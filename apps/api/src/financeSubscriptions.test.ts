@@ -63,14 +63,24 @@ describe("Finance subscription route authorization", () => {
         customerEmail: "attacker@example.test",
       },
     });
+    const selectCommission = await fixture.app.inject({
+      method: "POST",
+      url: `/api/finance/properties/${propertyId}/select-commission`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { commandId: "command-commission", idempotencyKey: "commission-1" },
+    });
     expect(read.statusCode).toBe(200);
     expect(write.statusCode).toBe(201);
+    expect(selectCommission.statusCode).toBe(201);
     expect(fixture.service.createFixedPlanCheckout).toHaveBeenCalledWith(
       expect.objectContaining({
         propertyId,
         organizationId,
         customerEmail: "host@example.test",
       }),
+    );
+    expect(fixture.service.selectCommissionPlan).toHaveBeenCalledWith(
+      expect.objectContaining({ propertyId, organizationId }),
     );
   });
 });
@@ -82,6 +92,11 @@ function createApp(options: {
 }) {
   const service = {
     getPlanStatus: vi.fn(async () => planStatus()),
+    selectCommissionPlan: vi.fn(async () => ({
+      ok: true as const,
+      status: "created" as const,
+      value: { planStatus: planStatus() },
+    })),
     createFixedPlanCheckout: vi.fn(async () => ({
       ok: true as const,
       status: "created" as const,

@@ -101,7 +101,7 @@ describe("target public bookability publication", () => {
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("AS has_coverage");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("AS has_sellable_offers");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
-      "finance.default_currency AS finance_default_currency",
+      "settings.default_currency AS booking_default_currency",
     );
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
       "finance.refund_policy AS finance_refund_policy",
@@ -120,8 +120,34 @@ describe("target public bookability publication", () => {
       "payment_provider_onboarding_status = 'completed'",
     );
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("payment_provider_charges_enabled = TRUE");
-    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("ARRAY['card', 'wallet']::text[]");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+      "NOT IN ('BHD', 'JOD', 'KWD', 'OMR', 'TND')",
+    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+      "'card' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))",
+    );
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'bank_transfer'");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'paypal'");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("AS public_payment_methods");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("AS billing_config_ready");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+      "source_rule_id = 'onboarding-booking:' || profile.property_id::text",
+    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+      "commission.commission_type = 'percentage'",
+    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("commission.percentage_rate = 5");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'billing_plan'");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+      "offer.currency = NULLIF(upper(trim(settings.default_currency)), '')",
+    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+      "finance.deposit_policy AS finance_deposit_policy",
+    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+      "UPDATE distribution.public_room_offer_snapshots offer",
+    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("SET payment_options = CASE");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("AS pay_at_property_ready");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("finance.payment_provider_accounts");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("pg_timezone_names");
@@ -471,6 +497,42 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical public location projection", () =
     );
     expect(incomplete.rows[0]?.profileStatus).toBe("incomplete");
     expect(incomplete.rows[0]?.missing).toContain("profile");
+  });
+
+  it("keeps payment-ready settings non-bookable until a billing plan is selected", async () => {
+    await client.query(
+      `INSERT INTO booking.booking_settings (property_id, default_currency)
+       VALUES ($1::uuid, 'EUR')
+       ON CONFLICT (property_id) DO UPDATE
+       SET default_currency = EXCLUDED.default_currency`,
+      [publicLocationPropertyId],
+    );
+    await client.query(
+      `INSERT INTO finance.payment_settings (
+         property_id, payments_enabled, accepted_methods, default_currency,
+         supported_currencies, deposit_policy, requires_manual_review
+       )
+       VALUES ($1::uuid, TRUE, ARRAY['pay_at_property', 'cash']::text[], 'EUR',
+         ARRAY['EUR']::text[], '{}'::jsonb, FALSE)
+       ON CONFLICT (property_id) DO UPDATE
+       SET payments_enabled = EXCLUDED.payments_enabled,
+           accepted_methods = EXCLUDED.accepted_methods,
+           default_currency = EXCLUDED.default_currency,
+           supported_currencies = EXCLUDED.supported_currencies`,
+      [publicLocationPropertyId],
+    );
+
+    await projectPublicBookabilityLocation(client);
+
+    const result = await client.query<{ missing: string[] }>(
+      `SELECT ARRAY(
+         SELECT jsonb_array_elements_text(public_setup_completeness -> 'missing')
+       ) AS missing
+       FROM distribution.public_hotel_bookability_profiles
+       WHERE property_id = $1::uuid`,
+      [publicLocationPropertyId],
+    );
+    expect(result.rows[0]?.missing).toContain("billing_plan");
   });
 });
 

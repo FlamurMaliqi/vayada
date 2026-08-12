@@ -64,6 +64,8 @@ import { createTargetFinanceBillingConfigReadPort } from "./domains/financeBilli
 import { createFinanceSubscriptionService } from "./domains/financeSubscriptionService.js";
 import { createPgFinanceSubscriptionStore } from "./domains/financeSubscriptionStore.js";
 import { createStripeFinanceSubscriptionProvider } from "./domains/stripeFinanceSubscriptions.js";
+import { createStripeBookingPaymentProvider } from "./domains/stripeBookingPayments.js";
+import { createStripeConnectProvider } from "./domains/stripeConnect.js";
 import { createPgMarketplaceSetupLifecycleStatusRepository } from "./domains/marketplaceSetupLifecycleStatusRepository.js";
 import { createPgBookingSetupLifecycleStatusRepository } from "./domains/bookingSetupLifecycleStatusRepository.js";
 import {
@@ -79,6 +81,14 @@ import { createPropertySetupFinanceStateProvider } from "./platform/propertySetu
 import { createPropertySetupReviewLifecycleStateProvider } from "./platform/propertySetupReviewLifecycleState.js";
 import { createPropertySetupRouteStateReadPort } from "./platform/propertySetupRouteState.js";
 import { runPlatformMediaCleanupJobs } from "./jobs/platformMediaCleanup.js";
+import {
+  createPgBookingLifecycleStore,
+  runBookingLifecycleSchedulerJobs,
+} from "./jobs/bookingLifecycle.js";
+import {
+  createResendBookingEmailDelivery,
+  runBookingEmailDeliveryJobs,
+} from "./jobs/bookingEmailDelivery.js";
 import { runChannexReviewJobs } from "./jobs/channexReviews.js";
 import {
   runFinanceSubscriptionNotificationJobs,
@@ -272,6 +282,10 @@ const bookingDashboardMetricsReadPort =
       })
     : undefined;
 
+const stripeBookingPaymentProvider = config.stripeSubscriptions.secretKey
+  ? createStripeBookingPaymentProvider({ secretKey: config.stripeSubscriptions.secretKey })
+  : undefined;
+
 const bookingWebCheckoutAdapter =
   config.bookingCheckoutCommandSource === "target"
     ? createTargetBookingWebCheckoutAdapter({
@@ -282,6 +296,7 @@ const bookingWebCheckoutAdapter =
             connectionString: targetDatabaseUrl,
             pool: executor,
           }),
+        stripePaymentProvider: stripeBookingPaymentProvider,
       })
     : undefined;
 
@@ -312,10 +327,23 @@ const pmsModuleActivationRepository = config.auth
     })
   : undefined;
 
+const stripeConnectProvider = config.stripeSubscriptions.secretKey
+  ? createStripeConnectProvider({
+      secretKey: config.stripeSubscriptions.secretKey,
+      returnBaseUrls: {
+        marketplace:
+          config.authSession?.authSurfaceOrigins["marketplace-web"] ??
+          config.stripeSubscriptions.bookingAdminBaseUrl,
+        bookingAdmin: config.stripeSubscriptions.bookingAdminBaseUrl,
+      },
+    })
+  : undefined;
+
 const financeRepository =
   config.financeSource === "target"
     ? createTargetFinancePropertySettingsRepository({
         connectionString: targetDatabaseUrl,
+        stripeConnectProvider,
       })
     : undefined;
 
@@ -336,6 +364,11 @@ const financeSubscriptionService =
         roomInventory: financeSubscriptionRoomInventory!,
         stripe: stripeSubscriptionProvider,
         bookingAdminBaseUrl: config.stripeSubscriptions.bookingAdminBaseUrl,
+        afterPlanChange: publicBookabilityPublisher
+          ? async (propertyId) => {
+              await publicBookabilityPublisher.publish({ propertyId });
+            }
+          : undefined,
       })
     : undefined;
 
@@ -756,6 +789,7 @@ const app = buildApp({
         },
         store: createPgProviderWebhookStore({
           connectionString: targetDatabaseUrl,
+          stripeConnectProvider,
         }),
       }
     : undefined,
@@ -962,6 +996,13 @@ const runFinanceSubscriptionJobs = () => {
         targetDatabaseUrl,
         stripeSubscriptionProvider,
         financeSubscriptionRoomInventory,
+        {
+          refreshPublicBookability: publicBookabilityPublisher
+            ? async (propertyId) => {
+                await publicBookabilityPublisher.publish({ propertyId });
+              }
+            : undefined,
+        },
       ),
     );
   }
@@ -1108,6 +1149,60 @@ if (platformMediaRuntime) {
     await platformMediaRuntime.cleanupStore.close();
   });
 }
+
+const bookingLifecycleStore =
+  config.bookingCheckoutCommandSource === "target"
+    ? createPgBookingLifecycleStore({
+        connectionString: targetDatabaseUrl,
+        inventoryReservationPort: createTargetPmsInventoryReservationPort(),
+        stripePaymentProvider: stripeBookingPaymentProvider,
+      })
+    : undefined;
+let activeBookingLifecycleRun: Promise<void> | undefined;
+const runBookingLifecycle = () => {
+  if (!bookingLifecycleStore || activeBookingLifecycleRun) return;
+  activeBookingLifecycleRun = runBookingLifecycleSchedulerJobs(bookingLifecycleStore)
+    .then(() => undefined)
+    .catch((error: unknown) => app.log.warn({ err: error }, "Booking lifecycle sweep failed"))
+    .finally(() => {
+      activeBookingLifecycleRun = undefined;
+    });
+};
+const bookingLifecycleTimer = bookingLifecycleStore
+  ? setInterval(runBookingLifecycle, 60_000)
+  : undefined;
+bookingLifecycleTimer?.unref();
+if (bookingLifecycleStore) runBookingLifecycle();
+
+const bookingEmailDelivery = config.bookingEmailDelivery
+  ? createResendBookingEmailDelivery(config.bookingEmailDelivery)
+  : undefined;
+let activeBookingEmailDelivery: Promise<void> | undefined;
+const runBookingEmailDelivery = () => {
+  if (!bookingEmailDelivery || activeBookingEmailDelivery) return;
+  activeBookingEmailDelivery = runBookingEmailDeliveryJobs(targetDatabaseUrl, bookingEmailDelivery)
+    .then((result) => {
+      if (result.failed > 0) {
+        app.log.warn({ failed: result.failed }, "Booking email delivery completed with failures");
+      }
+    })
+    .catch((error: unknown) => app.log.warn({ err: error }, "Booking email delivery failed"))
+    .finally(() => {
+      activeBookingEmailDelivery = undefined;
+    });
+};
+const bookingEmailDeliveryTimer = bookingEmailDelivery
+  ? setInterval(runBookingEmailDelivery, 5_000)
+  : undefined;
+bookingEmailDeliveryTimer?.unref();
+if (bookingEmailDelivery) runBookingEmailDelivery();
+app.addHook("onClose", async () => {
+  if (bookingLifecycleTimer) clearInterval(bookingLifecycleTimer);
+  if (bookingEmailDeliveryTimer) clearInterval(bookingEmailDeliveryTimer);
+  await activeBookingLifecycleRun;
+  await activeBookingEmailDelivery;
+  await bookingLifecycleStore?.close();
+});
 
 const propertySetupDraftRetentionWorker = startPropertySetupDraftRetentionWorker({
   store: createPgPropertySetupDraftRetentionStore({

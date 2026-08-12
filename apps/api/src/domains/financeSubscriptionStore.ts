@@ -5,6 +5,7 @@ import type {
   CreateFixedPlanCheckoutResult,
   FinanceSubscriptionCommandContext,
   OpenFinanceCustomerPortalResult,
+  SelectCommissionPlanResult,
   StripeSubscriptionSnapshot,
 } from "@vayada/domain-finance";
 import pg, { type PoolClient, type QueryResult, type QueryResultRow } from "pg";
@@ -37,6 +38,7 @@ type SubscriptionStoreExecutor = {
 };
 
 export type FinanceSubscriptionStore = {
+  withPlanMutationLock<T>(propertyId: string, action: () => Promise<T>): Promise<T>;
   getEntitlement(propertyId: string): Promise<FinanceSubscriptionEntitlementRow | null>;
   findReplay<T>(
     operation: string,
@@ -46,6 +48,10 @@ export type FinanceSubscriptionStore = {
     command: CreateFixedPlanCheckoutCommand,
     result: CreateFixedPlanCheckoutResult,
   ): Promise<{ status: "created" | "idempotent_replay"; result: CreateFixedPlanCheckoutResult }>;
+  recordCommissionSelection(
+    command: FinanceSubscriptionCommandContext,
+    result: SelectCommissionPlanResult,
+  ): Promise<{ status: "created" | "idempotent_replay"; result: SelectCommissionPlanResult }>;
   recordPortal(
     command: FinanceSubscriptionCommandContext,
     result: OpenFinanceCustomerPortalResult,
@@ -67,6 +73,26 @@ export function createPgFinanceSubscriptionStore(config: {
     config.pool ?? new pg.Pool({ connectionString: config.connectionString, max: config.max ?? 5 });
 
   return {
+    async withPlanMutationLock(propertyId, action) {
+      if (!pool.connect) return action();
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          `SELECT pg_advisory_xact_lock(hashtextextended('finance-fixed-checkout:' || $1, 0))`,
+          [propertyId],
+        );
+        const result = await action();
+        await client.query("COMMIT");
+        return result;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
     async getEntitlement(propertyId) {
       const result = await pool.query<FinanceSubscriptionEntitlementRow>(
         `${ENTITLEMENT_SELECT}
@@ -139,11 +165,75 @@ export function createPgFinanceSubscriptionStore(config: {
             command.audit.requestedAt,
           ],
         );
+        await ensureBookingCommissionRule(client, command.propertyId, command.audit.requestedAt);
         await insertAudit(client, "fixed-plan-checkout", command, idempotency.id, {
           checkoutSessionId: result.checkoutSessionId,
           amountMinor: result.amountMinor,
           currency: result.currency,
           activeRoomCount: result.activeRoomCount,
+        });
+        return { status: "created", result };
+      });
+    },
+
+    async recordCommissionSelection(command, result) {
+      return withTransaction(pool, async (client) => {
+        const idempotency = await insertCompletedIdempotency(client, "select-commission", command, {
+          result,
+        });
+        if (!idempotency.inserted) {
+          return {
+            status: "idempotent_replay",
+            result: idempotency.result as SelectCommissionPlanResult,
+          };
+        }
+        await client.query(
+          `INSERT INTO finance.billing_entitlements
+             (
+               organization_id, property_id, product, entitlement_key,
+               billing_status, plan_key, billing_provider,
+               source_system, entitlement_metadata, updated_at
+             )
+           VALUES
+             ($1::uuid, $2::uuid, 'booking', 'direct-booking-finance',
+              'active', 'commission', 'none', 'finance', $3::jsonb, $4::timestamptz)
+           ON CONFLICT (organization_id, product, entitlement_key, (COALESCE(property_id::text, '')))
+           DO UPDATE SET
+             plan_key = CASE
+               WHEN finance.billing_entitlements.plan_key = 'fixed'
+                 THEN finance.billing_entitlements.plan_key
+               ELSE 'commission'
+             END,
+             billing_provider = CASE
+               WHEN finance.billing_entitlements.plan_key = 'fixed'
+                 THEN finance.billing_entitlements.billing_provider
+               ELSE 'none'
+             END,
+             checkout_session_ref = CASE
+               WHEN finance.billing_entitlements.plan_key = 'fixed'
+                 THEN finance.billing_entitlements.checkout_session_ref
+               ELSE NULL
+             END,
+             provider_subscription_status = CASE
+               WHEN finance.billing_entitlements.plan_key = 'fixed'
+                 THEN finance.billing_entitlements.provider_subscription_status
+               ELSE NULL
+             END,
+             entitlement_metadata = finance.billing_entitlements.entitlement_metadata || EXCLUDED.entitlement_metadata,
+             updated_at = EXCLUDED.updated_at`,
+          [
+            command.organizationId,
+            command.propertyId,
+            JSON.stringify({
+              planSelectedAt: command.audit.requestedAt,
+              planSelectedBy: "onboarding",
+            }),
+            command.audit.requestedAt,
+          ],
+        );
+        await ensureBookingCommissionRule(client, command.propertyId, command.audit.requestedAt);
+        await insertAudit(client, "select-commission", command, idempotency.id, {
+          plan: "commission",
         });
         return { status: "created", result };
       });
@@ -216,6 +306,39 @@ export function createPgFinanceSubscriptionStore(config: {
       if (ownsPool) await pool.end?.();
     },
   };
+}
+
+async function ensureBookingCommissionRule(
+  client: SubscriptionStoreExecutor,
+  propertyId: string,
+  requestedAt: string,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO finance.commission_rules (
+       property_id, rule_scope, product, commission_type, percentage_rate,
+       status, starts_at, source_system, source_rule_id, rule_metadata,
+       created_at, updated_at
+     )
+     SELECT
+       $1::uuid, 'property', 'booking', 'percentage', 5,
+       'active', $2::timestamptz, 'finance', $3,
+       '{"source":"onboarding","bookingEngineFeePercent":5}'::jsonb,
+       $2::timestamptz, $2::timestamptz
+     ON CONFLICT (source_system, source_rule_id) DO UPDATE SET
+       property_id = EXCLUDED.property_id,
+       rule_scope = 'property',
+       product = 'booking',
+       commission_type = 'percentage',
+       percentage_rate = 5,
+       fixed_amount = NULL,
+       currency = NULL,
+       status = 'active',
+       starts_at = LEAST(finance.commission_rules.starts_at, EXCLUDED.starts_at),
+       ends_at = NULL,
+       rule_metadata = finance.commission_rules.rule_metadata || EXCLUDED.rule_metadata,
+       updated_at = EXCLUDED.updated_at`,
+    [propertyId, requestedAt, `onboarding-booking:${propertyId}`],
+  );
 }
 
 const ENTITLEMENT_SELECT = `SELECT

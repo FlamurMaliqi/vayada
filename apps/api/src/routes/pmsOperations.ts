@@ -115,6 +115,7 @@ export type PmsOperationsCommandSideEffect =
   | "calendar_refresh"
   | "ari_changed"
   | "distribution_refresh"
+  | "guest_notification"
   | "audit_event";
 export type PmsAssignmentCommandSideEffect = "calendar_refresh" | "ari_changed" | "audit_event";
 export type PmsPrivateNoteSource = "pms" | "migration" | "system";
@@ -274,6 +275,14 @@ export type PmsNoShowCommand = {
   idempotencyKey: string;
   expectedVersion?: string;
   reason?: string;
+  audit: PmsOperationsCommandAudit;
+};
+
+export type PmsBookingLifecycleCommand = {
+  propertyId: string;
+  guestBookingId: string;
+  commandId: string;
+  idempotencyKey: string;
   audit: PmsOperationsCommandAudit;
 };
 
@@ -666,6 +675,8 @@ export type PmsOperationsCommandRepository = {
   ): Promise<PmsOperationalCommandResult>;
   executeCheckInCommand(command: PmsCheckInCommand): Promise<PmsOperationalCommandResult>;
   executeNoShowCommand(command: PmsNoShowCommand): Promise<PmsOperationalCommandResult>;
+  acceptBooking(command: PmsBookingLifecycleCommand): Promise<PmsOperationalCommandResult>;
+  markBookingPaid(command: PmsBookingLifecycleCommand): Promise<PmsOperationalCommandResult>;
   listPrivateNotes(propertyId: string, guestBookingId: string): Promise<PmsPrivateNote[] | null>;
   createPrivateNote(command: PmsPrivateNoteCreateCommand): Promise<PmsPrivateNoteCommandResult>;
   deletePrivateNote(command: PmsPrivateNoteDeleteCommand): Promise<PmsPrivateNoteDeleteResult>;
@@ -864,6 +875,8 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/reservations/:guestBookingId/assignments",
     "/properties/:propertyId/reservations/:guestBookingId/status",
     "/properties/:propertyId/reservations/:guestBookingId/check-in",
+    "/properties/:propertyId/reservations/:guestBookingId/accept",
+    "/properties/:propertyId/reservations/:guestBookingId/mark-paid",
     "/properties/:propertyId/reservations/:guestBookingId/no-show",
   ]) {
     app.options(path, async (request, reply) => {
@@ -2094,6 +2107,68 @@ export async function registerPmsOperationsRoutes(
         const result = await commandRepository.executeOperationalStatusCommand(command.value);
         if (!result.ok) return sendPmsOperationalCommandError(reply, result);
 
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          reservation: result.reservation,
+          commandMeta: result.commandMeta,
+        } satisfies PmsOperationsCommandResponse;
+      },
+    );
+
+    app.post<{ Params: PmsReservationParams; Body: unknown }>(
+      "/properties/:propertyId/reservations/:guestBookingId/accept",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, {
+            statusCode: 403,
+            code: "missing_permission",
+            category: "authorization",
+            message: "PMS operations origin is not allowed.",
+          });
+        }
+        const { propertyId, guestBookingId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toBookingLifecycleCommand(
+          propertyId,
+          guestBookingId,
+          request,
+          "Accept booking",
+        );
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await commandRepository.acceptBooking(command.value);
+        if (!result.ok) return sendPmsOperationalCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          reservation: result.reservation,
+          commandMeta: result.commandMeta,
+        } satisfies PmsOperationsCommandResponse;
+      },
+    );
+
+    app.post<{ Params: PmsReservationParams; Body: unknown }>(
+      "/properties/:propertyId/reservations/:guestBookingId/mark-paid",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, {
+            statusCode: 403,
+            code: "missing_permission",
+            category: "authorization",
+            message: "PMS operations origin is not allowed.",
+          });
+        }
+        const { propertyId, guestBookingId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toBookingLifecycleCommand(
+          propertyId,
+          guestBookingId,
+          request,
+          "Mark booking paid",
+        );
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await commandRepository.markBookingPaid(command.value);
+        if (!result.ok) return sendPmsOperationalCommandError(reply, result);
         return {
           contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
           propertyId,
@@ -3392,6 +3467,25 @@ function toOperationalStatusCommand(
       ...metadata.value,
       status,
       audit: pmsOperationsCommandAudit(request, metadata.value.commandId, "Update PMS status"),
+    },
+  };
+}
+
+function toBookingLifecycleCommand(
+  propertyId: string,
+  guestBookingId: string,
+  request: FastifyRequest<{ Body: unknown }>,
+  action: string,
+): { value: PmsBookingLifecycleCommand } | { error: PmsOperationsError } {
+  const metadata = toOperationalCommandMetadata(request.body, `${action} command`);
+  if ("error" in metadata) return metadata;
+  return {
+    value: {
+      propertyId,
+      guestBookingId,
+      commandId: metadata.value.commandId,
+      idempotencyKey: metadata.value.idempotencyKey,
+      audit: pmsOperationsCommandAudit(request, metadata.value.commandId, action),
     },
   };
 }

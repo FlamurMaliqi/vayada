@@ -259,6 +259,7 @@ describe("shared hotel setup status route", () => {
         "shared_identity",
         "rooms_rates_availability",
         "guest_settings_policies",
+        "billing_plan",
         "payment",
         "direct_booking_publication",
       ],
@@ -277,6 +278,7 @@ describe("shared hotel setup status route", () => {
         "creator_offer",
         "rooms_rates_availability",
         "guest_settings_policies",
+        "billing_plan",
         "payment",
         "direct_booking_publication",
       ],
@@ -389,6 +391,7 @@ describe("shared hotel setup status route", () => {
       shared_identity: completedTaskFact("shared_identity"),
       rooms_rates_availability: completedTaskFact("rooms_rates_availability"),
       guest_settings_policies: completedTaskFact("guest_settings_policies"),
+      billing_plan: completedTaskFact("billing_plan"),
       payment: completedTaskFact("payment"),
       direct_booking_publication: taskFact("direct_booking_publication", {
         ownerProgress: "in_progress",
@@ -460,6 +463,7 @@ describe("shared hotel setup status route", () => {
         shared_identity: completedTaskFact("shared_identity"),
         rooms_rates_availability: completedTaskFact("rooms_rates_availability"),
         guest_settings_policies: completedTaskFact("guest_settings_policies"),
+        billing_plan: completedTaskFact("billing_plan"),
         payment: completedTaskFact("payment"),
         direct_booking_publication: completedTaskFact("direct_booking_publication"),
       }),
@@ -2303,6 +2307,11 @@ describe("shared hotel setup status route", () => {
       readiness: "actionable",
       reasonCodes: ["no_supported_checkout_payment_method"],
     });
+    const factsSql = query.mock.calls.find(([text]) =>
+      text.includes("hasEffectivePaymentMethod"),
+    )?.[0];
+    expect(factsSql).toContain("payment.deposit_policy ->> 'bankTransferInstructions'");
+    expect(factsSql).toContain("payment.deposit_policy ->> 'paypalEmail'");
     expect(facts.direct_booking_publication).toMatchObject({
       readiness: "actionable",
       ownerProgress: "in_progress",
@@ -2457,7 +2466,7 @@ describe("shared hotel setup status route", () => {
     expect(sql).toContain("finance.payment_provider_accounts");
     expect(sql).toContain("payment_provider.onboarding_status = 'completed'");
     expect(sql).toContain("payment_provider.charges_enabled = TRUE");
-    expect(sql).toContain("'card', 'wallet'");
+    expect(sql).toContain("'card' = ANY(payment.accepted_methods)");
     expect(sql).toContain("'bank_transfer'");
     expect(sql).toContain("JOIN platform.media_objects media_object");
     expect(sql).toContain("JOIN platform.media_variants media_variant");
@@ -3206,6 +3215,8 @@ function adaptiveStatusRow(overrides: Record<string, unknown> = {}): Record<stri
     hasCheckOutPolicy: true,
     hasCancellationPolicy: true,
     policyUpdatedAt: "2026-07-26T12:00:00.000Z",
+    billingPlanSelected: true,
+    billingPlanUpdatedAt: "2026-07-26T12:00:00.000Z",
     paymentsEnabled: true,
     paymentSettingsUpdatedAt: "2026-07-26T12:00:00.000Z",
     hasAcceptedPaymentMethod: true,
@@ -3300,9 +3311,15 @@ function taskFacts(
       "creator_offer",
       "rooms_rates_availability",
       "guest_settings_policies",
+      "billing_plan",
       "payment",
       "direct_booking_publication",
-    ].map((taskId) => [taskId, taskFact(taskId as SetupTaskId)]),
+    ].map((taskId) => [
+      taskId,
+      taskId === "billing_plan"
+        ? completedTaskFact("billing_plan")
+        : taskFact(taskId as SetupTaskId),
+    ]),
   ) as AdaptivePropertySetupFacts["taskFacts"];
   return { ...defaults, ...overrides };
 }

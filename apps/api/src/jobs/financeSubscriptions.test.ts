@@ -36,6 +36,43 @@ describe("Finance subscription webhook lifecycle", () => {
     );
     await processFinanceSubscriptionWebhook(payload("invoice.paid", 20), fixture.dependencies);
     expect(fixture.store.entitlement.planKey).toBe("fixed");
+    expect(fixture.refreshPublicBookability).toHaveBeenLastCalledWith("property-1");
+  });
+
+  it("activates Fixed when an older paid event arrives after a newer sync event", async () => {
+    const fixture = setup("commission");
+    fixture.store.entitlement.subscriptionRef = "sub_fixed";
+
+    await processFinanceSubscriptionWebhook(
+      payload("customer.subscription.updated", 30),
+      fixture.dependencies,
+    );
+    await expect(
+      processFinanceSubscriptionWebhook(payload("invoice.paid", 20), fixture.dependencies),
+    ).resolves.toBe("applied");
+
+    expect(fixture.store.entitlement.planKey).toBe("fixed");
+    expect(fixture.store.entitlement.lastProviderEventCreatedAt).toBe(
+      new Date(30_000).toISOString(),
+    );
+  });
+
+  it("ignores a completed Checkout after its pending Fixed intent was abandoned", async () => {
+    const fixture = setup("commission");
+    fixture.store.entitlement.checkoutSessionRef = null;
+
+    await expect(
+      processFinanceSubscriptionWebhook(
+        payload("checkout.session.completed", 21),
+        fixture.dependencies,
+      ),
+    ).resolves.toBe("ignored_stale");
+
+    expect(fixture.provider.retrieveSubscription).not.toHaveBeenCalled();
+    expect(fixture.store.entitlement).toMatchObject({
+      planKey: "commission",
+      subscriptionRef: null,
+    });
   });
 
   it("ignores delayed lifecycle events after a newer event was applied", async () => {
@@ -63,6 +100,7 @@ describe("Finance subscription webhook lifecycle", () => {
     await processFinanceSubscriptionWebhook(event, fixture.dependencies);
     expect(fixture.store.entitlement.planKey).toBe("fixed");
     expect(fixture.store.notificationCount).toBe(1);
+    expect(fixture.refreshPublicBookability).toHaveBeenCalledWith("property-1");
   });
 
   it("rejects an invoice that is not linked to the entitlement subscription", async () => {
@@ -98,6 +136,31 @@ describe("Finance subscription webhook lifecycle", () => {
       fixture.dependencies,
     );
     expect(fixture.store.entitlement.planKey).toBe("commission");
+  });
+
+  it("records an explicit Commission activation marker when the first Fixed plan ends", async () => {
+    let metadata: Record<string, unknown> | undefined;
+    const store = createPgFinanceSubscriptionWebhookStore({
+      query: vi.fn(async (sql: string, values?: readonly unknown[]) => {
+        if (sql.includes("UPDATE finance.billing_entitlements")) {
+          metadata = JSON.parse(String(values?.[12])) as Record<string, unknown>;
+          return { rows: [{ propertyId: "property-1", planKey: "commission" }] };
+        }
+        return { rows: [] };
+      }),
+    } as never);
+
+    await store.applySubscriptionSnapshot({
+      payload: payload("customer.subscription.deleted", 60),
+      snapshot: { ...verifiedSnapshot(), status: "canceled" },
+      transition: "deleted",
+      activeRoomCount: 2,
+    });
+
+    expect(metadata).toMatchObject({
+      planSelectedAt: new Date(60_000).toISOString(),
+      planSelectedBy: "fixed-subscription-ended",
+    });
   });
 
   it("does not mutate Stripe quantity for a stale upcoming-invoice event", async () => {
@@ -206,17 +269,21 @@ function setup(planKey: "commission" | "fixed") {
   const provider = {
     snapshot,
     createFixedPlanCheckout: vi.fn(),
+    expireFixedPlanCheckout: vi.fn(),
     createCustomerPortal: vi.fn(),
     cancelAtPeriodEnd: vi.fn(),
     retrieveSubscription: vi.fn(async () => ({ ...snapshot })),
     updateRoomQuantity: vi.fn(async () => ({ ...snapshot })),
   } satisfies StripeFinanceSubscriptionProvider & { snapshot: StripeSubscriptionSnapshot };
+  const refreshPublicBookability = vi.fn(async () => undefined);
   return {
     store,
     provider,
+    refreshPublicBookability,
     dependencies: {
       store,
       stripe: provider,
+      refreshPublicBookability,
       roomInventory: {
         getRoomInventorySnapshot: vi.fn(async () => ({
           propertyId: "property-1",
@@ -264,8 +331,11 @@ class MemoryStore implements FinanceSubscriptionWebhookStore {
   async applySubscriptionSnapshot(
     input: Parameters<FinanceSubscriptionWebhookStore["applySubscriptionSnapshot"]>[0],
   ) {
-    if (!this.accept(input.payload)) return null;
-    if (input.transition === "paid" && input.snapshot.status === "active") {
+    const activatesFixed = input.transition === "paid" && input.snapshot.status === "active";
+    if (!this.accept(input.payload) && !(activatesFixed && this.entitlement.planKey !== "fixed")) {
+      return null;
+    }
+    if (activatesFixed) {
       this.entitlement.planKey = "fixed";
     }
     if (

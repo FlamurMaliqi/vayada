@@ -1,0 +1,103 @@
+import { describe, expect, it } from "vitest";
+
+import { createPgFinanceSubscriptionStore } from "./financeSubscriptionStore.js";
+
+describe("Finance subscription store", () => {
+  it("holds a property advisory lock across Fixed Checkout creation", async () => {
+    const calls: string[] = [];
+    const client = {
+      async query(text: string) {
+        calls.push(text);
+        return { rows: [], rowCount: 0 };
+      },
+      release() {
+        calls.push("RELEASE");
+      },
+    };
+    const store = createPgFinanceSubscriptionStore({
+      connectionString: "postgres://unused",
+      pool: {
+        query: client.query,
+        async connect() {
+          return client;
+        },
+      } as never,
+    });
+
+    await store.withPlanMutationLock("property-1", async () => {
+      calls.push("ACTION");
+    });
+
+    expect(calls).toEqual([
+      "BEGIN",
+      expect.stringContaining("pg_advisory_xact_lock"),
+      "ACTION",
+      "COMMIT",
+      "RELEASE",
+    ]);
+  });
+
+  it("provisions the canonical 5% booking commission rule with a new plan selection", async () => {
+    const calls: Array<{ text: string; values?: readonly unknown[] }> = [];
+    const pool = {
+      async query(text: string, values?: readonly unknown[]) {
+        calls.push({ text, values });
+        if (text.includes("INSERT INTO platform.idempotency_keys"))
+          return { rows: [{ id: "idem-1" }] };
+        return { rows: [] };
+      },
+      async end() {},
+    };
+    const store = createPgFinanceSubscriptionStore({
+      connectionString: "postgres://unused",
+      pool: pool as never,
+    });
+
+    await store.recordCommissionSelection(
+      {
+        commandId: "commission-1",
+        idempotencyKey: "commission-property-1",
+        propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+        organizationId: "b9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+        audit: {
+          actor: { kind: "system", service: "test" },
+          requestId: "request-1",
+          reason: "test",
+          requestedAt: "2026-09-01T10:00:00.000Z",
+        },
+      },
+      {
+        planStatus: {
+          propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+          plan: "commission",
+          status: "commission",
+          currency: "EUR",
+          activeRoomCount: 1,
+          amountMinor: 3_000,
+          currentPeriodStart: null,
+          currentPeriodEnd: null,
+          nextBillingDate: null,
+          cancelAtPeriodEnd: false,
+          checkoutPending: false,
+          customerPortalAvailable: false,
+          activatedAt: null,
+          updatedAt: "2026-09-01T10:00:00.000Z",
+        },
+      },
+    );
+
+    const rule = calls.find(({ text }) => text.includes("INSERT INTO finance.commission_rules"));
+    expect(rule?.text).toContain("'percentage', 5");
+    expect(rule?.text).not.toContain("WHERE NOT EXISTS");
+    expect(rule?.text).toContain("ON CONFLICT (source_system, source_rule_id) DO UPDATE SET");
+    expect(rule?.text).toContain("commission_type = 'percentage'");
+    expect(rule?.text).toContain("percentage_rate = 5");
+    expect(rule?.text).toContain("status = 'active'");
+    expect(rule?.text).toContain("ends_at = NULL");
+    expect(rule?.values).toEqual([
+      "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+      "2026-09-01T10:00:00.000Z",
+      "onboarding-booking:a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+    ]);
+  });
+});

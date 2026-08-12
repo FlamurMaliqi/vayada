@@ -1111,6 +1111,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState("");
+  const [paymentDeadlineExpired, setPaymentDeadlineExpired] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<{
     message: string;
     variant?: "danger" | "default";
@@ -1151,6 +1152,18 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     guestPassportNumber: "",
     specialRequests: "",
   });
+
+  useEffect(() => {
+    const deadline = booking?.hostResponseDeadline;
+    if (!deadline) {
+      setPaymentDeadlineExpired(false);
+      return;
+    }
+    const update = () => setPaymentDeadlineExpired(Date.now() >= new Date(deadline).getTime());
+    update();
+    const interval = setInterval(update, 1000);
+    return () => clearInterval(interval);
+  }, [booking?.hostResponseDeadline]);
   const [modifyOpen, setModifyOpen] = useState(false);
   const [addonEditOpen, setAddonEditOpen] = useState(false);
 
@@ -1199,8 +1212,10 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   }, []);
 
   const handleAccept = () => {
+    if (paymentDeadlineExpired) return;
     setConfirmDialog({
-      message: "Are you sure you want to accept this booking? Payment will be captured.",
+      message:
+        "Accept this booking and send the guest the bank transfer instructions? No payment is recorded until you mark it as received.",
       confirmLabel: "Accept",
       onConfirm: () => {
         setConfirmDialog(null);
@@ -1270,8 +1285,15 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   };
 
   const handleMarkPaid = () => {
+    if (paymentDeadlineExpired) return;
+    const methodLabel =
+      booking?.paymentMethod === "bank_transfer"
+        ? "bank transfer"
+        : booking?.paymentMethod === "pay_at_property"
+          ? "pay-at-hotel payment"
+          : "PayPal payment";
     setConfirmDialog({
-      message: "Confirm that the PayPal payment has been received?",
+      message: `Confirm that the ${methodLabel} has been received?`,
       confirmLabel: "Mark as paid",
       onConfirm: () => {
         setConfirmDialog(null);
@@ -1512,6 +1534,11 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     booking.status === "expired" ||
     booking.status === "no_show";
   const hasDeadline = isPending && booking.hostResponseDeadline;
+  const hasAcceptedBankDeadline =
+    booking.status === "confirmed" &&
+    booking.paymentMethod === "bank_transfer" &&
+    booking.paymentStatus === "unpaid" &&
+    booking.hostResponseDeadline;
   const totalParty = booking.adults + booking.children;
   const additionalCapacity = Math.max(0, totalParty - 1);
 
@@ -1990,6 +2017,31 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                 )}
               </div>
             )}
+            {booking.status === "confirmed" &&
+              (booking.paymentMethod === "bank_transfer" ||
+                booking.paymentMethod === "pay_at_property") &&
+              booking.paymentStatus === "unpaid" && (
+                <div className="mt-4 space-y-3">
+                  {hasAcceptedBankDeadline ? (
+                    <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                      <p className="text-xs text-amber-800">
+                        Payment must be recorded before this reservation is released.
+                      </p>
+                      <CountdownTimer deadline={booking.hostResponseDeadline!} />
+                    </div>
+                  ) : null}
+                  <button
+                    onClick={handleMarkPaid}
+                    disabled={updating || paymentDeadlineExpired}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    <CheckCircleIcon className="h-4 w-4" />
+                    {booking.paymentMethod === "bank_transfer"
+                      ? "Mark bank transfer received"
+                      : "Mark pay-at-hotel payment received"}
+                  </button>
+                </div>
+              )}
           </div>
         </div>
 
@@ -2302,16 +2354,13 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             most urgent action stays visible without scrolling further. */}
         {isPending && booking.hostResponseDeadline && (
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-            <p className="mb-2 text-xs text-gray-500">
-              Booking approval and payment status actions are not available yet.
-            </p>
+            <p className="mb-2 text-xs text-gray-500">Review this manual-payment booking.</p>
             <div className="flex flex-wrap gap-3">
               {booking.paymentMethod === "paypal" ? (
                 <button
                   onClick={handleMarkPaid}
-                  disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || updating}
-                  title="Payment status changes are not available yet"
-                  className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-5 py-2.5 text-sm font-medium text-gray-400"
+                  disabled={updating || paymentDeadlineExpired}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
                 >
                   <CheckCircleIcon className="w-4 h-4" />
                   Mark as paid
@@ -2319,9 +2368,8 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               ) : (
                 <button
                   onClick={handleAccept}
-                  disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || updating}
-                  title="Booking acceptance is not available yet"
-                  className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-5 py-2.5 text-sm font-medium text-gray-400"
+                  disabled={updating || paymentDeadlineExpired}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
                 >
                   <CheckCircleIcon className="w-4 h-4" />
                   Accept booking
@@ -2341,15 +2389,20 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         )}
         {isPending && !booking.hostResponseDeadline && (
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-            <p className="mb-2 text-xs text-gray-500">Booking confirmation is not available yet.</p>
+            <p className="mb-2 text-xs text-gray-500">
+              {booking.paymentMethod === "paypal"
+                ? "Confirm the PayPal payment after it reaches your account."
+                : "Accept the booking to send bank transfer instructions to the guest."}
+            </p>
             <button
-              onClick={handleConfirmFromPending}
-              disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || updating}
-              title="Booking confirmation is not available yet"
-              className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-400"
+              onClick={
+                booking.paymentMethod === "paypal" ? handleMarkPaid : handleConfirmFromPending
+              }
+              disabled={updating}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
             >
               <CheckCircleIcon className="w-4 h-4" />
-              Confirm booking
+              {booking.paymentMethod === "paypal" ? "Mark as paid" : "Accept booking"}
             </button>
           </div>
         )}

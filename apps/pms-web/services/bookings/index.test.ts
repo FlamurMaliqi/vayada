@@ -122,6 +122,49 @@ describe("PMS target booking projection", () => {
       nightlyRate: 180,
     });
   });
+
+  it("hydrates manual payment state and uses the target acceptance and mark-paid commands", async () => {
+    const manualReservation = {
+      ...reservation,
+      status: "pending_payment",
+      payment: { method: "bank_transfer", status: "unpaid" },
+      hostResponseDeadlineAt: "2026-07-24T10:00:00.000Z",
+    };
+    mocks.post.mockResolvedValue({});
+    mocks.get.mockImplementation(async (endpoint: string) => {
+      if (endpoint.endsWith("/room-types")) return { items: [] };
+      if (endpoint.endsWith("/reservations/booking-1")) return { item: manualReservation };
+      return {
+        items: [manualReservation],
+        pagination: { total: 1, limit: 50, offset: 0 },
+      };
+    });
+
+    await expect(bookingsService.acceptBooking("booking-1")).resolves.toMatchObject({
+      paymentMethod: "bank_transfer",
+      paymentStatus: "unpaid",
+      status: "pending",
+      hostResponseDeadline: "2026-07-24T10:00:00.000Z",
+    });
+    await expect(bookingsService.markPaid("booking-1")).resolves.toMatchObject({
+      paymentMethod: "bank_transfer",
+    });
+
+    expect(mocks.post.mock.calls[0]?.[0]).toBe(
+      "/api/pms/properties/property-1/reservations/booking-1/accept",
+    );
+    expect(mocks.post.mock.calls[1]?.[0]).toBe(
+      "/api/pms/properties/property-1/reservations/booking-1/mark-paid",
+    );
+    expect(mocks.post.mock.calls[0]?.[1]).toEqual({
+      commandId: "pms.booking.accept:booking-1:v1",
+      idempotencyKey: "pms.booking.accept:booking-1:v1",
+    });
+    expect(mocks.post.mock.calls[1]?.[1]).toEqual({
+      commandId: "pms.booking.mark-paid:booking-1:v1",
+      idempotencyKey: "pms.booking.mark-paid:booking-1:v1",
+    });
+  });
 });
 
 describe("PMS guest contact projection", () => {

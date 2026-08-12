@@ -74,6 +74,7 @@ describe("target PMS reservation stay dates", () => {
     expect(listQuery).toContain("booking.booking_metadata #>> '{selectedOffer,roomName}'");
     expect(listQuery).toContain('AS "guestContactAccepted"');
     expect(listQuery).toContain("contact_event.actor_type = 'property_user'");
+    expect(listQuery).toContain("booking.booking_metadata ->> 'acceptedPaymentDeadlineAt'");
     expect(result.items[0]?.stay).toEqual({
       checkIn: "2026-07-23",
       checkOut: "2026-07-24",

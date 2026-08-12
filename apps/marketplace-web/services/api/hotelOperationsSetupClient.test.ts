@@ -51,6 +51,7 @@ import {
   isPublicationReady,
   isStripeReady,
   stableSetupCommandId,
+  type PaymentSetupDraft,
 } from "./hotelOperationsSetupClient";
 import { ApiErrorResponse } from "./client";
 
@@ -408,6 +409,32 @@ describe("hotel operations setup client", () => {
     );
   });
 
+  it("replays one Stripe link attempt but mints a new command for a deliberate retry", async () => {
+    mocks.post.mockResolvedValue({ onboardingUrl: "https://connect.stripe.test/onboard" });
+    const input = {
+      email: "host@example.test",
+      country: "DE",
+      providerAccountId: "provider-account-1",
+    };
+
+    await hotelOperationsSetupApi.startStripeOnboarding("property-1", {
+      ...input,
+      linkAttemptId: "attempt-1",
+    });
+    await hotelOperationsSetupApi.startStripeOnboarding("property-1", {
+      ...input,
+      linkAttemptId: "attempt-1",
+    });
+    await hotelOperationsSetupApi.startStripeOnboarding("property-1", {
+      ...input,
+      linkAttemptId: "attempt-2",
+    });
+
+    const bodies = mocks.post.mock.calls.map((call) => call[1] as { commandId: string });
+    expect(bodies[0]!.commandId).toBe(bodies[1]!.commandId);
+    expect(bodies[2]!.commandId).not.toBe(bodies[0]!.commandId);
+  });
+
   it("uses canonical property IDs for Booking guest-policy reads and writes", async () => {
     mocks.get.mockResolvedValue({
       property_name: "Hotel Alpenrose",
@@ -534,25 +561,114 @@ describe("hotel operations setup client", () => {
     );
   });
 
-  it("builds honest manual and Stripe payment settings", () => {
-    expect(buildPaymentSettingsRequest("property-1", "pay_at_property", "EUR")).toMatchObject({
+  it("builds multi-method settings without duplicating property currency", () => {
+    const draft = {
+      methods: ["pay_at_property", "bank_transfer", "paypal"],
+      onlineProvider: "stripe",
+      payAtHotelMethods: ["cash", "card"],
+      bankName: "Vayada Bank",
+      accountHolder: "Hotel One",
+      accountNumber: "DE123",
+      bicSwift: "VAYADEF1",
+      paypalEmail: "PAYMENTS@HOTEL.TEST",
+    } satisfies PaymentSetupDraft;
+    const eurRequest = buildPaymentSettingsRequest("property-1", draft, "EUR");
+    expect(eurRequest).toMatchObject({
       paymentSettings: {
         paymentsEnabled: true,
-        paymentProvider: "manual",
-        acceptedMethods: ["pay_at_property"],
-        defaultCurrency: "EUR",
-        supportedCurrencies: ["EUR"],
+        paymentProvider: "bank_transfer",
+        acceptedMethods: ["pay_at_property", "cash", "manual_card", "bank_transfer", "paypal"],
+        depositPolicy: {
+          bankName: "Vayada Bank",
+          accountHolder: "Hotel One",
+          accountNumber: "DE123",
+          bicSwift: "VAYADEF1",
+          paypalEmail: "payments@hotel.test",
+        },
       },
     });
-    expect(buildPaymentSettingsRequest("property-1", "stripe", "USD")).toMatchObject({
+    const idrRequest = buildPaymentSettingsRequest("property-1", draft, "IDR");
+    expect(idrRequest.paymentSettings).toEqual(eurRequest.paymentSettings);
+    expect(idrRequest.commandId).not.toBe(eurRequest.commandId);
+    expect(buildPaymentSettingsRequest("property-1", draft, "EUR", "attempt-2").commandId).not.toBe(
+      eurRequest.commandId,
+    );
+    expect(buildPaymentSettingsRequest("property-1", draft, "EUR", "attempt-2").commandId).toBe(
+      buildPaymentSettingsRequest("property-1", draft, "EUR", "attempt-2").commandId,
+    );
+    expect(
+      buildPaymentSettingsRequest("property-1", {
+        methods: ["online_card"],
+        onlineProvider: "stripe",
+        payAtHotelMethods: [],
+        bankName: "",
+        accountHolder: "",
+        accountNumber: "",
+        bicSwift: "",
+        paypalEmail: "",
+      }),
+    ).toMatchObject({
       paymentSettings: {
         paymentsEnabled: true,
         paymentProvider: "stripe",
         acceptedMethods: ["card"],
-        defaultCurrency: "USD",
-        supportedCurrencies: ["USD"],
       },
     });
+
+    expect(() =>
+      buildPaymentSettingsRequest("property-1", {
+        methods: ["pay_at_property"],
+        onlineProvider: "stripe",
+        payAtHotelMethods: [],
+        bankName: "",
+        accountHolder: "",
+        accountNumber: "",
+        bicSwift: "",
+        paypalEmail: "",
+      }),
+    ).toThrow("Choose cash, card, or both for Pay at Hotel.");
+  });
+
+  it("uses the canonical Finance subscription routes for onboarding plan selection", async () => {
+    mocks.get.mockResolvedValue({
+      planStatus: { plan: "commission", status: "commission", amountMinor: 3_500 },
+    });
+    mocks.post
+      .mockResolvedValueOnce({
+        planStatus: { plan: "commission", status: "commission", amountMinor: 3_500 },
+      })
+      .mockResolvedValueOnce({
+        checkout: {
+          checkoutUrl: "https://checkout.stripe.test/fixed",
+          amountMinor: 3_500,
+          activeRoomCount: 2,
+        },
+      });
+
+    await hotelOperationsSetupApi.getPlanStatus("property / one");
+    await hotelOperationsSetupApi.selectCommissionPlan("property / one");
+    await hotelOperationsSetupApi.startFixedPlanCheckout("property / one");
+
+    expect(mocks.get).toHaveBeenCalledWith(
+      "/api/finance/properties/property%20%2F%20one/plan-status",
+      undefined,
+    );
+    expect(mocks.post.mock.calls.map(([endpoint]) => endpoint)).toEqual([
+      "/api/finance/properties/property%20%2F%20one/select-commission",
+      "/api/finance/properties/property%20%2F%20one/fixed-plan/checkout",
+    ]);
+  });
+
+  it("advances plan command identity when the durable plan status changes", async () => {
+    mocks.post.mockResolvedValue({
+      planStatus: { plan: "commission", status: "commission", amountMinor: 3_500 },
+    });
+
+    await hotelOperationsSetupApi.selectCommissionPlan("property-1", "2026-08-11T10:00:00Z");
+    await hotelOperationsSetupApi.selectCommissionPlan("property-1", "2026-08-11T11:00:00Z");
+
+    const [first, second] = mocks.post.mock.calls.map(([, body]) => body as { commandId: string });
+    expect(first.commandId).not.toBe(second.commandId);
   });
 
   it("only treats Stripe as ready when the provider can charge", () => {
@@ -562,6 +678,7 @@ describe("hotel operations setup client", () => {
       acceptedMethods: ["card"],
       defaultCurrency: "EUR",
       supportedCurrencies: ["EUR"],
+      depositPolicy: {},
       requiresManualReview: false,
       providerAccount: {
         providerAccountId: "provider-1",

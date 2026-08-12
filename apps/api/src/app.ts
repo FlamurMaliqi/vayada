@@ -567,6 +567,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerFinanceRoutes, {
       prefix: "/api",
       repository: options.financeRepository,
+      publicBookabilityPublisher: options.publicBookabilityPublisher,
       xenditBankValidator: options.financeXenditBankValidator,
       publicHotelPropertyResolver: options.financePublicHotelPropertyResolver,
       publicHotelProfileRepository: financePublicHotelProfileRepository,

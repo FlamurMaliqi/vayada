@@ -58,7 +58,20 @@ export type PropertyLaunchSettings = {
   youtube: string;
 };
 
-export type PaymentMethodChoice = "pay_at_property" | "bank_transfer" | "stripe";
+export type PaymentMethodChoice = "online_card" | "pay_at_property" | "bank_transfer" | "paypal";
+export type OnlinePaymentProvider = "stripe" | "xendit" | "vayada";
+export type PayAtHotelMethod = "cash" | "card";
+
+export type PaymentSetupDraft = {
+  methods: PaymentMethodChoice[];
+  onlineProvider: OnlinePaymentProvider;
+  payAtHotelMethods: PayAtHotelMethod[];
+  bankName: string;
+  accountHolder: string;
+  accountNumber: string;
+  bicSwift: string;
+  paypalEmail: string;
+};
 
 export type FinancePaymentSettings = {
   paymentsEnabled: boolean;
@@ -66,6 +79,7 @@ export type FinancePaymentSettings = {
   acceptedMethods: string[];
   defaultCurrency: string;
   supportedCurrencies: string[];
+  depositPolicy: Record<string, string | number | boolean | null>;
   requiresManualReview: boolean;
   providerAccount: {
     providerAccountId: string | null;
@@ -76,6 +90,18 @@ export type FinancePaymentSettings = {
     payoutsEnabled: boolean;
   };
 };
+
+export type FinancePlanStatus = {
+  plan: "commission" | "fixed";
+  status: "commission" | "checkout_pending" | "active" | "past_due" | "cancel_at_period_end";
+  currency: "EUR";
+  activeRoomCount: number;
+  amountMinor: number;
+  checkoutPending: boolean;
+  updatedAt: string;
+};
+
+type FinancePlanStatusResponse = { planStatus: FinancePlanStatus };
 
 export type DirectBookingSetup = {
   profileRevision: number;
@@ -253,12 +279,53 @@ export const hotelOperationsSetupApi = {
     return response.paymentSettings;
   },
 
+  getPlanStatus: async (propertyId: string, signal?: AbortSignal): Promise<FinancePlanStatus> => {
+    const response = await targetApiClient.get<FinancePlanStatusResponse>(
+      `/api/finance/properties/${encoded(propertyId)}/plan-status`,
+      signal ? { signal } : undefined,
+    );
+    return response.planStatus;
+  },
+
+  selectCommissionPlan: async (
+    propertyId: string,
+    intentRevision = "initial",
+  ): Promise<FinancePlanStatus> => {
+    const commandId = stableSetupCommandId("finance-plan-commission", propertyId, {
+      plan: "commission",
+      intentRevision,
+    });
+    const response = await targetApiClient.post<FinancePlanStatusResponse>(
+      `/api/finance/properties/${encoded(propertyId)}/select-commission`,
+      { commandId, idempotencyKey: commandId },
+    );
+    return response.planStatus;
+  },
+
+  startFixedPlanCheckout: async (
+    propertyId: string,
+    intentRevision = "initial",
+  ): Promise<{ checkoutUrl: string; amountMinor: number; activeRoomCount: number }> => {
+    const commandId = stableSetupCommandId("finance-plan-fixed", propertyId, {
+      plan: "fixed",
+      intentRevision,
+    });
+    const response = await targetApiClient.post<{
+      checkout: { checkoutUrl: string; amountMinor: number; activeRoomCount: number };
+    }>(`/api/finance/properties/${encoded(propertyId)}/fixed-plan/checkout`, {
+      commandId,
+      idempotencyKey: commandId,
+    });
+    return response.checkout;
+  },
+
   updatePaymentSettings: async (
     propertyId: string,
-    method: PaymentMethodChoice,
-    currency: string,
+    draft: PaymentSetupDraft,
+    canonicalCurrency: string,
+    intentRevision: string,
   ): Promise<FinancePaymentSettings> => {
-    const body = buildPaymentSettingsRequest(propertyId, method, currency);
+    const body = buildPaymentSettingsRequest(propertyId, draft, canonicalCurrency, intentRevision);
     const response = await targetApiClient.patch<FinancePaymentSettingsResponse>(
       `/api/finance/properties/${encoded(propertyId)}/payment-settings`,
       body,
@@ -268,7 +335,12 @@ export const hotelOperationsSetupApi = {
 
   startStripeOnboarding: async (
     propertyId: string,
-    input: { email: string; country: string; providerAccountId?: string | null },
+    input: {
+      email: string;
+      country: string;
+      providerAccountId?: string | null;
+      linkAttemptId?: string;
+    },
   ): Promise<StripeProviderAccountResponse> => {
     const endpoint = input.providerAccountId
       ? `/api/finance/properties/${encoded(propertyId)}/provider-accounts/${encoded(
@@ -279,18 +351,22 @@ export const hotelOperationsSetupApi = {
       input.providerAccountId ? "finance-stripe-onboarding" : "finance-stripe-account",
       propertyId,
       input.providerAccountId
-        ? { providerAccountId: input.providerAccountId }
+        ? {
+            providerAccountId: input.providerAccountId,
+            linkAttemptId: input.linkAttemptId ?? "initial",
+          }
         : { email: input.email.trim().toLowerCase(), country: input.country.trim().toUpperCase() },
     );
     return targetApiClient.post<StripeProviderAccountResponse>(
       endpoint,
       input.providerAccountId
-        ? { commandId, idempotencyKey: commandId }
+        ? { commandId, idempotencyKey: commandId, returnSurface: "marketplace" }
         : {
             commandId,
             idempotencyKey: commandId,
             email: input.email.trim().toLowerCase(),
             country: input.country.trim().toUpperCase(),
+            returnSurface: "marketplace",
           },
     );
   },
@@ -542,39 +618,89 @@ export function buildRoomSetupRequest(
 
 export function buildPaymentSettingsRequest(
   propertyId: string,
-  method: PaymentMethodChoice,
-  currencyInput: string,
+  draft: PaymentSetupDraft,
+  canonicalCurrency = "EUR",
+  intentRevision = "initial",
 ) {
-  const currency = normalizeCurrency(currencyInput);
-  const paymentSettings =
-    method === "stripe"
-      ? {
-          paymentsEnabled: true,
-          paymentProvider: "stripe",
-          acceptedMethods: ["card"],
-          defaultCurrency: currency,
-          supportedCurrencies: [currency],
-          requiresManualReview: false,
-        }
-      : method === "bank_transfer"
-        ? {
-            paymentsEnabled: true,
-            paymentProvider: "bank_transfer",
-            acceptedMethods: ["bank_transfer"],
-            defaultCurrency: currency,
-            supportedCurrencies: [currency],
-            requiresManualReview: false,
-          }
-        : {
-            paymentsEnabled: true,
-            paymentProvider: "manual",
-            acceptedMethods: ["pay_at_property"],
-            defaultCurrency: currency,
-            supportedCurrencies: [currency],
-            requiresManualReview: false,
-          };
-  const commandId = stableSetupCommandId("finance-payment-settings", propertyId, paymentSettings);
+  if (draft.methods.length === 0) {
+    throw new Error("Select at least one payment method so guests can complete bookings.");
+  }
+  const selected = new Set(draft.methods);
+  if (selected.has("pay_at_property") && draft.payAtHotelMethods.length === 0) {
+    throw new Error("Choose cash, card, or both for Pay at Hotel.");
+  }
+  const acceptedMethods: string[] = [];
+  if (selected.has("online_card")) {
+    acceptedMethods.push(draft.onlineProvider === "xendit" ? "xendit" : "card");
+  }
+  if (selected.has("pay_at_property")) {
+    acceptedMethods.push("pay_at_property");
+    if (draft.payAtHotelMethods.includes("cash")) acceptedMethods.push("cash");
+    if (draft.payAtHotelMethods.includes("card")) acceptedMethods.push("manual_card");
+  }
+  if (selected.has("bank_transfer")) acceptedMethods.push("bank_transfer");
+  if (selected.has("paypal")) acceptedMethods.push("paypal");
+
+  const paymentProvider = selected.has("online_card")
+    ? draft.onlineProvider
+    : selected.has("bank_transfer")
+      ? "bank_transfer"
+      : "manual";
+  const bankDetails = selected.has("bank_transfer")
+    ? {
+        bankName: requiredText(draft.bankName, "Bank name"),
+        accountHolder: requiredText(draft.accountHolder, "Account holder"),
+        accountNumber: requiredText(draft.accountNumber, "Account number or IBAN"),
+        bicSwift: draft.bicSwift.trim(),
+      }
+    : { bankName: "", accountHolder: "", accountNumber: "", bicSwift: "" };
+  const paypalEmail = selected.has("paypal")
+    ? requiredEmail(draft.paypalEmail, "PayPal email")
+    : "";
+  const paymentSettings = {
+    paymentsEnabled: true,
+    paymentProvider,
+    acceptedMethods,
+    depositPolicy: {
+      ...bankDetails,
+      paypalEmail,
+      paypalPaymentWindowHours: 24,
+      bankTransferInstructions: selected.has("bank_transfer")
+        ? bankTransferInstructions(bankDetails)
+        : "",
+    },
+    requiresManualReview: false,
+  };
+  const commandId = stableSetupCommandId("finance-payment-settings", propertyId, {
+    canonicalCurrency,
+    paymentSettings,
+    intentRevision,
+  });
   return { commandId, idempotencyKey: commandId, paymentSettings };
+}
+
+function bankTransferInstructions(details: {
+  bankName: string;
+  accountHolder: string;
+  accountNumber: string;
+  bicSwift: string;
+}): string {
+  return [
+    `Bank: ${details.bankName}`,
+    `Account holder: ${details.accountHolder}`,
+    `Account number / IBAN: ${details.accountNumber}`,
+    details.bicSwift ? `BIC/SWIFT: ${details.bicSwift}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function requiredEmail(value: string, label: string): string {
+  const normalized = requiredText(value, label).toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+    throw new Error(`${label} must be a valid email address.`);
+  }
+  return normalized;
 }
 
 export function stableSetupCommandId(prefix: string, propertyId: string, payload: unknown): string {

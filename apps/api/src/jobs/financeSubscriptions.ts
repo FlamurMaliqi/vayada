@@ -71,17 +71,20 @@ export async function processFinanceSubscriptionWebhook(
     store: FinanceSubscriptionWebhookStore;
     stripe: StripeFinanceSubscriptionProvider;
     roomInventory: RoomInventoryReadPort;
+    refreshPublicBookability?: (propertyId: string) => Promise<void>;
   },
 ): Promise<"applied" | "ignored_stale"> {
   validatePayload(payload);
   const existing = await dependencies.store.findEntitlement(payload);
-  if (!existing)
+  if (!existing) {
+    if (payload.eventType === "checkout.session.completed") return "ignored_stale";
     throw new Error("Stripe subscription webhook does not map to a Finance entitlement.");
+  }
   const subscriptionId = payload.subscriptionId ?? existing.subscriptionRef;
   if (!subscriptionId) throw new Error("Stripe subscription webhook omitted the subscription ID.");
 
   if (payload.eventType === "checkout.session.completed") {
-    if (existing.checkoutSessionRef && payload.checkoutSessionId !== existing.checkoutSessionRef) {
+    if (!existing.checkoutSessionRef || payload.checkoutSessionId !== existing.checkoutSessionRef) {
       return "ignored_stale";
     }
   }
@@ -94,7 +97,9 @@ export async function processFinanceSubscriptionWebhook(
       snapshot,
       activeRoomCount: existing.activeRoomCount,
     });
-    return updated ? "applied" : "ignored_stale";
+    if (!updated) return "ignored_stale";
+    await dependencies.refreshPublicBookability?.(updated.propertyId);
+    return "applied";
   }
 
   if (existing.subscriptionRef !== subscriptionId) {
@@ -139,6 +144,7 @@ export async function processFinanceSubscriptionWebhook(
       snapshot,
     });
   }
+  await dependencies.refreshPublicBookability?.(updated.propertyId);
   return "applied";
 }
 
@@ -149,6 +155,7 @@ export async function runFinanceSubscriptionWebhookJobs(
   options: {
     workerId?: string;
     limit?: number;
+    refreshPublicBookability?: (propertyId: string) => Promise<void>;
   } = {},
 ): Promise<{ processed: number; failed: number }> {
   const pool = new pg.Pool({ connectionString, max: 2 });
@@ -170,6 +177,7 @@ export async function runFinanceSubscriptionWebhookJobs(
           store,
           stripe,
           roomInventory,
+          refreshPublicBookability: options.refreshPublicBookability,
         });
         await finishJob(pool, job.id);
         processed += 1;
@@ -250,27 +258,25 @@ export function createPgFinanceSubscriptionWebhookStore(
     async recordCheckoutCompleted({ payload, snapshot, activeRoomCount }) {
       const result = await pool.query<FinanceSubscriptionWebhookEntitlement>(
         `UPDATE finance.billing_entitlements entitlement
-         SET billing_customer_ref = $3,
-             billing_subscription_ref = $4,
-             provider_subscription_status = $5,
-             billing_period_start_at = $6::timestamptz,
-             billing_period_end_at = $7::timestamptz,
-             cancel_at_period_end = $8,
-             billing_amount_minor = $9,
+         SET billing_customer_ref = $2,
+             billing_subscription_ref = $3,
+             provider_subscription_status = $4,
+             billing_period_start_at = $5::timestamptz,
+             billing_period_end_at = $6::timestamptz,
+             cancel_at_period_end = $7,
+             billing_amount_minor = $8,
              billing_currency = 'EUR',
-             active_room_count = $10,
-             entitlement_metadata = entitlement.entitlement_metadata || $11::jsonb,
-             last_provider_event_created_at = $12::timestamptz,
-             last_provider_event_id = $13,
+             active_room_count = $9,
+             entitlement_metadata = entitlement.entitlement_metadata || $10::jsonb,
+             last_provider_event_created_at = $11::timestamptz,
+             last_provider_event_id = $12,
              updated_at = now()
-         WHERE (($1::text IS NOT NULL AND entitlement.checkout_session_ref = $1)
-             OR (entitlement.checkout_session_ref IS NULL
-               AND $2::text IS NOT NULL AND entitlement.property_id::text = $2
-               AND $14::text IS NOT NULL AND entitlement.organization_id::text = $14))
+         WHERE $1::text IS NOT NULL
+           AND entitlement.checkout_session_ref = $1
            AND entitlement.product = 'booking'
            AND entitlement.entitlement_key = 'direct-booking-finance'
            AND (entitlement.last_provider_event_created_at IS NULL
-             OR entitlement.last_provider_event_created_at <= $12::timestamptz)
+             OR entitlement.last_provider_event_created_at <= $11::timestamptz)
          RETURNING entitlement.organization_id::text AS "organizationId",
            entitlement.property_id::text AS "propertyId", entitlement.plan_key AS "planKey",
            entitlement.billing_subscription_ref AS "subscriptionRef",
@@ -279,7 +285,6 @@ export function createPgFinanceSubscriptionWebhookStore(
            entitlement.last_provider_event_created_at::text AS "lastProviderEventCreatedAt"`,
         [
           payload.checkoutSessionId,
-          payload.propertyId,
           snapshot.customerId,
           snapshot.subscriptionId,
           snapshot.status,
@@ -291,7 +296,6 @@ export function createPgFinanceSubscriptionWebhookStore(
           JSON.stringify({ subscriptionItemId: snapshot.subscriptionItemId }),
           eventCreatedAt(payload),
           payload.rawEventId,
-          payload.organizationId,
         ],
       );
       return result.rows[0] ?? null;
@@ -326,14 +330,23 @@ export function createPgFinanceSubscriptionWebhookStore(
              starts_at = CASE WHEN $2::boolean THEN COALESCE(entitlement.starts_at, now())
                               ELSE entitlement.starts_at END,
              entitlement_metadata = entitlement.entitlement_metadata || $13::jsonb,
-             last_provider_event_created_at = $14::timestamptz,
-             last_provider_event_id = $15,
+             last_provider_event_created_at = GREATEST(
+               COALESCE(entitlement.last_provider_event_created_at, '-infinity'::timestamptz),
+               $14::timestamptz
+             ),
+             last_provider_event_id = CASE
+               WHEN entitlement.last_provider_event_created_at IS NULL
+                 OR entitlement.last_provider_event_created_at <= $14::timestamptz
+                 THEN $15
+               ELSE entitlement.last_provider_event_id
+             END,
              updated_at = now()
          WHERE entitlement.billing_subscription_ref = $1
            AND entitlement.product = 'booking'
            AND entitlement.entitlement_key = 'direct-booking-finance'
            AND (entitlement.last_provider_event_created_at IS NULL
-             OR entitlement.last_provider_event_created_at <= $14::timestamptz)
+             OR entitlement.last_provider_event_created_at <= $14::timestamptz
+             OR ($2::boolean AND entitlement.plan_key <> 'fixed'))
          RETURNING entitlement.organization_id::text AS "organizationId",
            entitlement.property_id::text AS "propertyId", entitlement.plan_key AS "planKey",
            entitlement.billing_subscription_ref AS "subscriptionRef",
@@ -353,7 +366,15 @@ export function createPgFinanceSubscriptionWebhookStore(
           snapshot.cancelAtPeriodEnd,
           fixedPlanAmountMinor(activeRoomCount),
           activeRoomCount,
-          JSON.stringify({ subscriptionItemId: snapshot.subscriptionItemId }),
+          JSON.stringify({
+            subscriptionItemId: snapshot.subscriptionItemId,
+            ...(endsFixed
+              ? {
+                  planSelectedAt: eventCreatedAt(payload),
+                  planSelectedBy: "fixed-subscription-ended",
+                }
+              : {}),
+          }),
           eventCreatedAt(payload),
           payload.rawEventId,
         ],

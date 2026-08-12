@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { RoomInventoryReadPort } from "@vayada/domain-pms";
 import {
   FINANCE_FIXED_PLAN_CURRENCY,
@@ -12,6 +14,7 @@ import {
   type OpenFinanceCustomerPortalResult,
   type ScheduleCommissionPlanCommand,
   type ScheduleCommissionPlanResult,
+  type SelectCommissionPlanResult,
   type StripeFinanceSubscriptionProvider,
 } from "@vayada/domain-finance";
 
@@ -26,6 +29,7 @@ export function createFinanceSubscriptionService(config: {
   stripe?: StripeFinanceSubscriptionProvider;
   bookingAdminBaseUrl: string;
   now?: () => Date;
+  afterPlanChange?: (propertyId: string) => Promise<void>;
 }): FinanceSubscriptionService {
   const now = config.now ?? (() => new Date());
 
@@ -40,60 +44,114 @@ export function createFinanceSubscriptionService(config: {
   return {
     getPlanStatus,
 
-    async createFixedPlanCheckout(command) {
-      const replay = await config.store.findReplay<CreateFixedPlanCheckoutResult>(
-        "fixed-plan-checkout",
-        command,
-      );
-      if (replay) {
-        return "conflict" in replay
-          ? failure("idempotency_conflict", 409, "This idempotency key was already used.")
-          : { ok: true, status: "idempotent_replay", value: replay.result };
-      }
-      if (!config.stripe) return stripeNotConfigured();
-
-      const [entitlement, inventory] = await Promise.all([
-        config.store.getEntitlement(command.propertyId),
-        config.roomInventory.getRoomInventorySnapshot(command.propertyId),
-      ]);
-      if (!inventory) {
-        return failure("property_not_found", 404, "The property room inventory was not found.");
-      }
-      if (entitlement?.planKey === "fixed") {
-        return failure("fixed_plan_already_active", 409, "The Fixed Plan is already active.");
-      }
-
-      const resumableCheckout = pendingCheckout(entitlement, inventory.activeRoomCount, now());
-      if (resumableCheckout) {
-        return { ok: true, status: "idempotent_replay", value: resumableCheckout };
-      }
-
-      try {
-        const amountMinor = fixedPlanAmountMinor(inventory.activeRoomCount);
-        const session = await config.stripe.createFixedPlanCheckout({
-          propertyId: command.propertyId,
-          organizationId: command.organizationId,
-          customerEmail: command.customerEmail,
-          existingCustomerId: entitlement?.customerRef ?? null,
-          activeRoomCount: inventory.activeRoomCount,
-          successUrl: billingReturnUrl(config.bookingAdminBaseUrl, "success"),
-          cancelUrl: billingReturnUrl(config.bookingAdminBaseUrl, "canceled"),
-          idempotencyKey: checkoutProviderIdempotencyKey(
-            command.propertyId,
-            entitlement?.checkoutSessionRef ?? null,
-          ),
-        });
+    async selectCommissionPlan(command) {
+      return config.store.withPlanMutationLock(command.propertyId, async () => {
+        const replay = await config.store.findReplay<SelectCommissionPlanResult>(
+          "select-commission",
+          command,
+        );
+        if (replay) {
+          if ("conflict" in replay) {
+            return failure("idempotency_conflict", 409, "This idempotency key was already used.");
+          }
+          await config.afterPlanChange?.(command.propertyId);
+          return { ok: true, status: "idempotent_replay", value: replay.result };
+        }
+        const entitlement = await config.store.getEntitlement(command.propertyId);
+        if (entitlement?.planKey === "fixed") {
+          return failure(
+            "fixed_plan_already_active",
+            409,
+            "Use Billing Settings to schedule a change from an active Fixed Plan.",
+          );
+        }
+        if (entitlement?.checkoutSessionRef && isCheckoutPending(entitlement, now())) {
+          if (!config.stripe) return stripeNotConfigured();
+          try {
+            await config.stripe.expireFixedPlanCheckout({
+              checkoutSessionId: entitlement.checkoutSessionRef,
+              idempotencyKey: `fixed-plan-expire:${entitlement.checkoutSessionRef}:v1`,
+            });
+          } catch (error) {
+            return providerFailure(error);
+          }
+        }
+        const current = await getPlanStatus(command.propertyId);
         const value = {
-          ...session,
-          currency: FINANCE_FIXED_PLAN_CURRENCY,
-          amountMinor,
-          activeRoomCount: inventory.activeRoomCount,
-        } satisfies CreateFixedPlanCheckoutResult;
-        const recorded = await config.store.recordCheckout(command, value);
+          planStatus: {
+            ...current,
+            plan: "commission" as const,
+            status: "commission" as const,
+            checkoutPending: false,
+            updatedAt: command.audit.requestedAt,
+          },
+        };
+        const recorded = await config.store.recordCommissionSelection(command, value);
+        await config.afterPlanChange?.(command.propertyId);
         return { ok: true, status: recorded.status, value: recorded.result };
-      } catch (error) {
-        return providerFailure(error);
-      }
+      });
+    },
+
+    async createFixedPlanCheckout(command) {
+      if (!config.stripe) return stripeNotConfigured();
+      return config.store.withPlanMutationLock(command.propertyId, async () => {
+        const replay = await config.store.findReplay<CreateFixedPlanCheckoutResult>(
+          "fixed-plan-checkout",
+          command,
+        );
+        if (replay) {
+          if ("conflict" in replay) {
+            return failure("idempotency_conflict", 409, "This idempotency key was already used.");
+          }
+          await config.afterPlanChange?.(command.propertyId);
+          return { ok: true, status: "idempotent_replay", value: replay.result };
+        }
+
+        const [entitlement, inventory] = await Promise.all([
+          config.store.getEntitlement(command.propertyId),
+          config.roomInventory.getRoomInventorySnapshot(command.propertyId),
+        ]);
+        if (!inventory) {
+          return failure("property_not_found", 404, "The property room inventory was not found.");
+        }
+        if (entitlement?.planKey === "fixed") {
+          return failure("fixed_plan_already_active", 409, "The Fixed Plan is already active.");
+        }
+
+        const resumableCheckout = pendingCheckout(entitlement, inventory.activeRoomCount, now());
+        if (resumableCheckout) {
+          await config.afterPlanChange?.(command.propertyId);
+          return { ok: true, status: "idempotent_replay", value: resumableCheckout };
+        }
+
+        try {
+          const amountMinor = fixedPlanAmountMinor(inventory.activeRoomCount);
+          const session = await config.stripe!.createFixedPlanCheckout({
+            propertyId: command.propertyId,
+            organizationId: command.organizationId,
+            customerEmail: command.customerEmail,
+            existingCustomerId: entitlement?.customerRef ?? null,
+            activeRoomCount: inventory.activeRoomCount,
+            successUrl: billingReturnUrl(config.bookingAdminBaseUrl, "success"),
+            cancelUrl: billingReturnUrl(config.bookingAdminBaseUrl, "canceled"),
+            idempotencyKey: checkoutProviderIdempotencyKey(
+              command.propertyId,
+              command.idempotencyKey,
+            ),
+          });
+          const value = {
+            ...session,
+            currency: FINANCE_FIXED_PLAN_CURRENCY,
+            amountMinor,
+            activeRoomCount: inventory.activeRoomCount,
+          } satisfies CreateFixedPlanCheckoutResult;
+          const recorded = await config.store.recordCheckout(command, value);
+          await config.afterPlanChange?.(command.propertyId);
+          return { ok: true, status: recorded.status, value: recorded.result };
+        } catch (error) {
+          return providerFailure(error);
+        }
+      });
     },
 
     async openCustomerPortal(command) {
@@ -165,6 +223,7 @@ export function createFinanceSubscriptionService(config: {
           throw new Error("Stripe subscription does not match this property's Fixed Plan.");
         }
         await config.store.recordCancellation(command, snapshot);
+        await config.afterPlanChange?.(command.propertyId);
         return {
           ok: true,
           status: "updated",
@@ -253,11 +312,9 @@ function isCheckoutPending(
   );
 }
 
-function checkoutProviderIdempotencyKey(
-  propertyId: string,
-  previousCheckoutSessionId: string | null,
-): string {
-  return `fixed-plan-checkout:${propertyId}:${previousCheckoutSessionId ?? "initial"}:v1`;
+function checkoutProviderIdempotencyKey(propertyId: string, attemptIdempotencyKey: string): string {
+  const attemptHash = createHash("sha256").update(attemptIdempotencyKey).digest("hex");
+  return `fixed-plan-checkout:${propertyId}:${attemptHash}:v1`;
 }
 
 function failure<T>(

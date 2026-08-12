@@ -13,7 +13,36 @@ export interface BookingRequestResponse {
   // to confirmAuthorization() after Stripe.confirmPayment resolves.
   draftId?: string;
   bookingReference?: string;
+  authorizationComplete?: boolean;
+  authorizationExpired?: boolean;
 }
+
+export type BookingCreateRequest = {
+  roomTypeId: string;
+  guestFirstName: string;
+  guestLastName: string;
+  guestEmail: string;
+  guestPhone: string;
+  guestCountry?: string;
+  specialRequests?: string;
+  estimatedArrivalTime?: string;
+  numberOfGuests?: number;
+  checkIn: string;
+  checkOut: string;
+  adults: number;
+  children: number;
+  numberOfRooms?: number;
+  referralCode?: string;
+  paymentMethod?: string;
+  rateType?: string;
+  addonIds?: string[];
+  addonQuantities?: Record<string, number>;
+  addonDates?: Record<string, string[]>;
+  promoCode?: string;
+  quoteId?: string;
+  expectedTotalAmount?: number;
+  balanceAmount?: number;
+};
 
 export interface BookingQuote {
   quoteId?: string;
@@ -89,36 +118,13 @@ export interface CancelPreview {
 export const bookingService = {
   async create(
     slug: string,
-    data: {
-      roomTypeId: string;
-      guestFirstName: string;
-      guestLastName: string;
-      guestEmail: string;
-      guestPhone: string;
-      guestCountry?: string;
-      specialRequests?: string;
-      estimatedArrivalTime?: string;
-      numberOfGuests?: number;
-      checkIn: string;
-      checkOut: string;
-      adults: number;
-      children: number;
-      numberOfRooms?: number;
-      referralCode?: string;
-      paymentMethod?: string;
-      rateType?: string;
-      addonIds?: string[];
-      addonQuantities?: Record<string, number>;
-      addonDates?: Record<string, string[]>;
-      promoCode?: string;
-      quoteId?: string;
-      expectedTotalAmount?: number;
-      balanceAmount?: number;
-    },
+    data: BookingCreateRequest,
+    idempotencyKey?: string,
   ): Promise<BookingRequestResponse> {
     return bookingWebPublic.post(
       `/api/booking-web/hotels/${encodeURIComponent(slug)}/bookings`,
       data,
+      idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : undefined,
     );
   },
 
@@ -147,10 +153,12 @@ export const bookingService = {
       addonDates?: Record<string, string[]>;
       promoCode?: string;
     },
+    idempotencyKey?: string,
   ): Promise<BookingQuote> {
     return bookingWebPublic.post(
       `/api/booking-web/hotels/${encodeURIComponent(slug)}/bookings/quote`,
       data,
+      idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : undefined,
     );
   },
 
@@ -159,9 +167,15 @@ export const bookingService = {
   // redirect with a real reference. Idempotent: a second call after the
   // Stripe webhook has already materialized the draft returns the same
   // booking. Accepts a draft id (VAY-388) or a legacy booking id.
-  async confirmAuthorization(slug: string, handle: string): Promise<Booking> {
+  async confirmAuthorization(
+    slug: string,
+    handle: string,
+    idempotencyKey?: string,
+  ): Promise<Booking> {
     return bookingWebPublic.post(
       `/api/booking-web/hotels/${encodeURIComponent(slug)}/bookings/${encodeURIComponent(handle)}/confirm-authorization`,
+      undefined,
+      idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : undefined,
     );
   },
 
@@ -199,6 +213,17 @@ export const bookingService = {
   async getPaymentSettings(slug: string): Promise<PaymentSettings> {
     return bookingWebPublic.get<PaymentSettings>(
       `/api/booking-web/hotels/${encodeURIComponent(slug)}/checkout-config`,
+    );
+  },
+
+  async getPaymentInstructions(
+    slug: string,
+    bookingHandle: string,
+  ): Promise<{
+    paypal: { enabled: boolean; email: string | null; paymentWindowHours: number | null };
+  }> {
+    return bookingWebPublic.get(
+      `/api/booking-web/hotels/${encodeURIComponent(slug)}/bookings/${encodeURIComponent(bookingHandle)}/payment-instructions`,
     );
   },
 

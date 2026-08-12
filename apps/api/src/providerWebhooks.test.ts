@@ -133,6 +133,30 @@ describe("target provider webhook routes", () => {
     await app.close();
   });
 
+  it("removes Stripe client secrets before receipt, event, and job persistence", async () => {
+    const store = createMemoryProviderWebhookStore();
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { stripe: "whsec_stripe_test" },
+        modes: { stripe: "mutating" },
+        store,
+        now: () => fixedNow,
+      },
+    });
+    const payload = providerFixture("stripe").payload;
+    const object = (payload.data as { object: Record<string, unknown> }).object;
+    object.client_secret = "pi_secret_must_not_persist";
+
+    const response = await postProviderPayload(app, "stripe", payload);
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.stringify(store.receipts)).not.toContain("pi_secret_must_not_persist");
+    expect(JSON.stringify(store.domainEvents)).not.toContain("pi_secret_must_not_persist");
+    expect(JSON.stringify(store.jobs)).not.toContain("pi_secret_must_not_persist");
+    expect(JSON.stringify(store.receipts)).not.toContain("client_secret");
+    await app.close();
+  });
+
   it("uses actual Channex message payload ids for receipt and domain event keys", async () => {
     const store = createMemoryProviderWebhookStore();
     const app = buildApp({

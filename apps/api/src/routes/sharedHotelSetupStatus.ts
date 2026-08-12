@@ -1597,12 +1597,20 @@ const SETUP_TASK_REGISTRY: readonly SetupTaskDefinition[] = [
     dependencies: ["shared_identity", "rooms_rates_availability"],
   },
   {
+    taskId: "billing_plan",
+    track: "hotel_operations",
+    requirementOwnerDomain: "finance",
+    permissions: ["booking.settings.manage"],
+    actionableBy: "owner",
+    dependencies: ["shared_identity", "rooms_rates_availability"],
+  },
+  {
     taskId: "payment",
     track: "hotel_operations",
     requirementOwnerDomain: "finance",
     permissions: ["booking.settings.manage"],
     actionableBy: "owner",
-    dependencies: ["shared_identity"],
+    dependencies: ["shared_identity", "billing_plan"],
   },
   {
     taskId: "direct_booking_publication",
@@ -1614,6 +1622,7 @@ const SETUP_TASK_REGISTRY: readonly SetupTaskDefinition[] = [
       "shared_identity",
       "rooms_rates_availability",
       "guest_settings_policies",
+      "billing_plan",
       "payment",
     ],
   },
@@ -1798,6 +1807,7 @@ export function buildPropertySetupPlan(input: {
       "shared_identity",
       "rooms_rates_availability",
       "guest_settings_policies",
+      "billing_plan",
       "payment",
       "direct_booking_publication",
     ]),
@@ -2010,6 +2020,7 @@ function setupTaskProduct(taskId: SetupTaskId): SharedHotelSetupEntryProduct | n
   if (taskId === "rooms_rates_availability") return "pms";
   if (
     taskId === "guest_settings_policies" ||
+    taskId === "billing_plan" ||
     taskId === "payment" ||
     taskId === "direct_booking_publication"
   ) {

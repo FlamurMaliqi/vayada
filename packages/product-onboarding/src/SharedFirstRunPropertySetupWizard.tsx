@@ -239,9 +239,13 @@ const TASK_CONTENT: Record<
     title: "Review guest settings and policies",
     description: "Set check-in details, booking preferences, and cancellation terms.",
   },
+  billing_plan: {
+    title: "Choose your plan",
+    description: "How you pay for vayada.",
+  },
   payment: {
-    title: "Configure payment",
-    description: "Choose how guests can pay for direct bookings.",
+    title: "How guests can pay",
+    description: "Choose which payment options to offer. You can enable multiple.",
   },
   direct_booking_publication: {
     title: "Design your booking page",
