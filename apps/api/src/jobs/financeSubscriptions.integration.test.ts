@@ -6,6 +6,7 @@ import {
   createPgFinanceSubscriptionWebhookStore,
   type FinanceSubscriptionWebhookPayload,
 } from "./financeSubscriptions.js";
+import { readPropertyPlan } from "../domains/propertyPlanReadModel.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const organizationA = "f2000000-0000-4000-8000-000000001120";
@@ -131,6 +132,34 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance subscription webhook PostgreSQL sco
         subscriptionRef: null,
       },
     ]);
+  });
+
+  it("exposes the active subscription entitlement through property feature limits", async () => {
+    await pool.query(
+      `DELETE FROM finance.billing_entitlements
+       WHERE property_id = $1::uuid
+         AND organization_id = $2::uuid
+         AND entitlement_key = 'direct-booking-finance'`,
+      [propertyId, organizationB],
+    );
+    await pool.query(
+      `UPDATE finance.billing_entitlements
+       SET plan_key = 'fixed'
+       WHERE property_id = $1::uuid
+         AND organization_id = $2::uuid
+         AND entitlement_key = 'direct-booking-finance'`,
+      [propertyId, organizationA],
+    );
+
+    await expect(readPropertyPlan(pool, propertyId)).resolves.toMatchObject({
+      propertyId,
+      plan: "fixed",
+      limits: {
+        maxRoomPhotosPerType: 15,
+        maxAddons: 9,
+        guestContactAccess: "always",
+      },
+    });
   });
 
   async function cleanup() {
