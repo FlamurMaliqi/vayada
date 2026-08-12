@@ -2,6 +2,7 @@ import { backendAuthPlugin, type BackendAuthPluginOptions } from "@vayada/backen
 import type { IdentityLifecycleCommandBus } from "@vayada/backend-auth";
 import type { BookingGuestPiiPort } from "@vayada/domain-booking";
 import type { BookingPublicationCommandPort } from "@vayada/domain-booking";
+import type { FinanceSubscriptionService } from "@vayada/domain-finance";
 import type {
   PmsInventoryPublicOfferProjectionPort,
   PublicBookabilityPublicationCommandPort,
@@ -17,6 +18,7 @@ import type { HotelSetupTrackCommandRepository } from "./domains/hotelSetupTrack
 import type { HotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Repository.js";
 import type { PropertyMediaCommandRepository } from "./domains/propertyMediaCommandRepository.js";
 import type { PropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
+import type { PropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
 import type { PublicHotelProfileRepository } from "./routes/aiHotels.js";
 import type { PublicHotelQuoteRepository } from "./routes/aiHotelQuotes.js";
 import type { AskAuditRepository, AskRoutesOptions } from "./routes/ask.js";
@@ -89,6 +91,7 @@ import {
 import {
   registerSharedHotelSetupStatusRoutes,
   type SharedHotelSetupStatusRepository,
+  type SharedPropertyLaunchSettingsRepository,
 } from "./routes/sharedHotelSetupStatus.js";
 import { registerPropertyMediaRoutes } from "./routes/propertyMedia.js";
 import { registerHotelCatalogStep1Routes } from "./routes/hotelCatalogStep1.js";
@@ -139,6 +142,7 @@ import {
   type FinanceXenditBankValidator,
   type PmsFinanceCompatibilityRoutesOptions,
 } from "./routes/finance.js";
+import { registerFinanceSubscriptionRoutes } from "./routes/financeSubscriptions.js";
 import {
   registerAffiliateDashboardRoutes,
   type AffiliateDashboardReadRepository,
@@ -156,6 +160,10 @@ import {
   type PlatformAdminDashboardRepository,
 } from "./routes/platform/admin/dashboard/bookingCompatible.js";
 import { registerPmsOperationsRoutes } from "./routes/pmsOperations.js";
+import {
+  registerPmsRoomPublicationRoutes,
+  type PmsRoomPublicationRoutesOptions,
+} from "./routes/pmsRoomPublication.js";
 import {
   registerPmsModuleActivationRoutes,
   type PmsModuleActivationRepository,
@@ -186,6 +194,8 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   pmsInventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
   bookingGuestPiiPort?: BookingGuestPiiPort;
   pmsOperationsAllowedOrigins?: string[];
+  propertyPlanReadRepository?: PropertyPlanReadRepository;
+  pmsRoomPublication?: PmsRoomPublicationRoutesOptions;
   bookingDashboardMetricsReadPort?: BookingRoutesOptions["dashboardMetricsReadPort"];
   bookingAddonItemsRepository?: BookingAddonItemsRepository;
   bookingPromoCodesRepository?: BookingPromoCodesRepository;
@@ -210,6 +220,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   >;
   marketplaceCreatorProfileMediaRepository?: MarketplaceCreatorProfileMediaRepository;
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
+  propertyLaunchSettingsRepository?: SharedPropertyLaunchSettingsRepository;
   hotelSetupTrackCommandRepository?: HotelSetupTrackCommandRepository;
   propertyMediaCommandRepository?: PropertyMediaCommandRepository;
   hotelCatalogStep1?: {
@@ -252,6 +263,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   bookingWebPublicNow?: BookingWebPublicRoutesOptions["now"];
   affiliateDashboardRepository?: Partial<AffiliateDashboardReadRepository>;
   financeRepository?: FinanceRoutesOptions["repository"];
+  financeSubscriptionService?: FinanceSubscriptionService;
   pmsFinanceCompatibilityRepository?: PmsFinanceCompatibilityRoutesOptions["repository"];
   financeXenditBankValidator?: FinanceXenditBankValidator;
   financePublicHotelProfileRepository?: PublicHotelProfileRepository;
@@ -425,6 +437,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       prefix: "/api/hotel-setup",
       repository: options.sharedHotelSetupStatusRepository,
       trackCommandRepository: options.hotelSetupTrackCommandRepository,
+      launchSettingsRepository: options.propertyLaunchSettingsRepository,
     });
   }
   if (options.propertySetupRouteStateReadPort) {
@@ -520,9 +533,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       repository: options.pmsOperationsRepository,
       checkoutChargeMarkPaidFreezeEnabled: options.pmsCheckoutChargeMarkPaidFreezeEnabled,
       commandRepository: options.pmsOperationsCommandRepository,
+      resolveOnboardingRoomCurrency: async (propertyId) =>
+        (await options.bookingSettingsRepository?.findPropertySettingsByHotelId?.(propertyId))
+          ?.defaultCurrency ?? null,
       inventoryPublicOfferProjector: options.pmsInventoryPublicOfferProjector,
       bookingGuestPiiPort: options.bookingGuestPiiPort,
       allowedOrigins: options.pmsOperationsAllowedOrigins,
+      propertyPlanReadRepository: options.propertyPlanReadRepository,
+    });
+  }
+  if (options.pmsRoomPublication) {
+    app.register(registerPmsRoomPublicationRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsRoomPublication,
     });
   }
   if (options.pmsModuleActivationRepository) {
@@ -544,6 +567,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerFinanceRoutes, {
       prefix: "/api",
       repository: options.financeRepository,
+      publicBookabilityPublisher: options.publicBookabilityPublisher,
       xenditBankValidator: options.financeXenditBankValidator,
       publicHotelPropertyResolver: options.financePublicHotelPropertyResolver,
       publicHotelProfileRepository: financePublicHotelProfileRepository,
@@ -555,6 +579,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPmsFinanceCompatibilityRoutes, {
       prefix: "/api",
       repository: options.pmsFinanceCompatibilityRepository,
+    });
+  }
+  if (options.financeSubscriptionService) {
+    app.register(registerFinanceSubscriptionRoutes, {
+      prefix: "/api",
+      service: options.financeSubscriptionService,
     });
   }
   if (options.platformContactIntake) {

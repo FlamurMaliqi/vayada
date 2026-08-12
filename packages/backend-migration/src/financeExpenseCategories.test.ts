@@ -6,13 +6,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { assertSafeTestDatabase } from "./testUtils.js";
 
 const migration = await readFile(
-  join(import.meta.dirname, "../migrations/0060_finance_expense_categories.sql"),
+  join(import.meta.dirname, "../migrations/0067_finance_expense_categories.sql"),
   "utf8",
 );
 const categorySeeds = migration.match(
   /INSERT INTO finance\.expense_categories[\s\S]+?DO NOTHING;/,
 )?.[0];
-if (!categorySeeds) throw new Error("0060 category seeds are not replay-safe");
+if (!categorySeeds) throw new Error("0067 category seeds are not replay-safe");
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const PROPERTY_A = "20000000-0000-4000-8000-000000000001";
@@ -189,4 +189,42 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance expense categories (PostgreSQL)", (
       constraint: "chk_finance_recurring_expense_rules_amount",
     });
   });
+
+  it.each([
+    ["cadence", "daily", "2026-08-01", "2026-08-01", null, "unpaid", 1],
+    ["dates", "monthly", "2026-08-02", "2026-08-01", null, "unpaid", 1],
+    ["dates", "monthly", "-infinity", "2026-08-01", null, "unpaid", 1],
+    ["dates", "monthly", "2026-08-01", "2026-08-01", "infinity", "unpaid", 1],
+    ["payment_status", "monthly", "2026-08-01", "2026-08-01", null, "pending", 1],
+    ["revision", "monthly", "2026-08-01", "2026-08-01", null, "unpaid", 0],
+  ])(
+    "rejects invalid %s evidence",
+    async (constraint, cadence, startsOn, nextDueOn, endsOn, status, revision) => {
+      const category = await client.query<{ id: string }>(
+        "SELECT id FROM finance.expense_categories WHERE property_id = $1 LIMIT 1",
+        [PROPERTY_A],
+      );
+      await expect(
+        client.query(
+          `INSERT INTO finance.recurring_expense_rules
+           (property_id, category_id, cadence, starts_on, next_due_on, ends_on,
+            vendor, amount, currency, payment_status, revision)
+         VALUES ($1, $2, $3, $4, $5, $6, 'Vendor', 10, 'EUR', $7, $8)`,
+          [
+            PROPERTY_A,
+            category.rows[0]!.id,
+            cadence,
+            startsOn,
+            nextDueOn,
+            endsOn,
+            status,
+            revision,
+          ],
+        ),
+      ).rejects.toMatchObject({
+        code: "23514",
+        constraint: `chk_finance_recurring_expense_rules_${constraint}`,
+      });
+    },
+  );
 });

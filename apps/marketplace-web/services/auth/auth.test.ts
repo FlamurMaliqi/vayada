@@ -114,7 +114,7 @@ describe("marketplace AuthKit session recovery", () => {
       "fetch",
       vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
         const href = String(url);
-        if (href === "https://api.localhost/auth/session/refresh") {
+        if (href === "/auth/session/refresh") {
           sessionRefreshes += 1;
           expect(init?.method).toBe("POST");
           expect(new Headers(init?.headers).get("x-vayada-csrf")).toBe("expired-csrf-token");
@@ -211,7 +211,7 @@ describe("marketplace AuthKit session recovery", () => {
       "fetch",
       vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
         const href = String(url);
-        if (href === "https://api.localhost/auth/session?surface=marketplace-web") {
+        if (href === "/auth/session?surface=marketplace-web") {
           sessionRequests += 1;
           sessionStarted.resolve();
           return sessionResponse.promise;
@@ -249,7 +249,7 @@ describe("marketplace AuthKit session recovery", () => {
       "fetch",
       vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
         const href = String(url);
-        if (href === "https://api.localhost/auth/session?surface=marketplace-web") {
+        if (href === "/auth/session?surface=marketplace-web") {
           sessionRequests += 1;
           if (sessionRequests === 1) {
             firstSessionStarted.resolve();
@@ -269,7 +269,7 @@ describe("marketplace AuthKit session recovery", () => {
             user: { id: "user_creator", email: "creator@example.com", status: "active" },
           });
         }
-        if (href === "https://api.localhost/auth/logout") {
+        if (href === "/auth/logout") {
           logoutRequests += 1;
           return jsonResponse({ logoutUrl: "/login" });
         }
@@ -319,7 +319,7 @@ describe("authService", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.localhost/auth/password/login",
+      "/auth/password/login",
       expect.objectContaining({
         method: "POST",
         credentials: "include",
@@ -454,7 +454,7 @@ describe("authService", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.localhost/auth/password/signup",
+      "/auth/password/signup",
       expect.objectContaining({
         method: "POST",
         credentials: "include",
@@ -470,7 +470,7 @@ describe("authService", () => {
     expect(isAuthOrganizationSelectionResponse(response)).toBe(false);
   });
 
-  it("keeps the current portless fallback port for signup requests", async () => {
+  it("keeps browser auth relative on a portless fallback port", async () => {
     const localStorage = createStorageMock();
     vi.stubGlobal("window", {
       location: {
@@ -497,10 +497,7 @@ describe("authService", () => {
       password: "correct-password",
     });
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.localhost:1355/auth/password/signup",
-      expect.any(Object),
-    );
+    expect(fetchMock).toHaveBeenCalledWith("/auth/password/signup", expect.any(Object));
   });
 
   it("starts Google login through the AuthKit backend", () => {
@@ -518,7 +515,9 @@ describe("authService", () => {
     authService.startGoogleLogin("/marketplace");
 
     const url = new URL(location.href);
-    expect(`${url.origin}${url.pathname}`).toBe("https://api.localhost/auth/oauth/google/start");
+    expect(`${url.origin}${url.pathname}`).toBe(
+      "https://marketplace.localhost/auth/oauth/google/start",
+    );
     expect(url.searchParams.get("surface")).toBe("marketplace-web");
     expect(url.searchParams.get("flow")).toBe("login");
     expect(url.searchParams.get("return_to")).toBe(
@@ -542,7 +541,9 @@ describe("authService", () => {
     authService.startGoogleSignup("/onboarding");
 
     const url = new URL(location.href);
-    expect(`${url.origin}${url.pathname}`).toBe("https://api.localhost/auth/oauth/google/start");
+    expect(`${url.origin}${url.pathname}`).toBe(
+      "https://marketplace.localhost/auth/oauth/google/start",
+    );
     expect(url.searchParams.get("surface")).toBe("marketplace-web");
     expect(url.searchParams.get("flow")).toBe("signup");
     expect(url.searchParams.get("type")).toBeNull();
@@ -563,7 +564,7 @@ describe("authService", () => {
       message: "If an account with that email exists, a password reset link has been sent.",
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.localhost/auth/password/reset/request",
+      "/auth/password/reset/request",
       expect.objectContaining({
         method: "POST",
         credentials: "include",
@@ -585,7 +586,7 @@ describe("authService", () => {
       message: "Password reset successful. Please sign in with your new password.",
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.localhost/auth/password/reset/confirm",
+      "/auth/password/reset/confirm",
       expect.objectContaining({
         method: "POST",
         credentials: "include",
@@ -629,7 +630,7 @@ describe("authService", () => {
       accessToken: "verified-workos-access-token",
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.localhost/auth/email-verification/confirm",
+      "/auth/email-verification/confirm",
       expect.objectContaining({
         method: "POST",
         credentials: "include",
@@ -671,7 +672,7 @@ describe("authService", () => {
       organizationKind: "hotel_group",
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.localhost/auth/onboarding",
+      "/auth/onboarding",
       expect.objectContaining({
         method: "POST",
         credentials: "include",
@@ -714,7 +715,7 @@ describe("authService", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.localhost/auth/onboarding",
+      "/auth/onboarding",
       expect.objectContaining({
         body: JSON.stringify({
           type: "hotel",
@@ -723,6 +724,79 @@ describe("authService", () => {
         }),
       }),
     );
+  });
+
+  it("routes profile writes and the following refresh through same-origin auth", async () => {
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      csrfToken: "csrf-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.test", status: "active" },
+    });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ updated: true })).mockResolvedValueOnce(
+      jsonResponse({
+        accessToken: "refreshed-workos-access-token",
+        csrfToken: "csrf-token",
+        organizationKind: "creator_workspace",
+        user: { id: "user_creator", email: "creator@example.test", status: "active" },
+      }),
+    );
+
+    await authService.updateAccountDetails({ firstName: "Creator", lastName: "Example" });
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/auth/profile",
+      "/auth/session/refresh",
+    ]);
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        headers: expect.objectContaining({ "x-vayada-csrf": "csrf-token" }),
+      }),
+    );
+  });
+
+  it("routes verification resend and logout through same-origin auth", async () => {
+    mockBrowserStorage();
+    const location = {
+      href: "https://marketplace.localhost/profile",
+      origin: "https://marketplace.localhost",
+    };
+    Object.assign(window, { location });
+    expect(
+      storePendingEmailVerification({
+        pendingAuthenticationToken: "pending-email-token",
+        emailVerificationId: "verification-123",
+      }),
+    ).toBe(true);
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      csrfToken: "csrf-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.test", status: "active" },
+    });
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ message: "Verification code resent." }))
+      .mockResolvedValueOnce(
+        jsonResponse({ logoutUrl: "https://auth.workos.test/logout?return_to=marketplace" }),
+      );
+
+    await authService.resendEmailVerification();
+    await authService.logout();
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/auth/email-verification/resend",
+      "/auth/logout",
+    ]);
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        headers: expect.objectContaining({ "x-vayada-csrf": "csrf-token" }),
+      }),
+    );
+    expect(location.href).toBe("https://auth.workos.test/logout?return_to=marketplace");
   });
 
   it("falls back when pending verification storage is blocked", () => {

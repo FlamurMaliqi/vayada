@@ -45,6 +45,7 @@ describe("target PMS inventory reservation adapter", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.text).toContain("UPDATE pms.inventory_days");
     expect(calls[0]?.text).toContain("pg_advisory_xact_lock");
+    expect(calls[0]?.text).not.toContain("payAtProperty");
     expect(calls[0]?.text).toContain(
       "WHEN offer.availability_status IN ('closed', 'stale', 'unavailable')",
     );

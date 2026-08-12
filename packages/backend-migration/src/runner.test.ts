@@ -1214,12 +1214,14 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "billing_entitlements",
         "commission_rate_changes",
         "commission_rules",
+        "expense_categories",
         "finance_visibility_read_model",
         "payment_provider_accounts",
         "payment_settings",
         "payments",
         "payout_settings",
         "payouts",
+        "recurring_expense_rules",
       ]);
 
       const { rows: financeIntegrityConstraints } = await verifyClient.query<{
@@ -4723,6 +4725,19 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
            ) AS allowed`,
         ),
       ).resolves.toMatchObject({ rows: [{ allowed: true }] });
+      await expect(
+        verifyClient.query(
+          `SELECT
+             platform.valid_media_purpose_visibility(
+               'booking.header_logo', 'public'
+             ) AS public_allowed,
+             platform.valid_media_purpose_visibility(
+               'booking.header_logo', 'private'
+             ) AS private_allowed`,
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ public_allowed: true, private_allowed: false }],
+      });
 
       await verifyClient.query(
         `INSERT INTO platform.media_objects

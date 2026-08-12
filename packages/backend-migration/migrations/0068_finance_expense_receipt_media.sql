@@ -1,4 +1,4 @@
--- Migration: 0061_finance_expense_receipt_media
+-- Migration: 0068_finance_expense_receipt_media
 -- Owner: platform-media, domain-finance
 -- See: VAY-1124, engineering/pms-financials-contracts.md
 
@@ -27,6 +27,8 @@ LANGUAGE SQL
 IMMUTABLE
 AS $$
   SELECT CASE
+    WHEN media_purpose = 'booking.header_logo'
+      THEN media_visibility = 'public'
     WHEN media_purpose IN (
       'identity.user.profile_image',
       'property.hero_image',

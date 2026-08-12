@@ -3,21 +3,22 @@ import { describe, expect, it } from "vitest";
 import { pmsRoomMediaResource } from "./index";
 
 describe("pmsRoomMediaResource", () => {
-  it("uses the PMS property scope granted by the authenticated session", () => {
+  it("uses the canonical property and room target", () => {
     expect(pmsRoomMediaResource("property_123", "room_type_456")).toEqual({
-      product: "pms",
-      resourceType: "pms_property",
+      product: "hotel_catalog",
+      resourceType: "property",
       resourceId: "property_123",
+      propertyId: "property_123",
       targetResourceId: "room_type_456",
     });
   });
 
-  it("allows media uploads while a room type is being created", () => {
+  it("leaves the target empty while files are staged for a new room", () => {
     expect(pmsRoomMediaResource("property_123")).toEqual({
-      product: "pms",
-      resourceType: "pms_property",
+      product: "hotel_catalog",
+      resourceType: "property",
       resourceId: "property_123",
-      targetResourceId: "pending-room-type",
+      propertyId: "property_123",
     });
   });
 });

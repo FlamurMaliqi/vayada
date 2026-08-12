@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
+import type { FinanceStripeConnectProvider } from "@vayada/domain-finance";
 import pg from "pg";
 
+import { settleStripeBookingPayment } from "../domains/stripeBookingSettlement.js";
+import { PROJECT_PUBLIC_BOOKABILITY_PROFILE } from "./publicBookabilityPublication.js";
 import type {
   ProviderWebhookPromotionInput,
   ProviderWebhookPromotionResult,
@@ -12,6 +15,7 @@ import type {
 type PgProviderWebhookStoreConfig = {
   connectionString: string;
   max?: number;
+  stripeConnectProvider?: Pick<FinanceStripeConnectProvider, "retrieveAccount">;
 };
 
 export function createPgProviderWebhookStore(
@@ -27,7 +31,7 @@ export function createPgProviderWebhookStore(
       return recordReceipt(pool, input);
     },
     async promoteReceipt(input) {
-      return promoteReceipt(pool, input);
+      return promoteReceipt(pool, input, config.stripeConnectProvider);
     },
     async close() {
       await pool.end();
@@ -135,6 +139,7 @@ async function recordReceipt(
 async function promoteReceipt(
   pool: pg.Pool,
   input: ProviderWebhookPromotionInput,
+  stripeConnectProvider?: Pick<FinanceStripeConnectProvider, "retrieveAccount">,
 ): Promise<ProviderWebhookPromotionResult> {
   const client = await pool.connect();
   try {
@@ -155,6 +160,8 @@ async function promoteReceipt(
 
     const eventId = await insertOrFindDomainEvent(client, input);
     const jobId = await insertOrFindJob(client, input, eventId);
+    await settleCapturedStripeBooking(client, input, eventId);
+    await reconcileStripeProviderAccount(client, input, stripeConnectProvider);
 
     await insertOrTouchIdempotencyKey(client, {
       operation: "external_webhook_job",
@@ -202,6 +209,105 @@ async function promoteReceipt(
     throw error;
   } finally {
     client.release();
+  }
+}
+
+export async function settleCapturedStripeBooking(
+  client: Pick<pg.PoolClient, "query">,
+  input: ProviderWebhookPromotionInput,
+  sourceDomainEventId: string,
+): Promise<void> {
+  if (
+    input.provider !== "stripe" ||
+    input.normalizedPreview.domainEventType !== "payment.captured"
+  ) {
+    return;
+  }
+  const amountMinor = Number(input.normalizedPreview.payload["amount"]);
+  if (!Number.isInteger(amountMinor) || amountMinor < 0) return;
+  await settleStripeBookingPayment(client, {
+    paymentIntentId: input.normalizedPreview.resourceId,
+    amountMinor,
+    currency:
+      typeof input.normalizedPreview.payload["currency"] === "string"
+        ? input.normalizedPreview.payload["currency"]
+        : null,
+    occurredAt: new Date(),
+    correlationId: input.receiptKey,
+    sourceDomainEventId,
+  });
+}
+
+export async function reconcileStripeProviderAccount(
+  client: Pick<pg.PoolClient, "query">,
+  input: ProviderWebhookPromotionInput,
+  stripeConnectProvider?: Pick<FinanceStripeConnectProvider, "retrieveAccount">,
+): Promise<void> {
+  if (
+    input.provider !== "stripe" ||
+    input.normalizedPreview.domainEventType !== "finance.provider-account.updated"
+  ) {
+    return;
+  }
+  const payload = input.normalizedPreview.payload;
+  const canonical = stripeConnectProvider
+    ? await stripeConnectProvider.retrieveAccount({
+        providerAccountRef: input.normalizedPreview.resourceId,
+      })
+    : {
+        providerAccountRef: input.normalizedPreview.resourceId,
+        chargesEnabled: payload["chargesEnabled"] === true,
+        payoutsEnabled: payload["payoutsEnabled"] === true,
+        detailsSubmitted: payload["detailsSubmitted"] === true,
+        cardPaymentsStatus:
+          typeof payload["cardPaymentsStatus"] === "string" ? payload["cardPaymentsStatus"] : null,
+        defaultCurrency:
+          typeof payload["defaultCurrency"] === "string" ? payload["defaultCurrency"] : null,
+      };
+  const cardPaymentsReady =
+    canonical.cardPaymentsStatus === null || canonical.cardPaymentsStatus === "active";
+  const updated = await client.query<{ propertyId: string }>(
+    `UPDATE finance.payment_provider_accounts
+     SET status = CASE
+           WHEN $2::boolean AND $3::boolean AND $4::boolean AND $7::boolean THEN 'active'
+           ELSE 'setup_incomplete'
+         END,
+         onboarding_status = CASE WHEN $4::boolean THEN 'completed' ELSE 'invited' END,
+         charges_enabled = $2::boolean,
+         payouts_enabled = $3::boolean,
+         default_currency = COALESCE(NULLIF(upper($5), ''), default_currency),
+         account_metadata = account_metadata || $6::jsonb,
+         updated_at = now()
+     WHERE provider = 'stripe' AND provider_account_id = $1
+     RETURNING property_id::text AS "propertyId"`,
+    [
+      input.normalizedPreview.resourceId,
+      canonical.chargesEnabled,
+      canonical.payoutsEnabled,
+      canonical.detailsSubmitted,
+      canonical.defaultCurrency ?? "",
+      JSON.stringify({
+        lastStripeEventId: payload["rawEventId"] ?? null,
+        cardPaymentsStatus: canonical.cardPaymentsStatus,
+      }),
+      cardPaymentsReady,
+    ],
+  );
+  const propertyId = updated.rows[0]?.propertyId;
+  if (!propertyId) return;
+  const publicProfile = await client.query<{ canonicalUrl: string; bookingBaseUrl: string }>(
+    `SELECT canonical_url AS "canonicalUrl", booking_base_url AS "bookingBaseUrl"
+     FROM distribution.public_hotel_bookability_profiles
+     WHERE property_id = $1::uuid`,
+    [propertyId],
+  );
+  const urls = publicProfile.rows[0];
+  if (urls) {
+    await client.query(PROJECT_PUBLIC_BOOKABILITY_PROFILE, [
+      propertyId,
+      urls.canonicalUrl,
+      urls.bookingBaseUrl,
+    ]);
   }
 }
 

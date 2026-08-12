@@ -83,6 +83,8 @@ type AdaptiveHotelSetupFactsRow = {
   hasCheckOutPolicy: boolean;
   hasCancellationPolicy: boolean;
   policyUpdatedAt: unknown;
+  billingPlanSelected: boolean;
+  billingPlanUpdatedAt: unknown;
   paymentsEnabled: boolean | null;
   hasAcceptedPaymentMethod: boolean;
   hasEffectivePaymentMethod: boolean;
@@ -917,6 +919,12 @@ function toAdaptivePropertySetupFacts(row: AdaptiveHotelSetupFactsRow): Adaptive
         Boolean(row.policyUpdatedAt),
         toIsoString(row.policyUpdatedAt),
       ),
+      billing_plan: basicTaskFact(
+        "billing_plan",
+        row.billingPlanSelected ? [] : ["billing_plan_not_selected"],
+        row.billingPlanSelected,
+        toIsoString(row.billingPlanUpdatedAt),
+      ),
       payment: paymentFact(row),
       direct_booking_publication: publicationFact(row),
     },
@@ -1694,28 +1702,36 @@ function adaptiveHotelSetupFactsSql(): string {
         OR NULLIF(policy.cancellation_terms_url, '') IS NOT NULL
       ) AS "hasCancellationPolicy",
       policy.updated_at AS "policyUpdatedAt",
+      COALESCE(
+        billing.plan_key = 'fixed'
+        OR billing.checkout_session_ref IS NOT NULL
+        OR NULLIF(billing.entitlement_metadata ->> 'planSelectedAt', '') IS NOT NULL,
+        FALSE
+      ) AS "billingPlanSelected",
+      billing.updated_at AS "billingPlanUpdatedAt",
       payment.payments_enabled AS "paymentsEnabled",
       COALESCE(cardinality(payment.accepted_methods) > 0, FALSE)
         AS "hasAcceptedPaymentMethod",
       COALESCE(
         payment.payments_enabled
         AND (
-          payment.accepted_methods && ARRAY[
-            'pay_at_property',
-            'cash',
-            'bank_transfer',
-            'manual_card',
-            'other'
-          ]::text[]
-          OR (
-            payment.accepted_methods && ARRAY['card', 'wallet']::text[]
-            AND payment_provider.status = 'active'
-            AND payment_provider.onboarding_status = 'completed'
-            AND payment_provider.charges_enabled = TRUE
+          (
+            'pay_at_property' = ANY(payment.accepted_methods)
+            AND payment.accepted_methods && ARRAY['cash', 'manual_card']::text[]
           )
           OR (
-            payment.accepted_methods && ARRAY['xendit']::text[]
-            AND payment_provider.provider = 'xendit'
+            'bank_transfer' = ANY(payment.accepted_methods)
+            AND NULLIF(BTRIM(payment.deposit_policy ->> 'bankTransferInstructions'), '')
+              IS NOT NULL
+          )
+          OR (
+            'paypal' = ANY(payment.accepted_methods)
+            AND BTRIM(payment.deposit_policy ->> 'paypalEmail')
+              ~* '^[^[:space:]@]+@[^[:space:]@]+[.][^[:space:]@]+$'
+          )
+          OR (
+            'card' = ANY(payment.accepted_methods)
+            AND payment_provider.provider = 'stripe'
             AND payment_provider.status = 'active'
             AND payment_provider.onboarding_status = 'completed'
             AND payment_provider.charges_enabled = TRUE
@@ -1985,6 +2001,19 @@ function adaptiveHotelSetupFactsSql(): string {
     ) room_readiness ON TRUE
     LEFT JOIN hotel_catalog.property_policy_summaries policy
       ON policy.property_id = property.id
+    LEFT JOIN LATERAL (
+      SELECT entitlement.plan_key,
+             entitlement.checkout_session_ref,
+             entitlement.entitlement_metadata,
+             entitlement.updated_at
+      FROM finance.billing_entitlements entitlement
+      WHERE entitlement.property_id = property.id
+        AND entitlement.organization_id = $1::uuid
+        AND entitlement.product = 'booking'
+        AND entitlement.entitlement_key = 'direct-booking-finance'
+      ORDER BY entitlement.updated_at DESC
+      LIMIT 1
+    ) billing ON TRUE
     LEFT JOIN finance.payment_settings payment
       ON payment.property_id = property.id
     LEFT JOIN finance.payment_provider_accounts payment_provider

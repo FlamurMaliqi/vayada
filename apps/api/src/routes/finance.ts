@@ -61,6 +61,7 @@ import {
   type FinanceXenditPayoutReconciliationResponse,
 } from "@vayada/domain-finance";
 import { requireAuthContext, type RequestContext } from "@vayada/backend-auth";
+import type { PublicBookabilityPublicationCommandPort } from "@vayada/domain-distribution";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
@@ -108,7 +109,7 @@ export type FinancePropertySettingsReadPool = FinanceQueryExecutor & {
   end(): Promise<void>;
 };
 
-type FinancePropertySettingsWriteClient = {
+export type FinancePropertySettingsWriteClient = {
   query<T extends QueryResultRow = QueryResultRow>(
     text: string,
     values?: readonly unknown[],
@@ -118,6 +119,7 @@ type FinancePropertySettingsWriteClient = {
 
 export type FinanceRoutesOptions = {
   repository: FinancePropertyReadRepository;
+  publicBookabilityPublisher?: Pick<PublicBookabilityPublicationCommandPort, "publish">;
   xenditBankValidator?: FinanceXenditBankValidator;
   publicHotelPropertyResolver?: FinancePublicHotelPropertyResolver;
   publicHotelProfileRepository?: PublicHotelProfileRepository;
@@ -328,6 +330,8 @@ type FinanceCommandError = {
     | "invalid_command"
     | "affiliate_not_found"
     | "property_not_found"
+    | "property_currency_conflict"
+    | "invoice_not_found"
     | "provider_account_not_found"
     | "payout_not_found"
     | "reconciliation_not_ready"
@@ -347,11 +351,13 @@ type StripeProviderAccountBody = {
   idempotencyKey?: unknown;
   email?: unknown;
   country?: unknown;
+  returnSurface?: unknown;
 };
 
 type OnboardingLinkBody = {
   commandId?: unknown;
   idempotencyKey?: unknown;
+  returnSurface?: unknown;
 };
 
 type XenditBankValidationBody = {
@@ -444,6 +450,8 @@ export async function registerFinanceRoutes(
         reply.code(error.statusCode);
         return error;
       }
+
+      await options.publicBookabilityPublisher?.publish({ propertyId });
 
       return {
         ...toFinancePaymentSettingsResponse(result.settings),
@@ -1252,14 +1260,61 @@ async function updatePaymentSettingsInClient(
   client: FinancePropertySettingsWriteClient,
   command: FinancePaymentSettingsPatchCommand,
 ): Promise<FinancePaymentSettingsPatchResult> {
+  const currencyResult = await client.query<{ currency: string | null }>(
+    `SELECT COALESCE(settings.default_currency, 'EUR') AS currency
+       FROM hotel_catalog.properties property
+       LEFT JOIN booking.booking_settings settings ON settings.property_id = property.id
+      WHERE property.id = $1::uuid
+      LIMIT 1`,
+    [command.propertyId],
+  );
+  const canonicalCurrency = currencyCode(currencyResult.rows[0]?.currency);
+  if (!currencyResult.rows[0]) {
+    return {
+      ok: false,
+      statusCode: 404,
+      code: "property_not_found",
+      message: "The property currency could not be resolved.",
+    };
+  }
+  if (
+    (command.payload.defaultCurrency && command.payload.defaultCurrency !== canonicalCurrency) ||
+    (command.payload.supportedCurrencies &&
+      (command.payload.supportedCurrencies.length !== 1 ||
+        command.payload.supportedCurrencies[0] !== canonicalCurrency))
+  ) {
+    return {
+      ok: false,
+      statusCode: 409,
+      code: "property_currency_conflict",
+      message: `Payment currency changed to ${canonicalCurrency}. Reload before saving.`,
+    };
+  }
   const existing = await loadPaymentSettingsRow(client, command.propertyId);
   const current = existing
     ? toFinancePaymentSettingsReadModel(existing)
     : setupIncompletePaymentSettings(command.propertyId, new Date().toISOString());
-  const next = mergePaymentSettings(current, command.payload);
+  const next = mergePaymentSettings(current, {
+    ...command.payload,
+    defaultCurrency: canonicalCurrency,
+    supportedCurrencies: [canonicalCurrency],
+  });
+  const completenessError = paymentSettingsCompletenessError(next);
+  if (completenessError) {
+    return {
+      ok: false,
+      statusCode: 400,
+      code: "invalid_command",
+      message: completenessError,
+    };
+  }
   const keyHash = sha256(command.idempotencyKey);
   const fingerprint = sha256(
-    stableJson({ propertyId: command.propertyId, payload: command.payload }),
+    stableJson({
+      propertyId: command.propertyId,
+      canonicalCurrency,
+      payload: command.payload,
+    }),
   );
   const commandMeta = buildPaymentSettingsCommandMeta(command);
 
@@ -1367,6 +1422,48 @@ function mergePaymentSettings(
       : current.depositPolicy,
     updatedAt: new Date().toISOString(),
   };
+}
+
+function paymentSettingsCompletenessError(
+  settings: FinancePaymentSettingsReadModel,
+): string | null {
+  if (!settings.paymentsEnabled || settings.acceptedMethods.length === 0) {
+    return "Choose at least one payment method.";
+  }
+  if (
+    settings.acceptedMethods.includes("pay_at_property") &&
+    !settings.acceptedMethods.some((method) => method === "cash" || method === "manual_card")
+  ) {
+    return "Pay at Hotel requires cash, card, or both.";
+  }
+  if (settings.acceptedMethods.includes("bank_transfer")) {
+    const requiredFields = [
+      ["bankName", "bank name"],
+      ["accountHolder", "account holder"],
+      ["accountNumber", "account number or IBAN"],
+      ["bankTransferInstructions", "bank transfer instructions"],
+    ] as const;
+    for (const [field, label] of requiredFields) {
+      if (!policyText(settings.depositPolicy[field])) {
+        return `Bank Transfer requires ${label}.`;
+      }
+    }
+  }
+  if (
+    settings.acceptedMethods.includes("paypal") &&
+    !validPaymentEmail(settings.depositPolicy["paypalEmail"])
+  ) {
+    return "PayPal requires a valid email address.";
+  }
+  return null;
+}
+
+function policyText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function validPaymentEmail(value: unknown): boolean {
+  return typeof value === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
 async function upsertPaymentSettings(
@@ -1662,12 +1759,21 @@ async function createStripeProviderAccountInClient(
       owner,
       providerAccountRef: existingAccount.providerAccountRef,
       idempotencyKey: stripeProviderIdempotencyKey(owner, keyHash, "onboarding-link"),
+      returnSurface: command.payload.returnSurface,
     });
     await updateStripeProviderAccountOnboardingUrl(
       client,
       existingAccount.providerAccountId,
       onboardingUrl,
     );
+    if (owner.ownerScope === "property") {
+      await relinkPaymentSettingsProviderAccount(
+        client,
+        owner.propertyId,
+        "stripe",
+        existingAccount.providerAccountId,
+      );
+    }
     await reserveProviderAccountIdempotency(
       client,
       command,
@@ -1705,6 +1811,7 @@ async function createStripeProviderAccountInClient(
     email: command.payload.email,
     country: command.payload.country,
     idempotencyKey: stripeProviderIdempotencyKey(owner, keyHash, "account"),
+    returnSurface: command.payload.returnSurface,
   });
 
   let insertedAccount: FinanceProviderAccountRow;
@@ -1803,6 +1910,7 @@ async function issueStripeOnboardingLinkInClient(
     owner,
     providerAccountRef: account.providerAccountRef,
     idempotencyKey: stripeProviderIdempotencyKey(owner, keyHash, "onboarding-link"),
+    returnSurface: command.payload.returnSurface,
   });
   await updateStripeProviderAccountOnboardingUrl(client, account.providerAccountId, onboardingUrl);
   const response = providerAccountCommandResponse(
@@ -3250,16 +3358,16 @@ async function loadPaymentSettingsRow(
 ): Promise<FinancePaymentSettingsRow | null> {
   const result = await pool.query<FinancePaymentSettingsRow>(
     `SELECT
-       settings.property_id::text AS "propertyId",
-       settings.payments_enabled AS "paymentsEnabled",
-       settings.accepted_methods AS "acceptedMethods",
-       settings.default_currency AS "defaultCurrency",
+       property.id::text AS "propertyId",
+       COALESCE(settings.payments_enabled, FALSE) AS "paymentsEnabled",
+       COALESCE(settings.accepted_methods, ARRAY[]::text[]) AS "acceptedMethods",
+       COALESCE(booking_settings.default_currency, settings.default_currency, 'EUR') AS "defaultCurrency",
        COALESCE(settings.deposit_policy, '{}'::jsonb) AS "depositPolicy",
        COALESCE(settings.refund_policy, '{}'::jsonb) AS "refundPolicy",
        COALESCE(settings.tax_policy, '{}'::jsonb) AS "taxPolicy",
        settings.statement_descriptor AS "statementDescriptor",
-       settings.requires_manual_review AS "requiresManualReview",
-       settings.updated_at AS "updatedAt",
+       COALESCE(settings.requires_manual_review, TRUE) AS "requiresManualReview",
+       COALESCE(settings.updated_at, booking_settings.updated_at, property.updated_at) AS "updatedAt",
        account.provider_account_id AS "providerAccountId",
        account.provider,
        account.status AS "providerStatus",
@@ -3267,12 +3375,16 @@ async function loadPaymentSettingsRow(
        account.charges_enabled AS "chargesEnabled",
        account.payouts_enabled AS "payoutsEnabled",
        account.capabilities AS "providerCapabilities"
-     FROM finance.payment_settings settings
+     FROM hotel_catalog.properties property
+     LEFT JOIN finance.payment_settings settings
+       ON settings.property_id = property.id
+     LEFT JOIN booking.booking_settings booking_settings
+       ON booking_settings.property_id = property.id
      LEFT JOIN finance.payment_provider_accounts account
        ON account.id = settings.provider_account_id
       AND account.property_id = settings.property_id
       AND account.account_scope = 'property'
-     WHERE settings.property_id = $1::uuid
+     WHERE property.id = $1::uuid
      LIMIT 1`,
     [propertyId],
   );
@@ -4275,6 +4387,7 @@ function toStripePropertyAccountCommand(
     payload: {
       email: base.email,
       country: base.country,
+      returnSurface: base.returnSurface,
     },
   };
 }
@@ -4297,6 +4410,7 @@ function toStripeAffiliateAccountCommand(
     payload: {
       email: base.email,
       country: base.country,
+      returnSurface: base.returnSurface,
     },
   };
 }
@@ -4321,7 +4435,7 @@ function toStripePropertyOnboardingLinkCommand(
     idempotencyKey,
     propertyId,
     audit: financeCommandAudit(request, "Issue property Stripe Connect onboarding link"),
-    payload: { providerAccountId },
+    payload: { providerAccountId, returnSurface: parseStripeReturnSurface(body.returnSurface) },
   };
 }
 
@@ -4347,7 +4461,7 @@ function toStripeAffiliateOnboardingLinkCommand(
     affiliateId,
     organizationId: context.selectedOrganization.organizationId,
     audit: financeCommandAudit(request, "Issue affiliate Stripe Connect onboarding link"),
-    payload: { providerAccountId },
+    payload: { providerAccountId, returnSurface: parseStripeReturnSurface(body.returnSurface) },
   };
 }
 
@@ -4357,6 +4471,7 @@ function parseStripeProviderAccountBody(body: StripeProviderAccountBody):
       idempotencyKey: string;
       email: string;
       country: string;
+      returnSurface?: "marketplace" | "booking_admin";
     }
   | FinanceValidationError {
   const commandId = nonEmptyString(body.commandId);
@@ -4369,7 +4484,17 @@ function parseStripeProviderAccountBody(body: StripeProviderAccountBody):
       "Stripe provider-account command requires commandId, idempotencyKey, email, and country.",
     );
   }
-  return { commandId, idempotencyKey, email, country };
+  return {
+    commandId,
+    idempotencyKey,
+    email,
+    country,
+    returnSurface: parseStripeReturnSurface(body.returnSurface),
+  };
+}
+
+function parseStripeReturnSurface(value: unknown): "marketplace" | "booking_admin" | undefined {
+  return value === "marketplace" || value === "booking_admin" ? value : undefined;
 }
 
 function financeCommandAudit(request: FastifyRequest, reason: string): FinanceCommandAudit {
@@ -4872,7 +4997,7 @@ function toFinanceCommandError(
   } satisfies FinanceCommandError;
 }
 
-function enforceFinancePropertyReadPolicy(
+export function enforceFinancePropertyReadPolicy(
   request: FastifyRequest,
   reply: FastifyReply,
   propertyId: string,
@@ -4889,7 +5014,7 @@ function enforceFinancePropertyReadPolicy(
   }
 }
 
-function enforceFinancePropertyWritePolicy(
+export function enforceFinancePropertyWritePolicy(
   request: FastifyRequest,
   reply: FastifyReply,
   propertyId: string,
@@ -5399,11 +5524,10 @@ function paymentMethods(value: unknown): FinanceRoutePaymentMethod[] {
       case "xendit":
       case "cash":
       case "bank_transfer":
+      case "paypal":
       case "manual_card":
       case "wallet":
         return method;
-      case "paypal":
-        return "wallet";
       default:
         return "other";
     }
@@ -5625,6 +5749,10 @@ function optionalEnum<const T extends readonly string[]>(
 
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function likeSearch(value: string | undefined): string | null {
+  return value ? `%${value.replaceAll("%", "\\%").replaceAll("_", "\\_")}%` : null;
 }
 
 function clampLimit(value: unknown): number {

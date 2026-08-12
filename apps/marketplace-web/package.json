@@ -7,6 +7,7 @@
   },
   "scripts": {
     "dev": "next dev",
+    "prebuild": "npm --workspace @vayada/domain-booking run build && npm --workspace @vayada/domain-marketplace run build",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
@@ -15,7 +16,9 @@
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
+    "@vayada/domain-booking": "*",
     "@vayada/domain-hotels": "*",
+    "@vayada/domain-marketplace": "*",
     "@vayada/domain-pms": "*",
     "@vayada/marketplace-shared": "*",
     "@vayada/product-onboarding": "*",
