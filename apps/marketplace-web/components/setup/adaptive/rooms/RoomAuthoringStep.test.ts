@@ -398,10 +398,14 @@ describe("RoomAuthoringStep first-visit recovery", () => {
     renderer?.unmount();
   });
 
-  it("uses the commission plan cap and keeps photo removal available at the limit", async () => {
+  it("uses the returned commission plan cap and keeps photo removal available at the limit", async () => {
+    mocks.loadPhotoPlan.mockResolvedValueOnce({
+      plan: "commission",
+      maxRoomPhotosPerType: 12,
+    });
     const room = {
       ...completeRoomWithoutPhotos(),
-      photos: Array.from({ length: 10 }, (_, index) => ({
+      photos: Array.from({ length: 12 }, (_, index) => ({
         mediaObjectId: `77777777-7777-4777-8777-${String(index).padStart(12, "0")}`,
         previewUrl: `https://cdn.example.com/room-${index}.webp`,
         uploadState: "ready" as const,
@@ -421,9 +425,9 @@ describe("RoomAuthoringStep first-visit recovery", () => {
     });
 
     const rendered = JSON.stringify(renderer?.toJSON());
-    expect(rendered).toContain("10/10 photos");
+    expect(rendered).toContain("12/12 photos");
     expect(rendered).toContain(
-      "You've reached the 10-photo limit. Upgrade to the paid plan for up to 15 photos per room.",
+      "You've reached the 12-photo limit. Upgrade to the paid plan for up to 15 photos per room.",
     );
     const arrange = renderer!.root.find(
       (node) =>

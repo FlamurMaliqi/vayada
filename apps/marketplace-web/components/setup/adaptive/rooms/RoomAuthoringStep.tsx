@@ -1887,12 +1887,12 @@ function focusable(root: HTMLElement | null): HTMLElement[] {
 function roomPhotoLimitMessage(plan: RoomPhotoPlan, currentCount: number): string {
   if (currentCount > plan.maxRoomPhotosPerType) {
     return plan.plan === "commission"
-      ? "You have more photos than your plan allows. Remove photos to add new ones, or upgrade for up to 15."
-      : "You have more photos than the paid plan allows. Remove photos to add new ones.";
+      ? `You have more than the ${plan.maxRoomPhotosPerType}-photo limit your plan allows. Remove photos to add new ones, or upgrade for up to 15.`
+      : `You have more than the ${plan.maxRoomPhotosPerType}-photo limit the paid plan allows. Remove photos to add new ones.`;
   }
   return plan.plan === "commission"
-    ? "You've reached the 10-photo limit. Upgrade to the paid plan for up to 15 photos per room."
-    : "You've reached the 15-photo limit for the paid plan.";
+    ? `You've reached the ${plan.maxRoomPhotosPerType}-photo limit. Upgrade to the paid plan for up to 15 photos per room.`
+    : `You've reached the ${plan.maxRoomPhotosPerType}-photo limit for the paid plan.`;
 }
 
 function errorMessage(error: unknown): string {
