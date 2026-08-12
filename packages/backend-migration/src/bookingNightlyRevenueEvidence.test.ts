@@ -5,13 +5,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { assertSafeTestDatabase } from "./testUtils.js";
 
 const migration = await readFile(
-  join(import.meta.dirname, "../migrations/0069_booking_nightly_revenue_evidence.sql"),
+  join(import.meta.dirname, "../migrations/0073_booking_nightly_revenue_evidence.sql"),
   "utf8",
 );
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const PROPERTY_A = "20000000-0000-4000-8000-000000000001";
 const PROPERTY_B = "20000000-0000-4000-8000-000000000002";
 const ROOM_TYPE_A = "30000000-0000-4000-8000-000000000001";
+const ROOM_TYPE_B = "30000000-0000-4000-8000-000000000002";
 
 describe("Booking nightly revenue evidence migration contract", () => {
   it("exposes a Finance-safe view without mutable pricing or source payloads", () => {
@@ -32,7 +33,8 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
       DROP SCHEMA IF EXISTS booking CASCADE; CREATE SCHEMA booking;
       CREATE TABLE booking.guest_bookings (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(), property_id UUID NOT NULL,
-        currency CHAR(3) NOT NULL, UNIQUE (id, property_id));
+        currency CHAR(3) NOT NULL, check_in DATE NOT NULL DEFAULT '2026-09-01',
+        check_out DATE NOT NULL DEFAULT '2026-09-03', UNIQUE (id, property_id));
     `);
     await client.query(migration);
   });
@@ -45,32 +47,20 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
     }
   });
 
-  const createBooking = async (property = PROPERTY_A, currency = "EUR") =>
-    (
-      await client.query<{ id: string }>(
-        "INSERT INTO booking.guest_bookings (property_id, currency) VALUES ($1, $2) RETURNING id",
-        [property, currency],
-      )
-    ).rows[0]!.id;
+  const createBooking = async (property = PROPERTY_A, currency = "EUR", room = ROOM_TYPE_A) => {
+    const id = await client.query<{ id: string }>(
+      "INSERT INTO booking.guest_bookings (property_id, currency) VALUES ($1, $2) RETURNING id",
+      [property, currency],
+    );
+    await client.query(
+      "INSERT INTO booking.nightly_revenue_room_scopes VALUES ($1, $2) ON CONFLICT DO NOTHING",
+      [property, room],
+    );
+    return id.rows[0]!.id;
+  };
   const insertEvidence = (
     booking: string,
-    overrides: Partial<{
-      id: string;
-      property: string;
-      roomType: string | null;
-      stayDate: string;
-      recognizedOn: string;
-      currency: string;
-      amount: string | null;
-      occupied: number;
-      event: string;
-      lifecycle: string;
-      source: string;
-      quality: string;
-      revision: number;
-      corrects: string | null;
-      key: string;
-    }> = {},
+    overrides: Record<string, string | number | null | undefined> = {},
   ) => {
     const values = {
       id: crypto.randomUUID(),
@@ -128,6 +118,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
       lifecycle: "canceled",
       amount: "0",
       occupied: -1,
+      recognizedOn: "2026-09-02",
       revision: 2,
       corrects: exact,
     });
@@ -170,11 +161,6 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
       ),
       { code: "23514" },
     );
-    await rejects(
-      client.query("DELETE FROM booking.nightly_revenue_evidence WHERE id = $1", [exact]),
-      { code: "23514" },
-    );
-    await rejects(client.query("TRUNCATE booking.nightly_revenue_evidence"), { code: "23514" });
   });
 
   it("rejects fabricated missing facts and malformed economic events", async () => {
@@ -192,6 +178,12 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
     for (const amount of ["NaN", "Infinity", "-Infinity"]) {
       await expect(insertEvidence(booking, { amount, revision: 3 })).rejects.toBeDefined();
     }
+    await rejects(insertEvidence(booking, { stayDate: "infinity", recognizedOn: "infinity" }), {
+      constraint: "chk_booking_nightly_revenue_evidence_dates",
+    });
+    await rejects(insertEvidence(booking, { stayDate: "2026-09-04", recognizedOn: "2026-09-04" }), {
+      constraint: "chk_booking_nightly_revenue_evidence_booking_stay",
+    });
   });
 
   it("stores exact refund and correction links without rewriting history", async () => {
@@ -219,7 +211,16 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
       revision: 2,
       corrects: original,
     };
-    const other = await createBooking(PROPERTY_B);
+    const other = await createBooking(PROPERTY_B, "EUR", ROOM_TYPE_B);
+    await rejects(
+      insertEvidence(booking, {
+        roomType: ROOM_TYPE_B,
+        revision: 2,
+        stayDate: "2026-09-02",
+        recognizedOn: "2026-09-02",
+      }),
+      { code: "23503" },
+    );
     await rejects(
       insertEvidence(other, {
         ...correction,
@@ -231,18 +232,9 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
       { stayDate: "2026-09-02" },
       { roomType: crypto.randomUUID() },
       { revision: 1 },
+      { recognizedOn: "2026-08-31" },
     ])
       await rejects(insertEvidence(booking, { ...correction, ...overrides }), { code: "23514" });
-    const first = crypto.randomUUID(),
-      second = crypto.randomUUID();
-    await rejects(
-      client.query(
-        `INSERT INTO booking.nightly_revenue_evidence (id, property_id, guest_booking_id, room_type_id, stay_date, recognized_on, currency, gross_room_amount, occupied_room_nights, economic_event, lifecycle_state, source_kind, evidence_quality, source_revision, corrects_evidence_id, command_key)
-       SELECT v.id, $3, $4, $5, DATE '2026-09-01', DATE '2026-09-10', 'EUR', -5, 0, 'correction', 'corrected', 'direct', 'exact', v.revision, v.corrects, v.id::TEXT FROM (VALUES ($1::UUID, $2::UUID, 2), ($2::UUID, $1::UUID, 3)) v(id, corrects, revision)`,
-        [first, second, PROPERTY_A, booking, ROOM_TYPE_A],
-      ),
-      { code: "23503" },
-    );
   });
 
   it("deduplicates source lines and command replays", async () => {

@@ -1,11 +1,11 @@
--- Migration: 0069_booking_nightly_revenue_evidence
--- Owner: domain-booking; see VAY-1178 and engineering/pms-financials-contracts.md
+-- Migration: 0073_booking_nightly_revenue_evidence; owner: domain-booking; see VAY-1178 and engineering/pms-financials-contracts.md
 ALTER TABLE booking.guest_bookings ADD CONSTRAINT uq_guest_bookings_id_property_currency UNIQUE (id, property_id, currency);
+CREATE TABLE booking.nightly_revenue_room_scopes (property_id UUID NOT NULL, room_type_id UUID NOT NULL, PRIMARY KEY (property_id, room_type_id));
 CREATE TABLE booking.nightly_revenue_evidence (
   id                    UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
   property_id           UUID          NOT NULL,
   guest_booking_id      UUID          NOT NULL,
-  room_type_id          UUID,
+  room_type_id          UUID          NOT NULL,
   stay_date             DATE          NOT NULL,
   recognized_on         DATE          NOT NULL,
   currency              CHAR(3)       NOT NULL,
@@ -24,6 +24,7 @@ CREATE TABLE booking.nightly_revenue_evidence (
   CONSTRAINT uq_booking_nightly_revenue_evidence_source_line UNIQUE (guest_booking_id, source_revision, stay_date, line_position, economic_event),
   CONSTRAINT uq_booking_nightly_revenue_evidence_correction_scope UNIQUE (id, property_id, guest_booking_id, currency),
   CONSTRAINT chk_booking_nightly_revenue_evidence_currency CHECK (currency::TEXT ~ '^[A-Z]{3}$'),
+  CONSTRAINT chk_booking_nightly_revenue_evidence_dates CHECK (isfinite(stay_date) AND isfinite(recognized_on)),
   CONSTRAINT chk_booking_nightly_revenue_evidence_dimensions CHECK (
     source_revision BETWEEN 1 AND 2147483647 AND line_position BETWEEN 1 AND 1000
     AND occupied_room_nights IN (-1, 0, 1)
@@ -43,14 +44,12 @@ CREATE TABLE booking.nightly_revenue_evidence (
     OR (evidence_quality IN ('exact', 'inferred') AND gross_room_amount IS NOT NULL)
   ),
   CONSTRAINT chk_booking_nightly_revenue_evidence_finite_amount CHECK (gross_room_amount IS NULL OR (gross_room_amount > '-Infinity'::NUMERIC AND gross_room_amount < 'Infinity'::NUMERIC)),
-  CONSTRAINT chk_booking_nightly_revenue_evidence_room_type CHECK (
-    room_type_id IS NOT NULL OR evidence_quality = 'missing'),
   CONSTRAINT chk_booking_nightly_revenue_evidence_event CHECK (
     (economic_event = 'room_night' AND recognized_on = stay_date
       AND occupied_room_nights = 1 AND corrects_evidence_id IS NULL
       AND lifecycle_state IN ('confirmed', 'completed')
       AND (gross_room_amount IS NULL OR gross_room_amount >= 0))
-    OR (economic_event = 'room_night_reversal' AND recognized_on = stay_date
+    OR (economic_event = 'room_night_reversal' AND recognized_on >= stay_date
       AND occupied_room_nights = -1 AND corrects_evidence_id IS NOT NULL
       AND lifecycle_state IN ('canceled', 'no_show')
       AND (gross_room_amount IS NULL OR gross_room_amount <= 0))
@@ -70,6 +69,9 @@ CREATE TABLE booking.nightly_revenue_evidence (
   CONSTRAINT fk_booking_nightly_revenue_evidence_booking FOREIGN KEY (
     guest_booking_id, property_id, currency
   ) REFERENCES booking.guest_bookings (id, property_id, currency) ON DELETE RESTRICT,
+  CONSTRAINT fk_booking_nightly_revenue_evidence_room_scope FOREIGN KEY (
+    property_id, room_type_id
+  ) REFERENCES booking.nightly_revenue_room_scopes (property_id, room_type_id),
   CONSTRAINT fk_booking_nightly_revenue_evidence_correction FOREIGN KEY (
     corrects_evidence_id, property_id, guest_booking_id, currency
   ) REFERENCES booking.nightly_revenue_evidence (id, property_id, guest_booking_id, currency)
@@ -83,8 +85,18 @@ CREATE UNIQUE INDEX uq_booking_nightly_revenue_evidence_room_night_reversal ON b
   WHERE economic_event = 'room_night_reversal';
 CREATE FUNCTION booking.validate_nightly_revenue_correction()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE target booking.nightly_revenue_evidence%ROWTYPE;
+DECLARE target booking.nightly_revenue_evidence%ROWTYPE; booking_from DATE; booking_to DATE;
 BEGIN
+  IF NOT isfinite(NEW.stay_date) OR NOT isfinite(NEW.recognized_on) THEN
+    RAISE EXCEPTION 'nightly evidence requires finite dates'
+      USING ERRCODE = '23514', CONSTRAINT = 'chk_booking_nightly_revenue_evidence_dates';
+  END IF;
+  SELECT check_in, check_out INTO booking_from, booking_to FROM booking.guest_bookings
+  WHERE id = NEW.guest_booking_id AND property_id = NEW.property_id;
+  IF NOT FOUND OR NEW.stay_date < booking_from OR NEW.stay_date >= booking_to THEN
+    RAISE EXCEPTION 'nightly evidence must fall inside the booking stay'
+      USING ERRCODE = '23514', CONSTRAINT = 'chk_booking_nightly_revenue_evidence_booking_stay';
+  END IF;
   IF NEW.corrects_evidence_id IS NULL THEN RETURN NEW; END IF;
   SELECT * INTO target FROM booking.nightly_revenue_evidence
   WHERE id = NEW.corrects_evidence_id AND property_id = NEW.property_id
@@ -93,6 +105,7 @@ BEGIN
     RAISE EXCEPTION 'correction target must be prior evidence in the same booking scope' USING ERRCODE = '23503';
   END IF;
   IF target.source_revision >= NEW.source_revision OR target.stay_date <> NEW.stay_date
+    OR NEW.recognized_on < target.recognized_on
     OR target.line_position <> NEW.line_position
     OR (target.room_type_id IS NOT NULL
       AND NEW.room_type_id IS DISTINCT FROM target.room_type_id) THEN
@@ -106,24 +119,25 @@ BEGIN
   RETURN NEW;
 END;
 $$;
-CREATE TRIGGER trg_booking_nightly_revenue_evidence_validate_correction
-BEFORE INSERT ON booking.nightly_revenue_evidence
-FOR EACH ROW EXECUTE FUNCTION booking.validate_nightly_revenue_correction();
+CREATE TRIGGER trg_booking_nightly_revenue_evidence_validate_correction BEFORE INSERT
+ON booking.nightly_revenue_evidence FOR EACH ROW EXECUTE FUNCTION booking.validate_nightly_revenue_correction();
 CREATE FUNCTION booking.protect_nightly_revenue_evidence()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION 'nightly booking revenue evidence is immutable' USING ERRCODE = '23514';
 END;
 $$;
-CREATE TRIGGER trg_booking_nightly_revenue_evidence_protect_rows
-BEFORE UPDATE OR DELETE ON booking.nightly_revenue_evidence
+CREATE TRIGGER trg_booking_nightly_revenue_evidence_protect_rows BEFORE UPDATE OR DELETE
+ON booking.nightly_revenue_evidence FOR EACH ROW EXECUTE FUNCTION booking.protect_nightly_revenue_evidence();
+CREATE TRIGGER trg_booking_nightly_revenue_evidence_protect_truncate BEFORE TRUNCATE
+ON booking.nightly_revenue_evidence FOR EACH STATEMENT EXECUTE FUNCTION booking.protect_nightly_revenue_evidence();
+CREATE TRIGGER trg_booking_nightly_revenue_room_scopes_protect
+BEFORE UPDATE OR DELETE ON booking.nightly_revenue_room_scopes
 FOR EACH ROW EXECUTE FUNCTION booking.protect_nightly_revenue_evidence();
-CREATE TRIGGER trg_booking_nightly_revenue_evidence_protect_truncate
-BEFORE TRUNCATE ON booking.nightly_revenue_evidence
-FOR EACH STATEMENT EXECUTE FUNCTION booking.protect_nightly_revenue_evidence();
-CREATE INDEX idx_booking_nightly_revenue_evidence_reporting ON booking.nightly_revenue_evidence (property_id, recognized_on, currency, id);
+CREATE INDEX idx_booking_nightly_revenue_evidence_reporting
+  ON booking.nightly_revenue_evidence (property_id, recognized_on, currency, id);
 CREATE VIEW booking.finance_nightly_revenue_evidence AS
-SELECT id AS evidence_id, property_id, guest_booking_id, room_type_id, stay_date,
-  recognized_on, currency, gross_room_amount, occupied_room_nights, economic_event,
-  lifecycle_state, source_kind, evidence_quality, source_revision, corrects_evidence_id
+SELECT id AS evidence_id, property_id, guest_booking_id, room_type_id, stay_date, recognized_on,
+  currency, gross_room_amount, occupied_room_nights, economic_event, lifecycle_state, source_kind,
+  evidence_quality, source_revision, corrects_evidence_id
 FROM booking.nightly_revenue_evidence;
