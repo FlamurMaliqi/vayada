@@ -57,6 +57,7 @@ function targetProfileRow(overrides: Record<string, unknown> = {}): QueryResultR
     },
     bookingAdultAgeThreshold: 18,
     bookingChildrenEnabled: true,
+    bookingHeaderLogo: null,
     bookingHeroImage: null,
     bookingHeroHeading: null,
     bookingHeroSubtext: null,
@@ -277,7 +278,19 @@ describe("target public hotel profile security", () => {
     };
     const { repository, queries } = targetRepository(
       targetProfileRow({
-        media: [approvedImage],
+        media: [
+          {
+            type: "logo",
+            url: "https://cdn.vayada.example/logo.webp",
+            alt: "Brand logo",
+          },
+          {
+            type: "hero_image",
+            url: approvedImage.url,
+            altText: approvedImage.alt,
+          },
+        ],
+        bookingHeaderLogo: "https://cdn.vayada.example/logo.webp",
         bookingHeroImage: "https://cdn.vayada.example/draft.jpg",
         bookingHeroHeading: "Stay above the clouds",
         bookingHeroSubtext: "Book direct for our best available rates.",
@@ -290,12 +303,15 @@ describe("target public hotel profile security", () => {
 
     expect(profile?.hotel.images).toEqual([approvedImage]);
     expect(profile?.hotel.branding).toEqual({
+      logoUrl: "https://cdn.vayada.example/logo.webp",
       heroImage: "https://cdn.vayada.example/draft.jpg",
       heroHeading: "Stay above the clouds",
       heroSubtext: "Book direct for our best available rates.",
       primaryColor: "#3157D5",
       fontPairing: "grand-classic",
     });
+    expect(queries[0]?.text).toContain('booking_header_logo.public_cdn_url AS "bookingHeaderLogo"');
+    expect(queries[0]?.text).toContain("booking_branding.header_logo_media_object_id");
     expect(queries[0]?.text).toContain('booking_branding.hero_image_url AS "bookingHeroImage"');
     expect(queries[0]?.text).toContain('booking_branding.font_pairing AS "bookingFontPairing"');
     expect(queries[0]?.text).not.toContain("booking_branding.*");
@@ -307,6 +323,7 @@ describe("target public hotel profile security", () => {
   it("returns persisted public Booking branding from the AI hotel endpoint", async () => {
     const { repository } = targetRepository(
       targetProfileRow({
+        bookingHeaderLogo: "https://cdn.vayada.example/alpenrose/logo.webp",
         bookingHeroImage: "https://cdn.vayada.example/alpenrose/booking-hero.jpg",
         bookingHeroHeading: "Stay above the clouds",
         bookingHeroSubtext: "An independent alpine escape.",
@@ -323,6 +340,7 @@ describe("target public hotel profile security", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().hotel.branding).toEqual({
+      logoUrl: "https://cdn.vayada.example/alpenrose/logo.webp",
       heroImage: "https://cdn.vayada.example/alpenrose/booking-hero.jpg",
       heroHeading: "Stay above the clouds",
       heroSubtext: "An independent alpine escape.",

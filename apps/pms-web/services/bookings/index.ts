@@ -3,6 +3,8 @@ import { propertyEndpoint, resolveSelectedPmsPropertyId } from "../api/pmsProper
 import { unsupportedPmsNextStackFeature } from "../api/unsupported";
 import type { CheckinStepType } from "@/services/settings";
 
+export const HIDDEN_GUEST_CONTACT = "Hidden until you accept";
+
 export interface AssignedRoom {
   assignmentId: string | null;
   roomId: string | null;
@@ -110,6 +112,14 @@ function commandMetadata(prefix: string): { commandId: string; idempotencyKey: s
   return { commandId, idempotencyKey: commandId };
 }
 
+function bookingLifecycleCommand(
+  action: "accept" | "mark-paid",
+  guestBookingId: string,
+): { commandId: string; idempotencyKey: string } {
+  const commandId = `pms.booking.${action}:${encodeURIComponent(guestBookingId)}:v1`;
+  return { commandId, idempotencyKey: commandId };
+}
+
 function bookingChangeDecisionCommand(
   decision: "accept" | "decline",
   guestBookingId: string,
@@ -204,6 +214,8 @@ function toAdditionalGuest(guest: PmsBookingGuestPii, position: number): Booking
     dateOfBirth: null,
     email: guest.email ?? "",
     phone: guest.phone ?? "",
+    guestContactHidden:
+      guest.email === HIDDEN_GUEST_CONTACT && guest.phone === HIDDEN_GUEST_CONTACT,
     passportNumber: "",
     roomPosition: null,
     createdAt: "",
@@ -229,7 +241,12 @@ type PmsOperationalReservation = {
   status: string;
   source: "direct_booking" | "channel" | "manual" | "migration";
   stay: { checkIn: string; checkOut: string; adults: number; children: number };
-  primaryGuest: { displayName: string; email: string | null; phone: string | null };
+  primaryGuest: {
+    displayName: string;
+    email: string | null;
+    phone: string | null;
+    countryCode: string | null;
+  };
   assignments: Array<{
     assignmentId?: string | null;
     roomTypeId: string;
@@ -243,6 +260,8 @@ type PmsOperationalReservation = {
   bookedOffer?: { roomTypeId: string; roomName: string };
   roomCount?: number;
   pricing?: { totalAmount: PmsOperationsMoney; balanceAmount: PmsOperationsMoney };
+  payment?: { method: string | null; status: string };
+  hostResponseDeadlineAt?: string | null;
 };
 
 type PmsOperationsListResponse<T> = {
@@ -367,6 +386,7 @@ export interface BookingAdditionalGuest {
   dateOfBirth: string | null;
   email: string;
   phone: string;
+  guestContactHidden: boolean;
   passportNumber: string;
   /** Which of the booking's rooms this guest is assigned to.
    * 0 = primary room, 1..N-1 = extras, null = unassigned. */
@@ -376,7 +396,10 @@ export interface BookingAdditionalGuest {
 }
 
 export type BookingAdditionalGuestPayload = Partial<
-  Omit<BookingAdditionalGuest, "id" | "bookingId" | "position" | "createdAt" | "updatedAt">
+  Omit<
+    BookingAdditionalGuest,
+    "id" | "bookingId" | "position" | "createdAt" | "updatedAt" | "guestContactHidden"
+  >
 >;
 
 export interface BookingChangeRequest {
@@ -498,8 +521,10 @@ export const bookingsService = {
     }>,
   ) => unsupportedPmsNextStackFeature<Booking>("Booking detail updates"),
 
-  updateStatus: (_id: string, _status: "confirmed" | "cancelled") =>
-    unsupportedPmsNextStackFeature<Booking>("Booking confirmation or cancellation"),
+  updateStatus: (id: string, status: "confirmed" | "cancelled") =>
+    status === "confirmed"
+      ? bookingsService.acceptBooking(id)
+      : unsupportedPmsNextStackFeature<Booking>("Booking cancellation"),
 
   completeCheckIn: async (
     id: string,
@@ -583,12 +608,26 @@ export const bookingsService = {
     return refreshBooking(id);
   },
 
-  markPaid: (_id: string) => unsupportedPmsNextStackFeature<Booking>("Booking payment marking"),
+  markPaid: async (id: string) => {
+    await pmsOperationsClient.post<PmsOperationsCommandResponse>(
+      await reservationEndpoint(id, "/mark-paid"),
+      bookingLifecycleCommand("mark-paid", id),
+      pmsOperationsRequestOptions,
+    );
+    return refreshBooking(id);
+  },
 
   addArrivalCharge: (_id: string, _amount: number, _description?: string) =>
     unsupportedPmsNextStackFeature<Booking>("Arrival charges"),
 
-  acceptBooking: (_id: string) => unsupportedPmsNextStackFeature<Booking>("Booking acceptance"),
+  acceptBooking: async (id: string) => {
+    await pmsOperationsClient.post<PmsOperationsCommandResponse>(
+      await reservationEndpoint(id, "/accept"),
+      bookingLifecycleCommand("accept", id),
+      pmsOperationsRequestOptions,
+    );
+    return refreshBooking(id);
+  },
 
   rejectBooking: (_id: string, _reason?: string) =>
     unsupportedPmsNextStackFeature<Booking>("Booking rejection"),
@@ -882,7 +921,7 @@ function toBooking(
     guestLastName,
     guestEmail: reservation.primaryGuest.email ?? "",
     guestPhone: reservation.primaryGuest.phone ?? "",
-    guestCountry: "",
+    guestCountry: reservation.primaryGuest.countryCode ?? "",
     guestGender: "",
     guestDateOfBirth: null,
     guestPassportNumber: "",
@@ -912,12 +951,12 @@ function toBooking(
       position: assignment.position,
     })),
     channel: primaryAssignment?.channel ?? reservationSource(reservation.source),
-    paymentMethod: null,
-    paymentStatus: null,
+    paymentMethod: reservation.payment?.method ?? null,
+    paymentStatus: reservation.payment?.status ?? null,
     checkInPendingFlags: reservation.checkin.pendingFlags,
     checkedInAt: reservation.checkin.completedAt,
     checkedOutAt: reservation.checkout.completedAt,
-    hostResponseDeadline: null,
+    hostResponseDeadline: reservation.hostResponseDeadlineAt ?? null,
     platformFeeAmount: null,
     affiliateCommissionAmount: null,
     propertyPayoutAmount: null,
@@ -991,6 +1030,8 @@ function reservationSource(source: PmsOperationalReservation["source"]): string 
 function toBookingStatus(status: string): Booking["status"] {
   switch (status) {
     case "pending":
+    case "pending_payment":
+      return "pending";
     case "confirmed":
     case "checked_in":
     case "in_house":
