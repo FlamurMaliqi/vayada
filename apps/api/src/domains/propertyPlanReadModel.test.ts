@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { readPropertyPlan, type PropertyPlanQueryable } from "./propertyPlanReadModel.js";
+import {
+  createPgPropertyPlanReadRepository,
+  readPropertyPlan,
+  type PropertyPlanQueryable,
+} from "./propertyPlanReadModel.js";
 
 describe("readPropertyPlan", () => {
+  it("rejects empty repository connection strings", () => {
+    expect(() => createPgPropertyPlanReadRepository({ connectionString: " " })).toThrow(
+      "Property plan read repository connectionString must not be empty",
+    );
+  });
   it("returns the fixed-plan limits for an active paid entitlement", async () => {
     const queryable: PropertyPlanQueryable = {
       async query<T>() {

@@ -12,6 +12,8 @@ import type {
   BookingGuestPiiProjection,
 } from "@vayada/domain-booking";
 import type { PmsInventoryPublicOfferProjectionPort } from "@vayada/domain-distribution";
+import { PROPERTY_FEATURE_LIMITS, type PropertyPlanReadModel } from "@vayada/domain-finance";
+import type { PropertyPlanReadRepository } from "../domains/propertyPlanReadModel.js";
 import type {
   PmsCalendarDay,
   PmsOperationsReadRepository,
@@ -63,6 +65,12 @@ export type PmsRoomTypeDetailResponse = {
   propertyId: string;
   item: PmsRoomType;
   sourceFreshness: PmsSourceFreshness;
+};
+
+export type PmsPropertyPlanResponse = {
+  contractVersion: PmsOperationsContractVersion;
+  propertyId: string;
+  propertyPlan: PropertyPlanReadModel;
 };
 
 export type PmsCalendarResponse = {
@@ -693,6 +701,7 @@ export type PmsOperationsRoutesOptions = {
   bookingGuestPiiPort?: BookingGuestPiiPort;
   inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
   allowedOrigins?: string[];
+  propertyPlanReadRepository?: PropertyPlanReadRepository;
 };
 
 type PmsPropertyParams = {
@@ -791,6 +800,7 @@ type PmsOperationsErrorCode =
   | PmsAssignmentCommandConflictCode
   | "property_currency_conflict"
   | "room_type_conflict"
+  | "room_photo_plan_limit_reached"
   | "read_model_unavailable"
   | "room_type_not_found"
   | "reservation_not_found"
@@ -821,6 +831,7 @@ export async function registerPmsOperationsRoutes(
     await repository.close?.();
     await commandRepository?.close?.();
     await bookingGuestPiiPort?.close?.();
+    await options.propertyPlanReadRepository?.close?.();
   });
 
   for (const path of [
@@ -828,6 +839,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/rooms",
     "/properties/:propertyId/room-types",
     "/properties/:propertyId/room-types/:roomTypeId",
+    "/properties/:propertyId/plan-limits",
     "/properties/:propertyId/calendar",
     "/properties/:propertyId/room-blocks",
     "/properties/:propertyId/payment-settings",
@@ -883,6 +895,40 @@ export async function registerPmsOperationsRoutes(
       readModelUnavailable("PMS property summary read model is unavailable."),
     );
   });
+
+  app.get<{ Params: PmsPropertyParams }>(
+    "/properties/:propertyId/plan-limits",
+    async (request, reply) => {
+      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+        return sendPmsOperationsError(reply, {
+          statusCode: 403,
+          code: "missing_permission",
+          category: "authorization",
+          message: "PMS operations origin is not allowed.",
+        });
+      }
+      const { propertyId } = request.params;
+      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (!options.propertyPlanReadRepository) {
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("Property plan read model is unavailable."),
+        );
+      }
+      try {
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          propertyPlan: await options.propertyPlanReadRepository.getPropertyPlan(propertyId),
+        } satisfies PmsPropertyPlanResponse;
+      } catch {
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("Property plan read model is unavailable."),
+        );
+      }
+    },
+  );
 
   app.get<{ Params: PmsPropertyParams }>(
     "/properties/:propertyId/rooms",
@@ -1590,6 +1636,29 @@ export async function registerPmsOperationsRoutes(
 
         const command = toRoomTypeCreateCommand(propertyId, request, currencyOverride);
         if ("error" in command) return sendPmsOperationsError(reply, command.error);
+
+        if (options.propertyPlanReadRepository) {
+          try {
+            const propertyPlan =
+              await options.propertyPlanReadRepository.getPropertyPlan(propertyId);
+            if (command.value.media.length > propertyPlan.limits.maxRoomPhotosPerType) {
+              return sendPmsOperationsError(reply, {
+                statusCode: 409,
+                code: "room_photo_plan_limit_reached",
+                category: "conflict",
+                message:
+                  propertyPlan.plan === "commission"
+                    ? `You've reached the ${propertyPlan.limits.maxRoomPhotosPerType}-photo limit. Upgrade to the paid plan for up to ${PROPERTY_FEATURE_LIMITS.fixed.maxRoomPhotosPerType} photos per room.`
+                    : `You've reached the ${propertyPlan.limits.maxRoomPhotosPerType}-photo limit for the paid plan.`,
+              });
+            }
+          } catch {
+            return sendPmsOperationsError(
+              reply,
+              readModelUnavailable("Property plan read model is unavailable."),
+            );
+          }
+        }
 
         const result = await commandRepository.createRoomType(command.value);
         if (!result.ok) return sendPmsRoomTypeCommandError(reply, result);
