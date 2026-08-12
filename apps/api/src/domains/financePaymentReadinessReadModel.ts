@@ -59,7 +59,10 @@ WHERE settings.property_id = $2::uuid
       AND resource.product = 'pms'
       AND resource.resource_type = 'pms_property'
       AND resource.resource_id = $2::uuid::text
-      AND resource.relationship IN ('owner', 'finance_manager')
+      -- The aggregate setup route is also readable by PMS operators. This
+      -- snapshot contains only public-safe progress facts; Finance mutations
+      -- remain restricted by their route and command authorization boundary.
+      AND resource.relationship IN ('owner', 'operator', 'finance_manager')
       AND resource.status = 'active'
   )
   AND EXISTS (

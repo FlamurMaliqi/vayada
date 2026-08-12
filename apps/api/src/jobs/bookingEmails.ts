@@ -218,6 +218,19 @@ export function bookingLifecycleEmailJobKey(
   return `${bookingLifecycleEmailJobType(kind)}:booking:${guestBookingId}:${semantic}:v1`;
 }
 
+export function bankTransferDetailsFromPolicy(policy: unknown): unknown | null {
+  if (!policy || typeof policy !== "object" || Array.isArray(policy)) return null;
+  const instructions = (policy as Record<string, unknown>)["bankTransferInstructions"];
+  if (typeof instructions === "string") {
+    const text = instructions.trim();
+    return text || null;
+  }
+  if (!instructions || typeof instructions !== "object" || Array.isArray(instructions)) {
+    return null;
+  }
+  return Object.keys(instructions).length > 0 ? instructions : null;
+}
+
 function emailCopy(input: BookingLifecycleEmailInput) {
   const { booking } = input;
   const name = booking.guestName?.trim() || "there";

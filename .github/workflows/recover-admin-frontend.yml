@@ -95,13 +95,13 @@ jobs:
           esac
 
       - name: Checkout approved rollback source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.config.outputs.rollback_source_ref }}
           persist-credentials: false
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::269416271598:role/vayada-github-actions-deploy
           aws-region: ${{ env.AWS_REGION }}
@@ -152,7 +152,7 @@ jobs:
           done
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build and push rollback image
         id: build-rollback
@@ -169,7 +169,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Checkout approved production source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.config.outputs.source_ref }}
           persist-credentials: false
@@ -229,7 +229,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Dispatch canonical admin deployment
-        uses: peter-evans/repository-dispatch@v3
+        uses: peter-evans/repository-dispatch@v4
         with:
           token: ${{ secrets.PLATFORM_DEPLOY_TOKEN }}
           repository: vayada-marketplace/vayada-platform
