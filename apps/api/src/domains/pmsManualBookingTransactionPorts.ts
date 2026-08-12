@@ -67,8 +67,6 @@ export type PmsManualBookingTransactionDependencies = Readonly<{
 export type PmsManualBookingAcceptedWrite = Readonly<{
   guestBookingId: string;
   bookingReference: string;
-  rooms: readonly PmsManualBookingRoom[];
-  preview: ManualBookingPreviewResult;
   total: PmsManualBookingMoney;
   checkIn: string;
   checkOut: string;
