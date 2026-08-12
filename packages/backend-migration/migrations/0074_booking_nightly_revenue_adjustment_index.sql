@@ -6,4 +6,4 @@ CREATE UNIQUE INDEX CONCURRENTLY uq_booking_nightly_revenue_evidence_occupancy_t
   ON booking.nightly_revenue_evidence (corrects_evidence_id)
   WHERE economic_event IN ('room_night_reversal', 'occupancy_adjustment');
 -- vayada:next-statement
-DROP INDEX CONCURRENTLY booking.uq_booking_nightly_revenue_evidence_room_night_reversal;
+DROP INDEX CONCURRENTLY IF EXISTS booking.uq_booking_nightly_revenue_evidence_room_night_reversal;
