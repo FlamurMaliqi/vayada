@@ -10,6 +10,7 @@ import {
   MealPlanCode,
   PartialRefundTier,
   RateDepositSetting,
+  type PropertyPlan,
 } from "@/services/rooms";
 import ImageUpload from "@/components/ImageUpload";
 import { pmsRoomMediaResource } from "@/services/upload";
@@ -195,6 +196,7 @@ interface RoomTypeFormProps {
   // total_rooms truthful so the VAY-402 oversell invariant still holds.
   mode?: "create" | "edit";
   roomTypeId?: string;
+  propertyPlan: PropertyPlan | null;
 }
 
 function bedsToSummary(beds: { type: string; count: number }[]): string {
@@ -762,6 +764,7 @@ export default function RoomTypeForm({
   onCancel,
   mode = "create",
   roomTypeId,
+  propertyPlan,
 }: RoomTypeFormProps) {
   const formRef = useRef<HTMLFormElement | null>(null);
   const skipPriceWarningConfirmRef = useRef(false);
@@ -3471,7 +3474,8 @@ export default function RoomTypeForm({
                   : "pms_property_current",
                 roomTypeId,
               )}
-              maxImages={10}
+              maxImages={propertyPlan?.limits.maxRoomPhotosPerType ?? null}
+              plan={propertyPlan?.plan ?? null}
               label="Room Images"
             />
           </div>
