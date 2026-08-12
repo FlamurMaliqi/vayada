@@ -54,7 +54,7 @@ export async function calculateManualBookingPreview(
   ports: PmsManualBookingPreviewRoutesOptions,
 ) {
   const { propertyId } = scope;
-  const [rooms, roomTypes, pricing, addons, policy, available] = await Promise.all([
+  const [rooms, roomTypes, pricing, addonContext, policy, available] = await Promise.all([
     ports.pms.listRoomsByPropertyId(propertyId),
     ports.pms.listRoomTypesByPropertyId(propertyId),
     ports.pricing.getRecurringPricingBookingEvidence(propertyId),
@@ -62,8 +62,9 @@ export async function calculateManualBookingPreview(
     ports.booking.getCurrentGuestPolicy(scope),
     ports.pms.getPhysicalRoomAvailability(propertyId, command.stays),
   ]);
-  if (!pricing || !policy || !addons || pricing.propertyId !== propertyId)
+  if (!pricing || !policy || !addonContext || pricing.propertyId !== propertyId)
     fail(404, "property_not_found");
+  const addons = addonContext.addonItems;
   const currency = pricing.currency;
   let grand = 0n;
   const stays = command.stays.map((stay, index) => {

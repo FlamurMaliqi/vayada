@@ -298,14 +298,17 @@ function ports(state: State): PmsManualBookingPreviewRoutesOptions {
       },
       async listAddonItemsByHotelId() {
         read("addons");
-        return addonIds.map((addonItemId, index) => ({
-          addonItemId,
-          propertyId,
-          price: ["10.00", "5.00", "4.00", "2.00"][index],
-          currency: state.currency ?? "EUR",
-          pricingModel: ["per_stay", "per_guest", "per_night", "per_guest_night"][index],
-          status: "active",
-        })) as any;
+        return {
+          addonItems: addonIds.map((addonItemId, index) => ({
+            addonItemId,
+            propertyId,
+            price: ["10.00", "5.00", "4.00", "2.00"][index],
+            currency: state.currency ?? "EUR",
+            pricingModel: ["per_stay", "per_guest", "per_night", "per_guest_night"][index],
+            status: "active",
+          })),
+          propertyPlan: {},
+        } as any;
       },
     },
   };
