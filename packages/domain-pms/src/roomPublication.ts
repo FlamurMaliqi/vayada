@@ -15,7 +15,11 @@ import {
   type RoomTypeFacts,
   type RoomTypeFactsSnapshot,
 } from "./roomFacts.js";
-import { parseReplaceRoomMediaRequest, type RoomMediaAssignment } from "./roomMedia.js";
+import {
+  parseReplaceRoomMediaRequest,
+  type LegacyRoomMediaSnapshotItem,
+  type RoomMediaAssignment,
+} from "./roomMedia.js";
 
 export const PMS_ROOM_PUBLICATION_CONTRACT_VERSION = "pms-room-publication.v1" as const;
 export const PMS_ASSIGN_ROOM_TYPE_MEDIA_OPERATION = "pms.assignRoomTypeMedia" as const;
@@ -39,13 +43,25 @@ export type AssignRoomTypeMediaCommand = {
   readonly roomTypeId: string;
   readonly expectedRoomMediaRevision: number;
   readonly assignments: readonly RoomMediaAssignment[];
+  readonly legacyMediaSnapshot?: readonly LegacyRoomMediaSnapshotItem[];
   readonly idempotencyKey: string;
   readonly audit: RoomFactsCommandAudit;
 };
 
 export type AssignRoomTypeMediaError =
-  | { readonly code: "setup_scope_unavailable" | "room_type_not_found" }
+  | {
+      readonly code:
+        | "setup_scope_unavailable"
+        | "room_type_not_found"
+        | "legacy_media_not_authorized";
+    }
   | { readonly code: "room_media_revision_conflict"; readonly currentRevision: number }
+  | {
+      readonly code: "room_media_plan_limit_reached";
+      readonly plan: "commission" | "fixed";
+      readonly currentCount: number;
+      readonly maxAllowed: number;
+    }
   | { readonly code: "idempotency_key_conflict" | "command_in_progress" }
   | {
       readonly code: "media_not_found" | "media_not_authorized" | "media_not_ready";
@@ -157,6 +173,7 @@ export type RoomPublicationSnapshotPort = {
 };
 
 export function parseAssignRoomTypeMediaCommand(value: unknown): AssignRoomTypeMediaCommand | null {
+  const hasLegacySnapshot = isPlainDataRecord(value) && Object.hasOwn(value, "legacyMediaSnapshot");
   if (
     !isExactDataRecord(value, [
       "organizationId",
@@ -164,6 +181,7 @@ export function parseAssignRoomTypeMediaCommand(value: unknown): AssignRoomTypeM
       "roomTypeId",
       "expectedRoomMediaRevision",
       "assignments",
+      ...(hasLegacySnapshot ? ["legacyMediaSnapshot"] : []),
       "idempotencyKey",
       "audit",
     ]) ||
@@ -177,6 +195,7 @@ export function parseAssignRoomTypeMediaCommand(value: unknown): AssignRoomTypeM
   const request = parseReplaceRoomMediaRequest({
     expectedRoomMediaRevision: value["expectedRoomMediaRevision"],
     assignments: value["assignments"],
+    ...(hasLegacySnapshot ? { legacyMediaSnapshot: value["legacyMediaSnapshot"] } : {}),
   });
   const audit = parseAudit(value["audit"]);
   return request && audit
@@ -186,6 +205,9 @@ export function parseAssignRoomTypeMediaCommand(value: unknown): AssignRoomTypeM
         roomTypeId: normalizeUuid(value["roomTypeId"]),
         expectedRoomMediaRevision: request.expectedRoomMediaRevision,
         assignments: request.assignments,
+        ...(request.legacyMediaSnapshot
+          ? { legacyMediaSnapshot: request.legacyMediaSnapshot }
+          : {}),
         idempotencyKey: value["idempotencyKey"],
         audit,
       })
@@ -205,6 +227,18 @@ export function serializeAssignRoomTypeMediaFingerprint(
       altText,
       sortOrder,
     })),
+    ...(command.legacyMediaSnapshot
+      ? {
+          legacyMediaSnapshot: command.legacyMediaSnapshot.map(
+            ({ mediaObjectId, url, altText, sortOrder }) => ({
+              mediaObjectId,
+              url,
+              altText,
+              sortOrder,
+            }),
+          ),
+        }
+      : {}),
   });
 }
 
@@ -507,6 +541,7 @@ function parseMediaError(value: unknown): AssignRoomTypeMediaError | null {
     [
       "setup_scope_unavailable",
       "room_type_not_found",
+      "legacy_media_not_authorized",
       "idempotency_key_conflict",
       "command_in_progress",
     ].includes(value["code"])
@@ -519,6 +554,19 @@ function parseMediaError(value: unknown): AssignRoomTypeMediaError | null {
     return isExactDataRecord(value, ["code", "currentRevision"]) &&
       isPositiveRevision(value["currentRevision"])
       ? Object.freeze({ code: value["code"], currentRevision: value["currentRevision"] })
+      : null;
+  }
+  if (value["code"] === "room_media_plan_limit_reached") {
+    return isExactDataRecord(value, ["code", "plan", "currentCount", "maxAllowed"]) &&
+      ["commission", "fixed"].includes(value["plan"] as string) &&
+      isNonNegativeCount(value["currentCount"]) &&
+      isNonNegativeCount(value["maxAllowed"])
+      ? Object.freeze({
+          code: value["code"],
+          plan: value["plan"] as "commission" | "fixed",
+          currentCount: value["currentCount"],
+          maxAllowed: value["maxAllowed"],
+        })
       : null;
   }
   if (
@@ -623,6 +671,10 @@ function isPositiveRevision(value: unknown): value is number {
   return (
     Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= 2_147_483_647
   );
+}
+
+function isNonNegativeCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 20;
 }
 
 function isText(value: unknown, maximum: number): value is string {

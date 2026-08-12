@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { loadConfig } from "./config.js";
+import { loadConfig, stripeSubscriptionRuntimeEnabled } from "./config.js";
 
 const completeCreatorMarketplaceEnv = {
   TARGET_DATABASE_URL: "postgresql://target-db",
@@ -15,6 +15,22 @@ const completeCreatorMarketplaceEnv = {
 
 const completeCreatorPlatformConnectionEnv = {
   ...completeCreatorMarketplaceEnv,
+};
+
+const completeAuthSessionEnv = {
+  WORKOS_CLIENT_ID: "client",
+  WORKOS_API_KEY: "sk_test",
+  AUTH_COOKIE_SECRET: "cookie-secret",
+  AUTH_LOGOUT_URL: "https://admin.localhost/login",
+  AUTH_ALLOWED_ORIGINS:
+    "https://admin.localhost, https://api.localhost, https://admin.booking.localhost, " +
+    "https://pms.localhost, https://affiliate.localhost, https://marketplace.localhost",
+  AUTH_COMPATIBILITY_CALLBACK_ORIGIN: "https://api.localhost",
+  AUTH_PLATFORM_ADMIN_ORIGIN: "https://admin.localhost",
+  AUTH_BOOKING_ADMIN_ORIGIN: "https://admin.booking.localhost",
+  AUTH_PMS_WEB_ORIGIN: "https://pms.localhost",
+  AUTH_AFFILIATE_DASHBOARD_ORIGIN: "https://affiliate.localhost",
+  AUTH_MARKETPLACE_WEB_ORIGIN: "https://marketplace.localhost",
 };
 
 describe("api config", () => {
@@ -78,13 +94,10 @@ describe("api config", () => {
   it("loads AuthKit session route config when all session env values are present", () => {
     expect(
       loadConfig({
-        WORKOS_CLIENT_ID: "client",
-        WORKOS_API_KEY: "sk_test",
-        AUTH_COOKIE_SECRET: "cookie-secret",
+        ...completeAuthSessionEnv,
         AUTH_OAUTH_STATE_SECRET: "oauth-state-secret",
-        AUTH_LOGOUT_URL: "https://admin.localhost/login",
-        AUTH_ALLOWED_ORIGINS: "https://admin.localhost, https://api.localhost",
-        AUTH_COOKIE_SECURE: "false",
+        AUTH_FIRST_PARTY_SURFACES: "marketplace-web,pms-web,marketplace-web",
+        AUTH_COOKIE_SECURE: "true",
         AUTH_COOKIE_DOMAIN: "localhost",
         AUTH_LEGACY_MARKETPLACE_JWT_SECRET: "legacy-secret",
         AUTH_AFFILIATE_DASHBOARD_LOGOUT_URL: "https://affiliate.localhost/login",
@@ -97,8 +110,24 @@ describe("api config", () => {
       authCookieSecret: "cookie-secret",
       oauthStateSecret: "oauth-state-secret",
       authLogoutUrl: "https://admin.localhost/login",
-      authAllowedOrigins: ["https://admin.localhost", "https://api.localhost"],
-      authCookieSecure: false,
+      authAllowedOrigins: [
+        "https://admin.localhost",
+        "https://api.localhost",
+        "https://admin.booking.localhost",
+        "https://pms.localhost",
+        "https://affiliate.localhost",
+        "https://marketplace.localhost",
+      ],
+      authCompatibilityCallbackOrigin: "https://api.localhost",
+      authSurfaceOrigins: {
+        "platform-admin": "https://admin.localhost",
+        "booking-admin": "https://admin.booking.localhost",
+        "pms-web": "https://pms.localhost",
+        "affiliate-dashboard": "https://affiliate.localhost",
+        "marketplace-web": "https://marketplace.localhost",
+      },
+      authFirstPartySurfaces: ["marketplace-web", "pms-web"],
+      authCookieSecure: true,
       authCookieDomain: "localhost",
       authLegacyMarketplaceJwtSecret: "legacy-secret",
       authAffiliateDashboardLogoutUrl: "https://affiliate.localhost/login",
@@ -113,6 +142,40 @@ describe("api config", () => {
         WORKOS_CLIENT_ID: "client",
       }),
     ).toThrow("Incomplete auth session config");
+  });
+
+  it("rejects auth callback origins outside the exact allowlist", () => {
+    expect(() =>
+      loadConfig({
+        ...completeAuthSessionEnv,
+        AUTH_MARKETPLACE_WEB_ORIGIN: "https://evil.example",
+      }),
+    ).toThrow("Auth callback origins must be included in AUTH_ALLOWED_ORIGINS");
+  });
+
+  it("rejects malformed auth origins and unsupported rollout surfaces", () => {
+    expect(() =>
+      loadConfig({
+        ...completeAuthSessionEnv,
+        AUTH_PMS_WEB_ORIGIN: "https://pms.localhost/login",
+      }),
+    ).toThrow("AUTH_PMS_WEB_ORIGIN must be an absolute HTTP(S) origin");
+    expect(() =>
+      loadConfig({
+        ...completeAuthSessionEnv,
+        AUTH_FIRST_PARTY_SURFACES: "marketplace-web,unknown-surface",
+      }),
+    ).toThrow("AUTH_FIRST_PARTY_SURFACES contains unsupported surfaces: unknown-surface");
+  });
+
+  it("requires secure cookies for enabled HTTPS first-party surfaces", () => {
+    expect(() =>
+      loadConfig({
+        ...completeAuthSessionEnv,
+        AUTH_COOKIE_SECURE: "false",
+        AUTH_FIRST_PARTY_SURFACES: "marketplace-web",
+      }),
+    ).toThrow("AUTH_COOKIE_SECURE must be true for HTTPS first-party surfaces: marketplace-web");
   });
 
   it("loads independently configured creator platform providers", () => {
@@ -304,6 +367,22 @@ describe("api config", () => {
     );
   });
 
+  it("requires target Booking settings for the next API runtime", () => {
+    expect(() =>
+      loadConfig({
+        API_RUNTIME: "next",
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        PUBLIC_HOTEL_PROFILE_SOURCE: "target",
+        BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
+        PUBLIC_BOOKABILITY_SOURCE: "target",
+        BOOKING_RESERVATIONS_SOURCE: "target",
+        PMS_OPERATIONS_SOURCE: "target",
+        FINANCE_SOURCE: "target",
+        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
+      }),
+    ).toThrow("API_RUNTIME=next requires target runtime sources: BOOKING_SETTINGS_SOURCE=target");
+  });
+
   it("defaults provider webhook intake modes to observe-only shadow intake", () => {
     expect(loadConfig({}).providerWebhooks).toEqual({
       stripeSecret: undefined,
@@ -343,6 +422,54 @@ describe("api config", () => {
         XENDIT_SECRET_KEY: "xendit-api-secret",
       }).xenditSecretKey,
     ).toBe("xendit-api-secret");
+  });
+
+  it("loads Stripe subscription billing separately from webhook verification", () => {
+    expect(
+      loadConfig({
+        STRIPE_SECRET_KEY: "sk_test_subscription",
+        STRIPE_FIXED_PLAN_PRICE_ID: "price_fixed",
+        BOOKING_ADMIN_BASE_URL: "https://admin.booking.example",
+      }).stripeSubscriptions,
+    ).toEqual({
+      secretKey: "sk_test_subscription",
+      fixedPlanPriceId: "price_fixed",
+      bookingAdminBaseUrl: "https://admin.booking.example",
+    });
+  });
+
+  it("enables Stripe Checkout only when subscription mutation and webhook recovery are ready", () => {
+    const stripeRuntimeEnv = {
+      TARGET_DATABASE_URL: "postgresql://target-db",
+      FINANCE_SOURCE: "target",
+      BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
+      STRIPE_SECRET_KEY: "sk_test_subscription",
+      STRIPE_FIXED_PLAN_PRICE_ID: "price_fixed",
+      STRIPE_WEBHOOK_SECRET: "whsec_subscription",
+      STRIPE_WEBHOOK_INTAKE_MODE: "mutating",
+    };
+    const complete = loadConfig(stripeRuntimeEnv);
+    expect(stripeSubscriptionRuntimeEnabled(complete)).toBe(true);
+    expect(
+      stripeSubscriptionRuntimeEnabled(
+        loadConfig({ ...stripeRuntimeEnv, STRIPE_FIXED_PLAN_PRICE_ID: undefined }),
+      ),
+    ).toBe(true);
+
+    for (const env of [
+      { ...stripeRuntimeEnv, STRIPE_SECRET_KEY: undefined },
+      { ...stripeRuntimeEnv, STRIPE_WEBHOOK_SECRET: undefined },
+      { ...stripeRuntimeEnv, STRIPE_WEBHOOK_INTAKE_MODE: "observe_only" },
+      { ...stripeRuntimeEnv, BOOKING_CHECKOUT_COMMAND_SOURCE: "legacy_proxy" },
+    ]) {
+      expect(stripeSubscriptionRuntimeEnabled(loadConfig(env))).toBe(false);
+    }
+  });
+
+  it("rejects a non-HTTP Booking Admin return origin", () => {
+    expect(() => loadConfig({ BOOKING_ADMIN_BASE_URL: "ftp://admin.booking.example" })).toThrow(
+      "BOOKING_ADMIN_BASE_URL must be an absolute HTTP(S) origin",
+    );
   });
 
   it("rejects unsupported provider webhook intake modes", () => {
@@ -638,6 +765,57 @@ describe("api config", () => {
 
     expect(config.bookingCheckoutCommandSource).toBe("target");
     expect(config.targetDatabaseUrl).toBe("postgresql://target-db");
+  });
+
+  it("requires booking email delivery for target checkout in production", () => {
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "production",
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
+      }),
+    ).toThrow("requires RESEND_API_KEY and BOOKING_EMAIL_FROM");
+
+    expect(
+      loadConfig({
+        NODE_ENV: "production",
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
+        RESEND_API_KEY: "re_test",
+        BOOKING_EMAIL_FROM: "Vayada <bookings@example.test>",
+        FINANCE_SOURCE: "target",
+        STRIPE_SECRET_KEY: "sk_test",
+        STRIPE_WEBHOOK_SECRET: "whsec_test",
+        STRIPE_WEBHOOK_INTAKE_MODE: "mutating",
+      }).bookingEmailDelivery,
+    ).toEqual({
+      provider: "resend",
+      apiKey: "re_test",
+      from: "Vayada <bookings@example.test>",
+    });
+  });
+
+  it("requires the Stripe mutation and recovery runtime for target checkout in production", () => {
+    const complete = {
+      NODE_ENV: "production",
+      TARGET_DATABASE_URL: "postgresql://target-db",
+      BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
+      FINANCE_SOURCE: "target",
+      RESEND_API_KEY: "re_test",
+      BOOKING_EMAIL_FROM: "Vayada <bookings@example.test>",
+      STRIPE_SECRET_KEY: "sk_test",
+      STRIPE_WEBHOOK_SECRET: "whsec_test",
+      STRIPE_WEBHOOK_INTAKE_MODE: "mutating",
+    };
+    expect(loadConfig(complete).bookingCheckoutCommandSource).toBe("target");
+    for (const env of [
+      { ...complete, STRIPE_SECRET_KEY: undefined },
+      { ...complete, STRIPE_WEBHOOK_SECRET: undefined },
+      { ...complete, STRIPE_WEBHOOK_INTAKE_MODE: "observe_only" },
+      { ...complete, FINANCE_SOURCE: "legacy" },
+    ]) {
+      expect(() => loadConfig(env)).toThrow("requires STRIPE_SECRET_KEY");
+    }
   });
 
   it("requires target database config for target Booking Web checkout commands", () => {

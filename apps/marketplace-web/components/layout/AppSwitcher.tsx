@@ -5,6 +5,12 @@ import { ChevronDownIcon, CheckIcon } from "@heroicons/react/24/outline";
 import { STORAGE_KEYS } from "@/lib/constants";
 import type { UserType } from "@/lib/types";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
+import { getAuthCsrfToken } from "@/services/auth/sessionStore";
+import {
+  createBrowserAuthHandoff,
+  crossAppReauthenticationUrl,
+  type BrowserAuthSurface,
+} from "@vayada/product-onboarding";
 
 type Product = "booking" | "pms" | "marketplace";
 
@@ -20,6 +26,7 @@ export function AppSwitcher({
   placement?: "brand" | "nav";
 }) {
   const [open, setOpen] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
   const [userType, setUserType] = useState<UserType | null>(null);
   const [enabledProducts, setEnabledProducts] = useState<Set<Product>>(
     () => new Set<Product>(["marketplace"]),
@@ -72,8 +79,28 @@ export function AppSwitcher({
   const canSwitchToHotelApps = userType === "hotel";
   if (!canSwitchToHotelApps) return null;
 
-  const goTo = (baseUrl: string) => {
-    window.location.href = baseUrl;
+  const goTo = async (baseUrl: string, targetSurface: BrowserAuthSurface, targetPath: string) => {
+    setSwitchError(null);
+    setOpen(false);
+    const csrfToken = getAuthCsrfToken();
+    if (csrfToken) {
+      try {
+        window.location.href = await createBrowserAuthHandoff({
+          csrfToken,
+          sourceSurface: "marketplace-web",
+          targetPath,
+          targetSurface,
+        });
+        return;
+      } catch {
+        // A failed/disabled handoff falls back to normal target-app authentication.
+      }
+    }
+    try {
+      window.location.href = crossAppReauthenticationUrl(baseUrl, targetPath);
+    } catch {
+      setSwitchError("We couldn't open that app. Please try again later.");
+    }
   };
 
   return (
@@ -126,6 +153,12 @@ export function AppSwitcher({
           </>
         )}
       </button>
+
+      {switchError && (
+        <p className="px-3 py-2 text-xs text-red-600" role="alert">
+          {switchError}
+        </p>
+      )}
 
       {open && (
         <div
@@ -185,7 +218,7 @@ export function AppSwitcher({
               href="#"
               onClick={(e) => {
                 e.preventDefault();
-                goTo(BOOKING_ADMIN_URL);
+                void goTo(BOOKING_ADMIN_URL, "booking-admin", "/dashboard");
               }}
               className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
             >
@@ -223,7 +256,7 @@ export function AppSwitcher({
               href="#"
               onClick={(e) => {
                 e.preventDefault();
-                goTo(PMS_FRONTEND_URL);
+                void goTo(PMS_FRONTEND_URL, "pms-web", "/dashboard");
               }}
               className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
             >

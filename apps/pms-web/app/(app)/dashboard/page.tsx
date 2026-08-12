@@ -19,6 +19,7 @@ import {
   isNotCheckedInDeparture,
 } from "@/lib/dashboardBookings";
 import { useTranslation } from "@/lib/i18n";
+import { pmsSetupExitPropertyId } from "@vayada/product-onboarding";
 
 const AVATAR_COLORS = [
   "bg-blue-500",
@@ -100,6 +101,7 @@ export default function DashboardPage() {
   const [hotelCurrency, setHotelCurrency] = useState("EUR");
   const [hotelTimezone, setHotelTimezone] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [incompleteSetupPropertyId, setIncompleteSetupPropertyId] = useState<string | null>(null);
   const [weekOffset, setWeekOffset] = useState(0);
   const [quickView, setQuickView] = useState<{
     booking: Booking;
@@ -110,6 +112,12 @@ export default function DashboardPage() {
   } | null>(null);
 
   const today = getPropertyToday(hotelTimezone);
+
+  useEffect(() => {
+    setIncompleteSetupPropertyId(
+      pmsSetupExitPropertyId(`${window.location.pathname}${window.location.search}`),
+    );
+  }, []);
 
   useEffect(() => {
     Promise.all([
@@ -241,6 +249,20 @@ export default function DashboardPage() {
 
   return (
     <div className="p-4 md:p-6 space-y-4 md:space-y-5 overflow-x-hidden">
+      {incompleteSetupPropertyId && (
+        <div
+          className="flex flex-col gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 sm:flex-row sm:items-center sm:justify-between"
+          role="status"
+        >
+          <p>Your property setup isn&apos;t complete. Your progress is saved.</p>
+          <Link
+            href={`/setup?entryProduct=pms&returnTo=%2Fdashboard&propertyId=${encodeURIComponent(incompleteSetupPropertyId)}`}
+            className="shrink-0 font-semibold text-amber-950 underline decoration-amber-400 underline-offset-4 hover:decoration-amber-700"
+          >
+            Resume setup
+          </Link>
+        </div>
+      )}
       {/* Title */}
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
