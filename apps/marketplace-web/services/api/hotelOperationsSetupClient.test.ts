@@ -10,7 +10,9 @@ const mocks = vi.hoisted(() => ({
   updatePropertyProfile: vi.fn(),
   getPublicPropertyProfile: vi.fn(),
   updatePublicPropertyProfile: vi.fn(),
-  uploadPlatformMedia: vi.fn(),
+  replacePropertyPresentationMedia: vi.fn(),
+  loadPresentation: vi.fn(),
+  uploadPresentation: vi.fn(),
 }));
 
 vi.mock("./targetClient", () => ({
@@ -29,11 +31,15 @@ vi.mock("./sharedHotelSetupClient", () => ({
     updatePropertyProfile: mocks.updatePropertyProfile,
     getPublicPropertyProfile: mocks.getPublicPropertyProfile,
     updatePublicPropertyProfile: mocks.updatePublicPropertyProfile,
+    replacePropertyPresentationMedia: mocks.replacePropertyPresentationMedia,
   },
 }));
 
-vi.mock("@vayada/marketplace-shared/api/platformMedia", () => ({
-  uploadPlatformMedia: mocks.uploadPlatformMedia,
+vi.mock("./hotelPresentationClient", () => ({
+  hotelPresentationClient: {
+    load: mocks.loadPresentation,
+    upload: mocks.uploadPresentation,
+  },
 }));
 
 import {
@@ -51,6 +57,7 @@ import { ApiErrorResponse } from "./client";
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.getStatus.mockResolvedValue(roomSetupStatus("actionable"));
+  vi.stubGlobal("window", { localStorage: memoryStorage() });
 });
 
 describe("hotel operations setup client", () => {
@@ -574,35 +581,110 @@ describe("hotel operations setup client", () => {
     ).toBe(false);
   });
 
-  it("writes the minimum public description for Operations-only setup", async () => {
-    const file = new File(["image"], "hotel.webp", { type: "image/webp" });
+  it("hydrates Design Studio fields with property localization and a resettable subtext", async () => {
     mocks.getPropertyProfile.mockResolvedValue({
       propertyId: "property-1",
       profileRevision: 3,
-      profile: {
-        displayName: "Hotel One",
-        location: { localityPublic: false },
-      },
+      profile: { displayName: "Hotel One", location: { localityPublic: false } },
     });
-    mocks.updatePropertyProfile.mockResolvedValue({
-      propertyId: "property-1",
-      profileRevision: 4,
-      profile: {
-        displayName: "Hotel One",
-        location: { localityPublic: true },
-      },
-    });
-    mocks.uploadPlatformMedia.mockResolvedValue([{ mediaId: "media-1", url: "https://cdn/hotel" }]);
     mocks.getPublicPropertyProfile.mockResolvedValue({
       propertyId: "property-1",
       profileRevision: 5,
       publicProfile: {
-        shortDescription: null,
+        shortDescription: "An old public description.",
         longDescription: null,
-        media: [],
+        media: [{ mediaType: "hero_image", url: "https://cdn/catalog-hero" }],
       },
     });
-    mocks.updatePublicPropertyProfile.mockResolvedValue({});
+    mocks.get.mockImplementation(async (path: string) => {
+      if (path.endsWith("/settings/design")) {
+        return { primaryColor: "#1E3EDB", fontPairing: "grand-classic" };
+      }
+      if (path.endsWith("/launch-settings")) {
+        return { defaultCurrency: "CHF", defaultLanguage: "de" };
+      }
+      throw new Error(`Unexpected GET ${path}`);
+    });
+
+    await expect(hotelOperationsSetupApi.getDirectBookingSetup("property-1")).resolves.toEqual({
+      profileRevision: 3,
+      propertyName: "Hotel One",
+      heroImageUrl: "https://cdn/catalog-hero",
+      heroHeading: "Hotel One",
+      heroSubtext: "Book direct for a memorable stay at Hotel One.",
+      defaultHeroSubtext: "Book direct for a memorable stay at Hotel One.",
+      primaryColor: "#1E3EDB",
+      fontPairing: "grand-classic",
+      defaultCurrency: "CHF",
+      defaultLanguage: "de",
+    });
+  });
+
+  it("does not stretch a logo into the required Booking hero", async () => {
+    mocks.getPropertyProfile.mockResolvedValue({
+      propertyId: "property-1",
+      profileRevision: 3,
+      profile: { displayName: "Hotel One", location: { localityPublic: false } },
+    });
+    mocks.getPublicPropertyProfile.mockResolvedValue({
+      propertyId: "property-1",
+      profileRevision: 3,
+      publicProfile: {
+        shortDescription: null,
+        longDescription: null,
+        media: [
+          {
+            mediaObjectId: "11111111-1111-4111-8111-111111111111",
+            mediaType: "logo",
+            url: "https://cdn/property-logo",
+          },
+        ],
+      },
+    });
+    mocks.get.mockImplementation(async (path: string) => {
+      if (path.endsWith("/settings/design")) return {};
+      if (path.endsWith("/launch-settings")) {
+        return { defaultCurrency: "EUR", defaultLanguage: "en" };
+      }
+      throw new Error(`Unexpected GET ${path}`);
+    });
+
+    await expect(
+      hotelOperationsSetupApi.getDirectBookingSetup("property-1"),
+    ).resolves.toMatchObject({ heroImageUrl: "" });
+  });
+
+  it("writes only Design Studio fields and leaves profile settings to their owner", async () => {
+    const file = new File(["image"], "hotel.webp", { type: "image/webp" });
+    mocks.uploadPresentation.mockResolvedValue([
+      {
+        mediaObjectId: "22222222-2222-4222-8222-222222222222",
+        purpose: "property.hero_image",
+        status: "private_ready",
+        publicVariants: [],
+      },
+    ]);
+    mocks.loadPresentation.mockResolvedValue({
+      displayName: "Hotel One",
+      profile: {
+        media: {
+          coverMediaObjectId: "11111111-1111-4111-8111-111111111111",
+          galleryMediaObjectIds: ["33333333-3333-4333-8333-333333333333"],
+        },
+      },
+    });
+    mocks.replacePropertyPresentationMedia.mockResolvedValue({ profileRevision: 4 });
+    mocks.getPublicPropertyProfile.mockResolvedValue({
+      publicProfile: {
+        media: [
+          {
+            mediaObjectId: "22222222-2222-4222-8222-222222222222",
+            mediaType: "hero_image",
+            url: "https://cdn/hotel",
+          },
+        ],
+      },
+    });
     mocks.patch.mockResolvedValue({});
 
     const heroImageUrl = await hotelOperationsSetupApi.uploadDirectBookingHero(
@@ -611,17 +693,6 @@ describe("hotel operations setup client", () => {
       3,
     );
     await hotelOperationsSetupApi.saveDirectBookingSetup("property-1", {
-      localityPublic: true,
-      publicDescription: "A small city hotel.",
-      heroHeading: "Stay with us",
-      heroSubtext: "Book directly for our best available rooms.",
-      primaryColor: "#1E3EDB",
-      fontPairing: "modern-minimalist",
-      heroImageUrl,
-    });
-    await hotelOperationsSetupApi.saveDirectBookingSetup("property-1", {
-      localityPublic: true,
-      publicDescription: "A small city hotel.",
       heroHeading: "Stay with us",
       heroSubtext: "Book directly for our best available rooms.",
       primaryColor: "#1E3EDB",
@@ -629,60 +700,105 @@ describe("hotel operations setup client", () => {
       heroImageUrl,
     });
 
-    expect(mocks.uploadPlatformMedia).toHaveBeenCalledWith(
-      expect.objectContaining({
-        idempotencyKey: "booking.direct-hero:property-1:revision:3",
-        purpose: "property.hero_image",
-        expectedProfileRevision: 3,
-        resource: {
-          product: "booking",
-          resourceType: "booking_hotel",
-          resourceId: "property-1",
-          propertyId: "property-1",
-        },
-        files: [file],
-      }),
+    expect(mocks.uploadPresentation).toHaveBeenCalledWith(
+      "property-1",
+      [file],
+      "property.hero_image",
     );
-    expect(mocks.uploadPlatformMedia).toHaveBeenCalledTimes(1);
-    expect(mocks.updatePublicPropertyProfile).toHaveBeenCalledWith("property-1", {
-      expectedProfileRevision: 5,
-      patch: { shortDescription: "A small city hotel." },
-    });
+    expect(mocks.replacePropertyPresentationMedia).toHaveBeenCalledWith(
+      "property-1",
+      {
+        expectedProfileRevision: 3,
+        assignments: [
+          {
+            mediaObjectId: "22222222-2222-4222-8222-222222222222",
+            role: "cover",
+            altText: null,
+            sortOrder: 0,
+          },
+          {
+            mediaObjectId: "33333333-3333-4333-8333-333333333333",
+            role: "gallery",
+            altText: "Hotel One gallery photo 1",
+            sortOrder: 1,
+          },
+        ],
+      },
+      "booking.direct-hero.assign:property-1:revision:3:media:22222222-2222-4222-8222-222222222222",
+    );
+    expect(mocks.getPropertyProfile).not.toHaveBeenCalled();
+    expect(mocks.updatePropertyProfile).not.toHaveBeenCalled();
+    expect(mocks.updatePublicPropertyProfile).not.toHaveBeenCalled();
     expect(mocks.patch).toHaveBeenCalledWith(
       "/api/booking/hotels/property-1/settings/design",
       expect.objectContaining({ heroImage: "https://cdn/hotel" }),
     );
   });
 
-  it("does not read or write the canonical description for a both-track setup", async () => {
+  it("recovers a finalized hero upload after the design save fails and the page reloads", async () => {
+    const file = new File(["new hero"], "new-hero.webp", { type: "image/webp" });
+    mocks.uploadPresentation.mockResolvedValue([
+      {
+        mediaObjectId: "44444444-4444-4444-8444-444444444444",
+        purpose: "property.hero_image",
+        status: "private_ready",
+        publicVariants: [],
+      },
+    ]);
+    mocks.loadPresentation.mockResolvedValue({
+      displayName: "Hotel One",
+      profile: { media: { coverMediaObjectId: null, galleryMediaObjectIds: [] } },
+    });
+    mocks.replacePropertyPresentationMedia.mockResolvedValue({ profileRevision: 4 });
+    mocks.patch.mockRejectedValueOnce(new Error("connection lost"));
     mocks.getPropertyProfile.mockResolvedValue({
       propertyId: "property-1",
-      profileRevision: 8,
-      profile: {
-        displayName: "Hotel One",
-        location: { localityPublic: true },
+      profileRevision: 4,
+      profile: { displayName: "Hotel One", location: { localityPublic: true } },
+    });
+    mocks.getPublicPropertyProfile.mockResolvedValue({
+      propertyId: "property-1",
+      profileRevision: 4,
+      publicProfile: {
+        shortDescription: null,
+        longDescription: null,
+        media: [
+          {
+            mediaObjectId: "44444444-4444-4444-8444-444444444444",
+            mediaType: "hero_image",
+            url: "https://cdn/new-hero",
+          },
+        ],
       },
     });
-    mocks.patch.mockResolvedValue({});
-
-    await hotelOperationsSetupApi.saveDirectBookingSetup("property-1", {
-      localityPublic: true,
-      heroHeading: "Stay with us",
-      heroSubtext: "Book directly for our best available rooms.",
-      primaryColor: "#1E3EDB",
-      fontPairing: "modern-minimalist",
-      heroImageUrl: "https://cdn/hotel",
+    mocks.get.mockImplementation(async (path: string) => {
+      if (path.endsWith("/settings/design")) {
+        return { heroImage: "https://cdn/old-design-hero" };
+      }
+      if (path.endsWith("/launch-settings")) {
+        return { defaultCurrency: "EUR", defaultLanguage: "en" };
+      }
+      throw new Error(`Unexpected GET ${path}`);
     });
 
-    expect(mocks.getPublicPropertyProfile).not.toHaveBeenCalled();
-    expect(mocks.updatePublicPropertyProfile).not.toHaveBeenCalled();
-    expect(mocks.patch).toHaveBeenCalledWith("/api/booking/hotels/property-1/settings/design", {
-      heroImage: "https://cdn/hotel",
-      heroHeading: "Stay with us",
-      heroSubtext: "Book directly for our best available rooms.",
-      primaryColor: "#1E3EDB",
-      fontPairing: "modern-minimalist",
-    });
+    const uploadedUrl = await hotelOperationsSetupApi.uploadDirectBookingHero(
+      "property-1",
+      file,
+      3,
+    );
+    await expect(
+      hotelOperationsSetupApi.saveDirectBookingSetup("property-1", {
+        heroHeading: "Hotel One",
+        heroSubtext: "Book direct for a memorable stay.",
+        primaryColor: "#1E3EDB",
+        fontPairing: "modern-minimalist",
+        heroImageUrl: uploadedUrl,
+      }),
+    ).rejects.toThrow("connection lost");
+
+    await expect(
+      hotelOperationsSetupApi.getDirectBookingSetup("property-1"),
+    ).resolves.toMatchObject({ heroImageUrl: "https://cdn/new-hero" });
   });
 
   it("requires the authoritative publication to be public, fresh, and complete", () => {
@@ -710,6 +826,20 @@ describe("hotel operations setup client", () => {
     ).toBe(false);
   });
 });
+
+function memoryStorage(): Storage {
+  const values = new Map<string, string>();
+  return {
+    get length() {
+      return values.size;
+    },
+    clear: () => values.clear(),
+    getItem: (key) => values.get(key) ?? null,
+    key: (index) => Array.from(values.keys())[index] ?? null,
+    removeItem: (key) => void values.delete(key),
+    setItem: (key, value) => void values.set(key, value),
+  };
+}
 
 function roomSetupStatus(readiness: "actionable" | "complete", reasonCodes: string[] = []) {
   return {

@@ -244,8 +244,8 @@ const TASK_CONTENT: Record<
     description: "Choose how guests can pay for direct bookings.",
   },
   direct_booking_publication: {
-    title: "Publish direct booking",
-    description: "Review bookability and make your direct booking page available.",
+    title: "Design your booking page",
+    description: "Set up the look and feel of your direct booking site.",
   },
 };
 
@@ -2231,7 +2231,11 @@ function SetupPlan({
       )}
 
       <div className="min-w-0" onChangeCapture={() => setHasUnsavedChanges(true)}>
-        <div className="mx-auto max-w-3xl">
+        <div
+          className={`mx-auto ${
+            currentTask?.taskId === "direct_booking_publication" ? "max-w-5xl" : "max-w-3xl"
+          }`}
+        >
           {currentTask ? (
             <InlineSetupTaskStep
               key={currentTask.taskId}

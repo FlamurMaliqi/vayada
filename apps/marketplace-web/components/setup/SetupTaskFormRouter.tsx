@@ -11,7 +11,6 @@ import { RoomsRatesAvailabilityForm } from "./operations/RoomsRatesAvailabilityF
 export function SetupTaskFormRouter({
   task,
   propertyId,
-  selectedTracks,
   onBeforeSave,
   onComplete,
   onBack,
@@ -67,7 +66,6 @@ export function SetupTaskFormRouter({
           <DirectBookingPublicationForm
             {...props}
             key={`${propertyId}:${task.taskId}:${task.sourceRevision}`}
-            selectedTracks={selectedTracks}
           />
         );
     }

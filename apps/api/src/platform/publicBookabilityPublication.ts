@@ -340,6 +340,7 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
       settings.special_requests_enabled,
       settings.arrival_time_enabled,
       settings.guest_count_enabled,
+      settings.hero_subtext,
       settings.adult_age_threshold,
       settings.children_enabled,
       settings.updated_at AS booking_updated_at,
@@ -441,6 +442,15 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
         ) AS timezone_is_valid,
       COALESCE(NULLIF(input.booking_default_language, ''), input.default_locale, 'en') AS locale,
       NULLIF(upper(trim(input.finance_default_currency)), '') AS currency,
+      (
+        input.profile_status = 'complete'
+        OR (
+          input.profile_status = 'incomplete'
+          AND cardinality(input.completeness_reasons) = 1
+          AND 'description' = ANY(input.completeness_reasons)
+          AND NULLIF(BTRIM(input.hero_subtext), '') IS NOT NULL
+        )
+      ) AS booking_profile_ready,
       COALESCE(
         COALESCE(input.payments_enabled, FALSE)
           AND input.payment_provider_status = 'active'
@@ -487,7 +497,7 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
     SELECT
       input.*,
       ARRAY_REMOVE(ARRAY[
-        CASE WHEN input.profile_status <> 'complete' THEN 'profile' END,
+        CASE WHEN input.booking_profile_ready IS NOT TRUE THEN 'profile' END,
         CASE WHEN input.timezone_is_valid IS NOT TRUE THEN 'timezone' END,
         CASE WHEN input.booking_updated_at IS NULL THEN 'booking_settings' END,
         CASE WHEN input.currency IS NULL THEN 'default_currency' END,
@@ -561,7 +571,7 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
       END,
       CASE
         WHEN input.profile_status IN ('disabled', 'private') THEN 'unpublished'
-        WHEN input.profile_status <> 'complete' THEN 'incomplete'
+        WHEN input.booking_profile_ready IS NOT TRUE THEN 'incomplete'
         ELSE 'public'
       END,
       jsonb_strip_nulls(jsonb_build_object(
@@ -570,7 +580,8 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
         'name', input.display_name,
         'summary', COALESCE(
           input.descriptions -> input.locale ->> 'short',
-          input.descriptions -> input.default_locale ->> 'short'
+          input.descriptions -> input.default_locale ->> 'short',
+          NULLIF(BTRIM(input.hero_subtext), '')
         )
       )),
       jsonb_strip_nulls(jsonb_build_object(
