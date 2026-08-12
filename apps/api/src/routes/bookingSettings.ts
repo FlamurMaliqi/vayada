@@ -216,6 +216,8 @@ export type BookingRoomFilterSettingsReadModel = {
 };
 
 export type BookingDesignSettingsReadModel = {
+  headerLogo?: string | null;
+  headerLogoMediaObjectId?: string | null;
   heroImage?: string | null;
   heroHeading?: string | null;
   heroSubtext?: string | null;
@@ -254,6 +256,8 @@ export type BookingPropertySettingsReadModel = {
   country?: string | null;
   instagram?: string | null;
   facebook?: string | null;
+  tiktok?: string | null;
+  youtube?: string | null;
   defaultCurrency?: string | null;
   defaultLanguage?: string | null;
   supportedCurrencies?: unknown;
@@ -263,6 +267,7 @@ export type BookingPropertySettingsReadModel = {
   specialRequestsEnabled?: boolean | null;
   arrivalTimeEnabled?: boolean | null;
   guestCountEnabled?: boolean | null;
+  termsAndConditions?: string | null;
   cancellationPolicyText?: string | null;
   acceptedPaymentMethods?: unknown;
 };
@@ -299,6 +304,8 @@ export type BookingRoomFilterSettingsResponse = {
 };
 
 export type BookingDesignSettingsResponse = {
+  headerLogo: string;
+  headerLogoMediaObjectId: string | null;
   heroImage: string;
   heroHeading: string;
   heroSubtext: string;
@@ -364,7 +371,9 @@ export type UpdateBookingGuestFormSettingsBody = Omit<
 export type UpdateBookingBenefitsSettingsBody = BookingBenefitsSettingsResponse;
 export type UpdateBookingLocalizationSettingsBody = BookingLocalizationSettingsResponse;
 export type UpdateBookingRoomFilterSettingsBody = BookingRoomFilterSettingsResponse;
-export type UpdateBookingDesignSettingsBody = Partial<BookingDesignSettingsResponse>;
+export type UpdateBookingDesignSettingsBody = Partial<
+  Omit<BookingDesignSettingsResponse, "headerLogo">
+>;
 export type UpdateBookingLastMinuteSettingsBody = Omit<
   BookingLastMinuteSettingsResponse,
   "updatedAt"
@@ -380,6 +389,8 @@ export type UpdateBookingPropertySettingsBody = {
   country?: string | null;
   instagram?: string | null;
   facebook?: string | null;
+  tiktok?: string | null;
+  youtube?: string | null;
   defaultCurrency?: string;
   defaultLanguage?: string;
   supportedCurrencies?: string[];
@@ -389,6 +400,7 @@ export type UpdateBookingPropertySettingsBody = {
   specialRequestsEnabled?: boolean;
   arrivalTimeEnabled?: boolean;
   guestCountEnabled?: boolean;
+  termsAndConditions?: string | null;
   cancellationPolicyText?: string | null;
   acceptedPaymentMethods?: string[];
 };
@@ -422,6 +434,7 @@ export type BookingSettingsWriteRepository = {
   updateDesignSettingsByHotelId?(
     hotelId: string,
     settings: UpdateBookingDesignSettingsBody,
+    organizationId: string,
   ): Promise<BookingDesignSettingsReadModel | null>;
   updateLastMinuteSettingsByHotelId?(
     hotelId: string,
@@ -463,6 +476,7 @@ export type BookingSettingsWriteErrorCode =
   | "inactive_entitlement"
   | "missing_resource_access"
   | "invalid_payload"
+  | "invalid_header_logo_media"
   | "private_contact_conflict"
   | "not_found"
   | "write_model_unavailable";
@@ -845,6 +859,8 @@ type TargetBookingSettingsRow = {
   booking_filters: unknown;
   custom_filters: unknown;
   filter_rooms: unknown;
+  header_logo_media_object_id: string | null;
+  header_logo_url: string | null;
   hero_image_url: string | null;
   hero_heading: string | null;
   hero_subtext: string | null;
@@ -857,6 +873,10 @@ type TargetBookingSettingsRow = {
 type TargetBookingSettingsQueryRow = TargetBookingSettingsRow & {
   settings_property_id: string | null;
   source_link_count: number | string;
+};
+
+type TargetBookingDesignSettingsQueryRow = TargetBookingSettingsQueryRow & {
+  header_logo_valid: boolean;
 };
 
 type TargetBookingPropertySettingsRow = TargetBookingSettingsRow & {
@@ -874,8 +894,11 @@ type TargetBookingPropertySettingsRow = TargetBookingSettingsRow & {
   country: string | null;
   instagram: string | null;
   facebook: string | null;
+  tiktok: string | null;
+  youtube: string | null;
   check_in_time: string | null;
   check_out_time: string | null;
+  terms_and_conditions: string | null;
   cancellation_policy_text: string | null;
   accepted_payment_methods: unknown;
 };
@@ -922,6 +945,13 @@ export class BookingContactPublicationConflictError extends Error {
   }
 }
 
+export class BookingHeaderLogoMediaError extends Error {
+  constructor() {
+    super("Header logo media must be an approved public Booking logo owned by this property.");
+    this.name = "BookingHeaderLogoMediaError";
+  }
+}
+
 const TARGET_BOOKING_SETTINGS_SOURCE_LINK_CTE = `
   WITH scoped_property_candidates AS (
     SELECT property.id AS property_id
@@ -941,6 +971,27 @@ const TARGET_BOOKING_SETTINGS_SOURCE_LINK_CTE = `
            min(property_id::text)::uuid AS property_id
     FROM scoped_property_candidates
   )
+`;
+
+const TARGET_BOOKING_HEADER_LOGO_URL_JOIN = `
+  LEFT JOIN LATERAL (
+    SELECT variant.public_cdn_url
+    FROM platform.media_objects media
+    JOIN platform.media_variants variant
+      ON variant.media_object_id = media.id
+     AND variant.visibility = 'public'
+     AND variant.public_cdn_url LIKE 'https://%'
+    WHERE media.id = settings.header_logo_media_object_id
+      AND media.purpose = 'booking.header_logo'
+      AND media.visibility = 'public'
+      AND media.public_approved = TRUE
+      AND media.lifecycle_status = 'active'
+      AND media.resource_product = 'booking'
+      AND media.resource_type = 'booking_hotel'
+      AND media.resource_id = $1
+    ORDER BY (variant.variant_name = 'original_safe') DESC, variant.created_at, variant.id
+    LIMIT 1
+  ) booking_header_logo ON TRUE
 `;
 
 const TARGET_BOOKING_PROPERTY_LINK_SELECT = `
@@ -978,6 +1029,8 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
     contact.whatsapp_number,
     contact.instagram,
     contact.facebook,
+    contact.tiktok,
+    contact.youtube,
     COALESCE(
       NULLIF(location.raw_marketplace_location, ''),
       NULLIF(
@@ -996,6 +1049,7 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
     location.country_code AS country,
     to_char(policy.check_in_time, 'HH24:MI') AS check_in_time,
     to_char(policy.check_out_time, 'HH24:MI') AS check_out_time,
+    policy.terms_and_conditions,
     policy.cancellation_summary AS cancellation_policy_text,
     settings.show_addons_step,
     settings.group_addons_by_category,
@@ -1013,6 +1067,11 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
     settings.booking_filters,
     settings.custom_filters,
     settings.filter_rooms,
+    CASE
+      WHEN booking_header_logo.public_cdn_url IS NULL THEN NULL
+      ELSE settings.header_logo_media_object_id
+    END AS header_logo_media_object_id,
+    booking_header_logo.public_cdn_url AS header_logo_url,
     settings.hero_image_url,
     settings.hero_heading,
     settings.hero_subtext,
@@ -1067,7 +1126,15 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
       COALESCE(
         max(value) FILTER (WHERE channel_type = 'facebook' AND source_system = 'booking'),
         max(value) FILTER (WHERE channel_type = 'facebook')
-      ) AS facebook
+      ) AS facebook,
+      COALESCE(
+        max(value) FILTER (WHERE channel_type = 'tiktok' AND source_system = 'booking'),
+        max(value) FILTER (WHERE channel_type = 'tiktok')
+      ) AS tiktok,
+      COALESCE(
+        max(value) FILTER (WHERE channel_type = 'youtube' AND source_system = 'booking'),
+        max(value) FILTER (WHERE channel_type = 'youtube')
+      ) AS youtube
     FROM hotel_catalog.property_contact_channels
     WHERE property_id = property.id
       AND is_public = TRUE
@@ -1076,6 +1143,7 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
     ON policy.property_id = property.id
   LEFT JOIN booking.booking_settings settings
     ON settings.property_id = property.id
+  ${TARGET_BOOKING_HEADER_LOGO_URL_JOIN}
   LEFT JOIN finance.payment_settings finance
     ON finance.property_id = property.id
   WHERE source_link_status.source_link_count > 0
@@ -1102,6 +1170,11 @@ const TARGET_BOOKING_SETTINGS_SELECT = `
     settings.booking_filters,
     settings.custom_filters,
     settings.filter_rooms,
+    CASE
+      WHEN booking_header_logo.public_cdn_url IS NULL THEN NULL
+      ELSE settings.header_logo_media_object_id
+    END AS header_logo_media_object_id,
+    booking_header_logo.public_cdn_url AS header_logo_url,
     settings.hero_image_url,
     settings.hero_heading,
     settings.hero_subtext,
@@ -1113,6 +1186,7 @@ const TARGET_BOOKING_SETTINGS_SELECT = `
   LEFT JOIN booking.booking_settings settings
     ON source_link_status.source_link_count = 1
    AND settings.property_id = source_link_status.property_id
+  ${TARGET_BOOKING_HEADER_LOGO_URL_JOIN}
   WHERE source_link_status.source_link_count > 0
 `;
 
@@ -1120,9 +1194,42 @@ const TARGET_BOOKING_SETTINGS_SELECT = `
 // Catalog descriptions and media are edited through the revisioned profile API.
 const TARGET_BOOKING_DESIGN_SETTINGS_UPDATE = `
   ${TARGET_BOOKING_SETTINGS_SOURCE_LINK_CTE},
+  valid_header_logo AS (
+    SELECT media.id
+    FROM platform.media_objects media
+    WHERE $2::jsonb ? 'headerLogoMediaObjectId'
+      AND media.id = NULLIF(BTRIM($2::jsonb ->> 'headerLogoMediaObjectId'), '')::uuid
+      AND media.owner_organization_id = $3::uuid
+      AND media.purpose = 'booking.header_logo'
+      AND media.visibility = 'public'
+      AND media.public_approved = TRUE
+      AND media.lifecycle_status = 'active'
+      AND media.resource_product = 'booking'
+      AND media.resource_type = 'booking_hotel'
+      AND media.resource_id = $1
+      AND EXISTS (
+        SELECT 1
+        FROM platform.media_variants variant
+        WHERE variant.media_object_id = media.id
+          AND variant.visibility = 'public'
+          AND variant.public_cdn_url LIKE 'https://%'
+      )
+  ),
+  header_logo_validation AS (
+    SELECT (
+      NOT ($2::jsonb ? 'headerLogoMediaObjectId')
+      OR NULLIF(BTRIM($2::jsonb ->> 'headerLogoMediaObjectId'), '') IS NULL
+      OR EXISTS (SELECT 1 FROM valid_header_logo)
+    ) AS is_valid
+  ),
   updated_settings AS (
     UPDATE booking.booking_settings settings
-    SET hero_image_url = CASE
+    SET header_logo_media_object_id = CASE
+          WHEN $2::jsonb ? 'headerLogoMediaObjectId'
+            THEN NULLIF(BTRIM($2::jsonb ->> 'headerLogoMediaObjectId'), '')::uuid
+          ELSE settings.header_logo_media_object_id
+        END,
+        hero_image_url = CASE
           WHEN $2::jsonb ? 'heroImage'
             THEN NULLIF(BTRIM($2::jsonb ->> 'heroImage'), '')
           ELSE settings.hero_image_url
@@ -1146,9 +1253,10 @@ const TARGET_BOOKING_DESIGN_SETTINGS_UPDATE = `
           ELSE settings.font_pairing
         END,
         updated_at = now()
-    FROM source_link_status
+    FROM source_link_status, header_logo_validation
     WHERE source_link_status.source_link_count = 1
       AND settings.property_id = source_link_status.property_id
+      AND header_logo_validation.is_valid
     RETURNING
       settings.property_id::text AS settings_property_id,
       settings.show_addons_step,
@@ -1167,6 +1275,7 @@ const TARGET_BOOKING_DESIGN_SETTINGS_UPDATE = `
       settings.booking_filters,
       settings.custom_filters,
       settings.filter_rooms,
+      settings.header_logo_media_object_id,
       settings.hero_image_url,
       settings.hero_heading,
       settings.hero_subtext,
@@ -1176,6 +1285,7 @@ const TARGET_BOOKING_DESIGN_SETTINGS_UPDATE = `
       settings.updated_at
   )
   SELECT
+    header_logo_validation.is_valid AS header_logo_valid,
     source_link_status.source_link_count,
     updated_settings.settings_property_id,
     updated_settings.show_addons_step,
@@ -1194,6 +1304,11 @@ const TARGET_BOOKING_DESIGN_SETTINGS_UPDATE = `
     updated_settings.booking_filters,
     updated_settings.custom_filters,
     updated_settings.filter_rooms,
+    CASE
+      WHEN booking_header_logo.public_cdn_url IS NULL THEN NULL
+      ELSE updated_settings.header_logo_media_object_id
+    END AS header_logo_media_object_id,
+    booking_header_logo.public_cdn_url AS header_logo_url,
     updated_settings.hero_image_url,
     updated_settings.hero_heading,
     updated_settings.hero_subtext,
@@ -1202,7 +1317,26 @@ const TARGET_BOOKING_DESIGN_SETTINGS_UPDATE = `
     updated_settings.last_minute_discount,
     updated_settings.updated_at
   FROM source_link_status
+  CROSS JOIN header_logo_validation
   LEFT JOIN updated_settings ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT variant.public_cdn_url
+    FROM platform.media_objects media
+    JOIN platform.media_variants variant
+      ON variant.media_object_id = media.id
+     AND variant.visibility = 'public'
+     AND variant.public_cdn_url LIKE 'https://%'
+    WHERE media.id = updated_settings.header_logo_media_object_id
+      AND media.purpose = 'booking.header_logo'
+      AND media.visibility = 'public'
+      AND media.public_approved = TRUE
+      AND media.lifecycle_status = 'active'
+      AND media.resource_product = 'booking'
+      AND media.resource_type = 'booking_hotel'
+      AND media.resource_id = $1
+    ORDER BY (variant.variant_name = 'original_safe') DESC, variant.created_at, variant.id
+    LIMIT 1
+  ) booking_header_logo ON TRUE
   WHERE source_link_status.source_link_count > 0
 `;
 
@@ -1297,6 +1431,7 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
       property_id,
       check_in_time,
       check_out_time,
+      terms_and_conditions,
       cancellation_summary,
       policy_source_owner,
       updated_at
@@ -1306,12 +1441,14 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
       NULLIF($3::text, '')::time,
       NULLIF($4::text, '')::time,
       $5,
+      $6,
       'booking',
       now()
     FROM writable_target
     ON CONFLICT (property_id) DO UPDATE
     SET check_in_time = EXCLUDED.check_in_time,
         check_out_time = EXCLUDED.check_out_time,
+        terms_and_conditions = EXCLUDED.terms_and_conditions,
         cancellation_summary = EXCLUDED.cancellation_summary,
         policy_source_owner = EXCLUDED.policy_source_owner,
         updated_at = now()
@@ -1331,13 +1468,13 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
     )
     SELECT
       writable_target.property_id,
+      $8,
       $7,
-      $6,
-      $8::text[],
       $9::text[],
-      $10,
+      $10::text[],
       $11,
       $12,
+      $13,
       now()
     FROM writable_target
     ON CONFLICT (property_id) DO UPDATE
@@ -1430,6 +1567,8 @@ function toTargetRoomFilterSettings(
 
 function toTargetDesignSettings(row: TargetBookingSettingsRow): BookingDesignSettingsReadModel {
   return {
+    headerLogo: row.header_logo_url,
+    headerLogoMediaObjectId: row.header_logo_media_object_id,
     heroImage: row.hero_image_url,
     heroHeading: row.hero_heading,
     heroSubtext: row.hero_subtext,
@@ -1464,6 +1603,8 @@ function toTargetPropertySettings(
     country: row.country,
     instagram: row.instagram,
     facebook: row.facebook,
+    tiktok: row.tiktok,
+    youtube: row.youtube,
     defaultCurrency: row.default_currency,
     defaultLanguage: row.default_language,
     supportedCurrencies: row.supported_currencies,
@@ -1473,6 +1614,7 @@ function toTargetPropertySettings(
     specialRequestsEnabled: row.special_requests_enabled,
     arrivalTimeEnabled: row.arrival_time_enabled,
     guestCountEnabled: row.guest_count_enabled,
+    termsAndConditions: row.terms_and_conditions,
     cancellationPolicyText: row.cancellation_policy_text,
     acceptedPaymentMethods: row.accepted_payment_methods,
   };
@@ -1499,6 +1641,11 @@ function targetPropertySettingsWriteValues(
     nullableText(update.checkInTime !== undefined ? update.checkInTime : current.checkInTime),
     nullableText(update.checkOutTime !== undefined ? update.checkOutTime : current.checkOutTime),
     nullableText(
+      update.termsAndConditions !== undefined
+        ? update.termsAndConditions
+        : current.termsAndConditions,
+    ),
+    nullableText(
       update.cancellationPolicyText !== undefined
         ? update.cancellationPolicyText
         : current.cancellationPolicyText,
@@ -1519,6 +1666,8 @@ function targetPropertyContactInputs(input: {
   whatsappNumber?: string | null;
   instagram?: string | null;
   facebook?: string | null;
+  tiktok?: string | null;
+  youtube?: string | null;
 }): { channel_type: string; value: string }[] {
   const contacts: [keyof typeof input, string][] = [
     ["reservationEmail", "email"],
@@ -1526,6 +1675,8 @@ function targetPropertyContactInputs(input: {
     ["whatsappNumber", "whatsapp"],
     ["instagram", "instagram"],
     ["facebook", "facebook"],
+    ["tiktok", "tiktok"],
+    ["youtube", "youtube"],
   ];
 
   return contacts.flatMap(([field, channelType]) => {
@@ -1895,6 +2046,7 @@ export function createPgTargetBookingSettingsRepository(config: {
           settings.booking_filters,
           settings.custom_filters,
           settings.filter_rooms,
+          settings.header_logo_media_object_id,
           settings.hero_image_url,
           settings.hero_heading,
           settings.hero_subtext,
@@ -1922,6 +2074,11 @@ export function createPgTargetBookingSettingsRepository(config: {
           updated_settings.booking_filters,
           updated_settings.custom_filters,
           updated_settings.filter_rooms,
+          CASE
+            WHEN booking_header_logo.public_cdn_url IS NULL THEN NULL
+            ELSE updated_settings.header_logo_media_object_id
+          END AS header_logo_media_object_id,
+          booking_header_logo.public_cdn_url AS header_logo_url,
           updated_settings.hero_image_url,
           updated_settings.hero_heading,
           updated_settings.hero_subtext,
@@ -1931,6 +2088,24 @@ export function createPgTargetBookingSettingsRepository(config: {
           updated_settings.updated_at
         FROM source_link_status
         LEFT JOIN updated_settings ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT variant.public_cdn_url
+          FROM platform.media_objects media
+          JOIN platform.media_variants variant
+            ON variant.media_object_id = media.id
+           AND variant.visibility = 'public'
+           AND variant.public_cdn_url LIKE 'https://%'
+          WHERE media.id = updated_settings.header_logo_media_object_id
+            AND media.purpose = 'booking.header_logo'
+            AND media.visibility = 'public'
+            AND media.public_approved = TRUE
+            AND media.lifecycle_status = 'active'
+            AND media.resource_product = 'booking'
+            AND media.resource_type = 'booking_hotel'
+            AND media.resource_id = $1
+          ORDER BY (variant.variant_name = 'original_safe') DESC, variant.created_at, variant.id
+          LIMIT 1
+        ) booking_header_logo ON TRUE
         WHERE source_link_status.source_link_count > 0
       `,
       [hotelId, ...values],
@@ -2118,11 +2293,14 @@ export function createPgTargetBookingSettingsRepository(config: {
       );
       return row ? toTargetRoomFilterSettings(row) : null;
     },
-    async updateDesignSettingsByHotelId(hotelId, settings) {
-      const result = await pool.query<TargetBookingSettingsQueryRow>(
+    async updateDesignSettingsByHotelId(hotelId, settings, organizationId) {
+      const result = await pool.query<TargetBookingDesignSettingsQueryRow>(
         TARGET_BOOKING_DESIGN_SETTINGS_UPDATE,
-        [hotelId, JSON.stringify(settings)],
+        [hotelId, JSON.stringify(settings), organizationId],
       );
+      if (result.rows[0]?.header_logo_valid === false) {
+        throw new BookingHeaderLogoMediaError();
+      }
       const row = toSingleSettingsRow(result, hotelId);
       return row ? toTargetDesignSettings(row) : null;
     },
@@ -2709,11 +2887,15 @@ export async function registerBookingSettingsRoutes(
         request,
         reply,
         parseBody: parseDesignSettingsWriteBody,
-        write: (hotelId, settings) => {
+        write: (hotelId, settings, context) => {
           if (!writeRepository.updateDesignSettingsByHotelId) {
             throw new Error("Booking design settings write model is unavailable.");
           }
-          return writeRepository.updateDesignSettingsByHotelId(hotelId, settings);
+          return writeRepository.updateDesignSettingsByHotelId(
+            hotelId,
+            settings,
+            context.selectedOrganization.organizationId,
+          );
         },
         toResponse: toDesignSettingsResponse,
       }),
@@ -2790,6 +2972,14 @@ async function handleBookingSettingsWrite<TBody, TStored>(input: {
         message: error.message,
       });
     }
+    if (error instanceof BookingHeaderLogoMediaError) {
+      return sendBookingSettingsWriteError(input.reply, {
+        statusCode: 422,
+        code: "invalid_header_logo_media",
+        category: "validation",
+        message: error.message,
+      });
+    }
     input.request.log.error({ err: error, hotelId }, "Booking settings write failed");
     return sendBookingSettingsWriteError(input.reply, {
       statusCode: 500,
@@ -2831,6 +3021,19 @@ function parsePropertySettingsWriteBody(
   assignOptionalNullableString(value, "city", body, "city", details);
   assignOptionalNullableString(value, "instagram", body, "instagram", details);
   assignOptionalNullableString(value, "facebook", body, "facebook", details);
+  assignOptionalNullableString(value, "tiktok", body, "tiktok", details);
+  assignOptionalNullableString(value, "youtube", body, "youtube", details);
+  for (const [field, bodyField] of [
+    ["instagram", "instagram"],
+    ["facebook", "facebook"],
+    ["tiktok", "tiktok"],
+    ["youtube", "youtube"],
+  ] as const) {
+    const socialUrl = value[field];
+    if (socialUrl && !isHttpUrl(socialUrl)) {
+      details.push(`${bodyField} must be an http or https URL.`);
+    }
+  }
 
   const country = expectOptionalNullableString(body, "country", details);
   if (country !== undefined) {
@@ -2867,6 +3070,7 @@ function parsePropertySettingsWriteBody(
   assignOptionalBoolean(value, "specialRequestsEnabled", body, "special_requests_enabled", details);
   assignOptionalBoolean(value, "arrivalTimeEnabled", body, "arrival_time_enabled", details);
   assignOptionalBoolean(value, "guestCountEnabled", body, "guest_count_enabled", details);
+  assignOptionalNullableString(value, "termsAndConditions", body, "terms_text", details);
   assignOptionalNullableString(
     value,
     "cancellationPolicyText",
@@ -3091,6 +3295,7 @@ function parseDesignSettingsWriteBody(
   }
 
   const allowedKeys = new Set([
+    "headerLogoMediaObjectId",
     "heroImage",
     "heroHeading",
     "heroSubtext",
@@ -3105,6 +3310,22 @@ function parseDesignSettingsWriteBody(
   if (keys.length === 0) details.push("At least one design setting is required.");
 
   const value: UpdateBookingDesignSettingsBody = {};
+  const headerLogoMediaObjectId = expectOptionalNullableString(
+    body,
+    "headerLogoMediaObjectId",
+    details,
+  );
+  if (headerLogoMediaObjectId !== undefined) {
+    if (
+      headerLogoMediaObjectId !== null &&
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        headerLogoMediaObjectId,
+      )
+    ) {
+      details.push("headerLogoMediaObjectId must be a UUID or null.");
+    }
+    value.headerLogoMediaObjectId = headerLogoMediaObjectId;
+  }
   const heroImage = expectOptionalBoundedString(body, "heroImage", 2048, details);
   if (heroImage !== undefined) {
     if (heroImage && !isHttpUrl(heroImage)) {
@@ -3235,6 +3456,10 @@ export function toDesignSettingsResponse(
   settings: BookingDesignSettingsReadModel,
 ): BookingDesignSettingsResponse {
   return {
+    headerLogo: settings.headerLogo ?? "",
+    headerLogoMediaObjectId: settings.headerLogo
+      ? (settings.headerLogoMediaObjectId ?? null)
+      : null,
     heroImage: settings.heroImage ?? "",
     heroHeading: settings.heroHeading ?? "",
     heroSubtext: settings.heroSubtext ?? "",
@@ -3292,8 +3517,8 @@ export function toPropertySettingsResponse(
     country: settings.country ?? "",
     instagram: settings.instagram ?? "",
     facebook: settings.facebook ?? "",
-    tiktok: "",
-    youtube: "",
+    tiktok: settings.tiktok ?? "",
+    youtube: settings.youtube ?? "",
     default_currency: localization.defaultCurrency,
     default_language: localization.defaultLanguage,
     supported_currencies: localization.supportedCurrencies,
@@ -3332,7 +3557,7 @@ export function toPropertySettingsResponse(
     payout_account_number: "",
     payout_bank_name: "",
     payout_swift: "",
-    terms_text: "",
+    terms_text: settings.termsAndConditions ?? "",
     cancellation_policy_text: settings.cancellationPolicyText ?? "",
     show_room_detail_map: false,
     points_of_interest: [],
@@ -3493,6 +3718,9 @@ type NullablePropertySettingsStringKey =
   | "city"
   | "instagram"
   | "facebook"
+  | "tiktok"
+  | "youtube"
+  | "termsAndConditions"
   | "cancellationPolicyText";
 
 type BooleanPropertySettingsKey =

@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeftIcon, CheckIcon } from "@heroicons/react/24/outline";
 import Link from "next/link";
-import { roomsService, RoomTypeCreate } from "@/services/rooms";
+import { roomsService, RoomTypeCreate, type PropertyPlan } from "@/services/rooms";
 import { bookingsService } from "@/services/bookings";
 import RoomTypeForm from "@/components/rooms/RoomTypeForm";
 
@@ -17,6 +17,7 @@ export default function NewRoomPage() {
   const [setupComplete, setSetupComplete] = useState(false);
   const [error, setError] = useState("");
   const [initialCurrency, setInitialCurrency] = useState("EUR");
+  const [propertyPlan, setPropertyPlan] = useState<PropertyPlan | null>(null);
   const [form, setForm] = useState<RoomTypeCreate>({
     name: "",
     description: "",
@@ -44,6 +45,7 @@ export default function NewRoomPage() {
 
   // Inherit currency from payment settings (authoritative source)
   useEffect(() => {
+    roomsService.getPropertyPlan().then(setPropertyPlan).catch(console.error);
     bookingsService
       .getPaymentSettings()
       .then((res) => {
@@ -197,6 +199,7 @@ export default function NewRoomPage() {
         submitLabel={isOnboarding ? "Finish PMS Setup" : "Create Room Type"}
         cancelHref="/rooms"
         mode="create"
+        propertyPlan={propertyPlan}
       />
     </div>
   );

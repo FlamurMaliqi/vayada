@@ -18,7 +18,7 @@ describe("askIntelligence", () => {
     const answer = askAnswer();
     const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const href = String(url);
-      if (href === "https://api.localhost/auth/compat/booking-admin-token") {
+      if (href === "/auth/compat/booking-admin-token") {
         expect(init?.credentials).toBe("include");
         expect(new Headers(init?.headers).get("x-vayada-csrf")).toBe("csrf-token");
         return jsonResponse({

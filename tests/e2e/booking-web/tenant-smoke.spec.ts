@@ -67,6 +67,25 @@ test.describe("booking-web tenant smoke", () => {
     await assertHealthy();
   });
 
+  test("uses a constrained header logo without displacing mobile actions", async ({ page }) => {
+    await mockBookingApis(page, { headerLogoUrl: "/vayada-logo.png" });
+
+    await page.goto("/");
+    const nav = page.locator("nav");
+    const logo = nav.getByAltText("Hotel Alpenrose logo");
+    await expect(logo).toBeVisible();
+    await expect(nav.getByText("Hotel Alpenrose", { exact: true })).toHaveCount(0);
+    expect((await logo.boundingBox())?.height).toBeLessThanOrEqual(40);
+
+    await page.setViewportSize({ width: 375, height: 812 });
+    await expect(logo).toBeVisible();
+    expect((await logo.boundingBox())?.height).toBeLessThanOrEqual(32);
+    await expect(nav.getByRole("button", { name: "Refer", exact: true })).toBeVisible();
+    await expect(nav.getByRole("button", { name: "EN", exact: true })).toBeVisible();
+    await expect(nav.getByRole("button", { name: "EUR", exact: true })).toBeVisible();
+    expect((await nav.boundingBox())?.height).toBe(64);
+  });
+
   test("hides children in the guest selector when the target profile disables them", async ({
     page,
   }, testInfo) => {
