@@ -21,11 +21,13 @@ export function GuestSettingsPoliciesForm({
   onBeforeSave,
   onCompleted,
   propertyId,
+  taskComplete,
 }: {
   onBack: (() => void) | null;
   onBeforeSave: () => Promise<void>;
   onCompleted: () => void | Promise<void>;
   propertyId: string;
+  taskComplete: boolean;
 }) {
   const [settings, setSettings] = useState<GuestSettingsPolicies | null>(null);
   const [loading, setLoading] = useState(true);
@@ -40,7 +42,7 @@ export function GuestSettingsPoliciesForm({
     setLoading(true);
     setLoadError("");
     void hotelOperationsSetupApi
-      .getGuestSettingsPolicies(propertyId, controller.signal)
+      .getGuestSettingsPolicies(propertyId, controller.signal, !taskComplete)
       .then(setSettings)
       .catch((cause) => {
         if (!controller.signal.aborted) {
@@ -51,7 +53,7 @@ export function GuestSettingsPoliciesForm({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [propertyId, reloadToken]);
+  }, [propertyId, reloadToken, taskComplete]);
 
   const update = <Key extends keyof GuestSettingsPolicies>(
     key: Key,
@@ -126,10 +128,25 @@ export function GuestSettingsPoliciesForm({
           value={settings.checkOutTime}
         />
       </OperationField>
+      <OperationField className="sm:col-span-2" label="Terms & Conditions">
+        <textarea
+          className={`${operationInputClassName} min-h-48 resize-y`}
+          maxLength={10000}
+          onChange={(event) => update("termsAndConditions", event.target.value)}
+          placeholder="Enter your Terms & Conditions. These are shown to guests before they confirm a booking."
+          value={settings.termsAndConditions}
+        />
+        {!settings.termsAndConditions.trim() && (
+          <p className="mt-2 text-sm text-amber-700" role="status">
+            Without Terms & Conditions, guests won&apos;t see a T&amp;C link on the payment page. We
+            recommend keeping at least the default.
+          </p>
+        )}
+      </OperationField>
       <OperationField
         className="sm:col-span-2"
-        hint="Guests see this summary before they confirm a booking."
-        label="Cancellation policy"
+        hint="Guests see these policies before they confirm a booking. They must agree to your Terms & Conditions and Cancellation Policy on the payment page."
+        label="Cancellation Policy"
       >
         <textarea
           className={`${operationInputClassName} min-h-28 resize-y`}

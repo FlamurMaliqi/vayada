@@ -34,6 +34,7 @@ import {
   type AdaptivePropertySetupFacts,
   type SharedPropertyTypeCatalog,
   type SharedHotelSetupStatusRepository,
+  type SharedPropertyLaunchSettingsRepository,
   type SharedPropertyProfile,
   type SharedPropertyProfileInput,
   buildPropertySetupPlan,
@@ -1949,6 +1950,126 @@ describe("shared hotel setup status route", () => {
     expect(publicUpdateResponse.body.code).toBe("missing_property_resource_link");
   });
 
+  it("reads and writes launch settings for a creator-only property without Booking access", async () => {
+    const stored = {
+      id: propertyId,
+      propertyId,
+      defaultCurrency: "EUR",
+      supportedCurrencies: ["CHF"],
+      defaultLanguage: "de",
+      supportedLanguages: ["en"],
+      instagram: "https://instagram.com/alpenrose",
+      facebook: null,
+      tiktok: "https://tiktok.com/@alpenrose",
+      youtube: null,
+    };
+    const findPropertySettingsByHotelId = vi.fn(async () => stored);
+    const updatePropertySettingsByHotelId = vi.fn(async () => stored);
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+      linkedResources: [
+        propertyLink(propertyId),
+        productLink("marketplace", "hotel_profile", propertyId),
+      ],
+      repository: repositoryWith([]),
+      launchSettingsRepository: {
+        findPropertySettingsByHotelId,
+        updatePropertySettingsByHotelId,
+      },
+    });
+
+    const readResponse = await injectJson(app, {
+      method: "GET",
+      url: `/api/hotel-setup/properties/${propertyId}/launch-settings`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(readResponse.statusCode).toBe(200);
+    expect(readResponse.body).toEqual({
+      defaultCurrency: "EUR",
+      supportedCurrencies: ["CHF"],
+      defaultLanguage: "de",
+      supportedLanguages: ["en"],
+      instagram: "https://instagram.com/alpenrose",
+      facebook: "",
+      tiktok: "https://tiktok.com/@alpenrose",
+      youtube: "",
+    });
+
+    const payload = {
+      defaultCurrency: "EUR",
+      supportedCurrencies: ["CHF"],
+      defaultLanguage: "de",
+      supportedLanguages: ["en"],
+      instagram: "https://instagram.com/alpenrose",
+      facebook: "",
+      tiktok: "https://tiktok.com/@alpenrose",
+      youtube: "",
+    };
+    const writeResponse = await injectJson(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${propertyId}/launch-settings`,
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+    expect(writeResponse.statusCode).toBe(200);
+    expect(updatePropertySettingsByHotelId).toHaveBeenCalledWith(
+      propertyId,
+      payload,
+      organizationId,
+    );
+
+    const invalidResponse = await injectJson(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${propertyId}/launch-settings`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { ...payload, instagram: "https://user:secret@instagram.com/alpenrose" },
+    });
+    expect(invalidResponse.statusCode).toBe(422);
+    expect(updatePropertySettingsByHotelId).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects launch settings access outside the selected hotel group", async () => {
+    const launchSettingsRepository: SharedPropertyLaunchSettingsRepository = {
+      async findPropertySettingsByHotelId() {
+        throw new Error("unauthorized launch settings read must not hit the repository");
+      },
+      async updatePropertySettingsByHotelId() {
+        throw new Error("unauthorized launch settings write must not hit the repository");
+      },
+    };
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+      repository: repositoryWith([]),
+      launchSettingsRepository,
+    });
+
+    const readResponse = await injectJson<{ code: string }>(app, {
+      method: "GET",
+      url: `/api/hotel-setup/properties/${secondPropertyId}/launch-settings`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(readResponse.statusCode).toBe(403);
+    expect(readResponse.body.code).toBe("missing_property_resource_link");
+
+    const writeResponse = await injectJson<{ code: string }>(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${secondPropertyId}/launch-settings`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        defaultCurrency: "EUR",
+        supportedCurrencies: [],
+        defaultLanguage: "en",
+        supportedLanguages: [],
+        instagram: "",
+        facebook: "",
+        tiktok: "",
+        youtube: "",
+      },
+    });
+    expect(writeResponse.statusCode).toBe(403);
+    expect(writeResponse.body.code).toBe("missing_property_resource_link");
+  });
+
   it("returns field-level validation errors for canonical property profile writes", async () => {
     app = buildSharedSetupApp({
       permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
@@ -2745,6 +2866,7 @@ describe("shared hotel setup status route", () => {
 
 function buildSharedSetupApp(options: {
   repository: SharedHotelSetupStatusRepository;
+  launchSettingsRepository?: SharedPropertyLaunchSettingsRepository;
   trackCommandRepository?: HotelSetupTrackCommandRepository;
   permissions?: PermissionKey[];
   linkedResources?: LinkedResource[];
@@ -2753,6 +2875,7 @@ function buildSharedSetupApp(options: {
   return buildApp({
     logger: false,
     sharedHotelSetupStatusRepository: options.repository,
+    propertyLaunchSettingsRepository: options.launchSettingsRepository,
     hotelSetupTrackCommandRepository:
       options.trackCommandRepository ?? unusedTrackCommandRepository(),
     auth: {

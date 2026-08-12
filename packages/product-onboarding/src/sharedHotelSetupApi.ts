@@ -4,13 +4,15 @@ import {
   parsePropertyMediaLibraryItem,
   parsePropertyProfileResponse,
   parsePublicPropertyProfileResponse,
+  parseReplacePropertyPresentationMediaRequest,
   parseUpdatePublicPropertyProfileRequest,
   parseUpdatePropertyProfileRequest,
   type AdaptiveHotelSetupStatus,
   type CreatePropertyProfileRequest,
-  type PropertyProfileResponse,
   type PropertyMediaCommandResponse,
+  type PropertyProfileResponse,
   type PublicPropertyProfileResponse,
+  type ReplacePropertyPresentationMediaRequest,
   type UpdatePropertyProfileRequest,
   type UpdatePublicPropertyProfileRequest,
   type UpdateTracksRequest,
@@ -64,6 +66,11 @@ export type SharedHotelSetupApi = {
     propertyId: string,
     request: UpdatePublicPropertyProfileRequest,
   ): Promise<PublicPropertyProfileResponse>;
+  replacePropertyPresentationMedia(
+    propertyId: string,
+    request: ReplacePropertyPresentationMediaRequest,
+    idempotencyKey: string,
+  ): Promise<PropertyMediaCommandResponse>;
   uploadPropertyLogo(propertyId: string, file: File, idempotencyKey: string): Promise<string>;
   assignPropertyLogo(
     propertyId: string,
@@ -131,6 +138,17 @@ export function createSharedHotelSetupApi(client: SharedHotelSetupHttpClient): S
         await client.put<unknown>(
           `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/public-profile`,
           update,
+        ),
+      );
+    },
+    replacePropertyPresentationMedia: async (propertyId, request, idempotencyKey) => {
+      const update = parseReplacePropertyPresentationMediaRequest(request);
+      if (!update) throw new Error("Hotel cover and gallery assignments are invalid.");
+      return propertyMediaCommandResponse(
+        await client.put<unknown>(
+          `/api/hotel-setup/properties/${encodeURIComponent(propertyId)}/media/presentation`,
+          update,
+          idempotencyOptions(idempotencyKey),
         ),
       );
     },
@@ -283,4 +301,12 @@ function publicPropertyProfileResponse(value: unknown): PublicPropertyProfileRes
     throw new Error("Public hotel profile data is invalid. Refresh the page and try again.");
   }
   return profile;
+}
+
+function propertyMediaCommandResponse(value: unknown): PropertyMediaCommandResponse {
+  const response = parsePropertyMediaCommandResponse(value);
+  if (!response) {
+    throw new Error("Hotel media assignment data is invalid. Refresh the page and try again.");
+  }
+  return response;
 }

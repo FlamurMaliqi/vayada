@@ -5,6 +5,8 @@ import { useEffect, useState, type FormEvent } from "react";
 import {
   hotelOperationsErrorMessage,
   hotelOperationsSetupApi,
+  hotelOperationsWriteMayHaveCommitted,
+  isPropertyCurrencyConflict,
   type ExistingRoomSetup,
   type RoomSetupDraft,
   type RoomSetupState,
@@ -31,20 +33,15 @@ export function RoomsRatesAvailabilityForm({
   propertyId: string;
   taskComplete: boolean;
 }) {
-  const [draft, setDraft] = useState<RoomSetupDraft>({
-    name: "",
-    totalRooms: 1,
-    maxOccupancy: 2,
-    nightlyRate: 150,
-    currency: "EUR",
-    minimumStay: 1,
-  });
+  const [draft, setDraft] = useState<RoomSetupDraft>(() => emptyRoomDraft("EUR"));
   const [roomState, setRoomState] = useState<RoomSetupState | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [reloadToken, setReloadToken] = useState(0);
   const [submitting, setSubmitting] = useState(false);
-  const [savedPendingRefresh, setSavedPendingRefresh] = useState(false);
+  const [roomSaved, setRoomSaved] = useState(false);
+  const [addingAnother, setAddingAnother] = useState(false);
+  const [pendingAdditionalDraft, setPendingAdditionalDraft] = useState<RoomSetupDraft | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -52,9 +49,22 @@ export function RoomsRatesAvailabilityForm({
     setLoading(true);
     setLoadError("");
     setRoomState(null);
+    setRoomSaved(false);
+    setAddingAnother(false);
+    setPendingAdditionalDraft(null);
     void hotelOperationsSetupApi
       .getRoomSetupState(propertyId, controller.signal)
-      .then(setRoomState)
+      .then(async (nextRoomState) => {
+        setRoomState(nextRoomState);
+        if (nextRoomState.status !== "empty") return;
+
+        const launchSettings = await hotelOperationsSetupApi.getPropertyLaunchSettings(
+          propertyId,
+          controller.signal,
+        );
+        const currency = launchSettings.defaultCurrency.trim().toUpperCase() || "EUR";
+        setDraft(emptyRoomDraft(currency));
+      })
       .catch((cause) => {
         if (!controller.signal.aborted) {
           setLoadError(
@@ -76,8 +86,9 @@ export function RoomsRatesAvailabilityForm({
     event.preventDefault();
     setSubmitting(true);
     setError("");
+    let attemptedAdditionalDraft: RoomSetupDraft | null = null;
     try {
-      if (savedPendingRefresh) {
+      if (roomSaved) {
         await refreshProgress(true);
         return;
       }
@@ -94,6 +105,15 @@ export function RoomsRatesAvailabilityForm({
         return;
       }
 
+      if (addingAnother) {
+        attemptedAdditionalDraft = pendingAdditionalDraft ?? { ...draft };
+        setPendingAdditionalDraft(attemptedAdditionalDraft);
+        await hotelOperationsSetupApi.addRoomSetup(propertyId, attemptedAdditionalDraft);
+        setPendingAdditionalDraft(null);
+        setRoomSaved(true);
+        return;
+      }
+
       await onBeforeSave();
       const result = await hotelOperationsSetupApi.saveRoomSetup(propertyId, draft);
       if (result.status === "needs_recovery") {
@@ -105,15 +125,43 @@ export function RoomsRatesAvailabilityForm({
         return;
       }
 
-      setSavedPendingRefresh(true);
-      await refreshProgress(true);
+      setRoomSaved(true);
     } catch (cause) {
-      setError(
-        hotelOperationsErrorMessage(cause, "Rooms, rates, and availability could not be saved."),
-      );
+      if (isPropertyCurrencyConflict(cause)) {
+        setPendingAdditionalDraft(null);
+        try {
+          const launchSettings =
+            await hotelOperationsSetupApi.getPropertyLaunchSettings(propertyId);
+          const currency = launchSettings.defaultCurrency.trim().toUpperCase() || "EUR";
+          setDraft((current) => ({ ...current, currency, nightlyRate: Number.NaN }));
+          setError(
+            `Property currency changed to ${currency}. Review and re-enter the nightly rate.`,
+          );
+        } catch (reloadCause) {
+          setError(
+            hotelOperationsErrorMessage(
+              reloadCause,
+              "Property currency changed, but the latest setting could not be loaded.",
+            ),
+          );
+        }
+        return;
+      }
+      if (attemptedAdditionalDraft && !hotelOperationsWriteMayHaveCommitted(cause)) {
+        setPendingAdditionalDraft(null);
+      }
+      setError(hotelOperationsErrorMessage(cause, "The room type could not be saved."));
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleAddAnother = () => {
+    setDraft(emptyRoomDraft(draft.currency));
+    setRoomSaved(false);
+    setAddingAnother(true);
+    setPendingAdditionalDraft(null);
+    setError("");
   };
 
   const refreshProgress = async (roomWasSaved: boolean) => {
@@ -122,7 +170,7 @@ export function RoomsRatesAvailabilityForm({
     } catch {
       setError(
         roomWasSaved
-          ? "Rooms and rates were saved, but setup progress could not be refreshed. Try refreshing again. Vayada will not submit the room setup twice."
+          ? "Your room types were saved, but setup progress could not be refreshed. Choose Continue setup again. Vayada will not submit them twice."
           : "Setup progress could not be refreshed. Try again.",
       );
     }
@@ -139,22 +187,23 @@ export function RoomsRatesAvailabilityForm({
     );
   }
 
-  if (savedPendingRefresh) {
+  if (roomSaved) {
     return (
       <OperationFormShell
         error={error}
         notice={
           <div className="space-y-1">
-            <p className="font-semibold">Rooms and rates were saved.</p>
+            <p className="font-semibold">Room type saved.</p>
             <p>
-              Setup progress still needs to refresh. Retrying here will not submit the room setup
-              again.
+              You can add another room type now, or continue setup. You can always add more room
+              types and configure detailed pricing in Rooms &amp; Rates after setup.
             </p>
           </div>
         }
         onBack={onBack}
         onSubmit={handleSubmit}
-        submitLabel="Refresh setup progress"
+        secondaryAction={{ label: "Add another room type", onClick: handleAddAnother }}
+        submitLabel="Continue setup"
         submitting={submitting}
       >
         <RoomDraftSummary draft={draft} />
@@ -171,7 +220,7 @@ export function RoomsRatesAvailabilityForm({
             <p className="font-semibold">Rooms and rates are already set up.</p>
             <p>
               This step is read-only to prevent duplicate inventory. You can make later changes in
-              the PMS.
+              Rooms &amp; Rates.
             </p>
           </div>
         }
@@ -221,23 +270,26 @@ export function RoomsRatesAvailabilityForm({
       error={error}
       onBack={onBack}
       onSubmit={handleSubmit}
-      submitLabel="Save rooms and rates"
+      submitLabel={pendingAdditionalDraft ? "Retry save" : "Save and continue"}
       submitting={submitting}
+      submittingLabel={pendingAdditionalDraft ? "Retrying..." : "Saving..."}
     >
       <OperationField className="sm:col-span-2" label="Room type name">
         <input
           autoComplete="off"
           className={operationInputClassName}
+          disabled={pendingAdditionalDraft !== null}
           maxLength={120}
           onChange={(event) => update("name", event.target.value)}
-          placeholder="Double room"
+          placeholder="e.g. Deluxe Double, Pool Villa, Studio"
           required
           value={draft.name}
         />
       </OperationField>
-      <OperationField label="Number of rooms">
+      <OperationField hint="How many of this room type do you have?" label="Number of rooms/units">
         <input
           className={operationInputClassName}
+          disabled={pendingAdditionalDraft !== null}
           inputMode="numeric"
           min={1}
           onChange={(event) => update("totalRooms", event.target.valueAsNumber)}
@@ -246,9 +298,10 @@ export function RoomsRatesAvailabilityForm({
           value={draft.totalRooms}
         />
       </OperationField>
-      <OperationField label="Guests per room">
+      <OperationField label="Max guests">
         <input
           className={operationInputClassName}
+          disabled={pendingAdditionalDraft !== null}
           inputMode="numeric"
           min={1}
           onChange={(event) => update("maxOccupancy", event.target.valueAsNumber)}
@@ -258,46 +311,38 @@ export function RoomsRatesAvailabilityForm({
         />
       </OperationField>
       <OperationField label="Nightly rate">
-        <input
-          className={operationInputClassName}
-          inputMode="decimal"
-          min="0.01"
-          onChange={(event) => update("nightlyRate", event.target.valueAsNumber)}
-          required
-          step="0.01"
-          type="number"
-          value={draft.nightlyRate}
-        />
-      </OperationField>
-      <OperationField label="Currency">
-        <select
-          className={operationInputClassName}
-          onChange={(event) => update("currency", event.target.value)}
-          value={draft.currency}
-        >
-          <option value="EUR">EUR</option>
-          <option value="CHF">CHF</option>
-          <option value="GBP">GBP</option>
-          <option value="USD">USD</option>
-        </select>
-      </OperationField>
-      <OperationField
-        className="sm:col-span-2"
-        hint="This creates a year-round rate and initial bookable inventory."
-        label="Minimum stay"
-      >
-        <input
-          className={operationInputClassName}
-          inputMode="numeric"
-          min={1}
-          onChange={(event) => update("minimumStay", event.target.valueAsNumber)}
-          required
-          type="number"
-          value={draft.minimumStay}
-        />
+        <div className="flex min-h-11 overflow-hidden rounded-xl border border-gray-300 bg-white focus-within:border-primary-600 focus-within:ring-2 focus-within:ring-primary-100">
+          <input
+            className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-sm text-gray-950 outline-none"
+            disabled={pendingAdditionalDraft !== null}
+            inputMode="decimal"
+            min="0.01"
+            onChange={(event) => update("nightlyRate", event.target.valueAsNumber)}
+            required
+            step="0.01"
+            type="number"
+            value={Number.isNaN(draft.nightlyRate) ? "" : draft.nightlyRate}
+          />
+          <span
+            className="flex items-center border-l border-gray-200 bg-gray-50 px-3 text-sm font-semibold text-gray-700"
+            data-testid="room-rate-currency"
+          >
+            {draft.currency}
+          </span>
+        </div>
       </OperationField>
     </OperationFormShell>
   );
+}
+
+function emptyRoomDraft(currency: string): RoomSetupDraft {
+  return {
+    name: "",
+    totalRooms: 1,
+    maxOccupancy: 2,
+    nightlyRate: 150,
+    currency,
+  };
 }
 
 function roomRecoveryMessages(reasonCodes: string[], hasActiveRoom: boolean): string[] {
@@ -325,7 +370,6 @@ function RoomDraftSummary({ draft }: { draft: RoomSetupDraft }) {
     <RoomSummary
       currency={draft.currency}
       maxOccupancy={draft.maxOccupancy}
-      minimumStay={draft.minimumStay}
       name={draft.name}
       nightlyRate={draft.nightlyRate.toFixed(2)}
       totalRooms={draft.totalRooms}
@@ -338,7 +382,6 @@ function RoomSetupSummary({ room }: { room: ExistingRoomSetup }) {
     <RoomSummary
       currency={room.currency}
       maxOccupancy={room.maxOccupancy}
-      minimumStay={room.minimumStay}
       name={room.name}
       nightlyRate={room.nightlyRate}
       totalRooms={room.totalRooms}
@@ -349,14 +392,12 @@ function RoomSetupSummary({ room }: { room: ExistingRoomSetup }) {
 function RoomSummary({
   currency,
   maxOccupancy,
-  minimumStay,
   name,
   nightlyRate,
   totalRooms,
 }: {
   currency: string;
   maxOccupancy: number;
-  minimumStay: number | null;
   name: string;
   nightlyRate: string;
   totalRooms: number;
@@ -364,12 +405,8 @@ function RoomSummary({
   const summary = [
     ["Room type", name],
     ["Number of rooms", String(totalRooms)],
-    ["Guests per room", String(maxOccupancy)],
+    ["Max guests", String(maxOccupancy)],
     ["Nightly rate", `${currency} ${nightlyRate}`],
-    [
-      "Minimum stay",
-      minimumStay ? `${minimumStay} ${minimumStay === 1 ? "night" : "nights"}` : "Not set",
-    ],
   ];
 
   return (
