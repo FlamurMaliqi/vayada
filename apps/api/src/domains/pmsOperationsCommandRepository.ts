@@ -4164,6 +4164,7 @@ async function applyBookingMarkPaidCommandMutation(
     },
   };
   const financeResult = await recordManualPaymentInClient(client, financeCommand, {
+    transactionActive: true,
     enqueueSettlementEmail: false,
   });
   if (!financeResult.ok) {

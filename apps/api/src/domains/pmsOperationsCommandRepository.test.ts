@@ -667,6 +667,10 @@ describe("target PMS operations command repository", () => {
             },
           ]);
         }
+        if (text.includes("pg_advisory_xact_lock")) return { rows: [], rowCount: 1 };
+        if (text.includes("FROM finance.billing_entitlements")) {
+          return ok([{ plan: "commission" }]);
+        }
         if (text.includes("INSERT INTO finance.payments")) {
           return ok([{ paymentId: "f6855900-0000-0000-0000-000000000005", replay: false }], 1);
         }

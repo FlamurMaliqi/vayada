@@ -115,13 +115,15 @@ export function createPgFinanceSubscriptionStore(config: {
             ),
         });
       } finally {
+        let unlocked = false;
         try {
           await client.query(
             `SELECT pg_advisory_unlock(hashtextextended('finance-plan-mutation:' || $1, 0))`,
             [propertyId],
           );
+          unlocked = true;
         } finally {
-          client.release();
+          client.release(!unlocked);
         }
       }
     },

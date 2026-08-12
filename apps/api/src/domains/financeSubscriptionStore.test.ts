@@ -73,6 +73,33 @@ describe("Finance subscription store", () => {
     expect(calls.at(-1)).toBe("RELEASE");
   });
 
+  it("destroys a pooled client when the session advisory lock cannot be released", async () => {
+    const releases: Array<boolean | undefined> = [];
+    const client = {
+      async query(text: string) {
+        if (text.includes("pg_advisory_unlock")) throw new Error("connection lost");
+        return { rows: [], rowCount: 0 };
+      },
+      release(destroy?: boolean) {
+        releases.push(destroy);
+      },
+    };
+    const store = createPgFinanceSubscriptionStore({
+      connectionString: "postgres://unused",
+      pool: {
+        query: client.query,
+        async connect() {
+          return client;
+        },
+      } as never,
+    });
+
+    await expect(store.withPlanMutationLock("property-1", async () => undefined)).rejects.toThrow(
+      "connection lost",
+    );
+    expect(releases).toEqual([true]);
+  });
+
   it("provisions the canonical 5% booking commission rule with a new plan selection", async () => {
     const calls: Array<{ text: string; values?: readonly unknown[] }> = [];
     const pool = {

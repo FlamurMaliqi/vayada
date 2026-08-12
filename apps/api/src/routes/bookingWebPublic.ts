@@ -1529,8 +1529,11 @@ export function createTargetBookingWebCheckoutAdapter(
           context.occurredAt,
         );
         const billingConfigReadPort = config.billingConfigReadPortFactory?.(client);
-        const billingConfig = await billingConfigReadPort?.getBillingConfig(property.propertyId);
-        if (billingConfigReadPort && !billingConfig) {
+        if (!billingConfigReadPort) {
+          throw createHttpError(503, "Finance billing configuration is not available.");
+        }
+        const billingConfig = await billingConfigReadPort.getBillingConfig(property.propertyId);
+        if (!billingConfig) {
           throw createHttpError(409, "Finance billing configuration is not available.");
         }
         const checkoutConfig = await loadTargetCheckoutConfig(client, property.propertyId);
@@ -1544,7 +1547,7 @@ export function createTargetBookingWebCheckoutAdapter(
           context,
           quote,
           guestPhone,
-          billingConfig ?? null,
+          billingConfig,
           checkoutConfig,
         );
         const cardPayment =
@@ -1554,7 +1557,7 @@ export function createTargetBookingWebCheckoutAdapter(
                 config,
                 booking,
                 checkoutConfig,
-                billingConfig ?? null,
+                billingConfig,
                 context,
               )
             : null;

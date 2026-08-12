@@ -2147,6 +2147,18 @@ describe("Booking Web public bootstrap parity", () => {
     const adapter = createTargetBookingWebCheckoutAdapter({
       connectionString: "postgres://unused",
       inventoryReservationPort: createTargetPmsInventoryReservationPort(),
+      billingConfigReadPortFactory: () => ({
+        async getBillingConfig() {
+          return {
+            propertyId,
+            activePlan: "commission",
+            bookingEngineFeePercent: 5,
+            channelManagerFeePercent: 0,
+            affiliatePlatformFeePercent: 0,
+            updatedAt: "2026-09-01T10:00:00.000Z",
+          };
+        },
+      }),
       pool: pool as never,
     });
 
