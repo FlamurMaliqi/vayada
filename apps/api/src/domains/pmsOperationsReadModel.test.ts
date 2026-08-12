@@ -29,6 +29,7 @@ describe("target PMS reservation stay dates", () => {
                 primaryGuestDisplayName: "Ada Lovelace",
                 primaryGuestEmail: "ada@example.com",
                 primaryGuestPhone: null,
+                guestContactAccepted: false,
                 assignments: [],
                 checkinCompletedAt: null,
                 checkinPendingFlags: [],
@@ -60,15 +61,18 @@ describe("target PMS reservation stay dates", () => {
     });
 
     const result = await repository.listReservationsByPropertyId("property-1", {
+      search: "Ada",
       limit: 25,
       offset: 0,
     });
 
-    const listQuery = queries.find((query) => !query.includes("SELECT COUNT(*)::text AS total"));
+    const listQuery = queries.find((query) => query.includes('AS "guestContactAccepted"'));
     expect(listQuery).toContain('booking.check_in::text AS "checkIn"');
     expect(listQuery).toContain('booking.check_out::text AS "checkOut"');
     expect(listQuery).toContain("quote.selected_offer_snapshot ->> 'roomName'");
     expect(listQuery).toContain("booking.booking_metadata #>> '{selectedOffer,roomName}'");
+    expect(listQuery).toContain('AS "guestContactAccepted"');
+    expect(listQuery).toContain("contact_event.actor_type = 'property_user'");
     expect(result.items[0]?.stay).toEqual({
       checkIn: "2026-07-23",
       checkOut: "2026-07-24",
@@ -76,6 +80,11 @@ describe("target PMS reservation stay dates", () => {
       children: 0,
     });
     expect(result.items[0]).toMatchObject({
+      primaryGuest: {
+        displayName: "Ada Lovelace",
+        email: "Hidden until you accept",
+        phone: "Hidden until you accept",
+      },
       bookedOffer: {
         roomTypeId: "room-type-1",
         roomName: "Munich Booking Room",
@@ -109,6 +118,7 @@ describe("target PMS reservation stay dates", () => {
               primaryGuestDisplayName: "Ada Lovelace",
               primaryGuestEmail: "ada@example.com",
               primaryGuestPhone: null,
+              guestContactAccepted: true,
               assignments: [],
               checkinCompletedAt: null,
               checkinPendingFlags: [],
