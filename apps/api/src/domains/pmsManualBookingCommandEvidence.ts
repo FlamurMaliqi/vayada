@@ -113,6 +113,7 @@ export async function completeManualBookingCommand(
   transaction: PmsManualBookingTransaction,
   reservation: ManualBookingReservation,
   result: PmsManualBookingCreateResult,
+  completedAt: string,
 ): Promise<void> {
   const bodyHash = sha256(stableJson(result));
   const updated = await transaction.query(
@@ -123,13 +124,7 @@ export async function completeManualBookingCommand(
        last_seen_at = $4::timestamptz,
        idempotency_metadata = idempotency_metadata || jsonb_build_object('result', $5::jsonb)
      WHERE id = $1::uuid AND status = 'in_progress'`,
-    [
-      reservation.id,
-      bodyHash,
-      result.guestBookingId,
-      new Date().toISOString(),
-      JSON.stringify(result),
-    ],
+    [reservation.id, bodyHash, result.guestBookingId, completedAt, JSON.stringify(result)],
   );
   if (updated.rowCount !== 1) throw new Error("Manual booking command reservation was lost");
 }
