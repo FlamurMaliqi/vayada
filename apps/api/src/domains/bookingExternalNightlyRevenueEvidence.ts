@@ -46,7 +46,8 @@ type StoredLine = {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/,
   MONEY = /^-?\d{1,15}(?:\.\d{1,4})?$/;
-const MAX_EVIDENCE_LINES = 20 * 366;
+const MAX_EXTERNAL_EVIDENCE_LINES = 1_000;
+const MAX_MANUAL_EVIDENCE_LINES = 20 * 366;
 const EVENTS =
   "room_night room_night_reversal occupancy_adjustment retained_charge refund correction";
 const STATES = "confirmed completed canceled no_show refunded corrected";
@@ -147,10 +148,12 @@ function normalizeLines(
   command: AppendExternalRevenueEvidenceCommand,
   prefix: string,
 ): NormalizedLine[] {
+  const maxLines =
+    command.sourceKind === "manual" ? MAX_MANUAL_EVIDENCE_LINES : MAX_EXTERNAL_EVIDENCE_LINES;
   if (
     !Array.isArray(command.lines) ||
     command.lines.length < 1 ||
-    command.lines.length > MAX_EVIDENCE_LINES
+    command.lines.length > maxLines
   ) {
     throw new Error("External evidence lines are malformed");
   }
