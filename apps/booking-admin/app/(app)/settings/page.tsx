@@ -221,11 +221,23 @@ function buildTargetSettingsUpdate(
 
 export default function SettingsPage() {
   const { t } = useTranslation();
-  const [activeSection, setActiveSection] = useState<Section>(() =>
-    typeof window !== "undefined" && new URLSearchParams(window.location.search).has("billing")
-      ? "billing"
-      : "property",
-  );
+  const [activeSection, setActiveSection] = useState<Section>(() => {
+    if (typeof window === "undefined") return "property";
+    const searchParams = new URLSearchParams(window.location.search);
+    const requested = searchParams.get("section");
+    if (
+      requested === "property" ||
+      requested === "booking" ||
+      requested === "location" ||
+      requested === "notifications" ||
+      requested === "account" ||
+      requested === "billing" ||
+      requested === "payments"
+    ) {
+      return requested;
+    }
+    return searchParams.has("billing") ? "billing" : "property";
+  });
   const [settings, setSettings] = useState<PropertySettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
