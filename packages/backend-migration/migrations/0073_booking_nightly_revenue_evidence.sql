@@ -53,7 +53,7 @@ CREATE TABLE booking.nightly_revenue_evidence (
       AND occupied_room_nights = -1 AND corrects_evidence_id IS NOT NULL
       AND lifecycle_state IN ('canceled', 'no_show')
       AND (gross_room_amount IS NULL OR gross_room_amount <= 0))
-    OR (economic_event = 'retained_charge' AND occupied_room_nights = 0
+    OR (economic_event = 'retained_charge' AND recognized_on >= stay_date AND occupied_room_nights = 0
       AND evidence_quality IN ('exact', 'inferred')
       AND gross_room_amount > 0 AND corrects_evidence_id IS NULL
       AND lifecycle_state IN ('canceled', 'no_show'))
@@ -124,16 +124,16 @@ ON booking.nightly_revenue_evidence FOR EACH ROW EXECUTE FUNCTION booking.valida
 CREATE FUNCTION booking.protect_nightly_revenue_evidence()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-  RAISE EXCEPTION 'nightly booking revenue evidence is immutable' USING ERRCODE = '23514';
+  RAISE EXCEPTION 'nightly booking revenue evidence is immutable' USING ERRCODE = '55000';
 END;
 $$;
 CREATE TRIGGER trg_booking_nightly_revenue_evidence_protect_rows BEFORE UPDATE OR DELETE
 ON booking.nightly_revenue_evidence FOR EACH ROW EXECUTE FUNCTION booking.protect_nightly_revenue_evidence();
-CREATE TRIGGER trg_booking_nightly_revenue_evidence_protect_truncate BEFORE TRUNCATE
-ON booking.nightly_revenue_evidence FOR EACH STATEMENT EXECUTE FUNCTION booking.protect_nightly_revenue_evidence();
+CREATE TRIGGER trg_booking_nightly_revenue_evidence_protect_truncate BEFORE TRUNCATE ON booking.nightly_revenue_evidence FOR EACH STATEMENT EXECUTE FUNCTION booking.protect_nightly_revenue_evidence();
 CREATE TRIGGER trg_booking_nightly_revenue_room_scopes_protect
 BEFORE UPDATE OR DELETE ON booking.nightly_revenue_room_scopes
 FOR EACH ROW EXECUTE FUNCTION booking.protect_nightly_revenue_evidence();
+CREATE TRIGGER trg_booking_nightly_revenue_room_scopes_protect_truncate BEFORE TRUNCATE ON booking.nightly_revenue_room_scopes FOR EACH STATEMENT EXECUTE FUNCTION booking.protect_nightly_revenue_evidence();
 CREATE INDEX idx_booking_nightly_revenue_evidence_reporting
   ON booking.nightly_revenue_evidence (property_id, recognized_on, currency, id);
 CREATE VIEW booking.finance_nightly_revenue_evidence AS

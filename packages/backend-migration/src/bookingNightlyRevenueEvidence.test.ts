@@ -125,7 +125,6 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
     const missing = (
       await insertEvidence(booking, {
         amount: null,
-        roomType: ROOM_TYPE_A,
         quality: "missing",
         revision: 3,
         stayDate: "2026-09-02",
@@ -159,7 +158,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
         "UPDATE booking.nightly_revenue_evidence SET gross_room_amount = 1 WHERE id = $1",
         [exact],
       ),
-      { code: "23514" },
+      { code: "55000" },
     );
   });
 
@@ -170,6 +169,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
     });
     for (const overrides of [
       { event: "refund", amount: "-10" },
+      { event: "retained_charge", lifecycle: "canceled", occupied: 0, recognizedOn: "2026-08-31" },
       { lifecycle: "canceled", revision: 2 },
     ])
       await rejects(insertEvidence(booking, overrides), {
