@@ -1216,6 +1216,8 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "commission_rules",
         "expense_categories",
         "expenses",
+        "folio_lines",
+        "folio_payment_references",
         "folio_revisions",
         "folios",
         "finance_visibility_read_model",
