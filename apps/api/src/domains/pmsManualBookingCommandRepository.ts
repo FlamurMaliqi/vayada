@@ -101,7 +101,6 @@ export function createPgPmsManualBookingCommandRepository(config: {
           transaction,
           command,
           guestBookingId,
-          bookingReference,
           rooms,
           preview,
         });

@@ -93,7 +93,6 @@ export interface PmsManualBookingNightlyEvidenceOwnerPort {
     transaction: PmsManualBookingTransaction;
     command: PmsManualBookingCreateCommand;
     guestBookingId: string;
-    bookingReference: string;
     rooms: readonly PmsManualBookingRoom[];
     preview: ManualBookingPreviewResult;
   }): Promise<void>;
