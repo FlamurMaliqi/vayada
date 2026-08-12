@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
-import type { FinanceManualPaymentRecordCommand } from "@vayada/domain-finance";
 
 import {
   bankTransferDetailsFromPolicy,
   enqueueBookingLifecycleEmailJob,
 } from "../jobs/bookingEmails.js";
-import { recordManualPaymentInClient } from "../routes/finance.js";
+import {
+  recordBookingManualPaymentInClient,
+  type FinanceBookingManualPaymentSettlementCommand,
+} from "./financeManualPaymentSettlement.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import {
@@ -4149,8 +4151,7 @@ async function applyBookingMarkPaidCommandMutation(
     : isAcceptedBankTransfer
       ? "bank_transfer"
       : "pay_at_property";
-  const financeCommand: FinanceManualPaymentRecordCommand = {
-    commandType: "finance.manual_payment.record",
+  const financeCommand: FinanceBookingManualPaymentSettlementCommand = {
     commandId: command.commandId,
     idempotencyKey: `pms.booking.mark-paid.finance:${command.idempotencyKey}`,
     propertyId: command.propertyId,
@@ -4163,10 +4164,7 @@ async function applyBookingMarkPaidCommandMutation(
       reference: `PMS ${paymentMethod} confirmation`,
     },
   };
-  const financeResult = await recordManualPaymentInClient(client, financeCommand, {
-    transactionActive: true,
-    enqueueSettlementEmail: false,
-  });
+  const financeResult = await recordBookingManualPaymentInClient(client, financeCommand);
   if (!financeResult.ok) {
     throw new Error(
       `Finance rejected PMS booking payment ${command.guestBookingId}: ${financeResult.code}`,

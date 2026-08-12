@@ -615,7 +615,11 @@ describe("target PMS operations command repository", () => {
         if (text.includes("INSERT INTO platform.idempotency_keys")) {
           return ok([{ id: "idem" }], 1);
         }
-        if (text.includes("FROM booking.guest_bookings booking") && text.includes("FOR UPDATE")) {
+        if (
+          text.includes("FROM booking.guest_bookings booking") &&
+          text.includes("FOR UPDATE") &&
+          !text.includes("booking.commission_terms_snapshot")
+        ) {
           return ok([
             {
               guestBookingId,
@@ -638,30 +642,14 @@ describe("target PMS operations command repository", () => {
             },
           ]);
         }
-        if (text.includes("WITH invoice_base AS")) {
+        if (text.includes("booking.commission_terms_snapshot")) {
           return ok([
             {
-              invoiceId: "INV-PAYPAL-001",
-              invoiceNumber: "INV-PAYPAL-001",
               guestBookingId,
-              bookingReference: "BK-PAYPAL-001",
-              propertyName: "Hotel Alpenrose",
-              guestDisplayName: "Alex Guest",
-              guestEmail: "guest@example.test",
-              guestPhone: null,
-              checkIn: "2026-08-20",
-              checkOut: "2026-08-23",
-              roomName: null,
-              roomNumber: null,
               currency: "EUR",
-              totalAmount: "600.00",
-              amountPaid: "0.00",
               balanceDue: "600.00",
-              status: "sent",
-              issuedAt: "2026-08-01T10:00:00.000Z",
-              total: 1,
-              counts: { paid: 1 },
-              sourceFreshness: {},
+              lifecycleStatus,
+              paymentStatus: "unpaid",
               billingPlanSnapshot: "commission",
               commissionTermsSnapshot: { bookingEngineFeePercent: 5 },
             },
