@@ -40,10 +40,13 @@ import {
   buildPaymentSettingsRequest,
   buildRoomSetupRequest,
   hotelOperationsSetupApi,
+  hotelOperationsWriteMayHaveCommitted,
+  isPropertyCurrencyConflict,
   isPublicationReady,
   isStripeReady,
   stableSetupCommandId,
 } from "./hotelOperationsSetupClient";
+import { ApiErrorResponse } from "./client";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -180,7 +183,6 @@ describe("hotel operations setup client", () => {
         maxOccupancy: 2,
         nightlyRate: 100,
         currency: "EUR",
-        minimumStay: 1,
       }),
     ).resolves.toMatchObject({
       status: "needs_recovery",
@@ -203,7 +205,6 @@ describe("hotel operations setup client", () => {
         maxOccupancy: 3,
         nightlyRate: 190,
         currency: "EUR",
-        minimumStay: 2,
       }),
     ).resolves.toEqual({ status: "complete", room: null });
     expect(mocks.post).not.toHaveBeenCalled();
@@ -234,7 +235,6 @@ describe("hotel operations setup client", () => {
         maxOccupancy: 2,
         nightlyRate: 150,
         currency: "EUR",
-        minimumStay: 1,
       }),
     ).resolves.toMatchObject({
       status: "needs_recovery",
@@ -257,7 +257,6 @@ describe("hotel operations setup client", () => {
         maxOccupancy: 2,
         nightlyRate: 150,
         currency: "EUR",
-        minimumStay: 1,
       }),
     ).resolves.toEqual({
       status: "needs_recovery",
@@ -284,7 +283,6 @@ describe("hotel operations setup client", () => {
         maxOccupancy: 2,
         nightlyRate: 150,
         currency: "EUR",
-        minimumStay: 1,
       }),
     ).resolves.toEqual({
       status: "needs_recovery",
@@ -317,7 +315,6 @@ describe("hotel operations setup client", () => {
         maxOccupancy: 2,
         nightlyRate: 150,
         currency: "EUR",
-        minimumStay: 1,
       }),
     ).resolves.toEqual({ status: "created" });
     expect(mocks.post).toHaveBeenCalledWith(
@@ -327,6 +324,30 @@ describe("hotel operations setup client", () => {
     expect(mocks.get).toHaveBeenCalledWith("/api/pms/properties/property-1/room-types", undefined);
   });
 
+  it("adds another room type without reusing the initial-setup guard", async () => {
+    mocks.post.mockResolvedValue({});
+
+    await hotelOperationsSetupApi.addRoomSetup("property-1", {
+      name: "Pool Villa",
+      totalRooms: 3,
+      maxOccupancy: 4,
+      nightlyRate: 280,
+      currency: "IDR",
+    });
+
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.getStatus).not.toHaveBeenCalled();
+    expect(mocks.post).toHaveBeenCalledWith(
+      "/api/pms/properties/property-1/room-types",
+      expect.objectContaining({
+        initialSetupOnly: false,
+        name: "Pool Villa",
+        currency: "IDR",
+        seasons: [expect.objectContaining({ minStay: 1 })],
+      }),
+    );
+  });
+
   it("builds an atomic room, rate, and inventory command with a stable retry key", () => {
     const draft = {
       name: "Double room",
@@ -334,13 +355,13 @@ describe("hotel operations setup client", () => {
       maxOccupancy: 2,
       nightlyRate: 189.5,
       currency: "eur",
-      minimumStay: 2,
     };
 
     const first = buildRoomSetupRequest("property-1", draft);
     const retry = buildRoomSetupRequest("property-1", { ...draft });
 
     expect(first).toMatchObject({
+      onboardingSetup: true,
       initialSetupOnly: true,
       name: "Double room",
       totalRooms: 4,
@@ -353,12 +374,22 @@ describe("hotel operations setup client", () => {
           from: "01-01",
           to: "12-31",
           rate: "189.50",
-          minStay: 2,
+          minStay: 1,
         }),
       ],
     });
     expect(first.commandId).toBe(first.idempotencyKey);
     expect(retry.commandId).toBe(first.commandId);
+  });
+
+  it("distinguishes ambiguous room writes from definitive client rejections", () => {
+    expect(hotelOperationsWriteMayHaveCommitted(new TypeError("Failed to fetch"))).toBe(true);
+    expect(hotelOperationsWriteMayHaveCommitted(new ApiErrorResponse(503, {}))).toBe(true);
+    expect(hotelOperationsWriteMayHaveCommitted(new ApiErrorResponse(409, {}))).toBe(false);
+    expect(
+      isPropertyCurrencyConflict(new ApiErrorResponse(409, { code: "property_currency_conflict" })),
+    ).toBe(true);
+    expect(isPropertyCurrencyConflict(new ApiErrorResponse(409, {}))).toBe(false);
   });
 
   it("changes command keys when the authoritative payload changes", () => {
