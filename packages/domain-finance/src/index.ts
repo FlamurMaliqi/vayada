@@ -22,8 +22,6 @@
  *   through permissioned finance services.
  */
 
-import { createHash } from "node:crypto";
-
 export * from "./paymentReadiness.js";
 export * from "./paymentReadinessParsing.js";
 export * from "./paymentReadinessSnapshot.js";
@@ -593,16 +591,8 @@ export type FinanceReconciliationViewResponse = {
   sourceFreshness: FinanceJsonObject;
 };
 
-export const FINANCE_MANUAL_PAYMENT_SIDE_EFFECTS = [
-  "audit_event",
-  "booking_projection_refresh",
-  "pms_projection_refresh",
-] as const;
-
-export type FinanceManualPaymentSideEffect = (typeof FINANCE_MANUAL_PAYMENT_SIDE_EFFECTS)[number];
-
 export const FINANCE_COMMAND_SIDE_EFFECTS = [
-  ...FINANCE_MANUAL_PAYMENT_SIDE_EFFECTS,
+  "audit_event",
   "provider_validation",
   "reconciliation_job",
   "payout_job",
@@ -610,8 +600,8 @@ export const FINANCE_COMMAND_SIDE_EFFECTS = [
 
 export type FinanceCommandSideEffect = (typeof FINANCE_COMMAND_SIDE_EFFECTS)[number];
 
-export type FinanceProjectionRefreshJob = {
-  jobType: "booking.projection-refresh" | "pms.projection-refresh";
+export type FinanceProviderAccountRefreshJob = {
+  jobType: "pms.projection-refresh";
   idempotencyKey: string;
   status: "queued" | "idempotent_replay";
 };
@@ -640,7 +630,7 @@ export type FinanceDispatchAffiliatePayoutJob = {
 };
 
 export type FinanceCommandJob =
-  | FinanceProjectionRefreshJob
+  | FinanceProviderAccountRefreshJob
   | FinanceReconcilePayoutJob
   | FinanceDispatchPropertyPayoutJob
   | FinanceDispatchAffiliatePayoutJob;
@@ -655,13 +645,6 @@ export type FinanceCommandMeta = {
 
 export type FinanceProviderAccountCommandMeta = Omit<FinanceCommandMeta, "sideEffects"> & {
   sideEffects: FinanceProviderAccountCommandSideEffect[];
-};
-
-export type FinanceManualPaymentRecordResponse = {
-  contractVersion: FinanceContractVersion;
-  propertyId: FinancePropertyId;
-  invoice: FinanceInvoiceDetail;
-  commandMeta: FinanceCommandMeta;
 };
 
 export type FinanceProviderAccountOwnerScope = "property" | "affiliate";
@@ -1021,14 +1004,6 @@ export type SettleManualCheckoutChargePayload = {
   pmsCommandId: string;
 };
 
-export type RecordManualInvoicePaymentPayload = {
-  invoiceId: string;
-  amount: FinanceDecimalAmount;
-  currency: FinanceCurrencyCode;
-  paymentMethod: Exclude<FinanceRoutePaymentMethod, "wallet" | "xendit">;
-  reference?: string | null;
-};
-
 // ---------------------------------------------------------------------------
 // Payout split result
 //
@@ -1185,33 +1160,10 @@ export type FinancePropertyLedgerReadRepository = {
   ): Promise<Omit<FinanceInvoiceCsvExportResponse, "contractVersion" | "propertyId">>;
 };
 
-export type FinanceManualPaymentRecordCommand = FinanceCommandBase<
-  "finance.manual_payment.record",
-  RecordManualInvoicePaymentPayload
->;
-
-export type FinanceManualPaymentRecordResult =
-  | {
-      ok: true;
-      status: "created" | "idempotent_replay";
-      invoice: FinanceInvoiceDetail;
-      commandMeta: FinanceCommandMeta;
-    }
-  | {
-      ok: false;
-      statusCode: 400 | 404 | 409 | 500;
-      code: "invalid_command" | "invoice_not_found" | "idempotency_conflict" | "write_unavailable";
-      message: string;
-    };
-
 export type FinancePropertyCommandRepository = {
   updatePaymentSettings(
     command: FinancePaymentSettingsPatchCommand,
   ): Promise<FinancePaymentSettingsPatchResult>;
-
-  recordManualPayment(
-    command: FinanceManualPaymentRecordCommand,
-  ): Promise<FinanceManualPaymentRecordResult>;
 
   createStripeProviderAccount(
     command: CreateStripeProviderAccountCommand,
@@ -1535,7 +1487,6 @@ export type FinanceCommand =
   | UpdateInstantBookCommand
   | UpdateBillingPlanCommand
   | UpdateAddOnPriceCommand
-  | FinanceManualPaymentRecordCommand
   | CreateStripeProviderAccountCommand
   | IssueStripeOnboardingLinkCommand
   | FinancePropertyPayoutDispatchCommand
@@ -1547,7 +1498,6 @@ export const financeCommandTypes = [
   "finance.payment.instant_book.update",
   "finance.billing.plan.update",
   "finance.add_on.price.update",
-  "finance.manual_payment.record",
   "finance.provider_account.stripe.create",
   "finance.provider_account.stripe.onboarding_link.issue",
   "finance.property_payout.dispatch",
@@ -1671,16 +1621,6 @@ export function buildCheckoutChargeSettlementIdempotencyKey(input: {
   return `finance.checkout-charge-settlement:checkout_charge:${input.checkoutChargeId}:mark-paid:${input.pmsCommandId}:v1`;
 }
 
-export function buildManualPaymentProjectionJobIdempotencyKey(input: {
-  propertyId: FinancePropertyId;
-  jobType: FinanceProjectionRefreshJob["jobType"];
-  guestBookingId: string;
-  /** Raw client idempotency key; callers must not pass a precomputed hash. */
-  rawPaymentIdempotencyKey: string;
-}): string {
-  return `${input.jobType}:property:${input.propertyId}:booking:${input.guestBookingId}:finance-payment:${financeSha256(input.rawPaymentIdempotencyKey)}:v1`;
-}
-
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -1697,10 +1637,6 @@ function parseDecimalAmount(value: FinanceDecimalAmount): number {
     throw new Error(`Invalid decimal amount: negative value: ${value}`);
   }
   return parsed;
-}
-
-function financeSha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
 }
 
 function round2(value: number): number {
