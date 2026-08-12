@@ -20,18 +20,6 @@ paths because real invoices and recognized revenue are not compatible with
 booking-derived invoice rows or payment-timing summaries. AI Insights remains
 out of scope for v1.
 
-## Current state
-
-- PMS Web has an unavailable page, an unsupported service and four dormant
-  Financials components.
-- The API's summary, invoice and payment-list routes synthesize invoice identity,
-  state and a `Stay` line from booking/payment data.
-- `finance.finance_visibility_read_model` summarizes payments and payouts. It is
-  not a revenue/expense ledger, and the target schema has no expense or real
-  invoice aggregates.
-- `FINANCE_SOURCE` defaults to `legacy`; target Finance routes are registered
-  only when configured. Legacy Python remains untouched.
-
 ## Ownership
 
 | Fact or behavior                                             | Canonical owner                           | Financials consumption                                 |
@@ -153,6 +141,11 @@ integration boundary.
 ```ts
 type Date = string; type Decimal = string; type Ratio = Decimal; // date: YYYY-MM-DD; ratio: 0..1
 type Money = { amount: Decimal; currency: string }; type Page<T> = { items: T[]; nextCursor: string | null; limit: number };
+type ExpenseOrigin = "manual" | "recurring" | "ota_commission" | "platform_fee" | "supplier_bill";
+type InvoiceStatus = "draft" | "issued" | "sent" | "partial" | "paid" | "overdue" | "voided";
+type ExpensePayment = { paymentStatus: "paid"; paidOn: Date } | { paymentStatus: "unpaid"; paidOn: null };
+type ExpensePaymentWrite = { paymentStatus: "paid"; paidOn: Date } | { paymentStatus: "unpaid"; paidOn?: null };
+type ExpenseSettlementPatch = ExpensePaymentWrite | { paymentStatus?: never; paidOn?: never };
 type MoneyMetric = { value: Money; absoluteChange: Money; percentChange: Ratio | null };
 type ScalarMetric = { value: Decimal; absoluteChange: Decimal; percentChange: Ratio | null };
 type CountMetric = { value: number; absoluteChange: number; percentChange: Ratio | null };
@@ -163,32 +156,31 @@ type Command = { commandId: string; idempotencyKey: string; expectedRevision?: n
 type Range = { from: Date; to: Date }; type Cursor = { cursor?: string; limit?: number };
 type DashboardQuery = { asOf?: Date }; type RevenueQuery = Range;
 type ExpenseQuery = Range & Cursor & { categoryId?: string; paymentStatus?: "paid" | "unpaid"; recurring?: boolean;
-  origin?: "manual" | "recurring" | "ota_commission" | "platform_fee" | "supplier_bill"; search?: string; sort?: "incurredOn_desc" | "amount_desc" };
+  origin?: ExpenseOrigin; search?: string; sort?: "incurredOn_desc" | "amount_desc" };
 type ProfitLossQuery = { year: number };
-type InvoiceQuery = Cursor & { from?: Date; to?: Date; status?: "draft" | "issued" | "sent" | "partial" |
-  "paid" | "overdue" | "voided"; search?: string; sort?: "issuedOn_desc" | "dueOn_asc" | "amount_desc" };
+type InvoiceQuery = Cursor & { from?: Date; to?: Date; status?: InvoiceStatus;
+  search?: string; sort?: "issuedOn_desc" | "dueOn_asc" | "amount_desc" };
 type Category = { id: string; systemKey: string | null; name: string; color: string; sortOrder: number; archived: boolean; revision: number };
-type Expense = { id: string; categoryId: string; origin: ExpenseQuery["origin"];
-  incurredOn: Date; paidOn: Date | null; vendor: string; amount: Money;
-  paymentStatus: "paid" | "unpaid"; recurringRuleId: string | null; sourceKey: string | null;
-  reversesExpenseId: string | null; revision: number };
-type RecurringRule = { id: string; cadence: "weekly" | "monthly" | "yearly"; nextDueOn: Date; endsOn: Date | null; active: boolean; revision: number };
+type Expense = { id: string; categoryId: string; origin: ExpenseOrigin; incurredOn: Date; vendor: string; amount: Money;
+  recurringRuleId: string | null; sourceKey: string | null; reversesExpenseId: string | null; revision: number } & ExpensePayment;
+type RecurringRule = { id: string; categoryId: string; vendor: string; amount: Money; notes?: string;
+  paymentStatus: "paid" | "unpaid"; cadence: "weekly" | "monthly" | "yearly"; startsOn: Date;
+  nextDueOn: Date; endsOn: Date | null; active: boolean; revision: number };
 type InvoiceLine = { description: string; quantity: Decimal; unitAmount: Money; total: Money };
 type Invoice = { id: string; number: string; bookingId: string | null; recipient: { name: string; email: string | null };
-  issuedOn: Date | null; dueOn: Date | null; status: InvoiceQuery["status"]; lines: InvoiceLine[];
+  issuedOn: Date | null; dueOn: Date | null; status: InvoiceStatus; lines: InvoiceLine[];
   total: Money; allocated: Money; outstanding: Money; revision: number };
 type CategoryWrite = Command & { name: string; color: string; sortOrder: number }; type CategoryPatch = Command & Partial<Pick<Category, "name" | "color" | "sortOrder">>;
-type ExpenseWrite = Command & { incurredOn: Date; vendor: string; categoryId: string; amount: Money;
-  paymentStatus: "paid" | "unpaid"; paidOn?: Date; notes?: string; supplierInvoiceNumber?: string;
-  recurrence?: { cadence: "weekly" | "monthly" | "yearly"; startsOn: Date; endsOn?: Date } };
-type ExpensePatch = Command & Partial<Omit<ExpenseWrite, keyof Command | "recurrence">>;
-type RecurrencePatch = Command & { cadence?: "weekly" | "monthly" | "yearly";
-  nextDueOn?: Date; endsOn?: Date };
+type ExpenseWrite = Command & { incurredOn: Date; vendor: string; categoryId: string; amount: Money; notes?: string;
+  supplierInvoiceNumber?: string; recurrence?: { cadence: "weekly" | "monthly" | "yearly"; startsOn: Date; endsOn?: Date } } & ExpensePaymentWrite;
+type ExpensePatch = Command & Partial<Omit<ExpenseWrite, keyof Command | "recurrence" | keyof ExpensePaymentWrite>> & ExpenseSettlementPatch;
+type RecurrencePatch = Command & Partial<Pick<RecurringRule,
+  "categoryId" | "vendor" | "amount" | "notes" | "paymentStatus" | "cadence" | "nextDueOn" | "endsOn">>;
 type InvoiceWrite = Command & { bookingId?: string; recipient: Invoice["recipient"];
   dueOn?: Date; lines: Array<Omit<InvoiceLine, "total">> };
 type InvoicePatch = Command & Partial<Omit<InvoiceWrite, keyof Command>>;
 type VoidWrite = Command & { reason: string }; type DeliveryWrite = Command & { to: string };
-type PaymentWrite = Command & { amount: Money; paidOn: Date; method: string; reference?: string };
+type PaymentWrite = Command & { amount: Money; paidOn: Date; method: Exclude<FinanceRoutePaymentMethod, "wallet" | "xendit">; reference?: string };
 type ExportWrite = Command & ({ tab: "dashboard"; filters: DashboardQuery } |
   { tab: "revenue"; filters: RevenueQuery } | { tab: "expenses"; filters: ExpenseQuery } |
   { tab: "profit_loss"; filters: ProfitLossQuery } | { tab: "invoices"; filters: InvoiceQuery }) &
@@ -215,6 +207,8 @@ type ProfitLossResponse = Envelope & { summary: { revenueYtd: MoneyMetric; expen
 type InvoiceListResponse = Envelope & { summary: { outstanding: MoneyMetric; overdue: MoneyMetric;
   paidThisMonth: MoneyMetric; averageDaysToPay: ScalarMetric }; page: Page<Invoice> };
 type ItemResponse<T> = Envelope & { item: T }; type CommandResponse<T> = ItemResponse<T> & { outcome: "created" | "updated" | "replayed" };
+type CommandReceipt = { contractVersion: "pms-financials.v1"; propertyId: string; resourceId: string;
+  outcome: "created" | "updated" | "replayed" }; type WriteResponse<T> = CommandResponse<T> | CommandReceipt;
 ```
 
 `from`/`to` are inclusive. Invalid ranges return `400`. Cursors are opaque,
@@ -225,24 +219,24 @@ match the named tab's query type after normalization; unknown keys return `400`.
 
 ### Canonical routes
 
-| Method             | Path after `/api/finance/properties/:propertyId/financials` | Request → response                                                                |
-| ------------------ | ----------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `GET`              | `/dashboard`                                                | `DashboardQuery` → `DashboardResponse`                                            |
-| `GET`              | `/revenue`                                                  | `RevenueQuery` → `RevenueResponse`                                                |
-| `GET/POST`         | `/expense-categories`                                       | none / `CategoryWrite` → `ItemResponse<Category[]>` / `CommandResponse<Category>` |
-| `PATCH/DELETE`     | `/expense-categories/:categoryId`                           | `CategoryPatch` / `Command` → `CommandResponse<Category>`                         |
-| `GET/POST`         | `/expenses`                                                 | `ExpenseQuery` / `ExpenseWrite` → `ExpensesResponse` / `CommandResponse<Expense>` |
-| `GET/PATCH/DELETE` | `/expenses/:expenseId`                                      | none / `ExpensePatch` / `Command` → item / `CommandResponse<Expense>`             |
-| `GET/PATCH/DELETE` | `/recurring-expenses/:ruleId`                               | none / `RecurrencePatch` / `Command` → item / `CommandResponse<RecurringRule>`    |
-| `GET`              | `/profit-loss`                                              | `ProfitLossQuery` → `ProfitLossResponse`                                          |
-| `GET/POST`         | `/invoices`                                                 | `InvoiceQuery` / `InvoiceWrite` → `InvoiceListResponse` / command response        |
-| `GET/PATCH/DELETE` | `/invoices/:invoiceId`                                      | none / `InvoicePatch` / `Command` → item / `CommandResponse<Invoice>`             |
-| `POST`             | `/invoices/:invoiceId/issue`                                | `Command` → `CommandResponse<Invoice>`                                            |
-| `POST`             | `/invoices/:invoiceId/void`                                 | `VoidWrite` → `CommandResponse<Invoice>`                                          |
-| `POST`             | `/invoices/:invoiceId/payments`                             | `PaymentWrite` → `CommandResponse<Invoice>`                                       |
-| `POST/GET`         | `/invoices/:invoiceId/document`                             | `Command` / none → `CommandResponse<Disposition>` / item response                 |
-| `POST`             | `/invoices/:invoiceId/deliveries`                           | `DeliveryWrite` → `CommandResponse<DeliveryReceipt>`                              |
-| `POST/GET`         | `/exports` / `/exports/:exportId`                           | `ExportWrite` / none → `CommandResponse<Disposition>` / item response             |
+| Method             | Path after `/api/finance/properties/:propertyId/financials` | Request → response                                                                 |
+| ------------------ | ----------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `GET`              | `/dashboard`                                                | `DashboardQuery` → `DashboardResponse`                                             |
+| `GET`              | `/revenue`                                                  | `RevenueQuery` → `RevenueResponse`                                                 |
+| `GET/POST`         | `/expense-categories`                                       | none / `CategoryWrite` → `ItemResponse<Category[]>` / `WriteResponse<Category>`    |
+| `PATCH/DELETE`     | `/expense-categories/:categoryId`                           | `CategoryPatch` / `Command` → `WriteResponse<Category>`                            |
+| `GET/POST`         | `/expenses`                                                 | `ExpenseQuery` / `ExpenseWrite` → `ExpensesResponse` / `WriteResponse<Expense>`    |
+| `GET/PATCH/DELETE` | `/expenses/:expenseId`                                      | none / `ExpensePatch` / `Command` → item / `WriteResponse<Expense>`                |
+| `GET/PATCH/DELETE` | `/recurring-expenses/:ruleId`                               | none / `RecurrencePatch` / `Command` → item / `WriteResponse<RecurringRule>`       |
+| `GET`              | `/profit-loss`                                              | `ProfitLossQuery` → `ProfitLossResponse`                                           |
+| `GET/POST`         | `/invoices`                                                 | `InvoiceQuery` / `InvoiceWrite` → `InvoiceListResponse` / `WriteResponse<Invoice>` |
+| `GET/PATCH/DELETE` | `/invoices/:invoiceId`                                      | none / `InvoicePatch` / `Command` → item / `WriteResponse<Invoice>`                |
+| `POST`             | `/invoices/:invoiceId/issue`                                | `Command` → `WriteResponse<Invoice>`                                               |
+| `POST`             | `/invoices/:invoiceId/void`                                 | `VoidWrite` → `WriteResponse<Invoice>`                                             |
+| `POST`             | `/invoices/:invoiceId/payments`                             | `PaymentWrite` → `WriteResponse<Invoice>`                                          |
+| `POST/GET`         | `/invoices/:invoiceId/document`                             | `Command` / none → `WriteResponse<Disposition>` / item response                    |
+| `POST`             | `/invoices/:invoiceId/deliveries`                           | `DeliveryWrite` → `WriteResponse<DeliveryReceipt>`                                 |
+| `POST/GET`         | `/exports` / `/exports/:exportId`                           | `ExportWrite` / none → `WriteResponse<Disposition>` / item response                |
 
 V1 exports CSV for all five tabs and an individual PDF for each invoice. It does
 not promise a PDF rendition of Dashboard, Revenue, Expenses or P&L.
@@ -260,7 +254,8 @@ introduced.
   relationships do not gain Financials access implicitly.
 - `pms.finance.manage` does not imply read. VAY-1138 must grant
   `pms.finance.read` to `finance_manager` as an explicit migration before that
-  relationship is activated.
+  relationship is activated. A resource-bearing `CommandResponse<T>` also
+  requires read authorization; manage-only callers receive `CommandReceipt`.
 - Route adapters call `enforceRoutePolicy` before reads, idempotency lookup or
   validation that could disclose property data.
 - `401` means invalid/missing authentication. `403` covers permission,

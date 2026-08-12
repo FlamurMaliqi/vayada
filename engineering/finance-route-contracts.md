@@ -4,7 +4,8 @@
 > summary, synthetic invoice, invoice CSV, invoice-scoped manual payment and PMS
 > payment-ledger presentation contracts. See
 > [`pms-financials-contracts.md`](pms-financials-contracts.md). Payment settings,
-> provider onboarding, payment facts, payouts and reconciliation remain active.
+> provider onboarding, payment facts, payouts and reconciliation remain active;
+> superseded route rows below are historical compatibility references only.
 
 _VAY-795 contract record. Covers F1 from
 [`booking-pms-route-migration-inventory.md`](booking-pms-route-migration-inventory.md)
@@ -212,6 +213,7 @@ Invoice list query rules:
 
 Representative read models:
 
+<!-- prettier-ignore -->
 ```ts
 type FinanceInvoiceListResponse = {
   contractVersion: "finance-route-contracts.v1";
@@ -352,6 +354,7 @@ Property and affiliate payouts are finance-owned. Payout reads must expose
 provider status and retry/disposition state without returning destination
 account numbers or provider secrets.
 
+<!-- prettier-ignore -->
 ```ts
 type FinancePayout = {
   payoutId: string;
