@@ -19,13 +19,9 @@ import {
 } from "./sessionStore";
 import { ensureBookingCompatibilityToken } from "./compatibilityToken";
 import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
-import { resolveLocalApiOrigin } from "@vayada/product-onboarding/localApiOrigin";
 
 const AUTH_SURFACE = "booking-admin";
-
-function authApiBaseUrl(): string {
-  return resolveLocalApiOrigin(process.env.NEXT_PUBLIC_AUTH_API_URL);
-}
+const AUTH_BROWSER_BASE_PATH = "/auth";
 
 export interface LoginRequest {
   email: string;
@@ -39,7 +35,7 @@ export interface SignupRequest {
 }
 
 async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${authApiBaseUrl()}${endpoint}`, {
+  const response = await fetch(`${AUTH_BROWSER_BASE_PATH}${endpoint}`, {
     ...options,
     credentials: "include",
     headers: {
@@ -93,7 +89,7 @@ export const authService = {
       callbackUrl.searchParams.set("returnTo", returnTo);
     }
     const errorUrl = new URL("/login", window.location.origin);
-    const url = new URL(`${authApiBaseUrl()}/auth/oauth/google/start`);
+    const url = new URL(`${AUTH_BROWSER_BASE_PATH}/oauth/google/start`, window.location.origin);
     url.searchParams.set("surface", AUTH_SURFACE);
     url.searchParams.set("flow", "login");
     url.searchParams.set("return_to", callbackUrl.toString());
@@ -110,7 +106,7 @@ export const authService = {
       callbackUrl.searchParams.set("returnTo", returnTo);
     }
     const errorUrl = new URL("/signup", window.location.origin);
-    const url = new URL(`${authApiBaseUrl()}/auth/oauth/google/start`);
+    const url = new URL(`${AUTH_BROWSER_BASE_PATH}/oauth/google/start`, window.location.origin);
     url.searchParams.set("surface", AUTH_SURFACE);
     url.searchParams.set("flow", "signup");
     url.searchParams.set("type", "hotel");
@@ -127,7 +123,7 @@ export const authService = {
   refreshSession: async (organizationId?: string): Promise<AuthSessionResponse> => {
     const csrfToken = getAuthCsrfToken();
     const response = csrfToken
-      ? await authFetch<AuthSessionResponse>("/auth/session/refresh", {
+      ? await authFetch<AuthSessionResponse>("/session/refresh", {
           method: "POST",
           headers: { "x-vayada-csrf": csrfToken },
           body: JSON.stringify({
@@ -135,7 +131,7 @@ export const authService = {
             surface: AUTH_SURFACE,
           }),
         })
-      : await authFetch<AuthSessionResponse>(`/auth/session?surface=${AUTH_SURFACE}`);
+      : await authFetch<AuthSessionResponse>(`/session?surface=${AUTH_SURFACE}`);
 
     return storeAuthSessionResponse(response);
   },
@@ -158,7 +154,7 @@ export const authService = {
   },
 
   login: async (data: LoginRequest): Promise<AuthSessionResponse> => {
-    const response = await authFetch<AuthSessionResponse>("/auth/password/login", {
+    const response = await authFetch<AuthSessionResponse>("/password/login", {
       method: "POST",
       body: JSON.stringify({ ...data, surface: AUTH_SURFACE }),
     });
@@ -166,7 +162,7 @@ export const authService = {
   },
 
   signup: async (data: SignupRequest): Promise<AuthSessionResponse> => {
-    const response = await authFetch<AuthSessionResponse>("/auth/password/signup", {
+    const response = await authFetch<AuthSessionResponse>("/password/signup", {
       method: "POST",
       body: JSON.stringify({ ...data, surface: AUTH_SURFACE, type: "hotel" }),
     });
@@ -182,7 +178,7 @@ export const authService = {
   }): Promise<void> => {
     const csrfToken = getAuthCsrfToken();
     if (!csrfToken) throw new Error("Your session has expired. Please sign in again.");
-    await authFetch<{ updated: true }>("/auth/profile", {
+    await authFetch<{ updated: true }>("/profile", {
       method: "POST",
       headers: { "x-vayada-csrf": csrfToken },
       body: JSON.stringify({ ...data, surface: AUTH_SURFACE }),
@@ -199,7 +195,7 @@ export const authService = {
 
     if (isAuthKitLoginEnabled() && csrfToken) {
       try {
-        const response = await authFetch<{ logoutUrl: string }>("/auth/logout", {
+        const response = await authFetch<{ logoutUrl: string }>("/logout", {
           method: "POST",
           headers: { "x-vayada-csrf": csrfToken },
           body: JSON.stringify({ surface: AUTH_SURFACE }),
@@ -250,7 +246,7 @@ export const authService = {
    */
   forgotPassword: async (email: string): Promise<{ message: string }> => {
     try {
-      return await authFetch<{ message: string }>("/auth/password/reset/request", {
+      return await authFetch<{ message: string }>("/password/reset/request", {
         method: "POST",
         body: JSON.stringify({ email }),
       });
@@ -265,7 +261,7 @@ export const authService = {
    * Reset password using a reset token
    */
   resetPassword: async (token: string, newPassword: string): Promise<{ message: string }> => {
-    const response = await authFetch<{ message: string }>("/auth/password/reset/confirm", {
+    const response = await authFetch<{ message: string }>("/password/reset/confirm", {
       method: "POST",
       body: JSON.stringify({ token, newPassword }),
     });

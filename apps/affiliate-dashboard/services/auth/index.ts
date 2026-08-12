@@ -9,11 +9,11 @@ import {
   type AuthKitSessionResponse,
 } from "./storage";
 
-const AUTH_API_URL = process.env.NEXT_PUBLIC_AUTH_API_URL || "https://api.localhost";
 const AFFILIATE_SURFACE = "affiliate-dashboard";
+const AUTH_BROWSER_BASE_PATH = "/auth";
 
 async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${AUTH_API_URL}${endpoint}`, {
+  const response = await fetch(`${AUTH_BROWSER_BASE_PATH}${endpoint}`, {
     ...options,
     credentials: "include",
     headers: {
@@ -37,7 +37,7 @@ async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promis
 
 export const authService = {
   login: async (email: string, password: string): Promise<AuthKitSessionResponse> => {
-    const response = await authFetch<AuthKitSessionResponse>("/auth/password/login", {
+    const response = await authFetch<AuthKitSessionResponse>("/password/login", {
       method: "POST",
       body: JSON.stringify({ email, password, surface: AFFILIATE_SURFACE }),
     });
@@ -49,13 +49,13 @@ export const authService = {
     const csrfToken = getAuthCsrfToken();
     const response =
       organizationId && csrfToken
-        ? await authFetch<AuthKitSessionResponse>("/auth/session/refresh", {
+        ? await authFetch<AuthKitSessionResponse>("/session/refresh", {
             method: "POST",
             headers: { "x-vayada-csrf": csrfToken },
             body: JSON.stringify({ organizationId, surface: AFFILIATE_SURFACE }),
           })
         : await authFetch<AuthKitSessionResponse>(
-            `/auth/session?surface=${encodeURIComponent(AFFILIATE_SURFACE)}`,
+            `/session?surface=${encodeURIComponent(AFFILIATE_SURFACE)}`,
           );
 
     setAuthKitSession(response);
@@ -81,7 +81,7 @@ export const authService = {
 
     if (csrfToken) {
       try {
-        const response = await authFetch<{ logoutUrl: string }>("/auth/logout", {
+        const response = await authFetch<{ logoutUrl: string }>("/logout", {
           method: "POST",
           headers: { "x-vayada-csrf": csrfToken },
           body: JSON.stringify({ surface: AFFILIATE_SURFACE }),

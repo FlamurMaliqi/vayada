@@ -6,22 +6,16 @@ const PLATFORM_MEDIA_API_BASE_URL =
 const platformMediaClient = new ApiClient(PLATFORM_MEDIA_API_BASE_URL);
 
 export type PlatformMediaResourceScope = {
-  product: "pms";
-  resourceType: "pms_hotel" | "pms_property";
+  product: "hotel_catalog";
+  resourceType: "property";
   resourceId: string;
-  propertyId?: string;
+  propertyId: string;
   targetResourceId?: string;
 };
 
 export type PlatformMediaUploadResult = {
   mediaId: string;
   url: string;
-  storageKey: string;
-  contentType: string;
-  sizeBytes: number;
-  widthPx?: number;
-  heightPx?: number;
-  originalFilename: string;
 };
 
 type UploadTarget = {
@@ -39,14 +33,9 @@ type UploadSessionResponse = {
 
 type FinalizeResponse = {
   mediaObjects: Array<{
-    mediaId: string;
-    storageKey: string;
-    contentType: string;
-    sizeBytes: number;
-    widthPx?: number;
-    heightPx?: number;
-    originalFilename: string;
-    variants: Array<{ publicCdnUrl: string | null; storageKey: string }>;
+    mediaObjectId: string;
+    status: "public_ready";
+    publicVariants: Array<{ variantName: string; publicUrl: string }>;
   }>;
 };
 
@@ -110,16 +99,12 @@ export async function uploadPlatformMedia(input: {
   );
 
   return finalized.mediaObjects.map((mediaObject) => ({
-    mediaId: mediaObject.mediaId,
+    mediaId: mediaObject.mediaObjectId,
     url:
-      mediaObject.variants.find((variant) => variant.publicCdnUrl)?.publicCdnUrl ??
-      mediaObject.storageKey,
-    storageKey: mediaObject.storageKey,
-    contentType: mediaObject.contentType,
-    sizeBytes: mediaObject.sizeBytes,
-    widthPx: mediaObject.widthPx,
-    heightPx: mediaObject.heightPx,
-    originalFilename: mediaObject.originalFilename,
+      mediaObject.publicVariants.find(({ variantName }) => variantName === "thumbnail")
+        ?.publicUrl ??
+      mediaObject.publicVariants[0]?.publicUrl ??
+      "",
   }));
 }
 

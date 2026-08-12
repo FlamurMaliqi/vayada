@@ -3,7 +3,7 @@
 import { useState, useEffect, use } from "react";
 import { ArrowLeftIcon, TrashIcon } from "@heroicons/react/24/outline";
 import Link from "next/link";
-import { roomsService, RoomType, RoomTypeUpdate } from "@/services/rooms";
+import { roomsService, RoomType, RoomTypeUpdate, type PropertyPlan } from "@/services/rooms";
 import RoomTypeForm from "@/components/rooms/RoomTypeForm";
 import ConfirmDialog from "@/components/ConfirmDialog";
 
@@ -61,10 +61,12 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [saving, setSaving] = useState(false);
+  const [propertyPlan, setPropertyPlan] = useState<PropertyPlan | null>(null);
 
   const [form, setForm] = useState<RoomTypeUpdate>({});
 
   useEffect(() => {
+    roomsService.getPropertyPlan().then(setPropertyPlan).catch(console.error);
     roomsService
       .get(id)
       .then((r) => {
@@ -84,9 +86,9 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
       const updated = await roomsService.update(id, form);
       setRoom(updated);
       setForm(toRoomTypeUpdateForm(updated));
-      setSuccess("Room type location saved.");
+      setSuccess("Room type changes saved.");
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Failed to save room type location.");
+      setError(error instanceof Error ? error.message : "Failed to save room type changes.");
     } finally {
       setSaving(false);
     }
@@ -143,10 +145,11 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
         saving={saving}
         error={error}
         success={success}
-        submitLabel="Save Location"
+        submitLabel="Save Changes"
         cancelHref="/rooms"
         mode="edit"
         roomTypeId={id}
+        propertyPlan={propertyPlan}
       />
       {showDeleteConfirm && (
         <ConfirmDialog
