@@ -10,6 +10,7 @@ import {
   createFinanceStripeProviderAccount,
   getFinancePaymentSettings,
   issueFinanceStripeOnboardingLink,
+  payAtHotelMethodsFromFinance,
   updateFinancePaymentSettings,
   type UpdateFinancePaymentSettingsBody,
 } from "./financePaymentSettingsClient";
@@ -167,6 +168,7 @@ describe("payment settings target clients", () => {
         body: {
           email: "owner@example.com",
           country: "AT",
+          returnSurface: "booking_admin",
         },
         options: omitHotelContext,
       },
@@ -183,6 +185,7 @@ describe("payment settings target clients", () => {
     expect(calls[1]!.body).toMatchObject({
       commandId: expect.stringMatching(/^stripe-link-test-/),
       idempotencyKey: expect.stringMatching(/^stripe-link-test-/),
+      returnSurface: "booking_admin",
     });
   });
 
@@ -190,14 +193,14 @@ describe("payment settings target clients", () => {
     const body = buildFinancePaymentSettingsBody({
       payAtPropertyEnabled: true,
       payAtHotelMethods: ["cash", "card"],
-      onlineCardPayment: true,
+      onlineCardPayment: false,
       bankTransfer: true,
       payoutAccountHolder: "Hotel Alpenrose GmbH",
       payoutAccountType: "iban",
       payoutIban: "DE89370400440532013000",
       payoutBankName: "Commerzbank",
       payoutSwift: "COBADEFFXXX",
-      paymentProvider: "xendit",
+      paymentProvider: "stripe",
       defaultCurrency: "chf",
       commandPrefix: "test-command",
     });
@@ -206,8 +209,8 @@ describe("payment settings target clients", () => {
     expect(body.idempotencyKey).toBe(body.commandId);
     expect(body.paymentSettings).toMatchObject({
       paymentsEnabled: true,
-      paymentProvider: "xendit",
-      acceptedMethods: ["pay_at_property", "cash", "manual_card", "xendit", "bank_transfer"],
+      paymentProvider: "stripe",
+      acceptedMethods: ["pay_at_property", "cash", "manual_card", "bank_transfer"],
       defaultCurrency: "CHF",
       supportedCurrencies: ["CHF"],
       requiresManualReview: false,
@@ -216,5 +219,62 @@ describe("payment settings target clients", () => {
           "Account holder: Hotel Alpenrose GmbH\nIBAN: DE89370400440532013000\nBank: Commerzbank\nSWIFT/BIC: COBADEFFXXX",
       },
     });
+  });
+
+  it("round-trips a cash-only onboarding choice without adding card at hotel", () => {
+    const payAtHotelMethods = payAtHotelMethodsFromFinance(["pay_at_property", "cash"]);
+    const body = buildFinancePaymentSettingsBody({
+      payAtPropertyEnabled: true,
+      payAtHotelMethods,
+      onlineCardPayment: false,
+      bankTransfer: false,
+      paymentProvider: "stripe",
+      defaultCurrency: "EUR",
+      commandPrefix: "cash-only-round-trip",
+    });
+
+    expect(payAtHotelMethods).toEqual(["cash"]);
+    expect(body.paymentSettings.acceptedMethods).toEqual(["pay_at_property", "cash"]);
+  });
+
+  it("does not enable incomplete manual payment methods", () => {
+    expect(() =>
+      buildFinancePaymentSettingsBody({
+        payAtPropertyEnabled: false,
+        onlineCardPayment: false,
+        bankTransfer: true,
+        payoutAccountHolder: "Hotel One",
+        payoutAccountType: "iban",
+        payoutIban: "DE123",
+        paymentProvider: "stripe",
+        defaultCurrency: "EUR",
+      }),
+    ).toThrow("Bank name is required.");
+
+    expect(() =>
+      buildFinancePaymentSettingsBody({
+        payAtPropertyEnabled: false,
+        onlineCardPayment: false,
+        bankTransfer: false,
+        paypalEnabled: true,
+        paypalEmail: "not-an-email",
+        paymentProvider: "stripe",
+        defaultCurrency: "EUR",
+      }),
+    ).toThrow("PayPal email must be a valid email address.");
+  });
+
+  it("requires at least one public payment method", () => {
+    expect(() =>
+      buildFinancePaymentSettingsBody({
+        payAtPropertyEnabled: false,
+        payAtHotelMethods: [],
+        onlineCardPayment: false,
+        bankTransfer: false,
+        paypalEnabled: false,
+        paymentProvider: "stripe",
+        defaultCurrency: "EUR",
+      }),
+    ).toThrow("Choose at least one payment method.");
   });
 });

@@ -14,6 +14,10 @@ import type {
   AuthSurfacePolicy,
   ProductAuditEvent,
 } from "./routes/authSession.js";
+import type {
+  AuthSessionHandoff,
+  AuthSessionHandoffRepository,
+} from "./platform/authSessionHandoffs.js";
 import type { ApprovedPublicProfileImageRepository } from "./routes/platformMedia.js";
 import type { HotelAccountInviteRepository } from "./routes/hotelAccountInvites.js";
 
@@ -35,6 +39,18 @@ const session: AuthKitSession = {
     email: "f.maliqi@vayada.com",
     emailVerified: true,
     name: "Admin Example",
+  },
+};
+
+const handoffHotelSession: AuthKitSession = {
+  ...session,
+  accessToken: "hotel-workos-access-token",
+  sealedSession: "hotel-sealed-session",
+  organizationId: "org_workos_hotel_group",
+  user: {
+    ...session.user,
+    id: "user_workos_hotel",
+    email: "owner@alpenrose.example",
   },
 };
 
@@ -87,6 +103,7 @@ describe("AuthKit session routes", () => {
     };
     app = buildAuthSessionApp({
       allowedOrigins: ["https://marketplace.localhost"],
+      cookieSecure: true,
       authKitClient: createAuthKitClient({
         async authenticateWithPassword(input) {
           passwordAuthInput = input;
@@ -121,6 +138,8 @@ describe("AuthKit session routes", () => {
       surfacePolicies: {
         "marketplace-web": {
           requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          publicOrigin: "https://marketplace.localhost",
+          firstPartySession: true,
         },
       },
       productAuditSink: {
@@ -171,8 +190,8 @@ describe("AuthKit session routes", () => {
     expect(response.json()).not.toHaveProperty("clientSecret");
     expect(response.headers["set-cookie"]).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("vayada_workos_session=creator-sealed-session"),
-        expect.stringContaining("vayada_auth_csrf="),
+        expect.stringContaining("vayada_fp_workos_session=creator-sealed-session"),
+        expect.stringContaining("vayada_fp_auth_csrf="),
       ]),
     );
     expect(auditEvents).toEqual([
@@ -191,6 +210,11 @@ describe("AuthKit session routes", () => {
     let authorizationInput: Parameters<AuthKitClient["getAuthorizationUrl"]>[0] | undefined;
     app = buildAuthSessionApp({
       allowedOrigins: ["https://marketplace.localhost"],
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        },
+      },
       authKitClient: createAuthKitClient({
         getAuthorizationUrl(input) {
           authorizationInput = input;
@@ -217,6 +241,373 @@ describe("AuthKit session routes", () => {
     });
   });
 
+  it.each([
+    ["platform-admin", "https://admin.localhost"],
+    ["marketplace-web", "https://marketplace.localhost"],
+    ["booking-admin", "https://admin.booking.localhost"],
+    ["pms-web", "https://pms.localhost"],
+    ["affiliate-dashboard", "https://affiliate.localhost"],
+  ] as const)("uses the configured first-party callback for %s", async (surface, publicOrigin) => {
+    let authorizationInput: Parameters<AuthKitClient["getAuthorizationUrl"]>[0] | undefined;
+    app = buildAuthSessionApp({
+      allowedOrigins: [publicOrigin],
+      cookieSecure: true,
+      authKitClient: createAuthKitClient({
+        getAuthorizationUrl(input) {
+          authorizationInput = input;
+          return "https://auth.workos.test/google";
+        },
+      }),
+      surfacePolicies: {
+        [surface]: {
+          requiredOrganizationKind: "platform",
+          publicOrigin,
+          firstPartySession: true,
+        },
+      },
+    });
+
+    const url = new URL(publicOrigin);
+    const response = await app.inject({
+      method: "GET",
+      url:
+        `/auth/oauth/google/start?surface=${surface}&flow=login` +
+        `&return_to=${encodeURIComponent(`${publicOrigin}/login?auth=callback`)}` +
+        `&error_return_to=${encodeURIComponent(`${publicOrigin}/login`)}`,
+      headers: {
+        "x-forwarded-host": `${url.host}, attacker.example`,
+        "x-forwarded-proto": `${url.protocol.slice(0, -1)}, http`,
+      },
+    });
+
+    expect(response.statusCode).toBe(302);
+    expect(authorizationInput?.redirectUri).toBe(`${publicOrigin}/auth/oauth/google/callback`);
+    const stateCookie = (response.headers["set-cookie"] as string[]).find((value) =>
+      value.startsWith("vayada_fp_oauth_state="),
+    );
+    expect(stateCookie).toContain("Path=/auth");
+    expect(stateCookie).toContain("SameSite=Lax");
+    expect(stateCookie).toContain("HttpOnly");
+    expect(stateCookie).toContain("Secure");
+    expect(stateCookie).not.toContain("Domain=");
+  });
+
+  it.each([
+    { host: "attacker.example", proto: "https" },
+    { host: "api.localhost", proto: "javascript" },
+    { host: "attacker.example, api.localhost", proto: "https, http" },
+  ])("rejects untrusted forwarded callback origin $host/$proto", async ({ host, proto }) => {
+    const getAuthorizationUrl = vi.fn(() => "https://auth.workos.test/google");
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({ getAuthorizationUrl }),
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          publicOrigin: "https://marketplace.localhost",
+          firstPartySession: true,
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url:
+        "/auth/oauth/google/start?surface=marketplace-web&flow=login" +
+        "&return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin" +
+        "&error_return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin",
+      headers: { "x-forwarded-host": host, "x-forwarded-proto": proto },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: "invalid_callback_origin" });
+    expect(getAuthorizationUrl).not.toHaveBeenCalled();
+  });
+
+  it("rejects a callback delivered through the wrong public origin", async () => {
+    let state = "";
+    const authenticateWithCode = vi.fn(async () => session);
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      authKitClient: createAuthKitClient({
+        getAuthorizationUrl(input) {
+          state = input.state;
+          return "https://auth.workos.test/google";
+        },
+        authenticateWithCode,
+      }),
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          publicOrigin: "https://marketplace.localhost",
+          firstPartySession: true,
+        },
+      },
+    });
+    const start = await app.inject({
+      method: "GET",
+      url:
+        "/auth/oauth/google/start?surface=marketplace-web&flow=login" +
+        "&return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin" +
+        "&error_return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin",
+      headers: {
+        "x-forwarded-host": "marketplace.localhost",
+        "x-forwarded-proto": "https",
+      },
+    });
+    const callback = await app.inject({
+      method: "GET",
+      url: `/auth/oauth/google/callback?code=google-code&state=${encodeURIComponent(state)}`,
+      headers: {
+        cookie: cookieHeader(start, "vayada_fp_oauth_state"),
+        "x-forwarded-host": "attacker.example",
+        "x-forwarded-proto": "https",
+      },
+    });
+
+    expect(callback.statusCode).toBe(400);
+    expect(callback.json()).toEqual({ error: "invalid_callback_origin" });
+    expect(authenticateWithCode).not.toHaveBeenCalled();
+  });
+
+  it("uses host-only HttpOnly cookies and response CSRF tokens in first-party mode", async () => {
+    app = buildAuthSessionApp({
+      cookieSecure: true,
+      cookieDomain: ".localhost",
+      surfacePolicies: {
+        "platform-admin": {
+          requiredOrganizationKind: "platform",
+          publicOrigin: "https://admin.localhost",
+          firstPartySession: true,
+        },
+      },
+    });
+
+    const login = await app.inject({
+      method: "POST",
+      url: "/auth/password/login",
+      headers: { origin: "https://admin.localhost" },
+      payload: {
+        email: "f.maliqi@vayada.com",
+        password: "correct-password",
+        surface: "platform-admin",
+      },
+    });
+
+    expect(login.statusCode).toBe(200);
+    const csrfToken = login.json().csrfToken as string;
+    expect(csrfToken).toEqual(expect.any(String));
+    const loginCookies = login.headers["set-cookie"] as string[];
+    for (const [activeCookieName, legacyCookieName] of [
+      ["vayada_fp_workos_session", "vayada_workos_session"],
+      ["vayada_fp_auth_csrf", "vayada_auth_csrf"],
+    ]) {
+      const cookie = loginCookies.find(
+        (value) => value.startsWith(`${activeCookieName}=`) && !value.includes("Domain="),
+      );
+      const legacyCleanup = loginCookies.find(
+        (value) => value.startsWith(`${legacyCookieName}=`) && value.includes("Domain=.localhost"),
+      );
+      expect(cookie).toContain("Path=/auth");
+      expect(cookie).toContain("SameSite=Lax");
+      expect(cookie).toContain("HttpOnly");
+      expect(cookie).toContain("Secure");
+      expect(cookie).not.toContain("Domain=");
+      expect(legacyCleanup).toContain("Max-Age=0");
+    }
+
+    const refresh = await app.inject({
+      method: "POST",
+      url: "/auth/session/refresh",
+      headers: {
+        cookie: [
+          cookieHeader(login, "vayada_fp_workos_session"),
+          cookieHeader(login, "vayada_fp_auth_csrf"),
+        ].join("; "),
+        origin: "https://admin.localhost",
+        "x-vayada-csrf": csrfToken,
+      },
+      payload: { surface: "platform-admin" },
+    });
+
+    expect(refresh.statusCode).toBe(200);
+    expect(refresh.json().csrfToken).toBe(csrfToken);
+  });
+
+  it("preserves cross-origin cookie attributes in compatibility mode", async () => {
+    app = buildAuthSessionApp({ cookieSecure: true, cookieDomain: ".localhost" });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/login",
+      headers: { origin: "https://admin.localhost" },
+      payload: {
+        email: "f.maliqi@vayada.com",
+        password: "correct-password",
+        surface: "platform-admin",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const sessionCookie = (response.headers["set-cookie"] as string[]).find((value) =>
+      value.startsWith("vayada_workos_session="),
+    );
+    const csrfCookie = (response.headers["set-cookie"] as string[]).find((value) =>
+      value.startsWith("vayada_auth_csrf="),
+    );
+    expect(sessionCookie).toContain("SameSite=None");
+    expect(sessionCookie).toContain("HttpOnly");
+    expect(sessionCookie).toContain("Secure");
+    expect(sessionCookie).toContain("Domain=.localhost");
+    expect(csrfCookie).toContain("SameSite=None");
+    expect(csrfCookie).toContain("Secure");
+    expect(csrfCookie).toContain("Domain=.localhost");
+    expect(csrfCookie).not.toContain("HttpOnly");
+  });
+
+  it.each([
+    [
+      "legacy cookies first",
+      "vayada_workos_session=legacy-domain-session; " +
+        "vayada_auth_csrf=legacy-domain-csrf; " +
+        "vayada_fp_workos_session=first-party-session; " +
+        "vayada_fp_auth_csrf=first-party-csrf",
+    ],
+    [
+      "legacy cookies last",
+      "vayada_fp_workos_session=first-party-session; " +
+        "vayada_fp_auth_csrf=first-party-csrf; " +
+        "vayada_workos_session=newer-compatibility-session; " +
+        "vayada_auth_csrf=newer-compatibility-csrf",
+    ],
+  ])("isolates first-party cookies with %s", async (_order, cookie) => {
+    let authenticatedSealedSession = "";
+    app = buildAuthSessionApp({
+      cookieSecure: true,
+      cookieDomain: ".localhost",
+      authKitClient: createAuthKitClient({
+        async authenticateSession(input) {
+          authenticatedSealedSession = input.sealedSession;
+          return { ...session, sealedSession: input.sealedSession };
+        },
+      }),
+      surfacePolicies: {
+        "platform-admin": {
+          requiredOrganizationKind: "platform",
+          publicOrigin: "https://admin.localhost",
+          firstPartySession: true,
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/session?surface=platform-admin",
+      headers: {
+        cookie,
+        origin: "https://admin.localhost",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(authenticatedSealedSession).toBe("first-party-session");
+    expect(response.json().csrfToken).toBe("first-party-csrf");
+    expect(response.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^vayada_workos_session=;.*Max-Age=0.*Domain=\.localhost/),
+        expect.stringMatching(/^vayada_auth_csrf=;.*Max-Age=0.*Domain=\.localhost/),
+      ]),
+    );
+  });
+
+  it("fails closed when active first-party session or CSRF cookies are duplicated", async () => {
+    app = buildAuthSessionApp({
+      cookieSecure: true,
+      surfacePolicies: {
+        "platform-admin": {
+          requiredOrganizationKind: "platform",
+          publicOrigin: "https://admin.localhost",
+          firstPartySession: true,
+        },
+      },
+    });
+
+    const duplicateSession = await app.inject({
+      method: "GET",
+      url: "/auth/session?surface=platform-admin",
+      headers: {
+        cookie:
+          "vayada_fp_workos_session=first-session; " + "vayada_fp_workos_session=second-session",
+        origin: "https://admin.localhost",
+      },
+    });
+    expect(duplicateSession.statusCode).toBe(401);
+    expect(duplicateSession.json()).toEqual({ error: "missing_session" });
+
+    const duplicateCsrf = await app.inject({
+      method: "POST",
+      url: "/auth/session/refresh",
+      headers: {
+        cookie:
+          "vayada_fp_workos_session=sealed-session; " +
+          "vayada_fp_auth_csrf=csrf-token; vayada_fp_auth_csrf=csrf-token",
+        origin: "https://admin.localhost",
+        "x-vayada-csrf": "csrf-token",
+      },
+      payload: { surface: "platform-admin" },
+    });
+    expect(duplicateCsrf.statusCode).toBe(403);
+    expect(duplicateCsrf.json()).toEqual({ error: "csrf_rejected" });
+  });
+
+  it("fails closed when the active first-party OAuth-state cookie is duplicated", async () => {
+    let state = "";
+    const authenticateWithCode = vi.fn(async () => session);
+    app = buildAuthSessionApp({
+      allowedOrigins: ["https://marketplace.localhost"],
+      cookieSecure: true,
+      authKitClient: createAuthKitClient({
+        getAuthorizationUrl(input) {
+          state = input.state;
+          return "https://auth.workos.test/google";
+        },
+        authenticateWithCode,
+      }),
+      surfacePolicies: {
+        "marketplace-web": {
+          requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          publicOrigin: "https://marketplace.localhost",
+          firstPartySession: true,
+        },
+      },
+    });
+    const forwardedHeaders = {
+      "x-forwarded-host": "marketplace.localhost",
+      "x-forwarded-proto": "https",
+    };
+    const start = await app.inject({
+      method: "GET",
+      url:
+        "/auth/oauth/google/start?surface=marketplace-web&flow=login" +
+        "&return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin" +
+        "&error_return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin",
+      headers: forwardedHeaders,
+    });
+    const stateCookie = cookieHeader(start, "vayada_fp_oauth_state");
+    const callback = await app.inject({
+      method: "GET",
+      url: `/auth/oauth/google/callback?code=google-code&state=${encodeURIComponent(state)}`,
+      headers: {
+        ...forwardedHeaders,
+        cookie: `${stateCookie}; ${stateCookie}`,
+      },
+    });
+
+    expect(callback.statusCode).toBe(302);
+    expect(callback.headers.location).toContain("auth_error=");
+    expect(authenticateWithCode).not.toHaveBeenCalled();
+  });
+
   it("logs in an existing marketplace account through Google OAuth callback", async () => {
     let state = "";
     const marketplaceSession: AuthKitSession = {
@@ -232,6 +623,8 @@ describe("AuthKit session routes", () => {
     };
     app = buildAuthSessionApp({
       allowedOrigins: ["https://marketplace.localhost"],
+      cookieSecure: true,
+      cookieDomain: ".localhost",
       authKitClient: createAuthKitClient({
         getAuthorizationUrl(input) {
           state = input.state;
@@ -266,6 +659,8 @@ describe("AuthKit session routes", () => {
       surfacePolicies: {
         "marketplace-web": {
           requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+          publicOrigin: "https://marketplace.localhost",
+          firstPartySession: true,
         },
       },
     });
@@ -276,22 +671,47 @@ describe("AuthKit session routes", () => {
         "/auth/oauth/google/start?surface=marketplace-web&flow=login" +
         "&return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin%3Fauth%3Dcallback" +
         "&error_return_to=https%3A%2F%2Fmarketplace.localhost%2Flogin",
-      headers: { host: "api.localhost", "x-forwarded-proto": "https" },
+      headers: {
+        "x-forwarded-host": "marketplace.localhost",
+        "x-forwarded-proto": "https",
+      },
     });
+    expect(start.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^vayada_oauth_state=;.*Max-Age=0.*Domain=\.localhost/),
+      ]),
+    );
     const callback = await app.inject({
       method: "GET",
       url: `/auth/oauth/google/callback?code=google-code&state=${encodeURIComponent(state)}`,
-      headers: { cookie: cookieHeader(start, "vayada_oauth_state") },
+      headers: {
+        cookie: cookieHeader(start, "vayada_fp_oauth_state"),
+        "x-forwarded-host": "marketplace.localhost",
+        "x-forwarded-proto": "https",
+      },
     });
 
     expect(callback.statusCode).toBe(302);
     expect(callback.headers.location).toBe("https://marketplace.localhost/login?auth=callback");
     expect(callback.headers["set-cookie"]).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("vayada_workos_session=google-sealed-session"),
-        expect.stringContaining("vayada_auth_csrf="),
+        expect.stringContaining("vayada_fp_workos_session=google-sealed-session"),
+        expect.stringContaining("vayada_fp_auth_csrf="),
       ]),
     );
+    const restored = await app.inject({
+      method: "GET",
+      url: "/auth/session?surface=marketplace-web",
+      headers: {
+        cookie: [
+          cookieHeader(callback, "vayada_fp_workos_session"),
+          cookieHeader(callback, "vayada_fp_auth_csrf"),
+        ].join("; "),
+        origin: "https://marketplace.localhost",
+      },
+    });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json().csrfToken).toEqual(expect.any(String));
   });
 
   it("signs up a Google account and redirects to onboarding without product provisioning", async () => {
@@ -3764,11 +4184,15 @@ describe("AuthKit session routes", () => {
         }
       });
       app = buildAuthSessionApp({
+        cookieSecure: true,
+        cookieDomain: ".localhost",
         authKitClient: createAuthKitClient({ authenticateSession, getLogoutUrl }),
         productAuditSink: { record: recordAudit },
         surfacePolicies: {
           "platform-admin": {
             requiredOrganizationKind: "platform",
+            publicOrigin: "https://admin.localhost",
+            firstPartySession: true,
             logoutReturnUrl: "https://admin.localhost/login",
             selectedOrganizationCookieName: "vayada_platform_selected_org",
           },
@@ -3780,8 +4204,8 @@ describe("AuthKit session routes", () => {
         url: "/auth/logout",
         headers: {
           cookie:
-            "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token; " +
-            "vayada_platform_selected_org=org_workos_platform",
+            "vayada_fp_workos_session=sealed-session; vayada_fp_auth_csrf=csrf-token; " +
+            "vayada_fp_platform_selected_org=org_workos_platform",
           origin: "https://admin.localhost",
           "x-vayada-csrf": "csrf-token",
         },
@@ -3796,21 +4220,284 @@ describe("AuthKit session routes", () => {
       });
       const setCookieHeaders = response.headers["set-cookie"];
       expect(Array.isArray(setCookieHeaders)).toBe(true);
-      for (const cookieName of [
-        "vayada_workos_session",
-        "vayada_auth_csrf",
-        "vayada_platform_selected_org",
+      for (const [activeCookieName, legacyCookieName] of [
+        ["vayada_fp_workos_session", "vayada_workos_session"],
+        ["vayada_fp_auth_csrf", "vayada_auth_csrf"],
+        ["vayada_fp_oauth_state", "vayada_oauth_state"],
+        ["vayada_fp_platform_selected_org", "vayada_platform_selected_org"],
       ]) {
-        const expiredCookie = (setCookieHeaders as string[]).find((cookie) =>
-          cookie.startsWith(`${cookieName}=`),
+        const expiredCookie = (setCookieHeaders as string[]).find(
+          (cookie) => cookie.startsWith(`${activeCookieName}=`) && !cookie.includes("Domain="),
         );
         expect(expiredCookie).toContain("Max-Age=0");
+        const expiredDomainCookie = (setCookieHeaders as string[]).find(
+          (cookie) =>
+            cookie.startsWith(`${legacyCookieName}=`) && cookie.includes("Domain=.localhost"),
+        );
+        expect(expiredDomainCookie).toContain("Max-Age=0");
       }
       expect(authenticateSession).toHaveBeenCalledTimes(1);
       expect(recordAudit).toHaveBeenCalledTimes(expectedAuditCalls);
       expect(getLogoutUrl).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("creates and atomically redeems an audience-bound first-party handoff", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    app = buildAuthSessionApp(handoffAuthOptions(handoffs.repository));
+
+    const created = await createBookingHandoff(app);
+    expect(created.statusCode).toBe(200);
+    expect(created.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_fp_workos_session=hotel-sealed-session"),
+      ]),
+    );
+    const destination = new URL(created.json().destination);
+    expect(`${destination.origin}${destination.pathname}`).toBe(
+      "https://admin.booking.localhost/handoff",
+    );
+    expect(destination.search).toBe("");
+    const code = new URLSearchParams(destination.hash.slice(1)).get("code");
+    expect(code).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    const redeemed = await redeemHandoff(app, code!, "booking-admin");
+    expect(redeemed.statusCode).toBe(200);
+    expect(redeemed.json()).toEqual({
+      routingHints: {
+        organizationId: "org_hotel_group",
+        propertyId: "property_alpenrose",
+        workosOrganizationId: "org_workos_hotel_group",
+      },
+      targetPath: "/dashboard?from=marketplace",
+    });
+    expect(redeemed.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_fp_workos_session=hotel-sealed-session"),
+        expect.stringContaining("vayada_fp_auth_csrf="),
+      ]),
+    );
+
+    const replayed = await redeemHandoff(app, code!, "booking-admin");
+    expect(replayed.statusCode).toBe(401);
+    expect(replayed.json()).toEqual({ error: "invalid_handoff" });
+    expect(replayed.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("refuses to mint a target cookie after the provider session was logged out", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    const isSessionActive = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    app = buildAuthSessionApp(
+      handoffAuthOptions(
+        handoffs.repository,
+        createAuthKitClient({
+          async authenticateSession() {
+            return handoffHotelSession;
+          },
+          isSessionActive,
+        }),
+      ),
+    );
+
+    const destination = new URL((await createBookingHandoff(app)).json().destination);
+    const code = new URLSearchParams(destination.hash.slice(1)).get("code")!;
+    const response = await redeemHandoff(app, code, "booking-admin");
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: "invalid_handoff" });
+    expect(response.headers["set-cookie"]).toBeUndefined();
+    expect(isSessionActive).toHaveBeenNthCalledWith(2, {
+      sessionId: "session_workos",
+      workosUserId: "user_workos_hotel",
+    });
+  });
+
+  it("does not consume a handoff for the wrong audience and rejects expired codes", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    app = buildAuthSessionApp(handoffAuthOptions(handoffs.repository));
+
+    const firstDestination = new URL((await createBookingHandoff(app)).json().destination);
+    const firstCode = new URLSearchParams(firstDestination.hash.slice(1)).get("code")!;
+    const wrongAudience = await redeemHandoff(app, firstCode, "pms-web");
+    expect(wrongAudience.statusCode).toBe(401);
+    expect((await redeemHandoff(app, firstCode, "booking-admin")).statusCode).toBe(200);
+
+    const expiredDestination = new URL((await createBookingHandoff(app)).json().destination);
+    const expiredCode = new URLSearchParams(expiredDestination.hash.slice(1)).get("code")!;
+    handoffs.expireAll();
+    const expired = await redeemHandoff(app, expiredCode, "booking-admin");
+    expect(expired.statusCode).toBe(401);
+    expect(expired.json()).toEqual({ error: "invalid_handoff" });
+  });
+
+  it("requires the exact source gateway origin and a safe relative target path", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    app = buildAuthSessionApp(handoffAuthOptions(handoffs.repository));
+    const baseRequest = {
+      method: "POST" as const,
+      url: "/auth/handoff/create",
+      headers: {
+        cookie: "vayada_fp_workos_session=source-sealed-session; vayada_fp_auth_csrf=source-csrf",
+        origin: "https://marketplace.localhost",
+        "x-vayada-csrf": "source-csrf",
+      },
+      payload: {
+        sourceSurface: "marketplace-web",
+        targetPath: "/dashboard",
+        targetSurface: "booking-admin",
+      },
+    };
+
+    const bypassingGateway = await app.inject(baseRequest);
+    expect(bypassingGateway.statusCode).toBe(403);
+    expect(bypassingGateway.json()).toEqual({ error: "origin_rejected" });
+
+    const unsafeTarget = await app.inject({
+      ...baseRequest,
+      headers: {
+        ...baseRequest.headers,
+        "x-forwarded-host": "marketplace.localhost",
+        "x-forwarded-proto": "https",
+      },
+      payload: { ...baseRequest.payload, targetPath: "//evil.example/steal" },
+    });
+    expect(unsafeTarget.statusCode).toBe(400);
+    expect(unsafeTarget.json()).toEqual({ error: "invalid_handoff_target" });
+  });
+
+  it("releases a claimed handoff when WorkOS refresh fails transiently", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    let authenticationCalls = 0;
+    const authKitClient = createAuthKitClient({
+      async authenticateSession() {
+        authenticationCalls += 1;
+        if (authenticationCalls === 2) {
+          throw new Error("temporary WorkOS outage");
+        }
+        return handoffHotelSession;
+      },
+      async refreshSession() {
+        return handoffHotelSession;
+      },
+    });
+    app = buildAuthSessionApp(handoffAuthOptions(handoffs.repository, authKitClient));
+    const destination = new URL((await createBookingHandoff(app)).json().destination);
+    const code = new URLSearchParams(destination.hash.slice(1)).get("code")!;
+
+    const transient = await redeemHandoff(app, code, "booking-admin");
+    expect(transient.statusCode).toBe(503);
+    expect(transient.json()).toEqual({ error: "handoff_retryable" });
+    expect(transient.headers["set-cookie"]).toBeUndefined();
+    expect((await redeemHandoff(app, code, "booking-admin")).statusCode).toBe(200);
+  });
+
+  it("returns the retryable handoff contract when claiming storage fails", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    const claim = handoffs.repository.claim.bind(handoffs.repository);
+    let failClaim = false;
+    const repository: AuthSessionHandoffRepository = {
+      ...handoffs.repository,
+      async claim(input) {
+        if (failClaim) throw new Error("temporary database outage");
+        return claim(input);
+      },
+    };
+    app = buildAuthSessionApp(handoffAuthOptions(repository));
+    const destination = new URL((await createBookingHandoff(app)).json().destination);
+    const code = new URLSearchParams(destination.hash.slice(1)).get("code")!;
+    failClaim = true;
+
+    const transient = await redeemHandoff(app, code, "booking-admin");
+
+    expect(transient.statusCode).toBe(503);
+    expect(transient.json()).toEqual({ error: "handoff_retryable" });
+    expect(transient.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("rejects handoffs for recognized but unconfigured surfaces", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    app = buildAuthSessionApp(handoffAuthOptions(handoffs.repository));
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/handoff/create",
+      headers: { origin: "https://marketplace.localhost" },
+      payload: {
+        sourceSurface: "affiliate-dashboard",
+        targetPath: "/dashboard",
+        targetSurface: "booking-admin",
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: "handoff_not_enabled" });
+  });
+
+  it("releases a claimed handoff when target authorization storage fails transiently", async () => {
+    const handoffs = createMemoryHandoffRepository();
+    let lookupCalls = 0;
+    const options = handoffAuthOptions(handoffs.repository);
+    app = buildAuthSessionApp({
+      ...options,
+      identityRepository: createIdentityRepository({
+        userByProviderUserId: async () => {
+          lookupCalls += 1;
+          if (lookupCalls === 2) throw new Error("temporary database outage");
+          return {
+            userId: "user_hotel_admin",
+            email: "owner@alpenrose.example",
+            status: "active",
+          };
+        },
+        organizationByWorkosOrgId: options.identityRepository.findOrganizationByWorkosOrgId,
+        activeMembership: options.identityRepository.findActiveMembership,
+        linkedResources: options.identityRepository.findLinkedResources,
+      }),
+    });
+    const destination = new URL((await createBookingHandoff(app)).json().destination);
+    const code = new URLSearchParams(destination.hash.slice(1)).get("code")!;
+
+    const transient = await redeemHandoff(app, code, "booking-admin");
+    expect(transient.statusCode).toBe(503);
+    expect(transient.json()).toEqual({ error: "handoff_retryable" });
+    expect(transient.headers["set-cookie"]).toBeUndefined();
+    expect((await redeemHandoff(app, code, "booking-admin")).statusCode).toBe(200);
+  });
+
+  it("clears a stale first-party cookie after the provider session is terminal", async () => {
+    app = buildAuthSessionApp({
+      ...handoffAuthOptions(createMemoryHandoffRepository().repository),
+      authKitClient: createAuthKitClient({
+        async authenticateSession() {
+          return null;
+        },
+        async refreshSession() {
+          return null;
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/auth/session?surface=booking-admin",
+      headers: {
+        cookie: "vayada_fp_workos_session=stale-sealed-session",
+        origin: "https://admin.booking.localhost",
+      },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: "invalid_session" });
+    expect(response.headers["set-cookie"]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("vayada_fp_workos_session=; Path=/auth; Max-Age=0"),
+        expect.stringContaining("vayada_fp_auth_csrf=; Path=/auth; Max-Age=0"),
+      ]),
+    );
+    expect(response.headers["set-cookie"]).not.toEqual(
+      expect.arrayContaining([expect.stringContaining("vayada_fp_oauth_state=")]),
+    );
+  });
 
   it("rejects refresh when CSRF header is missing", async () => {
     app = buildAuthSessionApp();
@@ -3829,6 +4516,194 @@ describe("AuthKit session routes", () => {
   });
 });
 
+function handoffAuthOptions(
+  handoffRepository: AuthSessionHandoffRepository,
+  authKitClient: AuthKitClient = createAuthKitClient({
+    async authenticateSession() {
+      return handoffHotelSession;
+    },
+    async refreshSession() {
+      return handoffHotelSession;
+    },
+  }),
+) {
+  return {
+    allowedOrigins: [
+      "https://marketplace.localhost",
+      "https://admin.booking.localhost",
+      "https://pms.localhost",
+    ],
+    authKitClient,
+    cookieSecure: true,
+    handoffRepository,
+    identityRepository: createIdentityRepository({
+      userByProviderUserId: async () => ({
+        userId: "user_hotel_admin",
+        email: "owner@alpenrose.example",
+        status: "active",
+      }),
+      organizationByWorkosOrgId: async () => ({
+        organizationId: "org_hotel_group",
+        workosOrgId: "org_workos_hotel_group",
+        name: "Alpenrose Hotel Group",
+        kind: "hotel_group",
+        status: "active",
+      }),
+      activeMembership: async () => ({
+        membershipId: "membership_hotel",
+        status: "active",
+        roleKey: "hotel_owner",
+        workosMembershipId: "om_hotel",
+        workosRoleSlugs: ["hotel_owner"],
+      }),
+      linkedResources: async () => [
+        {
+          product: "booking",
+          resourceType: "booking_hotel",
+          resourceId: "booking_hotel_alpenrose",
+          relationship: "owner",
+          status: "active",
+        },
+        {
+          product: "pms",
+          resourceType: "pms_property",
+          resourceId: "pms_property_alpenrose",
+          relationship: "owner",
+          status: "active",
+        },
+      ],
+    }),
+    surfacePolicies: {
+      "marketplace-web": {
+        requiredOrganizationKind: ["creator_workspace", "hotel_group"],
+        publicOrigin: "https://marketplace.localhost",
+        firstPartySession: true,
+      },
+      "booking-admin": {
+        requiredOrganizationKind: "hotel_group",
+        publicOrigin: "https://admin.booking.localhost",
+        firstPartySession: true,
+        requiredResourceLink: { product: "booking", resourceType: "booking_hotel" },
+      },
+      "pms-web": {
+        requiredOrganizationKind: "hotel_group",
+        publicOrigin: "https://pms.localhost",
+        firstPartySession: true,
+        requiredResourceLink: { product: "pms", resourceType: "pms_property" },
+      },
+    } satisfies Partial<Record<string, AuthSurfacePolicy>>,
+    tokenVerifier: createTokenVerifier(handoffHotelSession),
+  };
+}
+
+function createBookingHandoff(app: ReturnType<typeof buildApp>) {
+  return app.inject({
+    method: "POST",
+    url: "/auth/handoff/create",
+    headers: {
+      cookie: "vayada_fp_workos_session=source-sealed-session; vayada_fp_auth_csrf=source-csrf",
+      origin: "https://marketplace.localhost",
+      "x-forwarded-host": "marketplace.localhost",
+      "x-forwarded-proto": "https",
+      "x-vayada-csrf": "source-csrf",
+    },
+    payload: {
+      routingHints: { propertyId: "property_alpenrose" },
+      sourceSurface: "marketplace-web",
+      targetPath: "/dashboard?from=marketplace",
+      targetSurface: "booking-admin",
+    },
+  });
+}
+
+function redeemHandoff(
+  app: ReturnType<typeof buildApp>,
+  code: string,
+  targetSurface: "booking-admin" | "pms-web",
+) {
+  const origin =
+    targetSurface === "booking-admin" ? "https://admin.booking.localhost" : "https://pms.localhost";
+  return app.inject({
+    method: "POST",
+    url: "/auth/handoff/redeem",
+    headers: {
+      origin,
+      "x-forwarded-host": new URL(origin).host,
+      "x-forwarded-proto": "https",
+    },
+    payload: { code, targetSurface },
+  });
+}
+
+function createMemoryHandoffRepository(): {
+  expireAll(): void;
+  repository: AuthSessionHandoffRepository;
+} {
+  type Record = AuthSessionHandoff & {
+    claimedBy?: string;
+    consumed: boolean;
+    expiresAt: Date;
+  };
+  const records = new Map<string, Record>();
+
+  return {
+    expireAll() {
+      for (const record of records.values()) record.expiresAt = new Date(0);
+    },
+    repository: {
+      async create(input) {
+        if (records.has(input.codeDigest)) return false;
+        records.set(input.codeDigest, {
+          consumed: false,
+          expiresAt: input.expiresAt,
+          routingHints: input.routingHints,
+          sealedSession: input.sealedSession,
+          sourceSurface: input.sourceSurface,
+          targetPath: input.targetPath,
+          targetPublicOrigin: input.targetPublicOrigin,
+          targetSurface: input.targetSurface,
+        });
+        return true;
+      },
+      async claim(input) {
+        const record = records.get(input.codeDigest);
+        if (
+          !record ||
+          record.consumed ||
+          record.claimedBy ||
+          record.expiresAt <= input.now ||
+          record.targetSurface !== input.targetSurface ||
+          record.targetPublicOrigin !== input.targetPublicOrigin
+        ) {
+          return null;
+        }
+        record.claimedBy = input.redemptionId;
+        return record;
+      },
+      async complete(input) {
+        const record = [...records.values()].find(
+          (candidate) => candidate.claimedBy === input.redemptionId && !candidate.consumed,
+        );
+        if (!record) return false;
+        record.consumed = true;
+        delete record.claimedBy;
+        return true;
+      },
+      async release(input) {
+        const record = [...records.values()].find(
+          (candidate) => candidate.claimedBy === input.redemptionId && !candidate.consumed,
+        );
+        if (record) delete record.claimedBy;
+      },
+      async scrubExpired(input) {
+        for (const [digest, record] of records) {
+          if (record.expiresAt < input.deleteBefore) records.delete(digest);
+        }
+      },
+    },
+  };
+}
+
 function buildAuthSessionApp(
   options: {
     authKitClient?: AuthKitClient;
@@ -3838,6 +4713,9 @@ function buildAuthSessionApp(
     tokenVerifier?: TokenVerifier;
     legacyMarketplaceJwtSecret?: string;
     allowedOrigins?: string[];
+    compatibilityCallbackOrigin?: string;
+    cookieSecure?: boolean;
+    cookieDomain?: string;
     surfacePolicies?: Partial<
       Record<
         "platform-admin" | "booking-admin" | "pms-web" | "affiliate-dashboard" | "marketplace-web",
@@ -3846,8 +4724,11 @@ function buildAuthSessionApp(
     >;
     profileImageMediaRepository?: ApprovedPublicProfileImageRepository;
     hotelAccountInviteOnboarding?: Pick<HotelAccountInviteRepository, "resolveForOnboarding">;
+    handoffRepository?: AuthSessionHandoffRepository;
   } = {},
 ) {
+  const compatibilityCallbackOrigin =
+    options.compatibilityCallbackOrigin ?? "https://api.localhost";
   return buildApp({
     logger: false,
     authSession: {
@@ -3859,14 +4740,22 @@ function buildAuthSessionApp(
       },
       tokenVerifier: options.tokenVerifier ?? createTokenVerifier(),
       logoutReturnUrl: "https://admin.localhost/login",
-      allowedOrigins: options.allowedOrigins ?? ["https://admin.localhost"],
+      allowedOrigins: [
+        ...new Set([
+          ...(options.allowedOrigins ?? ["https://admin.localhost"]),
+          compatibilityCallbackOrigin,
+        ]),
+      ],
+      compatibilityCallbackOrigin,
       requiredOrganizationKind: "platform",
       surfacePolicies: options.surfacePolicies,
       oauthStateSecret: "test-oauth-state-secret",
-      cookieSecure: false,
+      cookieSecure: options.cookieSecure ?? false,
+      ...(options.cookieDomain ? { cookieDomain: options.cookieDomain } : {}),
       legacyMarketplaceJwtSecret: options.legacyMarketplaceJwtSecret,
       profileImageMediaRepository: options.profileImageMediaRepository,
       hotelAccountInviteOnboarding: options.hotelAccountInviteOnboarding,
+      handoffRepository: options.handoffRepository,
     },
   });
 }
@@ -3956,6 +4845,9 @@ function createAuthKitClient(overrides: Partial<AuthKitClient> = {}): AuthKitCli
     },
     async authenticateSession() {
       return session;
+    },
+    async isSessionActive() {
+      return true;
     },
     async refreshSession() {
       return {

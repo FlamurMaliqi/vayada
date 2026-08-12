@@ -8,7 +8,15 @@ import {
   getFinancePaymentSettings,
   issueFinanceStripeOnboardingLink,
   updateFinancePaymentSettings,
+  payAtHotelMethodsFromFinance,
 } from "@/services/api/financePaymentSettingsClient";
+import {
+  createFixedPlanCheckout,
+  getFinancePlanStatus,
+  openFinanceCustomerPortal,
+  switchToCommissionPlan,
+  type FinancePlanStatus,
+} from "@/services/api/financeSubscriptionsClient";
 import {
   CalendarDaysIcon,
   BellIcon,
@@ -62,7 +70,6 @@ type Section =
 const POI_COLORS = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#0d9488", "#db2777"];
 const PROPERTY_MAP_CENTERING_UNAVAILABLE =
   "Automatic property map centering is not available on next-api yet.";
-const BILLING_PLAN_SWITCH_UNAVAILABLE = "Billing plan switching is not available on next-api yet.";
 const BILLING_SETTINGS_UNAVAILABLE = "Billing settings are not available on next-api yet.";
 
 function readBookingHotelId(settings: PropertySettings): string {
@@ -75,11 +82,43 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+function formatBillingAmount(amountMinor: number): string {
+  return new Intl.NumberFormat(undefined, { style: "currency", currency: "EUR" }).format(
+    amountMinor / 100,
+  );
+}
+
+function formatBillingDate(value: string | null): string {
+  return value
+    ? new Date(value).toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      })
+    : "—";
+}
+
 function toSettingsPaymentProvider(
   provider: string | null | undefined,
 ): "stripe" | "xendit" | "vayada" {
   if (provider === "xendit" || provider === "vayada") return provider;
   return "stripe";
+}
+
+function paymentPolicyText(policy: unknown, key: string): string {
+  const value =
+    policy && typeof policy === "object" && !Array.isArray(policy)
+      ? (policy as Record<string, unknown>)[key]
+      : undefined;
+  return typeof value === "string" ? value : "";
+}
+
+function paymentPolicyNumber(policy: unknown, key: string, fallback: number): number {
+  const value =
+    policy && typeof policy === "object" && !Array.isArray(policy)
+      ? (policy as Record<string, unknown>)[key]
+      : undefined;
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 const hasValidCoordinatePair = (latitude: number, longitude: number) =>
@@ -143,12 +182,6 @@ function buildTargetSettingsUpdate(
   settings: PropertySettings,
 ): TargetSettingsUpdate {
   if (section === "property") {
-    if ((settings.tiktok || "").trim() || (settings.youtube || "").trim()) {
-      return {
-        ok: false,
-        message: "TikTok and YouTube links are not available on next-api yet.",
-      };
-    }
     return {
       ok: true,
       data: {
@@ -161,25 +194,23 @@ function buildTargetSettingsUpdate(
         country: settings.country,
         instagram: settings.instagram,
         facebook: settings.facebook,
+        tiktok: settings.tiktok,
+        youtube: settings.youtube,
       },
     };
   }
 
   if (section === "booking") {
-    if (
-      (settings.terms_text || "").trim() ||
-      settings.map_view_enabled ||
-      settings.refer_a_guest_enabled
-    ) {
+    if (settings.map_view_enabled || settings.refer_a_guest_enabled) {
       return {
         ok: false,
-        message:
-          "Terms text, map view, and refer-a-guest settings are not available on next-api yet.",
+        message: "Map view and refer-a-guest settings are not available on next-api yet.",
       };
     }
     return {
       ok: true,
       data: {
+        terms_text: settings.terms_text,
         cancellation_policy_text: settings.cancellation_policy_text,
       },
     };
@@ -203,7 +234,23 @@ function buildTargetSettingsUpdate(
 
 export default function SettingsPage() {
   const { t } = useTranslation();
-  const [activeSection, setActiveSection] = useState<Section>("property");
+  const [activeSection, setActiveSection] = useState<Section>(() => {
+    if (typeof window === "undefined") return "property";
+    const searchParams = new URLSearchParams(window.location.search);
+    const requested = searchParams.get("section");
+    if (
+      requested === "property" ||
+      requested === "booking" ||
+      requested === "location" ||
+      requested === "notifications" ||
+      requested === "account" ||
+      requested === "billing" ||
+      requested === "payments"
+    ) {
+      return requested;
+    }
+    return searchParams.has("billing") ? "billing" : "property";
+  });
   const [settings, setSettings] = useState<PropertySettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -232,8 +279,15 @@ export default function SettingsPage() {
   const [savingPayment, setSavingPayment] = useState(false);
   const [paymentSettingsLoaded, setPaymentSettingsLoaded] = useState(false);
   const [selectedPoiId, setSelectedPoiId] = useState<string | null>(null);
-  const billingPlanSwitchUnavailable = true;
-  const billingPlanSwitchDisabled = saving || billingPlanSwitchUnavailable;
+  const [billingPropertyId, setBillingPropertyId] = useState<string | null>(null);
+  const [financePlanStatus, setFinancePlanStatus] = useState<FinancePlanStatus | null>(null);
+  const [billingPlanLoading, setBillingPlanLoading] = useState(true);
+  const [billingPlanAction, setBillingPlanAction] = useState<
+    "checkout" | "portal" | "commission" | null
+  >(null);
+  const [billingPlanModal, setBillingPlanModal] = useState<"fixed" | "commission" | null>(null);
+  const [billingPlanError, setBillingPlanError] = useState("");
+  const [billingPlanConfirmation, setBillingPlanConfirmation] = useState("");
 
   const fetchSettings = useCallback(async (): Promise<PropertySettings | null> => {
     try {
@@ -251,10 +305,14 @@ export default function SettingsPage() {
 
   useEffect(() => {
     setPaymentSettingsLoaded(false);
+    setBillingPlanLoading(true);
     const propertyPromise = fetchSettings();
     propertyPromise
       .then(async (property) => {
-        if (!property) return null;
+        if (!property) {
+          setBillingPlanLoading(false);
+          return null;
+        }
         settingsService
           .getCustomDomainStatus()
           .then(setDomainStatus)
@@ -265,9 +323,48 @@ export default function SettingsPage() {
             setFeedback({ type: "error", message });
           });
         const hotelId = readBookingHotelId(property);
-        if (!hotelId) return null;
+        if (!hotelId) {
+          setBillingPlanLoading(false);
+          return null;
+        }
         const propertyLink = await getBookingHotelPropertyLink({ hotelId });
-        return getFinancePaymentSettings({ propertyId: propertyLink.propertyId });
+        setBillingPropertyId(propertyLink.propertyId);
+        const billingReturn =
+          typeof window === "undefined"
+            ? null
+            : new URLSearchParams(window.location.search).get("billing");
+        const paymentSettingsPromise = getFinancePaymentSettings({
+          propertyId: propertyLink.propertyId,
+        });
+        const planStatusPromise = (async () => {
+          try {
+            let plan = await getFinancePlanStatus(propertyLink.propertyId);
+            if (billingReturn === "success") {
+              for (
+                let attempt = 0;
+                attempt < 10 && plan.planStatus.plan !== "fixed";
+                attempt += 1
+              ) {
+                await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+                plan = await getFinancePlanStatus(propertyLink.propertyId);
+              }
+              setBillingPlanConfirmation(
+                plan.planStatus.plan === "fixed"
+                  ? "Fixed Plan is active."
+                  : "Payment received. Your Fixed Plan is still being confirmed.",
+              );
+            } else if (billingReturn === "canceled") {
+              setBillingPlanError("Payment failed. Please try again or use a different card.");
+            }
+            setFinancePlanStatus(plan.planStatus);
+          } catch (error) {
+            setBillingPlanError(errorMessage(error, "Billing plan failed to load."));
+          } finally {
+            setBillingPlanLoading(false);
+          }
+        })();
+        const [, paymentSettings] = await Promise.all([planStatusPromise, paymentSettingsPromise]);
+        return paymentSettings;
       })
       .then((res) => {
         if (!res) {
@@ -281,8 +378,11 @@ export default function SettingsPage() {
         setStripeAccountId(stripeAccountId);
         setStripeOnboarded(
           providerAccount.provider === "stripe" &&
-            (providerAccount.onboardingStatus === "completed" ||
-              (providerAccount.chargesEnabled && providerAccount.payoutsEnabled)),
+            providerAccount.status === "active" &&
+            providerAccount.onboardingStatus === "completed" &&
+            providerAccount.chargesEnabled &&
+            providerAccount.payoutsEnabled &&
+            providerAccount.capabilities.includes("card_payments"),
         );
         setPaymentProvider(toSettingsPaymentProvider(ps.paymentProvider));
         setXenditChannelCode("ID_BCA");
@@ -291,25 +391,46 @@ export default function SettingsPage() {
         setSettings((prev) => ({
           ...prev,
           pay_at_property_enabled: ps.acceptedMethods.includes("pay_at_property"),
+          pay_at_hotel_methods: payAtHotelMethodsFromFinance(ps.acceptedMethods),
           online_card_payment:
             ps.acceptedMethods.includes("card") || ps.acceptedMethods.includes("xendit"),
           bank_transfer: ps.acceptedMethods.includes("bank_transfer"),
+          paypal_enabled: ps.acceptedMethods.includes("paypal"),
+          paypal_email: paymentPolicyText(ps.depositPolicy, "paypalEmail"),
+          paypal_payment_window_hours: paymentPolicyNumber(
+            ps.depositPolicy,
+            "paypalPaymentWindowHours",
+            24,
+          ),
+          payout_bank_name: paymentPolicyText(ps.depositPolicy, "bankName"),
+          payout_account_holder: paymentPolicyText(ps.depositPolicy, "accountHolder"),
+          payout_account_type: "account_number",
+          payout_account_number: paymentPolicyText(ps.depositPolicy, "accountNumber"),
+          payout_swift: paymentPolicyText(ps.depositPolicy, "bicSwift"),
         }));
         setPaymentSettingsLoaded(true);
       })
       .catch((err: unknown) => {
         setPaymentSettingsLoaded(false);
+        setBillingPlanLoading(false);
         setPaymentError(errorMessage(err, "Payment settings failed to load."));
       });
   }, [fetchSettings]);
 
   const handleCreateStripeAccount = async () => {
     if (!connectEmail) return;
+    const stripeTab = window.open("about:blank", "vayada-stripe-connect");
+    if (!stripeTab) {
+      setPaymentError("Allow pop-ups to continue to Stripe setup.");
+      return;
+    }
+    stripeTab.opener = null;
     setCreatingAccount(true);
     setPaymentError("");
     try {
       const hotelId = readBookingHotelId(settings);
       if (!hotelId) {
+        stripeTab.close();
         setPaymentError("Select a hotel before creating a Stripe account.");
         return;
       }
@@ -321,8 +442,9 @@ export default function SettingsPage() {
         commandPrefix: `settings-stripe-account-${hotelId}`,
       });
       setStripeAccountId(result.providerAccountId);
-      window.open(result.onboardingUrl, "_blank");
+      stripeTab.location.assign(result.onboardingUrl);
     } catch (err: unknown) {
+      stripeTab.close();
       const msg =
         err instanceof TypeError
           ? t("settings.billing.errorPaymentServerUnreachable")
@@ -334,9 +456,16 @@ export default function SettingsPage() {
   };
 
   const handleOnboarding = async () => {
+    const stripeTab = window.open("about:blank", "vayada-stripe-connect");
+    if (!stripeTab) {
+      setPaymentError("Allow pop-ups to continue to Stripe setup.");
+      return;
+    }
+    stripeTab.opener = null;
     try {
       const hotelId = readBookingHotelId(settings);
       if (!hotelId || !stripeAccountId) {
+        stripeTab.close();
         setPaymentError("Select a hotel and create a Stripe account before onboarding.");
         return;
       }
@@ -346,8 +475,9 @@ export default function SettingsPage() {
         providerAccountId: stripeAccountId,
         commandPrefix: `settings-stripe-onboarding-${hotelId}`,
       });
-      window.open(link.onboardingUrl, "_blank");
+      stripeTab.location.assign(link.onboardingUrl);
     } catch (err: unknown) {
+      stripeTab.close();
       setPaymentError(errorMessage(err, t("settings.billing.errorOnboardingLink")));
     }
   };
@@ -365,8 +495,8 @@ export default function SettingsPage() {
         fail("Payment settings did not load. Refresh before saving payments.");
         return false;
       }
-      if (paymentProvider === "xendit") {
-        fail("Xendit account details are not saved by this payment settings flow yet.");
+      if (paymentProvider === "xendit" || paymentProvider === "vayada") {
+        fail(`${paymentProvider === "xendit" ? "Xendit" : "vayada Payments"} is coming soon.`);
         return false;
       }
       const hotelId = readBookingHotelId(settings);
@@ -382,6 +512,9 @@ export default function SettingsPage() {
           payAtHotelMethods: settings.pay_at_hotel_methods,
           onlineCardPayment: settings.online_card_payment ?? false,
           bankTransfer: settings.bank_transfer ?? false,
+          paypalEnabled: settings.paypal_enabled ?? false,
+          paypalEmail: settings.paypal_email,
+          paypalPaymentWindowHours: settings.paypal_payment_window_hours,
           payoutAccountHolder: settings.payout_account_holder,
           payoutAccountType: settings.payout_account_type,
           payoutIban: settings.payout_iban,
@@ -456,23 +589,55 @@ export default function SettingsPage() {
     }
   };
 
-  const updateBillingPendingSwitch = async (billing_pending_switch: string | null) => {
-    if (billingPlanSwitchUnavailable) {
-      setFeedback({ type: "error", message: BILLING_PLAN_SWITCH_UNAVAILABLE });
-      return;
-    }
-
+  const startFixedPlanCheckout = async () => {
+    if (!billingPropertyId) return;
     try {
-      setSaving(true);
-      setFeedback(null);
-      await settingsService.updatePropertySettings({
-        billing_pending_switch: billing_pending_switch ?? "",
+      setBillingPlanAction("checkout");
+      setBillingPlanError("");
+      const result = await createFixedPlanCheckout({
+        propertyId: billingPropertyId,
       });
-      setSettings((s) => ({ ...s, billing_pending_switch }));
-    } catch (err: unknown) {
-      setFeedback({ type: "error", message: errorMessage(err, t("settings.feedback.saveError")) });
+      window.location.assign(result.checkout.checkoutUrl);
+    } catch (error) {
+      setBillingPlanModal(null);
+      setBillingPlanError(
+        errorMessage(error, "Payment failed. Please try again or use a different card."),
+      );
     } finally {
-      setSaving(false);
+      setBillingPlanAction(null);
+    }
+  };
+
+  const manageFixedPlanBilling = async () => {
+    if (!billingPropertyId) return;
+    try {
+      setBillingPlanAction("portal");
+      setBillingPlanError("");
+      const result = await openFinanceCustomerPortal({ propertyId: billingPropertyId });
+      window.location.assign(result.customerPortal.portalUrl);
+    } catch (error) {
+      setBillingPlanError(errorMessage(error, "Stripe billing could not be opened."));
+    } finally {
+      setBillingPlanAction(null);
+    }
+  };
+
+  const scheduleCommissionPlan = async () => {
+    if (!billingPropertyId) return;
+    try {
+      setBillingPlanAction("commission");
+      setBillingPlanError("");
+      const result = await switchToCommissionPlan({ propertyId: billingPropertyId });
+      setFinancePlanStatus(result.planStatus);
+      setBillingPlanModal(null);
+      setBillingPlanConfirmation(
+        `Your Fixed Plan remains active through ${formatBillingDate(result.planStatus.currentPeriodEnd)}.`,
+      );
+    } catch (error) {
+      setBillingPlanModal(null);
+      setBillingPlanError(errorMessage(error, "The plan change could not be scheduled."));
+    } finally {
+      setBillingPlanAction(null);
     }
   };
 
@@ -1265,26 +1430,18 @@ export default function SettingsPage() {
             {/* Commission Plan */}
             <div
               className={`bg-white rounded-lg border-2 p-5 transition-all ${
-                settings.billing_active_plan === "commission" && !settings.billing_pending_switch
+                financePlanStatus?.plan === "commission"
                   ? "border-primary-500 ring-1 ring-primary-200"
-                  : settings.billing_pending_switch === "commission"
-                    ? "border-amber-400 ring-1 ring-amber-200"
-                    : "border-gray-200"
+                  : "border-gray-200"
               }`}
             >
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-[14px] font-semibold text-gray-900">
                   {t("settings.billing.commission")}
                 </h3>
-                {settings.billing_active_plan === "commission" &&
-                  !settings.billing_pending_switch && (
-                    <span className="px-2 py-0.5 text-[10px] font-bold bg-green-100 text-green-700 rounded-full">
-                      {t("settings.billing.current")}
-                    </span>
-                  )}
-                {settings.billing_pending_switch === "commission" && (
-                  <span className="px-2 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-700 rounded-full">
-                    {t("settings.billing.nextMonth")}
+                {financePlanStatus?.plan === "commission" && (
+                  <span className="px-2 py-0.5 text-[10px] font-bold bg-green-100 text-green-700 rounded-full">
+                    {t("settings.billing.current")}
                   </span>
                 )}
               </div>
@@ -1309,23 +1466,13 @@ export default function SettingsPage() {
                   {t("settings.billing.noMonthlyFee")}
                 </p>
               </div>
-              {settings.billing_active_plan !== "commission" &&
-                !settings.billing_pending_switch && (
-                  <button
-                    onClick={() => updateBillingPendingSwitch("commission")}
-                    disabled={billingPlanSwitchDisabled}
-                    className="w-full py-2 text-[12px] font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
-                  >
-                    {t("settings.billing.switchFromNextMonth")}
-                  </button>
-                )}
-              {settings.billing_pending_switch === "commission" && (
+              {financePlanStatus?.plan === "fixed" && !financePlanStatus.cancelAtPeriodEnd && (
                 <button
-                  onClick={() => updateBillingPendingSwitch(null)}
-                  disabled={billingPlanSwitchDisabled}
-                  className="w-full py-2 text-[12px] font-semibold border border-amber-300 text-amber-700 rounded-lg hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
+                  onClick={() => setBillingPlanModal("commission")}
+                  disabled={billingPlanLoading || billingPlanAction !== null}
+                  className="w-full py-2 text-[12px] font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
                 >
-                  {t("settings.billing.cancelSwitch")}
+                  Switch to Commission Plan
                 </button>
               )}
             </div>
@@ -1333,89 +1480,148 @@ export default function SettingsPage() {
             {/* Fixed Fee Plan */}
             <div
               className={`bg-white rounded-lg border-2 p-5 transition-all ${
-                settings.billing_active_plan === "fixed" && !settings.billing_pending_switch
+                financePlanStatus?.plan === "fixed"
                   ? "border-primary-500 ring-1 ring-primary-200"
-                  : settings.billing_pending_switch === "fixed"
-                    ? "border-amber-400 ring-1 ring-amber-200"
-                    : "border-gray-200"
+                  : "border-gray-200"
               }`}
             >
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-[14px] font-semibold text-gray-900">
                   {t("settings.billing.fixedFee")}
                 </h3>
-                {settings.billing_active_plan === "fixed" && !settings.billing_pending_switch && (
+                {financePlanStatus?.plan === "fixed" && (
                   <span className="px-2 py-0.5 text-[10px] font-bold bg-green-100 text-green-700 rounded-full">
                     {t("settings.billing.current")}
                   </span>
                 )}
-                {settings.billing_pending_switch === "fixed" && (
-                  <span className="px-2 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-700 rounded-full">
-                    {t("settings.billing.nextMonth")}
-                  </span>
-                )}
               </div>
-              <p className="text-[12px] text-gray-500 mb-3">{t("settings.billing.flatMonthly")}</p>
+              <p className="text-[12px] text-gray-500 mb-3">Fixed fee based on active rooms</p>
               <div className="bg-gray-50 rounded-xl p-4 text-center mb-4">
                 <span className="text-3xl font-bold text-gray-900">
-                  $
-                  {(
-                    settings.fixed_plan_projected_monthly_fee ??
-                    settings.billing_fixed_fee ??
-                    30
-                  ).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+                  {formatBillingAmount(financePlanStatus?.amountMinor ?? 3_000)}
                 </span>
-                <p className="text-[11px] text-gray-400 mt-1">{t("settings.billing.perMonth")}</p>
+                <p className="text-[11px] text-gray-400 mt-1">every 30 days</p>
                 <p className="text-[10px] text-gray-400 mt-0.5">
-                  {typeof settings.active_room_count === "number"
-                    ? t(
-                        settings.active_room_count === 1
-                          ? "settings.billing.atActiveRoomsOne"
-                          : "settings.billing.atActiveRoomsOther",
-                        { count: settings.active_room_count },
-                      )
-                    : t("settings.billing.baseFeePerRoom")}
+                  €30 for the first active room + €5 per additional room ·{" "}
+                  {financePlanStatus?.activeRoomCount ?? 0} active rooms
                 </p>
               </div>
-              {settings.billing_active_plan !== "fixed" && !settings.billing_pending_switch && (
+              {financePlanStatus?.plan !== "fixed" && (
                 <button
-                  onClick={() => updateBillingPendingSwitch("fixed")}
-                  disabled={billingPlanSwitchDisabled}
+                  onClick={() => setBillingPlanModal("fixed")}
+                  disabled={
+                    billingPlanLoading ||
+                    billingPlanAction !== null ||
+                    !billingPropertyId ||
+                    !financePlanStatus
+                  }
                   className="w-full py-2 text-[12px] font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
                 >
-                  {t("settings.billing.switchFromNextMonth")}
+                  {financePlanStatus?.checkoutPending ? "Resume payment" : "Switch to Fixed Plan"}
                 </button>
               )}
-              {settings.billing_pending_switch === "fixed" && (
-                <button
-                  onClick={() => updateBillingPendingSwitch(null)}
-                  disabled={billingPlanSwitchDisabled}
-                  className="w-full py-2 text-[12px] font-semibold border border-amber-300 text-amber-700 rounded-lg hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
-                >
-                  {t("settings.billing.cancelSwitch")}
-                </button>
+              {financePlanStatus?.plan === "fixed" && (
+                <div className="space-y-2">
+                  <p className="text-center text-[11px] text-gray-500">
+                    Next billing date: {formatBillingDate(financePlanStatus.nextBillingDate)}
+                  </p>
+                  <button
+                    onClick={manageFixedPlanBilling}
+                    disabled={
+                      billingPlanAction !== null || !financePlanStatus.customerPortalAvailable
+                    }
+                    className="w-full py-2 text-[12px] font-semibold border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
+                  >
+                    {billingPlanAction === "portal" ? "Opening billing…" : "Manage billing"}
+                  </button>
+                </div>
               )}
             </div>
           </div>
 
-          {settings.billing_pending_switch && (
+          {billingPlanLoading && (
+            <div className="rounded-lg border border-gray-200 bg-white p-4 text-[13px] text-gray-500">
+              Loading your current billing plan…
+            </div>
+          )}
+          {billingPlanError && (
+            <div
+              role="alert"
+              className="rounded-lg border border-red-200 bg-red-50 p-4 text-[13px] text-red-800"
+            >
+              {billingPlanError}
+            </div>
+          )}
+          {billingPlanConfirmation && (
+            <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-[13px] text-green-800">
+              {billingPlanConfirmation}
+            </div>
+          )}
+          {financePlanStatus?.status === "past_due" && (
+            <div
+              role="alert"
+              className="rounded-lg border border-red-200 bg-red-50 p-4 text-[13px] text-red-800"
+            >
+              Your renewal payment is past due. Stripe will retry it automatically; use Manage
+              billing to update your card.
+            </div>
+          )}
+          {financePlanStatus?.cancelAtPeriodEnd && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
               <p className="text-[13px] text-amber-800">
-                {t("settings.billing.switchBannerLeadTo")}{" "}
-                <strong>
-                  {settings.billing_pending_switch === "commission"
-                    ? t("settings.billing.commission")
-                    : t("settings.billing.fixedFee")}
-                </strong>{" "}
-                {settings.billing_switch_effective_date
-                  ? t("settings.billing.switchBannerOnDate", {
-                      date: new Date(settings.billing_switch_effective_date).toLocaleDateString(
-                        undefined,
-                        { day: "numeric", month: "long", year: "numeric" },
-                      ),
-                    })
-                  : t("settings.billing.switchBannerNextMonth")}
+                Your Fixed Plan is paid through{" "}
+                <strong>{formatBillingDate(financePlanStatus.currentPeriodEnd)}</strong>. Commission
+                will apply to bookings created after that date.
               </p>
+            </div>
+          )}
+
+          {billingPlanModal && financePlanStatus && (
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="billing-plan-dialog-title"
+              className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/40 p-4"
+            >
+              <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+                <h2
+                  id="billing-plan-dialog-title"
+                  className="text-base font-semibold text-gray-900"
+                >
+                  {billingPlanModal === "fixed"
+                    ? "Switch to Fixed Plan"
+                    : "Switch to Commission Plan"}
+                </h2>
+                <p className="mt-3 text-[13px] leading-5 text-gray-600">
+                  {billingPlanModal === "fixed"
+                    ? `You're switching to the Fixed Plan at ${formatBillingAmount(financePlanStatus.amountMinor)}/month. Your first payment will be charged today. Future payments will be charged every 30 days. Any bookings created before today will still settle under your current commission terms.`
+                    : `You're switching back to the Commission Plan. Your current Fixed Plan is paid through ${formatBillingDate(financePlanStatus.currentPeriodEnd)}. Commission will apply to all bookings created after that date.`}
+                </p>
+                <div className="mt-6 flex justify-end gap-2">
+                  <button
+                    onClick={() => setBillingPlanModal(null)}
+                    disabled={billingPlanAction !== null}
+                    className="rounded-lg border border-gray-300 px-4 py-2 text-[12px] font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={
+                      billingPlanModal === "fixed" ? startFixedPlanCheckout : scheduleCommissionPlan
+                    }
+                    disabled={billingPlanAction !== null}
+                    className="rounded-lg bg-primary-600 px-4 py-2 text-[12px] font-semibold text-white hover:bg-primary-700 disabled:opacity-60"
+                  >
+                    {billingPlanModal === "fixed"
+                      ? billingPlanAction === "checkout"
+                        ? "Opening payment…"
+                        : "Continue to payment"
+                      : billingPlanAction === "commission"
+                        ? "Scheduling…"
+                        : "Switch to Commission Plan"}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
@@ -1626,8 +1832,7 @@ export default function SettingsPage() {
                         className="w-full rounded-lg border border-gray-200 px-3 py-2 text-[12px] text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500"
                       />
                       <p className="mt-1 text-[10px] text-gray-500">
-                        Bookings will be auto-cancelled if PayPal payment isn&apos;t confirmed
-                        within this window.
+                        Guests are asked to pay within this window. Confirm receipt manually in PMS.
                       </p>
                     </div>
                   </div>
@@ -2069,8 +2274,8 @@ export default function SettingsPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
                   <button
                     type="button"
-                    onClick={() => setPaymentProvider("vayada")}
-                    className={`relative flex flex-col p-3 rounded-xl border-2 transition-all text-left ${
+                    disabled
+                    className={`relative flex flex-col p-3 rounded-xl border-2 transition-all text-left opacity-55 cursor-not-allowed ${
                       paymentProvider === "vayada"
                         ? "border-primary-500 bg-primary-50/30"
                         : "border-gray-200 hover:border-gray-300"
@@ -2139,8 +2344,8 @@ export default function SettingsPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setPaymentProvider("xendit")}
-                    className={`relative flex flex-col p-3 rounded-xl border-2 transition-all text-left ${
+                    disabled
+                    className={`relative flex flex-col p-3 rounded-xl border-2 transition-all text-left opacity-55 cursor-not-allowed ${
                       paymentProvider === "xendit"
                         ? "border-primary-500 bg-primary-50/30"
                         : "border-gray-200 hover:border-gray-300"
@@ -2177,18 +2382,11 @@ export default function SettingsPage() {
                 {/* Provider-specific content */}
                 {paymentProvider === "vayada" ? (
                   <div className="space-y-3">
-                    <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3">
-                      <p className="text-[13px] text-green-800 font-medium">
-                        {t("settings.billing.vayadaNoSetupTitle")}
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+                      <p className="text-[13px] text-amber-900 font-medium">Coming soon</p>
+                      <p className="text-[12px] text-amber-800 mt-1">
+                        vayada Payments is not available in target checkout yet.
                       </p>
-                      <p className="text-[12px] text-green-700 mt-1">
-                        {t("settings.billing.vayadaNoSetupDesc")}
-                      </p>
-                    </div>
-                    <div className="flex justify-end pt-2">
-                      <SaveButton onClick={savePaymentProviderSettings} saving={savingPayment}>
-                        {t("common.save")}
-                      </SaveButton>
                     </div>
                   </div>
                 ) : paymentProvider === "xendit" ? (

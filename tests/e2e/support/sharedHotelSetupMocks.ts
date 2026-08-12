@@ -62,6 +62,12 @@ const TASK_DEFINITIONS: Array<
     destinationRouteKey: "booking.guest_settings_policies",
   },
   {
+    taskId: "billing_plan",
+    track: "hotel_operations",
+    requirementOwnerDomain: "finance",
+    destinationRouteKey: "finance.billing_plan",
+  },
+  {
     taskId: "payment",
     track: "hotel_operations",
     requirementOwnerDomain: "finance",
@@ -119,6 +125,7 @@ export function createAdaptiveHotelSetupStatusMock(
       "shared_identity",
       "rooms_rates_availability",
       "guest_settings_policies",
+      "billing_plan",
       "payment",
       "direct_booking_publication",
     ]),

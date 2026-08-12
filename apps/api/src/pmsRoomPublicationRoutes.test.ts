@@ -75,6 +75,41 @@ describe("PMS room publication routes", () => {
     });
   });
 
+  it("accepts an ordered legacy compatibility snapshot without trusting body scope", async () => {
+    const ports = fakePorts();
+    app = await testApp(ports);
+    const legacyMediaSnapshot = [
+      {
+        mediaObjectId: null,
+        url: "https://legacy.example.com/room.webp",
+        altText: null,
+        sortOrder: 0,
+      },
+      {
+        mediaObjectId,
+        url: "https://cdn.example.com/new.webp",
+        altText: "Garden suite",
+        sortOrder: 1,
+      },
+    ];
+
+    const response = await mediaRequest(app, {
+      body: {
+        expectedRoomMediaRevision: 3,
+        assignments: [{ mediaObjectId, altText: "Garden suite", sortOrder: 0 }],
+        legacyMediaSnapshot,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(ports.mediaCalls[0]).toMatchObject({
+      organizationId,
+      propertyId,
+      roomTypeId,
+      legacyMediaSnapshot,
+    });
+  });
+
   it("canonicalizes the reviewed amenity set and derives no scope from the body", async () => {
     const ports = fakePorts();
     app = await testApp(ports);
@@ -173,7 +208,19 @@ describe("PMS room publication routes", () => {
   it.each([
     ["media not found", "media", { code: "media_not_found", mediaObjectIds: [mediaObjectId] }, 404],
     ["media not ready", "media", { code: "media_not_ready", mediaObjectIds: [mediaObjectId] }, 422],
+    ["legacy media scope", "media", { code: "legacy_media_not_authorized" }, 403],
     ["media revision", "media", { code: "room_media_revision_conflict", currentRevision: 5 }, 409],
+    [
+      "media plan limit",
+      "media",
+      {
+        code: "room_media_plan_limit_reached",
+        plan: "commission",
+        currentCount: 10,
+        maxAllowed: 10,
+      },
+      409,
+    ],
     [
       "amenity vocabulary",
       "amenities",

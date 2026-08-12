@@ -202,11 +202,13 @@ This starts the databases, MinIO/media services, auth migrations, and legacy
 FastAPI APIs. It does not run `apps/api` or a Next.js app. Run the required
 host processes in separate terminals.
 
-For example, to run PMS Web with AuthKit over plain HTTP, first register
-`http://localhost:8003/auth/oauth/google/callback` and the matching API/PMS
-origins in the staging WorkOS project. `npm run dev:api` does not load
-`apps/api/.env`, and the integrated launcher's session defaults are not present,
-so start the API with:
+For example, to run PMS Web with first-party AuthKit over plain HTTP, register
+`http://localhost:3004/auth/oauth/google/callback` and the matching API/PMS
+origins in the staging WorkOS project. Keep the temporary
+`http://localhost:8003/auth/oauth/google/callback` registration only while the
+direct compatibility transport is still enabled. `npm run dev:api` does not
+load `apps/api/.env`, and the integrated launcher's session defaults are not
+present, so start the API with:
 
 ```bash
 # Terminal 1
@@ -216,8 +218,16 @@ set +a
 export TARGET_DATABASE_URL="${TARGET_DATABASE_URL:-$AUTH_DATABASE_URL}"
 export AUTH_COOKIE_SECRET=local-dev-auth-cookie-secret-0123456789abcdef
 export AUTH_LOGOUT_URL=http://localhost:3004/login
-export AUTH_ALLOWED_ORIGINS=http://localhost:8003,http://localhost:3004
+export AUTH_ALLOWED_ORIGINS=http://localhost:8003,http://localhost:3000,http://localhost:3001,http://localhost:3003,http://localhost:3004,http://localhost:3005
 export AUTH_COOKIE_SECURE=false
+export AUTH_COMPATIBILITY_CALLBACK_ORIGIN=http://localhost:8003
+export AUTH_PLATFORM_ADMIN_ORIGIN=http://localhost:3001
+export AUTH_MARKETPLACE_WEB_ORIGIN=http://localhost:3000
+export AUTH_BOOKING_ADMIN_ORIGIN=http://localhost:3003
+export AUTH_PMS_WEB_ORIGIN=http://localhost:3004
+export AUTH_AFFILIATE_DASHBOARD_ORIGIN=http://localhost:3005
+# Enable only after the PMS /auth gateway is present.
+export AUTH_FIRST_PARTY_SURFACES=pms-web
 export AUTH_LEGACY_PMS_JWT_SECRET=your-secret-key-change-in-production
 npm run target:migrate -- --env local
 npm run dev:api
@@ -233,7 +243,13 @@ NEXT_PUBLIC_PMS_OPERATIONS_API_URL=http://localhost:8003
 NEXT_PUBLIC_PLATFORM_MEDIA_API_URL=http://localhost:8003
 NEXT_PUBLIC_AUTHKIT_LOGIN_ENABLED=true
 NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED=true
+AUTH_PUBLIC_ORIGIN=http://localhost:3004
+AUTH_GATEWAY_UPSTREAM_ORIGIN=http://127.0.0.1:8003
 ```
+
+The two `AUTH_*` frontend values are server-only. Browser code uses relative
+`/auth/*`; `NEXT_PUBLIC_AUTH_API_URL` stays on `apps/api` for existing product
+API consumers.
 
 Then run `npm run dev:pms-web`. Other web apps follow the same pattern using
 their nearest `.env.example`.

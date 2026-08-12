@@ -9,6 +9,7 @@ export function OperationFormShell({
   notice,
   onBack,
   onSubmit,
+  secondaryAction,
   submitLabel,
   submitting,
   submittingLabel = "Saving...",
@@ -18,6 +19,7 @@ export function OperationFormShell({
   notice?: ReactNode;
   onBack: (() => void) | null;
   onSubmit: FormEventHandler<HTMLFormElement>;
+  secondaryAction?: { label: string; onClick: () => void };
   submitLabel: string;
   submitting: boolean;
   submittingLabel?: string;
@@ -57,13 +59,25 @@ export function OperationFormShell({
         ) : (
           <span />
         )}
-        <button
-          className="min-h-11 rounded-full bg-primary-600 px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600 focus:ring-offset-2 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={submitting}
-          type="submit"
-        >
-          {submitting ? submittingLabel : submitLabel}
-        </button>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          {secondaryAction ? (
+            <button
+              className="min-h-11 rounded-full border border-primary-300 bg-white px-6 py-2.5 text-sm font-semibold text-primary-700 transition hover:bg-primary-50 focus:outline-none focus:ring-2 focus:ring-primary-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={submitting}
+              onClick={secondaryAction.onClick}
+              type="button"
+            >
+              {secondaryAction.label}
+            </button>
+          ) : null}
+          <button
+            className="min-h-11 rounded-full bg-primary-600 px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-600 focus:ring-offset-2 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={submitting}
+            type="submit"
+          >
+            {submitting ? submittingLabel : submitLabel}
+          </button>
+        </div>
       </div>
     </form>
   );
