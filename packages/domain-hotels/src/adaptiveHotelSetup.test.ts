@@ -278,6 +278,13 @@ describe("adaptive hotel setup contracts", () => {
             actionableBy: "owner",
           },
           {
+            taskId: "billing_plan",
+            track: "hotel_operations",
+            requirementOwnerDomain: "finance",
+            destinationRouteKey: "finance.billing_plan",
+            actionableBy: "owner",
+          },
+          {
             taskId: "payment",
             track: "hotel_operations",
             requirementOwnerDomain: "finance",
@@ -312,7 +319,7 @@ describe("adaptive hotel setup contracts", () => {
           }),
         ),
         recommendedTaskId: "shared_identity",
-        ownerProgress: { complete: 0, total: 5 },
+        ownerProgress: { complete: 0, total: 6 },
         launchReadiness: {
           operationsUse: "pending",
           directBookingPublish: "pending",
@@ -345,7 +352,7 @@ describe("adaptive hotel setup contracts", () => {
       taskId: "public_profile",
       track: "creator_marketplace",
     });
-    value.setupPlan.ownerProgress.total = 6;
+    value.setupPlan.ownerProgress.total = 7;
     expect(parseAdaptiveHotelSetupStatus(value)).toBeNull();
   });
 

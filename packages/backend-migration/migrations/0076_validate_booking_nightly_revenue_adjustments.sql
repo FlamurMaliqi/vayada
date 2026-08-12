@@ -1,0 +1,5 @@
+-- Migration: 0076_validate_booking_nightly_revenue_adjustments; owner: domain-booking
+ALTER TABLE booking.nightly_revenue_evidence
+  VALIDATE CONSTRAINT chk_booking_nightly_revenue_evidence_enums;
+ALTER TABLE booking.nightly_revenue_evidence
+  VALIDATE CONSTRAINT chk_booking_nightly_revenue_evidence_event;

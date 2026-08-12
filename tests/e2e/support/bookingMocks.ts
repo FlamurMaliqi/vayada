@@ -305,6 +305,7 @@ const publicOffers = {
 
 type MockBookingApisOptions = {
   supportedQuoteParameters?: Partial<typeof publicHotelProfile.hotel.supportedQuoteParameters>;
+  headerLogoUrl?: string;
 };
 
 export async function mockBookingApis(page: Page, options: MockBookingApisOptions = {}) {
@@ -312,6 +313,18 @@ export async function mockBookingApis(page: Page, options: MockBookingApisOption
     ...publicHotelProfile,
     hotel: {
       ...publicHotelProfile.hotel,
+      ...(options.headerLogoUrl
+        ? {
+            branding: {
+              logoUrl: options.headerLogoUrl,
+              heroImage: null,
+              heroHeading: null,
+              heroSubtext: null,
+              primaryColor: null,
+              fontPairing: null,
+            },
+          }
+        : {}),
       supportedQuoteParameters: {
         ...publicHotelProfile.hotel.supportedQuoteParameters,
         ...options.supportedQuoteParameters,

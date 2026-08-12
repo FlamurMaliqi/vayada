@@ -50,6 +50,12 @@ describe("PMS inventory public offer projection", () => {
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain("AS effective_rate");
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain("rate_plan.currency");
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain("'rateType', input.rate_type");
+    expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
+      "input.capabilities -> 'paymentMethods'",
+    );
+    expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).not.toContain(
+      "input.capabilities ->> 'payAtProperty'",
+    );
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain("profile.policies");
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain("input.policies,\n    CASE");
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(

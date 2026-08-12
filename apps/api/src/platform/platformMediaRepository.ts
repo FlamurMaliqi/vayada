@@ -6,6 +6,7 @@ import {
   type ApprovedPublicProfileImageRepository,
   type PlatformMediaAuditEvent,
   PlatformMediaCompletionError,
+  PlatformMediaPlanLimitError,
   PlatformMediaTargetInvalidError,
   isAutoApprovedPublicMediaPurpose,
   type PlatformMediaObjectRecord,
@@ -14,6 +15,7 @@ import {
   type PlatformMediaTargetResolver,
   type PlatformMediaVariantRecord,
 } from "../routes/platformMedia.js";
+import { readPropertyPlan } from "../domains/propertyPlanReadModel.js";
 import {
   assertCanonicalPrivatePropertyVariants,
   isCanonicalPrivatePropertyMediaObject,
@@ -52,6 +54,7 @@ type CollaborationTargetRow = { collaborationId: string; propertyId: string };
 
 const supportedPurposes = new Set([
   "identity.user.profile_image",
+  "booking.header_logo",
   "property.hero_image",
   "property.gallery_image",
   "property.logo",
@@ -98,7 +101,10 @@ export function createPgPlatformMediaRepository(
       if (
         (isAutoApproved && requestedVisibility !== "public") ||
         (!isAutoApproved && input.policy.purpose !== input.request.purpose) ||
-        (isPropertyMedia && (requestedVisibility !== "private" || !input.policy.privateOnly))
+        (isPropertyMedia &&
+          (isAutoApproved
+            ? requestedVisibility !== "public" || input.policy.privateOnly
+            : requestedVisibility !== "private" || !input.policy.privateOnly))
       ) {
         throw new Error("Persistent platform media policy does not support this upload");
       }
@@ -135,6 +141,7 @@ export function createPgPlatformMediaRepository(
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
+        await assertRoomMediaUploadWithinPlan(client, session);
         const inserted = await client.query<{ id: string }>(
           `INSERT INTO platform.media_upload_sessions
              (id, upload_session_key, requested_purpose, requested_visibility,
@@ -257,6 +264,45 @@ export function createPgPlatformMediaRepository(
       if (ownsPool) await pool.end();
     },
   };
+}
+
+async function assertRoomMediaUploadWithinPlan(
+  client: Queryable,
+  session: PlatformMediaSessionRecord,
+): Promise<void> {
+  if (session.purpose !== "pms.room_type.media" || !isCanonicalPropertyMediaRequest(session)) {
+    return;
+  }
+  const propertyId = session.target.propertyId;
+  if (!propertyId) throw new PlatformMediaTargetInvalidError();
+  const count = await client.query<{ currentCount: number | string }>(
+    `SELECT GREATEST(
+       CASE
+         WHEN jsonb_typeof(room_type.media_snapshot) = 'array'
+           THEN jsonb_array_length(room_type.media_snapshot)
+         ELSE 0
+       END,
+       (SELECT count(*)::integer
+        FROM pms.room_type_media assignment
+        WHERE assignment.property_id = room_type.property_id
+          AND assignment.room_type_id = room_type.id)
+     ) AS "currentCount"
+     FROM pms.room_types room_type
+     WHERE room_type.property_id = $1::uuid
+       AND room_type.id = $2::uuid
+     FOR UPDATE`,
+    [propertyId, session.target.resourceId],
+  );
+  if (count.rows.length !== 1) throw new PlatformMediaTargetInvalidError();
+  const currentCount = Number(count.rows[0]!.currentCount);
+  const propertyPlan = await readPropertyPlan(client, propertyId);
+  if (currentCount + session.files.length > propertyPlan.limits.maxRoomPhotosPerType) {
+    throw new PlatformMediaPlanLimitError(
+      propertyPlan.plan,
+      currentCount,
+      propertyPlan.limits.maxRoomPhotosPerType,
+    );
+  }
 }
 
 async function resolveTarget(
@@ -574,7 +620,7 @@ function mediaObjectFor(
   mediaPathPrefix: string,
   now: string,
 ): PlatformMediaObjectRecord {
-  if (isCanonicalPropertyMediaRequest(session)) {
+  if (isCanonicalPropertyMediaRequest(session) && !isAutoApprovedPublicSession(session)) {
     assertCanonicalPrivatePropertyVariants({
       mediaId: file.sessionFile.mediaId,
       variants,
@@ -678,11 +724,27 @@ function assertCompletedPropertyMediaIsCanonical(
       (mediaObject) =>
         !expectedMediaIds.delete(mediaObject.mediaId) ||
         mediaObject.purpose !== session.purpose ||
-        !isCanonicalPrivatePropertyMediaObject({ mediaObject, mediaPathPrefix }),
+        !(isAutoApprovedPublicSession(session)
+          ? isCanonicalPublicRoomMediaObject(mediaObject)
+          : isCanonicalPrivatePropertyMediaObject({ mediaObject, mediaPathPrefix })),
     )
   ) {
     throw new Error("Completed property media is not reusable");
   }
+}
+
+function isCanonicalPublicRoomMediaObject(mediaObject: PlatformMediaObjectRecord): boolean {
+  return (
+    mediaObject.purpose === "pms.room_type.media" &&
+    mediaObject.visibility === "public" &&
+    mediaObject.requestedVisibility === "public" &&
+    mediaObject.approvalStatus === "approved" &&
+    mediaObject.lifecycleStatus === "active" &&
+    mediaObject.variants.length > 0 &&
+    mediaObject.variants.every(
+      (variant) => variant.visibility === "public" && variant.publicCdnUrl?.startsWith("https://"),
+    )
+  );
 }
 
 async function insertMediaObject(

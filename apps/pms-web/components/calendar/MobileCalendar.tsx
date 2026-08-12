@@ -20,9 +20,13 @@ import { getChannelBarColor } from "@/lib/constants/statusStyles";
 const WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 
 interface MobileCalendarProps {
+  currentMonth: Date;
   bookings: CalendarBooking[];
   blocks: CalendarBlock[];
   roomTypes: CalendarRoomType[];
+  loading?: boolean;
+  loadError?: boolean;
+  onMonthChange: (month: Date) => void;
   onSelectBooking: (id: string) => void;
   // Both dates are yyyy-MM-dd. endDate is the exclusive checkout (last selected
   // day + 1), matching desktop drag-select semantics.
@@ -33,16 +37,19 @@ interface MobileCalendarProps {
 }
 
 export default function MobileCalendar({
+  currentMonth,
   bookings,
   blocks,
   roomTypes,
+  loading = false,
+  loadError = false,
+  onMonthChange,
   onSelectBooking,
   onNewBooking,
   onBlockRoom,
   onSelectBlock,
   writeActionsAvailable = true,
 }: MobileCalendarProps) {
-  const [currentMonth, setCurrentMonth] = useState(new Date());
   // Selection model: tap a day to single-select it (so the user can browse
   // that day's bookings/blocks); drag from one day onto another to form a
   // range. The drag mirrors desktop's pointer drag-to-select. While the
@@ -138,13 +145,12 @@ export default function MobileCalendar({
     };
   }, [drag !== null]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const monthStart = startOfMonth(currentMonth);
-  const monthEnd = endOfMonth(currentMonth);
-  const calStart = startOfWeek(monthStart, { weekStartsOn: 1 });
-  const calEnd = endOfWeek(monthEnd, { weekStartsOn: 1 });
-
   // Build array of calendar days
   const days = useMemo(() => {
+    const monthStart = startOfMonth(currentMonth);
+    const monthEnd = endOfMonth(currentMonth);
+    const calStart = startOfWeek(monthStart, { weekStartsOn: 1 });
+    const calEnd = endOfWeek(monthEnd, { weekStartsOn: 1 });
     const result: Date[] = [];
     let day = calStart;
     while (day <= calEnd) {
@@ -274,7 +280,9 @@ export default function MobileCalendar({
         </div>
         <div className="flex items-center justify-between">
           <button
-            onClick={() => setCurrentMonth((m) => addMonths(m, -1))}
+            type="button"
+            aria-label="Previous month"
+            onClick={() => onMonthChange(addMonths(currentMonth, -1))}
             className="p-1.5 text-gray-500 hover:text-gray-900 transition-colors"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -288,7 +296,9 @@ export default function MobileCalendar({
           </button>
           <h2 className="text-[15px] font-bold text-gray-900">{format(currentMonth, "MMMM")}</h2>
           <button
-            onClick={() => setCurrentMonth((m) => addMonths(m, 1))}
+            type="button"
+            aria-label="Next month"
+            onClick={() => onMonthChange(addMonths(currentMonth, 1))}
             className="p-1.5 text-gray-500 hover:text-gray-900 transition-colors"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -464,7 +474,18 @@ export default function MobileCalendar({
             </div>
           </div>
 
-          {selectedBookings.length === 0 && selectedBlocks.length === 0 ? (
+          {loading ? (
+            <div
+              className="bg-white rounded-lg border border-gray-200 p-6 text-center"
+              aria-live="polite"
+            >
+              <p className="text-[12px] text-gray-400">Loading bookings and blocks...</p>
+            </div>
+          ) : loadError ? (
+            <div className="bg-white rounded-lg border border-red-200 p-6 text-center" role="alert">
+              <p className="text-[12px] text-red-600">Calendar data could not be loaded.</p>
+            </div>
+          ) : selectedBookings.length === 0 && selectedBlocks.length === 0 ? (
             <div className="bg-white rounded-lg border border-gray-200 p-6 text-center">
               <p className="text-[12px] text-gray-400">
                 {isRangeSelection

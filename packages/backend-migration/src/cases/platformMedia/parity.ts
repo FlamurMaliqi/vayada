@@ -1,6 +1,7 @@
 import type { ParityFinding, ParityHandlerContext } from "../../parityTypes.js";
 
 const REQUIRED_PURPOSES = [
+  "booking.header_logo",
   "property.hero_image",
   "property.gallery_image",
   "property.logo",
@@ -138,6 +139,7 @@ export async function checkPlatformMediaParity({
       WHERE media.visibility = 'public'
         AND media.lifecycle_status = 'active'
         AND media.purpose IN (
+          'booking.header_logo',
           'property.hero_image',
           'property.gallery_image',
           'property.logo',

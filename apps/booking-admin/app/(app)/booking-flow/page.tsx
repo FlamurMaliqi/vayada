@@ -24,12 +24,14 @@ import {
   updateBookingAddonSettings,
 } from "@/services/api/bookingAddonSettingsClient";
 import {
+  BookingAddonItemsClientError,
   createBookingAddonItem,
   deleteBookingAddonItem,
-  listBookingAddonItems,
+  getBookingAddonItemsContext,
   updateBookingAddonItem,
   type BookingAddonItem,
   type BookingAddonPricingModel,
+  type BookingPropertyPlan,
   type CreateBookingAddonItemBody,
 } from "@/services/api/bookingAddonItemsClient";
 import {
@@ -105,6 +107,16 @@ type PmsRoomsResponse = {
 const DEFAULT_ADDON_SETTINGS: AddonSettings = {
   showAddonsStep: true,
   groupAddonsByCategory: true,
+};
+
+const DEFAULT_PROPERTY_PLAN: BookingPropertyPlan = {
+  propertyId: "",
+  plan: "commission",
+  limits: {
+    maxRoomPhotosPerType: 10,
+    maxAddons: 3,
+    guestContactAccess: "after_acceptance",
+  },
 };
 
 const DEFAULT_GUEST_FORM_SETTINGS: BookingGuestFormSettings = {
@@ -263,6 +275,7 @@ export default function BookingFlowPage() {
   );
 
   const [addons, setAddons] = useState<AddonItem[]>([]);
+  const [propertyPlan, setPropertyPlan] = useState<BookingPropertyPlan>(DEFAULT_PROPERTY_PLAN);
   const [addonSettings, setAddonSettings] = useState<AddonSettings>(DEFAULT_ADDON_SETTINGS);
   const addonSettingsRef = useRef<AddonSettings>(DEFAULT_ADDON_SETTINGS);
   const addonSettingsWriteSeqRef = useRef(0);
@@ -357,8 +370,11 @@ export default function BookingFlowPage() {
     );
     const addonItemsPromise = loadTypedSetting(
       (hotelId) =>
-        listBookingAddonItems({ hotelId }).then((items) => items.map(toSettingsAddonItem)),
-      [] as AddonItem[],
+        getBookingAddonItemsContext({ hotelId }).then((context) => ({
+          addonItems: context.addonItems.map(toSettingsAddonItem),
+          propertyPlan: context.propertyPlan,
+        })),
+      { addonItems: [] as AddonItem[], propertyPlan: DEFAULT_PROPERTY_PLAN },
     );
     const promoCodesPromise = loadTypedSetting(
       (hotelId) =>
@@ -400,7 +416,7 @@ export default function BookingFlowPage() {
       .then(
         ([
           settings,
-          addonItems,
+          addonContext,
           promoItems,
           benefitsRes,
           guestFormSettings,
@@ -412,7 +428,8 @@ export default function BookingFlowPage() {
           setBookingHotelId(selectedHotelId || property?.id || null);
           addonSettingsRef.current = settings;
           setAddonSettings(settings);
-          setAddons(orderAddons(addonItems));
+          setAddons(orderAddons(addonContext.addonItems));
+          setPropertyPlan(addonContext.propertyPlan);
           setPromoCodes(promoItems);
           setBenefits(
             normalizeBookingBenefitsSettings(benefitsRes, DEFAULT_BENEFITS_SETTINGS).benefits,
@@ -487,9 +504,24 @@ export default function BookingFlowPage() {
       });
       setAddons((current) => orderAddons([...current, toSettingsAddonItem(saved)]));
       showFeedback("success", t("bookingFlow.addons.feedback.createSuccess"));
-    } catch {
-      showFeedback("error", t("bookingFlow.addons.feedback.saveError"));
-      throw new Error("Failed to save add-on.");
+    } catch (error) {
+      const message =
+        error instanceof BookingAddonItemsClientError
+          ? error.detail
+          : t("bookingFlow.addons.feedback.saveError");
+      showFeedback("error", message);
+      if (error instanceof BookingAddonItemsClientError && error.statusCode === 409) {
+        try {
+          const context = await getBookingAddonItemsContext({
+            hotelId: getBookingHotelIdForSave(),
+          });
+          setAddons(orderAddons(context.addonItems.map(toSettingsAddonItem)));
+          setPropertyPlan(context.propertyPlan);
+        } catch {
+          // Preserve the authoritative create error when a best-effort refresh also fails.
+        }
+      }
+      throw error;
     }
   };
 
@@ -506,9 +538,13 @@ export default function BookingFlowPage() {
         ),
       );
       showFeedback("success", t("bookingFlow.addons.feedback.updateSuccess"));
-    } catch {
-      showFeedback("error", t("bookingFlow.addons.feedback.saveError"));
-      throw new Error("Failed to save add-on.");
+    } catch (error) {
+      const message =
+        error instanceof BookingAddonItemsClientError
+          ? error.detail
+          : t("bookingFlow.addons.feedback.saveError");
+      showFeedback("error", message);
+      throw error;
     }
   };
 
@@ -762,6 +798,7 @@ export default function BookingFlowPage() {
             addons={addons}
             addonSettings={addonSettings}
             propertyCurrency={defaultCurrency}
+            propertyPlan={propertyPlan}
             handleToggleAddonSetting={handleToggleAddonSetting}
             onCreateAddon={handleCreateAddon}
             onUpdateAddon={handleUpdateAddon}

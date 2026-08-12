@@ -288,11 +288,11 @@ export const PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS = `
       'maxStayNights', input.max_stay_nights,
       'cancellationSummary', input.policies ->> 'cancellationSummary'
     )),
-    ARRAY_REMOVE(ARRAY[
-      CASE WHEN COALESCE((input.capabilities ->> 'onlinePayment')::boolean, FALSE) THEN 'card' END,
-      CASE WHEN COALESCE((input.capabilities ->> 'payAtProperty')::boolean, FALSE)
-        THEN 'pay_at_property' END
-    ], NULL)::text[],
+    ARRAY(
+      SELECT jsonb_array_elements_text(
+        COALESCE(input.capabilities -> 'paymentMethods', '[]'::jsonb)
+      )
+    ),
     input.policies,
     CASE
       WHEN input.stay_date < ($2::timestamptz AT TIME ZONE input.timezone)::date

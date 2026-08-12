@@ -8,6 +8,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  loadPhotoPlan: vi.fn(),
   loadWorkspace: vi.fn(),
   saveDraft: vi.fn(),
   ensureRoomTarget: vi.fn(),
@@ -29,6 +30,10 @@ const propertyId = "22222222-2222-4222-8222-222222222222";
 describe("RoomAuthoringStep first-visit recovery", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.loadPhotoPlan.mockResolvedValue({
+      plan: "commission",
+      maxRoomPhotosPerType: 10,
+    });
     mocks.loadWorkspace.mockResolvedValue([]);
     mocks.saveDraft.mockResolvedValue(draftReceipt());
     mocks.ensureRoomTarget.mockResolvedValue({
@@ -389,6 +394,61 @@ describe("RoomAuthoringStep first-visit recovery", () => {
         }),
       ],
     });
+
+    renderer?.unmount();
+  });
+
+  it("uses the returned commission plan cap and keeps photo removal available at the limit", async () => {
+    mocks.loadPhotoPlan.mockResolvedValueOnce({
+      plan: "commission",
+      maxRoomPhotosPerType: 12,
+    });
+    const room = {
+      ...completeRoomWithoutPhotos(),
+      photos: Array.from({ length: 12 }, (_, index) => ({
+        mediaObjectId: `77777777-7777-4777-8777-${String(index).padStart(12, "0")}`,
+        previewUrl: `https://cdn.example.com/room-${index}.webp`,
+        uploadState: "ready" as const,
+        errorMessage: null,
+      })),
+    };
+    const store: RoomAuthoringSessionStore = { propertyId, rooms: [room], dirty: true };
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(RoomAuthoringStep, {
+          ...context(routeWithRoomsDraft(emptyRoomsDraft())),
+          sessionStore: store,
+        }),
+      );
+    });
+
+    const rendered = JSON.stringify(renderer?.toJSON());
+    expect(rendered).toContain("12/12 photos");
+    expect(rendered).toContain(
+      "You've reached the 12-photo limit. Upgrade to the paid plan for up to 15 photos per room.",
+    );
+    const arrange = renderer!.root.find(
+      (node) =>
+        node.type === "button" &&
+        node.children.some(
+          (child) => typeof child === "string" && child.includes("Add or arrange photos"),
+        ),
+    );
+    expect(arrange.props.disabled).toBe(false);
+    await act(async () => arrange.props.onClick());
+    expect(
+      renderer!.root.findAll((node) => node.type === "input" && node.props.type === "file"),
+    ).toHaveLength(0);
+    expect(
+      renderer!.root.findAll(
+        (node) =>
+          node.type === "button" &&
+          typeof node.props["aria-label"] === "string" &&
+          node.props["aria-label"].startsWith("Remove photo"),
+      ).length,
+    ).toBeGreaterThan(0);
 
     renderer?.unmount();
   });
