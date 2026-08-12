@@ -68,20 +68,28 @@ export function createHotelPresentationClient(
       return parsed;
     },
 
-    async upload(propertyId: string, files: readonly File[]): Promise<PropertyMediaLibraryItem[]> {
+    async upload(
+      propertyId: string,
+      files: readonly File[],
+      purpose: "property.hero_image" | "property.gallery_image" = "property.gallery_image",
+    ): Promise<PropertyMediaLibraryItem[]> {
       if (files.length === 0) return [];
       const request = {
-        idempotencyKey: await key("presentation-media", propertyId, {
-          files: await Promise.all(
-            files.map(async (file) => ({
-              name: file.name,
-              type: contentType(file),
-              size: file.size,
-              digest: await sha256(await file.arrayBuffer()),
-            })),
-          ),
-        }),
-        purpose: "property.gallery_image",
+        idempotencyKey: await key(
+          purpose === "property.gallery_image" ? "presentation-media" : "presentation-hero",
+          propertyId,
+          {
+            files: await Promise.all(
+              files.map(async (file) => ({
+                name: file.name,
+                type: contentType(file),
+                size: file.size,
+                digest: await sha256(await file.arrayBuffer()),
+              })),
+            ),
+          },
+        ),
+        purpose,
         visibility: "private",
         resource: {
           product: "hotel_catalog",
@@ -99,6 +107,7 @@ export function createHotelPresentationClient(
       const created = parseUploadSession(
         await mediaHttp.post<unknown>("/api/media/upload-sessions", request),
         files.length,
+        purpose,
       );
       if (!created) throw invalid("media upload session");
       if (created.status === "completed") return created.mediaObjects!;
@@ -131,7 +140,7 @@ export function createHotelPresentationClient(
           })),
         },
       );
-      const finalized = parseMediaItems(value, files.length);
+      const finalized = parseMediaItems(value, files.length, purpose);
       if (!finalized) throw invalid("finalized presentation media");
       return finalized;
     },
@@ -156,7 +165,11 @@ type UploadSession = {
   mediaObjects: PropertyMediaLibraryItem[] | null;
 };
 
-function parseUploadSession(value: unknown, count: number): UploadSession | null {
+function parseUploadSession(
+  value: unknown,
+  count: number,
+  purpose: "property.hero_image" | "property.gallery_image",
+): UploadSession | null {
   if (
     !record(value) ||
     value.contractVersion !== "platform-media-upload.v2" ||
@@ -167,7 +180,7 @@ function parseUploadSession(value: unknown, count: number): UploadSession | null
   ) {
     return null;
   }
-  const mediaObjects = parseMediaArray(value.mediaObjects, count);
+  const mediaObjects = parseMediaArray(value.mediaObjects, count, purpose);
   if (value.uploadSession.status === "completed") {
     return mediaObjects
       ? {
@@ -207,16 +220,24 @@ function parseTarget(value: unknown): UploadSession["targets"][number] | null {
   return value as UploadSession["targets"][number];
 }
 
-function parseMediaItems(value: unknown, count: number): PropertyMediaLibraryItem[] | null {
+function parseMediaItems(
+  value: unknown,
+  count: number,
+  purpose: "property.hero_image" | "property.gallery_image",
+): PropertyMediaLibraryItem[] | null {
   return record(value) && value.contractVersion === "platform-media-upload.v2"
-    ? parseMediaArray(value.mediaObjects, count)
+    ? parseMediaArray(value.mediaObjects, count, purpose)
     : null;
 }
 
-function parseMediaArray(value: unknown, count: number): PropertyMediaLibraryItem[] | null {
+function parseMediaArray(
+  value: unknown,
+  count: number,
+  purpose: "property.hero_image" | "property.gallery_image",
+): PropertyMediaLibraryItem[] | null {
   if (!Array.isArray(value) || value.length !== count) return null;
   const parsed = value.map(parsePropertyMediaLibraryItem);
-  return parsed.some((item) => !item || item.purpose !== "property.gallery_image")
+  return parsed.some((item) => !item || item.purpose !== purpose)
     ? null
     : (parsed as PropertyMediaLibraryItem[]);
 }

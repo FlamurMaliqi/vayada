@@ -1896,7 +1896,6 @@ async function resolveTargetCheckoutProperty(
      WHERE s.slug = $1
        AND s.purpose = 'canonical'
        AND s.status = 'active'
-       AND p.profile_status = 'complete'
        AND profile.public_visibility = 'public_safe'
        AND profile.profile_status = 'public'
        AND (profile.expires_at IS NULL OR profile.expires_at > now())

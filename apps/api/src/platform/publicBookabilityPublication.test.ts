@@ -128,6 +128,11 @@ describe("target public bookability publication", () => {
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("ELSE 'Etc/UTC'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'sellable_availability'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'payment_method'");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("AS booking_profile_ready");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+      "'description' = ANY(input.completeness_reasons)",
+    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("NULLIF(BTRIM(input.hero_subtext), '')");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
       "NULLIF(BTRIM(media.item ->> 'type'), '')",
     );
@@ -405,6 +410,67 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical public location projection", () =
         alt: "Mountain view",
       },
     ]);
+  });
+
+  it("publishes an operations-only profile when hero subtext replaces the retired description", async () => {
+    await client.query(
+      `INSERT INTO booking.booking_settings (property_id, hero_subtext)
+       VALUES ($1::uuid, 'Book direct for a memorable stay.')
+       ON CONFLICT (property_id) DO UPDATE
+       SET hero_subtext = EXCLUDED.hero_subtext`,
+      [publicLocationPropertyId],
+    );
+    await client.query(
+      `UPDATE hotel_catalog.property_public_profile_read_model
+       SET profile_status = 'incomplete',
+           completeness_reasons = ARRAY['description']::text[],
+           descriptions = '{}'::jsonb
+       WHERE property_id = $1::uuid`,
+      [publicLocationPropertyId],
+    );
+
+    await projectPublicBookabilityLocation(client);
+
+    const result = await client.query<{
+      profileStatus: string;
+      publicIdentity: Record<string, unknown>;
+      missing: string[];
+    }>(
+      `SELECT
+         profile_status AS "profileStatus",
+         public_identity AS "publicIdentity",
+         ARRAY(
+           SELECT jsonb_array_elements_text(public_setup_completeness -> 'missing')
+         ) AS missing
+       FROM distribution.public_hotel_bookability_profiles
+       WHERE property_id = $1::uuid`,
+      [publicLocationPropertyId],
+    );
+    expect(result.rows[0]).toMatchObject({
+      profileStatus: "public",
+      publicIdentity: { summary: "Book direct for a memorable stay." },
+    });
+    expect(result.rows[0]?.missing).not.toContain("profile");
+
+    await client.query(
+      `UPDATE hotel_catalog.property_public_profile_read_model
+       SET completeness_reasons = ARRAY['description', 'media']::text[]
+       WHERE property_id = $1::uuid`,
+      [publicLocationPropertyId],
+    );
+    await projectPublicBookabilityLocation(client);
+    const incomplete = await client.query<{ profileStatus: string; missing: string[] }>(
+      `SELECT
+         profile_status AS "profileStatus",
+         ARRAY(
+           SELECT jsonb_array_elements_text(public_setup_completeness -> 'missing')
+         ) AS missing
+       FROM distribution.public_hotel_bookability_profiles
+       WHERE property_id = $1::uuid`,
+      [publicLocationPropertyId],
+    );
+    expect(incomplete.rows[0]?.profileStatus).toBe("incomplete");
+    expect(incomplete.rows[0]?.missing).toContain("profile");
   });
 });
 

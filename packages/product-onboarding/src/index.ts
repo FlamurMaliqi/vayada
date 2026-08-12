@@ -1,6 +1,14 @@
 export { default as AddonsStep, createEmptyAddon, type SetupAddon } from "./AddonsStep";
 export { default as BenefitsStep } from "./BenefitsStep";
-export { default as BrandMediaStep, type ColorPreset, type FontPairing } from "./BrandMediaStep";
+export { default as BrandMediaStep } from "./BrandMediaStep";
+export { BookingPagePreview } from "./BookingPagePreview";
+export {
+  BOOKING_PAGE_COLOR_PRESETS,
+  BOOKING_PAGE_FONT_PAIRINGS,
+  BOOKING_PAGE_FONT_STYLESHEET_URL,
+  type ColorPreset,
+  type FontPairing,
+} from "./bookingPageBranding";
 export { HotelIcon } from "./HotelIcon";
 export {
   default as SharedAccountDetailsStep,

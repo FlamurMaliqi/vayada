@@ -92,6 +92,37 @@ describe("hotelPresentationClient", () => {
     });
     expect(calls.upload).not.toHaveBeenCalled();
   });
+
+  it("uses the API's private Catalog contract for canonical hero uploads", async () => {
+    calls.post.mockResolvedValueOnce({
+      contractVersion: "platform-media-upload.v2",
+      uploadSession: { sessionId: "upload-hero", status: "completed" },
+      uploadTargets: [],
+      mediaObjects: [
+        {
+          mediaObjectId,
+          purpose: "property.hero_image",
+          status: "private_ready",
+          publicVariants: [],
+        },
+      ],
+    });
+    const file = new File([new Uint8Array([1, 2, 3])], "hero.jpg", { type: "image/jpeg" });
+
+    await expect(client.upload(propertyId, [file], "property.hero_image")).resolves.toEqual([
+      expect.objectContaining({ mediaObjectId, purpose: "property.hero_image" }),
+    ]);
+    expect(calls.post.mock.calls[0]?.[1]).toMatchObject({
+      purpose: "property.hero_image",
+      visibility: "private",
+      resource: {
+        product: "hotel_catalog",
+        resourceType: "property",
+        resourceId: propertyId,
+        propertyId,
+      },
+    });
+  });
 });
 
 function readModel(revision = 7) {
