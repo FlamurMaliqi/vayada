@@ -90,15 +90,14 @@ export async function reserveManualBookingCommand(
        tenant_scope, property_id, correlation_id, expires_at, idempotency_metadata
      ) VALUES (
        'pms', 'pms.manual_booking.create', $1, $2, 'property', $3::uuid,
-       $4, $5::timestamptz + interval '1 year',
-       jsonb_build_object('contractVersion', $6::text, 'commandId', $7::text)
+       $4, 'infinity'::timestamptz,
+       jsonb_build_object('contractVersion', $5::text, 'commandId', $6::text)
      ) ON CONFLICT DO NOTHING RETURNING id::text AS id`,
     [
       keyHash,
       requestFingerprint,
       command.propertyId,
       command.audit.correlationId ?? command.audit.requestId,
-      command.audit.requestedAt,
       command.contractVersion,
       command.commandId,
     ],
