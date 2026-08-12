@@ -54,7 +54,6 @@ import {
   type FinanceRoutePaymentProvider,
   type FinanceStripeConnectProvider,
   type IssueStripeOnboardingLinkCommand,
-  type PropertyPlanReadModel,
   type FinanceXenditBankValidationCommand,
   type FinanceXenditBankValidationResponse,
   type FinanceXenditPayoutReconciliationCommand,
@@ -67,12 +66,6 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
-import {
-  BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL,
-  guestContactForPropertyPlan,
-  PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL,
-} from "../domains/bookingGuestContactAccess.js";
-import { readPropertyPlan } from "../domains/propertyPlanReadModel.js";
 import type { PublicHotelProfileRepository } from "./aiHotels.js";
 import { enforceRoutePolicy, type RouteAuthorizationPolicy } from "./policy.js";
 
