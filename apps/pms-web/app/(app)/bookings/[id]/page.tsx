@@ -350,8 +350,7 @@ function AdditionalGuestRow({
         firstName: form.firstName,
         lastName: form.lastName,
         nationality: form.nationality,
-        email: form.email,
-        phone: form.phone,
+        ...(guest.guestContactHidden ? {} : { email: form.email, phone: form.phone }),
       });
     } finally {
       setSaving(false);
@@ -414,14 +413,21 @@ function AdditionalGuestRow({
               type="email"
               value={form.email}
               onChange={(v) => setForm({ ...form, email: v })}
+              disabled={guest.guestContactHidden}
             />
             <Field
               label="Phone (optional)"
               type="tel"
               value={form.phone}
               onChange={(v) => setForm({ ...form, phone: v })}
+              disabled={guest.guestContactHidden}
             />
           </div>
+          {guest.guestContactHidden && (
+            <p className="mt-3 text-xs text-amber-700">
+              Guest email and phone become available after you accept the booking.
+            </p>
+          )}
           {roomOptions.length > 1 && (
             <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
               Additional guest room assignment is not available on PMS next-stack yet.
@@ -462,11 +468,13 @@ function Field({
   value,
   onChange,
   type = "text",
+  disabled = false,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   type?: string;
+  disabled?: boolean;
 }) {
   return (
     <label className="block">
@@ -475,8 +483,9 @@ function Field({
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
         // 16px text size prevents iOS Safari from auto-zooming on focus.
-        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
       />
     </label>
   );
@@ -1316,6 +1325,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         dateOfBirth: null,
         email: "",
         phone: "",
+        guestContactHidden: false,
         passportNumber: "",
         roomPosition: null,
         createdAt: now,

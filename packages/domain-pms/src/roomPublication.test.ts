@@ -248,6 +248,25 @@ describe("room publication contract", () => {
         error: { code: "media_not_ready", mediaObjectIds: [mediaId], privateUrl: "secret" },
       }),
     ).toBeNull();
+    expect(
+      parseAssignRoomTypeMediaResult({
+        ok: false,
+        error: {
+          code: "room_media_plan_limit_reached",
+          plan: "commission",
+          currentCount: 10,
+          maxAllowed: 10,
+        },
+      }),
+    ).toEqual({
+      ok: false,
+      error: {
+        code: "room_media_plan_limit_reached",
+        plan: "commission",
+        currentCount: 10,
+        maxAllowed: 10,
+      },
+    });
   });
 
   it("projects opaque media proofs, public facts, and exact revisions deterministically", async () => {

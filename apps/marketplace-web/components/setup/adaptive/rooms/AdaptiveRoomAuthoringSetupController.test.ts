@@ -15,7 +15,27 @@ const mocks = vi.hoisted(() => ({
   routeFetch: vi.fn(),
   controllerProps: null as CapturedControllerProps | null,
   activeRoomCallback: vi.fn<() => Promise<void>>(),
+  activeAdaptiveCallback: vi.fn<() => Promise<void>>(),
+  activeRecoveryCallback: vi.fn<() => Promise<void>>(),
   saveSessionDraft: vi.fn<() => Promise<unknown>>(),
+}));
+
+vi.mock("../AdaptiveSetupStepFormDispatcher", () => ({
+  AdaptiveSetupStepFormDispatcher: ({
+    step,
+    registerBeforeLeave,
+    registerStaleRecovery,
+  }: {
+    step: { stepId: string };
+    registerBeforeLeave: (callback: () => Promise<void>) => () => void;
+    registerStaleRecovery: (callback: () => Promise<void>) => () => void;
+  }) => {
+    if (step.stepId === "present_hotel") {
+      registerBeforeLeave(mocks.activeAdaptiveCallback);
+      registerStaleRecovery(mocks.activeRecoveryCallback);
+    }
+    return null;
+  },
 }));
 
 vi.mock("../AdaptiveHotelSetupController", () => ({
@@ -49,6 +69,8 @@ describe("AdaptiveRoomAuthoringSetupController", () => {
     vi.clearAllMocks();
     mocks.controllerProps = null;
     mocks.activeRoomCallback.mockResolvedValue(undefined);
+    mocks.activeAdaptiveCallback.mockResolvedValue(undefined);
+    mocks.activeRecoveryCallback.mockResolvedValue(undefined);
     mocks.saveSessionDraft.mockResolvedValue(undefined);
   });
 
@@ -103,6 +125,7 @@ describe("AdaptiveRoomAuthoringSetupController", () => {
     const firstCallback = mocks.activeRoomCallback;
     await expect(controller.beforeLeave?.()).resolves.toBeUndefined();
     expect(firstCallback).toHaveBeenCalledOnce();
+    expect(controller.staleRecoveryMode?.()).toBeNull();
 
     const replacement = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
     mocks.activeRoomCallback = replacement;
@@ -124,6 +147,42 @@ describe("AdaptiveRoomAuthoringSetupController", () => {
     stepRenderer?.unmount();
     renderer?.unmount();
   });
+
+  it("runs only the current non-room step callback and ignores it after the step changes", async () => {
+    let renderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      renderer = create(
+        createElement(AdaptiveRoomAuthoringSetupController, {
+          propertyId,
+          requestedStepId: "present_hotel",
+          onExit: vi.fn(),
+        }),
+      );
+    });
+    const controller = capturedController();
+    let stepRenderer: ReactTestRenderer | undefined;
+    await act(async () => {
+      stepRenderer = create(createElement(controller.StepForm!, stepContext("present_hotel")));
+    });
+
+    await expect(controller.beforeLeave?.()).resolves.toBeUndefined();
+    expect(mocks.activeAdaptiveCallback).toHaveBeenCalledOnce();
+    expect(controller.staleRecoveryMode?.()).toBe("refresh");
+    await expect(controller.recoverStaleDraft?.()).resolves.toBeUndefined();
+    expect(mocks.activeRecoveryCallback).toHaveBeenCalledOnce();
+    expect(mocks.activeRoomCallback).not.toHaveBeenCalled();
+
+    await act(async () => {
+      stepRenderer?.update(createElement(controller.StepForm!, stepContext("pricing")));
+    });
+    await expect(controller.beforeLeave?.()).resolves.toBeUndefined();
+    expect(mocks.activeAdaptiveCallback).toHaveBeenCalledOnce();
+    expect(controller.staleRecoveryMode?.()).toBeNull();
+    await expect(controller.recoverStaleDraft?.()).rejects.toThrow(/does not have a saved draft/i);
+
+    stepRenderer?.unmount();
+    renderer?.unmount();
+  });
 });
 
 function capturedController(): CapturedControllerProps {
@@ -131,7 +190,9 @@ function capturedController(): CapturedControllerProps {
   return mocks.controllerProps;
 }
 
-function stepContext(stepId: "rooms" | "pricing"): AdaptiveSetupStepRenderContext {
+function stepContext(
+  stepId: "present_hotel" | "rooms" | "pricing",
+): AdaptiveSetupStepRenderContext {
   const route = setupRoute();
   return {
     route,
@@ -155,7 +216,7 @@ function setupRoute(): PropertySetupRouteReadModel {
     progress: { complete: 0, total: 2 },
     steps: [
       {
-        stepId: "rooms",
+        stepId: "present_hotel",
         position: 1,
         state: "not_started",
         sourceRevision: "rooms:0",
@@ -168,8 +229,21 @@ function setupRoute(): PropertySetupRouteReadModel {
         blockers: [],
       },
       {
-        stepId: "pricing",
+        stepId: "rooms",
         position: 2,
+        state: "not_started",
+        sourceRevision: "pricing:0",
+        currentBaseRevisions: {
+          "pms.pricing_settings": "pricing:0",
+          "pms.rate_plans": "plans:0",
+          "pms.rate_rules": "rules:0",
+        },
+        draft: null,
+        blockers: [],
+      },
+      {
+        stepId: "pricing",
+        position: 3,
         state: "not_started",
         sourceRevision: "pricing:0",
         currentBaseRevisions: {

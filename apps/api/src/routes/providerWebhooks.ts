@@ -143,7 +143,11 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
       request,
       rawPayload: payload.value,
       store: options.store,
-      normalizedPreview: previewStripeEvent(payload.value, receiptKey),
+      normalizedPreview: previewStripeEvent(
+        payload.value,
+        receiptKey,
+        Math.floor((options.now?.() ?? new Date()).getTime() / 1_000),
+      ),
     });
   });
 
@@ -549,10 +553,47 @@ function channexEventFamily(eventType: string): ChannexEventFamily {
 function previewStripeEvent(
   payload: Record<string, unknown>,
   receiptKey: string,
+  eventCreatedFallback: number,
 ): ProviderWebhookNormalizedPreview {
   const eventType = requiredString(payload, "type", "Stripe event");
   const dataObject = optionalRecord(optionalRecord(payload, "data"), "object") ?? {};
   const objectId = optionalString(dataObject, "id") ?? receiptKey;
+  const eventId = requiredString(payload, "id", "Stripe event");
+  if (STRIPE_SUBSCRIPTION_EVENT_TYPES.has(eventType)) {
+    const subscriptionId = stripeSubscriptionId(eventType, dataObject);
+    const metadata = stripeSubscriptionMetadata(eventType, dataObject);
+    const propertyId =
+      optionalString(metadata, "vayada_property_id") ??
+      optionalString(dataObject, "client_reference_id");
+    const organizationId = optionalString(metadata, "vayada_organization_id");
+    const customer = dataObject["customer"];
+    const customerId =
+      typeof customer === "string"
+        ? customer
+        : optionalString(optionalRecord(dataObject, "customer"), "id");
+    return {
+      domainEventKey: `finance.subscription.provider-event:stripe:${eventId}:v1`,
+      domainEventType: "finance.subscription.provider-event",
+      resourceProduct: "finance",
+      resourceType: "billing_subscription",
+      resourceId: subscriptionId ?? objectId,
+      jobKey: `finance.subscription-webhook:stripe:${eventId}:v1`,
+      queueName: "finance.subscriptions",
+      jobType: "finance.subscription-webhook",
+      payload: {
+        provider: "stripe",
+        eventType,
+        rawEventId: eventId,
+        eventCreated: optionalNumber(payload, "created") ?? eventCreatedFallback,
+        objectId,
+        subscriptionId,
+        checkoutSessionId: eventType === "checkout.session.completed" ? objectId : null,
+        propertyId,
+        organizationId,
+        customerId,
+      },
+    };
+  }
   const amount =
     optionalNumber(dataObject, "amount_received") ?? optionalNumber(dataObject, "amount") ?? 0;
 
@@ -620,6 +661,46 @@ function previewStripeEvent(
     });
   }
   return fallbackPreview("stripe", receiptKey, eventType, payload);
+}
+
+const STRIPE_SUBSCRIPTION_EVENT_TYPES = new Set([
+  "checkout.session.completed",
+  "invoice.paid",
+  "invoice.payment_failed",
+  "invoice.upcoming",
+  "customer.subscription.updated",
+  "customer.subscription.deleted",
+]);
+
+function stripeSubscriptionId(
+  eventType: string,
+  dataObject: Record<string, unknown>,
+): string | undefined {
+  if (eventType.startsWith("customer.subscription.")) return optionalString(dataObject, "id");
+  const subscription = dataObject["subscription"];
+  if (typeof subscription === "string" && subscription.trim()) return subscription.trim();
+  const parent = optionalRecord(dataObject, "parent");
+  const subscriptionDetails =
+    optionalRecord(parent, "subscription_details") ??
+    optionalRecord(dataObject, "subscription_details");
+  return optionalString(subscriptionDetails, "subscription");
+}
+
+function stripeSubscriptionMetadata(
+  eventType: string,
+  dataObject: Record<string, unknown>,
+): Record<string, unknown> {
+  if (
+    eventType === "checkout.session.completed" ||
+    eventType.startsWith("customer.subscription.")
+  ) {
+    return optionalRecord(dataObject, "metadata") ?? {};
+  }
+  const parent = optionalRecord(dataObject, "parent");
+  const subscriptionDetails =
+    optionalRecord(parent, "subscription_details") ??
+    optionalRecord(dataObject, "subscription_details");
+  return optionalRecord(subscriptionDetails, "metadata") ?? {};
 }
 
 function previewXenditEvent(

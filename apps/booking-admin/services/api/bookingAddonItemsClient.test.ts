@@ -4,6 +4,7 @@ import {
   BookingAddonItemsClientError,
   createBookingAddonItem,
   deleteBookingAddonItem,
+  getBookingAddonItemsContext,
   listBookingAddonItems,
   updateBookingAddonItem,
   type BookingAddonItem,
@@ -40,13 +41,23 @@ const addonItem: BookingAddonItem = {
   updatedAt: "2026-06-01T10:00:00.000Z",
 };
 
+const propertyPlan = {
+  propertyId: "property_alpenrose",
+  plan: "commission" as const,
+  limits: {
+    maxRoomPhotosPerType: 10,
+    maxAddons: 3,
+    guestContactAccess: "after_acceptance" as const,
+  },
+};
+
 describe("booking add-on item clients", () => {
   it("lists add-on items through the typed target endpoint", async () => {
     const calls: Array<{ endpoint: string; options?: RequestInit }> = [];
     const client: ReadClient = {
       get: async <T>(endpoint: string, options?: RequestInit) => {
         calls.push({ endpoint, options });
-        return { addonItems: [addonItem] } as T;
+        return { addonItems: [addonItem], propertyPlan } as T;
       },
     };
 
@@ -59,6 +70,16 @@ describe("booking add-on item clients", () => {
         options: omitHotelContextOptions,
       },
     ]);
+  });
+
+  it("returns the plan context used by add-on limit controls", async () => {
+    const client: ReadClient = {
+      get: async <T>() => ({ addonItems: [addonItem], propertyPlan }) as T,
+    };
+
+    await expect(
+      getBookingAddonItemsContext({ hotelId: "booking_hotel_alpenrose" }, client),
+    ).resolves.toEqual({ addonItems: [addonItem], propertyPlan });
   });
 
   it("creates add-on items through the typed target endpoint", async () => {

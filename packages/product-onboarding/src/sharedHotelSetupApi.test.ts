@@ -83,6 +83,48 @@ describe("createSharedHotelSetupApi", () => {
     await expect(api.getPublicPropertyProfile("property-1")).resolves.toEqual(validPublicProfile());
   });
 
+  it("sends and validates a revision-guarded property presentation command", async () => {
+    const propertyId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const mediaObjectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const calls: Array<{ endpoint: string; data: unknown; options?: RequestInit }> = [];
+    const response = {
+      outcome: "updated",
+      profileRevision: 8,
+      logoAssignment: null,
+      presentationAssignments: [{ mediaObjectId, role: "cover", altText: null, sortOrder: 0 }],
+    } as const;
+    const client: SharedHotelSetupHttpClient = {
+      get: async <T>() => response as T,
+      post: async <T>() => response as T,
+      put: async <T>(endpoint: string, data?: unknown, options?: RequestInit) => {
+        calls.push({ endpoint, data, options });
+        return response as T;
+      },
+    };
+    const api = createSharedHotelSetupApi(client);
+
+    await expect(
+      api.replacePropertyPresentationMedia(
+        propertyId,
+        {
+          expectedProfileRevision: 7,
+          assignments: [{ mediaObjectId, role: "cover", altText: null, sortOrder: 0 }],
+        },
+        "cover-assignment-1",
+      ),
+    ).resolves.toEqual(response);
+    expect(calls).toEqual([
+      {
+        endpoint: `/api/hotel-setup/properties/${propertyId}/media/presentation`,
+        data: {
+          expectedProfileRevision: 7,
+          assignments: [{ mediaObjectId, role: "cover", altText: null, sortOrder: 0 }],
+        },
+        options: { headers: { "Idempotency-Key": "cover-assignment-1" } },
+      },
+    ]);
+  });
+
   it("uploads privately, finalizes, and assigns one property logo with separate retry keys", async () => {
     const mediaObjectId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const calls: Array<{

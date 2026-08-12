@@ -31,6 +31,7 @@
     "format:check": "prettier --check .",
     "check:architecture-boundaries": "node scripts/check-architecture-boundaries.mjs",
     "test:architecture-boundaries": "node --test scripts/check-architecture-boundaries.test.mjs",
+    "test:workos-local-config": "bash scripts/dev-workos-local-config.test.sh",
     "lint:python": "ruff check .",
     "format:python": "ruff format .",
     "e2e": "playwright test",
@@ -43,6 +44,8 @@
     "e2e:marketplace-web": "playwright test --project=marketplace-web-chromium",
     "e2e:pms-web": "playwright test --project=pms-web-chromium",
     "e2e:vayada-admin": "playwright test --project=vayada-admin-chromium",
+    "e2e:first-party-auth": "playwright test --project=first-party-auth-chromium",
+    "e2e:first-party-auth:live": "playwright test --project=first-party-auth-live-chromium",
     "e2e:report": "playwright show-report",
     "build:api": "npm --workspace vayada-api run build",
     "build:affiliate-dashboard": "npm --workspace vayada-affiliate-dashboard run build",
@@ -83,6 +86,7 @@
     ]
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@playwright/test": "^1.60.0",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.6",

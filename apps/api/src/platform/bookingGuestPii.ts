@@ -13,6 +13,14 @@ import type {
   BookingGuestPiiRole,
 } from "@vayada/domain-booking";
 
+import {
+  BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL,
+  guestContactForPropertyPlan,
+  HIDDEN_GUEST_CONTACT,
+  propertyCanAccessGuestContact,
+} from "../domains/bookingGuestContactAccess.js";
+import { readPropertyPlan } from "../domains/propertyPlanReadModel.js";
+
 export type BookingGuestPiiClient = {
   query<T extends QueryResultRow = QueryResultRow>(
     text: string,
@@ -44,6 +52,10 @@ type BookingGuestPiiRow = {
   countryCode: string | null;
   arrivalTime: string | null;
   specialRequests: string | null;
+};
+
+type BookingGuestPiiProjectionRow = BookingGuestPiiRow & {
+  guestContactAccepted: boolean;
 };
 
 type BookingGuestPiiCommand =
@@ -153,8 +165,17 @@ export function createTargetBookingGuestPiiPort(
           command.propertyId,
           command.guestBookingId,
         );
+        const visibleAdditionalGuest = projection.additionalGuests.find(
+          (guest) => guest.guestId === additionalGuest.guestId,
+        );
+        if (!visibleAdditionalGuest) throw new Error("Created additional guest was not projected");
         await client.query("COMMIT");
-        return { ok: true, additionalGuest, projection, commandMeta };
+        return {
+          ok: true,
+          additionalGuest: visibleAdditionalGuest,
+          projection,
+          commandMeta,
+        };
       } catch (error) {
         await rollbackQuietly(client);
         if (isPgUniqueViolation(error)) {
@@ -186,7 +207,15 @@ export function createTargetBookingGuestPiiPort(
           await client.query("ROLLBACK");
           return additionalGuestNotFound(command.guestId);
         }
-        const merged = { ...existing, ...definedGuestFields(command.guest) };
+        const canWriteContact = await canPropertyAccessGuestContact(
+          client,
+          command.propertyId,
+          command.guestBookingId,
+        );
+        const merged = {
+          ...existing,
+          ...definedGuestFields(command.guest, canWriteContact),
+        };
         const result = await client.query<BookingGuestPiiRow>(
           `UPDATE booking.booking_guests
            SET first_name = $1,
@@ -236,8 +265,20 @@ export function createTargetBookingGuestPiiPort(
           command.propertyId,
           command.guestBookingId,
         );
+        const visibleAdditionalGuest = projection.additionalGuests.find(
+          (guest) => guest.guestId === additionalGuest.guestId,
+        );
+        if (!visibleAdditionalGuest) throw new Error("Updated additional guest was not projected");
         await client.query("COMMIT");
-        return { ok: true, additionalGuest, projection, commandMeta };
+        return {
+          ok: true,
+          additionalGuest: visibleAdditionalGuest,
+          projection,
+          commandMeta,
+        };
+      } catch (error) {
+        await rollbackQuietly(client);
+        throw error;
       } finally {
         client.release();
       }
@@ -279,6 +320,9 @@ export function createTargetBookingGuestPiiPort(
         );
         await client.query("COMMIT");
         return { ok: true, guestId, projection, commandMeta };
+      } catch (error) {
+        await rollbackQuietly(client);
+        throw error;
       } finally {
         client.release();
       }
@@ -310,7 +354,8 @@ async function listGuestPiiProjection(
   propertyId: string,
   guestBookingId: string,
 ): Promise<BookingGuestPiiProjection> {
-  const result = await client.query<BookingGuestPiiRow>(
+  const propertyPlan = await readPropertyPlan(client, propertyId);
+  const result = await client.query<BookingGuestPiiProjectionRow>(
     `SELECT
        guest.id::text AS "guestId",
        guest.guest_booking_id::text AS "guestBookingId",
@@ -319,6 +364,7 @@ async function listGuestPiiProjection(
        guest.last_name AS "lastName",
        guest.email,
        guest.phone,
+       ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
        guest.country_code AS "countryCode",
        guest.arrival_time AS "arrivalTime",
        guest.special_requests AS "specialRequests"
@@ -337,7 +383,11 @@ async function listGuestPiiProjection(
        guest.id`,
     [propertyId, guestBookingId],
   );
-  const guests = result.rows.map(toBookingGuestPii);
+  const guests = result.rows.map((row) => {
+    const guest = toBookingGuestPii(row);
+    const contact = guestContactForPropertyPlan(propertyPlan, row.guestContactAccepted, guest);
+    return { ...guest, ...contact };
+  });
   return {
     propertyId,
     guestBookingId,
@@ -371,6 +421,23 @@ async function findAdditionalGuest(
     [command.guestId, command.guestBookingId],
   );
   return result.rows[0] ? toBookingGuestPii(result.rows[0]) : null;
+}
+
+async function canPropertyAccessGuestContact(
+  client: BookingGuestPiiClient,
+  propertyId: string,
+  guestBookingId: string,
+): Promise<boolean> {
+  const propertyPlan = await readPropertyPlan(client, propertyId);
+  if (propertyPlan.limits.guestContactAccess === "always") return true;
+  const result = await client.query<{ guestContactAccepted: boolean }>(
+    `SELECT ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted"
+     FROM booking.guest_bookings booking
+     WHERE booking.property_id = $1::uuid
+       AND booking.id = $2::uuid`,
+    [propertyId, guestBookingId],
+  );
+  return propertyCanAccessGuestContact(propertyPlan, result.rows[0]?.guestContactAccepted === true);
 }
 
 async function insertGuestPiiAuditEvent(
@@ -519,10 +586,16 @@ function validateAdditionalGuestInput(
 
 function definedGuestFields(
   guest: Partial<BookingAdditionalGuestInput>,
+  includeGuestContact = true,
 ): BookingAdditionalGuestInput {
   return Object.fromEntries(
     Object.entries(guest)
-      .filter(([, value]) => value !== undefined)
+      .filter(
+        ([key, value]) =>
+          value !== undefined &&
+          (includeGuestContact || (key !== "email" && key !== "phone")) &&
+          !((key === "email" || key === "phone") && value === HIDDEN_GUEST_CONTACT),
+      )
       .map(([key, value]) => [
         key,
         key === "countryCode"
