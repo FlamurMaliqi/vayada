@@ -21,6 +21,11 @@ describe("PMS setup exit routing", () => {
     expect(isPmsSetupExitPath("/dashboard?setup=incomplete")).toBe(false);
     expect(isPmsSetupExitPath("/dashboard")).toBe(false);
     expect(isPmsSetupExitPath("/settings?setup=incomplete")).toBe(false);
+    expect(
+      isPmsSetupExitPath(
+        "https://attacker.example/dashboard?setup=incomplete&propertyId=property-1",
+      ),
+    ).toBe(false);
   });
 
   it("reads the selected property only from a dashboard setup exit", () => {
@@ -30,6 +35,11 @@ describe("PMS setup exit routing", () => {
     expect(pmsSetupExitPropertyId("/dashboard?propertyId=property-1")).toBeNull();
     expect(
       pmsSetupExitPropertyId("/choose-property?setup=incomplete&propertyId=property-1"),
+    ).toBeNull();
+    expect(
+      pmsSetupExitPropertyId(
+        "https://attacker.example/dashboard?setup=incomplete&propertyId=property-1",
+      ),
     ).toBeNull();
   });
 });

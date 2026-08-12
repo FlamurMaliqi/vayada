@@ -82,7 +82,32 @@ export async function resolveSharedHotelSetupGuard(
       propertyId: null,
     });
   }
+  const requestedPropertyId = input.propertyId?.trim();
+  if (requestedPropertyId && hasExplicitPropertyMismatch(status, requestedPropertyId)) {
+    input.onInvalidPropertyId?.();
+    const error = new Error("Setup status returned a different property than requested");
+    error.name = "SharedHotelSetupPropertyMismatchError";
+    if (input.fallbackOnInvalidPropertyId === false) throw error;
+    status = await api.getStatus({
+      entryProduct: input.entryProduct,
+      propertyId: null,
+    });
+  }
   return resolveSharedHotelSetupGuardDecision(status, input);
+}
+
+function hasExplicitPropertyMismatch(
+  status: AdaptiveHotelSetupStatus,
+  requestedPropertyId: string,
+): boolean {
+  const returnedPropertyIds = [
+    status.propertySelection.selectedPropertyId,
+    status.entryDecision?.propertyId,
+  ].filter((propertyId): propertyId is string => Boolean(propertyId));
+  return (
+    returnedPropertyIds.length === 0 ||
+    returnedPropertyIds.some((propertyId) => propertyId !== requestedPropertyId)
+  );
 }
 
 function isMissingPropertyResourceLinkError(error: unknown): boolean {

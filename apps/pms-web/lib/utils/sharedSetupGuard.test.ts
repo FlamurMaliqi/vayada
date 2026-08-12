@@ -126,6 +126,28 @@ describe("resolvePmsSetupGuard", () => {
     expect(api.getStatus).toHaveBeenCalledTimes(1);
     expect(storage.getItem("selectedSharedPropertyId")).toBeNull();
   });
+
+  it("rejects a successful status response for a different explicit setup-exit property", async () => {
+    const api = {
+      getStatus: vi.fn(async () =>
+        status({
+          product: "pms",
+          propertyId: "property-substituted",
+          decision: "enter",
+          destinationRouteKey: "pms.workspace",
+        }),
+      ),
+    };
+    const storage = memoryStorage({ selectedSharedPropertyId: "property-stale" });
+
+    await expect(
+      resolvePmsSetupGuard("/dashboard", api, storage, undefined, {
+        propertyId: "property-exit",
+      }),
+    ).rejects.toThrow("Setup status returned a different property than requested");
+    expect(api.getStatus).toHaveBeenCalledTimes(1);
+    expect(storage.getItem("selectedSharedPropertyId")).toBeNull();
+  });
 });
 
 function status(input: {
