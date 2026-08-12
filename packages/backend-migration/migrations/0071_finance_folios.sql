@@ -1,4 +1,4 @@
--- Migration: 0063_finance_folios
+-- Migration: 0071_finance_folios
 -- Owner: domain-finance
 -- See: VAY-1170, engineering/pms-financials-external-invoice-contract.md
 
@@ -63,7 +63,7 @@ CREATE TABLE finance.folio_revisions (
     REFERENCES finance.folios(id, property_id) ON DELETE RESTRICT,
   CONSTRAINT fk_finance_folio_revisions_pricing_currency
     FOREIGN KEY (property_id, currency)
-    REFERENCES pms.property_pricing_settings(property_id, currency) ON DELETE RESTRICT
+    REFERENCES pms.property_pricing_settings(property_id, currency) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
 
 CREATE FUNCTION finance.validate_folio_revision_insert()
@@ -113,6 +113,7 @@ BEFORE TRUNCATE ON finance.folio_revisions
 FOR EACH STATEMENT EXECUTE FUNCTION finance.protect_folio_history();
 
 CREATE INDEX idx_finance_folios_property ON finance.folios (property_id, created_at DESC, id);
-CREATE INDEX idx_finance_folios_booking ON finance.folios (guest_booking_id, property_id);
+CREATE INDEX idx_finance_folios_booking ON finance.folios (guest_booking_id, property_id)
+  WHERE guest_booking_id IS NOT NULL;
 CREATE INDEX idx_finance_folio_revisions_latest
   ON finance.folio_revisions (folio_id, revision DESC);
