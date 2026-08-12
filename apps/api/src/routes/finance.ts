@@ -5751,6 +5751,10 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function likeSearch(value: string | undefined): string | null {
+  return value ? `%${value.replaceAll("%", "\\%").replaceAll("_", "\\_")}%` : null;
+}
+
 function clampLimit(value: unknown): number {
   const parsed = typeof value === "string" ? Number(value) : NaN;
   if (!Number.isInteger(parsed)) return 50;

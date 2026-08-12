@@ -1,4 +1,4 @@
--- Migration: 0062_finance_expenses
+-- Migration: 0070_finance_expenses
 -- Owner: domain-finance
 -- See: VAY-1124, engineering/pms-financials-contracts.md
 
@@ -46,6 +46,8 @@ CREATE TABLE finance.expenses (
   CONSTRAINT chk_finance_expenses_amount
     CHECK (amount > 0 AND amount < 'Infinity'::NUMERIC),
   CONSTRAINT chk_finance_expenses_currency CHECK (currency::TEXT ~ '^[A-Z]{3}$'),
+  CONSTRAINT chk_finance_expenses_dates
+    CHECK (isfinite(incurred_on) AND (paid_on IS NULL OR isfinite(paid_on))),
   CONSTRAINT chk_finance_expenses_paid_state
     CHECK ((payment_status = 'paid') = (paid_on IS NOT NULL)),
   CONSTRAINT chk_finance_expenses_revision CHECK (revision BETWEEN 1 AND 2147483647),
@@ -83,7 +85,7 @@ CREATE TABLE finance.expenses (
   CONSTRAINT fk_finance_expenses_category_property FOREIGN KEY (category_id, property_id)
     REFERENCES finance.expense_categories(id, property_id) ON DELETE RESTRICT,
   CONSTRAINT fk_finance_expenses_pricing_currency FOREIGN KEY (property_id, currency)
-    REFERENCES pms.property_pricing_settings(property_id, currency) ON DELETE RESTRICT,
+    REFERENCES pms.property_pricing_settings(property_id, currency) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT fk_finance_expenses_recurrence_property FOREIGN KEY (recurring_rule_id, property_id)
     REFERENCES finance.recurring_expense_rules(id, property_id) ON DELETE RESTRICT,
   CONSTRAINT fk_finance_expenses_booking_property FOREIGN KEY (guest_booking_id, property_id)
@@ -131,15 +133,15 @@ BEGIN
          OLD.guest_booking_id, OLD.payment_id, OLD.supplier_invoice_number, OLD.receipt_media_id) THEN
     RAISE EXCEPTION 'expense accounting evidence is immutable' USING ERRCODE = '23514';
   END IF;
-  IF (OLD.origin <> 'manual' OR OLD.entry_kind <> 'expense')
-    AND ROW(NEW.category_id, NEW.vendor, NEW.description,
+  IF ROW(NEW.category_id, NEW.vendor, NEW.description,
       NEW.amount, NEW.currency) IS DISTINCT FROM ROW(OLD.category_id, OLD.vendor,
       OLD.description, OLD.amount, OLD.currency) THEN
-    RAISE EXCEPTION 'generated expenses require a correction' USING ERRCODE = '23514';
+    RAISE EXCEPTION 'expense financial fields require a correction' USING ERRCODE = '23514';
   END IF;
   IF NEW.revision <> OLD.revision + 1 THEN
     RAISE EXCEPTION 'expense revision must advance by one' USING ERRCODE = '23514';
   END IF;
+  NEW.updated_at := now();
   RETURN NEW;
 END;
 $$;
