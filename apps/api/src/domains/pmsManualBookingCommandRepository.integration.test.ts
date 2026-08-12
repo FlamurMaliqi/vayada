@@ -209,6 +209,16 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     expect((await counts()).booking).toBe("1");
   });
 
+  it("turns two simultaneous identical submissions into one create and one replay", async () => {
+    const input = command("same-key-race", "unpaid", "cash", "2027-06-01", false);
+    const results = await Promise.all([
+      repository.createManualBooking(input),
+      repository.createManualBooking(input),
+    ]);
+    expect(results.map(({ outcome }) => outcome).sort()).toEqual(["created", "replayed"]);
+    expect((await counts()).booking).toBe("1");
+  });
+
   function dependencies(
     override: Partial<PmsManualBookingTransactionDependencies> = {},
   ): PmsManualBookingTransactionDependencies {
