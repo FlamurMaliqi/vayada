@@ -540,6 +540,7 @@ const propertySetupPmsRuntime = (() => {
   });
   return {
     roomFacts,
+    recurringPricing,
     provider: createPropertySetupPmsStateProvider({
       owner,
       pricing: pmsPricingReadModel,
@@ -800,6 +801,27 @@ const app = buildApp({
   bookingDashboardMetricsReadPort,
   pmsOperationsRepository,
   propertyPlanReadRepository,
+  pmsManualBookingPreview:
+    pmsOperationsRepository && pmsRoomPublicationRuntime
+      ? {
+          pms: pmsOperationsRepository,
+          pricing: {
+            getPricingSourceSnapshot: (propertyId) =>
+              pmsPricingReadModel.getPricingSourceSnapshot(propertyId),
+            getRecurringPricingBookingEvidence: (propertyId) =>
+              propertySetupPmsRuntime.recurringPricing.getRecurringPricingBookingEvidence(
+                propertyId,
+              ),
+          },
+          roomPublication: pmsRoomPublicationRuntime.readModel,
+          booking: {
+            listAddonItemsByHotelId: (propertyId) =>
+              bookingAddonItemsRepository.listAddonItemsByHotelId(propertyId),
+            getCurrentGuestPolicy: (scope) =>
+              bookingGuestPolicyRepository.getCurrentGuestPolicy(scope),
+          },
+        }
+      : undefined,
   pmsModuleActivationRepository,
   pmsReviewRepository: createPgPmsReviewRepository({ connectionString: targetDatabaseUrl }),
   pmsOperationsCommandRepository,
