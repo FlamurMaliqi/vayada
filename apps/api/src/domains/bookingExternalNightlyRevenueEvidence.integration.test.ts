@@ -125,6 +125,9 @@ describe.skipIf(!TEST_DATABASE_URL)("external nightly revenue evidence (PostgreS
         "exact",
       ),
     );
+    await expect(
+      appendExternalNightlyRevenueEvidence(client, command({ lines: lines.slice(0, 1_001) })),
+    ).rejects.toThrow("External evidence lines are malformed");
     const result = await appendExternalNightlyRevenueEvidence(
       client,
       command({
