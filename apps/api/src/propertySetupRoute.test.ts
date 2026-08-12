@@ -54,7 +54,6 @@ const allPermissions: PermissionKey[] = [
   "booking.settings.manage",
   "pms.operations.read",
   "pms.operations.manage",
-  "pms.finance.manage",
 ];
 
 let app: FastifyInstance | undefined;
@@ -270,13 +269,17 @@ describe("property setup route", () => {
     expect(routeStateReadPort.getPropertySetupRouteState).not.toHaveBeenCalled();
   });
 
-  it("does not turn Finance access into a route-wide Hotel Operations requirement", async () => {
+  it("does not turn Finance access into a route-wide requirement for a PMS operator", async () => {
     const routeStateReadPort = {
       getPropertySetupRouteState: vi.fn(async () => ({ outcome: "not_found" as const })),
     };
     app = buildRouteApp({
       selectedTracks: ["hotel_operations"],
       permissions: allPermissions,
+      linkedResources: productLinks().map((link) => ({
+        ...link,
+        relationship: "operator",
+      })),
       routeStateReadPort,
     });
 

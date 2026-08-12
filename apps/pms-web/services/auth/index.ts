@@ -20,13 +20,9 @@ import {
   type AuthSessionResponse,
 } from "./sessionStore";
 import { isSafeRelativeReturnTo } from "@vayada/product-onboarding/returnTo";
-import { resolveLocalApiOrigin } from "@vayada/product-onboarding/localApiOrigin";
 
 const AUTH_SURFACE = "pms-web";
-
-function authApiBaseUrl(): string {
-  return resolveLocalApiOrigin(process.env.NEXT_PUBLIC_AUTH_API_URL);
-}
+const AUTH_BROWSER_BASE_PATH = "/auth";
 
 export interface LoginRequest {
   email: string;
@@ -88,7 +84,7 @@ type CompatibilityTokenResponse = {
 const PENDING_EMAIL_VERIFICATION_KEY = "vayada_pending_email_verification";
 
 async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${authApiBaseUrl()}${endpoint}`, {
+  const response = await fetch(`${AUTH_BROWSER_BASE_PATH}${endpoint}`, {
     ...options,
     credentials: "include",
     headers: {
@@ -178,7 +174,7 @@ async function attachPmsCompatibilityToken(): Promise<void> {
   const csrfToken = getAuthCsrfToken();
   if (!csrfToken) return;
 
-  const response = await authFetch<CompatibilityTokenResponse>("/auth/compat/pms-web-token", {
+  const response = await authFetch<CompatibilityTokenResponse>("/compat/pms-web-token", {
     method: "POST",
     headers: { "x-vayada-csrf": csrfToken },
   });
@@ -215,7 +211,7 @@ export const authService = {
       callbackUrl.searchParams.set("returnTo", returnTo);
     }
     const errorUrl = new URL("/login", window.location.origin);
-    const url = new URL(`${authApiBaseUrl()}/auth/oauth/google/start`);
+    const url = new URL(`${AUTH_BROWSER_BASE_PATH}/oauth/google/start`, window.location.origin);
     url.searchParams.set("surface", AUTH_SURFACE);
     url.searchParams.set("flow", "login");
     url.searchParams.set("return_to", callbackUrl.toString());
@@ -232,7 +228,7 @@ export const authService = {
       callbackUrl.searchParams.set("returnTo", returnTo);
     }
     const errorUrl = new URL("/signup", window.location.origin);
-    const url = new URL(`${authApiBaseUrl()}/auth/oauth/google/start`);
+    const url = new URL(`${AUTH_BROWSER_BASE_PATH}/oauth/google/start`, window.location.origin);
     url.searchParams.set("surface", AUTH_SURFACE);
     url.searchParams.set("flow", "signup");
     url.searchParams.set("type", "hotel");
@@ -244,7 +240,7 @@ export const authService = {
   refreshSession: async (organizationId?: string): Promise<AuthSessionResponse> => {
     const csrfToken = getAuthCsrfToken();
     const response = csrfToken
-      ? await authFetch<AuthSessionResponse>("/auth/session/refresh", {
+      ? await authFetch<AuthSessionResponse>("/session/refresh", {
           method: "POST",
           headers: { "x-vayada-csrf": csrfToken },
           body: JSON.stringify({
@@ -252,7 +248,7 @@ export const authService = {
             surface: AUTH_SURFACE,
           }),
         })
-      : await authFetch<AuthSessionResponse>(`/auth/session?surface=${AUTH_SURFACE}`);
+      : await authFetch<AuthSessionResponse>(`/session?surface=${AUTH_SURFACE}`);
 
     return storeAuthSessionResponse(response);
   },
@@ -275,7 +271,7 @@ export const authService = {
   },
 
   login: async (data: LoginRequest): Promise<AuthSessionResponse> => {
-    const response = await authFetch<AuthSessionResponse>("/auth/password/login", {
+    const response = await authFetch<AuthSessionResponse>("/password/login", {
       method: "POST",
       body: JSON.stringify({ ...data, surface: AUTH_SURFACE }),
     });
@@ -283,7 +279,7 @@ export const authService = {
   },
 
   signup: async (data: SignupRequest): Promise<AuthSessionResponse> => {
-    const response = await authFetch<AuthSessionResponse>("/auth/password/signup", {
+    const response = await authFetch<AuthSessionResponse>("/password/signup", {
       method: "POST",
       body: JSON.stringify({ ...data, surface: AUTH_SURFACE, type: "hotel" }),
     });
@@ -299,7 +295,7 @@ export const authService = {
   }): Promise<void> => {
     const csrfToken = getAuthCsrfToken();
     if (!csrfToken) throw new Error("Your session has expired. Please sign in again.");
-    await authFetch<{ updated: true }>("/auth/profile", {
+    await authFetch<{ updated: true }>("/profile", {
       method: "POST",
       headers: { "x-vayada-csrf": csrfToken },
       body: JSON.stringify({ ...data, surface: AUTH_SURFACE }),
@@ -313,7 +309,7 @@ export const authService = {
       throw new Error("Verification has expired. Please sign in again.");
     }
 
-    const response = await authFetch<AuthSessionResponse>("/auth/email-verification/confirm", {
+    const response = await authFetch<AuthSessionResponse>("/email-verification/confirm", {
       method: "POST",
       body: JSON.stringify({
         pendingAuthenticationToken: pending.pendingAuthenticationToken,
@@ -336,7 +332,7 @@ export const authService = {
       throw new Error("Please sign in again to request a new verification code.");
     }
 
-    return authFetch<{ message: string }>("/auth/email-verification/resend", {
+    return authFetch<{ message: string }>("/email-verification/resend", {
       method: "POST",
       body: JSON.stringify({
         emailVerificationId: pending.emailVerificationId,
@@ -350,7 +346,7 @@ export const authService = {
 
     if (isAuthKitLoginEnabled() && csrfToken) {
       try {
-        const response = await authFetch<{ logoutUrl: string }>("/auth/logout", {
+        const response = await authFetch<{ logoutUrl: string }>("/logout", {
           method: "POST",
           headers: { "x-vayada-csrf": csrfToken },
           body: JSON.stringify({ surface: AUTH_SURFACE }),
@@ -381,7 +377,7 @@ export const authService = {
 
   forgotPassword: async (email: string): Promise<{ message: string }> => {
     try {
-      return await authFetch<{ message: string }>("/auth/password/reset/request", {
+      return await authFetch<{ message: string }>("/password/reset/request", {
         method: "POST",
         body: JSON.stringify({ email }),
       });
@@ -400,7 +396,7 @@ export const authService = {
       if (newPassword.length < 8) {
         throw new Error("Password must be at least 8 characters long.");
       }
-      return await authFetch<{ message: string }>("/auth/password/reset/confirm", {
+      return await authFetch<{ message: string }>("/password/reset/confirm", {
         method: "POST",
         body: JSON.stringify({ token, newPassword }),
       });
