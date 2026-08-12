@@ -346,6 +346,58 @@ describe("S3 platform profile media adapter", () => {
     });
   });
 
+  it("publishes Booking header SVGs as safe WebP variants", async () => {
+    const source = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="80"><rect width="300" height="80" fill="#2345aa"/></svg>',
+    );
+    const { client } = fakeS3(async (command) =>
+      command instanceof GetObjectCommand
+        ? { ContentLength: source.length, Body: Readable.from([source]) }
+        : {},
+    );
+    const adapter = createAdapter(client);
+    const session = bookingHeaderLogoSession(source.length);
+    const headerLogoPolicy: PlatformMediaPurposePolicy = {
+      ...policy,
+      purpose: "booking.header_logo",
+      actorOwned: false,
+      allowedRelationships: ["owner", "operator"],
+      allowedResources: [{ product: "booking", resourceType: "booking_hotel" }],
+      allowedContentTypes: ["image/jpeg", "image/png", "image/webp", "image/svg+xml"],
+      allowedExtensions: [".jpg", ".jpeg", ".png", ".webp", ".svg"],
+      maxFileSizeBytes: 500 * 1024,
+      targetResourceProduct: "booking",
+      targetResourceType: "booking_hotel",
+    };
+    const sessionFile = session.files[0]!;
+    const uploadTarget = session.uploadTargets[0]!;
+
+    const inspected = await adapter.inspectUploadedFile({
+      session,
+      sessionFile,
+      uploadTarget,
+      clientFile: { uploadTargetId, contentType: "image/svg+xml", sizeBytes: source.length },
+      policy: headerLogoPolicy,
+    });
+    expect(inspected).toMatchObject({
+      ok: true,
+      inspection: { contentType: "image/svg+xml", widthPx: 300, heightPx: 80 },
+    });
+    if (!inspected.ok) throw new Error("Expected SVG logo inspection to succeed");
+
+    const variants = await adapter.generateVariants({
+      session,
+      file: { sessionFile, uploadTarget, inspection: inspected.inspection },
+      fileIndex: 0,
+      policy: headerLogoPolicy,
+    });
+    expect(variants).toHaveLength(4);
+    expect(variants.every((variant) => variant.contentType === "image/webp")).toBe(true);
+    expect(variants.every((variant) => variant.visibility === "public")).toBe(true);
+    expect(variants.every((variant) => variant.publicCdnUrl?.startsWith("https://"))).toBe(true);
+    expect(variants.every((variant) => variant.storageKey.endsWith(".webp"))).toBe(true);
+  });
+
   it("keeps pending marketplace offer variants private and uncached", async () => {
     const source = await validJpeg();
     const { client, send } = fakeS3(async (command) =>
@@ -1101,9 +1153,14 @@ function fakeS3(implementation: (command: unknown) => Promise<unknown>) {
 
 function profileSession(
   sizeBytes: number,
-  contentType: "image/jpeg" | "image/png" | "image/webp" = "image/jpeg",
+  contentType: "image/jpeg" | "image/png" | "image/webp" | "image/svg+xml" = "image/jpeg",
 ): PlatformMediaSessionRecord {
-  const extension = contentType === "image/jpeg" ? "jpg" : contentType.slice("image/".length);
+  const extension =
+    contentType === "image/jpeg"
+      ? "jpg"
+      : contentType === "image/svg+xml"
+        ? "svg"
+        : contentType.slice("image/".length);
   return {
     sessionId,
     uploadSessionKey: `media.upload_session:${sessionId}`,
@@ -1150,6 +1207,23 @@ function profileSession(
   };
 }
 
+function bookingHeaderLogoSession(sizeBytes: number): PlatformMediaSessionRecord {
+  return {
+    ...profileSession(sizeBytes, "image/svg+xml"),
+    purpose: "booking.header_logo",
+    resource: {
+      product: "booking",
+      resourceType: "booking_hotel",
+      resourceId: "booking_hotel_alpenrose",
+    },
+    target: {
+      resourceProduct: "booking",
+      resourceType: "booking_hotel",
+      resourceId: "booking_hotel_alpenrose",
+    },
+  };
+}
+
 const offerPolicy: PlatformMediaPurposePolicy = {
   ...policy,
   purpose: "marketplace.offer.media",
@@ -1179,7 +1253,10 @@ const chatPolicy: PlatformMediaPurposePolicy = {
 
 function propertyPolicy(
   purpose:
-    "property.hero_image" | "property.gallery_image" | "property.logo" | "pms.room_type.media",
+    | "property.hero_image"
+    | "property.gallery_image"
+    | "property.logo"
+    | "pms.room_type.media",
 ): PlatformMediaPurposePolicy {
   return {
     ...offerPolicy,
@@ -1241,7 +1318,10 @@ function chatSession(sizeBytes: number): PlatformMediaSessionRecord {
 function propertySession(
   sizeBytes: number,
   purpose:
-    "property.hero_image" | "property.gallery_image" | "property.logo" | "pms.room_type.media",
+    | "property.hero_image"
+    | "property.gallery_image"
+    | "property.logo"
+    | "pms.room_type.media",
 ): PlatformMediaSessionRecord {
   const roomMedia = purpose === "pms.room_type.media";
   return {

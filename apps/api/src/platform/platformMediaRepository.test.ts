@@ -5,7 +5,10 @@ import type {
   PlatformMediaObjectRecord,
   PlatformMediaSessionRecord,
 } from "../routes/platformMedia.js";
-import { PlatformMediaTargetInvalidError } from "../routes/platformMedia.js";
+import {
+  PlatformMediaPlanLimitError,
+  PlatformMediaTargetInvalidError,
+} from "../routes/platformMedia.js";
 import { createPgPlatformMediaRepository } from "./platformMediaRepository.js";
 
 describe("PostgreSQL platform media repository", () => {
@@ -133,6 +136,20 @@ describe("PostgreSQL platform media repository", () => {
       } as never),
     ).rejects.toThrow("Property media requires a canonical property target");
     expect(database.queries).toEqual([]);
+  });
+
+  it("blocks room-media upload sessions at the commission plan limit", async () => {
+    const database = createFakeDatabase();
+    database.setRoomMediaCount(10);
+
+    await expect(
+      createSession(repositoryFor(database.pool), "pms.room_type.media"),
+    ).rejects.toBeInstanceOf(PlatformMediaPlanLimitError);
+    expect(
+      database.clientQueries.some(({ text }) =>
+        text.includes("INSERT INTO platform.media_upload_sessions"),
+      ),
+    ).toBe(false);
   });
 
   it("rejects a persisted noncanonical property session during finalization", async () => {
@@ -325,69 +342,67 @@ describe("PostgreSQL platform media repository", () => {
     ["property.gallery_image", null],
     ["property.logo", null],
     ["pms.room_type.media", ROOM_TYPE_ID],
-  ] as const)(
-    "resolves and persists private-staged %s against the canonical property",
-    async (purpose, roomTypeId) => {
-      const database = createFakeDatabase();
-      const repository = repositoryFor(database.pool);
-      const resolved = await repository.resolveTarget({
-        request: {
-          purpose,
-          visibility: "private",
-          resource: {
-            product: "hotel_catalog",
-            resourceType: "property",
-            resourceId: PROPERTY_ID,
-            ...(roomTypeId ? { targetResourceId: roomTypeId } : {}),
-          },
-          files: [],
-        },
-        policy: {
-          targetResourceProduct: roomTypeId ? "pms" : "hotel_catalog",
-          targetResourceType: roomTypeId ? "room_type" : "property",
-        } as never,
-        context: {} as never,
-      });
-      expect(resolved).toEqual({
-        ok: true,
-        target: {
-          resourceProduct: roomTypeId ? "pms" : "hotel_catalog",
-          resourceType: roomTypeId ? "room_type" : "property",
-          resourceId: roomTypeId ?? PROPERTY_ID,
-          propertyId: PROPERTY_ID,
-        },
-      });
-
-      const session = await createSession(repository, purpose);
-      const completed = await repository.completeUploadSession(completionInput(session));
-      expect(completed.mediaObjects[0]).toMatchObject({
+  ] as const)("resolves and persists canonical %s media", async (purpose, roomTypeId) => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const resolved = await repository.resolveTarget({
+      request: {
         purpose,
-        propertyId: PROPERTY_ID,
+        visibility: "private",
+        resource: {
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: PROPERTY_ID,
+          ...(roomTypeId ? { targetResourceId: roomTypeId } : {}),
+        },
+        files: [],
+      },
+      policy: {
+        targetResourceProduct: roomTypeId ? "pms" : "hotel_catalog",
+        targetResourceType: roomTypeId ? "room_type" : "property",
+      } as never,
+      context: {} as never,
+    });
+    expect(resolved).toEqual({
+      ok: true,
+      target: {
         resourceProduct: roomTypeId ? "pms" : "hotel_catalog",
         resourceType: roomTypeId ? "room_type" : "property",
         resourceId: roomTypeId ?? PROPERTY_ID,
-        visibility: "private",
-        requestedVisibility: "private",
-        approvalStatus: "private",
-        lifecycleStatus: "staged",
-        variants: expect.arrayContaining([
-          expect.objectContaining({
-            visibility: "private",
-            publicCdnUrl: null,
-          }),
-        ]),
-      });
-      expect(completed.mediaObjects[0]!.variants.map(({ variantName }) => variantName)).toEqual(
-        PROPERTY_MEDIA_PUBLIC_VARIANTS,
-      );
-      expect(
-        database.clientQueries.some(({ text }) => text.includes("hotel_catalog.property_media")),
-      ).toBe(false);
-      expect(database.clientQueries.some(({ text }) => text.includes("profile_revision"))).toBe(
-        false,
-      );
-    },
-  );
+        propertyId: PROPERTY_ID,
+      },
+    });
+
+    const session = await createSession(repository, purpose);
+    const completed = await repository.completeUploadSession(completionInput(session));
+    const publicRoomMedia = purpose === "pms.room_type.media";
+    expect(completed.mediaObjects[0]).toMatchObject({
+      purpose,
+      propertyId: PROPERTY_ID,
+      resourceProduct: roomTypeId ? "pms" : "hotel_catalog",
+      resourceType: roomTypeId ? "room_type" : "property",
+      resourceId: roomTypeId ?? PROPERTY_ID,
+      visibility: publicRoomMedia ? "public" : "private",
+      requestedVisibility: publicRoomMedia ? "public" : "private",
+      approvalStatus: publicRoomMedia ? "approved" : "private",
+      lifecycleStatus: publicRoomMedia ? "active" : "staged",
+      variants: expect.arrayContaining([
+        expect.objectContaining({
+          visibility: publicRoomMedia ? "public" : "private",
+          publicCdnUrl: publicRoomMedia ? expect.stringMatching(/^https:\/\//) : null,
+        }),
+      ]),
+    });
+    expect(completed.mediaObjects[0]!.variants.map(({ variantName }) => variantName)).toEqual(
+      PROPERTY_MEDIA_PUBLIC_VARIANTS,
+    );
+    expect(
+      database.clientQueries.some(({ text }) => text.includes("hotel_catalog.property_media")),
+    ).toBe(false);
+    expect(database.clientQueries.some(({ text }) => text.includes("profile_revision"))).toBe(
+      false,
+    );
+  });
 
   it.each([
     ["a missing variant", (variants: PlatformMediaObjectRecord["variants"]) => variants.slice(1)],
@@ -642,7 +657,8 @@ async function createSession(
     } as never,
     request: {
       purpose,
-      visibility: visibility ?? (isChat || isPropertyMedia ? "private" : "public"),
+      visibility:
+        visibility ?? (isRoomMedia ? "public" : isChat || isPropertyMedia ? "private" : "public"),
       resource: resourceOverride ?? {
         product,
         resourceType,
@@ -660,8 +676,8 @@ async function createSession(
     },
     policy: {
       purpose,
-      autoApprovePublicOnFinalize: isProfile ? true : undefined,
-      privateOnly: isPropertyMedia || isChat,
+      autoApprovePublicOnFinalize: isProfile || isRoomMedia ? true : undefined,
+      privateOnly: (isPropertyMedia && !isRoomMedia) || isChat,
     } as never,
     target: {
       resourceProduct: isProfile
@@ -829,6 +845,7 @@ function createFakeDatabase(failAuditAction?: string) {
   let committed = emptyDatabaseState();
   let transaction: FakeDatabaseState | null = null;
   let roomTargetExists = true;
+  let roomMediaCount = 0;
   let commitMode: "normal" | "apply_then_throw" | "throw_before_apply" = "normal";
   const queries: QueryCall[] = [];
   const poolQueries: QueryCall[] = [];
@@ -841,7 +858,14 @@ function createFakeDatabase(failAuditAction?: string) {
     const call = { text, values };
     queries.push(call);
     poolQueries.push(call);
-    return executeFakeQuery(committed, text, values, failAuditActions, roomTargetExists);
+    return executeFakeQuery(
+      committed,
+      text,
+      values,
+      failAuditActions,
+      roomTargetExists,
+      roomMediaCount,
+    );
   });
 
   const clientQuery = vi.fn(async (text: string, values?: readonly unknown[]) => {
@@ -877,6 +901,7 @@ function createFakeDatabase(failAuditAction?: string) {
       values,
       failAuditActions,
       roomTargetExists,
+      roomMediaCount,
     );
   });
 
@@ -893,6 +918,9 @@ function createFakeDatabase(failAuditAction?: string) {
     failAuditActions,
     setRoomTargetExists(value: boolean) {
       roomTargetExists = value;
+    },
+    setRoomMediaCount(value: number) {
+      roomMediaCount = value;
     },
     setCommitMode(value: "normal" | "apply_then_throw" | "throw_before_apply") {
       commitMode = value;
@@ -930,6 +958,7 @@ function executeFakeQuery(
   values: readonly unknown[] | undefined,
   failAuditActions: ReadonlySet<string>,
   roomTargetExists: boolean,
+  roomMediaCount: number,
 ) {
   if (
     text.includes("INSERT INTO platform.product_audit_events") &&
@@ -949,6 +978,12 @@ function executeFakeQuery(
   } else if (text.includes("FROM hotel_catalog.properties property")) {
     return String(values?.[0]) === PROPERTY_ID
       ? { rows: [{ propertyId: PROPERTY_ID }] }
+      : { rows: [] };
+  } else if (text.includes('AS "currentCount"') && text.includes("FROM pms.room_types room_type")) {
+    return roomTargetExists &&
+      String(values?.[0]) === PROPERTY_ID &&
+      String(values?.[1]) === ROOM_TYPE_ID
+      ? { rows: [{ currentCount: roomMediaCount }] }
       : { rows: [] };
   } else if (text.includes("FROM pms.room_types room_type")) {
     return roomTargetExists &&

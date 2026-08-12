@@ -175,6 +175,17 @@ describe("PMS room publication routes", () => {
     ["media not ready", "media", { code: "media_not_ready", mediaObjectIds: [mediaObjectId] }, 422],
     ["media revision", "media", { code: "room_media_revision_conflict", currentRevision: 5 }, 409],
     [
+      "media plan limit",
+      "media",
+      {
+        code: "room_media_plan_limit_reached",
+        plan: "commission",
+        currentCount: 10,
+        maxAllowed: 10,
+      },
+      409,
+    ],
+    [
       "amenity vocabulary",
       "amenities",
       { code: "unsupported_room_amenity_keys", unsupportedAmenityKeys: ["unknown"] },
