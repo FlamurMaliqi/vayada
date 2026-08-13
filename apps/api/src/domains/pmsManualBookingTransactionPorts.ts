@@ -7,6 +7,7 @@ import type {
 import type { QueryResult, QueryResultRow } from "pg";
 
 import type { ManualBookingPreviewResult } from "../routes/pmsManualBookingPreview.js";
+import type { PmsManualBookingPreviewRoutesOptions } from "../routes/pmsManualBookingPreviewCalculation.js";
 
 export type PmsManualBookingTransaction = {
   query<Row extends QueryResultRow = QueryResultRow>(
@@ -56,6 +57,20 @@ export interface PmsManualBookingTransactionalPricingPort {
     acceptedAt: Date;
   }): Promise<ManualBookingPreviewResult>;
 }
+
+export type PmsManualBookingCurrentPricingEvidence = {
+  getPricingSourceSnapshot(input: {
+    transaction: PmsManualBookingTransaction;
+    propertyId: string;
+  }): ReturnType<PmsManualBookingPreviewRoutesOptions["pricing"]["getPricingSourceSnapshot"]>;
+  getRoomPublicationSnapshot(input: {
+    transaction: PmsManualBookingTransaction;
+    propertyId: string;
+    organizationId: string;
+  }): ReturnType<
+    PmsManualBookingPreviewRoutesOptions["roomPublication"]["getRoomPublicationSnapshot"]
+  >;
+};
 
 export type PmsManualBookingTransactionDependencies = Readonly<{
   nightlyEvidence: PmsManualBookingNightlyEvidenceOwnerPort;

@@ -21,18 +21,26 @@ export type PmsManualBookingMoney = Readonly<{ amountDecimal: string; currency: 
 export type PmsManualBookingDirectSource = (typeof PMS_MANUAL_BOOKING_DIRECT_SOURCES)[number];
 export type PmsManualBookingPaymentMethod = (typeof PMS_MANUAL_BOOKING_PAYMENT_METHODS)[number];
 
-export type PmsManualBookingStay = Readonly<{
+type PmsManualBookingStayBase = Readonly<{
   position: number;
   roomId: string;
   checkIn: string;
   checkOut: string;
   adults: number;
   children: number;
-  ratePlanId: string | null;
-  pricing:
-    | Readonly<{ kind: "rate_plan"; manualOverride: PmsManualBookingMoney | null }>
-    | Readonly<{ kind: "custom"; nightlyAmount: PmsManualBookingMoney }>;
 }>;
+
+export type PmsManualBookingStay = PmsManualBookingStayBase &
+  (
+    | Readonly<{
+        ratePlanId: string;
+        pricing: Readonly<{ kind: "rate_plan"; manualOverride: PmsManualBookingMoney | null }>;
+      }>
+    | Readonly<{
+        ratePlanId: null;
+        pricing: Readonly<{ kind: "custom"; nightlyAmount: PmsManualBookingMoney }>;
+      }>
+  );
 
 export type PmsManualBookingAddonSelection = Readonly<{
   addonId: string;

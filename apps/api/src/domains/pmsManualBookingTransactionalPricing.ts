@@ -7,15 +7,16 @@ import {
 import { calculateManualBookingPreview } from "../routes/pmsManualBookingPreviewCalculation.js";
 import { readCurrentBookingGuestPolicyRevision } from "./bookingGuestPolicyRepository.js";
 import type {
+  PmsManualBookingCurrentPricingEvidence,
   PmsManualBookingTransaction,
   PmsManualBookingTransactionalPricingPort,
 } from "./pmsManualBookingTransactionPorts.js";
 import { createTargetPmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import { loadPmsRecurringPricingBookingEvidence } from "./pmsRecurringPricingReadModel.js";
 
-const DAY = 86_400_000;
-
-export function createPmsManualBookingTransactionalPricingPort(): PmsManualBookingTransactionalPricingPort {
+export function createPmsManualBookingTransactionalPricingPort(
+  current: PmsManualBookingCurrentPricingEvidence,
+): PmsManualBookingTransactionalPricingPort {
   return {
     async calculate({ transaction, command, acceptedAt }) {
       const pms = createTargetPmsOperationsReadRepository({
@@ -30,10 +31,7 @@ export function createPmsManualBookingTransactionalPricingPort(): PmsManualBooki
         { propertyId: command.propertyId, organizationId: command.organizationId },
         {
           contractVersion: command.contractVersion,
-          stays: command.stays.map((stay) => ({
-            ...stay,
-            dates: dates(stay.checkIn, stay.checkOut),
-          })),
+          stays: [...command.stays],
           addOns: command.addOns.map((selection) => ({
             ...selection,
             serviceUnits: [...selection.serviceUnits],
@@ -42,8 +40,14 @@ export function createPmsManualBookingTransactionalPricingPort(): PmsManualBooki
         {
           pms,
           pricing: {
+            getPricingSourceSnapshot: (propertyId) =>
+              current.getPricingSourceSnapshot({ transaction, propertyId }),
             getRecurringPricingBookingEvidence: (propertyId) =>
               loadPmsRecurringPricingBookingEvidence(transaction, propertyId, acceptedAt),
+          },
+          roomPublication: {
+            getRoomPublicationSnapshot: ({ propertyId, organizationId }) =>
+              current.getRoomPublicationSnapshot({ transaction, propertyId, organizationId }),
           },
           booking: {
             listAddonItemsByHotelId: (propertyId) =>
@@ -63,12 +67,4 @@ function addonQueryable(transaction: PmsManualBookingTransaction): BookingAddonI
       return transaction.query<Row>(text, values);
     },
   };
-}
-
-function dates(checkIn: string, checkOut: string): string[] {
-  const start = Date.parse(`${checkIn}T00:00:00Z`);
-  const count = (Date.parse(`${checkOut}T00:00:00Z`) - start) / DAY;
-  return Array.from({ length: count }, (_, index) =>
-    new Date(start + index * DAY).toISOString().slice(0, 10),
-  );
 }
