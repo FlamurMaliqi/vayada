@@ -1,5 +1,6 @@
 import type { RequestContext } from "@vayada/backend-auth";
 import {
+  PMS_MANUAL_BOOKING_DIRECT_SOURCES,
   PmsManualBookingCreateError,
   type PmsManualBookingCreateCommand,
   type PmsManualBookingCreatePort,
@@ -68,6 +69,19 @@ describe("target manual-booking create route", () => {
         await app.close();
         app = undefined;
       }
+    },
+  );
+
+  it.each(PMS_MANUAL_BOOKING_DIRECT_SOURCES)(
+    "accepts canonical source %s",
+    async (directSource) => {
+      const state: State = { calls: [] };
+      app = await testApp(state);
+      const payload = command("unpaid", "cash");
+      payload.directSource = directSource;
+      const response = await request(app, payload);
+      expect(response.statusCode).toBe(201);
+      expect(state.calls[0]?.directSource).toBe(directSource);
     },
   );
 

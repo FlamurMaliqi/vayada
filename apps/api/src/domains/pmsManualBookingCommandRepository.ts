@@ -43,6 +43,9 @@ export function createPgPmsManualBookingCommandRepository(config: {
     async createManualBooking(command) {
       const acceptedAt = now();
       if (!validDate(acceptedAt)) throw new Error("Manual booking repository clock is invalid");
+      const attribution = config.dependencies.attribution.resolveManualAttribution({
+        directSource: command.directSource,
+      });
       const transaction = await pool.connect();
       try {
         await transaction.query("BEGIN");
@@ -83,19 +86,13 @@ export function createPgPmsManualBookingCommandRepository(config: {
           preview,
           guestBookingId,
           bookingReference,
+          attribution,
         });
         await config.dependencies.operations.persistOperationalFacts({
           transaction,
           command,
           rooms,
           guestBookingId,
-        });
-        await config.dependencies.attribution.recordManualAttribution({
-          transaction,
-          propertyId: command.propertyId,
-          guestBookingId,
-          bookingChannel: "direct",
-          directSource: command.directSource,
         });
         await config.dependencies.nightlyEvidence.appendExactNightlyEvidence({
           transaction,

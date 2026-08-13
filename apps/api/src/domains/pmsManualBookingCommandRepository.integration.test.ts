@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import {
+  PMS_MANUAL_BOOKING_DIRECT_SOURCES,
   PmsManualBookingCreateError,
   type PmsManualBookingCreateCommand,
 } from "@vayada/domain-pms";
@@ -8,6 +9,7 @@ import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createFinanceManualBookingSettlementPort } from "./financeManualBookingSettlement.js";
+import { createBookingPmsManualAttributionOwner } from "./bookingPmsManualAttribution.js";
 import { createPgPmsManualBookingPlatformOwnerPort } from "./pmsManualBookingCommandEvidence.js";
 import { createPgPmsManualBookingCommandRepository } from "./pmsManualBookingCommandRepository.js";
 import {
@@ -97,6 +99,9 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     const stored = await admin.query(
       `SELECT booking.expected_payment_method AS method, booking.payment_status AS payment,
         booking.total_amount::text AS total, booking.balance_amount::text AS balance,
+        booking.source_booking_id AS "sourceBookingReference",
+        booking.booking_channel AS "bookingChannel",
+        booking.direct_booking_source AS "directSource",
         guest.special_requests AS requests, booking.booking_metadata AS metadata,
         (SELECT count(*)::int FROM pms.operational_booking_assignments assignment
           WHERE assignment.guest_booking_id = booking.id) AS stays,
@@ -114,12 +119,25 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       payment: "unpaid",
       total: "410.00",
       balance: "410.00",
+      sourceBookingReference: input.commandId,
+      bookingChannel: "direct",
+      directSource: "email",
       requests: "Quiet room",
       stays: 2,
       notes: 1,
       addons: 1,
-      metadata: { attribution: "email", nightlyEvidence: true },
+      metadata: {
+        contractVersion: "pms-manual-booking.v1",
+        commandId: input.commandId,
+        nightlyEvidence: true,
+      },
     });
+    const financeAttribution = await admin.query(
+      `SELECT booking_channel AS channel, direct_booking_source AS source
+       FROM booking.finance_booking_attribution WHERE guest_booking_id = $1::uuid`,
+      [created.guestBookingId],
+    );
+    expect(financeAttribution.rows[0]).toEqual({ channel: "direct", source: "email" });
     await expect(counts()).resolves.toMatchObject({
       booking: "1",
       payment: "0",
@@ -152,6 +170,39 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     }
     expect((await counts()).payment).toBe("5");
   });
+
+  it("persists every canonical manual direct source", async () => {
+    for (const [index, directSource] of PMS_MANUAL_BOOKING_DIRECT_SOURCES.entries()) {
+      const input = command(
+        `source-${directSource}`,
+        "unpaid",
+        "cash",
+        `2027-08-${10 + index * 3}`,
+        false,
+      );
+      const created = await repository.createManualBooking({ ...input, directSource });
+      const stored = await admin.query(
+        `SELECT booking_channel AS channel, direct_booking_source AS source
+         FROM booking.guest_bookings WHERE id = $1::uuid`,
+        [created.guestBookingId],
+      );
+      expect(stored.rows[0]).toEqual({ channel: "direct", source: directSource });
+    }
+  });
+
+  it.each(["booking_engine", "arbitrary_raw_channel"])(
+    "rejects injected source %s without partial facts",
+    async (directSource) => {
+      const input = command(`invalid-${directSource}`, "unpaid", "cash", "2027-09-01", false);
+      await expect(
+        repository.createManualBooking({
+          ...input,
+          directSource,
+        } as PmsManualBookingCreateCommand),
+      ).rejects.toMatchObject({ code: "invalid_source", field: "directSource" });
+      await expect(counts()).resolves.toMatchObject({ booking: "0", commands: "0" });
+    },
+  );
 
   it("rejects changed replay, command reuse, and cross-property rooms without partial facts", async () => {
     const original = command("conflict", "unpaid", "cash", "2027-03-01", false);
@@ -302,16 +353,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       platform: createPgPmsManualBookingPlatformOwnerPort(),
       pricing: pricing(),
       financeSettlement: createFinanceManualBookingSettlementPort(),
-      attribution: {
-        async recordManualAttribution({ transaction, guestBookingId, directSource }) {
-          await transaction.query(
-            `UPDATE booking.guest_bookings
-             SET booking_metadata = booking_metadata || jsonb_build_object('attribution', $2::text)
-             WHERE id = $1::uuid`,
-            [guestBookingId, directSource],
-          );
-        },
-      },
+      attribution: createBookingPmsManualAttributionOwner(),
       nightlyEvidence: {
         async appendExactNightlyEvidence({ transaction, guestBookingId }) {
           await transaction.query(
