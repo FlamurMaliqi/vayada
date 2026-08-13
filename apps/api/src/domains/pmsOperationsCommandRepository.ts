@@ -9,6 +9,7 @@ import {
   recordBookingManualPaymentInClient,
   type FinanceBookingManualPaymentSettlementCommand,
 } from "./financeManualPaymentSettlement.js";
+import { appendPmsManualNoShowNightlyRevenueEvidence } from "./bookingPmsManualNoShowNightlyRevenueEvidence.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import { captureDirectNightlyRevenueEvidence } from "./stripeBookingSettlement.js";
@@ -4391,6 +4392,7 @@ async function applyCheckInCommandMutation(
 async function applyNoShowCommandMutation(
   client: PmsOperationsCommandClient,
   command: PmsNoShowCommand,
+  acceptedAt: string,
 ): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
   const sources = await findAssignmentsForOperationalCommand(client, command);
   if (sources.length === 0) return reservationNotFound(command.guestBookingId);
@@ -4440,6 +4442,7 @@ async function applyNoShowCommandMutation(
       command.reason ?? "",
     ],
   );
+  await appendPmsManualNoShowNightlyRevenueEvidence(client, command, acceptedAt);
   return { ok: true };
 }
 
@@ -4593,13 +4596,13 @@ async function findAssignmentForCommand(
 ): Promise<PmsAssignmentRow | null> {
   const result = await client.query<PmsAssignmentRow>(
     `SELECT
-       id::text AS "assignmentId",
-       guest_booking_id::text AS "guestBookingId",
-       room_type_id::text AS "roomTypeId",
-       room_id::text AS "roomId",
-       position,
-       assignment_status AS "assignmentStatus",
-       assignment_payload ->> 'version' AS version,
+       assignment.id::text AS "assignmentId",
+       assignment.guest_booking_id::text AS "guestBookingId",
+       assignment.room_type_id::text AS "roomTypeId",
+       assignment.room_id::text AS "roomId",
+       assignment.position,
+       assignment.assignment_status AS "assignmentStatus",
+       assignment.assignment_payload ->> 'version' AS version,
        assignment.updated_at AS "updatedAt",
        booking.check_in::text AS "checkIn",
        booking.check_out::text AS "checkOut"
@@ -4633,13 +4636,13 @@ async function findAssignmentsForOperationalCommand(
     "stepResults" in command || "inspectionResults" in command ? command.assignmentId : undefined;
   const result = await client.query<PmsAssignmentRow>(
     `SELECT
-       id::text AS "assignmentId",
-       guest_booking_id::text AS "guestBookingId",
-       room_type_id::text AS "roomTypeId",
-       room_id::text AS "roomId",
-       position,
-       assignment_status AS "assignmentStatus",
-       assignment_payload ->> 'version' AS version,
+       assignment.id::text AS "assignmentId",
+       assignment.guest_booking_id::text AS "guestBookingId",
+       assignment.room_type_id::text AS "roomTypeId",
+       assignment.room_id::text AS "roomId",
+       assignment.position,
+       assignment.assignment_status AS "assignmentStatus",
+       assignment.assignment_payload ->> 'version' AS version,
        assignment.updated_at AS "updatedAt",
        booking.check_in::text AS "checkIn",
        booking.check_out::text AS "checkOut"

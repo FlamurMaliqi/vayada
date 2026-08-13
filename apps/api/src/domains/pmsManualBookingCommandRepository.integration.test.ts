@@ -13,6 +13,8 @@ import { createBookingPmsManualAttributionOwner } from "./bookingPmsManualAttrib
 import { createBookingPmsManualNightlyRevenueEvidenceOwner } from "./bookingPmsManualNightlyRevenueEvidence.js";
 import { createPgPmsManualBookingPlatformOwnerPort } from "./pmsManualBookingCommandEvidence.js";
 import { createPgPmsManualBookingCommandRepository } from "./pmsManualBookingCommandRepository.js";
+import { createTargetPmsOperationsCommandRepository } from "./pmsOperationsCommandRepository.js";
+import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import {
   createPgPmsManualBookingBookingOwnerPort,
   createPgPmsManualBookingOperationsOwnerPort,
@@ -31,7 +33,7 @@ const otherPropertyId = uuid(4),
   roomTypeId = uuid(5),
   roomIds = [uuid(6), uuid(7)];
 const addonId = uuid(8);
-const acceptedAt = new Date("2026-08-12T20:30:00.000Z");
+const acceptedAt = new Date("2026-08-12T22:30:00.000Z");
 
 describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transaction", () => {
   const admin = new pg.Pool({ connectionString: TEST_DATABASE_URL ?? "postgresql://disabled" });
@@ -39,6 +41,15 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     connectionString: TEST_DATABASE_URL ?? "postgresql://disabled",
     now: () => acceptedAt,
     dependencies: dependencies(),
+  });
+  const operations = createTargetPmsOperationsCommandRepository({
+    connectionString: TEST_DATABASE_URL ?? "postgresql://disabled",
+    now: () => acceptedAt,
+    readRepository: {
+      async findReservationByGuestBookingId(_propertyId: string, requestedGuestBookingId: string) {
+        return { guestBookingId: requestedGuestBookingId } as never;
+      },
+    } as unknown as PmsOperationsReadRepository,
   });
 
   beforeAll(async () => {
@@ -60,6 +71,11 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
        ($1::uuid, 'vay-1254', 'VAY-1254'),
        ($2::uuid, 'vay-1254-other', 'VAY-1254 other')`,
       [propertyId, otherPropertyId],
+    );
+    await admin.query(
+      `INSERT INTO hotel_catalog.property_locations (property_id, timezone)
+       VALUES ($1::uuid, 'Europe/Athens')`,
+      [propertyId],
     );
     await admin.query(
       `INSERT INTO pms.room_types (
@@ -84,6 +100,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
   beforeEach(async () => cleanup(false));
 
   afterAll(async () => {
+    await operations.close?.();
     await repository.close();
     await cleanup(true);
     await admin.end();
@@ -160,6 +177,98 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       audit: "1",
       commands: "1",
     });
+  });
+
+  it("atomically clears manual room nights on no-show and replays exactly", async () => {
+    const created = await repository.createManualBooking(
+      command("no-show", "unpaid", "cash", "2026-08-10", true),
+    );
+    const noShow = {
+      propertyId,
+      guestBookingId: created.guestBookingId,
+      commandId: "no-show-command",
+      idempotencyKey: "no-show-key",
+      reason: "guest did not arrive",
+      audit: {
+        actor: { kind: "user" as const, userId: actorId, organizationId },
+        requestId: "no-show-request",
+        reason: "Mark manual booking no-show",
+        requestedAt: acceptedAt.toISOString(),
+      },
+    };
+    await expect(operations.executeNoShowCommand(noShow)).resolves.toMatchObject({ ok: true });
+    await expect(operations.executeNoShowCommand(noShow)).resolves.toMatchObject({
+      ok: true,
+      replayed: true,
+    });
+    await expect(
+      operations.executeNoShowCommand({ ...noShow, reason: "changed" }),
+    ).resolves.toMatchObject({ ok: false, code: "idempotency_conflict" });
+
+    const totals = await admin.query(
+      `SELECT stay_date::text AS date,line_position AS position,
+         SUM(occupied_room_nights)::int AS occupied,SUM(gross_room_amount)::text AS amount,
+         MAX(recognized_on) FILTER (WHERE economic_event='occupancy_adjustment')::text AS "recognizedOn"
+       FROM booking.nightly_revenue_evidence WHERE guest_booking_id=$1::uuid
+       GROUP BY stay_date,line_position ORDER BY stay_date,line_position`,
+      [created.guestBookingId],
+    );
+    expect(totals.rows).toHaveLength(4);
+    expect(totals.rows).toEqual(
+      expect.arrayContaining([expect.objectContaining({ occupied: 0, amount: "0.0000" })]),
+    );
+    expect(
+      totals.rows.every(
+        ({ occupied, amount, recognizedOn }) =>
+          occupied === 0 && amount === "0.0000" && recognizedOn === "2026-08-13",
+      ),
+    ).toBe(true);
+    const assignments = await admin.query(
+      `SELECT DISTINCT assignment_status AS status,room_id AS room
+       FROM pms.operational_booking_assignments WHERE guest_booking_id=$1::uuid`,
+      [created.guestBookingId],
+    );
+    expect(assignments.rows).toEqual([{ status: "released", room: null }]);
+    expect((await counts()).nightly).toBe("8");
+  });
+
+  it("rolls assignment release back when no-show evidence is unavailable", async () => {
+    const created = await repository.createManualBooking(
+      command("no-show-rollback", "unpaid", "cash", "2027-01-20", false),
+    );
+    await admin.query(
+      "UPDATE hotel_catalog.property_locations SET timezone=NULL WHERE property_id=$1::uuid",
+      [propertyId],
+    );
+    try {
+      await expect(
+        operations.executeNoShowCommand({
+          propertyId,
+          guestBookingId: created.guestBookingId,
+          commandId: "no-show-failing-command",
+          idempotencyKey: "no-show-failing-key",
+          audit: {
+            actor: { kind: "user", userId: actorId, organizationId },
+            requestId: "no-show-failing-request",
+            reason: "Mark manual booking no-show",
+            requestedAt: acceptedAt.toISOString(),
+          },
+        }),
+      ).rejects.toThrow("canonical property timezone");
+    } finally {
+      await admin.query(
+        "UPDATE hotel_catalog.property_locations SET timezone='Europe/Athens' WHERE property_id=$1::uuid",
+        [propertyId],
+      );
+    }
+    const state = await admin.query(
+      `SELECT DISTINCT assignment_status AS status,count(*)::int AS count
+       FROM pms.operational_booking_assignments WHERE guest_booking_id=$1::uuid
+       GROUP BY assignment_status`,
+      [created.guestBookingId],
+    );
+    expect(state.rows).toEqual([{ status: "assigned", count: 1 }]);
+    expect((await counts()).nightly).toBe("2");
   });
 
   it("round-trips every expected method for paid and unpaid bookings", async () => {
@@ -485,6 +594,10 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       ])
         await admin.query(sql, [propertyId]);
       if (full) {
+        await admin.query(
+          "DELETE FROM hotel_catalog.property_locations WHERE property_id = $1::uuid",
+          [propertyId],
+        );
         await admin.query("DELETE FROM booking.addon_definitions WHERE property_id = $1::uuid", [
           propertyId,
         ]);
