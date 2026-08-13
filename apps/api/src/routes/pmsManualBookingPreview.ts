@@ -94,10 +94,10 @@ export async function registerPmsManualBookingPreviewRoutes(
 function parseRequest(query: unknown, body: unknown): ManualBookingPreviewCommand {
   if (!query || typeof query !== "object" || Array.isArray(query) || Object.keys(query).length > 0)
     fail(400, "unknown_field");
-  return parseCommand(body);
+  return parseManualBookingPreviewCommand(body);
 }
 
-function parseCommand(value: unknown): ManualBookingPreviewCommand {
+export function parseManualBookingPreviewCommand(value: unknown): ManualBookingPreviewCommand {
   const parsed = commandInput.safeParse(value);
   if (!parsed.success) {
     if (parsed.error.issues.some((issue) => issue.code === "unrecognized_keys"))
