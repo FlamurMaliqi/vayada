@@ -4,7 +4,7 @@ import {
   CHANNEX_MANAGEMENT_CONTRACT_VERSION,
   CHANNEX_MANAGEMENT_OPERATION_TYPES,
   buildChannexManagementJobKey,
-} from "./management.js";
+} from "./index.js";
 
 describe("PMS Channex management contract", () => {
   it("keeps provider management versioned and webhook intake out of the command set", () => {

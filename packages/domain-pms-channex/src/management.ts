@@ -1,3 +1,5 @@
+import type { ChannexUtcDateTime } from "./index.js";
+
 export const CHANNEX_MANAGEMENT_CONTRACT_VERSION = "pms-channex-management.v1" as const;
 
 export type ChannexManagementMode = "observe_only" | "mutating";
@@ -34,11 +36,11 @@ export type ChannexManagementCapabilityModes = {
 
 export type ChannexSyncDomainState = {
   status: "pending" | "ok" | "degraded" | "failed" | "idle";
-  lastAttemptAt: string | null;
-  lastSuccessAt: string | null;
+  lastAttemptAt: ChannexUtcDateTime | null;
+  lastSuccessAt: ChannexUtcDateTime | null;
   lastErrorCode: string | null;
   lastErrorMessage: string | null;
-  retryAfter: string | null;
+  retryAfter: ChannexUtcDateTime | null;
 };
 
 export type ChannexRoomTypeMapping = {
@@ -77,10 +79,10 @@ export type ChannexManagementOperation = {
   status: ChannexManagementOperationStatus;
   commandId: string;
   idempotencyKey: string;
-  acceptedAt: string;
+  acceptedAt: ChannexUtcDateTime;
   attemptsMade: number;
   maxAttempts: number;
-  retryAfter: string | null;
+  retryAfter: ChannexUtcDateTime | null;
   lastError: { code: string; message: string } | null;
 };
 
