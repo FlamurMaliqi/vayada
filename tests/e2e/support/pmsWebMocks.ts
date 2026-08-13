@@ -303,6 +303,21 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
       },
     }),
   );
+  let bookingAcceptanceMode = "instant";
+  await page.route(
+    `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/booking-acceptance`,
+    async (route) => {
+      if (route.request().method() === "PUT") {
+        bookingAcceptanceMode = String(readJson(route)["acceptanceMode"]);
+      }
+      return route.fulfill({
+        json: {
+          propertyId: PMS_WEB_PROPERTY_ID,
+          acceptanceMode: bookingAcceptanceMode,
+        },
+      });
+    },
+  );
   await page.route(
     `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/calendar-settings`,
     async (route) =>
