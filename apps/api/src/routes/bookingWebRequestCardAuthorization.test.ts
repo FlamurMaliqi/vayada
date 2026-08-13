@@ -94,6 +94,9 @@ describe("request-mode card checkout", () => {
             providerAccountRef: "acct_1",
           };
         },
+        async capturePaymentIntent() {
+          throw new Error("not used");
+        },
         async cancelPaymentIntent() {
           throw new Error("not used");
         },

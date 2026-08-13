@@ -2520,6 +2520,9 @@ describe("Booking Web public bootstrap parity", () => {
           providerAccountRef: "acct_property_952",
         };
       },
+      async capturePaymentIntent() {
+        throw new Error("not used");
+      },
       async cancelPaymentIntent() {
         throw new Error("not used");
       },
