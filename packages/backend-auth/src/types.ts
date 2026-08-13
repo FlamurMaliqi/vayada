@@ -67,6 +67,7 @@ export type PermissionKey =
   | "marketplace.collaboration.read"
   | "marketplace.collaboration.write"
   | "marketplace.collaboration.review"
+  | "marketplace.affiliate.manage"
   | "marketplace.profile.manage"
   | "marketplace.trip.read"
   | "marketplace.trip.manage"
