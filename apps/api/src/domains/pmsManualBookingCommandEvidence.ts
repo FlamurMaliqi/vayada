@@ -14,6 +14,7 @@ type IdempotencyRow = {
   status: string;
   requestFingerprint: string;
   responseBodyHash: string | null;
+  responseResourceId: string | null;
   metadata: unknown;
 };
 
@@ -49,7 +50,8 @@ export async function findManualBookingReplay(
   const found = await transaction.query<IdempotencyRow>(
     `SELECT id::text AS id, status,
        request_fingerprint_hash AS "requestFingerprint",
-       response_body_hash AS "responseBodyHash", idempotency_metadata AS metadata
+       response_body_hash AS "responseBodyHash",
+       response_resource_id AS "responseResourceId", idempotency_metadata AS metadata
      FROM platform.idempotency_keys
      WHERE operation_scope = 'pms' AND operation = 'pms.manual_booking.create'
        AND key_hash = $1 AND tenant_scope = 'property'
@@ -66,6 +68,13 @@ export async function findManualBookingReplay(
   if (!isStoredResult(result, command) || row.responseBodyHash !== sha256(stableJson(result))) {
     throw new Error("Stored manual booking replay is invalid");
   }
+  const booking = await transaction.query(
+    `SELECT 1 FROM booking.guest_bookings
+     WHERE id = $1::uuid AND property_id = $2::uuid`,
+    [result.guestBookingId, command.propertyId],
+  );
+  if (row.responseResourceId !== result.guestBookingId || booking.rowCount !== 1)
+    throw new Error("Stored manual booking replay is invalid");
   return { ...result, outcome: "replayed" };
 }
 
