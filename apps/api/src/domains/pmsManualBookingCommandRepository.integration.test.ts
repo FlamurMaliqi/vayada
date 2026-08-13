@@ -565,6 +565,68 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     expect(stored.rows[0]).toEqual({ evidence: 2, keys: 0, audits: 0 });
   });
 
+  it.each([
+    ["partial", ["25.00"]],
+    ["full", ["100.00", "100.00"]],
+  ])("rejects price correction after a %s refund", async (kind, amounts) => {
+    const created = await repository.createManualBooking(
+      command(`price-after-${kind}-refund`, "paid", "cash", "2026-08-20", false),
+    );
+    const evidence = await admin.query<{ payment: string; id: string }>(
+      `SELECT payment.id::text AS payment,evidence.id::text
+       FROM finance.payments payment JOIN booking.nightly_revenue_evidence evidence
+         ON evidence.guest_booking_id=payment.guest_booking_id
+       WHERE payment.guest_booking_id=$1::uuid AND payment.payment_kind='manual'
+       ORDER BY evidence.stay_date,evidence.line_position`,
+      [created.guestBookingId],
+    );
+    const refund = {
+      propertyId,
+      guestBookingId: created.guestBookingId,
+      commandId: `refund-before-price-${kind}`,
+      idempotencyKey: `refund-before-price-${kind}`,
+      paymentEvidenceId: evidence.rows[0]!.payment,
+      accountingDate: "2026-08-21",
+      allocations: amounts.map((amountDecimal, index) => ({
+        evidenceId: evidence.rows[index]!.id,
+        amount: { amountDecimal, currency: "EUR" },
+      })),
+      audit: {
+        actor: { kind: "user" as const, userId: actorId, organizationId },
+        requestId: `refund-before-price-${kind}`,
+        reason: "Refund manual booking",
+        requestedAt: acceptedAt.toISOString(),
+      },
+    };
+    await expect(operations.refundManualBooking!(refund)).resolves.toMatchObject({ ok: true });
+    const refundTarget = await admin.query<{ id: string }>(
+      `SELECT id::text FROM booking.nightly_revenue_evidence
+       WHERE guest_booking_id=$1::uuid AND economic_event='refund' ORDER BY id LIMIT 1`,
+      [created.guestBookingId],
+    );
+    await expect(
+      operations.correctManualBookingPrices!(
+        priceCorrection(created.guestBookingId, `after-${kind}-refund`, {
+          kind: "exact",
+          nights: [
+            {
+              targetEvidenceId: refundTarget.rows[0]!.id,
+              replacementAmount: { amountDecimal: "100.00", currency: "EUR" },
+            },
+          ],
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: false, code: "invalid_body" });
+    const stored = await admin.query<{ corrections: number; keys: number }>(
+      `SELECT count(*) FILTER (WHERE economic_event='correction')::int corrections,
+        (SELECT count(*)::int FROM platform.idempotency_keys WHERE property_id=$2::uuid
+          AND operation='manual_price_correction_command') keys
+       FROM booking.nightly_revenue_evidence WHERE guest_booking_id=$1::uuid`,
+      [created.guestBookingId, propertyId],
+    );
+    expect(stored.rows[0]).toEqual({ corrections: 0, keys: 0 });
+  });
+
   it("atomically cancels a manual booking with explicit retained-charge evidence", async () => {
     const created = await repository.createManualBooking(
       command("cancel", "unpaid", "cash", "2026-08-20", false),
