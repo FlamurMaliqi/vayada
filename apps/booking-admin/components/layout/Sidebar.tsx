@@ -10,6 +10,7 @@ import {
   ChevronDownIcon,
   CheckIcon,
   Cog6ToothIcon,
+  UserGroupIcon,
 } from "@heroicons/react/24/outline";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
@@ -42,6 +43,7 @@ const coreNavItems: NavItem[] = [
   { labelKey: "layout.sidebar.designStudio", href: "/design-studio", icon: DesignStudioIcon },
   { labelKey: "layout.sidebar.bookingFlow", href: "/booking-flow", icon: BookingFlowIcon },
   { labelKey: "layout.sidebar.settings", href: "/settings", icon: Cog6ToothIcon },
+  { label: "Affiliates", href: "/affiliates", icon: UserGroupIcon },
 ];
 
 export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
