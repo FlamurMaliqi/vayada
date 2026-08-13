@@ -661,6 +661,7 @@ const authSessionHandoffRepository =
     : undefined;
 
 const app = buildApp({
+  trustProxy: ["loopback", "linklocal", "uniquelocal"],
   auth: buildAuthOptions(config.auth),
   browserAllowedOrigins: config.authSession?.authAllowedOrigins ?? [],
   authSession:

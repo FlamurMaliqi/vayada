@@ -7,6 +7,7 @@ import {
   type PublicBookabilityHotelProfile,
   type PublicBookabilityQuoteProjection,
 } from "@vayada/domain-distribution";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { buildApp } from "../app.js";
@@ -717,6 +718,7 @@ describe("Booking Web public bootstrap parity", () => {
       occurredAt: string | undefined;
     }> = [];
     let closed = 0;
+    const lookupAdmissionHashes: string[] = [];
     const record = (context: Parameters<BookingWebCheckoutAdapter["getCheckoutConfig"]>[1]) => {
       operations.push({
         operation: context?.operation,
@@ -728,6 +730,9 @@ describe("Booking Web public bootstrap parity", () => {
       });
     };
     const checkoutAdapter: BookingWebCheckoutAdapter = {
+      async consumeLookupAttempt(clientAddressHash) {
+        lookupAdmissionHashes.push(clientAddressHash);
+      },
       async getCheckoutConfig(_slug, context) {
         record(context);
         return { payAtPropertyEnabled: true, bankTransfer: true, paypalEnabled: false };
@@ -831,6 +836,7 @@ describe("Booking Web public bootstrap parity", () => {
       app.inject({
         method: "POST",
         url: "/api/booking-web/hotels/hotel-alpenrose/bookings/lookup",
+        headers: { "x-forwarded-for": "198.51.100.1, 203.0.113.9" },
         payload: { bookingReference: "VAY-TARGET-1", guestEmail: "guest@example.com" },
       }),
       app.inject({
@@ -924,6 +930,7 @@ describe("Booking Web public bootstrap parity", () => {
       ),
     ).toBe(true);
     expect(operations.every((entry) => entry.idempotencyKey)).toBe(true);
+    expect(lookupAdmissionHashes).toEqual([expect.stringMatching(/^[a-f0-9]{64}$/)]);
     const withdrawContexts = operations.filter((entry) => entry.operation === "booking-withdraw");
     const changePreviewContexts = operations.filter(
       (entry) => entry.operation === "booking-change-preview",
@@ -936,6 +943,108 @@ describe("Booking Web public bootstrap parity", () => {
     expect(new Set(changePreviewContexts.map((entry) => entry.idempotencyKey))).toHaveLength(1);
     await app.close();
     expect(closed).toBe(1);
+  });
+
+  it("admits five booking lookups per minute per client address", async () => {
+    const auditInserts: Array<{ text: string; values?: readonly unknown[] }> = [];
+    const pool = {
+      async query(text: string, values?: readonly unknown[]) {
+        if (text.includes("count(*)::text AS count")) {
+          return { rows: [{ count: String(auditInserts.length) }] };
+        }
+        if (text.includes("INSERT INTO platform.product_audit_events")) {
+          auditInserts.push({ text, values });
+        }
+        return { rows: [] };
+      },
+      async end() {},
+    };
+    const adapter = createTargetBookingWebCheckoutAdapter({
+      connectionString: "postgres://unused",
+      inventoryReservationPort: createTargetPmsInventoryReservationPort(),
+      pool: pool as never,
+    });
+    const context = (attempt: number) => ({
+      operation: "booking-lookup",
+      requestId: "lookup-restarted-process",
+      correlationId: `lookup-${attempt}`,
+      idempotencyKey: `lookup-${attempt}`,
+      fingerprint: String(attempt).padStart(64, "0"),
+      occurredAt: new Date("2026-09-02T10:00:30.000Z"),
+    });
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      await expect(
+        adapter.consumeLookupAttempt("client-address-hash", context(attempt)),
+      ).resolves.toBeUndefined();
+    }
+    await expect(adapter.consumeLookupAttempt("client-address-hash", context(6))).rejects.toThrow(
+      "Too many booking lookup attempts",
+    );
+    expect(auditInserts).toHaveLength(5);
+    expect(new Set(auditInserts.map((entry) => entry.values?.[0]))).toHaveLength(5);
+    expect(auditInserts[0]?.text).toContain("'security', 'restricted'");
+    expect(auditInserts[0]?.values).not.toContain("198.51.100.1");
+
+    let lookupCalled = false;
+    const app = buildApp({
+      logger: false,
+      publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
+      bookingWebCheckoutAdapter: {
+        ...createUnavailableBookingWebCheckoutAdapter(),
+        async consumeLookupAttempt() {
+          throw Object.assign(new Error("Too many booking lookup attempts."), { statusCode: 429 });
+        },
+        async lookup() {
+          lookupCalled = true;
+          return {};
+        },
+      },
+    });
+    const limited = await app.inject({
+      method: "POST",
+      url: "/api/booking-web/hotels/hotel-alpenrose/bookings/lookup",
+      payload: { bookingReference: "VAY-ABC123", guestEmail: "guest@example.test" },
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.headers["retry-after"]).toBe("60");
+    expect(lookupCalled).toBe(false);
+    await app.close();
+  });
+
+  it("only trusts forwarding headers from known proxies for booking lookup limits", async () => {
+    const hashes: string[] = [];
+    const app = buildApp({
+      logger: false,
+      trustProxy: ["10.0.0.1"],
+      publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
+      bookingWebCheckoutAdapter: {
+        ...createUnavailableBookingWebCheckoutAdapter(),
+        async consumeLookupAttempt(hash) {
+          hashes.push(hash);
+        },
+        async lookup() {
+          return {};
+        },
+      },
+    });
+    const injectLookup = (remoteAddress: string, forwardedFor: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/booking-web/hotels/hotel-alpenrose/bookings/lookup",
+        remoteAddress,
+        headers: { "x-forwarded-for": forwardedFor },
+        payload: { bookingReference: "VAY-ABC123", guestEmail: "guest@example.test" },
+      });
+
+    await injectLookup("198.51.100.44", "192.0.2.1");
+    await injectLookup("198.51.100.44", "192.0.2.2");
+    await injectLookup("10.0.0.1", "198.51.100.1, 203.0.113.9");
+
+    const hash = (address: string) =>
+      createHash("sha256").update(`booking-lookup-client:${address}`).digest("hex");
+    expect(hashes).toEqual([hash("198.51.100.44"), hash("198.51.100.44"), hash("203.0.113.9")]);
+    await app.close();
   });
 
   it("rejects public booking references as authorization handles", async () => {
@@ -2400,6 +2509,8 @@ describe("Booking Web public bootstrap parity", () => {
     let retrievePaymentIntentCalls = 0;
     let createCommandReserved = false;
     let completedCreateBody: unknown;
+    let confirmationMetadata: Record<string, unknown> = {};
+    let lookupAuditBody: unknown;
     const calls: Array<{ text: string; values: readonly unknown[] | undefined }> = [];
     const booking = () => ({
       guestBookingId,
@@ -2422,6 +2533,7 @@ describe("Booking Web public bootstrap parity", () => {
           nightlyRoomAmounts: nights("200"),
         },
         requestFingerprint: "2".repeat(64),
+        ...confirmationMetadata,
       },
       cardBrand,
       cardLast4,
@@ -2431,7 +2543,9 @@ describe("Booking Web public bootstrap parity", () => {
       async query(text: string, values?: readonly unknown[]) {
         calls.push({ text, values });
         if (text.includes("FROM hotel_catalog.property_slugs")) {
-          return { rows: [{ propertyId, displayName: "Hotel Alpenrose", defaultLocale: "en" }] };
+          return values?.[0] === "hotel-alpenrose"
+            ? { rows: [{ propertyId, displayName: "Hotel Alpenrose", defaultLocale: "en" }] }
+            : { rows: [] };
         }
         if (text.trimStart().startsWith("INSERT INTO platform.idempotency_keys")) {
           if (values?.[0] === "booking-create" && createCommandReserved) return { rows: [] };
@@ -2452,6 +2566,9 @@ describe("Booking Web public bootstrap parity", () => {
         if (text.includes("WITH upserted_key AS")) {
           if (values?.[0] === "booking-create") {
             completedCreateBody = JSON.parse(String(values[10])).responseBody;
+          }
+          if (values?.[0] === "booking-lookup") {
+            lookupAuditBody = JSON.parse(String(values[10])).responseBody;
           }
           return { rows: [] };
         }
@@ -2500,6 +2617,19 @@ describe("Booking Web public bootstrap parity", () => {
         }
         if (text.includes("WITH inventory_lock AS")) return { rows: [{ reserved: true }] };
         if (text.includes("INSERT INTO booking.guest_bookings")) return { rows: [booking()] };
+        if (
+          text.startsWith("UPDATE booking.guest_bookings") &&
+          text.includes("'{confirmationTokens}'")
+        ) {
+          const confirmationTokens = {
+            ...((confirmationMetadata.confirmationTokens as Record<string, unknown>) ?? {}),
+            [String(values?.[2])]: values?.[4],
+          };
+          confirmationMetadata = {
+            confirmationTokens,
+          };
+          return { rows: [] };
+        }
         if (text.includes('account.provider_account_id AS "providerAccountRef"')) {
           return {
             rows: [
@@ -2587,6 +2717,21 @@ describe("Booking Web public bootstrap parity", () => {
           };
         }
         if (text.includes("FROM booking.guest_bookings b")) {
+          if (text.includes("JOIN booking.booking_guests booker")) {
+            const suppliedEmail = values?.[2];
+            const suppliedTokenHash = values?.[3];
+            const tokenMatches =
+              typeof suppliedTokenHash === "string" &&
+              suppliedTokenHash in
+                ((confirmationMetadata.confirmationTokens as Record<string, unknown>) ?? {});
+            if (
+              values?.[0] !== propertyId ||
+              values?.[1] !== "B-CARD952" ||
+              (suppliedEmail !== "guest@example.test" && !tokenMatches)
+            ) {
+              return { rows: [] };
+            }
+          }
           return {
             rows: [
               {
@@ -2692,11 +2837,12 @@ describe("Booking Web public bootstrap parity", () => {
       "hotel-alpenrose",
       createRequest,
       createContext,
-    )) as { confirmationToken: string };
+    )) as { confirmationToken: string; confirmationTokenExpiresAt: string };
     expect(created).toMatchObject({
       clientSecret: "pi_card_952_secret_test",
       draftId: guestBookingId,
       confirmationToken: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+      confirmationTokenExpiresAt: "2026-09-02T10:00:00.000Z",
       booking: { id: guestBookingId, status: "draft", paymentMethod: "card" },
     });
     expect(calls.some((call) => call.text.includes("INSERT INTO finance.payments"))).toBe(true);
@@ -2771,16 +2917,110 @@ describe("Booking Web public bootstrap parity", () => {
     expect(retrievePaymentIntentCalls).toBe(retrieveCallsBeforeConfirm + 1);
 
     await expect(
-      adapter.confirmation?.("hotel-alpenrose", {
-        bookingReference: "B-CARD952",
-        confirmationToken: created.confirmationToken,
-      }),
+      adapter.confirmation?.(
+        "hotel-alpenrose",
+        {
+          bookingReference: "B-CARD952",
+          confirmationToken: created.confirmationToken,
+        },
+        {
+          operation: "booking-confirmation",
+          requestId: "req-card-confirmation-952",
+          correlationId: "corr-card-confirmation-952",
+          idempotencyKey: "idem-card-confirmation-952",
+          fingerprint: "4".repeat(64),
+          occurredAt: new Date("2026-09-02T09:59:59.000Z"),
+        },
+      ),
     ).resolves.toMatchObject({
       id: guestBookingId,
       status: "confirmed",
       cardBrand: "visa",
       cardLast4: "4242",
     });
+
+    const lookup = (await adapter.lookup(
+      "hotel-alpenrose",
+      { bookingReference: "B-CARD952", guestEmail: "guest@example.test" },
+      {
+        operation: "booking-lookup",
+        requestId: "req-card-lookup-952",
+        correlationId: "corr-card-lookup-952",
+        idempotencyKey: "idem-card-lookup-952",
+        fingerprint: "5".repeat(64),
+        occurredAt: new Date("2026-09-02T09:00:00.000Z"),
+      },
+    )) as { confirmationToken: string; confirmationTokenExpiresAt: string };
+    expect(lookup).toMatchObject({
+      bookingReference: "B-CARD952",
+      confirmationToken: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+      confirmationTokenExpiresAt: "2026-09-03T09:00:00.000Z",
+    });
+    const lookupRead = calls.find(
+      (call) =>
+        call.text.includes("FROM booking.guest_bookings b") &&
+        call.values?.includes("guest@example.test"),
+    );
+    expect(lookupRead?.text).toContain("b.property_id = $1::uuid");
+    expect(lookupRead?.text).toContain("lower(booker.email) = lower($3)");
+    expect(JSON.stringify(lookupAuditBody)).not.toContain(lookup.confirmationToken);
+
+    await expect(
+      adapter.confirmation?.(
+        "hotel-alpenrose",
+        { bookingReference: "B-CARD952", confirmationToken: created.confirmationToken },
+        {
+          operation: "booking-confirmation",
+          requestId: "req-card-original-token-952",
+          correlationId: "corr-card-original-token-952",
+          idempotencyKey: "idem-card-original-token-952",
+          fingerprint: "7".repeat(64),
+          occurredAt: new Date("2026-09-02T09:00:01.000Z"),
+        },
+      ),
+    ).resolves.toMatchObject({ bookingReference: "B-CARD952" });
+
+    await expect(
+      adapter.confirmation?.(
+        "hotel-alpenrose",
+        { bookingReference: "B-CARD952", confirmationToken: lookup.confirmationToken },
+        {
+          operation: "booking-confirmation",
+          requestId: "req-card-expired-952",
+          correlationId: "corr-card-expired-952",
+          idempotencyKey: "idem-card-expired-952",
+          fingerprint: "6".repeat(64),
+          occurredAt: new Date("2026-09-03T09:00:00.000Z"),
+        },
+      ),
+    ).rejects.toThrow("Booking confirmation link has expired");
+
+    const app = buildApp({
+      logger: false,
+      publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
+      bookingWebCheckoutAdapter: adapter,
+      bookingWebPublicNow: () => new Date("2026-09-02T10:00:00.000Z"),
+    });
+    const missing = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: "/api/booking-web/hotels/hotel-alpenrose/bookings/lookup",
+        payload: { bookingReference: "VAY-WRONG", guestEmail: "guest@example.test" },
+      }),
+      app.inject({
+        method: "POST",
+        url: "/api/booking-web/hotels/hotel-alpenrose/bookings/lookup",
+        payload: { bookingReference: "B-CARD952", guestEmail: "wrong@example.test" },
+      }),
+      app.inject({
+        method: "POST",
+        url: "/api/booking-web/hotels/other-hotel/bookings/lookup",
+        payload: { bookingReference: "B-CARD952", guestEmail: "guest@example.test" },
+      }),
+    ]);
+    expect(missing.map((response) => response.statusCode)).toEqual([404, 404, 404]);
+    expect(new Set(missing.map((response) => response.body))).toEqual(new Set([missing[0].body]));
+    await app.close();
   });
 
   it("reports actionable parity mismatches by fixture case and field", () => {

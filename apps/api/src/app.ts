@@ -189,7 +189,7 @@ export type ApiAuthOptions = Omit<BackendAuthPluginOptions, "authorizationResolv
   entitlementRepository?: EntitlementRepository;
 };
 
-type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
+type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   auth?: ApiAuthOptions;
   authSession?: AuthSessionRouteOptions;
   browserAllowedOrigins?: string[];
@@ -284,6 +284,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     logger: options.logger ?? {
       level: process.env.LOG_LEVEL ?? "info",
     },
+    trustProxy: options.trustProxy ?? false,
     disableRequestLogging: (request) =>
       request.url.startsWith("/api/marketplace/creator-platform-oauth/"),
   });

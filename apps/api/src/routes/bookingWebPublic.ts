@@ -209,6 +209,10 @@ export type BookingWebCheckoutCommandContext = {
 };
 
 export type BookingWebCheckoutAdapter = {
+  consumeLookupAttempt(
+    clientAddressHash: string,
+    context: BookingWebCheckoutCommandContext,
+  ): Promise<void>;
   getCheckoutConfig(slug: string, context?: BookingWebCheckoutCommandContext): Promise<unknown>;
   quoteBooking(
     slug: string,
@@ -625,11 +629,25 @@ export async function registerBookingWebPublicRoutes(
     "/hotels/:slug/bookings/lookup",
     async (request, reply) => {
       const body = request.body ?? {};
-      const response = await checkoutAdapter.lookup(
+      const context = checkoutCommandContext(
+        request,
+        "booking-lookup",
         request.params.slug,
         body,
-        checkoutCommandContext(request, "booking-lookup", request.params.slug, body, now),
+        now,
       );
+      try {
+        await checkoutAdapter.consumeLookupAttempt(
+          bookingLookupClientAddressHash(request),
+          context,
+        );
+      } catch (error) {
+        if (isHttpError(error) && error.statusCode === 429) {
+          reply.header("Retry-After", "60");
+        }
+        throw error;
+      }
+      const response = await checkoutAdapter.lookup(request.params.slug, body, context);
       reply.header("Cache-Control", "no-store");
       reply.header("X-Vayada-RateLimit-Policy", "public-booking-web-booking-lookup");
       reply.header("X-Robots-Tag", "noindex");
@@ -954,6 +972,10 @@ function writeBookingWebCorsHeaders(request: FastifyRequest, reply: FastifyReply
   reply.header("Vary", "Origin");
 }
 
+function bookingLookupClientAddressHash(request: FastifyRequest): string {
+  return sha256Hex(`booking-lookup-client:${request.ip || "unknown"}`);
+}
+
 function isAllowedBookingWebOrigin(origin: unknown): origin is string {
   if (typeof origin !== "string") return false;
   let url: URL;
@@ -1272,6 +1294,9 @@ const TARGET_CHECKOUT_SUPPORTED_PAYMENT_METHODS = [
   "paypal",
 ] as const;
 const TARGET_REQUEST_HOST_RESPONSE_HOURS = 24;
+const BOOKING_CONFIRMATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const BOOKING_LOOKUP_RATE_LIMIT = 5;
+const BOOKING_LOOKUP_RATE_WINDOW_MS = 60 * 1000;
 
 type TargetCheckoutCommandReservation =
   | { status: "reserved" }
@@ -1350,6 +1375,52 @@ export function createTargetBookingWebCheckoutAdapter(
   };
 
   return {
+    async consumeLookupAttempt(clientAddressHash, context) {
+      await withTargetCheckoutTransaction(pool, async (client) => {
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+          `booking-lookup:${clientAddressHash}`,
+        ]);
+        const attempts = await client.query<{ count: string }>(
+          `SELECT count(*)::text AS count
+             FROM platform.product_audit_events
+            WHERE product = 'booking'
+              AND action = 'booking.guest_lookup.attempt'
+              AND target_resource_product = 'booking'
+              AND target_resource_type = 'lookup_client_address_hash'
+              AND target_resource_id = $1
+              AND occurred_at > $2::timestamptz`,
+          [
+            clientAddressHash,
+            new Date(context.occurredAt.getTime() - BOOKING_LOOKUP_RATE_WINDOW_MS).toISOString(),
+          ],
+        );
+        if (Number(attempts.rows[0]?.count ?? 0) >= BOOKING_LOOKUP_RATE_LIMIT) {
+          throw createHttpError(429, "Too many booking lookup attempts. Please try again later.");
+        }
+        await client.query(
+          `INSERT INTO platform.product_audit_events (
+             audit_key, product, action, occurred_at, tenant_scope,
+             actor_type, target_resource_product, target_resource_type,
+             target_resource_id, correlation_id, causation_id,
+             redacted_payload, private_payload, audit_metadata,
+             retention_class, privacy_scope
+           ) VALUES (
+             $1, 'booking', 'booking.guest_lookup.attempt', $2::timestamptz, 'external',
+             'system', 'booking', 'lookup_client_address_hash', $3, $4, $5,
+             $6::jsonb, '{}'::jsonb, $7::jsonb, 'security', 'restricted'
+           )`,
+          [
+            `booking.guest_lookup.attempt.${randomBytes(16).toString("hex")}`,
+            context.occurredAt.toISOString(),
+            clientAddressHash,
+            context.correlationId,
+            context.requestId,
+            JSON.stringify({ operation: context.operation }),
+            JSON.stringify({ source: "apps/api-booking-web-public" }),
+          ],
+        );
+      });
+    },
     async findLatestChangeRequest(propertyId, bookingId) {
       const result = await loadLatestTargetChangeRequest(pool, propertyId, bookingId);
       return result ? serializeTargetChangeRequest(result) : null;
@@ -1606,18 +1677,10 @@ export function createTargetBookingWebCheckoutAdapter(
           billingConfig,
           checkoutConfig,
         );
-        const confirmationToken = randomBytes(32).toString("base64url");
-        await client.query(
-          `UPDATE booking.guest_bookings
-              SET booking_metadata = booking_metadata || $3::jsonb,
-                  updated_at = $4::timestamptz
-            WHERE property_id = $1::uuid AND id = $2::uuid`,
-          [
-            property.propertyId,
-            booking.guestBookingId,
-            JSON.stringify({ confirmationTokenHash: sha256Hex(confirmationToken) }),
-            context.occurredAt.toISOString(),
-          ],
+        const confirmation = await issueTargetBookingConfirmationToken(
+          client,
+          booking,
+          context.occurredAt,
         );
         if (booking.lifecycleStatus === "confirmed") {
           await captureDirectNightlyRevenueEvidence(client, booking, {
@@ -1667,7 +1730,8 @@ export function createTargetBookingWebCheckoutAdapter(
           clientSecret: cardPayment?.clientSecret ?? null,
           xenditInvoiceUrl: null,
           paymentMethod: quote.paymentMethod,
-          confirmationToken,
+          confirmationToken: confirmation.token,
+          confirmationTokenExpiresAt: confirmation.expiresAt,
           ...(cardPayment ? { draftId: booking.guestBookingId } : {}),
           ...(cardPayment ? { providerPaymentIntentId: cardPayment.paymentIntentId } : {}),
           pmsHandoff: { status: cardPayment ? "awaiting_payment" : "pending_handoff" },
@@ -1814,24 +1878,45 @@ export function createTargetBookingWebCheckoutAdapter(
       });
     },
     async lookup(slug, request, context) {
-      return withCommand(slug, context, async () => {
-        const property = await resolveTargetHistoricalBookingProperty(pool, slug);
+      if (!context) throw createHttpError(400, "Checkout command context is required.");
+      return withTargetCheckoutTransaction(pool, async (client) => {
+        let property: TargetCheckoutPropertyRow;
+        try {
+          property = await resolveTargetHistoricalBookingProperty(client, slug);
+        } catch (error) {
+          if (isHttpError(error) && error.statusCode === 404) {
+            throw createHttpError(404, "Booking not found.");
+          }
+          throw error;
+        }
         const reference = firstString(request.bookingReference);
         if (!reference) {
           throw createHttpError(400, "Booking reference is required.");
         }
         const booking = await loadTargetBooking(
-          pool,
+          client,
           property.propertyId,
           reference,
           requireGuestEmail(request.guestEmail),
         );
-        return {
+        const confirmation = await issueTargetBookingConfirmationToken(
+          client,
+          booking,
+          context.occurredAt,
+        );
+        const body = {
+          ...serializeTargetBooking(booking),
+          confirmationToken: confirmation.token,
+          confirmationTokenExpiresAt: confirmation.expiresAt,
+        };
+        await recordTargetCheckoutCommand(client, {
           propertyId: property.propertyId,
+          context,
           resourceType: "guest_booking",
           resourceId: booking.guestBookingId,
           body: serializeTargetBooking(booking),
-        };
+        });
+        return body;
       });
     },
     async confirmation(slug, request, context) {
@@ -1852,6 +1937,11 @@ export function createTargetBookingWebCheckoutAdapter(
           bookingReference,
           null,
           sha256Hex(confirmationToken),
+        );
+        assertTargetBookingConfirmationTokenActive(
+          booking,
+          sha256Hex(confirmationToken),
+          context?.occurredAt ?? new Date(),
         );
         if (booking.lifecycleStatus === "draft" || booking.paymentStatus === "unpaid") {
           throw createHttpError(409, "Booking confirmation is still processing.");
@@ -2103,8 +2193,72 @@ export function createTargetBookingWebCheckoutAdapter(
   };
 }
 
+async function issueTargetBookingConfirmationToken(
+  pool: BookingWebQueryExecutor,
+  booking: Pick<TargetBookingRow, "guestBookingId" | "propertyId">,
+  issuedAt: Date,
+): Promise<{ token: string; expiresAt: string }> {
+  const token = randomBytes(32).toString("base64url");
+  const tokenHash = sha256Hex(token);
+  const expiresAt = new Date(issuedAt.getTime() + BOOKING_CONFIRMATION_TOKEN_TTL_MS).toISOString();
+  await pool.query(
+    `UPDATE booking.guest_bookings
+        SET booking_metadata = jsonb_set(
+              booking_metadata,
+              '{confirmationTokens}',
+              COALESCE(
+                (
+                  SELECT jsonb_object_agg(token.key, token.value)
+                  FROM jsonb_each_text(
+                    CASE
+                      WHEN jsonb_typeof(booking_metadata -> 'confirmationTokens') = 'object'
+                        THEN booking_metadata -> 'confirmationTokens'
+                      ELSE '{}'::jsonb
+                    END
+                  ) token
+                  WHERE token.value > $4::text
+                ),
+                '{}'::jsonb
+              ) || jsonb_build_object($3::text, $5::text),
+              true
+            ),
+            updated_at = $4::timestamptz
+      WHERE property_id = $1::uuid AND id = $2::uuid`,
+    [booking.propertyId, booking.guestBookingId, tokenHash, issuedAt.toISOString(), expiresAt],
+  );
+  return { token, expiresAt };
+}
+
+function assertTargetBookingConfirmationTokenActive(
+  booking: Pick<TargetBookingRow, "bookingMetadata" | "createdAt">,
+  tokenHash: string,
+  now: Date,
+): void {
+  const metadata = objectValue(booking.bookingMetadata);
+  const legacyTokenExpiresAt = stringValue(metadata["confirmationTokenExpiresAt"]);
+  const createdAt = toIsoDateTime(booking.createdAt);
+  const expiresAt =
+    stringValue(objectValue(metadata["confirmationTokens"])[tokenHash]) ??
+    (stringValue(metadata["confirmationTokenHash"]) === tokenHash
+      ? (legacyTokenExpiresAt ??
+        (createdAt
+          ? new Date(Date.parse(createdAt) + BOOKING_CONFIRMATION_TOKEN_TTL_MS).toISOString()
+          : null))
+      : null);
+  if (
+    !expiresAt ||
+    !Number.isFinite(Date.parse(expiresAt)) ||
+    Date.parse(expiresAt) <= now.getTime()
+  ) {
+    throw createHttpError(404, "Booking confirmation link has expired.");
+  }
+}
+
 export function createUnavailableBookingWebCheckoutAdapter(): BookingWebCheckoutAdapter {
   return {
+    async consumeLookupAttempt() {
+      throw createHttpError(404, "Booking Web checkout adapter is not configured.");
+    },
     async getCheckoutConfig() {
       throw createHttpError(404, "Booking Web checkout adapter is not configured.");
     },
@@ -3709,7 +3863,13 @@ async function loadTargetBooking(
        AND (b.id::text = $2 OR b.public_reference = $2)
        AND (
          ($3::text IS NOT NULL AND lower(booker.email) = lower($3))
-         OR ($4::text IS NOT NULL AND b.booking_metadata ->> 'confirmationTokenHash' = $4)
+         OR (
+           $4::text IS NOT NULL
+           AND (
+             b.booking_metadata ->> 'confirmationTokenHash' = $4
+             OR b.booking_metadata -> 'confirmationTokens' ? $4
+           )
+         )
        )
      LIMIT 1`,
     [propertyId, referenceOrId, guestEmail, confirmationTokenHash],

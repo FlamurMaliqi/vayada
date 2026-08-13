@@ -16,6 +16,12 @@ export interface BookingRequestResponse {
   authorizationComplete?: boolean;
   authorizationExpired?: boolean;
   confirmationToken?: string;
+  confirmationTokenExpiresAt?: string;
+}
+
+export interface BookingLookupResponse extends Booking {
+  confirmationToken: string;
+  confirmationTokenExpiresAt: string;
 }
 
 export type BookingCreateRequest = {
@@ -228,7 +234,11 @@ export const bookingService = {
     );
   },
 
-  async lookup(slug: string, bookingReference: string, guestEmail: string): Promise<Booking> {
+  async lookup(
+    slug: string,
+    bookingReference: string,
+    guestEmail: string,
+  ): Promise<BookingLookupResponse> {
     const body = { bookingReference, guestEmail };
     return bookingWebPublic.post(
       `/api/booking-web/hotels/${encodeURIComponent(slug)}/bookings/lookup`,
