@@ -11,9 +11,16 @@ import type {
   BookingGuestPiiPort,
   BookingGuestPiiProjection,
 } from "@vayada/domain-booking";
-import type { PmsInventoryPublicOfferProjectionPort } from "@vayada/domain-distribution";
+import type {
+  PmsInventoryPublicOfferProjectionPort,
+  PublicBookabilityPublicationCommandPort,
+} from "@vayada/domain-distribution";
 import { PROPERTY_FEATURE_LIMITS, type PropertyPlanReadModel } from "@vayada/domain-finance";
 import type { PropertyPlanReadRepository } from "../domains/propertyPlanReadModel.js";
+import {
+  isBookingAcceptanceMode,
+  type BookingAcceptanceSettingsPort,
+} from "../domains/bookingAcceptanceSettings.js";
 import type {
   PmsCalendarDay,
   PmsOperationsReadRepository,
@@ -730,6 +737,8 @@ export type PmsOperationsRoutesOptions = {
   inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
   allowedOrigins?: string[];
   propertyPlanReadRepository?: PropertyPlanReadRepository;
+  bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
+  publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort;
 };
 
 type PmsPropertyParams = {
@@ -834,7 +843,8 @@ type PmsOperationsErrorCode =
   | "reservation_not_found"
   | "additional_guest_not_found"
   | "note_not_found"
-  | "charge_not_found";
+  | "charge_not_found"
+  | "property_not_found";
 
 type PmsOperationsError = {
   statusCode: 400 | 401 | 403 | 404 | 409 | 500;
@@ -860,6 +870,7 @@ export async function registerPmsOperationsRoutes(
     await commandRepository?.close?.();
     await bookingGuestPiiPort?.close?.();
     await options.propertyPlanReadRepository?.close?.();
+    await options.bookingAcceptanceSettings?.close?.();
   });
 
   for (const path of [
@@ -873,6 +884,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/payment-settings",
     "/properties/:propertyId/profile",
     "/properties/:propertyId/calendar-settings",
+    "/properties/:propertyId/booking-acceptance",
     "/properties/:propertyId/channex/status",
     "/properties/:propertyId/channex/channels",
     "/properties/:propertyId/messaging/unread-count",
@@ -1175,6 +1187,91 @@ export async function registerPmsOperationsRoutes(
         reply,
         readModelUnavailable("PMS property profile write model is unavailable."),
       );
+    },
+  );
+
+  app.get<{ Params: PmsPropertyParams }>(
+    "/properties/:propertyId/booking-acceptance",
+    async (request, reply) => {
+      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+        return sendPmsOperationsError(reply, {
+          statusCode: 403,
+          code: "missing_permission",
+          category: "authorization",
+          message: "PMS operations origin is not allowed.",
+        });
+      }
+      const { propertyId } = request.params;
+      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      try {
+        const acceptanceMode =
+          await options.bookingAcceptanceSettings?.findAcceptanceMode(propertyId);
+        if (!acceptanceMode) {
+          return sendPmsOperationsError(reply, {
+            statusCode: 404,
+            code: "property_not_found",
+            category: "not_found",
+            message: "Booking acceptance settings were not found.",
+          });
+        }
+        return bookingAcceptanceResponse(propertyId, acceptanceMode);
+      } catch {
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("Booking acceptance settings are unavailable."),
+        );
+      }
+    },
+  );
+
+  app.put<{ Params: PmsPropertyParams; Body: unknown }>(
+    "/properties/:propertyId/booking-acceptance",
+    async (request, reply) => {
+      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+        return sendPmsOperationsError(reply, {
+          statusCode: 403,
+          code: "missing_permission",
+          category: "authorization",
+          message: "PMS operations origin is not allowed.",
+        });
+      }
+      const { propertyId } = request.params;
+      if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+      const body = request.body;
+      if (
+        !body ||
+        typeof body !== "object" ||
+        Array.isArray(body) ||
+        Object.keys(body).length !== 1 ||
+        !isBookingAcceptanceMode((body as Record<string, unknown>)["acceptanceMode"])
+      ) {
+        return sendPmsOperationsError(
+          reply,
+          invalidBody("acceptanceMode must be either instant or request."),
+        );
+      }
+      try {
+        const acceptanceMode = await options.bookingAcceptanceSettings?.updateAcceptanceMode(
+          propertyId,
+          (body as { acceptanceMode: "instant" | "request" }).acceptanceMode,
+        );
+        if (!acceptanceMode) {
+          return sendPmsOperationsError(reply, {
+            statusCode: 404,
+            code: "property_not_found",
+            category: "not_found",
+            message: "Booking acceptance settings were not found.",
+          });
+        }
+        await options.publicBookabilityPublisher?.publish({ propertyId });
+        return bookingAcceptanceResponse(propertyId, acceptanceMode);
+      } catch (error) {
+        request.log.error({ err: error, propertyId }, "Booking acceptance settings update failed");
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("Booking acceptance settings could not be saved."),
+        );
+      }
     },
   );
 
@@ -2290,6 +2387,15 @@ export async function registerPmsOperationsRoutes(
       },
     );
   }
+}
+
+function bookingAcceptanceResponse(propertyId: string, acceptanceMode: "instant" | "request") {
+  return {
+    contractVersion: "booking-acceptance.v1",
+    propertyId,
+    acceptanceMode,
+    instantBook: acceptanceMode === "instant",
+  } as const;
 }
 
 async function listCalendarReservationsOverlappingStayRange(

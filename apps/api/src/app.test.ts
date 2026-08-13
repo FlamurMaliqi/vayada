@@ -94,6 +94,7 @@ import {
   createTargetPmsOperationsReadRepository,
   type PmsOperationsReadPool,
 } from "./domains/pmsOperationsReadModel.js";
+import type { BookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
 import {
   createCompatibilityPmsBookingReservationsReadRepository,
   type BookingReservationsReadPool,
@@ -2331,6 +2332,7 @@ function buildAuthenticatedApp(
     pmsOperationsRepository?: PmsOperationsReadRepository;
     pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
     pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
+    bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
     bookingGuestPiiPort?: BookingGuestPiiPort;
     pmsOperationsAllowedOrigins?: string[];
     propertyPlanReadRepository?: PropertyPlanReadRepository;
@@ -2348,6 +2350,7 @@ function buildAuthenticatedApp(
     pmsOperationsRepository: options.pmsOperationsRepository ?? pmsOperationsRepository,
     pmsCheckoutChargeMarkPaidFreezeEnabled: options.pmsCheckoutChargeMarkPaidFreezeEnabled,
     pmsOperationsCommandRepository: options.pmsOperationsCommandRepository,
+    bookingAcceptanceSettings: options.bookingAcceptanceSettings,
     bookingGuestPiiPort: options.bookingGuestPiiPort,
     pmsOperationsAllowedOrigins: options.pmsOperationsAllowedOrigins,
     propertyPlanReadRepository: options.propertyPlanReadRepository,
@@ -9793,6 +9796,61 @@ describe("vayada-api", () => {
         },
       },
     });
+  });
+
+  it("reads and updates the Booking-owned acceptance mode through PMS", async () => {
+    let acceptanceMode: "instant" | "request" = "request";
+    const published: string[] = [];
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.read", "pms.operations.manage"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      bookingAcceptanceSettings: {
+        async findAcceptanceMode(propertyId) {
+          expect(propertyId).toBe(pmsPropertyId);
+          return acceptanceMode;
+        },
+        async updateAcceptanceMode(propertyId, nextMode) {
+          expect(propertyId).toBe(pmsPropertyId);
+          acceptanceMode = nextMode;
+          return acceptanceMode;
+        },
+      },
+      publicBookabilityPublisher: {
+        async publish({ propertyId }) {
+          published.push(propertyId);
+          return null;
+        },
+      },
+    });
+
+    const read = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/booking-acceptance`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const update = await injectJson(app, {
+      method: "PUT",
+      url: `/api/pms/properties/${pmsPropertyId}/booking-acceptance`,
+      payload: { acceptanceMode: "instant" },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(read.statusCode).toBe(200);
+    expect(read.body).toMatchObject({ acceptanceMode: "request", instantBook: false });
+    expect(update.statusCode).toBe(200);
+    expect(update.body).toMatchObject({ acceptanceMode: "instant", instantBook: true });
+    expect(published).toEqual([pmsPropertyId]);
   });
 
   it("uses centralized property plan limits in PMS room photo errors", async () => {
