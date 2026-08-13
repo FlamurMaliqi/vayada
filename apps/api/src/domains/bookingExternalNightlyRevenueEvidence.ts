@@ -29,16 +29,13 @@ export type AppendExternalRevenueEvidenceCommand = Readonly<{
 export class ExternalRevenueEvidenceScopeError extends Error {
   readonly code = "external_booking_scope_unavailable";
 }
-
 export class ExternalRevenueEvidenceConflictError extends Error {
   readonly code = "external_evidence_idempotency_conflict";
 }
-
 type NormalizedLine = Omit<ExternalRevenueEvidenceLine, "correctsEvidenceId"> & {
   correctsEvidenceId: string | null;
   commandKey: string;
 };
-
 type StoredLine = {
   id: string;
   guestBookingId: string;
@@ -46,10 +43,12 @@ type StoredLine = {
   sourceRevision: number;
   commandKey: string;
 };
-
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const MONEY = /^-?\d{1,15}(?:\.\d{1,4})?$/;
-
+const DATE = /^\d{4}-\d{2}-\d{2}$/,
+  MONEY = /^-?\d{1,15}(?:\.\d{1,4})?$/;
+const EVENTS =
+  "room_night room_night_reversal occupancy_adjustment retained_charge refund correction";
+const STATES = "confirmed completed canceled no_show refunded corrected";
 export async function appendExternalNightlyRevenueEvidence(
   client: Pick<PoolClient, "query">,
   command: AppendExternalRevenueEvidenceCommand,
@@ -82,7 +81,6 @@ export async function appendExternalNightlyRevenueEvidence(
     lines.some((line) => line.linePosition > scope.roomCount)
   )
     throw new ExternalRevenueEvidenceScopeError("External room scope is unavailable");
-
   const stored = await client.query<StoredLine>(
     `SELECT id::text AS id, guest_booking_id::text AS "guestBookingId",
        source_kind AS "sourceKind", source_revision::int AS "sourceRevision", command_key AS "commandKey"
@@ -90,18 +88,13 @@ export async function appendExternalNightlyRevenueEvidence(
        AND command_key LIKE $2 || '%' ORDER BY command_key`,
     [command.propertyId, prefix],
   );
-  if (stored.rows.length > 0) {
-    return replay(stored.rows, lines, command.sourceKind, command.guestBookingId);
-  }
-
-  const revisionResult = await client.query<{ revision: string }>(
-    `SELECT (COALESCE(MAX(source_revision), 0) + 1)::text AS revision
-     FROM booking.nightly_revenue_evidence WHERE guest_booking_id = $1::uuid`,
+  if (stored.rows.length > 0) return replay(stored.rows, lines, command);
+  const revision = await client.query<{ value: number }>(
+    "SELECT COALESCE(MAX(source_revision),0)::int+1 value FROM booking.nightly_revenue_evidence WHERE guest_booking_id=$1",
     [command.guestBookingId],
   );
-  const sourceRevision = Number(revisionResult.rows[0]?.revision ?? 1);
-
-  const inserted = await client.query<{ id: string }>(
+  const sourceRevision = revision.rows[0]!.value;
+  const inserted = await client.query<{ id: string; commandKey: string }>(
     `INSERT INTO booking.nightly_revenue_evidence
        (property_id,guest_booking_id,room_type_id,stay_date,recognized_on,currency,gross_room_amount,
         occupied_room_nights,economic_event,lifecycle_state,source_kind,evidence_quality,
@@ -116,7 +109,7 @@ export async function appendExternalNightlyRevenueEvidence(
        "occupiedRoomNights" smallint, "economicEvent" text, "lifecycleState" text,
        "evidenceQuality" text, "linePosition" int, "correctsEvidenceId" text, "commandKey" text)
      WHERE booking.id=$1::uuid AND booking.property_id=$2::uuid AND booking.source_booking_id=$3
-     RETURNING id::text id`,
+     RETURNING id::text id, command_key AS "commandKey"`,
     [
       command.guestBookingId,
       command.propertyId,
@@ -126,14 +119,13 @@ export async function appendExternalNightlyRevenueEvidence(
       JSON.stringify(lines),
     ],
   );
+  inserted.rows.sort((a, b) => a.commandKey.localeCompare(b.commandKey));
   return { outcome: "appended", sourceRevision, evidenceIds: inserted.rows.map(({ id }) => id) };
 }
-
 function replay(
   stored: readonly StoredLine[],
   lines: readonly NormalizedLine[],
-  sourceKind: string,
-  guestBookingId: string,
+  command: AppendExternalRevenueEvidenceCommand,
 ) {
   const expected = new Set(lines.map(({ commandKey }) => commandKey));
   if (
@@ -142,19 +134,14 @@ function replay(
     stored.some(
       (row) =>
         !expected.has(row.commandKey) ||
-        row.guestBookingId !== guestBookingId ||
-        row.sourceKind !== sourceKind,
+        row.guestBookingId !== command.guestBookingId ||
+        row.sourceKind !== command.sourceKind,
     )
-  ) {
+  )
     throw new ExternalRevenueEvidenceConflictError("External evidence idempotency key conflicts");
-  }
-  return {
-    outcome: "replayed",
-    sourceRevision: stored[0]!.sourceRevision,
-    evidenceIds: stored.map(({ id }) => id),
-  };
+  const evidenceIds = stored.map(({ id }) => id);
+  return { outcome: "replayed", sourceRevision: stored[0]!.sourceRevision, evidenceIds };
 }
-
 function normalizeLines(
   command: AppendExternalRevenueEvidenceCommand,
   prefix: string,
@@ -163,20 +150,25 @@ function normalizeLines(
     throw new Error("External evidence lines are malformed");
   }
   const lines = command.lines.map((line) => {
+    if (typeof line !== "object" || line === null)
+      throw new Error("External evidence line is malformed");
     if (
       !UUID.test(line.roomTypeId) ||
+      !validDate(line.stayDate) ||
+      !validDate(line.recognizedOn) ||
+      !EVENTS.split(" ").includes(line.economicEvent) ||
+      !STATES.split(" ").includes(line.lifecycleState) ||
+      !["exact", "inferred", "missing"].includes(line.evidenceQuality) ||
       !Number.isInteger(line.linePosition) ||
       line.linePosition < 1 ||
       line.linePosition > 1000 ||
       (line.correctsEvidenceId != null && !UUID.test(line.correctsEvidenceId)) ||
       ![-1, 0, 1].includes(line.occupiedRoomNights)
-    ) {
+    )
       throw new Error("External evidence line is malformed");
-    }
     const grossRoomAmount = normalizeMoney(line.grossRoomAmount);
-    if ((line.evidenceQuality === "missing") !== (grossRoomAmount === null)) {
+    if ((line.evidenceQuality === "missing") !== (grossRoomAmount === null))
       throw new Error("External evidence quality is malformed");
-    }
     const normalized = {
       roomTypeId: line.roomTypeId,
       stayDate: line.stayDate,
@@ -191,12 +183,10 @@ function normalizeLines(
     };
     return { ...normalized, commandKey: `${prefix}${sha256(JSON.stringify(normalized))}` };
   });
-  if (new Set(lines.map(({ commandKey }) => commandKey)).size !== lines.length) {
+  if (new Set(lines.map(({ commandKey }) => commandKey)).size !== lines.length)
     throw new Error("External evidence lines contain duplicates");
-  }
   return lines.sort((left, right) => left.commandKey.localeCompare(right.commandKey));
 }
-
 function commandPrefix(command: AppendExternalRevenueEvidenceCommand): string {
   if (
     !UUID.test(command.propertyId) ||
@@ -204,15 +194,14 @@ function commandPrefix(command: AppendExternalRevenueEvidenceCommand): string {
     !["ota", "manual"].includes(command.sourceKind) ||
     !trimmed(command.sourceBookingReference, 500) ||
     !trimmed(command.idempotencyKey, 500)
-  ) {
+  )
     throw new Error("External evidence command is malformed");
-  }
   return `external:${sha256(command.idempotencyKey)}:`;
 }
-
-function normalizeMoney(value: string | null): string | null {
+function normalizeMoney(value: unknown): string | null {
   if (value === null) return null;
-  if (!MONEY.test(value)) throw new Error("External evidence amount is malformed");
+  if (typeof value !== "string" || !MONEY.test(value))
+    throw new Error("External evidence amount is malformed");
   const negative = value.startsWith("-");
   const [whole, fraction = ""] = (negative ? value.slice(1) : value).split(".");
   const normalizedWhole = whole!.replace(/^0+(?=\d)/, "");
@@ -225,3 +214,8 @@ function trimmed(value: string, max: number): boolean {
 }
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
+const validDate = (value: unknown) =>
+  typeof value === "string" &&
+  !value.startsWith("0000-") &&
+  DATE.test(value) &&
+  new Date(value).toJSON() === `${value}T00:00:00.000Z`;
