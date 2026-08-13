@@ -44,6 +44,9 @@ describe("target PMS reservation stay dates", () => {
                 totalAmount: "155.00",
                 balanceAmount: "155.00",
                 currency: "EUR",
+                paymentMethod: null,
+                expectedPaymentMethod: "unknown",
+                paymentStatus: "unpaid",
               },
             ];
 
@@ -75,6 +78,8 @@ describe("target PMS reservation stay dates", () => {
     expect(listQuery).toContain('AS "guestContactAccepted"');
     expect(listQuery).toContain("contact_event.actor_type = 'property_user'");
     expect(listQuery).toContain("booking.booking_metadata ->> 'acceptedPaymentDeadlineAt'");
+    expect(listQuery).toContain('booking.expected_payment_method AS "expectedPaymentMethod"');
+    expect(listQuery).toContain("FROM booking.nightly_revenue_evidence evidence");
     expect(result.items[0]?.stay).toEqual({
       checkIn: "2026-07-23",
       checkOut: "2026-07-24",
@@ -97,6 +102,7 @@ describe("target PMS reservation stay dates", () => {
         totalAmount: { amountDecimal: "155.00", currency: "EUR" },
         balanceAmount: { amountDecimal: "155.00", currency: "EUR" },
       },
+      payment: { method: null, expectedMethod: "unknown", status: "unpaid" },
     });
   });
 
