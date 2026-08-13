@@ -544,6 +544,26 @@ describe("target PMS operations command repository", () => {
       }
       if (text.includes("WITH booking_update AS")) return ok([{ id: guestBookingId }], 1);
       if (text.includes("WITH booking_scope AS")) return ok();
+      if (text.includes('AS "hostEmail"')) {
+        return ok([
+          {
+            propertyId,
+            guestBookingId,
+            bookingReference: "BK-BANK-001",
+            guestEmail: "guest@example.test",
+            guestName: "Alex Guest",
+            hostEmail: "reservations@example.test",
+            propertyName: "Hotel Alpenrose",
+            checkIn: "2026-08-20",
+            checkOut: "2026-08-23",
+            totalAmount: "600.00",
+            balanceAmount: "600.00",
+            currency: "EUR",
+            paymentMethod: "bank_transfer",
+            bookingMetadata: {},
+          },
+        ]);
+      }
       if (text.includes("INSERT INTO platform.domain_events")) {
         return ok([{ eventId: "f6855900-0000-0000-0000-000000000001" }], 1);
       }
@@ -753,6 +773,26 @@ describe("target PMS operations command repository", () => {
         }
         if (text.includes("WITH booking_update AS")) return ok([{ id: guestBookingId }], 1);
         if (text.includes("WITH booking_scope AS")) return ok();
+        if (text.includes('AS "hostEmail"')) {
+          return ok([
+            {
+              propertyId,
+              guestBookingId,
+              bookingReference: "BK-PAYPAL-001",
+              guestEmail: "guest@example.test",
+              guestName: "Alex Guest",
+              hostEmail: "reservations@example.test",
+              propertyName: "Hotel Alpenrose",
+              checkIn: "2026-08-20",
+              checkOut: "2026-08-23",
+              totalAmount: "600.00",
+              balanceAmount: "600.00",
+              currency: "EUR",
+              paymentMethod: method,
+              bookingMetadata: {},
+            },
+          ]);
+        }
         if (text.includes("INSERT INTO platform.domain_events")) {
           return ok([{ eventId: "f6855900-0000-0000-0000-000000000003" }], 1);
         }
@@ -791,7 +831,7 @@ describe("target PMS operations command repository", () => {
             call.text.includes("INSERT INTO platform.jobs") &&
             call.values.includes("email.booking-final-confirmation"),
         ),
-      ).toBe(true);
+      ).toBe(method === "paypal");
     },
   );
 

@@ -30,7 +30,10 @@ import {
   stripeAmountMinor,
   stripeApplicationFeeMinor,
 } from "../domains/stripeMoney.js";
-import { bankTransferDetailsFromPolicy } from "../jobs/bookingEmails.js";
+import {
+  bankTransferDetailsFromPolicy,
+  enqueueBookingTransitionNotifications,
+} from "../jobs/bookingEmails.js";
 import {
   inventoryReservationReceiptFromBookingMetadata,
   type DirectBookingInventoryReservationPort,
@@ -1570,6 +1573,20 @@ export function createTargetBookingWebCheckoutAdapter(
             required: true,
           });
         }
+        await enqueueBookingTransitionNotifications(client, {
+          propertyId: property.propertyId,
+          guestBookingId: booking.guestBookingId,
+          occurredAt: context.occurredAt.toISOString(),
+          correlationId: context.correlationId,
+          causationId: context.requestId,
+          actor: { type: "system" },
+          source: "apps/api-booking-checkout",
+          transition: {
+            eventType: "guest_booking.created",
+            fromStatus: null,
+            toStatus: booking.lifecycleStatus,
+          },
+        });
         const cardPayment =
           quote.paymentMethod === "card"
             ? await createTargetCardPayment(

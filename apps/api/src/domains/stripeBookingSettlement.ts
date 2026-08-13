@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { QueryResult, QueryResultRow } from "pg";
 
+import { enqueueBookingTransitionNotifications } from "../jobs/bookingEmails.js";
 import { stripeAmountMinor } from "./stripeMoney.js";
 
 type SettlementExecutor = {
@@ -129,6 +130,34 @@ export async function settleStripeBookingPayment(
     );
     await captureDirectNightlyRevenueEvidence(client, row, { required: true });
   }
+
+  const canonicalTransition = await client.query<
+    QueryResultRow & { fromStatus: string | null; toStatus: string }
+  >(
+    `SELECT from_status AS "fromStatus", to_status AS "toStatus"
+     FROM booking.booking_status_events
+     WHERE guest_booking_id = $1::uuid
+       AND event_type = 'guest_booking.payment_received'
+     ORDER BY occurred_at, id
+     LIMIT 1`,
+    [row.guestBookingId],
+  );
+  const transition = canonicalTransition.rows[0];
+  if (!transition) throw new Error("Canonical Stripe booking transition was not found.");
+  await enqueueBookingTransitionNotifications(client, {
+    propertyId: row.propertyId,
+    guestBookingId: row.guestBookingId,
+    occurredAt: input.occurredAt.toISOString(),
+    correlationId: input.correlationId,
+    causationId: input.sourceDomainEventId ?? input.paymentIntentId,
+    actor: { type: "provider" },
+    source: "apps/api-stripe-booking-settlement",
+    transition: {
+      eventType: "guest_booking.payment_received",
+      fromStatus: transition.fromStatus,
+      toStatus: transition.toStatus,
+    },
+  });
 
   const handoffKey = pmsCreateHandoffKey(row.propertyId, row.guestBookingId);
   const handoffHash = sha256(handoffKey);
