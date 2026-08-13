@@ -183,6 +183,8 @@ const BOOKING_STATUSES: Booking["status"][] = [
   "declined",
   "expired",
   "draft",
+  "checked_in",
+  "checked_out",
 ];
 
 const PAYMENT_METHODS = [
@@ -192,6 +194,8 @@ const PAYMENT_METHODS = [
   "xendit",
   "bank_transfer",
   "paypal",
+  "manual_card",
+  "other",
 ] as const;
 
 const PAYMENT_STATUSES = [
@@ -257,6 +261,12 @@ function paymentStatus(value: unknown): string | null {
   return PAYMENT_STATUSES.includes(value as (typeof PAYMENT_STATUSES)[number])
     ? (value as string)
     : null;
+}
+
+function nonEmptyStrings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => Boolean(nonEmptyString(item)))
+    : [];
 }
 
 /**
@@ -335,6 +345,15 @@ export function toConfirmationBooking(
     paymentStatus: hasSourcePaymentStatus
       ? paymentStatus(source.paymentStatus)
       : paymentStatus(context.paymentStatus),
+    paymentDeadline:
+      nonEmptyString(source.paymentDeadline) ?? nonEmptyString(context.paymentDeadline),
+    bankTransferDetails:
+      nonEmptyString(source.bankTransferDetails) ?? nonEmptyString(context.bankTransferDetails),
+    unitNames:
+      nonEmptyStrings(source.unitNames).length > 0
+        ? nonEmptyStrings(source.unitNames)
+        : nonEmptyStrings(context.unitNames),
+    cancelledAt: nonEmptyString(source.cancelledAt) ?? nonEmptyString(context.cancelledAt),
     cardBrand: nonEmptyString(source.cardBrand) ?? nonEmptyString(context.cardBrand),
     cardLast4: cardLast4(source.cardLast4) ?? cardLast4(context.cardLast4),
     hostResponseDeadline:

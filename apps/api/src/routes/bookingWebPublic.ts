@@ -1177,6 +1177,11 @@ type TargetBookingRow = QueryResultRow & {
   totalAmount: string | number;
   balanceAmount: string | number;
   bookingMetadata: unknown;
+  expectedPaymentMethod?: string | null;
+  operationalStatus?: string | null;
+  assignedRoomTypeName?: string | null;
+  unitNames?: unknown;
+  cancelledAt?: Date | string | null;
   cardBrand?: string | null;
   cardLast4?: string | null;
   createdAt: Date | string;
@@ -3840,6 +3845,11 @@ async function loadTargetBooking(
        b.total_amount AS "totalAmount",
        b.balance_amount AS "balanceAmount",
        b.booking_metadata AS "bookingMetadata",
+       b.expected_payment_method AS "expectedPaymentMethod",
+       primary_assignment.assignment_status AS "operationalStatus",
+       assigned_room_type.name AS "assignedRoomTypeName",
+       assigned_units.unit_names AS "unitNames",
+       cancellation.occurred_at AS "cancelledAt",
        card_payment.card_brand AS "cardBrand",
        card_payment.card_last4 AS "cardLast4",
        b.created_at AS "createdAt"
@@ -3849,6 +3859,38 @@ async function loadTargetBooking(
      JOIN booking.booking_guests booker
        ON booker.guest_booking_id = b.id
       AND booker.guest_role = 'booker'
+     LEFT JOIN LATERAL (
+       SELECT assignment.assignment_status, assignment.room_type_id
+       FROM pms.operational_booking_assignments assignment
+       WHERE assignment.guest_booking_id = b.id
+         AND assignment.property_id = b.property_id
+       ORDER BY assignment.position, assignment.created_at, assignment.id
+       LIMIT 1
+     ) primary_assignment ON TRUE
+     LEFT JOIN pms.room_types assigned_room_type
+       ON assigned_room_type.id = primary_assignment.room_type_id
+      AND assigned_room_type.property_id = b.property_id
+     LEFT JOIN LATERAL (
+       SELECT COALESCE(
+         jsonb_agg(room.room_number ORDER BY assignment.position, assignment.created_at, assignment.id)
+           FILTER (WHERE room.room_number IS NOT NULL),
+         '[]'::jsonb
+       ) AS unit_names
+       FROM pms.operational_booking_assignments assignment
+       LEFT JOIN pms.rooms room
+         ON room.id = assignment.room_id
+        AND room.property_id = assignment.property_id
+       WHERE assignment.guest_booking_id = b.id
+         AND assignment.property_id = b.property_id
+     ) assigned_units ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT event.occurred_at
+       FROM booking.booking_status_events event
+       WHERE event.guest_booking_id = b.id
+         AND event.to_status = 'canceled'
+       ORDER BY event.occurred_at DESC, event.id
+       LIMIT 1
+     ) cancellation ON TRUE
      LEFT JOIN LATERAL (
        SELECT payment.payment_metadata ->> 'cardBrand' AS card_brand,
               payment.payment_metadata ->> 'cardLast4' AS card_last4
@@ -3884,6 +3926,7 @@ async function loadTargetBooking(
 function serializeTargetBooking(booking: TargetBookingRow): Record<string, unknown> {
   const metadata = objectValue(booking.bookingMetadata);
   const selectedOffer = objectValue(metadata["selectedOffer"]);
+  const paymentInstructions = objectValue(metadata["paymentInstructions"]);
   const nights = Math.max(dateRange(booking.checkIn, booking.checkOut).length, 1);
   const roomCount = Math.max(Number(booking.roomCount), 1);
   const totalAmount = Number(decimalString(booking.totalAmount));
@@ -3895,11 +3938,12 @@ function serializeTargetBooking(booking: TargetBookingRow): Record<string, unkno
     roomName:
       stringValue(selectedOffer["roomName"]) ??
       stringValue(selectedOffer["publicOfferKey"]) ??
+      booking.assignedRoomTypeName ??
       "Room",
     guestFirstName: booking.guestFirstName ?? "",
     guestLastName: booking.guestLastName ?? "",
     guestEmail: booking.guestEmail ?? "",
-    status: publicBookingLifecycleStatus(booking.lifecycleStatus),
+    status: publicBookingLifecycleStatus(booking.lifecycleStatus, booking.operationalStatus),
     paymentStatus: booking.paymentStatus,
     checkIn: dateOnly(booking.checkIn),
     checkOut: dateOnly(booking.checkOut),
@@ -3912,7 +3956,15 @@ function serializeTargetBooking(booking: TargetBookingRow): Record<string, unkno
     currency: booking.currency,
     totalAmount,
     balanceAmount: Number(decimalString(booking.balanceAmount)),
-    paymentMethod: stringValue(metadata["paymentMethod"]),
+    paymentMethod:
+      stringValue(metadata["paymentMethod"]) ??
+      (booking.expectedPaymentMethod === "unknown" ? null : booking.expectedPaymentMethod),
+    paymentDeadline:
+      stringValue(metadata["acceptedPaymentDeadlineAt"]) ??
+      stringValue(metadata["pendingExpiresAt"]),
+    bankTransferDetails: stringValue(paymentInstructions["bankTransferDetails"]),
+    unitNames: stringArray(booking.unitNames),
+    cancelledAt: toIsoDateTime(booking.cancelledAt ?? null),
     cardBrand: booking.cardBrand ?? null,
     cardLast4: booking.cardLast4 ?? null,
     hostResponseDeadline:
@@ -3921,7 +3973,11 @@ function serializeTargetBooking(booking: TargetBookingRow): Record<string, unkno
   };
 }
 
-function publicBookingLifecycleStatus(status: string): string {
+function publicBookingLifecycleStatus(status: string, operationalStatus?: string | null): string {
+  if (operationalStatus === "checked_in" || operationalStatus === "in_house") {
+    return "checked_in";
+  }
+  if (operationalStatus === "checked_out") return "checked_out";
   if (status === "canceled") return "cancelled";
   if (status === "pending_payment") return "pending";
   return status;
@@ -3930,7 +3986,7 @@ function publicBookingLifecycleStatus(status: string): string {
 function serializeTargetBookingStatus(booking: TargetBookingRow): Record<string, unknown> {
   return {
     bookingReference: booking.publicReference,
-    status: booking.lifecycleStatus,
+    status: publicBookingLifecycleStatus(booking.lifecycleStatus, booking.operationalStatus),
     paymentStatus: booking.paymentStatus,
     checkIn: dateOnly(booking.checkIn),
     checkOut: dateOnly(booking.checkOut),
