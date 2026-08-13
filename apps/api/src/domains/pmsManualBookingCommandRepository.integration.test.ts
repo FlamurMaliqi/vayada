@@ -15,7 +15,10 @@ import { createPgPmsManualBookingPlatformOwnerPort } from "./pmsManualBookingCom
 import { createPgPmsManualBookingCommandRepository } from "./pmsManualBookingCommandRepository.js";
 import { createTargetPmsOperationsCommandRepository } from "./pmsOperationsCommandRepository.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
-import type { PmsManualStayCorrectionCommand } from "../routes/pmsOperations.js";
+import type {
+  PmsManualPriceCorrectionCommand,
+  PmsManualStayCorrectionCommand,
+} from "../routes/pmsOperations.js";
 import {
   createPgPmsManualBookingBookingOwnerPort,
   createPgPmsManualBookingOperationsOwnerPort,
@@ -415,6 +418,151 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       [[first.guestBookingId, second.guestBookingId]],
     );
     expect(evidence.rows.map(({ count }) => count)).toEqual([2, 6]);
+  });
+
+  it("atomically appends exact and explicitly inferred price replacements", async () => {
+    const created = await repository.createManualBooking(
+      command("price-correction", "unpaid", "cash", "2026-08-20", true),
+    );
+    const targets = await admin.query<{ id: string }>(
+      `SELECT id::text FROM booking.nightly_revenue_evidence
+       WHERE guest_booking_id=$1::uuid ORDER BY stay_date,line_position,id`,
+      [created.guestBookingId],
+    );
+    const exact = priceCorrection(created.guestBookingId, "exact", {
+      kind: "exact",
+      nights: [
+        {
+          targetEvidenceId: targets.rows[0]!.id,
+          replacementAmount: { amountDecimal: "120.00", currency: "EUR" },
+        },
+        {
+          targetEvidenceId: targets.rows[1]!.id,
+          replacementAmount: { amountDecimal: "80.00", currency: "EUR" },
+        },
+      ],
+    });
+    await expect(operations.correctManualBookingPrices!(exact)).resolves.toMatchObject({
+      ok: true,
+      commandMeta: { sideEffects: ["audit_event"] },
+    });
+    const inferred = priceCorrection(created.guestBookingId, "inferred", {
+      kind: "equal_inferred",
+      targetEvidenceIds: [targets.rows[2]!.id, targets.rows[3]!.id],
+      replacementTotal: { amountDecimal: "201.0001", currency: "EUR" },
+    });
+    await expect(operations.correctManualBookingPrices!(inferred)).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(operations.correctManualBookingPrices!(exact)).resolves.toMatchObject({
+      ok: true,
+      replayed: true,
+    });
+    await expect(
+      operations.correctManualBookingPrices!({ ...exact, reason: "changed" }),
+    ).resolves.toMatchObject({ ok: false, code: "idempotency_conflict" });
+
+    const stored = await admin.query(
+      `SELECT
+        (SELECT sum(gross_room_amount)::text FROM booking.nightly_revenue_evidence
+         WHERE guest_booking_id=$1::uuid) AS amount,
+        (SELECT sum(occupied_room_nights)::int FROM booking.nightly_revenue_evidence
+         WHERE guest_booking_id=$1::uuid) AS occupied,
+        (SELECT jsonb_agg(jsonb_build_object('amount',gross_room_amount::text,
+          'quality',evidence_quality,'recognized',recognized_on::text) ORDER BY source_revision,
+          stay_date,line_position) FROM booking.nightly_revenue_evidence
+         WHERE guest_booking_id=$1::uuid AND economic_event='correction') AS corrections,
+        (SELECT count(*)::int FROM platform.idempotency_keys WHERE property_id=$2::uuid
+          AND operation='manual_price_correction_command') AS keys,
+        (SELECT jsonb_agg(private_payload ORDER BY occurred_at,audit_key)
+         FROM platform.product_audit_events WHERE property_id=$2::uuid
+          AND action='pms.manual_price_correction') AS audits`,
+      [created.guestBookingId, propertyId],
+    );
+    expect(stored.rows[0]).toMatchObject({
+      amount: "401.0001",
+      occupied: 4,
+      corrections: [
+        { amount: "20.0000", quality: "exact", recognized: "2026-08-25" },
+        { amount: "-20.0000", quality: "exact", recognized: "2026-08-25" },
+        { amount: "0.5001", quality: "inferred", recognized: "2026-08-25" },
+        { amount: "0.5000", quality: "inferred", recognized: "2026-08-25" },
+      ],
+      keys: 2,
+      audits: [
+        { accountingDate: "2026-08-25", reason: "correct nightly prices" },
+        { accountingDate: "2026-08-25", reason: "correct nightly prices" },
+      ],
+    });
+  });
+
+  it("serializes competing price corrections against one current tip", async () => {
+    const created = await repository.createManualBooking(
+      command("price-correction-race", "unpaid", "cash", "2026-08-20", false),
+    );
+    const target = await admin.query<{ id: string }>(
+      "SELECT id::text FROM booking.nightly_revenue_evidence WHERE guest_booking_id=$1::uuid ORDER BY stay_date LIMIT 1",
+      [created.guestBookingId],
+    );
+    const correction = (suffix: string, amountDecimal: string) =>
+      priceCorrection(created.guestBookingId, suffix, {
+        kind: "exact",
+        nights: [
+          {
+            targetEvidenceId: target.rows[0]!.id,
+            replacementAmount: { amountDecimal, currency: "EUR" },
+          },
+        ],
+      });
+    const results = await Promise.all([
+      operations.correctManualBookingPrices!(correction("race-a", "110.00")),
+      operations.correctManualBookingPrices!(correction("race-b", "120.00")),
+    ]);
+    expect(results.map((result) => (result.ok ? "ok" : result.code)).sort()).toEqual([
+      "invalid_body",
+      "ok",
+    ]);
+    const stored = await admin.query<{ corrections: number; keys: number }>(
+      `SELECT count(*) FILTER (WHERE economic_event='correction')::int corrections,
+        (SELECT count(*)::int FROM platform.idempotency_keys WHERE property_id=$2::uuid
+          AND operation='manual_price_correction_command') keys
+       FROM booking.nightly_revenue_evidence WHERE guest_booking_id=$1::uuid`,
+      [created.guestBookingId, propertyId],
+    );
+    expect(stored.rows[0]).toEqual({ corrections: 1, keys: 1 });
+  });
+
+  it("rolls price evidence and idempotency back when the late audit write fails", async () => {
+    const created = await repository.createManualBooking(
+      command("price-correction-rollback", "unpaid", "cash", "2026-08-20", false),
+    );
+    const target = await admin.query<{ id: string }>(
+      "SELECT id::text FROM booking.nightly_revenue_evidence WHERE guest_booking_id=$1::uuid ORDER BY stay_date LIMIT 1",
+      [created.guestBookingId],
+    );
+    const correction = priceCorrection(created.guestBookingId, "rollback", {
+      kind: "exact",
+      nights: [
+        {
+          targetEvidenceId: target.rows[0]!.id,
+          replacementAmount: { amountDecimal: "110.00", currency: "EUR" },
+        },
+      ],
+    });
+    correction.audit.actor = { kind: "user", userId: uuid(999), organizationId };
+    await expect(operations.correctManualBookingPrices!(correction)).rejects.toMatchObject({
+      code: "23503",
+    });
+    const stored = await admin.query<{ evidence: number; keys: number; audits: number }>(
+      `SELECT count(*)::int evidence,
+        (SELECT count(*)::int FROM platform.idempotency_keys WHERE property_id=$2::uuid
+          AND operation='manual_price_correction_command') keys,
+        (SELECT count(*)::int FROM platform.product_audit_events WHERE property_id=$2::uuid
+          AND action='pms.manual_price_correction') audits
+       FROM booking.nightly_revenue_evidence WHERE guest_booking_id=$1::uuid`,
+      [created.guestBookingId, propertyId],
+    );
+    expect(stored.rows[0]).toEqual({ evidence: 2, keys: 0, audits: 0 });
   });
 
   it("atomically cancels a manual booking with explicit retained-charge evidence", async () => {
@@ -1103,6 +1251,28 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
         actor: { kind: "user", userId: actorId, organizationId },
         requestId: `correct-request-${suffix}`,
         reason: "Correct manual booking stays",
+        requestedAt: acceptedAt.toISOString(),
+      },
+    };
+  }
+
+  function priceCorrection(
+    guestBookingId: string,
+    suffix: string,
+    pricing: PmsManualPriceCorrectionCommand["pricing"],
+  ): PmsManualPriceCorrectionCommand {
+    return {
+      propertyId,
+      guestBookingId,
+      commandId: `price-command-${suffix}`,
+      idempotencyKey: `price-key-${suffix}`,
+      accountingDate: "2026-08-25",
+      reason: "correct nightly prices",
+      pricing,
+      audit: {
+        actor: { kind: "user", userId: actorId, organizationId },
+        requestId: `price-request-${suffix}`,
+        reason: "Correct manual booking prices",
         requestedAt: acceptedAt.toISOString(),
       },
     };
