@@ -90,7 +90,14 @@ export function createPgBookingPublicationCommandRepository(config: {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
-        if (!(await lockAuthorizedScope(client, command, requestedAt))) {
+        await lockPublicationScope(client, command.propertyId);
+        const propertyLifecycleRevision = await lockAuthorizedScope(
+          client,
+          command,
+          requestedAt,
+          true,
+        );
+        if (propertyLifecycleRevision === null) {
           await rollback(client);
           return bookingPublicationFailure({ code: "setup_scope_unavailable" });
         }
@@ -112,7 +119,6 @@ export function createPgBookingPublicationCommandRepository(config: {
           return concurrentReplay ?? bookingPublicationFailure({ code: "command_in_progress" });
         }
 
-        await lockPublicationScope(client, command.propertyId);
         const activeRevisionId =
           (await config.activeContent.getActive(command.propertyId))?.revisionId ?? null;
         if (activeRevisionId !== command.expectedActiveContentRevisionId) {
@@ -157,6 +163,7 @@ export function createPgBookingPublicationCommandRepository(config: {
           operationId,
           domainEventId,
           keyHash,
+          propertyLifecycleRevision,
           requestedAt,
         });
         await insertOutbox(client, command, {
@@ -164,6 +171,7 @@ export function createPgBookingPublicationCommandRepository(config: {
           domainEventId,
           outboxEventId,
           keyHash,
+          propertyLifecycleRevision,
           requestedAt,
         });
         await insertAttempt(client, command, {
@@ -172,6 +180,7 @@ export function createPgBookingPublicationCommandRepository(config: {
           outboxEventId,
           idempotencyId,
           fingerprint,
+          propertyLifecycleRevision,
           requestedAt,
         });
         const result: BookingPublicationRequestResult = { ok: true, operation };
@@ -230,9 +239,10 @@ async function lockAuthorizedScope(
   client: CommandClient,
   command: AuthorizedScopeInput,
   at: Date,
-): Promise<boolean> {
-  const scope = await client.query(
-    `SELECT property.id
+  requireActive = false,
+): Promise<number | null> {
+  const scope = await client.query<{ lifecycleRevision: number | string }>(
+    `SELECT property.lifecycle_revision AS "lifecycleRevision"
      FROM hotel_catalog.properties property
      JOIN identity.organizations organization
        ON organization.id = $1::uuid
@@ -257,11 +267,13 @@ async function lockAuthorizedScope(
       AND permission_grant.role_key = membership.role_key
       AND permission_grant.permission_key = $4
      WHERE property.id = $2::uuid
+       AND ($5::boolean = false OR property.lifecycle_status = 'active')
      FOR SHARE OF property, organization, resource, actor, membership
      FOR KEY SHARE OF permission_grant`,
-    [command.organizationId, command.propertyId, command.actorUserId, PERMISSION],
+    [command.organizationId, command.propertyId, command.actorUserId, PERMISSION, requireActive],
   );
-  if (scope.rowCount !== 1) return false;
+  const lifecycleRevision = Number(scope.rows[0]?.lifecycleRevision);
+  if (!Number.isSafeInteger(lifecycleRevision) || lifecycleRevision < 1) return null;
 
   const entitlements = await client.query<{
     status: "active" | "suspended" | "expired";
@@ -295,10 +307,10 @@ async function lockAuthorizedScope(
       (!row.startsAt || new Date(row.startsAt) <= at) &&
       (!row.expiresAt || new Date(row.expiresAt) > at),
   );
-  return (
-    !applicable.some(({ status }) => status === "suspended") &&
+  return !applicable.some(({ status }) => status === "suspended") &&
     applicable.some(({ status }) => status === "active")
-  );
+    ? lifecycleRevision
+    : null;
 }
 
 async function lockPublicationScope(client: CommandClient, propertyId: string): Promise<void> {
@@ -414,7 +426,13 @@ async function reserveIdempotency(
 async function insertDomainEvent(
   client: CommandClient,
   command: RequestBookingPublicationCommand,
-  input: { operationId: string; domainEventId: string; keyHash: string; requestedAt: Date },
+  input: {
+    operationId: string;
+    domainEventId: string;
+    keyHash: string;
+    propertyLifecycleRevision: number;
+    requestedAt: Date;
+  },
 ): Promise<void> {
   await client.query(
     `INSERT INTO platform.domain_events (
@@ -440,7 +458,9 @@ async function insertDomainEvent(
       command.actorUserId,
       command.audit.correlationId ?? command.audit.requestId,
       input.keyHash,
-      JSON.stringify(publicationEventPayload(command, input.operationId)),
+      JSON.stringify(
+        publicationEventPayload(command, input.operationId, input.propertyLifecycleRevision),
+      ),
     ],
   );
 }
@@ -453,6 +473,7 @@ async function insertOutbox(
     domainEventId: string;
     outboxEventId: string;
     keyHash: string;
+    propertyLifecycleRevision: number;
     requestedAt: Date;
   },
 ): Promise<void> {
@@ -481,19 +502,26 @@ async function insertOutbox(
       input.operationId,
       command.audit.correlationId ?? command.audit.requestId,
       input.keyHash,
-      JSON.stringify(publicationEventPayload(command, input.operationId)),
+      JSON.stringify(
+        publicationEventPayload(command, input.operationId, input.propertyLifecycleRevision),
+      ),
       input.requestedAt.toISOString(),
     ],
   );
 }
 
-function publicationEventPayload(command: RequestBookingPublicationCommand, operationId: string) {
+function publicationEventPayload(
+  command: RequestBookingPublicationCommand,
+  operationId: string,
+  propertyLifecycleRevision: number,
+) {
   return {
     operationId,
     organizationId: command.organizationId,
     propertyId: command.propertyId,
     requestedByUserId: command.actorUserId,
     expectedActiveContentRevisionId: command.expectedActiveContentRevisionId,
+    expectedPropertyLifecycleRevision: propertyLifecycleRevision,
     readiness: {
       contractVersion: command.readiness.contractVersion,
       product: command.readiness.product,
@@ -514,6 +542,7 @@ async function insertAttempt(
     outboxEventId: string;
     idempotencyId: string;
     fingerprint: string;
+    propertyLifecycleRevision: number;
     requestedAt: Date;
   },
 ): Promise<void> {
@@ -521,16 +550,16 @@ async function insertAttempt(
     `INSERT INTO booking.booking_publication_attempts (
        id, organization_id, property_id, idempotency_key_id,
        domain_event_id, outbox_event_id, request_fingerprint_hash,
-       expected_active_content_revision_id, source_manifest,
+       expected_active_content_revision_id, expected_property_lifecycle_revision, source_manifest,
        source_manifest_hash, readiness_hash, readiness_product, readiness_status,
        requested_by_user_id, requested_at, updated_at
      )
      VALUES (
        $1::uuid, $2::uuid, $3::uuid, $4::uuid,
        $5::uuid, $6::uuid, $7,
-       $8::uuid, $9::jsonb,
-       $10, $11, 'booking', 'ready',
-       $12::uuid, $13::timestamptz, $13::timestamptz
+       $8::uuid, $9::bigint, $10::jsonb,
+       $11, $12, 'booking', 'ready',
+       $13::uuid, $14::timestamptz, $14::timestamptz
      )`,
     [
       input.operationId,
@@ -541,6 +570,7 @@ async function insertAttempt(
       input.outboxEventId,
       input.fingerprint,
       command.expectedActiveContentRevisionId,
+      input.propertyLifecycleRevision,
       JSON.stringify(command.readiness.sourceManifest),
       command.readiness.sourceManifestHash,
       command.readiness.readinessHash,

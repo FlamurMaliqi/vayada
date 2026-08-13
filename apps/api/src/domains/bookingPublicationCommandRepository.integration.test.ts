@@ -501,6 +501,13 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
     const request = await command("expired-active-lease");
     const accepted = await repository.requestPublication(request);
     if (!accepted.ok) throw new Error("Expected accepted publication request");
+    await expect(
+      admin.query(
+        `SELECT expected_property_lifecycle_revision AS revision
+         FROM booking.booking_publication_attempts WHERE id = $1::uuid`,
+        [accepted.operation.operationId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ revision: "1" }] });
     await admin.query(
       `UPDATE platform.outbox_events
        SET status = 'leased', attempts_count = 1, max_attempts = 1,
@@ -521,6 +528,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
       outboxLeaseToken: "direct-activation",
       propertyId,
       expectedActiveRevisionId: null,
+      expectedPropertyLifecycleRevision: 1,
       requestedByUserId: actorUserId,
       readiness: request.readiness,
       projectedAt: new Date("2026-08-02T13:00:30.000Z"),
@@ -559,6 +567,77 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
     ).resolves.toMatchObject({
       rows: [{ attemptStatus: "succeeded", outboxStatus: "published", deadLetters: 0 }],
     });
+  });
+
+  it("does not reactivate public Booking content after property retirement", async () => {
+    await seedPublicBookabilityProfile();
+    const accepted = await repository.requestPublication(await command("retired-before-project"));
+    if (!accepted.ok) throw new Error("Expected accepted publication request");
+    await admin.query(
+      `UPDATE hotel_catalog.properties
+       SET lifecycle_status = 'retired', profile_status = 'disabled',
+           retired_at = '2026-08-02T13:00:15.000Z'::timestamptz,
+           retired_by_user_id = $2::uuid
+       WHERE id = $1::uuid`,
+      [propertyId, actorUserId],
+    );
+
+    await expect(projector.projectPending({ propertyId })).resolves.toMatchObject({
+      processed: 1,
+      succeeded: 0,
+      failed: 1,
+    });
+    await expect(distributionPublication.getActive(propertyId)).resolves.toBeNull();
+  });
+
+  it("fences a queued publication across retirement recovery", async () => {
+    await seedPublicBookabilityProfile();
+    const accepted = await repository.requestPublication(await command("recovered-before-project"));
+    if (!accepted.ok) throw new Error("Expected accepted publication request");
+    await admin.query(
+      `UPDATE hotel_catalog.properties
+       SET lifecycle_revision = 3, lifecycle_status = 'active', profile_status = 'complete'
+       WHERE id = $1::uuid`,
+      [propertyId],
+    );
+
+    await expect(projector.projectPending({ propertyId })).resolves.toMatchObject({
+      processed: 1,
+      succeeded: 0,
+      failed: 1,
+    });
+    await expect(distributionPublication.getActive(propertyId)).resolves.toBeNull();
+  });
+
+  it("uses lifecycle lock order when publication races a suspension", async () => {
+    const lifecycle = new pg.Client({ connectionString: TEST_DATABASE_URL! });
+    await lifecycle.connect();
+    try {
+      await lifecycle.query("BEGIN");
+      await lifecycle.query(
+        `SELECT pg_advisory_xact_lock(
+           hashtext('booking.publication'), hashtext($1::uuid::text)
+         )`,
+        [propertyId],
+      );
+      await lifecycle.query(
+        `UPDATE hotel_catalog.properties
+         SET lifecycle_status = 'suspended', lifecycle_revision = lifecycle_revision + 1,
+             pre_hold_profile_status = profile_status, profile_status = 'disabled'
+         WHERE id = $1::uuid`,
+        [propertyId],
+      );
+      const publication = repository.requestPublication(await command("suspension-race"));
+      await lifecycle.query("COMMIT");
+
+      await expect(publication).resolves.toMatchObject({
+        ok: false,
+        error: { code: "setup_scope_unavailable" },
+      });
+    } finally {
+      await lifecycle.query("ROLLBACK").catch(() => undefined);
+      await lifecycle.end();
+    }
   });
 
   it("fences a paused activation against lease recovery and source drift", async () => {
@@ -838,8 +917,9 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
       [organizationId],
     );
     await admin.query(
-      `INSERT INTO hotel_catalog.properties (id, public_id, display_name)
-       VALUES ($1::uuid, 'publication-hotel', 'Publication Hotel')`,
+      `INSERT INTO hotel_catalog.properties (
+         id, public_id, display_name, profile_status, lifecycle_status
+       ) VALUES ($1::uuid, 'publication-hotel', 'Publication Hotel', 'complete', 'active')`,
       [propertyId],
     );
     await admin.query(

@@ -2326,6 +2326,7 @@ async function resolveTargetCheckoutProperty(
 ): Promise<TargetCheckoutPropertyRow> {
   const bookabilityPredicate = requireBookable
     ? `AND profile.freshness_status = 'fresh'
+       AND p.lifecycle_status = 'active'
        AND profile.public_setup_completeness ->> 'status' = 'ready'
        AND jsonb_typeof(profile.capabilities -> 'paymentMethods') = 'array'
        AND jsonb_array_length(profile.capabilities -> 'paymentMethods') > 0`
@@ -2347,7 +2348,8 @@ async function resolveTargetCheckoutProperty(
        AND profile.profile_status = 'public'
        AND (profile.expires_at IS NULL OR profile.expires_at > now())
        ${bookabilityPredicate}
-     LIMIT 1`,
+     LIMIT 1
+     ${requireBookable ? "FOR SHARE OF p" : ""}`,
     [slug],
   );
   const property = result.rows[0];

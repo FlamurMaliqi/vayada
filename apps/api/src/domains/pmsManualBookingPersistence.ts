@@ -87,6 +87,15 @@ async function persistBookingFacts(
   const children = command.stays.reduce((sum, stay) => sum + stay.children, 0);
   const total = preview.grandTotal;
 
+  const property = await transaction.query(
+    `SELECT id
+     FROM hotel_catalog.properties
+     WHERE id = $1::uuid AND lifecycle_status <> 'retired'
+     FOR SHARE`,
+    [command.propertyId],
+  );
+  if (property.rowCount !== 1) throw new CommandError("property_not_found");
+
   await transaction.query(
     `INSERT INTO booking.guest_bookings (
        id, property_id, public_reference, source_system, source_booking_id,
