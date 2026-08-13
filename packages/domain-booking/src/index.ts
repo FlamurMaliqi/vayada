@@ -28,6 +28,7 @@ export * from "./bookingGuestPolicyCurrentOwnerEvidence.js";
 export * from "./bookingGuestPolicyReadiness.js";
 export * from "./bookingGuestPolicyProjection.js";
 export * from "./manualBookingPaymentIntent.js";
+export * from "./bookingAttribution.js";
 
 export type BookingUtcDateTime = string;
 export type BookingDate = string;
