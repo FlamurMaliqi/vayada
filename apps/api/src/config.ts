@@ -485,10 +485,14 @@ function loadChannexManagementConfig(env: NodeJS.ProcessEnv): ChannexManagementC
       "Mutating PMS Channex capabilities require CHANNEX_API_BASE_URL and CHANNEX_API_KEY",
     );
   }
+  const workerEnabled = readBooleanEnv(env, "PMS_CHANNEX_WORKER_ENABLED", mutating);
+  if (mutating && !workerEnabled) {
+    throw new Error("Mutating PMS Channex capabilities require PMS_CHANNEX_WORKER_ENABLED=true");
+  }
   return {
     apiBaseUrl,
     apiKey,
-    workerEnabled: readBooleanEnv(env, "PMS_CHANNEX_WORKER_ENABLED", mutating),
+    workerEnabled,
     capabilityModes,
   };
 }

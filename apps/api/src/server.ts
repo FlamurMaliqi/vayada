@@ -43,6 +43,7 @@ import { createTargetPmsInventoryReservationPort } from "./domains/pmsInventoryR
 import { createTargetPmsRoomInventoryReadPort } from "./domains/pmsRoomInventoryReadModel.js";
 import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
 import { createPgPmsChannexManagementReadRepository } from "./domains/pmsChannexManagementReadModel.js";
+import { createPgPmsChannexManagementCommandPort } from "./domains/pmsChannexManagementCommandStore.js";
 import { createPgHotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
 import { createPgPropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
 import { createPgPropertySetupDraftRepository } from "./domains/propertySetupDraftRepository.js";
@@ -91,6 +92,11 @@ import {
   runBookingEmailDeliveryJobs,
 } from "./jobs/bookingEmailDelivery.js";
 import { runChannexReviewJobs } from "./jobs/channexReviews.js";
+import { createChannexManagementProvider } from "./integrations/channexManagement.js";
+import { createPgChannexManagementPlanPort } from "./integrations/channexManagementPlans.js";
+import { runPmsChannexManagementWorkerOnce } from "./jobs/pmsChannexManagementWorker.js";
+import { createPgPmsChannexManagementWorkerStore } from "./jobs/pmsChannexManagementWorkerStore.js";
+import { createPmsChannexManagementTargetState } from "./jobs/pmsChannexManagementTargetState.js";
 import {
   runFinanceSubscriptionNotificationJobs,
   runFinanceSubscriptionWebhookJobs,
@@ -107,6 +113,7 @@ import {
 import { createPgTargetBookingAddonItemsRepository } from "./routes/bookingAddonItems.js";
 import { createPgTargetBookingPromoCodesRepository } from "./routes/bookingPromoCodes.js";
 import { createCompatibilityPmsBookingReservationsReadRepository } from "./routes/bookingReservations.js";
+import { promotePulledChannexBookingRevision } from "./routes/providerWebhooks.js";
 import { createTargetBookingWebCheckoutAdapter } from "./routes/bookingWebPublic.js";
 import {
   createPgBookingSettingsReadRepository,
@@ -316,6 +323,12 @@ const pmsOperationsRepository =
 const pmsChannexManagementRepository = pmsOperationsRepository
   ? createPgPmsChannexManagementReadRepository({ connectionString: targetDatabaseUrl })
   : undefined;
+const channexManagementMutating = Object.values(config.channexManagement.capabilityModes).includes(
+  "mutating",
+);
+const pmsChannexManagementCommandPort = channexManagementMutating
+  ? createPgPmsChannexManagementCommandPort({ connectionString: targetDatabaseUrl })
+  : undefined;
 
 const bookingGuestPiiPort =
   config.pmsOperationsSource === "target"
@@ -440,6 +453,46 @@ const providerWebhookSecrets = {
   channex: config.providerWebhooks.channexSecret,
 };
 const hasProviderWebhookSecret = Object.values(providerWebhookSecrets).some(Boolean);
+
+const channexBookingRevisionStore =
+  config.channexManagement.capabilityModes.bookingSync === "mutating"
+    ? createPgProviderWebhookStore({ connectionString: targetDatabaseUrl })
+    : undefined;
+const channexManagementPlans = config.channexManagement.workerEnabled
+  ? createPgChannexManagementPlanPort({
+      connectionString: targetDatabaseUrl,
+      bookingRevisionHandoff: async ({ propertyId, revisions }) => {
+        if (!channexBookingRevisionStore) {
+          if (revisions.length > 0) throw new Error("Channex booking intake is unavailable");
+          return;
+        }
+        for (const revision of revisions) {
+          if (!revision || typeof revision !== "object" || Array.isArray(revision)) {
+            throw new Error("Channex booking revision payload is invalid");
+          }
+          await promotePulledChannexBookingRevision({
+            store: channexBookingRevisionStore,
+            propertyId,
+            revision: revision as Record<string, unknown>,
+          });
+        }
+      },
+    })
+  : undefined;
+const channexManagementProvider =
+  channexManagementPlans && config.channexManagement.apiBaseUrl && config.channexManagement.apiKey
+    ? createChannexManagementProvider({
+        apiBaseUrl: config.channexManagement.apiBaseUrl,
+        apiKey: config.channexManagement.apiKey,
+        plans: channexManagementPlans,
+      })
+    : undefined;
+const channexManagementWorkerStore = channexManagementProvider
+  ? createPgPmsChannexManagementWorkerStore({
+      connectionString: targetDatabaseUrl,
+      targetState: createPmsChannexManagementTargetState(),
+    })
+  : undefined;
 
 const bookingWebAffiliateRepository =
   config.affiliatePublicSource === "target"
@@ -824,15 +877,8 @@ const app = buildApp({
   pmsChannexManagement: pmsChannexManagementRepository
     ? {
         repository: pmsChannexManagementRepository,
-        capabilityModes: {
-          connection: "observe_only",
-          provisioning: "observe_only",
-          ariSync: "observe_only",
-          bookingSync: "observe_only",
-          markups: "observe_only",
-          messaging: "observe_only",
-          iframe: "observe_only",
-        },
+        capabilityModes: config.channexManagement.capabilityModes,
+        commandPort: pmsChannexManagementCommandPort,
       }
     : undefined,
   propertyPlanReadRepository,
@@ -1040,6 +1086,41 @@ if (hasProviderWebhookSecret) runChannexReviews();
 app.addHook("onClose", async () => {
   if (channexReviewTimer) clearInterval(channexReviewTimer);
   await activeChannexReviewBatch;
+});
+
+let activeChannexManagementRun: Promise<void> | undefined;
+const runChannexManagement = () => {
+  if (!channexManagementWorkerStore || !channexManagementProvider || activeChannexManagementRun) {
+    return;
+  }
+  activeChannexManagementRun = runPmsChannexManagementWorkerOnce({
+    store: channexManagementWorkerStore,
+    provider: channexManagementProvider,
+    workerId: `pms-channex-management:${process.pid}`,
+  })
+    .then((result) => {
+      if (result.outcome === "dead_lettered") {
+        app.log.error(result, "Channex management operation was dead-lettered");
+      }
+    })
+    .catch((error: unknown) => app.log.warn({ err: error }, "Channex management worker failed"))
+    .finally(() => {
+      activeChannexManagementRun = undefined;
+    });
+};
+const channexManagementTimer = channexManagementWorkerStore
+  ? setInterval(runChannexManagement, 2_000)
+  : undefined;
+channexManagementTimer?.unref();
+if (channexManagementWorkerStore) runChannexManagement();
+app.addHook("onClose", async () => {
+  if (channexManagementTimer) clearInterval(channexManagementTimer);
+  await activeChannexManagementRun;
+  await Promise.all([
+    channexManagementWorkerStore?.close?.(),
+    channexManagementPlans?.close(),
+    channexBookingRevisionStore?.close?.(),
+  ]);
 });
 
 let activeFinanceSubscriptionBatch: Promise<void> | undefined;

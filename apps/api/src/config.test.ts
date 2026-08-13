@@ -76,6 +76,16 @@ describe("api config", () => {
         CHANNEX_API_KEY: "secret",
       }),
     ).toThrow("Mutating PMS Channex capabilities require PMS_OPERATIONS_SOURCE=target");
+    expect(() =>
+      loadConfig({
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        PMS_OPERATIONS_SOURCE: "target",
+        PMS_CHANNEX_CONNECTION_MODE: "mutating",
+        PMS_CHANNEX_WORKER_ENABLED: "false",
+        CHANNEX_API_BASE_URL: "https://staging.channex.io",
+        CHANNEX_API_KEY: "secret",
+      }),
+    ).toThrow("Mutating PMS Channex capabilities require PMS_CHANNEX_WORKER_ENABLED=true");
   });
 
   it("keeps auth disabled when auth env values are absent", () => {
