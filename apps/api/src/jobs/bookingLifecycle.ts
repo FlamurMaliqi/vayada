@@ -10,6 +10,7 @@ import {
   inventoryReservationReceiptFromBookingMetadata,
   type DirectBookingInventoryReservationPort,
 } from "../platform/inventoryReservation.js";
+import { enqueueBookingTransitionNotifications } from "./bookingEmails.js";
 
 export const BOOKING_LIFECYCLE_QUEUE = "booking-lifecycle";
 export const DEFAULT_STALE_UNPAID_MINUTES = 30;
@@ -728,6 +729,30 @@ async function updateBookingLifecycleStatus(
     row.bookingMetadata,
     context.now,
   );
+  if (
+    mutation.statusEventType === "guest_booking.expired" ||
+    mutation.cancellationReason === "accepted_payment_expired"
+  ) {
+    await enqueueBookingTransitionNotifications(client, {
+      propertyId: candidate.propertyId,
+      guestBookingId: candidate.guestBookingId,
+      occurredAt: context.now.toISOString(),
+      correlationId: context.correlationId,
+      causationId: buildBookingLifecycleSweepKey({
+        guestBookingId: candidate.guestBookingId,
+        action: mutation.action,
+        deadlineOrWindow: mutation.deadlineOrWindow,
+      }),
+      actor: { type: "system" },
+      source: "apps/api-booking-lifecycle-scheduler",
+      transition: {
+        eventType: mutation.statusEventType,
+        fromStatus: row.fromStatus,
+        toStatus: row.toStatus,
+        reason: mutation.cancellationReason ?? null,
+      },
+    });
+  }
 
   return insertLifecycleSideEffects(client, candidate, mutation, context, {
     fromStatus: row.fromStatus,

@@ -312,6 +312,7 @@ async function checkBookingSettings(
     hero_subtext: string | null;
     primary_color: string;
     font_pairing: string;
+    acceptance_mode: string;
   }>(
     `SELECT
        source.source_id AS booking_hotel_resource_id,
@@ -339,6 +340,7 @@ async function checkBookingSettings(
        settings.hero_subtext,
        settings.primary_color,
        settings.font_pairing
+       , settings.acceptance_mode
      FROM booking.booking_settings settings
      LEFT JOIN hotel_catalog.property_source_links source
        ON source.property_id = settings.property_id
@@ -378,7 +380,8 @@ async function checkBookingSettings(
     row.hero_heading === settings.heroHeading &&
     row.hero_subtext === settings.heroSubtext &&
     row.primary_color === settings.primaryColor &&
-    row.font_pairing === settings.fontPairing;
+    row.font_pairing === settings.fontPairing &&
+    row.acceptance_mode === settings.acceptanceMode;
 
   if (!matches) {
     findings.push({

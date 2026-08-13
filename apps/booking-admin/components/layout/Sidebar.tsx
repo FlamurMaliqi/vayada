@@ -10,7 +10,6 @@ import {
   ChevronDownIcon,
   CheckIcon,
   Cog6ToothIcon,
-  SparklesIcon,
 } from "@heroicons/react/24/outline";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
@@ -37,7 +36,6 @@ interface NavItem {
 
 const coreNavItems: NavItem[] = [
   { labelKey: "layout.sidebar.dashboard", href: "/", icon: DashboardIcon },
-  { label: "Ask Intelligence", href: "/ask", icon: SparklesIcon },
   ...(RESERVATIONS_NAV_ENABLED
     ? [{ label: "Reservations", href: "/reservations", icon: CalendarDaysIcon }]
     : []),

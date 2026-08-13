@@ -36,6 +36,8 @@ type RepositoryClient = {
   release(): void;
 };
 
+export type BookingGuestPolicyReadClient = Pick<RepositoryClient, "query">;
+
 export type BookingGuestPolicyRepositoryPool = {
   connect(): Promise<RepositoryClient>;
   end(): Promise<void>;
@@ -206,7 +208,7 @@ export function createPgBookingGuestPolicyRepository(config: {
         }
 
         await lockProperty(client, prepared.propertyId);
-        const current = await readCurrentRevision(client, prepared.propertyId);
+        const current = await readCurrentBookingGuestPolicyRevision(client, prepared.propertyId);
         const currentRevision = current?.revision ?? 0;
         if (currentRevision !== command.expectedRevision)
           return finalizeFailure(
@@ -313,7 +315,7 @@ export function createPgBookingGuestPolicyRepository(config: {
         throw new TypeError("Booking guest-policy current read scope is malformed");
       const client = await pool.connect();
       try {
-        return readCurrentRevision(
+        return readCurrentBookingGuestPolicyRevision(
           client,
           input.propertyId.toLowerCase(),
           input.organizationId.toLowerCase(),
@@ -692,8 +694,8 @@ const REVISION_SELECT = `
     LIMIT 1
   ) receipt ON TRUE`;
 
-async function readCurrentRevision(
-  client: RepositoryClient,
+export async function readCurrentBookingGuestPolicyRevision(
+  client: BookingGuestPolicyReadClient,
   propertyId: string,
   organizationId?: string,
 ): Promise<BookingGuestPolicyRevision | null> {

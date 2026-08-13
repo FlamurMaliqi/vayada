@@ -345,6 +345,7 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
       settings.adult_age_threshold,
       settings.children_enabled,
       settings.updated_at AS booking_updated_at,
+      settings.acceptance_mode,
       finance.payments_enabled,
       finance.accepted_methods,
       finance.deposit_policy AS finance_deposit_policy,
@@ -689,7 +690,7 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
         'termsUrl', input.public_policy ->> 'termsUrl'
       )),
       jsonb_build_object(
-        'instantBook', COALESCE(input.has_sellable_offers, FALSE),
+        'instantBook', COALESCE(input.acceptance_mode = 'instant', FALSE),
         'onlinePayment', input.online_payment_ready,
         'payAtProperty', input.pay_at_property_ready,
         'paymentMethods', input.public_payment_methods,

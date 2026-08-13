@@ -198,6 +198,7 @@ async function upsertTargetRows(
   const amenities = arrayValue(input.hotel.amenities);
   const policy = publicPolicy(input.hotel, bookingBaseUrl, defaultLocale);
   const brandingSettings = bookingBrandingSettingsForLegacyHotel(input.hotel);
+  const acceptanceMode = acceptanceModeForLegacyHotel(input.hotel);
   const freshness = {
     booking: { status: "fresh", generatedAt: input.generatedAt },
     pms: { status: "fresh", generatedAt: input.generatedAt },
@@ -299,8 +300,8 @@ async function upsertTargetRows(
   await client.query(
     `INSERT INTO booking.booking_settings
        (property_id, default_currency, default_language, supported_currencies, supported_languages,
-        source_freshness, primary_color, font_pairing)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        source_freshness, primary_color, font_pairing, acceptance_mode)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      ON CONFLICT (property_id) DO UPDATE SET
        default_currency = EXCLUDED.default_currency,
        default_language = EXCLUDED.default_language,
@@ -309,6 +310,7 @@ async function upsertTargetRows(
        source_freshness = EXCLUDED.source_freshness,
        primary_color = EXCLUDED.primary_color,
        font_pairing = EXCLUDED.font_pairing,
+       acceptance_mode = EXCLUDED.acceptance_mode,
        updated_at = now()`,
     [
       input.propertyId,
@@ -319,6 +321,7 @@ async function upsertTargetRows(
       JSON.stringify(freshness),
       brandingSettings.primaryColor,
       brandingSettings.fontPairing,
+      acceptanceMode,
     ],
   );
 
@@ -402,7 +405,7 @@ async function upsertTargetRows(
       JSON.stringify(amenities),
       JSON.stringify(policy),
       JSON.stringify({
-        instantBook: booleanValue(input.hotel.instant_book),
+        instantBook: acceptanceMode === "instant",
         onlinePayment: booleanValue(input.hotel.online_card_payment),
         payAtProperty: true,
         promoCodes: true,
@@ -730,6 +733,12 @@ function numberValue(value: unknown): number | null {
 
 function booleanValue(value: unknown): boolean {
   return value === true;
+}
+
+export function acceptanceModeForLegacyHotel(
+  hotel: Pick<LegacyHotel, "instant_book">,
+): "instant" | "request" {
+  return hotel.instant_book === false ? "request" : "instant";
 }
 
 function jsonValue(value: string): unknown {

@@ -54,7 +54,6 @@ export type PermissionKey =
   | "hotel_catalog.setup.read"
   | "hotel_catalog.setup.manage"
   | "hotel_catalog.products.manage"
-  | "intelligence.ask.read"
   | "booking.settings.manage"
   | "booking.settings.read"
   | "booking.analytics.read"

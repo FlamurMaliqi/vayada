@@ -152,7 +152,8 @@ export async function transformBookingCheckout(client: pg.Client): Promise<void>
         filter_rooms,
         source_freshness,
         primary_color,
-        font_pairing
+        font_pairing,
+        acceptance_mode
       )
     SELECT
       property_id,
@@ -213,6 +214,10 @@ export async function transformBookingCheckout(client: pg.Client): Promise<void>
         WHEN 'italiana-serif' THEN 'italiana-serif'
         WHEN 'italiana-source-sans-pro' THEN 'italiana-serif'
         ELSE 'high-end-serif'
+      END,
+      CASE
+        WHEN COALESCE((booking_settings ->> 'instantBook')::boolean, TRUE) THEN 'instant'
+        ELSE 'request'
       END
     FROM migration_source_booking.checkout_flow_inputs
   `);

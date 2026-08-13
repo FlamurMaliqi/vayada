@@ -19,9 +19,6 @@ import { createPgHotelCatalogCurrentOwnerEvidencePorts } from "./domains/hotelCa
 import { createPgHotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Repository.js";
 import { createPgMarketplaceHotelCollaborationPreferencesRepository } from "./domains/marketplaceHotelCollaborationPreferencesRepository.js";
 import { createPgHotelMediaResolutionPort } from "./platform/hotelMediaResolver.js";
-import { createPgAskAuditRepository } from "./platform/askAuditRepository.js";
-import { createOpenAIAskModel } from "./platform/askIntelligence.js";
-import { createTargetAskEvidenceRepository } from "./platform/askEvidenceRepository.js";
 import { createPgBookingWebEventSink } from "./platform/bookingWebEvents.js";
 import { createTargetBookingDashboardMetricsReadPort } from "./platform/bookingDashboard.js";
 import { createTargetBookingGuestPiiPort } from "./platform/bookingGuestPii.js";
@@ -419,18 +416,6 @@ const xenditBankValidator = config.xenditSecretKey
     })
   : undefined;
 
-const askModelProvider =
-  config.askIntelligence.provider === "openai"
-    ? await createOpenAIAskModel(config.askIntelligence)
-    : undefined;
-
-const askEvidenceRepository =
-  config.askIntelligenceEvidenceSource === "target"
-    ? createTargetAskEvidenceRepository({
-        connectionString: targetDatabaseUrl,
-      })
-    : undefined;
-
 const providerWebhookSecrets = {
   stripe: config.providerWebhooks.stripeSecret,
   xendit: config.providerWebhooks.xenditSecret,
@@ -540,6 +525,7 @@ const propertySetupPmsRuntime = (() => {
   });
   return {
     roomFacts,
+    recurringPricing,
     provider: createPropertySetupPmsStateProvider({
       owner,
       pricing: pmsPricingReadModel,
@@ -800,6 +786,27 @@ const app = buildApp({
   bookingDashboardMetricsReadPort,
   pmsOperationsRepository,
   propertyPlanReadRepository,
+  pmsManualBookingPreview:
+    pmsOperationsRepository && pmsRoomPublicationRuntime
+      ? {
+          pms: pmsOperationsRepository,
+          pricing: {
+            getPricingSourceSnapshot: (propertyId) =>
+              pmsPricingReadModel.getPricingSourceSnapshot(propertyId),
+            getRecurringPricingBookingEvidence: (propertyId) =>
+              propertySetupPmsRuntime.recurringPricing.getRecurringPricingBookingEvidence(
+                propertyId,
+              ),
+          },
+          roomPublication: pmsRoomPublicationRuntime.readModel,
+          booking: {
+            listAddonItemsByHotelId: (propertyId) =>
+              bookingAddonItemsRepository.listAddonItemsByHotelId(propertyId),
+            getCurrentGuestPolicy: (scope) =>
+              bookingGuestPolicyRepository.getCurrentGuestPolicy(scope),
+          },
+        }
+      : undefined,
   pmsModuleActivationRepository,
   pmsReviewRepository: createPgPmsReviewRepository({ connectionString: targetDatabaseUrl }),
   pmsOperationsCommandRepository,
@@ -905,12 +912,6 @@ const app = buildApp({
   bookingDomainResolutionSource: config.bookingDomainResolutionSource,
   bookingWebCalendarRepository,
   bookingWebCheckoutAdapter,
-  askModel: askModelProvider?.model,
-  askModelMetadata: askModelProvider?.metadata,
-  askAuditRepository: createPgAskAuditRepository({
-    connectionString: targetDatabaseUrl,
-  }),
-  askEvidenceRepository,
   bookingWebAttributionSink:
     config.bookingWebEventSink === "target" && config.auth
       ? createPgBookingWebEventSink({

@@ -24,6 +24,7 @@ const propertyId = "f6853000-0000-0000-0000-000000000001";
 const guestBookingId = "f6854000-0000-0000-0000-000000000001";
 const assignmentOneId = "f6855500-0000-0000-0000-000000000001";
 const assignmentTwoId = "f6855500-0000-0000-0000-000000000002";
+const roomTypeId = "f6855000-0000-0000-0000-000000000001";
 const userId = "f6851000-0000-0000-0000-000000000001";
 const organizationId = "f6852000-0000-0000-0000-000000000001";
 const directRevenueFields = {
@@ -328,9 +329,49 @@ function successfulOperationalHandler(status = "assigned"): QueryHandler {
     if (text.includes("FROM pms.booking_checkin_records")) return ok();
     if (text.includes("INSERT INTO pms.booking_checkin_records")) return ok([], 2);
     if (text.includes("UPDATE pms.operational_booking_assignments")) return ok([], 2);
+    if (text.includes("booking_metadata->>'contractVersion'")) return ok();
     if (text.includes("INSERT INTO platform.product_audit_events")) return ok([], 1);
     if (text.includes("UPDATE platform.idempotency_keys")) return ok([], 1);
     throw new Error(`Unhandled SQL: ${text}`);
+  };
+}
+
+function manualNoShowHandler(failEvidence = false): QueryHandler {
+  const fallback = successfulOperationalHandler();
+  return (text, values) => {
+    if (text.includes("booking_metadata->>'contractVersion'")) {
+      return ok([{ sourceBookingReference: "manual-create-command", timezone: "Europe/Athens" }]);
+    }
+    if (
+      text.includes("FROM booking.nightly_revenue_evidence") &&
+      text.includes("HAVING SUM(occupied_room_nights)=1")
+    ) {
+      return ok(
+        [1, 2].map((linePosition) => ({
+          roomTypeId,
+          stayDate: "2026-08-15",
+          recognizedOn: "2026-08-15",
+          grossRoomAmount: "-100.0000",
+          linePosition,
+          correctsEvidenceId: `f6855600-0000-0000-0000-00000000000${linePosition}`,
+          manualExact: true,
+        })),
+      );
+    }
+    if (text.includes("SELECT txid_current()")) return ok([{ id: "42" }]);
+    if (text.includes('room_count AS "roomCount"')) {
+      return ok([{ roomCount: 2, roomTypeCount: 1, transactionId: "42" }]);
+    }
+    if (text.includes("command_key LIKE")) return ok();
+    if (text.includes("COALESCE(MAX(source_revision)")) return ok([{ value: 2 }]);
+    if (text.includes("INSERT INTO booking.nightly_revenue_evidence")) {
+      if (failEvidence) throw new Error("forced nightly evidence failure");
+      return ok([
+        { id: assignmentOneId, commandKey: "one" },
+        { id: assignmentTwoId, commandKey: "two" },
+      ]);
+    }
+    return fallback(text, values);
   };
 }
 
@@ -503,6 +544,26 @@ describe("target PMS operations command repository", () => {
       }
       if (text.includes("WITH booking_update AS")) return ok([{ id: guestBookingId }], 1);
       if (text.includes("WITH booking_scope AS")) return ok();
+      if (text.includes('AS "hostEmail"')) {
+        return ok([
+          {
+            propertyId,
+            guestBookingId,
+            bookingReference: "BK-BANK-001",
+            guestEmail: "guest@example.test",
+            guestName: "Alex Guest",
+            hostEmail: "reservations@example.test",
+            propertyName: "Hotel Alpenrose",
+            checkIn: "2026-08-20",
+            checkOut: "2026-08-23",
+            totalAmount: "600.00",
+            balanceAmount: "600.00",
+            currency: "EUR",
+            paymentMethod: "bank_transfer",
+            bookingMetadata: {},
+          },
+        ]);
+      }
       if (text.includes("INSERT INTO platform.domain_events")) {
         return ok([{ eventId: "f6855900-0000-0000-0000-000000000001" }], 1);
       }
@@ -712,6 +773,26 @@ describe("target PMS operations command repository", () => {
         }
         if (text.includes("WITH booking_update AS")) return ok([{ id: guestBookingId }], 1);
         if (text.includes("WITH booking_scope AS")) return ok();
+        if (text.includes('AS "hostEmail"')) {
+          return ok([
+            {
+              propertyId,
+              guestBookingId,
+              bookingReference: "BK-PAYPAL-001",
+              guestEmail: "guest@example.test",
+              guestName: "Alex Guest",
+              hostEmail: "reservations@example.test",
+              propertyName: "Hotel Alpenrose",
+              checkIn: "2026-08-20",
+              checkOut: "2026-08-23",
+              totalAmount: "600.00",
+              balanceAmount: "600.00",
+              currency: "EUR",
+              paymentMethod: method,
+              bookingMetadata: {},
+            },
+          ]);
+        }
         if (text.includes("INSERT INTO platform.domain_events")) {
           return ok([{ eventId: "f6855900-0000-0000-0000-000000000003" }], 1);
         }
@@ -750,7 +831,7 @@ describe("target PMS operations command repository", () => {
             call.text.includes("INSERT INTO platform.jobs") &&
             call.values.includes("email.booking-final-confirmation"),
         ),
-      ).toBe(true);
+      ).toBe(method === "paypal");
     },
   );
 
@@ -1028,6 +1109,37 @@ describe("target PMS operations command repository", () => {
     expect(assignmentSelect.values[2]).toBeNull();
     const assignmentUpdate = requiredCall(client, "UPDATE pms.operational_booking_assignments");
     expect(assignmentUpdate.values[0]).toEqual([assignmentOneId, assignmentTwoId]);
+  });
+
+  it("appends exact manual no-show adjustments before committing", async () => {
+    const { client, repository } = createRepository(manualNoShowHandler());
+
+    await expect(repository.executeNoShowCommand(baseNoShowCommand())).resolves.toMatchObject({
+      ok: true,
+    });
+
+    const evidence = requiredCall(client, "INSERT INTO booking.nightly_revenue_evidence");
+    expect(JSON.parse(String(evidence.values[5]))).toEqual([
+      expect.objectContaining({
+        occupiedRoomNights: -1,
+        economicEvent: "occupancy_adjustment",
+        lifecycleState: "no_show",
+        grossRoomAmount: "-100.0000",
+      }),
+      expect.objectContaining({ occupiedRoomNights: -1 }),
+    ]);
+    expect(client.calls.at(-1)?.text).toBe("COMMIT");
+  });
+
+  it("rolls assignment release back when manual no-show evidence fails", async () => {
+    const { client, repository } = createRepository(manualNoShowHandler(true));
+
+    await expect(repository.executeNoShowCommand(baseNoShowCommand())).rejects.toThrow(
+      "forced nightly evidence failure",
+    );
+
+    expect(requiredCall(client, "UPDATE pms.operational_booking_assignments")).toBeDefined();
+    expect(client.calls.at(-1)?.text).toBe("ROLLBACK");
   });
 
   it("ignores malformed no-show assignmentId input instead of narrowing the reservation", async () => {

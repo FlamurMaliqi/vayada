@@ -1,5 +1,9 @@
 # Ask Intelligence evidence contract
 
+> **Retired on 2026-08-13.** The Ask Intelligence product and runtime described
+> here have been removed. This contract is retained only as historical context;
+> the future hotel-employee agent tracked in VAY-1091 requires a new contract.
+
 _VAY-613 contract record. Builds on VAY-600 WorkOS identity architecture,
 VAY-601 Ask Intelligence architecture, VAY-602 TypeScript backend structure, and
 VAY-608 RequestContext._

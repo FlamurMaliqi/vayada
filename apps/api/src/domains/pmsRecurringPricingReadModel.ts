@@ -87,7 +87,7 @@ type CurrencyAggregateRow = {
   optionalPricingAggregateRevision: number | string;
 };
 
-type Queryable = Pick<PmsRecurringPricingReadClient, "query">;
+export type PmsRecurringPricingQueryable = Pick<PmsRecurringPricingReadClient, "query">;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -179,26 +179,9 @@ export function createPgPmsRecurringPricingReadModel(config: {
     },
 
     async getRecurringPricingBookingEvidence(propertyId) {
-      const normalizedPropertyId = readUuid(propertyId);
-      return withRepeatableRead(pool, async (client) => {
-        const aggregate = await queryCurrencyAggregate(client, normalizedPropertyId);
-        if (!aggregate) return null;
-        const sources = await querySources(client, normalizedPropertyId);
-        const capturedAt = now();
-        const evidence = parsePmsRecurringPricingBookingEvidence({
-          contractVersion: PMS_RECURRING_PRICING_CONTRACT_VERSION,
-          propertyId: normalizedPropertyId,
-          pricingCurrencyRevision: positiveInteger(aggregate.pricingCurrencyRevision),
-          optionalPricingAggregateRevision: nonNegativeInteger(
-            aggregate.optionalPricingAggregateRevision,
-          ),
-          currency: aggregate.currency,
-          sources,
-          capturedAt: validDate(capturedAt) ? capturedAt.toISOString() : null,
-        });
-        if (!evidence) throw new Error("PMS recurring pricing Booking evidence is invalid");
-        return evidence;
-      });
+      return withRepeatableRead(pool, (client) =>
+        loadPmsRecurringPricingBookingEvidence(client, propertyId, now()),
+      );
     },
 
     async close() {
@@ -208,6 +191,31 @@ export function createPgPmsRecurringPricingReadModel(config: {
       closed = true;
     },
   };
+}
+
+/** Reads pricing evidence through an already-open caller transaction. */
+export async function loadPmsRecurringPricingBookingEvidence(
+  queryable: PmsRecurringPricingQueryable,
+  propertyId: string,
+  capturedAt: Date,
+): Promise<PmsRecurringPricingBookingEvidence | null> {
+  const normalizedPropertyId = readUuid(propertyId);
+  const aggregate = await queryCurrencyAggregate(queryable, normalizedPropertyId);
+  if (!aggregate) return null;
+  const sources = await querySources(queryable, normalizedPropertyId);
+  const evidence = parsePmsRecurringPricingBookingEvidence({
+    contractVersion: PMS_RECURRING_PRICING_CONTRACT_VERSION,
+    propertyId: normalizedPropertyId,
+    pricingCurrencyRevision: positiveInteger(aggregate.pricingCurrencyRevision),
+    optionalPricingAggregateRevision: nonNegativeInteger(
+      aggregate.optionalPricingAggregateRevision,
+    ),
+    currency: aggregate.currency,
+    sources,
+    capturedAt: validDate(capturedAt) ? capturedAt.toISOString() : null,
+  });
+  if (!evidence) throw new Error("PMS recurring pricing Booking evidence is invalid");
+  return evidence;
 }
 
 export async function loadPmsRecurringPricingSource(
@@ -329,7 +337,7 @@ export function pmsRecurringPricingSnapshotFromRows(
 }
 
 async function querySources(
-  queryable: Queryable,
+  queryable: PmsRecurringPricingQueryable,
   propertyId: string,
 ): Promise<readonly PmsRecurringPricingSourceSnapshot[]> {
   const roots = await queryable.query<PmsRecurringPricingSourceRow>(
@@ -355,7 +363,7 @@ async function querySources(
 }
 
 async function queryDetails(
-  queryable: Queryable,
+  queryable: PmsRecurringPricingQueryable,
   propertyId: string,
   sourceIds: readonly string[],
 ): Promise<{
@@ -382,7 +390,7 @@ async function queryDetails(
 }
 
 async function queryCurrencyAggregate(
-  queryable: Queryable,
+  queryable: PmsRecurringPricingQueryable,
   propertyId: string,
 ): Promise<CurrencyAggregateRow | null> {
   const result = await queryable.query<CurrencyAggregateRow>(

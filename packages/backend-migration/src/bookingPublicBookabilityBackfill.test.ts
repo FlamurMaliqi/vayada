@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  acceptanceModeForLegacyHotel,
   addDays,
   bookingBrandingSettingsForLegacyHotel,
   bookingBaseUrlFor,
@@ -58,5 +59,11 @@ describe("booking public bookability backfill helpers", () => {
     });
     expect(normalizeLegacyBookingPrimaryColor(" #336699 ")).toBe("#336699");
     expect(normalizeLegacyBookingFontPairing("Cormorant Garamond + Lato")).toBe("grand-classic");
+  });
+
+  it("preserves explicit legacy acceptance while keeping target-only rows instant", () => {
+    expect(acceptanceModeForLegacyHotel({ instant_book: true })).toBe("instant");
+    expect(acceptanceModeForLegacyHotel({ instant_book: false })).toBe("request");
+    expect(acceptanceModeForLegacyHotel({})).toBe("instant");
   });
 });

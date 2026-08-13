@@ -157,6 +157,14 @@ class PayoutRepository:
         )
 
     @staticmethod
+    async def delete_scheduled_by_booking(booking_id: str) -> None:
+        """Remove an incomplete finalization attempt before it is retried."""
+        await Database.execute(
+            "DELETE FROM payouts WHERE booking_id = $1 AND status = 'scheduled'",
+            booking_id,
+        )
+
+    @staticmethod
     async def list_by_hotel(
         hotel_id: str,
         *,

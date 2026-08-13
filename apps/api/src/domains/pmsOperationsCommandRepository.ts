@@ -3,12 +3,18 @@ import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import {
   bankTransferDetailsFromPolicy,
-  enqueueBookingLifecycleEmailJob,
+  enqueueBookingTransitionNotifications,
 } from "../jobs/bookingEmails.js";
 import {
   recordBookingManualPaymentInClient,
   type FinanceBookingManualPaymentSettlementCommand,
 } from "./financeManualPaymentSettlement.js";
+import { appendPmsManualNoShowNightlyRevenueEvidence } from "./bookingPmsManualNoShowNightlyRevenueEvidence.js";
+import {
+  cancelPmsManualBooking,
+  ManualCancellationEvidenceError,
+  ManualCancellationStateError,
+} from "./bookingPmsManualCancellationNightlyRevenueEvidence.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import { captureDirectNightlyRevenueEvidence } from "./stripeBookingSettlement.js";
@@ -30,6 +36,7 @@ import {
   type PmsCheckoutChargeWaiveCommand,
   type PmsCommandMeta,
   type PmsNoShowCommand,
+  type PmsManualCancellationCommand,
   type PmsOperationalCommandResult,
   type PmsOperationalStatus,
   type PmsOperationalStatusCommand,
@@ -101,12 +108,14 @@ type PmsOperationalCommand =
   | PmsOperationalStatusCommand
   | PmsCheckInCommand
   | PmsNoShowCommand
+  | PmsManualCancellationCommand
   | PmsBookingLifecycleCommand;
 
 type PmsOperationalCommandOperation =
   | "status_command"
   | "checkin_command"
   | "no_show_command"
+  | "manual_cancellation_command"
   | "booking_acceptance_command"
   | "booking_mark_paid_command"
   | "checkout_command";
@@ -124,9 +133,6 @@ type BookingPaymentLifecycleRow = QueryResultRow & {
   totalAmount: string;
   balanceAmount: string;
   currency: string;
-  guestEmail: string | null;
-  guestName: string | null;
-  propertyName: string;
   acceptedMethods: string[] | null;
   depositPolicy: unknown;
   paymentInstructions: unknown;
@@ -1038,6 +1044,14 @@ export function createTargetPmsOperationsCommandRepository(
         operation: "no_show_command",
         sideEffects: ["audit_event"],
         mutate: applyNoShowCommandMutation,
+      });
+    },
+    async cancelManualBooking(command) {
+      return executeOperationalCommand(config, pool, now, {
+        command,
+        operation: "manual_cancellation_command",
+        sideEffects: ["calendar_refresh", "ari_changed", "audit_event"],
+        mutate: applyManualCancellationCommandMutation,
       });
     },
     async acceptBooking(command) {
@@ -4107,8 +4121,9 @@ async function applyBookingAcceptanceCommandMutation(
     required: booking.sourceSystem === "booking",
   });
 
-  await enqueueBookingLifecycleEmailJob(client, {
-    kind: "reserved_pending_payment",
+  await enqueueBookingTransitionNotifications(client, {
+    propertyId: command.propertyId,
+    guestBookingId: command.guestBookingId,
     occurredAt: acceptedAt,
     correlationId: command.audit.correlationId ?? command.audit.requestId,
     causationId: command.commandId,
@@ -4119,7 +4134,11 @@ async function applyBookingAcceptanceCommandMutation(
     source: "apps/api-pms-booking-acceptance",
     paymentDeadlineAt,
     bankTransferDetails,
-    booking: bookingEmailSnapshot(booking),
+    transition: {
+      eventType: "guest_booking.accepted",
+      fromStatus: "pending_payment",
+      toStatus: "confirmed",
+    },
   });
   return { ok: true };
 }
@@ -4239,8 +4258,9 @@ async function applyBookingMarkPaidCommandMutation(
       required: booking.sourceSystem === "booking",
     });
 
-  await enqueueBookingLifecycleEmailJob(client, {
-    kind: "final_confirmation",
+  await enqueueBookingTransitionNotifications(client, {
+    propertyId: command.propertyId,
+    guestBookingId: command.guestBookingId,
     occurredAt: acceptedAt,
     correlationId: command.audit.correlationId ?? command.audit.requestId,
     causationId: command.commandId,
@@ -4249,7 +4269,11 @@ async function applyBookingMarkPaidCommandMutation(
         ? { type: "user", userId: command.audit.actor.userId }
         : { type: "system" },
     source: "apps/api-pms-booking-payment",
-    booking: bookingEmailSnapshot(booking),
+    transition: {
+      eventType: "guest_booking.payment_received",
+      fromStatus: booking.lifecycleStatus,
+      toStatus: "confirmed",
+    },
   });
   return { ok: true };
 }
@@ -4274,27 +4298,13 @@ async function loadBookingPaymentLifecycle(
        booking.currency,
        booking.source_system AS "sourceSystem",
        booking.booking_metadata AS "bookingMetadata",
-       guest.email AS "guestEmail",
-       NULLIF(trim(concat_ws(' ', guest.first_name, guest.last_name)), '') AS "guestName",
-       property.display_name AS "propertyName",
        payment.accepted_methods AS "acceptedMethods",
        payment.deposit_policy AS "depositPolicy",
        booking.booking_metadata -> 'paymentInstructions' AS "paymentInstructions",
        booking.booking_metadata ->> 'pendingExpiresAt' AS "pendingExpiresAt",
        booking.booking_metadata ->> 'acceptedPaymentDeadlineAt' AS "acceptedPaymentDeadlineAt"
      FROM booking.guest_bookings booking
-     JOIN hotel_catalog.properties property ON property.id = booking.property_id
      LEFT JOIN finance.payment_settings payment ON payment.property_id = booking.property_id
-     LEFT JOIN LATERAL (
-       SELECT booking_guest.first_name, booking_guest.last_name, booking_guest.email
-       FROM booking.booking_guests booking_guest
-       WHERE booking_guest.guest_booking_id = booking.id
-       ORDER BY
-         CASE booking_guest.guest_role WHEN 'booker' THEN 0 WHEN 'primary_guest' THEN 1 ELSE 2 END,
-         booking_guest.created_at,
-         booking_guest.id
-       LIMIT 1
-     ) guest ON TRUE
      WHERE booking.property_id = $1::uuid
        AND booking.id = $2::uuid
      FOR UPDATE OF booking`,
@@ -4316,23 +4326,6 @@ function jsonObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
-}
-
-function bookingEmailSnapshot(booking: BookingPaymentLifecycleRow) {
-  return {
-    propertyId: booking.propertyId,
-    guestBookingId: booking.guestBookingId,
-    bookingReference: booking.publicReference,
-    guestEmail: booking.guestEmail,
-    guestName: booking.guestName,
-    propertyName: booking.propertyName,
-    checkIn: booking.checkIn,
-    checkOut: booking.checkOut,
-    totalAmount: booking.totalAmount,
-    balanceAmount: booking.balanceAmount,
-    currency: booking.currency,
-    paymentMethod: booking.paymentMethod,
-  };
 }
 
 async function applyCheckInCommandMutation(
@@ -4391,6 +4384,7 @@ async function applyCheckInCommandMutation(
 async function applyNoShowCommandMutation(
   client: PmsOperationsCommandClient,
   command: PmsNoShowCommand,
+  acceptedAt: string,
 ): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
   const sources = await findAssignmentsForOperationalCommand(client, command);
   if (sources.length === 0) return reservationNotFound(command.guestBookingId);
@@ -4440,6 +4434,51 @@ async function applyNoShowCommandMutation(
       command.reason ?? "",
     ],
   );
+  await appendPmsManualNoShowNightlyRevenueEvidence(client, command, acceptedAt);
+  return { ok: true };
+}
+
+async function applyManualCancellationCommandMutation(
+  client: PmsOperationsCommandClient,
+  command: PmsManualCancellationCommand,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+  const sources = await findAssignmentsForOperationalCommand(client, command);
+  if (sources.length === 0) return reservationNotFound(command.guestBookingId);
+  if (
+    command.expectedVersion &&
+    sources.some((source) => !assignmentVersionMatches(source, command.expectedVersion!))
+  )
+    return operationalConflict("version_conflict", "Reservation cancellation version is stale.");
+  const invalid = sources.find(
+    ({ assignmentStatus }) => !["pending", "assigned"].includes(assignmentStatus),
+  );
+  if (invalid) return invalidStatusTransition(invalid.assignmentStatus, "canceled");
+
+  const nextVersion = nextAssignmentVersion(sources[0]!);
+  await client.query(
+    `UPDATE pms.operational_booking_assignments SET room_id=NULL,assignment_status='canceled',
+       assigned_at=NULL,assignment_payload=jsonb_set(jsonb_set(COALESCE(assignment_payload,'{}'),
+       '{version}',to_jsonb($4::text),true),'{operationalStatus}',to_jsonb('canceled'::text),true),
+       updated_at=$5::timestamptz
+     WHERE id=ANY($1::uuid[]) AND property_id=$2::uuid AND guest_booking_id=$3::uuid`,
+    [
+      sources.map(({ assignmentId }) => assignmentId),
+      command.propertyId,
+      command.guestBookingId,
+      nextVersion,
+      acceptedAt,
+    ],
+  );
+  try {
+    await cancelPmsManualBooking(client, command, acceptedAt);
+  } catch (error) {
+    if (error instanceof ManualCancellationEvidenceError)
+      return operationalInvalidBody(error.message);
+    if (error instanceof ManualCancellationStateError)
+      return invalidStatusTransition(error.currentStatus, "canceled");
+    throw error;
+  }
   return { ok: true };
 }
 
@@ -4593,13 +4632,13 @@ async function findAssignmentForCommand(
 ): Promise<PmsAssignmentRow | null> {
   const result = await client.query<PmsAssignmentRow>(
     `SELECT
-       id::text AS "assignmentId",
-       guest_booking_id::text AS "guestBookingId",
-       room_type_id::text AS "roomTypeId",
-       room_id::text AS "roomId",
-       position,
-       assignment_status AS "assignmentStatus",
-       assignment_payload ->> 'version' AS version,
+       assignment.id::text AS "assignmentId",
+       assignment.guest_booking_id::text AS "guestBookingId",
+       assignment.room_type_id::text AS "roomTypeId",
+       assignment.room_id::text AS "roomId",
+       assignment.position,
+       assignment.assignment_status AS "assignmentStatus",
+       assignment.assignment_payload ->> 'version' AS version,
        assignment.updated_at AS "updatedAt",
        booking.check_in::text AS "checkIn",
        booking.check_out::text AS "checkOut"
@@ -4633,13 +4672,13 @@ async function findAssignmentsForOperationalCommand(
     "stepResults" in command || "inspectionResults" in command ? command.assignmentId : undefined;
   const result = await client.query<PmsAssignmentRow>(
     `SELECT
-       id::text AS "assignmentId",
-       guest_booking_id::text AS "guestBookingId",
-       room_type_id::text AS "roomTypeId",
-       room_id::text AS "roomId",
-       position,
-       assignment_status AS "assignmentStatus",
-       assignment_payload ->> 'version' AS version,
+       assignment.id::text AS "assignmentId",
+       assignment.guest_booking_id::text AS "guestBookingId",
+       assignment.room_type_id::text AS "roomTypeId",
+       assignment.room_id::text AS "roomId",
+       assignment.position,
+       assignment.assignment_status AS "assignmentStatus",
+       assignment.assignment_payload ->> 'version' AS version,
        assignment.updated_at AS "updatedAt",
        booking.check_in::text AS "checkIn",
        booking.check_out::text AS "checkOut"
@@ -5144,7 +5183,7 @@ async function recordOperationalCommandAuditEvent(
       command.audit.correlationId ?? command.audit.requestId,
       command.commandId,
       JSON.stringify({ commandMeta, idempotencyKeyHash: keyHash }),
-      JSON.stringify({}),
+      JSON.stringify("retainedCharges" in command ? { reason: command.reason ?? null } : {}),
       JSON.stringify({
         commandId: command.commandId,
         reason: command.audit.reason,
@@ -5254,6 +5293,12 @@ function operationalConflict(
     code,
     message,
   };
+}
+
+function operationalInvalidBody(
+  message: string,
+): Exclude<PmsOperationalCommandResult, { ok: true }> {
+  return { ok: false, statusCode: 400, code: "invalid_body", message };
 }
 
 function invalidStatusTransition(

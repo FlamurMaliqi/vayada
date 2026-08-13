@@ -923,8 +923,13 @@ class TestCardPaymentDraft:
         "app.services.channex.ari_push.push_availability_for_room_type",
         new_callable=AsyncMock,
     )
+    @patch(
+        "app.services.stripe_service.retrieve_payment_intent",
+        new_callable=AsyncMock,
+    )
     async def test_confirm_authorization_materializes_draft(
         self,
+        mock_retrieve_pi,
         mock_channex,
         mock_guest_email,
         mock_host_email,
@@ -941,6 +946,11 @@ class TestCardPaymentDraft:
             pi_id="pi_materialize",
         )
         draft_id = body["draftId"]
+        mock_retrieve_pi.return_value = {
+            "id": "pi_materialize",
+            "status": "requires_capture",
+            "capture_method": "manual",
+        }
 
         resp = await client.post(
             f"/api/hotels/{hotel_with_rooms['hotel']['slug']}/bookings/{draft_id}/confirm-authorization"

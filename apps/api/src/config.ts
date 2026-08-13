@@ -43,18 +43,6 @@ export type ApiAuthSessionConfig = {
   authMarketplaceWebLogoutUrl?: string;
 };
 
-export type ApiAskIntelligenceConfig =
-  | { provider: "fixture" }
-  | {
-      provider: "openai";
-      apiKey: string;
-      model: string;
-      baseUrl?: string;
-      organization?: string;
-      project?: string;
-    };
-
-export type AskIntelligenceEvidenceSource = "fixture" | "target";
 export type PublicHotelProfileSource = "legacy" | "target";
 export type BookingDomainResolutionSource = "legacy" | "target";
 export type PublicBookabilitySource = "legacy" | "target";
@@ -134,8 +122,6 @@ export type ApiConfig = {
   apiRuntime: ApiRuntime;
   auth?: ApiAuthConfig;
   authSession?: ApiAuthSessionConfig;
-  askIntelligence: ApiAskIntelligenceConfig;
-  askIntelligenceEvidenceSource: AskIntelligenceEvidenceSource;
   targetDatabaseUrl?: string;
   bookingDatabaseUrl?: string;
   bookingReservationsSource: "legacy" | "target";
@@ -436,30 +422,6 @@ function loadAuthSessionConfig(env: NodeJS.ProcessEnv): ApiAuthSessionConfig | u
   };
 }
 
-function loadAskIntelligenceConfig(env: NodeJS.ProcessEnv): ApiAskIntelligenceConfig {
-  const provider = readOptionalEnv(env, "ASK_INTELLIGENCE_PROVIDER") ?? "fixture";
-  if (provider === "fixture") return { provider };
-  if (provider !== "openai") {
-    throw new Error("Unsupported Ask Intelligence provider; expected fixture or openai");
-  }
-
-  const requiredKeys = ["OPENAI_API_KEY", "ASK_INTELLIGENCE_MODEL"] as const;
-  const values = Object.fromEntries(requiredKeys.map((key) => [key, readOptionalEnv(env, key)]));
-  const missing = requiredKeys.filter((key) => !values[key]);
-  if (missing.length > 0) {
-    throw new Error(`Incomplete Ask Intelligence OpenAI config; missing ${missing.join(", ")}`);
-  }
-
-  return {
-    provider,
-    apiKey: values["OPENAI_API_KEY"]!,
-    model: values["ASK_INTELLIGENCE_MODEL"]!,
-    baseUrl: readOptionalEnv(env, "OPENAI_BASE_URL"),
-    organization: readOptionalEnv(env, "OPENAI_ORGANIZATION"),
-    project: readOptionalEnv(env, "OPENAI_PROJECT"),
-  };
-}
-
 function loadProviderWebhookConfig(env: NodeJS.ProcessEnv): ProviderWebhookConfig {
   return {
     stripeSecret: readOptionalEnv(env, "STRIPE_WEBHOOK_SECRET"),
@@ -673,12 +635,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     "disabled",
   );
   const financeSource = readSourceEnv(env, "FINANCE_SOURCE", ["legacy", "target"], "legacy");
-  const askIntelligenceEvidenceSource = readSourceEnv(
-    env,
-    "ASK_INTELLIGENCE_EVIDENCE_SOURCE",
-    ["fixture", "target"],
-    "fixture",
-  );
   const bookingWebEventSink = readSourceEnv(
     env,
     "BOOKING_WEB_EVENT_SINK",
@@ -728,9 +684,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   }
   if (financeSource === "target" && !targetDatabaseUrl) {
     throw new Error("FINANCE_SOURCE=target requires TARGET_DATABASE_URL");
-  }
-  if (askIntelligenceEvidenceSource === "target" && !targetDatabaseUrl) {
-    throw new Error("ASK_INTELLIGENCE_EVIDENCE_SOURCE=target requires TARGET_DATABASE_URL");
   }
   if (publicHotelProfileSource === "target" && !targetDatabaseUrl) {
     throw new Error("PUBLIC_HOTEL_PROFILE_SOURCE=target requires TARGET_DATABASE_URL");
@@ -792,8 +745,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     apiRuntime,
     auth,
     authSession,
-    askIntelligence: loadAskIntelligenceConfig(env),
-    askIntelligenceEvidenceSource,
     targetDatabaseUrl,
     bookingDatabaseUrl,
     bookingReservationsSource,
