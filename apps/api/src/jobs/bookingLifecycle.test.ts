@@ -326,15 +326,81 @@ describe("booking lifecycle scheduler jobs", () => {
       stripePaymentProvider,
     });
 
-    await expect(
-      runBookingLifecycleSchedulerJobs(store, {
-        now: new Date("2026-09-01T10:00:00.000Z"),
-        run: ["pendingBookingExpiry"],
-      }),
-    ).rejects.toThrow("provider timeout");
+    const result = await runBookingLifecycleSchedulerJobs(store, {
+      now: new Date("2026-09-01T10:00:00.000Z"),
+      run: ["pendingBookingExpiry"],
+    });
+
+    expect(result).toMatchObject({ applied: 0, skipped: 0, failed: 1 });
+    expect(result.runs[0]?.failures[0]).toMatchObject({
+      guestBookingId: "b9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+      action: "pending-expiry",
+      errorMessage: "provider timeout",
+    });
     expect(fixture.calls).toContain("ROLLBACK");
     expect(fixture.calls.some((sql) => sql.includes("WITH updated AS"))).toBe(false);
     expect(fixture.inventoryReservationPort.release).not.toHaveBeenCalled();
+  });
+
+  it("continues a later pay-at candidate and lifecycle runs after a provider failure", async () => {
+    const store = createFixtureStore();
+    const deadlineOrWindow = "2026-09-01T09:55:00.000Z";
+    vi.spyOn(store, "findPendingBookingExpiryCandidates").mockResolvedValue([
+      { ...store.booking("book_pending_due")!, deadlineOrWindow },
+      { ...store.booking("book_stale_unpaid")!, deadlineOrWindow },
+    ]);
+    const apply = vi.spyOn(store, "applyLifecycleMutation");
+    apply.mockImplementationOnce(async () => {
+      throw new Error("provider timeout");
+    });
+
+    const result = await runBookingLifecycleSchedulerJobs(store, {
+      now: new Date("2026-09-01T10:00:00.000Z"),
+      workerId: "worker_fixture",
+    });
+
+    expect(result).toMatchObject({ scanned: 3, applied: 2, skipped: 0, failed: 1 });
+    expect(result.runs.map((run) => ({ name: run.name, applied: run.applied }))).toEqual([
+      { name: "pendingBookingExpiry", applied: 1 },
+      { name: "staleUnpaidCancellation", applied: 0 },
+      { name: "expiredDraftCleanup", applied: 1 },
+    ]);
+    expect(store.booking("book_pending_due")?.lifecycleStatus).toBe("pending_payment");
+    expect(store.booking("book_stale_unpaid")?.lifecycleStatus).toBe("expired");
+    expect(store.booking("book_expired_draft")?.deleted).toBe(true);
+  });
+
+  it("reserves a separate expiry batch for manual payments when the provider batch is full", async () => {
+    const now = new Date("2026-09-01T10:00:00.000Z");
+    const row = (guestBookingId: string, paymentStatus: string) => ({
+      guestBookingId,
+      propertyId: "prop_alpenrose",
+      lifecycleStatus: "pending_payment",
+      paymentStatus,
+      createdAt: "2026-09-01T09:00:00.000Z",
+      updatedAt: "2026-09-01T09:00:00.000Z",
+      deadlineOrWindow: "2026-09-01T09:30:00.000Z",
+    });
+    const poisonCards = [1, 2, 3].map((index) => row(`poison-card-${index}`, "authorized"));
+    const query = vi.fn(async (_sql: string, values?: unknown[]) => ({
+      rows:
+        values?.[2] === "provider"
+          ? poisonCards.slice(0, Number(values[1]))
+          : [row("later-pay-at", "unpaid")],
+    }));
+    const store = createPgBookingLifecycleStore({
+      connectionString: "postgres://unused",
+      pool: { query, end: vi.fn() } as never,
+    });
+
+    const candidates = await store.findPendingBookingExpiryCandidates(now, 2);
+
+    expect(candidates.map((candidate) => candidate.guestBookingId)).toEqual([
+      "poison-card-1",
+      "poison-card-2",
+      "later-pay-at",
+    ]);
+    expect(query.mock.calls.map((call) => call[1]?.[2])).toEqual(["provider", "manual"]);
   });
 });
 
@@ -370,9 +436,12 @@ function pgLifecycleFixture(
     },
   };
   const calls: string[] = [];
-  const query = vi.fn(async (sql: string) => {
+  const query = vi.fn(async (sql: string, values?: unknown[]) => {
     calls.push(sql);
     if (sql.includes("WITH raw_deadlines") && sql.includes(`lifecycle_status = '${status}'`)) {
+      const lane = values?.[2];
+      const expectedLane = options.paymentStatus === "authorized" ? "provider" : "manual";
+      if (lane && lane !== expectedLane) return { rows: [] };
       return {
         rows: [
           {
