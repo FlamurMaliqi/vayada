@@ -23,7 +23,7 @@ export async function registerFinanceAffiliateCommissionRoutes(
   app.get<{ Params: PropertyParams }>(
     "/properties/:propertyId/affiliate-commission",
     async (request, reply) => {
-      if (!authorize(request, reply, request.params.propertyId)) return reply;
+      if (!(await authorize(options, request, reply, request.params.propertyId))) return reply;
       return options.repository.getCommission(request.params.propertyId);
     },
   );
@@ -31,7 +31,7 @@ export async function registerFinanceAffiliateCommissionRoutes(
   app.patch<{ Params: PropertyParams; Body: unknown }>(
     "/properties/:propertyId/affiliate-commission",
     async (request, reply) => {
-      const context = authorize(request, reply, request.params.propertyId);
+      const context = await authorize(options, request, reply, request.params.propertyId);
       if (!context) return reply;
       const command = parseCommand(request.body, false);
       if (typeof command === "string") return sendError(reply, 422, command);
@@ -48,7 +48,7 @@ export async function registerFinanceAffiliateCommissionRoutes(
   app.get<{ Params: AffiliateParams }>(
     "/properties/:propertyId/affiliates/:affiliateId/commission",
     async (request, reply) => {
-      if (!authorize(request, reply, request.params.propertyId)) return reply;
+      if (!(await authorize(options, request, reply, request.params.propertyId))) return reply;
       if (!(await hasAffiliate(options, request.params))) {
         return sendError(reply, 404, "affiliate_not_found");
       }
@@ -62,7 +62,7 @@ export async function registerFinanceAffiliateCommissionRoutes(
   app.patch<{ Params: AffiliateParams; Body: unknown }>(
     "/properties/:propertyId/affiliates/:affiliateId/commission",
     async (request, reply) => {
-      const context = authorize(request, reply, request.params.propertyId);
+      const context = await authorize(options, request, reply, request.params.propertyId);
       if (!context) return reply;
       if (!(await hasAffiliate(options, request.params))) {
         return sendError(reply, 404, "affiliate_not_found");
@@ -98,7 +98,12 @@ async function hasAffiliate(
   return Boolean(await options.affiliateScope.getAffiliate(params.propertyId, params.affiliateId));
 }
 
-function authorize(request: FastifyRequest, reply: FastifyReply, propertyId: string) {
+async function authorize(
+  options: FinanceAffiliateCommissionRoutesOptions,
+  request: FastifyRequest,
+  reply: FastifyReply,
+  propertyId: string,
+) {
   let context: ReturnType<typeof enforceRoutePolicy>;
   try {
     context = enforceRoutePolicy(request, { permission: "pms.finance.manage" });
@@ -123,17 +128,23 @@ function authorize(request: FastifyRequest, reply: FastifyReply, propertyId: str
     return sendDenied(reply, error, "missing_resource_access");
   }
 
-  const matching = context.entitlements.filter(
+  const pmsEntitlements = context.entitlements.filter(
     (entitlement) =>
-      ((entitlement.product === "booking" && entitlement.key === "direct-booking-finance") ||
-        (entitlement.product === "pms" && entitlement.key === "property-management")) &&
+      entitlement.product === "pms" &&
+      entitlement.key === "property-management" &&
       (entitlement.resource === undefined || entitlement.resource.resourceId === propertyId),
   );
-  if (!matching.some((entitlement) => entitlement.status === "active")) {
+  if (pmsEntitlements.some((entitlement) => entitlement.status === "active")) return context;
+
+  const financeAccess = await options.repository.getBookingFinanceAccess(
+    propertyId,
+    context.selectedOrganization.organizationId,
+  );
+  if (financeAccess !== "active") {
     sendError(
       reply,
       403,
-      matching.some((entitlement) => entitlement.status !== "active")
+      pmsEntitlements.length || financeAccess === "inactive"
         ? "inactive_entitlement"
         : "missing_entitlement",
     );
