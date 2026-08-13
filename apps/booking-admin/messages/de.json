@@ -157,6 +157,8 @@
   "dashboard.pageViewsModal.totalInWindow": "Gesamt im Zeitraum",
   "dashboard.pageViewsModal.openLabel": "Seitenaufruf-Details öffnen",
   "dashboard.pageViewsModal.close": "Schließen",
+  "dashboard.pageViewsModal.error": "Seitenaufrufe konnten nicht geladen werden.",
+  "dashboard.pageViewsModal.retry": "Erneut versuchen",
   "dashboard.bookingsBySource.title": "Buchungen nach Quelle",
   "dashboard.bookingsBySource.totalRevenue": "Gesamtumsatz",
   "dashboard.bookingsBySource.noData": "Keine Buchungsdaten für diesen Zeitraum",
