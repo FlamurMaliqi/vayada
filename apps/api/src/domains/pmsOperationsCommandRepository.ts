@@ -28,6 +28,15 @@ import {
   createFinanceManualBookingRefundPort,
   financeManualBookingRefundTransaction,
 } from "./financeManualBookingRefund.js";
+import {
+  correctPmsManualStays,
+  ManualStayCorrectionAvailabilityError,
+  ManualStayCorrectionScopeError,
+} from "./pmsManualStayCorrection.js";
+import {
+  ManualStayCorrectionEvidenceError,
+  ManualStayCorrectionStateError,
+} from "./bookingPmsManualStayCorrection.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import {
@@ -55,6 +64,7 @@ import {
   type PmsNoShowCommand,
   type PmsManualCancellationCommand,
   type PmsManualRefundCommand,
+  type PmsManualStayCorrectionCommand,
   type PmsOperationalCommandResult,
   type PmsOperationalStatus,
   type PmsOperationalStatusCommand,
@@ -134,6 +144,7 @@ type PmsOperationalCommand =
   | PmsNoShowCommand
   | PmsManualCancellationCommand
   | PmsManualRefundCommand
+  | PmsManualStayCorrectionCommand
   | PmsBookingLifecycleCommand;
 
 type PmsOperationalCommandOperation =
@@ -142,6 +153,7 @@ type PmsOperationalCommandOperation =
   | "no_show_command"
   | "manual_cancellation_command"
   | "manual_refund_command"
+  | "manual_stay_correction_command"
   | "booking_acceptance_command"
   | "booking_mark_paid_command"
   | "checkout_command";
@@ -1135,6 +1147,14 @@ export function createTargetPmsOperationsCommandRepository(
         operation: "manual_refund_command",
         sideEffects: ["audit_event"],
         mutate: applyManualRefundCommandMutation,
+      });
+    },
+    async correctManualBookingStays(command) {
+      return executeOperationalCommand(config, pool, now, {
+        command,
+        operation: "manual_stay_correction_command",
+        sideEffects: ["calendar_refresh", "ari_changed", "audit_event"],
+        mutate: applyManualStayCorrectionCommandMutation,
       });
     },
     async acceptBooking(command) {
@@ -5453,6 +5473,35 @@ async function applyManualRefundCommandMutation(
   return { ok: true };
 }
 
+async function applyManualStayCorrectionCommandMutation(
+  client: PmsOperationsCommandClient,
+  command: PmsManualStayCorrectionCommand,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+  const sources = await findAssignmentsForOperationalCommand(client, command);
+  if (sources.length === 0) return reservationNotFound(command.guestBookingId);
+  if (
+    command.expectedVersion &&
+    sources.some((source) => !assignmentVersionMatches(source, command.expectedVersion!))
+  )
+    return operationalConflict("version_conflict", "Reservation stay-correction version is stale.");
+  try {
+    await correctPmsManualStays(client, command, acceptedAt, nextAssignmentVersion(sources[0]!));
+  } catch (error) {
+    if (error instanceof ManualStayCorrectionAvailabilityError)
+      return operationalConflict("room_unavailable", error.message);
+    if (
+      error instanceof ManualStayCorrectionScopeError ||
+      error instanceof ManualStayCorrectionEvidenceError
+    )
+      return operationalInvalidBody(error.message);
+    if (error instanceof ManualStayCorrectionStateError)
+      return invalidStatusTransition(error.currentStatus, "corrected");
+    throw error;
+  }
+  return { ok: true };
+}
+
 async function applyAssignmentCommandMutation(
   client: PmsOperationsCommandClient,
   command: PmsAssignmentCommand,
@@ -6155,15 +6204,17 @@ async function recordOperationalCommandAuditEvent(
       command.commandId,
       JSON.stringify({ commandMeta, idempotencyKeyHash: keyHash }),
       JSON.stringify(
-        "retainedCharges" in command
-          ? { reason: command.reason ?? null }
-          : "allocations" in command
-            ? {
-                reason: command.reason ?? null,
-                paymentEvidenceId: command.paymentEvidenceId,
-                accountingDate: command.accountingDate,
-              }
-            : {},
+        "stays" in command
+          ? { accountingDate: command.accountingDate, stays: command.stays }
+          : "retainedCharges" in command
+            ? { reason: command.reason ?? null }
+            : "allocations" in command
+              ? {
+                  reason: command.reason ?? null,
+                  paymentEvidenceId: command.paymentEvidenceId,
+                  accountingDate: command.accountingDate,
+                }
+              : {},
       ),
       JSON.stringify({
         commandId: command.commandId,
@@ -6265,7 +6316,7 @@ function assignmentConflict(
 }
 
 function operationalConflict(
-  code: "version_conflict" | "idempotency_conflict",
+  code: "version_conflict" | "idempotency_conflict" | "room_unavailable",
   message: string,
 ): Exclude<PmsOperationalCommandResult, { ok: true }> {
   return {
