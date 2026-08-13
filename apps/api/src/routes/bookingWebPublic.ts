@@ -11,7 +11,7 @@ import {
   type PublicBookabilityQuoteProjection,
 } from "@vayada/domain-distribution";
 import type { BillingConfigReadModel, BillingConfigReadPort } from "@vayada/domain-finance";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
@@ -93,6 +93,10 @@ type BookingWebCheckoutRequest = Record<string, unknown>;
 type BookingWebLookupRequest = {
   bookingReference?: string;
   guestEmail?: string;
+};
+type BookingWebConfirmationRequest = {
+  bookingReference?: string;
+  confirmationToken?: string;
 };
 type BookingWebChangeRequest = {
   guestEmail?: string;
@@ -228,6 +232,11 @@ export type BookingWebCheckoutAdapter = {
   lookup(
     slug: string,
     request: BookingWebLookupRequest,
+    context?: BookingWebCheckoutCommandContext,
+  ): Promise<unknown>;
+  confirmation?(
+    slug: string,
+    request: BookingWebConfirmationRequest,
     context?: BookingWebCheckoutCommandContext,
   ): Promise<unknown>;
   withdraw(
@@ -575,6 +584,9 @@ export async function registerBookingWebPublicRoutes(
   app.post<{ Params: BookingWebBookingHandleParams }>(
     "/hotels/:slug/bookings/:handle/confirm-authorization",
     async (request, reply) => {
+      if (!isUuid(request.params.handle)) {
+        throw createHttpError(400, "Booking authorization handle must be a draft ID.");
+      }
       const response = await checkoutAdapter.confirmAuthorization(
         request.params.slug,
         request.params.handle,
@@ -619,6 +631,25 @@ export async function registerBookingWebPublicRoutes(
       );
       reply.header("Cache-Control", "no-store");
       reply.header("X-Vayada-RateLimit-Policy", "public-booking-web-booking-lookup");
+      reply.header("X-Robots-Tag", "noindex");
+      return response;
+    },
+  );
+
+  app.post<{ Params: BookingWebHotelParams; Body: BookingWebConfirmationRequest }>(
+    "/hotels/:slug/bookings/confirmation",
+    async (request, reply) => {
+      if (!checkoutAdapter.confirmation) {
+        throw createHttpError(404, "Booking confirmation lookup is not configured.");
+      }
+      const body = request.body ?? {};
+      const response = await checkoutAdapter.confirmation(
+        request.params.slug,
+        body,
+        checkoutCommandContext(request, "booking-confirmation", request.params.slug, body, now),
+      );
+      reply.header("Cache-Control", "no-store");
+      reply.header("X-Vayada-RateLimit-Policy", "public-booking-web-booking-confirmation");
       reply.header("X-Robots-Tag", "noindex");
       return response;
     },
@@ -1123,6 +1154,8 @@ type TargetBookingRow = QueryResultRow & {
   totalAmount: string | number;
   balanceAmount: string | number;
   bookingMetadata: unknown;
+  cardBrand?: string | null;
+  cardLast4?: string | null;
   createdAt: Date | string;
 };
 
@@ -1130,6 +1163,8 @@ type TargetCardPaymentRow = QueryResultRow & {
   paymentId: string;
   providerPaymentIntentId: string;
   providerAccountRef: string;
+  cardBrand?: string | null;
+  cardLast4?: string | null;
 };
 
 type TargetCheckoutQuoteOfferRow = QueryResultRow & {
@@ -1570,6 +1605,19 @@ export function createTargetBookingWebCheckoutAdapter(
           billingConfig,
           checkoutConfig,
         );
+        const confirmationToken = randomBytes(32).toString("base64url");
+        await client.query(
+          `UPDATE booking.guest_bookings
+              SET booking_metadata = booking_metadata || $3::jsonb,
+                  updated_at = $4::timestamptz
+            WHERE property_id = $1::uuid AND id = $2::uuid`,
+          [
+            property.propertyId,
+            booking.guestBookingId,
+            JSON.stringify({ confirmationTokenHash: sha256Hex(confirmationToken) }),
+            context.occurredAt.toISOString(),
+          ],
+        );
         if (booking.lifecycleStatus === "confirmed") {
           await captureDirectNightlyRevenueEvidence(client, booking, {
             selectedOffer: quote.selectedOfferSnapshot,
@@ -1618,6 +1666,7 @@ export function createTargetBookingWebCheckoutAdapter(
           clientSecret: cardPayment?.clientSecret ?? null,
           xenditInvoiceUrl: null,
           paymentMethod: quote.paymentMethod,
+          confirmationToken,
           ...(cardPayment ? { draftId: booking.guestBookingId } : {}),
           ...(cardPayment ? { providerPaymentIntentId: cardPayment.paymentIntentId } : {}),
           pmsHandoff: { status: cardPayment ? "awaiting_payment" : "pending_handoff" },
@@ -1666,6 +1715,9 @@ export function createTargetBookingWebCheckoutAdapter(
     },
     async confirmAuthorization(slug, handle, context) {
       if (!context) throw createHttpError(400, "Checkout command context is required.");
+      if (!isUuid(handle)) {
+        throw createHttpError(400, "Booking authorization handle must be a draft ID.");
+      }
       if (!config.stripePaymentProvider) {
         throw createHttpError(503, "Target card authorization is not configured.");
       }
@@ -1687,26 +1739,34 @@ export function createTargetBookingWebCheckoutAdapter(
           (acceptanceMode === "request" &&
             booking.paymentStatus === "authorized" &&
             booking.lifecycleStatus === "pending_payment");
-        if (!authorizationComplete) {
+        if (!authorizationComplete || !payment.cardBrand || !payment.cardLast4) {
           const intent = await config.stripePaymentProvider!.retrievePaymentIntent(
             payment.providerPaymentIntentId,
           );
-          assertStripePaymentReady(booking, payment.providerAccountRef, intent, acceptanceMode);
-          if (acceptanceMode === "request") {
-            await authorizeStripeBookingPayment(client, {
-              paymentIntentId: intent.paymentIntentId,
-              amountMinor: intent.amountMinor,
-              currency: intent.currency,
-              occurredAt: context.occurredAt,
-            });
-          } else {
-            await settleStripeBookingPayment(client, {
-              paymentIntentId: intent.paymentIntentId,
-              amountMinor: intent.amountMinor,
-              currency: intent.currency,
-              occurredAt: context.occurredAt,
-              correlationId: context.correlationId,
-            });
+          assertStripePaymentReady(
+            booking,
+            payment.providerAccountRef,
+            intent,
+            booking.paymentStatus === "paid" ? "instant" : acceptanceMode,
+          );
+          await recordTargetCardDisplayDetails(client, intent, context.occurredAt);
+          if (!authorizationComplete) {
+            if (acceptanceMode === "request") {
+              await authorizeStripeBookingPayment(client, {
+                paymentIntentId: intent.paymentIntentId,
+                amountMinor: intent.amountMinor,
+                currency: intent.currency,
+                occurredAt: context.occurredAt,
+              });
+            } else {
+              await settleStripeBookingPayment(client, {
+                paymentIntentId: intent.paymentIntentId,
+                amountMinor: intent.amountMinor,
+                currency: intent.currency,
+                occurredAt: context.occurredAt,
+                correlationId: context.correlationId,
+              });
+            }
           }
         }
         const finalized = await loadTargetHotelBooking(client, property.propertyId, handle);
@@ -1765,6 +1825,65 @@ export function createTargetBookingWebCheckoutAdapter(
           reference,
           requireGuestEmail(request.guestEmail),
         );
+        return {
+          propertyId: property.propertyId,
+          resourceType: "guest_booking",
+          resourceId: booking.guestBookingId,
+          body: serializeTargetBooking(booking),
+        };
+      });
+    },
+    async confirmation(slug, request, context) {
+      return withCommand(slug, context, async () => {
+        const bookingReference = firstString(request.bookingReference);
+        const confirmationToken = firstString(request.confirmationToken);
+        if (
+          !bookingReference ||
+          !confirmationToken ||
+          !/^[A-Za-z0-9_-]{40,80}$/.test(confirmationToken)
+        ) {
+          throw createHttpError(400, "Booking reference and confirmation token are required.");
+        }
+        const property = await resolveTargetHistoricalBookingProperty(pool, slug);
+        let booking = await loadTargetBooking(
+          pool,
+          property.propertyId,
+          bookingReference,
+          null,
+          sha256Hex(confirmationToken),
+        );
+        if (booking.lifecycleStatus === "draft" || booking.paymentStatus === "unpaid") {
+          throw createHttpError(409, "Booking confirmation is still processing.");
+        }
+        if (
+          stringValue(objectValue(booking.bookingMetadata)["paymentMethod"]) === "card" &&
+          (!booking.cardBrand || !booking.cardLast4)
+        ) {
+          if (!config.stripePaymentProvider) {
+            throw createHttpError(503, "Target card authorization is not configured.");
+          }
+          const payment = await loadTargetCardPayment(pool, booking);
+          const intent = await config.stripePaymentProvider.retrievePaymentIntent(
+            payment.providerPaymentIntentId,
+          );
+          const acceptanceMode = targetAcceptanceMode(
+            objectValue(booking.bookingMetadata)["acceptanceMode"],
+          );
+          assertStripePaymentReady(
+            booking,
+            payment.providerAccountRef,
+            intent,
+            booking.paymentStatus === "paid" ? "instant" : acceptanceMode,
+          );
+          await recordTargetCardDisplayDetails(pool, intent, context?.occurredAt ?? new Date());
+          booking = await loadTargetBooking(
+            pool,
+            property.propertyId,
+            bookingReference,
+            null,
+            sha256Hex(confirmationToken),
+          );
+        }
         return {
           propertyId: property.propertyId,
           resourceType: "guest_booking",
@@ -2823,7 +2942,7 @@ async function createTargetGuestBooking(
   checkoutConfig: TargetCheckoutConfigRow | null,
 ): Promise<TargetBookingRow> {
   const { totalAmount, balanceAmount } = resolveTargetCheckoutAmountSnapshot(request, quote);
-  const publicReference = targetPublicReference("B", [
+  const publicReference = await allocateTargetBookingPublicReference(pool, [
     property.propertyId,
     quote.quoteSessionId,
     context.fingerprint,
@@ -3314,6 +3433,7 @@ async function hydrateTargetCardCheckoutReplay(
         occurredAt: context.occurredAt,
       });
     }
+    await recordTargetCardDisplayDetails(client, intent, context.occurredAt);
     const finalized = await loadTargetHotelBooking(client, propertyId, bookingId);
     return {
       ...body,
@@ -3337,6 +3457,8 @@ async function loadTargetCardPayment(
   const result = await client.query<TargetCardPaymentRow>(
     `SELECT payment.id::text AS "paymentId",
             payment.provider_payment_intent_id AS "providerPaymentIntentId",
+            payment.payment_metadata ->> 'cardBrand' AS "cardBrand",
+            payment.payment_metadata ->> 'cardLast4' AS "cardLast4",
             account.provider_account_id AS "providerAccountRef"
        FROM finance.payments payment
        JOIN finance.payment_provider_accounts account ON account.id = payment.provider_account_id
@@ -3352,6 +3474,26 @@ async function loadTargetCardPayment(
   const payment = result.rows[0];
   if (!payment) throw createHttpError(404, "Card payment authorization was not found.");
   return payment;
+}
+
+async function recordTargetCardDisplayDetails(
+  client: BookingWebQueryExecutor,
+  intent: StripeBookingPaymentIntent,
+  occurredAt: Date,
+): Promise<void> {
+  if (!intent.cardBrand || !intent.cardLast4 || !/^\d{4}$/.test(intent.cardLast4)) return;
+  await client.query(
+    `UPDATE finance.payments
+        SET payment_metadata = payment_metadata || $2::jsonb,
+            updated_at = $3::timestamptz
+      WHERE provider_payment_intent_id = $1
+        AND payment_method = 'card'`,
+    [
+      intent.paymentIntentId,
+      JSON.stringify({ cardBrand: intent.cardBrand, cardLast4: intent.cardLast4 }),
+      occurredAt.toISOString(),
+    ],
+  );
 }
 
 function assertStripePaymentReady(
@@ -3519,7 +3661,8 @@ async function loadTargetBooking(
   pool: BookingWebQueryExecutor,
   propertyId: string,
   referenceOrId: string,
-  guestEmail: string,
+  guestEmail: string | null,
+  confirmationTokenHash: string | null = null,
 ): Promise<TargetBookingRow> {
   const result = await pool.query<TargetBookingRow>(
     `SELECT
@@ -3542,6 +3685,8 @@ async function loadTargetBooking(
        b.total_amount AS "totalAmount",
        b.balance_amount AS "balanceAmount",
        b.booking_metadata AS "bookingMetadata",
+       card_payment.card_brand AS "cardBrand",
+       card_payment.card_last4 AS "cardLast4",
        b.created_at AS "createdAt"
      FROM booking.guest_bookings b
      JOIN hotel_catalog.properties property
@@ -3549,11 +3694,24 @@ async function loadTargetBooking(
      JOIN booking.booking_guests booker
        ON booker.guest_booking_id = b.id
       AND booker.guest_role = 'booker'
-      AND lower(booker.email) = lower($3)
+     LEFT JOIN LATERAL (
+       SELECT payment.payment_metadata ->> 'cardBrand' AS card_brand,
+              payment.payment_metadata ->> 'cardLast4' AS card_last4
+       FROM finance.payments payment
+       WHERE payment.property_id = b.property_id
+         AND payment.guest_booking_id = b.id
+         AND payment.payment_method = 'card'
+       ORDER BY payment.created_at DESC
+       LIMIT 1
+     ) card_payment ON TRUE
      WHERE b.property_id = $1::uuid
        AND (b.id::text = $2 OR b.public_reference = $2)
+       AND (
+         ($3::text IS NOT NULL AND lower(booker.email) = lower($3))
+         OR ($4::text IS NOT NULL AND b.booking_metadata ->> 'confirmationTokenHash' = $4)
+       )
      LIMIT 1`,
-    [propertyId, referenceOrId, guestEmail],
+    [propertyId, referenceOrId, guestEmail, confirmationTokenHash],
   );
   const booking = result.rows[0];
   if (!booking) {
@@ -3594,6 +3752,8 @@ function serializeTargetBooking(booking: TargetBookingRow): Record<string, unkno
     totalAmount,
     balanceAmount: Number(decimalString(booking.balanceAmount)),
     paymentMethod: stringValue(metadata["paymentMethod"]),
+    cardBrand: booking.cardBrand ?? null,
+    cardLast4: booking.cardLast4 ?? null,
     hostResponseDeadline:
       stringValue(metadata["hostResponseDeadlineAt"]) ?? stringValue(metadata["pendingExpiresAt"]),
     createdAt: toIsoDateTime(booking.createdAt),
@@ -3916,8 +4076,20 @@ async function loadTargetHotelBooking(
        booking.total_amount AS "totalAmount",
        booking.balance_amount AS "balanceAmount",
        booking.booking_metadata AS "bookingMetadata",
+       card_payment.card_brand AS "cardBrand",
+       card_payment.card_last4 AS "cardLast4",
        booking.created_at AS "createdAt"
      FROM booking.guest_bookings booking
+     LEFT JOIN LATERAL (
+       SELECT payment.payment_metadata ->> 'cardBrand' AS card_brand,
+              payment.payment_metadata ->> 'cardLast4' AS card_last4
+       FROM finance.payments payment
+       WHERE payment.property_id = booking.property_id
+         AND payment.guest_booking_id = booking.id
+         AND payment.payment_method = 'card'
+       ORDER BY payment.created_at DESC
+       LIMIT 1
+     ) card_payment ON TRUE
      WHERE booking.property_id = $1::uuid
        AND (booking.id::text = $2 OR booking.public_reference = $2)
      LIMIT 1
@@ -5454,9 +5626,27 @@ function publicTargetCheckoutRateType(value: string): string {
   return canonical === "non_refundable" ? "nonrefundable" : canonical;
 }
 
-function targetPublicReference(prefix: "Q" | "B", components: string[]): string {
+async function allocateTargetBookingPublicReference(
+  pool: BookingWebQueryExecutor,
+  components: string[],
+): Promise<string> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const candidate = targetPublicReference("VAY", [...components, String(attempt)]);
+    await pool.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [candidate]);
+    const collision = await pool.query<{ collided: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM booking.guest_bookings WHERE public_reference = $1
+       ) AS collided`,
+      [candidate],
+    );
+    if (collision.rows[0]?.collided !== true) return candidate;
+  }
+  throw createHttpError(409, "Unable to allocate a booking reference. Please retry.");
+}
+
+function targetPublicReference(prefix: "Q" | "VAY", components: string[]): string {
   const digest = sha256Hex([prefix, ...components].join("\u001f"));
-  return `${prefix}-${digest.slice(0, 32).toUpperCase()}`;
+  return `${prefix}-${digest.slice(0, prefix === "VAY" ? 6 : 32).toUpperCase()}`;
 }
 
 function firstString(...values: unknown[]): string | undefined {
@@ -5464,6 +5654,10 @@ function firstString(...values: unknown[]): string | undefined {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return undefined;
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
 function recordBody(value: unknown): Record<string, unknown> {

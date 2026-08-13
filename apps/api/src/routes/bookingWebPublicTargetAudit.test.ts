@@ -92,24 +92,33 @@ describe("target Booking public audit regressions", () => {
     expect(propertyLookup?.text).not.toContain("p.profile_status = 'complete'");
   });
 
-  it("fails closed on booking reference collisions and binds references to the property", async () => {
+  it("bounds transactional retries when short booking references collide", async () => {
     const first = bookingCollisionHarness(propertyA);
     const second = bookingCollisionHarness(propertyB);
+    const retry = bookingCollisionHarness(propertyA);
     const request = bookingRequest();
     const context = bookingContext();
 
     await expect(first.adapter.createBooking("hotel-a", request, context)).rejects.toThrow(
-      "Checkout quote is no longer available",
+      "Unable to allocate a booking reference",
     );
     await expect(second.adapter.createBooking("hotel-b", request, context)).rejects.toThrow(
-      "Checkout quote is no longer available",
+      "Unable to allocate a booking reference",
+    );
+    await expect(retry.adapter.createBooking("hotel-a", request, context)).rejects.toThrow(
+      "Unable to allocate a booking reference",
     );
 
-    expect(first.publicBookingReference).toMatch(/^B-[A-F0-9]{32}$/);
-    expect(second.publicBookingReference).toMatch(/^B-[A-F0-9]{32}$/);
+    expect(first.publicBookingReference).toMatch(/^VAY-[A-F0-9]{6}$/);
+    expect(second.publicBookingReference).toMatch(/^VAY-[A-F0-9]{6}$/);
     expect(first.publicBookingReference).not.toBe(second.publicBookingReference);
-    expect(first.bookingWrite?.text).toContain("ON CONFLICT (public_reference) DO NOTHING");
-    expect(first.bookingWrite?.text).not.toContain("ON CONFLICT (public_reference) DO UPDATE");
+    expect(retry.publicBookingReference).toBe(first.publicBookingReference);
+    expect(
+      first.calls.filter((call) => call.text.includes("WHERE public_reference = $1")),
+    ).toHaveLength(8);
+    expect(first.calls.map((call) => call.text)).toContain(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+    );
     expect(first.calls.map((call) => call.text)).toContain("ROLLBACK");
     expect(second.calls.map((call) => call.text)).toContain("ROLLBACK");
   });
@@ -314,6 +323,10 @@ function bookingCollisionHarness(propertyId: string) {
         publicBookingReference = String(values?.[8]);
         return { rows: [] };
       }
+      if (text.includes("WHERE public_reference = $1")) {
+        publicBookingReference = String(values?.[0]);
+        return { rows: [{ collided: true }] };
+      }
       return { rows: [] };
     },
     async end() {},
@@ -331,9 +344,6 @@ function bookingCollisionHarness(propertyId: string) {
     calls,
     get publicBookingReference() {
       return publicBookingReference;
-    },
-    get bookingWrite() {
-      return calls.find((call) => call.text.includes("SELECT * FROM booking_row"));
     },
   };
 }
