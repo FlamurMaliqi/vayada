@@ -255,6 +255,9 @@ type PmsPrivateNoteRow = {
   authorDisplayName: string;
   source: "pms" | "migration" | "system";
   createdAt: Date | string;
+  editedByUserId: string | null;
+  editedByDisplayName: string | null;
+  editedAt: Date | string | null;
 };
 
 type PmsOperationalTemplateRow = {
@@ -750,7 +753,10 @@ export function createTargetPmsOperationsCommandRepository(
              note.author_user_id::text AS "authorUserId",
              note.author_display_name AS "authorDisplayName",
              note.source,
-             note.created_at AS "createdAt"
+             note.created_at AS "createdAt",
+             note.edited_by_user_id::text AS "editedByUserId",
+             note.edited_by_display_name AS "editedByDisplayName",
+             note.edited_at AS "editedAt"
            FROM pms.booking_notes_private note
            WHERE note.property_id = $1::uuid
              AND note.guest_booking_id = $2::uuid
@@ -848,7 +854,10 @@ export function createTargetPmsOperationsCommandRepository(
              author_user_id::text AS "authorUserId",
              author_display_name AS "authorDisplayName",
              source,
-             created_at AS "createdAt"`,
+             created_at AS "createdAt",
+             edited_by_user_id::text AS "editedByUserId",
+             edited_by_display_name AS "editedByDisplayName",
+             edited_at AS "editedAt"`,
           [
             command.propertyId,
             command.guestBookingId,
@@ -4129,6 +4138,12 @@ async function reservationExists(
 function toPmsPrivateNote(row: PmsPrivateNoteRow): PmsPrivateNote {
   const createdAt =
     row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt);
+  const editedAt =
+    row.editedAt instanceof Date
+      ? row.editedAt.toISOString()
+      : row.editedAt
+        ? String(row.editedAt)
+        : null;
   return {
     noteId: row.noteId,
     body: row.body,
@@ -4140,6 +4155,9 @@ function toPmsPrivateNote(row: PmsPrivateNoteRow): PmsPrivateNote {
       createdByUserId: row.authorUserId,
       createdByDisplayName: row.authorDisplayName,
       createdAt,
+      editedByUserId: row.editedByUserId,
+      editedByDisplayName: row.editedByDisplayName,
+      editedAt,
       privacyScope: "internal",
     },
   };
@@ -4484,8 +4502,9 @@ async function findPrivateNoteCommandReplay(
   if (!isPmsCommandMeta(commandMeta) || typeof noteId !== "string") {
     return privateNoteConflict("Private note command replay metadata is unavailable.");
   }
-  return isPmsPrivateNote(note)
-    ? { ok: true, commandMeta, noteId, note }
+  const replayNote = normalizePmsPrivateNote(note);
+  return replayNote
+    ? { ok: true, commandMeta, noteId, note: replayNote }
     : { ok: true, commandMeta, noteId };
 }
 
@@ -6631,21 +6650,39 @@ function operationalCommandFingerprint(command: PmsOperationalCommand): unknown 
   return fingerprint;
 }
 
-function isPmsPrivateNote(value: unknown): value is PmsPrivateNote {
-  if (!value || typeof value !== "object") return false;
+function normalizePmsPrivateNote(value: unknown): PmsPrivateNote | null {
+  if (!value || typeof value !== "object") return null;
   const note = value as PmsPrivateNote;
-  return (
-    typeof note.noteId === "string" &&
-    typeof note.body === "string" &&
-    (note.authorUserId === null || typeof note.authorUserId === "string") &&
-    typeof note.authorDisplayName === "string" &&
-    typeof note.createdAt === "string" &&
-    !!note.auditMetadata &&
-    typeof note.auditMetadata === "object" &&
-    note.auditMetadata.privacyScope === "internal" &&
-    typeof note.auditMetadata.createdAt === "string" &&
-    typeof note.auditMetadata.createdByDisplayName === "string"
-  );
+  if (
+    typeof note.noteId !== "string" ||
+    typeof note.body !== "string" ||
+    (note.authorUserId !== null && typeof note.authorUserId !== "string") ||
+    typeof note.authorDisplayName !== "string" ||
+    typeof note.createdAt !== "string" ||
+    !note.auditMetadata ||
+    typeof note.auditMetadata !== "object" ||
+    note.auditMetadata.privacyScope !== "internal" ||
+    typeof note.auditMetadata.createdAt !== "string" ||
+    typeof note.auditMetadata.createdByDisplayName !== "string"
+  ) {
+    return null;
+  }
+  for (const editValue of [
+    note.auditMetadata.editedByUserId,
+    note.auditMetadata.editedByDisplayName,
+    note.auditMetadata.editedAt,
+  ]) {
+    if (editValue !== undefined && editValue !== null && typeof editValue !== "string") return null;
+  }
+  return {
+    ...note,
+    auditMetadata: {
+      ...note.auditMetadata,
+      editedByUserId: note.auditMetadata.editedByUserId ?? null,
+      editedByDisplayName: note.auditMetadata.editedByDisplayName ?? null,
+      editedAt: note.auditMetadata.editedAt ?? null,
+    },
+  };
 }
 
 function isPmsOperationalTemplate(value: unknown): value is PmsOperationalTemplate {

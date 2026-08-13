@@ -226,6 +226,9 @@ function toBookingNote(note: PmsPrivateNote, bookingId: string): BookingNote {
     body: note.body,
     source: "booking-detail",
     createdAt: note.createdAt,
+    editedByUserId: note.auditMetadata.editedByUserId,
+    editedByName: note.auditMetadata.editedByDisplayName,
+    editedAt: note.auditMetadata.editedAt,
   };
 }
 
@@ -345,6 +348,11 @@ type PmsPrivateNote = {
   authorUserId: string | null;
   authorDisplayName: string;
   createdAt: string;
+  auditMetadata: {
+    editedByUserId: string | null;
+    editedByDisplayName: string | null;
+    editedAt: string | null;
+  };
 };
 
 type PmsPrivateNotesResponse = {
@@ -420,6 +428,9 @@ export interface BookingNote {
   body: string;
   source: "check-in" | "check-out" | "booking-detail" | null;
   createdAt: string;
+  editedByUserId: string | null;
+  editedByName: string | null;
+  editedAt: string | null;
 }
 
 export interface BookingAdditionalGuest {

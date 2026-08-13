@@ -38,6 +38,7 @@ describe("PMS operations command repository", () => {
     const created = await repository.createPrivateNote(createCommand);
     expect(created.ok).toBe(true);
     if (!created.ok) throw new Error("private note create unexpectedly failed");
+    target.stripPrivateNoteReplayEditMetadata();
 
     const deleted = await repository.deletePrivateNote({
       propertyId: createCommand.propertyId,
@@ -582,6 +583,7 @@ function targetPrivateNotesPool(options: { generatedRoomConflicts?: number } = {
   now(): Date;
   pool: PmsOperationsCommandPool;
   roomTypes: RoomTypeRecord[];
+  stripPrivateNoteReplayEditMetadata(): void;
 } {
   const calls: QueryCall[] = [];
   const auditEvents: Array<{ auditKey: string; action: string }> = [];
@@ -690,6 +692,9 @@ function targetPrivateNotesPool(options: { generatedRoomConflicts?: number } = {
           createdByUserId: String(values?.[2]),
           createdByDisplayName: String(values?.[3]),
           createdAt: String(values?.[5]),
+          editedByUserId: null,
+          editedByDisplayName: null,
+          editedAt: null,
           privacyScope: "internal",
         },
       };
@@ -706,6 +711,9 @@ function targetPrivateNotesPool(options: { generatedRoomConflicts?: number } = {
           authorDisplayName: note.authorDisplayName,
           source: "pms",
           createdAt: note.createdAt,
+          editedByUserId: null,
+          editedByDisplayName: null,
+          editedAt: null,
         } as unknown as T,
       ]);
     }
@@ -988,6 +996,16 @@ function targetPrivateNotesPool(options: { generatedRoomConflicts?: number } = {
     },
     get roomTypes() {
       return [...roomTypes.values()];
+    },
+    stripPrivateNoteReplayEditMetadata() {
+      for (const record of idempotencyRows.values()) {
+        const note = record.metadata?.["note"] as PmsPrivateNote | undefined;
+        if (!note) continue;
+        const audit = note.auditMetadata as Partial<PmsPrivateNote["auditMetadata"]>;
+        delete audit.editedByUserId;
+        delete audit.editedByDisplayName;
+        delete audit.editedAt;
+      }
     },
   };
 }

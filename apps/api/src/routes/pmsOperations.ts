@@ -155,6 +155,9 @@ export type PmsPrivateNoteAuditMetadata = {
   createdByUserId: string | null;
   createdByDisplayName: string;
   createdAt: string;
+  editedByUserId: string | null;
+  editedByDisplayName: string | null;
+  editedAt: string | null;
   privacyScope: "internal";
 };
 
