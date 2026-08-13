@@ -138,6 +138,7 @@ function PaymentPageContent() {
     requestBody: BookingCreateRequest;
     createIdempotencyKey: string;
     draftId?: string;
+    confirmationToken?: string;
   } | null>(null);
   const resumedCreateAttempt = useRef<string | null>(null);
 
@@ -417,7 +418,11 @@ function PaymentPageContent() {
       if (selectedPaymentMethod === "card" && result.authorizationComplete) {
         clearPendingBookingCreate();
         saveLastBooking(booking);
-        router.push(`/booking/${booking.bookingReference}`);
+        const confirmationParams = new URLSearchParams({ booking: booking.bookingReference });
+        if (result.confirmationToken) {
+          confirmationParams.set("token", result.confirmationToken);
+        }
+        router.push(`/confirmation?${confirmationParams}`);
       } else if (selectedPaymentMethod === "card" && result.clientSecret) {
         // VAY-388: `booking` is a draft preview here, not a persisted row.
         // We hold the draftId so StripeConfirmStep can materialize the
@@ -431,6 +436,7 @@ function PaymentPageContent() {
             requestBody,
             createIdempotencyKey,
             draftId: result.draftId || recovery?.draftId,
+            confirmationToken: result.confirmationToken || recovery?.confirmationToken,
           };
           savePendingBookingCreate(cardAttempt);
           setPendingCreateRecovery(cardAttempt);
@@ -584,6 +590,7 @@ function PaymentPageContent() {
           grandTotal={paymentGrandTotal}
           booking={pendingBooking}
           draftId={draftId}
+          confirmationToken={pendingCreateRecovery?.confirmationToken}
           slug={slug}
           formatPrice={formatPrice}
           formatDate={formatDate}

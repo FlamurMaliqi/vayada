@@ -13,12 +13,13 @@ export const metadata: Metadata = {
   },
 };
 
-export default function BookingConfirmationPage({
+export default async function BookingConfirmationPage({
   params,
   searchParams,
 }: {
   params: Promise<{ reference: string }>;
   searchParams: Promise<{ email?: string }>;
 }) {
-  return <BookingConfirmationPageClient params={params} searchParams={searchParams} />;
+  const [{ reference }, { email }] = await Promise.all([params, searchParams]);
+  return <BookingConfirmationPageClient reference={reference} emailParam={email} />;
 }

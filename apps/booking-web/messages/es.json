@@ -318,9 +318,9 @@
     "paymentMethodLabel": "Pago",
     "withdrawRequest": "Retirar solicitud",
     "withdrawing": "Retirando...",
-    "backToHotel": "Volver al Hotel",
+    "backToHotel": "Volver a {property}",
     "manageBooking": "Gestionar Reserva",
-    "emailNotice": "Se ha enviado un correo de confirmación a tu dirección de correo electrónico.",
+    "emailNotice": "Se ha enviado un correo de confirmación a {email}. Si no lo ves en unos minutos, revisa la carpeta de spam.",
     "requestChanges": "Solicitar cambios",
     "changePending": "Solicitud de cambio pendiente",
     "changePendingDesc": "Revisaremos las nuevas fechas solicitadas y te responderemos por correo electrónico."

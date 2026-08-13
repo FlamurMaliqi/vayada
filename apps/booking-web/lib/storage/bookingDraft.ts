@@ -47,6 +47,7 @@ export type PendingBookingCreateRecovery<TQuote = unknown, TRequest = unknown> =
   requestBody: TRequest;
   createIdempotencyKey: string;
   draftId?: string;
+  confirmationToken?: string;
 };
 
 function safeGet(key: string): string | null {
@@ -102,7 +103,8 @@ export function readPendingBookingCreate<TQuote, TRequest = unknown>(
       parsed.requestBody === null ||
       typeof parsed.createIdempotencyKey !== "string" ||
       !parsed.createIdempotencyKey ||
-      (parsed.draftId !== undefined && typeof parsed.draftId !== "string")
+      (parsed.draftId !== undefined && typeof parsed.draftId !== "string") ||
+      (parsed.confirmationToken !== undefined && typeof parsed.confirmationToken !== "string")
     ) {
       return null;
     }
@@ -205,6 +207,11 @@ const PAYMENT_STATUSES = [
 
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function cardLast4(value: unknown): string | null {
+  const digits = nonEmptyString(value);
+  return digits && /^\d{4}$/.test(digits) ? digits : null;
 }
 
 function nonNegativeNumber(value: unknown, fallback = 0): number {
@@ -328,6 +335,8 @@ export function toConfirmationBooking(
     paymentStatus: hasSourcePaymentStatus
       ? paymentStatus(source.paymentStatus)
       : paymentStatus(context.paymentStatus),
+    cardBrand: nonEmptyString(source.cardBrand) ?? nonEmptyString(context.cardBrand),
+    cardLast4: cardLast4(source.cardLast4) ?? cardLast4(context.cardLast4),
     hostResponseDeadline:
       nonEmptyString(source.hostResponseDeadline) ?? nonEmptyString(context.hostResponseDeadline),
     createdAt: nonEmptyString(source.createdAt) ?? nonEmptyString(context.createdAt) ?? "",

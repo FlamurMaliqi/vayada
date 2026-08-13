@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, use } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/navigation";
 import BookingNavigation from "@/components/layout/BookingNavigation";
@@ -10,11 +10,19 @@ import { bookingImageSizes } from "@/components/booking/imageSizes";
 import { useHotel, useSlug } from "@/contexts/HotelContext";
 import { useCurrency } from "@/contexts/CurrencyContext";
 import { Booking } from "@/lib/types";
-import { bookingService, BookingChangeRequest } from "@/services/api/booking";
-import { trackEvent } from "@/services/api/tracking";
 import {
+  bookingService,
+  type BookingChangeRequest,
+  type BookingCreateRequest,
+  type BookingQuote,
+} from "@/services/api/booking";
+import { trackEvent } from "@/services/api/tracking";
+import { ApiError } from "@/services/api/client";
+import {
+  clearPendingBookingCreate,
   readGuestDetails,
   readLastBooking,
+  readPendingBookingCreate,
   saveLastBooking,
   toConfirmationBooking,
 } from "@/lib/storage/bookingDraft";
@@ -47,15 +55,19 @@ function CountdownTimer({ deadline }: { deadline: string }) {
   return <span className="font-mono text-lg font-bold text-amber-600">{timeLeft}</span>;
 }
 
+function displayCardBrand(brand: string): string {
+  return brand.charAt(0).toUpperCase() + brand.slice(1).replaceAll("_", " ");
+}
+
 export default function BookingConfirmationPageClient({
-  params,
-  searchParams,
+  reference,
+  emailParam,
+  tokenParam,
 }: {
-  params: Promise<{ reference: string }>;
-  searchParams: Promise<{ email?: string }>;
+  reference: string;
+  emailParam?: string;
+  tokenParam?: string;
 }) {
-  const { reference } = use(params);
-  const { email: emailParam } = use(searchParams);
   const t = useTranslations("confirmation");
   const tc = useTranslations("common");
   const tp = useTranslations("payment");
@@ -69,18 +81,19 @@ export default function BookingConfirmationPageClient({
   const [hydrating, setHydrating] = useState(false);
   const [hydrateError, setHydrateError] = useState(false);
   const [changeRequest, setChangeRequest] = useState<BookingChangeRequest | null>(null);
+  const cardRecovery = useRef<Promise<Booking | null> | null>(null);
+  const confirmationLookup = useRef<Promise<Booking | null> | null>(null);
   const [paypalInfo, setPaypalInfo] = useState<{
     email: string;
     windowHours: number;
   } | null>(null);
 
-  // Booking details are written to sessionStorage on the checkout flow, but
-  // sessionStorage is per-tab, so a guest who opens the "View My Booking" link
-  // from the confirmation email on a different device sees no details. The
-  // backend now appends ?email=… to that link — when present, hydrate from the
-  // lookup endpoint so the page works cross-device.
+  // Use the saved booking on refresh. If Stripe redirected away for a payment
+  // challenge, replay the original create command: the backend checks the same
+  // PaymentIntent and materializes the booking without charging again.
   useEffect(() => {
     trackEvent(slug, "completed_booking");
+    setHydrateError(false);
     const stored = readLastBooking();
     if (stored && stored.bookingReference === reference) {
       const guest = readGuestDetails();
@@ -96,6 +109,120 @@ export default function BookingConfirmationPageClient({
       return;
     }
 
+    const recovery = readPendingBookingCreate<BookingQuote, BookingCreateRequest>(slug);
+    if (
+      recovery?.paymentMethod === "card" &&
+      (!tokenParam || recovery.confirmationToken === tokenParam)
+    ) {
+      let cancelled = false;
+      setHydrating(true);
+      cardRecovery.current ??= (async () => {
+        for (let attempt = 0; attempt < 15; attempt += 1) {
+          try {
+            const result = await bookingService.create(
+              slug,
+              recovery.requestBody,
+              recovery.createIdempotencyKey,
+            );
+            if (result.authorizationExpired) {
+              clearPendingBookingCreate();
+              return null;
+            }
+            if (result.authorizationComplete) {
+              const quote = recovery.quote;
+              const request = recovery.requestBody;
+              const normalized = toConfirmationBooking(result.booking, {
+                hotelName: hotel.name,
+                roomName: quote.roomName,
+                guestFirstName: request.guestFirstName,
+                guestLastName: request.guestLastName,
+                guestEmail: request.guestEmail,
+                checkIn: request.checkIn,
+                checkOut: request.checkOut,
+                adults: request.adults,
+                children: request.children,
+                numberOfRooms: request.numberOfRooms,
+                nightlyRate: quote.nightlyRate,
+                totalAmount: quote.totalAmount,
+                depositRequired: quote.depositRequired,
+                depositPercentage: quote.depositPercentage ?? 0,
+                depositAmount: quote.depositAmount,
+                balanceAmount: quote.balanceAmount,
+                addonTotal: quote.addonTotal,
+                addonIds: request.addonIds,
+                addonQuantities: request.addonQuantities,
+                addonDates: request.addonDates,
+                currency: quote.currency,
+                paymentMethod: "card",
+              });
+              if (normalized.bookingReference !== reference) return null;
+              saveLastBooking(normalized);
+              clearPendingBookingCreate();
+              return normalized;
+            }
+          } catch {
+            // A command may still be completing; retry with the same key.
+          }
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+        return null;
+      })();
+      void cardRecovery.current
+        .then((normalized) => {
+          if (cancelled) return;
+          if (!normalized) {
+            setHydrateError(true);
+            return;
+          }
+          setBooking(normalized);
+          setStatus(normalized.status);
+        })
+        .finally(() => {
+          if (!cancelled) setHydrating(false);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (tokenParam) {
+      let cancelled = false;
+      setHydrating(true);
+      confirmationLookup.current ??= (async () => {
+        for (let attempt = 0; attempt < 15; attempt += 1) {
+          try {
+            return await bookingService.confirmation(slug, reference, tokenParam);
+          } catch (error) {
+            if (error instanceof ApiError && error.status !== 409 && error.status < 500) {
+              return null;
+            }
+          }
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+        return null;
+      })();
+      void confirmationLookup.current
+        .then((fetched) => {
+          if (cancelled) return;
+          if (!fetched) {
+            setHydrateError(true);
+            return;
+          }
+          const normalized = toConfirmationBooking(fetched, { hotelName: hotel.name });
+          setBooking(normalized);
+          setStatus(normalized.status);
+          saveLastBooking(normalized);
+        })
+        .finally(() => {
+          if (!cancelled) setHydrating(false);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    // A confirmation-email link carries the guest email so the stored booking
+    // can be hydrated on another device without exposing it by reference alone.
     const email = emailParam;
     if (!email) return;
 
@@ -124,7 +251,7 @@ export default function BookingConfirmationPageClient({
     return () => {
       cancelled = true;
     };
-  }, [reference, emailParam, hotel.name, slug]);
+  }, [reference, emailParam, tokenParam, hotel.name, slug]);
 
   useEffect(() => {
     if (booking?.paymentMethod !== "paypal") return;
@@ -485,7 +612,9 @@ export default function BookingConfirmationPageClient({
                   <span className="text-gray-600">{t("paymentMethodLabel") || "Payment"}</span>
                   <span className="font-medium text-gray-900">
                     {booking.paymentMethod === "card"
-                      ? tp("payWithCard")
+                      ? booking.cardBrand && booking.cardLast4
+                        ? `${displayCardBrand(booking.cardBrand)} •••• ${booking.cardLast4}`
+                        : tp("payWithCard")
                       : isPayAtProperty
                         ? tp("payAtProperty")
                         : booking.paymentMethod === "paypal"
@@ -585,7 +714,7 @@ export default function BookingConfirmationPageClient({
               href="/"
               className="px-6 py-3 bg-primary-600 text-white font-semibold rounded-full hover:bg-primary-700 transition-colors"
             >
-              {t("backToHotel")}
+              {t("backToHotel", { property: hotel.name })}
             </Link>
             <Link
               href={manageBookingHref}
@@ -597,7 +726,11 @@ export default function BookingConfirmationPageClient({
         </div>
 
         {/* Email notice */}
-        <p className="text-center text-sm text-gray-500 mt-6">{t("emailNotice")}</p>
+        <p className="text-center text-sm text-gray-500 mt-6">
+          {guestEmail
+            ? t("emailNotice", { email: guestEmail })
+            : "A confirmation email has been sent to your email address."}
+        </p>
       </div>
 
       <BookingFooter />

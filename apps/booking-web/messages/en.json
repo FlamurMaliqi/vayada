@@ -293,7 +293,7 @@
   "confirmation": {
     "loadingDetails": "Loading booking details…",
     "detailsUnavailable": "Booking details are unavailable. Use Manage Booking to look up your reservation.",
-    "title": "Booking Confirmed!",
+    "title": "Your booking is confirmed!",
     "subtitle": "Your reservation has been successfully confirmed.",
     "requestSubmitted": "Booking Request Submitted",
     "pendingSubtitle": "Your booking request has been sent to us. We'll respond within 24 hours.",
@@ -318,9 +318,9 @@
     "paymentMethodLabel": "Payment",
     "withdrawRequest": "Withdraw Request",
     "withdrawing": "Withdrawing...",
-    "backToHotel": "Back to Hotel",
+    "backToHotel": "Back to {property}",
     "manageBooking": "Manage Booking",
-    "emailNotice": "A confirmation email has been sent to your email address.",
+    "emailNotice": "A confirmation email has been sent to {email}. If you don't see it within a few minutes, check your spam folder.",
     "requestChanges": "Request Changes",
     "changePending": "Change request pending approval",
     "changePendingDesc": "We'll review your requested change and email you once we respond."
