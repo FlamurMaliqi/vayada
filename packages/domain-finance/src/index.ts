@@ -30,6 +30,7 @@ export * from "./paymentReadinessSnapshot.js";
 export * from "./manualBookingSettlement.js";
 export * from "./subscriptions.js";
 export * from "./platformAffiliatePayouts.js";
+export * from "./affiliateCommission.js";
 
 // ---------------------------------------------------------------------------
 // Scalar aliases
