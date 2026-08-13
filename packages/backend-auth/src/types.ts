@@ -49,6 +49,7 @@ export type ResourceRelationship =
 export type PermissionKey =
   | "platform.admin.read"
   | "platform.finance.read"
+  | "platform.finance.manage"
   | "platform.property.status.manage"
   | "platform.user.suspend"
   | "hotel_catalog.setup.read"
