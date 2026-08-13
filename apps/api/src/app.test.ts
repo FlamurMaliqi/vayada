@@ -122,6 +122,7 @@ import type {
   PmsCheckoutChargeCreateCommand,
   PmsCheckoutChargeMarkPaidCommand,
   PmsCheckoutChargeWaiveCommand,
+  PmsCommandMeta,
   PmsOperationalTemplate,
   PmsOperationalTemplateCommandResponse,
   PmsOperationalTemplateKind,
@@ -138,6 +139,7 @@ import type {
   PmsPrivateNoteDeleteResponse,
   PmsOperationsReadRepository,
   PmsRoom,
+  PmsRoomBlockCreateCommand,
   PmsRoomBlockSummary,
   PmsRoomType,
   PmsRoomTypeCommandResponse,
@@ -1082,6 +1084,7 @@ const pmsRooms: PmsRoom[] = [
 const pmsRoomBlocks: PmsRoomBlockSummary[] = [
   {
     blockId: "f6855400-0000-0000-0000-000000000001",
+    version: "room-block-v1",
     roomTypeId: pmsRoomTypes[0].roomTypeId,
     roomId: pmsRooms[1].roomId,
     startsOn: "2026-08-15",
@@ -1092,6 +1095,7 @@ const pmsRoomBlocks: PmsRoomBlockSummary[] = [
   },
   {
     blockId: "f6855400-0000-0000-0000-000000000002",
+    version: "room-block-v1",
     roomTypeId: pmsRoomTypes[0].roomTypeId,
     roomId: null,
     startsOn: "2026-08-16",
@@ -1377,6 +1381,19 @@ const pmsOperationsRepository: PmsOperationsReadRepository = {
   },
 };
 
+function roomBlockCommandMeta(
+  command: { commandId: string; idempotencyKey: string },
+  acceptedAt: string,
+): PmsCommandMeta {
+  return {
+    contractVersion: "pms-operations.v1" as const,
+    commandId: command.commandId,
+    idempotencyKey: command.idempotencyKey,
+    acceptedAt,
+    sideEffects: ["calendar_refresh", "ari_changed", "audit_event"],
+  };
+}
+
 function createPmsOperationsCommandRepository(
   roomTypes: PmsRoomType[] = structuredClone(pmsRoomTypes),
 ): PmsOperationsCommandRepository & {
@@ -1396,6 +1413,7 @@ function createPmsOperationsCommandRepository(
   noteDeletes: PmsPrivateNoteDeleteCommand[];
   roomTypeCreates: PmsRoomTypeCreateCommand[];
   roomTypeUpdates: PmsRoomTypeUpdateCommand[];
+  roomBlockCreates: PmsRoomBlockCreateCommand[];
   templateUpdates: PmsOperationalTemplateUpdateCommand[];
   outboxEnqueues: string[];
   auditEvents: string[];
@@ -1416,6 +1434,8 @@ function createPmsOperationsCommandRepository(
   const noteDeletes: PmsPrivateNoteDeleteCommand[] = [];
   const roomTypeCreates: PmsRoomTypeCreateCommand[] = [];
   const roomTypeUpdates: PmsRoomTypeUpdateCommand[] = [];
+  const roomBlockCreates: PmsRoomBlockCreateCommand[] = [];
+  const roomBlocks = structuredClone(pmsRoomBlocks);
   const templateUpdates: PmsOperationalTemplateUpdateCommand[] = [];
   const outboxEnqueues: string[] = [];
   const auditEvents: string[] = [];
@@ -1490,9 +1510,86 @@ function createPmsOperationsCommandRepository(
     noteDeletes,
     roomTypeCreates,
     roomTypeUpdates,
+    roomBlockCreates,
     templateUpdates,
     outboxEnqueues,
     auditEvents,
+    async createRoomBlocks(command) {
+      roomBlockCreates.push(command);
+      const items = command.roomIds.map((roomId, index) => ({
+        blockId: `f6855400-0000-0000-0000-${String(index + 10).padStart(12, "0")}`,
+        version: "room-block-v1",
+        roomTypeId: command.roomTypeId,
+        roomId,
+        startsOn: command.startsOn,
+        endsOn: command.endsOn,
+        blockedCount: 1,
+        reason: command.reason,
+        status: "active" as const,
+      }));
+      roomBlocks.push(...items);
+      return {
+        ok: true as const,
+        items,
+        commandMeta: roomBlockCommandMeta(command, "2026-08-14T18:00:00.000Z"),
+      };
+    },
+    async updateRoomBlock(command) {
+      const item = roomBlocks.find((block) => block.blockId === command.blockId);
+      if (!item) {
+        return {
+          ok: false as const,
+          statusCode: 404 as const,
+          code: "room_block_not_found" as const,
+          message: "Room block not found.",
+        };
+      }
+      if (item.version !== command.expectedVersion) {
+        return {
+          ok: false as const,
+          statusCode: 409 as const,
+          code: "version_conflict" as const,
+          message: "Room block changed. Refresh and try again.",
+        };
+      }
+      Object.assign(item, {
+        startsOn: command.startsOn ?? item.startsOn,
+        endsOn: command.endsOn ?? item.endsOn,
+        reason: command.reason ?? item.reason,
+        version: "room-block-v2",
+      });
+      return {
+        ok: true as const,
+        items: [structuredClone(item)],
+        commandMeta: roomBlockCommandMeta(command, "2026-08-14T18:01:00.000Z"),
+      };
+    },
+    async releaseRoomBlock(command) {
+      const item = roomBlocks.find((block) => block.blockId === command.blockId);
+      if (!item || item.status !== "active") {
+        return {
+          ok: false as const,
+          statusCode: 404 as const,
+          code: "room_block_not_found" as const,
+          message: "Room block not found.",
+        };
+      }
+      if (item.version !== command.expectedVersion) {
+        return {
+          ok: false as const,
+          statusCode: 409 as const,
+          code: "version_conflict" as const,
+          message: "Room block changed. Refresh and try again.",
+        };
+      }
+      item.status = "released";
+      item.version = "room-block-v2";
+      return {
+        ok: true as const,
+        items: [structuredClone(item)],
+        commandMeta: roomBlockCommandMeta(command, "2026-08-14T18:02:00.000Z"),
+      };
+    },
     async createRoomType(command) {
       roomTypeCreates.push(command);
       if (command.idempotencyKey === "room-type-create-conflict") {
@@ -10434,6 +10531,155 @@ describe("vayada-api", () => {
     expect(commandRepository.auditEvents).toEqual([
       "room_type_created:f6855000-0000-0000-0000-000000000003",
     ]);
+  });
+
+  it("creates, updates, and releases target room blocks with refresh and ARI metadata", async () => {
+    const commandRepository = createPmsOperationsCommandRepository();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      pmsOperationsCommandRepository: commandRepository,
+    });
+    const headers = { authorization: "Bearer valid-token" };
+    const create = await injectJson(app, {
+      method: "POST",
+      url: `/api/pms/properties/${pmsPropertyId}/room-blocks`,
+      headers,
+      payload: {
+        commandId: "cmd-room-block-create",
+        idempotencyKey: "room-block-create",
+        roomTypeId: pmsRoomTypes[0].roomTypeId,
+        roomIds: [pmsRooms[0].roomId, pmsRooms[1].roomId],
+        startsOn: "2026-08-20",
+        endsOn: "2026-08-22",
+        reason: "Renovation",
+      },
+    });
+    expect(create.statusCode).toBe(200);
+    expect(create.body).toMatchObject({
+      items: [
+        { version: "room-block-v1", startsOn: "2026-08-20", endsOn: "2026-08-22" },
+        { version: "room-block-v1", startsOn: "2026-08-20", endsOn: "2026-08-22" },
+      ],
+      commandMeta: { sideEffects: ["calendar_refresh", "ari_changed", "audit_event"] },
+    });
+    expect(commandRepository.roomBlockCreates[0]).toMatchObject({
+      propertyId: pmsPropertyId,
+      roomIds: [pmsRooms[0].roomId, pmsRooms[1].roomId],
+      audit: { actor: { kind: "user", userId: "user_hotel_owner" } },
+    });
+
+    const block = (create.body as { items: PmsRoomBlockSummary[] }).items[0]!;
+    const update = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/room-blocks/${block.blockId}`,
+      headers,
+      payload: {
+        commandId: "cmd-room-block-update",
+        idempotencyKey: "room-block-update",
+        expectedVersion: block.version,
+        endsOn: "2026-08-23",
+        reason: "Extended renovation",
+      },
+    });
+    expect(update.statusCode).toBe(200);
+    expect(update.body).toMatchObject({
+      items: [{ version: "room-block-v2", endsOn: "2026-08-23" }],
+    });
+
+    const release = await injectJson(app, {
+      method: "DELETE",
+      url: `/api/pms/properties/${pmsPropertyId}/room-blocks/${block.blockId}`,
+      headers,
+      payload: {
+        commandId: "cmd-room-block-release",
+        idempotencyKey: "room-block-release",
+        expectedVersion: "room-block-v2",
+      },
+    });
+    expect(release.statusCode).toBe(200);
+    expect(release.body).toMatchObject({ items: [{ status: "released" }] });
+  });
+
+  it("rejects stale and unauthorized room-block writes before mutation", async () => {
+    const commandRepository = createPmsOperationsCommandRepository();
+    const entitlement: ProductEntitlement = {
+      product: "pms",
+      key: "property-management",
+      status: "active",
+      resource: {
+        product: "pms",
+        resourceType: "pms_property",
+        resourceId: pmsPropertyId,
+      },
+    };
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [entitlement],
+      pmsOperationsCommandRepository: commandRepository,
+    });
+    const stale = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/room-blocks/${pmsRoomBlocks[0].blockId}`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        commandId: "cmd-room-block-stale",
+        idempotencyKey: "room-block-stale",
+        expectedVersion: "room-block-v0",
+        reason: "Stale edit",
+      },
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.body).toMatchObject({ code: "version_conflict", category: "conflict" });
+
+    const malformedDate = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/room-blocks/${pmsRoomBlocks[0].blockId}`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        commandId: "cmd-room-block-malformed-date",
+        idempotencyKey: "room-block-malformed-date",
+        expectedVersion: pmsRoomBlocks[0].version,
+        startsOn: 123,
+        reason: "Must not silently drop the date",
+      },
+    });
+    expect(malformedDate.statusCode).toBe(400);
+    expect(malformedDate.body).toMatchObject({ code: "invalid_body", category: "validation" });
+    await app.close();
+
+    app = buildAuthenticatedApp({
+      permissions: [] as PermissionKey[],
+      entitlements: [entitlement],
+      pmsOperationsCommandRepository: commandRepository,
+    });
+    const forbidden = await injectJson(app, {
+      method: "POST",
+      url: `/api/pms/properties/${pmsPropertyId}/room-blocks`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        commandId: "cmd-room-block-forbidden",
+        idempotencyKey: "room-block-forbidden",
+        roomTypeId: pmsRoomTypes[0].roomTypeId,
+        roomIds: [pmsRooms[0].roomId],
+        startsOn: "2026-08-20",
+        endsOn: "2026-08-20",
+      },
+    });
+    expect(forbidden.statusCode).toBe(403);
+    expect(forbidden.body).toMatchObject({ code: "missing_permission" });
+    expect(commandRepository.roomBlockCreates).toHaveLength(0);
   });
 
   it("rejects stale currency before creating an onboarding room", async () => {

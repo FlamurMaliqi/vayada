@@ -382,6 +382,39 @@ export type PmsRoomTypeUpdateCommand = {
   audit: PmsOperationsCommandAudit;
 };
 
+export type PmsRoomBlockCreateCommand = {
+  propertyId: string;
+  commandId: string;
+  idempotencyKey: string;
+  roomTypeId: string;
+  roomIds: string[];
+  startsOn: string;
+  endsOn: string;
+  reason: string;
+  audit: PmsOperationsCommandAudit;
+};
+
+export type PmsRoomBlockUpdateCommand = {
+  propertyId: string;
+  blockId: string;
+  commandId: string;
+  idempotencyKey: string;
+  expectedVersion: string;
+  startsOn?: string;
+  endsOn?: string;
+  reason?: string;
+  audit: PmsOperationsCommandAudit;
+};
+
+export type PmsRoomBlockReleaseCommand = {
+  propertyId: string;
+  blockId: string;
+  commandId: string;
+  idempotencyKey: string;
+  expectedVersion: string;
+  audit: PmsOperationsCommandAudit;
+};
+
 export type PmsPrivateNoteCreateCommand = PmsPrivateNoteCreateRequest & {
   propertyId: string;
   guestBookingId: string;
@@ -443,6 +476,13 @@ export type PmsRoomTypeCommandResponse = {
   contractVersion: PmsOperationsContractVersion;
   propertyId: string;
   item: PmsRoomType;
+  commandMeta: PmsCommandMeta;
+};
+
+export type PmsRoomBlockCommandResponse = {
+  contractVersion: PmsOperationsContractVersion;
+  propertyId: string;
+  items: PmsRoomBlockSummary[];
   commandMeta: PmsCommandMeta;
 };
 
@@ -702,7 +742,29 @@ export type PmsRoomTypeCommandResult =
       message: string;
     };
 
+export type PmsRoomBlockCommandResult =
+  | {
+      ok: true;
+      items: PmsRoomBlockSummary[];
+      commandMeta: PmsCommandMeta;
+      replayed?: boolean;
+    }
+  | {
+      ok: false;
+      statusCode: 404 | 409 | 500;
+      code:
+        | "room_block_not_found"
+        | "room_block_conflict"
+        | "version_conflict"
+        | "idempotency_conflict"
+        | "side_effect_failed";
+      message: string;
+    };
+
 export type PmsOperationsCommandRepository = {
+  createRoomBlocks?(command: PmsRoomBlockCreateCommand): Promise<PmsRoomBlockCommandResult>;
+  updateRoomBlock?(command: PmsRoomBlockUpdateCommand): Promise<PmsRoomBlockCommandResult>;
+  releaseRoomBlock?(command: PmsRoomBlockReleaseCommand): Promise<PmsRoomBlockCommandResult>;
   createRoomType(command: PmsRoomTypeCreateCommand): Promise<PmsRoomTypeCommandResult>;
   updateRoomTypeLocation(command: PmsRoomTypeUpdateCommand): Promise<PmsRoomTypeCommandResult>;
   executeAssignmentCommand(command: PmsAssignmentCommand): Promise<PmsAssignmentCommandResult>;
@@ -761,6 +823,10 @@ type PmsPropertyParams = {
 
 type PmsRoomTypeParams = PmsPropertyParams & {
   roomTypeId: string;
+};
+
+type PmsRoomBlockParams = PmsPropertyParams & {
+  blockId: string;
 };
 
 type PmsReservationParams = PmsPropertyParams & {
@@ -833,6 +899,7 @@ type PmsOperationsErrorCategory =
   | "validation"
   | "conflict"
   | "read_model"
+  | "side_effect"
   | "not_found";
 
 type PmsOperationsErrorCode =
@@ -854,6 +921,9 @@ type PmsOperationsErrorCode =
   | "room_photo_plan_limit_reached"
   | "read_model_unavailable"
   | "room_type_not_found"
+  | "room_block_not_found"
+  | "room_block_conflict"
+  | "side_effect_failed"
   | "reservation_not_found"
   | "additional_guest_not_found"
   | "note_not_found"
@@ -895,6 +965,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/plan-limits",
     "/properties/:propertyId/calendar",
     "/properties/:propertyId/room-blocks",
+    "/properties/:propertyId/room-blocks/:blockId",
     "/properties/:propertyId/payment-settings",
     "/properties/:propertyId/profile",
     "/properties/:propertyId/calendar-settings",
@@ -1163,6 +1234,75 @@ export async function registerPmsOperationsRoutes(
       }
     },
   );
+
+  if (
+    commandRepository?.createRoomBlocks &&
+    commandRepository.updateRoomBlock &&
+    commandRepository.releaseRoomBlock
+  ) {
+    app.post<{ Params: PmsPropertyParams; Body: unknown }>(
+      "/properties/:propertyId/room-blocks",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toRoomBlockCreateCommand(propertyId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await commandRepository.createRoomBlocks!(command.value);
+        if (!result.ok) return sendPmsRoomBlockCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          items: result.items,
+          commandMeta: result.commandMeta,
+        } satisfies PmsRoomBlockCommandResponse;
+      },
+    );
+
+    app.patch<{ Params: PmsRoomBlockParams; Body: unknown }>(
+      "/properties/:propertyId/room-blocks/:blockId",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId, blockId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toRoomBlockUpdateCommand(propertyId, blockId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await commandRepository.updateRoomBlock!(command.value);
+        if (!result.ok) return sendPmsRoomBlockCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          items: result.items,
+          commandMeta: result.commandMeta,
+        } satisfies PmsRoomBlockCommandResponse;
+      },
+    );
+
+    app.delete<{ Params: PmsRoomBlockParams; Body: unknown }>(
+      "/properties/:propertyId/room-blocks/:blockId",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId, blockId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toRoomBlockReleaseCommand(propertyId, blockId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await commandRepository.releaseRoomBlock!(command.value);
+        if (!result.ok) return sendPmsRoomBlockCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          items: result.items,
+          commandMeta: result.commandMeta,
+        } satisfies PmsRoomBlockCommandResponse;
+      },
+    );
+  }
 
   app.get<{ Params: PmsPropertyParams }>(
     "/properties/:propertyId/profile",
@@ -2635,6 +2775,32 @@ function sendPmsRoomTypeCommandError(
   });
 }
 
+function sendPmsRoomBlockCommandError(
+  reply: FastifyReply,
+  result: Exclude<PmsRoomBlockCommandResult, { ok: true }>,
+): FastifyReply {
+  return sendPmsOperationsError(reply, {
+    statusCode: result.statusCode,
+    code: result.code,
+    category:
+      result.statusCode === 404
+        ? "not_found"
+        : result.statusCode === 500
+          ? "side_effect"
+          : "conflict",
+    message: result.message,
+  });
+}
+
+function originNotAllowed(): PmsOperationsError {
+  return {
+    statusCode: 403,
+    code: "missing_permission",
+    category: "authorization",
+    message: "PMS operations origin is not allowed.",
+  };
+}
+
 function sendPmsCheckOutCommandError(
   reply: FastifyReply,
   result: Exclude<PmsCheckOutCommandResult, { ok: true }>,
@@ -2692,6 +2858,119 @@ function writePmsOperationsCorsHeaders(
     .header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
     .header("Vary", "Origin");
   return true;
+}
+
+function toRoomBlockCreateCommand(
+  propertyId: string,
+  request: FastifyRequest<{ Body: unknown }>,
+): { value: PmsRoomBlockCreateCommand } | { error: PmsOperationsError } {
+  const raw = objectBody(request.body);
+  if (!raw) return { error: invalidBody("Room block create body must be an object.") };
+  const commandId = stringField(raw.commandId);
+  const idempotencyKey = stringField(raw.idempotencyKey);
+  const roomTypeId = stringField(raw.roomTypeId);
+  const startsOn = stringField(raw.startsOn);
+  const endsOn = stringField(raw.endsOn);
+  const roomIds = [...new Set(toStringArray(raw.roomIds))];
+  if (!commandId || !idempotencyKey || !roomTypeId || !startsOn || !endsOn) {
+    return {
+      error: invalidBody(
+        "Room block create requires commandId, idempotencyKey, roomTypeId, startsOn, and endsOn.",
+      ),
+    };
+  }
+  if (!isUuid(roomTypeId) || roomIds.length === 0 || roomIds.some((id) => !isUuid(id))) {
+    return { error: invalidBody("Room block create requires valid roomTypeId and roomIds.") };
+  }
+  if (!isDateOnly(startsOn) || !isDateOnly(endsOn) || startsOn > endsOn) {
+    return { error: invalidBody("Room block create requires an ordered date range.") };
+  }
+  return {
+    value: {
+      propertyId,
+      commandId,
+      idempotencyKey,
+      roomTypeId,
+      roomIds,
+      startsOn,
+      endsOn,
+      reason: typeof raw.reason === "string" ? raw.reason.trim() : "",
+      audit: pmsOperationsCommandAudit(request, commandId, "Create room block"),
+    },
+  };
+}
+
+function toRoomBlockUpdateCommand(
+  propertyId: string,
+  blockId: string,
+  request: FastifyRequest<{ Body: unknown }>,
+): { value: PmsRoomBlockUpdateCommand } | { error: PmsOperationsError } {
+  const raw = objectBody(request.body);
+  if (!raw || !isUuid(blockId)) return { error: invalidBody("Room block update is invalid.") };
+  const commandId = stringField(raw.commandId);
+  const idempotencyKey = stringField(raw.idempotencyKey);
+  const expectedVersion = stringField(raw.expectedVersion);
+  const startsOn = raw.startsOn === undefined ? undefined : stringField(raw.startsOn);
+  const endsOn = raw.endsOn === undefined ? undefined : stringField(raw.endsOn);
+  const reason = raw.reason === undefined ? undefined : String(raw.reason).trim();
+  if (!commandId || !idempotencyKey || !expectedVersion) {
+    return {
+      error: invalidBody(
+        "Room block update requires commandId, idempotencyKey, and expectedVersion.",
+      ),
+    };
+  }
+  if (startsOn === undefined && endsOn === undefined && reason === undefined) {
+    return { error: invalidBody("Room block update requires at least one changed field.") };
+  }
+  if (
+    (raw.startsOn !== undefined && (!startsOn || !isDateOnly(startsOn))) ||
+    (raw.endsOn !== undefined && (!endsOn || !isDateOnly(endsOn)))
+  ) {
+    return { error: invalidBody("Room block update requires valid dates.") };
+  }
+  return {
+    value: {
+      propertyId,
+      blockId,
+      commandId,
+      idempotencyKey,
+      expectedVersion,
+      startsOn,
+      endsOn,
+      reason,
+      audit: pmsOperationsCommandAudit(request, commandId, "Update room block"),
+    },
+  };
+}
+
+function toRoomBlockReleaseCommand(
+  propertyId: string,
+  blockId: string,
+  request: FastifyRequest<{ Body: unknown }>,
+): { value: PmsRoomBlockReleaseCommand } | { error: PmsOperationsError } {
+  const raw = objectBody(request.body);
+  if (!raw || !isUuid(blockId)) return { error: invalidBody("Room block release is invalid.") };
+  const commandId = stringField(raw.commandId);
+  const idempotencyKey = stringField(raw.idempotencyKey);
+  const expectedVersion = stringField(raw.expectedVersion);
+  if (!commandId || !idempotencyKey || !expectedVersion) {
+    return {
+      error: invalidBody(
+        "Room block release requires commandId, idempotencyKey, and expectedVersion.",
+      ),
+    };
+  }
+  return {
+    value: {
+      propertyId,
+      blockId,
+      commandId,
+      idempotencyKey,
+      expectedVersion,
+      audit: pmsOperationsCommandAudit(request, commandId, "Release room block"),
+    },
+  };
 }
 
 function toRoomTypeCreateCommand(
