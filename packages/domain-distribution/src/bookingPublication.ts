@@ -30,8 +30,14 @@ export type BookingPublicRate = Readonly<{
 export type BookingPublicRoom = Readonly<{
   roomTypeId: string;
   name: string;
-  maxAdults: number;
-  maxChildren: number;
+  description: string;
+  category: string | null;
+  occupancy: Readonly<{ maxGuests: number; maxAdults: number; maxChildren: number }>;
+  beds: readonly Readonly<{ type: string; quantity: number }>[];
+  bedrooms: number | null;
+  bathrooms: number | null;
+  bathroomType: "private" | "shared";
+  size: Readonly<{ value: number; unit: "sqm" }> | null;
   images: readonly { url: string; alt?: string | null }[];
   amenities: readonly string[];
   rates: readonly BookingPublicRate[];
@@ -74,20 +80,11 @@ export function buildBookingPublicContent(input: {
   finance: BookingPublicFinanceEvidence;
 }): BookingPublicContentBuild | null {
   if (!validHash(input.sourceManifestHash) || !validHash(input.readinessHash)) return null;
-  const readyMethods = [
-    ...new Set(
-      input.finance.readyPaymentMethods.filter(
-        (method) => method === "card" || method === "pay_at_property",
-      ),
-    ),
-  ].sort();
+  const readyMethods = [...new Set(input.finance.readyPaymentMethods)]
+    .filter((method) => method === "card" || method === "pay_at_property")
+    .sort();
   const rooms = sanitizeRooms(input.rooms, input.finance, readyMethods);
-  const calendar = sanitizeCalendar(
-    input.calendar,
-    rooms,
-    input.profile.generatedAt,
-    input.profile.hotel.timezone,
-  );
+  const calendar = sanitizeCalendar(input.calendar, rooms, input.profile);
   if (
     !rooms ||
     !calendar ||
@@ -118,19 +115,15 @@ function validProfile(
 ): boolean {
   const generated = Date.parse(profile.generatedAt);
   const sources = profile.freshness.sources;
+  const { hotel } = profile;
   return (
     profile.contractVersion === PUBLIC_BOOKABILITY_CONTRACT_VERSION &&
     profile.publicVisibility === PUBLIC_BOOKABILITY_VISIBILITY &&
-    [
-      profile.hotel.propertyId,
-      profile.hotel.slug,
-      profile.hotel.name,
-      profile.hotel.timezone,
-    ].every(nonEmpty) &&
-    profile.hotel.trust.profileComplete &&
-    profile.hotel.trust.profileVerified &&
-    profile.hotel.trust.bookabilityStatus === "bookable" &&
-    profile.hotel.trust.reasonCodes.length === 0 &&
+    [hotel.propertyId, hotel.slug, hotel.name, hotel.timezone].every(nonEmpty) &&
+    hotel.trust.profileComplete &&
+    hotel.trust.profileVerified &&
+    hotel.trust.bookabilityStatus === "bookable" &&
+    hotel.trust.reasonCodes.length === 0 &&
     profile.freshness.status === "fresh" &&
     profile.freshness.generatedAt === profile.generatedAt &&
     sameOwners(profile.dataSources, PUBLIC_BOOKABILITY_DATA_SOURCE_OWNERS) &&
@@ -142,20 +135,18 @@ function validProfile(
       ({ status, lastUpdatedAt }) =>
         status === "fresh" && validInstant(lastUpdatedAt) && Date.parse(lastUpdatedAt) <= generated,
     ) &&
-    profile.hotel.capabilities.onlinePayment === finance.onlinePayment &&
-    profile.hotel.capabilities.payAtProperty === finance.payAtProperty &&
-    profile.hotel.defaultCurrency === finance.defaultCurrency &&
-    sameOwners(profile.hotel.supportedCurrencies, finance.supportedCurrencies) &&
-    sameOwners(
-      profile.hotel.supportedQuoteParameters.supportedCurrencies,
-      finance.supportedCurrencies,
-    )
+    hotel.capabilities.onlinePayment === finance.onlinePayment &&
+    hotel.capabilities.payAtProperty === finance.payAtProperty &&
+    hotel.defaultCurrency === finance.defaultCurrency &&
+    sameOwners(hotel.supportedCurrencies, finance.supportedCurrencies) &&
+    sameOwners(hotel.supportedQuoteParameters.supportedCurrencies, finance.supportedCurrencies)
   );
 }
 
 function sameOwners(left: readonly string[], right: readonly string[]): boolean {
   return (
     new Set(left).size === left.length &&
+    new Set(right).size === right.length &&
     [...left].sort().join("\0") === [...right].sort().join("\0")
   );
 }
@@ -167,8 +158,7 @@ function sanitizeRooms(
 ): readonly BookingPublicRoom[] | null {
   const roomIds = new Set<string>();
   const rooms = input.map((room) => {
-    if (!nonEmpty(room.roomTypeId) || !nonEmpty(room.name) || roomIds.has(room.roomTypeId))
-      return null;
+    if (!validRoomFacts(room) || roomIds.has(room.roomTypeId)) return null;
     roomIds.add(room.roomTypeId);
     const rateIds = new Set<string>();
     const rates = room.rates.map((rate) => {
@@ -193,20 +183,18 @@ function sanitizeRooms(
         paymentTiming: rate.paymentTiming,
       };
     });
-    if (
-      rates.length === 0 ||
-      rates.some((rate) => !rate) ||
-      !Number.isInteger(room.maxAdults) ||
-      room.maxAdults < 1 ||
-      !Number.isInteger(room.maxChildren) ||
-      room.maxChildren < 0
-    )
-      return null;
+    if (rates.length === 0 || rates.some((rate) => !rate)) return null;
     return {
       roomTypeId: room.roomTypeId,
       name: room.name,
-      maxAdults: room.maxAdults,
-      maxChildren: room.maxChildren,
+      description: room.description,
+      category: room.category,
+      occupancy: { ...room.occupancy },
+      beds: room.beds.map((bed) => ({ ...bed })),
+      bedrooms: room.bedrooms,
+      bathrooms: room.bathrooms,
+      bathroomType: room.bathroomType,
+      size: room.size && { ...room.size },
       images: room.images.map(({ url, alt }) => ({ url, ...(alt === undefined ? {} : { alt }) })),
       amenities: [...room.amenities],
       rates: rates as BookingPublicRate[],
@@ -215,25 +203,52 @@ function sanitizeRooms(
   return rooms.length > 0 && !rooms.some((room) => !room) ? (rooms as BookingPublicRoom[]) : null;
 }
 
+function validRoomFacts(room: BookingPublicRoom): boolean {
+  const { maxGuests, maxAdults, maxChildren } = room.occupancy;
+  return (
+    [room.roomTypeId, room.name].every(nonEmpty) &&
+    room.description.length <= 5_000 &&
+    !room.description.includes("\0") &&
+    (room.category === null || nonEmpty(room.category)) &&
+    integer(maxGuests, 1) &&
+    integer(maxAdults, 1, maxGuests) &&
+    integer(maxChildren, 0, maxGuests) &&
+    maxAdults + maxChildren >= maxGuests &&
+    room.beds.length > 0 &&
+    new Set(room.beds.map(({ type }) => type)).size === room.beds.length &&
+    room.beds.every(
+      ({ type, quantity }) => nonEmpty(type) && Number.isInteger(quantity) && quantity > 0,
+    ) &&
+    (room.bedrooms === null || (Number.isInteger(room.bedrooms) && room.bedrooms >= 0)) &&
+    (room.bathrooms === null || (room.bathrooms > 0 && room.bathrooms <= 100)) &&
+    (room.bathroomType === "private" ||
+      (room.bathroomType === "shared" && room.bathrooms === null)) &&
+    (room.size === null || (room.size.value > 0 && room.size.unit === "sqm")) &&
+    room.images.length > 0 &&
+    new Set(room.images.map(({ url }) => url)).size === room.images.length &&
+    room.images.every(({ url }) => validHttpsUrl(url))
+  );
+}
+
 function sanitizeCalendar(
   value: BookingPublicCalendarSnapshot,
   rooms: readonly BookingPublicRoom[] | null,
-  generatedAt: string,
-  timezone: string,
+  profile: PublicBookabilityProfileProjection,
 ): BookingPublicCalendarSnapshot | null {
   if (!rooms) return null;
+  const { generatedAt } = profile;
   const roomTypeIds = [...new Set(value.roomTypeIds)].sort();
   const expectedRooms = rooms.map(({ roomTypeId }) => roomTypeId).sort();
   if (
     !validInstant(generatedAt) ||
-    value.currentLocalDate !== localDateAt(generatedAt, timezone) ||
+    value.currentLocalDate !== localDateAt(generatedAt, profile.hotel.timezone) ||
     !nonEmpty(value.sourceRevision) ||
     value.sourceRevision !== value.materializedRevision ||
     value.currentLocalDate !== value.coverageFrom ||
     value.coverageThrough !== value.materializedThrough ||
     inclusiveDays(value.coverageFrom, value.coverageThrough) !== 366 ||
-    value.expectedDayCount !== 366 ||
-    value.materializedDayCount !== 366 ||
+    value.expectedDayCount !== 366 * rooms.length ||
+    value.materializedDayCount !== 366 * rooms.length ||
     value.gapCount !== 0 ||
     JSON.stringify(roomTypeIds) !== JSON.stringify(expectedRooms) ||
     !validInstant(value.observedAt) ||
@@ -257,15 +272,7 @@ function sanitizeCalendar(
 
 function localDateAt(instant: string, timezone: string): string | null {
   try {
-    const parts = new Intl.DateTimeFormat("en", {
-      timeZone: timezone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).formatToParts(new Date(instant));
-    const part = (type: Intl.DateTimeFormatPartTypes) =>
-      parts.find((value) => value.type === type)?.value;
-    return `${part("year")}-${part("month")}-${part("day")}`;
+    return new Intl.DateTimeFormat("sv-SE", { timeZone: timezone }).format(new Date(instant));
   } catch {
     return null;
   }
@@ -287,13 +294,14 @@ function validInstant(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
 
-function validHash(value: string): boolean {
-  return /^sha256:[0-9a-f]{64}$/.test(value);
-}
+const validHash = (value: string) => /^sha256:[0-9a-f]{64}$/.test(value);
+const validHttpsUrl = (value: string) =>
+  URL.canParse(value) && new URL(value).protocol === "https:";
 
-function nonEmpty(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
+const integer = (value: number, minimum: number, maximum = 100) =>
+  Number.isInteger(value) && value >= minimum && value <= maximum;
+const nonEmpty = (value: unknown): value is string =>
+  typeof value === "string" && value.trim().length > 0;
 
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
