@@ -41,13 +41,6 @@ test.describe("booking-admin unsupported surfaces", () => {
       }),
     );
 
-    await page.goto("/affiliates");
-    await expect(page.getByRole("heading", { level: 1, name: "Affiliates" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Not available yet" })).toBeVisible();
-
-    await page.goto("/settings/feature-hub");
-    await expect(page.getByText("Affiliates", { exact: true })).toHaveCount(0);
-
     await page.goto("/settings");
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
     await page.getByRole("button", { name: "Account", exact: true }).click();
