@@ -621,3 +621,5 @@ export interface ChannexNotificationSettingsReadPort {
     propertyId: string;
   }): Promise<ChannexNotificationSettingsReadModel | null>;
 }
+
+export * from "./management.js";
