@@ -5,12 +5,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from app.services import email_service
 from app.services.email_service import (
+    _email_message_id,
     _render_request_status_email,
     send_booking_request_notification,
     send_guest_booking_accepted,
     send_guest_booking_expired,
     send_guest_booking_rejected,
     send_guest_booking_requested,
+    send_guest_booking_withdrawn,
     send_guest_payment_confirmed,
     send_host_booking_accepted,
     send_host_booking_expired,
@@ -37,6 +39,15 @@ BOOKING = {
     "currency": "USD",
     "total_amount": 450.00,
 }
+
+
+def test_email_message_id_is_stable_for_delivery_retries():
+    first = _email_message_id("guest@example.com", "Confirmed", "<p>Booked</p>")
+    retry = _email_message_id("guest@example.com", "Confirmed", "<p>Booked</p>")
+    different_recipient = _email_message_id("host@example.com", "Confirmed", "<p>Booked</p>")
+
+    assert first == retry
+    assert first != different_recipient
 
 
 def _shared_assertions(subject: str, html: str, expected_headline: str):
@@ -238,6 +249,38 @@ async def test_guest_lifecycle_emails_use_property_voice():
     assert "declined by the host" not in html
     assert "because the host did not respond" not in html
     assert "once the host reviews" not in html
+
+
+@pytest.mark.asyncio
+async def test_closed_captured_request_email_says_payment_was_refunded():
+    sent = []
+
+    async def fake_send(to, subject, html_body, reply_to=None):
+        sent.append(html_body)
+
+    refunded_booking = {
+        **BOOKING,
+        "payment_status": "refunded",
+        "deposit_required": True,
+        "deposit_amount": 225,
+        "balance_amount": 225,
+    }
+    with patch.object(email_service, "_send_email", side_effect=fake_send):
+        await send_guest_booking_rejected("alice@example.com", refunded_booking)
+        await send_guest_booking_withdrawn("alice@example.com", refunded_booking)
+        await send_guest_booking_expired("alice@example.com", refunded_booking)
+
+    guest_html = "\n".join(sent)
+    host_html = "\n".join(
+        _render_request_status_email(refunded_booking, event)[1]
+        for event in ("declined", "cancelled", "expired")
+    )
+    assert guest_html.count("Your card payment has been refunded.") == 3
+    assert host_html.count("The captured card deposit has been refunded.") == 3
+    assert "Deposit refunded" in guest_html
+    assert "Deposit refunded" in host_html
+    assert "authorization hold" not in guest_html
+    assert "authorization hold" not in host_html
 
 
 @pytest.mark.asyncio

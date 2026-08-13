@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 from email.mime.multipart import MIMEMultipart
@@ -61,6 +62,12 @@ def _wrap_html(content: str) -> str:
 </div></body></html>"""
 
 
+def _email_message_id(to: str, subject: str, html_body: str) -> str:
+    """Return a stable delivery key so retried SMTP sends can be deduplicated."""
+    digest = hashlib.sha256(f"{to}\0{subject}\0{html_body}".encode()).hexdigest()
+    return f"<{digest}@notifications.vayada.com>"
+
+
 def _booking_details_html(booking: dict) -> str:
     addon_names = booking.get("addon_names") or []
     if isinstance(addon_names, str):
@@ -75,11 +82,15 @@ def _booking_details_html(booking: dict) -> str:
     accommodation = f"{rooms}× {booking['room_name']}" if rooms > 1 else booking["room_name"]
     deposit_html = ""
     if booking.get("deposit_required"):
-        deposit_status = (
-            "Deposit paid"
-            if booking.get("payment_status") in ("captured", "refunded", "partially_refunded")
-            else "Deposit pending"
-        )
+        payment_status = booking.get("payment_status")
+        if payment_status == "refunded":
+            deposit_status = "Deposit refunded"
+        elif payment_status == "partially_refunded":
+            deposit_status = "Deposit partially refunded"
+        elif payment_status == "captured":
+            deposit_status = "Deposit paid"
+        else:
+            deposit_status = "Deposit pending"
         deposit_html = f"""
     <p class="detail"><strong>{deposit_status}:</strong> {booking["currency"]} {float(booking.get("deposit_amount", 0)):.2f}</p>
     <p class="detail"><strong>Remaining balance:</strong> {booking["currency"]} {float(booking.get("balance_amount", 0)):.2f} — due at the property upon check-in</p>
@@ -97,7 +108,7 @@ def _booking_details_html(booking: dict) -> str:
 async def _send_email(to: str, subject: str, html_body: str, reply_to: str | None = None):
     if not settings.SMTP_HOST:
         logger.debug("SMTP not configured — skipping email to %s", to)
-        return
+        return True
 
     try:
         import aiosmtplib
@@ -106,6 +117,7 @@ async def _send_email(to: str, subject: str, html_body: str, reply_to: str | Non
         msg["From"] = settings.SMTP_FROM
         msg["To"] = to
         msg["Subject"] = subject
+        msg["Message-ID"] = _email_message_id(to, subject, html_body)
         if reply_to:
             msg["Reply-To"] = reply_to
         msg.attach(MIMEText(html_body, "html"))
@@ -121,8 +133,10 @@ async def _send_email(to: str, subject: str, html_body: str, reply_to: str | Non
             start_tls=settings.SMTP_USE_TLS,
         )
         logger.info("Email sent to %s: %s", to, subject)
+        return True
     except Exception as e:
         logger.warning("Failed to send email to %s: %s", to, e)
+        return False
 
 
 async def send_guest_confirmation(guest_email: str, booking: dict):
@@ -179,7 +193,23 @@ _PAYMENT_LABELS = {
 
 def _payment_label(booking: dict) -> str:
     method = booking.get("payment_method", "card")
+    if method == "card":
+        status = booking.get("payment_status")
+        if status == "refunded":
+            return "Card deposit refunded" if booking.get("deposit_required") else "Card refunded"
+        if status == "partially_refunded":
+            return "Card deposit partially refunded"
+        if status == "captured":
+            return "Card deposit paid" if booking.get("deposit_required") else "Card captured"
     return _PAYMENT_LABELS.get(method, method)
+
+
+def _host_card_reversal_note(booking: dict) -> str:
+    if booking.get("payment_method", "card") != "card":
+        return ""
+    if booking.get("payment_status") == "refunded":
+        return "The captured card deposit has been refunded."
+    return "Any card authorization hold has been released."
 
 
 def _render_request_status_email(booking: dict, status_event: str) -> tuple[str, str]:
@@ -223,15 +253,18 @@ def _render_request_status_email(booking: dict, status_event: str) -> tuple[str,
     elif status_event == "declined":
         headline = "Booking Request Declined"
         subject = f"Booking Request Declined: {hotel_name} — {ref}"
+        payment_note = _host_card_reversal_note(booking)
         trailing = f"""
-    <p class="detail">You declined the request from <strong>{guest_name}</strong>. Any payment hold has been released.</p>
+    <p class="detail">You declined the request from <strong>{guest_name}</strong>. {payment_note}</p>
     <hr class="divider">
     <a href="{pms_link}" class="btn">View in PMS</a>
     """
     elif status_event == "cancelled":
         headline = "Booking Request Cancelled"
         subject = f"Booking Request Cancelled: {hotel_name} — {ref}"
+        payment_note = _host_card_reversal_note(booking)
         trailing = f"""
+    {f'<p class="detail">{payment_note}</p>' if payment_note else ""}
     <p class="detail">The room is now available for new bookings. No action is required on your part.</p>
     <hr class="divider">
     <a href="{pms_link}" class="btn">View in PMS</a>
@@ -239,7 +272,9 @@ def _render_request_status_email(booking: dict, status_event: str) -> tuple[str,
     elif status_event == "expired":
         headline = "Booking Request Expired"
         subject = f"Booking Request Expired: {hotel_name} — {ref}"
+        payment_note = _host_card_reversal_note(booking)
         trailing = f"""
+    {f'<p class="detail">{payment_note}</p>' if payment_note else ""}
     <div class="alert">
         This request expired because no action was taken within 24 hours.
         Please review and respond to booking requests promptly to avoid losing potential guests.
@@ -260,20 +295,28 @@ def _render_request_status_email(booking: dict, status_event: str) -> tuple[str,
     return subject, _wrap_html(content)
 
 
-async def _send_to_host_and_ops(
-    hotel_email: str, subject: str, html_body: str, reply_to: str | None = None
-):
-    """Send to the hotel host and the Vayada ops watchlist."""
-    if hotel_email:
-        await _send_email(hotel_email, subject, html_body, reply_to=reply_to)
-    ops_recipients = [
+def booking_host_notification_recipients(hotel_email: str | None) -> list[str]:
+    """Return the deduplicated host and ops recipients for booking mail."""
+    recipients = [
+        hotel_email,
         settings.VAYADA_OPS_EMAIL,
         "p.paetzold@vayada.com",
         "t.schreyer@vayada.com",
     ]
-    for recipient in ops_recipients:
-        if recipient and recipient != hotel_email:
-            await _send_email(recipient, subject, html_body, reply_to=reply_to)
+    return list(dict.fromkeys(recipient for recipient in recipients if recipient))
+
+
+async def _send_to_host_and_ops(
+    hotel_email: str, subject: str, html_body: str, reply_to: str | None = None
+):
+    """Send to the hotel host and the Vayada ops watchlist."""
+    delivered = True
+    for recipient in booking_host_notification_recipients(hotel_email):
+        recipient_delivered = (
+            await _send_email(recipient, subject, html_body, reply_to=reply_to) is not False
+        )
+        delivered = recipient_delivered and delivered
+    return delivered
 
 
 def _looks_like_email(value: str | None) -> bool:
@@ -422,15 +465,19 @@ async def send_guest_booking_accepted(guest_email: str, booking: dict):
     <p class="detail">We'll contact you shortly with your confirmation documents and all the details for your stay.</p>
     {_my_booking_button_html(booking, guest_email)}
     """
-    await _send_email(guest_email, subject, _wrap_html(content))
+    return await _send_email(guest_email, subject, _wrap_html(content))
 
 
 async def send_guest_booking_rejected(guest_email: str, booking: dict, reason: str | None = None):
     """Notify guest that their booking has been declined."""
     payment_method = booking.get("payment_method", "card")
-    refund_note = (
-        "Any authorization hold on your card has been released." if payment_method == "card" else ""
-    )
+    refund_note = ""
+    if payment_method == "card":
+        refund_note = (
+            "Your card payment has been refunded."
+            if booking.get("payment_status") == "refunded"
+            else "Any authorization hold on your card has been released."
+        )
     from html import escape
 
     reason_html = (
@@ -455,9 +502,13 @@ async def send_guest_booking_rejected(guest_email: str, booking: dict, reason: s
 async def send_guest_booking_expired(guest_email: str, booking: dict):
     """Notify guest that their booking request expired (host didn't respond)."""
     payment_method = booking.get("payment_method", "card")
-    refund_note = (
-        "Any authorization hold on your card has been released." if payment_method == "card" else ""
-    )
+    refund_note = ""
+    if payment_method == "card":
+        refund_note = (
+            "Your card payment has been refunded."
+            if booking.get("payment_status") == "refunded"
+            else "Any authorization hold on your card has been released."
+        )
 
     subject = f"Booking Request Expired — {booking['booking_reference']}"
     content = f"""
@@ -524,9 +575,13 @@ async def send_guest_cancellation_refund(
 async def send_guest_booking_withdrawn(guest_email: str, booking: dict):
     """Confirm to guest that they withdrew their booking request."""
     payment_method = booking.get("payment_method", "card")
-    release_note = (
-        "Any authorization hold on your card has been released." if payment_method == "card" else ""
-    )
+    release_note = ""
+    if payment_method == "card":
+        release_note = (
+            "Your card payment has been refunded."
+            if booking.get("payment_status") == "refunded"
+            else "Any authorization hold on your card has been released."
+        )
 
     subject = f"Booking Withdrawn — {booking['booking_reference']}"
     content = f"""
@@ -545,7 +600,13 @@ async def send_guest_booking_withdrawn(guest_email: str, booking: dict):
 async def send_host_booking_accepted(hotel_email: str, booking: dict):
     """Confirm to host that they accepted the booking."""
     subject, html_body = _render_request_status_email(booking, "accepted")
-    await _send_to_host_and_ops(hotel_email, subject, html_body)
+    return await _send_to_host_and_ops(hotel_email, subject, html_body)
+
+
+async def send_host_booking_accepted_to(recipient_email: str, booking: dict):
+    """Send one accepted-booking host/ops delivery for retry checkpointing."""
+    subject, html_body = _render_request_status_email(booking, "accepted")
+    return await _send_email(recipient_email, subject, html_body)
 
 
 async def send_guest_admin_booking_confirmed(guest_email: str, booking: dict):

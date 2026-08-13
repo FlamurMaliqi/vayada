@@ -39,6 +39,16 @@ async def create_payment_intent(
     }
 
 
+async def retrieve_payment_intent(payment_intent_id: str) -> dict:
+    """Load the authoritative Stripe state after client-side confirmation."""
+    pi = stripe.PaymentIntent.retrieve(payment_intent_id)
+    return {
+        "id": pi.id,
+        "status": pi.status,
+        "capture_method": pi.capture_method,
+    }
+
+
 async def capture_payment_intent(payment_intent_id: str, amount: int | None = None) -> dict:
     """Capture a previously authorized PaymentIntent."""
     params = {}
@@ -54,11 +64,17 @@ async def cancel_payment_intent(payment_intent_id: str) -> dict:
     return {"id": pi.id, "status": pi.status}
 
 
-async def create_refund(payment_intent_id: str, amount: int | None = None) -> dict:
+async def create_refund(
+    payment_intent_id: str,
+    amount: int | None = None,
+    idempotency_key: str | None = None,
+) -> dict:
     """Create a full or partial refund."""
     params = {"payment_intent": payment_intent_id}
     if amount is not None:
         params["amount"] = amount
+    if idempotency_key:
+        params["idempotency_key"] = idempotency_key
     refund = stripe.Refund.create(**params)
     return {"id": refund.id, "status": refund.status, "amount": refund.amount}
 

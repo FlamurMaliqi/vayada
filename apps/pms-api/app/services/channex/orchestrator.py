@@ -127,25 +127,27 @@ async def push_ari_for_hotel(hotel_id: str) -> bool:
     return True
 
 
-async def push_ari_for_booking(booking_id: str) -> None:
+async def push_ari_for_booking(booking_id: str) -> bool:
     """Targeted ARI sync after a booking changes — only affected room type + dates."""
     try:
         booking = await BookingRepository.get_by_id(booking_id)
         if not booking:
-            return
+            return True
 
         hotel_id = str(booking["hotel_id"])
         room_type_id = str(booking["room_type_id"])
 
         conn = await ChannexConnectionRepository.get_by_hotel_id(hotel_id)
         if not conn or not conn["is_active"]:
-            return
+            return True
 
-        await push_availability_for_room_type(
+        pushed = await push_availability_for_room_type(
             hotel_id,
             room_type_id,
             start_date=booking["check_in"],
             end_date=booking["check_out"],
         )
+        return pushed is not False
     except Exception as e:
         logger.error("Failed to push ARI for booking %s: %s", booking_id, e)
+        return False
