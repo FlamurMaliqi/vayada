@@ -10,6 +10,7 @@ import {
   type PublicBookabilityProfileProjection,
   type PublicBookabilityQuoteProjection,
 } from "@vayada/domain-distribution";
+import { parseBookingFlexibleCancellationTerms } from "@vayada/domain-booking";
 import type { BillingConfigReadModel, BillingConfigReadPort } from "@vayada/domain-finance";
 import { createHash, randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -5487,12 +5488,13 @@ function resolveTargetCancellationPreview(
       stringValue(rateSummary["rateType"]) ??
       stringValue(selectedOffer["publicOfferKey"]),
   );
+  const hasCanonicalPolicyDiscriminator = Object.hasOwn(policySnapshot, "type");
   const refundValue = stringValue(policySnapshot["refund"])?.toLowerCase();
   if (
     rateType === "non_refundable" ||
     rateSummary["refundable"] === false ||
-    policySnapshot["refundable"] === false ||
-    refundValue === "none"
+    (!hasCanonicalPolicyDiscriminator &&
+      (policySnapshot["refundable"] === false || refundValue === "none"))
   ) {
     throw createHttpError(
       409,
@@ -5501,11 +5503,12 @@ function resolveTargetCancellationPreview(
   }
 
   if (
-    Array.isArray(policySnapshot["tiers"]) ||
-    Array.isArray(policySnapshot["partialRefundTiers"]) ||
-    (refundValue !== null &&
-      refundValue !== undefined &&
-      !["full", "100", "100%"].includes(refundValue))
+    !hasCanonicalPolicyDiscriminator &&
+    (Array.isArray(policySnapshot["tiers"]) ||
+      Array.isArray(policySnapshot["partialRefundTiers"]) ||
+      (refundValue !== null &&
+        refundValue !== undefined &&
+        !["full", "100", "100%"].includes(refundValue)))
   ) {
     throw createHttpError(
       409,
@@ -5513,26 +5516,20 @@ function resolveTargetCancellationPreview(
     );
   }
 
-  const freeCancellationWindows = [
-    policySnapshot["freeUntilDays"],
-    policySnapshot["freeCancellationDays"],
-    policySnapshot["refundWindowDays"],
-  ].filter((value) => value !== undefined && value !== null);
-  const parsedWindows = freeCancellationWindows.map((value) => numberValue(value));
-  if (
-    parsedWindows.length === 0 ||
-    parsedWindows.some(
-      (value) => value === null || !Number.isInteger(value) || value < 0 || value > 3650,
-    ) ||
-    new Set(parsedWindows).size !== 1
-  ) {
-    throw createHttpError(
-      409,
-      "This booking's free-cancellation period cannot be verified online. Contact the property.",
-    );
+  const canonicalTerms = !hasCanonicalPolicyDiscriminator
+    ? null
+    : parseBookingFlexibleCancellationTerms({
+        type: policySnapshot["type"],
+        freeCancellationDeadlineDays: policySnapshot["freeCancellationDeadlineDays"],
+        afterDeadlinePenalty: policySnapshot["afterDeadlinePenalty"],
+        noShowPenalty: policySnapshot["noShowPenalty"],
+      });
+  const freeCancellationDays = !hasCanonicalPolicyDiscriminator
+    ? resolveLegacyFreeCancellationDays(policySnapshot)
+    : canonicalTerms?.freeCancellationDeadlineDays;
+  if (freeCancellationDays === undefined || freeCancellationDays === null) {
+    throw unverifiableFreeCancellationPeriodError();
   }
-
-  const freeCancellationDays = parsedWindows[0]!;
   const propertyDate = targetPropertyDateOnly(propertyTimezone, occurredAt);
   const daysUntilCheckIn = targetDateDifference(propertyDate, dateOnly(booking.checkIn));
   if (daysUntilCheckIn < freeCancellationDays) {
@@ -5552,6 +5549,32 @@ function resolveTargetCancellationPreview(
     currency: booking.currency,
     policy: policySnapshot,
   };
+}
+
+function resolveLegacyFreeCancellationDays(policySnapshot: Record<string, unknown>): number {
+  const freeCancellationWindows = [
+    policySnapshot["freeUntilDays"],
+    policySnapshot["freeCancellationDays"],
+    policySnapshot["refundWindowDays"],
+  ].filter((value) => value !== undefined && value !== null);
+  const parsedWindows = freeCancellationWindows.map((value) => numberValue(value));
+  if (
+    parsedWindows.length === 0 ||
+    parsedWindows.some(
+      (value) => value === null || !Number.isInteger(value) || value < 0 || value > 3650,
+    ) ||
+    new Set(parsedWindows).size !== 1
+  ) {
+    throw unverifiableFreeCancellationPeriodError();
+  }
+  return parsedWindows[0]!;
+}
+
+function unverifiableFreeCancellationPeriodError(): Error {
+  return createHttpError(
+    409,
+    "This booking's free-cancellation period cannot be verified online. Contact the property.",
+  );
 }
 
 function targetDateDifference(start: string, end: string): number {
