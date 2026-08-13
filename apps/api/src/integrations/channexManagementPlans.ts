@@ -37,14 +37,15 @@ type RoomRow = {
 };
 type RateRow = {
   roomTypeId: string;
+  roomTypeName: string;
   ratePlanId: string;
   name: string;
   currency: string;
   sellMode: "per_room" | "per_person";
   baseRate: number;
   channel: string;
+  channelLabel: string;
   markupPercent: number;
-  providerTitle: string;
   defaultOccupancy: number;
   externalRoomTypeId: string | null;
 };
@@ -139,12 +140,13 @@ async function enablePlan(
   );
   const property = result.rows[0];
   if (!property) throw new Error("Target property was not found");
+  const providerPropertyTitle = providerTitle(property.title, job.propertyId);
   return {
     requests: [
-      channexRequests.findProperty(property.title),
+      channexRequests.findProperty(providerPropertyTitle),
       channexRequests.createProperty(
         compact({
-          title: property.title,
+          title: providerPropertyTitle,
           currency: property.currency,
           property_type: property.propertyType,
           country: property.country,
@@ -184,10 +186,10 @@ async function provisioningPlan(
       [job.propertyId],
     ),
     pool.query<RateRow>(
-      `SELECT plan.room_type_id::text AS "roomTypeId", plan.id::text AS "ratePlanId",
+      `SELECT plan.room_type_id::text AS "roomTypeId", room.name AS "roomTypeName",
+         plan.id::text AS "ratePlanId",
          plan.name, plan.currency, 'per_room' AS "sellMode", plan.base_rate_amount::float8 AS "baseRate",
-         channel.key AS channel, 0::float8 AS "markupPercent",
-         left(plan.name || ' - ' || channel.label, 255) AS "providerTitle",
+         channel.key AS channel, channel.label AS "channelLabel", 0::float8 AS "markupPercent",
          LEAST(2, GREATEST(1, COALESCE((room.occupancy_limits ->> 'maxAdults')::integer, 2))) AS "defaultOccupancy",
          room_mapping.external_room_type_id AS "externalRoomTypeId"
        FROM pms.rate_plans plan
@@ -209,29 +211,36 @@ async function provisioningPlan(
     ),
   ]);
   const roomIds = new Set(rooms.rows.map(({ roomTypeId }) => roomTypeId));
+  const plannedRates = rates.rows.map((rate) => ({
+    ...rate,
+    providerTitle: providerRateTitle(rate),
+  }));
   return {
     externalPropertyId,
     requests: [
-      ...rooms.rows.flatMap((room) => [
-        channexRequests.listRoomTypes(externalPropertyId, [
-          { roomTypeId: room.roomTypeId, roomTypeName: room.name },
-        ]),
-        channexRequests.createRoomType({
-          roomTypeId: room.roomTypeId,
-          roomTypeName: room.name,
-          roomType: {
-            property_id: externalPropertyId,
-            title: room.name,
-            count_of_rooms: Math.max(1, room.countOfRooms),
-            occ_adults: Math.max(1, room.adults),
-            occ_children: Math.max(0, room.children),
-            occ_infants: 0,
-            default_occupancy: Math.min(2, Math.max(1, room.adults)),
-            room_kind: "room",
-          },
-        }),
-      ]),
-      ...rates.rows
+      ...rooms.rows.flatMap((room) => {
+        const title = providerTitle(room.name, room.roomTypeId);
+        return [
+          channexRequests.listRoomTypes(externalPropertyId, [
+            { roomTypeId: room.roomTypeId, roomTypeName: title },
+          ]),
+          channexRequests.createRoomType({
+            roomTypeId: room.roomTypeId,
+            roomTypeName: title,
+            roomType: {
+              property_id: externalPropertyId,
+              title,
+              count_of_rooms: Math.max(1, room.countOfRooms),
+              occ_adults: Math.max(1, room.adults),
+              occ_children: Math.max(0, room.children),
+              occ_infants: 0,
+              default_occupancy: Math.min(2, Math.max(1, room.adults)),
+              room_kind: "room",
+            },
+          }),
+        ];
+      }),
+      ...plannedRates
         .filter(
           ({ roomTypeId, externalRoomTypeId }) =>
             roomIds.has(roomTypeId) || Boolean(externalRoomTypeId),
@@ -335,6 +344,20 @@ async function ariPlan(
 function checkpoint(pool: Pool, job: ChannexManagementJob) {
   return (progress: Parameters<typeof applyPmsChannexManagementProgress>[2]) =>
     applyPmsChannexManagementProgress(pool, job, progress, new Date());
+}
+
+function providerTitle(title: string, identity: string) {
+  const marker = ` [Vayada:${identity}]`;
+  return `${Array.from(title)
+    .slice(0, Math.max(0, 255 - marker.length))
+    .join("")}${marker}`;
+}
+
+function providerRateTitle(rate: RateRow) {
+  return providerTitle(
+    `${rate.roomTypeName} - ${rate.name} - ${rate.channelLabel}`,
+    `${rate.roomTypeId}:${rate.channel}:${rate.ratePlanId}`,
+  );
 }
 
 async function connectionId(pool: Pool, propertyId: string): Promise<string | null> {
