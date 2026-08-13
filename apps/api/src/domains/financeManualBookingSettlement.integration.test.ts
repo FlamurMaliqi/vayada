@@ -13,6 +13,7 @@ const ORGANIZATION_ID = "15300000-0000-4000-8000-000000000001";
 const USER_ID = "15300000-0000-4000-8000-000000000002";
 const PROPERTY_ID = "15300000-0000-4000-8000-000000000003";
 const BOOKING_ID = "15300000-0000-4000-8000-000000000004";
+const HISTORICAL_BOOKING_ID = "15300000-0000-4000-8000-000000000005";
 
 describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQL port", () => {
   const pool = new pg.Pool({
@@ -25,7 +26,6 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
   beforeAll(async () => {
     assertSafeTestDatabase(TEST_DATABASE_URL!);
     client = await pool.connect();
-    transaction = financeManualBookingSettlementTransaction(client);
     await client.query("BEGIN");
     await client.query(
       `INSERT INTO identity.users (id, email)
@@ -46,17 +46,35 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
       `INSERT INTO booking.guest_bookings (
          id, property_id, public_reference, source_system, source_booking_id,
          lifecycle_status, payment_status, check_in, check_out, currency,
-         total_amount, balance_amount
+         total_amount, balance_amount, expected_payment_method
        ) VALUES (
-         $1::uuid, $2::uuid, 'VAY-1253-BOOKING', 'pms', 'vay-1253-command',
-         'confirmed', 'unpaid', '2026-09-01', '2026-09-03', 'EUR', 125.50, 125.50
+         $1::uuid, $2::uuid, 'VAY-1253-HISTORICAL', 'pms', 'vay-1253-historical',
+         'confirmed', 'unpaid', '2026-09-01', '2026-09-03', 'EUR', 125.50, 125.50, 'cash'
        )`,
+      [HISTORICAL_BOOKING_ID, PROPERTY_ID],
+    );
+    await client.query("COMMIT");
+    await client.query("BEGIN");
+    await client.query(
+      `INSERT INTO booking.guest_bookings (
+         id, property_id, public_reference, source_system, source_booking_id,
+         lifecycle_status, payment_status, check_in, check_out, currency,
+         total_amount, balance_amount, expected_payment_method
+       ) VALUES ($1::uuid, $2::uuid, 'VAY-1253-BOOKING', 'pms', 'vay-1253-command-current',
+         'confirmed', 'unpaid', '2026-09-01', '2026-09-03', 'EUR', 125.50, 125.50, 'cash')`,
       [BOOKING_ID, PROPERTY_ID],
     );
+    transaction = await financeManualBookingSettlementTransaction(client);
   });
 
   afterAll(async () => {
     await client.query("ROLLBACK");
+    await client.query("DELETE FROM booking.guest_bookings WHERE id = $1::uuid", [
+      HISTORICAL_BOOKING_ID,
+    ]);
+    await client.query("DELETE FROM hotel_catalog.properties WHERE id = $1::uuid", [PROPERTY_ID]);
+    await client.query("DELETE FROM identity.organizations WHERE id = $1::uuid", [ORGANIZATION_ID]);
+    await client.query("DELETE FROM identity.users WHERE id = $1::uuid", [USER_ID]);
     client.release();
     await pool.end();
   });
@@ -144,7 +162,11 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
   });
 
   it("rejects false totals, currencies, properties, and duplicate creation keys", async () => {
-    const cases = [{ amount: "1.00" }, { currency: "USD" }] as const;
+    const cases = [
+      { amount: "1.00" },
+      { currency: "USD" },
+      { paymentMethod: "bank_transfer" },
+    ] as const;
     for (const [index, change] of cases.entries()) {
       await expect(
         port.settleFull({
@@ -155,7 +177,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
           },
         }),
       ).rejects.toMatchObject({
-        code: index === 0 ? "non_full_settlement" : "cross_currency",
+        code: ["non_full_settlement", "cross_currency", "invalid_command"][index],
       });
     }
     await expect(
@@ -186,6 +208,23 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
         ])
       ).rows[0]?.count,
     ).toBe(0);
+  });
+
+  it("requires an open caller transaction and current-transaction booking", async () => {
+    const outside = await pool.connect();
+    try {
+      const unscoped = await financeManualBookingSettlementTransaction(outside);
+      await expect(
+        port.settleFull({ transaction: unscoped, command: command("no-begin") }),
+      ).rejects.toMatchObject({ code: "invalid_command" });
+    } finally {
+      outside.release();
+    }
+    const historical = command("historical");
+    historical.payload.booking.guestBookingId = HISTORICAL_BOOKING_ID;
+    await expect(port.settleFull({ transaction, command: historical })).rejects.toMatchObject({
+      code: "invalid_command",
+    });
   });
 });
 
