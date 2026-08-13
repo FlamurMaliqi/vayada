@@ -111,39 +111,40 @@ export function AffiliateWorkspace(props: AffiliateWorkspaceProps) {
             />
           ))}
         </div>
-        {props.applications && props.applications.total > props.applications.limit && (
-          <div className="flex items-center justify-between border-t border-gray-100 px-3 py-2 text-xs text-gray-500">
-            <span>
-              {props.offset + 1}–
-              {Math.min(
-                props.offset + props.applications.affiliates.length,
-                props.applications.total,
-              )}{" "}
-              of {props.applications.total}
-            </span>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={props.onPreviousPage}
-                disabled={props.offset === 0 || props.loading}
-                className="rounded border border-gray-200 px-2 py-1 disabled:opacity-40"
-              >
-                Previous
-              </button>
-              <button
-                type="button"
-                onClick={props.onNextPage}
-                disabled={
-                  props.offset + props.applications.limit >= props.applications.total ||
-                  props.loading
-                }
-                className="rounded border border-gray-200 px-2 py-1 disabled:opacity-40"
-              >
-                Next
-              </button>
+        {props.applications &&
+          (props.applications.total > props.applications.limit || props.offset > 0) && (
+            <div className="flex items-center justify-between border-t border-gray-100 px-3 py-2 text-xs text-gray-500">
+              <span>
+                {props.offset + 1}–
+                {Math.min(
+                  props.offset + props.applications.affiliates.length,
+                  props.applications.total,
+                )}{" "}
+                of {props.applications.total}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={props.onPreviousPage}
+                  disabled={props.offset === 0 || props.loading}
+                  className="rounded border border-gray-200 px-2 py-1 disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  onClick={props.onNextPage}
+                  disabled={
+                    props.offset + props.applications.limit >= props.applications.total ||
+                    props.loading
+                  }
+                  className="rounded border border-gray-200 px-2 py-1 disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
             </div>
-          </div>
-        )}
+          )}
       </section>
 
       <aside

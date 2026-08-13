@@ -156,8 +156,21 @@ test.describe("booking-admin affiliate management", () => {
       referralCode: "SUMMIT20",
     };
     const requestedOffsets: string[] = [];
+    let removedLastPage = false;
     await page.route(`**${MARKETPLACE_PATH}**`, async (route) => {
-      const url = new URL(route.request().url());
+      const request = route.request();
+      const url = new URL(request.url());
+      if (request.method() === "POST") {
+        removedLastPage = true;
+        await route.fulfill({
+          json: {
+            outcome: "applied",
+            commandId: "approve-noah",
+            affiliate: { ...nextAffiliate, lifecycleStatus: "approved" },
+          },
+        });
+        return;
+      }
       const list = url.pathname === MARKETPLACE_PATH;
       const target = url.searchParams.get("offset") === "50" ? nextAffiliate : initialAffiliate;
       if (list) requestedOffsets.push(url.searchParams.get("offset") ?? "0");
@@ -165,8 +178,9 @@ test.describe("booking-admin affiliate management", () => {
         json: list
           ? {
               contractVersion: "marketplace-affiliate-admin.v1",
-              affiliates: [target],
-              total: 51,
+              affiliates:
+                removedLastPage && url.searchParams.get("offset") === "50" ? [] : [target],
+              total: removedLastPage ? 50 : 51,
               limit: 50,
               offset: Number(url.searchParams.get("offset") ?? 0),
             }
@@ -184,7 +198,73 @@ test.describe("booking-admin affiliate management", () => {
     await expect(page.getByText("Mira Alpine").first()).toBeVisible();
     await page.getByRole("button", { name: "Next" }).click();
     await expect(page.getByText("Noah Summit").first()).toBeVisible();
-    expect(requestedOffsets).toContain("50");
+    await page.getByRole("button", { name: "Approve", exact: true }).click();
+    await expect(page.getByText("Mira Alpine").first()).toBeVisible();
+    await expect.poll(() => requestedOffsets.slice(-2)).toEqual(["50", "0"]);
+  });
+
+  test("ignores a stale list response after filters change", async ({ page }) => {
+    test.skip(
+      !PROD,
+      "Requires a production booking-admin build so the authenticated shell hydrates.",
+    );
+    await mockBookingAdminAuthenticatedSession(page);
+    await mockBookingAdminShellRoutes(page);
+    const approvedAffiliate = {
+      ...initialAffiliate,
+      affiliateId: "affiliate_creator_2",
+      displayName: "Noah Summit",
+      contactEmail: "noah@example.com",
+      referralCode: "NOAH9",
+      lifecycleStatus: "approved",
+    };
+    let initialStarted = false;
+    let releaseInitial = () => {};
+    const initialGate = new Promise<void>((resolve) => {
+      releaseInitial = resolve;
+    });
+    await page.route(`**${MARKETPLACE_PATH}**`, async (route) => {
+      const url = new URL(route.request().url());
+      const list = url.pathname === MARKETPLACE_PATH;
+      if (!list) {
+        await route.fulfill({
+          json: url.pathname.endsWith(approvedAffiliate.affiliateId)
+            ? approvedAffiliate
+            : initialAffiliate,
+        });
+        return;
+      }
+      const approved = url.searchParams.get("status") === "approved";
+      if (!approved) {
+        initialStarted = true;
+        await initialGate;
+      }
+      await route.fulfill({
+        json: {
+          contractVersion: "marketplace-affiliate-admin.v1",
+          affiliates: [approved ? approvedAffiliate : initialAffiliate],
+          total: 1,
+          limit: 50,
+          offset: 0,
+        },
+      });
+    });
+    await page.route(`**${FINANCE_PATH}/**`, (route) => {
+      const affiliateId = new URL(route.request().url()).pathname.includes(
+        approvedAffiliate.affiliateId,
+      )
+        ? approvedAffiliate.affiliateId
+        : AFFILIATE_ID;
+      return route.fulfill({ json: commission(affiliateId, null) });
+    });
+
+    await page.goto("/affiliates");
+    await expect.poll(() => initialStarted).toBe(true);
+    await page.getByLabel("Affiliate status").selectOption("approved");
+    await expect(page.getByText("Noah Summit").first()).toBeVisible();
+    releaseInitial();
+    await expect(page.getByText("Noah Summit").first()).toBeVisible();
+    await expect(page.getByRole("button", { name: /Mira Alpine/ })).toHaveCount(0);
   });
 
   test("does not apply a completed write to a newly selected affiliate", async ({ page }) => {
