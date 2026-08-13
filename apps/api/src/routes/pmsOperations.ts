@@ -314,6 +314,28 @@ export type PmsManualRefundCommand = {
   audit: PmsOperationsCommandAudit;
 };
 
+export type PmsManualStayCorrectionCommand = {
+  propertyId: string;
+  guestBookingId: string;
+  commandId: string;
+  idempotencyKey: string;
+  expectedVersion?: string;
+  accountingDate: string;
+  stays: Array<{
+    assignmentId: string;
+    position: number;
+    roomId: string;
+    checkIn: string;
+    checkOut: string;
+    nightly: Array<{
+      stayDate: string;
+      amount: PmsMoney | null;
+      evidenceQuality: "exact" | "inferred" | "missing";
+    }>;
+  }>;
+  audit: PmsOperationsCommandAudit;
+};
+
 export type PmsBookingLifecycleCommand = {
   propertyId: string;
   guestBookingId: string;
@@ -617,7 +639,7 @@ export type PmsOperationalCommandResult =
   | {
       ok: false;
       statusCode: 409;
-      code: "version_conflict" | "idempotency_conflict";
+      code: "version_conflict" | "idempotency_conflict" | "room_unavailable";
       message: string;
     };
 
@@ -775,6 +797,9 @@ export type PmsOperationsCommandRepository = {
   executeNoShowCommand(command: PmsNoShowCommand): Promise<PmsOperationalCommandResult>;
   cancelManualBooking?(command: PmsManualCancellationCommand): Promise<PmsOperationalCommandResult>;
   refundManualBooking?(command: PmsManualRefundCommand): Promise<PmsOperationalCommandResult>;
+  correctManualBookingStays?(
+    command: PmsManualStayCorrectionCommand,
+  ): Promise<PmsOperationalCommandResult>;
   acceptBooking(command: PmsBookingLifecycleCommand): Promise<PmsOperationalCommandResult>;
   markBookingPaid(command: PmsBookingLifecycleCommand): Promise<PmsOperationalCommandResult>;
   listPrivateNotes(propertyId: string, guestBookingId: string): Promise<PmsPrivateNote[] | null>;
@@ -993,6 +1018,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/reservations/:guestBookingId/mark-paid",
     "/properties/:propertyId/reservations/:guestBookingId/no-show",
     "/properties/:propertyId/reservations/:guestBookingId/cancel",
+    "/properties/:propertyId/reservations/:guestBookingId/correct-stays",
   ]) {
     app.options(path, async (request, reply) => {
       if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
@@ -2559,6 +2585,36 @@ export async function registerPmsOperationsRoutes(
         if (!commandRepository.refundManualBooking)
           return sendPmsOperationsError(reply, readModelUnavailable("Refund is unavailable."));
         const result = await commandRepository.refundManualBooking(command.value);
+        if (!result.ok) return sendPmsOperationalCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          reservation: result.reservation,
+          commandMeta: result.commandMeta,
+        } satisfies PmsOperationsCommandResponse;
+      },
+    );
+
+    app.post<{ Params: PmsReservationParams; Querystring: unknown; Body: unknown }>(
+      "/properties/:propertyId/reservations/:guestBookingId/correct-stays",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? []))
+          return sendPmsOperationsError(reply, {
+            statusCode: 403,
+            code: "missing_permission",
+            category: "authorization",
+            message: "PMS operations origin is not allowed.",
+          });
+        const { propertyId, guestBookingId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toManualStayCorrectionCommand(propertyId, guestBookingId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        if (!commandRepository.correctManualBookingStays)
+          return sendPmsOperationsError(
+            reply,
+            readModelUnavailable("Manual stay correction is unavailable."),
+          );
+        const result = await commandRepository.correctManualBookingStays(command.value);
         if (!result.ok) return sendPmsOperationalCommandError(reply, result);
         return {
           contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
@@ -4266,6 +4322,136 @@ function toManualRefundCommand(
       audit: pmsOperationsCommandAudit(request, metadata.value.commandId, "Refund manual booking"),
     },
   };
+}
+
+function toManualStayCorrectionCommand(
+  propertyId: string,
+  guestBookingId: string,
+  request: FastifyRequest<{ Querystring: unknown; Body: unknown }>,
+): { value: PmsManualStayCorrectionCommand } | { error: PmsOperationsError } {
+  if (!objectBody(request.query) || Object.keys(request.query as object).length)
+    return { error: invalidBody("Stay-correction query fields are not supported.") };
+  const metadata = toOperationalCommandMetadata(request.body, "Stay-correction command");
+  if ("error" in metadata) return metadata;
+  const raw = request.body as Record<string, unknown>;
+  if (
+    metadata.value.commandId.length > 200 ||
+    metadata.value.idempotencyKey.length > 200 ||
+    (metadata.value.expectedVersion?.length ?? 0) > 200 ||
+    Object.keys(raw).some(
+      (key) =>
+        !["commandId", "idempotencyKey", "expectedVersion", "accountingDate", "stays"].includes(
+          key,
+        ),
+    ) ||
+    !Array.isArray(raw.stays) ||
+    raw.stays.length < 1 ||
+    raw.stays.length > 20
+  )
+    return { error: invalidBody("Stay-correction command contains unknown or invalid fields.") };
+  const accountingDate = stringField(raw.accountingDate);
+  const stays = raw.stays.map((value) => {
+    const stay = objectBody(value);
+    if (
+      !stay ||
+      Object.keys(stay).some(
+        (key) =>
+          !["assignmentId", "position", "roomId", "checkIn", "checkOut", "nightly"].includes(key),
+      ) ||
+      !Array.isArray(stay.nightly)
+    )
+      return null;
+    const assignmentId = stringField(stay.assignmentId);
+    const roomId = stringField(stay.roomId);
+    const checkIn = stringField(stay.checkIn);
+    const checkOut = stringField(stay.checkOut);
+    if (
+      !assignmentId ||
+      !isUuid(assignmentId) ||
+      !roomId ||
+      !isUuid(roomId) ||
+      !checkIn ||
+      !checkOut ||
+      !isDateOnly(checkIn) ||
+      !isDateOnly(checkOut) ||
+      !Number.isInteger(stay.position) ||
+      Number(stay.position) < 1
+    )
+      return null;
+    const nights = daysInclusive(checkIn, checkOut) - 1;
+    if (nights < 1 || nights > 366 || stay.nightly.length !== nights) return null;
+    const nightly = stay.nightly.map((entry, index) => {
+      const night = objectBody(entry);
+      if (
+        !night ||
+        Object.keys(night).some(
+          (key) => !["stayDate", "amount", "evidenceQuality"].includes(key),
+        ) ||
+        night.stayDate !== dateOffset(checkIn, index) ||
+        !["exact", "inferred", "missing"].includes(String(night.evidenceQuality))
+      )
+        return null;
+      const evidenceQuality = night.evidenceQuality as "exact" | "inferred" | "missing";
+      if (evidenceQuality === "missing")
+        return night.amount === null
+          ? { stayDate: night.stayDate as string, amount: null, evidenceQuality }
+          : null;
+      const amount = objectBody(night.amount);
+      const amountDecimal = stringField(amount?.amountDecimal);
+      const currency = stringField(amount?.currency);
+      return amount &&
+        Object.keys(amount).every((key) => ["amountDecimal", "currency"].includes(key)) &&
+        amountDecimal &&
+        isMoneyAmount(amountDecimal) &&
+        currency &&
+        /^[A-Z]{3}$/.test(currency)
+        ? {
+            stayDate: night.stayDate as string,
+            amount: { amountDecimal, currency },
+            evidenceQuality,
+          }
+        : null;
+    });
+    return nightly.some((night) => !night)
+      ? null
+      : {
+          assignmentId,
+          position: Number(stay.position),
+          roomId,
+          checkIn,
+          checkOut,
+          nightly: nightly as PmsManualStayCorrectionCommand["stays"][number]["nightly"],
+        };
+  });
+  const positions = stays.map((stay) => stay?.position).sort((a, b) => (a ?? 0) - (b ?? 0));
+  if (
+    !accountingDate ||
+    !isDateOnly(accountingDate) ||
+    stays.some((stay) => !stay) ||
+    positions.some((position, index) => position !== index + 1) ||
+    new Set(stays.map((stay) => stay?.assignmentId)).size !== stays.length
+  )
+    return { error: invalidBody("Stay-correction stay or nightly evidence is invalid.") };
+  return {
+    value: {
+      propertyId,
+      guestBookingId,
+      ...metadata.value,
+      accountingDate,
+      stays: stays as PmsManualStayCorrectionCommand["stays"],
+      audit: pmsOperationsCommandAudit(
+        request,
+        metadata.value.commandId,
+        "Correct manual booking stays",
+      ),
+    },
+  };
+}
+
+function dateOffset(from: string, days: number): string {
+  const date = new Date(`${from}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 function requestsRetainedCharge(body: unknown): boolean {
