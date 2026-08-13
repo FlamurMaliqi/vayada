@@ -132,14 +132,19 @@ export function createPgMarketplaceAffiliateAdminRepository(config: {
           [command.propertyId, command.affiliateId],
         );
         const row = current.rows[0];
-        if (!row)
-          return await finishWithoutWrite(client, () => ({ outcome: "not_found" as const }));
+        if (!row) {
+          await client.query("COMMIT");
+          transactionOpen = false;
+          return { outcome: "not_found" };
+        }
         const nextStatus = nextLifecycleStatus(row.lifecycleStatus, command.action);
         if (!nextStatus) {
-          return await finishWithoutWrite(client, () => ({
+          await client.query("COMMIT");
+          transactionOpen = false;
+          return {
             outcome: "invalid_transition" as const,
             currentStatus: row.lifecycleStatus,
-          }));
+          };
         }
 
         const updated = await client.query<AffiliateRow>(
@@ -195,11 +200,6 @@ export function createPgMarketplaceAffiliateAdminRepository(config: {
       await pool.end();
     },
   };
-}
-
-async function finishWithoutWrite<T>(client: PoolClient, result: () => T): Promise<T> {
-  await client.query("COMMIT");
-  return result();
 }
 
 function nextLifecycleStatus(
