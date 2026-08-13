@@ -16,6 +16,7 @@ import {
   previousEditableSetupTaskId,
   profileUpdateFromDraft,
   recommendedInlineSetupTaskId,
+  setupErrorMessage,
   validateProfileDraft,
 } from "./SharedFirstRunPropertySetupWizard";
 
@@ -27,6 +28,42 @@ describe("idempotencyKeyForRetry", () => {
 
     expect(idempotencyKeyForRetry(first, create)).toBe(first);
     expect(idempotencyKeyForRetry(null, create)).toBe("key-2");
+  });
+});
+
+describe("property create conflict recovery", () => {
+  it("translates conflicts, server failures, and network failures into useful messages", () => {
+    expect(
+      setupErrorMessage({
+        status: 409,
+        data: { code: "command_in_progress" },
+      }),
+    ).toContain("still finishing");
+    expect(
+      setupErrorMessage({
+        status: 409,
+        data: { code: "idempotency_key_conflict" },
+      }),
+    ).toContain("setup changed during this save");
+    expect(
+      setupErrorMessage({
+        status: 409,
+        data: { code: "private_contact_conflict", detail: "Publish this contact first." },
+      }),
+    ).toBe("Publish this contact first.");
+    expect(setupErrorMessage(Object.assign(new Error("API Error: 500"), { status: 500 }))).toBe(
+      "Something went wrong on our end. Please try again.",
+    );
+    expect(
+      setupErrorMessage({
+        status: 500,
+        data: { message: "database unavailable" },
+      }),
+    ).toBe("Something went wrong on our end. Please try again.");
+    expect(setupErrorMessage(new TypeError("Failed to fetch"))).toBe(
+      "Couldn't save. Check your connection and try again.",
+    );
+    expect(setupErrorMessage(new Error("API Error: 409"))).not.toContain("API Error");
   });
 });
 

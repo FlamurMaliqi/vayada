@@ -743,7 +743,7 @@ async function findPropertyCreateReplay(
   const existing = result.rows[0];
   if (!existing) return null;
   if (existing.requestFingerprintHash !== fingerprint) {
-    throw propertyCreateConflict("idempotency_key_conflict");
+    throw propertyCreateConflict("idempotency_key_conflict", existing.propertyId ?? undefined);
   }
   if (existing.status !== "completed" || !existing.propertyId) {
     throw propertyCreateConflict("command_in_progress");
@@ -810,8 +810,9 @@ async function completePropertyCreate(
 
 function propertyCreateConflict(
   code: "idempotency_key_conflict" | "command_in_progress",
-): Error & { code: string } {
-  return Object.assign(new Error(code), { code });
+  propertyId?: string,
+): Error & { code: string; propertyId?: string } {
+  return Object.assign(new Error(code), { code, ...(propertyId ? { propertyId } : {}) });
 }
 
 function sha256(value: string): string {
