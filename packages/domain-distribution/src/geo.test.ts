@@ -226,15 +226,23 @@ describe("@vayada/domain-distribution — GEO validation contracts", () => {
         { loc: "https://hotel-alpenrose.booking.localhost/en" },
         { loc: "https://hotel-alpenrose.booking.localhost/en/book?check_in=2026-09-12" },
         { loc: "https://hotel-alpenrose.booking.localhost/en/payment" },
+        { loc: "https://hotel-alpenrose.booking.localhost/en/confirmation?booking=VAY-1267" },
       ];
       const result = validateGeoSitemap(entries, ["https://hotel-alpenrose.booking.localhost/en"]);
 
       expect(result.valid).toBe(false);
-      expect(result.forbiddenUrls.length).toBeGreaterThanOrEqual(2);
+      expect(result.forbiddenUrls.length).toBeGreaterThanOrEqual(3);
     });
 
     it("has the expected set of forbidden path fragments", () => {
-      const required = ["/book", "/payment", "/booking/", "/my-booking", "/addons"];
+      const required = [
+        "/book",
+        "/payment",
+        "/booking/",
+        "/confirmation",
+        "/my-booking",
+        "/addons",
+      ];
       for (const fragment of required) {
         expect(GEO_SITEMAP_FORBIDDEN_PATH_FRAGMENTS).toContain(fragment);
       }

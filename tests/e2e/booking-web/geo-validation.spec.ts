@@ -267,7 +267,7 @@ test.describe("booking-web sitemap GEO contract", () => {
   });
 
   test("sitemap forbidden path fragments contract covers all private routes", () => {
-    const required = ["/book", "/payment", "/booking/", "/my-booking", "/addons"];
+    const required = ["/book", "/payment", "/booking/", "/confirmation", "/my-booking", "/addons"];
     for (const fragment of required) {
       expect(GEO_SITEMAP_FORBIDDEN_PATH_FRAGMENTS).toContain(fragment);
     }
