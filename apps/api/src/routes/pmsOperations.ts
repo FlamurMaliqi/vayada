@@ -336,6 +336,27 @@ export type PmsManualStayCorrectionCommand = {
   audit: PmsOperationsCommandAudit;
 };
 
+export type PmsManualPriceCorrectionCommand = {
+  propertyId: string;
+  guestBookingId: string;
+  commandId: string;
+  idempotencyKey: string;
+  expectedVersion?: string;
+  accountingDate: string;
+  reason?: string;
+  pricing:
+    | {
+        kind: "exact";
+        nights: Array<{ targetEvidenceId: string; replacementAmount: PmsMoney }>;
+      }
+    | {
+        kind: "equal_inferred";
+        targetEvidenceIds: string[];
+        replacementTotal: PmsMoney;
+      };
+  audit: PmsOperationsCommandAudit;
+};
+
 export type PmsBookingLifecycleCommand = {
   propertyId: string;
   guestBookingId: string;
@@ -800,6 +821,9 @@ export type PmsOperationsCommandRepository = {
   correctManualBookingStays?(
     command: PmsManualStayCorrectionCommand,
   ): Promise<PmsOperationalCommandResult>;
+  correctManualBookingPrices?(
+    command: PmsManualPriceCorrectionCommand,
+  ): Promise<PmsOperationalCommandResult>;
   acceptBooking(command: PmsBookingLifecycleCommand): Promise<PmsOperationalCommandResult>;
   markBookingPaid(command: PmsBookingLifecycleCommand): Promise<PmsOperationalCommandResult>;
   listPrivateNotes(propertyId: string, guestBookingId: string): Promise<PmsPrivateNote[] | null>;
@@ -1019,6 +1043,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/reservations/:guestBookingId/no-show",
     "/properties/:propertyId/reservations/:guestBookingId/cancel",
     "/properties/:propertyId/reservations/:guestBookingId/correct-stays",
+    "/properties/:propertyId/reservations/:guestBookingId/correct-prices",
   ]) {
     app.options(path, async (request, reply) => {
       if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
@@ -2615,6 +2640,37 @@ export async function registerPmsOperationsRoutes(
             readModelUnavailable("Manual stay correction is unavailable."),
           );
         const result = await commandRepository.correctManualBookingStays(command.value);
+        if (!result.ok) return sendPmsOperationalCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          reservation: result.reservation,
+          commandMeta: result.commandMeta,
+        } satisfies PmsOperationsCommandResponse;
+      },
+    );
+
+    app.post<{ Params: PmsReservationParams; Querystring: unknown; Body: unknown }>(
+      "/properties/:propertyId/reservations/:guestBookingId/correct-prices",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? []))
+          return sendPmsOperationsError(reply, {
+            statusCode: 403,
+            code: "missing_permission",
+            category: "authorization",
+            message: "PMS operations origin is not allowed.",
+          });
+        const { propertyId, guestBookingId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        if (!enforcePmsFinanceManagePolicy(request, reply, propertyId)) return reply;
+        const command = toManualPriceCorrectionCommand(propertyId, guestBookingId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        if (!commandRepository.correctManualBookingPrices)
+          return sendPmsOperationsError(
+            reply,
+            readModelUnavailable("Manual price correction is unavailable."),
+          );
+        const result = await commandRepository.correctManualBookingPrices(command.value);
         if (!result.ok) return sendPmsOperationalCommandError(reply, result);
         return {
           contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
@@ -4446,6 +4502,126 @@ function toManualStayCorrectionCommand(
       ),
     },
   };
+}
+
+function toManualPriceCorrectionCommand(
+  propertyId: string,
+  guestBookingId: string,
+  request: FastifyRequest<{ Querystring: unknown; Body: unknown }>,
+): { value: PmsManualPriceCorrectionCommand } | { error: PmsOperationsError } {
+  if (!objectBody(request.query) || Object.keys(request.query as object).length)
+    return { error: invalidBody("Price-correction query fields are not supported.") };
+  const metadata = toOperationalCommandMetadata(request.body, "Price-correction command");
+  if ("error" in metadata) return metadata;
+  const raw = request.body as Record<string, unknown>;
+  if (
+    metadata.value.commandId.length > 200 ||
+    metadata.value.idempotencyKey.length > 200 ||
+    (metadata.value.expectedVersion?.length ?? 0) > 200 ||
+    Object.keys(raw).some(
+      (key) =>
+        ![
+          "commandId",
+          "idempotencyKey",
+          "expectedVersion",
+          "accountingDate",
+          "reason",
+          "pricing",
+        ].includes(key),
+    )
+  )
+    return { error: invalidBody("Price-correction command contains unknown or invalid fields.") };
+  const accountingDate = stringField(raw.accountingDate);
+  const reason = optionalStringField(raw.reason);
+  const pricing = objectBody(raw.pricing);
+  const parsed = pricing && parseManualPriceCorrectionPricing(pricing);
+  if (
+    !accountingDate ||
+    !isDateOnly(accountingDate) ||
+    (raw.reason !== undefined && reason === undefined) ||
+    (reason?.length ?? 0) > 1000 ||
+    !parsed
+  )
+    return { error: invalidBody("Price-correction pricing evidence is invalid.") };
+  return {
+    value: {
+      propertyId,
+      guestBookingId,
+      ...metadata.value,
+      accountingDate,
+      reason,
+      pricing: parsed,
+      audit: pmsOperationsCommandAudit(
+        request,
+        metadata.value.commandId,
+        "Correct manual booking prices",
+      ),
+    },
+  };
+}
+
+function parseManualPriceCorrectionPricing(
+  pricing: Record<string, unknown>,
+): PmsManualPriceCorrectionCommand["pricing"] | null {
+  if (pricing.kind === "exact") {
+    if (
+      Object.keys(pricing).some((key) => !["kind", "nights"].includes(key)) ||
+      !Array.isArray(pricing.nights) ||
+      pricing.nights.length < 1 ||
+      pricing.nights.length > 20 * 366
+    )
+      return null;
+    const nights = pricing.nights.map((value) => {
+      const night = objectBody(value);
+      if (
+        !night ||
+        Object.keys(night).some((key) => !["targetEvidenceId", "replacementAmount"].includes(key))
+      )
+        return null;
+      const targetEvidenceId = stringField(night.targetEvidenceId);
+      const replacementAmount = parsePriceCorrectionMoney(night.replacementAmount);
+      return targetEvidenceId && isUuid(targetEvidenceId) && replacementAmount
+        ? { targetEvidenceId, replacementAmount }
+        : null;
+    });
+    if (
+      nights.some((night) => !night) ||
+      new Set(nights.map((night) => night?.targetEvidenceId)).size !== nights.length
+    )
+      return null;
+    return { kind: "exact", nights: nights as NonNullable<(typeof nights)[number]>[] };
+  }
+  if (
+    pricing.kind !== "equal_inferred" ||
+    Object.keys(pricing).some(
+      (key) => !["kind", "targetEvidenceIds", "replacementTotal"].includes(key),
+    ) ||
+    !Array.isArray(pricing.targetEvidenceIds) ||
+    pricing.targetEvidenceIds.length < 1 ||
+    pricing.targetEvidenceIds.length > 20 * 366
+  )
+    return null;
+  const targetEvidenceIds = pricing.targetEvidenceIds.map(stringField);
+  const replacementTotal = parsePriceCorrectionMoney(pricing.replacementTotal);
+  return targetEvidenceIds.every((id) => id && isUuid(id)) &&
+    new Set(targetEvidenceIds).size === targetEvidenceIds.length &&
+    replacementTotal
+    ? { kind: "equal_inferred", targetEvidenceIds: targetEvidenceIds as string[], replacementTotal }
+    : null;
+}
+
+function parsePriceCorrectionMoney(value: unknown): PmsMoney | null {
+  const money = objectBody(value);
+  if (!money || Object.keys(money).some((key) => !["amountDecimal", "currency"].includes(key)))
+    return null;
+  const amountDecimal = stringField(money.amountDecimal);
+  const currency = stringField(money.currency);
+  return amountDecimal &&
+    /^(0|[1-9]\d{0,14})(?:\.\d{1,4})?$/.test(amountDecimal) &&
+    currency &&
+    /^[A-Z]{3}$/.test(currency)
+    ? { amountDecimal, currency }
+    : null;
 }
 
 function dateOffset(from: string, days: number): string {
