@@ -102,6 +102,7 @@ export function createPgPmsManualBookingCommandRepository(config: {
         });
         const paymentEvidenceId = await settleIfPaid(
           transaction,
+          reservation.id,
           config.dependencies.financeSettlement,
           command,
           guestBookingId,
@@ -138,6 +139,7 @@ export function createPgPmsManualBookingCommandRepository(config: {
 
 async function settleIfPaid(
   transaction: PmsManualBookingTransactionClient,
+  bookingCreationEvidenceId: string,
   finance: FinanceManualBookingSettlementPort,
   command: PmsManualBookingCreateCommand,
   guestBookingId: string,
@@ -150,6 +152,7 @@ async function settleIfPaid(
     transaction: await financeManualBookingSettlementTransaction(
       transaction as unknown as Pick<PoolClient, "query" | "release">,
     ),
+    bookingCreationEvidenceId,
     command: {
       commandType: "finance.manual_booking.settle_full",
       commandId: `${command.commandId}:settlement`,
