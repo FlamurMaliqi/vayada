@@ -262,7 +262,7 @@ Owner package: `domain-distribution`.
 
 ### Ask Intelligence (retired)
 
-> Historical ownership record only. Migration `0079` removes this schema, its
+> Historical ownership record only. Migration `0080` removes this schema, its
 > persisted evidence and audit data, and its Ask-only permissions. The
 > `domain-intelligence` package no longer exists. Future hotel employee agent
 > design starts from VAY-1091 and must define new ownership and storage
@@ -272,14 +272,14 @@ Former owner package: `domain-intelligence`.
 
 | Historical table or read model | Former owner     | Source migration histories / former tables                                                                            | Notes                                                                         |
 | ------------------------------ | ---------------- | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `metric_definitions`           | Ask Intelligence | New target catalog, informed by booking/PMS/finance/marketplace metrics.                                              | Removed by migration `0079`.                                                  |
-| `metric_snapshot_runs`         | Ask Intelligence | PMS bookings/payments/rooms, booking events, marketplace collaborations, finance read models.                         | Removed by migration `0079`.                                                  |
-| `setup_completeness_snapshots` | Ask Intelligence | Property setup status, booking platform status, PMS module activation/setup fields, marketplace profile completeness. | Removed by migration `0079`.                                                  |
-| `ai_evidence_catalog`          | Ask Intelligence | New target registry.                                                                                                  | Removed by migration `0079`.                                                  |
-| `ask_conversations`            | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0079`, including stored conversations.                  |
-| `ask_runs`                     | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0079`, including run history.                           |
-| `ask_tool_calls`               | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0079`, including tool traces.                           |
-| `ask_answer_audits`            | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0079`, including answer audit history.                  |
+| `metric_definitions`           | Ask Intelligence | New target catalog, informed by booking/PMS/finance/marketplace metrics.                                              | Removed by migration `0080`.                                                  |
+| `metric_snapshot_runs`         | Ask Intelligence | PMS bookings/payments/rooms, booking events, marketplace collaborations, finance read models.                         | Removed by migration `0080`.                                                  |
+| `setup_completeness_snapshots` | Ask Intelligence | Property setup status, booking platform status, PMS module activation/setup fields, marketplace profile completeness. | Removed by migration `0080`.                                                  |
+| `ai_evidence_catalog`          | Ask Intelligence | New target registry.                                                                                                  | Removed by migration `0080`.                                                  |
+| `ask_conversations`            | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0080`, including stored conversations.                  |
+| `ask_runs`                     | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0080`, including run history.                           |
+| `ask_tool_calls`               | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0080`, including tool traces.                           |
+| `ask_answer_audits`            | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0080`, including answer audit history.                  |
 
 ### Platform Media
 
