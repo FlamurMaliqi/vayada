@@ -6,6 +6,7 @@ import {
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { PmsChannexManagementCommandPort } from "../domains/pmsChannexManagementCommands.js";
+import type { PmsChannexIframeSessionPort } from "../domains/pmsChannexIframeSession.js";
 import type { PmsChannexManagementReadRepository } from "../domains/pmsChannexManagementReadModel.js";
 import { enforceRoutePolicy } from "./policy.js";
 
@@ -13,6 +14,7 @@ export type PmsChannexManagementRoutesOptions = {
   repository: PmsChannexManagementReadRepository;
   capabilityModes: ChannexManagementCapabilityModes;
   commandPort?: PmsChannexManagementCommandPort;
+  iframeSessionPort?: PmsChannexIframeSessionPort;
 };
 
 export async function registerPmsChannexManagementRoutes(
@@ -22,6 +24,7 @@ export async function registerPmsChannexManagementRoutes(
   app.addHook("onClose", async () => {
     await options.repository.close?.();
     await options.commandPort?.close?.();
+    await options.iframeSessionPort?.close?.();
   });
 
   app.get<{ Params: { propertyId: string } }>(
@@ -89,6 +92,29 @@ export async function registerPmsChannexManagementRoutes(
           operationType: "update_markups",
         }),
       );
+    },
+  );
+
+  app.post<{ Params: { propertyId: string } }>(
+    "/properties/:propertyId/channex/iframe-session",
+    async (request, reply) => {
+      const context = enforcePmsChannexPolicy(
+        request,
+        request.params.propertyId,
+        "pms.operations.manage",
+      );
+      if (options.capabilityModes.iframe !== "mutating") {
+        return reply.code(409).send({ code: "channex_capability_not_mutating" });
+      }
+      if (!options.iframeSessionPort) {
+        return reply.code(503).send({ code: "channex_iframe_unavailable" });
+      }
+      const result = await options.iframeSessionPort.createSession(
+        context,
+        request.params.propertyId,
+      );
+      if (result.ok) return result;
+      return reply.code(result.code === "connection_required" ? 409 : 502).send(result);
     },
   );
 }
