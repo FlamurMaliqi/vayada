@@ -9,20 +9,26 @@ import {
 } from "@vayada/domain-finance";
 import type { PoolClient, QueryResult, QueryResultRow } from "pg";
 
-declare const callerTransaction: unique symbol;
+const callerTransaction: unique symbol = Symbol("financeManualBookingSettlementTransaction");
 
 export type FinanceManualBookingSettlementTransaction = {
-  readonly [callerTransaction]: true;
+  readonly [callerTransaction]: string;
   query<T extends QueryResultRow = QueryResultRow>(
     text: string,
     values?: readonly unknown[],
   ): Promise<Pick<QueryResult<T>, "rows">>;
 };
 
-export function financeManualBookingSettlementTransaction(
+export async function financeManualBookingSettlementTransaction(
   client: Pick<PoolClient, "query" | "release">,
-): FinanceManualBookingSettlementTransaction {
-  return client as unknown as FinanceManualBookingSettlementTransaction;
+): Promise<FinanceManualBookingSettlementTransaction> {
+  const result = await client.query<{ transactionId: string }>(
+    `SELECT txid_current()::text AS "transactionId"`,
+  );
+  return {
+    [callerTransaction]: result.rows[0]!.transactionId,
+    query: client.query.bind(client),
+  };
 }
 
 export type FinanceManualBookingSettlementPort = {
@@ -45,12 +51,15 @@ type BookingRow = {
   totalAmount: string;
   balanceAmount: string;
   currency: string;
+  expectedPaymentMethod: string;
+  createdInTransaction: boolean;
 };
 
 export function createFinanceManualBookingSettlementPort(): FinanceManualBookingSettlementPort {
   return {
     async settleFull({ transaction, command }) {
       const normalized = normalizeFinanceManualBookingSettlement(command);
+      await assertCallerTransaction(transaction);
       const fingerprint = requestFingerprint(normalized);
       const idempotencyKey = storedIdempotencyKey(normalized);
       const booking = await lockBooking(transaction, normalized.guestBookingId);
@@ -121,6 +130,17 @@ export function createFinanceManualBookingSettlementPort(): FinanceManualBooking
   };
 }
 
+async function assertCallerTransaction(
+  transaction: FinanceManualBookingSettlementTransaction,
+): Promise<void> {
+  const current = await transaction.query<{ transactionId: string }>(
+    `SELECT txid_current()::text AS "transactionId"`,
+  );
+  if (current.rows[0]?.transactionId !== transaction[callerTransaction]) {
+    throw new FinanceManualBookingSettlementError("invalid_command");
+  }
+}
+
 async function lockBooking(
   transaction: FinanceManualBookingSettlementTransaction,
   guestBookingId: string,
@@ -129,7 +149,9 @@ async function lockBooking(
     `SELECT property_id::text AS "propertyId", source_system AS "sourceSystem",
             lifecycle_status AS "lifecycleStatus",
             payment_status AS "paymentStatus", total_amount::text AS "totalAmount",
-            balance_amount::text AS "balanceAmount", trim(currency) AS currency
+            balance_amount::text AS "balanceAmount", trim(currency) AS currency,
+            expected_payment_method AS "expectedPaymentMethod",
+            (xmin::text::xid8 = pg_current_xact_id()) AS "createdInTransaction"
      FROM booking.guest_bookings WHERE id = $1::uuid FOR UPDATE`,
     [guestBookingId],
   );
@@ -148,6 +170,9 @@ function assertBookingCreationState(
     throw new FinanceManualBookingSettlementError("non_full_settlement");
   }
   if (booking.sourceSystem !== "pms" || booking.lifecycleStatus !== "confirmed") {
+    throw new FinanceManualBookingSettlementError("invalid_command");
+  }
+  if (!booking.createdInTransaction || booking.expectedPaymentMethod !== command.paymentMethod) {
     throw new FinanceManualBookingSettlementError("invalid_command");
   }
 }
