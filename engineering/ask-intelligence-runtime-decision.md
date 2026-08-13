@@ -1,5 +1,9 @@
 # Ask Intelligence runtime and provider boundary decision
 
+> **Retired on 2026-08-13.** The Ask Intelligence product and runtime described
+> here have been removed. This decision is retained only as historical context;
+> VAY-1091 will make a new runtime and platform recommendation.
+
 _VAY-736 decision record. Builds on VAY-601 Ask Intelligence architecture,
 VAY-613 evidence contract, VAY-602 TypeScript backend structure, VAY-607
 runtime and DB tooling, and VAY-608 RequestContext. Official OpenAI

@@ -85,8 +85,8 @@ The next-stack debt falls into four groups:
      `apps/pms-web/services/api/client.ts` lines 81-85;
      `apps/vayada-admin/services/api/bookingClient.ts` lines 7-8;
      `apps/api/src/routes/pmsOperations.ts` lines 2100-2119).
-   - **Current consumer:** Booking Admin, PMS Web, Platform Admin booking
-     settings calls, Ask Intelligence calls.
+   - **Current consumer:** Booking Admin, PMS Web, and Platform Admin booking
+     settings calls. The former Ask Intelligence consumer is retired.
    - **Target replacement:** explicit resource ids in typed route paths or
      request bodies, authorized through `RequestContext.linkedResources` and
      route policy.
@@ -199,17 +199,19 @@ The next-stack debt falls into four groups:
      for PMS/finance contracts, and VAY-886/A1 affiliate follow-ups for
      affiliate-owned target routes.
 
-9. **`next-booking-admin`: Ask Intelligence scope header**
+9. **Retired: `next-booking-admin` Ask Intelligence scope header**
    - **Old thing:** Ask client sends `X-Hotel-Id` while also sending
      organization scope (`apps/booking-admin/services/api/askIntelligenceClient.ts`
      lines 71-85).
-   - **Current consumer:** Booking Admin Ask Intelligence panel.
-   - **Target replacement:** Ask request scope derived from AuthKit organization
-     plus authorized booking/PMS resource context.
-   - **Owner domain:** Ask Intelligence / auth.
-   - **Deletion blocker / proof needed:** Ask route tests reject mismatched
-     resource scope and frontend no longer treats a client header as authority.
-   - **Follow-up:** VAY-887; include in VAY-881 banlist when migrated.
+   - **Current state:** Removed with the Booking Admin panel, Ask client, and Ask
+     API runtime. There is no current consumer.
+   - **Target replacement:** None. The future hotel employee agent requires a
+     new architecture from VAY-1091.
+   - **Owner domain:** None; the former Ask Intelligence domain is retired.
+   - **Deletion proof:** The frontend client and route are deleted, and the
+     legacy-call surface no longer registers Booking Admin Ask.
+   - **Follow-up:** VAY-887 is superseded by retirement; use VAY-1091 for future
+     agent scope and authorization design.
 
 10. **`next-booking`: public API base fallback**
 
@@ -347,7 +349,8 @@ The next-stack debt falls into four groups:
 - VAY-884: delete Booking Admin helper shims after VAY-883.
 - VAY-885: migrate Platform Admin off direct legacy service clients.
 - VAY-886: move Affiliate Dashboard to target affiliate/finance routes.
-- VAY-887: remove `X-Hotel-Id` as authority from Ask Intelligence requests.
+- VAY-887 is superseded by Ask Intelligence retirement; VAY-1091 owns future
+  hotel employee agent scope and authorization design.
 - VAY-770, VAY-795, VAY-806, and VAY-772: owner tracks for PMS operations,
   finance, platform media/import, and Channex/webhook route families surfaced by
   PMS Web.

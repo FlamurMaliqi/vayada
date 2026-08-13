@@ -118,10 +118,6 @@ const surfaceRules = {
       "legacy X-Hotel-Id routing header",
     ),
   ],
-  "booking-admin-ask": [
-    legacyProductionHostRule(),
-    headerRule("x-hotel-id", "legacy X-Hotel-Id routing header", /^\/api\/ai\/ask$/),
-  ],
 } satisfies Record<string, LegacyCallRule[]>;
 
 export type NoLegacyCallSurface = keyof typeof surfaceRules;
