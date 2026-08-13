@@ -3,6 +3,12 @@
 ALTER TABLE booking.guest_bookings
   ADD COLUMN booking_channel TEXT NOT NULL DEFAULT 'unknown',
   ADD COLUMN direct_booking_source TEXT,
+  ADD CONSTRAINT chk_guest_bookings_finance_dates CHECK (
+    isfinite(check_in) AND isfinite(check_out)
+  ),
+  ADD CONSTRAINT chk_guest_bookings_finance_total CHECK (
+    total_amount < 'Infinity'::NUMERIC
+  ),
   ADD CONSTRAINT chk_guest_bookings_booking_channel CHECK (
     booking_channel IN ('direct', 'booking_com', 'airbnb', 'expedia', 'agoda', 'other_ota', 'unknown')
   ),

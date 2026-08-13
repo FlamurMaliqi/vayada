@@ -102,4 +102,20 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking Finance attribution (PostgreSQL)", 
       constraint: "chk_guest_bookings_booking_channel",
     });
   });
+
+  it("keeps projected dates and totals finite", async () => {
+    await expect(
+      client.query(
+        `INSERT INTO booking.guest_bookings (property_id, check_in, check_out)
+         VALUES ($1, '-infinity', 'infinity')`,
+        [PROPERTY_ID],
+      ),
+    ).rejects.toMatchObject({ constraint: "chk_guest_bookings_finance_dates" });
+    await expect(
+      client.query(
+        `INSERT INTO booking.guest_bookings (property_id, total_amount) VALUES ($1, 'NaN')`,
+        [PROPERTY_ID],
+      ),
+    ).rejects.toMatchObject({ constraint: "chk_guest_bookings_finance_total" });
+  });
 });
