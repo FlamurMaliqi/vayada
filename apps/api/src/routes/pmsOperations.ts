@@ -4365,24 +4365,21 @@ function toManualStayCorrectionCommand(
     const roomId = stringField(stay.roomId);
     const checkIn = stringField(stay.checkIn);
     const checkOut = stringField(stay.checkOut);
-    const nights =
-      checkIn && checkOut && isDateOnly(checkIn) && isDateOnly(checkOut)
-        ? daysInclusive(checkIn, checkOut) - 1
-        : 0;
     if (
       !assignmentId ||
       !isUuid(assignmentId) ||
       !roomId ||
       !isUuid(roomId) ||
+      !checkIn ||
+      !checkOut ||
+      !isDateOnly(checkIn) ||
+      !isDateOnly(checkOut) ||
       !Number.isInteger(stay.position) ||
-      Number(stay.position) < 1 ||
-      nights < 1 ||
-      nights > 366 ||
-      stay.nightly.length !== nights
+      Number(stay.position) < 1
     )
       return null;
-    const normalizedCheckIn = checkIn;
-    if (!normalizedCheckIn) return null;
+    const nights = daysInclusive(checkIn, checkOut) - 1;
+    if (nights < 1 || nights > 366 || stay.nightly.length !== nights) return null;
     const nightly = stay.nightly.map((entry, index) => {
       const night = objectBody(entry);
       if (
@@ -4390,7 +4387,7 @@ function toManualStayCorrectionCommand(
         Object.keys(night).some(
           (key) => !["stayDate", "amount", "evidenceQuality"].includes(key),
         ) ||
-        night.stayDate !== dateOffset(normalizedCheckIn, index) ||
+        night.stayDate !== dateOffset(checkIn, index) ||
         !["exact", "inferred", "missing"].includes(String(night.evidenceQuality))
       )
         return null;

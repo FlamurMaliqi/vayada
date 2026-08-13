@@ -138,27 +138,14 @@ async function staysAreAvailable(
      ), demand AS (
        SELECT "roomTypeId",stay_date,count(*)::int requested FROM requested_dates
        GROUP BY "roomTypeId",stay_date
-     ), used AS (
-       SELECT demand."roomTypeId",demand.stay_date,
-         count(DISTINCT CASE WHEN booking.id IS NOT NULL THEN assignment.room_id END)::int used
+     ), current_booking AS (
+       SELECT demand."roomTypeId",demand.stay_date,count(assignment.id)::int credit
        FROM demand LEFT JOIN pms.operational_booking_assignments assignment
-         ON assignment.property_id=$1::uuid AND assignment.guest_booking_id<>$2::uuid
+         ON assignment.property_id=$1::uuid AND assignment.guest_booking_id=$2::uuid
         AND assignment.room_type_id=demand."roomTypeId"
         AND assignment.assignment_status NOT IN ('canceled','released')
-       LEFT JOIN booking.guest_bookings booking ON booking.id=assignment.guest_booking_id
-        AND booking.property_id=assignment.property_id
-        AND COALESCE(assignment.check_in,booking.check_in)<=demand.stay_date
-        AND COALESCE(assignment.check_out,booking.check_out)>demand.stay_date
+        AND assignment.check_in<=demand.stay_date AND assignment.check_out>demand.stay_date
        GROUP BY demand."roomTypeId",demand.stay_date
-     ), blocked AS (
-       SELECT demand."roomTypeId",demand.stay_date,COALESCE(sum(block.blocked_count),0)::int blocked
-       FROM demand LEFT JOIN pms.room_blocks block ON block.property_id=$1::uuid
-        AND block.room_type_id=demand."roomTypeId" AND block.room_id IS NULL
-        AND block.status='active' AND block.starts_on<=demand.stay_date
-        AND block.ends_on>=demand.stay_date GROUP BY demand."roomTypeId",demand.stay_date
-     ), capacity AS (
-       SELECT room_type_id,count(*)::int capacity FROM pms.rooms
-       WHERE property_id=$1::uuid AND status='available' GROUP BY room_type_id
      )
      SELECT 1 FROM requested WHERE EXISTS (
        SELECT 1 FROM pms.operational_booking_assignments assignment
@@ -172,9 +159,12 @@ async function staysAreAvailable(
        SELECT 1 FROM pms.room_blocks block WHERE block.property_id=$1::uuid
         AND block.room_id=requested."roomId" AND block.status='active'
         AND block.starts_on<requested."checkOut" AND block.ends_on>=requested."checkIn")
-     UNION ALL SELECT 1 FROM demand JOIN used USING("roomTypeId",stay_date)
-       JOIN blocked USING("roomTypeId",stay_date) JOIN capacity ON capacity.room_type_id=demand."roomTypeId"
-       WHERE demand.requested+used.used+blocked.blocked>capacity.capacity LIMIT 1`,
+     UNION ALL SELECT 1 FROM demand LEFT JOIN current_booking USING("roomTypeId",stay_date)
+       LEFT JOIN pms.inventory_days inventory ON inventory.property_id=$1::uuid
+        AND inventory.room_type_id=demand."roomTypeId" AND inventory.stay_date=demand.stay_date
+       WHERE inventory.status='closed' OR inventory.effective_sellable_limit_count IS NULL
+        OR inventory.available_count+COALESCE(current_booking.credit,0)<demand.requested
+        OR inventory.property_id IS NULL LIMIT 1`,
     [command.propertyId, command.guestBookingId, JSON.stringify(stays)],
   );
   return unavailable.rowCount === 0;
