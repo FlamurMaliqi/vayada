@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { QueryResult, QueryResultRow } from "pg";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createTargetPmsOperationsCommandRepository,
@@ -816,6 +816,45 @@ describe("target PMS operations command repository", () => {
     });
     expect(client.calls.some(({ text }) => text.includes("WITH booking_update AS"))).toBe(false);
     expect(client.calls.some(({ text }) => text.includes("INSERT INTO platform.jobs"))).toBe(false);
+  });
+
+  it("does not capture a request card after its host-response deadline", async () => {
+    const provider: StripeBookingPaymentProvider = {
+      createPaymentIntent: vi.fn(),
+      retrievePaymentIntent: vi.fn(),
+      capturePaymentIntent: vi.fn(),
+      cancelPaymentIntent: vi.fn(),
+    };
+    const { client, repository } = createRepository((text) => {
+      if (text === "BEGIN" || text === "ROLLBACK") return ok();
+      if (text.includes("FROM platform.idempotency_keys")) return ok();
+      if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([{ id: "idem" }], 1);
+      if (text.includes("FROM booking.guest_bookings booking") && text.includes("FOR UPDATE")) {
+        return ok([
+          {
+            guestBookingId,
+            propertyId,
+            publicReference: "BK-REQUEST-CARD-EXPIRED",
+            lifecycleStatus: "pending_payment",
+            paymentStatus: "authorized",
+            paymentMethod: "card",
+            pendingExpiresAt: "2026-08-15T15:44:59.000Z",
+            bookingMetadata: { acceptanceMode: "request" },
+            providerPaymentIntentId: "pi_request_card",
+            providerAccountRef: "acct_request_card",
+          },
+        ]);
+      }
+      throw new Error(`Unhandled SQL: ${text}`);
+    }, provider);
+
+    await expect(repository.acceptBooking(baseBookingLifecycleCommand())).resolves.toMatchObject({
+      ok: false,
+      code: "invalid_status_transition",
+    });
+    expect(provider.retrievePaymentIntent).not.toHaveBeenCalled();
+    expect(provider.capturePaymentIntent).not.toHaveBeenCalled();
+    expect(client.calls.some(({ text }) => text.includes("UPDATE finance.payments"))).toBe(false);
   });
 
   it.each([

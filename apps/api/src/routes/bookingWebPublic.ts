@@ -1235,6 +1235,7 @@ const TARGET_CHECKOUT_SUPPORTED_PAYMENT_METHODS = [
   "bank_transfer",
   "paypal",
 ] as const;
+const TARGET_REQUEST_HOST_RESPONSE_HOURS = 24;
 
 type TargetCheckoutCommandReservation =
   | { status: "reserved" }
@@ -2870,6 +2871,16 @@ async function createTargetGuestBooking(
     acceptanceMode: quote.acceptanceMode,
     pmsHandoffStatus: "pending_handoff",
     inventoryReservation,
+    ...(quote.acceptanceMode === "request" &&
+    (quote.paymentMethod === "card" ||
+      quote.paymentMethod === "pay_at_property" ||
+      quote.paymentMethod === "cash")
+      ? {
+          hostResponseDeadlineAt: new Date(
+            context.occurredAt.getTime() + TARGET_REQUEST_HOST_RESPONSE_HOURS * 60 * 60 * 1000,
+          ).toISOString(),
+        }
+      : {}),
     ...(paymentInstructions ? { paymentInstructions } : {}),
     ...(quote.paymentMethod === "bank_transfer" || quote.paymentMethod === "paypal"
       ? {
@@ -3552,7 +3563,8 @@ async function loadTargetBooking(
 }
 
 function serializeTargetBooking(booking: TargetBookingRow): Record<string, unknown> {
-  const selectedOffer = objectValue(objectValue(booking.bookingMetadata)["selectedOffer"]);
+  const metadata = objectValue(booking.bookingMetadata);
+  const selectedOffer = objectValue(metadata["selectedOffer"]);
   const nights = Math.max(dateRange(booking.checkIn, booking.checkOut).length, 1);
   const roomCount = Math.max(Number(booking.roomCount), 1);
   const totalAmount = Number(decimalString(booking.totalAmount));
@@ -3581,7 +3593,9 @@ function serializeTargetBooking(booking: TargetBookingRow): Record<string, unkno
     currency: booking.currency,
     totalAmount,
     balanceAmount: Number(decimalString(booking.balanceAmount)),
-    paymentMethod: stringValue(objectValue(booking.bookingMetadata)["paymentMethod"]),
+    paymentMethod: stringValue(metadata["paymentMethod"]),
+    hostResponseDeadline:
+      stringValue(metadata["hostResponseDeadlineAt"]) ?? stringValue(metadata["pendingExpiresAt"]),
     createdAt: toIsoDateTime(booking.createdAt),
   };
 }

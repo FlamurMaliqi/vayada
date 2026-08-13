@@ -1610,6 +1610,7 @@ describe("Booking Web public bootstrap parity", () => {
     expect(optionalPhone.bookingWriteValues?.[9]).toBe("pending_payment");
     expect(JSON.parse(String(optionalPhone.bookingWriteValues?.[18]))).toMatchObject({
       acceptanceMode: "request",
+      hostResponseDeadlineAt: "2026-06-26T12:00:00.000Z",
       policySnapshot: { freeUntilDays: 7 },
       inventoryReservation: {
         contractVersion: "pms.inventory-reservation.v1",

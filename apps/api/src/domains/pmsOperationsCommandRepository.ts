@@ -4843,7 +4843,8 @@ async function applyBookingAcceptanceCommandMutation(
     acceptanceMode === "request" &&
     (booking.paymentMethod === "pay_at_property" || booking.paymentMethod === "cash") &&
     booking.lifecycleStatus === "pending_payment" &&
-    booking.paymentStatus === "unpaid";
+    booking.paymentStatus === "unpaid" &&
+    !deadlinePassed(booking.pendingExpiresAt, acceptedAt);
   if (isRequestPayAtProperty) {
     return acceptRequestPayAtPropertyBooking(client, command, booking, acceptedAt);
   }
@@ -4851,7 +4852,8 @@ async function applyBookingAcceptanceCommandMutation(
     acceptanceMode === "request" &&
     booking.paymentMethod === "card" &&
     booking.lifecycleStatus === "pending_payment" &&
-    booking.paymentStatus === "authorized";
+    booking.paymentStatus === "authorized" &&
+    !deadlinePassed(booking.pendingExpiresAt, acceptedAt);
   if (isRequestCard) {
     return captureAcceptedRequestCardBooking(config, client, command, booking, acceptedAt);
   }
@@ -5221,7 +5223,10 @@ async function loadBookingPaymentLifecycle(
        payment.accepted_methods AS "acceptedMethods",
        payment.deposit_policy AS "depositPolicy",
        booking.booking_metadata -> 'paymentInstructions' AS "paymentInstructions",
-       booking.booking_metadata ->> 'pendingExpiresAt' AS "pendingExpiresAt",
+       COALESCE(
+         booking.booking_metadata ->> 'hostResponseDeadlineAt',
+         booking.booking_metadata ->> 'pendingExpiresAt'
+       ) AS "pendingExpiresAt",
        booking.booking_metadata ->> 'acceptedPaymentDeadlineAt' AS "acceptedPaymentDeadlineAt",
        card_payment.provider_payment_intent_id AS "providerPaymentIntentId",
        card_payment.provider_account_ref AS "providerAccountRef"
