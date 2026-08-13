@@ -176,6 +176,15 @@ export const PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS = `
       rate_plan.code AS rate_plan_code,
       rate_plan.name AS rate_plan_name,
       rate_plan.rate_type,
+      rate_plan.cancellation_policy_snapshot,
+      CASE
+        WHEN rate_plan.cancellation_policy_snapshot ->> 'type' = 'free_until_days_before_arrival'
+          THEN 'Free cancellation until '
+            || (rate_plan.cancellation_policy_snapshot ->> 'freeCancellationDeadlineDays')
+            || ' days before arrival.'
+        WHEN rate_plan.rate_type = 'non_refundable' THEN 'Non-refundable.'
+        ELSE profile.policies ->> 'cancellationSummary'
+      END AS cancellation_summary,
       rate_plan.meal_plan,
       rate_plan.currency,
       rate_plan.active AS rate_plan_active,
@@ -286,14 +295,21 @@ export const PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS = `
       'mealPlan', input.meal_plan,
       'minStayNights', input.min_stay_nights,
       'maxStayNights', input.max_stay_nights,
-      'cancellationSummary', input.policies ->> 'cancellationSummary'
+      'cancellationSummary', input.cancellation_summary
     )),
     ARRAY(
       SELECT jsonb_array_elements_text(
         COALESCE(input.capabilities -> 'paymentMethods', '[]'::jsonb)
       )
     ),
-    input.policies,
+    jsonb_strip_nulls(
+      CASE
+        WHEN input.cancellation_policy_snapshot ->> 'type' = 'free_until_days_before_arrival'
+          THEN input.cancellation_policy_snapshot
+        ELSE input.policies || input.cancellation_policy_snapshot
+      END
+      || jsonb_build_object('cancellation', input.cancellation_summary)
+    ),
     CASE
       WHEN input.stay_date < ($2::timestamptz AT TIME ZONE input.timezone)::date
         THEN ARRAY['invalid_request']::text[]

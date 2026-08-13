@@ -11,6 +11,11 @@ import {
   type PmsReservationSink,
 } from "@vayada/domain-pms";
 
+export {
+  parseFlexibleCancellationTerms as parseBookingFlexibleCancellationTerms,
+  type FlexibleCancellationTerms as BookingFlexibleCancellationTerms,
+} from "@vayada/domain-pms";
+
 export * from "./onboardingPublication.js";
 export * from "./bookingLaunchEvidence.js";
 export * from "./bookingLaunchReadiness.js";

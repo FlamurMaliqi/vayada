@@ -1171,7 +1171,14 @@ describe("Booking Web public bootstrap parity", () => {
                 roomSummary: { name: "Deluxe Double Room" },
                 rateSummary: { name: "Flexible" },
                 occupancy: { maxAdults: 2, maxChildren: 1 },
-                publicPolicy: { deposit: "50% deposit required." },
+                publicPolicy: {
+                  type: "free_until_days_before_arrival",
+                  freeCancellationDeadlineDays: 7,
+                  afterDeadlinePenalty: "full_booking_amount",
+                  noShowPenalty: "full_booking_amount",
+                  cancellation: "Free cancellation until 7 days before arrival.",
+                  deposit: "50% deposit required.",
+                },
                 paymentOptions: ["pay_at_property"],
                 availableRooms: 2,
                 nightlyRoomAmounts: nights("187.20"),
@@ -1309,6 +1316,14 @@ describe("Booking Web public bootstrap parity", () => {
       paymentOptions: ["pay_at_property"],
       paymentMethod: "pay_at_property",
       acceptanceMode: "request",
+      publicPolicy: {
+        type: "free_until_days_before_arrival",
+        freeCancellationDeadlineDays: 7,
+      },
+    });
+    expect(JSON.parse(String(quoteWrite?.values?.[11]))).toMatchObject({
+      type: "free_until_days_before_arrival",
+      freeCancellationDeadlineDays: 7,
     });
     expect(calls.some((call) => call.text.includes("platform.product_audit_events"))).toBe(true);
     await adapter.close?.();
@@ -1782,7 +1797,15 @@ describe("Booking Web public bootstrap parity", () => {
     const calls: string[] = [];
     let inventoryWriteValues: readonly unknown[] | undefined;
     let lifecycleStatus = "confirmed";
-    let policySnapshot: Record<string, unknown> = { freeUntilDays: 7 };
+    let policySnapshot: Record<string, unknown> = {
+      type: "free_until_days_before_arrival",
+      freeCancellationDeadlineDays: 7,
+      afterDeadlinePenalty: "full_booking_amount",
+      noShowPenalty: "full_booking_amount",
+      freeCancellationDays: 14,
+      refund: "none",
+      tiers: [{ days: 30, refundPercentage: 50 }],
+    };
     const booking = () => ({
       guestBookingId,
       propertyId,
@@ -1869,8 +1892,21 @@ describe("Booking Web public bootstrap parity", () => {
       freeCancellationDays: 7,
       daysUntilCheckIn: 11,
       currency: "EUR",
-      policy: { freeUntilDays: 7 },
+      policy: {
+        type: "free_until_days_before_arrival",
+        freeCancellationDeadlineDays: 7,
+        afterDeadlinePenalty: "full_booking_amount",
+        noShowPenalty: "full_booking_amount",
+        freeCancellationDays: 14,
+        refund: "none",
+        tiers: [{ days: 30, refundPercentage: 50 }],
+      },
     });
+
+    policySnapshot = {};
+    await expect(adapter.cancelPreview("hotel-alpenrose", guestBookingId, request)).rejects.toThrow(
+      "free-cancellation period cannot be verified",
+    );
 
     policySnapshot = { refund: "none" };
     await expect(
@@ -1881,7 +1917,30 @@ describe("Booking Web public bootstrap parity", () => {
       }),
     ).rejects.toThrow("non-refundable");
 
-    policySnapshot = { freeUntilDays: 7 };
+    policySnapshot = {
+      type: "unknown",
+      freeCancellationDeadlineDays: 7,
+      afterDeadlinePenalty: "full_booking_amount",
+      noShowPenalty: "full_booking_amount",
+    };
+    await expect(adapter.cancelPreview("hotel-alpenrose", guestBookingId, request)).rejects.toThrow(
+      "free-cancellation period cannot be verified",
+    );
+
+    policySnapshot = {
+      type: "free_until_days_before_arrival",
+      freeCancellationDeadlineDays: 7,
+    };
+    await expect(adapter.cancelPreview("hotel-alpenrose", guestBookingId, request)).rejects.toThrow(
+      "free-cancellation period cannot be verified",
+    );
+
+    policySnapshot = {
+      type: "free_until_days_before_arrival",
+      freeCancellationDeadlineDays: 7,
+      afterDeadlinePenalty: "full_booking_amount",
+      noShowPenalty: "full_booking_amount",
+    };
     await expect(
       adapter.cancel("hotel-alpenrose", guestBookingId, request, {
         ...context,
