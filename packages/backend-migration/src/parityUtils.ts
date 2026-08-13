@@ -585,7 +585,13 @@ export function validateExpectedTargetConfig(
       validateObjectArray(
         bookingCheckoutChecks["settings"],
         "expected-target.json.bookingCheckoutChecks.settings",
-        ["propertyId", "bookingHotelResourceId", "defaultCurrency", "defaultLanguage"],
+        [
+          "propertyId",
+          "bookingHotelResourceId",
+          "defaultCurrency",
+          "defaultLanguage",
+          "acceptanceMode",
+        ],
         findings,
       );
     }
