@@ -955,6 +955,9 @@ describe("target PMS operations command repository", () => {
     expect(assignmentUpdate.values[1]).toEqual([assignmentOneId, assignmentTwoId]);
 
     const auditInsert = requiredCall(client, "INSERT INTO platform.product_audit_events");
+    expect(auditInsert.values[0]).toBe(
+      `pms.checkin_command.property.${propertyId}.key.${sha256("pms-checkin-001")}.audit.v1`,
+    );
     expect(auditInsert.text).toContain("'property',\n       NULL,\n       $4::uuid");
     expect(auditInsert.values[3]).toBe(propertyId);
     expect(auditInsert.values).not.toContain(organizationId);

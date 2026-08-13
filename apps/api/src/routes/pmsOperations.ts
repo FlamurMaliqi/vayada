@@ -301,6 +301,19 @@ export type PmsManualCancellationCommand = {
   audit: PmsOperationsCommandAudit;
 };
 
+export type PmsManualRefundCommand = {
+  propertyId: string;
+  guestBookingId: string;
+  commandId: string;
+  idempotencyKey: string;
+  expectedVersion?: string;
+  paymentEvidenceId: string;
+  accountingDate: string;
+  reason?: string;
+  allocations: Array<{ evidenceId: string; amount: PmsMoney }>;
+  audit: PmsOperationsCommandAudit;
+};
+
 export type PmsBookingLifecycleCommand = {
   propertyId: string;
   guestBookingId: string;
@@ -699,6 +712,7 @@ export type PmsOperationsCommandRepository = {
   executeCheckInCommand(command: PmsCheckInCommand): Promise<PmsOperationalCommandResult>;
   executeNoShowCommand(command: PmsNoShowCommand): Promise<PmsOperationalCommandResult>;
   cancelManualBooking?(command: PmsManualCancellationCommand): Promise<PmsOperationalCommandResult>;
+  refundManualBooking?(command: PmsManualRefundCommand): Promise<PmsOperationalCommandResult>;
   acceptBooking(command: PmsBookingLifecycleCommand): Promise<PmsOperationalCommandResult>;
   markBookingPaid(command: PmsBookingLifecycleCommand): Promise<PmsOperationalCommandResult>;
   listPrivateNotes(propertyId: string, guestBookingId: string): Promise<PmsPrivateNote[] | null>;
