@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { NationalitySelect } from "@/components/NationalitySelect";
-import { nationalityLabel } from "@/lib/nationalities";
+import { nationalityLabel } from "@vayada/locale-constants";
 import { useParams, useSearchParams } from "next/navigation";
 import {
   Booking,

@@ -12,6 +12,7 @@ import {
 } from "@vayada/domain-distribution";
 import { parseBookingFlexibleCancellationTerms } from "@vayada/domain-booking";
 import type { BillingConfigReadModel, BillingConfigReadPort } from "@vayada/domain-finance";
+import { normalizeNationalityCode } from "@vayada/locale-constants";
 import { createHash, randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
@@ -3423,7 +3424,7 @@ async function createTargetGuestBooking(
       stringField(request, "lastName") ?? stringField(request, "guestLastName") ?? "Guest",
       stringField(request, "guestEmail") ?? stringField(request, "email"),
       guestPhone,
-      uppercaseCountry(stringField(request, "country") ?? stringField(request, "countryCode")),
+      guestCountryCode(request),
       stringField(request, "arrivalTime") ?? stringField(request, "estimatedArrivalTime"),
       stringField(request, "specialRequests"),
       JSON.stringify({ requestId: context.requestId, correlationId: context.correlationId }),
@@ -5608,10 +5609,19 @@ function uppercaseCurrency(value: string): string {
   return /^[A-Z]{3}$/.test(currency) ? currency : "EUR";
 }
 
-function uppercaseCountry(value: string | null): string | null {
-  if (!value) return null;
-  const country = value.trim().toUpperCase();
-  return /^[A-Z]{2}$/.test(country) ? country : null;
+function guestCountryCode(request: BookingWebCheckoutRequest): string | null {
+  const values = ["country", "countryCode", "guestCountry"]
+    .map((key) => stringField(request, key))
+    .filter((value): value is string => Boolean(value));
+  const codes = values.map((value) => {
+    const code = normalizeNationalityCode(value);
+    if (!code) throw createHttpError(400, "Guest nationality is invalid.");
+    return code;
+  });
+  if (new Set(codes).size > 1) {
+    throw createHttpError(400, "Guest nationality values conflict.");
+  }
+  return codes[0] ?? null;
 }
 
 function lifecycleStatusFromCheckout(quote: TargetCheckoutQuoteSnapshot): string {

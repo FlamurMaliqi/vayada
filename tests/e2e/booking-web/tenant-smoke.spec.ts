@@ -176,6 +176,21 @@ test.describe("booking-web tenant smoke", () => {
     ).toHaveCount(0);
     await expect(page.locator('script[type="application/ld+json"]')).toHaveCount(0);
 
+    const nationality = page.getByRole("combobox", { name: "Country", exact: true });
+    await nationality.fill("Netherlands");
+    await expect(nationality).toHaveValue("Netherlands");
+    await expect(page.locator('datalist option[value="Netherlands"]')).toHaveCount(1);
+    await page.getByLabel("First Name").fill("Ada");
+    await page.getByLabel("Last Name").fill("Lovelace");
+    await page.getByLabel("Email Address").fill("ada@example.test");
+    await page.getByLabel("Phone Number").fill("1234567");
+    await page.getByRole("button", { name: "Continue to Payment" }).click();
+    await expect
+      .poll(() =>
+        page.evaluate(() => JSON.parse(sessionStorage.getItem("guestDetails") ?? "{}").guestCountry),
+      )
+      .toBe("NL");
+
     await assertHealthy();
   });
 

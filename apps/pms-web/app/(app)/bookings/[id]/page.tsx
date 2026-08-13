@@ -30,7 +30,7 @@ import ConfirmDialog from "@/components/ConfirmDialog";
 import Modal from "@/components/Modal";
 import { NationalitySelect } from "@/components/NationalitySelect";
 import { formatCurrency } from "@/lib/formatCurrency";
-import { nationalityDisplayLabel } from "@/lib/nationalities";
+import { nationalityDisplayLabel } from "@vayada/locale-constants";
 import {
   AddOnListPicker,
   SelectedAddOnSummary,

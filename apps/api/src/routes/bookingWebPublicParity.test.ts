@@ -1739,6 +1739,8 @@ describe("Booking Web public bootstrap parity", () => {
       quoteId: "Q-TARGETQUOTE1",
       roomTypeId: "room_deluxe",
       guestEmail: "guest@example.com",
+      country: "Holland",
+      guestCountry: "NL",
       checkIn: "2026-09-12",
       checkOut: "2026-09-15",
       adults: 2,
@@ -1796,6 +1798,7 @@ describe("Booking Web public bootstrap parity", () => {
     expect(optionalPhone.bookingWriteValues).not.toContain("whatsapp");
     expect(optionalPhone.bookingWriteValues).not.toContain("expedia");
     expect(optionalPhone.bookingWriteValues).not.toContain("call");
+    expect(optionalPhone.bookingWriteValues?.[24]).toBe("NL");
     expect(JSON.parse(String(optionalPhone.bookingWriteValues?.[18]))).toMatchObject({
       acceptanceMode: "request",
       hostResponseDeadlineAt: "2026-06-26T12:00:00.000Z",
@@ -1826,6 +1829,22 @@ describe("Booking Web public bootstrap parity", () => {
     expect(
       optionalPhone.calls.filter((text) => text.includes("INSERT INTO platform.domain_events")),
     ).toHaveLength(2);
+    const invalidNationality = createAdapter(false);
+    await expect(
+      invalidNationality.adapter.createBooking(
+        "hotel-alpenrose",
+        { ...request, guestCountry: "ZZ" },
+        context,
+      ),
+    ).rejects.toThrow("Guest nationality is invalid");
+    const conflictingNationality = createAdapter(false);
+    await expect(
+      conflictingNationality.adapter.createBooking(
+        "hotel-alpenrose",
+        { ...request, guestCountry: "US" },
+        context,
+      ),
+    ).rejects.toThrow("Guest nationality values conflict");
     const inventoryReservation = optionalPhone.calls.find((text) =>
       text.includes("UPDATE pms.inventory_days"),
     );
