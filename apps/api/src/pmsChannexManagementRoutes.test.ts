@@ -91,6 +91,23 @@ describe("PMS Channex management command routes", () => {
     expect(harness.enqueue).not.toHaveBeenCalled();
   });
 
+  it("applies authentication policy before command or markup validation", async () => {
+    const harness = await testApp({ authenticated: false });
+    app = harness.app;
+    for (const [method, path] of [
+      ["POST", "commands"],
+      ["PUT", "markups"],
+    ] as const) {
+      const response = await app.inject({
+        method,
+        url: `/properties/${propertyId}/channex/${path}`,
+        payload: { malformed: true },
+      });
+      expect(response.statusCode).toBe(401);
+    }
+    expect(harness.enqueue).not.toHaveBeenCalled();
+  });
+
   it("validates and queues target-owned markups", async () => {
     const harness = await testApp();
     app = harness.app;

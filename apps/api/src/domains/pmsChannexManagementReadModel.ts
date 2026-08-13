@@ -236,9 +236,11 @@ function isConnectedChannel(value: unknown): value is ChannexConnectedChannel {
 }
 
 function uniqueMarkups(rows: Array<{ channel: string; markupPercent: number }>) {
-  return [...new Map(rows.map((row) => [row.channel, row.markupPercent])).entries()].map(
-    ([channel, markupPercent]) => ({ channel, markupPercent }),
-  );
+  return [
+    ...new Map(
+      rows.filter((row) => row.channel !== "direct").map((row) => [row.channel, row.markupPercent]),
+    ).entries(),
+  ].map(([channel, markupPercent]) => ({ channel, markupPercent }));
 }
 
 function required(value: string): string {

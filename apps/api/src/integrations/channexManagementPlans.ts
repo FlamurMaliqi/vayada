@@ -44,6 +44,8 @@ type RateRow = {
   baseRate: number;
   channel: string;
   markupPercent: number;
+  providerTitle: string;
+  defaultOccupancy: number;
   externalRoomTypeId: string | null;
 };
 type AriRow = {
@@ -176,24 +178,33 @@ async function provisioningPlan(
          ON connection.property_id = room.property_id AND connection.provider = 'channex'
        LEFT JOIN pms.channel_room_type_mappings mapping
          ON mapping.connection_id = connection.id AND mapping.room_type_id = room.id
-       WHERE room.property_id = $1::uuid AND room.active AND mapping.id IS NULL
+       WHERE room.property_id = $1::uuid AND room.active
+         AND (mapping.id IS NULL OR mapping.status <> 'active')
        GROUP BY room.id ORDER BY room.sort_order, room.name`,
       [job.propertyId],
     ),
     pool.query<RateRow>(
       `SELECT plan.room_type_id::text AS "roomTypeId", plan.id::text AS "ratePlanId",
          plan.name, plan.currency, 'per_room' AS "sellMode", plan.base_rate_amount::float8 AS "baseRate",
-         'direct' AS channel, 0::float8 AS "markupPercent",
+         channel.key AS channel, 0::float8 AS "markupPercent",
+         left(plan.name || ' - ' || channel.label, 255) AS "providerTitle",
+         LEAST(2, GREATEST(1, COALESCE((room.occupancy_limits ->> 'maxAdults')::integer, 2))) AS "defaultOccupancy",
          room_mapping.external_room_type_id AS "externalRoomTypeId"
        FROM pms.rate_plans plan
+       JOIN pms.room_types room ON room.id = plan.room_type_id
+       CROSS JOIN (VALUES ('direct', 'Standard'), ('booking_com', 'BDC Standard'),
+         ('airbnb', 'Airbnb Standard')) AS channel(key, label)
        LEFT JOIN pms.channel_connections connection
          ON connection.property_id = plan.property_id AND connection.provider = 'channex'
        LEFT JOIN pms.channel_rate_plan_mappings mapping
          ON mapping.connection_id = connection.id AND mapping.rate_plan_id = plan.id
+           AND mapping.channel = channel.key
        LEFT JOIN pms.channel_room_type_mappings room_mapping
          ON room_mapping.connection_id = connection.id AND room_mapping.room_type_id = plan.room_type_id
-       WHERE plan.property_id = $1::uuid AND plan.active AND mapping.id IS NULL
-       ORDER BY plan.name`,
+           AND room_mapping.status = 'active'
+       WHERE plan.property_id = $1::uuid AND plan.active
+         AND (mapping.id IS NULL OR mapping.status <> 'active')
+       ORDER BY plan.name, channel.key`,
       [job.propertyId],
     ),
   ]);
@@ -212,9 +223,10 @@ async function provisioningPlan(
             property_id: externalPropertyId,
             title: room.name,
             count_of_rooms: Math.max(1, room.countOfRooms),
-            occ_adults: room.adults,
-            occ_children: room.children,
-            default_occupancy: room.adults,
+            occ_adults: Math.max(1, room.adults),
+            occ_children: Math.max(0, room.children),
+            occ_infants: 0,
+            default_occupancy: Math.min(2, Math.max(1, room.adults)),
             room_kind: "room",
           },
         }),
@@ -230,7 +242,7 @@ async function provisioningPlan(
               roomTypeId: rate.roomTypeId,
               ratePlanId: rate.ratePlanId,
               ratePlanName: rate.name,
-              providerTitle: rate.name,
+              providerTitle: rate.providerTitle,
               channel: rate.channel,
               sellMode: rate.sellMode,
               markupPercent: rate.markupPercent,
@@ -243,11 +255,13 @@ async function provisioningPlan(
             externalRoomTypeId: rate.externalRoomTypeId ?? undefined,
             ratePlan: {
               property_id: externalPropertyId,
-              title: rate.name,
+              title: rate.providerTitle,
               sell_mode: rate.sellMode,
               rate_mode: "manual",
               currency: rate.currency,
-              options: [{ occupancy: 2, is_primary: true, rate: rate.baseRate }],
+              options: [
+                { occupancy: rate.defaultOccupancy, is_primary: true, rate: rate.baseRate },
+              ],
               meal_type: "room_only",
             },
           }),

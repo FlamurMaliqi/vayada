@@ -49,13 +49,13 @@ export async function registerPmsChannexManagementRoutes(
   app.post<{ Params: { propertyId: string }; Body: unknown }>(
     "/properties/:propertyId/channex/commands",
     async (request, reply) => {
-      const input = parseCommand(request.body);
-      if (!input) return reply.code(400).send({ code: "invalid_channex_command" });
       const context = enforcePmsChannexPolicy(
         request,
         request.params.propertyId,
         "pms.operations.manage",
       );
+      const input = parseCommand(request.body);
+      if (!input) return reply.code(400).send({ code: "invalid_channex_command" });
       if (!isMutating(options.capabilityModes, input.operationType)) {
         return reply.code(409).send({ code: "channex_capability_not_mutating" });
       }
@@ -72,13 +72,13 @@ export async function registerPmsChannexManagementRoutes(
   app.put<{ Params: { propertyId: string }; Body: unknown }>(
     "/properties/:propertyId/channex/markups",
     async (request, reply) => {
-      const input = parseMarkups(request.body);
-      if (!input) return reply.code(400).send({ code: "invalid_channex_markups" });
       const context = enforcePmsChannexPolicy(
         request,
         request.params.propertyId,
         "pms.operations.manage",
       );
+      const input = parseMarkups(request.body);
+      if (!input) return reply.code(400).send({ code: "invalid_channex_markups" });
       if (options.capabilityModes.markups !== "mutating") {
         return reply.code(409).send({ code: "channex_capability_not_mutating" });
       }
@@ -148,7 +148,7 @@ function parseMarkups(body: unknown) {
   const markups = value.markups.map((item) => {
     if (!item || typeof item !== "object") return null;
     const markup = item as Record<string, unknown>;
-    return typeof markup.channel === "string" &&
+    return (markup.channel === "booking_com" || markup.channel === "airbnb") &&
       typeof markup.markupPercent === "number" &&
       markup.markupPercent >= -50 &&
       markup.markupPercent <= 200

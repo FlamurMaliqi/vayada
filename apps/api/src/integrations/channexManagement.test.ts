@@ -145,7 +145,7 @@ describe("Channex management provider", () => {
     });
   });
 
-  it("checkpoints reconciled state before skipping a duplicate create", async () => {
+  it("reconciles provider state and checkpoints it before skipping duplicate creates", async () => {
     const checkpoint = vi.fn();
     const fetcher = vi
       .fn<typeof fetch>()
@@ -178,6 +178,31 @@ describe("Channex management provider", () => {
     );
   });
 
+  it("checks messaging installation before applying the per-property add-on", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      response(200, {
+        data: [{ id: "app-1", attributes: { application_code: "channex_messages" } }],
+      }),
+    );
+    const provider = createChannexManagementProvider({
+      apiBaseUrl: "https://staging.channex.io",
+      apiKey: "secret",
+      plans: {
+        plan: async () => ({
+          requests: [
+            channexRequests.listInstalledApplications("property-1"),
+            channexRequests.installMessaging("property-1"),
+          ],
+        }),
+      },
+      fetch: fetcher,
+    });
+    await expect(provider.execute(job("install_messaging"))).resolves.toMatchObject({
+      ok: true,
+      messagingAppInstalled: true,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
   it("does not send a request when target planning fails", async () => {
     const fetcher = vi.fn<typeof fetch>();
     const provider = createChannexManagementProvider({
