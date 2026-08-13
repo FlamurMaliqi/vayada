@@ -295,6 +295,12 @@ export const GEO_BOOKING_WEB_ROBOTS_POLICIES: readonly GeoPageRobotsPolicy[] = [
     description: "Guest booking status page must not be indexed.",
   },
   {
+    pathPattern: "/{locale}/confirmation",
+    pageKind: "booking_status",
+    shouldBeIndexable: false,
+    description: "Guest payment confirmation page must not be indexed.",
+  },
+  {
     pathPattern: "/{locale}/my-booking",
     pageKind: "guest_private",
     shouldBeIndexable: false,
@@ -354,6 +360,7 @@ export const GEO_SITEMAP_FORBIDDEN_PATH_FRAGMENTS = [
   "/book",
   "/payment",
   "/booking/",
+  "/confirmation",
   "/my-booking",
   "/addons",
 ] as const;
