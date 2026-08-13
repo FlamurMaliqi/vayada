@@ -67,6 +67,10 @@ export function createPgPmsChannexManagementReadRepository(config: {
                     room.name AS "roomTypeName", mapping.external_room_type_id AS "externalRoomTypeId",
                     mapping.status
              FROM pms.channel_room_type_mappings mapping
+             JOIN pms.channel_connections connection
+               ON connection.id = mapping.connection_id
+              AND connection.property_id = mapping.property_id
+              AND connection.provider = 'channex'
              JOIN pms.room_types room ON room.id = mapping.room_type_id
              WHERE mapping.property_id = $1::uuid ORDER BY room.sort_order, room.name`,
             [propertyId],
@@ -78,6 +82,10 @@ export function createPgPmsChannexManagementReadRepository(config: {
                     mapping.external_rate_plan_id AS "externalRatePlanId", mapping.sell_mode AS "sellMode",
                     mapping.markup_percent::float8 AS "markupPercent", mapping.status
              FROM pms.channel_rate_plan_mappings mapping
+             JOIN pms.channel_connections connection
+               ON connection.id = mapping.connection_id
+              AND connection.property_id = mapping.property_id
+              AND connection.provider = 'channex'
              JOIN pms.rate_plans plan ON plan.id = mapping.rate_plan_id
              WHERE mapping.property_id = $1::uuid ORDER BY plan.name, mapping.channel`,
             [propertyId],
@@ -92,7 +100,12 @@ export function createPgPmsChannexManagementReadRepository(config: {
                       'lastSuccessAt', last_success_at, 'lastErrorCode', last_error_code,
                       'lastErrorMessage', last_error_message, 'retryAfter', retry_after
                     ) AS state
-             FROM pms.channel_sync_status WHERE property_id = $1::uuid`,
+             FROM pms.channel_sync_status sync
+             JOIN pms.channel_connections connection
+               ON connection.id = sync.connection_id
+              AND connection.property_id = sync.property_id
+              AND connection.provider = 'channex'
+             WHERE sync.property_id = $1::uuid`,
             [propertyId],
           ),
           pool.query<OperationRow>(
@@ -159,19 +172,19 @@ function operationSelect(where: string): string {
 
 function toOperation(row: OperationRow): ChannexManagementOperation {
   const operationType = row.payload.operationType as ChannexManagementOperationType;
-  const retryScheduled = row.status === "pending" && row.attemptsMade > 0;
+  const status = operationStatus(row);
   return {
     contractVersion: CHANNEX_MANAGEMENT_CONTRACT_VERSION,
     operationId: row.operationId,
     propertyId: row.propertyId,
     operationType,
-    status: (retryScheduled ? "retry_scheduled" : row.status) as ChannexManagementOperationStatus,
+    status,
     commandId: String(row.payload.commandId ?? ""),
     idempotencyKey: String(row.payload.idempotencyKey ?? ""),
     acceptedAt: iso(row.acceptedAt),
     attemptsMade: row.attemptsMade,
     maxAttempts: row.maxAttempts,
-    retryAfter: retryScheduled ? iso(row.runAfter) : null,
+    retryAfter: status === "retry_scheduled" ? iso(row.runAfter) : null,
     lastError:
       typeof row.metadata.lastErrorCode === "string"
         ? {
@@ -180,6 +193,12 @@ function toOperation(row: OperationRow): ChannexManagementOperation {
           }
         : null,
   };
+}
+
+function operationStatus(row: OperationRow): ChannexManagementOperationStatus {
+  if (row.status === "pending") return row.attemptsMade > 0 ? "retry_scheduled" : "queued";
+  if (row.status === "canceled") return "failed";
+  return row.status;
 }
 
 function emptySyncState(): ChannexManagementSnapshot["sync"] {
