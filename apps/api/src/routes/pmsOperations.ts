@@ -1019,8 +1019,6 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/profile",
     "/properties/:propertyId/calendar-settings",
     "/properties/:propertyId/booking-acceptance",
-    "/properties/:propertyId/channex/status",
-    "/properties/:propertyId/channex/channels",
     "/properties/:propertyId/messaging/unread-count",
     "/properties/:propertyId/reservations",
     "/properties/:propertyId/reservations/:guestBookingId",
@@ -1516,46 +1514,6 @@ export async function registerPmsOperationsRoutes(
       return sendPmsOperationsError(
         reply,
         readModelUnavailable("PMS calendar settings write model is unavailable."),
-      );
-    },
-  );
-
-  app.get<{ Params: PmsPropertyParams }>(
-    "/properties/:propertyId/channex/status",
-    async (request, reply) => {
-      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
-        return sendPmsOperationsError(reply, {
-          statusCode: 403,
-          code: "missing_permission",
-          category: "authorization",
-          message: "PMS operations origin is not allowed.",
-        });
-      }
-      const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
-      return sendPmsOperationsError(
-        reply,
-        readModelUnavailable("PMS Channex status read model is unavailable."),
-      );
-    },
-  );
-
-  app.get<{ Params: PmsPropertyParams }>(
-    "/properties/:propertyId/channex/channels",
-    async (request, reply) => {
-      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
-        return sendPmsOperationsError(reply, {
-          statusCode: 403,
-          code: "missing_permission",
-          category: "authorization",
-          message: "PMS operations origin is not allowed.",
-        });
-      }
-      const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
-      return sendPmsOperationsError(
-        reply,
-        readModelUnavailable("PMS Channex channels read model is unavailable."),
       );
     },
   );
