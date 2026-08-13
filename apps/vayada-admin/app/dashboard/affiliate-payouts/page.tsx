@@ -1,205 +1,199 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+
 import {
   affiliatePayoutsService,
-  AffiliatePayoutSummary,
-  AffiliatePayoutDetail,
+  type AffiliatePayoutDetail,
+  type AffiliatePayoutSummary,
 } from "@/services/api/affiliatePayouts";
 
-const PAYMENT_METHOD_OPTIONS = [
-  { value: "manual_bank", label: "Bank transfer (manual)" },
-  { value: "manual_paypal", label: "PayPal (manual)" },
-  { value: "wise", label: "Wise" },
-  { value: "stripe", label: "Stripe transfer" },
-  { value: "other", label: "Other" },
-];
+type Selection = { affiliateId: string; currency: string };
+type PaymentMethod = "manual" | "bank_transfer";
 
-function formatAmount(amount: number, currency: string) {
-  return `${currency} ${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+function formatAmount(amount: string, currency: string) {
+  const value = Number(amount);
+  return Number.isFinite(value)
+    ? new Intl.NumberFormat("en-US", { style: "currency", currency }).format(value)
+    : `${currency} ${amount}`;
 }
 
 function formatDate(iso: string | null) {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  return iso
+    ? new Date(iso).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })
+    : "—";
+}
+
+function totalsByCurrency(
+  rows: AffiliatePayoutSummary[],
+  field: "outstandingAmount" | "paidAmount",
+) {
+  const totals = new Map<string, number>();
+  for (const row of rows)
+    totals.set(row.currency, (totals.get(row.currency) ?? 0) + Number(row[field]));
+  return Array.from(totals.entries()).map(([currency, amount]) =>
+    formatAmount(amount.toFixed(2), currency),
+  );
 }
 
 export default function AffiliatePayoutsPage() {
   const [loading, setLoading] = useState(true);
-  const [affiliates, setAffiliates] = useState<AffiliatePayoutSummary[]>([]);
+  const [error, setError] = useState("");
+  const [summaries, setSummaries] = useState<AffiliatePayoutSummary[]>([]);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"outstanding" | "all">("outstanding");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Selection | null>(null);
 
-  useEffect(() => {
-    fetchList();
+  const fetchList = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setSummaries((await affiliatePayoutsService.list()).summaries);
+    } catch (reason) {
+      setSummaries([]);
+      setError(reason instanceof Error ? reason.message : "Could not load affiliate payouts.");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  const fetchList = () => {
-    setLoading(true);
-    affiliatePayoutsService
-      .list()
-      .then((res) => setAffiliates(res.affiliates))
-      .catch(() => setAffiliates([]))
-      .finally(() => setLoading(false));
-  };
+  useEffect(() => {
+    void fetchList();
+  }, [fetchList]);
 
   const filtered = useMemo(() => {
-    let list = affiliates;
-    if (filter === "outstanding") list = list.filter((a) => a.outstandingAmount > 0);
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      list = list.filter(
-        (a) =>
-          a.fullName.toLowerCase().includes(q) ||
-          a.email.toLowerCase().includes(q) ||
-          a.hotelName.toLowerCase().includes(q),
+    const query = search.trim().toLowerCase();
+    return summaries.filter((row) => {
+      if (filter === "outstanding" && Number(row.outstandingAmount) <= 0) return false;
+      return (
+        !query ||
+        row.affiliateId.toLowerCase().includes(query) ||
+        row.organizationId.toLowerCase().includes(query) ||
+        row.currency.toLowerCase().includes(query)
       );
-    }
-    return list;
-  }, [affiliates, filter, search]);
+    });
+  }, [filter, search, summaries]);
 
-  const totalOutstanding = useMemo(
-    () => affiliates.reduce((sum, a) => sum + a.outstandingAmount, 0),
-    [affiliates],
-  );
+  const outstandingTotals = totalsByCurrency(summaries, "outstandingAmount");
+  const paidTotals = totalsByCurrency(summaries, "paidAmount");
+  const payableCount = summaries.reduce((total, row) => total + row.payableCount, 0);
 
   return (
-    <div className="p-4 md:p-8 max-w-[1400px]">
-      <div className="mb-5 md:mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Affiliate Payouts</h1>
-        <p className="text-[13px] text-gray-500 mt-1">
-          Track what vayada owes referrers across all hotels and record manual payouts
+    <div className="max-w-[1400px] p-4 md:p-8">
+      <header className="mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">Affiliate payouts</h1>
+        <p className="mt-1 text-[13px] text-gray-500">
+          Review Finance ledger state and record externally completed manual payouts.
         </p>
+      </header>
+
+      <div className="mb-5 grid grid-cols-1 gap-3 md:grid-cols-3">
+        <Metric label="Outstanding by currency" values={outstandingTotals} fallback="No balance" />
+        <Metric label="Eligible payout rows" values={[String(payableCount)]} fallback="0" />
+        <Metric label="Paid by currency" values={paidTotals} fallback="No payments" />
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-4 mb-5">
-        <div className="bg-white border border-gray-200 rounded-xl p-4 md:p-5">
-          <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-            Total Outstanding
-          </p>
-          <p className="text-2xl font-bold text-gray-900">
-            {formatAmount(totalOutstanding, affiliates[0]?.currency || "EUR")}
-          </p>
-          <p className="text-[11px] text-gray-500 mt-1">
-            {affiliates.filter((a) => a.outstandingAmount > 0).length} affiliates with unpaid
-            balance
-          </p>
-        </div>
-        <div className="bg-white border border-gray-200 rounded-xl p-4 md:p-5">
-          <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-            Total Affiliates
-          </p>
-          <p className="text-2xl font-bold text-gray-900">{affiliates.length}</p>
-          <p className="text-[11px] text-gray-500 mt-1">Across all hotels</p>
-        </div>
-        <div className="bg-white border border-gray-200 rounded-xl p-4 md:p-5">
-          <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-            Lifetime Paid Out
-          </p>
-          <p className="text-2xl font-bold text-gray-900">
-            {formatAmount(
-              affiliates.reduce((sum, a) => sum + a.paidAmount, 0),
-              affiliates[0]?.currency || "EUR",
-            )}
-          </p>
-        </div>
-      </div>
-
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex gap-2">
-          {(["outstanding", "all"] as const).map((f) => (
+          {(["outstanding", "all"] as const).map((value) => (
             <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`px-3 py-1.5 text-[12px] font-medium rounded-full border transition-colors ${
-                filter === f
-                  ? "bg-gray-900 text-white border-gray-900"
-                  : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+              key={value}
+              type="button"
+              onClick={() => setFilter(value)}
+              className={`rounded-full border px-3 py-1.5 text-[12px] font-medium ${
+                filter === value
+                  ? "border-gray-900 bg-gray-900 text-white"
+                  : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
               }`}
             >
-              {f === "outstanding" ? "Outstanding only" : "All affiliates"}
+              {value === "outstanding" ? "Outstanding only" : "All payout scopes"}
             </button>
           ))}
         </div>
         <input
-          type="text"
-          placeholder="Search by name, email or hotel..."
+          aria-label="Search payout scopes"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="w-full sm:w-72 px-3 py-2 text-[13px] border border-gray-200 rounded-lg bg-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-200"
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search affiliate or organization ID"
+          className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] sm:w-80"
         />
       </div>
 
+      {error && (
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-[13px] text-red-700">
+          {error}{" "}
+          <button
+            type="button"
+            onClick={() => void fetchList()}
+            className="font-semibold underline"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       {loading ? (
-        <div className="animate-pulse h-64 bg-gray-100 rounded-xl" />
+        <div className="h-64 animate-pulse rounded-xl bg-gray-100" />
       ) : filtered.length === 0 ? (
-        <div className="bg-white border border-gray-200 rounded-xl p-12 text-center">
-          <p className="text-[13px] text-gray-500">
-            {filter === "outstanding" ? "No outstanding payouts." : "No affiliates found."}
-          </p>
+        <div className="rounded-xl border border-gray-200 bg-white p-12 text-center text-[13px] text-gray-500">
+          No matching payout scopes.
         </div>
       ) : (
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-          <table className="w-full text-[13px]">
-            <thead>
-              <tr className="border-b border-gray-200 bg-gray-50/80">
-                <th className="text-left  px-4 py-3 font-medium text-[11px] text-gray-500 uppercase tracking-wider">
-                  Affiliate
-                </th>
-                <th className="text-left  px-4 py-3 font-medium text-[11px] text-gray-500 uppercase tracking-wider">
-                  Hotel
-                </th>
-                <th className="text-left  px-4 py-3 font-medium text-[11px] text-gray-500 uppercase tracking-wider">
-                  Method
-                </th>
-                <th className="text-right px-4 py-3 font-medium text-[11px] text-gray-500 uppercase tracking-wider">
-                  Outstanding
-                </th>
-                <th className="text-right px-4 py-3 font-medium text-[11px] text-gray-500 uppercase tracking-wider">
-                  Lifetime paid
-                </th>
-                <th className="text-left  px-4 py-3 font-medium text-[11px] text-gray-500 uppercase tracking-wider">
-                  Last paid
-                </th>
-                <th className="text-right px-4 py-3 font-medium text-[11px] text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
+        <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
+          <table className="w-full min-w-[920px] text-[13px]">
+            <thead className="border-b border-gray-200 bg-gray-50/80 text-[11px] uppercase tracking-wider text-gray-500">
+              <tr>
+                <th className="px-4 py-3 text-left font-medium">Affiliate resource</th>
+                <th className="px-4 py-3 text-left font-medium">Method</th>
+                <th className="px-4 py-3 text-right font-medium">Outstanding</th>
+                <th className="px-4 py-3 text-right font-medium">Payable now</th>
+                <th className="px-4 py-3 text-right font-medium">Paid</th>
+                <th className="px-4 py-3 text-left font-medium">Last paid</th>
+                <th className="px-4 py-3 text-right font-medium">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {filtered.map((a) => (
-                <tr key={a.affiliateId} className="hover:bg-gray-50/50">
+              {filtered.map((row) => (
+                <tr key={`${row.affiliateId}:${row.currency}`} className="hover:bg-gray-50/50">
                   <td className="px-4 py-3">
-                    <p className="font-medium text-gray-900">{a.fullName}</p>
-                    <p className="text-[11px] text-gray-500">{a.email}</p>
+                    <p className="font-mono text-[12px] font-medium text-gray-900">
+                      {row.affiliateId}
+                    </p>
+                    <p className="font-mono text-[10px] text-gray-400">{row.organizationId}</p>
+                    {row.affiliateLifecycleStatus === "inactive" && (
+                      <p className="mt-1 text-[10px] font-medium text-amber-700">
+                        Affiliate lifecycle inactive · Finance history retained
+                      </p>
+                    )}
                   </td>
-                  <td className="px-4 py-3 text-gray-600">{a.hotelName}</td>
                   <td className="px-4 py-3">
-                    <span className="text-[11px] font-medium text-gray-600 bg-gray-100 px-2 py-0.5 rounded capitalize">
-                      {a.paymentMethod || "—"}
+                    <span className="rounded bg-gray-100 px-2 py-0.5 text-[11px] text-gray-700">
+                      {row.payoutMethod}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right font-semibold text-gray-900">
-                    {a.outstandingAmount > 0 ? formatAmount(a.outstandingAmount, a.currency) : "—"}
-                    {a.unpaidCount > 0 && (
-                      <span className="block text-[10px] text-gray-400 font-normal">
-                        {a.unpaidCount} bookings
-                      </span>
-                    )}
+                    {formatAmount(row.outstandingAmount, row.currency)}
+                    <span className="block text-[10px] font-normal text-gray-400">
+                      {row.payoutCount} ledger rows
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right text-gray-700">
+                    {formatAmount(row.payableAmount, row.currency)}
+                    <span className="block text-[10px] text-gray-400">
+                      {row.payableCount} eligible
+                    </span>
                   </td>
                   <td className="px-4 py-3 text-right text-gray-600">
-                    {a.paidAmount > 0 ? formatAmount(a.paidAmount, a.currency) : "—"}
+                    {formatAmount(row.paidAmount, row.currency)}
                   </td>
-                  <td className="px-4 py-3 text-gray-500">{formatDate(a.lastPaidAt)}</td>
+                  <td className="px-4 py-3 text-gray-500">{formatDate(row.lastPaidAt)}</td>
                   <td className="px-4 py-3 text-right">
                     <button
-                      onClick={() => setSelectedId(a.affiliateId)}
-                      className="px-3 py-1 text-[12px] font-medium text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+                      type="button"
+                      onClick={() =>
+                        setSelected({ affiliateId: row.affiliateId, currency: row.currency })
+                      }
+                      className="rounded-lg border border-gray-200 px-3 py-1 text-[12px] font-medium text-gray-700 hover:bg-gray-50"
                     >
                       Details
                     </button>
@@ -211,13 +205,13 @@ export default function AffiliatePayoutsPage() {
         </div>
       )}
 
-      {selectedId && (
+      {selected && (
         <PayoutDetailDrawer
-          affiliateId={selectedId}
-          onClose={() => setSelectedId(null)}
+          selection={selected}
+          onClose={() => setSelected(null)}
           onPaid={() => {
-            setSelectedId(null);
-            fetchList();
+            setSelected(null);
+            void fetchList();
           }}
         />
       )}
@@ -225,49 +219,57 @@ export default function AffiliatePayoutsPage() {
   );
 }
 
+function Metric({
+  label,
+  values,
+  fallback,
+}: {
+  label: string;
+  values: string[];
+  fallback: string;
+}) {
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-4 md:p-5">
+      <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+        {label}
+      </p>
+      <p className="text-xl font-bold text-gray-900">
+        {values.length ? values.join(" · ") : fallback}
+      </p>
+    </div>
+  );
+}
+
 function PayoutDetailDrawer({
-  affiliateId,
+  selection,
   onClose,
   onPaid,
 }: {
-  affiliateId: string;
+  selection: Selection;
   onClose: () => void;
   onPaid: () => void;
 }) {
   const [detail, setDetail] = useState<AffiliatePayoutDetail | null>(null);
   const [loading, setLoading] = useState(true);
-  const [showPayForm, setShowPayForm] = useState(false);
-  const [payMethod, setPayMethod] = useState("manual_bank");
-  const [payRef, setPayRef] = useState("");
-  const [payNotes, setPayNotes] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [showForm, setShowForm] = useState(false);
 
   useEffect(() => {
+    let active = true;
     setLoading(true);
+    setLoadError("");
     affiliatePayoutsService
-      .get(affiliateId)
-      .then(setDetail)
-      .catch(() => setDetail(null))
-      .finally(() => setLoading(false));
-  }, [affiliateId]);
-
-  const handleMarkPaid = async () => {
-    setSubmitting(true);
-    setError("");
-    try {
-      await affiliatePayoutsService.markPaid(affiliateId, {
-        paymentMethod: payMethod,
-        externalReference: payRef.trim() || undefined,
-        notes: payNotes.trim() || undefined,
-      });
-      onPaid();
-    } catch (err: any) {
-      setError(err?.message || "Failed to record payout");
-    } finally {
-      setSubmitting(false);
-    }
-  };
+      .get(selection.affiliateId, selection.currency)
+      .then((value) => active && setDetail(value))
+      .catch((reason) => {
+        if (active)
+          setLoadError(reason instanceof Error ? reason.message : "Could not load payout detail.");
+      })
+      .finally(() => active && setLoading(false));
+    return () => {
+      active = false;
+    };
+  }, [selection]);
 
   return (
     <div
@@ -275,293 +277,126 @@ function PayoutDetailDrawer({
       onClick={onClose}
     >
       <div
-        className="bg-white w-full max-w-2xl h-full overflow-y-auto shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
+        className="h-full w-full max-w-3xl overflow-y-auto bg-white shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
       >
-        <div className="sticky top-0 bg-white border-b border-gray-100 px-6 py-4 flex items-center justify-between z-10">
+        <header className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-100 bg-white px-6 py-4">
           <div>
-            <h2 className="text-base font-semibold text-gray-900">Affiliate payout details</h2>
-            {detail && (
-              <p className="text-[12px] text-gray-500 mt-0.5">
-                {detail.affiliate.fullName} · {detail.affiliate.hotelName}
-              </p>
-            )}
+            <h2 className="text-base font-semibold text-gray-900">Affiliate payout detail</h2>
+            <p className="mt-0.5 font-mono text-[11px] text-gray-500">
+              {selection.affiliateId} · {selection.currency}
+            </p>
           </div>
           <button
+            type="button"
+            aria-label="Close payout detail"
             onClick={onClose}
-            className="p-1 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+            className="text-2xl text-gray-400 hover:text-gray-700"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M6 18L18 6M6 6l12 12"
-              />
-            </svg>
+            ×
           </button>
-        </div>
+        </header>
 
-        {loading || !detail ? (
-          <div className="p-6">
-            <div className="h-32 animate-pulse bg-gray-100 rounded-lg" />
+        {loading ? (
+          <div className="m-6 h-40 animate-pulse rounded-lg bg-gray-100" />
+        ) : loadError || !detail ? (
+          <div className="m-6 rounded-lg border border-red-200 bg-red-50 p-4 text-[13px] text-red-700">
+            {loadError || "Payout detail is unavailable."}
           </div>
         ) : (
-          <div className="p-6 space-y-6">
-            <section>
-              <h3 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                Payout method
-              </h3>
-              <div className="bg-gray-50 border border-gray-100 rounded-lg p-4 space-y-1.5 text-[13px]">
-                <div>
-                  <span className="text-gray-500">Method:</span>{" "}
-                  <span className="text-gray-900 capitalize">{detail.affiliate.paymentMethod}</span>
-                </div>
-                {detail.affiliate.paymentMethod === "paypal" && (
-                  <div>
-                    <span className="text-gray-500">PayPal email:</span>{" "}
-                    <span className="text-gray-900">{detail.affiliate.paypalEmail || "—"}</span>
-                  </div>
-                )}
-                {detail.affiliate.paymentMethod === "bank" && (
-                  <>
-                    <div>
-                      <span className="text-gray-500">Holder:</span>{" "}
-                      <span className="text-gray-900">
-                        {detail.affiliate.bankAccountHolder || "—"}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-gray-500">IBAN:</span>{" "}
-                      <span className="text-gray-900 font-mono">
-                        {detail.affiliate.bankIban || "—"}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-gray-500">SWIFT/BIC:</span>{" "}
-                      <span className="text-gray-900 font-mono">
-                        {detail.affiliate.bankSwiftBic || "—"}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-gray-500">Bank:</span>{" "}
-                      <span className="text-gray-900">
-                        {detail.affiliate.bankName || "—"} ({detail.affiliate.bankCountry || "—"})
-                      </span>
-                    </div>
-                  </>
-                )}
-                {detail.affiliate.paymentMethod === "stripe" && (
-                  <>
-                    <div>
-                      <span className="text-gray-500">Account ID:</span>{" "}
-                      <span className="text-gray-900 font-mono">
-                        {detail.affiliate.stripeConnectAccountId || "—"}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-gray-500">Onboarded:</span>{" "}
-                      <span className="text-gray-900">
-                        {detail.affiliate.stripeConnectOnboarded ? "Yes" : "No"}
-                      </span>
-                    </div>
-                  </>
-                )}
-                <div className="pt-1 border-t border-gray-200 mt-2">
-                  <span className="text-gray-500">Contact:</span>{" "}
-                  <span className="text-gray-900">{detail.affiliate.email}</span>
-                </div>
+          <div className="space-y-6 p-6">
+            <section className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+              <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+                <Fact
+                  label="Outstanding"
+                  value={formatAmount(detail.summary.outstandingAmount, detail.summary.currency)}
+                />
+                <Fact
+                  label="Payable now"
+                  value={formatAmount(detail.summary.payableAmount, detail.summary.currency)}
+                />
+                <Fact label="Eligible rows" value={String(detail.summary.payableCount)} />
+                <Fact label="Method" value={detail.summary.payoutMethod} />
               </div>
-            </section>
-
-            <section>
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-center justify-between">
-                <div>
-                  <p className="text-[11px] font-semibold text-amber-700 uppercase tracking-wider">
-                    Outstanding
-                  </p>
-                  <p className="text-2xl font-bold text-amber-900">
-                    {formatAmount(detail.outstandingAmount, detail.lines[0]?.currency || "EUR")}
-                  </p>
-                  <p className="text-[12px] text-amber-700 mt-0.5">
-                    {detail.lines.filter((l) => l.status !== "completed").length} bookings unpaid
-                  </p>
-                </div>
-                {detail.outstandingAmount > 0 && !showPayForm && (
-                  <button
-                    onClick={() => setShowPayForm(true)}
-                    className="px-4 py-2 text-[13px] font-semibold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors"
-                  >
-                    Mark as paid
-                  </button>
-                )}
-              </div>
-
-              {showPayForm && (
-                <div className="mt-3 bg-white border border-gray-200 rounded-lg p-4 space-y-3">
-                  {error && (
-                    <div className="p-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
-                      {error}
-                    </div>
-                  )}
-                  <div>
-                    <label className="block text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
-                      Payment method
-                    </label>
-                    <select
-                      value={payMethod}
-                      onChange={(e) => setPayMethod(e.target.value)}
-                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-200"
-                    >
-                      {PAYMENT_METHOD_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
-                      External reference
-                    </label>
-                    <input
-                      type="text"
-                      value={payRef}
-                      onChange={(e) => setPayRef(e.target.value)}
-                      placeholder="Bank txn id, Wise ref, PayPal txn..."
-                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-200"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
-                      Notes (optional)
-                    </label>
-                    <textarea
-                      value={payNotes}
-                      onChange={(e) => setPayNotes(e.target.value)}
-                      rows={2}
-                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-200"
-                    />
-                  </div>
-                  <div className="flex gap-2 pt-1">
-                    <button
-                      onClick={() => setShowPayForm(false)}
-                      disabled={submitting}
-                      className="px-4 py-2 text-[13px] font-medium text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleMarkPaid}
-                      disabled={submitting}
-                      className="flex-1 px-4 py-2 text-[13px] font-semibold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50"
-                    >
-                      {submitting
-                        ? "Recording..."
-                        : `Confirm ${formatAmount(detail.outstandingAmount, detail.lines[0]?.currency || "EUR")} as paid`}
-                    </button>
-                  </div>
-                </div>
+              {detail.summary.payableCount > 0 && !showForm && (
+                <button
+                  type="button"
+                  onClick={() => setShowForm(true)}
+                  className="mt-4 rounded-lg bg-emerald-600 px-4 py-2 text-[13px] font-semibold text-white hover:bg-emerald-700"
+                >
+                  Record external payment
+                </button>
               )}
             </section>
 
+            {showForm && (
+              <MarkPaidForm detail={detail} onCancel={() => setShowForm(false)} onPaid={onPaid} />
+            )}
+
             <section>
-              <h3 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                Bookings
+              <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                Payout ledger
               </h3>
-              {detail.lines.length === 0 ? (
-                <p className="text-[13px] text-gray-500 bg-gray-50 border border-gray-100 rounded-lg p-4">
-                  No commission rows yet.
-                </p>
-              ) : (
-                <div className="border border-gray-200 rounded-lg overflow-hidden">
-                  <table className="w-full text-[12px]">
-                    <thead>
-                      <tr className="bg-gray-50/80 border-b border-gray-200">
-                        <th className="text-left  px-3 py-2 font-medium text-[10px] text-gray-500 uppercase">
-                          Booking
-                        </th>
-                        <th className="text-left  px-3 py-2 font-medium text-[10px] text-gray-500 uppercase">
-                          Stay
-                        </th>
-                        <th className="text-right px-3 py-2 font-medium text-[10px] text-gray-500 uppercase">
-                          Total
-                        </th>
-                        <th className="text-right px-3 py-2 font-medium text-[10px] text-gray-500 uppercase">
-                          Commission
-                        </th>
-                        <th className="text-left  px-3 py-2 font-medium text-[10px] text-gray-500 uppercase">
-                          Status
-                        </th>
+              <div className="overflow-x-auto rounded-lg border border-gray-200">
+                <table className="w-full min-w-[720px] text-[12px]">
+                  <thead className="border-b border-gray-200 bg-gray-50 text-[10px] uppercase text-gray-500">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">Payout</th>
+                      <th className="px-3 py-2 text-left font-medium">Status</th>
+                      <th className="px-3 py-2 text-right font-medium">Amount</th>
+                      <th className="px-3 py-2 text-left font-medium">Provider / retry</th>
+                      <th className="px-3 py-2 text-left font-medium">Evidence</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {detail.payouts.map((payout) => (
+                      <tr key={payout.payoutId}>
+                        <td className="px-3 py-2 font-mono text-[10px] text-gray-700">
+                          {payout.payoutId}
+                        </td>
+                        <td className="px-3 py-2 text-gray-700">{payout.payoutStatus}</td>
+                        <td className="px-3 py-2 text-right font-semibold text-gray-900">
+                          {formatAmount(payout.amount, payout.currency)}
+                        </td>
+                        <td className="px-3 py-2 text-gray-500">
+                          {payout.providerPayoutId || "Not dispatched"} · retry {payout.retryCount}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-[10px] text-gray-500">
+                          {payout.paymentEvidenceId || "—"}
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100">
-                      {detail.lines.map((l) => (
-                        <tr
-                          key={l.payoutId}
-                          className={l.status === "completed" ? "bg-emerald-50/30" : ""}
-                        >
-                          <td className="px-3 py-2">
-                            <p className="font-mono text-[10px] text-gray-700">
-                              {l.bookingReference}
-                            </p>
-                            <p className="text-[10px] text-gray-500">{l.guestName}</p>
-                          </td>
-                          <td className="px-3 py-2 text-gray-600 text-[11px]">
-                            {formatDate(l.checkIn)} → {formatDate(l.checkOut)}
-                          </td>
-                          <td className="px-3 py-2 text-right text-gray-600">
-                            {formatAmount(l.bookingTotal, l.currency)}
-                          </td>
-                          <td className="px-3 py-2 text-right font-semibold text-gray-900">
-                            {formatAmount(l.commission, l.currency)}
-                          </td>
-                          <td className="px-3 py-2">
-                            <span
-                              className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-medium capitalize ${
-                                l.status === "completed"
-                                  ? "bg-emerald-100 text-emerald-700"
-                                  : l.status === "failed"
-                                    ? "bg-red-100 text-red-700"
-                                    : "bg-amber-100 text-amber-700"
-                              }`}
-                            >
-                              {l.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </section>
 
             {detail.history.length > 0 && (
               <section>
-                <h3 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                  Payout history
+                <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                  Immutable payment history
                 </h3>
-                <div className="border border-gray-200 rounded-lg divide-y divide-gray-100">
-                  {detail.history.map((h, i) => (
-                    <div key={i} className="px-4 py-3 text-[12px]">
-                      <div className="flex items-center justify-between">
+                <div className="divide-y divide-gray-100 rounded-lg border border-gray-200">
+                  {detail.history.map((entry) => (
+                    <div key={entry.evidenceId} className="px-4 py-3 text-[12px]">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
                         <div>
                           <p className="font-semibold text-gray-900">
-                            {formatAmount(h.amount, h.currency)}
+                            {formatAmount(entry.amount, entry.currency)} · {entry.paymentMethod}
                           </p>
                           <p className="text-[11px] text-gray-500">
-                            {h.bookingCount} bookings · {h.paymentMethod} ·{" "}
-                            {formatDate(h.completedAt)}
+                            Paid {formatDate(entry.paidAt)} · recorded{" "}
+                            {formatDate(entry.recordedAt)}
                           </p>
                         </div>
-                        {h.externalReference && (
-                          <p className="text-[10px] font-mono text-gray-400">
-                            {h.externalReference}
-                          </p>
-                        )}
+                        <p className="font-mono text-[10px] text-gray-500">
+                          {entry.externalReference}
+                        </p>
                       </div>
-                      {h.notes && <p className="text-[11px] text-gray-500 mt-1">{h.notes}</p>}
+                      <p className="mt-1 font-mono text-[10px] text-gray-400">
+                        Evidence: {entry.evidenceReference}
+                      </p>
+                      {entry.note && <p className="mt-1 text-[11px] text-gray-500">{entry.note}</p>}
                     </div>
                   ))}
                 </div>
@@ -572,4 +407,167 @@ function PayoutDetailDrawer({
       </div>
     </div>
   );
+}
+
+function Fact({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">{label}</p>
+      <p className="mt-1 text-[13px] font-semibold text-gray-900">{value}</p>
+    </div>
+  );
+}
+
+function MarkPaidForm({
+  detail,
+  onCancel,
+  onPaid,
+}: {
+  detail: AffiliatePayoutDetail;
+  onCancel: () => void;
+  onPaid: () => void;
+}) {
+  const [method, setMethod] = useState<PaymentMethod>(
+    detail.summary.payoutMethod === "manual" ? "manual" : "bank_transfer",
+  );
+  const [externalReference, setExternalReference] = useState("");
+  const [evidenceReference, setEvidenceReference] = useState("");
+  const [paidAt, setPaidAt] = useState(localDateTime(new Date()));
+  const [note, setNote] = useState("");
+  const [identity, setIdentity] = useState(newCommandIdentity);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const change = <T,>(setter: (value: T) => void, value: T) => {
+    setter(value);
+    setIdentity(newCommandIdentity());
+  };
+  const submit = async () => {
+    const external = externalReference.trim();
+    const evidence = evidenceReference.trim();
+    if (!external || !evidence || !paidAt)
+      return setError("External reference, evidence reference, and paid time are required.");
+    const timestamp = new Date(paidAt);
+    if (Number.isNaN(timestamp.valueOf())) return setError("Paid time is invalid.");
+    setSubmitting(true);
+    setError("");
+    try {
+      await affiliatePayoutsService.markPaid(detail.summary.affiliateId, {
+        ...identity,
+        currency: detail.summary.currency,
+        payoutIds: detail.payouts
+          .filter((payout) => payout.manualMarkPaidEligible)
+          .map((payout) => payout.payoutId),
+        expectedAmount: detail.summary.payableAmount,
+        paymentMethod: method,
+        externalReference: external,
+        evidenceReference: evidence,
+        paidAt: timestamp.toISOString(),
+        note: note.trim() || null,
+      });
+      onPaid();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not record the payout.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <section className="space-y-3 rounded-lg border border-gray-200 p-4">
+      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+        External payment evidence
+      </h3>
+      {error && <p className="rounded bg-red-50 p-2 text-[12px] text-red-700">{error}</p>}
+      <div className="grid gap-3 md:grid-cols-2">
+        <Field label="Payment method">
+          <select
+            value={method}
+            onChange={(event) => change(setMethod, event.target.value as PaymentMethod)}
+            className={INPUT_CLASS}
+          >
+            <option value="bank_transfer">Bank transfer</option>
+            <option value="manual">Manual</option>
+          </select>
+        </Field>
+        <Field label="Paid at">
+          <input
+            type="datetime-local"
+            value={paidAt}
+            onChange={(event) => change(setPaidAt, event.target.value)}
+            className={INPUT_CLASS}
+          />
+        </Field>
+        <Field label="External reference">
+          <input
+            value={externalReference}
+            onChange={(event) => change(setExternalReference, event.target.value.trimStart())}
+            placeholder="Bank transfer or receipt ID"
+            className={INPUT_CLASS}
+          />
+        </Field>
+        <Field label="Evidence reference">
+          <input
+            value={evidenceReference}
+            onChange={(event) => change(setEvidenceReference, event.target.value.trimStart())}
+            placeholder="Vault URL or document reference"
+            className={INPUT_CLASS}
+          />
+        </Field>
+      </div>
+      <Field label="Note (optional)">
+        <textarea
+          rows={2}
+          value={note}
+          onChange={(event) => change(setNote, event.target.value.trimStart())}
+          className={INPUT_CLASS}
+        />
+      </Field>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          disabled={submitting}
+          onClick={onCancel}
+          className="rounded-lg border border-gray-200 px-4 py-2 text-[13px] text-gray-700 disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          disabled={submitting || !externalReference || !evidenceReference}
+          onClick={() => void submit()}
+          className="rounded-lg bg-emerald-600 px-4 py-2 text-[13px] font-semibold text-white disabled:opacity-50"
+        >
+          {submitting
+            ? "Recording…"
+            : `Confirm ${formatAmount(detail.summary.payableAmount, detail.summary.currency)} paid`}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+      {label}
+      <span className="mt-1 block normal-case tracking-normal">{children}</span>
+    </label>
+  );
+}
+
+const INPUT_CLASS =
+  "w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-normal text-gray-900 focus:outline-none focus:ring-2 focus:ring-gray-200";
+
+function newCommandIdentity() {
+  const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  return {
+    commandId: `platform-affiliate-payout-${suffix}`,
+    idempotencyKey: `platform-affiliate-payout-${suffix}`,
+  };
+}
+
+function localDateTime(date: Date) {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
 }
