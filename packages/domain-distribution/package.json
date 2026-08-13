@@ -22,6 +22,10 @@
     "./booking-publication": {
       "types": "./dist/bookingPublication.d.ts",
       "default": "./dist/bookingPublication.js"
+    },
+    "./booking-publication-owner-snapshots": {
+      "types": "./dist/bookingPublicationOwnerSnapshots.d.ts",
+      "default": "./dist/bookingPublicationOwnerSnapshots.js"
     }
   },
   "scripts": {
@@ -31,9 +35,11 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@vayada/domain-hotels": "0.0.0"
+  },
   "devDependencies": {
     "@types/node": "^20",
-    "@vayada/domain-hotels": "0.0.0",
     "typescript": "^5",
     "vitest": "^4.0.15"
   }
