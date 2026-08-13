@@ -126,6 +126,7 @@ import { createPgMarketplaceAdminRepository } from "./routes/marketplaceAdmin.js
 import { createPgHotelAccountInviteRepository } from "./routes/hotelAccountInvites.js";
 import { createPgMarketplaceHotelProfileStatusRepository } from "./routes/marketplaceHotelProfileStatus.js";
 import { createPgMarketplaceHotelSelfServiceRepository } from "./routes/marketplaceHotelSelfService.js";
+import { createPgMarketplaceAffiliateAdminRepository } from "./domains/marketplaceAffiliateAdminRepository.js";
 import { createPgMarketplaceCreatorSelfServiceRepository } from "./routes/marketplaceCreatorSelfService.js";
 import { createPgSharedHotelSetupStatusRepository } from "./platform/sharedHotelSetupStatusReadModel.js";
 import { createPgIdentityAdminUsersReadRepository } from "./routes/identityAdminUsers.js";
@@ -904,6 +905,9 @@ const app = buildApp({
     connectionString: targetDatabaseUrl,
   }),
   marketplaceHotelSelfServiceRepository: createPgMarketplaceHotelSelfServiceRepository({
+    connectionString: targetDatabaseUrl,
+  }),
+  marketplaceAffiliateAdminRepository: createPgMarketplaceAffiliateAdminRepository({
     connectionString: targetDatabaseUrl,
   }),
   marketplaceCreatorSelfServiceRepository,
