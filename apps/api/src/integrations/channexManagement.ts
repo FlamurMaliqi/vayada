@@ -81,7 +81,7 @@ export function createChannexManagementProvider(config: {
   const apiKey = required(config.apiKey, "Channex apiKey");
   const fetcher = config.fetch ?? fetch;
   return {
-    async execute(job) {
+    async execute(job, input) {
       let plan: ChannexManagementActionPlan;
       try {
         plan = await config.plans.plan(job);
@@ -116,6 +116,7 @@ export function createChannexManagementProvider(config: {
           continue;
         }
         try {
+          await input?.onProgress?.();
           const response = await fetcher(requestUrl(apiBaseUrl, request), {
             method: request.method,
             headers: {

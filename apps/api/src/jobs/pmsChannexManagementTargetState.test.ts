@@ -81,6 +81,35 @@ describe("PMS Channex management target state", () => {
     expect(client.sql()).toContain("AND connection_id = (");
     expect(client.sql()).toContain("last_error_code");
   });
+
+  it("preserves connected channels when connection recovery has no channel snapshot", async () => {
+    const client = fakeClient();
+
+    await createPmsChannexManagementTargetState().succeed(
+      client,
+      job("enable"),
+      { ok: true, externalPropertyId: "channex-1", connectionStatus: "connected" },
+      now,
+    );
+
+    expect(client.sql()).not.toContain("connectedChannels");
+  });
+
+  it("clears channel state and disables mappings after provider disconnect", async () => {
+    const client = fakeClient();
+
+    await createPmsChannexManagementTargetState().succeed(
+      client,
+      job("disable"),
+      { ok: true, connectionStatus: "disconnected" },
+      now,
+    );
+
+    expect(client.sql()).toContain("messaging_app_installed = FALSE");
+    expect(client.sql()).toContain("connection_metadata - 'connectedChannels'");
+    expect(client.sql()).toContain("pms.channel_room_type_mappings SET status = 'disabled'");
+    expect(client.sql()).toContain("pms.channel_rate_plan_mappings SET status = 'disabled'");
+  });
 });
 
 function fakeClient() {
