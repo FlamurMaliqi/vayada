@@ -176,6 +176,10 @@ import {
   type PmsModuleActivationRepository,
 } from "./routes/pmsModuleActivations.js";
 import { registerPmsReviewRoutes, type PmsReviewRepository } from "./routes/pmsReviews.js";
+import {
+  registerPmsChannexManagementRoutes,
+  type PmsChannexManagementRoutesOptions,
+} from "./routes/pmsChannexManagement.js";
 import { registerPropertySetupDraftRoutes } from "./routes/propertySetupDrafts.js";
 import { registerBookingPublicationRoutes } from "./routes/bookingPublication.js";
 import type { BookingPublicationRoutesOptions } from "./routes/bookingPublication.js";
@@ -198,6 +202,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   pmsManualBookingCreate?: PmsManualBookingCreateRoutesOptions;
   pmsModuleActivationRepository?: PmsModuleActivationRepository;
   pmsReviewRepository?: PmsReviewRepository;
+  pmsChannexManagement?: PmsChannexManagementRoutesOptions;
   pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
   pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
   pmsInventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
@@ -566,6 +571,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPmsReviewRoutes, {
       prefix: "/api/pms",
       repository: options.pmsReviewRepository,
+    });
+  }
+  if (options.pmsChannexManagement) {
+    app.register(registerPmsChannexManagementRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsChannexManagement,
     });
   }
   if (options.financeRepository) {

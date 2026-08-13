@@ -7,7 +7,7 @@
     "name": "api"
   },
   "scripts": {
-    "build:backend-packages": "npm --workspace @vayada/backend-config run build && npm --workspace @vayada/backend-http run build && npm --workspace @vayada/backend-db run build && npm --workspace @vayada/backend-auth run build && npm --workspace @vayada/backend-authorization run build && npm --workspace @vayada/backend-test run build && npm --workspace @vayada/domain-hotels run build && npm --workspace @vayada/domain-pms run build && npm --workspace @vayada/domain-booking run build && npm --workspace @vayada/domain-distribution run build && npm --workspace @vayada/domain-finance run build && npm --workspace @vayada/domain-marketplace run build",
+    "build:backend-packages": "npm --workspace @vayada/backend-config run build && npm --workspace @vayada/backend-http run build && npm --workspace @vayada/backend-db run build && npm --workspace @vayada/backend-auth run build && npm --workspace @vayada/backend-authorization run build && npm --workspace @vayada/backend-test run build && npm --workspace @vayada/domain-hotels run build && npm --workspace @vayada/domain-pms run build && npm --workspace @vayada/domain-pms-channex run build && npm --workspace @vayada/domain-booking run build && npm --workspace @vayada/domain-distribution run build && npm --workspace @vayada/domain-finance run build && npm --workspace @vayada/domain-marketplace run build",
     "prebuild": "npm run build:backend-packages",
     "predev": "npm run build:backend-packages",
     "dev": "tsx watch src/server.ts",
@@ -36,6 +36,7 @@
     "@vayada/domain-hotels": "0.0.0",
     "@vayada/domain-marketplace": "0.0.0",
     "@vayada/domain-pms": "0.0.0",
+    "@vayada/domain-pms-channex": "0.0.0",
     "@workos-inc/node": "^10.2.0",
     "countries-and-timezones": "3.9.0",
     "fastify": "^5.7.0",
