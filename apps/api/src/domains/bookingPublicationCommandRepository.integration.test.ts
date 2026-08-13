@@ -1,4 +1,6 @@
-import { createProductReadinessResult } from "@vayada/domain-hotels";
+import { createProductReadinessResult, type ReadinessProviderFailure } from "@vayada/domain-hotels";
+import type { BookingPublicContent } from "@vayada/domain-distribution/booking-publication";
+import type { BookingPublicationBuilderPort } from "@vayada/domain-distribution/booking-publication-builder";
 import type {
   ReadyBookingPublicationEvidence,
   RequestBookingPublicationCommand,
@@ -28,6 +30,48 @@ const secondOrganizationId = "74747474-7474-4747-8747-747474747406";
 const propertyId = "74747474-7474-4747-8747-747474747403";
 const activeRevisionId = "74747474-7474-4747-8747-747474747404";
 const resultRevisionId = "74747474-7474-4747-8747-747474747405";
+// The builder contract is tested in domain-distribution; this fixture isolates persistence and CAS.
+const publicContent = {
+  contractVersion: "booking-public-content.v1",
+  profile: { hotel: { propertyId }, branding: undefined },
+  rooms: [{ roomTypeId: "room-deluxe" }],
+  calendar: { sourceRevision: "calendar-r1" },
+  payments: { readyMethods: ["pay_at_property"] },
+} as unknown as BookingPublicContent;
+type BuilderMode =
+  | "built"
+  | "owner_snapshot_unavailable"
+  | "source_manifest_mismatch"
+  | "public_content_incomplete"
+  | "wrong_hash"
+  | "wrong_readiness_hash";
+let builderMode: BuilderMode = "built";
+let readinessProviderAvailable = true;
+const builder: BookingPublicationBuilderPort = {
+  async build({ readiness }) {
+    if (
+      builderMode !== "built" &&
+      builderMode !== "wrong_hash" &&
+      builderMode !== "wrong_readiness_hash"
+    ) {
+      return { outcome: "rejected", code: builderMode };
+    }
+    return {
+      outcome: "built",
+      build: {
+        sourceManifestHash:
+          builderMode === "wrong_hash"
+            ? (`sha256:${"0".repeat(64)}` as const)
+            : readiness.sourceManifestHash,
+        readinessHash:
+          builderMode === "wrong_readiness_hash"
+            ? (`sha256:${"1".repeat(64)}` as const)
+            : readiness.readinessHash,
+        publicContent,
+      },
+    };
+  },
+};
 
 describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safety", () => {
   let currentReadinessRevision = "booking-settings:4";
@@ -43,8 +87,12 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
     projection: distributionPublication,
     attempts: attemptStatus,
     readiness: {
-      getBookingReadiness: async () => readinessEvidence(currentReadinessRevision),
+      getBookingReadiness: async () =>
+        readinessProviderAvailable
+          ? readinessEvidence(currentReadinessRevision)
+          : readinessProviderFailure(),
     },
+    builder,
     now: () => new Date("2026-08-02T13:01:00.000Z"),
   });
   const repository = createPgBookingPublicationCommandRepository({
@@ -61,6 +109,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
 
   beforeEach(async () => {
     currentReadinessRevision = "booking-settings:4";
+    builderMode = "built";
+    readinessProviderAvailable = true;
     await cleanup();
     await seedAuthorizedScope();
   });
@@ -330,7 +380,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
   });
 
   it("projects the required outbox intent and reports success only after CAS activation", async () => {
-    await seedPublicBookabilityProfile();
     const accepted = await repository.requestPublication(await command("project-success"));
     if (!accepted.ok) throw new Error("Expected accepted publication request");
 
@@ -374,8 +423,10 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
           outboxStatus: "published",
           publicContent: {
             contractVersion: "booking-public-content.v1",
-            profile: { publicId: "publication-hotel" },
-            roomOffers: [],
+            profile: { hotel: { propertyId } },
+            rooms: [{ roomTypeId: "room-deluxe" }],
+            calendar: { sourceRevision: "calendar-r1" },
+            payments: { readyMethods: ["pay_at_property"] },
           },
         },
       ],
@@ -417,7 +468,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
   });
 
   it("rejects owner-source drift that occurs after command acceptance", async () => {
-    await seedPublicBookabilityProfile();
     const accepted = await repository.requestPublication(await command("projector-source-drift"));
     if (!accepted.ok) throw new Error("Expected accepted publication request");
     currentReadinessRevision = "booking-settings:5";
@@ -443,8 +493,59 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
     });
   });
 
+  it("retries a readiness provider failure and publishes after recovery", async () => {
+    const accepted = await repository.requestPublication(await command("readiness-recovery"));
+    if (!accepted.ok) throw new Error("Expected accepted publication request");
+    readinessProviderAvailable = false;
+
+    await expect(projector.projectPending({ propertyId })).resolves.toEqual({
+      processed: 1,
+      succeeded: 0,
+      failed: 1,
+      exhausted: 0,
+    });
+    await expect(distributionPublication.getActive(propertyId)).resolves.toBeNull();
+
+    readinessProviderAvailable = true;
+    await expect(projector.projectPending({ propertyId })).resolves.toEqual({
+      processed: 1,
+      succeeded: 1,
+      failed: 0,
+      exhausted: 0,
+    });
+    await expect(distributionPublication.getActive(propertyId)).resolves.toMatchObject({
+      revisionId: accepted.operation.operationId,
+    });
+  });
+
+  it.each([
+    ["source_manifest_mismatch", "source_content_changed"],
+    ["public_content_incomplete", "projection_failed"],
+    ["wrong_hash", "source_content_changed"],
+    ["wrong_readiness_hash", "source_content_changed"],
+  ] as const)("fails safely when the builder returns %s", async (mode, failureCode) => {
+    builderMode = mode;
+    const accepted = await repository.requestPublication(await command(`builder-${mode}`));
+    if (!accepted.ok) throw new Error("Expected accepted publication request");
+
+    await expect(projector.projectPending({ propertyId })).resolves.toEqual({
+      processed: 1,
+      succeeded: 0,
+      failed: 1,
+      exhausted: 0,
+    });
+    await expect(distributionPublication.getActive(propertyId)).resolves.toBeNull();
+    await expect(
+      repository.getPublicationStatus({
+        actorUserId,
+        organizationId,
+        propertyId,
+        operationId: accepted.operation.operationId,
+      }),
+    ).resolves.toMatchObject({ status: "failed", failureCode });
+  });
+
   it("retries status terminalization without failing an already-active revision", async () => {
-    await seedPublicBookabilityProfile();
     const accepted = await repository.requestPublication(await command("status-write-retry"));
     if (!accepted.ok) throw new Error("Expected accepted publication request");
     const statusFailure = createBookingPublicationProjector({
@@ -452,6 +553,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
       projection: distributionPublication,
       attempts: failSucceeded(attemptStatus),
       readiness: { getBookingReadiness: async () => readinessEvidence() },
+      builder,
       now: () => new Date("2026-08-02T13:01:00.000Z"),
     });
     try {
@@ -497,7 +599,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
   });
 
   it("reconciles an active revision before recovering an expired final lease", async () => {
-    await seedPublicBookabilityProfile();
     const request = await command("expired-active-lease");
     const accepted = await repository.requestPublication(request);
     if (!accepted.ok) throw new Error("Expected accepted publication request");
@@ -531,6 +632,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
       expectedPropertyLifecycleRevision: 1,
       requestedByUserId: actorUserId,
       readiness: request.readiness,
+      publicContent,
       projectedAt: new Date("2026-08-02T13:00:30.000Z"),
     });
     await admin.query(
@@ -640,8 +742,55 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
     }
   });
 
+  it("refuses to reuse an operation for different immutable public content", async () => {
+    const request = await command("immutable-content-retry");
+    const accepted = await repository.requestPublication(request);
+    if (!accepted.ok) throw new Error("Expected accepted publication request");
+    await admin.query(
+      `UPDATE platform.outbox_events
+       SET status = 'leased', leased_until = '2026-08-02T13:01:30.000Z'::timestamptz,
+           outbox_metadata = jsonb_set(
+             outbox_metadata,
+             '{bookingPublicationProjection}',
+             jsonb_build_object('leaseToken', 'immutable-content'),
+             true
+           )
+       WHERE resource_id = $1
+         AND event_type = 'booking.publication.requested'`,
+      [accepted.operation.operationId],
+    );
+    const input = {
+      operationId: accepted.operation.operationId,
+      outboxEventId: await outboxEventId(accepted.operation.operationId),
+      outboxLeaseToken: "immutable-content",
+      propertyId,
+      expectedActiveRevisionId: null,
+      expectedPropertyLifecycleRevision: 1,
+      requestedByUserId: actorUserId,
+      readiness: request.readiness,
+      publicContent,
+      projectedAt: new Date("2026-08-02T13:01:00.000Z"),
+    };
+    await distributionPublication.projectPublication(input);
+    await expect(distributionPublication.projectPublication(input)).resolves.toMatchObject({
+      revisionId: accepted.operation.operationId,
+    });
+
+    await expect(
+      distributionPublication.projectPublication({
+        ...input,
+        publicContent: {
+          ...publicContent,
+          rooms: [{ roomTypeId: "different-room" }],
+        } as unknown as BookingPublicContent,
+      }),
+    ).rejects.toThrow("Stored Booking publication revision does not match its operation");
+    await expect(distributionPublication.getActive(propertyId)).resolves.toMatchObject({
+      revisionId: accepted.operation.operationId,
+    });
+  });
+
   it("fences a paused activation against lease recovery and source drift", async () => {
-    await seedPublicBookabilityProfile();
     const accepted = await repository.requestPublication(await command("lease-fence-race"));
     if (!accepted.ok) throw new Error("Expected accepted publication request");
     const projectionPool = new pg.Pool({ connectionString: TEST_DATABASE_URL!, max: 1 });
@@ -658,6 +807,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
       projection: pausedProjection,
       attempts: failSucceeded(attemptStatus),
       readiness: { getBookingReadiness: async () => readinessEvidence() },
+      builder,
       leaseDurationMs: 1,
       now: () => new Date("2026-08-02T13:01:00.000Z"),
     });
@@ -669,6 +819,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
       readiness: {
         getBookingReadiness: async () => readinessEvidence(currentReadinessRevision),
       },
+      builder,
       now: () => new Date("2026-08-02T13:01:00.002Z"),
     });
     try {
@@ -715,6 +866,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
   });
 
   it("rolls exhausted outbox and dead-letter state back when attempt failure cannot commit", async () => {
+    builderMode = "owner_snapshot_unavailable";
     const accepted = await repository.requestPublication(await command("atomic-exhaustion"));
     if (!accepted.ok) throw new Error("Expected accepted publication request");
     await admin.query(
@@ -729,6 +881,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
       projection: distributionPublication,
       attempts: failTransactionFailure(attemptStatus),
       readiness: { getBookingReadiness: async () => readinessEvidence() },
+      builder,
       now: () => new Date("2026-08-02T13:01:00.000Z"),
     });
     try {
@@ -754,6 +907,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Booking publication command safe
   });
 
   it("exhausts unavailable public projection safely without reporting success", async () => {
+    builderMode = "owner_snapshot_unavailable";
     const accepted = await repository.requestPublication(await command("projector-unavailable"));
     if (!accepted.ok) throw new Error("Expected accepted publication request");
     await admin.query(
@@ -1102,6 +1256,24 @@ async function readinessEvidence(
     evaluatedAt: "2026-08-02T12:00:00.000Z",
   });
   return readiness as ReadyBookingPublicationEvidence;
+}
+
+function readinessProviderFailure(): ReadinessProviderFailure {
+  return {
+    outcome: "provider_failure",
+    contractVersion: "onboarding-product-readiness.v1",
+    propertyId,
+    product: "booking",
+    status: "error",
+    error: {
+      kind: "system_error",
+      errorSource: "provider",
+      code: "readiness_unavailable",
+      message: "Readiness could not be evaluated.",
+      retryable: true,
+    },
+    evaluatedAt: "2026-08-02T13:01:00.000Z",
+  };
 }
 
 function failOutboxPool(pool: pg.Pool): BookingPublicationCommandPool {
