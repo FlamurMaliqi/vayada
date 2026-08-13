@@ -132,6 +132,46 @@ describe("Finance subscription store", () => {
       "onboarding-booking:a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
     ]);
   });
+
+  it("uses the canonical property scope for subscription idempotency and audit rows", async () => {
+    const calls: Array<{ text: string; values?: readonly unknown[] }> = [];
+    const pool = {
+      async query(text: string, values?: readonly unknown[]) {
+        calls.push({ text, values });
+        if (text.includes("INSERT INTO platform.idempotency_keys")) {
+          return { rows: [{ id: "idem-1" }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      },
+      async end() {},
+    };
+    const store = createPgFinanceSubscriptionStore({
+      connectionString: "postgres://unused",
+      pool: pool as never,
+    });
+
+    await store.recordCommissionSelection(commissionCommand(), commissionResult());
+
+    const idempotency = calls.find(({ text }) =>
+      text.includes("INSERT INTO platform.idempotency_keys"),
+    );
+    expect(idempotency?.text).toMatch(/'property',\s+NULL,\s+\$4::uuid/);
+    expect(idempotency?.values).not.toContain("b9fccec2-eb4c-4c35-bfd3-02a748c2e117");
+    expect(idempotency?.values?.[3]).toBe("a9fccec2-eb4c-4c35-bfd3-02a748c2e117");
+
+    const audit = calls.find(({ text }) =>
+      text.includes("INSERT INTO platform.product_audit_events"),
+    );
+    expect(audit?.text).toMatch(/'property',\s+NULL,\s+\$4::uuid/);
+    expect(audit?.values).not.toContain("b9fccec2-eb4c-4c35-bfd3-02a748c2e117");
+    expect(audit?.values?.[3]).toBe("a9fccec2-eb4c-4c35-bfd3-02a748c2e117");
+
+    await store.findReplay("select-commission", commissionCommand());
+    const replay = calls.find(({ text }) => text.includes("FROM platform.idempotency_keys"));
+    expect(replay?.text).toContain("tenant_scope = 'property'");
+    expect(replay?.text).toContain("organization_id IS NULL");
+    expect(replay?.values?.[1]).toBe("a9fccec2-eb4c-4c35-bfd3-02a748c2e117");
+  });
 });
 
 function commissionCommand() {
