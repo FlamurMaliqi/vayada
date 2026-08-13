@@ -1,5 +1,10 @@
 # Ask Intelligence architecture
 
+> **Retired on 2026-08-13.** The Ask Intelligence product and runtime described
+> here have been removed. This document is retained only as historical context;
+> it must not be used as the design for the future hotel-employee agent tracked
+> in VAY-1091.
+
 _VAY-601 decision record. AI API documentation checked on 2026-06-03._
 
 ## Recommendation

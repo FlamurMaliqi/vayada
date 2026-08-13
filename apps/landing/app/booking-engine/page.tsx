@@ -7,7 +7,6 @@ import {
   CheckIcon,
   CursorArrowRaysIcon,
   ShoppingCartIcon,
-  SparklesIcon,
   UserGroupIcon,
 } from "@heroicons/react/24/outline";
 import { Navigation } from "@/components/layout";
@@ -76,12 +75,6 @@ const OUTCOMES = [
     body: "Increase revenue per stay with add-ons, upgrades and experiences.",
     Icon: ShoppingCartIcon,
   },
-];
-
-const AI_BULLETS = [
-  "Live competitor pricing",
-  "Auto-raise rates on occupancy",
-  "Abandonment recovery",
 ];
 
 function CheckBullet({ children }: { children: string }) {
@@ -213,67 +206,6 @@ export default function BookingEnginePage() {
                   <p className="mt-2 text-sm text-gray-500">{body}</p>
                 </div>
               ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="relative pb-20 md:pb-28">
-        <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="group relative grid gap-8 overflow-hidden rounded-3xl border border-border bg-[#f7f8fc]/70 p-8 transition-all hover:border-border-strong md:grid-cols-2 md:p-12">
-            <div>
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-primary-500">
-                  AI Distribution
-                </div>
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-primary-500/30 bg-primary-50 px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.18em] text-primary-500">
-                  <span className="h-1.5 w-1.5 animate-glow-pulse rounded-full bg-primary-500" />
-                  Coming soon
-                </span>
-              </div>
-              <h3 className="mt-4 font-display text-3xl font-semibold leading-tight text-ink md:text-4xl">
-                Ask anything. Automate everything.
-              </h3>
-              <p className="mt-4 text-base leading-relaxed text-gray-500">
-                Natural-language access to demand, performance, competitors and guests with
-                automations that execute the playbook.
-              </p>
-              <ul className="mt-6 space-y-2">
-                {AI_BULLETS.map((bullet) => (
-                  <CheckBullet key={bullet}>{bullet}</CheckBullet>
-                ))}
-              </ul>
-            </div>
-            <div className="relative">
-              <div className="relative h-full min-h-[280px] overflow-hidden rounded-2xl border border-border-strong bg-white p-6">
-                <div className="flex items-center gap-2 text-xs text-primary-500">
-                  <span className="h-1.5 w-1.5 animate-glow-pulse rounded-full bg-primary-500" />
-                  Ask Intelligence · live
-                </div>
-                <div className="mt-4 space-y-2.5">
-                  {[
-                    "Why did my direct share drop?",
-                    "Compare my pricing to competitors",
-                    "Any events near me in 60 days?",
-                  ].map((prompt) => (
-                    <div
-                      key={prompt}
-                      className="rounded-lg border border-border bg-[#f7f8fc] px-3 py-2 text-sm text-ink"
-                    >
-                      {prompt}
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-5 rounded-lg border border-primary-500/30 bg-primary-50 p-3 text-xs">
-                  <div className="flex items-center gap-2 text-primary-500">
-                    <SparklesIcon className="h-4 w-4" />
-                    Recommendation
-                  </div>
-                  <div className="mt-1 text-gray-700">
-                    Raise weekend rates +12% because local event demand is increasing.
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
         </div>

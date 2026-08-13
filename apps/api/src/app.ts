@@ -21,7 +21,6 @@ import type { PropertySetupDraftCommandRepository } from "./domains/propertySetu
 import type { PropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
 import type { PublicHotelProfileRepository } from "./routes/aiHotels.js";
 import type { PublicHotelQuoteRepository } from "./routes/aiHotelQuotes.js";
-import type { AskAuditRepository, AskRoutesOptions } from "./routes/ask.js";
 import type { BookingReservationsReadRepository } from "./routes/bookingReservations.js";
 import type {
   PmsOperationsCommandRepository,
@@ -34,7 +33,6 @@ import type {
 } from "./routes/bookingSettings.js";
 import { registerAiHotelQuoteRoutes } from "./routes/aiHotelQuotes.js";
 import { registerAiHotelRoutes } from "./routes/aiHotels.js";
-import { registerAskRoutes } from "./routes/ask.js";
 import { registerAuthSessionRoutes } from "./routes/authSession.js";
 import type { BookingCustomDomainRepository } from "./routes/bookingCustomDomain.js";
 import { registerBookingRoutes, type BookingRoutesOptions } from "./routes/booking.js";
@@ -248,13 +246,6 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
     IdentityAdminUserRoutesOptions,
     "lifecycleCommandBus" | "readRepository"
   >;
-  askAuditRepository?: AskAuditRepository;
-  askRuntime?: AskRoutesOptions["runtime"];
-  askEvidenceRepository?: AskRoutesOptions["evidenceRepository"];
-  askModel?: AskRoutesOptions["model"];
-  askModelMetadata?: AskRoutesOptions["modelMetadata"];
-  askBudgets?: AskRoutesOptions["budgets"];
-  askNow?: AskRoutesOptions["now"];
   platformContactIntake?: PlatformContactIntakeRoutesOptions;
   platformAdminDashboardRepository?: PlatformAdminDashboardRepository;
   marketplaceDiscoveryAllowedOrigins?: string[];
@@ -320,16 +311,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerProviderWebhookRoutes, options.providerWebhooks);
   }
   app.register(registerRouteGroups, { prefix: "/api" });
-  app.register(registerAskRoutes, {
-    prefix: "/api/ai",
-    auditRepository: options.askAuditRepository,
-    runtime: options.askRuntime,
-    evidenceRepository: options.askEvidenceRepository,
-    model: options.askModel,
-    modelMetadata: options.askModelMetadata,
-    budgets: options.askBudgets,
-    now: options.askNow,
-  });
   if (options.publicHotelProfileRepository) {
     app.register(registerAiHotelRoutes, {
       prefix: "/api/ai",

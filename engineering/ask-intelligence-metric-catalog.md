@@ -1,5 +1,9 @@
 # Ask Intelligence metric catalog
 
+> **Retired on 2026-08-13.** The Ask Intelligence product and runtime described
+> here have been removed. This catalog is retained only as historical context
+> and is not the source contract for the future VAY-1091 hotel-employee agent.
+
 _VAY-740 catalog record. Builds on VAY-601 Ask Intelligence architecture,
 VAY-613 evidence contract, VAY-736 runtime/provider decision, and the
 `intelligence` target schema from VAY-677._
