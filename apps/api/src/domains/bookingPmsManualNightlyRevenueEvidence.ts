@@ -50,6 +50,12 @@ export function createBookingPmsManualNightlyRevenueEvidenceOwner(): PmsManualBo
       if (lines.length === 0) {
         throw new Error("Manual booking nightly evidence is unavailable");
       }
+      await transaction.query(
+        `INSERT INTO booking.nightly_revenue_room_scopes (property_id, room_type_id)
+         SELECT $1::uuid, room_type_id::uuid FROM unnest($2::text[]) AS room_type_id
+         ON CONFLICT DO NOTHING`,
+        [command.propertyId, [...new Set(roomTypes.values())]],
+      );
       await appendExternalNightlyRevenueEvidence(transaction, {
         propertyId: command.propertyId,
         guestBookingId,

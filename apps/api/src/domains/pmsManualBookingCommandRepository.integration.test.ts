@@ -479,6 +479,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
         "DELETE FROM pms.operational_booking_assignments WHERE property_id = $1::uuid",
         "DELETE FROM booking.booking_addon_selections WHERE property_id = $1::uuid",
         "DELETE FROM booking.nightly_revenue_evidence WHERE property_id = $1::uuid",
+        "DELETE FROM booking.nightly_revenue_room_scopes WHERE property_id = $1::uuid",
         "DELETE FROM booking.booking_guests WHERE guest_booking_id IN (SELECT id FROM booking.guest_bookings WHERE property_id = $1::uuid)",
         "DELETE FROM booking.guest_bookings WHERE property_id = $1::uuid",
       ])

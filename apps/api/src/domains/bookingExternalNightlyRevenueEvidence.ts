@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import type { PoolClient } from "pg";
+import type { QueryResult, QueryResultRow } from "pg";
+export type ExternalRevenueEvidenceClient = {
+  query<Row extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values?: readonly unknown[],
+  ): Promise<Pick<QueryResult<Row>, "rows" | "rowCount">>;
+};
 export type ExternalRevenueEvidenceLine = Readonly<{
   roomTypeId: string;
   stayDate: string;
@@ -52,7 +58,7 @@ const EVENTS =
   "room_night room_night_reversal occupancy_adjustment retained_charge refund correction";
 const STATES = "confirmed completed canceled no_show refunded corrected";
 export async function appendExternalNightlyRevenueEvidence(
-  client: Pick<PoolClient, "query">,
+  client: ExternalRevenueEvidenceClient,
   command: AppendExternalRevenueEvidenceCommand,
 ) {
   const prefix = commandPrefix(command);
