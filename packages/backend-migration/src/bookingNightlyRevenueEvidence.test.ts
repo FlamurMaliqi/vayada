@@ -13,6 +13,9 @@ const adjustmentMigrations = await Promise.all(
     "0074_booking_nightly_revenue_adjustment_index.sql",
     "0075_booking_nightly_revenue_adjustments.sql",
     "0076_validate_booking_nightly_revenue_adjustments.sql",
+    "0077_booking_nightly_revenue_date_changes.sql",
+    "0082_booking_nightly_revenue_stay_corrections.sql",
+    "0083_validate_booking_nightly_revenue_stay_corrections.sql",
   ].map((file) => readFile(join(import.meta.dirname, "../migrations", file), "utf8")),
 );
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
@@ -329,6 +332,74 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
       [booking],
     );
     expect(aggregate.rows[0]).toEqual({ amount: "0.0000", occupied: 0, revisions: 4 });
+  });
+
+  it("adds corrected stay dates and changes room type only when re-adding occupancy", async () => {
+    const booking = await createBooking();
+    await client.query("INSERT INTO booking.nightly_revenue_room_scopes VALUES ($1,$2)", [
+      PROPERTY_A,
+      ROOM_TYPE_B,
+    ]);
+    const original = (await insertEvidence(booking)).rows[0]!.id as string;
+    await rejects(
+      insertEvidence(booking, {
+        roomType: ROOM_TYPE_B,
+        amount: "-120",
+        occupied: -1,
+        event: "occupancy_adjustment",
+        lifecycle: "corrected",
+        revision: 2,
+        corrects: original,
+      }),
+      { code: "23514" },
+    );
+    const removed = (
+      await insertEvidence(booking, {
+        amount: "-120",
+        occupied: -1,
+        event: "occupancy_adjustment",
+        lifecycle: "corrected",
+        revision: 2,
+        corrects: original,
+      })
+    ).rows[0]!.id as string;
+    await insertEvidence(booking, {
+      roomType: ROOM_TYPE_B,
+      source: "manual",
+      amount: "120",
+      occupied: 1,
+      event: "occupancy_adjustment",
+      lifecycle: "corrected",
+      recognizedOn: "2026-09-02",
+      revision: 3,
+      corrects: removed,
+    });
+    await client.query("UPDATE booking.guest_bookings SET check_out='2026-09-05' WHERE id=$1", [
+      booking,
+    ]);
+    await rejects(
+      insertEvidence(booking, {
+        stayDate: "2026-09-04",
+        recognizedOn: "2026-09-04",
+        occupied: 1,
+        event: "occupancy_adjustment",
+        lifecycle: "corrected",
+        revision: 4,
+      }),
+      { constraint: "chk_booking_nightly_revenue_evidence_event" },
+    );
+    await insertEvidence(booking, {
+      roomType: ROOM_TYPE_B,
+      source: "manual",
+      stayDate: "2026-09-04",
+      recognizedOn: "2026-09-04",
+      amount: "80",
+      occupied: 1,
+      event: "occupancy_adjustment",
+      lifecycle: "corrected",
+      revision: 4,
+      corrects: null,
+    });
   });
 
   it("serializes concurrent mixed removals against one tip", async () => {
