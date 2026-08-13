@@ -4381,6 +4381,8 @@ function toManualStayCorrectionCommand(
       stay.nightly.length !== nights
     )
       return null;
+    const normalizedCheckIn = checkIn;
+    if (!normalizedCheckIn) return null;
     const nightly = stay.nightly.map((entry, index) => {
       const night = objectBody(entry);
       if (
@@ -4388,7 +4390,7 @@ function toManualStayCorrectionCommand(
         Object.keys(night).some(
           (key) => !["stayDate", "amount", "evidenceQuality"].includes(key),
         ) ||
-        night.stayDate !== dateOffset(checkIn, index) ||
+        night.stayDate !== dateOffset(normalizedCheckIn, index) ||
         !["exact", "inferred", "missing"].includes(String(night.evidenceQuality))
       )
         return null;
