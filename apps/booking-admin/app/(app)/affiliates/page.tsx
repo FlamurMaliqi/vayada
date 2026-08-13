@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowPathIcon,
   CheckCircleIcon,
@@ -20,6 +20,7 @@ export default function AffiliatesPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<AffiliateDetail | null>(null);
   const [status, setStatus] = useState<"" | AffiliateLifecycleStatus>("");
+  const [offset, setOffset] = useState(0);
   const [searchDraft, setSearchDraft] = useState("");
   const [search, setSearch] = useState("");
   const [defaultDraft, setDefaultDraft] = useState("");
@@ -28,6 +29,11 @@ export default function AffiliatesPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [commissionError, setCommissionError] = useState<string | null>(null);
+  const [defaultAvailable, setDefaultAvailable] = useState<boolean | null>(null);
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
 
   const loadApplications = useCallback(async () => {
     setLoading(true);
@@ -36,7 +42,8 @@ export default function AffiliatesPage() {
       const result = await affiliatesService.list({
         ...(status ? { status } : {}),
         ...(search ? { search } : {}),
-        limit: 100,
+        limit: 50,
+        offset,
       });
       setApplications(result);
       setSelectedId((current) =>
@@ -49,7 +56,7 @@ export default function AffiliatesPage() {
     } finally {
       setLoading(false);
     }
-  }, [search, status]);
+  }, [offset, search, status]);
 
   useEffect(() => {
     void loadApplications();
@@ -58,8 +65,14 @@ export default function AffiliatesPage() {
   useEffect(() => {
     affiliatesService
       .getDefaultCommission()
-      .then((commission) => setDefaultDraft(commission.defaultPercentageRate))
-      .catch((nextError) => setError(errorMessage(nextError)));
+      .then((commission) => {
+        setDefaultDraft(commission.defaultPercentageRate);
+        setDefaultAvailable(true);
+      })
+      .catch((nextError) => {
+        setDefaultAvailable(false);
+        setError(errorMessage(nextError));
+      });
   }, []);
 
   useEffect(() => {
@@ -69,14 +82,25 @@ export default function AffiliatesPage() {
     }
     let active = true;
     setDetail(null);
-    affiliatesService
-      .get(selectedId)
-      .then((nextDetail) => {
+    setDetailError(null);
+    setCommissionError(null);
+    void (async () => {
+      try {
+        const affiliate = await affiliatesService.get(selectedId);
         if (!active) return;
-        setDetail(nextDetail);
-        setOverrideDraft(nextDetail.commission.overridePercentageRate ?? "");
-      })
-      .catch((nextError) => active && setError(errorMessage(nextError)));
+        setDetail({ affiliate, commission: null });
+        try {
+          const commission = await affiliatesService.getCommission(selectedId);
+          if (!active) return;
+          setDetail({ affiliate, commission });
+          setOverrideDraft(commission.overridePercentageRate ?? "");
+        } catch (nextError) {
+          if (active) setCommissionError(errorMessage(nextError));
+        }
+      } catch (nextError) {
+        if (active) setDetailError(errorMessage(nextError));
+      }
+    })();
     return () => {
       active = false;
     };
@@ -84,6 +108,7 @@ export default function AffiliatesPage() {
 
   const handleSearch = (event: FormEvent) => {
     event.preventDefault();
+    setOffset(0);
     setSearch(searchDraft.trim());
   };
 
@@ -93,11 +118,16 @@ export default function AffiliatesPage() {
       ((action === "reject" || action === "suspend") && !window.confirm(confirmCopy(action)))
     )
       return;
+    const affiliateId = detail.affiliate.affiliateId;
     setBusy(action);
     setError(null);
     try {
-      const result = await affiliatesService.updateStatus(detail.affiliate.affiliateId, action);
-      setDetail((current) => (current ? { ...current, affiliate: result.affiliate } : current));
+      const result = await affiliatesService.updateStatus(affiliateId, action);
+      setDetail((current) =>
+        current?.affiliate.affiliateId === affiliateId
+          ? { ...current, affiliate: result.affiliate }
+          : current,
+      );
       setNotice(`${affiliateName(result.affiliate)} ${pastTense(action)}.`);
       await loadApplications();
     } catch (nextError) {
@@ -123,17 +153,24 @@ export default function AffiliatesPage() {
   };
 
   const saveOverride = async (inherit = false) => {
-    if (!detail) return;
+    if (!detail?.commission) return;
     if (!inherit && !validRate(overrideDraft)) return setError("Enter a percentage from 0 to 100.");
+    const affiliateId = detail.affiliate.affiliateId;
     setBusy("commission");
     setError(null);
     try {
       const result = await affiliatesService.updateCommission(
-        detail.affiliate.affiliateId,
+        affiliateId,
         inherit ? null : overrideDraft.trim(),
       );
-      setDetail((current) => (current ? { ...current, commission: result.commission } : current));
-      setOverrideDraft(result.commission.overridePercentageRate ?? "");
+      setDetail((current) =>
+        current?.affiliate.affiliateId === affiliateId
+          ? { ...current, commission: result.commission }
+          : current,
+      );
+      if (selectedIdRef.current === affiliateId) {
+        setOverrideDraft(result.commission.overridePercentageRate ?? "");
+      }
       setNotice(inherit ? "Affiliate now uses the property default." : "Affiliate override saved.");
     } catch (nextError) {
       setError(errorMessage(nextError));
@@ -191,26 +228,30 @@ export default function AffiliatesPage() {
               New and inherited affiliate rates use this percentage.
             </p>
           </div>
-          <div className="flex items-end gap-2">
-            <label className="text-xs font-medium text-gray-600">
-              Commission %
-              <input
-                aria-label="Default commission percentage"
-                value={defaultDraft}
-                onChange={(event) => setDefaultDraft(event.target.value)}
-                inputMode="decimal"
-                className="mt-1 h-9 w-28 rounded-md border border-gray-200 px-3 text-sm text-gray-900 focus:border-primary-400 focus:outline-none focus:ring-2 focus:ring-primary-100"
-              />
-            </label>
-            <button
-              type="button"
-              onClick={() => void saveDefault()}
-              disabled={busy === "default"}
-              className="h-9 rounded-md bg-gray-900 px-4 text-[13px] font-medium text-white hover:bg-gray-800 disabled:opacity-50"
-            >
-              Save default
-            </button>
-          </div>
+          {defaultAvailable ? (
+            <div className="flex items-end gap-2">
+              <label className="text-xs font-medium text-gray-600">
+                Commission %
+                <input
+                  aria-label="Default commission percentage"
+                  value={defaultDraft}
+                  onChange={(event) => setDefaultDraft(event.target.value)}
+                  inputMode="decimal"
+                  className="mt-1 h-9 w-28 rounded-md border border-gray-200 px-3 text-sm text-gray-900 focus:border-primary-400 focus:outline-none focus:ring-2 focus:ring-primary-100"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => void saveDefault()}
+                disabled={busy === "default"}
+                className="h-9 rounded-md bg-gray-900 px-4 text-[13px] font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+              >
+                Save default
+              </button>
+            </div>
+          ) : (
+            <p className="text-xs text-gray-500">Finance access is required to change this rate.</p>
+          )}
         </div>
       </section>
 
@@ -223,10 +264,18 @@ export default function AffiliatesPage() {
         overrideDraft={overrideDraft}
         loading={loading}
         busy={busy}
+        detailError={detailError}
+        commissionError={commissionError}
+        offset={offset}
         onSearchDraftChange={setSearchDraft}
         onSearch={handleSearch}
-        onStatusChange={setStatus}
+        onStatusChange={(value) => {
+          setOffset(0);
+          setStatus(value);
+        }}
         onSelect={setSelectedId}
+        onPreviousPage={() => setOffset((current) => Math.max(0, current - 50))}
+        onNextPage={() => setOffset((current) => current + 50)}
         onOverrideChange={setOverrideDraft}
         onLifecycle={handleLifecycle}
         onSaveOverride={saveOverride}
