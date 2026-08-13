@@ -2400,6 +2400,34 @@ export async function registerPmsOperationsRoutes(
         } satisfies PmsOperationsCommandResponse;
       },
     );
+
+    app.post<{ Params: PmsReservationParams; Querystring: unknown; Body: unknown }>(
+      "/properties/:propertyId/reservations/:guestBookingId/refund",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? []))
+          return sendPmsOperationsError(reply, {
+            statusCode: 403,
+            code: "missing_permission",
+            category: "authorization",
+            message: "PMS operations origin is not allowed.",
+          });
+        const { propertyId, guestBookingId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        if (!enforcePmsFinanceManagePolicy(request, reply, propertyId)) return reply;
+        const command = toManualRefundCommand(propertyId, guestBookingId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        if (!commandRepository.refundManualBooking)
+          return sendPmsOperationsError(reply, readModelUnavailable("Refund is unavailable."));
+        const result = await commandRepository.refundManualBooking(command.value);
+        if (!result.ok) return sendPmsOperationalCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          reservation: result.reservation,
+          commandMeta: result.commandMeta,
+        } satisfies PmsOperationsCommandResponse;
+      },
+    );
   }
 }
 
@@ -3879,6 +3907,88 @@ function toManualCancellationCommand(
   };
 }
 
+function toManualRefundCommand(
+  propertyId: string,
+  guestBookingId: string,
+  request: FastifyRequest<{ Querystring: unknown; Body: unknown }>,
+): { value: PmsManualRefundCommand } | { error: PmsOperationsError } {
+  if (!objectBody(request.query) || Object.keys(request.query as object).length)
+    return { error: invalidBody("Refund query fields are not supported.") };
+  const metadata = toOperationalCommandMetadata(request.body, "Refund command");
+  if ("error" in metadata) return metadata;
+  const raw = request.body as Record<string, unknown>;
+  if (
+    metadata.value.commandId.length > 200 ||
+    metadata.value.idempotencyKey.length > 200 ||
+    (metadata.value.expectedVersion?.length ?? 0) > 200 ||
+    Object.keys(raw).some(
+      (key) =>
+        ![
+          "commandId",
+          "idempotencyKey",
+          "expectedVersion",
+          "paymentEvidenceId",
+          "accountingDate",
+          "reason",
+          "allocations",
+        ].includes(key),
+    ) ||
+    !Array.isArray(raw.allocations) ||
+    raw.allocations.length < 1 ||
+    raw.allocations.length > 20 * 366
+  )
+    return { error: invalidBody("Refund command contains unknown or invalid fields.") };
+  const paymentEvidenceId = stringField(raw.paymentEvidenceId);
+  const accountingDate = stringField(raw.accountingDate);
+  const reason = optionalStringField(raw.reason);
+  const allocations = raw.allocations.map((value) => {
+    const allocation = objectBody(value);
+    const amount = objectBody(allocation?.amount);
+    if (
+      !allocation ||
+      Object.keys(allocation).some((key) => !["evidenceId", "amount"].includes(key)) ||
+      !amount ||
+      Object.keys(amount).some((key) => !["amountDecimal", "currency"].includes(key))
+    )
+      return null;
+    const evidenceId = stringField(allocation.evidenceId);
+    const amountDecimal = stringField(amount.amountDecimal);
+    const currency = stringField(amount.currency);
+    return evidenceId &&
+      isUuid(evidenceId) &&
+      amountDecimal &&
+      isMoneyAmount(amountDecimal) &&
+      !/^0(?:\.0+)?$/.test(amountDecimal) &&
+      currency &&
+      /^[A-Z]{3}$/.test(currency)
+      ? { evidenceId, amount: { amountDecimal, currency } }
+      : null;
+  });
+  if (
+    !paymentEvidenceId ||
+    !isUuid(paymentEvidenceId) ||
+    !accountingDate ||
+    !isDateOnly(accountingDate) ||
+    (raw.reason !== undefined && reason === undefined) ||
+    (reason?.length ?? 0) > 1000 ||
+    allocations.some((allocation) => !allocation) ||
+    new Set(allocations.map((allocation) => allocation?.evidenceId)).size !== allocations.length
+  )
+    return { error: invalidBody("Refund payment or allocation evidence is invalid.") };
+  return {
+    value: {
+      propertyId,
+      guestBookingId,
+      ...metadata.value,
+      paymentEvidenceId,
+      accountingDate,
+      reason,
+      allocations: allocations as PmsManualRefundCommand["allocations"],
+      audit: pmsOperationsCommandAudit(request, metadata.value.commandId, "Refund manual booking"),
+    },
+  };
+}
+
 function requestsRetainedCharge(body: unknown): boolean {
   const charges = objectBody(body)?.retainedCharges;
   return !Array.isArray(charges) || charges.length > 0;
@@ -3896,14 +4006,19 @@ function toOperationalCommandMetadata(
   const raw = body as Record<string, unknown>;
   const commandId = stringField(raw.commandId);
   const idempotencyKey = stringField(raw.idempotencyKey);
-  if (!commandId || !idempotencyKey) {
+  const expectedVersion = optionalStringField(raw.expectedVersion);
+  if (
+    !commandId ||
+    !idempotencyKey ||
+    (raw.expectedVersion !== undefined && expectedVersion === undefined)
+  ) {
     return { error: invalidBody(`${commandName} requires commandId and idempotencyKey.`) };
   }
   return {
     value: {
       commandId,
       idempotencyKey,
-      expectedVersion: optionalStringField(raw.expectedVersion),
+      expectedVersion,
     },
   };
 }
