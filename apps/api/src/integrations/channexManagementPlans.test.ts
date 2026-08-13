@@ -37,6 +37,7 @@ describe("target Channex management plans", () => {
     expect(plan.requests.map(({ path }) => path)).toEqual([
       "/api/v1/room_types",
       "/api/v1/rate_plans",
+      "/api/v1/channels",
     ]);
     expect(db.sql()).toContain("pms.channel_room_type_mappings");
     expect(db.sql()).toContain("pms.channel_rate_plan_mappings");

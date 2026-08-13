@@ -1,4 +1,8 @@
-import type { ChannexRatePlanMapping, ChannexRoomTypeMapping } from "@vayada/domain-pms-channex";
+import type {
+  ChannexConnectedChannel,
+  ChannexRatePlanMapping,
+  ChannexRoomTypeMapping,
+} from "@vayada/domain-pms-channex";
 
 import type {
   ChannexManagementJob,
@@ -15,6 +19,7 @@ type ChannexRequest = {
   resolveBody?: (externalRoomTypeIds: ReadonlyMap<string, string>) => unknown;
   capture?:
     | { kind: "property" }
+    | { kind: "channels" }
     | { kind: "room_type"; roomTypeId: string; roomTypeName: string }
     | {
         kind: "rate_plan";
@@ -62,6 +67,7 @@ export function createChannexManagementProvider(config: {
       const externalRoomTypeIds = new Map<string, string>();
       const roomTypeMappings: ChannexRoomTypeMapping[] = [...(plan.roomTypeMappings ?? [])];
       const ratePlanMappings: ChannexRatePlanMapping[] = [...(plan.ratePlanMappings ?? [])];
+      let channels: ChannexConnectedChannel[] | undefined;
       for (const request of plan.requests) {
         try {
           const response = await fetcher(requestUrl(apiBaseUrl, request), {
@@ -84,7 +90,15 @@ export function createChannexManagementProvider(config: {
             if (request.path === "/api/v1/booking_revisions/feed") {
               revisions = dataList(responseBody);
             }
-            const externalId = request.capture ? dataId(responseBody) : undefined;
+            if (request.capture?.kind === "channels") {
+              channels = dataList(responseBody)
+                .map(channelFromProvider)
+                .filter((channel): channel is ChannexConnectedChannel => channel !== null);
+            }
+            const externalId =
+              request.capture && request.capture.kind !== "channels"
+                ? dataId(responseBody)
+                : undefined;
             if (request.capture?.kind === "property") externalPropertyId = externalId;
             if (request.capture?.kind === "room_type") {
               externalRoomTypeIds.set(request.capture.roomTypeId, externalId!);
@@ -127,6 +141,7 @@ export function createChannexManagementProvider(config: {
         externalPropertyId,
         roomTypeMappings,
         ratePlanMappings,
+        channels,
       } satisfies ChannexManagementProviderSuccess;
     },
   };
@@ -187,6 +202,23 @@ function dataId(value: unknown): string {
   const id = data && typeof data === "object" ? (data as { id?: unknown }).id : undefined;
   if (typeof id !== "string" || !id) throw new Error("Channex response omitted data.id");
   return id;
+}
+
+function channelFromProvider(value: unknown): ChannexConnectedChannel | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  const attributes =
+    item.attributes && typeof item.attributes === "object"
+      ? (item.attributes as Record<string, unknown>)
+      : item;
+  const key = typeof item.id === "string" ? item.id : attributes.application;
+  if (typeof key !== "string" || typeof attributes.application !== "string") return null;
+  return {
+    key,
+    application: attributes.application,
+    title: typeof attributes.title === "string" ? attributes.title : null,
+    isActive: attributes.is_active === true,
+  };
 }
 
 function isTimeout(error: unknown): boolean {
@@ -282,5 +314,11 @@ export const channexRequests = {
         application_code: "channex_messages",
       },
     },
+  }),
+  listChannels: (externalPropertyId: string): ChannexRequest => ({
+    method: "GET",
+    path: "/api/v1/channels",
+    query: { "filter[property_id]": externalPropertyId, "pagination[limit]": "100" },
+    capture: { kind: "channels" },
   }),
 };
