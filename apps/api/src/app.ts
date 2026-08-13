@@ -19,6 +19,7 @@ import type { HotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Rep
 import type { PropertyMediaCommandRepository } from "./domains/propertyMediaCommandRepository.js";
 import type { PropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
 import type { PropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
+import type { BookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
 import type { PublicHotelProfileRepository } from "./routes/aiHotels.js";
 import type { PublicHotelQuoteRepository } from "./routes/aiHotelQuotes.js";
 import type { BookingReservationsReadRepository } from "./routes/bookingReservations.js";
@@ -203,6 +204,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   bookingGuestPiiPort?: BookingGuestPiiPort;
   pmsOperationsAllowedOrigins?: string[];
   propertyPlanReadRepository?: PropertyPlanReadRepository;
+  bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
   pmsRoomPublication?: PmsRoomPublicationRoutesOptions;
   bookingDashboardMetricsReadPort?: BookingRoutesOptions["dashboardMetricsReadPort"];
   bookingAddonItemsRepository?: BookingAddonItemsRepository;
@@ -531,6 +533,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       bookingGuestPiiPort: options.bookingGuestPiiPort,
       allowedOrigins: options.pmsOperationsAllowedOrigins,
       propertyPlanReadRepository: options.propertyPlanReadRepository,
+      bookingAcceptanceSettings: options.bookingAcceptanceSettings,
+      publicBookabilityPublisher: options.publicBookabilityPublisher,
     });
   }
   if (options.pmsRoomPublication) {

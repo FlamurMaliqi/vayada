@@ -37,6 +37,7 @@ import {
 } from "./platform/workosWebhooks.js";
 import { createPublicRuntimeRepositories } from "./publicRuntime.js";
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
+import { createTargetBookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
 import { createTargetPmsInventoryPublicOfferProjection } from "./domains/pmsInventoryPublicOfferProjection.js";
 import { createTargetPmsInventoryReservationPort } from "./domains/pmsInventoryReservation.js";
 import { createTargetPmsRoomInventoryReadPort } from "./domains/pmsRoomInventoryReadModel.js";
@@ -316,6 +317,10 @@ const pmsOperationsCommandRepository = pmsOperationsRepository
       connectionString: targetDatabaseUrl,
       readRepository: pmsOperationsRepository,
     })
+  : undefined;
+
+const bookingAcceptanceSettings = pmsOperationsRepository
+  ? createTargetBookingAcceptanceSettingsPort({ connectionString: targetDatabaseUrl })
   : undefined;
 
 const pmsModuleActivationRepository = config.auth
@@ -810,6 +815,7 @@ const app = buildApp({
   pmsModuleActivationRepository,
   pmsReviewRepository: createPgPmsReviewRepository({ connectionString: targetDatabaseUrl }),
   pmsOperationsCommandRepository,
+  bookingAcceptanceSettings,
   pmsRoomPublication: pmsRoomPublicationRuntime
     ? {
         mediaCommandPort: pmsRoomPublicationRuntime.commandRepository,
