@@ -21,6 +21,7 @@ import {
 import type { FastifyInstance } from "fastify";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
+import { toPublicPmsRoomAmenityLabelsV1 } from "../domains/pmsRoomAmenityVocabulary.js";
 import type { PublicHotelProfileRepository } from "./aiHotels.js";
 
 export type PublicHotelQuoteQuery = {
@@ -436,6 +437,7 @@ function snapshotOfferInput(
     availableRooms: integerLikeValue(row.availableRooms, 0),
     refundable: booleanValue(rateSummary["refundable"]) ?? true,
     mealPlan: stringValue(rateSummary["mealPlan"]),
+    amenities: toPublicPmsRoomAmenityLabelsV1(publicStringArray(roomSummary["amenities"])),
     paymentOptions: paymentOptionsArray(row.paymentOptions),
     totals: {
       currency: row.currency,
@@ -870,6 +872,9 @@ function targetOfferFromRow(
       true,
     mealPlan:
       stringValue(offer["mealPlan"]) ?? stringValue(objectValue(offer["rateSummary"])["mealPlan"]),
+    amenities: toPublicPmsRoomAmenityLabelsV1(
+      publicStringArray(offer["amenities"] ?? roomSummary["amenities"]),
+    ),
     paymentOptions: paymentOptionsArray(offer["paymentOptions"]),
     totals: {
       currency:
@@ -1012,6 +1017,14 @@ function paymentOptionsArray(value: unknown): PublicBookabilityOffer["paymentOpt
   return [...new Set(options)];
 }
 
+function publicStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const parsed = stringValue(entry);
+    return parsed ? [parsed] : [];
+  });
+}
+
 function normalizePublicPaymentMethod(
   value: unknown,
 ): PublicBookabilityOffer["paymentOptions"][number] | null {
@@ -1138,6 +1151,7 @@ function serializeOffer(offer: PublicBookabilityOffer): PublicBookabilityOffer {
     availableRooms: offer.availableRooms,
     refundable: offer.refundable,
     mealPlan: offer.mealPlan ?? null,
+    amenities: offer.amenities.map((amenity) => amenity),
     paymentOptions: offer.paymentOptions.map((option) => option),
     totals: {
       currency: offer.totals.currency,

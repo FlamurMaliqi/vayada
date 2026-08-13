@@ -26,7 +26,10 @@ function snapshotOffer(
     publicOfferKey,
     roomTypeId: `room-${publicOfferKey}`,
     ratePlanId: `rate-${publicOfferKey}`,
-    roomSummary: { name: publicOfferKey },
+    roomSummary: {
+      name: publicOfferKey,
+      amenities: ["balcony", "wifi", "air_conditioning"],
+    },
     rateSummary: { refundable: true, ...rateSummary },
     occupancy: { maxAdults: 2, maxChildren: 1 },
     publicPolicy: { cancellation: "Free cancellation" },
@@ -189,7 +192,14 @@ describe("target public hotel quote stay restrictions", () => {
     expect(quote).toMatchObject({
       status: "bookable",
       unavailableReasons: [],
-      quote: { offers: [{ offerId: "exact-three" }] },
+      quote: {
+        offers: [
+          {
+            offerId: "exact-three",
+            amenities: ["Wi-Fi", "Air conditioning", "Balcony"],
+          },
+        ],
+      },
     });
     expect(quote?.quote?.offers).toHaveLength(1);
     expect(queries[1]?.text).toContain(
@@ -250,6 +260,19 @@ describe("cached target public hotel quote payment readiness", () => {
     expect(quote).toMatchObject({
       status: "bookable",
       quote: { offers: [{ paymentOptions: ["card"] }] },
+    });
+  });
+
+  it("publishes cached PMS amenity keys as ordered guest-facing labels", async () => {
+    const quote = await cachedTargetRepository([
+      cachedOffer({ amenities: ["balcony", "wifi", "air_conditioning"] }),
+    ]).findQuoteBySlug(profile.hotel.slug, query);
+
+    expect(quote).toMatchObject({
+      status: "bookable",
+      quote: {
+        offers: [{ amenities: ["Wi-Fi", "Air conditioning", "Balcony"] }],
+      },
     });
   });
 });

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   PMS_ROOM_AMENITY_KEYS_V1,
   createPmsRoomAmenityVocabularyValidationPort,
+  toPublicPmsRoomAmenityLabelsV1,
 } from "./domains/pmsRoomAmenityVocabulary.js";
 
 function key(value: string): PmsRoomAmenityKey {
@@ -55,6 +56,14 @@ describe("PMS room amenity vocabulary", () => {
     expect(Object.isFrozen(input)).toBe(true);
     expect(result.ok || Object.isFrozen(result.error.unsupportedAmenityKeys)).toBe(true);
     expect(Object.isFrozen(result)).toBe(true);
+  });
+
+  it("publishes stable guest-facing labels instead of sorted internal keys", () => {
+    expect(toPublicPmsRoomAmenityLabelsV1(["balcony", "wifi", "air_conditioning"])).toEqual([
+      "Wi-Fi",
+      "Air conditioning",
+      "Balcony",
+    ]);
   });
 
   it.each([

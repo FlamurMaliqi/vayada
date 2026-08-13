@@ -685,6 +685,7 @@ export async function transformDistributionBookability(client: pg.Client): Promi
         jsonb_strip_nulls(jsonb_build_object(
           'publicOfferKey', offer."publicOfferKey",
           'roomTypeName', source.room_type_name,
+          'amenities', source.room_amenities_snapshot,
           'locationAddress', source.room_attributes ->> 'locationAddress',
           'latitude', source.room_attributes -> 'latitude',
           'longitude', source.room_attributes -> 'longitude',

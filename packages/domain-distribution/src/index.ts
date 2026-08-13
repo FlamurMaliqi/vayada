@@ -292,6 +292,7 @@ export type PublicBookabilityOffer = {
   availableRooms: number;
   refundable: boolean;
   mealPlan?: string | null;
+  amenities: string[];
   paymentOptions: Array<"card" | "pay_at_property" | "bank_transfer" | "paypal">;
   totals: PublicBookabilityMoneyTotals;
   policies: {
@@ -316,6 +317,7 @@ export type PublicBookabilityAvailabilityOfferInput = {
   availableRooms: number;
   refundable: boolean;
   mealPlan?: string | null;
+  amenities?: string[];
   paymentOptions?: PublicBookabilityOffer["paymentOptions"];
   totals: PublicBookabilityMoneyTotals;
 };
@@ -795,6 +797,7 @@ function sanitizeOffer(
     availableRooms: offer.availableRooms,
     refundable: offer.refundable,
     mealPlan: offer.mealPlan ?? null,
+    amenities: copyStrings(offer.amenities ?? []),
     paymentOptions: [...allowedPaymentOptions],
     totals: {
       currency: offer.totals.currency,

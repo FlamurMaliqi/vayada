@@ -71,6 +71,8 @@
     "priceHighLow": "Harga: Tinggi ke Rendah",
     "upToGuests": "Hingga {count} tamu",
     "viewDetails": "Lihat Detail",
+    "viewFullAmenities": "Lihat semua fasilitas ({count} lagi)",
+    "showLess": "Tampilkan lebih sedikit",
     "rateOptions": "Pilihan Tarif",
     "selectYourRate": "Pilih Tarif Anda",
     "flexibleRate": "Tarif Fleksibel",

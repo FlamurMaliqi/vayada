@@ -294,6 +294,7 @@ function quoteFixture(
           availableRooms: 3,
           refundable: true,
           mealPlan: "breakfast",
+          amenities: [],
           paymentOptions: ["card", "pay_at_property"],
           totals: {
             currency: "EUR",

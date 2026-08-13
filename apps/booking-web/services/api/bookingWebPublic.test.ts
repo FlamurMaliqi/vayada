@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { toLegacyHotel, type BookingWebPublicHotelResponse } from "./bookingWebPublic";
+import {
+  toLegacyHotel,
+  toLegacyRooms,
+  type BookingWebPublicHotelResponse,
+} from "./bookingWebPublic";
 
 function publicHotelResponse(
   publicContacts?: BookingWebPublicHotelResponse["hotel"]["publicContacts"],
@@ -73,6 +77,43 @@ describe("Booking Web public hotel adapter", () => {
 
     expect(hotel.branding?.logoUrl).toBe("https://cdn.vayada.example/alpenrose/logo.webp");
     expect(hotel.heroImage).toBe("/vayada-logo.png");
+  });
+
+  it("preserves target amenity labels and an explicit reviewed-empty list", () => {
+    const response = {
+      request: { nights: 2, rooms: 1 },
+      status: "bookable" as const,
+      quote: {
+        offers: [
+          {
+            offerId: "offer-alpine-flexible",
+            roomTypeId: "room-alpine",
+            ratePlanId: "rate-flexible",
+            name: "Alpine Suite",
+            occupancy: { maxAdults: 2, maxChildren: 1 },
+            availableRooms: 2,
+            refundable: true,
+            mealPlan: "breakfast",
+            amenities: ["Wi-Fi", "Air conditioning", "Balcony"],
+            paymentOptions: ["card"],
+            totals: {
+              currency: "EUR",
+              roomTotal: 400,
+              taxesAndFees: 0,
+              discounts: 0,
+              grandTotal: 400,
+            },
+            policies: { cancellation: null, deposit: null },
+            bookingUrl: "https://hotel-alpenrose.booking.localhost/en/book",
+          },
+        ],
+      },
+    };
+
+    expect(toLegacyRooms(response)[0]?.amenities).toEqual(["Wi-Fi", "Air conditioning", "Balcony"]);
+
+    response.quote.offers[0].amenities = [];
+    expect(toLegacyRooms(response)[0]?.amenities).toEqual([]);
   });
 
   it("maps public contacts and uses only public city/region/country for the address", () => {

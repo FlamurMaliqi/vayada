@@ -16,6 +16,8 @@ import {
 } from "@/lib/constants/booking";
 import { bookingImageSizes } from "@/components/booking/imageSizes";
 
+const AMENITIES_PREVIEW_COUNT = 6;
+
 interface RoomDetailModalProps {
   room: RoomType;
   nights: number;
@@ -100,6 +102,7 @@ export default function RoomDetailModal({
   // Reset image index when switching between rooms
   useEffect(() => {
     setImgIndex(0);
+    setShowAllAmenities(false);
   }, [room]);
 
   // Lock body scroll when modal is open to prevent background scroll-bleed on mobile
@@ -169,6 +172,11 @@ export default function RoomDetailModal({
       throw error;
     }
   };
+  const visibleAmenities = showAllAmenities
+    ? room.amenities
+    : room.amenities.slice(0, AMENITIES_PREVIEW_COUNT);
+  const remainingAmenities = Math.max(room.amenities.length - AMENITIES_PREVIEW_COUNT, 0);
+  const amenitiesId = `room-amenities-${room.id}`;
 
   // Rate option buttons — shared between mobile scroll body and desktop sticky footer
   const rateOptionsJsx = (
@@ -294,6 +302,9 @@ export default function RoomDetailModal({
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={`room-detail-title-${room.id}`}
       className="fixed inset-0 z-[100] flex items-stretch md:items-center justify-center bg-black/50 backdrop-blur-sm"
       onClick={onClose}
     >
@@ -447,7 +458,12 @@ export default function RoomDetailModal({
                 </div>
               )}
               <div className="flex items-center gap-2 mb-2">
-                <h2 className="text-2xl font-bold text-gray-900">{room.name}</h2>
+                <h2
+                  id={`room-detail-title-${room.id}`}
+                  className="text-2xl font-bold text-gray-900"
+                >
+                  {room.name}
+                </h2>
                 {room.category && (
                   <span className="text-xs font-medium px-2.5 py-0.5 rounded-full bg-primary-50 text-primary-700 border border-primary-200">
                     {room.category}
@@ -521,31 +537,46 @@ export default function RoomDetailModal({
               )}
 
               {/* Amenities */}
-              <button
-                onClick={() => setShowAllAmenities(!showAllAmenities)}
-                className="text-sm font-medium text-primary-600 hover:text-primary-700 flex items-center gap-1 mb-4"
-              >
-                View Full Amenities ({room.amenities.length})
-                <svg
-                  className={`w-4 h-4 transition-transform ${showAllAmenities ? "rotate-180" : ""}`}
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M19 9l-7 7-7-7"
-                  />
-                </svg>
-              </button>
-              {showAllAmenities && (
-                <div className="grid grid-cols-2 gap-1.5 mb-4">
-                  {room.amenities.map((a) => (
-                    <span key={a} className="flex items-center gap-1.5 text-sm text-gray-600">
+              {room.amenities.length > 0 && (
+                <div className="mb-4">
+                  <div id={amenitiesId} className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    {visibleAmenities.map((amenity, index) => (
+                      <span
+                        key={`${amenity}-${index}`}
+                        className="flex min-w-0 items-center gap-1.5 text-sm text-gray-600"
+                      >
+                        <svg
+                          className="w-3.5 h-3.5 text-primary-500 flex-shrink-0"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M5 13l4 4L19 7"
+                          />
+                        </svg>
+                        <span className="truncate" title={amenity}>
+                          {amenity}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                  {remainingAmenities > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllAmenities(!showAllAmenities)}
+                      aria-expanded={showAllAmenities}
+                      aria-controls={amenitiesId}
+                      className="mt-2 flex items-center gap-1 text-sm font-medium text-primary-600 hover:text-primary-700"
+                    >
+                      {showAllAmenities
+                        ? t("showLess")
+                        : t("viewFullAmenities", { count: remainingAmenities })}
                       <svg
-                        className="w-3.5 h-3.5 text-primary-500 flex-shrink-0"
+                        className={`w-4 h-4 transition-transform ${showAllAmenities ? "rotate-180" : ""}`}
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
@@ -554,12 +585,11 @@ export default function RoomDetailModal({
                           strokeLinecap="round"
                           strokeLinejoin="round"
                           strokeWidth={2}
-                          d="M5 13l4 4L19 7"
+                          d="M19 9l-7 7-7-7"
                         />
                       </svg>
-                      {a}
-                    </span>
-                  ))}
+                    </button>
+                  )}
                 </div>
               )}
 

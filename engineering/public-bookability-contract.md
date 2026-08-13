@@ -282,6 +282,7 @@ Response shape:
         "availableRooms": 3,
         "refundable": true,
         "mealPlan": "breakfast",
+        "amenities": ["Wi-Fi", "Air conditioning", "Balcony"],
         "paymentOptions": ["card", "pay_at_property"],
         "totals": {
           "currency": "EUR",
@@ -336,6 +337,9 @@ Response shape:
   "dataSources": ["booking", "pms", "finance", "distribution"]
 }
 ```
+
+Offer `amenities` are public display labels in the versioned PMS guest-facing order. An explicit
+empty array means the room has no reviewed amenities and must not be replaced with meal-plan data.
 
 ## Status and Unavailable Reasons
 
