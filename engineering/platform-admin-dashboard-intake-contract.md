@@ -70,6 +70,68 @@ pools as normal route integration. Before cutover, a compatibility adapter may
 read legacy sources, but the route contract is target-shaped and must hide
 legacy table names and provider secrets.
 
+## Property Lifecycle
+
+Platform property lifecycle uses the contract version
+`platform-property-lifecycle.v1` and the Catalog-owned states `provisioning`,
+`active`, `suspended`, and `retired`. `profile_status` remains a separate
+Catalog completeness/publication input and must not be used as the lifecycle
+state.
+
+Canonical target routes are:
+
+| Route                                                              | Behavior                                                                                                                              |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/platform/admin/properties/provision`                    | Resolve one active hotel-group membership for the intended account, then reuse the canonical property setup creation transaction.     |
+| `GET /api/platform/admin/properties/:propertyId/retirement-impact` | Return current organizations, entitlements, bookings, inventory, Finance, media, and public-exposure impact plus blockers.            |
+| `PATCH /api/platform/admin/properties/:propertyId/status`          | Apply an allowed non-retirement transition with an expected lifecycle revision.                                                       |
+| `POST /api/platform/admin/properties/:propertyId/retire`           | Re-read impact under lock, require explicit confirmation, block unsafe retirement, and remove public access without deleting history. |
+| `DELETE /api/platform/admin/properties/:propertyId`                | Return `hard_delete_not_supported`; no target ownership contract authorizes destructive deletion.                                     |
+
+All commands require `platform.property.status.manage`, the platform operator
+resource, an `Idempotency-Key`, a non-empty reason, and audit data from
+`RequestContext`. An exact retry returns the stored command result. Reusing a
+key with a different request is rejected. `expectedLifecycleRevision` prevents
+concurrent commands from silently overwriting one another.
+
+Allowed transitions are:
+
+- `provisioning` to `active`, `suspended`, or `retired`;
+- `active` to `suspended` or `retired`;
+- `suspended` to `active` or `retired`;
+- `retired` to `suspended` as the guarded recovery step.
+
+Moving to `active` requires a complete canonical profile. A suspended or
+retired property is not public. Recovery does not republish it: Marketplace and
+Distribution owners must run their normal reviewed publication commands.
+Retirement preserves Catalog facts, organization links, entitlements, Booking
+history, PMS inventory, Finance records, media, and immutable publication
+revisions. It suspends the active Marketplace submission and hotel profile,
+disables public offer projections, marks the Distribution profile unavailable,
+and clears the mutable active public Booking revision pointer in the same
+transaction as the lifecycle update and audit.
+
+Retirement is blocked while any active guest booking, unresolved payment, open
+payout, or connected/degraded channel connection exists. The impact response
+must expose the current counts and actionable blocker messages. Draft bookings
+are active for this guard. Finance impact reports retained payment, payout, and
+billing-entitlement totals separately from unresolved/open blocker counts.
+Retained dependencies are visible but are not blockers by themselves.
+
+Booking writers hold a shared Catalog lifecycle lock before inserting a booking.
+Lifecycle suspension/retirement and Booking publication use the same
+property-scoped publication lock before locking the Catalog property. A queued
+publication can activate content only while the locked Catalog lifecycle is
+`active` at the lifecycle revision captured by the publication request, so
+neither checkout nor a stale projector retry can restore public activity after
+retirement or recovery.
+
+Platform provisioning references identify a durable account workflow, not a UI
+dialog attempt. The source link records the intended account and original input
+fingerprint; reference reuse with a different account or profile is rejected.
+The admin list must load canonical property/account bindings successfully before
+it offers provisioning; a partial read outage fails closed.
+
 ## Booking Dashboard Reads
 
 Canonical target routes:
