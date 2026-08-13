@@ -47,4 +47,4 @@ const command = {
     },
   ],
   addOns: [],
-} as PmsManualBookingCreateCommand;
+} as unknown as PmsManualBookingCreateCommand;
