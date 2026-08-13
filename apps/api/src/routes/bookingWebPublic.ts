@@ -19,7 +19,12 @@ import type {
   StripeBookingPaymentIntent,
   StripeBookingPaymentProvider,
 } from "../domains/stripeBookingPayments.js";
-import { pmsCreateJobKey, settleStripeBookingPayment } from "../domains/stripeBookingSettlement.js";
+import {
+  captureDirectNightlyRevenueEvidence,
+  pmsCreateJobKey,
+  settleStripeBookingPayment,
+  targetNightlyRoomAmounts,
+} from "../domains/stripeBookingSettlement.js";
 import {
   stripeAmountDecimal,
   stripeAmountMinor,
@@ -1226,10 +1231,12 @@ const TARGET_CHECKOUT_SUPPORTED_PAYMENT_METHODS = [
 ] as const;
 
 type TargetCheckoutCommandReservation =
-  { status: "reserved" } | { status: "replay"; body: unknown };
+  | { status: "reserved" }
+  | { status: "replay"; body: unknown };
 
 type TargetBookingChangeDecisionReservation =
-  { status: "reserved" } | { status: "replay"; body: unknown };
+  | { status: "reserved" }
+  | { status: "replay"; body: unknown };
 
 async function withTargetCheckoutTransaction<T>(
   pool: pg.Pool,
@@ -1390,13 +1397,12 @@ export function createTargetBookingWebCheckoutAdapter(
           inventoryReservation: reservation,
           context,
         });
-        await captureTargetNightlyRevenueEvidence(
-          client,
-          updatedBooking,
+        await captureDirectNightlyRevenueEvidence(client, updatedBooking, {
           selectedOffer,
-          context,
-          targetPropertyDateOnly(property.timezone, context.occurredAt),
-        );
+          fingerprint: context.fingerprint,
+          recognizedOn: targetPropertyDateOnly(property.timezone, context.occurredAt),
+          required: true,
+        });
         await enqueuePmsReservationHandoff(
           client,
           propertyId,
@@ -1557,6 +1563,13 @@ export function createTargetBookingWebCheckoutAdapter(
           billingConfig,
           checkoutConfig,
         );
+        if (booking.lifecycleStatus === "confirmed") {
+          await captureDirectNightlyRevenueEvidence(client, booking, {
+            selectedOffer: quote.selectedOfferSnapshot,
+            fingerprint: context.fingerprint,
+            required: true,
+          });
+        }
         const cardPayment =
           quote.paymentMethod === "card"
             ? await createTargetCardPayment(
@@ -3381,14 +3394,12 @@ async function withGuestLifecycleMutation(
       throw createHttpError(409, "Booking status changed. Please refresh and try again.");
     }
     if (updated.sourceSystem === "booking") {
-      await captureTargetNightlyRevenueEvidence(
-        client,
-        updated,
-        objectValue(objectValue(updated.bookingMetadata)["selectedOffer"]),
-        context,
-        null,
-        true,
-      );
+      await captureDirectNightlyRevenueEvidence(client, updated, {
+        clear: true,
+        fingerprint: context.fingerprint,
+        recognizedOn: targetPropertyDateOnly(property.timezone, context.occurredAt),
+        required: true,
+      });
     }
     const currentReservation = inventoryReservationReceiptFromBookingMetadata(
       updated.bookingMetadata,

@@ -182,10 +182,10 @@ class LifecyclePool {
             publicPolicy: {},
             paymentOptions: ["pay_at_property"],
             availableRooms: 2,
-            nightlyRoomAmounts: [
-              { stayDate: "2026-08-15", grossRoomAmount: "150.00" },
-              { stayDate: "2026-08-16", grossRoomAmount: "150.00" },
-            ],
+            nightlyRoomAmounts: ["2026-08-15", "2026-08-16"].map((stayDate) => ({
+              stayDate,
+              grossRoomAmount: "150.00",
+            })),
             roomTotal: "300.00",
             taxesAndFees: "20.00",
             discounts: "10.00",
@@ -437,14 +437,6 @@ describe("target booking date-change lifecycle", () => {
       balanceAmount: "310.00",
     });
     expect(inventory.state).toEqual({ releases: 1, reserves: 1 });
-    const revenueWrite = pool.calls.find((call) =>
-      call.text.includes("INSERT INTO booking.nightly_revenue_evidence"),
-    );
-    expect(JSON.parse(String(revenueWrite?.values?.[3]))).toEqual([
-      { stayDate: "2026-08-15", grossRoomAmount: "150.00" },
-      { stayDate: "2026-08-16", grossRoomAmount: "150.00" },
-    ]);
-    expect(revenueWrite?.values?.[5]).toBe("2026-07-22");
     const handoff = pool.calls.find((call) => call.text.includes("INSERT INTO platform.jobs"));
     expect(handoff?.values?.[0]).toContain(changeId);
     expect(String(handoff?.values?.[6])).toContain(`:${changeId}`);

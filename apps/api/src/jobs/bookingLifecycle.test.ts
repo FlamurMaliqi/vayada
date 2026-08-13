@@ -232,6 +232,14 @@ function pgLifecycleFixture(
   const propertyId = "a9fccec2-eb4c-4c35-bfd3-02a748c2e117";
   const guestBookingId = "b9fccec2-eb4c-4c35-bfd3-02a748c2e117";
   const bookingMetadata = {
+    requestFingerprint: "a".repeat(64),
+    selectedOffer: {
+      roomTypeId: "d9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+      nightlyRoomAmounts: [12, 13, 14].map((day) => ({
+        stayDate: `2026-09-${day}`,
+        grossRoomAmount: 200,
+      })),
+    },
     inventoryReservation: {
       contractVersion: "pms.inventory-reservation.v1",
       owner: "pms",
@@ -303,6 +311,7 @@ function pgLifecycleFixture(
             children: 0,
             roomCount: 1,
             totalAmount: "600.00",
+            bookingMetadata,
           },
         ],
       };

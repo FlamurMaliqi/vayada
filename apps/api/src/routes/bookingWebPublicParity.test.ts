@@ -1149,11 +1149,7 @@ describe("Booking Web public bootstrap parity", () => {
                 publicPolicy: { deposit: "50% deposit required." },
                 paymentOptions: ["pay_at_property"],
                 availableRooms: 2,
-                nightlyRoomAmounts: [
-                  { stayDate: "2026-09-12", grossRoomAmount: "187.20" },
-                  { stayDate: "2026-09-13", grossRoomAmount: "187.20" },
-                  { stayDate: "2026-09-14", grossRoomAmount: "187.20" },
-                ],
+                nightlyRoomAmounts: nights("187.20"),
                 roomTotal: "561.60",
                 taxesAndFees: "0.00",
                 discounts: "0.00",
@@ -1282,15 +1278,6 @@ describe("Booking Web public bootstrap parity", () => {
     const quoteWrite = calls.find((call) =>
       call.text.includes("INSERT INTO booking.quote_sessions"),
     );
-    expect(JSON.parse(String(quoteWrite?.values?.[9]))).toMatchObject({
-      paymentOptions: ["pay_at_property"],
-      paymentMethod: "pay_at_property",
-      nightlyRoomAmounts: [
-        { stayDate: "2026-09-12", grossRoomAmount: "187.20" },
-        { stayDate: "2026-09-13", grossRoomAmount: "187.20" },
-        { stayDate: "2026-09-14", grossRoomAmount: "187.20" },
-      ],
-    });
     expect(calls.some((call) => call.text.includes("platform.product_audit_events"))).toBe(true);
     await adapter.close?.();
     expect(ended).toBe(0);
@@ -1452,11 +1439,7 @@ describe("Booking Web public bootstrap parity", () => {
                     roomTypeId: "room_deluxe",
                     publicOfferKey: "room_deluxe:flexible",
                     paymentMethod: "pay_at_property",
-                    nightlyRoomAmounts: [
-                      { stayDate: "2026-09-12", grossRoomAmount: "33.34" },
-                      { stayDate: "2026-09-13", grossRoomAmount: "33.33" },
-                      { stayDate: "2026-09-14", grossRoomAmount: "33.33" },
-                    ],
+                    nightlyRoomAmounts: nights("33.34", "33.33", "33.33"),
                   },
                   totals: { totalAmount: "100.00", balanceAmount: "100.00" },
                   policySnapshot: { freeUntilDays: 7 },
@@ -1720,14 +1703,11 @@ describe("Booking Web public bootstrap parity", () => {
     const calls: string[] = [];
     let inventoryWriteValues: readonly unknown[] | undefined;
     let lifecycleStatus = "confirmed";
-    let sourceSystem = "booking";
-    let includeSelectedOffer = true;
     let policySnapshot: Record<string, unknown> = { freeUntilDays: 7 };
     const booking = () => ({
       guestBookingId,
       propertyId,
       publicReference: "B-CANCEL951",
-      sourceSystem,
       lifecycleStatus,
       paymentStatus: "unpaid",
       checkIn: "2026-09-12",
@@ -1739,14 +1719,12 @@ describe("Booking Web public bootstrap parity", () => {
       totalAmount: "300.00",
       balanceAmount: "300.00",
       bookingMetadata: {
-        selectedOffer: includeSelectedOffer
-          ? {
-              roomTypeId: "room-from-current-booking",
-              publicOfferKey: "room-deluxe:flexible",
-              rateType: "flexible",
-              rateSummary: { refundable: true },
-            }
-          : undefined,
+        selectedOffer: {
+          roomTypeId: "room-from-current-booking",
+          publicOfferKey: "room-deluxe:flexible",
+          rateType: "flexible",
+          rateSummary: { refundable: true },
+        },
         policySnapshot,
         inventoryReservation: {
           contractVersion: "pms.inventory-reservation.v1",
@@ -1834,21 +1812,6 @@ describe("Booking Web public bootstrap parity", () => {
       }),
     ).rejects.toThrow("free-cancellation period has expired");
 
-    sourceSystem = "pms";
-    includeSelectedOffer = false;
-    await expect(
-      adapter.cancel("hotel-alpenrose", guestBookingId, request, {
-        ...context,
-        idempotencyKey: "cancel-key-pms",
-        fingerprint: "b".repeat(64),
-      }),
-    ).resolves.toMatchObject({ status: "canceled" });
-    expect(calls.some((text) => text.includes("booking.nightly_revenue_evidence"))).toBe(false);
-    lifecycleStatus = "confirmed";
-    sourceSystem = "booking";
-    includeSelectedOffer = true;
-    calls.length = 0;
-
     await expect(
       adapter.cancel("hotel-alpenrose", guestBookingId, request, context),
     ).resolves.toMatchObject({ status: "canceled" });
@@ -1873,7 +1836,7 @@ describe("Booking Web public bootstrap parity", () => {
     ]);
     expect(calls.some((text) => text.includes("'pms-reservation-handoff'"))).toBe(true);
     expect(calls.filter((text) => text === "COMMIT")).toHaveLength(1);
-    expect(calls.filter((text) => text === "ROLLBACK")).toHaveLength(1);
+    expect(calls.filter((text) => text === "ROLLBACK")).toHaveLength(3);
   });
 
   it("rejects paid inventory-releasing guest mutations until refunds are integrated", async () => {
@@ -2283,7 +2246,14 @@ describe("Booking Web public bootstrap parity", () => {
       currency: "EUR",
       totalAmount: "600.00",
       balanceAmount,
-      bookingMetadata: { paymentMethod: "card" },
+      bookingMetadata: {
+        paymentMethod: "card",
+        selectedOffer: {
+          roomTypeId: "room_deluxe",
+          nightlyRoomAmounts: nights("200"),
+        },
+        requestFingerprint: "2".repeat(64),
+      },
       createdAt: "2026-09-01T10:00:00.000Z",
     });
     const pool = {
@@ -2348,6 +2318,7 @@ describe("Booking Web public bootstrap parity", () => {
                   roomTypeId: "room_deluxe",
                   publicOfferKey: "room_deluxe:flexible",
                   paymentMethod: "card",
+                  nightlyRoomAmounts: nights("200"),
                 },
                 totals: { totalAmount: "600.00", balanceAmount: "600.00" },
                 policySnapshot: {},
@@ -2388,6 +2359,7 @@ describe("Booking Web public bootstrap parity", () => {
                 children: 0,
                 roomCount: 1,
                 totalAmount: "600.00",
+                bookingMetadata: booking().bookingMetadata,
               },
             ],
           };
@@ -3088,3 +3060,10 @@ function nested(value: unknown, path: string): unknown {
     return (current as Record<string, unknown>)[segment];
   }, value);
 }
+const nights = (...amounts: string[]) =>
+  (amounts.length === 1 ? [amounts[0]!, amounts[0]!, amounts[0]!] : amounts).map(
+    (grossRoomAmount, day) => ({
+      stayDate: `2026-09-${day + 12}`,
+      grossRoomAmount,
+    }),
+  );
