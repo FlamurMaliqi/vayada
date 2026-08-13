@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   PmsManualBookingCreateError,
   type PmsManualBookingCreateCommand,
@@ -249,6 +251,26 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     expect((await counts()).booking).toBe("1");
   });
 
+  it("rejects self-consistent malformed or cross-command replay evidence", async () => {
+    const input = command("bad-replay", "unpaid", "cash", "2027-06-05", false);
+    const created = await repository.createManualBooking(input);
+    for (const result of [
+      { ...created, commandId: "different-command" },
+      { ...created, unexpected: true },
+    ]) {
+      await admin.query(
+        `UPDATE platform.idempotency_keys
+         SET idempotency_metadata = jsonb_set(idempotency_metadata, '{result}', $2::jsonb),
+           response_body_hash = $3
+         WHERE operation = 'pms.manual_booking.create' AND property_id = $1::uuid`,
+        [propertyId, JSON.stringify(result), hash(result)],
+      );
+      await expect(repository.createManualBooking(input)).rejects.toThrow(
+        "Stored manual booking replay is invalid",
+      );
+    }
+  });
+
   it("serializes simultaneous command-id reuse across different keys and rooms", async () => {
     const first = command("command-id-race", "unpaid", "cash", "2027-07-01", false);
     const second = {
@@ -462,4 +484,18 @@ function addDays(value: string, days: number): string {
   const date = new Date(`${value}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
+}
+
+function hash(value: unknown): string {
+  return createHash("sha256").update(stable(value)).digest("hex");
+}
+
+function stable(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`)
+      .join(",")}}`;
+  return JSON.stringify(value);
 }
