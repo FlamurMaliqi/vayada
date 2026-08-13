@@ -20,6 +20,7 @@ import type {
   StripeBookingPaymentProvider,
 } from "../domains/stripeBookingPayments.js";
 import {
+  authorizeStripeBookingPayment,
   captureDirectNightlyRevenueEvidence,
   pmsCreateJobKey,
   settleStripeBookingPayment,
@@ -1079,6 +1080,7 @@ type TargetCheckoutPropertyRow = QueryResultRow & {
 
 type TargetCheckoutConfigRow = QueryResultRow & {
   propertyId: string;
+  acceptanceMode: "instant" | "request" | null;
   defaultCurrency: string | null;
   benefits: unknown;
   showAddonsStep: boolean | null;
@@ -1178,6 +1180,7 @@ type TargetCheckoutQuoteSnapshot = {
   totalAmount: string;
   balanceAmount: string;
   paymentMethod: string | null;
+  acceptanceMode: "instant" | "request";
   selectedOfferSnapshot: Record<string, unknown>;
   totals: Record<string, unknown>;
   policySnapshot: Record<string, unknown>;
@@ -1595,6 +1598,7 @@ export function createTargetBookingWebCheckoutAdapter(
                 booking,
                 checkoutConfig,
                 billingConfig,
+                quote.acceptanceMode,
                 context,
               )
             : null;
@@ -1674,29 +1678,53 @@ export function createTargetBookingWebCheckoutAdapter(
         if (reservation.status === "replay") return reservation.body;
         const booking = await loadTargetHotelBooking(client, property.propertyId, handle, true);
         const payment = await loadTargetCardPayment(client, booking);
-        if (booking.paymentStatus !== "paid") {
+        const acceptanceMode = targetAcceptanceMode(
+          objectValue(booking.bookingMetadata)["acceptanceMode"],
+        );
+        const authorizationComplete =
+          (booking.paymentStatus === "paid" && booking.lifecycleStatus === "confirmed") ||
+          (acceptanceMode === "request" &&
+            booking.paymentStatus === "authorized" &&
+            booking.lifecycleStatus === "pending_payment");
+        if (!authorizationComplete) {
           const intent = await config.stripePaymentProvider!.retrievePaymentIntent(
             payment.providerPaymentIntentId,
           );
-          assertStripePaymentSettled(booking, payment.providerAccountRef, intent);
-          await settleStripeBookingPayment(client, {
-            paymentIntentId: intent.paymentIntentId,
-            amountMinor: intent.amountMinor,
-            currency: intent.currency,
-            occurredAt: context.occurredAt,
-            correlationId: context.correlationId,
-          });
+          assertStripePaymentReady(booking, payment.providerAccountRef, intent, acceptanceMode);
+          if (acceptanceMode === "request") {
+            await authorizeStripeBookingPayment(client, {
+              paymentIntentId: intent.paymentIntentId,
+              amountMinor: intent.amountMinor,
+              currency: intent.currency,
+              occurredAt: context.occurredAt,
+            });
+          } else {
+            await settleStripeBookingPayment(client, {
+              paymentIntentId: intent.paymentIntentId,
+              amountMinor: intent.amountMinor,
+              currency: intent.currency,
+              occurredAt: context.occurredAt,
+              correlationId: context.correlationId,
+            });
+          }
         }
-        const confirmed = await loadTargetHotelBooking(client, property.propertyId, handle);
-        if (confirmed.paymentStatus !== "paid") {
+        const finalized = await loadTargetHotelBooking(client, property.propertyId, handle);
+        if (
+          !(finalized.paymentStatus === "paid" && finalized.lifecycleStatus === "confirmed") &&
+          !(
+            acceptanceMode === "request" &&
+            finalized.paymentStatus === "authorized" &&
+            finalized.lifecycleStatus === "pending_payment"
+          )
+        ) {
           throw createHttpError(409, "Card payment authorization is not complete.");
         }
-        const body = serializeTargetBooking(confirmed);
+        const body = serializeTargetBooking(finalized);
         await recordTargetCheckoutCommand(client, {
           propertyId: property.propertyId,
           context,
           resourceType: "guest_booking",
-          resourceId: confirmed.guestBookingId,
+          resourceId: finalized.guestBookingId,
           body,
         });
         return body;
@@ -2013,7 +2041,6 @@ async function resolveTargetCheckoutProperty(
   const bookabilityPredicate = requireBookable
     ? `AND profile.freshness_status = 'fresh'
        AND profile.public_setup_completeness ->> 'status' = 'ready'
-       AND COALESCE((profile.capabilities ->> 'instantBook')::boolean, FALSE)
        AND jsonb_typeof(profile.capabilities -> 'paymentMethods') = 'array'
        AND jsonb_array_length(profile.capabilities -> 'paymentMethods') > 0`
     : "";
@@ -2078,6 +2105,7 @@ async function loadTargetCheckoutConfig(
   const result = await pool.query<TargetCheckoutConfigRow>(
     `SELECT
        p.id::text AS "propertyId",
+       bs.acceptance_mode AS "acceptanceMode",
        bs.default_currency AS "defaultCurrency",
        bs.benefits,
        bs.show_addons_step AS "showAddonsStep",
@@ -2186,6 +2214,7 @@ async function createTargetCheckoutQuote(
   }
 
   const settings = await loadTargetCheckoutConfig(pool, property.propertyId);
+  const acceptanceMode = settings?.acceptanceMode === "request" ? "request" : "instant";
   const currency = uppercaseCurrency(
     stringField(request, "currency") ?? settings?.defaultCurrency ?? "EUR",
   );
@@ -2246,6 +2275,7 @@ async function createTargetCheckoutQuote(
     publicPolicy: objectValue(offer.publicPolicy),
     paymentOptions,
     paymentMethod,
+    acceptanceMode,
     availableRooms: integerValue(offer.availableRooms, roomCount),
     nightlyRoomAmounts: targetNightlyRoomAmounts(offer.nightlyRoomAmounts, checkIn, checkOut),
     sourceFreshness: objectValue(offer.sourceFreshness),
@@ -2276,6 +2306,7 @@ async function createTargetCheckoutQuote(
       roomTypeId,
       rateType,
       paymentMethod,
+      acceptanceMode,
       promoCode: stringField(request, "promoCode"),
       referralCode: stringField(request, "referralCode"),
     }),
@@ -2370,6 +2401,7 @@ async function createTargetCheckoutQuote(
     totalAmount: totalAmount.toFixed(2),
     balanceAmount: balanceAmount.toFixed(2),
     paymentMethod,
+    acceptanceMode,
     selectedOfferSnapshot,
     totals,
     policySnapshot: objectValue(offer.publicPolicy),
@@ -2710,6 +2742,7 @@ async function loadTargetCheckoutQuoteSnapshot(
     throw createHttpError(409, "Booking room changed. Please refresh the checkout quote.");
   }
   const paymentMethod = stringValue(selectedOfferSnapshot["paymentMethod"]);
+  const acceptanceMode = targetAcceptanceMode(selectedOfferSnapshot["acceptanceMode"]);
   assertTargetPaymentMethodReady(paymentMethod);
   const requestedPaymentMethod = stringField(request, "paymentMethod");
   if (paymentMethod && requestedPaymentMethod && paymentMethod !== requestedPaymentMethod) {
@@ -2731,6 +2764,7 @@ async function loadTargetCheckoutQuoteSnapshot(
     totalAmount,
     balanceAmount,
     paymentMethod,
+    acceptanceMode,
     selectedOfferSnapshot,
     totals,
     policySnapshot: objectValue(row.policySnapshot),
@@ -2756,6 +2790,7 @@ function serializeTargetCheckoutQuote(quote: TargetCheckoutQuoteSnapshot): Recor
       stringValue(quote.selectedOfferSnapshot["rateType"]) ?? "flexible",
     ),
     paymentMethod: quote.paymentMethod ?? "pay_at_property",
+    acceptanceMode: quote.acceptanceMode,
     nightlyRate: roundMoney(
       roomTotal / Math.max(dateRange(quote.checkIn, quote.checkOut).length, 1) / quote.roomCount,
     ),
@@ -2832,6 +2867,7 @@ async function createTargetGuestBooking(
     selectedOffer: quote.selectedOfferSnapshot,
     policySnapshot: quote.policySnapshot,
     paymentMethod: quote.paymentMethod,
+    acceptanceMode: quote.acceptanceMode,
     pmsHandoffStatus: "pending_handoff",
     inventoryReservation,
     ...(paymentInstructions ? { paymentInstructions } : {}),
@@ -3105,6 +3141,7 @@ async function createTargetCardPayment(
   booking: TargetBookingRow,
   checkoutConfig: TargetCheckoutConfigRow | null,
   billingConfig: BillingConfigReadModel | null,
+  acceptanceMode: "instant" | "request",
   context: BookingWebCheckoutCommandContext,
 ): Promise<StripeBookingPaymentIntent> {
   if (
@@ -3143,6 +3180,7 @@ async function createTargetCardPayment(
       amountMinor,
       applicationFeeAmountMinor,
       currency: booking.currency,
+      captureMethod: acceptanceMode === "request" ? "manual" : "automatic",
       idempotencyKey: paymentIdempotencyKey,
     });
   } catch (error) {
@@ -3183,6 +3221,8 @@ async function createTargetCardPayment(
       intent.paymentIntentId,
       JSON.stringify({
         providerStatus: intent.status,
+        captureMethod: acceptanceMode === "request" ? "manual" : "automatic",
+        acceptanceMode,
         bookingReference: booking.publicReference,
         billingPlan: billingConfig?.activePlan ?? "commission",
         platformFeePercent:
@@ -3234,24 +3274,44 @@ async function hydrateTargetCardCheckoutReplay(
       authorizationExpired: true,
     };
   }
-  if (intent.status === "succeeded" && bookingId) {
+  if ((intent.status === "succeeded" || intent.status === "requires_capture") && bookingId) {
     const booking = await loadTargetHotelBooking(client, propertyId, bookingId, true);
     const payment = await loadTargetCardPayment(client, booking);
-    assertStripePaymentSettled(booking, payment.providerAccountRef, intent);
-    await settleStripeBookingPayment(client, {
-      paymentIntentId,
-      amountMinor: intent.amountMinor,
-      currency: intent.currency,
-      occurredAt: context.occurredAt,
-      correlationId: context.correlationId,
-    });
-    const confirmed = await loadTargetHotelBooking(client, propertyId, bookingId);
+    const acceptanceMode = targetAcceptanceMode(
+      objectValue(booking.bookingMetadata)["acceptanceMode"],
+    );
+    if (intent.status === "succeeded") {
+      if (acceptanceMode === "request" && booking.paymentStatus !== "paid") {
+        throw createHttpError(409, "Card payment was captured before booking acceptance.");
+      }
+      assertStripePaymentReady(booking, payment.providerAccountRef, intent, "instant");
+      if (booking.paymentStatus !== "paid") {
+        await settleStripeBookingPayment(client, {
+          paymentIntentId,
+          amountMinor: intent.amountMinor,
+          currency: intent.currency,
+          occurredAt: context.occurredAt,
+          correlationId: context.correlationId,
+        });
+      }
+    } else {
+      assertStripePaymentReady(booking, payment.providerAccountRef, intent, acceptanceMode);
+      await authorizeStripeBookingPayment(client, {
+        paymentIntentId,
+        amountMinor: intent.amountMinor,
+        currency: intent.currency,
+        occurredAt: context.occurredAt,
+      });
+    }
+    const finalized = await loadTargetHotelBooking(client, propertyId, bookingId);
     return {
       ...body,
-      booking: serializeTargetBooking(confirmed),
+      booking: serializeTargetBooking(finalized),
       clientSecret: null,
       authorizationComplete: true,
-      pmsHandoff: { status: "pending_handoff" },
+      pmsHandoff: {
+        status: acceptanceMode === "request" ? "awaiting_acceptance" : "pending_handoff",
+      },
     };
   }
   if (!intent.clientSecret)
@@ -3283,14 +3343,15 @@ async function loadTargetCardPayment(
   return payment;
 }
 
-function assertStripePaymentSettled(
+function assertStripePaymentReady(
   booking: TargetBookingRow,
   providerAccountRef: string,
   intent: StripeBookingPaymentIntent,
+  acceptanceMode: "instant" | "request",
 ): void {
   const expectedAmount = stripeAmountMinor(decimalString(booking.totalAmount), booking.currency);
   if (
-    intent.status !== "succeeded" ||
+    intent.status !== (acceptanceMode === "request" ? "requires_capture" : "succeeded") ||
     intent.amountMinor !== expectedAmount ||
     intent.currency !== booking.currency ||
     intent.propertyId !== booking.propertyId ||
@@ -5134,9 +5195,17 @@ function uppercaseCountry(value: string | null): string | null {
 
 function lifecycleStatusFromCheckout(quote: TargetCheckoutQuoteSnapshot): string {
   if (quote.paymentMethod === "card") return "draft";
+  if (quote.paymentMethod === "bank_transfer" || quote.paymentMethod === "paypal") {
+    return "pending_payment";
+  }
+  if (quote.acceptanceMode === "request") return "pending_payment";
   return quote.paymentMethod === "pay_at_property" || quote.paymentMethod === "cash"
     ? "confirmed"
     : "pending_payment";
+}
+
+function targetAcceptanceMode(value: unknown): "instant" | "request" {
+  return value === "request" ? "request" : "instant";
 }
 
 function boundedPaymentWindowHours(value: unknown): number {

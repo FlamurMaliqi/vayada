@@ -22,6 +22,7 @@ export type StripeBookingPaymentProvider = {
     amountMinor: number;
     applicationFeeAmountMinor: number;
     currency: string;
+    captureMethod: "automatic" | "manual";
     idempotencyKey: string;
   }): Promise<StripeBookingPaymentIntent>;
   retrievePaymentIntent(paymentIntentId: string): Promise<StripeBookingPaymentIntent>;
@@ -76,7 +77,7 @@ export function createStripeBookingPaymentProvider(config: {
           [
             ["amount", String(input.amountMinor)],
             ["currency", input.currency.toLowerCase()],
-            ["capture_method", "automatic"],
+            ["capture_method", input.captureMethod],
             ["payment_method_types[0]", "card"],
             ["transfer_data[destination]", input.providerAccountRef],
             ["metadata[vayada_property_id]", input.propertyId],

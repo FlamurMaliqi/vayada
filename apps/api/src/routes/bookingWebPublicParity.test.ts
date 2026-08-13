@@ -1130,6 +1130,7 @@ describe("Booking Web public bootstrap parity", () => {
             rows: [
               {
                 propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+                acceptanceMode: "request",
                 defaultCurrency: "EUR",
                 depositPolicy: {},
               },
@@ -1230,6 +1231,7 @@ describe("Booking Web public bootstrap parity", () => {
       roomTypeId: "room_deluxe",
       roomName: "Deluxe Double Room",
       paymentMethod: "pay_at_property",
+      acceptanceMode: "request",
       roomTotal: 561.6,
       totalAmount: 561.6,
       depositRequired: false,
@@ -1260,6 +1262,7 @@ describe("Booking Web public bootstrap parity", () => {
     );
     expect(propertyRead?.text).not.toContain("profile.capabilities ->> 'onlinePayment'");
     expect(propertyRead?.text).not.toContain("profile.capabilities ->> 'payAtProperty'");
+    expect(propertyRead?.text).not.toContain("profile.capabilities ->> 'instantBook'");
     expect(propertyRead?.text).toContain(
       "jsonb_array_length(profile.capabilities -> 'paymentMethods') > 0",
     );
@@ -1281,6 +1284,7 @@ describe("Booking Web public bootstrap parity", () => {
     expect(JSON.parse(String(quoteWrite?.values?.[9]))).toMatchObject({
       paymentOptions: ["pay_at_property"],
       paymentMethod: "pay_at_property",
+      acceptanceMode: "request",
     });
     expect(calls.some((call) => call.text.includes("platform.product_audit_events"))).toBe(true);
     await adapter.close?.();
@@ -1403,7 +1407,10 @@ describe("Booking Web public bootstrap parity", () => {
   });
 
   it("validates target booking phone and atomically reserves fresh inventory", async () => {
-    const createAdapter = (phoneRequired: boolean) => {
+    const createAdapter = (
+      phoneRequired: boolean,
+      quotedAcceptanceMode: "instant" | "request" = "request",
+    ) => {
       const calls: string[] = [];
       let bookingWriteValues: readonly unknown[] | undefined;
       const pool = {
@@ -1443,6 +1450,7 @@ describe("Booking Web public bootstrap parity", () => {
                     roomTypeId: "room_deluxe",
                     publicOfferKey: "room_deluxe:flexible",
                     paymentMethod: "pay_at_property",
+                    acceptanceMode: quotedAcceptanceMode,
                     nightlyRoomAmounts: nights("33.34", "33.33", "33.33"),
                   },
                   totals: { totalAmount: "100.00", balanceAmount: "100.00" },
@@ -1457,6 +1465,7 @@ describe("Booking Web public bootstrap parity", () => {
               rows: [
                 {
                   propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+                  acceptanceMode: quotedAcceptanceMode === "request" ? "instant" : "request",
                   defaultCurrency: "EUR",
                   phoneRequired,
                   paymentsEnabled: true,
@@ -1478,7 +1487,7 @@ describe("Booking Web public bootstrap parity", () => {
                   guestBookingId: "3c6a35e2-1436-455a-bf05-96d2f4559421",
                   propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
                   publicReference: "B-OPTIONAL",
-                  lifecycleStatus: "confirmed",
+                  lifecycleStatus: String(values?.[9]),
                   paymentStatus: "unpaid",
                   checkIn: "2026-09-12",
                   checkOut: "2026-09-15",
@@ -1488,7 +1497,7 @@ describe("Booking Web public bootstrap parity", () => {
                   currency: "EUR",
                   totalAmount: "100.00",
                   balanceAmount: "100.00",
-                  bookingMetadata: {},
+                  bookingMetadata: JSON.parse(String(values?.[18])),
                   createdAt: "2026-06-25T12:00:00.000Z",
                 },
               ],
@@ -1511,7 +1520,7 @@ describe("Booking Web public bootstrap parity", () => {
                   balanceAmount: "100.00",
                   currency: "EUR",
                   paymentMethod: "pay_at_property",
-                  bookingMetadata: {},
+                  bookingMetadata: { acceptanceMode: quotedAcceptanceMode },
                 },
               ],
             };
@@ -1598,7 +1607,9 @@ describe("Booking Web public bootstrap parity", () => {
       true,
     );
     expect(optionalPhone.bookingWriteValues?.[10]).toBe("unpaid");
+    expect(optionalPhone.bookingWriteValues?.[9]).toBe("pending_payment");
     expect(JSON.parse(String(optionalPhone.bookingWriteValues?.[18]))).toMatchObject({
+      acceptanceMode: "request",
       policySnapshot: { freeUntilDays: 7 },
       inventoryReservation: {
         contractVersion: "pms.inventory-reservation.v1",
@@ -1646,6 +1657,12 @@ describe("Booking Web public bootstrap parity", () => {
     expect(
       optionalPhone.calls.find((text) => text.includes("SELECT * FROM booking_row")),
     ).toContain('check_in::text AS "checkIn"');
+
+    const instant = createAdapter(false, "instant");
+    await expect(
+      instant.adapter.createBooking("hotel-alpenrose", request, context),
+    ).resolves.toMatchObject({ booking: { status: "confirmed" } });
+    expect(instant.bookingWriteValues?.[9]).toBe("confirmed");
   });
 
   it("validates quote dates before reserving the booking-create idempotency key", async () => {
@@ -2560,6 +2577,7 @@ describe("Booking Web public bootstrap parity", () => {
       propertyId,
       amountMinor: 60_000,
       applicationFeeAmountMinor: 3_000,
+      captureMethod: "automatic",
       idempotencyKey: expect.stringMatching(new RegExp(`^booking-card:${propertyId}:`)),
     });
     const cardPropertyRead = calls.find((call) =>
