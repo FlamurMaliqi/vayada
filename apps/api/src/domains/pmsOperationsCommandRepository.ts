@@ -10,6 +10,11 @@ import {
   type FinanceBookingManualPaymentSettlementCommand,
 } from "./financeManualPaymentSettlement.js";
 import { appendPmsManualNoShowNightlyRevenueEvidence } from "./bookingPmsManualNoShowNightlyRevenueEvidence.js";
+import {
+  cancelPmsManualBooking,
+  ManualCancellationEvidenceError,
+  ManualCancellationStateError,
+} from "./bookingPmsManualCancellationNightlyRevenueEvidence.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import { captureDirectNightlyRevenueEvidence } from "./stripeBookingSettlement.js";
@@ -31,6 +36,7 @@ import {
   type PmsCheckoutChargeWaiveCommand,
   type PmsCommandMeta,
   type PmsNoShowCommand,
+  type PmsManualCancellationCommand,
   type PmsOperationalCommandResult,
   type PmsOperationalStatus,
   type PmsOperationalStatusCommand,
@@ -102,12 +108,14 @@ type PmsOperationalCommand =
   | PmsOperationalStatusCommand
   | PmsCheckInCommand
   | PmsNoShowCommand
+  | PmsManualCancellationCommand
   | PmsBookingLifecycleCommand;
 
 type PmsOperationalCommandOperation =
   | "status_command"
   | "checkin_command"
   | "no_show_command"
+  | "manual_cancellation_command"
   | "booking_acceptance_command"
   | "booking_mark_paid_command"
   | "checkout_command";
@@ -1039,6 +1047,14 @@ export function createTargetPmsOperationsCommandRepository(
         operation: "no_show_command",
         sideEffects: ["audit_event"],
         mutate: applyNoShowCommandMutation,
+      });
+    },
+    async cancelManualBooking(command) {
+      return executeOperationalCommand(config, pool, now, {
+        command,
+        operation: "manual_cancellation_command",
+        sideEffects: ["calendar_refresh", "ari_changed", "audit_event"],
+        mutate: applyManualCancellationCommandMutation,
       });
     },
     async acceptBooking(command) {
@@ -4446,6 +4462,50 @@ async function applyNoShowCommandMutation(
   return { ok: true };
 }
 
+async function applyManualCancellationCommandMutation(
+  client: PmsOperationsCommandClient,
+  command: PmsManualCancellationCommand,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+  const sources = await findAssignmentsForOperationalCommand(client, command);
+  if (sources.length === 0) return reservationNotFound(command.guestBookingId);
+  if (
+    command.expectedVersion &&
+    sources.some((source) => !assignmentVersionMatches(source, command.expectedVersion!))
+  )
+    return operationalConflict("version_conflict", "Reservation cancellation version is stale.");
+  const invalid = sources.find(
+    ({ assignmentStatus }) => !["pending", "assigned"].includes(assignmentStatus),
+  );
+  if (invalid) return invalidStatusTransition(invalid.assignmentStatus, "canceled");
+
+  const nextVersion = nextAssignmentVersion(sources[0]!);
+  await client.query(
+    `UPDATE pms.operational_booking_assignments SET room_id=NULL,assignment_status='canceled',
+       assigned_at=NULL,assignment_payload=jsonb_set(jsonb_set(COALESCE(assignment_payload,'{}'),
+       '{version}',to_jsonb($4::text),true),'{operationalStatus}',to_jsonb('canceled'::text),true),
+       updated_at=$5::timestamptz
+     WHERE id=ANY($1::uuid[]) AND property_id=$2::uuid AND guest_booking_id=$3::uuid`,
+    [
+      sources.map(({ assignmentId }) => assignmentId),
+      command.propertyId,
+      command.guestBookingId,
+      nextVersion,
+      acceptedAt,
+    ],
+  );
+  try {
+    await cancelPmsManualBooking(client, command, acceptedAt);
+  } catch (error) {
+    if (error instanceof ManualCancellationEvidenceError)
+      return operationalInvalidBody(error.message);
+    if (error instanceof ManualCancellationStateError)
+      return invalidStatusTransition("current", "canceled");
+    throw error;
+  }
+  return { ok: true };
+}
+
 async function applyAssignmentCommandMutation(
   client: PmsOperationsCommandClient,
   command: PmsAssignmentCommand,
@@ -5147,7 +5207,7 @@ async function recordOperationalCommandAuditEvent(
       command.audit.correlationId ?? command.audit.requestId,
       command.commandId,
       JSON.stringify({ commandMeta, idempotencyKeyHash: keyHash }),
-      JSON.stringify({}),
+      JSON.stringify("retainedCharges" in command ? { reason: command.reason ?? null } : {}),
       JSON.stringify({
         commandId: command.commandId,
         reason: command.audit.reason,
@@ -5257,6 +5317,12 @@ function operationalConflict(
     code,
     message,
   };
+}
+
+function operationalInvalidBody(
+  message: string,
+): Exclude<PmsOperationalCommandResult, { ok: true }> {
+  return { ok: false, statusCode: 400, code: "invalid_body", message };
 }
 
 function invalidStatusTransition(
