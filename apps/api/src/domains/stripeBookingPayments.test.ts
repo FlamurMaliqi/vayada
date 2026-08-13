@@ -59,6 +59,12 @@ describe("Stripe booking payments", () => {
     expect(new URLSearchParams(calls[0]!.body).has("automatic_payment_methods[enabled]")).toBe(
       false,
     );
+
+    await provider.capturePaymentIntent("pi_booking_1", "capture-booking-payment-1");
+    expect(calls[1]).toMatchObject({
+      url: "https://api.stripe.com/v1/payment_intents/pi_booking_1/capture",
+      key: "capture-booking-payment-1",
+    });
   });
 
   it("rejects a provider replay bound to another property", async () => {

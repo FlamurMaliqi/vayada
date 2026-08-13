@@ -175,6 +175,7 @@ describe("booking lifecycle scheduler jobs", () => {
       retrievePaymentIntent: vi.fn().mockResolvedValue(stripeIntent("requires_action")),
       cancelPaymentIntent: vi.fn().mockResolvedValue(stripeIntent("canceled")),
       createPaymentIntent: vi.fn(),
+      capturePaymentIntent: vi.fn(),
     };
     const store = createPgBookingLifecycleStore({
       connectionString: "postgres://unused",
@@ -204,6 +205,7 @@ describe("booking lifecycle scheduler jobs", () => {
       retrievePaymentIntent: vi.fn().mockResolvedValue(stripeIntent("succeeded")),
       cancelPaymentIntent: vi.fn(),
       createPaymentIntent: vi.fn(),
+      capturePaymentIntent: vi.fn(),
     };
     const store = createPgBookingLifecycleStore({
       connectionString: "postgres://unused",

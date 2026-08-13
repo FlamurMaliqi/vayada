@@ -26,6 +26,10 @@ export type StripeBookingPaymentProvider = {
     idempotencyKey: string;
   }): Promise<StripeBookingPaymentIntent>;
   retrievePaymentIntent(paymentIntentId: string): Promise<StripeBookingPaymentIntent>;
+  capturePaymentIntent(
+    paymentIntentId: string,
+    idempotencyKey: string,
+  ): Promise<StripeBookingPaymentIntent>;
   cancelPaymentIntent(
     paymentIntentId: string,
     idempotencyKey: string,
@@ -102,6 +106,17 @@ export function createStripeBookingPaymentProvider(config: {
     async retrievePaymentIntent(paymentIntentId) {
       return paymentIntent(
         await request("GET", `/payment_intents/${encodeURIComponent(paymentIntentId)}`),
+      );
+    },
+
+    async capturePaymentIntent(paymentIntentId, idempotencyKey) {
+      return paymentIntent(
+        await request(
+          "POST",
+          `/payment_intents/${encodeURIComponent(paymentIntentId)}/capture`,
+          [],
+          idempotencyKey,
+        ),
       );
     },
 

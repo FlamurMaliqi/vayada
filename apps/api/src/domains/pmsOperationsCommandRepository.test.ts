@@ -8,6 +8,7 @@ import {
   type PmsOperationsCommandPool,
 } from "./pmsOperationsCommandRepository.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
+import type { StripeBookingPaymentProvider } from "./stripeBookingPayments.js";
 import type {
   PmsAssignmentCommand,
   PmsBookingLifecycleCommand,
@@ -27,6 +28,20 @@ const assignmentTwoId = "f6855500-0000-0000-0000-000000000002";
 const roomTypeId = "f6855000-0000-0000-0000-000000000001";
 const userId = "f6851000-0000-0000-0000-000000000001";
 const organizationId = "f6852000-0000-0000-0000-000000000001";
+
+function requestCardIntent(status: string) {
+  return {
+    paymentIntentId: "pi_request_card",
+    clientSecret: null,
+    status,
+    amountMinor: 60_000,
+    currency: "EUR",
+    propertyId,
+    bookingReference: "BK-REQUEST-CARD",
+    providerAccountRef: "acct_request_card",
+  };
+}
+
 const directRevenueFields = {
   sourceSystem: "booking",
   bookingMetadata: {
@@ -298,7 +313,10 @@ function baseCheckOutCommand(overrides: Partial<PmsCheckOutCommand> = {}): PmsCh
   };
 }
 
-function createRepository(handler: QueryHandler): {
+function createRepository(
+  handler: QueryHandler,
+  stripePaymentProvider?: StripeBookingPaymentProvider,
+): {
   client: RecordingCommandClient;
   repository: ReturnType<typeof createTargetPmsOperationsCommandRepository>;
 } {
@@ -309,6 +327,7 @@ function createRepository(handler: QueryHandler): {
       connectionString: "postgres://target",
       pool,
       readRepository,
+      stripePaymentProvider,
       now: () => new Date("2026-08-15T15:45:00.000Z"),
     }),
   };
@@ -509,6 +528,169 @@ function successfulCheckoutHandler(
 }
 
 describe("target PMS operations command repository", () => {
+  it("accepts request-mode pay-at-property bookings without marking them paid", async () => {
+    const { client, repository } = createRepository((text) => {
+      if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
+      if (text.includes("FROM platform.idempotency_keys")) return ok();
+      if (text.includes("INSERT INTO platform.idempotency_keys")) {
+        return ok([{ id: "idem" }], 1);
+      }
+      if (text.includes("FROM booking.guest_bookings booking") && text.includes("FOR UPDATE")) {
+        return ok([
+          {
+            guestBookingId,
+            propertyId,
+            publicReference: "BK-REQUEST-PAY-AT",
+            lifecycleStatus: "pending_payment",
+            paymentStatus: "unpaid",
+            paymentMethod: "pay_at_property",
+            checkIn: "2026-08-20",
+            checkOut: "2026-08-23",
+            totalAmount: "600.00",
+            balanceAmount: "600.00",
+            currency: "EUR",
+            ...directRevenueFields,
+            bookingMetadata: {
+              ...directRevenueFields.bookingMetadata,
+              acceptanceMode: "request",
+            },
+          },
+        ]);
+      }
+      if (text.includes("WITH booking_update AS")) return ok([{ id: guestBookingId }], 1);
+      if (text.includes("WITH booking_scope AS")) return ok();
+      if (text.includes("INSERT INTO platform.product_audit_events")) return ok([], 1);
+      if (text.includes("UPDATE platform.idempotency_keys")) return ok([], 1);
+      throw new Error(`Unhandled SQL: ${text}`);
+    });
+
+    const result = await repository.acceptBooking(baseBookingLifecycleCommand());
+    expect(result).toMatchObject({ ok: true, commandMeta: { sideEffects: ["audit_event"] } });
+
+    expect(requiredCall(client, "WITH booking_update AS").text).toContain(
+      "booking_metadata ->> 'acceptanceMode' = 'request'",
+    );
+    expect(client.calls.some(({ text }) => text.includes("payment_status = 'paid'"))).toBe(false);
+    expect(client.calls.some(({ text }) => text.includes("INSERT INTO platform.jobs"))).toBe(false);
+  });
+
+  it("captures request-mode cards only inside host acceptance", async () => {
+    let captureCalls = 0;
+    const provider: StripeBookingPaymentProvider = {
+      async createPaymentIntent() {
+        throw new Error("not used");
+      },
+      async retrievePaymentIntent() {
+        return requestCardIntent("requires_capture");
+      },
+      async capturePaymentIntent(paymentIntentId, idempotencyKey) {
+        captureCalls += 1;
+        expect(paymentIntentId).toBe("pi_request_card");
+        expect(idempotencyKey).toContain(`pms-booking-capture:${propertyId}:${guestBookingId}:`);
+        return requestCardIntent("succeeded");
+      },
+      async cancelPaymentIntent() {
+        throw new Error("not used");
+      },
+    };
+    const { client, repository } = createRepository((text) => {
+      if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
+      if (text.includes("FROM platform.idempotency_keys")) return ok();
+      if (text.includes("INSERT INTO platform.idempotency_keys")) {
+        return ok([{ id: "idem" }], 1);
+      }
+      if (text.includes("FROM booking.guest_bookings booking") && text.includes("FOR UPDATE")) {
+        return ok([
+          {
+            guestBookingId,
+            propertyId,
+            publicReference: "BK-REQUEST-CARD",
+            lifecycleStatus: "pending_payment",
+            paymentStatus: "authorized",
+            paymentMethod: "card",
+            checkIn: "2026-08-20",
+            checkOut: "2026-08-23",
+            totalAmount: "600.00",
+            balanceAmount: "600.00",
+            currency: "EUR",
+            sourceSystem: "booking",
+            bookingMetadata: {
+              ...directRevenueFields.bookingMetadata,
+              acceptanceMode: "request",
+            },
+            providerPaymentIntentId: "pi_request_card",
+            providerAccountRef: "acct_request_card",
+          },
+        ]);
+      }
+      if (text.includes("FOR UPDATE OF payment, booking")) {
+        return ok([
+          {
+            paymentId: "f6855900-0000-0000-0000-000000000006",
+            paymentStatus: "authorized",
+            propertyId,
+            guestBookingId,
+            amount: "600.00",
+            currency: "EUR",
+            lifecycleStatus: "pending_payment",
+            bookingPaymentStatus: "authorized",
+            publicReference: "BK-REQUEST-CARD",
+            checkIn: "2026-08-20",
+            checkOut: "2026-08-23",
+            adults: 2,
+            children: 0,
+            roomCount: 1,
+            totalAmount: "600.00",
+            bookingMetadata: directRevenueFields.bookingMetadata,
+          },
+        ]);
+      }
+      if (text.includes("UPDATE booking.guest_bookings") && text.includes("RETURNING id")) {
+        return ok([{ id: guestBookingId }], 1);
+      }
+      if (text.includes('from_status AS "fromStatus"')) {
+        return ok([{ fromStatus: "pending_payment", toStatus: "confirmed" }]);
+      }
+      if (text.includes('AS "hostEmail"')) {
+        return ok([
+          {
+            propertyId,
+            guestBookingId,
+            bookingReference: "BK-REQUEST-CARD",
+            guestEmail: "guest@example.test",
+            guestName: "Alex Guest",
+            hostEmail: "host@example.test",
+            propertyName: "Hotel Alpenrose",
+            checkIn: "2026-08-20",
+            checkOut: "2026-08-23",
+            totalAmount: "600.00",
+            balanceAmount: "0.00",
+            currency: "EUR",
+            paymentMethod: "card",
+            bookingMetadata: { acceptanceMode: "request" },
+          },
+        ]);
+      }
+      if (text.includes("INSERT INTO platform.domain_events"))
+        return ok([{ eventId: "event-1" }], 1);
+      if (text.includes("INSERT INTO platform.jobs"))
+        return text.includes('AS "jobId"') ? ok([{ jobId: "job-1", replay: false }], 1) : ok([], 1);
+      if (text.includes("INSERT INTO platform.product_audit_events")) return ok([], 1);
+      if (text.includes("UPDATE platform.idempotency_keys")) return ok([], 1);
+      return ok();
+    }, provider);
+
+    const result = await repository.acceptBooking(baseBookingLifecycleCommand());
+    expect(result).toMatchObject({ ok: true, commandMeta: { sideEffects: ["audit_event"] } });
+
+    expect(client.calls.some(({ text }) => text.includes("SET status = 'paid'"))).toBe(true);
+    expect(captureCalls).toBe(1);
+    expect(client.calls.some(({ text }) => text.includes("nightly_revenue_evidence"))).toBe(true);
+    expect(
+      client.calls.some(({ values }) => values.some((value) => String(value).includes("email."))),
+    ).toBe(true);
+  });
+
   it("sends bank details only inside the host acceptance transaction", async () => {
     const { client, repository } = createRepository((text) => {
       if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
@@ -578,6 +760,9 @@ describe("target PMS operations command repository", () => {
     const result = await repository.acceptBooking(baseBookingLifecycleCommand());
 
     expect(result.ok).toBe(true);
+    expect(result).toMatchObject({
+      commandMeta: { sideEffects: ["guest_notification", "audit_event"] },
+    });
     const acceptanceIndex = client.calls.findIndex(({ text }) =>
       text.includes("WITH booking_update AS"),
     );

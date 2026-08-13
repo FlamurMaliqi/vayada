@@ -5,6 +5,10 @@ import {
   bankTransferDetailsFromPolicy,
   enqueueBookingTransitionNotifications,
 } from "../jobs/bookingEmails.js";
+import type {
+  StripeBookingPaymentIntent,
+  StripeBookingPaymentProvider,
+} from "./stripeBookingPayments.js";
 import {
   recordBookingManualPaymentInClient,
   type FinanceBookingManualPaymentSettlementCommand,
@@ -26,7 +30,11 @@ import {
 } from "./financeManualBookingRefund.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
-import { captureDirectNightlyRevenueEvidence } from "./stripeBookingSettlement.js";
+import {
+  captureDirectNightlyRevenueEvidence,
+  settleStripeBookingPayment,
+} from "./stripeBookingSettlement.js";
+import { stripeAmountMinor } from "./stripeMoney.js";
 import {
   PMS_OPERATIONS_CONTRACT_VERSION,
   type PmsCheckInCommand,
@@ -86,6 +94,7 @@ export type TargetPmsOperationsCommandRepositoryConfig = {
   max?: number;
   pool?: PmsOperationsCommandPool;
   readRepository: PmsOperationsReadRepository;
+  stripePaymentProvider?: StripeBookingPaymentProvider;
   now?: () => Date;
 };
 
@@ -132,6 +141,11 @@ type PmsOperationalCommandOperation =
   | "booking_mark_paid_command"
   | "checkout_command";
 
+type PmsOperationalMutationSuccess = {
+  ok: true;
+  sideEffects?: PmsOperationsCommandSideEffect[];
+};
+
 type BookingPaymentLifecycleRow = QueryResultRow & {
   guestBookingId: string;
   propertyId: string;
@@ -152,6 +166,8 @@ type BookingPaymentLifecycleRow = QueryResultRow & {
   acceptedPaymentDeadlineAt: string | null;
   sourceSystem: string;
   bookingMetadata: unknown;
+  providerPaymentIntentId: string | null;
+  providerAccountRef: string | null;
 };
 type PmsOperationalTemplateOperation =
   | "checkin_checklist_template_update"
@@ -1078,8 +1094,9 @@ export function createTargetPmsOperationsCommandRepository(
       return executeOperationalCommand(config, pool, now, {
         command,
         operation: "booking_acceptance_command",
-        sideEffects: ["guest_notification", "audit_event"],
-        mutate: applyBookingAcceptanceCommandMutation,
+        sideEffects: ["audit_event"],
+        mutate: (client, lifecycleCommand, acceptedAt) =>
+          applyBookingAcceptanceCommandMutation(config, client, lifecycleCommand, acceptedAt),
       });
     },
     async markBookingPaid(command) {
@@ -3207,7 +3224,9 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
       client: PmsOperationsCommandClient,
       command: TCommand,
       acceptedAt: string,
-    ) => Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>>;
+    ) => Promise<
+      PmsOperationalMutationSuccess | Exclude<PmsOperationalCommandResult, { ok: true }>
+    >;
   },
 ): Promise<PmsOperationalCommandResult> {
   const { command, operation, sideEffects, mutate } = options;
@@ -3215,7 +3234,7 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
   const acceptedAt = now().toISOString();
   const keyHash = sha256(command.idempotencyKey);
   const requestFingerprintHash = sha256(stableJson(operationalCommandFingerprint(command)));
-  const commandMeta: PmsCommandMeta = {
+  let commandMeta: PmsCommandMeta = {
     contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
     commandId: command.commandId,
     idempotencyKey: command.idempotencyKey,
@@ -3274,6 +3293,9 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
     if (!mutation.ok) {
       await client.query("ROLLBACK");
       return mutation;
+    }
+    if (mutation.sideEffects) {
+      commandMeta = { ...commandMeta, sideEffects: mutation.sideEffects };
     }
 
     await recordOperationalCommandAuditEvent(client, command, operation, commandMeta, keyHash);
@@ -4063,12 +4085,30 @@ async function applyOperationalStatusCommandMutation(
 }
 
 async function applyBookingAcceptanceCommandMutation(
+  config: TargetPmsOperationsCommandRepositoryConfig,
   client: PmsOperationsCommandClient,
   command: PmsBookingLifecycleCommand,
   acceptedAt: string,
-): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+): Promise<PmsOperationalMutationSuccess | Exclude<PmsOperationalCommandResult, { ok: true }>> {
   const booking = await loadBookingPaymentLifecycle(client, command);
   if (!booking) return reservationNotFound(command.guestBookingId);
+  const acceptanceMode = jsonObject(booking.bookingMetadata)["acceptanceMode"];
+  const isRequestPayAtProperty =
+    acceptanceMode === "request" &&
+    (booking.paymentMethod === "pay_at_property" || booking.paymentMethod === "cash") &&
+    booking.lifecycleStatus === "pending_payment" &&
+    booking.paymentStatus === "unpaid";
+  if (isRequestPayAtProperty) {
+    return acceptRequestPayAtPropertyBooking(client, command, booking, acceptedAt);
+  }
+  const isRequestCard =
+    acceptanceMode === "request" &&
+    booking.paymentMethod === "card" &&
+    booking.lifecycleStatus === "pending_payment" &&
+    booking.paymentStatus === "authorized";
+  if (isRequestCard) {
+    return captureAcceptedRequestCardBooking(config, client, command, booking, acceptedAt);
+  }
   if (
     booking.lifecycleStatus !== "pending_payment" ||
     booking.paymentStatus !== "unpaid" ||
@@ -4160,7 +4200,121 @@ async function applyBookingAcceptanceCommandMutation(
       toStatus: "confirmed",
     },
   });
+  return { ok: true, sideEffects: ["guest_notification", "audit_event"] };
+}
+
+async function acceptRequestPayAtPropertyBooking(
+  client: PmsOperationsCommandClient,
+  command: PmsBookingLifecycleCommand,
+  booking: BookingPaymentLifecycleRow,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+  const updated = await client.query(
+    `WITH booking_update AS (
+       UPDATE booking.guest_bookings booking
+          SET lifecycle_status = 'confirmed', updated_at = $3::timestamptz
+        WHERE booking.property_id = $1::uuid
+          AND booking.id = $2::uuid
+          AND booking.lifecycle_status = 'pending_payment'
+          AND booking.payment_status = 'unpaid'
+          AND booking.booking_metadata ->> 'acceptanceMode' = 'request'
+       RETURNING booking.id
+     ),
+     status_event AS (
+       INSERT INTO booking.booking_status_events (
+         guest_booking_id, event_type, from_status, to_status, actor_type,
+         actor_user_id, public_visible, public_message, event_payload, occurred_at
+       )
+       SELECT booking_update.id, 'guest_booking.accepted', 'pending_payment', 'confirmed',
+         $4, $5::uuid, TRUE, 'Booking request accepted.', $6::jsonb, $3::timestamptz
+       FROM booking_update
+     ),
+     summary AS (
+       UPDATE booking.direct_booking_summary_read_model summary
+          SET lifecycle_status = 'confirmed', projected_at = $3::timestamptz
+        WHERE summary.guest_booking_id = (SELECT id FROM booking_update)
+     )
+     SELECT id FROM booking_update`,
+    [
+      command.propertyId,
+      command.guestBookingId,
+      acceptedAt,
+      command.audit.actor.kind === "user" ? "property_user" : "system",
+      command.audit.actor.kind === "user" ? command.audit.actor.userId : null,
+      JSON.stringify({
+        commandId: command.commandId,
+        requestId: command.audit.requestId,
+        correlationId: command.audit.correlationId ?? command.audit.requestId,
+        paymentMethod: booking.paymentMethod,
+      }),
+    ],
+  );
+  if ((updated.rowCount ?? updated.rows.length) === 0) {
+    return invalidStatusTransition("pending_payment/unpaid", "confirmed/unpaid");
+  }
+  await captureDirectNightlyRevenueEvidence(client, booking, {
+    fingerprint: command.idempotencyKey,
+    required: booking.sourceSystem === "booking",
+  });
   return { ok: true };
+}
+
+async function captureAcceptedRequestCardBooking(
+  config: TargetPmsOperationsCommandRepositoryConfig,
+  client: PmsOperationsCommandClient,
+  command: PmsBookingLifecycleCommand,
+  booking: BookingPaymentLifecycleRow,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+  if (
+    !config.stripePaymentProvider ||
+    !booking.providerPaymentIntentId ||
+    !booking.providerAccountRef
+  ) {
+    return invalidStatusTransition("card_capture_unavailable", "confirmed/paid");
+  }
+  let intent = await config.stripePaymentProvider.retrievePaymentIntent(
+    booking.providerPaymentIntentId,
+  );
+  assertAcceptedRequestCardIntent(booking, intent);
+  if (intent.status === "requires_capture") {
+    intent = await config.stripePaymentProvider.capturePaymentIntent(
+      booking.providerPaymentIntentId,
+      `pms-booking-capture:${command.propertyId}:${command.guestBookingId}:${sha256(command.idempotencyKey)}`,
+    );
+    assertAcceptedRequestCardIntent(booking, intent);
+  }
+  if (intent.status !== "succeeded") {
+    return invalidStatusTransition(`card/${intent.status}`, "confirmed/paid");
+  }
+  const settlement = await settleStripeBookingPayment(client, {
+    paymentIntentId: intent.paymentIntentId,
+    amountMinor: intent.amountMinor,
+    currency: intent.currency,
+    occurredAt: new Date(acceptedAt),
+    correlationId: command.audit.correlationId ?? command.audit.requestId,
+  });
+  if (settlement === "not_found") {
+    return invalidStatusTransition("card_payment_not_found", "confirmed/paid");
+  }
+  return { ok: true };
+}
+
+function assertAcceptedRequestCardIntent(
+  booking: BookingPaymentLifecycleRow,
+  intent: StripeBookingPaymentIntent,
+): void {
+  if (
+    !["requires_capture", "succeeded"].includes(intent.status) ||
+    intent.paymentIntentId !== booking.providerPaymentIntentId ||
+    intent.amountMinor !== stripeAmountMinor(booking.totalAmount, booking.currency) ||
+    intent.currency !== booking.currency ||
+    intent.propertyId !== booking.propertyId ||
+    intent.bookingReference !== booking.publicReference ||
+    intent.providerAccountRef !== booking.providerAccountRef
+  ) {
+    throw new Error("Stripe PaymentIntent did not match the accepted booking request.");
+  }
 }
 
 async function applyBookingMarkPaidCommandMutation(
@@ -4322,9 +4476,25 @@ async function loadBookingPaymentLifecycle(
        payment.deposit_policy AS "depositPolicy",
        booking.booking_metadata -> 'paymentInstructions' AS "paymentInstructions",
        booking.booking_metadata ->> 'pendingExpiresAt' AS "pendingExpiresAt",
-       booking.booking_metadata ->> 'acceptedPaymentDeadlineAt' AS "acceptedPaymentDeadlineAt"
+       booking.booking_metadata ->> 'acceptedPaymentDeadlineAt' AS "acceptedPaymentDeadlineAt",
+       card_payment.provider_payment_intent_id AS "providerPaymentIntentId",
+       card_payment.provider_account_ref AS "providerAccountRef"
      FROM booking.guest_bookings booking
      LEFT JOIN finance.payment_settings payment ON payment.property_id = booking.property_id
+     LEFT JOIN LATERAL (
+       SELECT card.provider_payment_intent_id,
+              account.provider_account_id AS provider_account_ref
+       FROM finance.payments card
+       JOIN finance.payment_provider_accounts account
+         ON account.id = card.provider_account_id
+        AND account.property_id = card.property_id
+       WHERE card.property_id = booking.property_id
+         AND card.guest_booking_id = booking.id
+         AND card.payment_method = 'card'
+         AND card.provider_payment_intent_id IS NOT NULL
+       ORDER BY card.created_at DESC, card.id DESC
+       LIMIT 1
+     ) card_payment ON TRUE
      WHERE booking.property_id = $1::uuid
        AND booking.id = $2::uuid
      FOR UPDATE OF booking`,

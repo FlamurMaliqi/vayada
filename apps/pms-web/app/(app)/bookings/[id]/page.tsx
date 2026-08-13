@@ -1213,9 +1213,14 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
 
   const handleAccept = () => {
     if (paymentDeadlineExpired) return;
+    const message =
+      booking?.paymentMethod === "card"
+        ? "Accept this booking request and capture the guest’s authorized card payment?"
+        : booking?.paymentMethod === "pay_at_property"
+          ? "Accept this booking request? Payment will remain due at the property."
+          : "Accept this booking and send the guest the bank transfer instructions? No payment is recorded until you mark it as received.";
     setConfirmDialog({
-      message:
-        "Accept this booking and send the guest the bank transfer instructions? No payment is recorded until you mark it as received.",
+      message,
       confirmLabel: "Accept",
       onConfirm: () => {
         setConfirmDialog(null);
@@ -1271,17 +1276,6 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     } finally {
       setDecidingChange(false);
     }
-  };
-
-  const handleConfirmFromPending = () => {
-    setConfirmDialog({
-      message: "Are you sure you want to confirm this booking?",
-      confirmLabel: "Confirm",
-      onConfirm: () => {
-        setConfirmDialog(null);
-        doAction(() => bookingsService.updateStatus(id, "confirmed"), "Failed to confirm booking");
-      },
-    });
   };
 
   const handleMarkPaid = () => {
@@ -2392,12 +2386,14 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             <p className="mb-2 text-xs text-gray-500">
               {booking.paymentMethod === "paypal"
                 ? "Confirm the PayPal payment after it reaches your account."
-                : "Accept the booking to send bank transfer instructions to the guest."}
+                : booking.paymentMethod === "card"
+                  ? "Accept the request to capture the authorized card and confirm the booking."
+                  : booking.paymentMethod === "pay_at_property"
+                    ? "Accept the request to confirm the booking with payment due at the property."
+                    : "Accept the booking to send bank transfer instructions to the guest."}
             </p>
             <button
-              onClick={
-                booking.paymentMethod === "paypal" ? handleMarkPaid : handleConfirmFromPending
-              }
+              onClick={booking.paymentMethod === "paypal" ? handleMarkPaid : handleAccept}
               disabled={updating}
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
             >

@@ -316,6 +316,7 @@ const pmsOperationsCommandRepository = pmsOperationsRepository
   ? createTargetPmsOperationsCommandRepository({
       connectionString: targetDatabaseUrl,
       readRepository: pmsOperationsRepository,
+      stripePaymentProvider: stripeBookingPaymentProvider,
     })
   : undefined;
 
