@@ -19,7 +19,12 @@ import type {
   StripeBookingPaymentIntent,
   StripeBookingPaymentProvider,
 } from "../domains/stripeBookingPayments.js";
-import { pmsCreateJobKey, settleStripeBookingPayment } from "../domains/stripeBookingSettlement.js";
+import {
+  captureDirectNightlyRevenueEvidence,
+  pmsCreateJobKey,
+  settleStripeBookingPayment,
+  targetNightlyRoomAmounts,
+} from "../domains/stripeBookingSettlement.js";
 import {
   stripeAmountDecimal,
   stripeAmountMinor,
@@ -1097,6 +1102,7 @@ type TargetBookingRow = QueryResultRow & {
   guestBookingId: string;
   propertyId: string;
   publicReference: string;
+  sourceSystem: string;
   hotelName?: string;
   guestFirstName?: string;
   guestLastName?: string;
@@ -1131,6 +1137,7 @@ type TargetCheckoutQuoteOfferRow = QueryResultRow & {
   publicPolicy: unknown;
   paymentOptions: string[] | null;
   availableRooms: string | number;
+  nightlyRoomAmounts: unknown;
   roomTotal: string | number;
   taxesAndFees: string | number;
   discounts: string | number;
@@ -1390,6 +1397,12 @@ export function createTargetBookingWebCheckoutAdapter(
           inventoryReservation: reservation,
           context,
         });
+        await captureDirectNightlyRevenueEvidence(client, updatedBooking, {
+          selectedOffer,
+          fingerprint: context.fingerprint,
+          recognizedOn: targetPropertyDateOnly(property.timezone, context.occurredAt),
+          required: true,
+        });
         await enqueuePmsReservationHandoff(
           client,
           propertyId,
@@ -1550,6 +1563,13 @@ export function createTargetBookingWebCheckoutAdapter(
           billingConfig,
           checkoutConfig,
         );
+        if (booking.lifecycleStatus === "confirmed") {
+          await captureDirectNightlyRevenueEvidence(client, booking, {
+            selectedOffer: quote.selectedOfferSnapshot,
+            fingerprint: context.fingerprint,
+            required: true,
+          });
+        }
         const cardPayment =
           quote.paymentMethod === "card"
             ? await createTargetCardPayment(
@@ -2210,6 +2230,7 @@ async function createTargetCheckoutQuote(
     paymentOptions,
     paymentMethod,
     availableRooms: integerValue(offer.availableRooms, roomCount),
+    nightlyRoomAmounts: targetNightlyRoomAmounts(offer.nightlyRoomAmounts, checkIn, checkOut),
     sourceFreshness: objectValue(offer.sourceFreshness),
     generatedAt: toIsoDateTime(offer.generatedAt),
   };
@@ -2379,6 +2400,9 @@ async function loadTargetCheckoutOffer(
            ELSE 0
          END
        ) AS "availableRooms",
+       jsonb_agg(jsonb_build_object(
+         'stayDate', offer.stay_date, 'grossRoomAmount', offer.base_price_amount
+       ) ORDER BY offer.stay_date) AS "nightlyRoomAmounts",
        SUM(offer.base_price_amount) * $7::int AS "roomTotal",
        SUM(offer.taxes_and_fees_amount) * $7::int AS "taxesAndFees",
        SUM(offer.discounts_amount) * $7::int AS discounts,
@@ -2902,6 +2926,7 @@ async function createTargetGuestBooking(
          id::text AS "guestBookingId",
          property_id::text AS "propertyId",
          public_reference AS "publicReference",
+         source_system AS "sourceSystem",
          lifecycle_status AS "lifecycleStatus",
          payment_status AS "paymentStatus",
          check_in::text AS "checkIn",
@@ -3313,6 +3338,7 @@ async function withGuestLifecycleMutation(
             id::text AS "guestBookingId",
             property_id::text AS "propertyId",
             public_reference AS "publicReference",
+            source_system AS "sourceSystem",
             lifecycle_status AS "lifecycleStatus",
             payment_status AS "paymentStatus",
             check_in::text AS "checkIn",
@@ -3367,6 +3393,14 @@ async function withGuestLifecycleMutation(
     if (!updated) {
       throw createHttpError(409, "Booking status changed. Please refresh and try again.");
     }
+    if (updated.sourceSystem === "booking") {
+      await captureDirectNightlyRevenueEvidence(client, updated, {
+        clear: true,
+        fingerprint: context.fingerprint,
+        recognizedOn: targetPropertyDateOnly(property.timezone, context.occurredAt),
+        required: true,
+      });
+    }
     const currentReservation = inventoryReservationReceiptFromBookingMetadata(
       updated.bookingMetadata,
       updated.propertyId,
@@ -3403,6 +3437,7 @@ async function loadTargetBooking(
        b.id::text AS "guestBookingId",
        b.property_id::text AS "propertyId",
        b.public_reference AS "publicReference",
+       b.source_system AS "sourceSystem",
        property.display_name AS "hotelName",
        booker.first_name AS "guestFirstName",
        booker.last_name AS "guestLastName",
@@ -3600,6 +3635,7 @@ async function previewTargetDateChange(
       rateSummary: objectValue(offer.rateSummary),
       occupancy: objectValue(offer.occupancy),
       publicPolicy: objectValue(offer.publicPolicy),
+      nightlyRoomAmounts: targetNightlyRoomAmounts(offer.nightlyRoomAmounts, checkIn, checkOut),
       sourceFreshness: objectValue(offer.sourceFreshness),
       generatedAt: toIsoDateTime(offer.generatedAt),
     };
@@ -3776,6 +3812,7 @@ async function loadTargetHotelBooking(
        booking.id::text AS "guestBookingId",
        booking.property_id::text AS "propertyId",
        booking.public_reference AS "publicReference",
+       booking.source_system AS "sourceSystem",
        booking.lifecycle_status AS "lifecycleStatus",
        booking.payment_status AS "paymentStatus",
        booking.check_in::text AS "checkIn",
@@ -3991,6 +4028,7 @@ async function applyAcceptedTargetDateChange(
         booking.id::text AS "guestBookingId",
         booking.property_id::text AS "propertyId",
         booking.public_reference AS "publicReference",
+        booking.source_system AS "sourceSystem",
         booking.lifecycle_status AS "lifecycleStatus",
         booking.payment_status AS "paymentStatus",
         booking.check_in::text AS "checkIn",

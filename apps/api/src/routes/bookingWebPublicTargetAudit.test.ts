@@ -193,6 +193,10 @@ function quoteHarness(options: {
               publicPolicy: {},
               paymentOptions: ["pay_at_property"],
               availableRooms: 2,
+              nightlyRoomAmounts: [12, 13, 14].map((day) => ({
+                stayDate: `2026-09-${day}`,
+                grossRoomAmount: 90,
+              })),
               roomTotal: "270.00",
               taxesAndFees: "0.00",
               discounts: "0.00",
@@ -317,6 +321,9 @@ function bookingCollisionHarness(propertyId: string) {
   const adapter = createTargetBookingWebCheckoutAdapter({
     connectionString: "postgresql://unused",
     inventoryReservationPort: createTargetPmsInventoryReservationPort(),
+    billingConfigReadPortFactory: () => ({
+      getBillingConfig: async () => ({ propertyId }) as never,
+    }),
     pool: pool as never,
   });
   return {

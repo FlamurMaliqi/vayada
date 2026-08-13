@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import pg from "pg";
 
 import type { StripeBookingPaymentProvider } from "../domains/stripeBookingPayments.js";
-import { settleStripeBookingPayment } from "../domains/stripeBookingSettlement.js";
+import {
+  captureDirectNightlyRevenueEvidence,
+  settleStripeBookingPayment,
+} from "../domains/stripeBookingSettlement.js";
 import {
   inventoryReservationReceiptFromBookingMetadata,
   type DirectBookingInventoryReservationPort,
@@ -623,6 +626,10 @@ async function updateBookingLifecycleStatus(
     fromStatus: string;
     toStatus: string;
     bookingMetadata: unknown;
+    sourceSystem: string;
+    checkIn: string;
+    checkOut: string;
+    recognizedOn: string | null;
   }>(
     `WITH updated AS (
        UPDATE booking.guest_bookings
@@ -642,7 +649,8 @@ async function updateBookingLifecycleStatus(
             )
           )
         RETURNING id::text AS "guestBookingId", $6::text AS "fromStatus",
-                  lifecycle_status AS "toStatus", booking_metadata AS "bookingMetadata"
+          lifecycle_status AS "toStatus", booking_metadata AS "bookingMetadata",
+          source_system AS "sourceSystem", check_in::text AS "checkIn", check_out::text AS "checkOut"
      ),
      status_event AS (
        INSERT INTO booking.booking_status_events
@@ -675,7 +683,9 @@ async function updateBookingLifecycleStatus(
               projected_at = $5::timestamptz
         WHERE summary.guest_booking_id = (SELECT "guestBookingId"::uuid FROM updated)
      )
-     SELECT * FROM updated`,
+     SELECT updated.*, (SELECT ($5::timestamptz AT TIME ZONE location.timezone)::date::text
+       FROM hotel_catalog.property_locations location WHERE location.property_id = $2::uuid
+     ) AS "recognizedOn" FROM updated`,
     [
       candidate.guestBookingId,
       candidate.propertyId,
@@ -694,6 +704,22 @@ async function updateBookingLifecycleStatus(
   const row = updated.rows[0];
   if (!row) {
     return lifecycleNoopResult(candidate, mutation);
+  }
+  if (row.sourceSystem === "booking") {
+    if (!row.recognizedOn) throw new Error("Booking cancellation requires property timezone.");
+    await captureDirectNightlyRevenueEvidence(
+      client,
+      {
+        ...row,
+        propertyId: candidate.propertyId,
+      },
+      {
+        clear: true,
+        fingerprint: `${mutation.action}:${mutation.deadlineOrWindow}`,
+        recognizedOn: row.recognizedOn,
+        required: true,
+      },
+    );
   }
   await releaseLifecycleInventory(
     client,

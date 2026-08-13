@@ -11,6 +11,7 @@ import {
 } from "./financeManualPaymentSettlement.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
+import { captureDirectNightlyRevenueEvidence } from "./stripeBookingSettlement.js";
 import {
   PMS_OPERATIONS_CONTRACT_VERSION,
   type PmsCheckInCommand,
@@ -131,6 +132,8 @@ type BookingPaymentLifecycleRow = QueryResultRow & {
   paymentInstructions: unknown;
   pendingExpiresAt: string | null;
   acceptedPaymentDeadlineAt: string | null;
+  sourceSystem: string;
+  bookingMetadata: unknown;
 };
 type PmsOperationalTemplateOperation =
   | "checkin_checklist_template_update"
@@ -4099,6 +4102,10 @@ async function applyBookingAcceptanceCommandMutation(
   if ((updated.rowCount ?? updated.rows.length) === 0) {
     return invalidStatusTransition("pending_payment", "confirmed");
   }
+  await captureDirectNightlyRevenueEvidence(client, booking, {
+    fingerprint: command.idempotencyKey,
+    required: booking.sourceSystem === "booking",
+  });
 
   await enqueueBookingLifecycleEmailJob(client, {
     kind: "reserved_pending_payment",
@@ -4226,6 +4233,11 @@ async function applyBookingMarkPaidCommandMutation(
   if ((updated.rowCount ?? updated.rows.length) === 0) {
     return invalidStatusTransition(booking.lifecycleStatus, "confirmed/paid");
   }
+  if (isPayPalPending)
+    await captureDirectNightlyRevenueEvidence(client, booking, {
+      fingerprint: command.idempotencyKey,
+      required: booking.sourceSystem === "booking",
+    });
 
   await enqueueBookingLifecycleEmailJob(client, {
     kind: "final_confirmation",
@@ -4260,6 +4272,8 @@ async function loadBookingPaymentLifecycle(
        booking.total_amount::text AS "totalAmount",
        booking.balance_amount::text AS "balanceAmount",
        booking.currency,
+       booking.source_system AS "sourceSystem",
+       booking.booking_metadata AS "bookingMetadata",
        guest.email AS "guestEmail",
        NULLIF(trim(concat_ws(' ', guest.first_name, guest.last_name)), '') AS "guestName",
        property.display_name AS "propertyName",

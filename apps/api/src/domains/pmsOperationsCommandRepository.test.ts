@@ -26,6 +26,19 @@ const assignmentOneId = "f6855500-0000-0000-0000-000000000001";
 const assignmentTwoId = "f6855500-0000-0000-0000-000000000002";
 const userId = "f6851000-0000-0000-0000-000000000001";
 const organizationId = "f6852000-0000-0000-0000-000000000001";
+const directRevenueFields = {
+  sourceSystem: "booking",
+  bookingMetadata: {
+    requestFingerprint: "a".repeat(64),
+    selectedOffer: {
+      roomTypeId: assignmentOneId,
+      nightlyRoomAmounts: [20, 21, 22].map((day) => ({
+        stayDate: `2026-08-${day}`,
+        grossRoomAmount: "200",
+      })),
+    },
+  },
+};
 
 type RecordedQuery = {
   text: string;
@@ -479,6 +492,7 @@ describe("target PMS operations command repository", () => {
             guestEmail: "guest@example.test",
             guestName: "Alex Guest",
             propertyName: "Hotel Alpenrose",
+            ...directRevenueFields,
             acceptedMethods: [],
             depositPolicy: {},
             paymentInstructions: {
@@ -488,6 +502,7 @@ describe("target PMS operations command repository", () => {
         ]);
       }
       if (text.includes("WITH booking_update AS")) return ok([{ id: guestBookingId }], 1);
+      if (text.includes("WITH booking_scope AS")) return ok();
       if (text.includes("INSERT INTO platform.domain_events")) {
         return ok([{ eventId: "f6855900-0000-0000-0000-000000000001" }], 1);
       }
@@ -510,6 +525,7 @@ describe("target PMS operations command repository", () => {
     );
     expect(acceptanceIndex).toBeGreaterThan(-1);
     expect(emailIndex).toBeGreaterThan(acceptanceIndex);
+    expect(requiredCall(client, "WITH booking_scope AS")).toBeDefined();
     expect(requiredCall(client, "WITH booking_update AS").values[3]).toBe("property_user");
     expect(requiredCall(client, "WITH booking_update AS").text).toContain(
       "acceptedPaymentDeadlineAt",
@@ -637,6 +653,7 @@ describe("target PMS operations command repository", () => {
               guestEmail: "guest@example.test",
               guestName: "Alex Guest",
               propertyName: "Hotel Alpenrose",
+              ...directRevenueFields,
               acceptedMethods: [method],
               depositPolicy: { paypalEmail: "host@example.test" },
             },
@@ -694,6 +711,7 @@ describe("target PMS operations command repository", () => {
           ]);
         }
         if (text.includes("WITH booking_update AS")) return ok([{ id: guestBookingId }], 1);
+        if (text.includes("WITH booking_scope AS")) return ok();
         if (text.includes("INSERT INTO platform.domain_events")) {
           return ok([{ eventId: "f6855900-0000-0000-0000-000000000003" }], 1);
         }
@@ -723,6 +741,9 @@ describe("target PMS operations command repository", () => {
       expect(financePayment.values).toContain("30.00");
       expect(financePayment.values).toContain("570.00");
       expect(client.calls.indexOf(financePayment)).toBeLessThan(client.calls.indexOf(mutation));
+      expect(client.calls.some(({ text }) => text.includes("WITH booking_scope AS"))).toBe(
+        method === "paypal",
+      );
       expect(
         client.calls.some(
           (call) =>

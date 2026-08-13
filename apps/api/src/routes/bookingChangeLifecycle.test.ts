@@ -182,6 +182,10 @@ class LifecyclePool {
             publicPolicy: {},
             paymentOptions: ["pay_at_property"],
             availableRooms: 2,
+            nightlyRoomAmounts: ["2026-08-15", "2026-08-16"].map((stayDate) => ({
+              stayDate,
+              grossRoomAmount: "150.00",
+            })),
             roomTotal: "300.00",
             taxesAndFees: "20.00",
             discounts: "10.00",

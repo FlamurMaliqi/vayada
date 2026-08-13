@@ -1149,6 +1149,7 @@ describe("Booking Web public bootstrap parity", () => {
                 publicPolicy: { deposit: "50% deposit required." },
                 paymentOptions: ["pay_at_property"],
                 availableRooms: 2,
+                nightlyRoomAmounts: nights("187.20"),
                 roomTotal: "561.60",
                 taxesAndFees: "0.00",
                 discounts: "0.00",
@@ -1442,6 +1443,7 @@ describe("Booking Web public bootstrap parity", () => {
                     roomTypeId: "room_deluxe",
                     publicOfferKey: "room_deluxe:flexible",
                     paymentMethod: "pay_at_property",
+                    nightlyRoomAmounts: nights("33.34", "33.33", "33.33"),
                   },
                   totals: { totalAmount: "100.00", balanceAmount: "100.00" },
                   policySnapshot: { freeUntilDays: 7 },
@@ -2248,7 +2250,14 @@ describe("Booking Web public bootstrap parity", () => {
       currency: "EUR",
       totalAmount: "600.00",
       balanceAmount,
-      bookingMetadata: { paymentMethod: "card" },
+      bookingMetadata: {
+        paymentMethod: "card",
+        selectedOffer: {
+          roomTypeId: "room_deluxe",
+          nightlyRoomAmounts: nights("200"),
+        },
+        requestFingerprint: "2".repeat(64),
+      },
       createdAt: "2026-09-01T10:00:00.000Z",
     });
     const pool = {
@@ -2313,6 +2322,7 @@ describe("Booking Web public bootstrap parity", () => {
                   roomTypeId: "room_deluxe",
                   publicOfferKey: "room_deluxe:flexible",
                   paymentMethod: "card",
+                  nightlyRoomAmounts: nights("200"),
                 },
                 totals: { totalAmount: "600.00", balanceAmount: "600.00" },
                 policySnapshot: {},
@@ -2353,6 +2363,7 @@ describe("Booking Web public bootstrap parity", () => {
                 children: 0,
                 roomCount: 1,
                 totalAmount: "600.00",
+                bookingMetadata: booking().bookingMetadata,
               },
             ],
           };
@@ -3053,3 +3064,10 @@ function nested(value: unknown, path: string): unknown {
     return (current as Record<string, unknown>)[segment];
   }, value);
 }
+const nights = (...amounts: string[]) =>
+  (amounts.length === 1 ? [amounts[0]!, amounts[0]!, amounts[0]!] : amounts).map(
+    (grossRoomAmount, day) => ({
+      stayDate: `2026-09-${day + 12}`,
+      grossRoomAmount,
+    }),
+  );

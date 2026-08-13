@@ -146,6 +146,7 @@ describe("booking lifecycle scheduler jobs", () => {
     expect(fixture.calls.find((sql) => sql.includes("WITH updated AS"))).toContain(
       "NULLIF(booking_metadata ->> 'acceptedPaymentDeadlineAt', '')::timestamptz",
     );
+    expect(fixture.calls.some((sql) => sql.includes("WITH booking_scope AS"))).toBe(true);
   });
 
   it("does not cancel an accepted bank booking that was paid after candidate selection", async () => {
@@ -232,6 +233,14 @@ function pgLifecycleFixture(
   const propertyId = "a9fccec2-eb4c-4c35-bfd3-02a748c2e117";
   const guestBookingId = "b9fccec2-eb4c-4c35-bfd3-02a748c2e117";
   const bookingMetadata = {
+    requestFingerprint: "a".repeat(64),
+    selectedOffer: {
+      roomTypeId: "d9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+      nightlyRoomAmounts: [12, 13, 14].map((day) => ({
+        stayDate: `2026-09-${day}`,
+        grossRoomAmount: 200,
+      })),
+    },
     inventoryReservation: {
       contractVersion: "pms.inventory-reservation.v1",
       owner: "pms",
@@ -280,10 +289,15 @@ function pgLifecycleFixture(
             fromStatus: status,
             toStatus: status === "confirmed" ? "canceled" : "expired",
             bookingMetadata,
+            sourceSystem: "booking",
+            checkIn: "2026-09-12",
+            checkOut: "2026-09-15",
+            recognizedOn: "2026-09-01",
           },
         ],
       };
     }
+    if (sql.includes("WITH booking_scope AS")) return { rows: [] };
     if (sql.includes("FOR UPDATE OF payment, booking")) {
       return {
         rows: [
@@ -303,6 +317,7 @@ function pgLifecycleFixture(
             children: 0,
             roomCount: 1,
             totalAmount: "600.00",
+            bookingMetadata,
           },
         ],
       };
