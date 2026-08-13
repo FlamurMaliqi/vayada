@@ -46,10 +46,11 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
       `INSERT INTO booking.guest_bookings (
          id, property_id, public_reference, source_system, source_booking_id,
          lifecycle_status, payment_status, check_in, check_out, currency,
-         total_amount, balance_amount, expected_payment_method
+         total_amount, balance_amount, expected_payment_method, booking_metadata
        ) VALUES (
          $1::uuid, $2::uuid, 'VAY-1253-HISTORICAL', 'pms', 'vay-1253-historical',
-         'confirmed', 'unpaid', '2026-09-01', '2026-09-03', 'EUR', 125.50, 125.50, 'cash'
+         'confirmed', 'unpaid', '2026-09-01', '2026-09-03', 'EUR', 125.50, 125.50,
+         'cash', '{"contractVersion":"pms-manual-booking.v1"}'::jsonb
        )`,
       [HISTORICAL_BOOKING_ID, PROPERTY_ID],
     );
@@ -59,9 +60,10 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
       `INSERT INTO booking.guest_bookings (
          id, property_id, public_reference, source_system, source_booking_id,
          lifecycle_status, payment_status, check_in, check_out, currency,
-         total_amount, balance_amount, expected_payment_method
+         total_amount, balance_amount, expected_payment_method, booking_metadata
        ) VALUES ($1::uuid, $2::uuid, 'VAY-1253-BOOKING', 'pms', 'vay-1253-command-current',
-         'confirmed', 'unpaid', '2026-09-01', '2026-09-03', 'EUR', 125.50, 125.50, 'cash')`,
+         'confirmed', 'unpaid', '2026-09-01', '2026-09-03', 'EUR', 125.50, 125.50,
+         'cash', '{"contractVersion":"pms-manual-booking.v1"}'::jsonb)`,
       [BOOKING_ID, PROPERTY_ID],
     );
     transaction = await financeManualBookingSettlementTransaction(client);
@@ -222,6 +224,10 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
     }
     const historical = command("historical");
     historical.payload.booking.guestBookingId = HISTORICAL_BOOKING_ID;
+    historical.payload.sourceReference = "pms-manual-booking:vay-1253-historical";
+    await client.query("UPDATE booking.guest_bookings SET updated_at = now() WHERE id = $1::uuid", [
+      HISTORICAL_BOOKING_ID,
+    ]);
     await expect(port.settleFull({ transaction, command: historical })).rejects.toMatchObject({
       code: "invalid_command",
     });
@@ -247,7 +253,7 @@ function command(suffix: string): FinanceManualBookingSettlementCommand {
       amount: "125.50",
       currency: "EUR",
       paymentMethod: "cash",
-      sourceReference: `manual-booking-${suffix}`,
+      sourceReference: "pms-manual-booking:vay-1253-command-current",
       operatorReference: "receipt 42",
       acceptedAt: "2026-08-12T09:00:00.000Z",
     },
