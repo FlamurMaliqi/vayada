@@ -164,6 +164,10 @@ import {
   registerPlatformAdminDashboardRoutes,
   type PlatformAdminDashboardRepository,
 } from "./routes/platform/admin/dashboard/bookingCompatible.js";
+import {
+  registerPlatformPropertyLifecycleRoutes,
+  type PlatformPropertyLifecycleRoutesOptions,
+} from "./routes/platform/admin/propertyLifecycle.js";
 import { registerPmsOperationsRoutes } from "./routes/pmsOperations.js";
 import {
   registerPmsManualBookingPreviewRoutes,
@@ -269,6 +273,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   >;
   platformContactIntake?: PlatformContactIntakeRoutesOptions;
   platformAdminDashboardRepository?: PlatformAdminDashboardRepository;
+  platformPropertyLifecycle?: PlatformPropertyLifecycleRoutesOptions;
   marketplaceDiscoveryAllowedOrigins?: string[];
   identityPrivacyAllowedOrigins?: string[];
   bookingDomainResolutionSource?: BookingDomainResolutionSource;
@@ -638,6 +643,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     prefix: "/api/platform/admin",
     repository: options.platformAdminDashboardRepository,
   });
+  if (options.platformPropertyLifecycle) {
+    app.register(registerPlatformPropertyLifecycleRoutes, {
+      prefix: "/api/platform/admin",
+      ...options.platformPropertyLifecycle,
+    });
+  }
   if (options.platformMedia) {
     app.register(registerPlatformMediaRoutes, {
       prefix: "/api/media",

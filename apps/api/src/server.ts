@@ -134,6 +134,9 @@ import { createPgIdentityAdminUsersReadRepository } from "./routes/identityAdmin
 import { createPgIdentityPrivacyRepository } from "./routes/identityPrivacy.js";
 import { createPgMarketplaceCreatorPlatformConnectionRepository } from "./routes/marketplaceCreatorPlatformConnections.js";
 import { createTargetPlatformAdminDashboardRepository } from "./routes/platform/admin/dashboard/bookingCompatible.js";
+import { createPgPlatformPropertyLifecycleCommandRepository } from "./domains/platformPropertyLifecycleCommandRepository.js";
+import { createPgPlatformPropertyLifecycleImpactRepository } from "./domains/platformPropertyLifecycleImpactRepository.js";
+import { createPgPlatformPropertyProvisioningRepository } from "./domains/platformPropertyProvisioningRepository.js";
 import { createPgPlatformContactIntakeRepository } from "./routes/platformContactIntake.js";
 import {
   createCreatorPlatformAdapterRegistry,
@@ -885,6 +888,18 @@ const app = buildApp({
   platformAdminDashboardRepository: createTargetPlatformAdminDashboardRepository({
     connectionString: targetDatabaseUrl,
   }),
+  platformPropertyLifecycle: {
+    impactRepository: createPgPlatformPropertyLifecycleImpactRepository({
+      connectionString: targetDatabaseUrl,
+    }),
+    commandRepository: createPgPlatformPropertyLifecycleCommandRepository({
+      connectionString: targetDatabaseUrl,
+    }),
+    provisioningRepository: createPgPlatformPropertyProvisioningRepository({
+      connectionString: targetDatabaseUrl,
+      setupRepository: sharedHotelSetupStatusRepository,
+    }),
+  },
   pmsOperationsAllowedOrigins: config.pmsOperationsAllowedOrigins,
   bookingSettingsRepository,
   bookingSettingsWriteRepository: bookingSettingsRepository,
