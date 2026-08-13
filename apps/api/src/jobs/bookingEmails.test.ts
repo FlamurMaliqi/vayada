@@ -7,6 +7,7 @@ import {
   BOOKING_RESERVED_PENDING_PAYMENT_EMAIL_JOB_TYPE,
   bookingLifecycleEmailJobKey,
   enqueueBookingLifecycleEmailJob,
+  enqueueBookingTransitionNotifications,
   type BookingLifecycleEmailInput,
 } from "./bookingEmails.js";
 
@@ -30,7 +31,11 @@ describe("booking lifecycle email jobs", () => {
     expect(result).toMatchObject({
       status: "queued",
       jobType: BOOKING_RESERVED_PENDING_PAYMENT_EMAIL_JOB_TYPE,
-      jobKey: bookingLifecycleEmailJobKey("reserved_pending_payment", "book_bank_001"),
+      jobKey: bookingLifecycleEmailJobKey("reserved_pending_payment", "book_bank_001", "guest", {
+        eventType: "guest_booking.accepted",
+        fromStatus: "pending_payment",
+        toStatus: "confirmed",
+      }),
     });
 
     const jobInsert = target.requiredCall("INSERT INTO platform.jobs");
@@ -47,10 +52,10 @@ describe("booking lifecycle email jobs", () => {
     });
 
     expect(target.requiredCall("INSERT INTO platform.domain_events").values?.[1]).toBe(
-      "booking.email.reserved_pending_payment_requested",
+      "booking.notification.reserved_pending_payment_requested",
     );
     expect(target.requiredCall("INSERT INTO platform.product_audit_events").values?.[1]).toBe(
-      "booking.email.reserved_pending_payment_requested",
+      "booking.notification.reserved_pending_payment_requested",
     );
   });
 
@@ -94,11 +99,145 @@ describe("booking lifecycle email jobs", () => {
       target.calls.filter((call) => call.text.includes("INSERT INTO platform.jobs")),
     ).toHaveLength(2);
   });
+
+  it("resolves guest and host recipients for a confirmed lifecycle transition", async () => {
+    const target = createTargetEmailStore();
+
+    const enqueued = await enqueueBookingTransitionNotifications(target, {
+      propertyId: "f2000000-0000-0000-0000-000000000951",
+      guestBookingId: "book_bank_001",
+      occurredAt: "2026-09-01T10:00:00.000Z",
+      transition: {
+        eventType: "guest_booking.payment_received",
+        fromStatus: "pending_payment",
+        toStatus: "confirmed",
+      },
+    });
+
+    expect(enqueued).toHaveLength(2);
+    const payloads = target.calls
+      .filter((call) => call.text.includes("INSERT INTO platform.jobs"))
+      .map((call) => JSON.parse(String(call.values?.[8])));
+    expect(payloads).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ to: "guest@example.test", recipientRole: "guest" }),
+        expect.objectContaining({ to: "reservations@alpenrose.test", recipientRole: "host" }),
+      ]),
+    );
+    expect(enqueued.map((job) => job.jobKey)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(":recipient:guest:final_confirmation:v1"),
+        expect.stringContaining(":recipient:host:host_new_booking:v1"),
+      ]),
+    );
+  });
+
+  it("uses current bank-transfer pending state for request and review notifications", async () => {
+    const target = createTargetEmailStore({ paymentMethod: "bank_transfer" });
+
+    const enqueued = await enqueueBookingTransitionNotifications(target, {
+      propertyId: "f2000000-0000-0000-0000-000000000951",
+      guestBookingId: "book_bank_001",
+      occurredAt: "2026-09-01T10:00:00.000Z",
+      transition: {
+        eventType: "guest_booking.created",
+        fromStatus: null,
+        toStatus: "pending_payment",
+      },
+    });
+
+    expect(enqueued.map((job) => job.jobType)).toEqual([
+      "email.booking-request-received",
+      "email.booking-host-review-required",
+    ]);
+  });
+
+  it("waits for card authorization before notifying a future request-mode booking", async () => {
+    const target = createTargetEmailStore({
+      paymentMethod: "card",
+      bookingMetadata: { acceptanceMode: "request" },
+    });
+    const input = {
+      propertyId: "f2000000-0000-0000-0000-000000000951",
+      guestBookingId: "book_bank_001",
+      occurredAt: "2026-09-01T10:00:00.000Z",
+    };
+
+    await expect(
+      enqueueBookingTransitionNotifications(target, {
+        ...input,
+        transition: { eventType: "guest_booking.created", fromStatus: null, toStatus: "draft" },
+      }),
+    ).resolves.toEqual([]);
+    const enqueued = await enqueueBookingTransitionNotifications(target, {
+      ...input,
+      transition: {
+        eventType: "guest_booking.payment_authorized",
+        fromStatus: "draft",
+        toStatus: "pending_payment",
+      },
+    });
+
+    expect(enqueued.map((job) => job.jobType)).toEqual([
+      "email.booking-request-received",
+      "email.booking-host-review-required",
+    ]);
+  });
+
+  it.each([
+    ["guest_booking.accepted", "confirmed", "email.booking-reserved-pending-payment", null],
+    ["guest_booking.rejected", "declined", "email.booking-rejected", null],
+    ["guest_booking.expired", "expired", "email.booking-expired", null],
+    ["guest_booking.canceled", "canceled", "email.booking-expired", "accepted_payment_expired"],
+  ])(
+    "maps %s to the appropriate guest lifecycle message",
+    async (eventType, toStatus, jobType, reason) => {
+      const target = createTargetEmailStore({ paymentMethod: "bank_transfer" });
+
+      const enqueued = await enqueueBookingTransitionNotifications(target, {
+        propertyId: "f2000000-0000-0000-0000-000000000951",
+        guestBookingId: "book_bank_001",
+        occurredAt: "2026-09-01T10:00:00.000Z",
+        transition: { eventType, fromStatus: "pending_payment", toStatus, reason },
+      });
+
+      expect(enqueued).toHaveLength(1);
+      expect(enqueued[0]?.jobType).toBe(jobType);
+    },
+  );
+
+  it("queues an auditable host failure instead of using the guest or creator address", async () => {
+    const target = createTargetEmailStore({ hostEmail: null });
+
+    const enqueued = await enqueueBookingTransitionNotifications(target, {
+      propertyId: "f2000000-0000-0000-0000-000000000951",
+      guestBookingId: "book_bank_001",
+      occurredAt: "2026-09-01T10:00:00.000Z",
+      transition: {
+        eventType: "guest_booking.created",
+        fromStatus: null,
+        toStatus: "confirmed",
+      },
+    });
+
+    expect(enqueued).toHaveLength(2);
+    expect(enqueued[1]?.jobKey).toContain(":recipient:host:");
+    const payloads = target.calls
+      .filter((call) => call.text.includes("INSERT INTO platform.jobs"))
+      .map((call) => JSON.parse(String(call.values?.[8])));
+    expect(payloads).toContainEqual(expect.objectContaining({ to: null, recipientRole: "host" }));
+    const recipientQuery = target.requiredCall('AS "hostEmail"').text;
+    expect(recipientQuery).toContain("contact.purpose = 'operations'");
+    expect(recipientQuery).toContain(
+      "contact.purpose = 'general' AND contact.source_system = 'booking'",
+    );
+    expect(recipientQuery).not.toContain("contact.purpose = 'creator'");
+  });
 });
 
 type QueryCall = { text: string; values?: readonly unknown[] };
 
-function createTargetEmailStore(): {
+function createTargetEmailStore(snapshotOverrides: Record<string, unknown> = {}): {
   calls: QueryCall[];
   query<T extends QueryResultRow = QueryResultRow>(
     text: string,
@@ -108,6 +247,7 @@ function createTargetEmailStore(): {
 } {
   const calls: QueryCall[] = [];
   const jobs = new Map<string, string>();
+  let sequence = 0;
 
   return {
     calls,
@@ -116,8 +256,32 @@ function createTargetEmailStore(): {
       values?: readonly unknown[],
     ): Promise<{ rows: T[] }> {
       calls.push({ text, values });
+      if (text.includes('AS "hostEmail"')) {
+        return {
+          rows: [
+            {
+              propertyId: "f2000000-0000-0000-0000-000000000951",
+              guestBookingId: "book_bank_001",
+              bookingReference: "B-BANK-001",
+              guestEmail: "guest@example.test",
+              guestName: "Ada Guest",
+              hostEmail: "reservations@alpenrose.test",
+              propertyName: "Hotel Alpenrose",
+              checkIn: "2026-09-12",
+              checkOut: "2026-09-15",
+              totalAmount: "600.00",
+              balanceAmount: "200.00",
+              currency: "EUR",
+              paymentMethod: "card",
+              bookingMetadata: {},
+              ...snapshotOverrides,
+            } as unknown as T,
+          ],
+        };
+      }
       if (text.includes("INSERT INTO platform.domain_events")) {
-        return { rows: [{ eventId: "event_booking_email_001" } as unknown as T] };
+        sequence += 1;
+        return { rows: [{ eventId: `event_booking_email_${sequence}` } as unknown as T] };
       }
       if (text.includes("INSERT INTO platform.jobs")) {
         const jobKey = String(values?.[0]);
@@ -125,7 +289,7 @@ function createTargetEmailStore(): {
         if (existingJobId) {
           return { rows: [{ jobId: existingJobId, replay: true } as unknown as T] };
         }
-        const jobId = "job_booking_email_001";
+        const jobId = `job_booking_email_${jobs.size + 1}`;
         jobs.set(jobKey, jobId);
         return { rows: [{ jobId, replay: false } as unknown as T] };
       }
@@ -148,6 +312,12 @@ function bookingEmailInput(
     correlationId: "corr-booking-email-001",
     causationId: "booking.accept:book_bank_001",
     actor: { type: "user", userId: "f1000000-0000-0000-0000-000000000951" },
+    recipient: { role: "guest", email: "guest@example.test" },
+    transition: {
+      eventType: "guest_booking.accepted",
+      fromStatus: "pending_payment",
+      toStatus: "confirmed",
+    },
     booking: {
       propertyId: "f2000000-0000-0000-0000-000000000951",
       guestBookingId: "book_bank_001",
