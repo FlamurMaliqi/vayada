@@ -100,6 +100,161 @@ test.describe("booking-admin affiliate management", () => {
         .filter({ hasText: "Your role cannot manage affiliates for this property." }),
     ).toBeVisible();
   });
+
+  test("keeps lifecycle management available when Finance access is denied", async ({ page }) => {
+    test.skip(
+      !PROD,
+      "Requires a production booking-admin build so the authenticated shell hydrates.",
+    );
+    await mockBookingAdminAuthenticatedSession(page);
+    await mockBookingAdminShellRoutes(page);
+    let affiliate = { ...initialAffiliate, lifecycleStatus: "pending" as string };
+    await page.route(`**${MARKETPLACE_PATH}**`, async (route) => {
+      const request = route.request();
+      if (request.method() === "POST") {
+        affiliate = { ...affiliate, lifecycleStatus: "approved" };
+        await route.fulfill({ json: { outcome: "applied", commandId: "approve", affiliate } });
+        return;
+      }
+      const list = new URL(request.url()).pathname === MARKETPLACE_PATH;
+      await route.fulfill({
+        json: list
+          ? {
+              contractVersion: "marketplace-affiliate-admin.v1",
+              affiliates: [affiliate],
+              total: 1,
+              limit: 50,
+              offset: 0,
+            }
+          : affiliate,
+      });
+    });
+    await page.route(`**${FINANCE_PATH}/**`, (route) =>
+      route.fulfill({ status: 403, json: { code: "missing_permission" } }),
+    );
+
+    await page.goto("/affiliates");
+    await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeVisible();
+    await expect(
+      page.getByText("Your role cannot manage affiliates for this property.").first(),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Approve", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Suspend access" })).toBeVisible();
+  });
+
+  test("pages through the complete affiliate result set", async ({ page }) => {
+    test.skip(
+      !PROD,
+      "Requires a production booking-admin build so the authenticated shell hydrates.",
+    );
+    await mockBookingAdminAuthenticatedSession(page);
+    await mockBookingAdminShellRoutes(page);
+    const nextAffiliate = {
+      ...initialAffiliate,
+      affiliateId: "affiliate_creator_51",
+      displayName: "Noah Summit",
+      referralCode: "SUMMIT20",
+    };
+    const requestedOffsets: string[] = [];
+    await page.route(`**${MARKETPLACE_PATH}**`, async (route) => {
+      const url = new URL(route.request().url());
+      const list = url.pathname === MARKETPLACE_PATH;
+      const target = url.searchParams.get("offset") === "50" ? nextAffiliate : initialAffiliate;
+      if (list) requestedOffsets.push(url.searchParams.get("offset") ?? "0");
+      await route.fulfill({
+        json: list
+          ? {
+              contractVersion: "marketplace-affiliate-admin.v1",
+              affiliates: [target],
+              total: 51,
+              limit: 50,
+              offset: Number(url.searchParams.get("offset") ?? 0),
+            }
+          : target,
+      });
+    });
+    await page.route(`**${FINANCE_PATH}/**`, (route) => {
+      const affiliateId = new URL(route.request().url()).pathname.includes("affiliate_creator_51")
+        ? "affiliate_creator_51"
+        : AFFILIATE_ID;
+      return route.fulfill({ json: commission(affiliateId, null) });
+    });
+
+    await page.goto("/affiliates");
+    await expect(page.getByText("Mira Alpine").first()).toBeVisible();
+    await page.getByRole("button", { name: "Next" }).click();
+    await expect(page.getByText("Noah Summit").first()).toBeVisible();
+    expect(requestedOffsets).toContain("50");
+  });
+
+  test("does not apply a completed write to a newly selected affiliate", async ({ page }) => {
+    test.skip(
+      !PROD,
+      "Requires a production booking-admin build so the authenticated shell hydrates.",
+    );
+    await mockBookingAdminAuthenticatedSession(page);
+    await mockBookingAdminShellRoutes(page);
+    const noah = {
+      ...initialAffiliate,
+      affiliateId: "affiliate_creator_2",
+      displayName: "Noah Summit",
+      contactEmail: "noah@example.com",
+      referralCode: "NOAH9",
+    };
+    let writeStarted = false;
+    let releaseWrite = () => {};
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    await page.route(`**${MARKETPLACE_PATH}**`, (route) => {
+      const url = new URL(route.request().url());
+      const list = url.pathname === MARKETPLACE_PATH;
+      const target = url.pathname.endsWith(noah.affiliateId) ? noah : initialAffiliate;
+      return route.fulfill({
+        json: list
+          ? {
+              contractVersion: "marketplace-affiliate-admin.v1",
+              affiliates: [initialAffiliate, noah],
+              total: 2,
+              limit: 50,
+              offset: 0,
+            }
+          : target,
+      });
+    });
+    await page.route(`**${FINANCE_PATH}/**`, async (route) => {
+      const request = route.request();
+      const isNoah = new URL(request.url()).pathname.includes(noah.affiliateId);
+      if (request.method() === "PATCH") {
+        writeStarted = true;
+        await writeGate;
+        const body = request.postDataJSON() as Record<string, string>;
+        await route.fulfill({
+          json: {
+            outcome: "applied",
+            commandId: body.commandId,
+            commission: commission(AFFILIATE_ID, "18"),
+          },
+        });
+        return;
+      }
+      await route.fulfill({
+        json: commission(isNoah ? noah.affiliateId : AFFILIATE_ID, isNoah ? "9" : null),
+      });
+    });
+
+    await page.goto("/affiliates");
+    await page.getByLabel("Affiliate commission override").fill("18");
+    await page.getByRole("button", { name: "Save override" }).click();
+    await expect.poll(() => writeStarted).toBe(true);
+    await page.getByRole("button", { name: /Noah Summit/ }).click();
+    const dossier = page.getByRole("complementary", { name: "Affiliate detail" });
+    await expect(dossier).toContainText("Noah Summit");
+    releaseWrite();
+    await expect(page.getByText("Affiliate override saved.")).toBeVisible();
+    await expect(dossier).toContainText("Effective rate: 9%");
+    await expect(page.getByLabel("Affiliate commission override")).toHaveValue("9");
+  });
 });
 
 async function mockAffiliateRoutes(page: Page) {
