@@ -41,8 +41,8 @@ export type BookingLifecycleEmailInput = {
   paymentDeadlineAt?: string | null;
   bankTransferDetails?: unknown;
   source?: string;
-  recipient: { role: BookingNotificationRecipientRole; email: string | null };
-  transition: BookingLifecycleTransition;
+  recipient?: { role: BookingNotificationRecipientRole; email: string | null };
+  transition?: BookingLifecycleTransition;
   booking: {
     propertyId: string;
     guestBookingId: string;
@@ -91,12 +91,12 @@ export async function enqueueBookingLifecycleEmailJob(
   queryable: Queryable,
   input: BookingLifecycleEmailInput,
 ): Promise<BookingLifecycleEmailEnqueueResult> {
-  const recipientRole = input.recipient.role;
-  const to = normalizeEmail(input.recipient.email);
+  const recipientRole = input.recipient?.role ?? "guest";
+  const to = normalizeEmail(input.recipient ? input.recipient.email : input.booking.guestEmail);
 
   const jobType = bookingLifecycleEmailJobType(input.kind);
   const eventType = `booking.notification.${input.kind}_requested`;
-  const transition = input.transition;
+  const transition = input.transition ?? legacyTransition(input.kind);
   const jobKey = bookingLifecycleEmailJobKey(
     input.kind,
     input.booking.guestBookingId,
@@ -354,8 +354,8 @@ export function bookingLifecycleEmailJobType(kind: BookingLifecycleEmailKind): s
 export function bookingLifecycleEmailJobKey(
   kind: BookingLifecycleEmailKind,
   guestBookingId: string,
-  recipientRole: BookingNotificationRecipientRole,
-  transition: BookingLifecycleTransition,
+  recipientRole: BookingNotificationRecipientRole = "guest",
+  transition: BookingLifecycleTransition = legacyTransition(kind),
 ): string {
   const transitionKey = [
     transition.eventType,
@@ -554,6 +554,41 @@ function notificationsForTransition(
     return [{ kind: "booking_expired", role: "guest" }];
   }
   return [];
+}
+
+function legacyTransition(kind: BookingLifecycleEmailKind): BookingLifecycleTransition {
+  if (kind === "reserved_pending_payment" || kind === "booking_accepted") {
+    return {
+      eventType: "guest_booking.accepted",
+      fromStatus: "pending_payment",
+      toStatus: "confirmed",
+    };
+  }
+  if (kind === "request_received" || kind === "host_review_required") {
+    return { eventType: "guest_booking.created", fromStatus: null, toStatus: "pending_payment" };
+  }
+  if (kind === "booking_rejected") {
+    return {
+      eventType: "guest_booking.rejected",
+      fromStatus: "pending_payment",
+      toStatus: "declined",
+    };
+  }
+  if (kind === "booking_expired") {
+    return {
+      eventType: "guest_booking.expired",
+      fromStatus: "pending_payment",
+      toStatus: "expired",
+    };
+  }
+  if (kind === "host_new_booking") {
+    return { eventType: "guest_booking.created", fromStatus: null, toStatus: "confirmed" };
+  }
+  return {
+    eventType: "guest_booking.payment_received",
+    fromStatus: "pending_payment",
+    toStatus: "confirmed",
+  };
 }
 
 function record(value: unknown): Record<string, unknown> {

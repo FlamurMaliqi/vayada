@@ -100,6 +100,29 @@ describe("booking lifecycle email jobs", () => {
     ).toHaveLength(2);
   });
 
+  it("keeps existing guest-only callers compatible while lifecycle wiring migrates", async () => {
+    const target = createTargetEmailStore();
+    const input = bookingEmailInput({ kind: "final_confirmation" });
+    delete input.recipient;
+    delete input.transition;
+
+    const result = await enqueueBookingLifecycleEmailJob(target, input);
+
+    expect(result.jobKey).toBe(bookingLifecycleEmailJobKey("final_confirmation", "book_bank_001"));
+    const payload = JSON.parse(
+      String(target.requiredCall("INSERT INTO platform.jobs").values?.[8]),
+    );
+    expect(payload).toMatchObject({
+      to: "guest@example.test",
+      recipientRole: "guest",
+      transition: {
+        eventType: "guest_booking.payment_received",
+        fromStatus: "pending_payment",
+        toStatus: "confirmed",
+      },
+    });
+  });
+
   it("resolves guest and host recipients for a confirmed lifecycle transition", async () => {
     const target = createTargetEmailStore();
 
