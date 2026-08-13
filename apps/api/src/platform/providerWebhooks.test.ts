@@ -24,6 +24,16 @@ describe("provider webhook booking settlement", () => {
               children: 0,
               roomCount: 1,
               totalAmount: "600.00",
+              bookingMetadata: {
+                requestFingerprint: "a".repeat(64),
+                selectedOffer: {
+                  roomTypeId: "d9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+                  nightlyRoomAmounts: [12, 13, 14].map((day) => ({
+                    stayDate: `2026-09-${day}`,
+                    grossRoomAmount: 200,
+                  })),
+                },
+              },
             },
           ],
         };
@@ -59,6 +69,12 @@ describe("provider webhook booking settlement", () => {
     expect(statements.some((sql) => sql.includes("UPDATE finance.payments"))).toBe(true);
     expect(statements.some((sql) => sql.includes("UPDATE booking.guest_bookings"))).toBe(true);
     expect(statements.some((sql) => sql.includes("'pms-reservation-handoff'"))).toBe(true);
+    expect(
+      statements.some((sql) => sql.includes("INSERT INTO booking.nightly_revenue_evidence")),
+    ).toBe(true);
+    expect(
+      statements.findIndex((sql) => sql.includes("INSERT INTO booking.nightly_revenue_evidence")),
+    ).toBeLessThan(statements.findIndex((sql) => sql.includes("'pms-reservation-handoff'")));
     expect(query.mock.calls.flatMap(([, values]) => values ?? [])).toEqual(
       expect.arrayContaining(["pi_booking_1", "webhook:stripe:evt_1"]),
     );
