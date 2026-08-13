@@ -1,5 +1,6 @@
 import { pmsOperationsClient, pmsOperationsRequestOptions } from "../api/pmsOperationsClient";
 import { propertyEndpoint, resolveSelectedPmsPropertyId } from "../api/pmsPropertyClient";
+import { pmsManualBookingClient } from "../api/pmsManualBookingClient";
 import { unsupportedPmsNextStackFeature } from "../api/unsupported";
 import { BookingAddon } from "../bookings";
 
@@ -176,6 +177,10 @@ export interface CreateAdminBookingPayload {
 export const calendarService = {
   getCalendarData: (start: string, end: string) =>
     pmsOperationsCalendarReadService.getCalendarData(start, end),
+
+  previewManualBooking: pmsManualBookingClient.preview,
+
+  createManualBooking: pmsManualBookingClient.create,
 
   createRoomBlock: async (data: CreateRoomBlockPayload): Promise<CalendarBlock[]> => {
     const propertyId = await resolveSelectedPmsPropertyId("creating room block");
