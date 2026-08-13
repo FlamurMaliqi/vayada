@@ -1,16 +1,7 @@
 import { createHash } from "node:crypto";
-
-import type { QueryResult, QueryResultRow } from "pg";
-
-export type ExternalRevenueEvidenceClient = {
-  query<T extends QueryResultRow = QueryResultRow>(
-    text: string,
-    values?: readonly unknown[],
-  ): Promise<Pick<QueryResult<T>, "rows" | "rowCount">>;
-};
-
+import type { PoolClient } from "pg";
 export type ExternalRevenueEvidenceLine = Readonly<{
-  roomTypeId: string | null;
+  roomTypeId: string;
   stayDate: string;
   recognizedOn: string;
   grossRoomAmount: string | null;
@@ -27,7 +18,6 @@ export type ExternalRevenueEvidenceLine = Readonly<{
   linePosition: number;
   correctsEvidenceId?: string | null;
 }>;
-
 export type AppendExternalRevenueEvidenceCommand = Readonly<{
   propertyId: string;
   guestBookingId: string;
@@ -36,7 +26,6 @@ export type AppendExternalRevenueEvidenceCommand = Readonly<{
   idempotencyKey: string;
   lines: readonly ExternalRevenueEvidenceLine[];
 }>;
-
 export class ExternalRevenueEvidenceScopeError extends Error {
   readonly code = "external_booking_scope_unavailable";
 }
@@ -59,68 +48,75 @@ type StoredLine = {
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const DATE = /^\d{4}-\d{2}-\d{2}$/,
-  MONEY = /^-?\d{1,15}(?:\.\d{1,4})?$/;
+const MONEY = /^-?\d{1,15}(?:\.\d{1,4})?$/;
 
-/** Must receive the external booking writer's open transaction client. */
 export async function appendExternalNightlyRevenueEvidence(
-  client: ExternalRevenueEvidenceClient,
+  client: Pick<PoolClient, "query">,
   command: AppendExternalRevenueEvidenceCommand,
 ) {
   const prefix = commandPrefix(command);
   const lines = normalizeLines(command, prefix);
-  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
-    `${command.propertyId}:${prefix}`,
-  ]);
-  const booking = await client.query(
-    `SELECT id FROM booking.guest_bookings
-     WHERE id = $1::uuid AND property_id = $2::uuid AND source_system = 'pms'
-       AND source_booking_id = $3
-     FOR UPDATE`,
-    [command.guestBookingId, command.propertyId, command.sourceBookingReference],
+  const transaction = await client.query<{ id: string }>(
+    "SELECT txid_current()::text id, pg_advisory_xact_lock(hashtextextended($1, 0))",
+    [`${command.propertyId}:${prefix}`],
   );
-  if ((booking.rowCount ?? 0) !== 1) {
-    throw new ExternalRevenueEvidenceScopeError("External booking scope is unavailable");
-  }
+  const roomTypes = [...new Set(lines.map(({ roomTypeId }) => roomTypeId))];
+  const booking = await client.query<{
+    roomCount: number;
+    roomTypeCount: number;
+    transactionId: string;
+  }>(
+    `SELECT room_count AS "roomCount", txid_current()::text AS "transactionId",
+       (SELECT count(*)::int FROM booking.nightly_revenue_room_scopes
+        WHERE property_id=$2::uuid AND room_type_id=ANY($4::uuid[])) AS "roomTypeCount"
+     FROM booking.guest_bookings WHERE id=$1::uuid AND property_id=$2::uuid
+       AND source_system='pms' AND source_booking_id=$3 FOR UPDATE`,
+    [command.guestBookingId, command.propertyId, command.sourceBookingReference, roomTypes],
+  );
+  const scope = booking.rows[0];
+  if (!scope) throw new ExternalRevenueEvidenceScopeError("External booking scope is unavailable");
+  if (scope.transactionId !== transaction.rows[0]?.id)
+    throw new Error("External evidence requires an open transaction");
+  if (
+    scope.roomTypeCount !== roomTypes.length ||
+    lines.some((line) => line.linePosition > scope.roomCount)
+  )
+    throw new ExternalRevenueEvidenceScopeError("External room scope is unavailable");
 
   const stored = await client.query<StoredLine>(
     `SELECT id::text AS id, guest_booking_id::text AS "guestBookingId",
-       source_kind AS "sourceKind", source_revision::int AS "sourceRevision",
-       command_key AS "commandKey"
-     FROM booking.nightly_revenue_evidence
-     WHERE property_id = $1::uuid AND command_key LIKE $2 || '%' ORDER BY command_key`,
+       source_kind AS "sourceKind", source_revision::int AS "sourceRevision", command_key AS "commandKey"
+     FROM booking.nightly_revenue_evidence WHERE property_id=$1::uuid
+       AND command_key LIKE $2 || '%' ORDER BY command_key`,
     [command.propertyId, prefix],
   );
   if (stored.rows.length > 0) {
     return replay(stored.rows, lines, command.sourceKind, command.guestBookingId);
   }
 
-  const revisionResult = await client.query<{ revision: number }>(
-    `SELECT COALESCE(MAX(source_revision), 0)::int + 1 AS revision
+  const revisionResult = await client.query<{ revision: string }>(
+    `SELECT (COALESCE(MAX(source_revision), 0) + 1)::text AS revision
      FROM booking.nightly_revenue_evidence WHERE guest_booking_id = $1::uuid`,
     [command.guestBookingId],
   );
-  const sourceRevision = revisionResult.rows[0]?.revision ?? 1;
-  if (sourceRevision > 2_147_483_647) throw new Error("External evidence revision is exhausted");
+  const sourceRevision = Number(revisionResult.rows[0]?.revision ?? 1);
 
   const inserted = await client.query<{ id: string }>(
     `INSERT INTO booking.nightly_revenue_evidence
-       (property_id, guest_booking_id, room_type_id, stay_date, recognized_on, currency,
-        gross_room_amount, occupied_room_nights, economic_event, lifecycle_state, source_kind,
-        evidence_quality, source_revision, line_position, corrects_evidence_id, command_key)
+       (property_id,guest_booking_id,room_type_id,stay_date,recognized_on,currency,gross_room_amount,
+        occupied_room_nights,economic_event,lifecycle_state,source_kind,evidence_quality,
+        source_revision,line_position,corrects_evidence_id,command_key)
      SELECT booking.property_id, booking.id, line."roomTypeId"::uuid, line."stayDate"::date,
-       line."recognizedOn"::date, booking.currency, line."grossRoomAmount"::numeric,
-       line."occupiedRoomNights", line."economicEvent", line."lifecycleState", $4,
-       line."evidenceQuality", $5, line."linePosition", line."correctsEvidenceId"::uuid,
-       line."commandKey"
+       line."recognizedOn"::date, booking.currency, line."grossRoomAmount"::numeric, line."occupiedRoomNights",
+       line."economicEvent", line."lifecycleState", $4, line."evidenceQuality", $5,
+       line."linePosition", line."correctsEvidenceId"::uuid, line."commandKey"
      FROM booking.guest_bookings booking
      CROSS JOIN jsonb_to_recordset($6::jsonb) AS line(
        "roomTypeId" text, "stayDate" text, "recognizedOn" text, "grossRoomAmount" text,
        "occupiedRoomNights" smallint, "economicEvent" text, "lifecycleState" text,
        "evidenceQuality" text, "linePosition" int, "correctsEvidenceId" text, "commandKey" text)
-     WHERE booking.id = $1::uuid AND booking.property_id = $2::uuid
-       AND booking.source_booking_id = $3
-     RETURNING id::text AS id`,
+     WHERE booking.id=$1::uuid AND booking.property_id=$2::uuid AND booking.source_booking_id=$3
+     RETURNING id::text id`,
     [
       command.guestBookingId,
       command.propertyId,
@@ -139,17 +135,17 @@ function replay(
   sourceKind: string,
   guestBookingId: string,
 ) {
-  const expected = new Map(lines.map((line) => [line.commandKey, line]));
-  const matches =
-    stored.length === lines.length &&
-    stored.every(
+  const expected = new Set(lines.map(({ commandKey }) => commandKey));
+  if (
+    stored.length !== lines.length ||
+    new Set(stored.map(({ sourceRevision }) => sourceRevision)).size !== 1 ||
+    stored.some(
       (row) =>
-        expected.has(row.commandKey) &&
-        row.guestBookingId === guestBookingId &&
-        row.sourceKind === sourceKind,
-    );
-  const revisions = new Set(stored.map(({ sourceRevision }) => sourceRevision));
-  if (!matches || revisions.size !== 1) {
+        !expected.has(row.commandKey) ||
+        row.guestBookingId !== guestBookingId ||
+        row.sourceKind !== sourceKind,
+    )
+  ) {
     throw new ExternalRevenueEvidenceConflictError("External evidence idempotency key conflicts");
   }
   return {
@@ -168,21 +164,17 @@ function normalizeLines(
   }
   const lines = command.lines.map((line) => {
     if (
-      (line.roomTypeId !== null && !UUID.test(line.roomTypeId)) ||
-      !DATE.test(line.stayDate) ||
-      !DATE.test(line.recognizedOn) ||
+      !UUID.test(line.roomTypeId) ||
       !Number.isInteger(line.linePosition) ||
       line.linePosition < 1 ||
       line.linePosition > 1000 ||
-      (line.correctsEvidenceId != null && !UUID.test(line.correctsEvidenceId))
+      (line.correctsEvidenceId != null && !UUID.test(line.correctsEvidenceId)) ||
+      ![-1, 0, 1].includes(line.occupiedRoomNights)
     ) {
       throw new Error("External evidence line is malformed");
     }
     const grossRoomAmount = normalizeMoney(line.grossRoomAmount);
-    if (
-      (line.evidenceQuality === "missing") !== (grossRoomAmount === null) ||
-      (line.evidenceQuality !== "missing" && line.roomTypeId === null)
-    ) {
+    if ((line.evidenceQuality === "missing") !== (grossRoomAmount === null)) {
       throw new Error("External evidence quality is malformed");
     }
     const normalized = {
@@ -202,7 +194,7 @@ function normalizeLines(
   if (new Set(lines.map(({ commandKey }) => commandKey)).size !== lines.length) {
     throw new Error("External evidence lines contain duplicates");
   }
-  return lines;
+  return lines.sort((left, right) => left.commandKey.localeCompare(right.commandKey));
 }
 
 function commandPrefix(command: AppendExternalRevenueEvidenceCommand): string {
@@ -215,7 +207,7 @@ function commandPrefix(command: AppendExternalRevenueEvidenceCommand): string {
   ) {
     throw new Error("External evidence command is malformed");
   }
-  return `external:${command.sourceKind}:${sha256(command.idempotencyKey)}:`;
+  return `external:${sha256(command.idempotencyKey)}:`;
 }
 
 function normalizeMoney(value: string | null): string | null {
@@ -232,6 +224,4 @@ function trimmed(value: string, max: number): boolean {
   return typeof value === "string" && value === value.trim() && !!value && value.length <= max;
 }
 
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
+const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");

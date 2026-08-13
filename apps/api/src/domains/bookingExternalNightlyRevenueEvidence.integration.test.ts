@@ -1,7 +1,6 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   ExternalRevenueEvidenceConflictError,
   ExternalRevenueEvidenceScopeError,
@@ -9,27 +8,24 @@ import {
   type AppendExternalRevenueEvidenceCommand,
   type ExternalRevenueEvidenceLine,
 } from "./bookingExternalNightlyRevenueEvidence.js";
+const DATABASE_URL = process.env["TEST_DATABASE_URL"];
+const PROPERTY = randomUUID(),
+  OTA_BOOKING = randomUUID(),
+  DIRECT_BOOKING = randomUUID(),
+  ROOM_TYPE = randomUUID();
+const OTHER_PROPERTY = randomUUID(),
+  OTHER_ROOM_TYPE = randomUUID();
+const OTA_REFERENCE = `external:${randomUUID()}`;
 
-const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
-const PROPERTY = "42000000-0000-4000-8000-000000000001";
-const OTA_BOOKING = "42000000-0000-4000-8000-000000000002";
-const MANUAL_BOOKING = "42000000-0000-4000-8000-000000000003";
-const ROOM_TYPE = "42000000-0000-4000-8000-000000000004";
-const migration = (name: string) =>
-  readFile(
-    join(import.meta.dirname, "../../../../packages/backend-migration/migrations", name),
-    "utf8",
-  );
-
-describe.skipIf(!TEST_DATABASE_URL)("external nightly revenue evidence (PostgreSQL)", () => {
-  const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
-  const roomNight = (
+describe.skipIf(!DATABASE_URL)("external nightly revenue evidence (PostgreSQL)", () => {
+  const client = new pg.Client({ connectionString: DATABASE_URL });
+  const line = (
     stayDate: string,
-    linePosition: number,
     grossRoomAmount: string | null,
     evidenceQuality: "exact" | "inferred" | "missing",
+    overrides: Partial<ExternalRevenueEvidenceLine> = {},
   ): ExternalRevenueEvidenceLine => ({
-    roomTypeId: evidenceQuality === "missing" ? null : ROOM_TYPE,
+    roomTypeId: ROOM_TYPE,
     stayDate,
     recognizedOn: stayDate,
     grossRoomAmount,
@@ -37,7 +33,8 @@ describe.skipIf(!TEST_DATABASE_URL)("external nightly revenue evidence (PostgreS
     economicEvent: "room_night",
     lifecycleState: "confirmed",
     evidenceQuality,
-    linePosition,
+    linePosition: 1,
+    ...overrides,
   });
   const command = (
     overrides: Partial<AppendExternalRevenueEvidenceCommand> = {},
@@ -45,114 +42,131 @@ describe.skipIf(!TEST_DATABASE_URL)("external nightly revenue evidence (PostgreS
     propertyId: PROPERTY,
     guestBookingId: OTA_BOOKING,
     sourceKind: "ota",
-    sourceBookingReference: "channex:booking-7",
-    idempotencyKey: "channex:booking-7:revision-1",
+    sourceBookingReference: OTA_REFERENCE,
+    idempotencyKey: "external-revision-1",
     lines: [
-      roomNight("2026-09-01", 1, "100", "exact"),
-      roomNight("2026-09-01", 2, "50", "inferred"),
-      roomNight("2026-09-02", 1, null, "missing"),
+      line("2026-09-01", "100", "exact"),
+      line("2026-09-01", "50", "inferred", { linePosition: 2 }),
+      line("2026-09-02", null, "missing"),
     ],
     ...overrides,
   });
-
+  const append = (overrides: Partial<AppendExternalRevenueEvidenceCommand> = {}, db = client) =>
+    appendExternalNightlyRevenueEvidence(db, command(overrides));
   beforeAll(async () => {
-    const database = new URL(TEST_DATABASE_URL!).pathname;
-    if (!/test/i.test(database)) throw new Error(`Refusing non-test database ${database}`);
+    if (!/test/i.test(new URL(DATABASE_URL!).pathname)) throw new Error("Refusing non-test DB");
     await client.connect();
-    const [schema, adjustments] = await Promise.all([
-      migration("0069_booking_nightly_revenue_evidence.sql"),
-      migration("0070_booking_nightly_revenue_adjustments.sql"),
-    ]);
-    await client.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto; DROP SCHEMA IF EXISTS booking CASCADE;
-      CREATE SCHEMA booking; CREATE TABLE booking.guest_bookings (
-        id uuid PRIMARY KEY, property_id uuid NOT NULL, currency char(3) NOT NULL,
-        source_system text NOT NULL, source_booking_id text,
-        UNIQUE (id, property_id), UNIQUE (source_system, source_booking_id));`);
-    await client.query(schema);
-    await client.query(adjustments);
     await client.query(
-      `INSERT INTO booking.guest_bookings VALUES
-       ($1, $3, 'EUR', 'pms', 'channex:booking-7'), ($2, $3, 'EUR', 'pms', 'manual:booking-8')`,
-      [OTA_BOOKING, MANUAL_BOOKING, PROPERTY],
+      "INSERT INTO hotel_catalog.properties (id,public_id,display_name) VALUES ($1,$1::uuid::text,'Revenue test'),($2,$2::uuid::text,'Other')",
+      [PROPERTY, OTHER_PROPERTY],
+    );
+    await client.query(
+      `INSERT INTO booking.guest_bookings
+       (id,property_id,public_reference,source_system,source_booking_id,lifecycle_status,payment_status,
+        check_in,check_out,room_count,currency,total_amount,balance_amount)
+       VALUES ($1,$3,$1::uuid::text,'pms',$4,'confirmed','unpaid','2026-09-01','2026-12-01',2,'EUR',0,0),
+         ($2,$3,$2::uuid::text,'booking',NULL,'confirmed','unpaid','2026-09-01','2026-12-01',1,'EUR',0,0)`,
+      [OTA_BOOKING, DIRECT_BOOKING, PROPERTY, OTA_REFERENCE],
+    );
+    const roomScopes = [PROPERTY, ROOM_TYPE, OTHER_PROPERTY, OTHER_ROOM_TYPE];
+    await client.query(
+      "INSERT INTO booking.nightly_revenue_room_scopes VALUES ($1,$2),($3,$4)",
+      roomScopes,
     );
   });
+  beforeEach(() => client.query("BEGIN"));
+  afterEach(() => client.query("ROLLBACK"));
   afterAll(async () => {
-    await client.query("DROP SCHEMA IF EXISTS booking CASCADE");
+    await client.query("SET session_replication_role=replica");
+    const properties = [[PROPERTY, OTHER_PROPERTY]];
+    await client.query(
+      `WITH evidence AS (DELETE FROM booking.nightly_revenue_evidence WHERE property_id=ANY($1::uuid[])),
+       rooms AS (DELETE FROM booking.nightly_revenue_room_scopes WHERE property_id=ANY($1::uuid[])),
+       bookings AS (DELETE FROM booking.guest_bookings WHERE property_id=ANY($1::uuid[]))
+       DELETE FROM hotel_catalog.properties WHERE id=ANY($1::uuid[])`,
+      properties,
+    );
+    await client.query("SET session_replication_role=origin");
     await client.end();
   });
 
-  it("appends explicit qualities and lifecycle evidence with scoped replay", async () => {
-    const first = await appendExternalNightlyRevenueEvidence(client, command());
-    expect(first).toMatchObject({ outcome: "appended", sourceRevision: 1 });
-    const [exact, ...rest] = command().lines;
-    const reordered = Object.assign(Object.fromEntries(Object.entries(exact!).reverse()), {
-      providerPayload: { secret: "not-booking-evidence" },
-    }) as unknown as ExternalRevenueEvidenceLine;
-    expect(
-      await appendExternalNightlyRevenueEvidence(client, command({ lines: [reordered, ...rest] })),
-    ).toMatchObject({
-      outcome: "replayed",
-      evidenceIds: first.evidenceIds,
-    });
-    await expect(
-      appendExternalNightlyRevenueEvidence(
-        client,
-        command({ lines: [roomNight("2026-09-01", 1, "101", "exact")] }),
-      ),
-    ).rejects.toBeInstanceOf(ExternalRevenueEvidenceConflictError);
-    await expect(
-      appendExternalNightlyRevenueEvidence(client, command({ sourceBookingReference: "wrong" })),
-    ).rejects.toBeInstanceOf(ExternalRevenueEvidenceScopeError);
+  it("preserves explicit quality, private scope, and strict replay", async () => {
+    const first = await append();
+    expect(await append()).toEqual({ ...first, outcome: "replayed" });
+    await expect(append({ sourceKind: "manual" })).rejects.toBeInstanceOf(
+      ExternalRevenueEvidenceConflictError,
+    );
+    for (const overrides of [
+      { propertyId: randomUUID() },
+      { sourceBookingReference: "wrong" },
+      { guestBookingId: DIRECT_BOOKING },
+      { lines: [line("2026-09-01", "1", "exact", { roomTypeId: OTHER_ROOM_TYPE })] },
+      { lines: [line("2026-09-01", "1", "exact", { linePosition: 3 })] },
+    ])
+      await expect(append(overrides)).rejects.toBeInstanceOf(ExternalRevenueEvidenceScopeError);
 
     const rows = await client.query(
-      `SELECT gross_room_amount::text AS amount, evidence_quality AS quality
-       FROM booking.nightly_revenue_evidence ORDER BY stay_date, line_position`,
+      `SELECT gross_room_amount::text amount,evidence_quality quality,to_jsonb(evidence) item
+       FROM booking.finance_nightly_revenue_evidence evidence
+       WHERE guest_booking_id=$1 ORDER BY stay_date,gross_room_amount DESC NULLS LAST`,
+      [OTA_BOOKING],
     );
-    expect(rows.rows).toEqual([
-      { amount: "100.0000", quality: "exact" },
-      { amount: "50.0000", quality: "inferred" },
-      { amount: null, quality: "missing" },
-    ]);
+    expect(rows.rows.map(({ amount, quality }) => `${amount}:${quality}`).join(",")).toBe(
+      "100.0000:exact,50.0000:inferred,null:missing",
+    );
+    expect(JSON.stringify(rows.rows)).not.toContain(OTA_REFERENCE);
   });
 
-  it("serializes a reused key across different bookings", async () => {
-    const peer = new pg.Client({ connectionString: TEST_DATABASE_URL });
-    await peer.connect();
-    const peerPid = (await peer.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!
-      .pid;
-    try {
-      await client.query("BEGIN");
-      await appendExternalNightlyRevenueEvidence(
-        client,
-        command({
-          idempotencyKey: "shared-key",
-          lines: [roomNight("2026-11-01", 1, "90", "exact")],
-        }),
-      );
-      await peer.query("BEGIN");
-      const conflict = appendExternalNightlyRevenueEvidence(
-        peer,
-        command({
-          guestBookingId: MANUAL_BOOKING,
-          sourceBookingReference: "manual:booking-8",
-          idempotencyKey: "shared-key",
-          lines: [roomNight("2026-11-01", 1, "91", "exact")],
-        }),
-      );
-      await expect
-        .poll(async () =>
-          Number(
-            (await client.query("SELECT cardinality(pg_blocking_pids($1)) AS count", [peerPid]))
-              .rows[0]?.count,
-          ),
+  it("serializes manual revisions and appends adjustment history", async () => {
+    const first = new pg.Client({ connectionString: DATABASE_URL });
+    const second = new pg.Client({ connectionString: DATABASE_URL });
+    await Promise.all([first.connect(), second.connect()]);
+    await Promise.all([first.query("BEGIN"), second.query("BEGIN")]);
+    const secondPid = (await second.query("SELECT pg_backend_pid() pid")).rows[0].pid;
+    const manual = (db: pg.Client, idempotencyKey: string, lines: ExternalRevenueEvidenceLine[]) =>
+      append({ sourceKind: "manual", idempotencyKey, lines }, db);
+    const event = (
+      amount: string,
+      economicEvent: ExternalRevenueEvidenceLine["economicEvent"],
+      lifecycleState: ExternalRevenueEvidenceLine["lifecycleState"],
+      correctsEvidenceId?: string,
+    ) =>
+      line("2026-10-01", amount, "exact", {
+        recognizedOn: "2026-10-06",
+        occupiedRoomNights: economicEvent === "occupancy_adjustment" ? -1 : 0,
+        economicEvent,
+        lifecycleState,
+        correctsEvidenceId,
+      });
+    const base = await manual(first, "manual-base", [line("2026-10-01", "80", "exact")]);
+    const pending = manual(second, "manual-cancel", [
+      event("-80", "occupancy_adjustment", "canceled", base.evidenceIds[0]),
+    ]);
+    const blocked = () =>
+      client
+        .query(
+          "SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND wait_event='transactionid'",
+          [secondPid],
         )
-        .toBeGreaterThan(0);
-      await client.query("COMMIT");
-      await expect(conflict).rejects.toBeInstanceOf(ExternalRevenueEvidenceConflictError);
-    } finally {
-      await client.query("ROLLBACK");
-      await peer.query("ROLLBACK");
-      await peer.end();
-    }
+        .then(({ rowCount }) => rowCount);
+    await expect.poll(blocked).toBe(1);
+    await first.query("COMMIT");
+    expect((await pending).sourceRevision).toBe(2);
+    await second.query("COMMIT");
+    const retainedId = (
+      await manual(client, "manual-retained", [event("20", "retained_charge", "canceled")])
+    ).evidenceIds[0]!;
+    await manual(client, "manual-adjust", [
+      event("-20", "refund", "refunded", retainedId),
+      event("5", "correction", "corrected", retainedId),
+    ]);
+    const events = await client.query<{ event: string }>(
+      "SELECT economic_event event FROM booking.nightly_revenue_evidence WHERE guest_booking_id=$1 ORDER BY source_revision,economic_event",
+      [OTA_BOOKING],
+    );
+    expect(events.rows.map(({ event }) => event).join(",")).toBe(
+      "room_night,occupancy_adjustment,retained_charge,correction,refund",
+    );
+    await Promise.all([first.end(), second.end()]);
   });
 });
