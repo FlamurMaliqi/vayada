@@ -57,6 +57,8 @@ export interface ApiError {
   message?: string;
   code?: string;
   category?: string;
+  field?: string;
+  stayPosition?: number;
 }
 
 export class ApiErrorResponse extends Error {
