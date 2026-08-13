@@ -1494,6 +1494,36 @@ describe("Booking Web public bootstrap parity", () => {
               ],
             };
           }
+          if (text.includes('AS "hostEmail"')) {
+            return {
+              rows: [
+                {
+                  propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+                  guestBookingId: "3c6a35e2-1436-455a-bf05-96d2f4559421",
+                  bookingReference: "B-OPTIONAL",
+                  guestEmail: "guest@example.com",
+                  guestName: "Guest Guest",
+                  hostEmail: "reservations@example.test",
+                  propertyName: "Hotel Alpenrose",
+                  checkIn: "2026-09-12",
+                  checkOut: "2026-09-15",
+                  totalAmount: "100.00",
+                  balanceAmount: "100.00",
+                  currency: "EUR",
+                  paymentMethod: "pay_at_property",
+                  bookingMetadata: {},
+                },
+              ],
+            };
+          }
+          if (text.includes("INSERT INTO platform.domain_events")) {
+            return { rows: [{ eventId: "4c6a35e2-1436-455a-bf05-96d2f4559421" }] };
+          }
+          if (text.includes('RETURNING id::text AS "jobId"')) {
+            return {
+              rows: [{ jobId: "5c6a35e2-1436-455a-bf05-96d2f4559421", replay: false }],
+            };
+          }
           return { rows: [] };
         },
         async end() {},
@@ -1593,6 +1623,9 @@ describe("Booking Web public bootstrap parity", () => {
       affiliatePlatformFeePercent: 7,
       financeConfigUpdatedAt: "2026-06-25T11:59:00.000Z",
     });
+    expect(
+      optionalPhone.calls.filter((text) => text.includes("INSERT INTO platform.domain_events")),
+    ).toHaveLength(2);
     const inventoryReservation = optionalPhone.calls.find((text) =>
       text.includes("UPDATE pms.inventory_days"),
     );
@@ -2134,6 +2167,28 @@ describe("Booking Web public bootstrap parity", () => {
             ],
           };
         }
+        if (text.includes('AS "hostEmail"')) {
+          return {
+            rows: [
+              {
+                propertyId,
+                guestBookingId,
+                bookingReference: "B-BANK951",
+                guestEmail: "guest@example.test",
+                guestName: "Ada Guest",
+                hostEmail: "reservations@example.test",
+                propertyName: "Hotel Alpenrose",
+                checkIn: "2026-09-12",
+                checkOut: "2026-09-15",
+                totalAmount: "600.00",
+                balanceAmount: "600.00",
+                currency: "EUR",
+                paymentMethod: "bank_transfer",
+                bookingMetadata: { paymentMethod: "bank_transfer" },
+              },
+            ],
+          };
+        }
         if (text.includes("INSERT INTO platform.domain_events")) {
           return { rows: [{ eventId: "d9fccec2-eb4c-4c35-bfd3-02a748c2e951" }] };
         }
@@ -2223,6 +2278,12 @@ describe("Booking Web public bootstrap parity", () => {
     expect(
       calls.some((call) => call.values?.includes("email.booking-reserved-pending-payment")),
     ).toBe(false);
+    expect(calls.some((call) => call.values?.includes("email.booking-request-received"))).toBe(
+      true,
+    );
+    expect(calls.some((call) => call.values?.includes("email.booking-host-review-required"))).toBe(
+      true,
+    );
   });
 
   it("creates and settles a target Stripe Connect card booking", async () => {
@@ -2379,6 +2440,31 @@ describe("Booking Web public bootstrap parity", () => {
           paymentStatus = "paid";
           balanceAmount = "0.00";
           return { rows: [{ guestBookingId }] };
+        }
+        if (text.includes('from_status AS "fromStatus"')) {
+          return { rows: [{ fromStatus: "draft", toStatus: "confirmed" }] };
+        }
+        if (text.includes('AS "hostEmail"')) {
+          return {
+            rows: [
+              {
+                propertyId,
+                guestBookingId,
+                bookingReference: "B-CARD952",
+                guestEmail: "guest@example.test",
+                guestName: "Guest Guest",
+                hostEmail: "reservations@example.test",
+                propertyName: "Hotel Alpenrose",
+                checkIn: "2026-09-12",
+                checkOut: "2026-09-15",
+                totalAmount: "600.00",
+                balanceAmount: balanceAmount,
+                currency: "EUR",
+                paymentMethod: "card",
+                bookingMetadata: booking().bookingMetadata,
+              },
+            ],
+          };
         }
         if (text.includes("FROM booking.guest_bookings booking")) return { rows: [booking()] };
         if (text.includes("INSERT INTO platform.domain_events")) {

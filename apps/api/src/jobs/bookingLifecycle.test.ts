@@ -298,6 +298,31 @@ function pgLifecycleFixture(
       };
     }
     if (sql.includes("WITH booking_scope AS")) return { rows: [] };
+    if (sql.includes('AS "hostEmail"')) {
+      return {
+        rows: [
+          {
+            propertyId,
+            guestBookingId,
+            bookingReference: "B-EXPIRING",
+            guestEmail: "guest@example.test",
+            guestName: "Ada Guest",
+            hostEmail: "reservations@example.test",
+            propertyName: "Hotel Alpenrose",
+            checkIn: "2026-09-12",
+            checkOut: "2026-09-15",
+            totalAmount: "600.00",
+            balanceAmount: "600.00",
+            currency: "EUR",
+            paymentMethod: status === "confirmed" ? "bank_transfer" : "card",
+            bookingMetadata,
+          },
+        ],
+      };
+    }
+    if (sql.includes('from_status AS "fromStatus"')) {
+      return { rows: [{ fromStatus: "draft", toStatus: "confirmed" }] };
+    }
     if (sql.includes("FOR UPDATE OF payment, booking")) {
       return {
         rows: [
@@ -330,7 +355,12 @@ function pgLifecycleFixture(
     }
     if (sql.includes("WITH deleted AS")) return { rows: [{ guestBookingId, fromStatus: "draft" }] };
     if (sql.includes("INSERT INTO platform.idempotency_keys")) return { rows: [{ id: "idem-1" }] };
-    if (sql.includes("INSERT INTO platform.domain_events")) return { rows: [{ id: "event-1" }] };
+    if (sql.includes("INSERT INTO platform.domain_events")) {
+      return { rows: [{ id: "event-1", eventId: "event-1" }] };
+    }
+    if (sql.includes('RETURNING id::text AS "jobId"')) {
+      return { rows: [{ jobId: "notification-job-1", replay: false }] };
+    }
     if (sql.includes("INSERT INTO platform.jobs")) return { rows: [{ id: "job-1" }] };
     return { rows: [] };
   });

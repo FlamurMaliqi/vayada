@@ -3,7 +3,7 @@ import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import {
   bankTransferDetailsFromPolicy,
-  enqueueBookingLifecycleEmailJob,
+  enqueueBookingTransitionNotifications,
 } from "../jobs/bookingEmails.js";
 import {
   recordBookingManualPaymentInClient,
@@ -133,9 +133,6 @@ type BookingPaymentLifecycleRow = QueryResultRow & {
   totalAmount: string;
   balanceAmount: string;
   currency: string;
-  guestEmail: string | null;
-  guestName: string | null;
-  propertyName: string;
   acceptedMethods: string[] | null;
   depositPolicy: unknown;
   paymentInstructions: unknown;
@@ -4124,8 +4121,9 @@ async function applyBookingAcceptanceCommandMutation(
     required: booking.sourceSystem === "booking",
   });
 
-  await enqueueBookingLifecycleEmailJob(client, {
-    kind: "reserved_pending_payment",
+  await enqueueBookingTransitionNotifications(client, {
+    propertyId: command.propertyId,
+    guestBookingId: command.guestBookingId,
     occurredAt: acceptedAt,
     correlationId: command.audit.correlationId ?? command.audit.requestId,
     causationId: command.commandId,
@@ -4136,7 +4134,11 @@ async function applyBookingAcceptanceCommandMutation(
     source: "apps/api-pms-booking-acceptance",
     paymentDeadlineAt,
     bankTransferDetails,
-    booking: bookingEmailSnapshot(booking),
+    transition: {
+      eventType: "guest_booking.accepted",
+      fromStatus: "pending_payment",
+      toStatus: "confirmed",
+    },
   });
   return { ok: true };
 }
@@ -4256,8 +4258,9 @@ async function applyBookingMarkPaidCommandMutation(
       required: booking.sourceSystem === "booking",
     });
 
-  await enqueueBookingLifecycleEmailJob(client, {
-    kind: "final_confirmation",
+  await enqueueBookingTransitionNotifications(client, {
+    propertyId: command.propertyId,
+    guestBookingId: command.guestBookingId,
     occurredAt: acceptedAt,
     correlationId: command.audit.correlationId ?? command.audit.requestId,
     causationId: command.commandId,
@@ -4266,7 +4269,11 @@ async function applyBookingMarkPaidCommandMutation(
         ? { type: "user", userId: command.audit.actor.userId }
         : { type: "system" },
     source: "apps/api-pms-booking-payment",
-    booking: bookingEmailSnapshot(booking),
+    transition: {
+      eventType: "guest_booking.payment_received",
+      fromStatus: booking.lifecycleStatus,
+      toStatus: "confirmed",
+    },
   });
   return { ok: true };
 }
@@ -4291,27 +4298,13 @@ async function loadBookingPaymentLifecycle(
        booking.currency,
        booking.source_system AS "sourceSystem",
        booking.booking_metadata AS "bookingMetadata",
-       guest.email AS "guestEmail",
-       NULLIF(trim(concat_ws(' ', guest.first_name, guest.last_name)), '') AS "guestName",
-       property.display_name AS "propertyName",
        payment.accepted_methods AS "acceptedMethods",
        payment.deposit_policy AS "depositPolicy",
        booking.booking_metadata -> 'paymentInstructions' AS "paymentInstructions",
        booking.booking_metadata ->> 'pendingExpiresAt' AS "pendingExpiresAt",
        booking.booking_metadata ->> 'acceptedPaymentDeadlineAt' AS "acceptedPaymentDeadlineAt"
      FROM booking.guest_bookings booking
-     JOIN hotel_catalog.properties property ON property.id = booking.property_id
      LEFT JOIN finance.payment_settings payment ON payment.property_id = booking.property_id
-     LEFT JOIN LATERAL (
-       SELECT booking_guest.first_name, booking_guest.last_name, booking_guest.email
-       FROM booking.booking_guests booking_guest
-       WHERE booking_guest.guest_booking_id = booking.id
-       ORDER BY
-         CASE booking_guest.guest_role WHEN 'booker' THEN 0 WHEN 'primary_guest' THEN 1 ELSE 2 END,
-         booking_guest.created_at,
-         booking_guest.id
-       LIMIT 1
-     ) guest ON TRUE
      WHERE booking.property_id = $1::uuid
        AND booking.id = $2::uuid
      FOR UPDATE OF booking`,
@@ -4333,23 +4326,6 @@ function jsonObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
-}
-
-function bookingEmailSnapshot(booking: BookingPaymentLifecycleRow) {
-  return {
-    propertyId: booking.propertyId,
-    guestBookingId: booking.guestBookingId,
-    bookingReference: booking.publicReference,
-    guestEmail: booking.guestEmail,
-    guestName: booking.guestName,
-    propertyName: booking.propertyName,
-    checkIn: booking.checkIn,
-    checkOut: booking.checkOut,
-    totalAmount: booking.totalAmount,
-    balanceAmount: booking.balanceAmount,
-    currency: booking.currency,
-    paymentMethod: booking.paymentMethod,
-  };
 }
 
 async function applyCheckInCommandMutation(
