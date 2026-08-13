@@ -81,6 +81,10 @@ import {
 import { registerMarketplaceAffiliateAdminRoutes } from "./routes/marketplaceAffiliateAdmin.js";
 import type { MarketplaceAffiliateAdminRepository } from "@vayada/domain-marketplace";
 import {
+  registerFinanceAffiliateCommissionRoutes,
+  type FinanceAffiliateCommissionRoutesOptions,
+} from "./routes/financeAffiliateCommissions.js";
+import {
   registerMarketplaceCreatorSelfServiceRoutes,
   type MarketplaceCreatorProfileMediaRepository,
   type MarketplaceCreatorSelfServiceRepository,
@@ -231,6 +235,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   marketplaceHotelProfileStatusRepository?: MarketplaceHotelProfileStatusRepository;
   marketplaceHotelSelfServiceRepository?: MarketplaceHotelSelfServiceRepository;
   marketplaceAffiliateAdminRepository?: MarketplaceAffiliateAdminRepository;
+  financeAffiliateCommissions?: FinanceAffiliateCommissionRoutesOptions;
   marketplaceCreatorSelfServiceRepository?: MarketplaceCreatorSelfServiceRepository;
   marketplaceCreatorPlatformConnections?: Omit<
     MarketplaceCreatorPlatformConnectionRoutesOptions,
@@ -412,6 +417,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerMarketplaceAffiliateAdminRoutes, {
       prefix: "/api/marketplace",
       repository: options.marketplaceAffiliateAdminRepository,
+    });
+  }
+  if (options.financeAffiliateCommissions) {
+    app.register(registerFinanceAffiliateCommissionRoutes, {
+      prefix: "/api/finance",
+      ...options.financeAffiliateCommissions,
     });
   }
   if (options.marketplaceCreatorSelfServiceRepository && options.identityLifecycleCommandBus) {
