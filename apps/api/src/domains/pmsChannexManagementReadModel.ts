@@ -21,7 +21,7 @@ type ConnectionRow = {
   metadata: Record<string, unknown>;
 };
 
-type OperationRow = {
+export type PmsChannexManagementJobRow = {
   operationId: string;
   propertyId: string;
   status: "pending" | "running" | "succeeded" | "failed" | "canceled" | "dead_lettered";
@@ -108,7 +108,7 @@ export function createPgPmsChannexManagementReadRepository(config: {
              WHERE sync.property_id = $1::uuid`,
             [propertyId],
           ),
-          pool.query<OperationRow>(
+          pool.query<PmsChannexManagementJobRow>(
             operationSelect("property_id = $1::uuid AND status IN ('pending', 'running')") +
               " LIMIT 1",
             [propertyId],
@@ -144,16 +144,18 @@ export function createPgPmsChannexManagementReadRepository(config: {
         ),
         sync,
         capabilityModes,
-        activeOperation: activeOperation.rows[0] ? toOperation(activeOperation.rows[0]) : null,
+        activeOperation: activeOperation.rows[0]
+          ? mapPmsChannexManagementOperation(activeOperation.rows[0])
+          : null,
       };
     },
 
     async getOperation(propertyId, operationId) {
-      const result = await pool.query<OperationRow>(
+      const result = await pool.query<PmsChannexManagementJobRow>(
         operationSelect("property_id = $1::uuid AND id = $2::uuid") + " LIMIT 1",
         [propertyId, operationId],
       );
-      return result.rows[0] ? toOperation(result.rows[0]) : null;
+      return result.rows[0] ? mapPmsChannexManagementOperation(result.rows[0]) : null;
     },
 
     async close() {
@@ -170,7 +172,9 @@ function operationSelect(where: string): string {
           ORDER BY created_at DESC`;
 }
 
-function toOperation(row: OperationRow): ChannexManagementOperation {
+export function mapPmsChannexManagementOperation(
+  row: PmsChannexManagementJobRow,
+): ChannexManagementOperation {
   const operationType = row.payload.operationType as ChannexManagementOperationType;
   const status = operationStatus(row);
   return {
@@ -195,7 +199,7 @@ function toOperation(row: OperationRow): ChannexManagementOperation {
   };
 }
 
-function operationStatus(row: OperationRow): ChannexManagementOperationStatus {
+function operationStatus(row: PmsChannexManagementJobRow): ChannexManagementOperationStatus {
   if (row.status === "pending") return row.attemptsMade > 0 ? "retry_scheduled" : "queued";
   if (row.status === "canceled") return "failed";
   return row.status;
