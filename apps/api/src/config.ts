@@ -63,6 +63,22 @@ export type ProviderWebhookConfig = {
   channexMode: ProviderWebhookIntakeMode;
 };
 
+export type ChannexManagementMode = "observe_only" | "mutating";
+export type ChannexManagementConfig = {
+  apiBaseUrl?: string;
+  apiKey?: string;
+  workerEnabled: boolean;
+  capabilityModes: {
+    connection: ChannexManagementMode;
+    provisioning: ChannexManagementMode;
+    ariSync: ChannexManagementMode;
+    bookingSync: ChannexManagementMode;
+    markups: ChannexManagementMode;
+    messaging: ChannexManagementMode;
+    iframe: ChannexManagementMode;
+  };
+};
+
 export type StripeSubscriptionConfig = {
   secretKey?: string;
   fixedPlanPriceId?: string;
@@ -150,6 +166,7 @@ export type ApiConfig = {
   pmsInventoryPublicOfferRetryIntervalMs: number;
   creatorPlatformConnections?: CreatorPlatformConnectionsConfig;
   providerWebhooks: ProviderWebhookConfig;
+  channexManagement: ChannexManagementConfig;
   stripeSubscriptions: StripeSubscriptionConfig;
   bookingEmailDelivery?: BookingEmailDeliveryConfig;
   xenditSecretKey?: string;
@@ -448,6 +465,34 @@ function loadProviderWebhookConfig(env: NodeJS.ProcessEnv): ProviderWebhookConfi
   };
 }
 
+function loadChannexManagementConfig(env: NodeJS.ProcessEnv): ChannexManagementConfig {
+  const mode = (key: string) =>
+    readSourceEnv(env, key, ["observe_only", "mutating"] as const, "observe_only");
+  const capabilityModes = {
+    connection: mode("PMS_CHANNEX_CONNECTION_MODE"),
+    provisioning: mode("PMS_CHANNEX_PROVISIONING_MODE"),
+    ariSync: mode("PMS_CHANNEX_ARI_SYNC_MODE"),
+    bookingSync: mode("PMS_CHANNEX_BOOKING_SYNC_MODE"),
+    markups: mode("PMS_CHANNEX_MARKUPS_MODE"),
+    messaging: mode("PMS_CHANNEX_MESSAGING_MODE"),
+    iframe: mode("PMS_CHANNEX_IFRAME_MODE"),
+  };
+  const apiBaseUrl = readOptionalEnv(env, "CHANNEX_API_BASE_URL");
+  const apiKey = readOptionalEnv(env, "CHANNEX_API_KEY");
+  const mutating = Object.values(capabilityModes).includes("mutating");
+  if (mutating && (!apiBaseUrl || !apiKey)) {
+    throw new Error(
+      "Mutating PMS Channex capabilities require CHANNEX_API_BASE_URL and CHANNEX_API_KEY",
+    );
+  }
+  return {
+    apiBaseUrl,
+    apiKey,
+    workerEnabled: readBooleanEnv(env, "PMS_CHANNEX_WORKER_ENABLED", mutating),
+    capabilityModes,
+  };
+}
+
 function loadStripeSubscriptionConfig(env: NodeJS.ProcessEnv): StripeSubscriptionConfig {
   const bookingAdminBaseUrl =
     readOptionalEnv(env, "BOOKING_ADMIN_BASE_URL") ??
@@ -733,6 +778,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     stripeSubscriptions: loadStripeSubscriptionConfig(env),
     providerWebhooks: loadProviderWebhookConfig(env),
   };
+  const channexManagement = loadChannexManagementConfig(env);
+  if (
+    Object.values(channexManagement.capabilityModes).includes("mutating") &&
+    pmsOperationsSource !== "target"
+  ) {
+    throw new Error("Mutating PMS Channex capabilities require PMS_OPERATIONS_SOURCE=target");
+  }
   if (
     env.NODE_ENV === "production" &&
     bookingCheckoutCommandSource === "target" &&
@@ -810,6 +862,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     ),
     creatorPlatformConnections,
     providerWebhooks: prospectiveConfig.providerWebhooks,
+    channexManagement,
     stripeSubscriptions: prospectiveConfig.stripeSubscriptions,
     bookingEmailDelivery,
     xenditSecretKey: readOptionalEnv(env, "XENDIT_SECRET_KEY"),

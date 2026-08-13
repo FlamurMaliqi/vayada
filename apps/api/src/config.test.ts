@@ -34,6 +34,50 @@ const completeAuthSessionEnv = {
 };
 
 describe("api config", () => {
+  it("keeps Channex management fail-closed until each capability is cut over", () => {
+    expect(loadConfig({}).channexManagement).toMatchObject({
+      workerEnabled: false,
+      capabilityModes: {
+        connection: "observe_only",
+        provisioning: "observe_only",
+        ariSync: "observe_only",
+        bookingSync: "observe_only",
+        markups: "observe_only",
+        messaging: "observe_only",
+        iframe: "observe_only",
+      },
+    });
+  });
+
+  it("loads explicitly cut-over Channex capabilities only with target provider config", () => {
+    const config = loadConfig({
+      TARGET_DATABASE_URL: "postgresql://target-db",
+      PMS_OPERATIONS_SOURCE: "target",
+      CHANNEX_API_BASE_URL: "https://staging.channex.io",
+      CHANNEX_API_KEY: "secret",
+      PMS_CHANNEX_CONNECTION_MODE: "mutating",
+      PMS_CHANNEX_WORKER_ENABLED: "true",
+    });
+    expect(config.channexManagement).toMatchObject({
+      apiBaseUrl: "https://staging.channex.io",
+      workerEnabled: true,
+      capabilityModes: { connection: "mutating", provisioning: "observe_only" },
+    });
+  });
+
+  it("rejects Channex mutation without provider config or target ownership", () => {
+    expect(() => loadConfig({ PMS_CHANNEX_ARI_SYNC_MODE: "mutating" })).toThrow(
+      "Mutating PMS Channex capabilities require CHANNEX_API_BASE_URL and CHANNEX_API_KEY",
+    );
+    expect(() =>
+      loadConfig({
+        PMS_CHANNEX_ARI_SYNC_MODE: "mutating",
+        CHANNEX_API_BASE_URL: "https://staging.channex.io",
+        CHANNEX_API_KEY: "secret",
+      }),
+    ).toThrow("Mutating PMS Channex capabilities require PMS_OPERATIONS_SOURCE=target");
+  });
+
   it("keeps auth disabled when auth env values are absent", () => {
     expect(loadConfig({}).auth).toBeUndefined();
   });
