@@ -142,14 +142,6 @@ export const bookingSettingsService = {
       `Booking commission history target route is not available for ${hotelId}.`,
     ),
 
-  createHotelForUser: (userId: string, name: string) =>
-    unavailableTargetRoute<{ id: string; name: string; slug: string }>(
-      `Booking hotel provisioning target route is not available for ${name || userId}.`,
-    ),
-
-  deleteHotel: (hotelId: string) =>
-    unavailableTargetRoute(`Booking hotel delete target route is not available for ${hotelId}.`),
-
   getPropertySettings: (hotelId: string) =>
     platformBookingUnavailable<PropertySettings>(hotelId, "property settings"),
 
