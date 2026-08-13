@@ -248,6 +248,8 @@ export type PmsPrivateNoteDeleteRequest = {
   idempotencyKey: string;
 };
 
+export type PmsPrivateNoteUpdateRequest = PmsPrivateNoteCreateRequest;
+
 export type PmsAssignmentCommand = PmsAssignmentCommandRequest & {
   propertyId: string;
   guestBookingId: string;
@@ -473,6 +475,14 @@ export type PmsPrivateNoteDeleteCommand = PmsPrivateNoteDeleteRequest & {
   guestBookingId: string;
   noteId: string;
   actorUserId: string;
+};
+
+export type PmsPrivateNoteUpdateCommand = PmsPrivateNoteUpdateRequest & {
+  propertyId: string;
+  guestBookingId: string;
+  noteId: string;
+  actorUserId: string;
+  editorDisplayName: string;
 };
 
 export type PmsOperationalTemplateUpdateCommand = {
@@ -831,6 +841,7 @@ export type PmsOperationsCommandRepository = {
   markBookingPaid(command: PmsBookingLifecycleCommand): Promise<PmsOperationalCommandResult>;
   listPrivateNotes(propertyId: string, guestBookingId: string): Promise<PmsPrivateNote[] | null>;
   createPrivateNote(command: PmsPrivateNoteCreateCommand): Promise<PmsPrivateNoteCommandResult>;
+  updatePrivateNote(command: PmsPrivateNoteUpdateCommand): Promise<PmsPrivateNoteCommandResult>;
   deletePrivateNote(command: PmsPrivateNoteDeleteCommand): Promise<PmsPrivateNoteDeleteResult>;
   getOperationalTemplate(
     propertyId: string,
@@ -2332,6 +2343,43 @@ export async function registerPmsOperationsRoutes(
       },
     );
 
+    app.patch<{ Params: PmsPrivateNoteParams; Body: unknown }>(
+      "/properties/:propertyId/reservations/:guestBookingId/notes/:noteId",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, {
+            statusCode: 403,
+            code: "missing_permission",
+            category: "authorization",
+            message: "PMS operations origin is not allowed.",
+          });
+        }
+        const { propertyId, guestBookingId, noteId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+
+        const command = toPrivateNoteUpdateCommand(propertyId, guestBookingId, noteId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+
+        const result = await commandRepository.updatePrivateNote(command.value);
+        if (!result.ok) {
+          return sendPmsOperationsError(reply, {
+            statusCode: result.statusCode,
+            code: result.code,
+            category: result.statusCode === 404 ? "not_found" : "conflict",
+            message: result.message,
+          });
+        }
+
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          guestBookingId,
+          note: result.note,
+          commandMeta: result.commandMeta,
+        } satisfies PmsPrivateNoteCommandResponse;
+      },
+    );
+
     app.patch<{ Params: PmsReservationParams; Body: unknown }>(
       "/properties/:propertyId/reservations/:guestBookingId/assignments",
       async (request, reply) => {
@@ -3637,6 +3685,40 @@ function toPrivateNoteDeleteCommand(
       commandId,
       idempotencyKey,
       actorUserId: request.authContext!.actor.internalUserId,
+    },
+  };
+}
+
+function toPrivateNoteUpdateCommand(
+  propertyId: string,
+  guestBookingId: string,
+  noteId: string,
+  request: FastifyRequest<{ Body: unknown }>,
+): { value: PmsPrivateNoteUpdateCommand } | { error: PmsOperationsError } {
+  if (!isUuid(noteId)) return { error: invalidBody("noteId must be a UUID.") };
+  const body = objectBody(request.body);
+  const commandId = body && stringField(body.commandId);
+  const idempotencyKey = body && stringField(body.idempotencyKey);
+  const noteBody = body && stringField(body.body);
+  if (!commandId || !idempotencyKey || !noteBody) {
+    return {
+      error: invalidBody("Private note update requires commandId, idempotencyKey, and body."),
+    };
+  }
+  if (noteBody.length > 5000) {
+    return { error: invalidBody("Private note body cannot exceed 5000 characters.") };
+  }
+  const context = request.authContext!;
+  return {
+    value: {
+      propertyId,
+      guestBookingId,
+      noteId,
+      commandId,
+      idempotencyKey,
+      body: noteBody,
+      actorUserId: context.actor.internalUserId,
+      editorDisplayName: context.actor.email,
     },
   };
 }
