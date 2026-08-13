@@ -70,6 +70,13 @@ test.describe("pms-web smoke", () => {
     await expect(page.getByLabel("Timezone")).toHaveValue("Europe/Berlin");
     await expect(page.getByLabel("Country (ISO code)")).toHaveValue("DE");
     await expect(page.getByText("Editing not available yet")).toBeVisible();
+    const instantAcceptance = page.getByRole("switch", {
+      name: "Accept bookings instantly",
+    });
+    await expect(instantAcceptance).toBeChecked();
+    await instantAcceptance.click();
+    await expect(instantAcceptance).not.toBeChecked();
+    await expect(page.getByText("Booking acceptance settings saved")).toBeVisible();
 
     await page.goto("/settings/feature-hub");
     await expect(page.getByText("Inbox", { exact: true })).toHaveCount(0);

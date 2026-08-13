@@ -20,6 +20,8 @@ import {
 } from "@/components/settings/layout";
 import { PropertySection } from "@/components/settings/PropertySection";
 import { LocalizationSection } from "@/components/settings/LocalizationSection";
+import { BookingEngineSection } from "@/components/settings/BookingEngineSection";
+import { settingsService, type BookingAcceptanceMode } from "@/services/settings";
 import { humanizeApiError } from "@/components/settings/constants";
 import {
   pmsPropertyDetailsSaveError,
@@ -57,6 +59,10 @@ export default function SettingsPage() {
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
   const [activeId, setActiveId] = useState<SectionId>("property-details");
+  const [acceptanceMode, setAcceptanceMode] = useState<BookingAcceptanceMode>("instant");
+  const [acceptanceLoadError, setAcceptanceLoadError] = useState("");
+  const [loadingAcceptance, setLoadingAcceptance] = useState(true);
+  const [savingAcceptance, setSavingAcceptance] = useState(false);
 
   // Currency
   const [currency, setCurrency] = useState("");
@@ -94,6 +100,21 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const loadAcceptanceMode = useCallback(async () => {
+    setLoadingAcceptance(true);
+    setAcceptanceLoadError("");
+    try {
+      const settings = await settingsService.getBookingAcceptance();
+      setAcceptanceMode(settings.acceptanceMode);
+    } catch (loadError) {
+      setAcceptanceLoadError(
+        humanizeApiError(loadError, "We couldn’t load booking acceptance settings."),
+      );
+    } finally {
+      setLoadingAcceptance(false);
+    }
+  }, []);
+
   useEffect(() => {
     bookingsService
       .getPaymentSettings()
@@ -110,7 +131,25 @@ export default function SettingsPage() {
       .finally(() => setLoading(false));
 
     void loadPropertyProfile();
-  }, [loadPropertyProfile]);
+    void loadAcceptanceMode();
+  }, [loadAcceptanceMode, loadPropertyProfile]);
+
+  const saveAcceptanceMode = async (instantBook: boolean) => {
+    setSavingAcceptance(true);
+    setError("");
+    setSuccess("");
+    try {
+      const saved = await settingsService.updateBookingAcceptance(
+        instantBook ? "instant" : "request",
+      );
+      setAcceptanceMode(saved.acceptanceMode);
+      setSuccess("Booking acceptance settings saved");
+    } catch (saveError) {
+      setError(humanizeApiError(saveError, "Couldn’t save booking acceptance settings."));
+    } finally {
+      setSavingAcceptance(false);
+    }
+  };
 
   // Hash → active rail item + scrollIntoView. Re-runs on hashchange so the
   // global SearchModal navigation (VAY-367) lands on the right section even
@@ -247,10 +286,12 @@ export default function SettingsPage() {
         onSave={savePropertyDetails}
       />
 
-      <UnavailableSettingsSection
-        id="booking-engine"
-        title="Booking Engine"
-        description="Booking acceptance and same-day cutoff controls are not available in PMS yet."
+      <BookingEngineSection
+        instantBook={acceptanceMode === "instant"}
+        saving={savingAcceptance || loadingAcceptance}
+        loadError={acceptanceLoadError}
+        onToggle={(next) => void saveAcceptanceMode(next)}
+        onRetry={() => void loadAcceptanceMode()}
       />
 
       <UnavailableSettingsSection
