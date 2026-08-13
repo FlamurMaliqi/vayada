@@ -60,10 +60,10 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking Web affiliate admin projection", ()
     });
   });
 
-  it("updates profile fields without resetting an administered lifecycle", async () => {
+  it("does not let repeated public registration rewrite an administered profile", async () => {
     const registration = await repository.register(slug, {
-      fullName: "Ada Affiliate",
-      email: "ada@example.test",
+      fullName: "Secure Affiliate",
+      email: "security@example.test",
       userType: "creator",
     });
     await pool.query(
@@ -73,7 +73,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking Web affiliate admin projection", ()
     );
     await repository.register(slug, {
       fullName: "Ada Updated",
-      email: "ada@example.test",
+      email: "security@example.test",
       userType: "creator",
     });
     const result = await pool.query(
@@ -82,6 +82,15 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking Web affiliate admin projection", ()
        WHERE property_id = $1::uuid AND affiliate_id = $2`,
       [propertyId, registration.id],
     );
-    expect(result.rows[0]).toEqual({ displayName: "Ada Updated", lifecycleStatus: "approved" });
+    const eventCount = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM platform.domain_events
+       WHERE resource_id = $1 AND event_type = 'marketplace.affiliate.public_registered'`,
+      [registration.id],
+    );
+    expect(result.rows[0]).toEqual({
+      displayName: "Secure Affiliate",
+      lifecycleStatus: "approved",
+    });
+    expect(eventCount.rows[0]?.count).toBe("1");
   });
 });
