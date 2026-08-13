@@ -80,6 +80,7 @@ export type PmsRoomBlockStatus = "active" | "released" | "expired";
 
 export type PmsRoomBlockSummary = {
   blockId: string;
+  version: string;
   roomTypeId: string;
   roomId: string | null;
   startsOn: PmsDate;
@@ -351,6 +352,7 @@ export function createTargetPmsOperationsReadRepository(config: {
            SELECT jsonb_agg(
                     jsonb_build_object(
                       'blockId', block.id::text,
+                      'version', concat('room-block-v', block.revision),
                       'roomTypeId', block.room_type_id::text,
                       'roomId', block.room_id::text,
                       'startsOn', block.starts_on::text,
@@ -398,6 +400,7 @@ export function createTargetPmsOperationsReadRepository(config: {
       const result = await pool.query<TargetPmsRoomBlockRow>(
         `SELECT
            block.id::text AS "blockId",
+           block.revision,
            block.room_type_id::text AS "roomTypeId",
            block.room_id::text AS "roomId",
            block.starts_on AS "startsOn",
@@ -546,6 +549,7 @@ type TargetPmsRoomTypeRow = {
 
 type TargetPmsRoomBlockRow = {
   blockId: string;
+  revision: number;
   roomTypeId: string;
   roomId: string | null;
   startsOn: Date | string;
@@ -918,6 +922,7 @@ function toPmsRoomType(row: TargetPmsRoomTypeRow): PmsRoomType {
 function toPmsRoomBlockSummary(row: TargetPmsRoomBlockRow): PmsRoomBlockSummary {
   return {
     blockId: row.blockId,
+    version: `room-block-v${row.revision}`,
     roomTypeId: row.roomTypeId,
     roomId: row.roomId,
     startsOn: toDateOnly(row.startsOn),
@@ -1005,6 +1010,7 @@ function toRoomBlockSummaries(value: unknown): PmsRoomBlockSummary[] {
   return toRecordArray(value)
     .map((item) => ({
       blockId: String(item.blockId ?? ""),
+      version: String(item.version ?? ""),
       roomTypeId: String(item.roomTypeId ?? ""),
       roomId: typeof item.roomId === "string" ? item.roomId : null,
       startsOn: toDateOnly(String(item.startsOn ?? "")),
@@ -1013,7 +1019,9 @@ function toRoomBlockSummaries(value: unknown): PmsRoomBlockSummary[] {
       reason: String(item.reason ?? ""),
       status: toRoomBlockStatus(item.status),
     }))
-    .filter((item) => item.blockId.length > 0 && item.roomTypeId.length > 0);
+    .filter(
+      (item) => item.blockId.length > 0 && item.version.length > 0 && item.roomTypeId.length > 0,
+    );
 }
 
 function toOperationalAssignments(value: unknown): PmsOperationalAssignment[] {
@@ -1244,7 +1252,11 @@ function toInteger(value: string | number): number {
 
 function toDateOnly(value: Date | string): string {
   if (value instanceof Date) {
-    return Number.isFinite(value.getTime()) ? value.toISOString().slice(0, 10) : "";
+    if (!Number.isFinite(value.getTime())) return "";
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, "0");
+    const day = String(value.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
   }
 
   return value.slice(0, 10);
