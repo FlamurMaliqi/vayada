@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { CalendarBooking, CalendarRoom, CalendarRoomType } from "@/services/calendar";
 import Modal from "@/components/Modal";
 
@@ -64,7 +64,6 @@ export default function BlockModal({
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [confirmOverlap, setConfirmOverlap] = useState(false);
 
   const roomsForType = useMemo(
     () => rooms.filter((r) => r.roomTypeId === roomTypeId),
@@ -85,16 +84,9 @@ export default function BlockModal({
     );
   }, [bookings, startDate, endDate, selectedRoomIds]);
 
-  // Re-arm the warning whenever the range or room selection changes, so a user
-  // who edits the dates after seeing it can't skip a fresh overlap.
-  useEffect(() => {
-    setConfirmOverlap(false);
-  }, [startDate, endDate, selectedRoomIds]);
-
   const allSelected = roomsForType.length > 0 && selectedRoomIds.length === roomsForType.length;
   const nights = nightsBetween(startDate, endDate);
   const roomNights = nights * selectedRoomIds.length;
-  const overrideMode = confirmOverlap && overlappingBookings.length > 0;
 
   const toggleRoom = (id: string) => {
     setSelectedRoomIds((prev) =>
@@ -134,9 +126,8 @@ export default function BlockModal({
       setError("Please select at least one room to block");
       return;
     }
-    // Don't silently block over a booking — make the user confirm once.
-    if (overlappingBookings.length > 0 && !confirmOverlap) {
-      setConfirmOverlap(true);
+    if (overlappingBookings.length > 0) {
+      setError("A selected room already has a booking in this date range.");
       return;
     }
 
@@ -152,8 +143,7 @@ export default function BlockModal({
 
   const inputCls =
     "w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent";
-  const sectionLabelCls =
-    "block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2";
+  const sectionLabelCls = "block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2";
 
   return (
     <Modal
@@ -185,20 +175,16 @@ export default function BlockModal({
             <button
               type="submit"
               form="block-rooms-form"
-              disabled={submitting || selectedRoomIds.length === 0}
-              className={`px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                overrideMode
-                  ? "bg-amber-600 hover:bg-amber-700"
-                  : "bg-primary-600 hover:bg-primary-700"
-              }`}
+              disabled={
+                submitting || selectedRoomIds.length === 0 || overlappingBookings.length > 0
+              }
+              className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-primary-600 hover:bg-primary-700"
             >
               {submitting
                 ? "Blocking…"
-                : overrideMode
-                  ? "Block anyway"
-                  : selectedRoomIds.length > 1
-                    ? `Block ${selectedRoomIds.length} rooms`
-                    : "Block room"}
+                : selectedRoomIds.length > 1
+                  ? `Block ${selectedRoomIds.length} rooms`
+                  : "Block room"}
             </button>
           </div>
         </div>
@@ -208,9 +194,7 @@ export default function BlockModal({
       <div className="flex items-start justify-between gap-4 mb-5">
         <div className="min-w-0">
           <h2 className="text-lg font-bold text-gray-900">Block Rooms</h2>
-          <p className="text-sm text-gray-500 mt-0.5">
-            Make rooms unavailable for new bookings.
-          </p>
+          <p className="text-sm text-gray-500 mt-0.5">Make rooms unavailable for new bookings.</p>
         </div>
         <button
           type="button"
@@ -377,7 +361,7 @@ export default function BlockModal({
           </div>
         )}
 
-        {overrideMode && (
+        {overlappingBookings.length > 0 && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 overflow-hidden">
             <div className="flex items-center gap-2 px-3 py-2 border-b border-amber-200">
               <svg
@@ -418,7 +402,7 @@ export default function BlockModal({
               )}
             </ul>
             <p className="px-3 py-2 text-xs text-amber-800 border-t border-amber-200">
-              Press <span className="font-semibold">Block anyway</span> to override.
+              Choose different rooms or dates before creating this block.
             </p>
           </div>
         )}

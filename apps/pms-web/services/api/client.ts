@@ -47,13 +47,16 @@ export const omitHotelContext: RequestInit = {
 };
 
 export interface ApiError {
-  detail:
+  detail?:
     | string
     | Array<{
         loc: (string | number)[];
         msg: string;
         type: string;
       }>;
+  message?: string;
+  code?: string;
+  category?: string;
 }
 
 export class ApiErrorResponse extends Error {
@@ -72,6 +75,8 @@ export class ApiErrorResponse extends Error {
       typeof (data.detail as { message?: unknown }).message === "string"
     ) {
       message = (data.detail as { message: string }).message;
+    } else if (typeof data.message === "string") {
+      message = data.message;
     } else {
       message = `API Error: ${status}`;
     }

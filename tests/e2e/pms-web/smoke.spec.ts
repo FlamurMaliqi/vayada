@@ -49,8 +49,8 @@ test.describe("pms-web smoke", () => {
     await page.goto("/calendar");
     await expect(page.getByRole("heading", { name: /calendar/i })).toBeVisible();
     await expect(page.getByText("Alpine Suite").first()).toBeVisible();
-    await expect(page.getByText(/calendar viewing is active/i)).toBeVisible();
-    await expect(page.getByRole("button", { name: /block room/i }).first()).toBeDisabled();
+    await expect(page.getByText(/room blocks are available/i)).toBeVisible();
+    await expect(page.getByRole("button", { name: /block room/i }).first()).toBeEnabled();
     await expect(page.getByRole("button", { name: /new booking/i }).first()).toBeDisabled();
 
     await page.goto("/channel-manager");
