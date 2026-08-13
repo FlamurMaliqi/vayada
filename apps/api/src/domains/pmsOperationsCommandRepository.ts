@@ -37,6 +37,11 @@ import {
   ManualStayCorrectionEvidenceError,
   ManualStayCorrectionStateError,
 } from "./bookingPmsManualStayCorrection.js";
+import {
+  correctBookingPmsManualPrices,
+  ManualPriceCorrectionEvidenceError,
+  ManualPriceCorrectionStateError,
+} from "./bookingPmsManualPriceCorrection.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import {
@@ -64,6 +69,7 @@ import {
   type PmsNoShowCommand,
   type PmsManualCancellationCommand,
   type PmsManualRefundCommand,
+  type PmsManualPriceCorrectionCommand,
   type PmsManualStayCorrectionCommand,
   type PmsOperationalCommandResult,
   type PmsOperationalStatus,
@@ -124,6 +130,8 @@ type PmsAssignmentRow = {
   updatedAt: Date | string;
   checkIn: string;
   checkOut: string;
+  source: string;
+  stayEvidenceKind: string;
 };
 
 type PmsRoomAvailabilityRow = {
@@ -144,6 +152,7 @@ type PmsOperationalCommand =
   | PmsNoShowCommand
   | PmsManualCancellationCommand
   | PmsManualRefundCommand
+  | PmsManualPriceCorrectionCommand
   | PmsManualStayCorrectionCommand
   | PmsBookingLifecycleCommand;
 
@@ -153,6 +162,7 @@ type PmsOperationalCommandOperation =
   | "no_show_command"
   | "manual_cancellation_command"
   | "manual_refund_command"
+  | "manual_price_correction_command"
   | "manual_stay_correction_command"
   | "booking_acceptance_command"
   | "booking_mark_paid_command"
@@ -1155,6 +1165,14 @@ export function createTargetPmsOperationsCommandRepository(
         operation: "manual_stay_correction_command",
         sideEffects: ["calendar_refresh", "ari_changed", "audit_event"],
         mutate: applyManualStayCorrectionCommandMutation,
+      });
+    },
+    async correctManualBookingPrices(command) {
+      return executeOperationalCommand(config, pool, now, {
+        command,
+        operation: "manual_price_correction_command",
+        sideEffects: ["audit_event"],
+        mutate: applyManualPriceCorrectionCommandMutation,
       });
     },
     async acceptBooking(command) {
@@ -5502,6 +5520,39 @@ async function applyManualStayCorrectionCommandMutation(
   return { ok: true };
 }
 
+async function applyManualPriceCorrectionCommandMutation(
+  client: PmsOperationsCommandClient,
+  command: PmsManualPriceCorrectionCommand,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+  const sources = await findAssignmentsForOperationalCommand(client, command);
+  if (sources.length === 0) return reservationNotFound(command.guestBookingId);
+  if (
+    command.expectedVersion &&
+    sources.some((source) => !assignmentVersionMatches(source, command.expectedVersion!))
+  )
+    return operationalConflict(
+      "version_conflict",
+      "Reservation price-correction version is stale.",
+    );
+  if (
+    sources.some(
+      ({ source, stayEvidenceKind }) => source !== "manual" || stayEvidenceKind !== "exact",
+    )
+  )
+    return operationalInvalidBody("Manual price correction assignment scope is unavailable");
+  try {
+    await correctBookingPmsManualPrices(client, command, acceptedAt);
+  } catch (error) {
+    if (error instanceof ManualPriceCorrectionEvidenceError)
+      return operationalInvalidBody(error.message);
+    if (error instanceof ManualPriceCorrectionStateError)
+      return invalidStatusTransition(error.currentStatus, "corrected");
+    throw error;
+  }
+  return { ok: true };
+}
+
 async function applyAssignmentCommandMutation(
   client: PmsOperationsCommandClient,
   command: PmsAssignmentCommand,
@@ -5660,6 +5711,8 @@ async function findAssignmentForCommand(
        assignment.assignment_status AS "assignmentStatus",
        assignment.assignment_payload ->> 'version' AS version,
        assignment.updated_at AS "updatedAt",
+       assignment.source,
+       assignment.stay_evidence_kind AS "stayEvidenceKind",
        booking.check_in::text AS "checkIn",
        booking.check_out::text AS "checkOut"
      FROM pms.operational_booking_assignments assignment
@@ -5700,6 +5753,8 @@ async function findAssignmentsForOperationalCommand(
        assignment.assignment_status AS "assignmentStatus",
        assignment.assignment_payload ->> 'version' AS version,
        assignment.updated_at AS "updatedAt",
+       assignment.source,
+       assignment.stay_evidence_kind AS "stayEvidenceKind",
        booking.check_in::text AS "checkIn",
        booking.check_out::text AS "checkOut"
      FROM pms.operational_booking_assignments assignment
@@ -6204,17 +6259,23 @@ async function recordOperationalCommandAuditEvent(
       command.commandId,
       JSON.stringify({ commandMeta, idempotencyKeyHash: keyHash }),
       JSON.stringify(
-        "stays" in command
-          ? { accountingDate: command.accountingDate, stays: command.stays }
-          : "retainedCharges" in command
-            ? { reason: command.reason ?? null }
-            : "allocations" in command
-              ? {
-                  reason: command.reason ?? null,
-                  paymentEvidenceId: command.paymentEvidenceId,
-                  accountingDate: command.accountingDate,
-                }
-              : {},
+        "pricing" in command
+          ? {
+              accountingDate: command.accountingDate,
+              reason: command.reason ?? null,
+              pricing: command.pricing,
+            }
+          : "stays" in command
+            ? { accountingDate: command.accountingDate, stays: command.stays }
+            : "retainedCharges" in command
+              ? { reason: command.reason ?? null }
+              : "allocations" in command
+                ? {
+                    reason: command.reason ?? null,
+                    paymentEvidenceId: command.paymentEvidenceId,
+                    accountingDate: command.accountingDate,
+                  }
+                : {},
       ),
       JSON.stringify({
         commandId: command.commandId,
