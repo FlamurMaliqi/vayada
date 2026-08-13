@@ -416,6 +416,272 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     });
   });
 
+  it("atomically records an exact partial manual refund and replays it", async () => {
+    const created = await repository.createManualBooking(
+      command("refund", "paid", "cash", "2026-08-20", false),
+    );
+    const evidence = await admin.query(
+      `SELECT payment.id::text AS payment,
+         (SELECT id::text FROM booking.nightly_revenue_evidence
+          WHERE guest_booking_id=booking.id ORDER BY stay_date,line_position LIMIT 1) AS target
+       FROM booking.guest_bookings booking JOIN finance.payments payment
+         ON payment.guest_booking_id=booking.id AND payment.payment_kind='manual'
+       WHERE booking.id=$1::uuid`,
+      [created.guestBookingId],
+    );
+    const refund = {
+      propertyId,
+      guestBookingId: created.guestBookingId,
+      commandId: "refund-command",
+      idempotencyKey: "refund-key",
+      paymentEvidenceId: evidence.rows[0].payment as string,
+      accountingDate: "2026-08-21",
+      reason: "partial guest refund",
+      allocations: [
+        {
+          evidenceId: evidence.rows[0].target as string,
+          amount: { amountDecimal: "25.00", currency: "EUR" },
+        },
+      ],
+      audit: {
+        actor: { kind: "user" as const, userId: actorId, organizationId },
+        requestId: "refund-request",
+        reason: "Refund manual booking",
+        requestedAt: acceptedAt.toISOString(),
+      },
+    };
+    await expect(
+      operations.refundManualBooking!({
+        ...refund,
+        commandId: "over-refund-command",
+        idempotencyKey: "over-refund-key",
+        allocations: [
+          { ...refund.allocations[0]!, amount: { amountDecimal: "101.00", currency: "EUR" } },
+        ],
+      }),
+    ).resolves.toMatchObject({ ok: false, code: "invalid_body" });
+    await expect(operations.refundManualBooking!(refund)).resolves.toMatchObject({ ok: true });
+    await expect(operations.refundManualBooking!(refund)).resolves.toMatchObject({
+      ok: true,
+      replayed: true,
+    });
+    await expect(
+      operations.refundManualBooking!({
+        ...refund,
+        commandId: "stale-refund-command",
+        idempotencyKey: "stale-refund-key",
+        allocations: [
+          { ...refund.allocations[0]!, amount: { amountDecimal: "1.00", currency: "EUR" } },
+        ],
+      }),
+    ).resolves.toMatchObject({ ok: false, code: "invalid_body" });
+    await expect(
+      operations.refundManualBooking!({ ...refund, reason: "changed" }),
+    ).resolves.toMatchObject({ ok: false, code: "idempotency_conflict" });
+
+    const stored = await admin.query(
+      `SELECT payment.status,payment.refunded_amount::text AS refunded,
+         payment.net_amount::text AS net,booking.payment_status AS booking_payment,
+         (SELECT count(*)::int FROM booking.nightly_revenue_evidence item
+          WHERE item.guest_booking_id=booking.id AND economic_event='refund') AS refunds,
+         (SELECT gross_room_amount::text FROM booking.nightly_revenue_evidence item
+          WHERE item.guest_booking_id=booking.id AND economic_event='refund') AS refund_amount,
+         (SELECT recognized_on::text FROM booking.nightly_revenue_evidence item
+          WHERE item.guest_booking_id=booking.id AND economic_event='refund') AS recognized,
+         (SELECT private_payload FROM platform.product_audit_events audit
+          WHERE audit.property_id=booking.property_id AND action='pms.manual_refund') AS audit,
+         (SELECT count(*)::int FROM platform.idempotency_keys key
+          WHERE key.property_id=booking.property_id AND operation='manual_refund_command') AS keys
+        ,(SELECT jsonb_build_object('amount',refund.amount::text,'net',refund.net_amount::text,
+            'refunded',refund.refunded_amount::text,'metadata',refund.payment_metadata)
+          FROM finance.payments refund WHERE refund.guest_booking_id=booking.id
+            AND refund.payment_kind='refund') AS refund_fact
+        ,(SELECT jsonb_build_object('retention',audit.retention_class,'privacy',audit.privacy_scope,
+            'target',audit.target_resource_id)
+          FROM platform.product_audit_events audit
+          WHERE audit.property_id=booking.property_id
+            AND action='finance.manual_booking_refund') AS finance_audit
+       FROM booking.guest_bookings booking JOIN finance.payments payment
+         ON payment.guest_booking_id=booking.id AND payment.payment_kind='manual'
+       WHERE booking.id=$1::uuid`,
+      [created.guestBookingId],
+    );
+    expect(stored.rows[0]).toMatchObject({
+      status: "partially_refunded",
+      refunded: "25.00",
+      net: "200.00",
+      booking_payment: "paid",
+      refunds: 1,
+      refund_amount: "-25.0000",
+      recognized: "2026-08-21",
+      keys: 1,
+      refund_fact: {
+        amount: "25.00",
+        net: "-25.00",
+        refunded: "25.00",
+        metadata: {
+          contractVersion: "finance-manual-booking-refund.v1",
+          correctsPaymentEvidenceId: evidence.rows[0].payment,
+          commandId: "refund-command",
+          accountingDate: "2026-08-21",
+        },
+      },
+      finance_audit: {
+        retention: "financial",
+        privacy: "confidential",
+        target: evidence.rows[0].payment,
+      },
+      audit: {
+        reason: "partial guest refund",
+        paymentEvidenceId: evidence.rows[0].payment,
+        accountingDate: "2026-08-21",
+      },
+    });
+  });
+
+  it("refunds the current retained-charge tip after a paid cancellation", async () => {
+    const created = await repository.createManualBooking(
+      command("refund-retained", "paid", "cash", "2026-08-20", false),
+    );
+    await expect(
+      operations.cancelManualBooking!({
+        propertyId,
+        guestBookingId: created.guestBookingId,
+        commandId: "refund-retained-cancel-command",
+        idempotencyKey: "refund-retained-cancel-key",
+        accountingDate: "2026-08-21",
+        retainedCharges: [
+          {
+            linePosition: 1,
+            stayDate: "2026-08-20",
+            amount: { amountDecimal: "25.00", currency: "EUR" },
+          },
+        ],
+        audit: {
+          actor: { kind: "user", userId: actorId, organizationId },
+          requestId: "refund-retained-cancel-request",
+          reason: "Cancel manual booking",
+          requestedAt: acceptedAt.toISOString(),
+        },
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    const evidence = await admin.query(
+      `SELECT payment.id::text AS payment,
+         (SELECT id::text FROM booking.nightly_revenue_evidence
+          WHERE guest_booking_id=booking.id AND economic_event='retained_charge') AS target
+       FROM booking.guest_bookings booking JOIN finance.payments payment
+         ON payment.guest_booking_id=booking.id AND payment.payment_kind='manual'
+       WHERE booking.id=$1::uuid`,
+      [created.guestBookingId],
+    );
+    await expect(
+      operations.refundManualBooking!({
+        propertyId,
+        guestBookingId: created.guestBookingId,
+        commandId: "refund-retained-command",
+        idempotencyKey: "refund-retained-key",
+        paymentEvidenceId: evidence.rows[0].payment,
+        accountingDate: "2026-08-22",
+        allocations: [
+          {
+            evidenceId: evidence.rows[0].target,
+            amount: { amountDecimal: "25.00", currency: "EUR" },
+          },
+        ],
+        audit: {
+          actor: { kind: "user", userId: actorId, organizationId },
+          requestId: "refund-retained-request",
+          reason: "Refund retained charge",
+          requestedAt: acceptedAt.toISOString(),
+        },
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    const stored = await admin.query(
+      `SELECT payment.status,payment.refunded_amount::text AS refunded,
+         SUM(item.gross_room_amount)::text AS amount,SUM(item.occupied_room_nights)::int AS occupied,
+         bool_and(item.corrects_evidence_id=$2::uuid) FILTER (WHERE item.economic_event='refund') AS target
+       FROM finance.payments payment JOIN booking.nightly_revenue_evidence item
+         ON item.guest_booking_id=payment.guest_booking_id
+       WHERE payment.guest_booking_id=$1::uuid AND payment.payment_kind='manual'
+       GROUP BY payment.id`,
+      [created.guestBookingId, evidence.rows[0].target],
+    );
+    expect(stored.rows[0]).toEqual({
+      status: "partially_refunded",
+      refunded: "25.00",
+      amount: "0.0000",
+      occupied: 0,
+      target: true,
+    });
+  });
+
+  it("rolls payment and nightly refund facts back when the audit write fails", async () => {
+    const created = await repository.createManualBooking(
+      command("refund-rollback", "paid", "cash", "2026-08-20", false),
+    );
+    const evidence = await admin.query(
+      `SELECT payment.id::text AS payment,
+         (SELECT id::text FROM booking.nightly_revenue_evidence
+          WHERE guest_booking_id=booking.id ORDER BY stay_date LIMIT 1) AS target
+       FROM booking.guest_bookings booking JOIN finance.payments payment
+         ON payment.guest_booking_id=booking.id AND payment.payment_kind='manual'
+       WHERE booking.id=$1::uuid`,
+      [created.guestBookingId],
+    );
+    await expect(
+      operations.refundManualBooking!({
+        propertyId,
+        guestBookingId: created.guestBookingId,
+        commandId: "refund-rollback-command",
+        idempotencyKey: "refund-rollback-key",
+        paymentEvidenceId: evidence.rows[0].payment,
+        accountingDate: "2026-08-21",
+        allocations: [
+          {
+            evidenceId: evidence.rows[0].target,
+            amount: { amountDecimal: "25.00", currency: "EUR" },
+          },
+        ],
+        audit: {
+          actor: { kind: "user", userId: uuid(99), organizationId },
+          requestId: "refund-rollback-request",
+          reason: "Refund manual booking",
+          requestedAt: acceptedAt.toISOString(),
+        },
+      }),
+    ).rejects.toMatchObject({ code: "23503" });
+    const stored = await admin.query(
+      `SELECT payment.status,payment.refunded_amount::text AS refunded,
+         payment.net_amount::text AS net,booking.payment_status AS booking_payment,
+         (SELECT count(*)::int FROM booking.nightly_revenue_evidence item
+          WHERE item.guest_booking_id=booking.id) AS evidence,
+         (SELECT count(*)::int FROM platform.product_audit_events audit
+          WHERE audit.property_id=booking.property_id AND action='pms.manual_refund') AS audits,
+         (SELECT count(*)::int FROM platform.idempotency_keys key
+          WHERE key.property_id=booking.property_id AND operation='manual_refund_command') AS keys,
+         (SELECT count(*)::int FROM finance.payments refund
+          WHERE refund.guest_booking_id=booking.id AND refund.payment_kind='refund') AS refund_facts,
+         (SELECT count(*)::int FROM platform.product_audit_events audit
+          WHERE audit.property_id=booking.property_id
+            AND action='finance.manual_booking_refund') AS finance_audits
+       FROM booking.guest_bookings booking JOIN finance.payments payment
+         ON payment.guest_booking_id=booking.id AND payment.payment_kind='manual'
+       WHERE booking.id=$1::uuid`,
+      [created.guestBookingId],
+    );
+    expect(stored.rows[0]).toEqual({
+      status: "paid",
+      refunded: "0.00",
+      net: "200.00",
+      booking_payment: "paid",
+      evidence: 2,
+      audits: 0,
+      keys: 0,
+      refund_facts: 0,
+      finance_audits: 0,
+    });
+  });
+
   it("round-trips every expected method for paid and unpaid bookings", async () => {
     const methods = ["pay_at_property", "bank_transfer", "manual_card", "cash", "other"] as const;
     for (const [methodIndex, method] of methods.entries()) {
