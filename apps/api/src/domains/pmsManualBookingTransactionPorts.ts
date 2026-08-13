@@ -82,6 +82,7 @@ export interface PmsManualBookingPlatformOwnerPort {
   writeEvidence(input: {
     transaction: PmsManualBookingTransaction;
     command: PmsManualBookingCreateCommand;
+    preview: ManualBookingPreviewResult;
     result: PmsManualBookingCreateResult;
     reservation: PmsManualBookingCommandReservation;
   }): Promise<void>;

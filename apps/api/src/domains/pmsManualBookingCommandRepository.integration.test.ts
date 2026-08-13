@@ -14,7 +14,10 @@ import { createBookingPmsManualNightlyRevenueEvidenceOwner } from "./bookingPmsM
 import { createPgPmsManualBookingPlatformOwnerPort } from "./pmsManualBookingCommandEvidence.js";
 import { createPgPmsManualBookingCommandRepository } from "./pmsManualBookingCommandRepository.js";
 import { createTargetPmsOperationsCommandRepository } from "./pmsOperationsCommandRepository.js";
-import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
+import {
+  createTargetPmsOperationsReadRepository,
+  type PmsOperationsReadRepository,
+} from "./pmsOperationsReadModel.js";
 import type {
   PmsManualPriceCorrectionCommand,
   PmsManualStayCorrectionCommand,
@@ -54,6 +57,10 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
         return { guestBookingId: requestedGuestBookingId } as never;
       },
     } as unknown as PmsOperationsReadRepository,
+  });
+  const readRepository = createTargetPmsOperationsReadRepository({
+    connectionString: TEST_DATABASE_URL ?? "postgresql://disabled",
+    pool: admin,
   });
 
   beforeAll(async () => {
@@ -175,6 +182,83 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       { date: "2027-01-02", position: 2, amount: "100.0000", source: "manual", quality: "exact" },
       { date: "2027-01-03", position: 2, amount: "100.0000", source: "manual", quality: "exact" },
     ]);
+    const projection = await readRepository.findReservationByGuestBookingId(
+      propertyId,
+      created.guestBookingId,
+    );
+    expect(projection).toMatchObject({
+      stay: { checkIn: "2027-01-01", checkOut: "2027-01-04", adults: 3, children: 0 },
+      payment: { expectedMethod: "cash", status: "unpaid" },
+      assignments: [
+        {
+          position: 1,
+          roomId: roomIds[0],
+          ratePlanId: null,
+          stay: { checkIn: "2027-01-01", checkOut: "2027-01-03", adults: 1, children: 0 },
+          nightly: [
+            {
+              serviceDate: "2027-01-01",
+              applied: { amountDecimal: "100.00", currency: "EUR" },
+              evidenceQuality: "exact",
+            },
+            {
+              serviceDate: "2027-01-02",
+              applied: { amountDecimal: "100.00", currency: "EUR" },
+              evidenceQuality: "exact",
+            },
+          ],
+        },
+        {
+          position: 2,
+          roomId: roomIds[1],
+          stay: { checkIn: "2027-01-02", checkOut: "2027-01-04", adults: 2, children: 0 },
+          nightly: [{ serviceDate: "2027-01-02" }, { serviceDate: "2027-01-03" }],
+        },
+      ],
+    });
+    const calendar = await readRepository.listCalendarDaysByPropertyId(propertyId, {
+      from: "2027-01-01",
+      to: "2027-01-03",
+    });
+    expect(
+      calendar.items.map(({ stayDate, assignmentRefs }) => ({ stayDate, assignmentRefs })),
+    ).toEqual([
+      { stayDate: "2027-01-01", assignmentRefs: [projection!.assignments[0]!.assignmentId] },
+      {
+        stayDate: "2027-01-02",
+        assignmentRefs: projection!.assignments.map(({ assignmentId }) => assignmentId),
+      },
+      { stayDate: "2027-01-03", assignmentRefs: [projection!.assignments[1]!.assignmentId] },
+    ]);
+    await expect(
+      readRepository.findReservationByGuestBookingId(otherPropertyId, created.guestBookingId),
+    ).resolves.toBeNull();
+    const confirmation = await admin.query(
+      `SELECT payload FROM platform.outbox_events
+       WHERE property_id = $1::uuid
+         AND event_type = 'booking.guest_confirmation.requested.v1'`,
+      [propertyId],
+    );
+    expect(confirmation.rows[0]?.payload).toMatchObject({
+      guestBookingId: created.guestBookingId,
+      bookingReference: created.bookingReference,
+      guest: { email: "ada@example.test", specialRequests: "Quiet room" },
+      expectedPaymentMethod: "cash",
+      paymentStatus: "unpaid",
+      stays: expect.arrayContaining([
+        expect.objectContaining({
+          position: 1,
+          roomId: roomIds[0],
+          nightly: expect.arrayContaining([expect.objectContaining({ serviceDate: "2027-01-01" })]),
+        }),
+        expect.objectContaining({
+          position: 2,
+          roomId: roomIds[1],
+          nightly: expect.arrayContaining([expect.objectContaining({ serviceDate: "2027-01-02" })]),
+        }),
+      ]),
+    });
+    expect(JSON.stringify(confirmation.rows[0]?.payload)).not.toContain("VIP");
     await expect(counts()).resolves.toMatchObject({
       booking: "1",
       nightly: "4",
@@ -334,6 +418,28 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       outbox: 2,
       audited: 2,
     });
+    const projection = await readRepository.findReservationByGuestBookingId(
+      propertyId,
+      created.guestBookingId,
+    );
+    expect(
+      projection!.assignments.map(({ nightly }) =>
+        nightly!.map(({ serviceDate, applied, evidenceQuality }) => ({
+          serviceDate,
+          amount: applied?.amountDecimal,
+          evidenceQuality,
+        })),
+      ),
+    ).toEqual([
+      [
+        { serviceDate: "2026-08-21", amount: "100.00", evidenceQuality: "exact" },
+        { serviceDate: "2026-08-22", amount: "100.00", evidenceQuality: "exact" },
+      ],
+      [
+        { serviceDate: "2026-08-23", amount: "100.00", evidenceQuality: "inferred" },
+        { serviceDate: "2026-08-24", amount: "100.00", evidenceQuality: "exact" },
+      ],
+    ]);
   });
 
   it("rolls assignment and Booking changes back when explicit nightly economics do not balance", async () => {
@@ -494,6 +600,23 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
         { accountingDate: "2026-08-25", reason: "correct nightly prices" },
       ],
     });
+    const projection = await readRepository.findReservationByGuestBookingId(
+      propertyId,
+      created.guestBookingId,
+    );
+    expect(
+      projection!.assignments.flatMap(({ nightly }) =>
+        nightly!.map(({ applied, evidenceQuality }) => ({
+          amount: applied?.amountDecimal,
+          evidenceQuality,
+        })),
+      ),
+    ).toEqual([
+      { amount: "120.00", evidenceQuality: "exact" },
+      { amount: "80.00", evidenceQuality: "exact" },
+      { amount: "100.50", evidenceQuality: "inferred" },
+      { amount: "100.50", evidenceQuality: "inferred" },
+    ]);
   });
 
   it("serializes competing price corrections against one current tip", async () => {
@@ -992,6 +1115,18 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
         accountingDate: "2026-08-21",
       },
     });
+    await expect(
+      readRepository.findReservationByGuestBookingId(propertyId, created.guestBookingId),
+    ).resolves.toMatchObject({
+      assignments: [
+        {
+          nightly: [
+            { applied: { amountDecimal: "100.00" }, evidenceQuality: "exact" },
+            { applied: { amountDecimal: "100.00" }, evidenceQuality: "exact" },
+          ],
+        },
+      ],
+    });
   });
 
   it("refunds the current retained-charge tip after a paid cancellation", async () => {
@@ -1156,6 +1291,9 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
           status,
           balance: status === "paid" ? "0.00" : "200.00",
         });
+        await expect(
+          readRepository.findReservationByGuestBookingId(propertyId, created.guestBookingId),
+        ).resolves.toMatchObject({ payment: { expectedMethod: method, status } });
       }
     }
     expect((await counts()).payment).toBe("5");

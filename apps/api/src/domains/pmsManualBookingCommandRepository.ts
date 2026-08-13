@@ -117,6 +117,7 @@ export function createPgPmsManualBookingCommandRepository(config: {
         await config.dependencies.platform.writeEvidence({
           transaction,
           command,
+          preview,
           result,
           reservation,
         });
