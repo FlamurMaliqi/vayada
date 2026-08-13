@@ -91,6 +91,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
               ($5::uuid, $3::uuid, $4::uuid, '103','verified')`,
       [roomIds[0], roomIds[1], propertyId, roomTypeId, roomIds[2]],
     );
+    await seedInventory();
     await admin.query(
       `INSERT INTO booking.addon_definitions (
          id, property_id, name, pricing_model, price_amount, currency
@@ -365,6 +366,24 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       assignmentCheckIn: "2026-08-20",
       evidence: 2,
       keys: 0,
+    });
+  });
+
+  it("fails closed when canonical inventory closes a corrected night", async () => {
+    const created = await repository.createManualBooking(
+      command("stay-correction-closed", "unpaid", "cash", "2026-08-20", false),
+    );
+    await fixtureQuery(
+      `UPDATE pms.inventory_days SET status='closed',available_count=0
+       WHERE property_id=$1::uuid AND room_type_id=$2::uuid AND stay_date='2026-08-27'::date`,
+      [propertyId, roomTypeId],
+    );
+    const correction = await stayCorrection(created.guestBookingId, "stay-correction-closed", [
+      { roomId: roomIds[1]!, checkIn: "2026-08-27" },
+    ]);
+    await expect(operations.correctManualBookingStays!(correction)).resolves.toMatchObject({
+      ok: false,
+      code: "room_unavailable",
     });
   });
 
@@ -1153,6 +1172,34 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     return result.rows[0];
   }
 
+  async function seedInventory() {
+    await fixtureQuery(
+      `INSERT INTO pms.inventory_days
+        (property_id,room_type_id,stay_date,total_count,available_count,calendar_revision,
+         inventory_revision,generated_sellable_limit_count,effective_sellable_limit_count,
+         generated_source_revision,channel_source_revision,manual_source_revision,
+         block_source_revision,booking_source_revision)
+       SELECT $1::uuid,$2::uuid,day,3,3,1,1,3,3,1,0,0,0,0
+       FROM generate_series('2026-08-01'::date,'2027-12-31','1 day') day`,
+      [propertyId, roomTypeId],
+    );
+  }
+
+  async function fixtureQuery(sql: string, parameters: readonly unknown[]) {
+    const client = await admin.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(sql, [...parameters]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async function cleanup(full: boolean) {
     await admin.query("BEGIN");
     try {
@@ -1172,7 +1219,16 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
         "DELETE FROM booking.guest_bookings WHERE property_id = $1::uuid",
       ])
         await admin.query(sql, [propertyId]);
+      await admin.query(
+        `UPDATE pms.inventory_days SET status='open',manual_sellable_limit_count=NULL,
+           effective_sellable_limit_count=3,available_count=3
+         WHERE property_id=$1::uuid`,
+        [propertyId],
+      );
       if (full) {
+        await admin.query("DELETE FROM pms.inventory_days WHERE property_id = $1::uuid", [
+          propertyId,
+        ]);
         await admin.query(
           "DELETE FROM hotel_catalog.property_locations WHERE property_id = $1::uuid",
           [propertyId],
