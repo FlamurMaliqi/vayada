@@ -258,6 +258,8 @@ export type BookingGuestPii = {
   email: string | null;
   phone: string | null;
   countryCode: string | null;
+  countryCodeRaw: string | null;
+  countryCodeReviewRequired: boolean;
   arrivalTime: string | null;
   specialRequests: string | null;
 };
@@ -320,6 +322,13 @@ export type BookingAdditionalGuestDeleteCommand = Omit<
   guestId: string;
 };
 
+export type BookingPrimaryGuestNationalityCorrectionCommand = Omit<
+  BookingAdditionalGuestCreateCommand,
+  "guest"
+> & {
+  countryCode: string;
+};
+
 export type BookingGuestPiiCommandResult =
   | {
       ok: true;
@@ -334,6 +343,7 @@ export type BookingGuestPiiCommandResult =
       code:
         | "invalid_guest_pii"
         | "reservation_not_found"
+        | "primary_guest_not_found"
         | "additional_guest_not_found"
         | "idempotency_conflict";
       message: string;
@@ -343,6 +353,16 @@ export type BookingGuestPiiDeleteResult =
   | {
       ok: true;
       guestId: string;
+      projection: BookingGuestPiiProjection;
+      commandMeta: BookingGuestPiiCommandMeta;
+      replayed?: boolean;
+    }
+  | Exclude<BookingGuestPiiCommandResult, { ok: true }>;
+
+export type BookingPrimaryGuestNationalityCorrectionResult =
+  | {
+      ok: true;
+      primaryGuest: BookingGuestPii;
       projection: BookingGuestPiiProjection;
       commandMeta: BookingGuestPiiCommandMeta;
       replayed?: boolean;
@@ -360,6 +380,9 @@ export type BookingGuestPiiPort = {
     propertyId: string;
     guestBookingId: string;
   }): Promise<BookingGuestPiiProjection | null>;
+  correctPrimaryGuestNationalityForPmsOperations(
+    command: BookingPrimaryGuestNationalityCorrectionCommand,
+  ): Promise<BookingPrimaryGuestNationalityCorrectionResult>;
   createAdditionalGuestForPmsOperations(
     command: BookingAdditionalGuestCreateCommand,
   ): Promise<BookingGuestPiiCommandResult>;
