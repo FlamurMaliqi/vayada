@@ -24,7 +24,7 @@ const legacyRuntimeEnvKeys = [
 const nextApiLegacyFreeEnv: NodeJS.ProcessEnv = {
   API_RUNTIME: "next",
   TARGET_DATABASE_URL: "postgresql://target-db",
-  PUBLIC_HOTEL_PROFILE_SOURCE: "target",
+  PUBLIC_HOTEL_PROFILE_SOURCE: "active_publication",
   BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
   PUBLIC_BOOKABILITY_SOURCE: "target",
   BOOKING_SETTINGS_SOURCE: "target",
@@ -40,15 +40,24 @@ const publicBookabilityFixture = PUBLIC_BOOKABILITY_FIXTURES.find(
 
 const publicHotelProfilePool: PublicHotelProfileReadPool = {
   async query<T extends QueryResultRow>(text: string, values?: readonly unknown[]) {
-    expect(text).toContain("distribution.public_hotel_bookability_profiles");
+    expect(text).toContain("distribution.active_public_booking_revision");
+    expect(text).toContain("distribution.public_booking_content_revisions");
+    expect(text).not.toContain("distribution.public_hotel_bookability_profiles");
     expect(text).not.toContain("booking_hotels");
 
-    const customDomainUrl = text.includes("property_domains")
-      ? `https://${String(values?.[0])}`
-      : publicBookabilityFixture.profile.hotel.customDomainUrl;
+    const fixtureProfile = structuredClone(publicBookabilityFixture.profile);
+    if (text.includes("hotel_catalog.property_domains")) {
+      const origin = `https://${String(values?.[0])}`;
+      fixtureProfile.hotel.canonicalUrl = `${origin}/en`;
+      fixtureProfile.hotel.bookingBaseUrl = origin;
+      fixtureProfile.hotel.customDomainUrl = origin;
+      fixtureProfile.hotel.trust.domainVerified = true;
+    }
 
     return {
-      rows: [targetPublicHotelProfileRow(customDomainUrl)] as T[],
+      rows: [
+        { propertyId: fixtureProfile.hotel.propertyId, profile: fixtureProfile },
+      ] as unknown as T[],
     };
   },
   async end() {},
@@ -110,7 +119,7 @@ describe("next-api legacy-free runtime check", () => {
       apiRuntime: "next",
       bookingDatabaseUrl: undefined,
       bookingReservationsReadDatabaseUrl: undefined,
-      publicHotelProfileSource: "target",
+      publicHotelProfileSource: "active_publication",
       bookingDomainResolutionSource: "target",
       publicBookabilitySource: "target",
       bookingSettingsSource: "target",
@@ -157,54 +166,6 @@ describe("next-api legacy-free runtime check", () => {
     );
   });
 });
-
-function targetPublicHotelProfileRow(customDomainUrl: string | null): QueryResultRow {
-  const profile = publicBookabilityFixture.profile;
-  const hotel = profile.hotel;
-
-  return {
-    propertyId: hotel.propertyId,
-    contractVersion: profile.contractVersion,
-    publicVisibility: profile.publicVisibility,
-    publicId: hotel.propertyId,
-    canonicalSlug: hotel.slug,
-    canonicalUrl: hotel.canonicalUrl,
-    bookingBaseUrl: hotel.bookingBaseUrl,
-    customDomainUrl,
-    timezone: hotel.timezone,
-    defaultLocale: hotel.defaultLocale,
-    supportedLocales: hotel.supportedLocales,
-    defaultCurrency: hotel.defaultCurrency,
-    supportedCurrencies: hotel.supportedCurrencies,
-    profileStatus: "public",
-    publicIdentity: {
-      propertyId: hotel.propertyId,
-      slug: hotel.slug,
-      name: hotel.name,
-      summary: hotel.summary,
-    },
-    location: hotel.location,
-    media: hotel.images,
-    amenities: hotel.amenities,
-    policies: hotel.policies,
-    capabilities: hotel.capabilities,
-    supportedQuoteParameters: hotel.supportedQuoteParameters,
-    publicSetupCompleteness: { status: "ready", missing: [] },
-    sourceFreshness: Object.fromEntries(
-      profile.freshness.sources.map((source) => [
-        source.owner,
-        {
-          status: source.status,
-          generatedAt: source.lastUpdatedAt,
-          reasonCode: source.reasonCode,
-        },
-      ]),
-    ),
-    freshnessStatus: profile.freshness.status,
-    dataSources: profile.dataSources,
-    generatedAt: profile.generatedAt,
-  };
-}
 
 function targetPublicHotelQuoteRow(): QueryResultRow {
   const quote = publicBookabilityFixture.quote!;

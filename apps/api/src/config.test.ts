@@ -319,6 +319,18 @@ describe("api config", () => {
     ).toThrow("PUBLIC_HOTEL_PROFILE_SOURCE=target requires TARGET_DATABASE_URL");
   });
 
+  it("loads active immutable publication profiles only with the target DB", () => {
+    expect(
+      loadConfig({
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        PUBLIC_HOTEL_PROFILE_SOURCE: "active_publication",
+      }).publicHotelProfileSource,
+    ).toBe("active_publication");
+    expect(() => loadConfig({ PUBLIC_HOTEL_PROFILE_SOURCE: "active_publication" })).toThrow(
+      "PUBLIC_HOTEL_PROFILE_SOURCE=active_publication requires TARGET_DATABASE_URL",
+    );
+  });
+
   it("rejects target domain resolution without target public profiles", () => {
     expect(() =>
       loadConfig({
@@ -326,7 +338,7 @@ describe("api config", () => {
         BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
       }),
     ).toThrow(
-      "BOOKING_DOMAIN_RESOLUTION_SOURCE=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target",
+      "BOOKING_DOMAIN_RESOLUTION_SOURCE=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target or active_publication",
     );
   });
 
@@ -335,7 +347,7 @@ describe("api config", () => {
       loadConfig({
         PUBLIC_HOTEL_PROFILE_SOURCE: "booking",
       }),
-    ).toThrow("PUBLIC_HOTEL_PROFILE_SOURCE must be one of: legacy, target");
+    ).toThrow("PUBLIC_HOTEL_PROFILE_SOURCE must be one of: legacy, target, active_publication");
   });
 
   it("loads optional target database config", () => {
@@ -821,7 +833,9 @@ describe("api config", () => {
         TARGET_DATABASE_URL: "postgresql://target-db",
         PUBLIC_BOOKABILITY_SOURCE: "target",
       }),
-    ).toThrow("PUBLIC_BOOKABILITY_SOURCE=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target");
+    ).toThrow(
+      "PUBLIC_BOOKABILITY_SOURCE=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target or active_publication",
+    );
   });
 
   it("rejects unsupported public bookability source config", () => {

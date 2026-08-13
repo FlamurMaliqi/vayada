@@ -102,7 +102,7 @@ removed.
 
 | Surface                                         | Legacy config removed                                                       | Required target activation knob                                                                                                                                                                    | Startup assertion before cutover                                                                                                                                                                                                                                                                                                                                                          |
 | ----------------------------------------------- | --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Public hotel profile / Booking Web host profile | `BOOKING_DATABASE_URL` for profile reads                                    | `TARGET_DATABASE_URL` plus `PUBLIC_HOTEL_PROFILE_SOURCE=target`                                                                                                                                    | `/api/ai/hotels/:slug`, `/api/booking-web/hotels/:slug`, and known-host resolution mount with `BOOKING_DATABASE_URL` unset.                                                                                                                                                                                                                                                               |
+| Public hotel profile / Booking Web host profile | `BOOKING_DATABASE_URL` for profile reads                                    | `TARGET_DATABASE_URL` plus `PUBLIC_HOTEL_PROFILE_SOURCE=active_publication`; `target` remains the mutable compatibility source                                                                     | Every intended property has a valid active immutable Booking revision; `/api/ai/hotels/:slug`, `/api/booking-web/hotels/:slug`, and known-host resolution pass with `BOOKING_DATABASE_URL` unset.                                                                                                                                                                                         |
 | Booking Web custom-domain resolution            | `BOOKING_PUBLIC_API_URL` for `/api/resolve-domain`                          | `TARGET_DATABASE_URL` plus `BOOKING_DOMAIN_RESOLUTION_SOURCE=target`                                                                                                                               | `/api/booking-web/hosts/:host` resolves verified custom domains without calling legacy Booking.                                                                                                                                                                                                                                                                                           |
 | Public quote/offers/calendar reads              | `PMS_PUBLIC_API_URL` read calls                                             | `TARGET_DATABASE_URL` plus `PUBLIC_BOOKABILITY_SOURCE=target`                                                                                                                                      | `/api/ai/hotels/:slug/quote`, `/api/booking-web/hotels/:slug/offers`, and `/api/booking-web/hotels/:slug/calendar` return target freshness states with `PMS_PUBLIC_API_URL` unset.                                                                                                                                                                                                        |
 | Booking settings                                | `BOOKING_DATABASE_URL` for settings reads/writes                            | `TARGET_DATABASE_URL` plus `BOOKING_SETTINGS_SOURCE=target`                                                                                                                                        | All `/api/booking/hotels/:hotelId/settings/*` GET/PUT routes mount and pass contract tests with `BOOKING_DATABASE_URL` unset.                                                                                                                                                                                                                                                             |
@@ -119,8 +119,9 @@ before production:
    still configured.
 2. Run the final legacy-to-target migration and parity checks.
 3. Freeze or queue legacy writes for the cutover window.
-4. Flip public profile / Booking Web host reads to the target DB; remove the
-   public-profile use of `BOOKING_DATABASE_URL`.
+4. Confirm the reviewed property cohort has valid active immutable Booking
+   revisions, then set `PUBLIC_HOTEL_PROFILE_SOURCE=active_publication`; remove
+   the public-profile use of `BOOKING_DATABASE_URL`.
 5. Flip quote, offer, and calendar reads to target read models; remove read use
    of `PMS_PUBLIC_API_URL`.
 6. Flip Booking settings writes to target after the final settings snapshot is
@@ -136,6 +137,22 @@ before production:
 11. Start `apps/api` with no legacy product DB URLs and no legacy product API
     URLs configured. The app must still mount all accepted replacement
     contracts needed for frontend and public traffic.
+
+### Immutable public profile flip notes
+
+`PUBLIC_HOTEL_PROFILE_SOURCE=active_publication` is the immutable revision
+activation switch. `target` intentionally retains the pre-existing mutable
+`distribution.public_hotel_bookability_profiles` compatibility reader.
+
+Before activation, verify every property in the rollout cohort has an active
+pointer to a valid `booking-public-content.v1` revision and smoke canonical
+slug, redirect slug, and verified custom-domain reads. A missing, malformed,
+stale, non-bookable, revoked-domain, or unpointed revision fails closed.
+
+For rollback, set `PUBLIC_HOTEL_PROFILE_SOURCE=target`; do not mutate or delete
+the immutable revisions or active pointers. Reconcile the failing cohort, build
+and activate corrected revisions, repeat the smoke checks, then re-enable
+`active_publication`.
 
 ### Checkout command flip notes
 
