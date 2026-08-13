@@ -75,7 +75,14 @@ export type BookingLifecycleRunResult = {
   scanned: number;
   applied: number;
   skipped: number;
+  failed: number;
   mutations: BookingLifecycleMutationResult[];
+  failures: Array<{
+    guestBookingId: string;
+    propertyId: string;
+    action: BookingLifecycleAction;
+    errorMessage: string;
+  }>;
 };
 
 export type BookingLifecycleSchedulerResult = {
@@ -83,6 +90,7 @@ export type BookingLifecycleSchedulerResult = {
   scanned: number;
   applied: number;
   skipped: number;
+  failed: number;
 };
 
 export type BookingLifecycleStore = {
@@ -247,6 +255,7 @@ export async function runBookingLifecycleSchedulerJobs(
     scanned: sumBy(runs, "scanned"),
     applied: sumBy(runs, "applied"),
     skipped: sumBy(runs, "skipped"),
+    failed: sumBy(runs, "failed"),
   };
 }
 
@@ -278,15 +287,25 @@ async function runBookingLifecycleJob(
 ): Promise<BookingLifecycleRunResult> {
   const candidates = await selectCandidatesForRun(store, runName, input);
   const mutations: BookingLifecycleMutationResult[] = [];
+  const failures: BookingLifecycleRunResult["failures"] = [];
 
   for (const candidate of candidates) {
     const mutationTemplate = mutationForRun(runName, candidate);
-    const result = await store.applyLifecycleMutation(
-      candidate,
-      { ...mutationTemplate, deadlineOrWindow: candidate.deadlineOrWindow },
-      input.context,
-    );
-    mutations.push(result);
+    try {
+      const result = await store.applyLifecycleMutation(
+        candidate,
+        { ...mutationTemplate, deadlineOrWindow: candidate.deadlineOrWindow },
+        input.context,
+      );
+      mutations.push(result);
+    } catch (error) {
+      failures.push({
+        guestBookingId: candidate.guestBookingId,
+        propertyId: candidate.propertyId,
+        action: mutationTemplate.action,
+        errorMessage: error instanceof Error ? error.message : "Booking lifecycle mutation failed.",
+      });
+    }
   }
 
   const applied = mutations.filter((mutation) => mutation.applied).length;
@@ -294,8 +313,10 @@ async function runBookingLifecycleJob(
     name: runName,
     scanned: candidates.length,
     applied,
-    skipped: candidates.length - applied,
+    skipped: mutations.length - applied,
+    failed: failures.length,
     mutations,
+    failures,
   };
 }
 
@@ -335,6 +356,26 @@ async function selectPendingBookingExpiryCandidates(
   now: Date,
   limit: number,
 ): Promise<BookingLifecycleCandidate[]> {
+  const rows: CandidateRow[] = [];
+  for (const lane of ["provider", "manual"] as const) {
+    const result = await selectPendingBookingExpiryCandidateLane(queryable, now, limit, lane);
+    rows.push(...result);
+  }
+  return rows
+    .map(candidateFromRow)
+    .sort(
+      (left, right) =>
+        Date.parse(left.deadlineOrWindow) - Date.parse(right.deadlineOrWindow) ||
+        Date.parse(left.createdAt) - Date.parse(right.createdAt),
+    );
+}
+
+async function selectPendingBookingExpiryCandidateLane(
+  queryable: Queryable,
+  now: Date,
+  limit: number,
+  lane: "provider" | "manual",
+): Promise<CandidateRow[]> {
   const result = await queryable.query<CandidateRow>(
     `WITH raw_deadlines AS (
        SELECT
@@ -392,11 +433,15 @@ async function selectPendingBookingExpiryCandidates(
        ON provider_account.id = card_payment.provider_account_id
      WHERE d.deadline_at IS NOT NULL
        AND d.deadline_at <= $1::timestamptz
+       AND (
+         ($3::text = 'provider' AND b.payment_status = 'authorized')
+         OR ($3::text = 'manual' AND b.payment_status <> 'authorized')
+       )
      ORDER BY d.deadline_at ASC, b.created_at ASC
      LIMIT $2`,
-    [now.toISOString(), limit],
+    [now.toISOString(), limit, lane],
   );
-  return result.rows.map(candidateFromRow);
+  return result.rows;
 }
 
 async function selectStaleUnpaidBookingCandidates(

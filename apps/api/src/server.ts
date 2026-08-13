@@ -1170,7 +1170,14 @@ let activeBookingLifecycleRun: Promise<void> | undefined;
 const runBookingLifecycle = () => {
   if (!bookingLifecycleStore || activeBookingLifecycleRun) return;
   activeBookingLifecycleRun = runBookingLifecycleSchedulerJobs(bookingLifecycleStore)
-    .then(() => undefined)
+    .then((result) => {
+      if (result.failed > 0) {
+        app.log.warn(
+          { failed: result.failed, failures: result.runs.flatMap((run) => run.failures) },
+          "Booking lifecycle sweep completed with failures",
+        );
+      }
+    })
     .catch((error: unknown) => app.log.warn({ err: error }, "Booking lifecycle sweep failed"))
     .finally(() => {
       activeBookingLifecycleRun = undefined;

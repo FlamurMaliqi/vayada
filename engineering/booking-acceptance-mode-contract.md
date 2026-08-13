@@ -54,6 +54,10 @@ idempotently and Finance is terminalized; an already-captured race is settled
 and confirmed; an unavailable or indeterminate provider response leaves the
 booking and inventory unchanged for retry.
 
+Provider-backed and manual pending expiries use independent scheduler batch
+limits, so a provider outage cannot starve pay-at-property or bank-transfer
+inventory release.
+
 ## Migration
 
 The legacy `instant_book` boolean maps `true` to `instant` and `false` to
