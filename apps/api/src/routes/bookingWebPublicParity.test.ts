@@ -262,6 +262,7 @@ describe("Booking Web public bootstrap parity", () => {
     expect(response.statusCode).toBe(204);
     expect(events).toMatchObject([
       {
+        propertyId: "booking_hotel_alpenrose",
         hotelSlug: "hotel-alpenrose",
         eventType: "page_visit",
         eventId: "event_page_visit_001",
@@ -269,6 +270,30 @@ describe("Booking Web public bootstrap parity", () => {
         metadata: { locale: "de" },
       },
     ]);
+    await app.close();
+  });
+
+  it("rejects telemetry that cannot be resolved to a canonical property", async () => {
+    const events: unknown[] = [];
+    const app = buildApp({
+      logger: false,
+      publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
+      bookingWebAttributionSink: {
+        async recordAffiliateClick() {},
+        async recordTelemetryEvent(event) {
+          events.push(event);
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/booking-web/events",
+      payload: { hotelSlug: "unknown-hotel", eventType: "page_visit" },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(events).toEqual([]);
     await app.close();
   });
 

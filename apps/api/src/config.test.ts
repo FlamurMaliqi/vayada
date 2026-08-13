@@ -556,18 +556,31 @@ describe("api config", () => {
   it("loads target Booking Web event sink config", () => {
     expect(
       loadConfig({
-        AUTH_DATABASE_URL: "postgresql://auth-db",
-        WORKOS_JWKS_URL: "https://api.workos.com/sso/jwks/client",
-        WORKOS_ISSUER: "https://api.workos.com",
-        WORKOS_AUDIENCE: "client",
+        ...completeCreatorMarketplaceEnv,
+        PUBLIC_HOTEL_PROFILE_SOURCE: "target",
         BOOKING_WEB_EVENT_SINK: "target",
       }).bookingWebEventSink,
     ).toBe("target");
   });
 
+  it("rejects target Booking Web events with a legacy public profile boundary", () => {
+    expect(() =>
+      loadConfig({
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        AUTH_DATABASE_URL: "postgresql://auth-db",
+        WORKOS_JWKS_URL: "https://api.workos.com/sso/jwks/client",
+        WORKOS_ISSUER: "https://api.workos.com",
+        WORKOS_AUDIENCE: "client",
+        BOOKING_WEB_EVENT_SINK: "target",
+      }),
+    ).toThrow("BOOKING_WEB_EVENT_SINK=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target");
+  });
+
   it("requires auth config for the target Booking Web event sink", () => {
     expect(() =>
       loadConfig({
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        PUBLIC_HOTEL_PROFILE_SOURCE: "target",
         BOOKING_WEB_EVENT_SINK: "target",
       }),
     ).toThrow("BOOKING_WEB_EVENT_SINK=target requires complete auth config");
@@ -957,5 +970,4 @@ describe("api config", () => {
       }),
     ).toThrow("PLATFORM_MEDIA_CDN_BASE_URL must be an HTTPS origin");
   });
-
 });

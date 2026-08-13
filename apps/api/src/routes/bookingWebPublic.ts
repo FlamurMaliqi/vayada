@@ -176,6 +176,7 @@ export type BookingWebAffiliateClickEvent = {
 };
 
 export type BookingWebTelemetryEvent = {
+  propertyId: string;
   hotelSlug: string;
   eventType: string;
   eventId?: string;
@@ -864,7 +865,12 @@ export async function registerBookingWebPublicRoutes(
       throw createHttpError(400, "Hotel slug and event type are required.");
     }
     if (options.attributionSink) {
+      const profile = await options.profileRepository.findProfileBySlug(hotelSlug);
+      if (!profile) {
+        throw createHttpError(404, "Hotel not found.");
+      }
       await options.attributionSink.recordTelemetryEvent({
+        propertyId: profile.hotel.propertyId,
         hotelSlug,
         eventType,
         eventId: firstString(

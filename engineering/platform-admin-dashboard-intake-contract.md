@@ -80,7 +80,7 @@ Canonical target routes:
 | `GET /admin/dashboard/bookings-by-source` | `GET /api/booking/properties/:propertyId/dashboard/bookings-by-source` | `BookingDashboardMetricsReadPort.getSourceMix`                         |
 | `GET /admin/dashboard/sparklines`         | `GET /api/booking/properties/:propertyId/dashboard/sparklines`         | `BookingDashboardMetricsReadPort.getSparklines`                        |
 | `GET /admin/dashboard/conversion-funnel`  | Follow-up                                                              | Platform event/read model over Booking Web telemetry                   |
-| `GET /admin/dashboard/page-views`         | Follow-up                                                              | Platform event/read model over Booking Web telemetry                   |
+| `GET /admin/dashboard/page-views`         | `GET /api/booking/properties/:propertyId/dashboard/page-views`         | `BookingDashboardMetricsReadPort.getPageViewTimeline`                  |
 | `POST /api/events`                        | Retire after dashboard reads consume target events                     | `platform.domain_events` intake already receives Booking Web telemetry |
 
 All protected dashboard routes require:
@@ -90,10 +90,38 @@ All protected dashboard routes require:
 - linked `booking:booking_hotel:{propertyId}` resource with `owner` or `operator`
   relationship.
 
-The first implementation slice exposes stats, source mix, and sparklines only.
-Conversion funnel and page views wait until the target read model over
-`platform.domain_events` is pinned so the legacy `POST /api/events` consumer can
-be retired without losing dashboard telemetry.
+The first implementation slice exposed stats, source mix, and sparklines only.
+The conversion funnel remains a follow-up. VAY-1284 pins the page-view portion
+of the target read model over `platform.domain_events` so the dashboard no
+longer depends on legacy Booking event reads.
+
+VAY-1284 pins the page-view portion of that target read model:
+
+- Source only `booking_web.page_visit` evidence written by the Distribution
+  Booking Web event sink to `platform.domain_events`; legacy Booking events are
+  not a runtime fallback.
+- Resolve the requested Booking hotel resource through the canonical property
+  link. New telemetry resolves the public profile at intake and persists the
+  canonical `property_id` with `tenant_scope = 'property'`; the submitted slug
+  remains audit evidence, not the authorization boundary. Older external-scope
+  events contribute only when their slug has exactly one catalog property owner,
+  so ambiguous or reused slug evidence fails closed.
+- Bucket `occurred_at` into inclusive requested local dates using the canonical
+  `hotel_catalog.property_locations.timezone`. Missing or invalid timezone
+  evidence is a read-model error, not an implicit UTC shift.
+- Return every date in the requested window, including zero-valued dates. The
+  comparison window is the equally sized, immediately preceding window.
+- Count one persisted domain event. The event sink's unique source/event key
+  collapses retries carrying the same event/idempotency key; session IDs do not
+  turn this into a unique-visitor metric.
+- Exclude intake classified as `bot` or `test`, plus events explicitly marked
+  `isTestData` or `testData`. Older unclassified evidence remains human so the
+  target cutover does not erase accepted historical page views.
+- Dashboard totals and page-view sparklines use this same predicate and local
+  date boundary, so their values reconcile with the detailed timeline.
+
+The conversion-funnel definition and UI remain a separate follow-up; this
+contract does not add or reinterpret funnel steps.
 
 Dashboard responses must not include guest PII, PMS operational notes, provider
 IDs, or legacy database/table names.
@@ -144,7 +172,7 @@ adapter in `apps/api`. It intentionally leaves these as follow-ups:
 - platform/super-admin read model repositories and routes;
 - platform property status command;
 - contact intake route and durable email job;
-- dashboard conversion/page-view reads over platform events;
+- dashboard conversion reads over platform events;
 - non-media PMS import preview/confirm jobs;
 - all media upload/import-media behavior.
 
