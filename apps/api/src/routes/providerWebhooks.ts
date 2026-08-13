@@ -211,6 +211,54 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
   });
 };
 
+export async function promotePulledChannexBookingRevision(input: {
+  store: ProviderWebhookStore;
+  propertyId: string;
+  revision: Record<string, unknown>;
+}): Promise<ProviderWebhookPromotionResult | null> {
+  const rawPayload = {
+    event: "booking",
+    property_id: input.propertyId,
+    payload: input.revision,
+  };
+  const classification = classifyChannexPayload(rawPayload);
+  if (classification.family !== "booking" || !classification.channelBookingId) {
+    throw new Error("Pulled Channex revision has no booking identity");
+  }
+  const receiptKeyHash = sha256(classification.receiptKey);
+  const payloadHash = sha256(stableStringify(canonicalPayload(rawPayload)));
+  const normalizedPreview = previewChannexEvent(rawPayload, classification);
+  const receipt = await input.store.recordReceipt({
+    provider: "channex",
+    receiptKey: classification.receiptKey,
+    receiptKeyHash,
+    providerEventId: classification.receiptKey,
+    eventType: classification.eventType,
+    payloadHash,
+    rawHeaders: { source: "channex-booking-revisions-feed" },
+    rawPayload,
+    mode: "mutating",
+    normalizedPreview,
+  });
+  if (receipt.status === "conflict")
+    throw new Error("Pulled Channex revision conflicts with receipt");
+  if (
+    receipt.status === "duplicate" &&
+    !["observed", "received", "validated", "normalized"].includes(receipt.lifecycleStatus)
+  ) {
+    return null;
+  }
+  return input.store.promoteReceipt({
+    provider: "channex",
+    receiptId: receipt.receiptId,
+    receiptKey: classification.receiptKey,
+    receiptKeyHash,
+    payloadHash,
+    rawPayload,
+    normalizedPreview,
+  });
+}
+
 async function handleAuthenticatedProviderWebhook(input: {
   provider: ProviderWebhookProvider;
   eventType: string;
