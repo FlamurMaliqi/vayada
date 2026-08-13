@@ -46,6 +46,14 @@ Pending requests retain the same reservation receipt and release guarantees as
 confirmed bookings. Stripe capture is idempotent so a retry can finish the
 database transition after a provider-side capture without charging twice.
 
+Request-mode card and pay-at-property bookings retain the legacy 24-hour host
+response window, frozen as `hostResponseDeadlineAt` on the booking. The Booking
+lifecycle sweep releases inventory only after that deadline. For an authorized
+card it first reconciles Stripe: a still-capturable authorization is canceled
+idempotently and Finance is terminalized; an already-captured race is settled
+and confirmed; an unavailable or indeterminate provider response leaves the
+booking and inventory unchanged for retry.
+
 ## Migration
 
 The legacy `instant_book` boolean maps `true` to `instant` and `false` to

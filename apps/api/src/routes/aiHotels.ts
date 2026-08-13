@@ -903,10 +903,7 @@ function targetProfileTrust(
   if (freshness === "unavailable" || freshness === "unknown") {
     reasonCodes.push("unavailable_data");
   }
-  if (
-    !missing.includes("availability_source") &&
-    (missing.includes("sellable_availability") || !capabilities.instantBook)
-  ) {
+  if (!missing.includes("availability_source") && missing.includes("sellable_availability")) {
     reasonCodes.push("sold_out");
   }
   if (

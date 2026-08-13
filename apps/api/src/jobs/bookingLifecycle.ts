@@ -372,9 +372,24 @@ async function selectPendingBookingExpiryCandidates(
        b.created_at AS "createdAt",
        b.updated_at AS "updatedAt",
        d.deadline_at AS "deadlineOrWindow",
-       b.checkout_context_id::text AS "checkoutContextId"
+       b.checkout_context_id::text AS "checkoutContextId",
+       b.public_reference AS "publicReference",
+       card_payment.provider_payment_intent_id AS "providerPaymentIntentId",
+       provider_account.provider_account_id AS "providerAccountRef"
      FROM booking.guest_bookings b
      JOIN candidate_deadlines d ON d.id = b.id
+     LEFT JOIN LATERAL (
+       SELECT payment.provider_payment_intent_id, payment.provider_account_id
+       FROM finance.payments payment
+       WHERE payment.guest_booking_id = b.id
+         AND payment.property_id = b.property_id
+         AND payment.payment_method = 'card'
+         AND payment.provider_payment_intent_id IS NOT NULL
+       ORDER BY payment.created_at DESC
+       LIMIT 1
+     ) card_payment ON TRUE
+     LEFT JOIN finance.payment_provider_accounts provider_account
+       ON provider_account.id = card_payment.provider_account_id
      WHERE d.deadline_at IS NOT NULL
        AND d.deadline_at <= $1::timestamptz
      ORDER BY d.deadline_at ASC, b.created_at ASC
@@ -493,6 +508,19 @@ async function applyPgLifecycleMutation(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    if (mutation.action === "pending-expiry" && candidate.paymentStatus === "authorized") {
+      const cardResult = await resolveExpiredStripeAuthorization(
+        client,
+        candidate,
+        mutation,
+        context,
+        config,
+      );
+      if (cardResult) {
+        await client.query("COMMIT");
+        return cardResult;
+      }
+    }
     if (mutation.deleteDraft && candidate.providerPaymentIntentId) {
       const cardResult = await resolveExpiredStripeDraft(
         client,
@@ -529,6 +557,96 @@ async function applyPgLifecycleMutation(
   } finally {
     client.release();
   }
+}
+
+async function resolveExpiredStripeAuthorization(
+  client: pg.PoolClient,
+  candidate: BookingLifecycleCandidate,
+  mutation: BookingLifecycleMutation,
+  context: BookingLifecycleJobContext,
+  config: Pick<PgBookingLifecycleStoreConfig, "stripePaymentProvider">,
+): Promise<BookingLifecycleMutationResult | null> {
+  const paymentIntentId = candidate.providerPaymentIntentId;
+  const provider = config.stripePaymentProvider;
+  if (!provider || !paymentIntentId) return lifecycleNoopResult(candidate, mutation);
+  const locked = await client.query<{ paymentId: string }>(
+    `SELECT payment.id::text AS "paymentId"
+       FROM finance.payments payment
+       JOIN booking.guest_bookings booking
+         ON booking.id = payment.guest_booking_id
+        AND booking.property_id = payment.property_id
+      WHERE booking.id = $1::uuid
+        AND booking.property_id = $2::uuid
+        AND booking.lifecycle_status = 'pending_payment'
+        AND booking.payment_status = 'authorized'
+        AND booking.booking_metadata ->> 'acceptanceMode' = 'request'
+        AND booking.booking_metadata ->> 'paymentMethod' = 'card'
+        AND NULLIF(booking.booking_metadata ->> 'hostResponseDeadlineAt', '')::timestamptz
+              = $3::timestamptz
+        AND payment.provider_payment_intent_id = $4
+        AND payment.payment_method = 'card'
+        AND payment.status = 'authorized'
+      FOR UPDATE OF payment, booking`,
+    [candidate.guestBookingId, candidate.propertyId, candidate.deadlineOrWindow, paymentIntentId],
+  );
+  const payment = locked.rows[0];
+  if (!payment) return lifecycleNoopResult(candidate, mutation);
+
+  let intent = await provider.retrievePaymentIntent(paymentIntentId);
+  assertLifecycleStripeBinding(candidate, intent);
+  if (intent.status === "succeeded") {
+    return settleExpiredStripeAuthorization(client, candidate, mutation, context, intent);
+  }
+  if (intent.status !== "requires_capture" && intent.status !== "canceled") {
+    return lifecycleNoopResult(candidate, mutation);
+  }
+  if (intent.status === "requires_capture") {
+    try {
+      intent = await provider.cancelPaymentIntent(
+        paymentIntentId,
+        `booking-card-request-expire:${candidate.propertyId}:${candidate.guestBookingId}:v1`,
+      );
+    } catch {
+      intent = await provider.retrievePaymentIntent(paymentIntentId);
+    }
+    assertLifecycleStripeBinding(candidate, intent);
+    if (intent.status === "succeeded") {
+      return settleExpiredStripeAuthorization(client, candidate, mutation, context, intent);
+    }
+    if (intent.status !== "canceled") return lifecycleNoopResult(candidate, mutation);
+  }
+  const terminalized = await client.query(
+    `UPDATE finance.payments
+        SET status = 'canceled',
+            updated_at = $2::timestamptz,
+            payment_metadata = payment_metadata ||
+              '{"providerStatus":"canceled","reconciliationStatus":"canceled"}'::jsonb
+      WHERE id = $1::uuid AND status = 'authorized'
+      RETURNING id`,
+    [payment.paymentId, context.now.toISOString()],
+  );
+  return terminalized.rows.length > 0 ? null : lifecycleNoopResult(candidate, mutation);
+}
+
+async function settleExpiredStripeAuthorization(
+  client: pg.PoolClient,
+  candidate: BookingLifecycleCandidate,
+  mutation: BookingLifecycleMutation,
+  context: BookingLifecycleJobContext,
+  intent: Awaited<ReturnType<StripeBookingPaymentProvider["retrievePaymentIntent"]>>,
+): Promise<BookingLifecycleMutationResult> {
+  await settleStripeBookingPayment(client, {
+    paymentIntentId: intent.paymentIntentId,
+    amountMinor: intent.amountMinor,
+    currency: intent.currency,
+    occurredAt: context.now,
+    correlationId: context.correlationId,
+  });
+  return {
+    ...lifecycleNoopResult(candidate, mutation),
+    applied: true,
+    toStatus: "confirmed",
+  };
 }
 
 async function resolveExpiredStripeDraft(
@@ -611,7 +729,7 @@ function assertLifecycleStripeBinding(
     intent.bookingReference !== candidate.publicReference ||
     intent.providerAccountRef !== candidate.providerAccountRef
   ) {
-    throw new Error("Stripe PaymentIntent did not match the expiring booking draft.");
+    throw new Error("Stripe PaymentIntent did not match the expiring booking.");
   }
 }
 
@@ -635,11 +753,23 @@ async function updateBookingLifecycleStatus(
     `WITH updated AS (
        UPDATE booking.guest_bookings
           SET lifecycle_status = $3,
+              payment_status = CASE
+                WHEN $10 = 'pending-expiry' AND payment_status = 'authorized' THEN 'failed'
+                ELSE payment_status
+              END,
               cancellation_reason = COALESCE(cancellation_reason, $4),
               updated_at = $5::timestamptz
         WHERE id = $1::uuid
           AND property_id = $2::uuid
           AND lifecycle_status = $6
+          AND (
+            $10 <> 'pending-expiry'
+            OR NULLIF(COALESCE(
+              booking_metadata ->> 'hostResponseDeadlineAt',
+              booking_metadata ->> 'pendingExpiresAt',
+              booking_metadata ->> 'expiresAt'
+            ), '')::timestamptz = $11::timestamptz
+          )
           AND (
             $10 <> 'accepted-payment-expiry'
             OR (
@@ -651,7 +781,8 @@ async function updateBookingLifecycleStatus(
           )
         RETURNING id::text AS "guestBookingId", $6::text AS "fromStatus",
           lifecycle_status AS "toStatus", booking_metadata AS "bookingMetadata",
-          source_system AS "sourceSystem", check_in::text AS "checkIn", check_out::text AS "checkOut"
+          payment_status AS "paymentStatus", source_system AS "sourceSystem",
+          check_in::text AS "checkIn", check_out::text AS "checkOut"
      ),
      status_event AS (
        INSERT INTO booking.booking_status_events
@@ -681,6 +812,7 @@ async function updateBookingLifecycleStatus(
      summary AS (
        UPDATE booking.direct_booking_summary_read_model summary
           SET lifecycle_status = (SELECT "toStatus" FROM updated),
+              payment_status = (SELECT "paymentStatus" FROM updated),
               projected_at = $5::timestamptz
         WHERE summary.guest_booking_id = (SELECT "guestBookingId"::uuid FROM updated)
      )
