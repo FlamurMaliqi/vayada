@@ -8123,6 +8123,7 @@ describe("vayada-api", () => {
               address: null,
               city: null,
               country: null,
+              timezone: "Europe/Vienna",
               instagram: null,
               facebook: null,
               tiktok: null,
@@ -8177,6 +8178,7 @@ describe("vayada-api", () => {
     expect(response.body).toMatchObject({
       id: propertyId,
       property_id: propertyId,
+      time_zone: "Europe/Vienna",
       booking_hotel_id: null,
       slug: "hotel-alpenrose",
       property_name: "Hotel Alpenrose",
