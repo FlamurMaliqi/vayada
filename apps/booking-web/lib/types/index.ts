@@ -161,6 +161,8 @@ export interface Booking {
   status: "confirmed" | "pending" | "cancelled" | "declined" | "expired" | "draft";
   paymentMethod?: string | null;
   paymentStatus?: string | null;
+  cardBrand?: string | null;
+  cardLast4?: string | null;
   hostResponseDeadline?: string | null;
   createdAt: string;
 }

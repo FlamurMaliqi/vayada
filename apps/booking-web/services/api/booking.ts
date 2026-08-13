@@ -15,6 +15,7 @@ export interface BookingRequestResponse {
   bookingReference?: string;
   authorizationComplete?: boolean;
   authorizationExpired?: boolean;
+  confirmationToken?: string;
 }
 
 export type BookingCreateRequest = {
@@ -232,6 +233,17 @@ export const bookingService = {
     return bookingWebPublic.post(
       `/api/booking-web/hotels/${encodeURIComponent(slug)}/bookings/lookup`,
       body,
+    );
+  },
+
+  async confirmation(
+    slug: string,
+    bookingReference: string,
+    confirmationToken: string,
+  ): Promise<Booking> {
+    return bookingWebPublic.post(
+      `/api/booking-web/hotels/${encodeURIComponent(slug)}/bookings/confirmation`,
+      { bookingReference, confirmationToken },
     );
   },
 

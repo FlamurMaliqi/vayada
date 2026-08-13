@@ -318,9 +318,9 @@
     "paymentMethodLabel": "Pembayaran",
     "withdrawRequest": "Tarik Permintaan",
     "withdrawing": "Menarik...",
-    "backToHotel": "Kembali ke Hotel",
+    "backToHotel": "Kembali ke {property}",
     "manageBooking": "Kelola Pemesanan",
-    "emailNotice": "Email konfirmasi telah dikirim ke alamat email Anda.",
+    "emailNotice": "Email konfirmasi telah dikirim ke {email}. Jika belum terlihat dalam beberapa menit, periksa folder spam Anda.",
     "requestChanges": "Ajukan Perubahan",
     "changePending": "Permintaan perubahan menunggu peninjauan",
     "changePendingDesc": "Kami akan meninjau tanggal baru yang Anda minta dan membalas melalui email."
