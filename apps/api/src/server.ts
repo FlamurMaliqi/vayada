@@ -127,6 +127,7 @@ import { createPgHotelAccountInviteRepository } from "./routes/hotelAccountInvit
 import { createPgMarketplaceHotelProfileStatusRepository } from "./routes/marketplaceHotelProfileStatus.js";
 import { createPgMarketplaceHotelSelfServiceRepository } from "./routes/marketplaceHotelSelfService.js";
 import { createPgMarketplaceAffiliateAdminRepository } from "./domains/marketplaceAffiliateAdminRepository.js";
+import { createPgFinanceAffiliateCommissionRepository } from "./domains/financeAffiliateCommissionRepository.js";
 import { createPgMarketplaceCreatorSelfServiceRepository } from "./routes/marketplaceCreatorSelfService.js";
 import { createPgSharedHotelSetupStatusRepository } from "./platform/sharedHotelSetupStatusReadModel.js";
 import { createPgIdentityAdminUsersReadRepository } from "./routes/identityAdminUsers.js";
@@ -631,6 +632,14 @@ const marketplaceCreatorSelfServiceRepository = createPgMarketplaceCreatorSelfSe
   connectionString: targetDatabaseUrl,
 });
 
+const marketplaceAffiliateAdminRepository = createPgMarketplaceAffiliateAdminRepository({
+  connectionString: targetDatabaseUrl,
+});
+
+const financeAffiliateCommissionRepository = createPgFinanceAffiliateCommissionRepository({
+  connectionString: targetDatabaseUrl,
+});
+
 const creatorPlatformConnectionRuntime = (() => {
   const connectionConfig = config.creatorPlatformConnections;
   const adapters: CreatorPlatformAdapter[] = [];
@@ -907,9 +916,11 @@ const app = buildApp({
   marketplaceHotelSelfServiceRepository: createPgMarketplaceHotelSelfServiceRepository({
     connectionString: targetDatabaseUrl,
   }),
-  marketplaceAffiliateAdminRepository: createPgMarketplaceAffiliateAdminRepository({
-    connectionString: targetDatabaseUrl,
-  }),
+  marketplaceAffiliateAdminRepository,
+  financeAffiliateCommissions: {
+    repository: financeAffiliateCommissionRepository,
+    affiliateScope: marketplaceAffiliateAdminRepository,
+  },
   marketplaceCreatorSelfServiceRepository,
   marketplaceCreatorPlatformConnections: creatorPlatformConnectionRuntime,
   marketplaceCreatorProfileMediaRepository: platformMediaRuntime?.profileMediaRepository,
