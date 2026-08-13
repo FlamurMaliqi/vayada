@@ -14,6 +14,7 @@ const USER_ID = "15300000-0000-4000-8000-000000000002";
 const PROPERTY_ID = "15300000-0000-4000-8000-000000000003";
 const BOOKING_ID = "15300000-0000-4000-8000-000000000004";
 const HISTORICAL_BOOKING_ID = "15300000-0000-4000-8000-000000000005";
+const CREATION_EVIDENCE_ID = "15300000-0000-4000-8000-000000000006";
 
 describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQL port", () => {
   const pool = new pg.Pool({
@@ -66,6 +67,17 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
          'cash', '{"contractVersion":"pms-manual-booking.v1"}'::jsonb)`,
       [BOOKING_ID, PROPERTY_ID],
     );
+    await client.query(
+      `INSERT INTO platform.idempotency_keys (
+         id, operation_scope, operation, key_hash, request_fingerprint_hash,
+         tenant_scope, property_id, correlation_id, expires_at, idempotency_metadata
+       ) VALUES (
+         $1::uuid, 'pms', 'pms.manual_booking.create', repeat('a', 64), repeat('b', 64),
+         'property', $2::uuid, 'vay-1253', now() + interval '1 day',
+         '{"contractVersion":"pms-manual-booking.v1","commandId":"vay-1253-command-current"}'::jsonb
+       )`,
+      [CREATION_EVIDENCE_ID, PROPERTY_ID],
+    );
     transaction = await financeManualBookingSettlementTransaction(client);
   });
 
@@ -90,11 +102,16 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
   });
 
   it("writes one provider-free manual paid fact and exactly replays it", async () => {
-    const input = { transaction, command: command("create-and-replay") };
+    const input = {
+      transaction,
+      bookingCreationEvidenceId: CREATION_EVIDENCE_ID,
+      command: command("create-and-replay"),
+    };
     const created = await port.settleFull(input);
     await expect(
       port.settleFull({
         transaction,
+        bookingCreationEvidenceId: CREATION_EVIDENCE_ID,
         command: {
           ...input.command,
           audit: {
@@ -148,16 +165,22 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
 
   it("rejects reuse with changed facts or a changed key", async () => {
     const original = command("conflict");
-    await port.settleFull({ transaction, command: original });
+    await port.settleFull({
+      transaction,
+      bookingCreationEvidenceId: CREATION_EVIDENCE_ID,
+      command: original,
+    });
     await expect(
       port.settleFull({
         transaction,
+        bookingCreationEvidenceId: CREATION_EVIDENCE_ID,
         command: { ...original, payload: { ...original.payload, paymentMethod: "other" } },
       }),
     ).rejects.toMatchObject({ code: "idempotency_conflict" });
     await expect(
       port.settleFull({
         transaction,
+        bookingCreationEvidenceId: CREATION_EVIDENCE_ID,
         command: { ...original, idempotencyKey: "changed-key" },
       }),
     ).rejects.toMatchObject({ code: "idempotency_conflict" });
@@ -173,6 +196,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
       await expect(
         port.settleFull({
           transaction,
+          bookingCreationEvidenceId: CREATION_EVIDENCE_ID,
           command: {
             ...command(`authoritative-${index}`),
             payload: { ...command(`authoritative-${index}`).payload, ...change },
@@ -185,14 +209,23 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
     await expect(
       port.settleFull({
         transaction,
+        bookingCreationEvidenceId: CREATION_EVIDENCE_ID,
         command: { ...command("wrong-property"), propertyId: USER_ID },
       }),
     ).rejects.toMatchObject({ code: "cross_property" });
 
     const original = command("one-per-booking");
-    await port.settleFull({ transaction, command: original });
+    await port.settleFull({
+      transaction,
+      bookingCreationEvidenceId: CREATION_EVIDENCE_ID,
+      command: original,
+    });
     await expect(
-      port.settleFull({ transaction, command: command("second-key-and-source") }),
+      port.settleFull({
+        transaction,
+        bookingCreationEvidenceId: CREATION_EVIDENCE_ID,
+        command: command("second-key-and-source"),
+      }),
     ).rejects.toMatchObject({ code: "idempotency_conflict" });
   });
 
@@ -200,6 +233,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
     await client.query("SAVEPOINT caller_transaction");
     const created = await port.settleFull({
       transaction,
+      bookingCreationEvidenceId: CREATION_EVIDENCE_ID,
       command: command("caller-rollback"),
     });
     await client.query("ROLLBACK TO SAVEPOINT caller_transaction");
@@ -217,7 +251,11 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
     try {
       const unscoped = await financeManualBookingSettlementTransaction(outside);
       await expect(
-        port.settleFull({ transaction: unscoped, command: command("no-begin") }),
+        port.settleFull({
+          transaction: unscoped,
+          bookingCreationEvidenceId: CREATION_EVIDENCE_ID,
+          command: command("no-begin"),
+        }),
       ).rejects.toMatchObject({ code: "invalid_command" });
     } finally {
       outside.release();
@@ -225,12 +263,19 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance manual booking settlement PostgreSQ
     const historical = command("historical");
     historical.payload.booking.guestBookingId = HISTORICAL_BOOKING_ID;
     historical.payload.sourceReference = "pms-manual-booking:vay-1253-historical";
-    await client.query("UPDATE booking.guest_bookings SET updated_at = now() WHERE id = $1::uuid", [
-      HISTORICAL_BOOKING_ID,
-    ]);
-    await expect(port.settleFull({ transaction, command: historical })).rejects.toMatchObject({
-      code: "invalid_command",
-    });
+    await client.query(
+      `UPDATE booking.guest_bookings
+       SET created_at = transaction_timestamp(), updated_at = now()
+       WHERE id = $1::uuid`,
+      [HISTORICAL_BOOKING_ID],
+    );
+    await expect(
+      port.settleFull({
+        transaction,
+        bookingCreationEvidenceId: CREATION_EVIDENCE_ID,
+        command: historical,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_command" });
   });
 });
 
