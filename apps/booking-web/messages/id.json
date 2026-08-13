@@ -28,6 +28,7 @@
     "contact": "Kontak",
     "phone": "Telepon",
     "email": "Email",
+    "close": "Tutup",
     "loading": "Memuat...",
     "qty": "Jml",
     "perPerson": "per orang",
@@ -255,6 +256,8 @@
   "myBooking": {
     "title": "Pemesanan Saya",
     "notFound": "Tidak ada pemesanan ditemukan dengan referensi dan email tersebut.",
+    "tooManyAttempts": "Terlalu banyak percobaan. Tunggu satu menit lalu coba lagi.",
+    "lookupUnavailable": "Pemesanan Anda tidak dapat dicari saat ini. Silakan coba lagi.",
     "lookUp": "Cari Pemesanan Anda",
     "lookUpDesc": "Masukkan referensi pemesanan dan alamat email Anda untuk melihat detail reservasi.",
     "reference": "Referensi Pemesanan",

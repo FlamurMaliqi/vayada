@@ -28,6 +28,7 @@
     "contact": "Kontakt",
     "phone": "Telefon",
     "email": "E-Mail",
+    "close": "Schließen",
     "loading": "Wird geladen...",
     "qty": "Anz",
     "perPerson": "pro Person",
@@ -255,6 +256,8 @@
   "myBooking": {
     "title": "Meine Buchung",
     "notFound": "Keine Buchung mit dieser Referenz und E-Mail-Adresse gefunden.",
+    "tooManyAttempts": "Zu viele Versuche. Bitte warten Sie eine Minute und versuchen Sie es erneut.",
+    "lookupUnavailable": "Ihre Buchung konnte gerade nicht abgerufen werden. Bitte versuchen Sie es erneut.",
     "lookUp": "Buchung nachschlagen",
     "lookUpDesc": "Geben Sie Ihre Buchungsreferenz und E-Mail-Adresse ein, um Ihre Reservierungsdetails einzusehen.",
     "reference": "Buchungsreferenz",

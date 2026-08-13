@@ -28,6 +28,7 @@
     "contact": "Contact",
     "phone": "Phone",
     "email": "Email",
+    "close": "Close",
     "loading": "Loading...",
     "qty": "Qty",
     "perPerson": "per person",
@@ -255,6 +256,8 @@
   "myBooking": {
     "title": "My Booking",
     "notFound": "No booking found with that reference and email.",
+    "tooManyAttempts": "Too many attempts. Please wait a minute and try again.",
+    "lookupUnavailable": "We couldn't look up your booking right now. Please try again.",
     "lookUp": "Look Up Your Booking",
     "lookUpDesc": "Enter your booking reference and email address to view your reservation details.",
     "reference": "Booking Reference",
