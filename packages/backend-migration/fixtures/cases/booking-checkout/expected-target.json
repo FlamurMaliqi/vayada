@@ -86,6 +86,7 @@
         "heroSubtext": null,
         "primaryColor": "#0F766E",
         "fontPairing": "modern-minimalist",
+        "acceptanceMode": "instant",
         "sourceFreshness": {
           "booking_hotels": {
             "status": "fresh",

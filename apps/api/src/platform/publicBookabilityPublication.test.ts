@@ -100,6 +100,13 @@ describe("target public bookability publication", () => {
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).not.toContain("profile.timezone");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("AS has_coverage");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("AS has_sellable_offers");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("settings.acceptance_mode");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+      "'instantBook', COALESCE(input.acceptance_mode = 'instant', FALSE)",
+    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).not.toContain(
+      "'instantBook', COALESCE(input.has_sellable_offers, FALSE)",
+    );
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
       "settings.default_currency AS booking_default_currency",
     );
