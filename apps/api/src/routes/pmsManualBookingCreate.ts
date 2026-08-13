@@ -89,12 +89,12 @@ export async function registerPmsManualBookingCreateRoutes(
   app: FastifyInstance,
   options: PmsManualBookingCreateRoutesOptions,
 ): Promise<void> {
-  app.post<{ Params: { propertyId: string }; Body: unknown }>(
+  app.post<{ Params: { propertyId: string }; Querystring: unknown; Body: unknown }>(
     "/properties/:propertyId/manual-bookings",
     async (request, reply) => {
       try {
         const scope = authorize(request, requestsPaidSettlement(request.body));
-        const command = parseCreateCommand(request.body, scope);
+        const command = parseCreateCommand(request.query, request.body, scope);
         const result = await options.command.createManualBooking(command);
         return reply.status(result.outcome === "created" ? 201 : 200).send(result);
       } catch (error) {
@@ -129,7 +129,13 @@ export async function registerPmsManualBookingCreateRoutes(
   );
 }
 
-function parseCreateCommand(value: unknown, scope: AuthorizedScope): PmsManualBookingCreateCommand {
+function parseCreateCommand(
+  query: unknown,
+  value: unknown,
+  scope: AuthorizedScope,
+): PmsManualBookingCreateCommand {
+  if (!query || typeof query !== "object" || Array.isArray(query) || Object.keys(query).length)
+    throw new PmsManualBookingCreateError("unknown_field");
   const raw = record(value);
   if (
     raw &&
@@ -162,7 +168,7 @@ function parseCreateCommand(value: unknown, scope: AuthorizedScope): PmsManualBo
   });
   return {
     ...parsed.data,
-    stays: preview.stays.map(({ dates: _, ...selected }) => selected),
+    stays: preview.stays,
     addOns: preview.addOns,
     propertyId: scope.propertyId,
     organizationId: scope.organizationId,
