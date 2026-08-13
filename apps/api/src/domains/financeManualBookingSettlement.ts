@@ -53,6 +53,8 @@ type BookingRow = {
   currency: string;
   expectedPaymentMethod: string;
   createdInTransaction: boolean;
+  sourceBookingId: string;
+  contractVersion: string | null;
 };
 
 export function createFinanceManualBookingSettlementPort(): FinanceManualBookingSettlementPort {
@@ -151,7 +153,9 @@ async function lockBooking(
             payment_status AS "paymentStatus", total_amount::text AS "totalAmount",
             balance_amount::text AS "balanceAmount", trim(currency) AS currency,
             expected_payment_method AS "expectedPaymentMethod",
-            (xmin::text::xid8 = pg_current_xact_id()) AS "createdInTransaction"
+            source_booking_id AS "sourceBookingId",
+            booking_metadata->>'contractVersion' AS "contractVersion",
+            (created_at = transaction_timestamp()) AS "createdInTransaction"
      FROM booking.guest_bookings WHERE id = $1::uuid FOR UPDATE`,
     [guestBookingId],
   );
@@ -172,7 +176,12 @@ function assertBookingCreationState(
   if (booking.sourceSystem !== "pms" || booking.lifecycleStatus !== "confirmed") {
     throw new FinanceManualBookingSettlementError("invalid_command");
   }
-  if (!booking.createdInTransaction || booking.expectedPaymentMethod !== command.paymentMethod) {
+  if (
+    !booking.createdInTransaction ||
+    booking.contractVersion !== "pms-manual-booking.v1" ||
+    command.sourceReference !== `pms-manual-booking:${booking.sourceBookingId}` ||
+    booking.expectedPaymentMethod !== command.paymentMethod
+  ) {
     throw new FinanceManualBookingSettlementError("invalid_command");
   }
 }
