@@ -271,6 +271,151 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     expect((await counts()).nightly).toBe("2");
   });
 
+  it("atomically cancels a manual booking with explicit retained-charge evidence", async () => {
+    const created = await repository.createManualBooking(
+      command("cancel", "unpaid", "cash", "2026-08-20", false),
+    );
+    const cancellation = {
+      propertyId,
+      guestBookingId: created.guestBookingId,
+      commandId: "cancel-command",
+      idempotencyKey: "cancel-key",
+      reason: "property cancellation",
+      accountingDate: "2026-08-21",
+      retainedCharges: [
+        {
+          linePosition: 1,
+          stayDate: "2026-08-20",
+          amount: { amountDecimal: "25.00", currency: "EUR" },
+        },
+      ],
+      audit: {
+        actor: { kind: "user" as const, userId: actorId, organizationId },
+        requestId: "cancel-request",
+        reason: "Cancel manual booking",
+        requestedAt: acceptedAt.toISOString(),
+      },
+    };
+    await expect(
+      operations.cancelManualBooking!({
+        ...cancellation,
+        commandId: "cancel-duplicate-command",
+        idempotencyKey: "cancel-duplicate-key",
+        retainedCharges: [cancellation.retainedCharges[0]!, cancellation.retainedCharges[0]!],
+      }),
+    ).resolves.toMatchObject({ ok: false, code: "invalid_body" });
+    await expect(operations.cancelManualBooking!(cancellation)).resolves.toMatchObject({
+      ok: true,
+      commandMeta: { sideEffects: ["calendar_refresh", "ari_changed", "audit_event"] },
+    });
+    await expect(operations.cancelManualBooking!(cancellation)).resolves.toMatchObject({
+      ok: true,
+      replayed: true,
+    });
+    await expect(
+      operations.cancelManualBooking!({ ...cancellation, reason: "changed" }),
+    ).resolves.toMatchObject({ ok: false, code: "idempotency_conflict" });
+
+    const stored = await admin.query(
+      `SELECT booking.lifecycle_status AS status,assignment.assignment_status AS assignment,
+         assignment.room_id AS room,booking.cancellation_reason AS reason,
+         (SELECT count(*)::int FROM booking.nightly_revenue_evidence evidence
+          WHERE evidence.guest_booking_id=booking.id) AS evidence_count,
+         (SELECT SUM(occupied_room_nights)::int FROM booking.nightly_revenue_evidence evidence
+          WHERE evidence.guest_booking_id=booking.id) AS occupied,
+         (SELECT SUM(gross_room_amount)::text FROM booking.nightly_revenue_evidence evidence
+          WHERE evidence.guest_booking_id=booking.id) AS amount,
+         (SELECT MAX(recognized_on)::text FROM booking.nightly_revenue_evidence evidence
+          WHERE evidence.guest_booking_id=booking.id AND economic_event='retained_charge') AS recognized,
+         (SELECT MAX(source_revision)::int FROM booking.nightly_revenue_evidence evidence
+          WHERE evidence.guest_booking_id=booking.id AND economic_event='occupancy_adjustment') AS occupancy_revision,
+         (SELECT MAX(source_revision)::int FROM booking.nightly_revenue_evidence evidence
+          WHERE evidence.guest_booking_id=booking.id AND economic_event='retained_charge') AS retained_revision,
+         (SELECT count(*)::int FROM platform.outbox_events outbox
+          WHERE outbox.resource_id=booking.id::text AND outbox.outbox_key LIKE 'booking.manual-cancellation.%') AS outbox,
+         (SELECT source_system FROM platform.domain_events event
+          WHERE event.resource_id=booking.id::text AND event.event_type='booking.manual_booking.canceled.v1') AS event_source,
+         (SELECT event_payload ? 'reason' FROM booking.booking_status_events event
+          WHERE event.guest_booking_id=booking.id AND event.event_type='guest_booking.canceled') AS leaks_reason,
+         (SELECT private_payload->>'reason' FROM platform.product_audit_events audit
+          WHERE audit.property_id=booking.property_id AND action='pms.manual_cancellation') AS audit_reason
+       FROM booking.guest_bookings booking JOIN pms.operational_booking_assignments assignment
+         ON assignment.guest_booking_id=booking.id WHERE booking.id=$1::uuid`,
+      [created.guestBookingId],
+    );
+    expect(stored.rows[0]).toEqual({
+      status: "canceled",
+      assignment: "canceled",
+      room: null,
+      reason: "property_cancellation",
+      evidence_count: 5,
+      occupied: 0,
+      amount: "25.0000",
+      recognized: "2026-08-21",
+      occupancy_revision: 2,
+      retained_revision: 3,
+      outbox: 2,
+      event_source: "booking",
+      leaks_reason: false,
+      audit_reason: "property cancellation",
+    });
+  });
+
+  it("rolls cancellation, room release, audit, and idempotency back on evidence failure", async () => {
+    const created = await repository.createManualBooking(
+      command("cancel-rollback", "unpaid", "cash", "2026-08-12", false),
+    );
+    await admin.query(
+      "UPDATE hotel_catalog.property_locations SET timezone=NULL WHERE property_id=$1::uuid",
+      [propertyId],
+    );
+    try {
+      await expect(
+        operations.cancelManualBooking!({
+          propertyId,
+          guestBookingId: created.guestBookingId,
+          commandId: "cancel-rollback-command",
+          idempotencyKey: "cancel-rollback-key",
+          accountingDate: null,
+          retainedCharges: [],
+          audit: {
+            actor: { kind: "user", userId: actorId, organizationId },
+            requestId: "cancel-rollback-request",
+            reason: "Cancel manual booking",
+            requestedAt: acceptedAt.toISOString(),
+          },
+        }),
+      ).resolves.toMatchObject({ ok: false, code: "invalid_body" });
+    } finally {
+      await admin.query(
+        "UPDATE hotel_catalog.property_locations SET timezone='Europe/Athens' WHERE property_id=$1::uuid",
+        [propertyId],
+      );
+    }
+    const state = await admin.query(
+      `SELECT booking.lifecycle_status AS status,assignment.assignment_status AS assignment,
+         (SELECT count(*)::int FROM platform.idempotency_keys key
+          WHERE key.property_id=booking.property_id AND operation='manual_cancellation_command') AS keys,
+         (SELECT count(*)::int FROM platform.product_audit_events audit
+          WHERE audit.property_id=booking.property_id AND action='pms.manual_cancellation') AS audits,
+         (SELECT count(*)::int FROM platform.domain_events event
+          WHERE event.property_id=booking.property_id AND event.event_type='booking.manual_booking.canceled.v1') AS events,
+         (SELECT count(*)::int FROM platform.outbox_events outbox
+          WHERE outbox.property_id=booking.property_id AND outbox.outbox_key LIKE 'booking.manual-cancellation.%') AS outbox
+       FROM booking.guest_bookings booking JOIN pms.operational_booking_assignments assignment
+         ON assignment.guest_booking_id=booking.id WHERE booking.id=$1::uuid`,
+      [created.guestBookingId],
+    );
+    expect(state.rows[0]).toEqual({
+      status: "confirmed",
+      assignment: "assigned",
+      keys: 0,
+      audits: 0,
+      events: 0,
+      outbox: 0,
+    });
+  });
+
   it("round-trips every expected method for paid and unpaid bookings", async () => {
     const methods = ["pay_at_property", "bank_transfer", "manual_card", "cash", "other"] as const;
     for (const [methodIndex, method] of methods.entries()) {
