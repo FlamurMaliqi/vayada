@@ -4,6 +4,9 @@ import { pmsManualBookingClient } from "../api/pmsManualBookingClient";
 import { unsupportedPmsNextStackFeature } from "../api/unsupported";
 import { BookingAddon } from "../bookings";
 
+// prettier-ignore
+type ManualAddonApi = { addOns: Array<{ addonItemId: string; name: string; description: string; price: string; currency: string; category: string; pricingModel: "per_stay" | "per_night" | "per_guest" | "per_guest_night"; status: string; }> };
+
 export interface CalendarRoomType {
   id: string;
   name: string;
@@ -249,8 +252,25 @@ export const calendarService = {
   createAdminBooking: (_data: CreateAdminBookingPayload) =>
     unsupportedPmsNextStackFeature("Manual booking creation"),
 
-  listAvailableAddons: (_roomId: string) =>
-    unsupportedPmsNextStackFeature<BookingAddon[]>("Booking add-ons"),
+  listAvailableAddons: async (_roomId: string): Promise<BookingAddon[]> => {
+    const propertyId = await resolveSelectedPmsPropertyId("loading booking add-ons");
+    const response = await pmsOperationsClient.get<ManualAddonApi>(
+      propertyEndpoint(propertyId, "manual-bookings/addons"),
+      pmsOperationsRequestOptions,
+    );
+    return response.addOns
+      .filter((addon) => addon.status === "active")
+      .map((addon) => ({
+        id: addon.addonItemId,
+        name: addon.name,
+        description: addon.description,
+        price: Number(addon.price),
+        currency: addon.currency,
+        category: addon.category,
+        perPerson: addon.pricingModel === "per_guest" || addon.pricingModel === "per_guest_night",
+        perNight: addon.pricingModel === "per_night" || addon.pricingModel === "per_guest_night",
+      }));
+  },
 
   // Booking-engine-equivalent nightly rate for the given room type and check-in
   // date — used by the New Booking modal so the pre-filled rate matches what

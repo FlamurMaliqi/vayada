@@ -58,6 +58,28 @@ export async function registerPmsManualBookingPreviewRoutes(
   app: FastifyInstance,
   ports: PmsManualBookingPreviewRoutesOptions,
 ): Promise<void> {
+  app.get<{ Params: { propertyId: string } }>(
+    "/properties/:propertyId/manual-bookings/addons",
+    async (request, reply) => {
+      try {
+        const { propertyId } = authorize(request);
+        const context = await ports.booking.listAddonItemsByHotelId(propertyId);
+        if (!context) fail(404, "property_not_found");
+        return reply.send({
+          contractVersion: "pms-manual-booking.v1",
+          addOns: context.addonItems.filter((addon) => addon.status === "active"),
+        });
+      } catch (error) {
+        if (error instanceof UnauthorizedError)
+          return reply.status(401).send({ code: "unauthenticated" });
+        if (error instanceof AuthorizationError)
+          return reply.status(403).send({ code: "forbidden" });
+        if (error instanceof PreviewError) return reply.status(error.status).send(error.body);
+        request.log.error({ err: error }, "manual booking add-ons failed");
+        return reply.status(500).send({ code: "manual_booking_preview_unavailable" });
+      }
+    },
+  );
   app.post<{ Params: { propertyId: string }; Querystring: unknown; Body: unknown }>(
     "/properties/:propertyId/manual-bookings/preview",
     async (request, reply) => {

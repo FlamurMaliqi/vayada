@@ -79,6 +79,9 @@ describe("target manual-booking preview", () => {
     ]);
   });
 
+  // prettier-ignore
+  it("lists active add-ons for front-desk PMS users", async () => { const state: State = { reads: [] }; app = await testApp(state, { relationship: "front_desk" }); const response = await app.inject({ method: "GET", url: `/properties/${propertyId}/manual-bookings/addons`, headers: headers() }); expect(response.statusCode).toBe(200); expect(response.json().addOns.map((addon: any) => addon.addonItemId)).toEqual(addonIds); expect(state.reads).toEqual(["addons"]); });
+
   it.each([
     [false, "150.00"],
     [true, "155.00"],
