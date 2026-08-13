@@ -116,6 +116,17 @@ describe("target manual-booking create route", () => {
     expect(state.calls).toEqual([]);
   });
 
+  it("rejects query-string aliases after authorization", async () => {
+    const state: State = { calls: [] };
+    app = await testApp(state);
+    const response = await request(app, command("unpaid", "cash"), headers(), "?channel=direct");
+    expect([response.statusCode, response.json().code, state.calls]).toEqual([
+      400,
+      "unknown_field",
+      [],
+    ]);
+  });
+
   it("returns an exact replay as 200", async () => {
     const state: State = { calls: [], outcome: "replayed" };
     app = await testApp(state);
@@ -276,10 +287,11 @@ async function request(
   app: Awaited<ReturnType<typeof testApp>>,
   payload: unknown,
   requestHeaders: Record<string, string> = headers(),
+  query = "",
 ) {
   return app.inject({
     method: "POST",
-    url: `/properties/${propertyId}/manual-bookings`,
+    url: `/properties/${propertyId}/manual-bookings${query}`,
     headers: requestHeaders,
     payload: payload as object,
   });
