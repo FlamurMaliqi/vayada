@@ -106,6 +106,9 @@ export type SharedHotelSetupStatusRepository = {
     idempotencyKey: string;
     correlationId: string;
     profile: SharedPropertyProfileInput;
+    audit?: { actorUserId: string; requestId: string; receivedAt: string; reason?: string };
+    targetAccountUserId?: string;
+    provisioningReference?: string;
   }): Promise<SharedPropertyProfile>;
   updatePropertyProfile(input: {
     organizationId: string;
@@ -318,6 +321,11 @@ export async function registerSharedHotelSetupStatusRoutes(
         idempotencyKey,
         correlationId: access.context.audit.correlationId ?? access.context.audit.requestId,
         profile: profileInput,
+        audit: {
+          actorUserId: access.context.actor.internalUserId,
+          requestId: access.context.audit.requestId,
+          receivedAt: access.context.audit.receivedAt,
+        },
       });
 
       return reply.status(201).send(profile);
