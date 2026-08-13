@@ -16,6 +16,8 @@ const adjustmentMigrations = await Promise.all(
     "0077_booking_nightly_revenue_date_changes.sql",
     "0082_booking_nightly_revenue_stay_corrections.sql",
     "0083_validate_booking_nightly_revenue_stay_corrections.sql",
+    "0084_booking_nightly_revenue_price_corrections.sql",
+    "0085_validate_booking_nightly_revenue_price_corrections.sql",
   ].map((file) => readFile(join(import.meta.dirname, "../migrations", file), "utf8")),
 );
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
@@ -212,6 +214,65 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking nightly revenue evidence (PostgreSQ
       revision: 2,
       corrects: original,
     });
+  });
+
+  it("replaces only current occupied-night economics", async () => {
+    const booking = await createBooking();
+    const missing = (await insertEvidence(booking, { amount: null, quality: "missing" })).rows[0]!
+      .id as string;
+    const zero = (
+      await insertEvidence(booking, {
+        amount: "0",
+        event: "correction",
+        lifecycle: "corrected",
+        occupied: 0,
+        revision: 2,
+        corrects: missing,
+      })
+    ).rows[0]!.id as string;
+    await rejects(
+      insertEvidence(booking, {
+        amount: "1",
+        event: "correction",
+        lifecycle: "corrected",
+        occupied: 0,
+        revision: 3,
+        corrects: missing,
+      }),
+      { constraint: "chk_booking_nightly_revenue_evidence_price_correction" },
+    );
+    const raised = (
+      await insertEvidence(booking, {
+        amount: "125",
+        event: "correction",
+        lifecycle: "corrected",
+        occupied: 0,
+        revision: 3,
+        corrects: zero,
+      })
+    ).rows[0]!.id as string;
+    const lowered = (
+      await insertEvidence(booking, {
+        amount: "-25",
+        event: "correction",
+        lifecycle: "corrected",
+        occupied: 0,
+        revision: 4,
+        corrects: raised,
+      })
+    ).rows[0]!.id as string;
+    for (const amount of ["0", "-101"])
+      await rejects(
+        insertEvidence(booking, {
+          amount,
+          event: "correction",
+          lifecycle: "corrected",
+          occupied: 0,
+          revision: 5,
+          corrects: lowered,
+        }),
+        { constraint: "chk_booking_nightly_revenue_evidence_price_correction" },
+      );
   });
 
   it("rejects wrong-booking and inexact correction targets", async () => {
