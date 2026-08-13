@@ -234,6 +234,7 @@ export const channexRequests = {
     channel: string;
     sellMode: "per_room" | "per_person";
     markupPercent: number;
+    externalRoomTypeId?: string;
     ratePlan: Record<string, unknown>;
   }): ChannexRequest => ({
     method: "POST",
@@ -242,7 +243,7 @@ export const channexRequests = {
       rate_plan: {
         ...input.ratePlan,
         room_type_id: required(
-          externalRoomTypeIds.get(input.roomTypeId) ?? "",
+          input.externalRoomTypeId ?? externalRoomTypeIds.get(input.roomTypeId) ?? "",
           `External room type ${input.roomTypeId}`,
         ),
       },
