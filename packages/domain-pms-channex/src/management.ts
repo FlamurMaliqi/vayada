@@ -105,7 +105,7 @@ export type ChannexManagementSnapshot = {
   activeOperation: ChannexManagementOperation | null;
 };
 
-export type ChannexManagementCommand = {
+export type ChannexManagementCommandRequest = {
   commandId: string;
   idempotencyKey: string;
   operationType: Exclude<ChannexManagementOperationType, "update_markups">;
