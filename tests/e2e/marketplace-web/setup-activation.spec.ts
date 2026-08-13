@@ -95,7 +95,7 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(page.getByRole("button", { name: "Add External Creator" })).toHaveCount(0);
   });
 
-  test("creates the first hotel with the complete shared minimum", async ({ page, baseURL }) => {
+  test("recovers the first hotel after a correlated create conflict", async ({ page, baseURL }) => {
     await mockGooglePlaces(page);
     await primeBrowserState(page, true);
     await mockAuthSession(page);
@@ -110,6 +110,8 @@ test.describe("marketplace-web shared setup activation", () => {
 
     const logoMediaObjectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     let propertyCreated = false;
+    let propertyCreateRequests = 0;
+    let createdPropertyPayload: Record<string, unknown> | null = null;
     let logoUploadFinalized = false;
     let logoAssigned = false;
     let personalMediaRequests = 0;
@@ -171,6 +173,7 @@ test.describe("marketplace-web shared setup activation", () => {
         return;
       }
       const payload = route.request().postDataJSON();
+      propertyCreateRequests += 1;
       expect(payload).toMatchObject({
         displayName: "Hotel Alpenrose",
         propertyType: "hotel",
@@ -207,12 +210,32 @@ test.describe("marketplace-web shared setup activation", () => {
       expect(payload.location.timezone).toMatch(/\//);
       expect(route.request().headers()["idempotency-key"]).toBeTruthy();
       propertyCreated = true;
+      createdPropertyPayload = payload;
       await route.fulfill({
-        status: 201,
+        status: 409,
         headers: corsHeaders(route),
-        json: sharedPropertyProfile(payload),
+        json: {
+          code: "idempotency_key_conflict",
+          detail: "These hotel details changed during the save. Review them and try again.",
+          propertyId,
+        },
       });
     });
+    await page.route(
+      new RegExp(`/api/hotel-setup/properties/${propertyId}/profile$`),
+      async (route) => {
+        if (route.request().method() === "OPTIONS") {
+          await fulfillCorsPreflight(route);
+          return;
+        }
+        expect(createdPropertyPayload).not.toBeNull();
+        await route.fulfill({
+          status: 200,
+          headers: corsHeaders(route),
+          json: sharedPropertyProfile(createdPropertyPayload ?? {}),
+        });
+      },
+    );
     await page.route(/\/auth\/profile$/, async (route) => {
       if (route.request().method() === "OPTIONS") {
         await fulfillCorsPreflight(route);
@@ -474,6 +497,7 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(marketplaceProgress.locator('[data-state="upcoming"]')).toHaveCount(0);
     await expect(page.getByText("Step 4 of 4", { exact: true })).toBeVisible();
     expect(propertyCreated).toBe(true);
+    expect(propertyCreateRequests).toBe(1);
     expect(logoUploadFinalized).toBe(true);
     expect(logoAssigned).toBe(true);
     expect(accountProfileWrites).toBe(0);

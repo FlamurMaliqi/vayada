@@ -1320,6 +1320,52 @@ describe("shared hotel setup status route", () => {
     expect(createPropertyProfile).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      code: "idempotency_key_conflict",
+      detail: "These hotel details changed during the save. Review them and try again.",
+      propertyId,
+    },
+    {
+      code: "command_in_progress",
+      detail: "Your hotel setup is still being saved. Please try again in a moment.",
+      propertyId: null,
+    },
+  ] as const)("returns a useful message for property create conflict $code", async (conflict) => {
+    const createPropertyProfile = vi.fn(async () => {
+      throw Object.assign(new Error(conflict.code), {
+        code: conflict.code,
+        ...(conflict.propertyId ? { propertyId: conflict.propertyId } : {}),
+      });
+    });
+    app = buildSharedSetupApp({
+      linkedResources: [],
+      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+      repository: {
+        ...unusedStatusMethods(),
+        ...unusedPropertyProfileMethods(),
+        createPropertyProfile,
+      },
+    });
+
+    const response = await injectJson<{ code: string; detail: string; propertyId?: string }>(app, {
+      method: "POST",
+      url: "/api/hotel-setup/properties",
+      headers: {
+        authorization: "Bearer valid-token",
+        "idempotency-key": "create-alpenrose-munich",
+      },
+      payload: minimalHotelInput(),
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toEqual({
+      code: conflict.code,
+      detail: conflict.detail,
+      ...(conflict.propertyId ? { propertyId: conflict.propertyId } : {}),
+    });
+  });
+
   it("requires owner permission when property creation exposes map or contact data", async () => {
     const createPropertyProfile = vi.fn();
     const input = minimalHotelInput();

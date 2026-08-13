@@ -324,8 +324,22 @@ export async function registerSharedHotelSetupStatusRoutes(
     } catch (error) {
       const code =
         isObjectRecord(error) && typeof error["code"] === "string" ? error["code"] : null;
-      if (code === "idempotency_key_conflict" || code === "command_in_progress") {
-        return reply.status(409).send({ code });
+      const propertyId =
+        isObjectRecord(error) && typeof error["propertyId"] === "string"
+          ? error["propertyId"]
+          : null;
+      if (code === "idempotency_key_conflict") {
+        return reply.status(409).send({
+          code,
+          detail: "These hotel details changed during the save. Review them and try again.",
+          ...(propertyId ? { propertyId } : {}),
+        });
+      }
+      if (code === "command_in_progress") {
+        return reply.status(409).send({
+          code,
+          detail: "Your hotel setup is still being saved. Please try again in a moment.",
+        });
       }
       throw error;
     }

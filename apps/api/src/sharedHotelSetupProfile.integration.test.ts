@@ -118,6 +118,17 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical property profile repository", () 
         },
       },
     });
+    await expect(
+      repository.createPropertyProfile({
+        organizationId,
+        idempotencyKey: "profile-revision-integration-create",
+        correlationId: "profile-revision-integration-conflict",
+        profile: { ...profile, displayName: "Changed after uncertain save" },
+      }),
+    ).rejects.toMatchObject({
+      code: "idempotency_key_conflict",
+      propertyId: created.propertyId,
+    });
 
     const updatedProfile: SharedPropertyProfileInput = {
       ...profile,
