@@ -19,7 +19,25 @@ async function applySuccess(
   result: ChannexManagementProviderSuccess,
   now: Date,
 ) {
-  if (job.input.operationType === "enable") {
+  await applyPmsChannexManagementProgress(client, job, result, now);
+  if (job.input.operationType === "enable" || job.input.operationType === "disable") return;
+  await applyConnectedSuccess(client, job, result, now);
+}
+
+export async function applyPmsChannexManagementProgress(
+  client: Pick<ChannexManagementQueryClient, "query">,
+  job: ChannexManagementJob,
+  result: ChannexManagementProviderSuccess,
+  now: Date,
+) {
+  const connectionStatus =
+    result.connectionStatus ??
+    (job.input.operationType === "enable" && result.externalPropertyId
+      ? "connected"
+      : job.input.operationType === "disable"
+        ? "disconnected"
+        : undefined);
+  if (connectionStatus === "connected") {
     await client.query(
       `INSERT INTO pms.channel_connections (
          property_id, provider, connection_status, external_property_id, connection_metadata
@@ -35,17 +53,34 @@ async function applySuccess(
         now.toISOString(),
       ],
     );
-    return;
   }
-  if (job.input.operationType === "disable") {
+  if (connectionStatus === "disconnected") {
     await client.query(
-      `UPDATE pms.channel_connections SET connection_status = 'disconnected', updated_at = $2::timestamptz
+      `UPDATE pms.channel_connections SET connection_status = 'disconnected',
+         external_property_id = NULL, updated_at = $2::timestamptz
        WHERE property_id = $1::uuid AND provider = 'channex'`,
       [job.propertyId, now.toISOString()],
     );
-    return;
   }
-  await applyConnectedSuccess(client, job, result, now);
+  if (result.roomTypeMappings?.length || result.ratePlanMappings?.length) {
+    await applyMappings(client, job, result);
+  }
+  if (result.messagingAppInstalled) {
+    await client.query(
+      `UPDATE pms.channel_connections SET messaging_app_installed = TRUE, updated_at = $2::timestamptz
+       WHERE property_id = $1::uuid AND provider = 'channex'`,
+      [job.propertyId, now.toISOString()],
+    );
+  }
+  if (result.channels) {
+    await client.query(
+      `UPDATE pms.channel_connections SET
+         connection_metadata = connection_metadata || jsonb_build_object('connectedChannels', $2::jsonb),
+         updated_at = $3::timestamptz
+       WHERE property_id = $1::uuid AND provider = 'channex'`,
+      [job.propertyId, JSON.stringify(result.channels), now.toISOString()],
+    );
+  }
 }
 
 async function applyConnectedSuccess(
@@ -54,7 +89,6 @@ async function applyConnectedSuccess(
   result: ChannexManagementProviderSuccess,
   now: Date,
 ) {
-  if (job.input.operationType === "provision") await applyMappings(client, job, result);
   if (job.input.operationType === "update_markups") {
     for (const markup of job.input.markups ?? []) {
       await client.query(
@@ -94,7 +128,7 @@ async function applyConnectedSuccess(
 }
 
 async function applyMappings(
-  client: ChannexManagementQueryClient,
+  client: Pick<ChannexManagementQueryClient, "query">,
   job: ChannexManagementJob,
   result: ChannexManagementProviderSuccess,
 ) {
