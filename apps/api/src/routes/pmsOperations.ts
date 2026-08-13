@@ -10,6 +10,7 @@ import type {
   BookingGuestPiiDeleteResult,
   BookingGuestPiiPort,
   BookingGuestPiiProjection,
+  BookingPrimaryGuestNationalityCorrectionCommand,
 } from "@vayada/domain-booking";
 import type {
   PmsInventoryPublicOfferProjectionPort,
@@ -563,6 +564,15 @@ export type PmsAdditionalGuestDeleteResponse = {
   propertyId: string;
   guestBookingId: string;
   guestId: string;
+  reservation: PmsOperationalReservationDetail;
+  commandMeta: BookingGuestPiiCommandMeta;
+};
+
+export type PmsPrimaryGuestNationalityCommandResponse = {
+  contractVersion: PmsOperationsContractVersion;
+  propertyId: string;
+  guestBookingId: string;
+  primaryGuest: BookingGuestPii;
   reservation: PmsOperationalReservationDetail;
   commandMeta: BookingGuestPiiCommandMeta;
 };
@@ -1653,6 +1663,55 @@ export async function registerPmsOperationsRoutes(
   );
 
   if (bookingGuestPiiPort) {
+    app.patch<{ Params: PmsReservationParams; Body: unknown }>(
+      "/properties/:propertyId/reservations/:guestBookingId/primary-guest/nationality",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, {
+            statusCode: 403,
+            code: "missing_permission",
+            category: "authorization",
+            message: "PMS operations origin is not allowed.",
+          });
+        }
+        const { propertyId, guestBookingId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+
+        const command = toPrimaryGuestNationalityCorrectionCommand(
+          propertyId,
+          guestBookingId,
+          request,
+        );
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await bookingGuestPiiPort.correctPrimaryGuestNationalityForPmsOperations(
+          command.value,
+        );
+        if (!result.ok) return sendBookingGuestPiiCommandError(reply, result);
+        const primaryGuest = result.projection.primaryGuest;
+        if (!primaryGuest) {
+          return sendPmsOperationsError(
+            reply,
+            readModelUnavailable("Corrected primary guest projection is unavailable."),
+          );
+        }
+        const reservation = await reservationWithAdditionalGuestProjection(
+          repository,
+          propertyId,
+          guestBookingId,
+          result.projection,
+        );
+        if (!reservation) return sendPmsOperationsError(reply, reservationNotFoundError());
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          guestBookingId,
+          primaryGuest,
+          reservation,
+          commandMeta: result.commandMeta,
+        } satisfies PmsPrimaryGuestNationalityCommandResponse;
+      },
+    );
+
     app.get<{ Params: PmsReservationParams }>(
       "/properties/:propertyId/reservations/:guestBookingId/additional-guests",
       async (request, reply) => {
@@ -3742,6 +3801,36 @@ function toAdditionalGuestCreateCommand(
       idempotencyKey: metadata.value.idempotencyKey,
       guest: guest.value,
       audit: bookingGuestPiiAudit(request, metadata.value.commandId, "Create additional guest"),
+    },
+  };
+}
+
+function toPrimaryGuestNationalityCorrectionCommand(
+  propertyId: string,
+  guestBookingId: string,
+  request: FastifyRequest<{ Body: unknown }>,
+): { value: BookingPrimaryGuestNationalityCorrectionCommand } | { error: PmsOperationsError } {
+  const metadata = toBookingGuestPiiCommandMetadata(
+    request.body,
+    "Primary guest nationality correction",
+  );
+  if ("error" in metadata) return metadata;
+  const countryCode = stringField(metadata.body.countryCode);
+  if (!countryCode) {
+    return { error: invalidBody("Primary guest nationality correction requires countryCode.") };
+  }
+  return {
+    value: {
+      propertyId,
+      guestBookingId,
+      commandId: metadata.value.commandId,
+      idempotencyKey: metadata.value.idempotencyKey,
+      countryCode,
+      audit: bookingGuestPiiAudit(
+        request,
+        metadata.value.commandId,
+        "Correct primary guest nationality",
+      ),
     },
   };
 }

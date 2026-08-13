@@ -15,6 +15,7 @@ import type {
   BookingGuestPiiCommandMeta,
   BookingGuestPiiPort,
   BookingGuestPiiProjection,
+  BookingPrimaryGuestNationalityCorrectionCommand,
   BookingReservationReadModel,
 } from "@vayada/domain-booking";
 import {
@@ -1253,6 +1254,7 @@ function createBookingGuestPiiPort(): BookingGuestPiiPort & {
   creates: BookingAdditionalGuestCreateCommand[];
   updates: BookingAdditionalGuestUpdateCommand[];
   deletes: BookingAdditionalGuestDeleteCommand[];
+  corrections: BookingPrimaryGuestNationalityCorrectionCommand[];
 } {
   const guestsByReservation = new Map<string, BookingGuestPii[]>([
     [pmsReservations[0].guestBookingId, [bookingPrimaryGuestPii]],
@@ -1261,6 +1263,7 @@ function createBookingGuestPiiPort(): BookingGuestPiiPort & {
   const creates: BookingAdditionalGuestCreateCommand[] = [];
   const updates: BookingAdditionalGuestUpdateCommand[] = [];
   const deletes: BookingAdditionalGuestDeleteCommand[] = [];
+  const corrections: BookingPrimaryGuestNationalityCorrectionCommand[] = [];
   const projection = (
     propertyId: string,
     guestBookingId: string,
@@ -1278,7 +1281,8 @@ function createBookingGuestPiiPort(): BookingGuestPiiPort & {
     command:
       | BookingAdditionalGuestCreateCommand
       | BookingAdditionalGuestUpdateCommand
-      | BookingAdditionalGuestDeleteCommand,
+      | BookingAdditionalGuestDeleteCommand
+      | BookingPrimaryGuestNationalityCorrectionCommand,
   ): BookingGuestPiiCommandMeta => ({
     contractVersion: "booking-guest-pii.v1",
     commandId: command.commandId,
@@ -1291,11 +1295,37 @@ function createBookingGuestPiiPort(): BookingGuestPiiPort & {
     creates,
     updates,
     deletes,
+    corrections,
     async listGuestPiiForPmsOperations(input) {
       expect(input.propertyId).toBe(pmsPropertyId);
       return projection(input.propertyId, input.guestBookingId);
     },
-    async correctPrimaryGuestNationalityForPmsOperations() {
+    async correctPrimaryGuestNationalityForPmsOperations(command) {
+      corrections.push(command);
+      const guests = guestsByReservation.get(command.guestBookingId);
+      const primaryGuest = guests?.find((guest) => guest.role !== "additional_guest");
+      if (guests && primaryGuest) {
+        const corrected = {
+          ...primaryGuest,
+          countryCode: command.countryCode,
+          countryCodeRaw: null,
+          countryCodeReviewRequired: false,
+        };
+        guests.splice(guests.indexOf(primaryGuest), 1, corrected);
+        return {
+          ok: true,
+          primaryGuest: corrected,
+          projection: {
+            ...projection(command.propertyId, command.guestBookingId)!,
+            primaryGuest: {
+              ...corrected,
+              email: "Hidden until you accept",
+              phone: "Hidden until you accept",
+            },
+          },
+          commandMeta: commandMeta(command),
+        };
+      }
       return {
         ok: false,
         statusCode: 404,
@@ -12069,6 +12099,70 @@ describe("vayada-api", () => {
     for (const forbiddenWrite of boundaryCase.expected.mustNotWrite ?? []) {
       expect(forbiddenWrite).not.toBe("pms.booking_guests");
     }
+  });
+
+  it("routes authorized primary guest nationality correction through Booking ownership", async () => {
+    const bookingGuestPiiPort = createBookingGuestPiiPort();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      bookingGuestPiiPort,
+    });
+
+    const response = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/reservations/${pmsReservations[0].guestBookingId}/primary-guest/nationality`,
+      payload: {
+        commandId: "command-primary-nationality",
+        idempotencyKey: "idempotency-primary-nationality",
+        countryCode: "NL",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(bookingGuestPiiPort.corrections).toHaveLength(1);
+    expect(bookingGuestPiiPort.corrections[0]).toMatchObject({
+      propertyId: pmsPropertyId,
+      countryCode: "NL",
+      audit: {
+        actorUserId: "user_hotel_owner",
+        actorOrganizationId: "org_hotel_group",
+        source: "pms_operations",
+      },
+    });
+    expect(response.body).toMatchObject({
+      primaryGuest: {
+        countryCode: "NL",
+        countryCodeRaw: null,
+        countryCodeReviewRequired: false,
+        email: "Hidden until you accept",
+        phone: "Hidden until you accept",
+      },
+      commandMeta: { contractVersion: "booking-guest-pii.v1" },
+    });
+  });
+
+  it("rejects primary guest nationality correction without PMS manage permission", async () => {
+    const bookingGuestPiiPort = createBookingGuestPiiPort();
+    app = buildAuthenticatedApp({
+      permissions: [],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      bookingGuestPiiPort,
+    });
+    const response = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/reservations/${pmsReservations[0].guestBookingId}/primary-guest/nationality`,
+      payload: {
+        commandId: "command-primary-nationality-denied",
+        idempotencyKey: "idempotency-primary-nationality-denied",
+        countryCode: "NL",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.body).toMatchObject({ code: "missing_permission" });
+    expect(bookingGuestPiiPort.corrections).toEqual([]);
   });
 
   it("freezes PMS checkout-charge mark-paid when the F1a finance bridge is disabled", async () => {
