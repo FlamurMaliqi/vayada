@@ -106,9 +106,14 @@ test("gates legacy booking writes while keeping supported hotel actions active",
   await expect(page.getByLabel(/passport/i)).toHaveCount(0);
   await page.getByLabel("First name").fill("Grace");
   await page.getByLabel("Last name").fill("Hopper");
+  await page.getByLabel("Nationality").fill("Netherlands");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => createdGuest).not.toBeNull();
-  expect(createdGuest).toMatchObject({ firstName: "Grace", lastName: "Hopper" });
+  expect(createdGuest).toMatchObject({
+    firstName: "Grace",
+    lastName: "Hopper",
+    countryCode: "NL",
+  });
   expect(createdGuest).not.toHaveProperty("gender");
   expect(createdGuest).not.toHaveProperty("dateOfBirth");
   expect(createdGuest).not.toHaveProperty("passportNumber");
@@ -137,7 +142,19 @@ test("keeps check-in guest CRUD active without presenting unsupported identity f
   await mockPmsWebTargetRoutes(page);
   await page.route(
     `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}`,
-    (route) => route.fulfill({ json: { item: pmsWebReservation } }),
+    (route) =>
+      route.fulfill({
+        json: {
+          item: {
+            ...pmsWebReservation,
+            source: "channel",
+            assignments: pmsWebReservation.assignments.map((assignment) => ({
+              ...assignment,
+              channel: "booking_com",
+            })),
+          },
+        },
+      }),
   );
   await page.route(
     `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}/notes`,
@@ -204,7 +221,9 @@ test("keeps check-in guest CRUD active without presenting unsupported identity f
   await expect(page.getByLabel("Date of birth")).toHaveCount(0);
   await expect(page.getByLabel(/passport/i)).toHaveCount(0);
   await expect(page.getByLabel("First name").first()).toBeDisabled();
-  await expect(page.getByLabel("First name").nth(1)).toBeEditable();
+  await expect(page.getByLabel("First name").nth(1)).toBeDisabled();
+  await expect(page.getByLabel("Nationality").nth(1)).toHaveValue("United States");
+  await expect(page.getByLabel("Nationality").nth(1)).toBeDisabled();
   await expect(page.getByRole("button", { name: "Save booker" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Save guest" })).toBeEnabled();
   await expect(

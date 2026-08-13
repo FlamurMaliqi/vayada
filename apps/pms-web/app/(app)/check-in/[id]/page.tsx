@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { NationalitySelect } from "@/components/NationalitySelect";
+import { nationalityLabel } from "@/lib/nationalities";
 import { useParams, useSearchParams } from "next/navigation";
 import {
   Booking,
@@ -805,10 +807,12 @@ function GuestRegistrationCard({
           disabled={contactLocked(guest.phone)}
           onChange={(v) => onChange({ phone: v })}
         />
-        <Field
-          label="Nationality"
+        <NationalitySelect
           value={guest.nationality || ""}
-          disabled={contactLocked(guest.nationality)}
+          disabled={
+            readOnly ||
+            (ota && Boolean(guest.nationality) && Boolean(nationalityLabel(guest.nationality)))
+          }
           onChange={(v) => onChange({ nationality: v })}
         />
       </div>
