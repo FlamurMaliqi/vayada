@@ -15,6 +15,15 @@ import {
   ManualCancellationEvidenceError,
   ManualCancellationStateError,
 } from "./bookingPmsManualCancellationNightlyRevenueEvidence.js";
+import {
+  ManualRefundEvidenceError,
+  ManualRefundStateError,
+  refundPmsManualBooking,
+} from "./bookingPmsManualRefundNightlyRevenueEvidence.js";
+import {
+  createFinanceManualBookingRefundPort,
+  financeManualBookingRefundTransaction,
+} from "./financeManualBookingRefund.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import { captureDirectNightlyRevenueEvidence } from "./stripeBookingSettlement.js";
@@ -37,6 +46,7 @@ import {
   type PmsCommandMeta,
   type PmsNoShowCommand,
   type PmsManualCancellationCommand,
+  type PmsManualRefundCommand,
   type PmsOperationalCommandResult,
   type PmsOperationalStatus,
   type PmsOperationalStatusCommand,
@@ -109,6 +119,7 @@ type PmsOperationalCommand =
   | PmsCheckInCommand
   | PmsNoShowCommand
   | PmsManualCancellationCommand
+  | PmsManualRefundCommand
   | PmsBookingLifecycleCommand;
 
 type PmsOperationalCommandOperation =
@@ -116,6 +127,7 @@ type PmsOperationalCommandOperation =
   | "checkin_command"
   | "no_show_command"
   | "manual_cancellation_command"
+  | "manual_refund_command"
   | "booking_acceptance_command"
   | "booking_mark_paid_command"
   | "checkout_command";
@@ -1052,6 +1064,14 @@ export function createTargetPmsOperationsCommandRepository(
         operation: "manual_cancellation_command",
         sideEffects: ["calendar_refresh", "ari_changed", "audit_event"],
         mutate: applyManualCancellationCommandMutation,
+      });
+    },
+    async refundManualBooking(command) {
+      return executeOperationalCommand(config, pool, now, {
+        command,
+        operation: "manual_refund_command",
+        sideEffects: ["audit_event"],
+        mutate: applyManualRefundCommandMutation,
       });
     },
     async acceptBooking(command) {
@@ -4482,6 +4502,36 @@ async function applyManualCancellationCommandMutation(
   return { ok: true };
 }
 
+async function applyManualRefundCommandMutation(
+  client: PmsOperationsCommandClient,
+  command: PmsManualRefundCommand,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+  const sources = await findAssignmentsForOperationalCommand(client, command);
+  if (sources.length === 0) return reservationNotFound(command.guestBookingId);
+  if (
+    command.expectedVersion &&
+    sources.some((source) => !assignmentVersionMatches(source, command.expectedVersion!))
+  )
+    return operationalConflict("version_conflict", "Reservation refund version is stale.");
+  try {
+    const financeTransaction = await financeManualBookingRefundTransaction(client);
+    await refundPmsManualBooking(
+      client,
+      command,
+      acceptedAt,
+      createFinanceManualBookingRefundPort(),
+      financeTransaction,
+    );
+  } catch (error) {
+    if (error instanceof ManualRefundEvidenceError) return operationalInvalidBody(error.message);
+    if (error instanceof ManualRefundStateError)
+      return invalidStatusTransition(error.currentStatus, "refunded");
+    throw error;
+  }
+  return { ok: true };
+}
+
 async function applyAssignmentCommandMutation(
   client: PmsOperationsCommandClient,
   command: PmsAssignmentCommand,
@@ -5173,7 +5223,7 @@ async function recordOperationalCommandAuditEvent(
      )
      ON CONFLICT (product, audit_key) DO NOTHING`,
     [
-      `pms.${operation}.${command.idempotencyKey}.audit.v1`,
+      `pms.${operation}.property.${command.propertyId}.key.${keyHash}.audit.v1`,
       `pms.${operation.replace("_command", "")}`,
       command.audit.requestedAt,
       command.propertyId,
@@ -5183,7 +5233,17 @@ async function recordOperationalCommandAuditEvent(
       command.audit.correlationId ?? command.audit.requestId,
       command.commandId,
       JSON.stringify({ commandMeta, idempotencyKeyHash: keyHash }),
-      JSON.stringify("retainedCharges" in command ? { reason: command.reason ?? null } : {}),
+      JSON.stringify(
+        "retainedCharges" in command
+          ? { reason: command.reason ?? null }
+          : "allocations" in command
+            ? {
+                reason: command.reason ?? null,
+                paymentEvidenceId: command.paymentEvidenceId,
+                accountingDate: command.accountingDate,
+              }
+            : {},
+      ),
       JSON.stringify({
         commandId: command.commandId,
         reason: command.audit.reason,
