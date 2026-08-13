@@ -63,7 +63,7 @@ export async function findManualBookingReplay(
     throw new PmsManualBookingCreateError("idempotency_conflict");
   }
   const result = record(row.metadata)?.["result"];
-  if (!isStoredResult(result) || row.responseBodyHash !== sha256(stableJson(result))) {
+  if (!isStoredResult(result, command) || row.responseBodyHash !== sha256(stableJson(result))) {
     throw new Error("Stored manual booking replay is invalid");
   }
   return { ...result, outcome: "replayed" };
@@ -242,16 +242,86 @@ async function insertAudit(
   );
 }
 
-function isStoredResult(value: unknown): value is PmsManualBookingCreateResult {
+function isStoredResult(
+  value: unknown,
+  command: PmsManualBookingCreateCommand,
+): value is PmsManualBookingCreateResult {
   const input = record(value);
+  const total = record(input?.["total"]);
+  const balance = record(input?.["balance"]);
+  const paid = command.payment.settlement.status === "paid";
+  const checkIn = command.stays.reduce(
+    (earliest, stay) => (stay.checkIn < earliest ? stay.checkIn : earliest),
+    command.stays[0]!.checkIn,
+  );
+  const checkOut = command.stays.reduce(
+    (latest, stay) => (stay.checkOut > latest ? stay.checkOut : latest),
+    command.stays[0]!.checkOut,
+  );
   return (
+    exact(input, [
+      "contractVersion",
+      "outcome",
+      "commandId",
+      "idempotencyKey",
+      "guestBookingId",
+      "bookingReference",
+      "bookingChannel",
+      "directSource",
+      "stayCount",
+      "checkIn",
+      "checkOut",
+      "total",
+      "balance",
+      "paymentStatus",
+      "paymentEvidenceId",
+      "sideEffects",
+    ]) &&
     input?.["contractVersion"] === PMS_MANUAL_BOOKING_CONTRACT_VERSION &&
     input["outcome"] === "created" &&
-    typeof input["guestBookingId"] === "string" &&
+    input["commandId"] === command.commandId &&
+    input["idempotencyKey"] === command.idempotencyKey &&
+    uuid(input["guestBookingId"]) &&
     typeof input["bookingReference"] === "string" &&
     input["bookingChannel"] === "direct" &&
-    (input["paymentStatus"] === "paid" || input["paymentStatus"] === "unpaid") &&
-    Array.isArray(input["sideEffects"])
+    input["directSource"] === command.directSource &&
+    input["stayCount"] === command.stays.length &&
+    input["checkIn"] === checkIn &&
+    input["checkOut"] === checkOut &&
+    money(total) &&
+    money(balance) &&
+    total["currency"] === balance["currency"] &&
+    input["paymentStatus"] === (paid ? "paid" : "unpaid") &&
+    (paid ? uuid(input["paymentEvidenceId"]) : input["paymentEvidenceId"] === null) &&
+    (paid
+      ? balance["amountDecimal"] === "0.00"
+      : balance["amountDecimal"] === total["amountDecimal"]) &&
+    JSON.stringify(input["sideEffects"]) ===
+      '["calendar_refresh","ari_changed","guest_confirmation","audit_event"]'
+  );
+}
+
+function exact(
+  value: Record<string, unknown> | null,
+  keys: string[],
+): value is Record<string, unknown> {
+  return !!value && Object.keys(value).sort().join() === [...keys].sort().join();
+}
+
+function money(value: Record<string, unknown> | null): value is Record<string, string> {
+  return (
+    exact(value, ["amountDecimal", "currency"]) &&
+    typeof value["amountDecimal"] === "string" &&
+    /^\d+\.\d{2}$/.test(value["amountDecimal"]) &&
+    typeof value["currency"] === "string" &&
+    /^[A-Z]{3}$/.test(value["currency"])
+  );
+}
+
+function uuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
   );
 }
 
