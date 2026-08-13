@@ -42,6 +42,7 @@ import { createTargetPmsInventoryPublicOfferProjection } from "./domains/pmsInve
 import { createTargetPmsInventoryReservationPort } from "./domains/pmsInventoryReservation.js";
 import { createTargetPmsRoomInventoryReadPort } from "./domains/pmsRoomInventoryReadModel.js";
 import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
+import { createPgPmsChannexManagementReadRepository } from "./domains/pmsChannexManagementReadModel.js";
 import { createPgHotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
 import { createPgPropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
 import { createPgPropertySetupDraftRepository } from "./domains/propertySetupDraftRepository.js";
@@ -304,6 +305,10 @@ const pmsOperationsRepository =
         connectionString: targetDatabaseUrl,
       })
     : undefined;
+
+const pmsChannexManagementRepository = pmsOperationsRepository
+  ? createPgPmsChannexManagementReadRepository({ connectionString: targetDatabaseUrl })
+  : undefined;
 
 const bookingGuestPiiPort =
   config.pmsOperationsSource === "target"
@@ -791,6 +796,20 @@ const app = buildApp({
   bookingPromoCodesRepository,
   bookingDashboardMetricsReadPort,
   pmsOperationsRepository,
+  pmsChannexManagement: pmsChannexManagementRepository
+    ? {
+        repository: pmsChannexManagementRepository,
+        capabilityModes: {
+          connection: "observe_only",
+          provisioning: "observe_only",
+          ariSync: "observe_only",
+          bookingSync: "observe_only",
+          markups: "observe_only",
+          messaging: "observe_only",
+          iframe: "observe_only",
+        },
+      }
+    : undefined,
   propertyPlanReadRepository,
   pmsManualBookingPreview:
     pmsOperationsRepository && pmsRoomPublicationRuntime
