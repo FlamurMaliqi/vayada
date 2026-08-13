@@ -15,6 +15,7 @@ import { createPgPmsManualBookingPlatformOwnerPort } from "./pmsManualBookingCom
 import { createPgPmsManualBookingCommandRepository } from "./pmsManualBookingCommandRepository.js";
 import { createTargetPmsOperationsCommandRepository } from "./pmsOperationsCommandRepository.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
+import type { PmsManualStayCorrectionCommand } from "../routes/pmsOperations.js";
 import {
   createPgPmsManualBookingBookingOwnerPort,
   createPgPmsManualBookingOperationsOwnerPort,
@@ -31,7 +32,7 @@ const organizationId = uuid(1),
   propertyId = uuid(3);
 const otherPropertyId = uuid(4),
   roomTypeId = uuid(5),
-  roomIds = [uuid(6), uuid(7)];
+  roomIds = [uuid(6), uuid(7), uuid(9)];
 const addonId = uuid(8);
 const acceptedAt = new Date("2026-08-12T22:30:00.000Z");
 
@@ -84,10 +85,11 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       [roomTypeId, propertyId],
     );
     await admin.query(
-      `INSERT INTO pms.rooms (id, property_id, room_type_id, room_number)
-       VALUES ($1::uuid, $3::uuid, $4::uuid, '101'),
-              ($2::uuid, $3::uuid, $4::uuid, '102')`,
-      [roomIds[0], roomIds[1], propertyId, roomTypeId],
+      `INSERT INTO pms.rooms (id, property_id, room_type_id, room_number,operational_label_status)
+       VALUES ($1::uuid, $3::uuid, $4::uuid, '101','verified'),
+              ($2::uuid, $3::uuid, $4::uuid, '102','verified'),
+              ($5::uuid, $3::uuid, $4::uuid, '103','verified')`,
+      [roomIds[0], roomIds[1], propertyId, roomTypeId, roomIds[2]],
     );
     await admin.query(
       `INSERT INTO booking.addon_definitions (
@@ -269,6 +271,131 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     );
     expect(state.rows).toEqual([{ status: "assigned", count: 1 }]);
     expect((await counts()).nightly).toBe("2");
+  });
+
+  it("atomically corrects heterogeneous stay dates, room assignment, and current revenue tips", async () => {
+    const created = await repository.createManualBooking(
+      command("stay-correction", "unpaid", "cash", "2026-08-20", true),
+    );
+    const correction = await stayCorrection(created.guestBookingId, "stay-correction", [
+      { roomId: roomIds[1]!, checkIn: "2026-08-21" },
+      { roomId: roomIds[1]!, checkIn: "2026-08-23" },
+    ]);
+    correction.stays[1]!.nightly[0]!.evidenceQuality = "inferred";
+    const corrected = await operations.correctManualBookingStays!(correction);
+    if (!corrected.ok) throw new Error(corrected.message);
+    expect(corrected).toMatchObject({
+      ok: true,
+      commandMeta: { sideEffects: ["calendar_refresh", "ari_changed", "audit_event"] },
+    });
+    await expect(operations.correctManualBookingStays!(correction)).resolves.toMatchObject({
+      ok: true,
+      replayed: true,
+    });
+    await expect(
+      operations.correctManualBookingStays!({ ...correction, accountingDate: "2026-08-22" }),
+    ).resolves.toMatchObject({ ok: false, code: "idempotency_conflict" });
+
+    const stored = await admin.query(
+      `SELECT booking.check_in::text AS "checkIn",booking.check_out::text AS "checkOut",
+         booking.total_amount::text AS total,
+         (SELECT jsonb_agg(jsonb_build_object('position',position,'room',room_id::text,
+            'from',check_in::text,'to',check_out::text) ORDER BY position)
+          FROM pms.operational_booking_assignments WHERE guest_booking_id=booking.id) AS stays,
+         (SELECT count(*)::int FROM booking.nightly_revenue_evidence evidence
+          WHERE evidence.guest_booking_id=booking.id) AS evidence,
+         (SELECT sum(occupied_room_nights)::int FROM booking.nightly_revenue_evidence evidence
+          WHERE evidence.guest_booking_id=booking.id) AS occupied,
+         (SELECT sum(gross_room_amount)::text FROM booking.nightly_revenue_evidence evidence
+          WHERE evidence.guest_booking_id=booking.id) AS amount,
+         (SELECT count(*)::int FROM platform.outbox_events outbox
+          WHERE outbox.resource_id=booking.id::text
+            AND outbox.outbox_key LIKE 'booking.manual-stay-correction.%') AS outbox,
+         (SELECT jsonb_array_length(private_payload->'stays') FROM platform.product_audit_events audit
+          WHERE audit.property_id=booking.property_id AND action='pms.manual_stay_correction') AS audited
+       FROM booking.guest_bookings booking WHERE booking.id=$1::uuid`,
+      [created.guestBookingId],
+    );
+    expect(stored.rows[0]).toEqual({
+      checkIn: "2026-08-21",
+      checkOut: "2026-08-25",
+      total: "410.00",
+      stays: [
+        { position: 1, room: roomIds[1], from: "2026-08-21", to: "2026-08-23" },
+        { position: 2, room: roomIds[1], from: "2026-08-23", to: "2026-08-25" },
+      ],
+      evidence: 10,
+      occupied: 4,
+      amount: "400.0000",
+      outbox: 2,
+      audited: 2,
+    });
+  });
+
+  it("rolls assignment and Booking changes back when explicit nightly economics do not balance", async () => {
+    const created = await repository.createManualBooking(
+      command("stay-correction-rollback", "unpaid", "cash", "2026-08-20", false),
+    );
+    const correction = await stayCorrection(
+      created.guestBookingId,
+      "stay-correction-rollback",
+      [{ roomId: roomIds[1]!, checkIn: "2026-08-21" }],
+      [["90.00", "100.00"]],
+    );
+    await expect(operations.correctManualBookingStays!(correction)).resolves.toMatchObject({
+      ok: false,
+      code: "invalid_body",
+    });
+    const stored = await admin.query(
+      `SELECT booking.check_in::text AS "checkIn",booking.check_out::text AS "checkOut",
+         assignment.room_id::text AS room,assignment.check_in::text AS "assignmentCheckIn",
+         (SELECT count(*)::int FROM booking.nightly_revenue_evidence evidence
+          WHERE evidence.guest_booking_id=booking.id) AS evidence,
+         (SELECT count(*)::int FROM platform.idempotency_keys key
+          WHERE key.property_id=booking.property_id
+            AND operation='manual_stay_correction_command') AS keys
+       FROM booking.guest_bookings booking JOIN pms.operational_booking_assignments assignment
+         ON assignment.guest_booking_id=booking.id WHERE booking.id=$1::uuid`,
+      [created.guestBookingId],
+    );
+    expect(stored.rows[0]).toEqual({
+      checkIn: "2026-08-20",
+      checkOut: "2026-08-22",
+      room: roomIds[0],
+      assignmentCheckIn: "2026-08-20",
+      evidence: 2,
+      keys: 0,
+    });
+  });
+
+  it("serializes simultaneous corrections selecting the same physical room", async () => {
+    const first = await repository.createManualBooking(
+      command("stay-correction-race-a", "unpaid", "cash", "2026-08-20", false),
+    );
+    const second = await repository.createManualBooking(
+      command("stay-correction-race-b", "unpaid", "cash", "2026-08-23", false),
+    );
+    const [firstCommand, secondCommand] = await Promise.all([
+      stayCorrection(first.guestBookingId, "stay-correction-race-a", [
+        { roomId: roomIds[2]!, checkIn: "2026-08-26" },
+      ]),
+      stayCorrection(second.guestBookingId, "stay-correction-race-b", [
+        { roomId: roomIds[2]!, checkIn: "2026-08-26" },
+      ]),
+    ]);
+    const results = await Promise.all([
+      operations.correctManualBookingStays!(firstCommand),
+      operations.correctManualBookingStays!(secondCommand),
+    ]);
+    expect(
+      results.map((result) => (result.ok ? "ok" : `${result.code}:${result.message}`)).sort(),
+    ).toEqual(["ok", "room_unavailable:A selected room is unavailable for the corrected stay"]);
+    const evidence = await admin.query<{ count: number }>(
+      `SELECT count(*)::int count FROM booking.nightly_revenue_evidence
+       WHERE guest_booking_id=ANY($1::uuid[]) GROUP BY guest_booking_id ORDER BY count`,
+      [[first.guestBookingId, second.guestBookingId]],
+    );
+    expect(evidence.rows.map(({ count }) => count)).toEqual([2, 6]);
   });
 
   it("atomically cancels a manual booking with explicit retained-charge evidence", async () => {
@@ -918,6 +1045,47 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       attribution: createBookingPmsManualAttributionOwner(),
       nightlyEvidence: createBookingPmsManualNightlyRevenueEvidenceOwner(),
       ...override,
+    };
+  }
+
+  async function stayCorrection(
+    guestBookingId: string,
+    suffix: string,
+    targets: Array<{ roomId: string; checkIn: string }>,
+    amounts?: string[][],
+  ): Promise<PmsManualStayCorrectionCommand> {
+    const assignments = await admin.query<{ assignmentId: string; position: number }>(
+      `SELECT id::text AS "assignmentId",position FROM pms.operational_booking_assignments
+       WHERE guest_booking_id=$1::uuid ORDER BY position`,
+      [guestBookingId],
+    );
+    return {
+      propertyId,
+      guestBookingId,
+      commandId: `correct-command-${suffix}`,
+      idempotencyKey: `correct-key-${suffix}`,
+      accountingDate: "2026-08-21",
+      stays: assignments.rows.map(({ assignmentId, position }, index) => {
+        const target = targets[index]!;
+        return {
+          assignmentId,
+          position,
+          roomId: target.roomId,
+          checkIn: target.checkIn,
+          checkOut: addDays(target.checkIn, 2),
+          nightly: [target.checkIn, addDays(target.checkIn, 1)].map((stayDate, night) => ({
+            stayDate,
+            amount: { amountDecimal: amounts?.[index]?.[night] ?? "100.00", currency: "EUR" },
+            evidenceQuality: "exact" as const,
+          })),
+        };
+      }),
+      audit: {
+        actor: { kind: "user", userId: actorId, organizationId },
+        requestId: `correct-request-${suffix}`,
+        reason: "Correct manual booking stays",
+        requestedAt: acceptedAt.toISOString(),
+      },
     };
   }
 
