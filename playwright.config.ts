@@ -1,6 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const startServers = process.env.CI === "true" || process.env.E2E_START_SERVERS === "1";
+const nextStackSmokeOnly = process.env.E2E_NEXT_STACK_SMOKE === "1";
+const startServers =
+  !nextStackSmokeOnly && (process.env.CI === "true" || process.env.E2E_START_SERVERS === "1");
 const firstPartyAuthOnly = process.env.E2E_FIRST_PARTY_AUTH_ONLY === "1";
 
 const landingBaseURL =
@@ -217,6 +219,19 @@ export default defineConfig({
         launchOptions: {
           args: ["--test-third-party-cookie-phaseout"],
         },
+        screenshot: "off",
+        trace: "off",
+        video: "off",
+      },
+    },
+    {
+      name: "next-stack-smoke-chromium",
+      testMatch: /next-stack-smoke\/.*\.spec\.ts/,
+      retries: 0,
+      workers: 1,
+      use: {
+        ...devices["Desktop Chrome"],
+        baseURL: "https://next-marketplace.vayada.com",
         screenshot: "off",
         trace: "off",
         video: "off",
