@@ -18,15 +18,22 @@
     "./geo": {
       "types": "./dist/geo.d.ts",
       "default": "./dist/geo.js"
+    },
+    "./booking-publication": {
+      "types": "./dist/bookingPublication.d.ts",
+      "default": "./dist/bookingPublication.js"
     }
   },
   "scripts": {
+    "prebuild": "npm --workspace @vayada/domain-hotels run build",
+    "pretypecheck": "npm --workspace @vayada/domain-hotels run build",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^20",
+    "@vayada/domain-hotels": "0.0.0",
     "typescript": "^5",
     "vitest": "^4.0.15"
   }
