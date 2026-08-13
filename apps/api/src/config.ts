@@ -480,13 +480,16 @@ function loadChannexManagementConfig(env: NodeJS.ProcessEnv): ChannexManagementC
   const apiBaseUrl = readOptionalEnv(env, "CHANNEX_API_BASE_URL");
   const apiKey = readOptionalEnv(env, "CHANNEX_API_KEY");
   const mutating = Object.values(capabilityModes).includes("mutating");
+  const durableCommandsMutating = Object.entries(capabilityModes).some(
+    ([capability, value]) => capability !== "iframe" && value === "mutating",
+  );
   if (mutating && (!apiBaseUrl || !apiKey)) {
     throw new Error(
       "Mutating PMS Channex capabilities require CHANNEX_API_BASE_URL and CHANNEX_API_KEY",
     );
   }
-  const workerEnabled = readBooleanEnv(env, "PMS_CHANNEX_WORKER_ENABLED", mutating);
-  if (mutating && !workerEnabled) {
+  const workerEnabled = readBooleanEnv(env, "PMS_CHANNEX_WORKER_ENABLED", durableCommandsMutating);
+  if (durableCommandsMutating && !workerEnabled) {
     throw new Error("Mutating PMS Channex capabilities require PMS_CHANNEX_WORKER_ENABLED=true");
   }
   return {

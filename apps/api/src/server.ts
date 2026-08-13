@@ -324,10 +324,10 @@ const pmsOperationsRepository =
 const pmsChannexManagementRepository = pmsOperationsRepository
   ? createPgPmsChannexManagementReadRepository({ connectionString: targetDatabaseUrl })
   : undefined;
-const channexManagementMutating = Object.values(config.channexManagement.capabilityModes).includes(
-  "mutating",
+const channexCommandsMutating = Object.entries(config.channexManagement.capabilityModes).some(
+  ([capability, mode]) => capability !== "iframe" && mode === "mutating",
 );
-const pmsChannexManagementCommandPort = channexManagementMutating
+const pmsChannexManagementCommandPort = channexCommandsMutating
   ? createPgPmsChannexManagementCommandPort({ connectionString: targetDatabaseUrl })
   : undefined;
 const pmsChannexIframeSessionPort =
@@ -467,27 +467,28 @@ const channexBookingRevisionStore =
   config.channexManagement.capabilityModes.bookingSync === "mutating"
     ? createPgProviderWebhookStore({ connectionString: targetDatabaseUrl })
     : undefined;
-const channexManagementPlans = config.channexManagement.workerEnabled
-  ? createPgChannexManagementPlanPort({
-      connectionString: targetDatabaseUrl,
-      bookingRevisionHandoff: async ({ propertyId, revisions }) => {
-        if (!channexBookingRevisionStore) {
-          if (revisions.length > 0) throw new Error("Channex booking intake is unavailable");
-          return;
-        }
-        for (const revision of revisions) {
-          if (!revision || typeof revision !== "object" || Array.isArray(revision)) {
-            throw new Error("Channex booking revision payload is invalid");
+const channexManagementPlans =
+  channexCommandsMutating && config.channexManagement.workerEnabled
+    ? createPgChannexManagementPlanPort({
+        connectionString: targetDatabaseUrl,
+        bookingRevisionHandoff: async ({ propertyId, revisions }) => {
+          if (!channexBookingRevisionStore) {
+            if (revisions.length > 0) throw new Error("Channex booking intake is unavailable");
+            return;
           }
-          await promotePulledChannexBookingRevision({
-            store: channexBookingRevisionStore,
-            propertyId,
-            revision: revision as Record<string, unknown>,
-          });
-        }
-      },
-    })
-  : undefined;
+          for (const revision of revisions) {
+            if (!revision || typeof revision !== "object" || Array.isArray(revision)) {
+              throw new Error("Channex booking revision payload is invalid");
+            }
+            await promotePulledChannexBookingRevision({
+              store: channexBookingRevisionStore,
+              propertyId,
+              revision: revision as Record<string, unknown>,
+            });
+          }
+        },
+      })
+    : undefined;
 const channexManagementProvider =
   channexManagementPlans && config.channexManagement.apiBaseUrl && config.channexManagement.apiKey
     ? createChannexManagementProvider({
