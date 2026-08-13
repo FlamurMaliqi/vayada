@@ -140,6 +140,8 @@ test("gates legacy booking writes while keeping supported hotel actions active",
   let noteCreates = 0;
   let noteUpdates = 0;
   let createdGuest: Record<string, unknown> | null = null;
+  let nationalityCorrections = 0;
+  let rejectNationalityCorrection = true;
 
   await mockPmsWebAuthenticatedSession(page);
   await mockPmsWebTargetRoutes(page);
@@ -170,7 +172,45 @@ test("gates legacy booking writes while keeping supported hotel actions active",
 
   await page.route(
     `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}`,
-    (route) => route.fulfill({ json: { item: pmsWebReservation } }),
+    (route) =>
+      route.fulfill({
+        json: {
+          item: {
+            ...pmsWebReservation,
+            primaryGuest: nationalityCorrections
+              ? { ...pmsWebReservation.primaryGuest, countryCode: "NL" }
+              : {
+                  ...pmsWebReservation.primaryGuest,
+                  countryCode: null,
+                  countryCodeRaw: "Holland",
+                  countryCodeReviewRequired: true,
+                },
+          },
+        },
+      }),
+  );
+  await page.route(
+    `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}/primary-guest/nationality`,
+    (route) => {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      expect(body).toMatchObject({ countryCode: "NL" });
+      expect(body.commandId).toEqual(expect.any(String));
+      expect(body.idempotencyKey).toEqual(expect.any(String));
+      nationalityCorrections += 1;
+      if (rejectNationalityCorrection) {
+        return route.fulfill({ status: 500, json: { message: "Correction unavailable" } });
+      }
+      return route.fulfill({
+        json: {
+          primaryGuest: {
+            ...pmsWebReservation.primaryGuest,
+            countryCode: "NL",
+            countryCodeRaw: null,
+            countryCodeReviewRequired: false,
+          },
+        },
+      });
+    },
   );
   const originalNote = {
     noteId: "f6855900-0000-4000-8000-000000000001",
@@ -273,6 +313,21 @@ test("gates legacy booking writes while keeping supported hotel actions active",
   await expect(
     page.getByRole("button", { name: /edit booker.*not available yet/i }),
   ).toBeDisabled();
+  await expect(page.getByText("Needs review")).toBeVisible();
+  await expect(page.getByText(/Imported value: Holland/)).toBeVisible();
+  await page.getByRole("button", { name: "Correct nationality" }).click();
+  await page.getByRole("combobox", { name: "Nationality" }).fill("Netherlands");
+  await page.getByRole("button", { name: "Save nationality" }).click();
+  await expect.poll(() => nationalityCorrections).toBe(1);
+  const nationalityError = page.locator('p[role="alert"]');
+  await expect(nationalityError).toHaveText("Correction unavailable");
+  assertHealthy = watchPageHealth(page, testInfo);
+  rejectNationalityCorrection = false;
+  await page.getByRole("button", { name: "Save nationality" }).click();
+  await expect.poll(() => nationalityCorrections).toBe(2);
+  await expect(page.getByText("Netherlands", { exact: true })).toBeVisible();
+  await expect(nationalityError).toHaveCount(0);
+  await expect(page.getByText("Needs review")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Cancellation unavailable" })).toBeDisabled();
   await expect(page.getByRole("link", { name: "Check in guest" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add note" })).toBeEnabled();
@@ -308,7 +363,7 @@ test("gates legacy booking writes while keeping supported hotel actions active",
   await expect(page.getByLabel(/passport/i)).toHaveCount(0);
   await page.getByLabel("First name").fill("Grace");
   await page.getByLabel("Last name").fill("Hopper");
-  await page.getByLabel("Nationality").fill("Netherlands");
+  await page.getByRole("combobox", { name: "Nationality" }).fill("Netherlands");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => createdGuest).not.toBeNull();
   expect(createdGuest).toMatchObject({

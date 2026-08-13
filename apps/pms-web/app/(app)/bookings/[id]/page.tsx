@@ -1155,6 +1155,11 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   } | null>(null);
   const [bookerEditing, setBookerEditing] = useState(false);
   const [bookerSaving, setBookerSaving] = useState(false);
+  const [nationalityEditing, setNationalityEditing] = useState(false);
+  const [nationalityDraft, setNationalityDraft] = useState("");
+  const [nationalitySaving, setNationalitySaving] = useState(false);
+  const [nationalityError, setNationalityError] = useState("");
+  const nationalitySavePending = useRef(false);
   const [bookerForm, setBookerForm] = useState({
     guestFirstName: "",
     guestLastName: "",
@@ -1458,6 +1463,31 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       setError(errMessage(err, "Failed to save booker information"));
     } finally {
       setBookerSaving(false);
+    }
+  };
+
+  const handleEditNationality = () => {
+    if (!booking) return;
+    setNationalityError("");
+    setNationalityDraft(booking.guestCountry);
+    setNationalityEditing(true);
+  };
+
+  const handleSaveNationality = async () => {
+    if (!nationalityDraft || nationalitySavePending.current) return;
+    nationalitySavePending.current = true;
+    setNationalitySaving(true);
+    setNationalityError("");
+    try {
+      const correction = await bookingsService.correctPrimaryGuestNationality(id, nationalityDraft);
+      setBooking((current) => (current ? { ...current, ...correction } : current));
+      setNationalityError("");
+      setNationalityEditing(false);
+    } catch (err) {
+      setNationalityError(errMessage(err, "Failed to save nationality"));
+    } finally {
+      nationalitySavePending.current = false;
+      setNationalitySaving(false);
     }
   };
 
@@ -2266,11 +2296,74 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   <p className="text-xs text-gray-500">Phone</p>
                   <p className="font-medium text-gray-900">{booking.guestPhone || "—"}</p>
                 </div>
-                <div>
-                  <p className="text-xs text-gray-500">Nationality</p>
-                  <p className="font-medium text-gray-900">
-                    {nationalityDisplayLabel(booking.guestCountry) || "—"}
-                  </p>
+                <div className="space-y-2">
+                  {nationalityEditing ? (
+                    <>
+                      <NationalitySelect
+                        value={nationalityDraft}
+                        onChange={setNationalityDraft}
+                        disabled={nationalitySaving}
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNationalityError("");
+                            setNationalityEditing(false);
+                          }}
+                          disabled={nationalitySaving}
+                          className="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSaveNationality}
+                          disabled={!nationalityDraft || nationalitySaving}
+                          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          {nationalitySaving ? "Saving…" : "Save nationality"}
+                        </button>
+                      </div>
+                      {nationalityError && (
+                        <p role="alert" className="text-xs font-medium text-red-700">
+                          {nationalityError}
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs text-gray-500">Nationality</p>
+                          <p className="font-medium text-gray-900">
+                            {nationalityDisplayLabel(booking.guestCountry) || "—"}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleEditNationality}
+                          aria-label={
+                            booking.guestCountryReviewRequired
+                              ? "Correct nationality"
+                              : "Edit nationality"
+                          }
+                          className="inline-flex items-center gap-1 rounded bg-gray-50 px-2 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-100"
+                        >
+                          <PencilSquareIcon className="h-3.5 w-3.5" />
+                          {booking.guestCountryReviewRequired ? "Correct" : "Edit"}
+                        </button>
+                      </div>
+                      {booking.guestCountryReviewRequired && (
+                        <p role="status" className="text-xs font-medium text-amber-700">
+                          Needs review
+                          {booking.guestCountryRaw
+                            ? ` · Imported value: ${booking.guestCountryRaw}`
+                            : ""}
+                        </p>
+                      )}
+                    </>
+                  )}
                 </div>
                 {booking.guestGender && (
                   <div>

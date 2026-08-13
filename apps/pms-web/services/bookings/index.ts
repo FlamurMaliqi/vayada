@@ -42,6 +42,8 @@ export interface Booking {
   guestEmail: string;
   guestPhone: string;
   guestCountry: string;
+  guestCountryRaw: string | null;
+  guestCountryReviewRequired: boolean;
   guestGender: string;
   guestDateOfBirth: string | null;
   guestPassportNumber: string;
@@ -278,6 +280,8 @@ type PmsOperationalReservation = {
     phone: string | null;
     countryCode: string | null;
     specialRequests?: string | null;
+    countryCodeRaw?: string | null;
+    countryCodeReviewRequired?: boolean;
   };
   addOns?: Array<{ addonId: string; name: string; quantity: number }>;
   assignments: Array<{
@@ -342,6 +346,10 @@ type PmsOperationsCommandResponse = {
   reservation: PmsOperationalReservation;
 };
 
+type PmsPrimaryGuestNationalityCommandResponse = {
+  primaryGuest: PmsBookingGuestPii;
+};
+
 type PmsPrivateNote = {
   noteId: string;
   body: string;
@@ -387,6 +395,8 @@ type PmsBookingGuestPii = {
   email: string | null;
   phone: string | null;
   countryCode: string | null;
+  countryCodeRaw: string | null;
+  countryCodeReviewRequired: boolean;
 };
 
 type PmsAdditionalGuestsResponse = {
@@ -554,6 +564,19 @@ export const bookingsService = {
 
   get: async (id: string) => {
     return pmsOperationsBookingsReadService.get(id);
+  },
+
+  correctPrimaryGuestNationality: async (id: string, countryCode: string) => {
+    const response = await pmsOperationsClient.patch<PmsPrimaryGuestNationalityCommandResponse>(
+      await reservationEndpoint(id, "/primary-guest/nationality"),
+      { ...commandMetadata("pms.primary-guest.nationality.correct"), countryCode },
+      pmsOperationsRequestOptions,
+    );
+    return {
+      guestCountry: response.primaryGuest.countryCode ?? "",
+      guestCountryRaw: response.primaryGuest.countryCodeRaw,
+      guestCountryReviewRequired: response.primaryGuest.countryCodeReviewRequired,
+    };
   },
 
   update: (
@@ -996,6 +1019,8 @@ function toBooking(
     guestEmail: reservation.primaryGuest.email ?? "",
     guestPhone: reservation.primaryGuest.phone ?? "",
     guestCountry: reservation.primaryGuest.countryCode ?? "",
+    guestCountryRaw: reservation.primaryGuest.countryCodeRaw ?? null,
+    guestCountryReviewRequired: reservation.primaryGuest.countryCodeReviewRequired === true,
     guestGender: "",
     guestDateOfBirth: null,
     guestPassportNumber: "",
