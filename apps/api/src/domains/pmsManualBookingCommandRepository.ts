@@ -147,7 +147,7 @@ async function settleIfPaid(
 ): Promise<string | null> {
   if (command.payment.settlement.status === "unpaid") return null;
   const receipt = await finance.settleFull({
-    transaction: financeManualBookingSettlementTransaction(
+    transaction: await financeManualBookingSettlementTransaction(
       transaction as unknown as Pick<PoolClient, "query" | "release">,
     ),
     command: {
