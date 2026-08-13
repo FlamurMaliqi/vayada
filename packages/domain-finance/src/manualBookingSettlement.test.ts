@@ -67,6 +67,8 @@ describe("manual booking settlement contract", () => {
     "2026-02-30T09:00:00.000Z",
     "2026-08-12T25:00:00Z",
     "2026-08-12T09:00:00.1234Z",
+    "0000-08-12T09:00:00Z",
+    "0001-01-01T00:00:00+01:00",
   ])("rejects invalid RFC 3339 timestamp %s", (acceptedAt) => {
     expect(() => normalizeFinanceManualBookingSettlement(command({ acceptedAt }))).toThrowError(
       expect.objectContaining({ code: "invalid_command" }),

@@ -186,12 +186,15 @@ function instant(value: unknown): string {
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
+  if (year < 1) invalid();
   const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
   const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   if (month < 1 || month > 12 || day < 1 || day > days[month - 1]!) invalid();
   const parsed = new Date(value);
   if (!value.trim() || Number.isNaN(parsed.valueOf())) invalid();
-  return parsed.toISOString();
+  const normalized = parsed.toISOString();
+  if (normalized.startsWith("0000-")) invalid();
+  return normalized;
 }
 
 function record(
