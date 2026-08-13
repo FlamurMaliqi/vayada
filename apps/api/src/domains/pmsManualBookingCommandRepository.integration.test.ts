@@ -627,6 +627,105 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     expect(stored.rows[0]).toEqual({ corrections: 0, keys: 0 });
   });
 
+  it("serializes price correction behind a concurrent refund", async () => {
+    const created = await repository.createManualBooking(
+      command("price-refund-race", "paid", "cash", "2026-08-20", false),
+    );
+    const evidence = await admin.query<{ payment: string; id: string }>(
+      `SELECT payment.id::text AS payment,evidence.id::text
+       FROM finance.payments payment JOIN booking.nightly_revenue_evidence evidence
+         ON evidence.guest_booking_id=payment.guest_booking_id
+       WHERE payment.guest_booking_id=$1::uuid AND payment.payment_kind='manual'
+       ORDER BY evidence.stay_date LIMIT 1`,
+      [created.guestBookingId],
+    );
+    const gate = new pg.Client({ connectionString: TEST_DATABASE_URL! });
+    await gate.connect();
+    await gate.query("SELECT pg_advisory_lock(1272)");
+    await admin.query(`
+      CREATE FUNCTION booking.test_pause_manual_refund() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.economic_event='refund' THEN PERFORM pg_advisory_xact_lock(1272); END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER trg_test_pause_manual_refund BEFORE INSERT ON booking.nightly_revenue_evidence
+      FOR EACH ROW EXECUTE FUNCTION booking.test_pause_manual_refund();
+    `);
+    try {
+      const refund = operations.refundManualBooking!({
+        propertyId,
+        guestBookingId: created.guestBookingId,
+        commandId: "refund-price-race",
+        idempotencyKey: "refund-price-race",
+        paymentEvidenceId: evidence.rows[0]!.payment,
+        accountingDate: "2026-08-21",
+        allocations: [
+          {
+            evidenceId: evidence.rows[0]!.id,
+            amount: { amountDecimal: "25.00", currency: "EUR" },
+          },
+        ],
+        audit: {
+          actor: { kind: "user", userId: actorId, organizationId },
+          requestId: "refund-price-race",
+          reason: "Refund manual booking",
+          requestedAt: acceptedAt.toISOString(),
+        },
+      });
+      await expect
+        .poll(async () =>
+          Number(
+            (
+              await admin.query(
+                "SELECT count(*) value FROM pg_stat_activity WHERE wait_event='advisory'",
+              )
+            ).rows[0].value,
+          ),
+        )
+        .toBeGreaterThan(0);
+      const correction = operations.correctManualBookingPrices!(
+        priceCorrection(created.guestBookingId, "refund-race", {
+          kind: "exact",
+          nights: [
+            {
+              targetEvidenceId: evidence.rows[0]!.id,
+              replacementAmount: { amountDecimal: "110.00", currency: "EUR" },
+            },
+          ],
+        }),
+      );
+      await expect
+        .poll(async () =>
+          Number(
+            (
+              await admin.query(
+                "SELECT count(*) value FROM pg_stat_activity WHERE wait_event='transactionid'",
+              )
+            ).rows[0].value,
+          ),
+        )
+        .toBeGreaterThan(0);
+      await gate.query("SELECT pg_advisory_unlock(1272)");
+      await expect(refund).resolves.toMatchObject({ ok: true });
+      await expect(correction).resolves.toMatchObject({ ok: false, code: "invalid_body" });
+      const stored = await admin.query<{ corrections: number; keys: number }>(
+        `SELECT count(*) FILTER (WHERE economic_event='correction')::int corrections,
+          (SELECT count(*)::int FROM platform.idempotency_keys WHERE property_id=$2::uuid
+            AND operation='manual_price_correction_command') keys
+         FROM booking.nightly_revenue_evidence WHERE guest_booking_id=$1::uuid`,
+        [created.guestBookingId, propertyId],
+      );
+      expect(stored.rows[0]).toEqual({ corrections: 0, keys: 0 });
+    } finally {
+      await gate.query("SELECT pg_advisory_unlock(1272)");
+      await gate.end();
+      await admin.query(`
+        DROP TRIGGER IF EXISTS trg_test_pause_manual_refund ON booking.nightly_revenue_evidence;
+        DROP FUNCTION IF EXISTS booking.test_pause_manual_refund();
+      `);
+    }
+  });
+
   it("atomically cancels a manual booking with explicit retained-charge evidence", async () => {
     const created = await repository.createManualBooking(
       command("cancel", "unpaid", "cash", "2026-08-20", false),
