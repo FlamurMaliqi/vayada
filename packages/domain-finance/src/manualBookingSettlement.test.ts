@@ -62,14 +62,16 @@ describe("manual booking settlement contract", () => {
     );
   });
 
-  it.each(["2026-08-12", "2026-02-30T09:00:00.000Z", "2026-08-12T25:00:00Z"])(
-    "rejects invalid RFC 3339 timestamp %s",
-    (acceptedAt) => {
-      expect(() => normalizeFinanceManualBookingSettlement(command({ acceptedAt }))).toThrowError(
-        expect.objectContaining({ code: "invalid_command" }),
-      );
-    },
-  );
+  it.each([
+    "2026-08-12",
+    "2026-02-30T09:00:00.000Z",
+    "2026-08-12T25:00:00Z",
+    "2026-08-12T09:00:00.1234Z",
+  ])("rejects invalid RFC 3339 timestamp %s", (acceptedAt) => {
+    expect(() => normalizeFinanceManualBookingSettlement(command({ acceptedAt }))).toThrowError(
+      expect.objectContaining({ code: "invalid_command" }),
+    );
+  });
 
   it.each(["pay_at_property", "bank_transfer", "manual_card", "cash", "other"] as const)(
     "accepts the canonical %s method",
@@ -79,4 +81,20 @@ describe("manual booking settlement contract", () => {
       ).toBe(paymentMethod);
     },
   );
+
+  it.each([
+    (value: any) => (value.idempotencyKey = " manual-booking-key-1"),
+    (value: any) => (value.commandId = "x".repeat(201)),
+    (value: any) => (value.payload.amount = 125),
+    (value: any) => (value.audit.actor.kind = "system"),
+    (value: any) => (value.propertyId = "00000000-0000-0000-0000-000000000000"),
+    (value: any) => delete value.payload,
+    (value: any) => (value.payload.unexpected = true),
+  ])("returns invalid_command for malformed runtime input", (mutate) => {
+    const value: any = command();
+    mutate(value);
+    expect(() => normalizeFinanceManualBookingSettlement(value)).toThrowError(
+      expect.objectContaining({ code: "invalid_command" }),
+    );
+  });
 });

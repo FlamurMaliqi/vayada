@@ -79,75 +79,105 @@ export type NormalizedFinanceManualBookingSettlement = {
 };
 
 export function normalizeFinanceManualBookingSettlement(
-  command: FinanceManualBookingSettlementCommand,
+  value: unknown,
 ): NormalizedFinanceManualBookingSettlement {
+  if (
+    !record(value, ["commandType", "commandId", "idempotencyKey", "propertyId", "audit", "payload"])
+  )
+    invalid();
+  const command = value;
+  if (!record(command.audit, ["actor", "requestId", "reason", "requestedAt"], ["correlationId"]))
+    invalid();
+  const audit = command.audit;
+  if (!record(audit.actor, ["kind", "userId", "organizationId"])) invalid();
+  const actorInput = audit.actor;
+  if (
+    !record(
+      command.payload,
+      ["booking", "amount", "currency", "paymentMethod", "sourceReference", "acceptedAt"],
+      ["operatorReference"],
+    )
+  )
+    invalid();
+  const payload = command.payload;
+  if (!record(payload.booking, ["guestBookingId"])) invalid();
+  const booking = payload.booking;
   if (command.commandType !== "finance.manual_booking.settle_full") invalid();
   const propertyId = uuid(command.propertyId);
-  const currency = currencyCode(command.payload.currency);
-  const amount = money(command.payload.amount);
+  const currency = currencyCode(payload.currency);
+  const amount = money(payload.amount);
+  if (actorInput.kind !== "user") invalid();
   const actor = {
     kind: "user" as const,
-    userId: uuid(command.audit.actor.userId),
-    organizationId: uuid(command.audit.actor.organizationId),
+    userId: uuid(actorInput.userId),
+    organizationId: uuid(actorInput.organizationId),
   };
 
   return {
-    commandId: text(command.commandId),
-    idempotencyKey: text(command.idempotencyKey),
+    commandId: text(command.commandId, 200),
+    idempotencyKey: text(command.idempotencyKey, 200),
     propertyId,
-    guestBookingId: uuid(command.payload.booking.guestBookingId),
+    guestBookingId: uuid(booking.guestBookingId),
     amount,
     currency,
-    paymentMethod: paymentMethod(command.payload.paymentMethod),
-    sourceReference: text(command.payload.sourceReference),
-    operatorReference: optionalText(command.payload.operatorReference),
-    acceptedAt: instant(command.payload.acceptedAt),
+    paymentMethod: paymentMethod(payload.paymentMethod),
+    sourceReference: text(payload.sourceReference, 200),
+    operatorReference: optionalText(payload.operatorReference, 500),
+    acceptedAt: instant(payload.acceptedAt),
     audit: {
       actor,
-      requestId: text(command.audit.requestId),
-      correlationId: optionalText(command.audit.correlationId),
-      reason: text(command.audit.reason),
-      requestedAt: instant(command.audit.requestedAt),
+      requestId: text(audit.requestId, 200),
+      correlationId: optionalText(audit.correlationId, 200),
+      reason: text(audit.reason, 500),
+      requestedAt: instant(audit.requestedAt),
     },
   };
 }
 
-function money(value: string): FinanceDecimalAmount {
+function money(value: unknown): FinanceDecimalAmount {
+  if (typeof value !== "string") invalid();
   const match = /^(0|[1-9]\d{0,12})(?:\.(\d{1,2}))?$/.exec(value);
   if (!match) invalid();
   return `${match[1]}.${(match[2] ?? "").padEnd(2, "0")}`;
 }
 
-function currencyCode(value: string): FinanceCurrencyCode {
+function currencyCode(value: unknown): FinanceCurrencyCode {
+  if (typeof value !== "string") invalid();
   if (!/^[A-Z]{3}$/.test(value)) invalid();
   return value;
 }
 
-function paymentMethod(value: string): FinanceManualBookingPaymentMethod {
+function paymentMethod(value: unknown): FinanceManualBookingPaymentMethod {
+  if (typeof value !== "string") invalid();
   if (!FINANCE_MANUAL_BOOKING_PAYMENT_METHODS.some((method) => method === value)) invalid();
   return value as FinanceManualBookingPaymentMethod;
 }
 
-function uuid(value: string): string {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+function uuid(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+  ) {
     invalid();
   }
   return value.toLowerCase();
 }
 
-function text(value: string): string {
-  const normalized = value.trim();
-  if (!normalized) invalid();
-  return normalized;
+function text(value: unknown, maximum: number): string {
+  if (typeof value !== "string" || !value || value.length > maximum || value !== value.trim())
+    invalid();
+  return value;
 }
 
-function optionalText(value: string | null | undefined): string | null {
-  return value == null || !value.trim() ? null : value.trim();
+function optionalText(value: unknown, maximum: number): string | null {
+  if (value == null) return null;
+  return text(value, maximum);
 }
 
-function instant(value: string): string {
+function instant(value: unknown): string {
+  if (typeof value !== "string") invalid();
   const match =
-    /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(
+    /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(
       value,
     );
   if (!match) {
@@ -162,6 +192,20 @@ function instant(value: string): string {
   const parsed = new Date(value);
   if (!value.trim() || Number.isNaN(parsed.valueOf())) invalid();
   return parsed.toISOString();
+}
+
+function record(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): value is Record<string, unknown> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    required.every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).every((key) => required.includes(key) || optional.includes(key))
+  );
 }
 
 function invalid(): never {
