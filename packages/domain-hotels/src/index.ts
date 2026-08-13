@@ -13,6 +13,7 @@
  */
 
 export * from "./adaptiveHotelSetup.js";
+export * from "./hotelCatalogCurrentOwnerEvidence.js";
 export * from "./hotelCatalogStep1.js";
 export * from "./hotelMediaProjection.js";
 export * from "./onboardingLifecycle.js";

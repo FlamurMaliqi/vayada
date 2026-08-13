@@ -129,17 +129,17 @@ export default function BookingConfirmationPageClient({
   useEffect(() => {
     if (booking?.paymentMethod !== "paypal") return;
     bookingService
-      .getPaymentSettings(slug)
-      .then((settings) => {
-        if (settings.paypalEmail) {
+      .getPaymentInstructions(slug, booking.id || booking.bookingReference)
+      .then((instructions) => {
+        if (instructions.paypal.enabled && instructions.paypal.email) {
           setPaypalInfo({
-            email: settings.paypalEmail,
-            windowHours: settings.paypalPaymentWindowHours || 24,
+            email: instructions.paypal.email,
+            windowHours: instructions.paypal.paymentWindowHours || 24,
           });
         }
       })
       .catch(() => {});
-  }, [booking?.paymentMethod, slug]);
+  }, [booking?.id, booking?.bookingReference, booking?.paymentMethod, slug]);
 
   // Fetch any existing change request once we know the booking + email.
   useEffect(() => {

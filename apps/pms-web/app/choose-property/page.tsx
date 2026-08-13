@@ -12,6 +12,7 @@ import { authService } from "@/services/auth";
 import { resolvePmsSetupGuard } from "@/lib/utils/sharedSetupGuard";
 import { pmsSettingsService } from "@/services/settings";
 import { useTranslation } from "@/lib/i18n";
+import { isPmsSetupExitPath } from "@vayada/product-onboarding";
 
 /**
  * Post-login hotel picker for the PMS.
@@ -45,6 +46,10 @@ export default function PmsChoosePropertyPage() {
         if (cancelled) return;
 
         if (list.length === 0) {
+          if (isPmsSetupExitPath(`${window.location.pathname}${window.location.search}`)) {
+            setHotels([]);
+            return;
+          }
           router.replace("/setup");
           return;
         }
@@ -146,6 +151,11 @@ export default function PmsChoosePropertyPage() {
         </div>
 
         <div className="space-y-2">
+          {hotels.length === 0 && (
+            <p className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-center text-sm leading-6 text-amber-950">
+              No property has been created yet. Start or resume setup when you&apos;re ready.
+            </p>
+          )}
           {hotels.map((hotel) => (
             <button
               key={hotel.id}

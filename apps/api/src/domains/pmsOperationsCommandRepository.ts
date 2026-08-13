@@ -1,8 +1,17 @@
 import { createHash } from "node:crypto";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
+import {
+  bankTransferDetailsFromPolicy,
+  enqueueBookingLifecycleEmailJob,
+} from "../jobs/bookingEmails.js";
+import {
+  recordBookingManualPaymentInClient,
+  type FinanceBookingManualPaymentSettlementCommand,
+} from "./financeManualPaymentSettlement.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
+import { captureDirectNightlyRevenueEvidence } from "./stripeBookingSettlement.js";
 import {
   PMS_OPERATIONS_CONTRACT_VERSION,
   type PmsCheckInCommand,
@@ -12,6 +21,7 @@ import {
   type PmsAssignmentCommand,
   type PmsAssignmentCommandConflictCode,
   type PmsAssignmentCommandResult,
+  type PmsBookingLifecycleCommand,
   type PmsCheckoutCharge,
   type PmsCheckoutChargeCommandResult,
   type PmsCheckoutChargeCreateCommand,
@@ -87,13 +97,44 @@ type PmsIdempotencyRow = {
   idempotencyMetadata: Record<string, unknown> | null;
 };
 
-type PmsOperationalCommand = PmsOperationalStatusCommand | PmsCheckInCommand | PmsNoShowCommand;
+type PmsOperationalCommand =
+  | PmsOperationalStatusCommand
+  | PmsCheckInCommand
+  | PmsNoShowCommand
+  | PmsBookingLifecycleCommand;
 
 type PmsOperationalCommandOperation =
   | "status_command"
   | "checkin_command"
   | "no_show_command"
+  | "booking_acceptance_command"
+  | "booking_mark_paid_command"
   | "checkout_command";
+
+type BookingPaymentLifecycleRow = QueryResultRow & {
+  guestBookingId: string;
+  propertyId: string;
+  publicReference: string;
+  invoiceId: string;
+  lifecycleStatus: string;
+  paymentStatus: string;
+  paymentMethod: string | null;
+  checkIn: string;
+  checkOut: string;
+  totalAmount: string;
+  balanceAmount: string;
+  currency: string;
+  guestEmail: string | null;
+  guestName: string | null;
+  propertyName: string;
+  acceptedMethods: string[] | null;
+  depositPolicy: unknown;
+  paymentInstructions: unknown;
+  pendingExpiresAt: string | null;
+  acceptedPaymentDeadlineAt: string | null;
+  sourceSystem: string;
+  bookingMetadata: unknown;
+};
 type PmsOperationalTemplateOperation =
   | "checkin_checklist_template_update"
   | "checkout_inspection_template_update";
@@ -997,6 +1038,22 @@ export function createTargetPmsOperationsCommandRepository(
         operation: "no_show_command",
         sideEffects: ["audit_event"],
         mutate: applyNoShowCommandMutation,
+      });
+    },
+    async acceptBooking(command) {
+      return executeOperationalCommand(config, pool, now, {
+        command,
+        operation: "booking_acceptance_command",
+        sideEffects: ["guest_notification", "audit_event"],
+        mutate: applyBookingAcceptanceCommandMutation,
+      });
+    },
+    async markBookingPaid(command) {
+      return executeOperationalCommand(config, pool, now, {
+        command,
+        operation: "booking_mark_paid_command",
+        sideEffects: ["guest_notification", "audit_event"],
+        mutate: applyBookingMarkPaidCommandMutation,
       });
     },
     async getOperationalTemplate(propertyId, templateKind) {
@@ -3969,6 +4026,313 @@ async function applyOperationalStatusCommandMutation(
 
   await updateAssignmentsOperationalStatus(client, command, sources, command.status);
   return { ok: true };
+}
+
+async function applyBookingAcceptanceCommandMutation(
+  client: PmsOperationsCommandClient,
+  command: PmsBookingLifecycleCommand,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+  const booking = await loadBookingPaymentLifecycle(client, command);
+  if (!booking) return reservationNotFound(command.guestBookingId);
+  if (
+    booking.lifecycleStatus !== "pending_payment" ||
+    booking.paymentStatus !== "unpaid" ||
+    booking.paymentMethod !== "bank_transfer" ||
+    deadlinePassed(booking.pendingExpiresAt, acceptedAt)
+  ) {
+    return invalidStatusTransition(booking.lifecycleStatus, "confirmed");
+  }
+  const bankTransferDetails = bankTransferDetailsFromPolicy({
+    bankTransferInstructions: jsonObject(booking.paymentInstructions)["bankTransferDetails"],
+  });
+  if (!bankTransferDetails) {
+    return invalidStatusTransition("bank_transfer_unavailable", "confirmed");
+  }
+  const paymentDeadlineAt = new Date(Date.parse(acceptedAt) + 24 * 60 * 60 * 1000).toISOString();
+
+  const updated = await client.query(
+    `WITH booking_update AS (
+       UPDATE booking.guest_bookings booking
+          SET lifecycle_status = 'confirmed',
+              booking_metadata = booking.booking_metadata ||
+                jsonb_build_object('acceptedPaymentDeadlineAt', $7::text),
+              updated_at = $3::timestamptz
+        WHERE booking.property_id = $1::uuid
+          AND booking.id = $2::uuid
+          AND booking.lifecycle_status = 'pending_payment'
+          AND booking.payment_status = 'unpaid'
+          AND ($8::timestamptz IS NULL OR $3::timestamptz < $8::timestamptz)
+       RETURNING booking.id
+     ),
+     status_event AS (
+       INSERT INTO booking.booking_status_events (
+         guest_booking_id, event_type, from_status, to_status, actor_type,
+         actor_user_id, public_visible, public_message, event_payload, occurred_at
+       )
+       SELECT
+         booking_update.id, 'guest_booking.accepted', 'pending_payment', 'confirmed',
+         $4, $5::uuid, TRUE, 'Booking accepted. Payment instructions sent.',
+         $6::jsonb, $3::timestamptz
+       FROM booking_update
+     ),
+     summary AS (
+       UPDATE booking.direct_booking_summary_read_model summary
+          SET lifecycle_status = 'confirmed',
+              projected_at = $3::timestamptz
+        WHERE summary.guest_booking_id = (SELECT id FROM booking_update)
+     )
+     SELECT id FROM booking_update`,
+    [
+      command.propertyId,
+      command.guestBookingId,
+      acceptedAt,
+      command.audit.actor.kind === "user" ? "property_user" : "system",
+      command.audit.actor.kind === "user" ? command.audit.actor.userId : null,
+      JSON.stringify({
+        commandId: command.commandId,
+        requestId: command.audit.requestId,
+        correlationId: command.audit.correlationId ?? command.audit.requestId,
+        paymentMethod: "bank_transfer",
+      }),
+      paymentDeadlineAt,
+      booking.pendingExpiresAt,
+    ],
+  );
+  if ((updated.rowCount ?? updated.rows.length) === 0) {
+    return invalidStatusTransition("pending_payment", "confirmed");
+  }
+  await captureDirectNightlyRevenueEvidence(client, booking, {
+    fingerprint: command.idempotencyKey,
+    required: booking.sourceSystem === "booking",
+  });
+
+  await enqueueBookingLifecycleEmailJob(client, {
+    kind: "reserved_pending_payment",
+    occurredAt: acceptedAt,
+    correlationId: command.audit.correlationId ?? command.audit.requestId,
+    causationId: command.commandId,
+    actor:
+      command.audit.actor.kind === "user"
+        ? { type: "user", userId: command.audit.actor.userId }
+        : { type: "system" },
+    source: "apps/api-pms-booking-acceptance",
+    paymentDeadlineAt,
+    bankTransferDetails,
+    booking: bookingEmailSnapshot(booking),
+  });
+  return { ok: true };
+}
+
+async function applyBookingMarkPaidCommandMutation(
+  client: PmsOperationsCommandClient,
+  command: PmsBookingLifecycleCommand,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+  const booking = await loadBookingPaymentLifecycle(client, command);
+  if (!booking) return reservationNotFound(command.guestBookingId);
+  const isPayPalPending =
+    booking.paymentMethod === "paypal" && booking.lifecycleStatus === "pending_payment";
+  const isAcceptedBankTransfer =
+    booking.paymentMethod === "bank_transfer" && booking.lifecycleStatus === "confirmed";
+  const isPayAtProperty =
+    booking.paymentMethod === "pay_at_property" && booking.lifecycleStatus === "confirmed";
+  const paymentDeadline = isPayPalPending
+    ? booking.pendingExpiresAt
+    : isAcceptedBankTransfer
+      ? booking.acceptedPaymentDeadlineAt
+      : null;
+  if (
+    booking.paymentStatus !== "unpaid" ||
+    (!isPayPalPending && !isAcceptedBankTransfer && !isPayAtProperty) ||
+    deadlinePassed(paymentDeadline, acceptedAt)
+  ) {
+    return invalidStatusTransition(
+      `${booking.lifecycleStatus}/${booking.paymentStatus}`,
+      "confirmed/paid",
+    );
+  }
+
+  const paymentMethod = isPayPalPending
+    ? "paypal"
+    : isAcceptedBankTransfer
+      ? "bank_transfer"
+      : "pay_at_property";
+  const financeCommand: FinanceBookingManualPaymentSettlementCommand = {
+    commandId: command.commandId,
+    idempotencyKey: `pms.booking.mark-paid.finance:${command.idempotencyKey}`,
+    propertyId: command.propertyId,
+    audit: command.audit,
+    payload: {
+      invoiceId: booking.invoiceId,
+      amount: booking.balanceAmount,
+      currency: booking.currency,
+      paymentMethod,
+      reference: `PMS ${paymentMethod} confirmation`,
+    },
+  };
+  const financeResult = await recordBookingManualPaymentInClient(client, financeCommand);
+  if (!financeResult.ok) {
+    throw new Error(
+      `Finance rejected PMS booking payment ${command.guestBookingId}: ${financeResult.code}`,
+    );
+  }
+
+  const updated = await client.query(
+    `WITH booking_update AS (
+       UPDATE booking.guest_bookings booking
+          SET lifecycle_status = 'confirmed',
+              payment_status = 'paid',
+              balance_amount = 0,
+              updated_at = $3::timestamptz
+        WHERE booking.property_id = $1::uuid
+          AND booking.id = $2::uuid
+          AND booking.lifecycle_status = $4
+          AND booking.payment_status = 'unpaid'
+          AND ($8::timestamptz IS NULL OR $3::timestamptz < $8::timestamptz)
+       RETURNING booking.id
+     ),
+     status_event AS (
+       INSERT INTO booking.booking_status_events (
+         guest_booking_id, event_type, from_status, to_status, actor_type,
+         actor_user_id, public_visible, public_message, event_payload, occurred_at
+       )
+       SELECT
+         booking_update.id, 'guest_booking.payment_received', $4, 'confirmed',
+         $5, $6::uuid, TRUE, 'Payment received. Booking confirmed.',
+         $7::jsonb, $3::timestamptz
+       FROM booking_update
+     ),
+     summary AS (
+       UPDATE booking.direct_booking_summary_read_model summary
+          SET lifecycle_status = 'confirmed',
+              payment_status = 'paid',
+              amount_summary = jsonb_set(summary.amount_summary, '{balanceAmount}', '0'::jsonb),
+              projected_at = $3::timestamptz
+        WHERE summary.guest_booking_id = (SELECT id FROM booking_update)
+     )
+     SELECT id FROM booking_update`,
+    [
+      command.propertyId,
+      command.guestBookingId,
+      acceptedAt,
+      booking.lifecycleStatus,
+      command.audit.actor.kind === "user" ? "property_user" : "system",
+      command.audit.actor.kind === "user" ? command.audit.actor.userId : null,
+      JSON.stringify({
+        commandId: command.commandId,
+        requestId: command.audit.requestId,
+        correlationId: command.audit.correlationId ?? command.audit.requestId,
+        paymentMethod: booking.paymentMethod,
+        fromPaymentStatus: "unpaid",
+        toPaymentStatus: "paid",
+      }),
+      paymentDeadline,
+    ],
+  );
+  if ((updated.rowCount ?? updated.rows.length) === 0) {
+    return invalidStatusTransition(booking.lifecycleStatus, "confirmed/paid");
+  }
+  if (isPayPalPending)
+    await captureDirectNightlyRevenueEvidence(client, booking, {
+      fingerprint: command.idempotencyKey,
+      required: booking.sourceSystem === "booking",
+    });
+
+  await enqueueBookingLifecycleEmailJob(client, {
+    kind: "final_confirmation",
+    occurredAt: acceptedAt,
+    correlationId: command.audit.correlationId ?? command.audit.requestId,
+    causationId: command.commandId,
+    actor:
+      command.audit.actor.kind === "user"
+        ? { type: "user", userId: command.audit.actor.userId }
+        : { type: "system" },
+    source: "apps/api-pms-booking-payment",
+    booking: bookingEmailSnapshot(booking),
+  });
+  return { ok: true };
+}
+
+async function loadBookingPaymentLifecycle(
+  client: PmsOperationsCommandClient,
+  command: PmsBookingLifecycleCommand,
+): Promise<BookingPaymentLifecycleRow | null> {
+  const result = await client.query<BookingPaymentLifecycleRow>(
+    `SELECT
+       booking.id::text AS "guestBookingId",
+       booking.property_id::text AS "propertyId",
+       booking.public_reference AS "publicReference",
+       COALESCE(booking.booking_metadata ->> 'invoiceId', booking.id::text) AS "invoiceId",
+       booking.lifecycle_status AS "lifecycleStatus",
+       booking.payment_status AS "paymentStatus",
+       booking.booking_metadata ->> 'paymentMethod' AS "paymentMethod",
+       booking.check_in::text AS "checkIn",
+       booking.check_out::text AS "checkOut",
+       booking.total_amount::text AS "totalAmount",
+       booking.balance_amount::text AS "balanceAmount",
+       booking.currency,
+       booking.source_system AS "sourceSystem",
+       booking.booking_metadata AS "bookingMetadata",
+       guest.email AS "guestEmail",
+       NULLIF(trim(concat_ws(' ', guest.first_name, guest.last_name)), '') AS "guestName",
+       property.display_name AS "propertyName",
+       payment.accepted_methods AS "acceptedMethods",
+       payment.deposit_policy AS "depositPolicy",
+       booking.booking_metadata -> 'paymentInstructions' AS "paymentInstructions",
+       booking.booking_metadata ->> 'pendingExpiresAt' AS "pendingExpiresAt",
+       booking.booking_metadata ->> 'acceptedPaymentDeadlineAt' AS "acceptedPaymentDeadlineAt"
+     FROM booking.guest_bookings booking
+     JOIN hotel_catalog.properties property ON property.id = booking.property_id
+     LEFT JOIN finance.payment_settings payment ON payment.property_id = booking.property_id
+     LEFT JOIN LATERAL (
+       SELECT booking_guest.first_name, booking_guest.last_name, booking_guest.email
+       FROM booking.booking_guests booking_guest
+       WHERE booking_guest.guest_booking_id = booking.id
+       ORDER BY
+         CASE booking_guest.guest_role WHEN 'booker' THEN 0 WHEN 'primary_guest' THEN 1 ELSE 2 END,
+         booking_guest.created_at,
+         booking_guest.id
+       LIMIT 1
+     ) guest ON TRUE
+     WHERE booking.property_id = $1::uuid
+       AND booking.id = $2::uuid
+     FOR UPDATE OF booking`,
+    [command.propertyId, command.guestBookingId],
+  );
+  return result.rows[0] ?? null;
+}
+
+function deadlinePassed(deadline: string | null, commandTime: string): boolean {
+  if (!deadline) return false;
+  const deadlineTime = Date.parse(deadline);
+  const acceptedTime = Date.parse(commandTime);
+  return (
+    Number.isFinite(deadlineTime) && Number.isFinite(acceptedTime) && acceptedTime >= deadlineTime
+  );
+}
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function bookingEmailSnapshot(booking: BookingPaymentLifecycleRow) {
+  return {
+    propertyId: booking.propertyId,
+    guestBookingId: booking.guestBookingId,
+    bookingReference: booking.publicReference,
+    guestEmail: booking.guestEmail,
+    guestName: booking.guestName,
+    propertyName: booking.propertyName,
+    checkIn: booking.checkIn,
+    checkOut: booking.checkOut,
+    totalAmount: booking.totalAmount,
+    balanceAmount: booking.balanceAmount,
+    currency: booking.currency,
+    paymentMethod: booking.paymentMethod,
+  };
 }
 
 async function applyCheckInCommandMutation(

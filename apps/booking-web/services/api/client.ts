@@ -33,10 +33,11 @@ class ApiClient {
     return parse<T>(res);
   }
 
-  async post<T>(path: string, body?: unknown): Promise<T> {
+  async post<T>(path: string, body?: unknown, init?: ApiRequestInit): Promise<T> {
     const res = await fetch(`${this.baseUrl}${path}`, {
+      ...init,
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...init?.headers },
       ...(body !== undefined && { body: JSON.stringify(body) }),
     });
     return parse<T>(res);

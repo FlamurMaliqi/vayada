@@ -65,6 +65,33 @@ describe("target Booking public audit regressions", () => {
     expect(target.quoteWrite?.text).toContain("ON CONFLICT (public_quote_reference) DO NOTHING");
   });
 
+  it("trusts Booking publication eligibility when catalog description is the only omission", async () => {
+    const target = quoteHarness({ propertyId: propertyA });
+
+    await expect(
+      target.adapter.quoteBooking(
+        "hotel-a",
+        {
+          roomTypeId: "room-deluxe",
+          checkIn: "2026-09-12",
+          checkOut: "2026-09-15",
+          adults: 2,
+          children: 0,
+          numberOfRooms: 1,
+          paymentMethod: "pay_at_property",
+          rateType: "flexible",
+        },
+        quoteContext(),
+      ),
+    ).resolves.toBeDefined();
+
+    const propertyLookup = target.calls.find((call) =>
+      call.text.includes("FROM hotel_catalog.property_slugs"),
+    );
+    expect(propertyLookup?.text).toContain("profile.profile_status = 'public'");
+    expect(propertyLookup?.text).not.toContain("p.profile_status = 'complete'");
+  });
+
   it("fails closed on booking reference collisions and binds references to the property", async () => {
     const first = bookingCollisionHarness(propertyA);
     const second = bookingCollisionHarness(propertyB);
@@ -166,6 +193,10 @@ function quoteHarness(options: {
               publicPolicy: {},
               paymentOptions: ["pay_at_property"],
               availableRooms: 2,
+              nightlyRoomAmounts: [12, 13, 14].map((day) => ({
+                stayDate: `2026-09-${day}`,
+                grossRoomAmount: 90,
+              })),
               roomTotal: "270.00",
               taxesAndFees: "0.00",
               discounts: "0.00",
@@ -239,7 +270,18 @@ function bookingCollisionHarness(propertyId: string) {
         return { rows: [{ id: "899e6c2a-95f8-47f2-8bf1-c2d18e3d7a66" }] };
       }
       if (text.includes("FROM hotel_catalog.properties p")) {
-        return { rows: [{ phoneRequired: false, acceptedMethods: ["pay_at_property"] }] };
+        return {
+          rows: [
+            {
+              defaultCurrency: "EUR",
+              phoneRequired: false,
+              paymentsEnabled: true,
+              acceptedMethods: ["pay_at_property", "cash"],
+              depositPolicy: {},
+              providerReady: false,
+            },
+          ],
+        };
       }
       if (text.trimStart().startsWith("SELECT") && text.includes("FROM booking.quote_sessions")) {
         return {
@@ -279,6 +321,9 @@ function bookingCollisionHarness(propertyId: string) {
   const adapter = createTargetBookingWebCheckoutAdapter({
     connectionString: "postgresql://unused",
     inventoryReservationPort: createTargetPmsInventoryReservationPort(),
+    billingConfigReadPortFactory: () => ({
+      getBillingConfig: async () => ({ propertyId }) as never,
+    }),
     pool: pool as never,
   });
   return {

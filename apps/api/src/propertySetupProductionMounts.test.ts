@@ -33,6 +33,11 @@ describe("adaptive property setup production mounts", () => {
       bookingDesignReadiness: {
         readinessPort: { getBookingDesignReadiness: ownerPort },
       },
+      pmsRoomPublication: {
+        mediaCommandPort: { assignRoomTypeMedia: ownerPort },
+        amenitiesCommandPort: { confirmRoomTypeAmenities: ownerPort },
+        snapshotPort: { getRoomPublicationSnapshot: ownerPort },
+      },
     });
 
     for (const url of [
@@ -41,6 +46,7 @@ describe("adaptive property setup production mounts", () => {
       `/api/marketplace/properties/${propertyId}/hotel-collaboration-preferences`,
       `/api/booking/properties/${propertyId}/booking-design`,
       `/api/booking/properties/${propertyId}/booking-design/readiness`,
+      `/api/pms/properties/${propertyId}/room-publication-snapshot`,
     ]) {
       const response = await app.inject({ method: "GET", url });
       expect(response.statusCode, url).toBe(401);

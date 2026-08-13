@@ -25,6 +25,7 @@ import type { PrivateDownloadPolicy } from "./mediaServing.js";
 
 const SUPPORTED_IMAGE_PURPOSES = new Set<PlatformMediaPurpose>([
   "identity.user.profile_image",
+  "booking.header_logo",
   "property.hero_image",
   "property.gallery_image",
   "property.logo",
@@ -33,7 +34,13 @@ const SUPPORTED_IMAGE_PURPOSES = new Set<PlatformMediaPurpose>([
   "marketplace.collaboration_chat.attachment",
   "pms.room_type.media",
 ]);
-const IMAGE_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const IMAGE_CONTENT_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/svg+xml",
+]);
 const MAX_SIGNED_IMAGE_SIZE_BYTES = 20 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 25_000_000;
 const MAX_RESIZABLE_IMAGE_PIXELS = 60_000_000;
@@ -245,7 +252,7 @@ export function createS3PlatformMediaAdapter(
             return {
               ok: false,
               code: "unsupported_media_type",
-              message: "Images must contain valid JPG, PNG, WebP, or GIF bytes.",
+              message: "Images must contain valid JPG, PNG, WebP, GIF, or SVG bytes.",
             };
           }
           if (contentType !== normalizeContentType(input.sessionFile.contentType)) {
@@ -557,6 +564,7 @@ function checkedBuffer(value: Uint8Array, maxBytes: number): Buffer {
 
 function imageContentType(format?: string): string | null {
   if (format === "jpeg") return "image/jpeg";
+  if (format === "svg") return "image/svg+xml";
   if (format === "png" || format === "webp" || format === "gif") return `image/${format}`;
   return null;
 }
@@ -650,7 +658,7 @@ function isMissingS3ObjectError(error: unknown): boolean {
 function isInvalidImageError(error: unknown): boolean {
   return (
     error instanceof Error &&
-    /^(?:Input buffer (?:contains unsupported image format|has corrupt header|is empty)|VipsJpeg: .*(?:corrupt|invalid|premature)|pngload_buffer:|webpload_buffer:)/i.test(
+    /^(?:Input buffer (?:contains unsupported image format|has corrupt header|is empty)|VipsJpeg: .*(?:corrupt|invalid|premature)|pngload_buffer:|webpload_buffer:|svgload_buffer:)/i.test(
       error.message,
     )
   );

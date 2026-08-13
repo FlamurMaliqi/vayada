@@ -290,6 +290,12 @@ function setupTasks(
       destinationRouteKey: "booking.guest_settings_policies",
     },
     {
+      taskId: "billing_plan",
+      track: "hotel_operations",
+      requirementOwnerDomain: "finance",
+      destinationRouteKey: "finance.billing_plan",
+    },
+    {
       taskId: "payment",
       track: "hotel_operations",
       requirementOwnerDomain: "finance",
