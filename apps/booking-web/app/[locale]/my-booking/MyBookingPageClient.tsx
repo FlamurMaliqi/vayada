@@ -11,6 +11,7 @@ import { useHotel, useSlug } from "@/contexts/HotelContext";
 import { useCurrency } from "@/contexts/CurrencyContext";
 import { bookingService, CancelPreview } from "@/services/api/booking";
 import { Booking } from "@/lib/types";
+import { readLastBooking } from "@/lib/storage/bookingDraft";
 
 export default function MyBookingPageClient() {
   const t = useTranslations("myBooking");
@@ -54,7 +55,10 @@ export default function MyBookingPageClient() {
   // email link with ?reference=&email= already populated (VAY-379).
   useEffect(() => {
     const qpRef = searchParams.get("reference");
-    const qpEmail = searchParams.get("email");
+    const stored = readLastBooking();
+    const qpEmail =
+      searchParams.get("email") ||
+      (stored?.bookingReference === qpRef?.toUpperCase() ? (stored?.guestEmail ?? "") : "");
     if (qpRef && qpEmail) {
       setReference(qpRef.toUpperCase());
       setEmail(qpEmail);

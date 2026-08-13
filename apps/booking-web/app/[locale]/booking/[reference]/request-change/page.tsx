@@ -10,6 +10,7 @@ import { bookingImageSizes } from "@/components/booking/imageSizes";
 import { useHotel, useSlug } from "@/contexts/HotelContext";
 import { useCurrency } from "@/contexts/CurrencyContext";
 import { Booking } from "@/lib/types";
+import { readLastBooking } from "@/lib/storage/bookingDraft";
 import { bookingService, ChangeRequestPreview } from "@/services/api/booking";
 
 export default function RequestChangePage({
@@ -40,10 +41,22 @@ export default function RequestChangePage({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
 
-  const guestEmail = emailParam || "";
+  const [guestEmail, setGuestEmail] = useState(emailParam || "");
+  const [emailResolved, setEmailResolved] = useState(Boolean(emailParam));
+
+  useEffect(() => {
+    if (emailParam) {
+      setGuestEmail(emailParam);
+    } else {
+      const stored = readLastBooking();
+      if (stored?.bookingReference === reference) setGuestEmail(stored.guestEmail);
+    }
+    setEmailResolved(true);
+  }, [emailParam, reference]);
 
   // Load the booking and any existing date-change request.
   useEffect(() => {
+    if (!emailResolved) return;
     if (!guestEmail) {
       setLoadError(
         t("missingEmail") || "This page must be opened from the booking confirmation link.",
@@ -78,7 +91,7 @@ export default function RequestChangePage({
     return () => {
       cancelled = true;
     };
-  }, [reference, guestEmail, slug, t]);
+  }, [reference, guestEmail, emailResolved, slug, t]);
 
   // Debounced preview fetch whenever the form changes.
   useEffect(() => {
@@ -134,7 +147,7 @@ export default function RequestChangePage({
         addonQuantities: {},
         addonDates: {},
       });
-      router.push(`/booking/${reference}?email=${encodeURIComponent(guestEmail)}`);
+      router.push(`/booking/${reference}`);
     } catch (err: unknown) {
       setSubmitError(err instanceof Error && err.message ? err.message : t("submitError"));
     } finally {

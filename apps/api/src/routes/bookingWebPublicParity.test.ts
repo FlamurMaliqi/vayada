@@ -2061,7 +2061,7 @@ describe("Booking Web public bootstrap parity", () => {
 
     await expect(
       adapter.cancel("hotel-alpenrose", guestBookingId, request, context),
-    ).resolves.toMatchObject({ status: "canceled" });
+    ).resolves.toMatchObject({ status: "cancelled" });
     await expect(
       adapter.cancel("hotel-alpenrose", guestBookingId, request, {
         ...context,
@@ -2504,6 +2504,7 @@ describe("Booking Web public bootstrap parity", () => {
     let balanceAmount = "600.00";
     let cardBrand: string | null = null;
     let cardLast4: string | null = null;
+    let operationalStatus: string | null = null;
     let retrievedIntentStatus = "canceled";
     let cardPaymentInput: Record<string, unknown> | null = null;
     let retrievePaymentIntentCalls = 0;
@@ -2526,8 +2527,12 @@ describe("Booking Web public bootstrap parity", () => {
       currency: "EUR",
       totalAmount: "600.00",
       balanceAmount,
+      expectedPaymentMethod: "manual_card",
       bookingMetadata: {
         paymentMethod: "card",
+        acceptedPaymentDeadlineAt: "2026-09-03T10:00:00.000Z",
+        pendingExpiresAt: "2026-09-02T10:00:00.000Z",
+        paymentInstructions: { bankTransferDetails: "IBAN: DE123" },
         selectedOffer: {
           roomTypeId: "room_deluxe",
           nightlyRoomAmounts: nights("200"),
@@ -2537,6 +2542,10 @@ describe("Booking Web public bootstrap parity", () => {
       },
       cardBrand,
       cardLast4,
+      operationalStatus,
+      assignedRoomTypeName: "Deluxe Suite",
+      unitNames: ["Suite 204", "Suite 205"],
+      cancelledAt: "2026-09-04T12:30:00.000Z",
       createdAt: "2026-09-01T10:00:00.000Z",
     });
     const pool = {
@@ -2963,6 +2972,12 @@ describe("Booking Web public bootstrap parity", () => {
     );
     expect(lookupRead?.text).toContain("b.property_id = $1::uuid");
     expect(lookupRead?.text).toContain("lower(booker.email) = lower($3)");
+    expect(lookupRead?.text).toContain("FROM pms.operational_booking_assignments assignment");
+    expect(lookupRead?.text).toContain("assignment.property_id = b.property_id");
+    expect(lookupRead?.text).toContain('b.expected_payment_method AS "expectedPaymentMethod"');
+    expect(lookupRead?.text).toContain("LEFT JOIN pms.room_types assigned_room_type");
+    expect(lookupRead?.text).toContain("jsonb_agg(room.room_number");
+    expect(lookupRead?.text).toContain("event.to_status = 'canceled'");
     expect(JSON.stringify(lookupAuditBody)).not.toContain(lookup.confirmationToken);
 
     await expect(
@@ -2979,6 +2994,75 @@ describe("Booking Web public bootstrap parity", () => {
         },
       ),
     ).resolves.toMatchObject({ bookingReference: "B-CARD952" });
+
+    operationalStatus = "checked_in";
+    await expect(
+      adapter.confirmation?.(
+        "hotel-alpenrose",
+        { bookingReference: "B-CARD952", confirmationToken: created.confirmationToken },
+        {
+          operation: "booking-confirmation",
+          requestId: "req-card-checked-in-952",
+          correlationId: "corr-card-checked-in-952",
+          idempotencyKey: "idem-card-checked-in-952",
+          fingerprint: "b".repeat(64),
+          occurredAt: new Date("2026-09-02T09:00:01.000Z"),
+        },
+      ),
+    ).resolves.toMatchObject({
+      status: "checked_in",
+      roomName: "Deluxe Suite",
+      unitNames: ["Suite 204", "Suite 205"],
+    });
+    operationalStatus = "checked_out";
+    await expect(
+      adapter.confirmation?.(
+        "hotel-alpenrose",
+        { bookingReference: "B-CARD952", confirmationToken: created.confirmationToken },
+        {
+          operation: "booking-confirmation",
+          requestId: "req-card-checked-out-952",
+          correlationId: "corr-card-checked-out-952",
+          idempotencyKey: "idem-card-checked-out-952",
+          fingerprint: "c".repeat(64),
+          occurredAt: new Date("2026-09-02T09:00:01.000Z"),
+        },
+      ),
+    ).resolves.toMatchObject({
+      status: "checked_out",
+      roomName: "Deluxe Suite",
+      unitNames: ["Suite 204", "Suite 205"],
+    });
+    operationalStatus = null;
+
+    confirmationMetadata = { ...confirmationMetadata, paymentMethod: undefined };
+    await expect(
+      adapter.confirmation?.("hotel-alpenrose", {
+        bookingReference: "B-CARD952",
+        confirmationToken: created.confirmationToken,
+      }),
+    ).resolves.toMatchObject({
+      roomName: "Deluxe Suite",
+      paymentMethod: "manual_card",
+      paymentDeadline: "2026-09-03T10:00:00.000Z",
+      unitNames: ["Suite 204", "Suite 205"],
+    });
+    confirmationMetadata = { ...confirmationMetadata, paymentMethod: "card" };
+
+    lifecycleStatus = "pending_payment";
+    await expect(
+      adapter.getStatus("hotel-alpenrose", {
+        reference: "B-CARD952",
+        email: "guest@example.test",
+      }),
+    ).resolves.toMatchObject({ status: "pending" });
+    lifecycleStatus = "canceled";
+    await expect(
+      adapter.getStatus("hotel-alpenrose", {
+        reference: "B-CARD952",
+        email: "guest@example.test",
+      }),
+    ).resolves.toMatchObject({ status: "cancelled" });
 
     lifecycleStatus = "confirmed";
     paymentStatus = "unpaid";
