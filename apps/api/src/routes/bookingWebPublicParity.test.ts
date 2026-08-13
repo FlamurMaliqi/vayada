@@ -534,7 +534,7 @@ describe("Booking Web public bootstrap parity", () => {
       status.statusCode,
       lookup.statusCode,
       promo.statusCode,
-    ]).toEqual([404, 404, 404, 404, 404, 404, 404]);
+    ]).toEqual([404, 404, 404, 400, 404, 404, 404]);
     expect(paymentInstructions.statusCode).toBe(404);
     expect(create.json()).toMatchObject({
       message: "Booking Web checkout command adapter is not configured.",
@@ -577,7 +577,7 @@ describe("Booking Web public bootstrap parity", () => {
     });
 
     expect(create.statusCode).toBe(404);
-    expect(confirm.statusCode).toBe(404);
+    expect(confirm.statusCode).toBe(400);
     expect(withdraw.statusCode).toBe(404);
     expect(cancelPreview.statusCode).toBe(404);
     expect(changePreview.statusCode).toBe(404);
@@ -822,7 +822,7 @@ describe("Booking Web public bootstrap parity", () => {
       }),
       app.inject({
         method: "POST",
-        url: "/api/booking-web/hotels/hotel-alpenrose/bookings/VAY-TARGET-1/confirm-authorization",
+        url: "/api/booking-web/hotels/hotel-alpenrose/bookings/b9fccec2-eb4c-4c35-bfd3-02a748c2e951/confirm-authorization",
       }),
       app.inject({
         method: "GET",
@@ -936,6 +936,30 @@ describe("Booking Web public bootstrap parity", () => {
     expect(new Set(changePreviewContexts.map((entry) => entry.idempotencyKey))).toHaveLength(1);
     await app.close();
     expect(closed).toBe(1);
+  });
+
+  it("rejects public booking references as authorization handles", async () => {
+    let called = false;
+    const app = buildApp({
+      logger: false,
+      publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
+      bookingWebCheckoutAdapter: {
+        ...createUnavailableBookingWebCheckoutAdapter(),
+        async confirmAuthorization() {
+          called = true;
+          return {};
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/booking-web/hotels/hotel-alpenrose/bookings/VAY-ABC123/confirm-authorization",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(called).toBe(false);
+    await app.close();
   });
 
   it("keeps one checkout attempt replayable while distinct attempt tokens create distinct quotes", async () => {
@@ -2310,8 +2334,11 @@ describe("Booking Web public bootstrap parity", () => {
     let lifecycleStatus = "draft";
     let paymentStatus = "unpaid";
     let balanceAmount = "600.00";
+    let cardBrand: string | null = null;
+    let cardLast4: string | null = null;
     let retrievedIntentStatus = "canceled";
     let cardPaymentInput: Record<string, unknown> | null = null;
+    let retrievePaymentIntentCalls = 0;
     let createCommandReserved = false;
     let completedCreateBody: unknown;
     const calls: Array<{ text: string; values: readonly unknown[] | undefined }> = [];
@@ -2337,6 +2364,8 @@ describe("Booking Web public bootstrap parity", () => {
         },
         requestFingerprint: "2".repeat(64),
       },
+      cardBrand,
+      cardLast4,
       createdAt: "2026-09-01T10:00:00.000Z",
     });
     const pool = {
@@ -2419,6 +2448,8 @@ describe("Booking Web public bootstrap parity", () => {
                 paymentId: "d9fccec2-eb4c-4c35-bfd3-02a748c2e952",
                 providerPaymentIntentId: "pi_card_952",
                 providerAccountRef: "acct_property_952",
+                cardBrand,
+                cardLast4,
               },
             ],
           };
@@ -2446,6 +2477,18 @@ describe("Booking Web public bootstrap parity", () => {
               },
             ],
           };
+        }
+        if (
+          text.includes("WHERE provider_payment_intent_id = $1") &&
+          text.includes("payment_metadata = payment_metadata || $2::jsonb")
+        ) {
+          const details = JSON.parse(String(values?.[1])) as {
+            cardBrand: string;
+            cardLast4: string;
+          };
+          cardBrand = details.cardBrand;
+          cardLast4 = details.cardLast4;
+          return { rows: [] };
         }
         if (text.startsWith("UPDATE booking.guest_bookings") && text.includes("RETURNING id")) {
           lifecycleStatus = "confirmed";
@@ -2484,6 +2527,19 @@ describe("Booking Web public bootstrap parity", () => {
             ],
           };
         }
+        if (text.includes("FROM booking.guest_bookings b")) {
+          return {
+            rows: [
+              {
+                ...booking(),
+                hotelName: "Hotel Alpenrose",
+                guestFirstName: "Guest",
+                guestLastName: "Guest",
+                guestEmail: "guest@example.test",
+              },
+            ],
+          };
+        }
         if (text.includes("FROM booking.guest_bookings booking")) return { rows: [booking()] };
         if (text.includes("INSERT INTO platform.domain_events")) {
           return { rows: [{ eventId: "e9fccec2-eb4c-4c35-bfd3-02a748c2e952" }] };
@@ -2510,6 +2566,7 @@ describe("Booking Web public bootstrap parity", () => {
         };
       },
       async retrievePaymentIntent() {
+        retrievePaymentIntentCalls += 1;
         return {
           paymentIntentId: "pi_card_952",
           clientSecret: "pi_card_952_secret_test",
@@ -2519,6 +2576,8 @@ describe("Booking Web public bootstrap parity", () => {
           propertyId,
           bookingReference: "B-CARD952",
           providerAccountRef: "acct_property_952",
+          cardBrand: "visa",
+          cardLast4: "4242",
         };
       },
       async capturePaymentIntent() {
@@ -2570,10 +2629,15 @@ describe("Booking Web public bootstrap parity", () => {
       fingerprint: "2".repeat(64),
       occurredAt: new Date("2026-09-01T10:00:00.000Z"),
     };
-    const created = await adapter.createBooking("hotel-alpenrose", createRequest, createContext);
+    const created = (await adapter.createBooking(
+      "hotel-alpenrose",
+      createRequest,
+      createContext,
+    )) as { confirmationToken: string };
     expect(created).toMatchObject({
       clientSecret: "pi_card_952_secret_test",
       draftId: guestBookingId,
+      confirmationToken: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
       booking: { id: guestBookingId, status: "draft", paymentMethod: "card" },
     });
     expect(calls.some((call) => call.text.includes("INSERT INTO finance.payments"))).toBe(true);
@@ -2593,6 +2657,10 @@ describe("Booking Web public bootstrap parity", () => {
     );
     const paymentInsert = calls.find((call) => call.text.includes("INSERT INTO finance.payments"));
     expect(paymentInsert?.values?.slice(4, 7)).toEqual(["600.00", "30.00", "570.00"]);
+    const bookingInsert = calls.find((call) =>
+      call.text.includes("INSERT INTO booking.guest_bookings"),
+    );
+    expect(bookingInsert?.values).toContainEqual(expect.stringMatching(/^VAY-[A-F0-9]{6}$/));
     expect(calls.some((call) => call.text.includes("'pms-reservation-handoff'"))).toBe(false);
 
     await expect(
@@ -2611,10 +2679,49 @@ describe("Booking Web public bootstrap parity", () => {
     ).resolves.toMatchObject({
       authorizationComplete: true,
       clientSecret: null,
-      booking: { id: guestBookingId, status: "confirmed", paymentStatus: "paid" },
+      booking: {
+        id: guestBookingId,
+        status: "confirmed",
+        paymentStatus: "paid",
+        cardBrand: "visa",
+        cardLast4: "4242",
+      },
     });
     expect(calls.some((call) => call.text.includes("guest_booking.payment_received"))).toBe(true);
     expect(calls.some((call) => call.text.includes("'pms-reservation-handoff'"))).toBe(true);
+
+    cardBrand = null;
+    cardLast4 = null;
+    const retrieveCallsBeforeConfirm = retrievePaymentIntentCalls;
+    await expect(
+      adapter.confirmAuthorization("hotel-alpenrose", guestBookingId, {
+        operation: "booking-confirm-authorization",
+        requestId: "req-card-confirm-952",
+        correlationId: "corr-card-confirm-952",
+        idempotencyKey: "idem-card-confirm-952",
+        fingerprint: "3".repeat(64),
+        occurredAt: new Date("2026-09-01T10:01:00.000Z"),
+      }),
+    ).resolves.toMatchObject({
+      id: guestBookingId,
+      status: "confirmed",
+      paymentStatus: "paid",
+      cardBrand: "visa",
+      cardLast4: "4242",
+    });
+    expect(retrievePaymentIntentCalls).toBe(retrieveCallsBeforeConfirm + 1);
+
+    await expect(
+      adapter.confirmation?.("hotel-alpenrose", {
+        bookingReference: "B-CARD952",
+        confirmationToken: created.confirmationToken,
+      }),
+    ).resolves.toMatchObject({
+      id: guestBookingId,
+      status: "confirmed",
+      cardBrand: "visa",
+      cardLast4: "4242",
+    });
   });
 
   it("reports actionable parity mismatches by fixture case and field", () => {

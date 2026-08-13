@@ -102,6 +102,38 @@ describe("Stripe booking payments", () => {
     ).rejects.toThrow("different property booking");
   });
 
+  it("retrieves safe card display details from the PaymentIntent", async () => {
+    let requestedUrl = "";
+    const provider = createStripeBookingPaymentProvider({
+      secretKey: "sk_test",
+      fetch: async (input) => {
+        requestedUrl = String(input);
+        return new Response(
+          JSON.stringify({
+            id: "pi_booking_1",
+            client_secret: "pi_booking_1_secret_test",
+            status: "succeeded",
+            amount: 6050,
+            currency: "eur",
+            metadata: {
+              vayada_property_id: "property-1",
+              vayada_booking_reference: "B-001",
+            },
+            transfer_data: { destination: "acct_1" },
+            payment_method: { card: { brand: "visa", last4: "4242" } },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+
+    await expect(provider.retrievePaymentIntent("pi_booking_1")).resolves.toMatchObject({
+      cardBrand: "visa",
+      cardLast4: "4242",
+    });
+    expect(new URL(requestedUrl).searchParams.get("expand[]")).toBe("payment_method");
+  });
+
   it("creates request-mode PaymentIntents with manual capture", async () => {
     let body = "";
     const provider = createStripeBookingPaymentProvider({

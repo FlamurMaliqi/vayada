@@ -12,6 +12,8 @@ export type StripeBookingPaymentIntent = {
   propertyId: string | null;
   bookingReference: string | null;
   providerAccountRef: string | null;
+  cardBrand?: string | null;
+  cardLast4?: string | null;
 };
 
 export type StripeBookingPaymentProvider = {
@@ -105,7 +107,9 @@ export function createStripeBookingPaymentProvider(config: {
 
     async retrievePaymentIntent(paymentIntentId) {
       return paymentIntent(
-        await request("GET", `/payment_intents/${encodeURIComponent(paymentIntentId)}`),
+        await request("GET", `/payment_intents/${encodeURIComponent(paymentIntentId)}`, [
+          ["expand[]", "payment_method"],
+        ]),
       );
     },
 
@@ -147,6 +151,7 @@ function paymentIntent(value: StripeObject): StripeBookingPaymentIntent {
   ) {
     throw new Error("Stripe returned an invalid PaymentIntent.");
   }
+  const card = object(object(value["payment_method"])["card"]);
   return {
     paymentIntentId,
     clientSecret: text(value["client_secret"]),
@@ -156,6 +161,8 @@ function paymentIntent(value: StripeObject): StripeBookingPaymentIntent {
     propertyId: text(object(value["metadata"])["vayada_property_id"]),
     bookingReference: text(object(value["metadata"])["vayada_booking_reference"]),
     providerAccountRef: text(object(value["transfer_data"])["destination"]),
+    cardBrand: text(card["brand"]),
+    cardLast4: /^\d{4}$/.test(text(card["last4"]) ?? "") ? text(card["last4"]) : null,
   };
 }
 
