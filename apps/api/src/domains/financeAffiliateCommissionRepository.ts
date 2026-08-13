@@ -8,6 +8,8 @@ import type {
 } from "@vayada/domain-finance";
 import pg, { type PoolClient, type QueryResultRow } from "pg";
 
+import { activeBookingPlanEntitlementSql } from "./propertyPlanReadModel.js";
+
 type Queryable = {
   query<T extends QueryResultRow = QueryResultRow>(
     text: string,
@@ -35,6 +37,27 @@ export function createPgFinanceAffiliateCommissionRepository(config: {
   return {
     getCommission(propertyId, affiliateId = null) {
       return readCommission(pool, propertyId, affiliateId);
+    },
+
+    async getBookingFinanceAccess(propertyId, organizationId) {
+      const result = await pool.query<{ active: boolean; exists: boolean }>(
+        `SELECT
+           EXISTS (
+             SELECT 1 FROM finance.billing_entitlements entitlement
+             WHERE entitlement.property_id = $1::uuid
+               AND entitlement.organization_id = $2::uuid
+               AND ${activeBookingPlanEntitlementSql("entitlement")}
+           ) AS active,
+           EXISTS (
+             SELECT 1 FROM finance.billing_entitlements entitlement
+             WHERE entitlement.property_id = $1::uuid
+               AND entitlement.organization_id = $2::uuid
+               AND entitlement.product = 'booking'
+               AND entitlement.entitlement_key = 'direct-booking-finance'
+           ) AS exists`,
+        [propertyId, organizationId],
+      );
+      return result.rows[0]?.active ? "active" : result.rows[0]?.exists ? "inactive" : "missing";
     },
 
     async setCommission(command) {
@@ -80,6 +103,9 @@ export function createPgFinanceAffiliateCommissionRepository(config: {
           keyHash,
           fingerprint,
         );
+        await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
+          `finance-affiliate-commission:${command.propertyId}:${command.affiliateId ?? "property-default"}`,
+        ]);
         const current = await readActiveRule(client, command.propertyId, command.affiliateId);
         const previousRate = current ? normalizeRate(current.percentageRate) : null;
         let ruleId = current?.id ?? null;

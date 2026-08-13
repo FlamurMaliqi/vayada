@@ -34,6 +34,8 @@ export type FinanceAffiliateCommissionResult =
     }
   | { outcome: "idempotency_conflict" };
 
+export type FinanceAffiliateCommissionAccessStatus = "active" | "inactive" | "missing";
+
 export interface FinanceAffiliateCommissionRepository {
   getCommission(
     propertyId: string,
@@ -42,5 +44,9 @@ export interface FinanceAffiliateCommissionRepository {
   setCommission(
     command: FinanceAffiliateCommissionCommand,
   ): Promise<FinanceAffiliateCommissionResult>;
+  getBookingFinanceAccess(
+    propertyId: string,
+    organizationId: string,
+  ): Promise<FinanceAffiliateCommissionAccessStatus>;
   close?(): Promise<void>;
 }

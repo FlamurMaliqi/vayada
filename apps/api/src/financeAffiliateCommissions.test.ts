@@ -135,13 +135,21 @@ describe("Finance affiliate commission routes", () => {
   });
 
   it.each([
-    { name: "without authentication", headers: {}, auth: {}, status: 401, code: "unauthenticated" },
+    {
+      name: "without authentication",
+      headers: {},
+      auth: {},
+      status: 401,
+      code: "unauthenticated",
+      financeAccess: "missing" as const,
+    },
     {
       name: "without permission",
       headers: authHeader,
       auth: { permissions: ["pms.finance.read" as PermissionKey] },
       status: 403,
       code: "missing_permission",
+      financeAccess: "missing" as const,
     },
     {
       name: "without entitlement",
@@ -149,13 +157,15 @@ describe("Finance affiliate commission routes", () => {
       auth: { entitlements: [] },
       status: 403,
       code: "missing_entitlement",
+      financeAccess: "missing" as const,
     },
     {
       name: "with inactive entitlement",
       headers: authHeader,
-      auth: { entitlements: [financeEntitlement("suspended")] },
+      auth: { entitlements: [] },
       status: 403,
       code: "inactive_entitlement",
+      financeAccess: "inactive" as const,
     },
     {
       name: "for another property",
@@ -163,9 +173,10 @@ describe("Finance affiliate commission routes", () => {
       auth: { links: [propertyLink(otherPropertyId)] },
       status: 403,
       code: "missing_resource_access",
+      financeAccess: "active" as const,
     },
-  ])("denies commission reads $name", async ({ headers, auth, status, code }) => {
-    const ports = fakePorts();
+  ])("denies commission reads $name", async ({ headers, auth, status, code, financeAccess }) => {
+    const ports = fakePorts({ financeAccess });
     const app = await testApp(ports, auth);
     apps.push(app);
     const response = await injectJson<{ code: string }>(app, {
@@ -179,7 +190,8 @@ describe("Finance affiliate commission routes", () => {
   });
 
   it("accepts the PMS property-management entitlement", async () => {
-    const app = await testApp(fakePorts(), {
+    const ports = fakePorts({ financeAccess: "missing" });
+    const app = await testApp(ports, {
       entitlements: [{ product: "pms", key: "property-management", status: "active" }],
     });
     apps.push(app);
@@ -189,6 +201,20 @@ describe("Finance affiliate commission routes", () => {
       headers: authHeader,
     });
     expect(response.statusCode).toBe(200);
+    expect(ports.calls.financeAccess).toEqual([]);
+  });
+
+  it("reads active Booking Finance access from the Finance-owned store", async () => {
+    const ports = fakePorts({ financeAccess: "active" });
+    const app = await testApp(ports, { entitlements: [] });
+    apps.push(app);
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/finance/properties/${propertyId}/affiliate-commission`,
+      headers: authHeader,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(ports.calls.financeAccess).toEqual([[propertyId, "org-vay-1278"]]);
   });
 
   it("returns not found before Finance reads an affiliate from another property", async () => {
@@ -207,16 +233,22 @@ describe("Finance affiliate commission routes", () => {
 });
 
 type FakePorts = FinanceAffiliateCommissionRoutesOptions & {
-  calls: { get: unknown[]; set: FinanceAffiliateCommissionCommand[]; scope: unknown[] };
+  calls: {
+    get: unknown[];
+    set: FinanceAffiliateCommissionCommand[];
+    scope: unknown[];
+    financeAccess: unknown[];
+  };
 };
 
 function fakePorts(
   options: {
     result?: FinanceAffiliateCommissionResult;
     affiliate?: MarketplaceAffiliateAdminRecord | null;
+    financeAccess?: "active" | "inactive" | "missing";
   } = {},
 ): FakePorts {
-  const calls: FakePorts["calls"] = { get: [], set: [], scope: [] };
+  const calls: FakePorts["calls"] = { get: [], set: [], scope: [], financeAccess: [] };
   return {
     calls,
     repository: {
@@ -233,6 +265,10 @@ function fakePorts(
             commission: commissionView(command.affiliateId),
           }
         );
+      },
+      async getBookingFinanceAccess(...input) {
+        calls.financeAccess.push(input);
+        return options.financeAccess ?? "active";
       },
     } satisfies FinanceAffiliateCommissionRepository,
     affiliateScope: {
@@ -254,7 +290,7 @@ async function testApp(ports: FakePorts, auth: AuthOptions = {}) {
       actor: { internalUserId: actorUserId },
       selectedOrganization: { organizationId: "org-vay-1278", kind: "hotel_group" },
       membership: { permissions: auth.permissions ?? ["pms.finance.manage"] },
-      entitlements: auth.entitlements ?? [financeEntitlement()],
+      entitlements: auth.entitlements ?? [pmsEntitlement()],
       linkedResources: auth.links ?? [propertyLink(propertyId)],
     } as RequestContext;
   });
@@ -294,8 +330,8 @@ function affiliateRecord(): MarketplaceAffiliateAdminRecord {
   };
 }
 
-function financeEntitlement(status: ProductEntitlement["status"] = "active"): ProductEntitlement {
-  return { product: "booking", key: "direct-booking-finance", status };
+function pmsEntitlement(status: ProductEntitlement["status"] = "active"): ProductEntitlement {
+  return { product: "pms", key: "property-management", status };
 }
 
 function propertyLink(resourceId: string): LinkedResource {
