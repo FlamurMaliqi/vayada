@@ -442,8 +442,6 @@ export default function MobileCalendar({
               {rangeStartStr && rangeEndStr && (
                 <button
                   type="button"
-                  disabled={!writeActionsAvailable}
-                  title={!writeActionsAvailable ? "Room blocking is not available yet" : undefined}
                   onClick={() => onBlockRoom(rangeStartStr, rangeEndStr)}
                   className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-red-600 border border-red-200 bg-white rounded-lg hover:bg-red-50 transition-colors disabled:cursor-not-allowed disabled:text-gray-400 disabled:border-gray-200"
                 >
@@ -501,10 +499,6 @@ export default function MobileCalendar({
                   <button
                     key={`block-${bl.id}`}
                     type="button"
-                    disabled={!writeActionsAvailable}
-                    title={
-                      !writeActionsAvailable ? "Block editing is not available yet" : undefined
-                    }
                     onClick={() => onSelectBlock(bl)}
                     className="w-full bg-red-50 rounded-lg border border-dashed border-red-200 p-3 text-left hover:bg-red-100 transition-colors disabled:cursor-default disabled:hover:bg-red-50"
                   >

@@ -53,6 +53,7 @@ export interface CalendarBooking {
 
 export interface CalendarBlock {
   id: string;
+  version: string;
   roomTypeId: string;
   roomId: string | null;
   roomNumber: string | null;
@@ -108,12 +109,20 @@ type PmsOperationsRoom = {
 
 type PmsOperationsRoomBlock = {
   blockId: string;
+  version: string;
   roomTypeId: string;
   roomId: string | null;
   startsOn: string;
   endsOn: string;
   blockedCount: number;
   reason: string;
+  status: "active" | "released" | "expired";
+};
+
+type PmsRoomBlockCommandResponse = {
+  contractVersion: "pms-operations.v1";
+  propertyId: string;
+  items: PmsOperationsRoomBlock[];
 };
 
 type PmsOperationalReservation = {
@@ -168,14 +177,54 @@ export const calendarService = {
   getCalendarData: (start: string, end: string) =>
     pmsOperationsCalendarReadService.getCalendarData(start, end),
 
-  createRoomBlock: (_data: CreateRoomBlockPayload) =>
-    unsupportedPmsNextStackFeature<CalendarBlock[]>("Room block creation"),
+  createRoomBlock: async (data: CreateRoomBlockPayload): Promise<CalendarBlock[]> => {
+    const propertyId = await resolveSelectedPmsPropertyId("creating room block");
+    const command = roomBlockCommandEnvelope();
+    const response = await pmsOperationsClient.post<PmsRoomBlockCommandResponse>(
+      propertyEndpoint(propertyId, "room-blocks"),
+      {
+        ...command,
+        roomTypeId: data.roomTypeId,
+        roomIds: data.roomIds,
+        startsOn: data.startDate,
+        endsOn: addDaysDateOnly(data.endDate, -1),
+        reason: data.reason,
+      },
+      pmsOperationsRequestOptions,
+    );
+    return response.items.map((item) => toCalendarBlock(item, null));
+  },
 
-  updateRoomBlock: (_blockId: string, _data: UpdateRoomBlockPayload) =>
-    unsupportedPmsNextStackFeature<CalendarBlock>("Room block updates"),
+  updateRoomBlock: async (
+    blockId: string,
+    expectedVersion: string,
+    data: UpdateRoomBlockPayload,
+  ): Promise<CalendarBlock> => {
+    const propertyId = await resolveSelectedPmsPropertyId("updating room block");
+    const response = await pmsOperationsClient.patch<PmsRoomBlockCommandResponse>(
+      propertyEndpoint(propertyId, `room-blocks/${blockId}`),
+      {
+        ...roomBlockCommandEnvelope(),
+        expectedVersion,
+        ...(data.startDate ? { startsOn: data.startDate } : {}),
+        ...(data.endDate ? { endsOn: addDaysDateOnly(data.endDate, -1) } : {}),
+        ...(data.reason !== undefined ? { reason: data.reason } : {}),
+      },
+      pmsOperationsRequestOptions,
+    );
+    return toCalendarBlock(response.items[0]!, null);
+  },
 
-  deleteRoomBlock: (_blockId: string) =>
-    unsupportedPmsNextStackFeature<void>("Room block deletion"),
+  deleteRoomBlock: async (blockId: string, expectedVersion: string): Promise<void> => {
+    const propertyId = await resolveSelectedPmsPropertyId("deleting room block");
+    await pmsOperationsClient.delete<PmsRoomBlockCommandResponse>(
+      propertyEndpoint(propertyId, `room-blocks/${blockId}`),
+      {
+        ...pmsOperationsRequestOptions,
+        body: JSON.stringify({ ...roomBlockCommandEnvelope(), expectedVersion }),
+      },
+    );
+  },
 
   createAdminBooking: (_data: CreateAdminBookingPayload) =>
     unsupportedPmsNextStackFeature("Manual booking creation"),
@@ -283,17 +332,14 @@ function toCalendarData(
           reservation.stay.checkIn < range.end && reservation.stay.checkOut > range.start,
       )
       .flatMap((reservation) => calendarBookingsForReservation(reservation, roomTypesById)),
-    blocks: blocks.map((block) => ({
-      id: block.blockId,
-      roomTypeId: block.roomTypeId,
-      roomId: block.roomId,
-      roomNumber: block.roomId ? (roomsById.get(block.roomId)?.roomNumber ?? null) : null,
-      startDate: block.startsOn,
-      endDate: addDaysDateOnly(block.endsOn, 1),
-      blockedCount: block.blockedCount,
-      reason: block.reason,
-      createdAt: `${block.startsOn}T00:00:00.000Z`,
-    })),
+    blocks: blocks
+      .filter((block) => block.status === "active")
+      .map((block) =>
+        toCalendarBlock(
+          block,
+          block.roomId ? (roomsById.get(block.roomId)?.roomNumber ?? null) : null,
+        ),
+      ),
   };
 }
 
@@ -366,4 +412,24 @@ function addDaysDateOnly(date: string, days: number): string {
   const parsed = Date.parse(`${date}T00:00:00.000Z`);
   if (!Number.isFinite(parsed)) return date;
   return new Date(parsed + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+function roomBlockCommandEnvelope(): { commandId: string; idempotencyKey: string } {
+  const commandId = globalThis.crypto.randomUUID();
+  return { commandId, idempotencyKey: `pms-room-block:${commandId}` };
+}
+
+function toCalendarBlock(block: PmsOperationsRoomBlock, roomNumber: string | null): CalendarBlock {
+  return {
+    id: block.blockId,
+    version: block.version,
+    roomTypeId: block.roomTypeId,
+    roomId: block.roomId,
+    roomNumber,
+    startDate: block.startsOn,
+    endDate: addDaysDateOnly(block.endsOn, 1),
+    blockedCount: block.blockedCount,
+    reason: block.reason,
+    createdAt: `${block.startsOn}T00:00:00.000Z`,
+  };
 }
