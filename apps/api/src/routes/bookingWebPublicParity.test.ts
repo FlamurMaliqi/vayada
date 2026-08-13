@@ -1278,6 +1278,10 @@ describe("Booking Web public bootstrap parity", () => {
     const quoteWrite = calls.find((call) =>
       call.text.includes("INSERT INTO booking.quote_sessions"),
     );
+    expect(JSON.parse(String(quoteWrite?.values?.[9]))).toMatchObject({
+      paymentOptions: ["pay_at_property"],
+      paymentMethod: "pay_at_property",
+    });
     expect(calls.some((call) => call.text.includes("platform.product_audit_events"))).toBe(true);
     await adapter.close?.();
     expect(ended).toBe(0);
