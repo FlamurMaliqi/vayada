@@ -1,4 +1,4 @@
--- Migration: 0080_pms_room_block_revisions
+-- Migration: 0081_pms_room_block_revisions
 -- Owner: domain-pms; see VAY-1286
 
 ALTER TABLE pms.room_blocks
