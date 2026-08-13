@@ -66,6 +66,54 @@ describe("Channex management provider", () => {
     expect(handoff).toHaveBeenCalledWith([{ id: "revision-1" }]);
   });
 
+  it("captures provider IDs while provisioning rooms before their rates", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(response(200, { data: { id: "external-room" } }))
+      .mockResolvedValueOnce(response(200, { data: { id: "external-rate" } }));
+    const provider = createChannexManagementProvider({
+      apiBaseUrl: "https://staging.channex.io",
+      apiKey: "secret",
+      plans: {
+        plan: async () => ({
+          externalPropertyId: "external-property",
+          requests: [
+            channexRequests.createRoomType({
+              roomTypeId: "room-1",
+              roomTypeName: "Deluxe",
+              roomType: { property_id: "external-property", title: "Deluxe" },
+            }),
+            channexRequests.createRatePlan({
+              roomTypeId: "room-1",
+              ratePlanId: "rate-1",
+              ratePlanName: "Flexible",
+              channel: "direct",
+              sellMode: "per_room",
+              markupPercent: 0,
+              ratePlan: { property_id: "external-property", title: "Flexible" },
+            }),
+          ],
+        }),
+      },
+      fetch: fetcher,
+    });
+
+    await expect(provider.execute(job("provision"))).resolves.toMatchObject({
+      ok: true,
+      roomTypeMappings: [{ roomTypeId: "room-1", externalRoomTypeId: "external-room" }],
+      ratePlanMappings: [
+        {
+          ratePlanId: "rate-1",
+          externalRoomTypeId: "external-room",
+          externalRatePlanId: "external-rate",
+        },
+      ],
+    });
+    expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toMatchObject({
+      rate_plan: { room_type_id: "external-room" },
+    });
+  });
+
   it("does not send a request when target planning fails", async () => {
     const fetcher = vi.fn<typeof fetch>();
     const provider = createChannexManagementProvider({

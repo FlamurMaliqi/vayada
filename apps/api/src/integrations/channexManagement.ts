@@ -12,6 +12,19 @@ type ChannexRequest = {
   path: string;
   query?: Record<string, string>;
   body?: unknown;
+  resolveBody?: (externalRoomTypeIds: ReadonlyMap<string, string>) => unknown;
+  capture?:
+    | { kind: "property" }
+    | { kind: "room_type"; roomTypeId: string; roomTypeName: string }
+    | {
+        kind: "rate_plan";
+        roomTypeId: string;
+        ratePlanId: string;
+        ratePlanName: string;
+        channel: string;
+        sellMode: "per_room" | "per_person";
+        markupPercent: number;
+      };
 };
 
 export type ChannexManagementActionPlan = {
@@ -45,6 +58,10 @@ export function createChannexManagementProvider(config: {
       }
       let lastRequestId: string | undefined;
       let revisions: unknown[] = [];
+      let externalPropertyId = plan.externalPropertyId;
+      const externalRoomTypeIds = new Map<string, string>();
+      const roomTypeMappings: ChannexRoomTypeMapping[] = [...(plan.roomTypeMappings ?? [])];
+      const ratePlanMappings: ChannexRatePlanMapping[] = [...(plan.ratePlanMappings ?? [])];
       for (const request of plan.requests) {
         try {
           const response = await fetcher(requestUrl(apiBaseUrl, request), {
@@ -54,13 +71,44 @@ export function createChannexManagementProvider(config: {
               "user-api-key": apiKey,
               "idempotency-key": job.input.idempotencyKey,
             },
-            body: request.body === undefined ? undefined : JSON.stringify(request.body),
+            body:
+              request.body === undefined && !request.resolveBody
+                ? undefined
+                : JSON.stringify(request.resolveBody?.(externalRoomTypeIds) ?? request.body),
             signal: AbortSignal.timeout(30_000),
           });
           lastRequestId = response.headers.get("x-request-id") ?? lastRequestId;
           if (!response.ok) return await responseFailure(response, lastRequestId);
-          if (request.path === "/api/v1/booking_revisions/feed") {
-            revisions = dataList(await response.json());
+          if (response.status !== 204) {
+            const responseBody = await response.json();
+            if (request.path === "/api/v1/booking_revisions/feed") {
+              revisions = dataList(responseBody);
+            }
+            const externalId = request.capture ? dataId(responseBody) : undefined;
+            if (request.capture?.kind === "property") externalPropertyId = externalId;
+            if (request.capture?.kind === "room_type") {
+              externalRoomTypeIds.set(request.capture.roomTypeId, externalId!);
+              roomTypeMappings.push({
+                mappingId: job.jobId,
+                roomTypeId: request.capture.roomTypeId,
+                roomTypeName: request.capture.roomTypeName,
+                externalRoomTypeId: externalId!,
+                status: "active",
+              });
+            }
+            if (request.capture?.kind === "rate_plan") {
+              const externalRoomTypeId = externalRoomTypeIds.get(request.capture.roomTypeId);
+              if (!externalRoomTypeId) {
+                return failure("invalid_state", new Error("Missing room mapping"));
+              }
+              ratePlanMappings.push({
+                mappingId: job.jobId,
+                ...request.capture,
+                externalRoomTypeId,
+                externalRatePlanId: externalId!,
+                status: "active",
+              });
+            }
           }
         } catch (error) {
           return failure(isTimeout(error) ? "timeout" : "provider_unavailable", error);
@@ -76,9 +124,9 @@ export function createChannexManagementProvider(config: {
       return {
         ok: true,
         providerRequestId: lastRequestId,
-        externalPropertyId: plan.externalPropertyId,
-        roomTypeMappings: plan.roomTypeMappings,
-        ratePlanMappings: plan.ratePlanMappings,
+        externalPropertyId,
+        roomTypeMappings,
+        ratePlanMappings,
       } satisfies ChannexManagementProviderSuccess;
     },
   };
@@ -134,6 +182,13 @@ function dataList(value: unknown): unknown[] {
     : [];
 }
 
+function dataId(value: unknown): string {
+  const data = value && typeof value === "object" ? (value as { data?: unknown }).data : undefined;
+  const id = data && typeof data === "object" ? (data as { id?: unknown }).id : undefined;
+  if (typeof id !== "string" || !id) throw new Error("Channex response omitted data.id");
+  return id;
+}
+
 function isTimeout(error: unknown): boolean {
   return error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name);
 }
@@ -156,20 +211,51 @@ export const channexRequests = {
     method: "POST",
     path: "/api/v1/properties",
     body: { property },
+    capture: { kind: "property" },
   }),
   deleteProperty: (externalPropertyId: string): ChannexRequest => ({
     method: "DELETE",
     path: `/api/v1/properties/${encodeURIComponent(externalPropertyId)}`,
   }),
-  createRoomType: (roomType: Record<string, unknown>): ChannexRequest => ({
+  createRoomType: (input: {
+    roomTypeId: string;
+    roomTypeName: string;
+    roomType: Record<string, unknown>;
+  }): ChannexRequest => ({
     method: "POST",
     path: "/api/v1/room_types",
-    body: { room_type: roomType },
+    body: { room_type: input.roomType },
+    capture: { kind: "room_type", roomTypeId: input.roomTypeId, roomTypeName: input.roomTypeName },
   }),
-  createRatePlan: (ratePlan: Record<string, unknown>): ChannexRequest => ({
+  createRatePlan: (input: {
+    roomTypeId: string;
+    ratePlanId: string;
+    ratePlanName: string;
+    channel: string;
+    sellMode: "per_room" | "per_person";
+    markupPercent: number;
+    ratePlan: Record<string, unknown>;
+  }): ChannexRequest => ({
     method: "POST",
     path: "/api/v1/rate_plans",
-    body: { rate_plan: ratePlan },
+    resolveBody: (externalRoomTypeIds) => ({
+      rate_plan: {
+        ...input.ratePlan,
+        room_type_id: required(
+          externalRoomTypeIds.get(input.roomTypeId) ?? "",
+          `External room type ${input.roomTypeId}`,
+        ),
+      },
+    }),
+    capture: {
+      kind: "rate_plan",
+      roomTypeId: input.roomTypeId,
+      ratePlanId: input.ratePlanId,
+      ratePlanName: input.ratePlanName,
+      channel: input.channel,
+      sellMode: input.sellMode,
+      markupPercent: input.markupPercent,
+    },
   }),
   availability: (values: unknown[]): ChannexRequest => ({
     method: "POST",
