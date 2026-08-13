@@ -336,49 +336,6 @@ export type ExpectedTarget = {
     }>;
     forbiddenPublicOutputValues?: string[];
   };
-  intelligenceChecks?: {
-    properties: Array<{
-      propertyId: string;
-      organizationId: string;
-      ownerUserId: string;
-      bookingHotelResourceId: string;
-      pmsHotelResourceId: string;
-      marketplaceProfileResourceId: string;
-      bookingMetricDefinitionId: string;
-      setupMetricDefinitionId: string;
-      financeMetricDefinitionId: string;
-      bookingSnapshotRunId: string;
-      financeSnapshotRunId: string;
-      setupOverallSnapshotId: string;
-      setupPaymentSnapshotId: string;
-      bookingEvidenceCatalogId: string;
-      setupEvidenceCatalogId: string;
-      financeEvidenceCatalogId: string;
-      conversationId: string;
-      answeredRunId: string;
-      deniedRunId: string;
-      bookingToolCallId: string;
-      setupToolCallId: string;
-      deniedFinanceToolCallId: string;
-      answeredAuditId: string;
-      deniedAuditId: string;
-      answeredAnswerId: string;
-      deniedAnswerId: string;
-      bookingToolId: string;
-      setupToolId: string;
-      financeToolId: string;
-      bookingSnapshotKey: string;
-      financeSnapshotKey: string;
-      setupOverallSnapshotKey: string;
-      setupPaymentSnapshotKey: string;
-      conversationKey: string;
-      answeredRunKey: string;
-      deniedRunKey: string;
-      scopeKey: string;
-      requiredAskPermissionKey: string;
-    }>;
-    forbiddenPrivateBoundaryValues?: string[];
-  };
   platformMediaChecks?: {
     legacyUrlInventory: {
       sourceUrlCount: number;

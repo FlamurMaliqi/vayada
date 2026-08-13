@@ -6,7 +6,7 @@
     "identity.organization_memberships": 1,
     "identity.organization_resource_links": 3,
     "identity.product_entitlements": 2,
-    "identity.permission_catalog": 27,
+    "identity.permission_catalog": 26,
     "identity.role_permission_grants": 45
   },
   "idStability": {
@@ -132,7 +132,6 @@
       "marketplace.collaboration.read",
       "marketplace.collaboration.review",
       "booking.analytics.read",
-      "intelligence.ask.read",
       "hotel_catalog.setup.read"
     ]
   }

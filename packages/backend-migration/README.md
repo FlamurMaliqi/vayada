@@ -133,9 +133,8 @@ data. It is intentionally narrow:
 - optionally activates Booking Admin Feature Hub module rows in the PMS DB when
   `PMS_DATABASE_URL` is supplied.
 
-Run reviewed target migrations first so role grants from
-`0018_marketplace_hotel_profile_grants.sql` and
-`0019_seed_ask_intelligence_role_grants.sql` are present:
+Run all reviewed target migrations first so the current role grants and schema
+state are present:
 
 ```bash
 TARGET_DATABASE_URL=<target database url> \
