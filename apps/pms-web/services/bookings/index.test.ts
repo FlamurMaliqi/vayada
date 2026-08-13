@@ -22,6 +22,9 @@ vi.mock("../api/unsupported", () => ({
 }));
 
 import { bookingsService, HIDDEN_GUEST_CONTACT } from ".";
+import { calendarService } from "../calendar";
+// prettier-ignore
+import { expectedPaymentMethodLabel, ratePlanLabel } from "../../components/bookings/BookingStaySummary";
 
 const reservation = {
   guestBookingId: "booking-1",
@@ -45,6 +48,20 @@ const reservation = {
     balanceAmount: { amountDecimal: "155.00", currency: "EUR" },
   },
 };
+
+// prettier-ignore
+const roomTypes = ["Suite", "Studio"].map((name, index) => ({ roomTypeId: `type-${index + 1}`, name, category: "", occupancyLimits: { total: index ? 4 : 2 }, baseRate: { amountDecimal: "100.00", currency: "EUR" }, roomCount: 1, ratePlans: [{ ratePlanId: `plan-${index + 1}`, name: `Plan ${index + 1}`, rateType: "flexible", baseRate: { amountDecimal: "100.00", currency: "EUR" }, active: true }] }));
+// prettier-ignore
+const assignments = [
+  { assignmentId: "a-1", roomTypeId: "type-1", ratePlanId: "plan-1", roomId: "room-1", roomNumber: "101", position: 1, channel: "direct", stay: { checkIn: "2026-09-10", checkOut: "2026-09-12", adults: 1, children: 0 }, nightly: [{ serviceDate: "2026-09-10", applied: { amountDecimal: "100.00", currency: "EUR" }, evidenceQuality: "exact" }] },
+  { assignmentId: "a-2", roomTypeId: "type-2", ratePlanId: "plan-2", roomId: "room-2", roomNumber: "202", position: 2, channel: "direct", stay: { checkIn: "2026-09-12", checkOut: "2026-09-15", adults: 2, children: 1 }, nightly: [{ serviceDate: "2026-09-12", applied: { amountDecimal: "180.00", currency: "EUR" }, evidenceQuality: "exact" }] },
+];
+// prettier-ignore
+const heterogeneousReservation = { ...reservation, stay: { checkIn: "2026-09-10", checkOut: "2026-09-15", adults: 3, children: 1 }, assignments, roomCount: 2, payment: { method: null, expectedMethod: "cash", status: "unpaid" } };
+// prettier-ignore
+const reservationPage = (item: object) => ({ items: [item], pagination: { total: 1, limit: 500, offset: 0 } });
+// prettier-ignore
+const calendarResponse = (item: object) => async (endpoint: string) => endpoint.endsWith("/room-types") ? { items: roomTypes } : endpoint.includes("/reservations?") ? reservationPage(item) : { items: [] };
 
 describe("PMS target booking projection", () => {
   beforeEach(() => {
@@ -164,6 +181,66 @@ describe("PMS target booking projection", () => {
       commandId: "pms.booking.mark-paid:booking-1:v1",
       idempotencyKey: "pms.booking.mark-paid:booking-1:v1",
     });
+  });
+
+  it("maps exact and partial stay evidence without copying booking-wide values", async () => {
+    // prettier-ignore
+    mocks.get.mockImplementation(async (endpoint: string) => endpoint.endsWith("/room-types") ? { items: roomTypes } : reservationPage(heterogeneousReservation));
+    const complete = (await bookingsService.list()).bookings[0]!;
+    expect(complete.expectedPaymentMethod).toBe("cash");
+    expect(complete.totalRoomCapacity).toBe(6);
+    // prettier-ignore
+    mocks.get.mockImplementation(async (endpoint: string) => endpoint.endsWith("/room-types") ? { items: roomTypes } : reservationPage({ ...heterogeneousReservation, stay: { ...heterogeneousReservation.stay, adults: 7 } }));
+    expect((await bookingsService.list()).bookings[0]!.totalRoomCapacity).toBe(6);
+    // prettier-ignore
+    mocks.get.mockImplementation(async (endpoint: string) => endpoint.endsWith("/room-types") ? { items: roomTypes } : reservationPage({ ...reservation, stay: { ...reservation.stay, adults: 3 }, bookedOffer: { roomTypeId: "type-1", roomName: "Suite" } }));
+    expect((await bookingsService.list()).bookings[0]!.totalRoomCapacity).toBe(2);
+    // prettier-ignore
+    expect(complete.stays).toMatchObject([{ position: 0, roomName: "Suite", ratePlanName: "Plan 1", checkIn: "2026-09-10", adults: 1, nightly: [{ appliedAmount: 100 }] }, { position: 1, roomName: "Studio", ratePlanName: "Plan 2", checkIn: "2026-09-12", adults: 2, nightly: [{ appliedAmount: 180 }] }]);
+    // prettier-ignore
+    const partialReservation = { ...heterogeneousReservation, assignments: [assignments[0], { ...assignments[1], stay: undefined, nightly: [] }] };
+    // prettier-ignore
+    mocks.get.mockImplementation(async (endpoint: string) => endpoint.endsWith("/room-types") ? { items: roomTypes } : reservationPage(partialReservation));
+    // prettier-ignore
+    expect((await bookingsService.list()).bookings[0]!.stays[1]).toMatchObject({ checkIn: null, checkOut: null, adults: null, children: null, nightly: [] });
+    mocks.get.mockImplementation(async (endpoint: string) =>
+      endpoint.endsWith("/room-types")
+        ? { items: roomTypes }
+        : reservationPage({ ...heterogeneousReservation, assignments: [assignments[0]] }),
+    );
+    expect((await bookingsService.list()).bookings[0]!.totalRoomCapacity).toBe(4);
+  });
+
+  it("surfaces target read errors", async () => {
+    mocks.get.mockRejectedValue(new Error("read model unavailable"));
+    await expect(bookingsService.get("booking-1")).rejects.toThrow("read model unavailable");
+  });
+});
+
+describe("PMS target calendar projection", () => {
+  it("keeps one reservation identity while placing each exact stay independently", async () => {
+    mocks.resolvePropertyId.mockResolvedValue("property-1");
+    mocks.get.mockImplementation(calendarResponse(heterogeneousReservation));
+    const result = await calendarService.getCalendarData("2026-09-10", "2026-09-16");
+    // prettier-ignore
+    expect(result.bookings).toMatchObject([{ id: "booking-1", bookingReference: "VAY-1", roomPosition: 0, checkIn: "2026-09-10", checkOut: "2026-09-12" }, { id: "booking-1", bookingReference: "VAY-1", roomPosition: 1, checkIn: "2026-09-12", checkOut: "2026-09-15" }]);
+    // prettier-ignore
+    mocks.get.mockImplementation(calendarResponse({ ...heterogeneousReservation, assignments: [assignments[0]] }));
+    const partial = await calendarService.getCalendarData("2026-09-10", "2026-09-16");
+    expect(partial.bookings).toMatchObject([{ numberOfRooms: 2, checkIn: "2026-09-10" }]);
+    // prettier-ignore
+    mocks.get.mockImplementation(calendarResponse({ ...heterogeneousReservation, assignments: [] }));
+    expect((await calendarService.getCalendarData("2026-09-10", "2026-09-16")).bookings).toEqual(
+      [],
+    );
+  });
+
+  it("labels every expected method without using settlement state", () => {
+    // prettier-ignore
+    const methods = ["unknown", "pay_at_property", "bank_transfer", "manual_card", "cash", "other"] as const;
+    // prettier-ignore
+    expect(methods.map(expectedPaymentMethodLabel)).toEqual(["Not specified", "Pay at property", "Bank transfer", "Manual card", "Cash", "Other"]);
+    expect(ratePlanLabel(null)).toBe("Rate plan unavailable");
   });
 });
 

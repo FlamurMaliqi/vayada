@@ -155,7 +155,9 @@ type PmsOperationalReservation = {
     roomNumber: string | null;
     position: number;
     channel: string;
+    stay?: { checkIn: string; checkOut: string };
   }>;
+  roomCount?: number;
 };
 
 type PmsOperationsListResponse<T> = {
@@ -377,7 +379,7 @@ function toCalendarData(
         (reservation) =>
           reservation.stay.checkIn < range.end && reservation.stay.checkOut > range.start,
       )
-      .flatMap((reservation) => calendarBookingsForReservation(reservation, roomTypesById)),
+      .flatMap((reservation) => calendarBookingsForReservation(reservation, roomTypesById, range)),
     blocks: blocks
       .filter((block) => block.status === "active")
       .map((block) =>
@@ -392,31 +394,40 @@ function toCalendarData(
 function calendarBookingsForReservation(
   reservation: PmsOperationalReservation,
   roomTypesById: Map<string, PmsOperationsRoomType>,
+  range: { start: string; end: string },
 ): CalendarBooking[] {
   const status = toCalendarStatus(reservation.status);
   if (!status) return [];
 
   const assignments = reservation.assignments.length > 0 ? reservation.assignments : [null];
+  const numberOfRooms = Math.max(reservation.roomCount ?? reservation.assignments.length, 1);
   const [guestFirstName, guestLastName] = splitGuestName(reservation.primaryGuest.displayName);
-  return assignments.map((assignment, index) => {
-    const roomType = assignment ? roomTypesById.get(assignment.roomTypeId) : undefined;
-    return {
-      id: reservation.guestBookingId,
-      roomTypeId: assignment?.roomTypeId ?? "",
-      roomName: roomType?.name ?? "",
-      guestFirstName,
-      guestLastName,
-      checkIn: reservation.stay.checkIn,
-      checkOut: reservation.stay.checkOut,
-      status,
-      roomId: assignment?.roomId ?? null,
-      roomNumber: assignment?.roomNumber ?? null,
-      channel: assignment?.channel ?? reservationSource(reservation.source),
-      bookingReference: reservation.bookingReference,
-      numberOfRooms: assignments.length,
-      roomPosition: assignment?.position ?? index,
-    };
-  });
+  return assignments
+    .map((assignment, index): CalendarBooking | null => {
+      const stay = assignment?.stay ?? (numberOfRooms === 1 ? reservation.stay : null);
+      if (!stay) return null;
+      const roomType = assignment ? roomTypesById.get(assignment.roomTypeId) : undefined;
+      return {
+        id: reservation.guestBookingId,
+        roomTypeId: assignment?.roomTypeId ?? "",
+        roomName: roomType?.name ?? "",
+        guestFirstName,
+        guestLastName,
+        checkIn: stay.checkIn,
+        checkOut: stay.checkOut,
+        status,
+        roomId: assignment?.roomId ?? null,
+        roomNumber: assignment?.roomNumber ?? null,
+        channel: assignment?.channel ?? reservationSource(reservation.source),
+        bookingReference: reservation.bookingReference,
+        numberOfRooms,
+        roomPosition: assignment ? Math.max(assignment.position - 1, 0) : index,
+      };
+    })
+    .filter(
+      (booking): booking is CalendarBooking =>
+        booking !== null && booking.checkIn < range.end && booking.checkOut > range.start,
+    );
 }
 
 function splitGuestName(displayName: string): [string, string] {

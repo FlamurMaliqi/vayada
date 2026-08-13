@@ -12,6 +12,29 @@ export interface AssignedRoom {
   position: number;
 }
 
+export type BookingExpectedPaymentMethod =
+  | "unknown"
+  | "pay_at_property"
+  | "bank_transfer"
+  | "manual_card"
+  | "cash"
+  | "other";
+
+export interface BookingStay {
+  position: number;
+  roomName: string;
+  ratePlanName: string | null;
+  roomNumber: string | null;
+  checkIn: string | null;
+  checkOut: string | null;
+  adults: number | null;
+  children: number | null;
+  nightly: Array<{
+    appliedAmount: number | null;
+    currency: string | null;
+  }>;
+}
+
 export interface Booking {
   id: string;
   bookingReference: string;
@@ -56,8 +79,10 @@ export interface Booking {
   // VAY-403: every physical room the booking occupies — the primary
   // (position 0) plus any extra rooms of a multi-room reservation.
   assignedRooms: AssignedRoom[];
+  stays: BookingStay[];
   channel: string;
   paymentMethod: string | null;
+  expectedPaymentMethod: BookingExpectedPaymentMethod;
   paymentStatus: string | null;
   checkInPendingFlags: string[];
   checkedInAt: string | null;
@@ -233,6 +258,7 @@ type PmsOperationsRoomType = {
   name: string;
   occupancyLimits: Record<string, number>;
   baseRate: PmsOperationsMoney;
+  ratePlans?: Array<{ ratePlanId: string; name: string }>;
 };
 
 type PmsOperationalReservation = {
@@ -254,13 +280,24 @@ type PmsOperationalReservation = {
     roomNumber: string | null;
     position: number;
     channel: string;
+    ratePlanId: string | null;
+    stay?: { checkIn: string; checkOut: string; adults: number; children: number };
+    nightly?: Array<{
+      serviceDate: string;
+      applied: PmsOperationsMoney | null;
+      evidenceQuality: "exact" | "inferred" | "missing";
+    }>;
   }>;
   checkin: { completedAt: string | null; pendingFlags: string[] };
   checkout: { completedAt: string | null; pendingFlags: string[] };
   bookedOffer?: { roomTypeId: string; roomName: string };
   roomCount?: number;
   pricing?: { totalAmount: PmsOperationsMoney; balanceAmount: PmsOperationsMoney };
-  payment?: { method: string | null; status: string };
+  payment?: {
+    method: string | null;
+    expectedMethod?: BookingExpectedPaymentMethod;
+    status: string;
+  };
   hostResponseDeadlineAt?: string | null;
 };
 
@@ -909,6 +946,12 @@ function toBooking(
     : baseRate * Math.max(nights, 1) * numberOfRooms;
   const nightlyRate = roomType ? baseRate : totalAmount / Math.max(nights, 1) / numberOfRooms;
   const [guestFirstName, guestLastName] = splitGuestName(reservation.primaryGuest.displayName);
+  // prettier-ignore
+  const capacities = reservation.assignments.map((assignment) => maxOccupancy(roomTypesById.get(assignment.roomTypeId)));
+  const knownCapacity = capacities.reduce((sum, capacity) => sum + capacity, 0);
+  const roomTypeCapacity = maxOccupancy(roomType);
+  // prettier-ignore
+  const totalRoomCapacity = (numberOfRooms === 1 && roomTypeCapacity > 0) || (capacities.length === numberOfRooms && capacities.every(Boolean)) ? knownCapacity || roomTypeCapacity : Math.max(knownCapacity || roomTypeCapacity, reservation.stay.adults + reservation.stay.children);
 
   return {
     id: reservation.guestBookingId,
@@ -916,7 +959,7 @@ function toBooking(
     roomTypeId,
     roomName: roomType?.name || reservation.bookedOffer?.roomName || "",
     roomMaxOccupancy: maxOccupancy(roomType),
-    totalRoomCapacity: maxOccupancy(roomType),
+    totalRoomCapacity,
     guestFirstName,
     guestLastName,
     guestEmail: reservation.primaryGuest.email ?? "",
@@ -948,10 +991,31 @@ function toBooking(
       assignmentId: assignment.assignmentId ?? null,
       roomId: assignment.roomId,
       roomNumber: assignment.roomNumber,
-      position: assignment.position,
+      position: Math.max(assignment.position - 1, 0),
     })),
+    stays: reservation.assignments.map((assignment) => {
+      const assignmentRoomType = roomTypesById.get(assignment.roomTypeId);
+      const ratePlan = assignmentRoomType?.ratePlans?.find(
+        (plan) => plan.ratePlanId === assignment.ratePlanId,
+      );
+      return {
+        position: Math.max(assignment.position - 1, 0),
+        roomName: assignmentRoomType?.name ?? "",
+        ratePlanName: ratePlan?.name ?? null,
+        roomNumber: assignment.roomNumber,
+        checkIn: assignment.stay?.checkIn ?? null,
+        checkOut: assignment.stay?.checkOut ?? null,
+        adults: assignment.stay?.adults ?? null,
+        children: assignment.stay?.children ?? null,
+        nightly: (assignment.nightly ?? []).map((night) => ({
+          appliedAmount: night.applied ? moneyAmount(night.applied) : null,
+          currency: night.applied?.currency ?? null,
+        })),
+      };
+    }),
     channel: primaryAssignment?.channel ?? reservationSource(reservation.source),
     paymentMethod: reservation.payment?.method ?? null,
+    expectedPaymentMethod: reservation.payment?.expectedMethod ?? "unknown",
     paymentStatus: reservation.payment?.status ?? null,
     checkInPendingFlags: reservation.checkin.pendingFlags,
     checkedInAt: reservation.checkin.completedAt,
