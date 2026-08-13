@@ -4500,7 +4500,7 @@ async function applyManualCancellationCommandMutation(
     if (error instanceof ManualCancellationEvidenceError)
       return operationalInvalidBody(error.message);
     if (error instanceof ManualCancellationStateError)
-      return invalidStatusTransition("current", "canceled");
+      return invalidStatusTransition(error.currentStatus, "canceled");
     throw error;
   }
   return { ok: true };

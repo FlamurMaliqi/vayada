@@ -30,7 +30,14 @@ type CurrentNight = {
 };
 
 export class ManualCancellationEvidenceError extends Error {}
-export class ManualCancellationStateError extends Error {}
+export class ManualCancellationStateError extends Error {
+  constructor(
+    message: string,
+    readonly currentStatus: string,
+  ) {
+    super(message);
+  }
+}
 
 export async function cancelPmsManualBooking(
   transaction: ExternalRevenueEvidenceClient,
@@ -58,10 +65,15 @@ export async function cancelPmsManualBooking(
   );
   const scope = booking.rows[0];
   if (!scope || scope.lifecycleStatus !== "confirmed")
-    throw new ManualCancellationStateError("Manual booking cannot be canceled");
+    throw new ManualCancellationStateError(
+      "Manual booking cannot be canceled",
+      scope?.lifecycleStatus ?? "missing",
+    );
   const zone = scope.timezone && getTimezone(scope.timezone);
   if (!zone || zone.name !== scope.timezone || zone.aliasOf !== null)
-    throw new Error("Manual cancellation requires a canonical property timezone");
+    throw new ManualCancellationEvidenceError(
+      "Manual cancellation requires a canonical property timezone",
+    );
   const localDate = propertyDate(acceptedAt, scope.timezone!);
   if (
     (command.retainedCharges.length === 0 && command.accountingDate !== null) ||
@@ -82,7 +94,9 @@ export async function cancelPmsManualBooking(
     [command.guestBookingId, localDate],
   );
   if (current.rows.length === 0 || current.rows.some(({ manualExact }) => !manualExact))
-    throw new Error("Manual cancellation nightly revenue evidence is unavailable");
+    throw new ManualCancellationEvidenceError(
+      "Manual cancellation nightly revenue evidence is unavailable",
+    );
 
   await transaction.query(
     `WITH updated AS (
@@ -98,14 +112,18 @@ export async function cancelPmsManualBooking(
   );
 
   const nights = new Map(current.rows.map((night) => [key(night), night]));
+  const retainedKeys = new Set<string>();
   const retained: ExternalRevenueEvidenceLine[] = command.retainedCharges.map((charge) => {
-    const night = nights.get(key(charge));
+    const chargeKey = key(charge);
+    const night = nights.get(chargeKey);
     if (
       !night ||
+      retainedKeys.has(chargeKey) ||
       charge.amount.currency !== scope.currency ||
       night.recognizedOn > command.accountingDate!
     )
       throw new ManualCancellationEvidenceError("Retained charge does not match booking evidence");
+    retainedKeys.add(chargeKey);
     return {
       roomTypeId: night.roomTypeId,
       stayDate: night.stayDate,
