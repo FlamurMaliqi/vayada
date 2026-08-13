@@ -7,6 +7,7 @@ import BookingConfirmationPageClient from "./BookingConfirmationPageClient";
  * whether the client component renders a meta tag.
  */
 export const metadata: Metadata = {
+  referrer: "no-referrer",
   robots: {
     index: false,
     follow: false,
@@ -18,8 +19,10 @@ export default async function BookingConfirmationPage({
   searchParams,
 }: {
   params: Promise<{ reference: string }>;
-  searchParams: Promise<{ email?: string }>;
+  searchParams: Promise<{ email?: string; token?: string }>;
 }) {
-  const [{ reference }, { email }] = await Promise.all([params, searchParams]);
-  return <BookingConfirmationPageClient reference={reference} emailParam={email} />;
+  const [{ reference }, { email, token }] = await Promise.all([params, searchParams]);
+  return (
+    <BookingConfirmationPageClient reference={reference} emailParam={email} tokenParam={token} />
+  );
 }

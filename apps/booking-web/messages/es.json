@@ -28,6 +28,7 @@
     "contact": "Contacto",
     "phone": "Teléfono",
     "email": "Correo electrónico",
+    "close": "Cerrar",
     "loading": "Cargando...",
     "qty": "Cant",
     "perPerson": "por persona",
@@ -255,6 +256,8 @@
   "myBooking": {
     "title": "Mi Reserva",
     "notFound": "No se encontró ninguna reserva con esa referencia y correo.",
+    "tooManyAttempts": "Demasiados intentos. Espera un minuto y vuelve a intentarlo.",
+    "lookupUnavailable": "No pudimos buscar tu reserva en este momento. Vuelve a intentarlo.",
     "lookUp": "Consulta Tu Reserva",
     "lookUpDesc": "Introduce tu referencia de reserva y correo electrónico para ver los detalles de tu reserva.",
     "reference": "Referencia de Reserva",

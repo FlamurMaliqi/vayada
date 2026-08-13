@@ -75,7 +75,7 @@ export default function BookingConfirmationPageClient({
   const { slug } = useSlug();
   const { formatPrice } = useCurrency();
   const [booking, setBooking] = useState<Booking | null>(null);
-  const [status, setStatus] = useState<string>("pending");
+  const [status, setStatus] = useState<string>("");
   const [withdrawing, setWithdrawing] = useState(false);
   const [withdrawError, setWithdrawError] = useState("");
   const [hydrating, setHydrating] = useState(false);

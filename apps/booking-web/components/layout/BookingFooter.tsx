@@ -1,11 +1,15 @@
 "use client";
 
+import { useState } from "react";
+import FindBookingModal from "@/components/booking/FindBookingModal";
 import { useHotel } from "@/contexts/HotelContext";
 import { useTranslations } from "next-intl";
 
 export default function BookingFooter() {
   const { hotel } = useHotel();
   const t = useTranslations("common");
+  const tm = useTranslations("myBooking");
+  const [findBookingOpen, setFindBookingOpen] = useState(false);
 
   return (
     <footer className="bg-primary-600 text-white py-8 px-4 sm:px-6 lg:px-8">
@@ -110,16 +114,24 @@ export default function BookingFooter() {
 
         {/* Bottom bar */}
         <div className="border-t border-white/20 pt-4">
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-1 text-xs text-white/70">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-white/70">
             <p>
               &copy; {new Date().getFullYear()} {t("allRightsReserved", { name: hotel.name })}
             </p>
+            <button
+              type="button"
+              onClick={() => setFindBookingOpen(true)}
+              className="font-semibold text-white underline underline-offset-4 transition-opacity hover:opacity-80"
+            >
+              {tm("findBooking")}
+            </button>
             <p>
               {t("poweredBy")} <span className="text-white font-semibold underline">vayada</span>
             </p>
           </div>
         </div>
       </div>
+      <FindBookingModal open={findBookingOpen} onClose={() => setFindBookingOpen(false)} />
     </footer>
   );
 }

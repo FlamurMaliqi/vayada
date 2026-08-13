@@ -2980,6 +2980,52 @@ describe("Booking Web public bootstrap parity", () => {
       ),
     ).resolves.toMatchObject({ bookingReference: "B-CARD952" });
 
+    lifecycleStatus = "confirmed";
+    paymentStatus = "unpaid";
+    cardBrand = "visa";
+    cardLast4 = "4242";
+    const unpaidLookup = (await adapter.lookup(
+      "hotel-alpenrose",
+      { bookingReference: "B-CARD952", guestEmail: "guest@example.test" },
+      {
+        operation: "booking-lookup",
+        requestId: "req-card-unpaid-lookup-952",
+        correlationId: "corr-card-unpaid-lookup-952",
+        idempotencyKey: "idem-card-unpaid-lookup-952",
+        fingerprint: "8".repeat(64),
+        occurredAt: new Date("2026-09-02T09:00:02.000Z"),
+      },
+    )) as { confirmationToken: string };
+    await expect(
+      adapter.confirmation?.(
+        "hotel-alpenrose",
+        { bookingReference: "B-CARD952", confirmationToken: unpaidLookup.confirmationToken },
+        {
+          operation: "booking-confirmation",
+          requestId: "req-card-unpaid-confirmation-952",
+          correlationId: "corr-card-unpaid-confirmation-952",
+          idempotencyKey: "idem-card-unpaid-confirmation-952",
+          fingerprint: "9".repeat(64),
+          occurredAt: new Date("2026-09-02T09:00:03.000Z"),
+        },
+      ),
+    ).resolves.toMatchObject({ status: "confirmed", paymentStatus: "unpaid" });
+    lifecycleStatus = "pending_payment";
+    await expect(
+      adapter.confirmation?.(
+        "hotel-alpenrose",
+        { bookingReference: "B-CARD952", confirmationToken: unpaidLookup.confirmationToken },
+        {
+          operation: "booking-confirmation",
+          requestId: "req-card-pending-confirmation-952",
+          correlationId: "corr-card-pending-confirmation-952",
+          idempotencyKey: "idem-card-pending-confirmation-952",
+          fingerprint: "a".repeat(64),
+          occurredAt: new Date("2026-09-02T09:00:04.000Z"),
+        },
+      ),
+    ).resolves.toMatchObject({ status: "pending", paymentStatus: "unpaid" });
+
     await expect(
       adapter.confirmation?.(
         "hotel-alpenrose",

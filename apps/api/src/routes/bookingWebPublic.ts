@@ -1943,7 +1943,7 @@ export function createTargetBookingWebCheckoutAdapter(
           sha256Hex(confirmationToken),
           context?.occurredAt ?? new Date(),
         );
-        if (booking.lifecycleStatus === "draft" || booking.paymentStatus === "unpaid") {
+        if (booking.lifecycleStatus === "draft") {
           throw createHttpError(409, "Booking confirmation is still processing.");
         }
         if (
