@@ -29,6 +29,7 @@ type BookingScope = {
   currency: string;
   lifecycleStatus: string;
   timezone: string | null;
+  hasRefund: boolean;
 };
 type CurrentTip = {
   id: string;
@@ -65,6 +66,8 @@ export async function correctBookingPmsManualPrices(
   const booking = await transaction.query<BookingScope>(
     `SELECT source_booking_id AS "sourceBookingReference",trim(currency) AS currency,
        lifecycle_status AS "lifecycleStatus",
+       EXISTS (SELECT 1 FROM booking.nightly_revenue_evidence evidence
+        WHERE evidence.guest_booking_id=booking.id AND economic_event='refund') AS "hasRefund",
        (SELECT timezone FROM hotel_catalog.property_locations
         WHERE property_id=booking.property_id) AS timezone
      FROM booking.guest_bookings booking WHERE id=$1::uuid AND property_id=$2::uuid
@@ -77,6 +80,10 @@ export async function correctBookingPmsManualPrices(
     throw new ManualPriceCorrectionStateError(
       "Manual booking prices cannot be corrected",
       scope?.lifecycleStatus ?? "missing",
+    );
+  if (scope.hasRefund)
+    throw new ManualPriceCorrectionEvidenceError(
+      "Manual booking prices cannot be corrected after a refund",
     );
   const zone = scope.timezone && getTimezone(scope.timezone);
   if (!zone || zone.name !== scope.timezone || zone.aliasOf !== null)
