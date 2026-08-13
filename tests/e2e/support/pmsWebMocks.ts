@@ -6,6 +6,42 @@ export const PMS_WEB_ROOM_TYPE_ID = "room_type_alpine_suite";
 export const PMS_WEB_ROOM_ID = "room_101";
 export const PMS_WEB_RESERVATION_ID = "guest_booking_ada";
 
+export const pmsWebChannexSnapshot = {
+  contractVersion: "pms-channex-management.v1",
+  propertyId: PMS_WEB_PROPERTY_ID,
+  connection: {
+    status: "disconnected",
+    externalPropertyId: null,
+    messagingAppInstalled: false,
+  },
+  mappings: { roomTypes: [], ratePlans: [] },
+  channels: [],
+  markups: [],
+  sync: Object.fromEntries(
+    ["booking", "ari", "message", "mapping"].map((domain) => [
+      domain,
+      {
+        status: "idle",
+        lastAttemptAt: null,
+        lastSuccessAt: null,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        retryAfter: null,
+      },
+    ]),
+  ),
+  capabilityModes: {
+    connection: "observe_only",
+    provisioning: "observe_only",
+    ariSync: "observe_only",
+    bookingSync: "observe_only",
+    markups: "observe_only",
+    messaging: "observe_only",
+    iframe: "observe_only",
+  },
+  activeOperation: null,
+};
+
 const propertySummary = {
   id: PMS_WEB_PROPERTY_ID,
   name: PMS_WEB_PROPERTY_ID,
@@ -334,23 +370,8 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
         },
       }),
   );
-  await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/channex/status`, (route) =>
-    route.fulfill({
-      json: {
-        isConnected: false,
-        channexPropertyId: null,
-        roomTypesProvisioned: 0,
-        ratePlansProvisioned: 0,
-        lastBookingSyncAt: null,
-        lastAriSyncAt: null,
-        lastAriSyncError: null,
-        lastAriSyncFailedAt: null,
-        messagingAppInstalled: false,
-      },
-    }),
-  );
-  await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/channex/channels`, (route) =>
-    route.fulfill({ json: { channels: [] } }),
+  await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/channex`, (route) =>
+    route.fulfill({ json: pmsWebChannexSnapshot }),
   );
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/messaging/unread-count`, (route) =>
     route.fulfill({ json: { unreadCount: 0 } }),
