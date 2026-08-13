@@ -257,13 +257,15 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     for (const result of [
       { ...created, commandId: "different-command" },
       { ...created, unexpected: true },
+      { ...created, guestBookingId: otherPropertyId },
     ]) {
       await admin.query(
         `UPDATE platform.idempotency_keys
          SET idempotency_metadata = jsonb_set(idempotency_metadata, '{result}', $2::jsonb),
            response_body_hash = $3
+           , response_resource_id = $4
          WHERE operation = 'pms.manual_booking.create' AND property_id = $1::uuid`,
-        [propertyId, JSON.stringify(result), hash(result)],
+        [propertyId, JSON.stringify(result), hash(result), result.guestBookingId],
       );
       await expect(repository.createManualBooking(input)).rejects.toThrow(
         "Stored manual booking replay is invalid",
