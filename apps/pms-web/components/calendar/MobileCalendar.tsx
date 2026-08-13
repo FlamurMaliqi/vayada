@@ -34,6 +34,7 @@ interface MobileCalendarProps {
   onBlockRoom: (startDate: string, endDate: string) => void;
   onSelectBlock: (block: CalendarBlock) => void;
   writeActionsAvailable?: boolean;
+  manualBookingAvailable?: boolean;
 }
 
 export default function MobileCalendar({
@@ -49,6 +50,7 @@ export default function MobileCalendar({
   onBlockRoom,
   onSelectBlock,
   writeActionsAvailable = true,
+  manualBookingAvailable = writeActionsAvailable,
 }: MobileCalendarProps) {
   // Selection model: tap a day to single-select it (so the user can browse
   // that day's bookings/blocks); drag from one day onto another to form a
@@ -458,9 +460,9 @@ export default function MobileCalendar({
               )}
               <button
                 type="button"
-                disabled={!writeActionsAvailable}
+                disabled={!manualBookingAvailable}
                 title={
-                  !writeActionsAvailable
+                  !manualBookingAvailable
                     ? "Manual booking creation is not available yet"
                     : undefined
                 }

@@ -12,6 +12,12 @@ export interface CalendarRoomType {
   baseRate: number;
   maxOccupancy: number;
   currency: string;
+  ratePlans: Array<{
+    id: string;
+    name: string;
+    rateType: "flexible" | "non_refundable" | "package" | "manual";
+    baseRate: number;
+  }>;
   seasons: {
     name?: string;
     tier?: string;
@@ -98,6 +104,13 @@ type PmsOperationsRoomType = {
   occupancyLimits: Record<string, number>;
   baseRate: PmsOperationsMoney;
   roomCount: number;
+  ratePlans: Array<{
+    ratePlanId: string;
+    name: string;
+    rateType: "flexible" | "non_refundable" | "package" | "manual";
+    baseRate: PmsOperationsMoney;
+    active: boolean;
+  }>;
 };
 
 type PmsOperationsRoom = {
@@ -321,6 +334,14 @@ function toCalendarData(
       baseRate: moneyAmount(roomType.baseRate),
       maxOccupancy: maxOccupancy(roomType),
       currency: roomType.baseRate.currency,
+      ratePlans: (roomType.ratePlans ?? [])
+        .filter((plan) => plan.active)
+        .map((plan) => ({
+          id: plan.ratePlanId,
+          name: plan.name,
+          rateType: plan.rateType,
+          baseRate: moneyAmount(plan.baseRate),
+        })),
       seasons: [],
     })),
     rooms: rooms
