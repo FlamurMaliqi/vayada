@@ -134,7 +134,10 @@
         "attachmentCount": 1,
         "privateNoteCount": 1,
         "checkoutChargeCount": 1,
-        "syncStatusCount": 3
+        "syncStatusCount": 3,
+        "bookerCountryCode": null,
+        "bookerCountryCodeRaw": "Atlantis",
+        "bookerCountryCodeReviewRequired": true
       }
     ],
     "forbiddenOperationalSummaryKeys": [

@@ -103,6 +103,9 @@ async function checkPmsOperationalSlice(
     external_booking_id: string | null;
     booking_sync_status_id: string | null;
     sync_status_count: string;
+    booker_country_code: string | null;
+    booker_country_code_raw: string | null;
+    booker_country_code_review_required: boolean | null;
   }>(
     `SELECT
        rt.source_system AS room_type_source_system,
@@ -121,6 +124,9 @@ async function checkPmsOperationalSlice(
        room_block.status AS room_block_status,
        booking.public_reference,
        booking.lifecycle_status,
+       BTRIM(booker.country_code) AS booker_country_code,
+       booker.country_code_raw AS booker_country_code_raw,
+       booker.country_code_review_required AS booker_country_code_review_required,
        assignment.assignment_status,
        assignment.channel AS assignment_channel,
        assignment.external_reservation_id AS assignment_external_reservation_id,
@@ -204,6 +210,9 @@ async function checkPmsOperationalSlice(
       AND assignment.room_type_id = rt.id
       AND assignment.rate_plan_id = rate_plan.id
       AND assignment.room_id = room.id
+     LEFT JOIN booking.booking_guests booker
+       ON booker.guest_booking_id = booking.id
+      AND booker.guest_role = 'booker'
      LEFT JOIN pms.booking_checkin_records checkin
        ON checkin.id = $10
       AND checkin.property_id = rt.property_id
@@ -306,6 +315,9 @@ async function checkPmsOperationalSlice(
         roomBlockStatus: row.room_block_status,
         publicBookingReference: row.public_reference,
         lifecycleStatus: row.lifecycle_status,
+        bookerCountryCode: row.booker_country_code,
+        bookerCountryCodeRaw: row.booker_country_code_raw,
+        bookerCountryCodeReviewRequired: row.booker_country_code_review_required,
         assignmentStatus: row.assignment_status,
         channel: row.assignment_channel,
         externalBookingId: row.assignment_external_reservation_id,
@@ -353,6 +365,9 @@ async function checkPmsOperationalSlice(
     actual.roomBlockStatus === "active" &&
     actual.publicBookingReference === check.publicBookingReference &&
     actual.lifecycleStatus === "completed" &&
+    actual.bookerCountryCode === check.bookerCountryCode &&
+    actual.bookerCountryCodeRaw === check.bookerCountryCodeRaw &&
+    actual.bookerCountryCodeReviewRequired === check.bookerCountryCodeReviewRequired &&
     actual.assignmentStatus === check.assignmentStatus &&
     actual.channel === check.channel &&
     actual.externalBookingId === check.externalBookingId &&

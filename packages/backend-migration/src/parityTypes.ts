@@ -99,6 +99,9 @@ export type ExpectedTarget = {
       addonSelectionCount: number;
       promoApplicationCount: number;
       statusEventCount: number;
+      bookerCountryCode: string | null;
+      bookerCountryCodeRaw: string | null;
+      bookerCountryCodeReviewRequired: boolean;
     }>;
     settings?: Array<{
       propertyId: string;
@@ -223,6 +226,9 @@ export type ExpectedTarget = {
       privateNoteCount: number;
       checkoutChargeCount: number;
       syncStatusCount: number;
+      bookerCountryCode: string | null;
+      bookerCountryCodeRaw: string | null;
+      bookerCountryCodeReviewRequired: boolean;
     }>;
     forbiddenOperationalSummaryKeys?: string[];
   };

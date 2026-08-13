@@ -47,6 +47,9 @@ async function checkBookingFlow(
     summary_payment_status: string | null;
     summary_total: string | null;
     summary_currency: string | null;
+    booker_country_code: string | null;
+    booker_country_code_raw: string | null;
+    booker_country_code_review_required: boolean | null;
   }>(
     `SELECT
        q.status AS quote_status,
@@ -65,7 +68,10 @@ async function checkBookingFlow(
        rm.lifecycle_status AS summary_lifecycle_status,
        rm.payment_status AS summary_payment_status,
        rm.amount_summary ->> 'total' AS summary_total,
-       rm.amount_summary ->> 'currency' AS summary_currency
+       rm.amount_summary ->> 'currency' AS summary_currency,
+       BTRIM(booker.country_code) AS booker_country_code,
+       booker.country_code_raw AS booker_country_code_raw,
+       booker.country_code_review_required AS booker_country_code_review_required
      FROM booking.quote_sessions q
      JOIN booking.checkout_contexts c
        ON c.quote_session_id = q.id
@@ -81,6 +87,9 @@ async function checkBookingFlow(
      LEFT JOIN booking.direct_booking_summary_read_model rm
        ON rm.guest_booking_id = b.id
       AND rm.property_id = b.property_id
+     LEFT JOIN booking.booking_guests booker
+       ON booker.guest_booking_id = b.id
+      AND booker.guest_role = 'booker'
      WHERE q.id = $1
        AND c.id = $2
        AND b.id = $3
@@ -113,7 +122,10 @@ async function checkBookingFlow(
     row.summary_lifecycle_status === flow.lifecycleStatus &&
     row.summary_payment_status === flow.paymentStatus &&
     row.summary_total === flow.paymentAmount &&
-    row.summary_currency === flow.currency;
+    row.summary_currency === flow.currency &&
+    row.booker_country_code === flow.bookerCountryCode &&
+    row.booker_country_code_raw === flow.bookerCountryCodeRaw &&
+    row.booker_country_code_review_required === flow.bookerCountryCodeReviewRequired;
 
   if (!matches) {
     findings.push({
