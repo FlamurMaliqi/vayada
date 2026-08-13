@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   PmsManualBookingCreateError,
   type PmsManualBookingCreateCommand,
@@ -6,7 +8,12 @@ import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createFinanceManualBookingSettlementPort } from "./financeManualBookingSettlement.js";
+import { createPgPmsManualBookingPlatformOwnerPort } from "./pmsManualBookingCommandEvidence.js";
 import { createPgPmsManualBookingCommandRepository } from "./pmsManualBookingCommandRepository.js";
+import {
+  createPgPmsManualBookingBookingOwnerPort,
+  createPgPmsManualBookingOperationsOwnerPort,
+} from "./pmsManualBookingPersistence.js";
 import type {
   PmsManualBookingTransactionDependencies,
   PmsManualBookingTransactionalPricingPort,
@@ -146,6 +153,27 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     expect((await counts()).payment).toBe("5");
   });
 
+  it("rejects changed replay, command reuse, and cross-property rooms without partial facts", async () => {
+    const original = command("conflict", "unpaid", "cash", "2027-03-01", false);
+    await repository.createManualBooking(original);
+    await expect(
+      repository.createManualBooking({
+        ...original,
+        guest: { ...original.guest, lastName: "Changed" },
+      }),
+    ).rejects.toMatchObject({ code: "idempotency_conflict" });
+    await expect(
+      repository.createManualBooking({ ...original, idempotencyKey: "another-key" }),
+    ).rejects.toMatchObject({ code: "idempotency_conflict" });
+    await expect(
+      repository.createManualBooking({
+        ...command("cross-property", "unpaid", "cash", "2027-03-05", false),
+        propertyId: otherPropertyId,
+      }),
+    ).rejects.toMatchObject({ code: "room_not_found" });
+    expect((await counts()).booking).toBe("1");
+  });
+
   it("rolls paid Booking, PMS, evidence, command, and Finance facts back together", async () => {
     const failing = createPgPmsManualBookingCommandRepository({
       connectionString: TEST_DATABASE_URL!,
@@ -171,6 +199,31 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     });
   });
 
+  it("rejects a calculated total that exceeds Booking persistence precision", async () => {
+    const basePricing = pricing();
+    const oversized = createPgPmsManualBookingCommandRepository({
+      connectionString: TEST_DATABASE_URL!,
+      now: () => acceptedAt,
+      dependencies: dependencies({
+        pricing: {
+          async calculate(input) {
+            return {
+              ...(await basePricing.calculate(input)),
+              grandTotal: { amountDecimal: "10000000000000.00", currency: "EUR" },
+            };
+          },
+        },
+      }),
+    });
+    await expect(
+      oversized.createManualBooking(
+        command("oversized-total", "unpaid", "cash", "2027-04-10", false),
+      ),
+    ).rejects.toMatchObject({ code: "invalid_body", field: "grandTotal" });
+    await oversized.close();
+    await expect(counts()).resolves.toMatchObject({ booking: "0", commands: "0" });
+  });
+
   it("serializes overlapping room commands so exactly one creates evidence", async () => {
     const first = repository.createManualBooking(
       command("race-one", "unpaid", "cash", "2027-05-01", false),
@@ -188,10 +241,65 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     expect((await counts()).booking).toBe("1");
   });
 
+  it("turns two simultaneous identical submissions into one create and one replay", async () => {
+    const input = command("same-key-race", "unpaid", "cash", "2027-06-01", false);
+    const results = await Promise.all([
+      repository.createManualBooking(input),
+      repository.createManualBooking(input),
+    ]);
+    expect(results.map(({ outcome }) => outcome).sort()).toEqual(["created", "replayed"]);
+    expect((await counts()).booking).toBe("1");
+  });
+
+  it("rejects self-consistent malformed or cross-command replay evidence", async () => {
+    const input = command("bad-replay", "unpaid", "cash", "2027-06-05", false);
+    const created = await repository.createManualBooking(input);
+    for (const result of [
+      { ...created, commandId: "different-command" },
+      { ...created, unexpected: true },
+      { ...created, guestBookingId: otherPropertyId },
+    ]) {
+      await admin.query(
+        `UPDATE platform.idempotency_keys
+         SET idempotency_metadata = jsonb_set(idempotency_metadata, '{result}', $2::jsonb),
+           response_body_hash = $3
+           , response_resource_id = $4
+         WHERE operation = 'pms.manual_booking.create' AND property_id = $1::uuid`,
+        [propertyId, JSON.stringify(result), hash(result), result.guestBookingId],
+      );
+      await expect(repository.createManualBooking(input)).rejects.toThrow(
+        "Stored manual booking replay is invalid",
+      );
+    }
+  });
+
+  it("serializes simultaneous command-id reuse across different keys and rooms", async () => {
+    const first = command("command-id-race", "unpaid", "cash", "2027-07-01", false);
+    const second = {
+      ...first,
+      idempotencyKey: "different-key-same-command",
+      stays: [{ ...first.stays[0]!, roomId: roomIds[1]! }],
+    };
+    const settled = await Promise.allSettled([
+      repository.createManualBooking(first),
+      repository.createManualBooking(second),
+    ]);
+    expect(settled.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    expect(settled.filter(({ status }) => status === "rejected")).toEqual([
+      expect.objectContaining({
+        reason: expect.objectContaining({ code: "idempotency_conflict" }),
+      }),
+    ]);
+    expect((await counts()).booking).toBe("1");
+  });
+
   function dependencies(
     override: Partial<PmsManualBookingTransactionDependencies> = {},
   ): PmsManualBookingTransactionDependencies {
     return {
+      booking: createPgPmsManualBookingBookingOwnerPort(),
+      operations: createPgPmsManualBookingOperationsOwnerPort(),
+      platform: createPgPmsManualBookingPlatformOwnerPort(),
       pricing: pricing(),
       financeSettlement: createFinanceManualBookingSettlementPort(),
       attribution: {
@@ -378,4 +486,18 @@ function addDays(value: string, days: number): string {
   const date = new Date(`${value}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
+}
+
+function hash(value: unknown): string {
+  return createHash("sha256").update(stable(value)).digest("hex");
+}
+
+function stable(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`)
+      .join(",")}}`;
+  return JSON.stringify(value);
 }
