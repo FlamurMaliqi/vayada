@@ -250,6 +250,7 @@ export function pmsRoomFactsSnapshotFromRow(row: PmsRoomFactsRow): RoomTypeFacts
   }
   const occupancy = dataRecord(row.occupancyLimits);
   const attributes = dataRecord(row.roomAttributes);
+  const bathrooms = attributes?.["bathrooms"];
   const parsed = parseRoomTypeFactsSnapshot({
     contractVersion: PMS_ROOM_FACTS_CONTRACT_VERSION,
     propertyId: row.propertyId,
@@ -265,17 +266,40 @@ export function pmsRoomFactsSnapshotFromRow(row: PmsRoomFactsRow): RoomTypeFacts
         maxAdults: occupancy?.["adults"],
         maxChildren: occupancy?.["children"],
       },
-      beds: attributes?.["beds"],
+      beds: attributes?.["beds"] ?? legacyBeds(attributes?.["bedType"]),
       bedrooms: attributes?.["bedrooms"],
-      bathrooms: attributes?.["bathrooms"],
-      bathroomType: attributes?.["bathroomType"],
-      size: attributes?.["size"],
+      bathrooms,
+      bathroomType:
+        attributes?.["bathroomType"] ??
+        (typeof bathrooms === "number" && bathrooms > 0 ? "private" : undefined),
+      size: legacyRoomSize(attributes?.["size"]),
     },
     createdAt: isoDate(row.createdAt),
     updatedAt: isoDate(row.updatedAt),
   });
   if (!parsed) throw new Error("PMS room facts row failed contract validation");
   return parsed;
+}
+
+function legacyBeds(value: unknown): unknown {
+  if (typeof value !== "string") return undefined;
+  const beds = new Map<string, number>();
+  for (const item of value.split(",")) {
+    const match = /^([1-9]\d*)\s+(.+)$/.exec(item.trim());
+    if (!match) return undefined;
+    const type = match[2]!
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    if (!type) return undefined;
+    beds.set(type, (beds.get(type) ?? 0) + Number(match[1]));
+  }
+  return Array.from(beds, ([type, quantity]) => ({ type, quantity }));
+}
+
+function legacyRoomSize(value: unknown): unknown {
+  return typeof value === "number" ? { value, unit: "sqm" } : value;
 }
 
 function dataRecord(value: unknown): Record<string, unknown> | null {
