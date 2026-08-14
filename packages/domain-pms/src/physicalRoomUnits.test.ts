@@ -4,8 +4,11 @@ import {
   PMS_ROOM_FACTS_CONTRACT_VERSION,
   parseReconcilePhysicalRoomUnitsCommand,
   parseReconcilePhysicalRoomUnitsResult,
+  parseSetPhysicalRoomOperationalLabelCommand,
+  parseSetPhysicalRoomOperationalLabelResult,
   requireVerifiedPhysicalRoomOperationalIdentity,
   serializeReconcilePhysicalRoomUnitsFingerprint,
+  serializeSetPhysicalRoomOperationalLabelFingerprint,
   type PhysicalRoomUnitIdentity,
 } from "./index.js";
 
@@ -329,6 +332,86 @@ describe("physical room unit reconcile contract", () => {
             { code: "room_block", affectedCount: 2 },
           ],
         },
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("physical room operational label command", () => {
+  const labelCommand = (overrides: Record<string, unknown> = {}) => ({
+    organizationId,
+    propertyId,
+    roomTypeId,
+    roomUnitId: firstUnitId,
+    expectedRevision: 3,
+    operationalLabel: "204",
+    idempotencyKey: "label-deluxe-204",
+    audit: command().audit,
+    ...overrides,
+  });
+  const success = (overrides: Record<string, unknown> = {}) => ({
+    ok: true,
+    response: {
+      contractVersion: PMS_ROOM_FACTS_CONTRACT_VERSION,
+      outcome: "updated",
+      propertyId,
+      roomTypeId,
+      roomUnitId: firstUnitId,
+      roomUnitsRevision: 4,
+      operationalLabel: "204",
+      operationalLabelStatus: "verified",
+      acceptedAt,
+      ...overrides,
+    },
+  });
+
+  it("parses an exact verified-label command and stable fingerprint", () => {
+    const parsed = parseSetPhysicalRoomOperationalLabelCommand(labelCommand());
+
+    expect(parsed).toEqual(labelCommand());
+    expect(Object.isFrozen(parsed)).toBe(true);
+    expect(serializeSetPhysicalRoomOperationalLabelFingerprint(parsed!)).toBe(
+      JSON.stringify({
+        organizationId,
+        propertyId,
+        roomTypeId,
+        roomUnitId: firstUnitId,
+        expectedRevision: 3,
+        operationalLabel: "204",
+      }),
+    );
+  });
+
+  it.each([
+    ["blank label", { operationalLabel: "" }],
+    ["padded label", { operationalLabel: " 204" }],
+    ["long label", { operationalLabel: "x".repeat(201) }],
+    ["bad room", { roomUnitId: "room-1" }],
+    ["zero revision", { expectedRevision: 0 }],
+    ["extra field", { extra: true }],
+  ])("rejects %s", (_label, override) => {
+    expect(parseSetPhysicalRoomOperationalLabelCommand(labelCommand(override))).toBeNull();
+  });
+
+  it("parses only exact verified-label responses and known errors", () => {
+    expect(parseSetPhysicalRoomOperationalLabelResult(success())).toEqual(success());
+    expect(
+      parseSetPhysicalRoomOperationalLabelResult({
+        ok: false,
+        error: { code: "room_units_revision_conflict", currentRevision: 4 },
+      }),
+    ).toEqual({
+      ok: false,
+      error: { code: "room_units_revision_conflict", currentRevision: 4 },
+    });
+    expect(
+      parseSetPhysicalRoomOperationalLabelResult(success({ operationalLabelStatus: "unverified" })),
+    ).toBeNull();
+    expect(parseSetPhysicalRoomOperationalLabelResult(success({ extra: true }))).toBeNull();
+    expect(
+      parseSetPhysicalRoomOperationalLabelResult({
+        ok: false,
+        error: { code: "unknown" },
       }),
     ).toBeNull();
   });
