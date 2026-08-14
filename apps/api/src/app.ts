@@ -194,6 +194,10 @@ import {
 import { registerPropertySetupDraftRoutes } from "./routes/propertySetupDrafts.js";
 import { registerBookingPublicationRoutes } from "./routes/bookingPublication.js";
 import type { BookingPublicationRoutesOptions } from "./routes/bookingPublication.js";
+import {
+  registerBookingGuestPolicyRoutes,
+  type BookingGuestPolicyRoutesOptions,
+} from "./routes/bookingGuestPolicy.js";
 
 export type ApiAuthOptions = Omit<BackendAuthPluginOptions, "authorizationResolver"> & {
   rolePermissionRepository: RolePermissionRepository;
@@ -207,6 +211,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   workosWebhooks?: WorkosWebhookRoutesOptions;
   providerWebhooks?: ProviderWebhookRoutesOptions;
   bookingReservationsRepository?: BookingReservationsReadRepository;
+  bookingGuestPolicy?: BookingGuestPolicyRoutesOptions;
   bookingChangeRequestRepository?: BookingHotelChangeRequestRepository;
   pmsOperationsRepository?: PmsOperationsReadRepository;
   pmsManualBookingPreview?: PmsManualBookingPreviewRoutesOptions;
@@ -547,6 +552,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     customDomainRepository: options.bookingCustomDomainRepository,
     changeRequestRepository: options.bookingChangeRequestRepository,
   });
+  if (options.bookingGuestPolicy) {
+    app.register(registerBookingGuestPolicyRoutes, {
+      prefix: "/api/booking",
+      ...options.bookingGuestPolicy,
+    });
+  }
   app.register(registerAffiliateDashboardRoutes, {
     prefix: "/api",
     repository: options.affiliateDashboardRepository,

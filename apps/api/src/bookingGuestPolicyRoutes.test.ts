@@ -28,12 +28,33 @@ import {
   revisionFixture,
 } from "./bookingGuestPolicyTestFixtures.js";
 import { registerBookingGuestPolicyRoutes } from "./routes/bookingGuestPolicy.js";
+import { buildApp } from "./app.js";
 
 describe("protected Booking guest-policy routes", () => {
   let app: FastifyInstance | null = null;
   afterEach(async () => {
     await app?.close();
     app = null;
+  });
+
+  it("mounts the protected production route only with its application", async () => {
+    const disabled = buildApp({ logger: false });
+    const path = `/api/booking/properties/${propertyId}/booking-guest-policy`;
+    expect((await disabled.inject({ method: "GET", url: path })).statusCode).toBe(404);
+    await disabled.close();
+
+    app = buildApp({
+      logger: false,
+      bookingGuestPolicy: {
+        application: routeApplication(
+          revisionFixture(),
+          compositionFixture(),
+          firstVisitReadiness(),
+          [],
+        ),
+      },
+    });
+    expect((await app.inject({ method: "GET", url: path })).statusCode).toBe(401);
   });
 
   it("serves setup, preview, command, and readiness through one exact authorized scope", async () => {

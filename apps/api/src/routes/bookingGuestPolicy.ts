@@ -28,7 +28,7 @@ export type BookingGuestPolicyRoutesOptions = {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/** Protected, unmounted Step 7 adapter; application composition owns its future `/api` prefix. */
+/** Protected Booking-owned setup adapter; application composition owns its `/api/booking` prefix. */
 export async function registerBookingGuestPolicyRoutes(
   app: FastifyInstance,
   options: BookingGuestPolicyRoutesOptions,
