@@ -15,6 +15,7 @@ npm run e2e:booking-admin
 npm run e2e:marketplace-web
 npm run e2e:pms-web
 npm run e2e:vayada-admin
+npm run e2e:next-stack-smoke
 npm run e2e:headed
 npm run e2e:ui
 npm run e2e:report
@@ -35,6 +36,45 @@ To have Playwright start plain-port Next.js dev servers for all apps:
 ```bash
 E2E_START_SERVERS=1 npm run e2e
 ```
+
+## Deployed Next-stack Smoke
+
+`npm run e2e:next-stack-smoke` is the production-safe browser and API smoke for
+the deployed TypeScript stack. It creates unique synthetic WorkOS identities,
+completes fresh hotel and creator onboarding, verifies Marketplace-to-PMS and
+Marketplace-to-Booking-Admin handoffs, publishes a direct-booking property, and
+exercises both instant and request acceptance with a pay-at-property quote.
+
+The command is guarded: it accepts only the fixed `next-*.vayada.com` origins
+and requires `NEXT_STACK_SMOKE_ENV=next`. The deployed next API shares the live
+WorkOS tenant, so live-key use additionally requires
+`NEXT_STACK_SMOKE_ALLOW_LIVE_WORKOS=1`; the manual workflow uses the exact
+deployed key from its protected `next-smoke` environment secret. The smoke never
+configures card, wallet, Stripe, or Xendit checkout. Run it through the manual
+`Next-stack onboarding and checkout smoke` workflow, whose `next-smoke` GitHub
+environment isolates the password and email-domain settings, or locally with
+the same variables:
+
+```bash
+E2E_NEXT_STACK_SMOKE=1 \
+NEXT_STACK_SMOKE_ENV=next \
+NEXT_STACK_SMOKE_ALLOW_LIVE_WORKOS=1 \
+NEXT_STACK_SMOKE_EMAIL_DOMAIN=smoke.example.test \
+NEXT_STACK_SMOKE_PASSWORD='<staging-password>' \
+WORKOS_API_KEY='<key used by deployed next-api>' \
+npm run e2e:next-stack-smoke
+```
+
+Cleanup runs even after a failed assertion. It cancels or withdraws every
+synthetic booking, changes the synthetic property to the non-checkout `other`
+payment method and waits until public quotes disappear, then deletes the
+WorkOS staging organizations and users. Target database rows and product audit
+events are deliberately retained for traceability, but the property is left
+unbookable and inventory is restored. A cleanup failure fails the workflow.
+
+Real card payments are intentionally outside this command. Stripe coverage must
+use a separate test-mode-only environment and test payment methods; do not add a
+live Stripe key or card-capable payment method to this workflow.
 
 Server mode starts only the Next.js frontends on ports 3000-3006. It does not
 start `apps/api` on 8003 or the legacy FastAPI APIs on 8000-8002. Current smokes
