@@ -78,6 +78,8 @@ export default function DashboardPage() {
   const [funnel, setFunnel] = useState<ConversionFunnel | null>(null);
   const [sparklines, setSparklines] = useState<Sparklines | null>(null);
   const [currency, setCurrency] = useState("EUR");
+  const [propertyTimeZone, setPropertyTimeZone] = useState<string | null>(null);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [pageViewsModalOpen, setPageViewsModalOpen] = useState(false);
 
@@ -86,18 +88,20 @@ export default function DashboardPage() {
       .getPropertySettings()
       .then((settings: PropertySettings) => {
         if (settings.default_currency) setCurrency(settings.default_currency);
+        setPropertyTimeZone(settings.time_zone || null);
       })
-      .catch(() => {});
+      .catch(() => setPropertyTimeZone(null))
+      .finally(() => setSettingsLoaded(true));
   }, []);
 
-  const fetchData = useCallback(async (range: TimeRange) => {
+  const fetchData = useCallback(async (range: TimeRange, timeZone: string) => {
     setLoading(true);
     try {
       const [statsData, sourcesData, funnelData, sparklinesData] = await Promise.allSettled([
-        dashboardService.getStats(range),
-        dashboardService.getBookingsBySource(range),
+        dashboardService.getStats(range, timeZone),
+        dashboardService.getBookingsBySource(range, timeZone),
         dashboardService.getConversionFunnel(range),
-        dashboardService.getSparklines(range),
+        dashboardService.getSparklines(range, timeZone),
       ]);
       if (statsData.status === "fulfilled") setStats(statsData.value);
       if (sourcesData.status === "fulfilled") setSources(sourcesData.value);
@@ -112,8 +116,13 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    fetchData(timeRange);
-  }, [timeRange, fetchData]);
+    if (!settingsLoaded) return;
+    if (!propertyTimeZone) {
+      setLoading(false);
+      return;
+    }
+    fetchData(timeRange, propertyTimeZone);
+  }, [timeRange, propertyTimeZone, settingsLoaded, fetchData]);
 
   // Build donut chart gradient
   const donutGradient =
@@ -392,7 +401,12 @@ export default function DashboardPage() {
       </div>
 
       {pageViewsModalOpen && (
-        <PageViewsDetailModal locale={locale} t={t} onClose={() => setPageViewsModalOpen(false)} />
+        <PageViewsDetailModal
+          locale={locale}
+          t={t}
+          timeZone={propertyTimeZone}
+          onClose={() => setPageViewsModalOpen(false)}
+        />
       )}
 
       {/* Bookings by Source + Conversion Funnel */}
@@ -548,10 +562,11 @@ export default function DashboardPage() {
 interface PageViewsDetailModalProps {
   locale: string;
   t: (key: string, params?: Record<string, string | number>) => string;
+  timeZone: string | null;
   onClose: () => void;
 }
 
-function PageViewsDetailModal({ locale, t, onClose }: PageViewsDetailModalProps) {
+function PageViewsDetailModal({ locale, t, timeZone, onClose }: PageViewsDetailModalProps) {
   // Self-fetching: the modal owns its own week_offset state and reloads
   // when the user navigates. Keeping this out of the parent dashboard
   // means the parent's today/week/month tabs don't accidentally reset
@@ -571,8 +586,12 @@ function PageViewsDetailModal({ locale, t, onClose }: PageViewsDetailModalProps)
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    if (!timeZone) {
+      setLoading(false);
+      return;
+    }
     dashboardService
-      .getPageViewsTimeline(weekOffset)
+      .getPageViewsTimeline(weekOffset, timeZone)
       .then((d) => {
         if (!cancelled) setData(d);
       })
@@ -585,7 +604,7 @@ function PageViewsDetailModal({ locale, t, onClose }: PageViewsDetailModalProps)
     return () => {
       cancelled = true;
     };
-  }, [weekOffset]);
+  }, [weekOffset, timeZone]);
 
   const max = data ? Math.max(...data.buckets.map((b) => b.count), 1) : 1;
   const diff = data ? data.total - data.previous_total : 0;
