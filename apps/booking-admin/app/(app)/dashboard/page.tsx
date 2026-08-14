@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "@/lib/i18n";
 import { formatCurrency, formatNumber } from "@/lib/utils";
 import { settingsService, type PropertySettings } from "@/services/settings";
@@ -82,6 +82,7 @@ export default function DashboardPage() {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [pageViewsModalOpen, setPageViewsModalOpen] = useState(false);
+  const fetchSequence = useRef(0);
 
   useEffect(() => {
     settingsService
@@ -95,34 +96,48 @@ export default function DashboardPage() {
   }, []);
 
   const fetchData = useCallback(async (range: TimeRange, timeZone: string) => {
+    const sequence = ++fetchSequence.current;
     setLoading(true);
-    try {
-      const [statsData, sourcesData, funnelData, sparklinesData] = await Promise.allSettled([
-        dashboardService.getStats(range, timeZone),
-        dashboardService.getBookingsBySource(range, timeZone),
-        dashboardService.getConversionFunnel(range),
-        dashboardService.getSparklines(range, timeZone),
-      ]);
-      if (statsData.status === "fulfilled") setStats(statsData.value);
-      if (sourcesData.status === "fulfilled") setSources(sourcesData.value);
-      if (funnelData.status === "fulfilled") setFunnel(funnelData.value);
-      else setFunnel(null);
-      if (sparklinesData.status === "fulfilled") setSparklines(sparklinesData.value);
-    } catch {
-      // Keep existing data on error
-    } finally {
-      setLoading(false);
-    }
+    setStats(null);
+    setSources(null);
+    setFunnel(null);
+    setSparklines(null);
+    const [statsData, sourcesData, funnelData, sparklinesData] = await Promise.allSettled([
+      dashboardService.getStats(range, timeZone),
+      dashboardService.getBookingsBySource(range, timeZone),
+      dashboardService.getConversionFunnel(range),
+      dashboardService.getSparklines(range, timeZone),
+    ]);
+    if (sequence !== fetchSequence.current) return;
+    if (statsData.status === "fulfilled") setStats(statsData.value);
+    if (sourcesData.status === "fulfilled") setSources(sourcesData.value);
+    if (funnelData.status === "fulfilled") setFunnel(funnelData.value);
+    if (sparklinesData.status === "fulfilled") setSparklines(sparklinesData.value);
+    setLoading(false);
   }, []);
 
   useEffect(() => {
     if (!settingsLoaded) return;
     if (!propertyTimeZone) {
+      fetchSequence.current += 1;
+      setStats(null);
+      setSources(null);
+      setFunnel(null);
+      setSparklines(null);
       setLoading(false);
       return;
     }
     fetchData(timeRange, propertyTimeZone);
   }, [timeRange, propertyTimeZone, settingsLoaded, fetchData]);
+
+  const selectTimeRange = (range: TimeRange) => {
+    fetchSequence.current += 1;
+    setStats(null);
+    setSources(null);
+    setFunnel(null);
+    setSparklines(null);
+    setTimeRange(range);
+  };
 
   // Build donut chart gradient
   const donutGradient =
@@ -212,7 +227,7 @@ export default function DashboardPage() {
         ].map(({ key, label }) => (
           <button
             key={key}
-            onClick={() => setTimeRange(key)}
+            onClick={() => selectTimeRange(key)}
             className={`flex-1 sm:flex-initial px-4 py-1.5 rounded-md text-[13px] font-medium transition-colors ${
               timeRange === key
                 ? "bg-white text-gray-900 border border-gray-200 shadow-sm"
@@ -574,6 +589,8 @@ function PageViewsDetailModal({ locale, t, timeZone, onClose }: PageViewsDetailM
   const [weekOffset, setWeekOffset] = useState(0);
   const [data, setData] = useState<PageViewsTimeline | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -586,7 +603,10 @@ function PageViewsDetailModal({ locale, t, timeZone, onClose }: PageViewsDetailM
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setError(false);
+    setData(null);
     if (!timeZone) {
+      setError(true);
       setLoading(false);
       return;
     }
@@ -596,7 +616,7 @@ function PageViewsDetailModal({ locale, t, timeZone, onClose }: PageViewsDetailM
         if (!cancelled) setData(d);
       })
       .catch(() => {
-        /* keep last data on error */
+        if (!cancelled) setError(true);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -604,7 +624,7 @@ function PageViewsDetailModal({ locale, t, timeZone, onClose }: PageViewsDetailM
     return () => {
       cancelled = true;
     };
-  }, [weekOffset, timeZone]);
+  }, [weekOffset, reloadKey, timeZone]);
 
   const max = data ? Math.max(...data.buckets.map((b) => b.count), 1) : 1;
   const diff = data ? data.total - data.previous_total : 0;
@@ -689,45 +709,66 @@ function PageViewsDetailModal({ locale, t, timeZone, onClose }: PageViewsDetailM
           </button>
         </div>
 
-        <div
-          className={`flex items-end gap-2 h-40 mb-2 transition-opacity ${loading ? "opacity-50" : ""}`}
-        >
-          {(data?.buckets ?? Array.from({ length: 7 }, () => ({ date: "", count: 0 }))).map(
-            (b, i) => (
-              <div key={i} className="flex-1 flex flex-col items-center justify-end h-full">
-                <span className="text-[11px] font-medium text-gray-700 mb-1">
-                  {formatNumber(b.count, locale)}
-                </span>
-                <div
-                  className="w-full bg-primary-500 rounded-t"
-                  style={{ height: `${Math.max((b.count / max) * 100, 2)}%` }}
-                />
-              </div>
-            ),
-          )}
-        </div>
-        <div className="flex gap-2 mb-5">
-          {(data?.buckets ?? []).map((b) => (
-            <span
-              key={b.date}
-              className="flex-1 text-center text-[11px] text-gray-500 truncate"
-              title={formatShortDate(b.date, locale)}
+        {error ? (
+          <div className="h-48 mb-5 flex flex-col items-center justify-center text-center">
+            <p className="text-[13px] text-red-600">{t("dashboard.pageViewsModal.error")}</p>
+            <button
+              type="button"
+              onClick={() => setReloadKey((key) => key + 1)}
+              className="mt-3 text-[13px] font-medium text-primary-600 hover:text-primary-700"
             >
-              {formatShortDate(b.date, locale)}
-            </span>
-          ))}
-        </div>
+              {t("dashboard.pageViewsModal.retry")}
+            </button>
+          </div>
+        ) : (
+          <>
+            <div
+              className={`flex items-end gap-2 h-40 mb-2 transition-opacity ${loading ? "opacity-50" : ""}`}
+              aria-busy={loading}
+              aria-label={loading ? t("common.loading") : undefined}
+            >
+              {(data?.buckets ?? Array.from({ length: 7 }, () => ({ date: "", count: 0 }))).map(
+                (b, i) => (
+                  <div key={i} className="flex-1 flex flex-col items-center justify-end h-full">
+                    <span className="text-[11px] font-medium text-gray-700 mb-1">
+                      {loading ? "" : formatNumber(b.count, locale)}
+                    </span>
+                    <div
+                      className={`w-full rounded-t ${loading ? "bg-gray-200 animate-pulse" : "bg-primary-500"}`}
+                      style={{
+                        height: `${loading ? 20 + i * 8 : Math.max((b.count / max) * 100, 2)}%`,
+                      }}
+                    />
+                  </div>
+                ),
+              )}
+            </div>
+            <div className="flex gap-2 mb-5">
+              {(data?.buckets ?? []).map((b) => (
+                <span
+                  key={b.date}
+                  className="flex-1 text-center text-[11px] text-gray-500 truncate"
+                  title={formatShortDate(b.date, locale)}
+                >
+                  {formatShortDate(b.date, locale)}
+                </span>
+              ))}
+            </div>
+          </>
+        )}
 
         <div className="border-t border-gray-100 pt-4 grid grid-cols-2 gap-4 text-[13px]">
           <div>
             <div className="text-gray-500">{t("dashboard.pageViewsModal.totalInWindow")}</div>
             <div className="text-xl font-semibold text-gray-900">
-              {formatNumber(data?.total ?? 0, locale)}
+              {loading || error ? "--" : formatNumber(data?.total ?? 0, locale)}
             </div>
           </div>
           <div>
             <div className="text-gray-500">{t("dashboard.pageViewsModal.vsPrevious7Days")}</div>
-            {data && data.has_previous_data ? (
+            {loading || error ? (
+              <div className="text-xl font-semibold text-gray-400">--</div>
+            ) : data && data.has_previous_data ? (
               <div
                 className={`text-xl font-semibold ${diff > 0 ? "text-green-600" : diff < 0 ? "text-red-500" : "text-gray-900"}`}
               >

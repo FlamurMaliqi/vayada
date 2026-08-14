@@ -157,6 +157,8 @@
   "dashboard.pageViewsModal.totalInWindow": "Total in window",
   "dashboard.pageViewsModal.openLabel": "Open page views breakdown",
   "dashboard.pageViewsModal.close": "Close",
+  "dashboard.pageViewsModal.error": "Page-view data could not be loaded.",
+  "dashboard.pageViewsModal.retry": "Try again",
   "dashboard.bookingsBySource.title": "Bookings by Source",
   "dashboard.bookingsBySource.totalRevenue": "Total Revenue",
   "dashboard.bookingsBySource.noData": "No booking data for this period",

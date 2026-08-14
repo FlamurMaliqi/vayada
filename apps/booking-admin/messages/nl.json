@@ -157,6 +157,8 @@
   "dashboard.pageViewsModal.totalInWindow": "Totaal in periode",
   "dashboard.pageViewsModal.openLabel": "Paginaweergaven detail openen",
   "dashboard.pageViewsModal.close": "Sluiten",
+  "dashboard.pageViewsModal.error": "Paginaweergaven konden niet worden geladen.",
+  "dashboard.pageViewsModal.retry": "Opnieuw proberen",
   "dashboard.bookingsBySource.title": "Boekingen per bron",
   "dashboard.bookingsBySource.totalRevenue": "Totale omzet",
   "dashboard.bookingsBySource.noData": "Geen boekingsgegevens voor deze periode",

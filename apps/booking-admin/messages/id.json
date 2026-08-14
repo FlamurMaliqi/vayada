@@ -157,6 +157,8 @@
   "dashboard.pageViewsModal.totalInWindow": "Total dalam periode",
   "dashboard.pageViewsModal.openLabel": "Buka detail tampilan halaman",
   "dashboard.pageViewsModal.close": "Tutup",
+  "dashboard.pageViewsModal.error": "Data tampilan halaman tidak dapat dimuat.",
+  "dashboard.pageViewsModal.retry": "Coba lagi",
   "dashboard.bookingsBySource.title": "Pemesanan berdasarkan Sumber",
   "dashboard.bookingsBySource.totalRevenue": "Total Pendapatan",
   "dashboard.bookingsBySource.noData": "Tidak ada data pemesanan untuk periode ini",

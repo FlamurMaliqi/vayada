@@ -32,6 +32,7 @@ export interface BookingAdminPropertySettingsFixture {
   tiktok?: string;
   youtube?: string;
   default_currency: string;
+  time_zone?: string;
   default_language: string;
   supported_currencies: string[];
   supported_languages: string[];
@@ -176,6 +177,7 @@ export const defaultBookingAdminPropertySettings: BookingAdminPropertySettingsFi
   id: BOOKING_ADMIN_HOTEL_ID,
   slug: BOOKING_ADMIN_HOTEL_SLUG,
   default_currency: "EUR",
+  time_zone: "Europe/Berlin",
   default_language: "en",
   supported_currencies: [],
   supported_languages: [],
@@ -471,11 +473,13 @@ export async function mockBookingAdminShellRoutes(
             totalRevenue: { amountDecimal: "0.00", currency: "EUR" },
             bookingCount: 0,
             avgNightlyRate: { amountDecimal: "0.00", currency: "EUR" },
+            pageViewCount: 0,
           },
           previous: {
             totalRevenue: { amountDecimal: "0.00", currency: "EUR" },
             bookingCount: 0,
             avgNightlyRate: { amountDecimal: "0.00", currency: "EUR" },
+            pageViewCount: 0,
           },
           nextArrivalDate: null,
           liveSinceDate: null,
@@ -495,6 +499,26 @@ export async function mockBookingAdminShellRoutes(
   );
   await page.route("**/api/booking/properties/*/dashboard/sparklines**", (route) =>
     route.fulfill({ json: { sparklines: { points: [] } } }),
+  );
+  await page.route("**/api/booking/properties/*/dashboard/page-views**", (route) =>
+    route.fulfill({
+      json: {
+        pageViews: {
+          timeZone: "Europe/Berlin",
+          windowStart: "2026-08-07",
+          windowEnd: "2026-08-13",
+          previousWindowStart: "2026-07-31",
+          previousWindowEnd: "2026-08-06",
+          buckets: Array.from({ length: 7 }, (_, index) => ({
+            date: `2026-08-${String(index + 7).padStart(2, "0")}`,
+            count: 0,
+          })),
+          previousBuckets: [],
+          total: 0,
+          previousTotal: 0,
+        },
+      },
+    }),
   );
 }
 

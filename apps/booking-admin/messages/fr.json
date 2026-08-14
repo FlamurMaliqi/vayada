@@ -157,6 +157,8 @@
   "dashboard.pageViewsModal.totalInWindow": "Total sur la période",
   "dashboard.pageViewsModal.openLabel": "Ouvrir le détail des vues",
   "dashboard.pageViewsModal.close": "Fermer",
+  "dashboard.pageViewsModal.error": "Impossible de charger les vues de page.",
+  "dashboard.pageViewsModal.retry": "Réessayer",
   "dashboard.bookingsBySource.title": "Réservations par source",
   "dashboard.bookingsBySource.totalRevenue": "Revenus totaux",
   "dashboard.bookingsBySource.noData": "Aucune donnée de réservation pour cette période",
