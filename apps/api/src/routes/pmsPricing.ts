@@ -34,11 +34,7 @@ export type PmsPricingRoutesOptions = {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/**
- * Unmounted ONB-15 adapter. Composition remains deferred until the reviewed
- * PMS onboarding cutover owns these paths and supplies the cross-domain
- * currency guard.
- */
+/** Target pricing adapter. Currency changes stay fail-closed until the shared dependency guard lands. */
 export async function registerPmsPricingRoutes(
   app: FastifyInstance,
   options: PmsPricingRoutesOptions,

@@ -60,10 +60,17 @@ import { createPgPmsRoomPublicationReadModel } from "./domains/pmsRoomPublicatio
 import { createPgPropertySetupFinanceOwnerScopePort } from "./domains/propertySetupFinanceOwnerScope.js";
 import { createPgPropertySetupPmsOwnerRepository } from "./domains/propertySetupPmsOwnerRepository.js";
 import { createPgPmsPricingReadModel } from "./domains/pmsPricingReadModel.js";
+import { createPgPmsPricingCommandRepository } from "./domains/pmsPricingCommandRepository.js";
+import {
+  PMS_PRICING_CURRENCY_CAPABILITIES_PORT,
+  PMS_PRICING_CURRENCY_CHANGE_FAIL_CLOSED_GUARD,
+} from "./domains/pmsPricingCurrencyCapabilities.js";
 import { createPgPmsManualBookingCommandRepository } from "./domains/pmsManualBookingCommandRepository.js";
 import { createPmsManualBookingProductionCommandConfig } from "./domains/pmsManualBookingProductionRuntime.js";
 import { createPgPmsRecurringPricingReadModel } from "./domains/pmsRecurringPricingReadModel.js";
+import { createPgPmsRecurringPricingCommandRepository } from "./domains/pmsRecurringPricingCommandRepository.js";
 import { createPgPmsMandatoryChargeConfirmationReadModel } from "./domains/pmsMandatoryChargeConfirmationReadModel.js";
+import { createPgPmsMandatoryChargeConfirmationCommandRepository } from "./domains/pmsMandatoryChargeConfirmationCommandRepository.js";
 import { createPgHotelCatalogOperatingCalendarPropertyProfileEvidencePort } from "./domains/hotelCatalogOperatingCalendarPropertyProfileEvidence.js";
 import { createPgPmsOperatingCalendarReadModel } from "./domains/pmsOperatingCalendarReadModel.js";
 import { createPgFinancePaymentReadinessReadModel } from "./domains/financePaymentReadinessReadModel.js";
@@ -637,6 +644,21 @@ const propertySetupPmsRuntime = (() => {
     ],
   };
 })();
+const pmsGuestPolicySetupCommands =
+  config.pmsOperationsSource === "target"
+    ? {
+        pricing: createPgPmsPricingCommandRepository({
+          connectionString: targetDatabaseUrl,
+          currencyChangeGuard: PMS_PRICING_CURRENCY_CHANGE_FAIL_CLOSED_GUARD,
+        }),
+        recurringPricing: createPgPmsRecurringPricingCommandRepository({
+          connectionString: targetDatabaseUrl,
+        }),
+        mandatoryCharges: createPgPmsMandatoryChargeConfirmationCommandRepository({
+          connectionString: targetDatabaseUrl,
+        }),
+      }
+    : undefined;
 
 const pmsRoomPublicationRuntime = bookingDesignMediaAdapter
   ? (() => {
@@ -941,6 +963,25 @@ const app = buildApp({
   pmsManualBookingCreate: pmsManualBookingCommandRepository
     ? { command: pmsManualBookingCommandRepository }
     : undefined,
+  pmsPricing: pmsGuestPolicySetupCommands
+    ? {
+        commandPort: pmsGuestPolicySetupCommands.pricing,
+        readPort: pmsPricingReadModel,
+        currencyCapabilitiesReadPort: PMS_PRICING_CURRENCY_CAPABILITIES_PORT,
+      }
+    : undefined,
+  pmsRecurringPricing: pmsGuestPolicySetupCommands
+    ? {
+        commandPort: pmsGuestPolicySetupCommands.recurringPricing,
+        readPort: propertySetupPmsRuntime.recurringPricing,
+      }
+    : undefined,
+  pmsMandatoryChargeConfirmation: pmsGuestPolicySetupCommands
+    ? {
+        commandPort: pmsGuestPolicySetupCommands.mandatoryCharges,
+        readPort: propertySetupPmsRuntime.mandatoryCharges,
+      }
+    : undefined,
   pmsModuleActivationRepository,
   pmsReviewRepository: createPgPmsReviewRepository({ connectionString: targetDatabaseUrl }),
   pmsOperationsCommandRepository,
@@ -1084,6 +1125,9 @@ app.addHook("onClose", async () => {
     pmsRoomPublicationRuntime?.commandRepository.close(),
     pmsRoomPublicationRuntime?.readModel.close(),
     pmsManualBookingCommandRepository?.close(),
+    pmsGuestPolicySetupCommands?.pricing.close(),
+    pmsGuestPolicySetupCommands?.recurringPricing.close(),
+    pmsGuestPolicySetupCommands?.mandatoryCharges.close(),
     ...(!platformMediaRuntime ? [hotelCatalogStep1Repository.close()] : []),
   ]);
 });
