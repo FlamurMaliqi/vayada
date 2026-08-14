@@ -106,7 +106,7 @@ export interface RoomTypeCreate {
   maxChildren?: number | null;
   bedrooms?: number;
   bathrooms?: number;
-  bathroomType?: "private" | "shared";
+  bathroomType: "private" | "shared";
   size?: number;
   baseRate?: number;
   nonRefundableRate?: number | null;
