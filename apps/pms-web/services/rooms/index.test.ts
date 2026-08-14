@@ -256,9 +256,7 @@ describe("roomsService.update", () => {
       roomsService.update("room-type-1", {
         images: [{ url: "blob:room-preview" }],
       }),
-    ).rejects.toThrow(
-      "Every saved room photo must finish uploading before the room can be saved.",
-    );
+    ).rejects.toThrow("Every saved room photo must finish uploading before the room can be saved.");
     expect(mocks.put).not.toHaveBeenCalled();
   });
 
@@ -389,10 +387,11 @@ describe("roomsService.create", () => {
 
     await roomsService.create({
       name: "Alpine Suite",
+      bathroomType: "private",
       images: [{ url: "blob:room-preview", pendingFile: file }],
     });
 
-    expect(mocks.post.mock.calls[0]?.[1]).toMatchObject({ images: [] });
+    expect(mocks.post.mock.calls[0]?.[1]).toMatchObject({ bathroomType: "private", images: [] });
     expect(mocks.uploadImages).toHaveBeenCalledWith([file], {
       product: "hotel_catalog",
       resourceType: "property",

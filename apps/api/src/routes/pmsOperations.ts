@@ -3099,6 +3099,18 @@ function toRoomTypeCreateCommand(
   }
   const locationAttributes = roomTypeLocationAttributes(raw, "Room type create");
   if ("error" in locationAttributes) return { error: invalidBody(locationAttributes.error) };
+  const attributes = roomTypeAttributes(raw);
+  if (
+    attributes.bathroomType !== undefined &&
+    attributes.bathroomType !== "private" &&
+    attributes.bathroomType !== "shared"
+  ) {
+    return { error: invalidBody("Room type create bathroomType is invalid.") };
+  }
+  if (attributes.bathroomType === "private" && !(Number(attributes.bathrooms) > 0)) {
+    return { error: invalidBody("Private bathrooms require a positive bathroom count.") };
+  }
+  if (attributes.bathroomType === "shared") attributes.bathrooms = null;
 
   return {
     value: {
@@ -3110,7 +3122,7 @@ function toRoomTypeCreateCommand(
       description: optionalStringField(raw.description) ?? "",
       category: nullableStringField(raw.category) ?? null,
       occupancyLimits,
-      attributes: { ...roomTypeAttributes(raw), ...locationAttributes.value },
+      attributes: { ...attributes, ...locationAttributes.value },
       amenities: toStringArray(raw.amenities),
       media: roomTypeMedia(raw.images),
       baseRate: { amountDecimal: baseRate, currency },

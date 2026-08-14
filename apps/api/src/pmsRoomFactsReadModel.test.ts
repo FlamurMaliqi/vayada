@@ -143,6 +143,18 @@ describe("PMS room-facts read model", () => {
       bathroomType: "private",
       size: { value: 32.5, unit: "sqm" },
     });
+    expect(() =>
+      pmsRoomFactsSnapshotFromRow(
+        roomFactsRow({
+          roomAttributes: {
+            bedType: "1 King Bed",
+            bedrooms: 1,
+            bathrooms: 1,
+            size: 32.5,
+          },
+        }),
+      ),
+    ).toThrow("row failed contract validation");
   });
 
   it("lists active and inactive facts in creation order within one property", async () => {

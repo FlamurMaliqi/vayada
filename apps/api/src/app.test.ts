@@ -10456,6 +10456,22 @@ describe("vayada-api", () => {
       pmsOperationsCommandRepository: commandRepository,
     });
 
+    const invalid = await injectJson(app, {
+      method: "POST",
+      url: `/api/pms/properties/${pmsPropertyId}/room-types`,
+      payload: {
+        commandId: "cmd-room-type-invalid-bathroom",
+        idempotencyKey: "room-type-invalid-bathroom",
+        name: "Invalid Bathroom Suite",
+        bathroomType: "ensuite",
+        baseRate: "240.00",
+        operatingPeriods: [{ from: "01-01", to: "12-31" }],
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(commandRepository.roomTypeCreates).toHaveLength(0);
+
     const response = await injectJson(app, {
       method: "POST",
       url: `/api/pms/properties/${pmsPropertyId}/room-types`,

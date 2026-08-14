@@ -1527,7 +1527,7 @@ export default function RoomTypeForm({
             </div>
             <div>
               <div className="flex items-center gap-2 mb-1.5">
-                <label className="text-[12px] font-semibold text-gray-900">Bathrooms</label>
+                <label className="text-[12px] font-semibold text-gray-900">Private bathrooms</label>
               </div>
               <input
                 type="number"
