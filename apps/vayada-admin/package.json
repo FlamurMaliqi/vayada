@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
+    "@vayada/domain-hotels": "0.0.0",
     "@vayada/marketplace-shared": "*",
     "@vayada/product-onboarding": "*",
     "clsx": "^2.0.0",
