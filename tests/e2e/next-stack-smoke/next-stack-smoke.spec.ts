@@ -410,7 +410,10 @@ async function runForeignHotelFlow(
         geoPublic: false,
         mapDisplayMode: "hidden",
       },
-      contacts: [{ channelType: "email", value: user.email, purpose: "general", isPublic: false }],
+      contacts: [
+        { channelType: "email", value: user.email, purpose: "general", isPublic: false },
+        { channelType: "phone", value: "+49 30 5550199", purpose: "general", isPublic: false },
+      ],
     },
     { "Idempotency-Key": `next-smoke:${environment.runId}:foreign-property` },
   );
