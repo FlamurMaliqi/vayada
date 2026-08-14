@@ -4953,6 +4953,17 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
 
       expect(retiredIntelligencePermissions).toHaveLength(0);
 
+      const { rows: retiredIntelligenceGrants } = await verifyClient.query<{
+        permission_key: string;
+      }>(
+        `SELECT permission_key
+         FROM identity.role_permission_grants
+         WHERE permission_key IN ('finance.summary.read', 'intelligence.ask.read')
+         ORDER BY permission_key`,
+      );
+
+      expect(retiredIntelligenceGrants).toHaveLength(0);
+
       const { rows: retiredIntelligenceResourceLinkConstraints } = await verifyClient.query<{
         constraint_name: string;
       }>(
