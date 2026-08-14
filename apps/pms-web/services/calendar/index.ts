@@ -374,12 +374,9 @@ function toCalendarData(
         floor: room.floor ?? "",
         status: room.status,
       })),
-    bookings: reservations
-      .filter(
-        (reservation) =>
-          reservation.stay.checkIn < range.end && reservation.stay.checkOut > range.start,
-      )
-      .flatMap((reservation) => calendarBookingsForReservation(reservation, roomTypesById, range)),
+    bookings: reservations.flatMap((reservation) =>
+      calendarBookingsForReservation(reservation, roomTypesById, range),
+    ),
     blocks: blocks
       .filter((block) => block.status === "active")
       .map((block) =>

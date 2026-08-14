@@ -1,9 +1,11 @@
-import type { BookingExpectedPaymentMethod, BookingStay } from "@/services/bookings";
+import type { Booking, BookingExpectedPaymentMethod, BookingStay } from "@/services/bookings";
 import { formatCurrency } from "@/lib/formatCurrency";
 // prettier-ignore
 export const expectedPaymentMethodLabel = (method: BookingExpectedPaymentMethod) => method === "unknown" ? "Not specified" : method.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
 // prettier-ignore
 export const settlementLabel = (paid: boolean, amount: number, currency: string) => paid ? "Payment recorded" : `${formatCurrency(amount, currency)} outstanding`;
+// prettier-ignore
+export const bookingSettlementLabel = (booking: Pick<Booking, "balanceAmount" | "currency" | "depositRequired" | "paymentStatus" | "totalAmount">) => settlementLabel(booking.depositRequired ? booking.balanceAmount <= 0 : ["captured", "paid", "refunded", "partially_refunded"].includes(booking.paymentStatus || ""), booking.depositRequired ? booking.balanceAmount : booking.totalAmount, booking.currency);
 // prettier-ignore
 function guestsLabel(stay: BookingStay): string { return stay.adults == null || stay.children == null ? "Guest count unavailable" : `${stay.adults} adult${stay.adults === 1 ? "" : "s"}${stay.children ? `, ${stay.children} child${stay.children === 1 ? "" : "ren"}` : ""}`; }
 // prettier-ignore

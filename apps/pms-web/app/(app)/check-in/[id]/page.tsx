@@ -14,8 +14,8 @@ import {
 import { CheckinChecklistStep, settingsService } from "@/services/settings";
 import { formatCurrency } from "@/lib/formatCurrency";
 import BookingStaySummary, {
+  bookingSettlementLabel,
   expectedPaymentMethodLabel,
-  settlementLabel,
 } from "@/components/bookings/BookingStaySummary";
 
 type GuestDraft = BookingAdditionalGuestPayload & { id?: string; position: number };
@@ -604,12 +604,7 @@ export default function CheckInPage() {
                 <p
                   className={`font-semibold ${isPaid(booking) ? "text-green-800" : "text-amber-950"}`}
                 >
-                  {/* prettier-ignore */}
-                  {settlementLabel(
-                    isPaid(booking),
-                    booking.depositRequired ? booking.balanceAmount : booking.totalAmount,
-                    booking.currency,
-                  )}
+                  {bookingSettlementLabel(booking)}
                 </p>
                 {(!booking.depositRequired || booking.balanceAmount > 0) && (
                   <div className="mt-3">

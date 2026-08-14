@@ -6,6 +6,7 @@ import { formatCurrency } from "@/lib/formatCurrency";
 import { CHANNEL_COLORS, getChannelLabel, normalizeChannelKey } from "@/lib/constants/statusStyles";
 import Modal from "@/components/Modal";
 import BookingStaySummary, {
+  bookingSettlementLabel,
   expectedPaymentMethodLabel,
 } from "@/components/bookings/BookingStaySummary";
 
@@ -1191,9 +1192,7 @@ export default function BookingDetailModal({
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-gray-600">Settlement</span>
-                <span className="font-medium text-gray-900">
-                  {booking.paymentStatus || "Not recorded"}
-                </span>
+                <span className="font-medium text-gray-900">{bookingSettlementLabel(booking)}</span>
               </div>
               <div className="flex justify-between text-sm pt-2 border-t border-gray-200">
                 <span className="font-medium text-gray-900">Total Amount</span>

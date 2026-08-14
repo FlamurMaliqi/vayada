@@ -1124,20 +1124,22 @@ export default function CalendarPage() {
                         const style = getBarStyle(b.checkIn, b.checkOut);
                         if (!style) return null;
                         const channelColor = getChannelBarColor(b.channel);
+                        // prettier-ignore
+                        const stayLabel = b.numberOfRooms > 1 ? ` · Room ${b.roomPosition + 1} of ${b.numberOfRooms}` : "";
                         return (
                           <div
                             key={`${b.id}-${b.roomPosition}`}
                             data-bar="booking"
                             className={`absolute top-1.5 h-8 rounded-md px-2 text-[11px] font-medium leading-8 truncate cursor-pointer z-[1] text-white ${channelColor} hover:brightness-110 transition-all flex items-center gap-1.5 opacity-75`}
                             style={{ ...style, top: `${calendarLaneTop(index)}px` }}
-                            title={`${b.guestFirstName} ${b.guestLastName} (${b.status}) - Unassigned\n${b.checkIn} → ${b.checkOut}`}
+                            title={`${b.guestFirstName} ${b.guestLastName} (${b.status}) - Unassigned${stayLabel}\n${b.checkIn} → ${b.checkOut}`}
                             onClick={() => setSelectedBookingId(b.id)}
                           >
                             <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[9px] font-bold flex-shrink-0">
                               {getInitials(b.guestFirstName, b.guestLastName)}
                             </span>
                             <span className="truncate">
-                              {`${b.guestFirstName} ${b.guestLastName}`.trim()}
+                              {`${b.guestFirstName} ${b.guestLastName}${stayLabel}`.trim()}
                             </span>
                           </div>
                         );
