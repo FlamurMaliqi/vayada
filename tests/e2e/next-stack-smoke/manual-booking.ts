@@ -32,6 +32,17 @@ type Args = {
 
 export async function runManualBookingAcceptance(args: Args): Promise<void> {
   const { api, bookings, environment, page, propertyId, request, slug, testInfo } = args;
+  await test.step("verify paid manual-booking capability", async () => {
+    const response = await request.get(
+      `${NEXT_STACK_ORIGINS.api}/api/pms/properties/${propertyId}/manual-bookings/capabilities`,
+      { headers: { authorization: `Bearer ${args.accessToken}` } },
+    );
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual({
+      contractVersion: "pms-manual-booking.v1",
+      canRecordPaidPayment: true,
+    });
+  });
   await test.step("create target manual-booking add-on evidence", async () => {
     const addon = await api.json<Record<string, unknown>>(
       "POST",
