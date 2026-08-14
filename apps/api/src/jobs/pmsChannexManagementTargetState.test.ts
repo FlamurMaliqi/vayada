@@ -78,6 +78,7 @@ describe("PMS Channex management target state", () => {
     );
     expect(client.sql()).toContain("pms.channel_room_type_mappings");
     expect(client.sql()).toContain("pms.channel_rate_plan_mappings");
+    expect(client.sql()).toContain("AND connection_id = (");
     expect(client.sql()).toContain("last_error_code");
   });
 });

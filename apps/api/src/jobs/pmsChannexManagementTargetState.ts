@@ -59,7 +59,11 @@ async function applyConnectedSuccess(
     for (const markup of job.input.markups ?? []) {
       await client.query(
         `UPDATE pms.channel_rate_plan_mappings SET markup_percent = $3, updated_at = $4::timestamptz
-         WHERE property_id = $1::uuid AND channel = $2`,
+         WHERE property_id = $1::uuid AND channel = $2
+           AND connection_id = (
+             SELECT id FROM pms.channel_connections
+             WHERE property_id = $1::uuid AND provider = 'channex'
+           )`,
         [job.propertyId, markup.channel, markup.markupPercent, now.toISOString()],
       );
     }
