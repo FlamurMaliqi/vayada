@@ -1,6 +1,7 @@
 import pg from "pg";
 
 import type { ChannexManagementJob } from "../jobs/pmsChannexManagementWorker.js";
+import { applyPmsChannexManagementProgress } from "../jobs/pmsChannexManagementTargetState.js";
 import {
   channexRequests,
   type ChannexManagementActionPlan,
@@ -82,18 +83,20 @@ async function plan(
 ): Promise<ChannexManagementActionPlan> {
   const externalPropertyId = await connectionId(pool, job.propertyId);
   if (job.input.operationType === "enable") {
-    return externalPropertyId
-      ? { externalPropertyId, requests: [] }
-      : enablePlan(pool, job.propertyId);
+    return externalPropertyId ? { externalPropertyId, requests: [] } : enablePlan(pool, job);
   }
   if (job.input.operationType === "disable") {
     return externalPropertyId
-      ? { externalPropertyId, requests: [channexRequests.deleteProperty(externalPropertyId)] }
+      ? {
+          externalPropertyId,
+          requests: [channexRequests.deleteProperty(externalPropertyId)],
+          checkpoint: checkpoint(pool, job),
+        }
       : { requests: [] };
   }
   if (!externalPropertyId) throw new Error("Channex connection is not enabled");
   if (job.input.operationType === "provision") {
-    return provisioningPlan(pool, job.propertyId, externalPropertyId);
+    return provisioningPlan(pool, job, externalPropertyId);
   }
   if (job.input.operationType === "sync_ari" || job.input.operationType === "update_markups") {
     return ariPlan(pool, job, externalPropertyId);
@@ -107,11 +110,18 @@ async function plan(
   }
   return {
     externalPropertyId,
-    requests: [channexRequests.installMessaging(externalPropertyId)],
+    requests: [
+      channexRequests.listInstalledApplications(externalPropertyId),
+      channexRequests.installMessaging(externalPropertyId),
+    ],
+    checkpoint: checkpoint(pool, job),
   };
 }
 
-async function enablePlan(pool: Pool, propertyId: string): Promise<ChannexManagementActionPlan> {
+async function enablePlan(
+  pool: Pool,
+  job: ChannexManagementJob,
+): Promise<ChannexManagementActionPlan> {
   const result = await pool.query<PropertyRow>(
     `SELECT property.display_name AS title, COALESCE(room.currency, 'EUR') AS currency,
        property.property_type AS "propertyType", location.country_code AS country,
@@ -123,12 +133,13 @@ async function enablePlan(pool: Pool, propertyId: string): Promise<ChannexManage
      LEFT JOIN LATERAL (
        SELECT currency FROM pms.room_types WHERE property_id = property.id AND active LIMIT 1
      ) room ON TRUE WHERE property.id = $1::uuid`,
-    [propertyId],
+    [job.propertyId],
   );
   const property = result.rows[0];
   if (!property) throw new Error("Target property was not found");
   return {
     requests: [
+      channexRequests.findProperty(property.title),
       channexRequests.createProperty(
         compact({
           title: property.title,
@@ -144,12 +155,13 @@ async function enablePlan(pool: Pool, propertyId: string): Promise<ChannexManage
         }),
       ),
     ],
+    checkpoint: checkpoint(pool, job),
   };
 }
 
 async function provisioningPlan(
   pool: Pool,
-  propertyId: string,
+  job: ChannexManagementJob,
   externalPropertyId: string,
 ): Promise<ChannexManagementActionPlan> {
   const [rooms, rates] = await Promise.all([
@@ -166,7 +178,7 @@ async function provisioningPlan(
          ON mapping.connection_id = connection.id AND mapping.room_type_id = room.id
        WHERE room.property_id = $1::uuid AND room.active AND mapping.id IS NULL
        GROUP BY room.id ORDER BY room.sort_order, room.name`,
-      [propertyId],
+      [job.propertyId],
     ),
     pool.query<RateRow>(
       `SELECT plan.room_type_id::text AS "roomTypeId", plan.id::text AS "ratePlanId",
@@ -182,14 +194,17 @@ async function provisioningPlan(
          ON room_mapping.connection_id = connection.id AND room_mapping.room_type_id = plan.room_type_id
        WHERE plan.property_id = $1::uuid AND plan.active AND mapping.id IS NULL
        ORDER BY plan.name`,
-      [propertyId],
+      [job.propertyId],
     ),
   ]);
   const roomIds = new Set(rooms.rows.map(({ roomTypeId }) => roomTypeId));
   return {
     externalPropertyId,
     requests: [
-      ...rooms.rows.map((room) =>
+      ...rooms.rows.flatMap((room) => [
+        channexRequests.listRoomTypes(externalPropertyId, [
+          { roomTypeId: room.roomTypeId, roomTypeName: room.name },
+        ]),
         channexRequests.createRoomType({
           roomTypeId: room.roomTypeId,
           roomTypeName: room.name,
@@ -203,13 +218,25 @@ async function provisioningPlan(
             room_kind: "room",
           },
         }),
-      ),
+      ]),
       ...rates.rows
         .filter(
           ({ roomTypeId, externalRoomTypeId }) =>
             roomIds.has(roomTypeId) || Boolean(externalRoomTypeId),
         )
-        .map((rate) =>
+        .flatMap((rate) => [
+          channexRequests.listRatePlans(externalPropertyId, [
+            {
+              roomTypeId: rate.roomTypeId,
+              ratePlanId: rate.ratePlanId,
+              ratePlanName: rate.name,
+              providerTitle: rate.name,
+              channel: rate.channel,
+              sellMode: rate.sellMode,
+              markupPercent: rate.markupPercent,
+              externalRoomTypeId: rate.externalRoomTypeId ?? undefined,
+            },
+          ]),
           channexRequests.createRatePlan({
             ...rate,
             ratePlanName: rate.name,
@@ -224,9 +251,10 @@ async function provisioningPlan(
               meal_type: "room_only",
             },
           }),
-        ),
+        ]),
       channexRequests.listChannels(externalPropertyId),
     ],
+    checkpoint: checkpoint(pool, job),
   };
 }
 
@@ -288,6 +316,11 @@ async function ariPlan(
       ),
     ],
   };
+}
+
+function checkpoint(pool: Pool, job: ChannexManagementJob) {
+  return (progress: Parameters<typeof applyPmsChannexManagementProgress>[2]) =>
+    applyPmsChannexManagementProgress(pool, job, progress, new Date());
 }
 
 async function connectionId(pool: Pool, propertyId: string): Promise<string | null> {

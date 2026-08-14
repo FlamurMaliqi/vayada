@@ -13,9 +13,17 @@ describe("target Channex management plans", () => {
     });
     const enabled = await port.plan(job("enable"));
     expect(enabled.requests).toMatchObject([
+      { method: "GET", path: "/api/v1/properties", capture: { kind: "property_list" } },
       { method: "POST", path: "/api/v1/properties", capture: { kind: "property" } },
     ]);
+    expect(enabled.checkpoint).toEqual(expect.any(Function));
+    await enabled.checkpoint?.({
+      ok: true,
+      externalPropertyId: "external-1",
+      connectionStatus: "connected",
+    });
     expect(db.sql()).toContain("hotel_catalog.properties");
+    expect(db.sql()).toContain("pms.channel_connections");
 
     db = new FakePool("disconnected");
     port = createPgChannexManagementPlanPort({
@@ -36,9 +44,14 @@ describe("target Channex management plans", () => {
     const plan = await port.plan(job("provision"));
     expect(plan.requests.map(({ path }) => path)).toEqual([
       "/api/v1/room_types",
+      "/api/v1/room_types",
+      "/api/v1/rate_plans",
       "/api/v1/rate_plans",
       "/api/v1/channels",
     ]);
+    expect(plan.requests[0]?.query).toMatchObject({ "filter[title]": "Deluxe" });
+    expect(plan.requests[2]?.query).toMatchObject({ "filter[title]": "Flexible" });
+    expect(plan.checkpoint).toEqual(expect.any(Function));
     expect(db.sql()).toContain("pms.channel_room_type_mappings");
     expect(db.sql()).toContain("pms.channel_rate_plan_mappings");
     expect(db.sql()).toContain("mapping.connection_id = connection.id");

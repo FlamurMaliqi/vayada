@@ -4,7 +4,7 @@ import type { ChannexManagementJob } from "../jobs/pmsChannexManagementWorker.js
 import { channexRequests, createChannexManagementProvider } from "./channexManagement.js";
 
 describe("Channex management provider", () => {
-  it("executes a prepared action with auth and idempotency headers", async () => {
+  it("executes a prepared action with provider authentication", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response(204));
     const provider = createChannexManagementProvider({
       apiBaseUrl: "https://staging.channex.io",
@@ -20,7 +20,6 @@ describe("Channex management provider", () => {
         method: "POST",
         headers: expect.objectContaining({
           "user-api-key": "secret",
-          "idempotency-key": "key-1",
         }),
       }),
     );
@@ -137,9 +136,42 @@ describe("Channex management provider", () => {
     await expect(provider.execute(job("provision"))).resolves.toMatchObject({
       ok: true,
       channels: [
-        { key: "channel-1", application: "BookingCom", title: "Booking.com", isActive: true },
+        { key: "booking_com", application: "BookingCom", title: "Booking.com", isActive: true },
       ],
     });
+  });
+
+  it("checkpoints reconciled state before skipping a duplicate create", async () => {
+    const checkpoint = vi.fn();
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        response(200, { data: [{ id: "external-property", attributes: { title: "Hotel" } }] }),
+      );
+    const provider = createChannexManagementProvider({
+      apiBaseUrl: "https://staging.channex.io",
+      apiKey: "secret",
+      plans: {
+        plan: async () => ({
+          requests: [
+            channexRequests.findProperty("Hotel"),
+            channexRequests.createProperty({ title: "Hotel" }),
+          ],
+          checkpoint,
+        }),
+      },
+      fetch: fetcher,
+    });
+
+    await expect(provider.execute(job("enable"))).resolves.toMatchObject({
+      ok: true,
+      externalPropertyId: "external-property",
+      connectionStatus: "connected",
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(checkpoint).toHaveBeenCalledWith(
+      expect.objectContaining({ externalPropertyId: "external-property" }),
+    );
   });
 
   it("does not send a request when target planning fails", async () => {

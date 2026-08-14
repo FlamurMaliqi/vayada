@@ -20,6 +20,8 @@ export type ChannexManagementProviderSuccess = {
   ok: true;
   providerRequestId?: string;
   externalPropertyId?: string;
+  connectionStatus?: "connected" | "disconnected";
+  messagingAppInstalled?: boolean;
   channels?: ChannexConnectedChannel[];
   roomTypeMappings?: ChannexRoomTypeMapping[];
   ratePlanMappings?: ChannexRatePlanMapping[];
