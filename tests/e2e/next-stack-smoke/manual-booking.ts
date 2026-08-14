@@ -50,6 +50,10 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
   });
 
   const created = await test.step("create a paid heterogeneous booking in PMS Web", async () => {
+    let previewEnabled = false;
+    await page.route(`**/api/pms/properties/${propertyId}/manual-bookings/preview`, (route) =>
+      previewEnabled ? route.continue() : route.abort(),
+    );
     await page.goto(`${NEXT_STACK_ORIGINS.pms}/calendar`);
     await expect(page.getByRole("heading", { name: "Calendar", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "+ New Booking", exact: true }).click();
@@ -90,6 +94,7 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
         url.pathname === `/api/pms/properties/${propertyId}/manual-bookings/preview`
       );
     });
+    previewEnabled = true;
     await dialog.getByLabel("Room 1 check-out").fill(firstCheckOut);
     const previewResponse = await previewResponsePromise;
     expect(previewResponse.status(), await previewResponse.text()).toBe(200);
