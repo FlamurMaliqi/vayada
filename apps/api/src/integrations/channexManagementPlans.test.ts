@@ -13,8 +13,17 @@ describe("target Channex management plans", () => {
     });
     const enabled = await port.plan(job("enable"));
     expect(enabled.requests).toMatchObject([
-      { method: "GET", path: "/api/v1/properties", capture: { kind: "property_list" } },
-      { method: "POST", path: "/api/v1/properties", capture: { kind: "property" } },
+      {
+        method: "GET",
+        path: "/api/v1/properties",
+        capture: { kind: "property_list", title: "Hotel [Vayada:property-1]" },
+      },
+      {
+        method: "POST",
+        path: "/api/v1/properties",
+        body: { property: { title: "Hotel [Vayada:property-1]" } },
+        capture: { kind: "property" },
+      },
     ]);
     expect(enabled.checkpoint).toEqual(expect.any(Function));
     await enabled.checkpoint?.({
@@ -32,6 +41,57 @@ describe("target Channex management plans", () => {
       bookingRevisionHandoff: vi.fn(),
     });
     await expect(port.plan(job("disable"))).resolves.toMatchObject({ requests: [] });
+  });
+
+  it("keeps provider room and rate titles unique across identical local names", async () => {
+    const db = new FakePool("multi_room");
+    const port = createPgChannexManagementPlanPort({
+      connectionString: "postgresql://target",
+      pool: db,
+      bookingRevisionHandoff: vi.fn(),
+    });
+    const plan = await port.plan(job("provision"));
+    const roomTitles = plan.requests.flatMap((request) =>
+      request.capture?.kind === "room_type_list"
+        ? request.capture.rooms.map(({ roomTypeName }) => roomTypeName)
+        : [],
+    );
+    const rateTitles = plan.requests.flatMap((request) =>
+      request.capture?.kind === "rate_plan_list"
+        ? request.capture.rates.map(({ providerTitle }) => providerTitle)
+        : [],
+    );
+    expect(new Set(roomTitles).size).toBe(roomTitles.length);
+    expect(roomTitles).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("[Vayada:room-1]"),
+        expect.stringContaining("[Vayada:room-2]"),
+      ]),
+    );
+    expect(new Set(rateTitles).size).toBe(rateTitles.length);
+    expect(rateTitles).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("[Vayada:room-1:booking_com:rate-1]"),
+        expect.stringContaining("[Vayada:room-2:booking_com:rate-2]"),
+      ]),
+    );
+  });
+
+  it("preserves provider identity when truncating long Unicode titles", async () => {
+    const db = new FakePool("unicode");
+    const port = createPgChannexManagementPlanPort({
+      connectionString: "postgresql://target",
+      pool: db,
+      bookingRevisionHandoff: vi.fn(),
+    });
+    const plan = await port.plan(job("enable"));
+    const capture = plan.requests[0]?.capture;
+    expect(capture?.kind).toBe("property_list");
+    if (capture?.kind !== "property_list") throw new Error("Expected property lookup");
+    const { title } = capture;
+    expect(Array.from(title)).toHaveLength(255);
+    expect(title).toMatch(/\[Vayada:property-1\]$/);
+    expect(title).not.toMatch(/[\uD800-\uDFFF]/u);
   });
 
   it("orders missing or disabled rooms before dependent target rate plans", async () => {
@@ -56,11 +116,17 @@ describe("target Channex management plans", () => {
     expect(plan.requests[1]?.body).toMatchObject({
       room_type: { occ_infants: 0, default_occupancy: 1 },
     });
-    expect(plan.requests[0]?.query).toMatchObject({ "filter[title]": "Deluxe" });
-    expect(plan.requests[2]?.query).toMatchObject({ "filter[title]": "Flexible - Standard" });
-    expect(plan.requests[4]?.query).toMatchObject({ "filter[title]": "Flexible - BDC Standard" });
+    expect(plan.requests[0]?.query).toMatchObject({
+      "filter[title]": "Deluxe [Vayada:room-1]",
+    });
+    expect(plan.requests[2]?.query).toMatchObject({
+      "filter[title]": "Deluxe - Flexible - Standard [Vayada:room-1:direct:rate-1]",
+    });
+    expect(plan.requests[4]?.query).toMatchObject({
+      "filter[title]": "Deluxe - Flexible - BDC Standard [Vayada:room-1:booking_com:rate-1]",
+    });
     expect(plan.requests[6]?.query).toMatchObject({
-      "filter[title]": "Flexible - Airbnb Standard",
+      "filter[title]": "Deluxe - Flexible - Airbnb Standard [Vayada:room-1:airbnb:rate-1]",
     });
     expect(plan.checkpoint).toEqual(expect.any(Function));
     expect(db.sql()).toContain("pms.channel_room_type_mappings");
@@ -110,7 +176,14 @@ describe("target Channex management plans", () => {
   });
 });
 
-type Mode = "enable" | "disconnected" | "connected" | "provision" | "ari";
+type Mode =
+  | "enable"
+  | "unicode"
+  | "disconnected"
+  | "connected"
+  | "provision"
+  | "multi_room"
+  | "ari";
 class FakePool {
   private calls: string[] = [];
   constructor(private readonly mode: Mode) {}
@@ -121,14 +194,16 @@ class FakePool {
   async query<T>(text: string) {
     this.calls.push(text);
     let rows: unknown[] = [];
-    if (text.includes("hotel_catalog.properties")) rows = [{ title: "Hotel", currency: "EUR" }];
+    if (text.includes("hotel_catalog.properties"))
+      rows = [{ title: this.mode === "unicode" ? "😀".repeat(300) : "Hotel", currency: "EUR" }];
     else if (
       text.includes("external_property_id") &&
       this.mode !== "disconnected" &&
-      this.mode !== "enable"
+      this.mode !== "enable" &&
+      this.mode !== "unicode"
     )
       rows = [{ externalPropertyId: "external-1" }];
-    else if (text.includes("count(unit.id)"))
+    else if (text.includes("count(unit.id)")) {
       rows = [
         {
           roomTypeId: "room-1",
@@ -139,25 +214,39 @@ class FakePool {
           children: 0,
         },
       ];
-    else if (text.includes("FROM pms.rate_plans plan") && this.mode === "provision")
-      rows = [
-        ["direct", "Standard"],
-        ["booking_com", "BDC Standard"],
-        ["airbnb", "Airbnb Standard"],
-      ].map(([channel, label]) => ({
-        roomTypeId: "room-1",
-        ratePlanId: "rate-1",
-        name: "Flexible",
-        currency: "EUR",
-        sellMode: "per_room",
-        baseRate: 100,
-        channel,
-        markupPercent: 0,
-        providerTitle: `Flexible - ${label}`,
-        defaultOccupancy: 1,
-        externalRoomTypeId: null,
-      }));
-    else if (text.includes("FROM pms.inventory_days"))
+      if (this.mode === "multi_room") {
+        rows.push({ ...rows[0]!, roomTypeId: "room-2" });
+      }
+    } else if (
+      text.includes("FROM pms.rate_plans plan") &&
+      (this.mode === "provision" || this.mode === "multi_room")
+    ) {
+      const rooms =
+        this.mode === "multi_room"
+          ? [
+              { roomTypeId: "room-1", roomTypeName: "Deluxe", ratePlanId: "rate-1" },
+              { roomTypeId: "room-2", roomTypeName: "Deluxe", ratePlanId: "rate-2" },
+            ]
+          : [{ roomTypeId: "room-1", roomTypeName: "Deluxe", ratePlanId: "rate-1" }];
+      rows = rooms.flatMap((room) =>
+        [
+          ["direct", "Standard"],
+          ["booking_com", "BDC Standard"],
+          ["airbnb", "Airbnb Standard"],
+        ].map(([channel, channelLabel]) => ({
+          ...room,
+          name: "Flexible",
+          currency: "EUR",
+          sellMode: "per_room",
+          baseRate: 100,
+          channel,
+          channelLabel,
+          markupPercent: 0,
+          defaultOccupancy: 1,
+          externalRoomTypeId: null,
+        })),
+      );
+    } else if (text.includes("FROM pms.inventory_days"))
       rows = [
         {
           stayDate: "2026-08-14",

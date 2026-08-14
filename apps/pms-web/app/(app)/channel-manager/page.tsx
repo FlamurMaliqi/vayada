@@ -235,7 +235,7 @@ export default function ChannelManagerPage() {
                       className="grid items-center gap-2 sm:grid-cols-[1fr_9rem]"
                     >
                       <span className="text-sm font-medium capitalize text-gray-800">
-                        {channel}
+                        {channel.replaceAll("_", " ")}
                       </span>
                       <span className="relative">
                         <input
