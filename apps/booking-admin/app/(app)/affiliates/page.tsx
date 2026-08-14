@@ -33,7 +33,10 @@ export default function AffiliatesPage() {
   const [commissionError, setCommissionError] = useState<string | null>(null);
   const [defaultAvailable, setDefaultAvailable] = useState<boolean | null>(null);
   const selectedIdRef = useRef(selectedId);
-  selectedIdRef.current = selectedId;
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
 
   const loadApplications = useCallback(async () => {
     setLoading(true);
