@@ -1,4 +1,4 @@
--- Migration: 0084_platform_property_lifecycle
+-- Migration: 0088_platform_property_lifecycle
 -- Owner: domain-hotels (Catalog lifecycle)
 -- See: engineering/platform-admin-dashboard-intake-contract.md, VAY-1280
 
