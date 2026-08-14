@@ -384,6 +384,7 @@ async function runForeignHotelFlow(
   await page.getByRole("button", { name: "Set up my first hotel" }).click();
   await expect(page.getByRole("heading", { name: "Choose how you’ll use Vayada" })).toBeVisible();
   const session = await readAuthSession(page);
+  expect(session.organizationKind).toBe("hotel_group");
   const api = targetApi(request, session.accessToken);
   await api.json(
     "PUT",
