@@ -93,6 +93,153 @@ export type PhysicalRoomUnitReconcilePort = {
   ): Promise<ReconcilePhysicalRoomUnitsResult>;
 };
 
+export type SetPhysicalRoomOperationalLabelCommand = {
+  readonly organizationId: string;
+  readonly propertyId: string;
+  readonly roomTypeId: string;
+  readonly roomUnitId: string;
+  readonly expectedRevision: number;
+  readonly operationalLabel: string;
+  readonly idempotencyKey: string;
+  readonly audit: RoomFactsCommandAudit;
+};
+
+export type SetPhysicalRoomOperationalLabelResponse = {
+  readonly contractVersion: PmsRoomFactsContractVersion;
+  readonly outcome: "updated" | "unchanged";
+  readonly propertyId: string;
+  readonly roomTypeId: string;
+  readonly roomUnitId: string;
+  readonly roomUnitsRevision: number;
+  readonly operationalLabel: string;
+  readonly operationalLabelStatus: "verified";
+  readonly acceptedAt: string;
+};
+
+export type SetPhysicalRoomOperationalLabelError =
+  | {
+      readonly code:
+        | "setup_scope_unavailable"
+        | "room_type_not_found"
+        | "room_unit_not_found"
+        | "operational_label_conflict"
+        | "idempotency_key_conflict"
+        | "command_in_progress";
+    }
+  | { readonly code: "room_units_revision_conflict"; readonly currentRevision: number };
+
+export type SetPhysicalRoomOperationalLabelResult =
+  | { readonly ok: true; readonly response: SetPhysicalRoomOperationalLabelResponse }
+  | { readonly ok: false; readonly error: SetPhysicalRoomOperationalLabelError };
+
+export type PhysicalRoomOperationalLabelPort = {
+  setPhysicalRoomOperationalLabel(
+    command: SetPhysicalRoomOperationalLabelCommand,
+  ): Promise<SetPhysicalRoomOperationalLabelResult>;
+};
+
+export function parseSetPhysicalRoomOperationalLabelCommand(
+  value: unknown,
+): SetPhysicalRoomOperationalLabelCommand | null {
+  if (
+    !isExactRecord(value, [
+      "organizationId",
+      "propertyId",
+      "roomTypeId",
+      "roomUnitId",
+      "expectedRevision",
+      "operationalLabel",
+      "idempotencyKey",
+      "audit",
+    ]) ||
+    !isUuid(value.organizationId) ||
+    !isUuid(value.propertyId) ||
+    !isUuid(value.roomTypeId) ||
+    !isUuid(value.roomUnitId) ||
+    !isRevision(value.expectedRevision) ||
+    !isTrimmedText(value.operationalLabel, 1, 200) ||
+    !isTrimmedText(value.idempotencyKey, 1, 200)
+  ) {
+    return null;
+  }
+  const audit = parseAudit(value.audit);
+  return audit
+    ? Object.freeze({
+        organizationId: normalizeUuid(value.organizationId),
+        propertyId: normalizeUuid(value.propertyId),
+        roomTypeId: normalizeUuid(value.roomTypeId),
+        roomUnitId: normalizeUuid(value.roomUnitId),
+        expectedRevision: value.expectedRevision,
+        operationalLabel: value.operationalLabel,
+        idempotencyKey: value.idempotencyKey,
+        audit,
+      })
+    : null;
+}
+
+export function serializeSetPhysicalRoomOperationalLabelFingerprint(
+  command: SetPhysicalRoomOperationalLabelCommand,
+): string {
+  return JSON.stringify({
+    organizationId: command.organizationId,
+    propertyId: command.propertyId,
+    roomTypeId: command.roomTypeId,
+    roomUnitId: command.roomUnitId,
+    expectedRevision: command.expectedRevision,
+    operationalLabel: command.operationalLabel,
+  });
+}
+
+export function parseSetPhysicalRoomOperationalLabelResult(
+  value: unknown,
+): SetPhysicalRoomOperationalLabelResult | null {
+  if (!isRecord(value)) return null;
+  if (value.ok === false && isExactRecord(value, ["ok", "error"])) {
+    const error = parseOperationalLabelError(value.error);
+    return error ? Object.freeze({ ok: false as const, error }) : null;
+  }
+  if (value.ok !== true || !isExactRecord(value, ["ok", "response"])) return null;
+  const response = value.response;
+  if (
+    !isExactRecord(response, [
+      "contractVersion",
+      "outcome",
+      "propertyId",
+      "roomTypeId",
+      "roomUnitId",
+      "roomUnitsRevision",
+      "operationalLabel",
+      "operationalLabelStatus",
+      "acceptedAt",
+    ]) ||
+    response.contractVersion !== PMS_ROOM_FACTS_CONTRACT_VERSION ||
+    !(response.outcome === "updated" || response.outcome === "unchanged") ||
+    !isUuid(response.propertyId) ||
+    !isUuid(response.roomTypeId) ||
+    !isUuid(response.roomUnitId) ||
+    !isRevision(response.roomUnitsRevision) ||
+    !isTrimmedText(response.operationalLabel, 1, 200) ||
+    response.operationalLabelStatus !== "verified" ||
+    !isIsoDateTime(response.acceptedAt)
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    ok: true as const,
+    response: Object.freeze({
+      contractVersion: PMS_ROOM_FACTS_CONTRACT_VERSION,
+      outcome: response.outcome,
+      propertyId: normalizeUuid(response.propertyId),
+      roomTypeId: normalizeUuid(response.roomTypeId),
+      roomUnitId: normalizeUuid(response.roomUnitId),
+      roomUnitsRevision: response.roomUnitsRevision,
+      operationalLabel: response.operationalLabel,
+      operationalLabelStatus: "verified" as const,
+      acceptedAt: response.acceptedAt,
+    }),
+  });
+}
+
 export type PhysicalRoomOperationalIdentityResult =
   | {
       readonly ok: true;
@@ -353,6 +500,26 @@ function parseError(value: unknown): ReconcilePhysicalRoomUnitsError | null {
     safelyRemovableUnitCount: value.safelyRemovableUnitCount,
     blockers: Object.freeze(blockers as PhysicalRoomUnitReconcileBlocker[]),
   });
+}
+
+function parseOperationalLabelError(value: unknown): SetPhysicalRoomOperationalLabelError | null {
+  if (!isRecord(value)) return null;
+  if (
+    isExactRecord(value, ["code"]) &&
+    (value.code === "setup_scope_unavailable" ||
+      value.code === "room_type_not_found" ||
+      value.code === "room_unit_not_found" ||
+      value.code === "operational_label_conflict" ||
+      value.code === "idempotency_key_conflict" ||
+      value.code === "command_in_progress")
+  ) {
+    return Object.freeze({ code: value.code });
+  }
+  return value.code === "room_units_revision_conflict" &&
+    isExactRecord(value, ["code", "currentRevision"]) &&
+    isRevision(value.currentRevision)
+    ? Object.freeze({ code: value.code, currentRevision: value.currentRevision })
+    : null;
 }
 
 function parseBlocker(value: unknown): PhysicalRoomUnitReconcileBlocker | null {
