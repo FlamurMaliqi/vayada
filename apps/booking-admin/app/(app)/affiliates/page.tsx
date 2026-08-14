@@ -51,22 +51,16 @@ export default function AffiliatesPage() {
     }
   }, [search, status]);
 
-  const loadDefaultCommission = useCallback(async () => {
-    try {
-      const commission = await affiliatesService.getDefaultCommission();
-      setDefaultDraft(commission.defaultPercentageRate);
-    } catch (nextError) {
-      setError(errorMessage(nextError));
-    }
-  }, []);
-
   useEffect(() => {
     void loadApplications();
   }, [loadApplications]);
 
   useEffect(() => {
-    void loadDefaultCommission();
-  }, [loadDefaultCommission]);
+    affiliatesService
+      .getDefaultCommission()
+      .then((commission) => setDefaultDraft(commission.defaultPercentageRate))
+      .catch((nextError) => setError(errorMessage(nextError)));
+  }, []);
 
   useEffect(() => {
     if (!selectedId) {
