@@ -178,6 +178,8 @@ export const calendarService = {
   getCalendarData: (start: string, end: string) =>
     pmsOperationsCalendarReadService.getCalendarData(start, end),
 
+  getManualBookingCapabilities: pmsManualBookingClient.capabilities,
+
   previewManualBooking: pmsManualBookingClient.preview,
 
   createManualBooking: pmsManualBookingClient.create,

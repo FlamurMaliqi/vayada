@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  get: vi.fn(),
   post: vi.fn(),
   resolvePropertyId: vi.fn(),
 }));
 
 vi.mock("./pmsOperationsClient", () => ({
-  pmsOperationsClient: { post: mocks.post },
+  pmsOperationsClient: { get: mocks.get, post: mocks.post },
   pmsOperationsRequestOptions: { headers: { "X-Vayada-Omit-Hotel-Context": "true" } },
 }));
 
@@ -63,6 +64,38 @@ describe("pmsManualBookingClient", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.resolvePropertyId.mockResolvedValue("property-1");
+  });
+
+  it("loads the selected property's boolean-only Paid capability", async () => {
+    const capability = {
+      contractVersion: PMS_MANUAL_BOOKING_CONTRACT_VERSION,
+      canRecordPaidPayment: true,
+    };
+    mocks.get.mockResolvedValue(capability);
+    await expect(pmsManualBookingClient.capabilities()).resolves.toBe(capability);
+    expect(mocks.get).toHaveBeenCalledWith(
+      "/api/pms/properties/property-1/manual-bookings/capabilities",
+      { headers: { "X-Vayada-Omit-Hotel-Context": "true" } },
+    );
+  });
+
+  it.each([
+    ["request failure", () => Promise.reject(new Error("offline"))],
+    [
+      "extra policy data",
+      () =>
+        Promise.resolve({
+          contractVersion: PMS_MANUAL_BOOKING_CONTRACT_VERSION,
+          canRecordPaidPayment: true,
+          permissions: ["pms.finance.manage"],
+        }),
+    ],
+  ])("fails Paid closed on %s", async (_label, response) => {
+    mocks.get.mockImplementation(response);
+    await expect(pmsManualBookingClient.capabilities()).resolves.toEqual({
+      contractVersion: PMS_MANUAL_BOOKING_CONTRACT_VERSION,
+      canRecordPaidPayment: false,
+    });
   });
 
   it("sends a versioned preview and returns server-derived totals unchanged", async () => {

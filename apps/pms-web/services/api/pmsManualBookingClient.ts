@@ -30,6 +30,10 @@ export type PmsManualBookingPreviewInput = {
   stays: PmsManualBookingStay[];
   addOns: PmsManualBookingAddonSelection[];
 };
+export type PmsManualBookingCapabilities = {
+  contractVersion: typeof PMS_MANUAL_BOOKING_CONTRACT_VERSION;
+  canRecordPaidPayment: boolean;
+};
 export type PmsManualBookingCreateInput = PmsManualBookingPreviewInput & {
   commandId: string;
   idempotencyKey: string;
@@ -139,11 +143,37 @@ export class PmsManualBookingServiceError extends Error {
 }
 
 export const pmsManualBookingClient = {
+  capabilities: async (): Promise<PmsManualBookingCapabilities> => {
+    const fallback = {
+      contractVersion: PMS_MANUAL_BOOKING_CONTRACT_VERSION,
+      canRecordPaidPayment: false,
+    };
+    try {
+      const propertyId = await resolveSelectedPmsPropertyId("loading manual booking capabilities");
+      const value = await pmsOperationsClient.get<unknown>(
+        propertyEndpoint(propertyId, "manual-bookings/capabilities"),
+        pmsOperationsRequestOptions,
+      );
+      return isCapabilities(value) ? value : fallback;
+    } catch {
+      return fallback;
+    }
+  },
   preview: (input: PmsManualBookingPreviewInput) =>
     post<PmsManualBookingPreviewResult>("previewing a manual booking", "preview", input),
   create: (input: PmsManualBookingCreateInput) =>
     post<PmsManualBookingCreateResult>("creating a manual booking", "", input),
 };
+
+function isCapabilities(value: unknown): value is PmsManualBookingCapabilities {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    Object.keys(record).length === 2 &&
+    record["contractVersion"] === PMS_MANUAL_BOOKING_CONTRACT_VERSION &&
+    typeof record["canRecordPaidPayment"] === "boolean"
+  );
+}
 
 async function post<T>(action: string, suffix: string, input: object): Promise<T> {
   const propertyId = await resolveSelectedPmsPropertyId(action);
