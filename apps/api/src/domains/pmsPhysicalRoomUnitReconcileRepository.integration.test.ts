@@ -1,11 +1,14 @@
 import {
   parseReconcilePhysicalRoomUnitsCommand,
+  parseSetPhysicalRoomOperationalLabelCommand,
   type ReconcilePhysicalRoomUnitsCommand,
+  type SetPhysicalRoomOperationalLabelCommand,
 } from "@vayada/domain-pms";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
+import { createPgPmsPhysicalRoomOperationalLabelRepository } from "./pmsPhysicalRoomOperationalLabelRepository.js";
 import {
   createPgPmsPhysicalRoomUnitReconcileRepository,
   type PmsPhysicalRoomUnitReconcileClient,
@@ -29,6 +32,11 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
     max: 4,
     now: () => new Date("2026-08-03T12:00:00.000Z"),
   });
+  const labelRepository = createPgPmsPhysicalRoomOperationalLabelRepository({
+    connectionString: TEST_DATABASE_URL ?? "postgresql://integration-test-disabled",
+    max: 4,
+    now: () => new Date("2026-08-03T12:00:00.000Z"),
+  });
 
   beforeAll(async () => {
     assertSafeTestDatabase(TEST_DATABASE_URL!);
@@ -42,6 +50,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
 
   afterAll(async () => {
     await repository.close();
+    await labelRepository.close();
     await cleanup();
     await admin.end();
   });
@@ -110,6 +119,87 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
       domainEvents: 0,
       outboxEvents: 0,
     });
+  });
+
+  it("verifies one real label, exactly replays, and maps a case-insensitive duplicate", async () => {
+    const added = await repository.reconcilePhysicalRoomUnits(reconcileCommand("label-seed", 1, 2));
+    if (!added.ok) throw new Error("Expected physical units to be added");
+    const [firstUnit, secondUnit] = added.response.addedUnits;
+    const command = labelCommand("first-label", firstUnit!.roomUnitId, 2, "QA-101");
+    const first = await labelRepository.setPhysicalRoomOperationalLabel(command);
+    expect(first).toMatchObject({
+      ok: true,
+      response: {
+        outcome: "updated",
+        roomUnitId: firstUnit!.roomUnitId,
+        roomUnitsRevision: 3,
+        operationalLabel: "QA-101",
+        operationalLabelStatus: "verified",
+      },
+    });
+    await expect(labelRepository.setPhysicalRoomOperationalLabel(command)).resolves.toEqual(first);
+    await expect(
+      labelRepository.setPhysicalRoomOperationalLabel(
+        labelCommand("duplicate-label", secondUnit!.roomUnitId, 3, "qa-101"),
+      ),
+    ).resolves.toEqual({ ok: false, error: { code: "operational_label_conflict" } });
+
+    const units = await admin.query<{
+      roomUnitId: string;
+      label: string | null;
+      labelStatus: string;
+    }>(
+      `SELECT id::text AS "roomUnitId", room_number AS label,
+              operational_label_status AS "labelStatus"
+       FROM pms.rooms WHERE room_type_id = $1::uuid ORDER BY id`,
+      [roomTypeId],
+    );
+    expect(units.rows).toEqual([
+      { roomUnitId: firstUnit!.roomUnitId, label: "QA-101", labelStatus: "verified" },
+      { roomUnitId: secondUnit!.roomUnitId, label: null, labelStatus: "unverified" },
+    ]);
+    await expect(roomTypeRevisions()).resolves.toEqual({ facts: 1, units: 3 });
+    const durable = await admin.query<{ audits: number; keys: number }>(
+      `SELECT
+         (SELECT count(*)::integer FROM platform.product_audit_events
+          WHERE property_id = $1::uuid
+            AND action = 'physical_room_unit.operational_label.set') AS audits,
+         (SELECT count(*)::integer FROM platform.idempotency_keys
+          WHERE property_id = $1::uuid
+            AND operation = 'pms.physical_room_unit.operational_label.set') AS keys`,
+      [propertyId],
+    );
+    expect(durable.rows[0]).toEqual({ audits: 2, keys: 2 });
+  });
+
+  it("replays a legacy exact-label conflict without drifting the room revision", async () => {
+    const added = await repository.reconcilePhysicalRoomUnits(
+      reconcileCommand("legacy-seed", 1, 2),
+    );
+    if (!added.ok) throw new Error("Expected physical units to be added");
+    const [firstUnit, secondUnit] = added.response.addedUnits;
+    await admin.query("UPDATE pms.rooms SET room_number = 'GENERATED-102' WHERE id = $1::uuid", [
+      secondUnit!.roomUnitId,
+    ]);
+    const command = labelCommand("legacy-conflict", firstUnit!.roomUnitId, 2, "GENERATED-102");
+    const conflict = { ok: false, error: { code: "operational_label_conflict" } } as const;
+    await expect(labelRepository.setPhysicalRoomOperationalLabel(command)).resolves.toEqual(
+      conflict,
+    );
+    await expect(labelRepository.setPhysicalRoomOperationalLabel(command)).resolves.toEqual(
+      conflict,
+    );
+    await expect(roomTypeRevisions()).resolves.toEqual({ facts: 1, units: 2 });
+
+    const units = await admin.query<{ label: string | null; labelStatus: string }>(
+      `SELECT room_number AS label, operational_label_status AS "labelStatus"
+       FROM pms.rooms WHERE room_type_id = $1::uuid ORDER BY id`,
+      [roomTypeId],
+    );
+    expect(units.rows).toEqual([
+      { label: null, labelStatus: "unverified" },
+      { label: "GENERATED-102", labelStatus: "unverified" },
+    ]);
   });
 
   it("counts every non-retired unit and reports verified, blocked, and non-available blockers", async () => {
@@ -650,6 +740,31 @@ function reconcileCommand(
     },
   });
   if (!parsed) throw new Error("Invalid integration-test reconcile command");
+  return parsed;
+}
+
+function labelCommand(
+  suffix: string,
+  targetRoomUnitId: string,
+  expectedRevision: number,
+  operationalLabel: string,
+): SetPhysicalRoomOperationalLabelCommand {
+  const parsed = parseSetPhysicalRoomOperationalLabelCommand({
+    organizationId,
+    propertyId,
+    roomTypeId,
+    roomUnitId: targetRoomUnitId,
+    expectedRevision,
+    operationalLabel,
+    idempotencyKey: `vay1277-${suffix}`,
+    audit: {
+      actor: { kind: "user", userId: actorUserId },
+      requestId: `req-${suffix}`,
+      correlationId: `corr-${suffix}`,
+      requestedAt: "2026-08-03T12:00:00.000Z",
+    },
+  });
+  if (!parsed) throw new Error("Invalid integration-test room-label command");
   return parsed;
 }
 
