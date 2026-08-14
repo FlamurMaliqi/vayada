@@ -224,7 +224,8 @@ function AffiliateDossier({
           )}
         </div>
       </div>
-      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+      {commission ? (
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
         <h3 className="text-sm font-semibold text-gray-900">Commission override</h3>
         <p className="mt-1 text-xs text-gray-500">
           Effective rate:{" "}
@@ -263,7 +264,15 @@ function AffiliateDossier({
         <p className="mt-3 text-[11px] text-gray-400">
           Lifecycle and commission changes are recorded in the property audit trail.
         </p>
-      </div>
+        </div>
+      ) : (
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+          <h3 className="text-sm font-semibold text-gray-900">Commission override</h3>
+          <p className="mt-1 text-xs text-gray-500">
+            Finance access is required to view or change this rate.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
