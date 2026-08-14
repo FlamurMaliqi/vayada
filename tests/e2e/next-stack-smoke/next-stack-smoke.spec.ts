@@ -6,6 +6,7 @@ import {
   type APIRequestContext,
   type BrowserContext,
   type Page,
+  type TestInfo,
 } from "@playwright/test";
 
 import {
@@ -27,11 +28,12 @@ import {
 } from "./support";
 import { runQuoteLifecycle, waitForOffer, type BookingResource } from "./booking-lifecycle";
 import { cleanupSmokeResources, type HotelResource } from "./cleanup";
+import { runManualBookingAcceptance } from "./manual-booking";
 
 test("fresh hotel and creator onboarding reaches every next-stack handoff and safe checkout", async ({
   browser,
   request,
-}) => {
+}, testInfo) => {
   test.skip(
     process.env.E2E_NEXT_STACK_SMOKE !== "1",
     "This live smoke must be acknowledged with E2E_NEXT_STACK_SMOKE=1.",
@@ -53,6 +55,7 @@ test("fresh hotel and creator onboarding reaches every next-stack handoff and sa
         environment,
         users,
         bookings,
+        testInfo,
         (resource) => {
           hotel = resource;
         },
@@ -90,6 +93,7 @@ async function runHotelFlow(
   environment: SmokeEnvironment,
   users: SyntheticUser[],
   bookings: BookingResource[],
+  testInfo: TestInfo,
   registerHotel: (resource: HotelResource) => void,
 ): Promise<HotelResource> {
   const page = await context.newPage();
@@ -202,7 +206,7 @@ async function runHotelFlow(
           onboardingSetup: true,
           initialSetupOnly: true,
           name: "QA Double Room",
-          totalRooms: 1,
+          totalRooms: 2,
           maxOccupancy: 2,
           maxAdults: 2,
           maxChildren: 0,
@@ -305,15 +309,26 @@ async function runHotelFlow(
 
   const resource = { api, propertyId: setup.propertyId, slug: publication.slug, stay };
   registerHotel(resource);
+  await runManualBookingAcceptance({
+    api,
+    accessToken: session.accessToken,
+    bookings,
+    environment,
+    page,
+    propertyId: setup.propertyId,
+    request,
+    slug: publication.slug,
+    testInfo,
+  });
   await test.step("exercise instant and request checkout with inventory restoration", async () => {
     for (const mode of ["instant", "request"] as const) {
       await api.json("PUT", `/api/pms/properties/${setup.propertyId}/booking-acceptance`, {
         acceptanceMode: mode,
       });
-      const offer = await waitForOffer(request, publication.slug, stay, 1);
+      const offer = await waitForOffer(request, publication.slug, stay, 2);
       expect(offer.roomTypeId).toBe(setup.roomTypeId);
       await runQuoteLifecycle(request, environment, publication.slug, stay, offer, mode, bookings);
-      await waitForOffer(request, publication.slug, stay, 1);
+      await waitForOffer(request, publication.slug, stay, 2);
     }
   });
 

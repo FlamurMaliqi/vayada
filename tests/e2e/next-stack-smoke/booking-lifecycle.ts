@@ -78,7 +78,7 @@ export async function runQuoteLifecycle(
     slug,
   };
   bookings.push(resource);
-  await waitForAvailability(request, slug, stay, 0);
+  await waitForAvailability(request, slug, stay, offer.availableRooms - 1);
   if (mode === "request") {
     await api.json(
       "POST",

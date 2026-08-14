@@ -43,3 +43,12 @@ jobs:
 
       - name: Run next-stack smoke
         run: npm run e2e:next-stack-smoke
+
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: next-stack-smoke-evidence
+          path: |
+            test-results/
+            playwright-report/
