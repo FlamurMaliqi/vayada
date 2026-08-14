@@ -42,9 +42,32 @@ describe("target manual-booking create route", () => {
 
   it("mounts the capability route without activating the create command runtime", async () => {
     app = buildApp({ logger: false });
-    const response = await app.inject({
+    const capability = await app.inject({
       method: "GET",
       url: `/api/pms/properties/${propertyId}/manual-bookings/capabilities`,
+    });
+    expect(capability.statusCode).toBe(401);
+    const create = await app.inject({
+      method: "POST",
+      url: `/api/pms/properties/${propertyId}/manual-bookings`,
+    });
+    expect(create.statusCode).toBe(404);
+  });
+
+  it("mounts the protected create route when the production command runtime is enabled", async () => {
+    app = buildApp({
+      logger: false,
+      pmsManualBookingCreate: {
+        command: {
+          async createManualBooking() {
+            throw new Error("unauthorized request reached command port");
+          },
+        },
+      },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/pms/properties/${propertyId}/manual-bookings`,
     });
     expect(response.statusCode).toBe(401);
   });
