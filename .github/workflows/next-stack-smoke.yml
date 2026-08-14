@@ -38,6 +38,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build PMS domain contracts
+        run: npm --workspace @vayada/domain-pms run build
+
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
