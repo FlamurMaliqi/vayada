@@ -14,7 +14,6 @@ const EXPECTED_TARGET_KEYS = new Set([
   "pmsOperationsChecks",
   "marketplaceChecks",
   "distributionBookabilityChecks",
-  "intelligenceChecks",
   "platformMediaChecks",
   "mediaUrlMigrationChecks",
 ]);
@@ -101,7 +100,6 @@ const MARKETPLACE_SLICE_INTEGER_FIELDS = [
   "platformFollowerCount",
 ];
 const DISTRIBUTION_BOOKABILITY_CHECK_KEYS = new Set(["properties", "forbiddenPublicOutputValues"]);
-const INTELLIGENCE_CHECK_KEYS = new Set(["properties", "forbiddenPrivateBoundaryValues"]);
 const PLATFORM_MEDIA_CHECK_KEYS = new Set([
   "legacyUrlInventory",
   "requiredPurposes",
@@ -124,46 +122,6 @@ const MEDIA_URL_MIGRATION_CHECK_KEYS = new Set([
   "forbiddenPublicReferenceValues",
 ]);
 const MEDIA_URL_BOOKING_PROPERTY_MEDIA_STRING_FIELDS = ["id", "mediaType", "url", "sourceSystem"];
-const INTELLIGENCE_PROPERTY_STRING_FIELDS = [
-  "propertyId",
-  "organizationId",
-  "ownerUserId",
-  "bookingHotelResourceId",
-  "pmsHotelResourceId",
-  "marketplaceProfileResourceId",
-  "bookingMetricDefinitionId",
-  "setupMetricDefinitionId",
-  "financeMetricDefinitionId",
-  "bookingSnapshotRunId",
-  "financeSnapshotRunId",
-  "setupOverallSnapshotId",
-  "setupPaymentSnapshotId",
-  "bookingEvidenceCatalogId",
-  "setupEvidenceCatalogId",
-  "financeEvidenceCatalogId",
-  "conversationId",
-  "answeredRunId",
-  "deniedRunId",
-  "bookingToolCallId",
-  "setupToolCallId",
-  "deniedFinanceToolCallId",
-  "answeredAuditId",
-  "deniedAuditId",
-  "answeredAnswerId",
-  "deniedAnswerId",
-  "bookingToolId",
-  "setupToolId",
-  "financeToolId",
-  "bookingSnapshotKey",
-  "financeSnapshotKey",
-  "setupOverallSnapshotKey",
-  "setupPaymentSnapshotKey",
-  "conversationKey",
-  "answeredRunKey",
-  "deniedRunKey",
-  "scopeKey",
-  "requiredAskPermissionKey",
-];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -446,7 +404,6 @@ export function validateExpectedTargetConfig(
     "pmsOperationsChecks",
     "marketplaceChecks",
     "distributionBookabilityChecks",
-    "intelligenceChecks",
     "platformMediaChecks",
     "mediaUrlMigrationChecks",
   ]) {
@@ -834,41 +791,6 @@ export function validateExpectedTargetConfig(
       validateStringArray(
         distributionBookabilityChecks["forbiddenPublicOutputValues"],
         "expected-target.json.distributionBookabilityChecks.forbiddenPublicOutputValues",
-        findings,
-      );
-    }
-  }
-
-  const intelligenceChecks = expected["intelligenceChecks"];
-  if (isRecord(intelligenceChecks)) {
-    validateKnownKeys(
-      intelligenceChecks,
-      INTELLIGENCE_CHECK_KEYS,
-      "expected-target.json.intelligenceChecks",
-      findings,
-    );
-    validateObjectArray(
-      intelligenceChecks["properties"],
-      "expected-target.json.intelligenceChecks.properties",
-      INTELLIGENCE_PROPERTY_STRING_FIELDS,
-      findings,
-    );
-    if (
-      Array.isArray(intelligenceChecks["properties"]) &&
-      intelligenceChecks["properties"].length === 0
-    ) {
-      addInvalidFixtureConfigFinding(
-        findings,
-        "expected-target.json.intelligenceChecks.properties",
-        "expected-target.json.intelligenceChecks.properties must contain at least one property check",
-        "non-empty object[]",
-        "[]",
-      );
-    }
-    if (intelligenceChecks["forbiddenPrivateBoundaryValues"] !== undefined) {
-      validateStringArray(
-        intelligenceChecks["forbiddenPrivateBoundaryValues"],
-        "expected-target.json.intelligenceChecks.forbiddenPrivateBoundaryValues",
         findings,
       );
     }

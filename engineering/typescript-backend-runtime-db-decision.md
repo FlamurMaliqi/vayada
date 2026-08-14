@@ -125,8 +125,8 @@ Reasoning:
 
 - Prisma introspection reflects the database that exists today. It cannot infer
   Vayada's target domains: WorkOS identity mappings, internal organizations,
-  resource links, bookability read models, Ask Intelligence evidence records,
-  jobs, audit, or migration-only ownership columns.
+  resource links, bookability read models, jobs, audit, or migration-only
+  ownership columns.
 - The rewrite needs explicit SQL review and parity harness output more than it
   needs an ORM abstraction.
 - Prisma remains useful for discovery, but discovery output should not drive the

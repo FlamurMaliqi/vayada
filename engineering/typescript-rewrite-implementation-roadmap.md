@@ -4,6 +4,11 @@ _VAY-603 roadmap index. Inputs: VAY-600 WorkOS identity architecture, VAY-601
 Ask Intelligence architecture, VAY-602 target TypeScript backend structure,
 VAY-604 AI-agent bookability, and VAY-605 backend database restructure._
 
+> **Retirement update:** VAY-601 and its Ask Intelligence contracts are
+> historical inputs only. Migration `0090` removes that schema. Any future
+> hotel employee agent starts with the VAY-1091 design spike and must not reuse
+> the retired implementation or storage model.
+
 ## Purpose
 
 This roadmap explains how Vayada should start the TypeScript backend rewrite
@@ -28,9 +33,8 @@ product route implementations belong in follow-up tickets and stacked PRs.
 - Compatibility means preserving externally required contracts at the HTTP or
   frontend boundary, not wrapping legacy runtime tables or Python services from
   TypeScript domain code.
-- WorkOS authentication, Vayada authorization, public AI bookability, and
-  authenticated Ask Intelligence are separate concerns even when they share the
-  same backend app.
+- WorkOS authentication, Vayada authorization, and public AI bookability are
+  separate concerns. A future hotel employee agent is deferred to VAY-1091.
 
 ## Phase order
 
@@ -56,7 +60,7 @@ Decisions to resolve:
   DBs cut over together
 - durable job/event mechanism for ECS and local dev
 - WorkOS rollout sequence: same cutover or short-lived legacy session bridge
-- initial agent runtime/provider boundary for Ask Intelligence
+- future hotel employee agent boundary is deferred to VAY-1091
 - public bookability API terms, rate limits, and cache policy
 
 ### 2. Core contracts
@@ -69,14 +73,14 @@ Contract slices:
   membership, permissions, linked resources, entitlements, locale, currency,
   and audit metadata
 - target schema ownership map for identity, hotel catalog, booking, PMS,
-  marketplace, finance, distribution/bookability, Ask Intelligence, jobs, and
-  audit: `engineering/target-schema-ownership-map.md`
+  marketplace, finance, distribution/bookability, jobs, and audit:
+  `engineering/target-schema-ownership-map.md`
 - migration and parity harness design for target rebuilds, source-to-target
   checks, mismatch reports, and explicit SQL migration application:
   `engineering/migration-parity-harness.md`
 - public bookability profile and quote contract:
   `engineering/public-bookability-contract.md`
-- Ask Intelligence evidence and answer envelope contract
+- no current agent contract; VAY-1091 owns any future hotel employee agent
 - jobs/events idempotency, retry, failure visibility, and audit contract
 
 ### 3. TypeScript platform scaffold
@@ -116,7 +120,7 @@ Current status:
 - Booking source-to-target transforms and parity fixtures remain open; the
   merged DDL only establishes the target tables and migration-runner checks.
 - PMS operations is the next open domain DDL slice before finance,
-  marketplace, distribution/bookability, jobs/events/audit, and intelligence.
+  marketplace, distribution/bookability, and jobs/events/audit.
 
 ### 5. Domain implementation slices
 
@@ -127,7 +131,6 @@ Recommended first domains:
 - identity and authorization resource resolution
 - public bookability profile
 - quote contract parity
-- Ask Intelligence read-only evidence catalog
 - one jobs/events side-effect path
 - target-backed compatibility routes for externally required frontend/public
   HTTP shapes
@@ -173,7 +176,6 @@ Output:
 | RequestContext contract            | authenticated product routes         |
 | Target schema ownership map        | DDL and migration scripts            |
 | Bookability profile/quote contract | public AI bookability implementation |
-| Ask Intelligence evidence contract | Ask Intelligence MVP implementation  |
 | Jobs/events contract               | side-effect migration                |
 | Migration/parity harness           | staging rehearsal                    |
 | Staging rehearsal pass             | production cutover                   |
@@ -220,13 +222,11 @@ criteria:
    - Output: `engineering/public-bookability-contract.md` and
      `engineering/fixtures/public-bookability/cases.json`.
 
-7. **Define Ask Intelligence evidence contract**
-   - Specify read-only evidence tools, answer envelope, unavailable-data states,
-     audit records, and tenant scope rules.
-   - Validation: fixture answers reference evidence and cannot cross tenant
-     scope.
-   - Output: `engineering/ask-intelligence-evidence-contract.md` and
-     `engineering/fixtures/ask-intelligence-evidence/answers.json`.
+7. **Design the future hotel employee agent in VAY-1091**
+   - Start from current hotel employee workflows and authorization needs.
+   - Do not reuse the retired Ask Intelligence runtime, contracts, fixtures, or
+     schema.
+   - Output: a reviewed design spike before any implementation ticket.
 
 8. **Define jobs/events contract**
    - Specify idempotency keys, retry behavior, failure visibility, dead-letter
@@ -244,13 +244,13 @@ criteria:
 ## References
 
 - `engineering/workos-identity-architecture.md`
-- `engineering/ask-intelligence-architecture.md`
+- `engineering/ask-intelligence-architecture.md` (historical, retired)
 - `engineering/ai-agent-bookability.md`
 - `engineering/typescript-backend-structure.md`
 - `engineering/backend-database-restructure.md`
 - `engineering/target-schema-ownership-map.md`
 - `engineering/migration-parity-harness.md`
 - `engineering/public-bookability-contract.md`
-- `engineering/ask-intelligence-evidence-contract.md`
+- `engineering/ask-intelligence-evidence-contract.md` (historical, retired)
 - `engineering/jobs-events-contract.md`
 - `.agents/skills/typescript-rewrite-workflow/SKILL.md`

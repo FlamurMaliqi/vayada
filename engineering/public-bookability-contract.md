@@ -8,8 +8,8 @@ parity harness._
 
 Public bookability is the stable external distribution contract for agents,
 partner consumers, search systems, and future MCP/tools. It is not a wrapper
-around today's split booking/PMS endpoints and it is not the same surface as
-authenticated Ask Intelligence.
+around today's split booking/PMS endpoints. Any future hotel employee agent is
+separately designed through VAY-1091.
 
 The first implementation should answer two public questions:
 
@@ -49,9 +49,8 @@ Consumers:
 
 Non-consumers:
 
-- authenticated Ask Intelligence. Ask Intelligence may use setup or public
-  readiness signals, but it answers from scoped private evidence tools and
-  `RequestContext`, not from this public API as its source of truth.
+- any future authenticated hotel employee agent. VAY-1091 must define its
+  private evidence and `RequestContext` boundaries separately.
 
 ## Versioning
 
@@ -395,7 +394,7 @@ Forbidden:
   room assignment details, maintenance blockers with private notes, and channel
   manager credentials;
 - unpublished room/rate inventory, internal overbooking buffers, private setup
-  diagnostics, and tenant-only Ask Intelligence evidence;
+  diagnostics, and tenant-only internal evidence;
 - raw source table names, legacy IDs that are not public resource IDs, SQL
   snippets, and internal error traces.
 

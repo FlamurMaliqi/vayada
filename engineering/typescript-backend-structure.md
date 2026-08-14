@@ -5,6 +5,11 @@ VAY-601 Ask Intelligence architecture, and VAY-604 AI-agent bookability
 recommendation. Updated after VAY-605 selected a planned big-bang database
 rewrite._
 
+> **Retirement update:** VAY-601 is a historical input only. Migration `0090`
+> removes the retired Ask Intelligence schema. Any future hotel employee agent
+> starts with the VAY-1091 design spike and must define a new runtime and
+> storage model.
+
 ## Recommendation
 
 Move Vayada toward a **TypeScript modular backend**, not a direct port of the
@@ -40,8 +45,8 @@ The backend structure should be organized around these principles:
 - Background work uses explicit job/event infrastructure with idempotency,
   retries, failure visibility, and audit links. Avoid untracked
   `asyncio.create_task`-style side effects.
-- Public AI bookability is a separate distribution domain from the authenticated
-  hotel-owner Ask Intelligence agent.
+- Public AI bookability is a distribution domain. A future hotel employee agent
+  is deferred to VAY-1091 and is not a current backend domain.
 - Preserve existing public URLs and frontend contracts through compatibility
   adapters until the frontend has moved to the new contracts.
 - Preserve the Booking Engine / PMS split defined in
@@ -65,8 +70,8 @@ and AI decisions harder to implement safely:
   reading booking-engine hotel identity/payment data, booking-api reading PMS
   billing data, and marketplace-api reading PMS affiliate data.
 - Database ownership is currently split by historical product app rather than
-  by the target domains needed for WorkOS, bookability, intelligence, finance,
-  jobs, and audit. VAY-605 therefore makes database restructure a coordinated
+  by the target domains needed for WorkOS, bookability, finance, jobs, and
+  audit. VAY-605 therefore makes database restructure a coordinated
   cutover program, not an endpoint-by-endpoint table patch.
 - Large routers and services mix responsibilities. Current examples include
   `apps/pms-api/app/services/booking_service.py`,
@@ -79,8 +84,8 @@ and AI decisions harder to implement safely:
 - The public booking surface is split between booking-api, PMS public room
   endpoints, and PMS booking endpoints. This works for Vayada frontends but is
   not a stable external bookability contract for AI agents or partners.
-- Metric definitions and setup-completeness signals are not centralized enough
-  for Ask Intelligence to answer with deterministic evidence.
+- Analytics and setup-completeness signals still need clear domain-owned read
+  models.
 
 ## Target shape
 
@@ -152,7 +157,6 @@ packages/domain-pms
 packages/domain-marketplace
 packages/domain-finance
 packages/domain-distribution
-packages/domain-intelligence
 ```
 
 Package responsibilities:
@@ -373,8 +377,8 @@ Owns:
 - payout settings and payout runs
 
 This domain must expose stricter permissions than operational booking summaries.
-Ask Intelligence should not read financial/payout data unless the selected
-organization membership has explicit finance permissions.
+Any future hotel employee agent designed through VAY-1091 must use those same
+explicit finance permissions.
 
 ### Distribution and AI bookability
 
@@ -395,21 +399,12 @@ pages. With this domain and checkout deep links, assistants can verify live
 availability, price, and policy before sending the guest into a Vayada checkout
 flow.
 
-### Intelligence
+### Retired Intelligence domain
 
-Owns the authenticated hotel-owner agent from VAY-601:
-
-- Ask API
-- agent runtime adapter
-- planner/policy layer
-- read-only evidence tools
-- answer envelope validation
-- conversation state and traces
-- audit of accessed resources and suggested actions
-
-This is not the same as public AI bookability. Intelligence uses authenticated
-organization context and owner permissions. Distribution serves public,
-read-only hotel bookability to external agents and search systems.
+The VAY-601 Ask Intelligence domain is retired and migration `0090` removes its
+schema and stored data. Do not recreate its API, runtime, tools, traces, or
+audit model in this backend structure. VAY-1091 owns any future hotel employee
+agent design.
 
 ## Data access and cutover model
 
@@ -475,7 +470,7 @@ Redesign:
 - booking quote/creation/payment as separate services with idempotency
 - PMS side effects as domain events/jobs
 - hotel setup completeness as a shared read model
-- analytics/metrics as curated views for Ask Intelligence
+- analytics/metrics as domain-owned read models
 - public AI bookability as a first-class distribution API
 
 ## First implementation tickets
@@ -491,7 +486,7 @@ These are the smallest useful follow-ups after this decision:
 2. **Define target-schema boundaries and migration harness**
    - Convert the VAY-605 ownership map into target-schema contracts for
      identity, hotel catalog, booking, PMS, marketplace, finance,
-     distribution, intelligence, and jobs/audit.
+     distribution, and jobs/audit.
    - Add migration/parity harness interfaces to `backend-migration`.
    - Validation: target-schema contract fixtures and source-to-target mapping
      tests for representative records.
@@ -518,10 +513,10 @@ These are the smallest useful follow-ups after this decision:
    - Validation: tests for sold out, min/max stay, same-day cutoff, and payment
      not configured.
 
-6. **Define Ask Intelligence evidence catalog**
-   - Specify read-only tools and curated metric views for the VAY-601 MVP.
-   - Include permission requirements and unavailable-data states.
-   - Validation: schema tests for evidence packs and answer envelope fixtures.
+6. **Design the future hotel employee agent in VAY-1091**
+   - Start from current hotel employee workflows and authorization needs.
+   - Do not reuse the retired Ask runtime, contracts, fixtures, or schema.
+   - Validation: reviewed design before any implementation ticket.
 
 7. **Move one side-effect path to jobs/events**
    - Pick a narrow booking side effect, such as email after booking status
@@ -565,8 +560,8 @@ This target structure gives VAY-603 a concrete implementation-planning base:
 
 - WorkOS can be introduced through one identity/authorization layer rather than
   three duplicated FastAPI dependency stacks.
-- Ask Intelligence can use authorized evidence tools instead of arbitrary SQL or
-  prompt-level tenant scoping.
+- Any future hotel employee agent can start from a reviewed VAY-1091 design
+  instead of inheriting the retired Ask implementation.
 - AI-agent bookability can expose one public quote/bookability contract instead
   of leaking internal booking-api/PMS boundaries.
 - Python and TypeScript services can coexist behind compatibility routes while

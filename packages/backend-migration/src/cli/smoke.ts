@@ -6,7 +6,7 @@ import { runParityChecks, type ParityReport } from "../parity.js";
 import { rebuild } from "../rebuild.js";
 import { type MigrationEnvironment } from "../runner.js";
 import { getSmokeFixtureCases } from "../smoke.js";
-import { DEFAULT_TARGET_SCHEMAS } from "../targetSchemas.js";
+import { DEFAULT_REBUILD_SCHEMAS } from "../targetSchemas.js";
 import { assertValidEnvironment } from "./utils.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -25,7 +25,7 @@ function parseArgs(argv: string[]): {
   let connectionString = process.env["TARGET_DATABASE_URL"] ?? "";
   let migrationsDir = DEFAULT_MIGRATIONS_DIR;
   let fixturesDir = DEFAULT_FIXTURES_DIR;
-  let schemas: string[] = [...DEFAULT_TARGET_SCHEMAS];
+  let schemas: string[] = [...DEFAULT_REBUILD_SCHEMAS];
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--env" && args[i + 1]) {
