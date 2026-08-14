@@ -88,6 +88,18 @@ describe("api config", () => {
     ).toThrow("Mutating PMS Channex capabilities require PMS_CHANNEX_WORKER_ENABLED=true");
   });
 
+  it("does not require the durable worker for an iframe-only cutover", () => {
+    expect(
+      loadConfig({
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        PMS_OPERATIONS_SOURCE: "target",
+        CHANNEX_API_BASE_URL: "https://staging.channex.io",
+        CHANNEX_API_KEY: "secret",
+        PMS_CHANNEX_IFRAME_MODE: "mutating",
+      }).channexManagement,
+    ).toMatchObject({ workerEnabled: false, capabilityModes: { iframe: "mutating" } });
+  });
+
   it("keeps auth disabled when auth env values are absent", () => {
     expect(loadConfig({}).auth).toBeUndefined();
   });

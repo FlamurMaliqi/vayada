@@ -10,7 +10,12 @@ type Pool = {
 };
 
 export type PmsChannexIframeSessionResult =
-  | { ok: true; iframeUrl: string; expiresAt: string }
+  | {
+      ok: true;
+      contractVersion: "pms-channex-management.v1";
+      iframeUrl: string;
+      expiresAt: string;
+    }
   | { ok: false; code: "connection_required" | "provider_rejected"; message: string };
 
 export type PmsChannexIframeSessionPort = {
@@ -99,6 +104,7 @@ export function createPgPmsChannexIframeSessionPort(config: {
       );
       return {
         ok: true,
+        contractVersion: "pms-channex-management.v1",
         iframeUrl: iframeUrl(baseUrl, token, externalPropertyId, context.locale),
         expiresAt: new Date(createdAt.getTime() + 15 * 60_000).toISOString(),
       };

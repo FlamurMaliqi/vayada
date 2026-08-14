@@ -10312,16 +10312,6 @@ describe("vayada-api", () => {
         autoOpenMonths: 24,
       },
     });
-    const channexStatus = await app.inject({
-      method: "GET",
-      url: `/api/pms/properties/${pmsPropertyId}/channex/status`,
-      headers: targetHeaders,
-    });
-    const channexChannels = await app.inject({
-      method: "GET",
-      url: `/api/pms/properties/${pmsPropertyId}/channex/channels`,
-      headers: targetHeaders,
-    });
     const unread = await app.inject({
       method: "GET",
       url: `/api/pms/properties/${pmsPropertyId}/messaging/unread-count`,
@@ -10334,8 +10324,6 @@ describe("vayada-api", () => {
       profilePatch,
       calendarSettingsRead,
       calendarSettings,
-      channexStatus,
-      channexChannels,
       unread,
     ]) {
       expect(response.statusCode).toBe(500);
@@ -10362,12 +10350,6 @@ describe("vayada-api", () => {
     expect(calendarSettings.json()).toMatchObject({
       message: "PMS calendar settings write model is unavailable.",
     });
-    expect(channexStatus.json()).toMatchObject({
-      message: "PMS Channex status read model is unavailable.",
-    });
-    expect(channexChannels.json()).toMatchObject({
-      message: "PMS Channex channels read model is unavailable.",
-    });
     expect(unread.json()).toMatchObject({
       message: "PMS messaging unread count read model is unavailable.",
     });
@@ -10389,7 +10371,7 @@ describe("vayada-api", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: `/api/pms/properties/${pmsPropertyId}/channex/status`,
+      url: `/api/pms/properties/${pmsPropertyId}/messaging/unread-count`,
       headers: {
         authorization: "Bearer valid-token",
         origin: "https://pms.localhost",
@@ -10402,6 +10384,26 @@ describe("vayada-api", () => {
       code: "missing_resource_access",
       category: "authorization",
     });
+  });
+
+  it("does not expose retired Channex placeholder routes", async () => {
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.read"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsOperationsAllowedOrigins: ["https://pms.localhost"],
+    });
+
+    for (const suffix of ["status", "channels"]) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/pms/properties/${pmsPropertyId}/channex/${suffix}`,
+        headers: {
+          authorization: "Bearer valid-token",
+          origin: "https://pms.localhost",
+        },
+      });
+      expect(response.statusCode).toBe(404);
+    }
   });
 
   it("returns PMS room-type detail through the P1a route contract", async () => {

@@ -55,7 +55,9 @@ test.describe("pms-web smoke", () => {
 
     await page.goto("/channel-manager");
     await expect(page.getByRole("heading", { level: 1, name: /channel/i })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Not available yet" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Channex connection" })).toBeVisible();
+    await expect(page.getByText(/observe-only mode/i)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Enable connection" })).toBeDisabled();
 
     await page.goto("/inbox");
     await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();

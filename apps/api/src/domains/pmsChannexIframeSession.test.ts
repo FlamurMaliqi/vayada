@@ -24,6 +24,7 @@ describe("PMS Channex iframe sessions", () => {
 
     await expect(port.createSession(context(), "property-1")).resolves.toEqual({
       ok: true,
+      contractVersion: "pms-channex-management.v1",
       iframeUrl:
         "https://staging.channex.io/auth/exchange?oauth_session_key=one-time-secret&app_mode=headless&redirect_to=%2Fchannels&property_id=external-property&lng=en",
       expiresAt: "2026-08-13T10:15:00.000Z",
