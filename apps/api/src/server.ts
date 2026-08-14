@@ -44,6 +44,7 @@ import { createTargetPmsRoomInventoryReadPort } from "./domains/pmsRoomInventory
 import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
 import { createPgPmsChannexManagementReadRepository } from "./domains/pmsChannexManagementReadModel.js";
 import { createPgPmsChannexManagementCommandPort } from "./domains/pmsChannexManagementCommandStore.js";
+import { createPgPmsChannexIframeSessionPort } from "./domains/pmsChannexIframeSession.js";
 import { createPgHotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
 import { createPgPropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
 import { createPgPropertySetupDraftRepository } from "./domains/propertySetupDraftRepository.js";
@@ -329,6 +330,14 @@ const channexManagementMutating = Object.values(config.channexManagement.capabil
 const pmsChannexManagementCommandPort = channexManagementMutating
   ? createPgPmsChannexManagementCommandPort({ connectionString: targetDatabaseUrl })
   : undefined;
+const pmsChannexIframeSessionPort =
+  config.channexManagement.capabilityModes.iframe === "mutating"
+    ? createPgPmsChannexIframeSessionPort({
+        connectionString: targetDatabaseUrl,
+        apiBaseUrl: config.channexManagement.apiBaseUrl!,
+        apiKey: config.channexManagement.apiKey!,
+      })
+    : undefined;
 
 const bookingGuestPiiPort =
   config.pmsOperationsSource === "target"
@@ -880,6 +889,7 @@ const app = buildApp({
         repository: pmsChannexManagementRepository,
         capabilityModes: config.channexManagement.capabilityModes,
         commandPort: pmsChannexManagementCommandPort,
+        iframeSessionPort: pmsChannexIframeSessionPort,
       }
     : undefined,
   propertyPlanReadRepository,

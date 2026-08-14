@@ -225,6 +225,7 @@ async function provisioningPlan(
             },
           }),
         ),
+      channexRequests.listChannels(externalPropertyId),
     ],
   };
 }

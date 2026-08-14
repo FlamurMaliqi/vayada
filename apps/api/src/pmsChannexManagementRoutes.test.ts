@@ -113,6 +113,27 @@ describe("PMS Channex management command routes", () => {
       markups: [{ channel: "airbnb", markupPercent: 12.5 }],
     });
   });
+
+  it("guards short-lived iframe sessions with the iframe cutover mode", async () => {
+    let harness = await testApp({}, { ...mutating, iframe: "mutating" });
+    app = harness.app;
+    const unavailable = await app.inject({
+      method: "POST",
+      url: `/properties/${propertyId}/channex/iframe-session`,
+      headers: { authorization: "Bearer valid" },
+    });
+    expect(unavailable).toMatchObject({ statusCode: 503 });
+    await app.close();
+
+    harness = await testApp({}, { ...mutating, iframe: "observe_only" });
+    app = harness.app;
+    const disabled = await app.inject({
+      method: "POST",
+      url: `/properties/${propertyId}/channex/iframe-session`,
+      headers: { authorization: "Bearer valid" },
+    });
+    expect(disabled).toMatchObject({ statusCode: 409 });
+  });
 });
 
 async function testApp(

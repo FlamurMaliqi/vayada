@@ -114,6 +114,34 @@ describe("Channex management provider", () => {
     });
   });
 
+  it("normalizes connected channels for the target read model", async () => {
+    const provider = createChannexManagementProvider({
+      apiBaseUrl: "https://staging.channex.io",
+      apiKey: "secret",
+      plans: {
+        plan: async () => ({
+          requests: [channexRequests.listChannels("external-property")],
+        }),
+      },
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(
+        response(200, {
+          data: [
+            {
+              id: "channel-1",
+              attributes: { application: "BookingCom", title: "Booking.com", is_active: true },
+            },
+          ],
+        }),
+      ),
+    });
+    await expect(provider.execute(job("provision"))).resolves.toMatchObject({
+      ok: true,
+      channels: [
+        { key: "channel-1", application: "BookingCom", title: "Booking.com", isActive: true },
+      ],
+    });
+  });
+
   it("does not send a request when target planning fails", async () => {
     const fetcher = vi.fn<typeof fetch>();
     const provider = createChannexManagementProvider({
