@@ -40,6 +40,8 @@ describe("target Channex management plans", () => {
     ]);
     expect(db.sql()).toContain("pms.channel_room_type_mappings");
     expect(db.sql()).toContain("pms.channel_rate_plan_mappings");
+    expect(db.sql()).toContain("mapping.connection_id = connection.id");
+    expect(db.sql()).toContain("connection.provider = 'channex'");
   });
 
   it("builds ARI from target inventory/mappings and delegates booking intake", async () => {
@@ -62,6 +64,8 @@ describe("target Channex management plans", () => {
       "/api/v1/restrictions",
     ]);
     expect(ari.requests[1]?.body).toMatchObject({ values: [{ rate: 120 }] });
+    expect(db.sql()).toContain("rate_mapping.connection_id = connection.id");
+    expect(db.sql()).toContain("connection.provider = 'channex'");
 
     db = new FakePool("connected");
     handoff = vi.fn();

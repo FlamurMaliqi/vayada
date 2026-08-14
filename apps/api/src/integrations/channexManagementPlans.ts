@@ -160,7 +160,10 @@ async function provisioningPlan(
          COALESCE((room.occupancy_limits ->> 'maxChildren')::integer, 0) AS children
        FROM pms.room_types room LEFT JOIN pms.rooms unit
          ON unit.room_type_id = room.id AND unit.status <> 'retired'
-       LEFT JOIN pms.channel_room_type_mappings mapping ON mapping.room_type_id = room.id
+       LEFT JOIN pms.channel_connections connection
+         ON connection.property_id = room.property_id AND connection.provider = 'channex'
+       LEFT JOIN pms.channel_room_type_mappings mapping
+         ON mapping.connection_id = connection.id AND mapping.room_type_id = room.id
        WHERE room.property_id = $1::uuid AND room.active AND mapping.id IS NULL
        GROUP BY room.id ORDER BY room.sort_order, room.name`,
       [propertyId],
@@ -171,8 +174,12 @@ async function provisioningPlan(
          'direct' AS channel, 0::float8 AS "markupPercent",
          room_mapping.external_room_type_id AS "externalRoomTypeId"
        FROM pms.rate_plans plan
-       LEFT JOIN pms.channel_rate_plan_mappings mapping ON mapping.rate_plan_id = plan.id
-       LEFT JOIN pms.channel_room_type_mappings room_mapping ON room_mapping.room_type_id = plan.room_type_id
+       LEFT JOIN pms.channel_connections connection
+         ON connection.property_id = plan.property_id AND connection.provider = 'channex'
+       LEFT JOIN pms.channel_rate_plan_mappings mapping
+         ON mapping.connection_id = connection.id AND mapping.rate_plan_id = plan.id
+       LEFT JOIN pms.channel_room_type_mappings room_mapping
+         ON room_mapping.connection_id = connection.id AND room_mapping.room_type_id = plan.room_type_id
        WHERE plan.property_id = $1::uuid AND plan.active AND mapping.id IS NULL
        ORDER BY plan.name`,
       [propertyId],
@@ -234,10 +241,12 @@ async function ariPlan(
        plan.base_rate_amount::float8 AS rate, rate_mapping.channel,
        rate_mapping.markup_percent::float8 AS "markupPercent"
      FROM pms.inventory_days inventory
+     JOIN pms.channel_connections connection
+       ON connection.property_id = inventory.property_id AND connection.provider = 'channex'
      JOIN pms.channel_room_type_mappings room_mapping
-       ON room_mapping.property_id = inventory.property_id AND room_mapping.room_type_id = inventory.room_type_id
+       ON room_mapping.connection_id = connection.id AND room_mapping.room_type_id = inventory.room_type_id
      JOIN pms.channel_rate_plan_mappings rate_mapping
-       ON rate_mapping.property_id = inventory.property_id AND rate_mapping.room_type_id = inventory.room_type_id
+       ON rate_mapping.connection_id = connection.id AND rate_mapping.room_type_id = inventory.room_type_id
      JOIN pms.rate_plans plan ON plan.id = rate_mapping.rate_plan_id
      WHERE inventory.property_id = $1::uuid AND inventory.stay_date BETWEEN current_date AND current_date + 365
        AND room_mapping.status = 'active' AND rate_mapping.status = 'active'
