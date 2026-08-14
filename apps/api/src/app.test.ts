@@ -2645,6 +2645,9 @@ describe("vayada-api", () => {
               name: "Hotel Alpenrose",
               slug: "hotel-alpenrose",
               status: "live",
+              lifecycleStatus: "active",
+              lifecycleRevision: 1,
+              ownerAccountUserIds: [],
               createdAt: "2026-06-01T12:00:00.000Z",
             },
           ];
@@ -2689,6 +2692,9 @@ describe("vayada-api", () => {
               name: "Hotel Alpenrose",
               slug: "hotel-alpenrose",
               status: "live",
+              lifecycleStatus: "active",
+              lifecycleRevision: 1,
+              ownerAccountUserIds: [],
               createdAt: "2026-06-01T12:00:00.000Z",
             },
             {
@@ -2696,6 +2702,9 @@ describe("vayada-api", () => {
               name: "Demo Lodge",
               slug: "demo-lodge",
               status: "demo",
+              lifecycleStatus: "provisioning",
+              lifecycleRevision: 1,
+              ownerAccountUserIds: [],
               createdAt: "2026-06-02T12:00:00.000Z",
             },
           ];
