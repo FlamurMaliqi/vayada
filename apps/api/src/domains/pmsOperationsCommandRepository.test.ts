@@ -583,9 +583,10 @@ describe("target PMS operations command repository", () => {
       async retrievePaymentIntent() {
         return requestCardIntent("requires_capture");
       },
-      async capturePaymentIntent(paymentIntentId, idempotencyKey) {
+      async capturePaymentIntent(paymentIntentId, providerAccountRef, idempotencyKey) {
         captureCalls += 1;
         expect(paymentIntentId).toBe("pi_request_card");
+        expect(providerAccountRef).toBe("acct_request_card");
         expect(idempotencyKey).toContain(`pms-booking-capture:${propertyId}:${guestBookingId}:`);
         return requestCardIntent("succeeded");
       },
@@ -620,6 +621,7 @@ describe("target PMS operations command repository", () => {
             },
             providerPaymentIntentId: "pi_request_card",
             providerAccountRef: "acct_request_card",
+            chargeType: "direct",
           },
         ]);
       }

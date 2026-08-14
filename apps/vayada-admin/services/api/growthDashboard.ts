@@ -1,4 +1,11 @@
 import { apiClient } from "./client";
+import type {
+  PlatformPropertyLifecycleResult,
+  PlatformPropertyLifecycleStatus,
+  PlatformPropertyProvisionRequest,
+  PlatformPropertyRetirementImpact,
+  PlatformPropertyStatusCommand,
+} from "@vayada/domain-hotels";
 
 export type PlatformStatus = "live" | "demo" | "test";
 export type Granularity = "daily" | "weekly" | "monthly";
@@ -8,6 +15,9 @@ export interface PlatformProperty {
   name: string;
   slug: string;
   status: PlatformStatus;
+  lifecycleStatus: PlatformPropertyLifecycleStatus;
+  lifecycleRevision: number;
+  ownerAccountUserIds: string[];
   createdAt: string;
 }
 
@@ -64,9 +74,47 @@ export function getGrowthDashboard(params: {
   return apiClient.get<GrowthDashboard>(`/api/platform/admin/growth?${search.toString()}`);
 }
 
-export function updatePropertyStatus(id: string, status: PlatformStatus) {
-  void status;
-  return Promise.reject<PlatformProperty>(
-    new Error(`Platform admin property status target route is not available for ${id}.`),
+export function getPropertyRetirementImpact(id: string) {
+  return apiClient.get<PlatformPropertyRetirementImpact>(
+    `/api/platform/admin/properties/${id}/retirement-impact`,
   );
 }
+
+export function updatePropertyStatus(id: string, input: PlatformPropertyStatusCommand) {
+  return apiClient.patch<PlatformPropertyLifecycleResult>(
+    `/api/platform/admin/properties/${id}/status`,
+    input,
+    idempotencyOptions(),
+  );
+}
+
+export function retireProperty(
+  id: string,
+  input: { expectedLifecycleRevision: number; reason: string },
+) {
+  return apiClient.post<PlatformPropertyLifecycleResult>(
+    `/api/platform/admin/properties/${id}/retire`,
+    { ...input, confirmation: "RETIRE" },
+    idempotencyOptions(),
+  );
+}
+
+export function provisionProperty(input: PlatformPropertyProvisionRequest) {
+  return apiClient.post<PlatformPropertyLifecycleResult>(
+    "/api/platform/admin/properties/provision",
+    input,
+    idempotencyOptions(),
+  );
+}
+
+function idempotencyOptions(): RequestInit {
+  return { headers: { "Idempotency-Key": crypto.randomUUID() } };
+}
+
+export type {
+  PlatformPropertyLifecycleResult,
+  PlatformPropertyLifecycleStatus,
+  PlatformPropertyProvisionRequest,
+  PlatformPropertyRetirementImpact,
+  PlatformPropertyStatusCommand,
+};

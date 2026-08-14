@@ -168,6 +168,12 @@ export type PmsOperationalReservation = {
     method: string | null;
     expectedMethod?: PmsExpectedPaymentMethod;
     status: string;
+    breakdown?: {
+      grossAmount: PmsMoney;
+      stripeFee: PmsMoney;
+      vayadaCommission: PmsMoney;
+      netPayout: PmsMoney;
+    };
   };
   hostResponseDeadlineAt?: PmsUtcDateTime | null;
 };
@@ -622,6 +628,7 @@ type TargetPmsOperationalReservationRow = {
   paymentMethod: string | null;
   expectedPaymentMethod: PmsExpectedPaymentMethod;
   paymentStatus: string;
+  paymentBreakdown: unknown;
   hostResponseDeadlineAt: string | null;
 };
 
@@ -682,6 +689,7 @@ const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
   booking.booking_metadata ->> 'paymentMethod' AS "paymentMethod",
   booking.expected_payment_method AS "expectedPaymentMethod",
   booking.payment_status AS "paymentStatus",
+  card_payment.breakdown AS "paymentBreakdown",
   COALESCE(
     booking.booking_metadata ->> 'acceptedPaymentDeadlineAt',
     booking.booking_metadata ->> 'hostResponseDeadlineAt',
@@ -698,6 +706,34 @@ FROM booking.guest_bookings booking
 LEFT JOIN booking.quote_sessions quote
   ON quote.id = booking.quote_session_id
  AND quote.property_id = booking.property_id
+LEFT JOIN LATERAL (
+  SELECT jsonb_build_object(
+           'grossAmount', jsonb_build_object(
+             'amountDecimal', payment.processor_fee_breakdown ->> 'grossAmount',
+             'currency', payment.processor_fee_breakdown ->> 'currency'
+           ),
+           'stripeFee', jsonb_build_object(
+             'amountDecimal', payment.processor_fee_breakdown ->> 'stripeFeeAmount',
+             'currency', payment.processor_fee_breakdown ->> 'currency'
+           ),
+           'vayadaCommission', jsonb_build_object(
+             'amountDecimal', payment.processor_fee_breakdown ->> 'applicationFeeAmount',
+             'currency', payment.processor_fee_breakdown ->> 'currency'
+           ),
+           'netPayout', jsonb_build_object(
+             'amountDecimal', payment.processor_fee_breakdown ->> 'netPayoutAmount',
+             'currency', payment.processor_fee_breakdown ->> 'currency'
+           )
+         ) AS breakdown
+  FROM finance.payments payment
+  WHERE payment.property_id = booking.property_id
+    AND payment.guest_booking_id = booking.id
+    AND payment.payment_method = 'card'
+    AND payment.payment_metadata ->> 'chargeType' = 'direct'
+    AND payment.processor_fee_breakdown ->> 'status' = 'available'
+  ORDER BY payment.created_at DESC, payment.id DESC
+  LIMIT 1
+) card_payment ON TRUE
 LEFT JOIN LATERAL (
   SELECT assignment.*
   FROM pms.operational_booking_assignments assignment
@@ -1066,9 +1102,29 @@ function toPmsOperationalReservation(
       method: row.paymentMethod,
       expectedMethod: row.expectedPaymentMethod,
       status: row.paymentStatus,
+      ...paymentBreakdown(row.paymentBreakdown),
     },
     hostResponseDeadlineAt: toIsoDateTimeOrNull(row.hostResponseDeadlineAt),
   };
+}
+
+function paymentBreakdown(value: unknown): {
+  breakdown?: NonNullable<PmsOperationalReservation["payment"]>["breakdown"];
+} {
+  const breakdown = toJsonRecord(value);
+  const money = (key: string): PmsMoney | null => {
+    const item = toJsonRecord(breakdown[key]);
+    const amountDecimal = typeof item["amountDecimal"] === "string" ? item["amountDecimal"] : "";
+    const currency = typeof item["currency"] === "string" ? item["currency"] : "";
+    return amountDecimal && currency ? { amountDecimal, currency } : null;
+  };
+  const grossAmount = money("grossAmount");
+  const stripeFee = money("stripeFee");
+  const vayadaCommission = money("vayadaCommission");
+  const netPayout = money("netPayout");
+  return grossAmount && stripeFee && vayadaCommission && netPayout
+    ? { breakdown: { grossAmount, stripeFee, vayadaCommission, netPayout } }
+    : {};
 }
 
 function toRoomBlockSummaries(value: unknown): PmsRoomBlockSummary[] {

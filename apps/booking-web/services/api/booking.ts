@@ -7,6 +7,7 @@ export interface BookingRequestResponse {
   // For other payment methods it's a real persisted booking.
   booking: Booking;
   clientSecret: string | null;
+  stripeAccountId?: string;
   xenditInvoiceUrl: string | null;
   paymentMethod: string;
   // Soft-hold draft id, present when paymentMethod === 'card'. Pass it

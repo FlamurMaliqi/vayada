@@ -47,6 +47,12 @@ describe("target PMS reservation stay dates", () => {
                 paymentMethod: null,
                 expectedPaymentMethod: "unknown",
                 paymentStatus: "unpaid",
+                paymentBreakdown: {
+                  grossAmount: { amountDecimal: "100.00", currency: "EUR" },
+                  stripeFee: { amountDecimal: "3.20", currency: "EUR" },
+                  vayadaCommission: { amountDecimal: "5.00", currency: "EUR" },
+                  netPayout: { amountDecimal: "91.80", currency: "EUR" },
+                },
               },
             ];
 
@@ -80,6 +86,8 @@ describe("target PMS reservation stay dates", () => {
     expect(listQuery).toContain("booking.booking_metadata ->> 'acceptedPaymentDeadlineAt'");
     expect(listQuery).toContain('booking.expected_payment_method AS "expectedPaymentMethod"');
     expect(listQuery).toContain("FROM booking.nightly_revenue_evidence evidence");
+    expect(listQuery).toContain("payment.payment_metadata ->> 'chargeType' = 'direct'");
+    expect(listQuery).toContain("payment.processor_fee_breakdown ->> 'status' = 'available'");
     expect(result.items[0]?.stay).toEqual({
       checkIn: "2026-07-23",
       checkOut: "2026-07-24",
@@ -102,7 +110,17 @@ describe("target PMS reservation stay dates", () => {
         totalAmount: { amountDecimal: "155.00", currency: "EUR" },
         balanceAmount: { amountDecimal: "155.00", currency: "EUR" },
       },
-      payment: { method: null, expectedMethod: "unknown", status: "unpaid" },
+      payment: {
+        method: null,
+        expectedMethod: "unknown",
+        status: "unpaid",
+        breakdown: {
+          grossAmount: { amountDecimal: "100.00", currency: "EUR" },
+          stripeFee: { amountDecimal: "3.20", currency: "EUR" },
+          vayadaCommission: { amountDecimal: "5.00", currency: "EUR" },
+          netPayout: { amountDecimal: "91.80", currency: "EUR" },
+        },
+      },
     });
   });
 

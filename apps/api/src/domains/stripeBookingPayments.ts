@@ -14,6 +14,15 @@ export type StripeBookingPaymentIntent = {
   providerAccountRef: string | null;
   cardBrand?: string | null;
   cardLast4?: string | null;
+  feeBreakdown?: {
+    balanceTransactionId: string;
+    chargeId: string;
+    currency: string;
+    grossAmountMinor: number;
+    processorFeeAmountMinor: number;
+    applicationFeeAmountMinor: number;
+    netPayoutAmountMinor: number;
+  } | null;
 };
 
 export type StripeBookingPaymentProvider = {
@@ -27,13 +36,18 @@ export type StripeBookingPaymentProvider = {
     captureMethod: "automatic" | "manual";
     idempotencyKey: string;
   }): Promise<StripeBookingPaymentIntent>;
-  retrievePaymentIntent(paymentIntentId: string): Promise<StripeBookingPaymentIntent>;
+  retrievePaymentIntent(
+    paymentIntentId: string,
+    providerAccountRef: string | null,
+  ): Promise<StripeBookingPaymentIntent>;
   capturePaymentIntent(
     paymentIntentId: string,
+    providerAccountRef: string | null,
     idempotencyKey: string,
   ): Promise<StripeBookingPaymentIntent>;
   cancelPaymentIntent(
     paymentIntentId: string,
+    providerAccountRef: string | null,
     idempotencyKey: string,
   ): Promise<StripeBookingPaymentIntent>;
 };
@@ -51,6 +65,7 @@ export function createStripeBookingPaymentProvider(config: {
     path: string,
     fields: ReadonlyArray<readonly [string, string]> = [],
     idempotencyKey?: string,
+    providerAccountRef?: string | null,
   ): Promise<StripeObject> => {
     const form = new URLSearchParams(fields.map(([key, value]): [string, string] => [key, value]));
     const response = await fetchImpl(
@@ -61,6 +76,7 @@ export function createStripeBookingPaymentProvider(config: {
           Authorization: `Basic ${Buffer.from(`${config.secretKey}:`).toString("base64")}`,
           ...(method === "POST" ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
           ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+          ...(providerAccountRef ? { "Stripe-Account": providerAccountRef } : {}),
         },
         ...(method === "POST" ? { body: form.toString() } : {}),
       },
@@ -85,7 +101,6 @@ export function createStripeBookingPaymentProvider(config: {
             ["currency", input.currency.toLowerCase()],
             ["capture_method", input.captureMethod],
             ["payment_method_types[0]", "card"],
-            ["transfer_data[destination]", input.providerAccountRef],
             ["metadata[vayada_property_id]", input.propertyId],
             ["metadata[vayada_booking_reference]", input.bookingReference],
             ...(input.applicationFeeAmountMinor > 0
@@ -93,7 +108,9 @@ export function createStripeBookingPaymentProvider(config: {
               : []),
           ],
           input.idempotencyKey,
+          input.providerAccountRef,
         ),
+        input.providerAccountRef,
       );
       if (
         intent.propertyId !== input.propertyId ||
@@ -105,39 +122,54 @@ export function createStripeBookingPaymentProvider(config: {
       return intent;
     },
 
-    async retrievePaymentIntent(paymentIntentId) {
+    async retrievePaymentIntent(paymentIntentId, providerAccountRef) {
       return paymentIntent(
-        await request("GET", `/payment_intents/${encodeURIComponent(paymentIntentId)}`, [
-          ["expand[]", "payment_method"],
-        ]),
+        await request(
+          "GET",
+          `/payment_intents/${encodeURIComponent(paymentIntentId)}`,
+          [
+            ["expand[]", "payment_method"],
+            ["expand[]", "latest_charge.balance_transaction"],
+          ],
+          undefined,
+          providerAccountRef,
+        ),
+        providerAccountRef,
       );
     },
 
-    async capturePaymentIntent(paymentIntentId, idempotencyKey) {
+    async capturePaymentIntent(paymentIntentId, providerAccountRef, idempotencyKey) {
       return paymentIntent(
         await request(
           "POST",
           `/payment_intents/${encodeURIComponent(paymentIntentId)}/capture`,
-          [],
+          [["expand[]", "latest_charge.balance_transaction"]],
           idempotencyKey,
+          providerAccountRef,
         ),
+        providerAccountRef,
       );
     },
 
-    async cancelPaymentIntent(paymentIntentId, idempotencyKey) {
+    async cancelPaymentIntent(paymentIntentId, providerAccountRef, idempotencyKey) {
       return paymentIntent(
         await request(
           "POST",
           `/payment_intents/${encodeURIComponent(paymentIntentId)}/cancel`,
           [],
           idempotencyKey,
+          providerAccountRef,
         ),
+        providerAccountRef,
       );
     },
   };
 }
 
-function paymentIntent(value: StripeObject): StripeBookingPaymentIntent {
+function paymentIntent(
+  value: StripeObject,
+  requestProviderAccountRef: string | null,
+): StripeBookingPaymentIntent {
   const paymentIntentId = text(value["id"]);
   const status = text(value["status"]);
   const amountMinor = Number(value["amount"]);
@@ -152,6 +184,28 @@ function paymentIntent(value: StripeObject): StripeBookingPaymentIntent {
     throw new Error("Stripe returned an invalid PaymentIntent.");
   }
   const card = object(object(value["payment_method"])["card"]);
+  const charge = object(value["latest_charge"]);
+  const balanceTransaction = object(charge["balance_transaction"]);
+  const balanceTransactionId = text(balanceTransaction["id"]);
+  const chargeId = text(charge["id"]);
+  const balanceCurrency = text(balanceTransaction["currency"]);
+  const balanceGross = integer(balanceTransaction["amount"]);
+  const balanceFee = integer(balanceTransaction["fee"]);
+  const balanceNet = signedInteger(balanceTransaction["net"]);
+  const feeDetails = Array.isArray(balanceTransaction["fee_details"])
+    ? balanceTransaction["fee_details"].map(object)
+    : [];
+  const applicationFeeAmountMinor = feeDetails
+    .filter((fee) => text(fee["type"]) === "application_fee")
+    .reduce((sum, fee) => sum + (integer(fee["amount"]) ?? 0), 0);
+  const detailedProcessorFeeAmountMinor = feeDetails
+    .filter((fee) => text(fee["type"]) !== "application_fee")
+    .reduce((sum, fee) => sum + (integer(fee["amount"]) ?? 0), 0);
+  const processorFeeAmountMinor =
+    balanceFee !== null &&
+    applicationFeeAmountMinor + detailedProcessorFeeAmountMinor !== balanceFee
+      ? Math.max(balanceFee - applicationFeeAmountMinor, 0)
+      : detailedProcessorFeeAmountMinor;
   return {
     paymentIntentId,
     clientSecret: text(value["client_secret"]),
@@ -160,10 +214,39 @@ function paymentIntent(value: StripeObject): StripeBookingPaymentIntent {
     currency: currency.toUpperCase(),
     propertyId: text(object(value["metadata"])["vayada_property_id"]),
     bookingReference: text(object(value["metadata"])["vayada_booking_reference"]),
-    providerAccountRef: text(object(value["transfer_data"])["destination"]),
+    providerAccountRef:
+      requestProviderAccountRef ?? text(object(value["transfer_data"])["destination"]),
     cardBrand: text(card["brand"]),
     cardLast4: /^\d{4}$/.test(text(card["last4"]) ?? "") ? text(card["last4"]) : null,
+    feeBreakdown:
+      balanceTransactionId &&
+      chargeId &&
+      balanceCurrency &&
+      balanceGross !== null &&
+      balanceFee !== null &&
+      balanceNet !== null &&
+      applicationFeeAmountMinor + processorFeeAmountMinor === balanceFee
+        ? {
+            balanceTransactionId,
+            chargeId,
+            currency: balanceCurrency.toUpperCase(),
+            grossAmountMinor: balanceGross,
+            processorFeeAmountMinor,
+            applicationFeeAmountMinor,
+            netPayoutAmountMinor: balanceNet,
+          }
+        : null,
   };
+}
+
+function integer(value: unknown): number | null {
+  const result = Number(value);
+  return Number.isSafeInteger(result) && result >= 0 ? result : null;
+}
+
+function signedInteger(value: unknown): number | null {
+  const result = Number(value);
+  return Number.isSafeInteger(result) ? result : null;
 }
 
 function text(value: unknown): string | null {
