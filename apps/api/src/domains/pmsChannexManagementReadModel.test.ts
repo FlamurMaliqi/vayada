@@ -38,6 +38,37 @@ describe("PMS Channex management read model", () => {
     }
   });
 
+  it("suppresses inactive or disconnected markups", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            status: "disconnected",
+            externalPropertyId: null,
+            messagingAppInstalled: false,
+            metadata: {},
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [
+          { channel: "booking_com", markupPercent: 12, status: "active" },
+          { channel: "airbnb", markupPercent: 15, status: "disabled" },
+        ],
+      })
+      .mockResolvedValue({ rows: [] });
+    const repository = createPgPmsChannexManagementReadRepository({
+      connectionString: "postgres://target",
+      pool: { query, end: vi.fn() } as never,
+    });
+
+    const snapshot = await repository.getSnapshot("00000000-0000-4000-8000-000000000001", modes);
+
+    expect(snapshot.markups).toEqual([]);
+  });
+
   it.each([
     ["pending", 0, "queued", null],
     ["pending", 1, "retry_scheduled", "2026-08-14T00:00:00.000Z"],

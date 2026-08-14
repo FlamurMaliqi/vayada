@@ -140,6 +140,13 @@ export function useChannexManager() {
   };
 
   const saveMarkups = async () => {
+    if (
+      !snapshot ||
+      (snapshot.connection.status !== "connected" && snapshot.connection.status !== "degraded")
+    ) {
+      setActionError("Connect this property before updating channel markups.");
+      return;
+    }
     const markups = channels.map((channel) => {
       const draft = markupDrafts[channel] ?? "";
       return { channel, draft, markupPct: Number(draft) };

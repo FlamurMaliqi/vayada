@@ -129,6 +129,19 @@ describe("PMS Channex management command routes", () => {
       operationType: "update_markups",
       markups: [{ channel: "airbnb", markupPercent: 12.5 }],
     });
+
+    const invalid = await app.inject({
+      method: "PUT",
+      url: `/properties/${propertyId}/channex/markups`,
+      headers: { authorization: "Bearer valid" },
+      payload: {
+        commandId: "command-3",
+        idempotencyKey: "key-3",
+        markups: [{ channel: "direct", markupPercent: 10 }],
+      },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(harness.enqueue).toHaveBeenCalledTimes(1);
   });
 
   it("guards short-lived iframe sessions with the iframe cutover mode", async () => {
