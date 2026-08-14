@@ -1,4 +1,4 @@
--- Migration: 0085_booking_admin_affiliate_management
+-- Migration: 0087_booking_admin_affiliate_management
 -- Owners: domain-marketplace, domain-finance, domain-identity
 -- See: engineering/booking-admin-affiliate-management-contract.md
 
