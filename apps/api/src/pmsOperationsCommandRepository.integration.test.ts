@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
 import type { PmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
+import { createPgPmsRoomFactsReadModel } from "./domains/pmsRoomFactsReadModel.js";
 import type { PmsRoomTypeCreateCommand } from "./routes/pmsOperations.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
@@ -109,6 +110,17 @@ describe.skipIf(!TEST_DATABASE_URL)("first-run PMS room setup concurrency", () =
         [propertyId],
       ),
     ).resolves.toMatchObject({ rows: [{ count: "1" }] });
+    const facts = await createPgPmsRoomFactsReadModel({
+      connectionString: TEST_DATABASE_URL!,
+      pool: control,
+    }).listRoomTypeFacts(propertyId);
+    expect(facts[0]?.facts).toMatchObject({
+      beds: [{ type: "king_bed", quantity: 1 }],
+      bedrooms: 1,
+      bathrooms: 1,
+      bathroomType: "private",
+      size: { value: 32, unit: "sqm" },
+    });
   });
 
   async function waitForAdvisoryWaiters(expected: number): Promise<void> {
@@ -170,7 +182,13 @@ function roomCommand(suffix: string, name: string): PmsRoomTypeCreateCommand {
     description: "",
     category: "double",
     occupancyLimits: { adults: 2, children: 0, total: 2 },
-    attributes: {},
+    attributes: {
+      bedType: "1 King Bed",
+      bedrooms: 1,
+      bathrooms: 1,
+      bathroomType: "private",
+      size: 32,
+    },
     amenities: [],
     media: [],
     baseRate: { amountDecimal: "120.00", currency: "EUR" },

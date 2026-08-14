@@ -10456,6 +10456,24 @@ describe("vayada-api", () => {
       pmsOperationsCommandRepository: commandRepository,
     });
 
+    for (const bathroomType of [undefined, null, "", "ensuite"]) {
+      const invalid = await injectJson(app, {
+        method: "POST",
+        url: `/api/pms/properties/${pmsPropertyId}/room-types`,
+        payload: {
+          commandId: "cmd-room-type-invalid-bathroom",
+          idempotencyKey: "room-type-invalid-bathroom",
+          name: "Invalid Bathroom Suite",
+          bathroomType,
+          baseRate: "240.00",
+          operatingPeriods: [{ from: "01-01", to: "12-31" }],
+        },
+        headers: { authorization: "Bearer valid-token" },
+      });
+      expect(invalid.statusCode).toBe(400);
+    }
+    expect(commandRepository.roomTypeCreates).toHaveLength(0);
+
     const response = await injectJson(app, {
       method: "POST",
       url: `/api/pms/properties/${pmsPropertyId}/room-types`,
@@ -10469,6 +10487,11 @@ describe("vayada-api", () => {
         maxAdults: 2,
         maxChildren: 2,
         maxOccupancy: 4,
+        bedType: "1 King Bed",
+        bedrooms: 1,
+        bathrooms: 1,
+        bathroomType: "private",
+        size: 32,
         baseRate: 0,
         currency: "eur",
         operatingPeriods: [{ from: "01-01", to: "12-31" }],
@@ -10521,6 +10544,13 @@ describe("vayada-api", () => {
       name: "Loft Suite",
       baseRate: { amountDecimal: "240.00", currency: "EUR" },
       nonRefundableRate: { amountDecimal: "216.00", currency: "EUR" },
+      attributes: {
+        bedType: "1 King Bed",
+        bedrooms: 1,
+        bathrooms: 1,
+        bathroomType: "private",
+        size: 32,
+      },
       roomCount: 3,
       operatingPeriods: [{ from: "01-01", to: "12-31" }],
       seasons: [

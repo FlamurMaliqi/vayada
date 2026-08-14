@@ -25,6 +25,7 @@ export default function NewRoomPage() {
     maxOccupancy: 2,
     maxAdults: null,
     maxChildren: null,
+    bathroomType: "private",
     size: 0,
     baseRate: 0,
     nonRefundableRate: null,
