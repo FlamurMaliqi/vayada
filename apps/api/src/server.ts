@@ -54,6 +54,7 @@ import { createPgPropertySetupDraftCommandRepository } from "./domains/propertyS
 import { createPgPropertySetupDraftRepository } from "./domains/propertySetupDraftRepository.js";
 import { createPgPropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
 import { createPgPmsRoomFactsReadModel } from "./domains/pmsRoomFactsReadModel.js";
+import { createPgPmsPhysicalRoomOperationalLabelRepository } from "./domains/pmsPhysicalRoomOperationalLabelRepository.js";
 import { createPmsRoomAmenityVocabularyValidationPort } from "./domains/pmsRoomAmenityVocabulary.js";
 import { createPgPmsRoomPublicationCommandRepository } from "./domains/pmsRoomPublicationCommandRepository.js";
 import { createPgPmsRoomPublicationReadModel } from "./domains/pmsRoomPublicationReadModel.js";
@@ -659,6 +660,10 @@ const pmsGuestPolicySetupCommands =
         }),
       }
     : undefined;
+const pmsPhysicalRoomOperationalLabels =
+  config.pmsOperationsSource === "target"
+    ? createPgPmsPhysicalRoomOperationalLabelRepository({ connectionString: targetDatabaseUrl })
+    : undefined;
 
 const pmsRoomPublicationRuntime = bookingDesignMediaAdapter
   ? (() => {
@@ -982,6 +987,9 @@ const app = buildApp({
         readPort: propertySetupPmsRuntime.mandatoryCharges,
       }
     : undefined,
+  pmsPhysicalRoomOperationalLabels: pmsPhysicalRoomOperationalLabels
+    ? { commandPort: pmsPhysicalRoomOperationalLabels }
+    : undefined,
   pmsModuleActivationRepository,
   pmsReviewRepository: createPgPmsReviewRepository({ connectionString: targetDatabaseUrl }),
   pmsOperationsCommandRepository,
@@ -1128,6 +1136,7 @@ app.addHook("onClose", async () => {
     pmsGuestPolicySetupCommands?.pricing.close(),
     pmsGuestPolicySetupCommands?.recurringPricing.close(),
     pmsGuestPolicySetupCommands?.mandatoryCharges.close(),
+    pmsPhysicalRoomOperationalLabels?.close(),
     ...(!platformMediaRuntime ? [hotelCatalogStep1Repository.close()] : []),
   ]);
 });
