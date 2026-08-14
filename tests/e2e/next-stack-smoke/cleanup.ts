@@ -13,6 +13,7 @@ import {
 
 export type HotelResource = {
   api: JsonApi;
+  addonItemIds?: string[];
   propertyId: string;
   slug?: string;
   stay?: Stay;
@@ -61,6 +62,16 @@ export async function cleanupSmokeResources(
   }
 
   if (hotel) {
+    for (const addonItemId of hotel.addonItemIds ?? []) {
+      try {
+        await hotel.api.json(
+          "DELETE",
+          `/api/booking/hotels/${hotel.propertyId}/addon-items/${addonItemId}`,
+        );
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     try {
       await hotel.api.json(
         "PATCH",

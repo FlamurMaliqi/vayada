@@ -18,6 +18,7 @@ type ManualBody = Record<string, unknown>;
 
 type Args = {
   accessToken: string;
+  addonItemIds: string[];
   api: JsonApi;
   bookings: BookingResource[];
   environment: SmokeEnvironment;
@@ -31,16 +32,21 @@ type Args = {
 export async function runManualBookingAcceptance(args: Args): Promise<void> {
   const { api, bookings, environment, page, propertyId, request, slug, testInfo } = args;
   await test.step("create target manual-booking add-on evidence", async () => {
-    await api.json("POST", `/api/booking/hotels/${propertyId}/addon-items`, {
-      name: "QA breakfast basket",
-      description: "Synthetic add-on for manual-booking acceptance.",
-      price: "18.00",
-      currency: "EUR",
-      category: "dining",
-      pricingModel: "per_stay",
-      publicVisible: true,
-      status: "active",
-    });
+    const addon = await api.json<Record<string, unknown>>(
+      "POST",
+      `/api/booking/hotels/${propertyId}/addon-items`,
+      {
+        name: "QA breakfast basket",
+        description: "Synthetic add-on for manual-booking acceptance.",
+        price: "18.00",
+        currency: "EUR",
+        category: "dining",
+        pricingModel: "per_stay",
+        publicVisible: true,
+        status: "active",
+      },
+    );
+    args.addonItemIds.push(stringField(addon, "addonItemId"));
   });
 
   const created = await test.step("create a paid heterogeneous booking in PMS Web", async () => {
@@ -97,8 +103,8 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
     expect(response.status()).toBe(201);
     const result = record(await response.json()),
       body = record(response.request().postDataJSON());
-    assertCreatedResult(result, "paid");
     bookings.push(manualResource(result, email, slug));
+    assertCreatedResult(result, "paid");
     await expect(page.getByText("Booking created.")).toBeVisible();
     await expect(page.getByText("Vera Acceptance", { exact: true })).toHaveCount(2);
     await page.screenshot({
@@ -233,8 +239,8 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
         const response = await post(request, args.accessToken, propertyId, body);
         expect(response.status()).toBe(201);
         const result = record(await response.json());
-        assertCreatedResult(result, status);
         bookings.push(manualResource(result, email, slug));
+        assertCreatedResult(result, status);
 
         const detail = recordField(
             await api.json(

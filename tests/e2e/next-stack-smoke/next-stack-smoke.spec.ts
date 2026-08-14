@@ -307,7 +307,13 @@ async function runHotelFlow(
     );
   });
 
-  const resource = { api, propertyId: setup.propertyId, slug: publication.slug, stay };
+  const resource = {
+    api,
+    addonItemIds: [] as string[],
+    propertyId: setup.propertyId,
+    slug: publication.slug,
+    stay,
+  };
   registerHotel(resource);
   await runManualBookingAcceptance({
     api,
@@ -319,6 +325,7 @@ async function runHotelFlow(
     request,
     slug: publication.slug,
     testInfo,
+    addonItemIds: resource.addonItemIds,
   });
   await test.step("exercise instant and request checkout with inventory restoration", async () => {
     for (const mode of ["instant", "request"] as const) {
