@@ -3,9 +3,13 @@ import { AuthorizationError } from "@vayada/backend-authorization";
 import {
   parseReconcilePhysicalRoomUnitsCommand,
   parseReconcilePhysicalRoomUnitsResult,
+  parseSetPhysicalRoomOperationalLabelCommand,
+  parseSetPhysicalRoomOperationalLabelResult,
   type PhysicalRoomUnitReconcilePort,
+  type PhysicalRoomOperationalLabelPort,
   type ReconcilePhysicalRoomUnitsError,
   type RoomFactsCommandAudit,
+  type SetPhysicalRoomOperationalLabelError,
 } from "@vayada/domain-pms";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
@@ -19,6 +23,10 @@ type AuthorizedScope = {
 
 export type PmsPhysicalRoomUnitRoutesOptions = {
   commandPort: PhysicalRoomUnitReconcilePort;
+};
+
+export type PmsPhysicalRoomOperationalLabelRoutesOptions = {
+  commandPort: PhysicalRoomOperationalLabelPort;
 };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -91,6 +99,73 @@ export async function registerPmsPhysicalRoomUnitRoutes(
   );
 }
 
+export async function registerPmsPhysicalRoomOperationalLabelRoutes(
+  app: FastifyInstance,
+  options: PmsPhysicalRoomOperationalLabelRoutesOptions,
+): Promise<void> {
+  type LabelParams = Params & { roomUnitId: string };
+  const authorized = new WeakMap<FastifyRequest, AuthorizedScope>();
+  const authorize = async (request: FastifyRequest, reply: FastifyReply) => {
+    const scope = authorizeRequest(request, reply);
+    if (scope) authorized.set(request, scope);
+  };
+
+  app.put<{ Params: LabelParams; Querystring: unknown; Body: unknown }>(
+    "/properties/:propertyId/room-types/:roomTypeId/physical-units/:roomUnitId/operational-label",
+    { onRequest: authorize },
+    async (request, reply) => {
+      const scope = requireAuthorizedScope(authorized, request);
+      if (!isExactObject(request.query, [])) {
+        return invalidRequest(reply, "The operational-label route does not accept query fields.");
+      }
+      const roomTypeId = readRoomTypeId(request.params, reply);
+      const roomUnitId = readRoomUnitId(request.params, reply);
+      if (!roomTypeId || !roomUnitId) return reply;
+      const idempotencyKey = readIdempotencyKey(request);
+      if (!idempotencyKey) return invalidRequest(reply, "A single Idempotency-Key is required.");
+      if (!isExactObject(request.body, ["expectedRevision", "operationalLabel"])) {
+        return invalidRequest(reply, "The operational-label body is invalid.");
+      }
+      const command = parseSetPhysicalRoomOperationalLabelCommand({
+        organizationId: scope.context.selectedOrganization.organizationId,
+        propertyId: scope.propertyId,
+        roomTypeId,
+        roomUnitId,
+        expectedRevision: request.body.expectedRevision,
+        operationalLabel: request.body.operationalLabel,
+        idempotencyKey,
+        audit: commandAudit(scope.context),
+      });
+      if (!command) return invalidRequest(reply, "The operational-label body is invalid.");
+
+      const result = parseSetPhysicalRoomOperationalLabelResult(
+        await options.commandPort.setPhysicalRoomOperationalLabel(command),
+      );
+      const expectedRevision =
+        result?.ok && result.response.outcome === "updated"
+          ? command.expectedRevision + 1
+          : command.expectedRevision;
+      if (
+        !result ||
+        (result.ok &&
+          (result.response.propertyId !== scope.propertyId ||
+            result.response.roomTypeId !== roomTypeId ||
+            result.response.roomUnitId !== roomUnitId ||
+            result.response.operationalLabel !== command.operationalLabel ||
+            result.response.roomUnitsRevision !== expectedRevision)) ||
+        (!result.ok &&
+          result.error.code === "room_units_revision_conflict" &&
+          result.error.currentRevision === command.expectedRevision)
+      ) {
+        return reply.status(500).send({ code: "pms_physical_room_label_port_contract_violation" });
+      }
+      return result.ok
+        ? reply.status(200).send(result.response)
+        : sendOperationalLabelError(reply, result.error);
+    },
+  );
+}
+
 function authorizeRequest(request: FastifyRequest, reply: FastifyReply): AuthorizedScope | null {
   try {
     const baseContext = enforceRoutePolicy(request, { permission: "pms.operations.manage" });
@@ -155,6 +230,17 @@ function readRoomTypeId(params: Params, reply: FastifyReply): string | null {
   return params.roomTypeId.toLowerCase();
 }
 
+function readRoomUnitId(
+  params: Params & { roomUnitId: string },
+  reply: FastifyReply,
+): string | null {
+  if (!UUID_PATTERN.test(params.roomUnitId)) {
+    invalidRequest(reply, "The room unit ID is invalid.");
+    return null;
+  }
+  return params.roomUnitId.toLowerCase();
+}
+
 function readIdempotencyKey(request: FastifyRequest): string | null {
   const occurrences = request.raw.rawHeaders.filter(
     (value, index) => index % 2 === 0 && value.toLowerCase() === "idempotency-key",
@@ -182,6 +268,21 @@ function sendCommandError(
   return reply
     .status(
       error.code === "setup_scope_unavailable" || error.code === "room_type_not_found" ? 404 : 409,
+    )
+    .send(error);
+}
+
+function sendOperationalLabelError(
+  reply: FastifyReply,
+  error: SetPhysicalRoomOperationalLabelError,
+): FastifyReply {
+  return reply
+    .status(
+      error.code === "setup_scope_unavailable" ||
+        error.code === "room_type_not_found" ||
+        error.code === "room_unit_not_found"
+        ? 404
+        : 409,
     )
     .send(error);
 }
