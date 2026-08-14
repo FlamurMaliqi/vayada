@@ -2538,6 +2538,7 @@ describe("Booking Web public bootstrap parity", () => {
     let retrievedIntentStatus = "canceled";
     let cardPaymentInput: Record<string, unknown> | null = null;
     let retrievePaymentIntentCalls = 0;
+    let retrieveProviderAccountRef: string | null = null;
     let createCommandReserved = false;
     let completedCreateBody: unknown;
     let confirmationMetadata: Record<string, unknown> = {};
@@ -2706,11 +2707,8 @@ describe("Booking Web public bootstrap parity", () => {
             ],
           };
         }
-        if (
-          text.includes("WHERE provider_payment_intent_id = $1") &&
-          text.includes("payment_metadata = payment_metadata || $2::jsonb")
-        ) {
-          const details = JSON.parse(String(values?.[1])) as {
+        if (text.includes("UPDATE finance.payments payment")) {
+          const details = JSON.parse(String(values?.[2])) as {
             cardBrand: string;
             cardLast4: string;
           };
@@ -2808,8 +2806,9 @@ describe("Booking Web public bootstrap parity", () => {
           providerAccountRef: "acct_property_952",
         };
       },
-      async retrievePaymentIntent() {
+      async retrievePaymentIntent(_paymentIntentId: string, providerAccountRef: string | null) {
         retrievePaymentIntentCalls += 1;
+        retrieveProviderAccountRef = providerAccountRef;
         return {
           paymentIntentId: "pi_card_952",
           clientSecret: "pi_card_952_secret_test",
@@ -2880,6 +2879,7 @@ describe("Booking Web public bootstrap parity", () => {
     expect(created).toMatchObject({
       clientSecret: "pi_card_952_secret_test",
       draftId: guestBookingId,
+      stripeAccountId: "acct_property_952",
       confirmationToken: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
       confirmationTokenExpiresAt: "2026-09-02T10:00:00.000Z",
       booking: { id: guestBookingId, status: "draft", paymentMethod: "card" },
@@ -2887,6 +2887,7 @@ describe("Booking Web public bootstrap parity", () => {
     expect(calls.some((call) => call.text.includes("INSERT INTO finance.payments"))).toBe(true);
     expect(cardPaymentInput).toMatchObject({
       propertyId,
+      providerAccountRef: "acct_property_952",
       amountMinor: 60_000,
       applicationFeeAmountMinor: 3_000,
       captureMethod: "automatic",
@@ -2900,7 +2901,12 @@ describe("Booking Web public bootstrap parity", () => {
       "jsonb_array_length(profile.capabilities -> 'paymentMethods') > 0",
     );
     const paymentInsert = calls.find((call) => call.text.includes("INSERT INTO finance.payments"));
-    expect(paymentInsert?.values?.slice(4, 7)).toEqual(["600.00", "30.00", "570.00"]);
+    expect(paymentInsert?.values?.slice(4, 8)).toEqual(["600.00", "30.00", "570.00", "EUR"]);
+    expect(JSON.parse(String(paymentInsert?.values?.[9]))).toMatchObject({ status: "pending" });
+    expect(JSON.parse(String(paymentInsert?.values?.[10]))).toMatchObject({
+      chargeType: "direct",
+      applicationFeeAmount: "30.00",
+    });
     const bookingInsert = calls.find((call) =>
       call.text.includes("INSERT INTO booking.guest_bookings"),
     );
@@ -2916,6 +2922,7 @@ describe("Booking Web public bootstrap parity", () => {
       draftId: guestBookingId,
     });
     expect(lifecycleStatus).toBe("draft");
+    expect(retrieveProviderAccountRef).toBe("acct_property_952");
 
     retrievedIntentStatus = "succeeded";
     await expect(

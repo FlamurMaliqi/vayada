@@ -46,6 +46,7 @@ import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutat
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import {
   captureDirectNightlyRevenueEvidence,
+  reconcileStripeBookingPaymentProviderDetails,
   settleStripeBookingPayment,
 } from "./stripeBookingSettlement.js";
 import { stripeAmountMinor } from "./stripeMoney.js";
@@ -195,6 +196,7 @@ type BookingPaymentLifecycleRow = QueryResultRow & {
   bookingMetadata: unknown;
   providerPaymentIntentId: string | null;
   providerAccountRef: string | null;
+  chargeType: string | null;
 };
 type PmsOperationalTemplateOperation =
   | "checkin_checklist_template_update"
@@ -5061,11 +5063,13 @@ async function captureAcceptedRequestCardBooking(
   }
   let intent = await config.stripePaymentProvider.retrievePaymentIntent(
     booking.providerPaymentIntentId,
+    booking.chargeType === "direct" ? booking.providerAccountRef : null,
   );
   assertAcceptedRequestCardIntent(booking, intent);
   if (intent.status === "requires_capture") {
     intent = await config.stripePaymentProvider.capturePaymentIntent(
       booking.providerPaymentIntentId,
+      booking.chargeType === "direct" ? booking.providerAccountRef : null,
       `pms-booking-capture:${command.propertyId}:${command.guestBookingId}:${sha256(command.idempotencyKey)}`,
     );
     assertAcceptedRequestCardIntent(booking, intent);
@@ -5075,6 +5079,7 @@ async function captureAcceptedRequestCardBooking(
   }
   const settlement = await settleStripeBookingPayment(client, {
     paymentIntentId: intent.paymentIntentId,
+    providerAccountRef: intent.providerAccountRef,
     amountMinor: intent.amountMinor,
     currency: intent.currency,
     occurredAt: new Date(acceptedAt),
@@ -5083,6 +5088,7 @@ async function captureAcceptedRequestCardBooking(
   if (settlement === "not_found") {
     return invalidStatusTransition("card_payment_not_found", "confirmed/paid");
   }
+  await reconcileStripeBookingPaymentProviderDetails(client, intent, new Date(acceptedAt));
   return { ok: true };
 }
 
@@ -5267,12 +5273,14 @@ async function loadBookingPaymentLifecycle(
        ) AS "pendingExpiresAt",
        booking.booking_metadata ->> 'acceptedPaymentDeadlineAt' AS "acceptedPaymentDeadlineAt",
        card_payment.provider_payment_intent_id AS "providerPaymentIntentId",
-       card_payment.provider_account_ref AS "providerAccountRef"
+       card_payment.provider_account_ref AS "providerAccountRef",
+       card_payment.charge_type AS "chargeType"
      FROM booking.guest_bookings booking
      LEFT JOIN finance.payment_settings payment ON payment.property_id = booking.property_id
      LEFT JOIN LATERAL (
        SELECT card.provider_payment_intent_id,
-              account.provider_account_id AS provider_account_ref
+              account.provider_account_id AS provider_account_ref,
+              card.payment_metadata ->> 'chargeType' AS charge_type
        FROM finance.payments card
        JOIN finance.payment_provider_accounts account
          ON account.id = card.provider_account_id

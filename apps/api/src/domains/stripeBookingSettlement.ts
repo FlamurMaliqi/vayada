@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import type { QueryResult, QueryResultRow } from "pg";
 
 import { enqueueBookingTransitionNotifications } from "../jobs/bookingEmails.js";
-import { stripeAmountMinor } from "./stripeMoney.js";
+import type { StripeBookingPaymentIntent } from "./stripeBookingPayments.js";
+import { stripeAmountDecimal, stripeAmountMinor } from "./stripeMoney.js";
 
 type SettlementExecutor = {
   query<T extends QueryResultRow = QueryResultRow>(
@@ -39,6 +40,7 @@ export async function authorizeStripeBookingPayment(
   client: SettlementExecutor,
   input: {
     paymentIntentId: string;
+    providerAccountRef?: string | null;
     amountMinor: number;
     currency: string;
     occurredAt: Date;
@@ -55,14 +57,18 @@ export async function authorizeStripeBookingPayment(
        booking.lifecycle_status AS "lifecycleStatus",
        booking.payment_status AS "bookingPaymentStatus"
      FROM finance.payments payment
+     LEFT JOIN finance.payment_provider_accounts account
+       ON account.id = payment.provider_account_id
+      AND account.property_id = payment.property_id
      JOIN booking.guest_bookings booking
        ON booking.id = payment.guest_booking_id
       AND booking.property_id = payment.property_id
      WHERE payment.provider_payment_intent_id = $1
        AND payment.payment_method = 'card'
+       AND ($2::text IS NULL OR account.provider_account_id = $2)
      LIMIT 1
      FOR UPDATE OF payment, booking`,
-    [input.paymentIntentId],
+    [input.paymentIntentId, input.providerAccountRef ?? null],
   );
   const row = selected.rows[0];
   if (!row) return "not_found";
@@ -130,6 +136,7 @@ export async function settleStripeBookingPayment(
   client: SettlementExecutor,
   input: {
     paymentIntentId: string;
+    providerAccountRef?: string | null;
     amountMinor: number;
     currency?: string | null;
     occurredAt: Date;
@@ -156,14 +163,18 @@ export async function settleStripeBookingPayment(
        booking.total_amount::text AS "totalAmount",
        booking.booking_metadata AS "bookingMetadata"
      FROM finance.payments payment
+     LEFT JOIN finance.payment_provider_accounts account
+       ON account.id = payment.provider_account_id
+      AND account.property_id = payment.property_id
      JOIN booking.guest_bookings booking
        ON booking.id = payment.guest_booking_id
       AND booking.property_id = payment.property_id
      WHERE payment.provider_payment_intent_id = $1
        AND payment.payment_method = 'card'
+       AND ($2::text IS NULL OR account.provider_account_id = $2)
      LIMIT 1
      FOR UPDATE OF payment, booking`,
-    [input.paymentIntentId],
+    [input.paymentIntentId, input.providerAccountRef ?? null],
   );
   const row = selected.rows[0];
   if (!row) return "not_found";
@@ -307,6 +318,64 @@ export async function settleStripeBookingPayment(
     ],
   );
   return alreadySettled ? "already_settled" : "settled";
+}
+
+export async function reconcileStripeBookingPaymentProviderDetails(
+  client: SettlementExecutor,
+  intent: StripeBookingPaymentIntent,
+  occurredAt: Date,
+): Promise<void> {
+  const card =
+    intent.cardBrand && intent.cardLast4 && /^\d{4}$/.test(intent.cardLast4)
+      ? { cardBrand: intent.cardBrand, cardLast4: intent.cardLast4 }
+      : {};
+  const fees = intent.feeBreakdown;
+  await client.query(
+    `UPDATE finance.payments payment
+        SET payment_metadata = payment.payment_metadata || $3::jsonb,
+            provider_transaction_id = CASE
+              WHEN payment.payment_metadata ->> 'chargeType' = 'direct'
+                THEN COALESCE($4, payment.provider_transaction_id)
+              ELSE payment.provider_transaction_id
+            END,
+            processor_fee_breakdown = CASE
+              WHEN payment.payment_metadata ->> 'chargeType' = 'direct'
+                AND $5::jsonb <> '{}'::jsonb THEN $5::jsonb
+              ELSE payment.processor_fee_breakdown
+            END,
+            updated_at = $6::timestamptz
+       FROM finance.payment_provider_accounts account
+      WHERE payment.provider_account_id = account.id
+        AND payment.property_id = account.property_id
+        AND payment.provider_payment_intent_id = $1
+        AND payment.payment_method = 'card'
+        AND ($2::text IS NULL OR account.provider_account_id = $2)`,
+    [
+      intent.paymentIntentId,
+      intent.providerAccountRef,
+      JSON.stringify(card),
+      fees?.chargeId ?? null,
+      JSON.stringify(
+        fees
+          ? {
+              contractVersion: "stripe-direct-charge.v1",
+              status: "available",
+              balanceTransactionId: fees.balanceTransactionId,
+              chargeId: fees.chargeId,
+              currency: fees.currency,
+              grossAmount: stripeAmountDecimal(fees.grossAmountMinor, fees.currency),
+              stripeFeeAmount: stripeAmountDecimal(fees.processorFeeAmountMinor, fees.currency),
+              applicationFeeAmount: stripeAmountDecimal(
+                fees.applicationFeeAmountMinor,
+                fees.currency,
+              ),
+              netPayoutAmount: stripeAmountDecimal(fees.netPayoutAmountMinor, fees.currency),
+            }
+          : {},
+      ),
+      occurredAt.toISOString(),
+    ],
+  );
 }
 
 export async function captureDirectNightlyRevenueEvidence(

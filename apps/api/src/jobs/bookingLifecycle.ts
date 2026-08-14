@@ -4,6 +4,7 @@ import pg from "pg";
 import type { StripeBookingPaymentProvider } from "../domains/stripeBookingPayments.js";
 import {
   captureDirectNightlyRevenueEvidence,
+  reconcileStripeBookingPaymentProviderDetails,
   settleStripeBookingPayment,
 } from "../domains/stripeBookingSettlement.js";
 import {
@@ -39,6 +40,7 @@ export type BookingLifecycleCandidate = {
   providerPaymentIntentId?: string | null;
   publicReference?: string | null;
   providerAccountRef?: string | null;
+  chargeType?: string | null;
 };
 
 export type BookingLifecycleJobContext = {
@@ -141,6 +143,7 @@ type CandidateRow = {
   providerPaymentIntentId?: string | null;
   publicReference?: string | null;
   providerAccountRef?: string | null;
+  chargeType?: string | null;
 };
 
 const LIFECYCLE_RUNS: readonly BookingLifecycleRunName[] = [
@@ -416,11 +419,13 @@ async function selectPendingBookingExpiryCandidateLane(
        b.checkout_context_id::text AS "checkoutContextId",
        b.public_reference AS "publicReference",
        card_payment.provider_payment_intent_id AS "providerPaymentIntentId",
-       provider_account.provider_account_id AS "providerAccountRef"
+       provider_account.provider_account_id AS "providerAccountRef",
+       card_payment.charge_type AS "chargeType"
      FROM booking.guest_bookings b
      JOIN candidate_deadlines d ON d.id = b.id
      LEFT JOIN LATERAL (
-       SELECT payment.provider_payment_intent_id, payment.provider_account_id
+       SELECT payment.provider_payment_intent_id, payment.provider_account_id,
+              payment.payment_metadata ->> 'chargeType' AS charge_type
        FROM finance.payments payment
        WHERE payment.guest_booking_id = b.id
          AND payment.property_id = b.property_id
@@ -519,11 +524,13 @@ async function selectExpiredDraftCandidates(
        b.checkout_context_id::text AS "checkoutContextId",
        b.public_reference AS "publicReference",
        card_payment.provider_payment_intent_id AS "providerPaymentIntentId",
-       provider_account.provider_account_id AS "providerAccountRef"
+       provider_account.provider_account_id AS "providerAccountRef",
+       card_payment.charge_type AS "chargeType"
      FROM booking.guest_bookings b
      JOIN draft_deadlines d ON d.id = b.id
      LEFT JOIN LATERAL (
-       SELECT payment.provider_payment_intent_id, payment.provider_account_id
+       SELECT payment.provider_payment_intent_id, payment.provider_account_id,
+              payment.payment_metadata ->> 'chargeType' AS charge_type
        FROM finance.payments payment
        WHERE payment.guest_booking_id = b.id
          AND payment.property_id = b.property_id
@@ -637,7 +644,7 @@ async function resolveExpiredStripeAuthorization(
   const payment = locked.rows[0];
   if (!payment) return lifecycleNoopResult(candidate, mutation);
 
-  let intent = await provider.retrievePaymentIntent(paymentIntentId);
+  let intent = await provider.retrievePaymentIntent(paymentIntentId, stripeAccountRef(candidate));
   assertLifecycleStripeBinding(candidate, intent);
   if (intent.status === "succeeded") {
     return settleExpiredStripeAuthorization(client, candidate, mutation, context, intent);
@@ -649,10 +656,11 @@ async function resolveExpiredStripeAuthorization(
     try {
       intent = await provider.cancelPaymentIntent(
         paymentIntentId,
+        stripeAccountRef(candidate),
         `booking-card-request-expire:${candidate.propertyId}:${candidate.guestBookingId}:v1`,
       );
     } catch {
-      intent = await provider.retrievePaymentIntent(paymentIntentId);
+      intent = await provider.retrievePaymentIntent(paymentIntentId, stripeAccountRef(candidate));
     }
     assertLifecycleStripeBinding(candidate, intent);
     if (intent.status === "succeeded") {
@@ -682,11 +690,13 @@ async function settleExpiredStripeAuthorization(
 ): Promise<BookingLifecycleMutationResult> {
   await settleStripeBookingPayment(client, {
     paymentIntentId: intent.paymentIntentId,
+    providerAccountRef: intent.providerAccountRef,
     amountMinor: intent.amountMinor,
     currency: intent.currency,
     occurredAt: context.now,
     correlationId: context.correlationId,
   });
+  await reconcileStripeBookingPaymentProviderDetails(client, intent, context.now);
   return {
     ...lifecycleNoopResult(candidate, mutation),
     applied: true,
@@ -712,16 +722,18 @@ async function resolveExpiredStripeDraft(
   const paymentIntentId = candidate.providerPaymentIntentId;
   if (!provider || !paymentIntentId) return lifecycleNoopResult(candidate, mutation);
 
-  let intent = await provider.retrievePaymentIntent(paymentIntentId);
+  let intent = await provider.retrievePaymentIntent(paymentIntentId, stripeAccountRef(candidate));
   assertLifecycleStripeBinding(candidate, intent);
   if (intent.status === "succeeded") {
     await settleStripeBookingPayment(client, {
       paymentIntentId,
+      providerAccountRef: intent.providerAccountRef,
       amountMinor: intent.amountMinor,
       currency: intent.currency,
       occurredAt: context.now,
       correlationId: context.correlationId,
     });
+    await reconcileStripeBookingPaymentProviderDetails(client, intent, context.now);
     return {
       ...lifecycleNoopResult(candidate, mutation),
       applied: true,
@@ -740,20 +752,23 @@ async function resolveExpiredStripeDraft(
     try {
       intent = await provider.cancelPaymentIntent(
         paymentIntentId,
+        stripeAccountRef(candidate),
         `booking-card-expire:${candidate.propertyId}:${candidate.guestBookingId}:v1`,
       );
     } catch {
-      intent = await provider.retrievePaymentIntent(paymentIntentId);
+      intent = await provider.retrievePaymentIntent(paymentIntentId, stripeAccountRef(candidate));
     }
     assertLifecycleStripeBinding(candidate, intent);
     if (intent.status === "succeeded") {
       await settleStripeBookingPayment(client, {
         paymentIntentId,
+        providerAccountRef: intent.providerAccountRef,
         amountMinor: intent.amountMinor,
         currency: intent.currency,
         occurredAt: context.now,
         correlationId: context.correlationId,
       });
+      await reconcileStripeBookingPaymentProviderDetails(client, intent, context.now);
       return {
         ...lifecycleNoopResult(candidate, mutation),
         applied: true,
@@ -776,6 +791,10 @@ function assertLifecycleStripeBinding(
   ) {
     throw new Error("Stripe PaymentIntent did not match the expiring booking.");
   }
+}
+
+function stripeAccountRef(candidate: BookingLifecycleCandidate): string | null {
+  return candidate.chargeType === "direct" ? (candidate.providerAccountRef ?? null) : null;
 }
 
 async function updateBookingLifecycleStatus(
@@ -1426,6 +1445,7 @@ function candidateFromRow(row: CandidateRow): BookingLifecycleCandidate {
     providerPaymentIntentId: row.providerPaymentIntentId,
     publicReference: row.publicReference,
     providerAccountRef: row.providerAccountRef,
+    chargeType: row.chargeType,
   };
 }
 
