@@ -22,6 +22,11 @@ test.describe("booking-web tenant smoke", () => {
     await expect(page.getByText("Alpine Suite")).toBeVisible();
     await expect(page.getByRole("button", { name: /Select This Rate/i }).first()).toBeVisible();
     const nav = page.locator("nav");
+    await nav.getByRole("button", { name: "Contact", exact: true }).click();
+    await expect(nav.getByText("Phone", { exact: true })).toBeVisible();
+    await expect(nav.getByText("Email", { exact: true })).toBeVisible();
+    await expect(nav.getByText("WhatsApp", { exact: true })).toHaveCount(0);
+    await nav.getByRole("button", { name: "Contact", exact: true }).click();
     await nav.getByRole("button", { name: "EN", exact: true }).click();
     await expect(nav.getByRole("button", { name: "Nederlands", exact: true })).toBeVisible();
 
@@ -65,6 +70,27 @@ test.describe("booking-web tenant smoke", () => {
     ).toBe(true);
 
     await assertHealthy();
+  });
+
+  test("shows WhatsApp only when the hotel publishes a WhatsApp number", async ({ page }) => {
+    await mockBookingApis(page, {
+      publicContacts: [
+        { type: "phone", value: "+41 44 000 00 00" },
+        { type: "whatsapp", value: "+41 79 123 45 67" },
+        { type: "email", value: "stay@alpenrose.test" },
+      ],
+    });
+
+    await page.goto("/");
+    const nav = page.locator("nav");
+    await nav.getByRole("button", { name: "Contact", exact: true }).click();
+
+    await expect(nav.getByText("WhatsApp", { exact: true })).toBeVisible();
+    await expect(nav.getByText("+41 79 123 45 67", { exact: true })).toBeVisible();
+    await expect(nav.getByRole("link", { name: /WhatsApp/ })).toHaveAttribute(
+      "href",
+      "https://wa.me/41791234567",
+    );
   });
 
   test("uses a constrained header logo without displacing mobile actions", async ({ page }) => {

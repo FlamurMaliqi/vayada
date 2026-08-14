@@ -310,6 +310,7 @@ const publicOffers = {
 type MockBookingApisOptions = {
   supportedQuoteParameters?: Partial<typeof publicHotelProfile.hotel.supportedQuoteParameters>;
   headerLogoUrl?: string;
+  publicContacts?: typeof publicHotelProfile.hotel.publicContacts;
 };
 
 export async function mockBookingApis(page: Page, options: MockBookingApisOptions = {}) {
@@ -329,6 +330,7 @@ export async function mockBookingApis(page: Page, options: MockBookingApisOption
             },
           }
         : {}),
+      publicContacts: options.publicContacts ?? publicHotelProfile.hotel.publicContacts,
       supportedQuoteParameters: {
         ...publicHotelProfile.hotel.supportedQuoteParameters,
         ...options.supportedQuoteParameters,

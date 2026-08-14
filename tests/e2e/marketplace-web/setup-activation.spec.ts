@@ -188,22 +188,22 @@ test.describe("marketplace-web shared setup activation", () => {
         },
         contacts: [
           {
+            channelType: "phone",
+            value: "+94 77 123 4567",
+            purpose: "general",
+            isPublic: true,
+          },
+          {
+            channelType: "whatsapp",
+            value: "+49 170 1234567",
+            purpose: "general",
+            isPublic: true,
+          },
+          {
             channelType: "email",
             value: "owner@alpenrose.example",
             purpose: "general",
-            isPublic: false,
-          },
-          {
-            channelType: "phone",
-            value: "+49 89 123456",
-            purpose: "general",
-            isPublic: false,
-          },
-          {
-            channelType: "website",
-            value: "https://alpenrose.example",
-            purpose: "general",
-            isPublic: false,
+            isPublic: true,
           },
         ],
       });
@@ -474,9 +474,25 @@ test.describe("marketplace-web shared setup activation", () => {
     await page.getByRole("textbox", { name: /YouTube/ }).fill("https://youtube.com/@alpenrose");
     await page.getByRole("button", { name: "Continue" }).click();
 
-    await page.getByRole("textbox", { name: /Contact email/ }).fill("owner@alpenrose.example");
-    await page.getByRole("textbox", { name: /Phone number/ }).fill("+49 89 123456");
-    await page.getByRole("textbox", { name: /Website/ }).fill("https://alpenrose.example");
+    await expect(page.getByText("Step 4 of 4 · Contact information")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "How can guests reach you?" })).toBeVisible();
+    await expect(
+      page.getByText("This information is shown when guests click 'Contact' on your booking page."),
+    ).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Phone number country code" })).toHaveValue(
+      "DE",
+    );
+    await page.getByRole("combobox", { name: "Phone number country code" }).selectOption("LK");
+    await page.getByRole("textbox", { name: /^Phone number/ }).fill("0771234567");
+    await expect(page.getByRole("textbox", { name: /^Phone number/ })).toHaveValue(
+      "+94 77 123 4567",
+    );
+    await expect(page.getByRole("textbox", { name: /^WhatsApp number/ })).toHaveValue(
+      "+94 77 123 4567",
+    );
+    await page.getByRole("textbox", { name: /^WhatsApp number/ }).fill("+49 170 1234567");
+    await page.getByRole("textbox", { name: /^Email/ }).fill("owner@alpenrose.example");
+    await expect(page.getByRole("textbox", { name: /Website/ })).toHaveCount(0);
     await page.getByRole("button", { name: "Save and continue" }).click();
 
     await expect(page.getByRole("img", { name: "vayada" })).toBeVisible();

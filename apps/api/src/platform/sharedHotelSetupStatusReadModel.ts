@@ -1374,11 +1374,17 @@ function propertyProfileSql(): string {
             'purpose', contact.purpose,
             'isPublic', contact.is_public
           )
-          ORDER BY contact.created_at, contact.id
+          ORDER BY contact.channel_type, contact.value, contact.created_at, contact.id
         ) AS items
       FROM hotel_catalog.property_contact_channels contact
       WHERE contact.property_id = property.id
-        AND contact.source_system = 'platform'
+        AND (
+          contact.source_system = 'platform'
+          OR (
+            contact.is_public = TRUE
+            AND contact.channel_type IN ('phone', 'whatsapp', 'email')
+          )
+        )
     ) contacts ON TRUE
     WHERE property.id = $2::uuid
     LIMIT 1
@@ -1759,7 +1765,16 @@ function propertyProfileMutationCtes(): string {
           WHERE contact_input.channel_type = contact.channel_type
             AND contact_input.value IS NOT NULL
             AND contact_input.value = contact.value
-        )
+      )
+      RETURNING contact.property_id
+    ),
+    deleted_external_guest_contacts AS (
+      DELETE FROM hotel_catalog.property_contact_channels contact
+      USING written_property
+      WHERE contact.property_id = written_property.property_id
+        AND contact.source_system <> 'platform'
+        AND contact.is_public = TRUE
+        AND contact.channel_type IN ('phone', 'whatsapp', 'email')
       RETURNING contact.property_id
     ),
     upserted_contacts AS (
@@ -1781,6 +1796,10 @@ function propertyProfileMutationCtes(): string {
         'platform',
         now()
       FROM contact_input
+      CROSS JOIN (
+        SELECT count(*) AS deleted_count
+        FROM deleted_external_guest_contacts
+      ) external_guest_contact_cleanup
       ON CONFLICT (property_id, channel_type, value) DO UPDATE
       SET purpose = EXCLUDED.purpose,
           is_public = EXCLUDED.is_public,

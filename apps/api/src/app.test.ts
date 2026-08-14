@@ -7797,7 +7797,13 @@ describe("vayada-api", () => {
       "guest_count_enabled = EXCLUDED.guest_count_enabled",
     );
     expect(propertyUpdateQuery?.text).toContain("contact.source_system = 'booking'");
+    expect(propertyUpdateQuery?.text).toContain(
+      "contact.channel_type IN ('email', 'phone', 'whatsapp')",
+    );
     expect(propertyUpdateQuery?.text).toContain("WHERE input.channel_type = contact.channel_type");
+    expect(propertyUpdateQuery?.text).toContain(
+      "CROSS JOIN (SELECT count(*) FROM deleted_contacts) deleted_contact_status",
+    );
     expect(propertyUpdateQuery?.text).toContain(
       "hotel_catalog.property_contact_channels.source_system = 'booking'",
     );
