@@ -128,10 +128,11 @@ export async function createSyntheticUser(
   request: APIRequestContext,
   environment: SmokeEnvironment,
   role: "hotel" | "creator",
+  qualifier = "",
 ): Promise<SyntheticUser> {
   const firstName = role === "hotel" ? "Harper" : "Casey";
   const lastName = `Smoke ${environment.runId.slice(-8)}`;
-  const email = `qa-next-${role}-${environment.runId}@${environment.emailDomain}`;
+  const email = `qa-next-${qualifier ? `${qualifier}-` : ""}${role}-${environment.runId}@${environment.emailDomain}`;
   const api = workosApi(request, environment.workosApiKey);
   const user = await api.json<Record<string, unknown>>("POST", "/user_management/users", {
     email,

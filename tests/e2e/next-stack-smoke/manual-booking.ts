@@ -171,7 +171,11 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
       409,
       "room_unavailable",
     );
-    const firstStay = record(arrayField(created.body, "stays")[0]);
+    const firstStay = {
+      ...record(arrayField(created.body, "stays")[0]),
+      checkIn: futureDate(12),
+      checkOut: futureDate(14),
+    };
     await expectFailure(
       post(
         request,
@@ -286,7 +290,22 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
         expect(payment.expectedMethod).toBe(expectedMethod);
         expect(payment.status).toBe(status);
         await page.goto(`${NEXT_STACK_ORIGINS.pms}/bookings/${bookingId}`);
-        await expect(page.getByText(methodLabel(expectedMethod), { exact: true })).toBeVisible();
+        const paymentGrid = page
+          .getByText("Expected method", { exact: true })
+          .locator("..")
+          .locator("..");
+        await expect(
+          paymentGrid
+            .getByText("Expected method", { exact: true })
+            .locator("..")
+            .getByText(methodLabel(expectedMethod), { exact: true }),
+        ).toBeVisible();
+        await expect(
+          paymentGrid
+            .getByText("Status", { exact: true })
+            .locator("..")
+            .getByText(status === "paid" ? "Paid" : "Unpaid", { exact: true }),
+        ).toBeVisible();
       }
     }
     const payments = await api.json<Record<string, unknown>>(
