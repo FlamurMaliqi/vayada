@@ -10,6 +10,7 @@ import {
 import {
   NEXT_STACK_ORIGINS,
   arrayField,
+  numberField,
   record,
   recordField,
   stringField,
@@ -43,7 +44,12 @@ export async function configureGuestPolicyForManualBooking(args: Args): Promise<
         "GET",
         `/api/pms/properties/${propertyId}/rooms`,
       ),
-      roomId = stringField(record(arrayField(rooms, "items")[0]), "roomId"),
+      physicalRooms = arrayField(rooms, "items")
+        .map(record)
+        .filter((room) => stringField(room, "roomTypeId") === roomTypeId);
+    expect(physicalRooms).toHaveLength(2);
+    await verifyOperationalLabels(api, propertyId, roomTypeId, physicalRooms);
+    const roomId = stringField(physicalRooms[0]!, "roomId"),
       previewCommand = manualPreviewCommand(roomId);
     expect(await previewStatus(request, accessToken, propertyId, previewCommand)).toEqual([
       404,
@@ -87,6 +93,32 @@ export async function configureGuestPolicyForManualBooking(args: Args): Promise<
       null,
     ]);
   });
+}
+
+async function verifyOperationalLabels(
+  api: JsonApi,
+  propertyId: string,
+  roomTypeId: string,
+  rooms: Record<string, unknown>[],
+) {
+  let expectedRevision = 1;
+  for (const [index, room] of rooms.entries()) {
+    const roomId = stringField(room, "roomId"),
+      label = `QA-${index + 101}`,
+      response = await api.json<Record<string, unknown>>(
+        "PUT",
+        `/api/pms/properties/${propertyId}/room-types/${roomTypeId}/physical-units/${roomId}/operational-label`,
+        { expectedRevision, operationalLabel: label },
+        { "Idempotency-Key": `next-smoke:room-label:${propertyId}:${roomId}` },
+      );
+    expect(response).toMatchObject({
+      outcome: "updated",
+      roomUnitId: roomId,
+      operationalLabel: label,
+      operationalLabelStatus: "verified",
+    });
+    expectedRevision = numberField(response, "roomUnitsRevision");
+  }
 }
 
 async function configurePricing(api: JsonApi, propertyId: string, roomTypeId: string) {
