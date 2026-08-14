@@ -53,13 +53,13 @@ test("runs a durable sync and shows connected channel management", async ({ page
     },
     channels: [
       {
-        key: "channel-booking",
-        application: "booking.com",
+        key: "booking_com",
+        application: "BookingCom",
         title: "Booking.com",
         isActive: true,
       },
     ],
-    markups: [{ channel: "booking.com", markupPercent: 12 }],
+    markups: [{ channel: "booking_com", markupPercent: 12 }],
     capabilityModes: Object.fromEntries(
       Object.keys(pmsWebChannexSnapshot.capabilityModes).map((capability) => [
         capability,
@@ -68,6 +68,7 @@ test("runs a durable sync and shows connected channel management", async ({ page
     ),
   };
   let commandBody: Record<string, unknown> | null = null;
+  let markupBody: Record<string, unknown> | null = null;
   let operationReads = 0;
 
   await page.unroute(routeBase);
@@ -75,6 +76,10 @@ test("runs a durable sync and shows connected channel management", async ({ page
   await page.route(`${routeBase}/commands`, (route) => {
     commandBody = route.request().postDataJSON() as Record<string, unknown>;
     return route.fulfill({ json: operation("queued") });
+  });
+  await page.route(`${routeBase}/markups`, (route) => {
+    markupBody = route.request().postDataJSON() as Record<string, unknown>;
+    return route.fulfill({ json: operation("succeeded", "update_markups") });
   });
   await page.route(`${routeBase}/operations/operation-1`, (route) => {
     operationReads += 1;
@@ -88,6 +93,12 @@ test("runs a durable sync and shows connected channel management", async ({ page
   await expect(page.getByText("Booking.com", { exact: true })).toBeVisible();
   await expect(page.getByRole("spinbutton")).toHaveValue("12");
 
+  await page.getByRole("spinbutton").fill("13");
+  await page.getByRole("button", { name: "Save markups" }).click();
+  await expect
+    .poll(() => markupBody?.["markups"])
+    .toEqual([{ channel: "booking_com", markupPercent: 13 }]);
+
   await page.getByRole("button", { name: "Sync now" }).first().click();
 
   await expect.poll(() => commandBody?.["operationType"]).toBe("sync_ari");
@@ -96,12 +107,15 @@ test("runs a durable sync and shows connected channel management", async ({ page
   await assertHealthy();
 });
 
-function operation(status: "queued" | "running" | "succeeded") {
+function operation(
+  status: "queued" | "running" | "succeeded",
+  operationType: "sync_ari" | "update_markups" = "sync_ari",
+) {
   return {
     contractVersion: "pms-channex-management.v1",
     operationId: "operation-1",
     propertyId: PMS_WEB_PROPERTY_ID,
-    operationType: "sync_ari",
+    operationType,
     status,
     commandId: "command-1",
     idempotencyKey: "sync_ari:command-1",

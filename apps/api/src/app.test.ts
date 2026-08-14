@@ -10386,6 +10386,26 @@ describe("vayada-api", () => {
     });
   });
 
+  it("does not expose retired Channex placeholder routes", async () => {
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.read"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsOperationsAllowedOrigins: ["https://pms.localhost"],
+    });
+
+    for (const suffix of ["status", "channels"]) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/pms/properties/${pmsPropertyId}/channex/${suffix}`,
+        headers: {
+          authorization: "Bearer valid-token",
+          origin: "https://pms.localhost",
+        },
+      });
+      expect(response.statusCode).toBe(404);
+    }
+  });
+
   it("returns PMS room-type detail through the P1a route contract", async () => {
     app = buildAuthenticatedApp({
       permissions: ["pms.operations.read"],
