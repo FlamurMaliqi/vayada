@@ -699,6 +699,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   if (publicBookabilitySource === "target" && publicHotelProfileSource !== "target") {
     throw new Error("PUBLIC_BOOKABILITY_SOURCE=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target");
   }
+  if (bookingWebEventSink === "target" && publicHotelProfileSource !== "target") {
+    throw new Error("BOOKING_WEB_EVENT_SINK=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target");
+  }
   if (bookingWebEventSink === "target" && !auth) {
     throw new Error("BOOKING_WEB_EVENT_SINK=target requires complete auth config");
   }
