@@ -584,13 +584,12 @@ export default function CheckInPage() {
               </div>
             </Card>
 
-            <Card title="Payment">
-              <div className="mb-3 grid grid-cols-2 gap-3 text-sm">
+            <Card title="Payment on arrival">
+              <div className="mb-3 text-sm">
                 <Info
                   label="Expected method"
                   value={expectedPaymentMethodLabel(booking.expectedPaymentMethod)}
                 />
-                <Info label="Settlement" value={isPaid(booking) ? "Recorded" : "Outstanding"} />
               </div>
               {booking.depositRequired && (
                 <div className="mb-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm">
@@ -609,11 +608,15 @@ export default function CheckInPage() {
                   className={`font-semibold ${isPaid(booking) ? "text-green-800" : "text-amber-950"}`}
                 >
                   {isPaid(booking)
-                    ? "Payment recorded"
-                    : `${formatCurrency(
-                        booking.depositRequired ? booking.balanceAmount : booking.totalAmount,
-                        booking.currency,
-                      )} outstanding`}
+                    ? booking.paymentMethod === "paypal"
+                      ? "PayPal payment received"
+                      : "Paid at property"
+                    : booking.paymentMethod === "paypal"
+                      ? `${formatCurrency(booking.totalAmount, booking.currency)} awaiting PayPal payment.`
+                      : `${formatCurrency(
+                          booking.depositRequired ? booking.balanceAmount : booking.totalAmount,
+                          booking.currency,
+                        )} due at property. Pay at property.`}
                 </p>
                 {(!booking.depositRequired || booking.balanceAmount > 0) && (
                   <div className="mt-3">

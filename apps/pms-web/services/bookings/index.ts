@@ -12,13 +12,8 @@ export interface AssignedRoom {
   position: number;
 }
 
-export type BookingExpectedPaymentMethod =
-  | "unknown"
-  | "pay_at_property"
-  | "bank_transfer"
-  | "manual_card"
-  | "cash"
-  | "other";
+// prettier-ignore
+export type BookingExpectedPaymentMethod = "unknown" | "pay_at_property" | "bank_transfer" | "manual_card" | "cash" | "other";
 
 export interface BookingStay {
   position: number;

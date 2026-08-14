@@ -1175,7 +1175,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       const b = await bookingsService.get(id);
       setBooking(b);
     } catch (err) {
-      setError(errMessage(err, "Could not load booking"));
+      console.error(err);
     } finally {
       setLoading(false);
     }
@@ -1515,7 +1515,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   if (!booking) {
     return (
       <div className="p-6">
-        <p className="text-gray-500">{error || "Booking not found."}</p>
+        <p className="text-gray-500">Booking not found.</p>
       </div>
     );
   }

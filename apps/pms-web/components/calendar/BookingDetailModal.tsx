@@ -116,7 +116,7 @@ export default function BookingDetailModal({
           specialRequests: b.specialRequests || "",
         });
       })
-      .catch(() => setMoveError("Could not load booking"))
+      .catch(console.error)
       .finally(() => setLoading(false));
   }, [bookingId]);
 
@@ -423,7 +423,7 @@ export default function BookingDetailModal({
           </div>
         </div>
       ) : !booking ? (
-        <div className="p-8 text-center text-gray-500">{moveError || "Booking not found"}</div>
+        <div className="p-8 text-center text-gray-500">Booking not found</div>
       ) : view === "roomPicker" ? (
         /* ── ROOM PICKER ── */
         <div className="p-6">

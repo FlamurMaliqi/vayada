@@ -2,7 +2,6 @@ import type { BookingExpectedPaymentMethod, BookingStay } from "@/services/booki
 import { formatCurrency } from "@/lib/formatCurrency";
 // prettier-ignore
 export const expectedPaymentMethodLabel = (method: BookingExpectedPaymentMethod) => method === "unknown" ? "Not specified" : method.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
-
 function guestsLabel(stay: BookingStay): string {
   if (stay.adults == null || stay.children == null) return "Guest count unavailable";
   const adults = `${stay.adults} adult${stay.adults === 1 ? "" : "s"}`;
@@ -10,7 +9,6 @@ function guestsLabel(stay: BookingStay): string {
   const children = stay.children ? `, ${stay.children} child${stay.children === 1 ? "" : "ren"}` : "";
   return adults + children;
 }
-
 function pricingLabel(stay: BookingStay): string {
   if (!stay.nightly.length) return "Pricing unavailable";
   // prettier-ignore
@@ -21,12 +19,6 @@ function pricingLabel(stay: BookingStay): string {
   // prettier-ignore
   return `${formatCurrency(priced.reduce((sum, night) => sum + (night.appliedAmount ?? 0), 0), priced[0]!.currency!)} applied`;
 }
-
-// prettier-ignore
-const dateLabel = (stay: BookingStay) => stay.checkIn && stay.checkOut ? `${stay.checkIn} → ${stay.checkOut}` : "Stay dates unavailable";
-// prettier-ignore
-export const ratePlanLabel = (name: string | null) => name || "Rate plan unavailable";
-
 // prettier-ignore
 export default function BookingStaySummary({ stays, expectedCount }: { stays: BookingStay[]; expectedCount: number }) {
   return (
@@ -45,7 +37,8 @@ export default function BookingStaySummary({ stays, expectedCount }: { stays: Bo
             <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-4">
               <div>
                 <dt className="text-xs text-gray-500">Dates</dt>
-                <dd className="font-medium text-gray-900">{dateLabel(stay)}</dd>
+                {/* prettier-ignore */}
+                <dd className="font-medium text-gray-900">{stay.checkIn && stay.checkOut ? `${stay.checkIn} → ${stay.checkOut}` : "Stay dates unavailable"}</dd>
               </div>
               <div>
                 <dt className="text-xs text-gray-500">Guests</dt>
@@ -53,7 +46,7 @@ export default function BookingStaySummary({ stays, expectedCount }: { stays: Bo
               </div>
               <div>
                 <dt className="text-xs text-gray-500">Rate plan</dt>
-                <dd className="font-medium text-gray-900">{ratePlanLabel(stay.ratePlanName)}</dd>
+                <dd className="font-medium text-gray-900">{stay.ratePlanName || "Rate plan unavailable"}</dd>
               </div>
               <div>
                 <dt className="text-xs text-gray-500">Applied pricing</dt>

@@ -23,8 +23,11 @@ vi.mock("../api/unsupported", () => ({
 
 import { bookingsService, HIDDEN_GUEST_CONTACT } from ".";
 import { calendarService } from "../calendar";
+import { createElement } from "react";
+import { create } from "react-test-renderer";
+import MobileCalendar from "../../components/calendar/MobileCalendar";
 // prettier-ignore
-import { expectedPaymentMethodLabel, ratePlanLabel } from "../../components/bookings/BookingStaySummary";
+import { expectedPaymentMethodLabel } from "../../components/bookings/BookingStaySummary";
 
 const reservation = {
   guestBookingId: "booking-1",
@@ -225,6 +228,15 @@ describe("PMS target calendar projection", () => {
     // prettier-ignore
     expect(result.bookings).toMatchObject([{ id: "booking-1", bookingReference: "VAY-1", roomPosition: 0, checkIn: "2026-09-10", checkOut: "2026-09-12" }, { id: "booking-1", bookingReference: "VAY-1", roomPosition: 1, checkIn: "2026-09-12", checkOut: "2026-09-15" }]);
     // prettier-ignore
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-11T12:00:00Z"));
+    // prettier-ignore
+    const mobile = create(createElement(MobileCalendar, { currentMonth: new Date(), bookings: result.bookings.map((booking) => ({ ...booking, checkIn: "2026-09-10", checkOut: "2026-09-12" })), blocks: [], roomTypes: [], onMonthChange: vi.fn(), onSelectBooking: vi.fn(), onNewBooking: vi.fn(), onBlockRoom: vi.fn(), onSelectBlock: vi.fn() }));
+    expect(JSON.stringify(mobile.toJSON())).toContain("Room 1 of 2");
+    expect(JSON.stringify(mobile.toJSON())).toContain("Room 2 of 2");
+    mobile.unmount();
+    vi.useRealTimers();
+    // prettier-ignore
     mocks.get.mockImplementation(calendarResponse({ ...heterogeneousReservation, assignments: [assignments[0]] }));
     const partial = await calendarService.getCalendarData("2026-09-10", "2026-09-16");
     expect(partial.bookings).toMatchObject([{ numberOfRooms: 2, checkIn: "2026-09-10" }]);
@@ -240,7 +252,6 @@ describe("PMS target calendar projection", () => {
     const methods = ["unknown", "pay_at_property", "bank_transfer", "manual_card", "cash", "other"] as const;
     // prettier-ignore
     expect(methods.map(expectedPaymentMethodLabel)).toEqual(["Not specified", "Pay at property", "Bank transfer", "Manual card", "Cash", "Other"]);
-    expect(ratePlanLabel(null)).toBe("Rate plan unavailable");
   });
 });
 

@@ -172,7 +172,7 @@ export default function MobileCalendar({
         if (isWithinInterval(day, { start, end })) {
           const key = format(day, "yyyy-MM-dd");
           if (!map[key]) map[key] = [];
-          if (!map[key].find((x) => x.id === b.id)) {
+          if (!map[key].find((x) => x.id === b.id && x.roomPosition === b.roomPosition)) {
             map[key].push(b);
           }
         }
@@ -235,8 +235,9 @@ export default function MobileCalendar({
     const out: CalendarBooking[] = [];
     for (const d of rangeDays) {
       for (const b of bookingsByDay[format(d, "yyyy-MM-dd")] || []) {
-        if (!seen.has(b.id)) {
-          seen.add(b.id);
+        const key = `${b.id}:${b.roomPosition}`;
+        if (!seen.has(key)) {
+          seen.add(key);
           out.push(b);
         }
       }
@@ -544,7 +545,7 @@ export default function MobileCalendar({
                 const channelColor = getChannelBarColor(b.channel);
                 return (
                   <button
-                    key={b.id}
+                    key={`${b.id}:${b.roomPosition}`}
                     onClick={() => onSelectBooking(b.id)}
                     className="w-full bg-white rounded-lg border border-gray-200 p-3 text-left hover:border-gray-300 transition-colors"
                   >
@@ -560,6 +561,8 @@ export default function MobileCalendar({
                           {b.guestFirstName} {b.guestLastName}
                         </div>
                         <div className="text-[11px] text-gray-500">
+                          {b.numberOfRooms > 1 &&
+                            `Room ${b.roomPosition + 1} of ${b.numberOfRooms} · `}
                           {b.checkIn} → {b.checkOut}
                         </div>
                       </div>

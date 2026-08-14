@@ -822,6 +822,7 @@ export default function CalendarPage() {
             rooms={data.rooms}
             roomTypeMap={roomTypeMap}
             bookingsByRoom={bookingsByRoom}
+            unassignedBookings={unassignedBookings}
             blocksByRoom={blocksByRoom}
             legacyBlocksByRoomType={legacyBlocksByRoomType}
             roomIndexInType={roomIndexInType}
@@ -1053,7 +1054,7 @@ export default function CalendarPage() {
                               : "";
                             return (
                               <div
-                                key={`${b.id}-${b.roomId ?? "na"}`}
+                                key={`${b.id}-${b.roomPosition}`}
                                 data-bar="booking"
                                 className={`absolute top-1.5 h-8 rounded-md px-2 text-[11px] font-medium leading-8 truncate cursor-pointer z-[1] text-white ${channelColor} hover:brightness-110 transition-all flex items-center gap-1.5 ${
                                   isMultiRoom ? "ring-1 ring-inset ring-white/50" : ""
@@ -1121,7 +1122,7 @@ export default function CalendarPage() {
                         const channelColor = getChannelBarColor(b.channel);
                         return (
                           <div
-                            key={b.id}
+                            key={`${b.id}-${b.roomPosition}`}
                             data-bar="booking"
                             className={`absolute top-1.5 h-8 rounded-md px-2 text-[11px] font-medium leading-8 truncate cursor-pointer z-[1] text-white ${channelColor} hover:brightness-110 transition-all flex items-center gap-1.5 opacity-75`}
                             style={style}
