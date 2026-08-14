@@ -213,6 +213,7 @@ async function runHotelFlow(
           bedType: "1 King Bed",
           bedrooms: 1,
           bathrooms: 1,
+          bathroomType: "private",
           size: 24,
           baseRate: "150.00",
           currency: "EUR",
