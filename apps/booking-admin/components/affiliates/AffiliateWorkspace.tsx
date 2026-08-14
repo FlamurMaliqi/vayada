@@ -39,10 +39,15 @@ interface AffiliateWorkspaceProps {
   overrideDraft: string;
   loading: boolean;
   busy: string | null;
+  detailError: string | null;
+  commissionError: string | null;
+  offset: number;
   onSearchDraftChange: (value: string) => void;
   onSearch: (event: FormEvent) => void;
   onStatusChange: (value: "" | AffiliateLifecycleStatus) => void;
   onSelect: (affiliateId: string) => void;
+  onPreviousPage: () => void;
+  onNextPage: () => void;
   onOverrideChange: (value: string) => void;
   onLifecycle: (action: AffiliateLifecycleAction) => void;
   onSaveOverride: (inherit?: boolean) => void;
@@ -106,6 +111,39 @@ export function AffiliateWorkspace(props: AffiliateWorkspaceProps) {
             />
           ))}
         </div>
+        {props.applications && props.applications.total > props.applications.limit && (
+          <div className="flex items-center justify-between border-t border-gray-100 px-3 py-2 text-xs text-gray-500">
+            <span>
+              {props.offset + 1}–
+              {Math.min(
+                props.offset + props.applications.affiliates.length,
+                props.applications.total,
+              )}{" "}
+              of {props.applications.total}
+            </span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={props.onPreviousPage}
+                disabled={props.offset === 0 || props.loading}
+                className="rounded border border-gray-200 px-2 py-1 disabled:opacity-40"
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                onClick={props.onNextPage}
+                disabled={
+                  props.offset + props.applications.limit >= props.applications.total ||
+                  props.loading
+                }
+                className="rounded border border-gray-200 px-2 py-1 disabled:opacity-40"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       <aside
@@ -113,7 +151,12 @@ export function AffiliateWorkspace(props: AffiliateWorkspaceProps) {
         aria-label="Affiliate detail"
       >
         {!selected && <SelectPrompt />}
-        {selected && !props.detail && (
+        {selected && props.detailError && (
+          <p role="alert" className="py-16 text-center text-sm text-red-600">
+            {props.detailError}
+          </p>
+        )}
+        {selected && !props.detail && !props.detailError && (
           <p className="py-16 text-center text-sm text-gray-500">Loading applicant…</p>
         )}
         {props.detail && (
@@ -124,6 +167,7 @@ export function AffiliateWorkspace(props: AffiliateWorkspaceProps) {
             busy={props.busy}
             onLifecycle={props.onLifecycle}
             onSaveOverride={props.onSaveOverride}
+            commissionError={props.commissionError}
           />
         )}
       </aside>
@@ -172,9 +216,16 @@ function AffiliateDossier({
   busy,
   onLifecycle,
   onSaveOverride,
+  commissionError,
 }: Pick<
   AffiliateWorkspaceProps,
-  "detail" | "overrideDraft" | "onOverrideChange" | "busy" | "onLifecycle" | "onSaveOverride"
+  | "detail"
+  | "overrideDraft"
+  | "onOverrideChange"
+  | "busy"
+  | "onLifecycle"
+  | "onSaveOverride"
+  | "commissionError"
 > & { detail: AffiliateDetail }) {
   const { affiliate, commission } = detail;
   const actions = lifecycleActions(affiliate.lifecycleStatus);
@@ -226,50 +277,50 @@ function AffiliateDossier({
       </div>
       {commission ? (
         <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-        <h3 className="text-sm font-semibold text-gray-900">Commission override</h3>
-        <p className="mt-1 text-xs text-gray-500">
-          Effective rate:{" "}
-          <strong className="text-gray-800">{commission.effectivePercentageRate}%</strong> · Default{" "}
-          {commission.defaultPercentageRate}%
-        </p>
-        <div className="mt-3 flex flex-wrap items-end gap-2">
-          <label className="text-xs font-medium text-gray-600">
-            Override %
-            <input
-              aria-label="Affiliate commission override"
-              value={overrideDraft}
-              onChange={(event) => onOverrideChange(event.target.value)}
-              placeholder={commission.defaultPercentageRate}
-              inputMode="decimal"
-              className="mt-1 block h-9 w-28 rounded-md border border-gray-200 bg-white px-3 text-sm focus:border-primary-400 focus:outline-none focus:ring-2 focus:ring-primary-100"
-            />
-          </label>
-          <button
-            type="button"
-            onClick={() => onSaveOverride()}
-            disabled={busy === "commission"}
-            className="h-9 rounded-md bg-gray-900 px-3 text-xs font-medium text-white disabled:opacity-50"
-          >
-            Save override
-          </button>
-          <button
-            type="button"
-            onClick={() => onSaveOverride(true)}
-            disabled={busy === "commission" || commission.overridePercentageRate === null}
-            className="h-9 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 disabled:opacity-50"
-          >
-            Use default
-          </button>
-        </div>
-        <p className="mt-3 text-[11px] text-gray-400">
-          Lifecycle and commission changes are recorded in the property audit trail.
-        </p>
+          <h3 className="text-sm font-semibold text-gray-900">Commission override</h3>
+          <p className="mt-1 text-xs text-gray-500">
+            Effective rate:{" "}
+            <strong className="text-gray-800">{commission.effectivePercentageRate}%</strong> ·
+            Default {commission.defaultPercentageRate}%
+          </p>
+          <div className="mt-3 flex flex-wrap items-end gap-2">
+            <label className="text-xs font-medium text-gray-600">
+              Override %
+              <input
+                aria-label="Affiliate commission override"
+                value={overrideDraft}
+                onChange={(event) => onOverrideChange(event.target.value)}
+                placeholder={commission.defaultPercentageRate}
+                inputMode="decimal"
+                className="mt-1 block h-9 w-28 rounded-md border border-gray-200 bg-white px-3 text-sm focus:border-primary-400 focus:outline-none focus:ring-2 focus:ring-primary-100"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => onSaveOverride()}
+              disabled={busy === "commission"}
+              className="h-9 rounded-md bg-gray-900 px-3 text-xs font-medium text-white disabled:opacity-50"
+            >
+              Save override
+            </button>
+            <button
+              type="button"
+              onClick={() => onSaveOverride(true)}
+              disabled={busy === "commission" || commission.overridePercentageRate === null}
+              className="h-9 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 disabled:opacity-50"
+            >
+              Use default
+            </button>
+          </div>
+          <p className="mt-3 text-[11px] text-gray-400">
+            Lifecycle and commission changes are recorded in the property audit trail.
+          </p>
         </div>
       ) : (
         <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
           <h3 className="text-sm font-semibold text-gray-900">Commission override</h3>
           <p className="mt-1 text-xs text-gray-500">
-            Finance access is required to view or change this rate.
+            {commissionError ?? "Loading Finance commission…"}
           </p>
         </div>
       )}
