@@ -4,6 +4,7 @@ import { PmsManualBookingCreateError as CommandError } from "@vayada/domain-pms"
 import type { ManualBookingPreviewResult } from "../routes/pmsManualBookingPreview.js";
 import type {
   PmsManualBookingAcceptedWrite,
+  PmsManualBookingAttribution,
   PmsManualBookingBookingOwnerPort,
   PmsManualBookingOperationsOwnerPort,
   PmsManualBookingRoom,
@@ -70,9 +71,10 @@ async function persistBookingFacts(
     preview: ManualBookingPreviewResult;
     guestBookingId: string;
     bookingReference: string;
+    attribution: PmsManualBookingAttribution;
   },
 ): Promise<PmsManualBookingAcceptedWrite> {
-  const { command, preview, guestBookingId, bookingReference } = input;
+  const { command, preview, guestBookingId, bookingReference, attribution } = input;
   const checkIn = command.stays.reduce(
     (earliest, stay) => (stay.checkIn < earliest ? stay.checkIn : earliest),
     command.stays[0]!.checkIn,
@@ -85,16 +87,25 @@ async function persistBookingFacts(
   const children = command.stays.reduce((sum, stay) => sum + stay.children, 0);
   const total = preview.grandTotal;
 
+  const property = await transaction.query(
+    `SELECT id
+     FROM hotel_catalog.properties
+     WHERE id = $1::uuid AND lifecycle_status <> 'retired'
+     FOR SHARE`,
+    [command.propertyId],
+  );
+  if (property.rowCount !== 1) throw new CommandError("property_not_found");
+
   await transaction.query(
     `INSERT INTO booking.guest_bookings (
        id, property_id, public_reference, source_system, source_booking_id,
        lifecycle_status, payment_status, check_in, check_out, adults, children,
        room_count, currency, total_amount, balance_amount,
-       expected_payment_method, booking_metadata
+       expected_payment_method, booking_channel, direct_booking_source, booking_metadata
      ) VALUES (
        $1::uuid, $2::uuid, $3, 'pms', $4, 'confirmed', 'unpaid',
        $5::date, $6::date, $7, $8, $9, $10, $11::numeric, $11::numeric, $12,
-       jsonb_build_object('contractVersion', $13::text, 'commandId', $4::text)
+       $13, $14, jsonb_build_object('contractVersion', $15::text, 'commandId', $4::text)
      )`,
     [
       guestBookingId,
@@ -109,6 +120,8 @@ async function persistBookingFacts(
       total.currency,
       total.amountDecimal,
       command.payment.expectedMethod,
+      attribution.bookingChannel,
+      attribution.directSource,
       command.contractVersion,
     ],
   );

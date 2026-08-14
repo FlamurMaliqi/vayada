@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { QueryResult, QueryResultRow } from "pg";
 
+import { enqueueBookingTransitionNotifications } from "../jobs/bookingEmails.js";
 import { stripeAmountMinor } from "./stripeMoney.js";
 
 type SettlementExecutor = {
@@ -33,6 +34,97 @@ type DirectRevenueBooking = Pick<
   StripePaymentBookingRow,
   "guestBookingId" | "propertyId" | "checkIn" | "checkOut" | "bookingMetadata"
 >;
+
+export async function authorizeStripeBookingPayment(
+  client: SettlementExecutor,
+  input: {
+    paymentIntentId: string;
+    amountMinor: number;
+    currency: string;
+    occurredAt: Date;
+  },
+): Promise<"authorized" | "already_authorized" | "not_found"> {
+  const selected = await client.query<StripePaymentBookingRow>(
+    `SELECT
+       payment.id::text AS "paymentId",
+       payment.status AS "paymentStatus",
+       payment.property_id::text AS "propertyId",
+       payment.guest_booking_id::text AS "guestBookingId",
+       payment.amount::text AS amount,
+       payment.currency,
+       booking.lifecycle_status AS "lifecycleStatus",
+       booking.payment_status AS "bookingPaymentStatus"
+     FROM finance.payments payment
+     JOIN booking.guest_bookings booking
+       ON booking.id = payment.guest_booking_id
+      AND booking.property_id = payment.property_id
+     WHERE payment.provider_payment_intent_id = $1
+       AND payment.payment_method = 'card'
+     LIMIT 1
+     FOR UPDATE OF payment, booking`,
+    [input.paymentIntentId],
+  );
+  const row = selected.rows[0];
+  if (!row) return "not_found";
+  if (
+    stripeAmountMinor(row.amount, row.currency) !== input.amountMinor ||
+    row.currency !== input.currency.toUpperCase()
+  ) {
+    throw new Error("Stripe PaymentIntent amount or currency did not match the canonical payment.");
+  }
+  if (row.paymentStatus === "authorized" && row.bookingPaymentStatus === "authorized") {
+    return "already_authorized";
+  }
+  const occurredAt = input.occurredAt.toISOString();
+  const paymentUpdated = await client.query(
+    `UPDATE finance.payments
+        SET status = 'authorized', authorized_at = $2::timestamptz,
+            updated_at = $2::timestamptz,
+            payment_metadata = payment_metadata ||
+              '{"providerStatus":"requires_capture","reconciliationStatus":"authorized"}'::jsonb
+      WHERE id = $1::uuid AND status = 'requires_action'
+      RETURNING id`,
+    [row.paymentId, occurredAt],
+  );
+  if (paymentUpdated.rows.length === 0) {
+    throw new Error("Stripe payment authorization state changed.");
+  }
+  const updated = await client.query(
+    `UPDATE booking.guest_bookings
+        SET lifecycle_status = 'pending_payment', payment_status = 'authorized',
+            updated_at = $3::timestamptz
+      WHERE id = $1::uuid AND property_id = $2::uuid
+        AND lifecycle_status = 'draft' AND payment_status = 'unpaid'
+      RETURNING id`,
+    [row.guestBookingId, row.propertyId, occurredAt],
+  );
+  if (updated.rows.length === 0) {
+    throw new Error("Stripe authorization cannot advance the booking in its current state.");
+  }
+  await client.query(
+    `INSERT INTO booking.booking_status_events (
+       guest_booking_id, event_type, from_status, to_status, actor_type,
+       public_visible, public_message, event_payload, occurred_at
+     ) VALUES (
+       $1::uuid, 'guest_booking.payment_authorized', $2, 'pending_payment', 'system', TRUE,
+       'Card authorized. Booking request awaiting property acceptance.', $3::jsonb, $4::timestamptz
+     )`,
+    [
+      row.guestBookingId,
+      row.lifecycleStatus,
+      JSON.stringify({ provider: "stripe", paymentIntentId: input.paymentIntentId }),
+      occurredAt,
+    ],
+  );
+  await client.query(
+    `UPDATE booking.direct_booking_summary_read_model
+        SET lifecycle_status = 'pending_payment', payment_status = 'authorized',
+            projected_at = $2::timestamptz
+      WHERE guest_booking_id = $1::uuid`,
+    [row.guestBookingId, occurredAt],
+  );
+  return "authorized";
+}
 
 export async function settleStripeBookingPayment(
   client: SettlementExecutor,
@@ -129,6 +221,34 @@ export async function settleStripeBookingPayment(
     );
     await captureDirectNightlyRevenueEvidence(client, row, { required: true });
   }
+
+  const canonicalTransition = await client.query<
+    QueryResultRow & { fromStatus: string | null; toStatus: string }
+  >(
+    `SELECT from_status AS "fromStatus", to_status AS "toStatus"
+     FROM booking.booking_status_events
+     WHERE guest_booking_id = $1::uuid
+       AND event_type = 'guest_booking.payment_received'
+     ORDER BY occurred_at, id
+     LIMIT 1`,
+    [row.guestBookingId],
+  );
+  const transition = canonicalTransition.rows[0];
+  if (!transition) throw new Error("Canonical Stripe booking transition was not found.");
+  await enqueueBookingTransitionNotifications(client, {
+    propertyId: row.propertyId,
+    guestBookingId: row.guestBookingId,
+    occurredAt: input.occurredAt.toISOString(),
+    correlationId: input.correlationId,
+    causationId: input.sourceDomainEventId ?? input.paymentIntentId,
+    actor: { type: "provider" },
+    source: "apps/api-stripe-booking-settlement",
+    transition: {
+      eventType: "guest_booking.payment_received",
+      fromStatus: transition.fromStatus,
+      toStatus: transition.toStatus,
+    },
+  });
 
   const handoffKey = pmsCreateHandoffKey(row.propertyId, row.guestBookingId);
   const handoffHash = sha256(handoffKey);

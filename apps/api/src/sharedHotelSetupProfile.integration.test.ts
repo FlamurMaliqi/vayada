@@ -14,6 +14,9 @@ const organizationId = "77777777-7777-4777-8777-777777777965";
 const mediaObjectId = "77777777-7777-4777-8777-777777777966";
 const invalidMediaObjectId = "77777777-7777-4777-8777-777777777967";
 const actorUserId = "77777777-7777-4777-8777-777777777968";
+const membershipId = "77777777-7777-4777-8777-777777777976";
+const secondActorUserId = "77777777-7777-4777-8777-777777777977";
+const secondMembershipId = "77777777-7777-4777-8777-777777777978";
 const uploadSessionId = "77777777-7777-4777-8777-777777777969";
 const roomTypeWithRoomId = "77777777-7777-4777-8777-777777777970";
 const roomTypeWithRateId = "77777777-7777-4777-8777-777777777971";
@@ -72,13 +75,23 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical property profile repository", () 
     await cleanup();
     await client.query(
       `INSERT INTO identity.users (id, email, name, status)
-       VALUES ($1::uuid, 'profile-revision-actor@example.test', 'Profile Revision Actor', 'active')`,
-      [actorUserId],
+       VALUES
+         ($1::uuid, 'profile-revision-actor@example.test', 'Profile Revision Actor', 'active'),
+         ($2::uuid, 'profile-revision-second@example.test', 'Second Profile Actor', 'active')`,
+      [actorUserId, secondActorUserId],
     );
     await client.query(
       `INSERT INTO identity.organizations (id, kind, name, slug, status)
        VALUES ($1::uuid, 'hotel_group', 'Profile Revision Test Group', 'profile-revision-test', 'active')`,
       [organizationId],
+    );
+    await client.query(
+      `INSERT INTO identity.organization_memberships (
+         id, organization_id, user_id, status, role_key
+       ) VALUES
+         ($1::uuid, $2::uuid, $3::uuid, 'active', 'hotel_owner'),
+         ($4::uuid, $2::uuid, $5::uuid, 'active', 'hotel_owner')`,
+      [membershipId, organizationId, actorUserId, secondMembershipId, secondActorUserId],
     );
     await client.query(
       `INSERT INTO hotel_catalog.organization_setup_track_intents (
@@ -88,6 +101,89 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical property profile repository", () 
        VALUES ($1::uuid, ARRAY['creator_marketplace']::text[])`,
       [organizationId],
     );
+  });
+
+  it("provisions one canonical property for concurrent stable-reference commands", async () => {
+    const provisioningReference = "platform-admin-provisioning-integration";
+    const create = (idempotencyKey: string) =>
+      repository.createPropertyProfile({
+        organizationId,
+        idempotencyKey,
+        correlationId: idempotencyKey,
+        profile: { ...profile, displayName: "Provisioned Lifecycle Hotel" },
+        targetAccountUserId: actorUserId,
+        provisioningReference,
+        audit: {
+          actorUserId,
+          requestId: idempotencyKey,
+          receivedAt: "2026-08-13T12:00:00.000Z",
+          reason: "Owner onboarding request",
+        },
+      });
+
+    const [first, retry] = await Promise.all([
+      create("platform-provision-concurrent-a"),
+      create("platform-provision-concurrent-b"),
+    ]);
+    expect(retry.propertyId).toBe(first.propertyId);
+    await expect(create("platform-provision-concurrent-c")).resolves.toMatchObject({
+      propertyId: first.propertyId,
+    });
+    await expect(
+      repository.createPropertyProfile({
+        organizationId,
+        idempotencyKey: "platform-provision-concurrent-a",
+        correlationId: "platform-provision-changed-reason",
+        profile: { ...profile, displayName: "Provisioned Lifecycle Hotel" },
+        targetAccountUserId: actorUserId,
+        provisioningReference,
+        audit: {
+          actorUserId,
+          requestId: "platform-provision-changed-reason",
+          receivedAt: "2026-08-13T12:00:00.000Z",
+          reason: "A different command reason",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "idempotency_key_conflict" });
+    await expect(
+      repository.createPropertyProfile({
+        organizationId,
+        idempotencyKey: "platform-provision-different-profile",
+        correlationId: "platform-provision-different-profile",
+        profile: { ...profile, displayName: "Different provisioning intent" },
+        targetAccountUserId: actorUserId,
+        provisioningReference,
+      }),
+    ).rejects.toMatchObject({ code: "provisioning_reference_conflict" });
+    await expect(
+      repository.createPropertyProfile({
+        organizationId,
+        idempotencyKey: "platform-provision-different-account",
+        correlationId: "platform-provision-different-account",
+        profile: { ...profile, displayName: "Provisioned Lifecycle Hotel" },
+        targetAccountUserId: secondActorUserId,
+        provisioningReference,
+      }),
+    ).rejects.toMatchObject({ code: "provisioning_reference_conflict" });
+
+    await expect(
+      client.query(
+        `SELECT
+           (SELECT count(*)::int FROM hotel_catalog.property_source_links
+            WHERE source_system = 'platform'
+              AND source_table = 'platform_admin_provisioning'
+              AND source_id = $1) AS source_links,
+           (SELECT count(*)::int FROM identity.organization_resource_links
+            WHERE organization_id = $2::uuid AND product = 'hotel_catalog'
+              AND resource_type = 'property' AND resource_id = $3) AS organization_links,
+           (SELECT count(*)::int FROM platform.product_audit_events
+            WHERE product = 'hotel_catalog' AND action = 'hotel_setup.property.create'
+              AND organization_id = $2::uuid AND target_resource_id = $3) AS creation_audits`,
+        [provisioningReference, organizationId, first.propertyId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ source_links: 1, organization_links: 1, creation_audits: 1 }],
+    });
   });
 
   afterAll(async () => {
@@ -117,6 +213,17 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical property profile repository", () 
           mapDisplayMode: "hidden",
         },
       },
+    });
+    await expect(
+      repository.createPropertyProfile({
+        organizationId,
+        idempotencyKey: "profile-revision-integration-create",
+        correlationId: "profile-revision-integration-conflict",
+        profile: { ...profile, displayName: "Changed after uncertain save" },
+      }),
+    ).rejects.toMatchObject({
+      code: "idempotency_key_conflict",
+      propertyId: created.propertyId,
     });
 
     const updatedProfile: SharedPropertyProfileInput = {
@@ -675,6 +782,12 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical property profile repository", () 
     await client.query("BEGIN");
     try {
       await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `DELETE FROM hotel_catalog.property_source_links
+         WHERE source_system = 'platform'
+           AND source_table = 'platform_admin_provisioning'
+           AND source_id = 'platform-admin-provisioning-integration'`,
+      );
       await client.query("DELETE FROM platform.idempotency_keys WHERE organization_id = $1::uuid", [
         organizationId,
       ]);
@@ -691,6 +804,16 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical property profile repository", () 
         [organizationId],
       );
       for (const { propertyId } of properties.rows) {
+        await client.query(
+          "DELETE FROM platform.product_audit_events WHERE property_id = $1::uuid",
+          [propertyId],
+        );
+      }
+      for (const { propertyId } of properties.rows) {
+        await client.query(
+          "DELETE FROM hotel_catalog.property_source_links WHERE property_id = $1::uuid",
+          [propertyId],
+        );
         await client.query("DELETE FROM pms.inventory_days WHERE property_id = $1::uuid", [
           propertyId,
         ]);
@@ -726,10 +849,16 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical property profile repository", () 
         "DELETE FROM hotel_catalog.organization_setup_track_intents WHERE organization_id = $1::uuid",
         [organizationId],
       );
+      await client.query(
+        "DELETE FROM identity.organization_memberships WHERE id = ANY($1::uuid[])",
+        [[membershipId, secondMembershipId]],
+      );
       await client.query("DELETE FROM identity.organizations WHERE id = $1::uuid", [
         organizationId,
       ]);
-      await client.query("DELETE FROM identity.users WHERE id = $1::uuid", [actorUserId]);
+      await client.query("DELETE FROM identity.users WHERE id = ANY($1::uuid[])", [
+        [actorUserId, secondActorUserId],
+      ]);
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");

@@ -44,6 +44,9 @@ describe("target PMS reservation stay dates", () => {
                 totalAmount: "155.00",
                 balanceAmount: "155.00",
                 currency: "EUR",
+                paymentMethod: null,
+                expectedPaymentMethod: "unknown",
+                paymentStatus: "unpaid",
               },
             ];
 
@@ -75,6 +78,8 @@ describe("target PMS reservation stay dates", () => {
     expect(listQuery).toContain('AS "guestContactAccepted"');
     expect(listQuery).toContain("contact_event.actor_type = 'property_user'");
     expect(listQuery).toContain("booking.booking_metadata ->> 'acceptedPaymentDeadlineAt'");
+    expect(listQuery).toContain('booking.expected_payment_method AS "expectedPaymentMethod"');
+    expect(listQuery).toContain("FROM booking.nightly_revenue_evidence evidence");
     expect(result.items[0]?.stay).toEqual({
       checkIn: "2026-07-23",
       checkOut: "2026-07-24",
@@ -97,6 +102,7 @@ describe("target PMS reservation stay dates", () => {
         totalAmount: { amountDecimal: "155.00", currency: "EUR" },
         balanceAmount: { amountDecimal: "155.00", currency: "EUR" },
       },
+      payment: { method: null, expectedMethod: "unknown", status: "unpaid" },
     });
   });
 
@@ -193,5 +199,63 @@ describe("target PMS room media compatibility", () => {
     expect(roomTypeQuery).toContain(
       "jsonb_typeof(legacy_media.item -> 'mediaObjectId') IS DISTINCT FROM 'string'",
     );
+  });
+});
+
+describe("target PMS room block calendar projection", () => {
+  it("projects the authoritative room-block revision into the calendar version", async () => {
+    let calendarQuery = "";
+    const pool: PmsOperationsReadPool = {
+      async query<T extends QueryResultRow = QueryResultRow>(
+        text: string,
+      ): Promise<QueryResult<T>> {
+        calendarQuery = text;
+        const rows = [
+          {
+            stayDate: "2026-08-20",
+            roomTypeId: "room-type-1",
+            totalCount: 2,
+            assignedCount: 0,
+            blockedCount: 1,
+            availableCount: 1,
+            status: "open",
+            blocks: [
+              {
+                blockId: "block-1",
+                version: "room-block-v3",
+                roomTypeId: "room-type-1",
+                roomId: "room-1",
+                startsOn: "2026-08-20",
+                endsOn: "2026-08-21",
+                blockedCount: 1,
+                reason: "Maintenance",
+                status: "active",
+              },
+            ],
+            assignmentRefs: [],
+            sourceFreshness: {},
+          },
+        ];
+        return {
+          command: "SELECT",
+          rowCount: rows.length,
+          oid: 0,
+          fields: [],
+          rows: rows as unknown as T[],
+        };
+      },
+    };
+    const repository = createTargetPmsOperationsReadRepository({
+      connectionString: "postgresql://pms-operations-read",
+      pool,
+    });
+
+    const result = await repository.listCalendarDaysByPropertyId("property-1", {
+      from: "2026-08-20",
+      to: "2026-08-20",
+    });
+
+    expect(calendarQuery).toContain("'version', concat('room-block-v', block.revision)");
+    expect(result.items[0]?.blocks[0]?.version).toBe("room-block-v3");
   });
 });

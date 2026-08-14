@@ -5,6 +5,10 @@ import { bookingsService, Booking } from "@/services/bookings";
 import { formatCurrency } from "@/lib/formatCurrency";
 import { CHANNEL_COLORS, getChannelLabel, normalizeChannelKey } from "@/lib/constants/statusStyles";
 import Modal from "@/components/Modal";
+import BookingStaySummary, {
+  bookingSettlementLabel,
+  expectedPaymentMethodLabel,
+} from "@/components/bookings/BookingStaySummary";
 
 interface CalendarRoom {
   id: string;
@@ -1008,8 +1012,14 @@ export default function BookingDetailModal({
             </div>
           </div>
 
+          {booking.numberOfRooms > 1 && (
+            <div className="mb-6">
+              <BookingStaySummary stays={booking.stays} expectedCount={booking.numberOfRooms} />
+            </div>
+          )}
+
           {/* Booked / Check-in / Check-out */}
-          <div className="grid grid-cols-3 gap-4 mb-6">
+          <div hidden={booking.numberOfRooms > 1} className="grid grid-cols-3 gap-4 mb-6">
             <div>
               <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Booked</p>
               <p className="text-sm font-semibold text-gray-900 mt-0.5">
@@ -1027,7 +1037,7 @@ export default function BookingDetailModal({
           </div>
 
           {/* Room info */}
-          <div className="bg-gray-50 rounded-lg p-4 mb-6">
+          <div hidden={booking.numberOfRooms > 1} className="bg-gray-50 rounded-lg p-4 mb-6">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-900">
@@ -1162,15 +1172,27 @@ export default function BookingDetailModal({
               Payment Details
             </h3>
             <div className="bg-gray-50 rounded-lg p-4 space-y-2">
+              {booking.numberOfRooms <= 1 && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">
+                    {formatCurrency(booking.nightlyRate, booking.currency)} x {booking.nights} night
+                    {booking.nights !== 1 ? "s" : ""}
+                    {booking.numberOfRooms > 1 && ` x ${booking.numberOfRooms} rooms`}
+                  </span>
+                  <span className="font-medium text-gray-900">
+                    {formatCurrency(booking.totalAmount, booking.currency)}
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between text-sm">
-                <span className="text-gray-600">
-                  {formatCurrency(booking.nightlyRate, booking.currency)} x {booking.nights} night
-                  {booking.nights !== 1 ? "s" : ""}
-                  {booking.numberOfRooms > 1 && ` x ${booking.numberOfRooms} rooms`}
-                </span>
+                <span className="text-gray-600">Expected payment method</span>
                 <span className="font-medium text-gray-900">
-                  {formatCurrency(booking.totalAmount, booking.currency)}
+                  {expectedPaymentMethodLabel(booking.expectedPaymentMethod)}
                 </span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">Settlement</span>
+                <span className="font-medium text-gray-900">{bookingSettlementLabel(booking)}</span>
               </div>
               <div className="flex justify-between text-sm pt-2 border-t border-gray-200">
                 <span className="font-medium text-gray-900">Total Amount</span>

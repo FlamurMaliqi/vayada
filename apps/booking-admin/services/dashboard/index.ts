@@ -49,6 +49,7 @@ export interface PageViewBucket {
 }
 
 export interface PageViewsTimeline {
+  time_zone: string;
   window_start: string;
   window_end: string;
   previous_window_start: string;
@@ -73,11 +74,13 @@ type TargetDashboardStatsResponse = {
       totalRevenue: Money;
       bookingCount: number;
       avgNightlyRate: Money;
+      pageViewCount: number;
     };
     previous: {
       totalRevenue: Money;
       bookingCount: number;
       avgNightlyRate: Money;
+      pageViewCount: number;
     };
     nextArrivalDate: string | null;
     liveSinceDate: string | null;
@@ -102,7 +105,22 @@ type TargetSparklinesResponse = {
       revenue: Money;
       bookingCount: number;
       avgNightlyRate: Money;
+      pageViewCount: number;
     }[];
+  };
+};
+
+type TargetPageViewsResponse = {
+  pageViews: {
+    timeZone: string;
+    windowStart: string;
+    windowEnd: string;
+    previousWindowStart: string;
+    previousWindowEnd: string;
+    buckets: { date: string; count: number }[];
+    previousBuckets: { date: string; count: number }[];
+    total: number;
+    previousTotal: number;
   };
 };
 
@@ -110,35 +128,46 @@ function currentHotelId(): string | null {
   return getSelectedBookingHotelId();
 }
 
-function addDays(date: Date, days: number): Date {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
-}
-
-function isoDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
+function dateInTimeZone(date: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const year = values.year;
+  const month = values.month;
+  const day = values.day;
+  if (!year || !month || !day) throw new Error("Property timezone date is unavailable.");
   return `${year}-${month}-${day}`;
 }
 
-function rangeQuery(range: TimeRange): {
+function shiftIsoDate(value: string, days: number): string {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function rangeQuery(
+  range: TimeRange,
+  timeZone: string,
+): {
   currentStart: string;
   currentEnd: string;
   previousStart: string;
   previousEnd: string;
 } {
-  const end = new Date();
+  const currentEnd = dateInTimeZone(new Date(), timeZone);
   const days = range === "today" ? 1 : range === "week" ? 7 : 30;
-  const currentStart = addDays(end, -(days - 1));
-  const previousEnd = addDays(currentStart, -1);
-  const previousStart = addDays(previousEnd, -(days - 1));
+  const currentStart = shiftIsoDate(currentEnd, -(days - 1));
+  const previousEnd = shiftIsoDate(currentStart, -1);
+  const previousStart = shiftIsoDate(previousEnd, -(days - 1));
   return {
-    currentStart: isoDate(currentStart),
-    currentEnd: isoDate(end),
-    previousStart: isoDate(previousStart),
-    previousEnd: isoDate(previousEnd),
+    currentStart,
+    currentEnd,
+    previousStart,
+    previousEnd,
   };
 }
 
@@ -158,9 +187,9 @@ function requireDashboardBasePath(): string {
 }
 
 export const dashboardService = {
-  getStats: async (range: TimeRange = "today"): Promise<DashboardStats> => {
+  getStats: async (range: TimeRange, timeZone: string): Promise<DashboardStats> => {
     const basePath = requireDashboardBasePath();
-    const query = rangeQuery(range);
+    const query = rangeQuery(range, timeZone);
     const response = await apiClient.get<TargetDashboardStatsResponse>(
       `${basePath}/stats?periodStart=${query.currentStart}&periodEnd=${query.currentEnd}&previousPeriodStart=${query.previousStart}&previousPeriodEnd=${query.previousEnd}`,
     );
@@ -171,16 +200,16 @@ export const dashboardService = {
       bookings_previous: response.metrics.previous.bookingCount,
       avg_nightly_rate: amount(response.metrics.current.avgNightlyRate),
       avg_nightly_rate_previous: amount(response.metrics.previous.avgNightlyRate),
-      page_views: 0,
-      page_views_previous: 0,
+      page_views: response.metrics.current.pageViewCount,
+      page_views_previous: response.metrics.previous.pageViewCount,
       next_arrival: response.metrics.nextArrivalDate,
       live_since: response.metrics.liveSinceDate,
     };
   },
 
-  getBookingsBySource: async (range: TimeRange = "month"): Promise<BookingsBySource> => {
+  getBookingsBySource: async (range: TimeRange, timeZone: string): Promise<BookingsBySource> => {
     const basePath = requireDashboardBasePath();
-    const query = rangeQuery(range);
+    const query = rangeQuery(range, timeZone);
     const response = await apiClient.get<TargetSourceMixResponse>(
       `${basePath}/bookings-by-source?periodStart=${query.currentStart}&periodEnd=${query.currentEnd}`,
     );
@@ -200,9 +229,9 @@ export const dashboardService = {
     throw new Error("Booking dashboard conversion funnel is not available on the target API yet.");
   },
 
-  getSparklines: async (range: TimeRange = "today"): Promise<Sparklines> => {
+  getSparklines: async (range: TimeRange, timeZone: string): Promise<Sparklines> => {
     const basePath = requireDashboardBasePath();
-    const query = rangeQuery(range);
+    const query = rangeQuery(range, timeZone);
     const response = await apiClient.get<TargetSparklinesResponse>(
       `${basePath}/sparklines?windowStart=${query.currentStart}&windowEnd=${query.currentEnd}`,
     );
@@ -210,12 +239,35 @@ export const dashboardService = {
       revenue: response.sparklines.points.map((point) => amount(point.revenue)),
       bookings: response.sparklines.points.map((point) => point.bookingCount),
       avg_rate: response.sparklines.points.map((point) => amount(point.avgNightlyRate)),
-      page_views: response.sparklines.points.map(() => 0),
+      page_views: response.sparklines.points.map((point) => point.pageViewCount),
     };
   },
 
-  getPageViewsTimeline: async (weekOffset = 0): Promise<PageViewsTimeline> => {
-    void weekOffset;
-    throw new Error("Booking dashboard page views are not available on the target API yet.");
+  getPageViewsTimeline: async (
+    weekOffset: number,
+    timeZone: string,
+  ): Promise<PageViewsTimeline> => {
+    const basePath = requireDashboardBasePath();
+    const propertyToday = dateInTimeZone(new Date(), timeZone);
+    const windowEnd = shiftIsoDate(propertyToday, -7 * Math.max(weekOffset, 0));
+    const windowStart = shiftIsoDate(windowEnd, -6);
+    const response = await apiClient.get<TargetPageViewsResponse>(
+      `${basePath}/page-views?windowStart=${windowStart}&windowEnd=${windowEnd}`,
+    );
+    if (response.pageViews.timeZone !== timeZone) {
+      throw new Error("Property timezone changed while loading page views.");
+    }
+    return {
+      time_zone: response.pageViews.timeZone,
+      window_start: response.pageViews.windowStart,
+      window_end: response.pageViews.windowEnd,
+      previous_window_start: response.pageViews.previousWindowStart,
+      previous_window_end: response.pageViews.previousWindowEnd,
+      buckets: response.pageViews.buckets,
+      previous_buckets: response.pageViews.previousBuckets,
+      total: response.pageViews.total,
+      previous_total: response.pageViews.previousTotal,
+      has_previous_data: response.pageViews.previousTotal > 0,
+    };
   },
 };

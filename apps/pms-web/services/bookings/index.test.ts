@@ -22,6 +22,12 @@ vi.mock("../api/unsupported", () => ({
 }));
 
 import { bookingsService, HIDDEN_GUEST_CONTACT } from ".";
+import { calendarService } from "../calendar";
+import { createElement } from "react";
+import { create } from "react-test-renderer";
+import MobileCalendar, { calendarLaneTop } from "../../components/calendar/MobileCalendar";
+// prettier-ignore
+import { bookingSettlementLabel, expectedPaymentMethodLabel } from "../../components/bookings/BookingStaySummary";
 
 const reservation = {
   guestBookingId: "booking-1",
@@ -45,6 +51,20 @@ const reservation = {
     balanceAmount: { amountDecimal: "155.00", currency: "EUR" },
   },
 };
+
+// prettier-ignore
+const roomTypes = ["Suite", "Studio"].map((name, index) => ({ roomTypeId: `type-${index + 1}`, name, category: "", occupancyLimits: { total: index ? 4 : 2 }, baseRate: { amountDecimal: "100.00", currency: "EUR" }, roomCount: 1, ratePlans: [{ ratePlanId: `plan-${index + 1}`, name: `Plan ${index + 1}`, rateType: "flexible", baseRate: { amountDecimal: "100.00", currency: "EUR" }, active: true }] }));
+// prettier-ignore
+const assignments = [
+  { assignmentId: "a-1", roomTypeId: "type-1", ratePlanId: "plan-1", roomId: "room-1", roomNumber: "101", position: 1, channel: "direct", stay: { checkIn: "2026-09-10", checkOut: "2026-09-12", adults: 1, children: 0 }, nightly: [{ serviceDate: "2026-09-10", applied: { amountDecimal: "100.00", currency: "EUR" }, evidenceQuality: "exact" }] },
+  { assignmentId: "a-2", roomTypeId: "type-2", ratePlanId: "plan-2", roomId: "room-2", roomNumber: "202", position: 2, channel: "direct", stay: { checkIn: "2026-09-12", checkOut: "2026-09-15", adults: 2, children: 1 }, nightly: [{ serviceDate: "2026-09-12", applied: { amountDecimal: "180.00", currency: "EUR" }, evidenceQuality: "exact" }] },
+];
+// prettier-ignore
+const heterogeneousReservation = { ...reservation, stay: { checkIn: "2026-08-01", checkOut: "2026-08-02", adults: 3, children: 1 }, assignments, roomCount: 2, payment: { method: null, expectedMethod: "cash", status: "unpaid" } };
+// prettier-ignore
+const reservationPage = (item: object) => ({ items: [item], pagination: { total: 1, limit: 500, offset: 0 } });
+// prettier-ignore
+const calendarResponse = (item: object) => async (endpoint: string) => endpoint.endsWith("/room-types") ? { items: roomTypes } : endpoint.includes("/reservations?") ? reservationPage(item) : { items: [] };
 
 describe("PMS target booking projection", () => {
   beforeEach(() => {
@@ -165,8 +185,53 @@ describe("PMS target booking projection", () => {
       idempotencyKey: "pms.booking.mark-paid:booking-1:v1",
     });
   });
-});
 
+  it("maps exact and partial stay evidence without copying booking-wide values", async () => {
+    // prettier-ignore
+    mocks.get.mockImplementation(async (endpoint: string) => endpoint.endsWith("/room-types") ? { items: roomTypes } : reservationPage(heterogeneousReservation));
+    const complete = (await bookingsService.list()).bookings[0]!;
+    expect(complete.expectedPaymentMethod).toBe("cash");
+    // prettier-ignore
+    expect(complete.stays).toMatchObject([{ position: 0, roomName: "Suite", ratePlanName: "Plan 1", checkIn: "2026-09-10", adults: 1, nightly: [{ appliedAmount: 100 }] }, { position: 1, roomName: "Studio", ratePlanName: "Plan 2", checkIn: "2026-09-12", adults: 2, nightly: [{ appliedAmount: 180 }] }]);
+    // prettier-ignore
+    const partialReservation = { ...heterogeneousReservation, assignments: [assignments[0], { ...assignments[1], stay: undefined, nightly: [] }] };
+    // prettier-ignore
+    mocks.get.mockImplementation(async (endpoint: string) => endpoint.endsWith("/room-types") ? { items: roomTypes } : reservationPage(partialReservation));
+    // prettier-ignore
+    expect((await bookingsService.list()).bookings[0]!.stays[1]).toMatchObject({ checkIn: null, checkOut: null, adults: null, children: null, nightly: [] });
+  });
+  it("surfaces target read errors", async () => {
+    mocks.get.mockRejectedValue(new Error("read model unavailable"));
+    await expect(bookingsService.get("booking-1")).rejects.toThrow("read model unavailable");
+  });
+});
+describe("PMS target calendar projection", () => {
+  it("keeps one reservation identity while placing each exact stay independently", async () => {
+    mocks.resolvePropertyId.mockResolvedValue("property-1");
+    mocks.get.mockImplementation(calendarResponse(heterogeneousReservation));
+    const result = await calendarService.getCalendarData("2026-09-10", "2026-09-16");
+    // prettier-ignore
+    expect(result.bookings).toMatchObject([{ id: "booking-1", bookingReference: "VAY-1", roomPosition: 0, checkIn: "2026-09-10", checkOut: "2026-09-12" }, { id: "booking-1", bookingReference: "VAY-1", roomPosition: 1, checkIn: "2026-09-12", checkOut: "2026-09-15" }]);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-11T12:00:00Z"));
+    // prettier-ignore
+    const mobile = create(createElement(MobileCalendar, { currentMonth: new Date(), bookings: result.bookings.map((booking) => ({ ...booking, checkIn: "2026-09-10", checkOut: "2026-09-12" })), blocks: [], roomTypes: [], onMonthChange: vi.fn(), onSelectBooking: vi.fn(), onNewBooking: vi.fn(), onBlockRoom: vi.fn(), onSelectBlock: vi.fn() }));
+    try {
+      expect(JSON.stringify(mobile.toJSON())).toContain("Room 1 of 2");
+      expect(JSON.stringify(mobile.toJSON())).toContain("Room 2 of 2");
+      expect([0, 1].map(calendarLaneTop)).toEqual([6, 42]);
+    } finally {
+      mobile.unmount();
+      vi.useRealTimers();
+    }
+  });
+  it("labels every expected method without using settlement state", () => {
+    // prettier-ignore
+    expect((["unknown", "pay_at_property", "bank_transfer", "manual_card", "cash", "other"] as const).map(expectedPaymentMethodLabel)).toEqual(["Not specified", "Pay at property", "Bank transfer", "Manual card", "Cash", "Other"]);
+    // prettier-ignore
+    expect([`${expectedPaymentMethodLabel("bank_transfer")}: ${bookingSettlementLabel({ balanceAmount: 100, currency: "EUR", depositRequired: false, paymentStatus: "unpaid", totalAmount: 100 })}`, `${expectedPaymentMethodLabel("manual_card")}: ${bookingSettlementLabel({ balanceAmount: 0, currency: "EUR", depositRequired: false, paymentStatus: "paid", totalAmount: 100 })}`]).toEqual(["Bank transfer: €100 outstanding", "Manual card: Payment recorded"]);
+  });
+});
 describe("PMS guest contact projection", () => {
   it("marks masked additional guest contact as read-only", async () => {
     mocks.resolvePropertyId.mockResolvedValue("property-1");

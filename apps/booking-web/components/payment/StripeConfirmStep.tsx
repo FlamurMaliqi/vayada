@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import { useStripe, useElements, PaymentElement } from "@stripe/react-stripe-js";
@@ -36,6 +36,7 @@ interface StripeConfirmStepProps {
   // Soft-hold draft id from POST /bookings; pass it to
   // confirmAuthorization to materialize the real booking row.
   draftId: string | null;
+  confirmationToken?: string;
   slug: string;
   formatPrice: (amount: number, fromCurrency: string) => string;
   formatDate: (date: string | Date, locale?: string) => string;
@@ -65,6 +66,7 @@ export default function StripeConfirmStep({
   grandTotal,
   booking,
   draftId,
+  confirmationToken,
   slug,
   formatPrice,
   formatDate,
@@ -84,21 +86,29 @@ export default function StripeConfirmStep({
   const tc = useTranslations("common");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const confirmationStarted = useRef(false);
 
   const handleConfirmPayment = async () => {
-    if (!stripe || !elements) return;
+    if (!stripe || !elements || confirmationStarted.current) return;
 
+    confirmationStarted.current = true;
     setSubmitting(true);
     setError("");
 
     try {
+      const localePrefix = locale === "en" ? "" : `/${locale}`;
+      const confirmationUrl = new URL(`${localePrefix}/confirmation`, window.location.origin);
+      confirmationUrl.searchParams.set("booking", booking.bookingReference);
+      if (confirmationToken) confirmationUrl.searchParams.set("token", confirmationToken);
       const { error: stripeError } = await stripe.confirmPayment({
         elements,
+        confirmParams: { return_url: confirmationUrl.toString() },
         redirect: "if_required",
       });
 
       if (stripeError) {
         setError(stripeError.message || "Payment failed");
+        confirmationStarted.current = false;
         setSubmitting(false);
         return;
       }
@@ -121,9 +131,14 @@ export default function StripeConfirmStep({
         }),
       );
       clearPendingBookingCreate();
-      router.push(`/booking/${materialized.bookingReference}`);
-    } catch (err: any) {
-      setError(err.message || "Payment confirmation failed");
+      const confirmationParams = new URLSearchParams({
+        booking: materialized.bookingReference,
+      });
+      if (confirmationToken) confirmationParams.set("token", confirmationToken);
+      router.push(`/confirmation?${confirmationParams}`);
+    } catch (err: unknown) {
+      setError(err instanceof Error && err.message ? err.message : "Payment confirmation failed");
+      confirmationStarted.current = false;
       setSubmitting(false);
     }
   };

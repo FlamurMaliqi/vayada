@@ -37,10 +37,12 @@ import {
 } from "./platform/workosWebhooks.js";
 import { createPublicRuntimeRepositories } from "./publicRuntime.js";
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
+import { createTargetBookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
 import { createTargetPmsInventoryPublicOfferProjection } from "./domains/pmsInventoryPublicOfferProjection.js";
 import { createTargetPmsInventoryReservationPort } from "./domains/pmsInventoryReservation.js";
 import { createTargetPmsRoomInventoryReadPort } from "./domains/pmsRoomInventoryReadModel.js";
 import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
+import { createPgPmsChannexManagementReadRepository } from "./domains/pmsChannexManagementReadModel.js";
 import { createPgHotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
 import { createPgPropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
 import { createPgPropertySetupDraftRepository } from "./domains/propertySetupDraftRepository.js";
@@ -52,6 +54,8 @@ import { createPgPmsRoomPublicationReadModel } from "./domains/pmsRoomPublicatio
 import { createPgPropertySetupFinanceOwnerScopePort } from "./domains/propertySetupFinanceOwnerScope.js";
 import { createPgPropertySetupPmsOwnerRepository } from "./domains/propertySetupPmsOwnerRepository.js";
 import { createPgPmsPricingReadModel } from "./domains/pmsPricingReadModel.js";
+import { createPgPmsManualBookingCommandRepository } from "./domains/pmsManualBookingCommandRepository.js";
+import { createPmsManualBookingProductionCommandConfig } from "./domains/pmsManualBookingProductionRuntime.js";
 import { createPgPmsRecurringPricingReadModel } from "./domains/pmsRecurringPricingReadModel.js";
 import { createPgPmsMandatoryChargeConfirmationReadModel } from "./domains/pmsMandatoryChargeConfirmationReadModel.js";
 import { createPgHotelCatalogOperatingCalendarPropertyProfileEvidencePort } from "./domains/hotelCatalogOperatingCalendarPropertyProfileEvidence.js";
@@ -122,12 +126,17 @@ import { createPgMarketplaceAdminRepository } from "./routes/marketplaceAdmin.js
 import { createPgHotelAccountInviteRepository } from "./routes/hotelAccountInvites.js";
 import { createPgMarketplaceHotelProfileStatusRepository } from "./routes/marketplaceHotelProfileStatus.js";
 import { createPgMarketplaceHotelSelfServiceRepository } from "./routes/marketplaceHotelSelfService.js";
+import { createPgMarketplaceAffiliateAdminRepository } from "./domains/marketplaceAffiliateAdminRepository.js";
+import { createPgFinanceAffiliateCommissionRepository } from "./domains/financeAffiliateCommissionRepository.js";
 import { createPgMarketplaceCreatorSelfServiceRepository } from "./routes/marketplaceCreatorSelfService.js";
 import { createPgSharedHotelSetupStatusRepository } from "./platform/sharedHotelSetupStatusReadModel.js";
 import { createPgIdentityAdminUsersReadRepository } from "./routes/identityAdminUsers.js";
 import { createPgIdentityPrivacyRepository } from "./routes/identityPrivacy.js";
 import { createPgMarketplaceCreatorPlatformConnectionRepository } from "./routes/marketplaceCreatorPlatformConnections.js";
 import { createTargetPlatformAdminDashboardRepository } from "./routes/platform/admin/dashboard/bookingCompatible.js";
+import { createPgPlatformPropertyLifecycleCommandRepository } from "./domains/platformPropertyLifecycleCommandRepository.js";
+import { createPgPlatformPropertyLifecycleImpactRepository } from "./domains/platformPropertyLifecycleImpactRepository.js";
+import { createPgPlatformPropertyProvisioningRepository } from "./domains/platformPropertyProvisioningRepository.js";
 import { createPgPlatformContactIntakeRepository } from "./routes/platformContactIntake.js";
 import {
   createCreatorPlatformAdapterRegistry,
@@ -304,6 +313,10 @@ const pmsOperationsRepository =
       })
     : undefined;
 
+const pmsChannexManagementRepository = pmsOperationsRepository
+  ? createPgPmsChannexManagementReadRepository({ connectionString: targetDatabaseUrl })
+  : undefined;
+
 const bookingGuestPiiPort =
   config.pmsOperationsSource === "target"
     ? createTargetBookingGuestPiiPort({
@@ -315,7 +328,12 @@ const pmsOperationsCommandRepository = pmsOperationsRepository
   ? createTargetPmsOperationsCommandRepository({
       connectionString: targetDatabaseUrl,
       readRepository: pmsOperationsRepository,
+      stripePaymentProvider: stripeBookingPaymentProvider,
     })
+  : undefined;
+
+const bookingAcceptanceSettings = pmsOperationsRepository
+  ? createTargetBookingAcceptanceSettingsPort({ connectionString: targetDatabaseUrl })
   : undefined;
 
 const pmsModuleActivationRepository = config.auth
@@ -568,8 +586,17 @@ const pmsRoomPublicationRuntime = bookingDesignMediaAdapter
         amenityVocabulary,
         mediaResolver,
       });
-      return { commandRepository, readModel };
+      return { amenityVocabulary, mediaResolver, commandRepository, readModel };
     })()
+  : undefined;
+
+const pmsManualBookingCommandConfig = createPmsManualBookingProductionCommandConfig({
+  connectionString: targetDatabaseUrl,
+  pmsOperationsReady: Boolean(pmsOperationsRepository),
+  roomPublication: pmsRoomPublicationRuntime,
+});
+const pmsManualBookingCommandRepository = pmsManualBookingCommandConfig
+  ? createPgPmsManualBookingCommandRepository(pmsManualBookingCommandConfig)
   : undefined;
 
 const bookingGuestPolicyCurrentOwnerEvidence = createBookingGuestPolicyCurrentOwnerEvidenceAdapter({
@@ -605,6 +632,14 @@ const propertySetupRouteStateReadPort = createPropertySetupRouteStateReadPort({
 });
 
 const marketplaceCreatorSelfServiceRepository = createPgMarketplaceCreatorSelfServiceRepository({
+  connectionString: targetDatabaseUrl,
+});
+
+const marketplaceAffiliateAdminRepository = createPgMarketplaceAffiliateAdminRepository({
+  connectionString: targetDatabaseUrl,
+});
+
+const financeAffiliateCommissionRepository = createPgFinanceAffiliateCommissionRepository({
   connectionString: targetDatabaseUrl,
 });
 
@@ -650,6 +685,7 @@ const authSessionHandoffRepository =
     : undefined;
 
 const app = buildApp({
+  trustProxy: ["loopback", "linklocal", "uniquelocal"],
   auth: buildAuthOptions(config.auth),
   browserAllowedOrigins: config.authSession?.authAllowedOrigins ?? [],
   authSession:
@@ -785,6 +821,20 @@ const app = buildApp({
   bookingPromoCodesRepository,
   bookingDashboardMetricsReadPort,
   pmsOperationsRepository,
+  pmsChannexManagement: pmsChannexManagementRepository
+    ? {
+        repository: pmsChannexManagementRepository,
+        capabilityModes: {
+          connection: "observe_only",
+          provisioning: "observe_only",
+          ariSync: "observe_only",
+          bookingSync: "observe_only",
+          markups: "observe_only",
+          messaging: "observe_only",
+          iframe: "observe_only",
+        },
+      }
+    : undefined,
   propertyPlanReadRepository,
   pmsManualBookingPreview:
     pmsOperationsRepository && pmsRoomPublicationRuntime
@@ -807,9 +857,13 @@ const app = buildApp({
           },
         }
       : undefined,
+  pmsManualBookingCreate: pmsManualBookingCommandRepository
+    ? { command: pmsManualBookingCommandRepository }
+    : undefined,
   pmsModuleActivationRepository,
   pmsReviewRepository: createPgPmsReviewRepository({ connectionString: targetDatabaseUrl }),
   pmsOperationsCommandRepository,
+  bookingAcceptanceSettings,
   pmsRoomPublication: pmsRoomPublicationRuntime
     ? {
         mediaCommandPort: pmsRoomPublicationRuntime.commandRepository,
@@ -834,6 +888,18 @@ const app = buildApp({
   platformAdminDashboardRepository: createTargetPlatformAdminDashboardRepository({
     connectionString: targetDatabaseUrl,
   }),
+  platformPropertyLifecycle: {
+    impactRepository: createPgPlatformPropertyLifecycleImpactRepository({
+      connectionString: targetDatabaseUrl,
+    }),
+    commandRepository: createPgPlatformPropertyLifecycleCommandRepository({
+      connectionString: targetDatabaseUrl,
+    }),
+    provisioningRepository: createPgPlatformPropertyProvisioningRepository({
+      connectionString: targetDatabaseUrl,
+      setupRepository: sharedHotelSetupStatusRepository,
+    }),
+  },
   pmsOperationsAllowedOrigins: config.pmsOperationsAllowedOrigins,
   bookingSettingsRepository,
   bookingSettingsWriteRepository: bookingSettingsRepository,
@@ -865,6 +931,11 @@ const app = buildApp({
   marketplaceHotelSelfServiceRepository: createPgMarketplaceHotelSelfServiceRepository({
     connectionString: targetDatabaseUrl,
   }),
+  marketplaceAffiliateAdminRepository,
+  financeAffiliateCommissions: {
+    repository: financeAffiliateCommissionRepository,
+    affiliateScope: marketplaceAffiliateAdminRepository,
+  },
   marketplaceCreatorSelfServiceRepository,
   marketplaceCreatorPlatformConnections: creatorPlatformConnectionRuntime,
   marketplaceCreatorProfileMediaRepository: platformMediaRuntime?.profileMediaRepository,
@@ -931,6 +1002,7 @@ app.addHook("onClose", async () => {
     bookingDesignMediaAdapter?.close?.(),
     pmsRoomPublicationRuntime?.commandRepository.close(),
     pmsRoomPublicationRuntime?.readModel.close(),
+    pmsManualBookingCommandRepository?.close(),
     ...(!platformMediaRuntime ? [hotelCatalogStep1Repository.close()] : []),
   ]);
 });
@@ -1163,7 +1235,14 @@ let activeBookingLifecycleRun: Promise<void> | undefined;
 const runBookingLifecycle = () => {
   if (!bookingLifecycleStore || activeBookingLifecycleRun) return;
   activeBookingLifecycleRun = runBookingLifecycleSchedulerJobs(bookingLifecycleStore)
-    .then(() => undefined)
+    .then((result) => {
+      if (result.failed > 0) {
+        app.log.warn(
+          { failed: result.failed, failures: result.runs.flatMap((run) => run.failures) },
+          "Booking lifecycle sweep completed with failures",
+        );
+      }
+    })
     .catch((error: unknown) => app.log.warn({ err: error }, "Booking lifecycle sweep failed"))
     .finally(() => {
       activeBookingLifecycleRun = undefined;

@@ -12,6 +12,8 @@ export type StripeBookingPaymentIntent = {
   propertyId: string | null;
   bookingReference: string | null;
   providerAccountRef: string | null;
+  cardBrand?: string | null;
+  cardLast4?: string | null;
 };
 
 export type StripeBookingPaymentProvider = {
@@ -22,9 +24,14 @@ export type StripeBookingPaymentProvider = {
     amountMinor: number;
     applicationFeeAmountMinor: number;
     currency: string;
+    captureMethod: "automatic" | "manual";
     idempotencyKey: string;
   }): Promise<StripeBookingPaymentIntent>;
   retrievePaymentIntent(paymentIntentId: string): Promise<StripeBookingPaymentIntent>;
+  capturePaymentIntent(
+    paymentIntentId: string,
+    idempotencyKey: string,
+  ): Promise<StripeBookingPaymentIntent>;
   cancelPaymentIntent(
     paymentIntentId: string,
     idempotencyKey: string,
@@ -76,7 +83,7 @@ export function createStripeBookingPaymentProvider(config: {
           [
             ["amount", String(input.amountMinor)],
             ["currency", input.currency.toLowerCase()],
-            ["capture_method", "automatic"],
+            ["capture_method", input.captureMethod],
             ["payment_method_types[0]", "card"],
             ["transfer_data[destination]", input.providerAccountRef],
             ["metadata[vayada_property_id]", input.propertyId],
@@ -100,7 +107,20 @@ export function createStripeBookingPaymentProvider(config: {
 
     async retrievePaymentIntent(paymentIntentId) {
       return paymentIntent(
-        await request("GET", `/payment_intents/${encodeURIComponent(paymentIntentId)}`),
+        await request("GET", `/payment_intents/${encodeURIComponent(paymentIntentId)}`, [
+          ["expand[]", "payment_method"],
+        ]),
+      );
+    },
+
+    async capturePaymentIntent(paymentIntentId, idempotencyKey) {
+      return paymentIntent(
+        await request(
+          "POST",
+          `/payment_intents/${encodeURIComponent(paymentIntentId)}/capture`,
+          [],
+          idempotencyKey,
+        ),
       );
     },
 
@@ -131,6 +151,7 @@ function paymentIntent(value: StripeObject): StripeBookingPaymentIntent {
   ) {
     throw new Error("Stripe returned an invalid PaymentIntent.");
   }
+  const card = object(object(value["payment_method"])["card"]);
   return {
     paymentIntentId,
     clientSecret: text(value["client_secret"]),
@@ -140,6 +161,8 @@ function paymentIntent(value: StripeObject): StripeBookingPaymentIntent {
     propertyId: text(object(value["metadata"])["vayada_property_id"]),
     bookingReference: text(object(value["metadata"])["vayada_booking_reference"]),
     providerAccountRef: text(object(value["transfer_data"])["destination"]),
+    cardBrand: text(card["brand"]),
+    cardLast4: /^\d{4}$/.test(text(card["last4"]) ?? "") ? text(card["last4"]) : null,
   };
 }
 

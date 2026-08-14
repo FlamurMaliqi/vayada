@@ -157,6 +157,8 @@
   "dashboard.pageViewsModal.totalInWindow": "区间总计",
   "dashboard.pageViewsModal.openLabel": "打开页面浏览详情",
   "dashboard.pageViewsModal.close": "关闭",
+  "dashboard.pageViewsModal.error": "无法加载页面浏览数据。",
+  "dashboard.pageViewsModal.retry": "重试",
   "dashboard.bookingsBySource.title": "按来源统计预订",
   "dashboard.bookingsBySource.totalRevenue": "总收入",
   "dashboard.bookingsBySource.noData": "该时段暂无预订数据",

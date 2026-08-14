@@ -22,11 +22,15 @@
  *   through permissioned finance services.
  */
 
+import type { FinancePlatformAffiliatePayoutRepository } from "./platformAffiliatePayouts.js";
+
 export * from "./paymentReadiness.js";
 export * from "./paymentReadinessParsing.js";
 export * from "./paymentReadinessSnapshot.js";
 export * from "./manualBookingSettlement.js";
 export * from "./subscriptions.js";
+export * from "./platformAffiliatePayouts.js";
+export * from "./affiliateCommission.js";
 
 // ---------------------------------------------------------------------------
 // Scalar aliases
@@ -1017,6 +1021,7 @@ export type FinanceAffiliateRepository = {
 export type FinancePropertyReadRepository = FinancePropertySettingsReadRepository &
   Partial<FinancePropertyOperationsReadRepository> &
   Partial<FinanceAffiliateRepository> &
+  Partial<FinancePlatformAffiliatePayoutRepository> &
   Partial<FinancePropertyCommandRepository>;
 
 export function toFinancePaymentSettingsResponse(

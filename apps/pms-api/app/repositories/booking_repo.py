@@ -662,6 +662,7 @@ WHERE id = $1""",
     @staticmethod
     async def update_booking_accepted(
         booking_id: str,
+        finalization_token: str,
         platform_fee: float,
         affiliate_commission: float,
         property_payout: float,
@@ -677,6 +678,8 @@ WHERE id = $1""",
                 property_payout_amount = $5,
                 updated_at = now()
             WHERE id = $1
+              AND status = 'pending'
+              AND finalization_token = $6
             RETURNING *
             """,
             booking_id,
@@ -684,8 +687,134 @@ WHERE id = $1""",
             platform_fee,
             affiliate_commission,
             property_payout,
+            finalization_token,
         )
         return dict(row) if row else None
+
+    @staticmethod
+    async def claim_finalization(booking_id: str, finalization_token: str) -> bool:
+        row = await Database.fetchrow(
+            """
+            UPDATE bookings
+            SET finalization_started_at = now(),
+                finalization_token = $2,
+                updated_at = now()
+            WHERE id = $1
+              AND (
+                  status = 'pending'
+                  OR (status = 'confirmed' AND finalization_started_at IS NOT NULL)
+              )
+              AND finalization_completed_at IS NULL
+              AND (
+                  finalization_token IS NULL
+                  OR finalization_started_at < now() - interval '15 minutes'
+              )
+            RETURNING id
+            """,
+            booking_id,
+            finalization_token,
+        )
+        return row is not None
+
+    @staticmethod
+    async def release_finalization_claim(booking_id: str, finalization_token: str) -> None:
+        await Database.execute(
+            """
+            UPDATE bookings
+            SET finalization_started_at = CASE
+                    WHEN status = 'pending' THEN NULL
+                    ELSE finalization_started_at
+                END,
+                finalization_token = NULL,
+                updated_at = now()
+            WHERE id = $1
+              AND status IN ('pending', 'confirmed')
+              AND finalization_completed_at IS NULL
+              AND finalization_token = $2
+            """,
+            booking_id,
+            finalization_token,
+        )
+
+    @staticmethod
+    async def mark_finalization_effect(
+        booking_id: str, finalization_token: str, effect: str
+    ) -> dict | None:
+        columns = {
+            "guest": "guest_confirmation_sent_at",
+            "host": "host_confirmation_sent_at",
+            "ari": "ari_handoff_completed_at",
+        }
+        column = columns.get(effect)
+        if not column:
+            raise ValueError(f"Unknown booking finalization effect: {effect}")
+        row = await Database.fetchrow(
+            f"""
+            UPDATE bookings
+            SET {column} = COALESCE({column}, now()), updated_at = now()
+            WHERE id = $1 AND finalization_token = $2
+            RETURNING *
+            """,
+            booking_id,
+            finalization_token,
+        )
+        return dict(row) if row else None
+
+    @staticmethod
+    async def complete_finalization(booking_id: str, finalization_token: str) -> dict | None:
+        row = await Database.fetchrow(
+            """
+            UPDATE bookings
+            SET finalization_completed_at = now(),
+                finalization_token = NULL,
+                updated_at = now()
+            WHERE id = $1
+              AND status = 'confirmed'
+              AND finalization_token = $2
+              AND guest_confirmation_sent_at IS NOT NULL
+              AND host_confirmation_sent_at IS NOT NULL
+              AND ari_handoff_completed_at IS NOT NULL
+            RETURNING *
+            """,
+            booking_id,
+            finalization_token,
+        )
+        return dict(row) if row else None
+
+    @staticmethod
+    async def notification_was_delivered(
+        booking_id: str, notification_type: str, recipient_email: str
+    ) -> bool:
+        return bool(
+            await Database.fetchval(
+                """
+                SELECT 1 FROM booking_notification_deliveries
+                WHERE booking_id = $1
+                  AND notification_type = $2
+                  AND recipient_email = $3
+                """,
+                booking_id,
+                notification_type,
+                recipient_email.lower(),
+            )
+        )
+
+    @staticmethod
+    async def mark_notification_delivered(
+        booking_id: str, notification_type: str, recipient_email: str
+    ) -> None:
+        await Database.execute(
+            """
+            INSERT INTO booking_notification_deliveries (
+                booking_id, notification_type, recipient_email
+            ) VALUES ($1, $2, $3)
+            ON CONFLICT (booking_id, notification_type, recipient_email)
+            DO NOTHING
+            """,
+            booking_id,
+            notification_type,
+            recipient_email.lower(),
+        )
 
     @staticmethod
     async def assign_room(booking_id: str, room_id: str) -> dict | None:

@@ -68,6 +68,9 @@ import { createHash } from "node:crypto";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import type { PublicHotelProfileRepository } from "./aiHotels.js";
+import { createFinancePlatformAffiliatePayoutMarkPaidRepository } from "./financePlatformAffiliatePayoutMarkPaid.js";
+import { createFinancePlatformAffiliatePayoutReadRepository } from "./financePlatformAffiliatePayoutRepository.js";
+import { registerFinancePlatformAffiliatePayoutRoutes } from "./financePlatformAffiliatePayoutRoutes.js";
 import { enforceRoutePolicy, type RouteAuthorizationPolicy } from "./policy.js";
 
 const XENDIT_BANK_VALIDATION_SIDE_EFFECTS: FinanceCommandMeta["sideEffects"] = [
@@ -408,6 +411,8 @@ export async function registerFinanceRoutes(
       await options.publicHotelProfileRepository?.close?.();
     }
   });
+
+  await registerFinancePlatformAffiliatePayoutRoutes(app, { repository: options.repository });
 
   app.get<{ Params: FinancePropertyParams }>(
     "/finance/properties/:propertyId/payment-settings",
@@ -1083,7 +1088,34 @@ export function createTargetFinancePropertySettingsRepository(config: {
       max: config.max ?? 5,
     });
 
+  const platformAffiliatePayoutReads = createFinancePlatformAffiliatePayoutReadRepository({
+    query: pool.query.bind(pool),
+    connect: async () => {
+      if (!pool.connect) throw new Error("Finance read transactions are unavailable.");
+      const client = await pool.connect();
+      if (!client.release) throw new Error("Finance read client cannot release transactions.");
+      return {
+        query: client.query.bind(client),
+        release: client.release.bind(client),
+      };
+    },
+  });
+  const platformAffiliatePayoutWrites = createFinancePlatformAffiliatePayoutMarkPaidRepository({
+    connect: pool.connect
+      ? async () => {
+          const client = await pool.connect!();
+          if (!client.release) throw new Error("Finance write client cannot release transactions.");
+          return {
+            query: client.query.bind(client),
+            release: client.release.bind(client),
+          };
+        }
+      : undefined,
+  });
+
   return {
+    ...platformAffiliatePayoutReads,
+    ...platformAffiliatePayoutWrites,
     async getPaymentSettings(propertyId) {
       const row = await loadPaymentSettingsRow(pool, propertyId);
       return row ? toFinancePaymentSettingsReadModel(row) : null;

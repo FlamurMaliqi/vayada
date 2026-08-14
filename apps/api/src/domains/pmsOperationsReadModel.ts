@@ -80,6 +80,7 @@ export type PmsRoomBlockStatus = "active" | "released" | "expired";
 
 export type PmsRoomBlockSummary = {
   blockId: string;
+  version: string;
   roomTypeId: string;
   roomId: string | null;
   startsOn: PmsDate;
@@ -115,6 +116,20 @@ export type PmsOperationalAssignmentStatus =
   | "canceled"
   | "released";
 
+export type PmsExpectedPaymentMethod =
+  | "unknown"
+  | "pay_at_property"
+  | "bank_transfer"
+  | "manual_card"
+  | "cash"
+  | "other";
+
+export type PmsOperationalNight = {
+  serviceDate: PmsDate;
+  applied: PmsMoney | null;
+  evidenceQuality: "exact" | "inferred" | "missing";
+};
+
 export type PmsOperationalAssignment = {
   assignmentId: string;
   roomTypeId: string;
@@ -125,6 +140,8 @@ export type PmsOperationalAssignment = {
   assignmentStatus: PmsOperationalAssignmentStatus;
   channel: string;
   assignedAt: PmsUtcDateTime | null;
+  stay?: { checkIn: PmsDate; checkOut: PmsDate; adults: number; children: number };
+  nightly?: PmsOperationalNight[];
 };
 
 export type PmsOperationalReservation = {
@@ -147,7 +164,11 @@ export type PmsOperationalReservation = {
   bookedOffer?: { roomTypeId: string; roomName: string };
   roomCount?: number;
   pricing?: { totalAmount: PmsMoney; balanceAmount: PmsMoney };
-  payment?: { method: string | null; status: string };
+  payment?: {
+    method: string | null;
+    expectedMethod?: PmsExpectedPaymentMethod;
+    status: string;
+  };
   hostResponseDeadlineAt?: PmsUtcDateTime | null;
 };
 
@@ -333,7 +354,7 @@ export function createTargetPmsOperationsReadRepository(config: {
     async listCalendarDaysByPropertyId(propertyId, range) {
       const result = await pool.query<TargetPmsCalendarDayRow>(
         `SELECT
-           inventory.stay_date AS "stayDate",
+           inventory.stay_date::text AS "stayDate",
            inventory.room_type_id::text AS "roomTypeId",
            inventory.total_count AS "totalCount",
            inventory.assigned_count AS "assignedCount",
@@ -351,6 +372,7 @@ export function createTargetPmsOperationsReadRepository(config: {
            SELECT jsonb_agg(
                     jsonb_build_object(
                       'blockId', block.id::text,
+                      'version', concat('room-block-v', block.revision),
                       'roomTypeId', block.room_type_id::text,
                       'roomId', block.room_id::text,
                       'startsOn', block.starts_on::text,
@@ -377,8 +399,8 @@ export function createTargetPmsOperationsReadRepository(config: {
            WHERE assignment.property_id = inventory.property_id
              AND assignment.room_type_id = inventory.room_type_id
              AND assignment.assignment_status NOT IN ('canceled', 'released')
-             AND booking.check_in <= inventory.stay_date
-             AND booking.check_out > inventory.stay_date
+             AND COALESCE(assignment.check_in, booking.check_in) <= inventory.stay_date
+             AND COALESCE(assignment.check_out, booking.check_out) > inventory.stay_date
          ) assignments ON TRUE
          WHERE inventory.property_id = $1
            AND inventory.stay_date >= $2::date
@@ -398,6 +420,7 @@ export function createTargetPmsOperationsReadRepository(config: {
       const result = await pool.query<TargetPmsRoomBlockRow>(
         `SELECT
            block.id::text AS "blockId",
+           block.revision,
            block.room_type_id::text AS "roomTypeId",
            block.room_id::text AS "roomId",
            block.starts_on AS "startsOn",
@@ -546,6 +569,7 @@ type TargetPmsRoomTypeRow = {
 
 type TargetPmsRoomBlockRow = {
   blockId: string;
+  revision: number;
   roomTypeId: string;
   roomId: string | null;
   startsOn: Date | string;
@@ -596,6 +620,7 @@ type TargetPmsOperationalReservationRow = {
   balanceAmount: string | number;
   currency: string;
   paymentMethod: string | null;
+  expectedPaymentMethod: PmsExpectedPaymentMethod;
   paymentStatus: string;
   hostResponseDeadlineAt: string | null;
 };
@@ -655,6 +680,7 @@ const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
   booking.balance_amount AS "balanceAmount",
   booking.currency,
   booking.booking_metadata ->> 'paymentMethod' AS "paymentMethod",
+  booking.expected_payment_method AS "expectedPaymentMethod",
   booking.payment_status AS "paymentStatus",
   COALESCE(
     booking.booking_metadata ->> 'acceptedPaymentDeadlineAt',
@@ -705,7 +731,16 @@ LEFT JOIN LATERAL (
              'position', assignment.position,
              'assignmentStatus', assignment.assignment_status,
              'channel', assignment.channel,
-             'assignedAt', to_jsonb(assignment.assigned_at)
+             'assignedAt', to_jsonb(assignment.assigned_at),
+             'stay', CASE WHEN assignment.stay_evidence_kind = 'exact' THEN
+               jsonb_build_object(
+                 'checkIn', assignment.check_in::text,
+                 'checkOut', assignment.check_out::text,
+                 'adults', assignment.adults,
+                 'children', assignment.children
+               )
+             END,
+             'nightly', COALESCE(nightly.items, '[]'::jsonb)
            )
            ORDER BY assignment.position, assignment.created_at, assignment.id
          ) AS items
@@ -713,6 +748,36 @@ LEFT JOIN LATERAL (
   LEFT JOIN pms.rooms room
     ON room.id = assignment.room_id
    AND room.property_id = assignment.property_id
+  LEFT JOIN LATERAL (
+    SELECT jsonb_agg(
+             jsonb_build_object(
+               'serviceDate', applied.stay_date::text,
+               'applied', CASE WHEN applied.amount IS NULL THEN NULL ELSE
+                 jsonb_build_object(
+                   'amountDecimal', applied.amount::text,
+                   'currency', applied.currency
+                 )
+               END,
+               'evidenceQuality', applied.evidence_quality
+             ) ORDER BY applied.stay_date
+           ) AS items
+    FROM (
+      SELECT evidence.stay_date, evidence.currency,
+        CASE WHEN COUNT(evidence.gross_room_amount) = 0 THEN NULL
+          ELSE SUM(evidence.gross_room_amount) END AS amount,
+        (array_agg(evidence.evidence_quality ORDER BY evidence.source_revision DESC,
+          evidence.created_at DESC,evidence.id DESC))[1] AS evidence_quality
+      FROM booking.nightly_revenue_evidence evidence
+      WHERE evidence.property_id = assignment.property_id
+        AND evidence.guest_booking_id = assignment.guest_booking_id
+        AND evidence.room_type_id = assignment.room_type_id
+        AND evidence.line_position = assignment.position
+        AND evidence.economic_event NOT IN ('refund','retained_charge')
+        AND (assignment.stay_evidence_kind <> 'exact' OR
+          (evidence.stay_date >= assignment.check_in AND evidence.stay_date < assignment.check_out))
+      GROUP BY evidence.stay_date, evidence.currency
+    ) applied
+  ) nightly ON TRUE
   WHERE assignment.guest_booking_id = booking.id
     AND assignment.property_id = booking.property_id
 ) assignments ON TRUE
@@ -918,6 +983,7 @@ function toPmsRoomType(row: TargetPmsRoomTypeRow): PmsRoomType {
 function toPmsRoomBlockSummary(row: TargetPmsRoomBlockRow): PmsRoomBlockSummary {
   return {
     blockId: row.blockId,
+    version: `room-block-v${row.revision}`,
     roomTypeId: row.roomTypeId,
     roomId: row.roomId,
     startsOn: toDateOnly(row.startsOn),
@@ -996,7 +1062,11 @@ function toPmsOperationalReservation(
         currency: row.currency,
       },
     },
-    payment: { method: row.paymentMethod, status: row.paymentStatus },
+    payment: {
+      method: row.paymentMethod,
+      expectedMethod: row.expectedPaymentMethod,
+      status: row.paymentStatus,
+    },
     hostResponseDeadlineAt: toIsoDateTimeOrNull(row.hostResponseDeadlineAt),
   };
 }
@@ -1005,6 +1075,7 @@ function toRoomBlockSummaries(value: unknown): PmsRoomBlockSummary[] {
   return toRecordArray(value)
     .map((item) => ({
       blockId: String(item.blockId ?? ""),
+      version: String(item.version ?? ""),
       roomTypeId: String(item.roomTypeId ?? ""),
       roomId: typeof item.roomId === "string" ? item.roomId : null,
       startsOn: toDateOnly(String(item.startsOn ?? "")),
@@ -1013,27 +1084,68 @@ function toRoomBlockSummaries(value: unknown): PmsRoomBlockSummary[] {
       reason: String(item.reason ?? ""),
       status: toRoomBlockStatus(item.status),
     }))
-    .filter((item) => item.blockId.length > 0 && item.roomTypeId.length > 0);
+    .filter(
+      (item) => item.blockId.length > 0 && item.version.length > 0 && item.roomTypeId.length > 0,
+    );
 }
 
 function toOperationalAssignments(value: unknown): PmsOperationalAssignment[] {
   return toRecordArray(value)
-    .map((item) => ({
-      assignmentId: String(item.assignmentId ?? ""),
-      roomTypeId: String(item.roomTypeId ?? ""),
-      ratePlanId: typeof item.ratePlanId === "string" ? item.ratePlanId : null,
-      roomId: typeof item.roomId === "string" ? item.roomId : null,
-      roomNumber: typeof item.roomNumber === "string" ? item.roomNumber : null,
-      position: toInteger(Number(item.position ?? 0)),
-      assignmentStatus: toAssignmentStatus(item.assignmentStatus),
-      channel: String(item.channel ?? "direct"),
-      assignedAt: toIsoDateTimeOrNull(
-        typeof item.assignedAt === "string" || item.assignedAt instanceof Date
-          ? item.assignedAt
-          : null,
-      ),
-    }))
+    .map((item) => {
+      const stay = record(item.stay);
+      return {
+        assignmentId: String(item.assignmentId ?? ""),
+        roomTypeId: String(item.roomTypeId ?? ""),
+        ratePlanId: typeof item.ratePlanId === "string" ? item.ratePlanId : null,
+        roomId: typeof item.roomId === "string" ? item.roomId : null,
+        roomNumber: typeof item.roomNumber === "string" ? item.roomNumber : null,
+        position: toInteger(Number(item.position ?? 0)),
+        assignmentStatus: toAssignmentStatus(item.assignmentStatus),
+        channel: String(item.channel ?? "direct"),
+        assignedAt: toIsoDateTimeOrNull(
+          typeof item.assignedAt === "string" || item.assignedAt instanceof Date
+            ? item.assignedAt
+            : null,
+        ),
+        ...(stay
+          ? {
+              stay: {
+                checkIn: toDateOnly(String(stay.checkIn ?? "")),
+                checkOut: toDateOnly(String(stay.checkOut ?? "")),
+                adults: toInteger(Number(stay.adults ?? 0)),
+                children: toInteger(Number(stay.children ?? 0)),
+              },
+            }
+          : {}),
+        nightly: toOperationalNights(item.nightly),
+      };
+    })
     .filter((item) => item.assignmentId.length > 0 && item.roomTypeId.length > 0);
+}
+
+function toOperationalNights(value: unknown): PmsOperationalNight[] {
+  return toRecordArray(value).map((item) => {
+    const applied = record(item.applied);
+    return {
+      serviceDate: toDateOnly(String(item.serviceDate ?? "")),
+      applied: applied
+        ? {
+            amountDecimal: toDecimalString(String(applied.amountDecimal ?? "0")),
+            currency: String(applied.currency ?? ""),
+          }
+        : null,
+      evidenceQuality:
+        item.evidenceQuality === "exact" || item.evidenceQuality === "inferred"
+          ? item.evidenceQuality
+          : "missing",
+    };
+  });
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function toRecordArray(value: unknown): Record<string, unknown>[] {
@@ -1244,7 +1356,11 @@ function toInteger(value: string | number): number {
 
 function toDateOnly(value: Date | string): string {
   if (value instanceof Date) {
-    return Number.isFinite(value.getTime()) ? value.toISOString().slice(0, 10) : "";
+    if (!Number.isFinite(value.getTime())) return "";
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, "0");
+    const day = String(value.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
   }
 
   return value.slice(0, 10);

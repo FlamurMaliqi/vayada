@@ -49,6 +49,7 @@ export type ResourceRelationship =
 export type PermissionKey =
   | "platform.admin.read"
   | "platform.finance.read"
+  | "platform.finance.manage"
   | "platform.property.status.manage"
   | "platform.user.suspend"
   | "hotel_catalog.setup.read"
@@ -67,6 +68,7 @@ export type PermissionKey =
   | "marketplace.collaboration.read"
   | "marketplace.collaboration.write"
   | "marketplace.collaboration.review"
+  | "marketplace.affiliate.manage"
   | "marketplace.profile.manage"
   | "marketplace.trip.read"
   | "marketplace.trip.manage"

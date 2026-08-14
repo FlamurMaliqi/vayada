@@ -216,18 +216,15 @@ export function createPgSharedHotelSetupStatusRepository(config: {
     async getPropertyProfile({ organizationId, propertyId }) {
       return loadPropertyProfile(pool, organizationId, propertyId);
     },
-    async createPropertyProfile({ organizationId, idempotencyKey, correlationId, profile }) {
+    async createPropertyProfile(input) {
       const propertyId = await writePropertyProfile(pool, {
-        organizationId,
-        idempotencyKey,
-        correlationId,
-        profile,
+        ...input,
         mode: "create",
       });
       if (!propertyId) {
         throw new Error("Created shared property profile did not return a property id");
       }
-      const created = await loadPropertyProfile(pool, organizationId, propertyId);
+      const created = await loadPropertyProfile(pool, input.organizationId, propertyId);
       if (!created) {
         throw new Error("Created shared property profile could not be loaded");
       }
@@ -607,6 +604,9 @@ async function writePropertyProfile(
         idempotencyKey: string;
         correlationId: string;
         profile: SharedPropertyProfileInput;
+        audit?: { actorUserId: string; requestId: string; receivedAt: string; reason?: string };
+        targetAccountUserId?: string;
+        provisioningReference?: string;
       }
     | {
         mode: "update";
@@ -624,10 +624,40 @@ async function writePropertyProfile(
     const client = await pool.connect();
     const keyHash = sha256(input.idempotencyKey);
     const fingerprint = sha256(
-      JSON.stringify({ organizationId: input.organizationId, profile: payload }),
+      JSON.stringify({
+        organizationId: input.organizationId,
+        targetAccountUserId: input.targetAccountUserId ?? null,
+        provisioningReference: input.provisioningReference ?? null,
+        reason: input.audit?.reason ?? null,
+        profile: payload,
+      }),
     );
     try {
       await client.query("BEGIN");
+      const organization = await client.query(
+        `SELECT id
+         FROM identity.organizations
+         WHERE id = $1::uuid
+           AND kind = 'hotel_group'
+           AND status = 'active'
+           AND ($2::uuid IS NULL OR EXISTS (
+             SELECT 1 FROM identity.organization_memberships membership
+             JOIN identity.users account ON account.id = membership.user_id
+             WHERE membership.organization_id = identity.organizations.id
+               AND membership.user_id = $2::uuid
+               AND membership.status = 'active' AND account.status = 'active'
+           ))
+         FOR UPDATE`,
+        [input.organizationId, input.targetAccountUserId ?? null],
+      );
+      if (organization.rows.length !== 1) {
+        throw new Error("Active hotel-group organization was not found");
+      }
+      if (input.provisioningReference) {
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+          input.provisioningReference,
+        ]);
+      }
       const replay = await findPropertyCreateReplay(
         client,
         input.organizationId,
@@ -638,6 +668,15 @@ async function writePropertyProfile(
         await client.query("COMMIT");
         return replay;
       }
+      const provisionedPropertyId = input.provisioningReference
+        ? await findProvisionedProperty(
+            client,
+            input.organizationId,
+            input.provisioningReference,
+            input.targetAccountUserId ?? null,
+            fingerprint,
+          )
+        : null;
       const idempotencyId = await reservePropertyCreate(
         client,
         input.organizationId,
@@ -656,17 +695,10 @@ async function writePropertyProfile(
         await client.query("COMMIT");
         return concurrentReplay;
       }
-      const organization = await client.query(
-        `SELECT id
-         FROM identity.organizations
-         WHERE id = $1::uuid
-           AND kind = 'hotel_group'
-           AND status = 'active'
-         FOR UPDATE`,
-        [input.organizationId],
-      );
-      if (organization.rows.length !== 1) {
-        throw new Error("Active hotel-group organization was not found");
+      if (provisionedPropertyId) {
+        await completePropertyCreate(client, idempotencyId, provisionedPropertyId);
+        await client.query("COMMIT");
+        return provisionedPropertyId;
       }
       const result = await client.query<PropertyProfileWriteRow>(createPropertyProfileSql(), [
         input.organizationId,
@@ -675,6 +707,17 @@ async function writePropertyProfile(
       const propertyId = result.rows[0]?.propertyId;
       if (!propertyId)
         throw new Error("Created shared property profile did not return a property id");
+      if (input.provisioningReference) {
+        await linkProvisioningReference(client, {
+          propertyId,
+          provisioningReference: input.provisioningReference,
+          targetAccountUserId: input.targetAccountUserId ?? null,
+          fingerprint,
+        });
+      }
+      if (input.audit) {
+        await auditPropertyCreate(client, input, idempotencyId, propertyId);
+      }
       await completePropertyCreate(client, idempotencyId, propertyId);
       await client.query("COMMIT");
       return propertyId;
@@ -743,12 +786,117 @@ async function findPropertyCreateReplay(
   const existing = result.rows[0];
   if (!existing) return null;
   if (existing.requestFingerprintHash !== fingerprint) {
-    throw propertyCreateConflict("idempotency_key_conflict");
+    throw propertyCreateConflict("idempotency_key_conflict", existing.propertyId ?? undefined);
   }
   if (existing.status !== "completed" || !existing.propertyId) {
     throw propertyCreateConflict("command_in_progress");
   }
   return existing.propertyId;
+}
+
+async function findProvisionedProperty(
+  client: SharedHotelSetupQueryClient,
+  organizationId: string,
+  provisioningReference: string,
+  targetAccountUserId: string | null,
+  fingerprint: string,
+): Promise<string | null> {
+  const result = await client.query<{
+    propertyId: string;
+    belongsToOrganization: boolean;
+    targetAccountUserId: string | null;
+    fingerprint: string | null;
+  }>(
+    `SELECT source.property_id::text AS "propertyId",
+       source.metadata ->> 'targetAccountUserId' AS "targetAccountUserId",
+       source.metadata ->> 'requestFingerprint' AS fingerprint,
+       EXISTS (
+         SELECT 1 FROM identity.organization_resource_links owner_link
+         WHERE owner_link.organization_id = $1::uuid
+           AND owner_link.product = 'hotel_catalog'
+           AND owner_link.resource_type = 'property'
+           AND owner_link.resource_id = source.property_id::text
+           AND owner_link.relationship = 'owner' AND owner_link.status = 'active'
+       ) AS "belongsToOrganization"
+     FROM hotel_catalog.property_source_links source
+     WHERE source.source_system = 'platform'
+       AND source.source_table = 'platform_admin_provisioning'
+       AND source.source_id = $2
+       AND source.status = 'active'`,
+    [organizationId, provisioningReference],
+  );
+  const existing = result.rows[0];
+  if (!existing) return null;
+  if (
+    !existing.belongsToOrganization ||
+    existing.targetAccountUserId !== targetAccountUserId ||
+    existing.fingerprint !== fingerprint
+  ) {
+    throw propertyCreateConflict("provisioning_reference_conflict", existing.propertyId);
+  }
+  return existing.propertyId;
+}
+
+async function linkProvisioningReference(
+  client: SharedHotelSetupQueryClient,
+  input: {
+    propertyId: string;
+    provisioningReference: string;
+    targetAccountUserId: string | null;
+    fingerprint: string;
+  },
+): Promise<void> {
+  await client.query(
+    `INSERT INTO hotel_catalog.property_source_links (
+       property_id, source_system, source_table, source_id, relationship, status, metadata
+     ) VALUES (
+       $1::uuid, 'platform', 'platform_admin_provisioning', $2, 'canonical_input', 'active',
+       jsonb_build_object('targetAccountUserId', $3::text, 'requestFingerprint', $4::text)
+     )`,
+    [input.propertyId, input.provisioningReference, input.targetAccountUserId, input.fingerprint],
+  );
+}
+
+async function auditPropertyCreate(
+  client: SharedHotelSetupQueryClient,
+  input: {
+    organizationId: string;
+    correlationId: string;
+    audit?: { actorUserId: string; requestId: string; receivedAt: string; reason?: string };
+    targetAccountUserId?: string;
+    provisioningReference?: string;
+  },
+  idempotencyId: string,
+  propertyId: string,
+): Promise<void> {
+  if (!input.audit) return;
+  await client.query(
+    `INSERT INTO platform.product_audit_events (
+       audit_key, product, action, occurred_at, tenant_scope, organization_id,
+       actor_type, actor_user_id, target_resource_product, target_resource_type,
+       target_resource_id, idempotency_key_id, correlation_id, causation_id,
+       redacted_payload, private_payload, audit_metadata, privacy_scope
+     ) VALUES ($1, 'hotel_catalog', 'hotel_setup.property.create', $2::timestamptz,
+       'organization', $3::uuid, 'user', $5::uuid, 'hotel_catalog', 'property', $4,
+       $6::uuid, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb, 'confidential')`,
+    [
+      `hotel-setup-property-create:${idempotencyId}`,
+      input.audit.receivedAt,
+      input.organizationId,
+      propertyId,
+      input.audit.actorUserId,
+      idempotencyId,
+      input.correlationId,
+      input.audit.requestId,
+      JSON.stringify({ outcome: "created" }),
+      JSON.stringify({
+        targetAccountUserId: input.targetAccountUserId ?? null,
+        provisioningReference: input.provisioningReference ?? null,
+        reason: input.audit.reason ?? null,
+      }),
+      JSON.stringify({ organizationId: input.organizationId }),
+    ],
+  );
 }
 
 async function reservePropertyCreate(
@@ -809,9 +957,10 @@ async function completePropertyCreate(
 }
 
 function propertyCreateConflict(
-  code: "idempotency_key_conflict" | "command_in_progress",
-): Error & { code: string } {
-  return Object.assign(new Error(code), { code });
+  code: "idempotency_key_conflict" | "command_in_progress" | "provisioning_reference_conflict",
+  propertyId?: string,
+): Error & { code: string; propertyId?: string } {
+  return Object.assign(new Error(code), { code, ...(propertyId ? { propertyId } : {}) });
 }
 
 function sha256(value: string): string {

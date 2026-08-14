@@ -104,6 +104,7 @@
         "itemCount": 2,
         "mustInclude": [
           "items[0].blockId",
+          "items[0].version",
           "items[0].roomTypeId",
           "items[0].roomId",
           "items[0].startsOn",
@@ -329,9 +330,9 @@
           "commandId": "cmd-room-block-create",
           "idempotencyKey": "pms-room-block-create-001",
           "roomTypeId": "f6855000-0000-0000-0000-000000000001",
+          "roomIds": ["f6855100-0000-0000-0000-000000000001"],
           "startsOn": "2026-08-15",
           "endsOn": "2026-08-16",
-          "blockedCount": 1,
           "reason": "maintenance"
         }
       },

@@ -26,6 +26,7 @@ export interface PropertySettings {
   address: string;
   city?: string;
   country?: string;
+  time_zone?: string;
   instagram?: string;
   facebook?: string;
   tiktok?: string;

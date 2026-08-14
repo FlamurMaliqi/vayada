@@ -125,6 +125,7 @@ export type ExpectedTarget = {
       heroSubtext: string | null;
       primaryColor: string;
       fontPairing: string;
+      acceptanceMode: "instant" | "request";
     }>;
     forbiddenSummaryKeys?: string[];
   };

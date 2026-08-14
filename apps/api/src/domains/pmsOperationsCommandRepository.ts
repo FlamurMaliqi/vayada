@@ -3,15 +3,52 @@ import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import {
   bankTransferDetailsFromPolicy,
-  enqueueBookingLifecycleEmailJob,
+  enqueueBookingTransitionNotifications,
 } from "../jobs/bookingEmails.js";
+import type {
+  StripeBookingPaymentIntent,
+  StripeBookingPaymentProvider,
+} from "./stripeBookingPayments.js";
 import {
   recordBookingManualPaymentInClient,
   type FinanceBookingManualPaymentSettlementCommand,
 } from "./financeManualPaymentSettlement.js";
+import { appendPmsManualNoShowNightlyRevenueEvidence } from "./bookingPmsManualNoShowNightlyRevenueEvidence.js";
+import {
+  cancelPmsManualBooking,
+  ManualCancellationEvidenceError,
+  ManualCancellationStateError,
+} from "./bookingPmsManualCancellationNightlyRevenueEvidence.js";
+import {
+  ManualRefundEvidenceError,
+  ManualRefundStateError,
+  refundPmsManualBooking,
+} from "./bookingPmsManualRefundNightlyRevenueEvidence.js";
+import {
+  createFinanceManualBookingRefundPort,
+  financeManualBookingRefundTransaction,
+} from "./financeManualBookingRefund.js";
+import {
+  correctPmsManualStays,
+  ManualStayCorrectionAvailabilityError,
+  ManualStayCorrectionScopeError,
+} from "./pmsManualStayCorrection.js";
+import {
+  ManualStayCorrectionEvidenceError,
+  ManualStayCorrectionStateError,
+} from "./bookingPmsManualStayCorrection.js";
+import {
+  correctBookingPmsManualPrices,
+  ManualPriceCorrectionEvidenceError,
+  ManualPriceCorrectionStateError,
+} from "./bookingPmsManualPriceCorrection.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
-import { captureDirectNightlyRevenueEvidence } from "./stripeBookingSettlement.js";
+import {
+  captureDirectNightlyRevenueEvidence,
+  settleStripeBookingPayment,
+} from "./stripeBookingSettlement.js";
+import { stripeAmountMinor } from "./stripeMoney.js";
 import {
   PMS_OPERATIONS_CONTRACT_VERSION,
   type PmsCheckInCommand,
@@ -30,6 +67,10 @@ import {
   type PmsCheckoutChargeWaiveCommand,
   type PmsCommandMeta,
   type PmsNoShowCommand,
+  type PmsManualCancellationCommand,
+  type PmsManualRefundCommand,
+  type PmsManualPriceCorrectionCommand,
+  type PmsManualStayCorrectionCommand,
   type PmsOperationalCommandResult,
   type PmsOperationalStatus,
   type PmsOperationalStatusCommand,
@@ -45,6 +86,11 @@ import {
   type PmsPrivateNoteCreateCommand,
   type PmsPrivateNoteDeleteCommand,
   type PmsPrivateNoteDeleteResult,
+  type PmsRoomBlockCommandResult,
+  type PmsRoomBlockCreateCommand,
+  type PmsRoomBlockReleaseCommand,
+  type PmsRoomBlockSummary,
+  type PmsRoomBlockUpdateCommand,
   type PmsRoomType,
   type PmsRoomTypeCommandResult,
   type PmsRoomTypeCreateCommand,
@@ -69,6 +115,7 @@ export type TargetPmsOperationsCommandRepositoryConfig = {
   max?: number;
   pool?: PmsOperationsCommandPool;
   readRepository: PmsOperationsReadRepository;
+  stripePaymentProvider?: StripeBookingPaymentProvider;
   now?: () => Date;
 };
 
@@ -83,6 +130,8 @@ type PmsAssignmentRow = {
   updatedAt: Date | string;
   checkIn: string;
   checkOut: string;
+  source: string;
+  stayEvidenceKind: string;
 };
 
 type PmsRoomAvailabilityRow = {
@@ -101,15 +150,28 @@ type PmsOperationalCommand =
   | PmsOperationalStatusCommand
   | PmsCheckInCommand
   | PmsNoShowCommand
+  | PmsManualCancellationCommand
+  | PmsManualRefundCommand
+  | PmsManualPriceCorrectionCommand
+  | PmsManualStayCorrectionCommand
   | PmsBookingLifecycleCommand;
 
 type PmsOperationalCommandOperation =
   | "status_command"
   | "checkin_command"
   | "no_show_command"
+  | "manual_cancellation_command"
+  | "manual_refund_command"
+  | "manual_price_correction_command"
+  | "manual_stay_correction_command"
   | "booking_acceptance_command"
   | "booking_mark_paid_command"
   | "checkout_command";
+
+type PmsOperationalMutationSuccess = {
+  ok: true;
+  sideEffects?: PmsOperationsCommandSideEffect[];
+};
 
 type BookingPaymentLifecycleRow = QueryResultRow & {
   guestBookingId: string;
@@ -124,9 +186,6 @@ type BookingPaymentLifecycleRow = QueryResultRow & {
   totalAmount: string;
   balanceAmount: string;
   currency: string;
-  guestEmail: string | null;
-  guestName: string | null;
-  propertyName: string;
   acceptedMethods: string[] | null;
   depositPolicy: unknown;
   paymentInstructions: unknown;
@@ -134,6 +193,8 @@ type BookingPaymentLifecycleRow = QueryResultRow & {
   acceptedPaymentDeadlineAt: string | null;
   sourceSystem: string;
   bookingMetadata: unknown;
+  providerPaymentIntentId: string | null;
+  providerAccountRef: string | null;
 };
 type PmsOperationalTemplateOperation =
   | "checkin_checklist_template_update"
@@ -144,6 +205,30 @@ type PmsCheckoutChargeOperation =
   | "checkout_charge_waive";
 type PmsRoomTypeCommandOperation = "room_type_create" | "room_type_location_update";
 type PmsRoomTypeCommand = PmsRoomTypeCreateCommand | PmsRoomTypeUpdateCommand;
+type PmsRoomBlockCommand =
+  | PmsRoomBlockCreateCommand
+  | PmsRoomBlockUpdateCommand
+  | PmsRoomBlockReleaseCommand;
+type PmsRoomBlockOperation = "room_block_create" | "room_block_update" | "room_block_release";
+
+type PmsRoomBlockRow = {
+  blockId: string;
+  roomTypeId: string;
+  roomId: string | null;
+  startsOn: Date | string;
+  endsOn: Date | string;
+  blockedCount: number;
+  reason: string;
+  status: "active" | "released" | "expired";
+  revision: number;
+};
+
+type PmsRoomBlockMutation = {
+  items: PmsRoomBlockSummary[];
+  roomTypeId: string;
+  affectedFrom: string;
+  affectedTo: string;
+};
 
 const ALLOWED_OPERATIONAL_STATUS_TRANSITIONS: ReadonlyMap<
   string,
@@ -223,6 +308,15 @@ export function createTargetPmsOperationsCommandRepository(
   const now = config.now ?? (() => new Date());
 
   return {
+    createRoomBlocks(command) {
+      return executeRoomBlockCommand(pool, now, "room_block_create", command);
+    },
+    updateRoomBlock(command) {
+      return executeRoomBlockCommand(pool, now, "room_block_update", command);
+    },
+    releaseRoomBlock(command) {
+      return executeRoomBlockCommand(pool, now, "room_block_release", command);
+    },
     async createRoomType(command) {
       const client = await pool.connect();
       const acceptedAt = now().toISOString();
@@ -315,10 +409,19 @@ export function createTargetPmsOperationsCommandRepository(
         );
         const created = roomTypeFromCommand(command, roomTypeId, ratePlans);
 
-        await enqueueRoomTypeCreateSideEffects(
+        await enqueueInventoryChangedSideEffects(
           client,
           command,
-          created,
+          {
+            roomTypeId: created.roomTypeId,
+            resourceType: "room_type",
+            resourceId: created.roomTypeId,
+            dateRange: {
+              from: acceptedAt.slice(0, 10),
+              to: addUtcDays(acceptedAt.slice(0, 10), PMS_ROOM_INVENTORY_HORIZON_DAYS - 1),
+            },
+            calendarRefresh: false,
+          },
           commandMeta,
           keyHash,
           acceptedAt,
@@ -1040,12 +1143,45 @@ export function createTargetPmsOperationsCommandRepository(
         mutate: applyNoShowCommandMutation,
       });
     },
+    async cancelManualBooking(command) {
+      return executeOperationalCommand(config, pool, now, {
+        command,
+        operation: "manual_cancellation_command",
+        sideEffects: ["calendar_refresh", "ari_changed", "audit_event"],
+        mutate: applyManualCancellationCommandMutation,
+      });
+    },
+    async refundManualBooking(command) {
+      return executeOperationalCommand(config, pool, now, {
+        command,
+        operation: "manual_refund_command",
+        sideEffects: ["audit_event"],
+        mutate: applyManualRefundCommandMutation,
+      });
+    },
+    async correctManualBookingStays(command) {
+      return executeOperationalCommand(config, pool, now, {
+        command,
+        operation: "manual_stay_correction_command",
+        sideEffects: ["calendar_refresh", "ari_changed", "audit_event"],
+        mutate: applyManualStayCorrectionCommandMutation,
+      });
+    },
+    async correctManualBookingPrices(command) {
+      return executeOperationalCommand(config, pool, now, {
+        command,
+        operation: "manual_price_correction_command",
+        sideEffects: ["audit_event"],
+        mutate: applyManualPriceCorrectionCommandMutation,
+      });
+    },
     async acceptBooking(command) {
       return executeOperationalCommand(config, pool, now, {
         command,
         operation: "booking_acceptance_command",
-        sideEffects: ["guest_notification", "audit_event"],
-        mutate: applyBookingAcceptanceCommandMutation,
+        sideEffects: ["audit_event"],
+        mutate: (client, lifecycleCommand, acceptedAt) =>
+          applyBookingAcceptanceCommandMutation(config, client, lifecycleCommand, acceptedAt),
       });
     },
     async markBookingPaid(command) {
@@ -1894,6 +2030,672 @@ function roomTypeFromCommand(
   };
 }
 
+async function executeRoomBlockCommand(
+  pool: PmsOperationsCommandPool,
+  now: () => Date,
+  operation: PmsRoomBlockOperation,
+  command: PmsRoomBlockCommand,
+): Promise<PmsRoomBlockCommandResult> {
+  const client = await pool.connect();
+  const acceptedAt = now().toISOString();
+  const keyHash = sha256(command.idempotencyKey);
+  const requestFingerprintHash = sha256(stableJson(roomBlockCommandFingerprint(command)));
+  const commandMeta: PmsCommandMeta = {
+    contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+    commandId: command.commandId,
+    idempotencyKey: command.idempotencyKey,
+    acceptedAt,
+    sideEffects: ["calendar_refresh", "ari_changed", "audit_event"],
+  };
+  let writingSideEffects = false;
+
+  try {
+    await client.query("BEGIN");
+    const replay = await findRoomBlockCommandReplay(
+      client,
+      operation,
+      command,
+      keyHash,
+      requestFingerprintHash,
+    );
+    if (replay) {
+      await client.query("ROLLBACK");
+      return replay;
+    }
+    if (
+      !(await recordRoomBlockCommandIdempotency(
+        client,
+        operation,
+        command,
+        keyHash,
+        requestFingerprintHash,
+        acceptedAt,
+      ))
+    ) {
+      const concurrentReplay = await findRoomBlockCommandReplay(
+        client,
+        operation,
+        command,
+        keyHash,
+        requestFingerprintHash,
+      );
+      await client.query("ROLLBACK");
+      return (
+        concurrentReplay ??
+        roomBlockConflict(
+          "idempotency_conflict",
+          "Room block command idempotency key could not be reserved.",
+        )
+      );
+    }
+
+    const mutation = await applyRoomBlockMutation(client, operation, command, acceptedAt);
+    if (!mutation.ok) {
+      await client.query("ROLLBACK");
+      return mutation;
+    }
+
+    writingSideEffects = true;
+    await enqueueInventoryChangedSideEffects(
+      client,
+      command,
+      {
+        roomTypeId: mutation.value.roomTypeId,
+        resourceType: "room_block",
+        resourceId: mutation.value.items[0]!.blockId,
+        dateRange: { from: mutation.value.affectedFrom, to: mutation.value.affectedTo },
+        calendarRefresh: true,
+      },
+      commandMeta,
+      keyHash,
+      acceptedAt,
+    );
+    await insertRoomBlockAuditEvent(
+      client,
+      operation,
+      command,
+      mutation.value,
+      commandMeta,
+      keyHash,
+    );
+    await completeRoomBlockCommandIdempotency(
+      client,
+      operation,
+      command,
+      mutation.value.items,
+      commandMeta,
+      keyHash,
+      acceptedAt,
+    );
+    await client.query("COMMIT");
+    return { ok: true, items: mutation.value.items, commandMeta };
+  } catch (error) {
+    await rollbackQuietly(client);
+    if (writingSideEffects) {
+      return {
+        ok: false,
+        statusCode: 500,
+        code: "side_effect_failed",
+        message: "Room block side effects could not be queued; no changes were committed.",
+      };
+    }
+    if (isPgUniqueViolation(error) || isPgForeignKeyViolation(error)) {
+      return roomBlockConflict(
+        "room_block_conflict",
+        "Room block conflicts with the current inventory state.",
+      );
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function applyRoomBlockMutation(
+  client: PmsOperationsCommandClient,
+  operation: PmsRoomBlockOperation,
+  command: PmsRoomBlockCommand,
+  acceptedAt: string,
+): Promise<
+  { ok: true; value: PmsRoomBlockMutation } | Exclude<PmsRoomBlockCommandResult, { ok: true }>
+> {
+  if (operation === "room_block_create") {
+    const create = command as PmsRoomBlockCreateCommand;
+    await lockPmsPhysicalRoomUnitMutationScope(client, create.propertyId, create.roomTypeId);
+    await lockRoomTypeRooms(client, create.propertyId, create.roomTypeId);
+    if (
+      !(await roomBlockRoomsAreAvailable(
+        client,
+        create.propertyId,
+        create.roomTypeId,
+        create.roomIds,
+        create.startsOn,
+        create.endsOn,
+        null,
+      )) ||
+      !(await roomBlockCapacityIsAvailable(
+        client,
+        create.propertyId,
+        create.roomTypeId,
+        create.startsOn,
+        create.endsOn,
+        create.roomIds.length,
+      ))
+    ) {
+      return roomBlockConflict(
+        "room_block_conflict",
+        "One or more rooms are unavailable for the requested dates.",
+      );
+    }
+    const result = await client.query<PmsRoomBlockRow>(
+      `INSERT INTO pms.room_blocks (
+         property_id, room_type_id, room_id, starts_on, ends_on, blocked_count,
+         reason, created_by_user_id, created_at, updated_at
+       )
+       SELECT $1::uuid, $2::uuid, room_id, $3::date, $4::date, 1, $5,
+              $6::uuid, $7::timestamptz, $7::timestamptz
+       FROM unnest($8::uuid[]) AS room_id
+       RETURNING id::text AS "blockId", room_type_id::text AS "roomTypeId",
+         room_id::text AS "roomId",
+         starts_on AS "startsOn", ends_on AS "endsOn", blocked_count AS "blockedCount",
+         reason, status, revision`,
+      [
+        create.propertyId,
+        create.roomTypeId,
+        create.startsOn,
+        create.endsOn,
+        create.reason,
+        create.audit.actor.kind === "user" ? create.audit.actor.userId : null,
+        acceptedAt,
+        create.roomIds,
+      ],
+    );
+    await reconcileRoomBlockInventory(
+      client,
+      create.propertyId,
+      create.roomTypeId,
+      create.startsOn,
+      create.endsOn,
+      acceptedAt,
+    );
+    return {
+      ok: true,
+      value: {
+        items: result.rows.map(roomBlockSummary),
+        roomTypeId: create.roomTypeId,
+        affectedFrom: create.startsOn,
+        affectedTo: create.endsOn,
+      },
+    };
+  }
+
+  const existingCommand = command as PmsRoomBlockUpdateCommand | PmsRoomBlockReleaseCommand;
+  const initial = await findRoomBlock(client, existingCommand.propertyId, existingCommand.blockId);
+  if (!initial) return roomBlockNotFound(existingCommand.blockId);
+  await lockPmsPhysicalRoomUnitMutationScope(
+    client,
+    existingCommand.propertyId,
+    initial.roomTypeId,
+  );
+  await lockRoomTypeRooms(client, existingCommand.propertyId, initial.roomTypeId);
+  const current = await findRoomBlock(
+    client,
+    existingCommand.propertyId,
+    existingCommand.blockId,
+    true,
+  );
+  if (!current || current.status !== "active") return roomBlockNotFound(existingCommand.blockId);
+  if (existingCommand.expectedVersion !== `room-block-v${current.revision}`) {
+    return roomBlockConflict("version_conflict", "Room block changed. Refresh and try again.");
+  }
+
+  if (operation === "room_block_update") {
+    const update = command as PmsRoomBlockUpdateCommand;
+    const startsOn = update.startsOn ?? dateOnly(current.startsOn);
+    const endsOn = update.endsOn ?? dateOnly(current.endsOn);
+    if (startsOn > endsOn) {
+      return roomBlockConflict("room_block_conflict", "Room block dates are not ordered.");
+    }
+    if (
+      !current.roomId ||
+      !(await roomBlockRoomsAreAvailable(
+        client,
+        update.propertyId,
+        current.roomTypeId,
+        [current.roomId],
+        startsOn,
+        endsOn,
+        current.blockId,
+      )) ||
+      !(await roomBlockCapacityIsAvailable(
+        client,
+        update.propertyId,
+        current.roomTypeId,
+        startsOn,
+        endsOn,
+        1,
+        { from: dateOnly(current.startsOn), to: dateOnly(current.endsOn) },
+      ))
+    ) {
+      return roomBlockConflict(
+        "room_block_conflict",
+        "Room is unavailable for the requested dates.",
+      );
+    }
+    const result = await client.query<PmsRoomBlockRow>(
+      `UPDATE pms.room_blocks
+       SET starts_on = $3::date, ends_on = $4::date, reason = $5,
+           revision = revision + 1, updated_at = $6::timestamptz
+       WHERE property_id = $1::uuid AND id = $2::uuid AND status = 'active'
+       RETURNING id::text AS "blockId", room_type_id::text AS "roomTypeId",
+         room_id::text AS "roomId",
+         starts_on AS "startsOn", ends_on AS "endsOn", blocked_count AS "blockedCount",
+         reason, status, revision`,
+      [
+        update.propertyId,
+        update.blockId,
+        startsOn,
+        endsOn,
+        update.reason ?? current.reason,
+        acceptedAt,
+      ],
+    );
+    const affectedFrom =
+      startsOn < dateOnly(current.startsOn) ? startsOn : dateOnly(current.startsOn);
+    const affectedTo = endsOn > dateOnly(current.endsOn) ? endsOn : dateOnly(current.endsOn);
+    await reconcileRoomBlockInventory(
+      client,
+      update.propertyId,
+      current.roomTypeId,
+      affectedFrom,
+      affectedTo,
+      acceptedAt,
+    );
+    return {
+      ok: true,
+      value: {
+        items: result.rows.map(roomBlockSummary),
+        roomTypeId: current.roomTypeId,
+        affectedFrom,
+        affectedTo,
+      },
+    };
+  }
+
+  const released = await client.query<PmsRoomBlockRow>(
+    `UPDATE pms.room_blocks
+     SET status = 'released', released_at = $3::timestamptz,
+         revision = revision + 1, updated_at = $3::timestamptz
+     WHERE property_id = $1::uuid AND id = $2::uuid AND status = 'active'
+     RETURNING id::text AS "blockId", room_type_id::text AS "roomTypeId",
+       room_id::text AS "roomId",
+       starts_on AS "startsOn", ends_on AS "endsOn", blocked_count AS "blockedCount",
+       reason, status, revision`,
+    [existingCommand.propertyId, existingCommand.blockId, acceptedAt],
+  );
+  const from = dateOnly(current.startsOn);
+  const to = dateOnly(current.endsOn);
+  await reconcileRoomBlockInventory(
+    client,
+    existingCommand.propertyId,
+    current.roomTypeId,
+    from,
+    to,
+    acceptedAt,
+  );
+  return {
+    ok: true,
+    value: {
+      items: released.rows.map(roomBlockSummary),
+      roomTypeId: current.roomTypeId,
+      affectedFrom: from,
+      affectedTo: to,
+    },
+  };
+}
+
+async function lockRoomTypeRooms(
+  client: PmsOperationsCommandClient,
+  propertyId: string,
+  roomTypeId: string,
+): Promise<void> {
+  await client.query(
+    `SELECT id FROM pms.rooms
+     WHERE property_id = $1::uuid AND room_type_id = $2::uuid
+     ORDER BY id FOR UPDATE`,
+    [propertyId, roomTypeId],
+  );
+}
+
+async function roomBlockRoomsAreAvailable(
+  client: PmsOperationsCommandClient,
+  propertyId: string,
+  roomTypeId: string,
+  roomIds: string[],
+  startsOn: string,
+  endsOn: string,
+  excludedBlockId: string | null,
+): Promise<boolean> {
+  const result = await client.query<{ roomId: string }>(
+    `SELECT room.id::text AS "roomId"
+     FROM pms.rooms room
+     WHERE room.property_id = $1::uuid AND room.room_type_id = $2::uuid
+       AND room.id = ANY($3::uuid[]) AND room.status = 'available'
+       AND room.operational_label_status = 'verified' AND room.room_number IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM pms.room_blocks block
+         WHERE block.property_id = room.property_id AND block.room_id = room.id
+           AND block.status = 'active' AND ($6::uuid IS NULL OR block.id <> $6::uuid)
+           AND daterange(block.starts_on, block.ends_on + 1, '[)') &&
+               daterange($4::date, $5::date + 1, '[)')
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM pms.operational_booking_assignments assignment
+         JOIN booking.guest_bookings booking
+           ON booking.id = assignment.guest_booking_id
+          AND booking.property_id = assignment.property_id
+         WHERE assignment.property_id = room.property_id AND assignment.room_id = room.id
+           AND assignment.assignment_status NOT IN ('canceled', 'released')
+           AND daterange(COALESCE(assignment.check_in, booking.check_in),
+                         COALESCE(assignment.check_out, booking.check_out), '[)') &&
+               daterange($4::date, $5::date + 1, '[)')
+       )`,
+    [propertyId, roomTypeId, roomIds, startsOn, endsOn, excludedBlockId],
+  );
+  return result.rows.length === roomIds.length;
+}
+
+async function roomBlockCapacityIsAvailable(
+  client: PmsOperationsCommandClient,
+  propertyId: string,
+  roomTypeId: string,
+  startsOn: string,
+  endsOn: string,
+  requestedCount: number,
+  creditedRange?: { from: string; to: string },
+): Promise<boolean> {
+  const result = await client.query<{
+    stayDate: Date | string;
+    totalCount: number;
+    assignedCount: number;
+    blockedCount: number;
+  }>(
+    `SELECT stay_date AS "stayDate", total_count AS "totalCount",
+            assigned_count AS "assignedCount", blocked_count AS "blockedCount"
+     FROM pms.inventory_days
+     WHERE property_id = $1::uuid AND room_type_id = $2::uuid
+       AND stay_date BETWEEN $3::date AND $4::date
+     ORDER BY stay_date FOR UPDATE`,
+    [propertyId, roomTypeId, startsOn, endsOn],
+  );
+  const expectedDays =
+    Math.floor(
+      (Date.parse(`${endsOn}T00:00:00Z`) - Date.parse(`${startsOn}T00:00:00Z`)) / 86_400_000,
+    ) + 1;
+  return (
+    result.rows.length === expectedDays &&
+    result.rows.every((day) => {
+      const stayDate = dateOnly(day.stayDate);
+      const credit =
+        creditedRange && stayDate >= creditedRange.from && stayDate <= creditedRange.to ? 1 : 0;
+      return (
+        Number(day.totalCount) - Number(day.assignedCount) - Number(day.blockedCount) + credit >=
+        requestedCount
+      );
+    })
+  );
+}
+
+async function reconcileRoomBlockInventory(
+  client: PmsOperationsCommandClient,
+  propertyId: string,
+  roomTypeId: string,
+  affectedFrom: string,
+  affectedTo: string,
+  acceptedAt: string,
+): Promise<void> {
+  await client.query(
+    `WITH affected_dates AS (
+       SELECT generate_series($3::date, $4::date, interval '1 day')::date AS stay_date
+     ), changes AS (
+       SELECT affected.stay_date,
+              COALESCE(SUM(block.blocked_count), 0)::integer AS blocked_count
+       FROM affected_dates affected
+       LEFT JOIN pms.room_blocks block
+         ON block.property_id = $1::uuid AND block.room_type_id = $2::uuid
+        AND block.status = 'active'
+        AND affected.stay_date BETWEEN block.starts_on AND block.ends_on
+       GROUP BY affected.stay_date
+     )
+     UPDATE pms.inventory_days inventory
+     SET blocked_count = changes.blocked_count,
+         available_count = CASE WHEN inventory.status = 'closed' THEN 0 ELSE GREATEST(
+           0, COALESCE(inventory.effective_sellable_limit_count, inventory.total_count)
+             - inventory.assigned_count - changes.blocked_count
+         ) END,
+         inventory_revision = CASE WHEN inventory.inventory_revision IS NULL THEN NULL ELSE inventory.inventory_revision + 1 END,
+         block_source_revision = CASE WHEN inventory.block_source_revision IS NULL THEN NULL ELSE inventory.block_source_revision + 1 END,
+         updated_at = $5::timestamptz
+     FROM changes
+     WHERE inventory.property_id = $1::uuid AND inventory.room_type_id = $2::uuid
+       AND inventory.stay_date = changes.stay_date
+       AND inventory.blocked_count IS DISTINCT FROM changes.blocked_count`,
+    [propertyId, roomTypeId, affectedFrom, affectedTo, acceptedAt],
+  );
+}
+
+async function findRoomBlock(
+  client: PmsOperationsCommandClient,
+  propertyId: string,
+  blockId: string,
+  forUpdate = false,
+): Promise<PmsRoomBlockRow | null> {
+  const result = await client.query<PmsRoomBlockRow>(
+    `SELECT id::text AS "blockId", room_type_id::text AS "roomTypeId",
+       room_id::text AS "roomId",
+       starts_on AS "startsOn", ends_on AS "endsOn", blocked_count AS "blockedCount",
+       reason, status, revision
+     FROM pms.room_blocks
+     WHERE property_id = $1::uuid AND id = $2::uuid${forUpdate ? " FOR UPDATE" : ""}`,
+    [propertyId, blockId],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function findRoomBlockCommandReplay(
+  client: PmsOperationsCommandClient,
+  operation: PmsRoomBlockOperation,
+  command: PmsRoomBlockCommand,
+  keyHash: string,
+  requestFingerprintHash: string,
+): Promise<PmsRoomBlockCommandResult | null> {
+  const result = await client.query<PmsIdempotencyRow>(
+    `SELECT status, request_fingerprint_hash AS "requestFingerprintHash",
+            idempotency_metadata AS "idempotencyMetadata"
+     FROM platform.idempotency_keys
+     WHERE operation_scope = 'pms' AND operation = $1 AND key_hash = $2
+       AND tenant_scope = 'property' AND property_id = $3::uuid
+     FOR UPDATE`,
+    [operation, keyHash, command.propertyId],
+  );
+  const existing = result.rows[0];
+  if (!existing) return null;
+  if (existing.requestFingerprintHash !== requestFingerprintHash) {
+    return roomBlockConflict(
+      "idempotency_conflict",
+      "Idempotency key was used with a different room block command.",
+    );
+  }
+  if (existing.status !== "completed") {
+    return roomBlockConflict("idempotency_conflict", "Room block command is already in progress.");
+  }
+  const commandMeta = existing.idempotencyMetadata?.["commandMeta"];
+  const items = existing.idempotencyMetadata?.["items"];
+  if (!isPmsCommandMeta(commandMeta) || !Array.isArray(items) || !items.every(isRoomBlockSummary)) {
+    return roomBlockConflict(
+      "idempotency_conflict",
+      "Room block command replay metadata is unavailable.",
+    );
+  }
+  return { ok: true, items, commandMeta, replayed: true };
+}
+
+async function recordRoomBlockCommandIdempotency(
+  client: PmsOperationsCommandClient,
+  operation: PmsRoomBlockOperation,
+  command: PmsRoomBlockCommand,
+  keyHash: string,
+  requestFingerprintHash: string,
+  acceptedAt: string,
+): Promise<boolean> {
+  const result = await client.query(
+    `INSERT INTO platform.idempotency_keys (
+       operation_scope, operation, key_hash, request_fingerprint_hash, status,
+       tenant_scope, property_id, correlation_id, expires_at, idempotency_metadata
+     ) VALUES (
+       'pms', $1, $2, $3, 'in_progress', 'property', $4::uuid, $5,
+       $6::timestamptz + interval '24 hours', $7::jsonb
+     ) ON CONFLICT DO NOTHING RETURNING id`,
+    [
+      operation,
+      keyHash,
+      requestFingerprintHash,
+      command.propertyId,
+      command.audit.correlationId ?? command.audit.requestId,
+      acceptedAt,
+      JSON.stringify({ commandId: command.commandId, audit: command.audit }),
+    ],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+async function completeRoomBlockCommandIdempotency(
+  client: PmsOperationsCommandClient,
+  operation: PmsRoomBlockOperation,
+  command: PmsRoomBlockCommand,
+  items: PmsRoomBlockSummary[],
+  commandMeta: PmsCommandMeta,
+  keyHash: string,
+  acceptedAt: string,
+): Promise<void> {
+  const metadata = { commandMeta, items };
+  await client.query(
+    `UPDATE platform.idempotency_keys
+     SET status = 'completed', response_status_code = 200,
+         response_resource_product = 'pms', response_resource_type = 'room_block',
+         response_resource_id = $1, response_body_hash = $2,
+         completed_at = $3::timestamptz, last_seen_at = $3::timestamptz,
+         idempotency_metadata = $4::jsonb
+     WHERE operation_scope = 'pms' AND operation = $5 AND key_hash = $6
+       AND tenant_scope = 'property' AND property_id = $7::uuid`,
+    [
+      items[0]!.blockId,
+      sha256(stableJson(metadata)),
+      acceptedAt,
+      JSON.stringify(metadata),
+      operation,
+      keyHash,
+      command.propertyId,
+    ],
+  );
+}
+
+async function insertRoomBlockAuditEvent(
+  client: PmsOperationsCommandClient,
+  operation: PmsRoomBlockOperation,
+  command: PmsRoomBlockCommand,
+  mutation: PmsRoomBlockMutation,
+  commandMeta: PmsCommandMeta,
+  keyHash: string,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO platform.product_audit_events (
+       audit_key, product, action, occurred_at, tenant_scope, property_id,
+       actor_type, actor_user_id, target_resource_product, target_resource_type,
+       target_resource_id, correlation_id, causation_id, redacted_payload, audit_metadata
+     ) VALUES (
+       $1, 'pms', $2, $3::timestamptz, 'property', $4::uuid, $5, $6::uuid,
+       'pms', 'room_block', $7, $8, $9, $10::jsonb, $11::jsonb
+     ) ON CONFLICT (product, audit_key) DO NOTHING`,
+    [
+      `pms.${operation}.property.${command.propertyId}.key.${keyHash}.audit.v1`,
+      `pms.${operation}`,
+      command.audit.requestedAt,
+      command.propertyId,
+      command.audit.actor.kind,
+      command.audit.actor.kind === "user" ? command.audit.actor.userId : null,
+      mutation.items[0]!.blockId,
+      command.audit.correlationId ?? command.audit.requestId,
+      command.commandId,
+      JSON.stringify({
+        commandMeta,
+        roomTypeId: mutation.roomTypeId,
+        itemCount: mutation.items.length,
+      }),
+      JSON.stringify({ reason: command.audit.reason, requestId: command.audit.requestId }),
+    ],
+  );
+}
+
+function roomBlockCommandFingerprint(command: PmsRoomBlockCommand): unknown {
+  const { audit: _audit, ...fingerprint } = command;
+  return fingerprint;
+}
+
+function roomBlockSummary(row: PmsRoomBlockRow): PmsRoomBlockSummary {
+  return {
+    blockId: row.blockId,
+    version: `room-block-v${row.revision}`,
+    roomTypeId: row.roomTypeId,
+    roomId: row.roomId,
+    startsOn: dateOnly(row.startsOn),
+    endsOn: dateOnly(row.endsOn),
+    blockedCount: Number(row.blockedCount),
+    reason: row.reason,
+    status: row.status,
+  };
+}
+
+function isRoomBlockSummary(value: unknown): value is PmsRoomBlockSummary {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<PmsRoomBlockSummary>;
+  return (
+    typeof item.blockId === "string" &&
+    typeof item.version === "string" &&
+    typeof item.roomTypeId === "string" &&
+    (typeof item.roomId === "string" || item.roomId === null) &&
+    typeof item.startsOn === "string" &&
+    typeof item.endsOn === "string" &&
+    typeof item.blockedCount === "number" &&
+    typeof item.reason === "string" &&
+    (item.status === "active" || item.status === "released" || item.status === "expired")
+  );
+}
+
+function dateOnly(value: Date | string): string {
+  if (!(value instanceof Date)) return String(value).slice(0, 10);
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function roomBlockConflict(
+  code: "room_block_conflict" | "version_conflict" | "idempotency_conflict",
+  message: string,
+): Exclude<PmsRoomBlockCommandResult, { ok: true }> {
+  return { ok: false, statusCode: 409, code, message };
+}
+
+function roomBlockNotFound(blockId: string): Exclude<PmsRoomBlockCommandResult, { ok: true }> {
+  return {
+    ok: false,
+    statusCode: 404,
+    code: "room_block_not_found",
+    message: `Room block ${blockId} was not found.`,
+  };
+}
+
 async function findRoomTypeCommandReplay(
   client: PmsOperationsCommandClient,
   operation: PmsRoomTypeCommandOperation,
@@ -2024,21 +2826,27 @@ async function completeRoomTypeCommandIdempotency(
   );
 }
 
-async function enqueueRoomTypeCreateSideEffects(
+async function enqueueInventoryChangedSideEffects(
   client: PmsOperationsCommandClient,
-  command: PmsRoomTypeCreateCommand,
-  roomType: PmsRoomType,
+  command: Pick<
+    PmsRoomBlockCommand | PmsRoomTypeCreateCommand,
+    "propertyId" | "commandId" | "audit"
+  >,
+  resource: {
+    roomTypeId: string;
+    resourceType: "room_type" | "room_block";
+    resourceId: string;
+    dateRange: { from: string; to: string };
+    calendarRefresh: boolean;
+  },
   commandMeta: PmsCommandMeta,
   keyHash: string,
   acceptedAt: string,
 ): Promise<void> {
   const inventoryChangedPayload = JSON.stringify({
     propertyId: command.propertyId,
-    roomTypeId: roomType.roomTypeId,
-    dateRange: {
-      from: acceptedAt.slice(0, 10),
-      to: addUtcDays(acceptedAt.slice(0, 10), PMS_ROOM_INVENTORY_HORIZON_DAYS - 1),
-    },
+    roomTypeId: resource.roomTypeId,
+    dateRange: resource.dateRange,
     inventoryVersion: keyHash,
   });
   const domainEvent = await client.query<{ eventId: string }>(
@@ -2069,13 +2877,13 @@ async function enqueueRoomTypeCreateSideEffects(
          'property',
          $3::uuid,
          'pms',
-         'room_type',
          $4,
          $5,
          $6,
          $7,
-         $8::jsonb,
-         $9::jsonb
+         $8,
+         $9::jsonb,
+         $10::jsonb
        )
        ON CONFLICT (source_system, event_key) DO NOTHING
        RETURNING id::text AS "eventId"
@@ -2088,10 +2896,11 @@ async function enqueueRoomTypeCreateSideEffects(
        AND event_key = $1
      LIMIT 1`,
     [
-      `pms.inventory.changed.room_type.property.${command.propertyId}.key.${keyHash}.v1`,
+      `pms.inventory.changed.${resource.resourceType}.property.${command.propertyId}.key.${keyHash}.v1`,
       acceptedAt,
       command.propertyId,
-      roomType.roomTypeId,
+      resource.resourceType,
+      resource.resourceId,
       command.audit.correlationId ?? command.audit.requestId,
       command.commandId,
       keyHash,
@@ -2124,19 +2933,20 @@ async function enqueueRoomTypeCreateSideEffects(
        'property',
        $3::uuid,
        'pms',
-       'room_type',
        $4,
        $5,
        $6,
-       $7::jsonb,
-       $8::jsonb
+       $7,
+       $8::jsonb,
+       $9::jsonb
      )
      ON CONFLICT (destination, outbox_key) DO NOTHING`,
     [
       domainEvent.rows[0]!.eventId,
-      `pms.ari_changed.room_type.property.${command.propertyId}.key.${keyHash}.v1`,
+      `pms.ari_changed.${resource.resourceType}.property.${command.propertyId}.key.${keyHash}.v1`,
       command.propertyId,
-      roomType.roomTypeId,
+      resource.resourceType,
+      resource.resourceId,
       command.audit.correlationId ?? command.audit.requestId,
       keyHash,
       inventoryChangedPayload,
@@ -2168,25 +2978,50 @@ async function enqueueRoomTypeCreateSideEffects(
        'property',
        $3::uuid,
        'pms',
-       'room_type',
        $4,
        $5,
        $6,
-       $7::jsonb,
-       $8::jsonb
+       $7,
+       $8::jsonb,
+       $9::jsonb
      )
      ON CONFLICT (destination, outbox_key) DO NOTHING`,
     [
       domainEvent.rows[0]!.eventId,
-      `distribution.inventory_changed.room_type.property.${command.propertyId}.key.${keyHash}.v1`,
+      `distribution.inventory_changed.${resource.resourceType}.property.${command.propertyId}.key.${keyHash}.v1`,
       command.propertyId,
-      roomType.roomTypeId,
+      resource.resourceType,
+      resource.resourceId,
       command.audit.correlationId ?? command.audit.requestId,
       keyHash,
       inventoryChangedPayload,
       JSON.stringify({ sideEffects: commandMeta.sideEffects }),
     ],
   );
+
+  if (resource.calendarRefresh) {
+    await client.query(
+      `INSERT INTO platform.outbox_events (
+         domain_event_id, outbox_key, destination, event_type, tenant_scope,
+         property_id, resource_product, resource_type, resource_id, correlation_id,
+         idempotency_key_hash, payload, outbox_metadata
+       ) VALUES (
+         $1::uuid, $2, 'pms.calendar-projection', 'pms.calendar.refresh_requested',
+         'property', $3::uuid, 'pms', $4, $5, $6, $7, $8::jsonb, $9::jsonb
+       ) ON CONFLICT (destination, outbox_key) DO NOTHING`,
+      [
+        domainEvent.rows[0]!.eventId,
+        `pms.calendar_refresh.${resource.resourceType}.property.${command.propertyId}.key.${keyHash}.v1`,
+        command.propertyId,
+        resource.resourceType,
+        resource.resourceId,
+        command.audit.correlationId ?? command.audit.requestId,
+        keyHash,
+        inventoryChangedPayload,
+        JSON.stringify({ sideEffects: commandMeta.sideEffects }),
+      ],
+    );
+  }
 }
 
 async function insertRoomTypeAuditEvent(
@@ -3173,7 +4008,9 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
       client: PmsOperationsCommandClient,
       command: TCommand,
       acceptedAt: string,
-    ) => Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>>;
+    ) => Promise<
+      PmsOperationalMutationSuccess | Exclude<PmsOperationalCommandResult, { ok: true }>
+    >;
   },
 ): Promise<PmsOperationalCommandResult> {
   const { command, operation, sideEffects, mutate } = options;
@@ -3181,7 +4018,7 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
   const acceptedAt = now().toISOString();
   const keyHash = sha256(command.idempotencyKey);
   const requestFingerprintHash = sha256(stableJson(operationalCommandFingerprint(command)));
-  const commandMeta: PmsCommandMeta = {
+  let commandMeta: PmsCommandMeta = {
     contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
     commandId: command.commandId,
     idempotencyKey: command.idempotencyKey,
@@ -3240,6 +4077,9 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
     if (!mutation.ok) {
       await client.query("ROLLBACK");
       return mutation;
+    }
+    if (mutation.sideEffects) {
+      commandMeta = { ...commandMeta, sideEffects: mutation.sideEffects };
     }
 
     await recordOperationalCommandAuditEvent(client, command, operation, commandMeta, keyHash);
@@ -4029,12 +4869,32 @@ async function applyOperationalStatusCommandMutation(
 }
 
 async function applyBookingAcceptanceCommandMutation(
+  config: TargetPmsOperationsCommandRepositoryConfig,
   client: PmsOperationsCommandClient,
   command: PmsBookingLifecycleCommand,
   acceptedAt: string,
-): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+): Promise<PmsOperationalMutationSuccess | Exclude<PmsOperationalCommandResult, { ok: true }>> {
   const booking = await loadBookingPaymentLifecycle(client, command);
   if (!booking) return reservationNotFound(command.guestBookingId);
+  const acceptanceMode = jsonObject(booking.bookingMetadata)["acceptanceMode"];
+  const isRequestPayAtProperty =
+    acceptanceMode === "request" &&
+    (booking.paymentMethod === "pay_at_property" || booking.paymentMethod === "cash") &&
+    booking.lifecycleStatus === "pending_payment" &&
+    booking.paymentStatus === "unpaid" &&
+    !deadlinePassed(booking.pendingExpiresAt, acceptedAt);
+  if (isRequestPayAtProperty) {
+    return acceptRequestPayAtPropertyBooking(client, command, booking, acceptedAt);
+  }
+  const isRequestCard =
+    acceptanceMode === "request" &&
+    booking.paymentMethod === "card" &&
+    booking.lifecycleStatus === "pending_payment" &&
+    booking.paymentStatus === "authorized" &&
+    !deadlinePassed(booking.pendingExpiresAt, acceptedAt);
+  if (isRequestCard) {
+    return captureAcceptedRequestCardBooking(config, client, command, booking, acceptedAt);
+  }
   if (
     booking.lifecycleStatus !== "pending_payment" ||
     booking.paymentStatus !== "unpaid" ||
@@ -4107,8 +4967,9 @@ async function applyBookingAcceptanceCommandMutation(
     required: booking.sourceSystem === "booking",
   });
 
-  await enqueueBookingLifecycleEmailJob(client, {
-    kind: "reserved_pending_payment",
+  await enqueueBookingTransitionNotifications(client, {
+    propertyId: command.propertyId,
+    guestBookingId: command.guestBookingId,
     occurredAt: acceptedAt,
     correlationId: command.audit.correlationId ?? command.audit.requestId,
     causationId: command.commandId,
@@ -4119,9 +4980,127 @@ async function applyBookingAcceptanceCommandMutation(
     source: "apps/api-pms-booking-acceptance",
     paymentDeadlineAt,
     bankTransferDetails,
-    booking: bookingEmailSnapshot(booking),
+    transition: {
+      eventType: "guest_booking.accepted",
+      fromStatus: "pending_payment",
+      toStatus: "confirmed",
+    },
+  });
+  return { ok: true, sideEffects: ["guest_notification", "audit_event"] };
+}
+
+async function acceptRequestPayAtPropertyBooking(
+  client: PmsOperationsCommandClient,
+  command: PmsBookingLifecycleCommand,
+  booking: BookingPaymentLifecycleRow,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+  const updated = await client.query(
+    `WITH booking_update AS (
+       UPDATE booking.guest_bookings booking
+          SET lifecycle_status = 'confirmed', updated_at = $3::timestamptz
+        WHERE booking.property_id = $1::uuid
+          AND booking.id = $2::uuid
+          AND booking.lifecycle_status = 'pending_payment'
+          AND booking.payment_status = 'unpaid'
+          AND booking.booking_metadata ->> 'acceptanceMode' = 'request'
+       RETURNING booking.id
+     ),
+     status_event AS (
+       INSERT INTO booking.booking_status_events (
+         guest_booking_id, event_type, from_status, to_status, actor_type,
+         actor_user_id, public_visible, public_message, event_payload, occurred_at
+       )
+       SELECT booking_update.id, 'guest_booking.accepted', 'pending_payment', 'confirmed',
+         $4, $5::uuid, TRUE, 'Booking request accepted.', $6::jsonb, $3::timestamptz
+       FROM booking_update
+     ),
+     summary AS (
+       UPDATE booking.direct_booking_summary_read_model summary
+          SET lifecycle_status = 'confirmed', projected_at = $3::timestamptz
+        WHERE summary.guest_booking_id = (SELECT id FROM booking_update)
+     )
+     SELECT id FROM booking_update`,
+    [
+      command.propertyId,
+      command.guestBookingId,
+      acceptedAt,
+      command.audit.actor.kind === "user" ? "property_user" : "system",
+      command.audit.actor.kind === "user" ? command.audit.actor.userId : null,
+      JSON.stringify({
+        commandId: command.commandId,
+        requestId: command.audit.requestId,
+        correlationId: command.audit.correlationId ?? command.audit.requestId,
+        paymentMethod: booking.paymentMethod,
+      }),
+    ],
+  );
+  if ((updated.rowCount ?? updated.rows.length) === 0) {
+    return invalidStatusTransition("pending_payment/unpaid", "confirmed/unpaid");
+  }
+  await captureDirectNightlyRevenueEvidence(client, booking, {
+    fingerprint: command.idempotencyKey,
+    required: booking.sourceSystem === "booking",
   });
   return { ok: true };
+}
+
+async function captureAcceptedRequestCardBooking(
+  config: TargetPmsOperationsCommandRepositoryConfig,
+  client: PmsOperationsCommandClient,
+  command: PmsBookingLifecycleCommand,
+  booking: BookingPaymentLifecycleRow,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+  if (
+    !config.stripePaymentProvider ||
+    !booking.providerPaymentIntentId ||
+    !booking.providerAccountRef
+  ) {
+    return invalidStatusTransition("card_capture_unavailable", "confirmed/paid");
+  }
+  let intent = await config.stripePaymentProvider.retrievePaymentIntent(
+    booking.providerPaymentIntentId,
+  );
+  assertAcceptedRequestCardIntent(booking, intent);
+  if (intent.status === "requires_capture") {
+    intent = await config.stripePaymentProvider.capturePaymentIntent(
+      booking.providerPaymentIntentId,
+      `pms-booking-capture:${command.propertyId}:${command.guestBookingId}:${sha256(command.idempotencyKey)}`,
+    );
+    assertAcceptedRequestCardIntent(booking, intent);
+  }
+  if (intent.status !== "succeeded") {
+    return invalidStatusTransition(`card/${intent.status}`, "confirmed/paid");
+  }
+  const settlement = await settleStripeBookingPayment(client, {
+    paymentIntentId: intent.paymentIntentId,
+    amountMinor: intent.amountMinor,
+    currency: intent.currency,
+    occurredAt: new Date(acceptedAt),
+    correlationId: command.audit.correlationId ?? command.audit.requestId,
+  });
+  if (settlement === "not_found") {
+    return invalidStatusTransition("card_payment_not_found", "confirmed/paid");
+  }
+  return { ok: true };
+}
+
+function assertAcceptedRequestCardIntent(
+  booking: BookingPaymentLifecycleRow,
+  intent: StripeBookingPaymentIntent,
+): void {
+  if (
+    !["requires_capture", "succeeded"].includes(intent.status) ||
+    intent.paymentIntentId !== booking.providerPaymentIntentId ||
+    intent.amountMinor !== stripeAmountMinor(booking.totalAmount, booking.currency) ||
+    intent.currency !== booking.currency ||
+    intent.propertyId !== booking.propertyId ||
+    intent.bookingReference !== booking.publicReference ||
+    intent.providerAccountRef !== booking.providerAccountRef
+  ) {
+    throw new Error("Stripe PaymentIntent did not match the accepted booking request.");
+  }
 }
 
 async function applyBookingMarkPaidCommandMutation(
@@ -4239,8 +5218,9 @@ async function applyBookingMarkPaidCommandMutation(
       required: booking.sourceSystem === "booking",
     });
 
-  await enqueueBookingLifecycleEmailJob(client, {
-    kind: "final_confirmation",
+  await enqueueBookingTransitionNotifications(client, {
+    propertyId: command.propertyId,
+    guestBookingId: command.guestBookingId,
     occurredAt: acceptedAt,
     correlationId: command.audit.correlationId ?? command.audit.requestId,
     causationId: command.commandId,
@@ -4249,7 +5229,11 @@ async function applyBookingMarkPaidCommandMutation(
         ? { type: "user", userId: command.audit.actor.userId }
         : { type: "system" },
     source: "apps/api-pms-booking-payment",
-    booking: bookingEmailSnapshot(booking),
+    transition: {
+      eventType: "guest_booking.payment_received",
+      fromStatus: booking.lifecycleStatus,
+      toStatus: "confirmed",
+    },
   });
   return { ok: true };
 }
@@ -4274,27 +5258,32 @@ async function loadBookingPaymentLifecycle(
        booking.currency,
        booking.source_system AS "sourceSystem",
        booking.booking_metadata AS "bookingMetadata",
-       guest.email AS "guestEmail",
-       NULLIF(trim(concat_ws(' ', guest.first_name, guest.last_name)), '') AS "guestName",
-       property.display_name AS "propertyName",
        payment.accepted_methods AS "acceptedMethods",
        payment.deposit_policy AS "depositPolicy",
        booking.booking_metadata -> 'paymentInstructions' AS "paymentInstructions",
-       booking.booking_metadata ->> 'pendingExpiresAt' AS "pendingExpiresAt",
-       booking.booking_metadata ->> 'acceptedPaymentDeadlineAt' AS "acceptedPaymentDeadlineAt"
+       COALESCE(
+         booking.booking_metadata ->> 'hostResponseDeadlineAt',
+         booking.booking_metadata ->> 'pendingExpiresAt'
+       ) AS "pendingExpiresAt",
+       booking.booking_metadata ->> 'acceptedPaymentDeadlineAt' AS "acceptedPaymentDeadlineAt",
+       card_payment.provider_payment_intent_id AS "providerPaymentIntentId",
+       card_payment.provider_account_ref AS "providerAccountRef"
      FROM booking.guest_bookings booking
-     JOIN hotel_catalog.properties property ON property.id = booking.property_id
      LEFT JOIN finance.payment_settings payment ON payment.property_id = booking.property_id
      LEFT JOIN LATERAL (
-       SELECT booking_guest.first_name, booking_guest.last_name, booking_guest.email
-       FROM booking.booking_guests booking_guest
-       WHERE booking_guest.guest_booking_id = booking.id
-       ORDER BY
-         CASE booking_guest.guest_role WHEN 'booker' THEN 0 WHEN 'primary_guest' THEN 1 ELSE 2 END,
-         booking_guest.created_at,
-         booking_guest.id
+       SELECT card.provider_payment_intent_id,
+              account.provider_account_id AS provider_account_ref
+       FROM finance.payments card
+       JOIN finance.payment_provider_accounts account
+         ON account.id = card.provider_account_id
+        AND account.property_id = card.property_id
+       WHERE card.property_id = booking.property_id
+         AND card.guest_booking_id = booking.id
+         AND card.payment_method = 'card'
+         AND card.provider_payment_intent_id IS NOT NULL
+       ORDER BY card.created_at DESC, card.id DESC
        LIMIT 1
-     ) guest ON TRUE
+     ) card_payment ON TRUE
      WHERE booking.property_id = $1::uuid
        AND booking.id = $2::uuid
      FOR UPDATE OF booking`,
@@ -4316,23 +5305,6 @@ function jsonObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
-}
-
-function bookingEmailSnapshot(booking: BookingPaymentLifecycleRow) {
-  return {
-    propertyId: booking.propertyId,
-    guestBookingId: booking.guestBookingId,
-    bookingReference: booking.publicReference,
-    guestEmail: booking.guestEmail,
-    guestName: booking.guestName,
-    propertyName: booking.propertyName,
-    checkIn: booking.checkIn,
-    checkOut: booking.checkOut,
-    totalAmount: booking.totalAmount,
-    balanceAmount: booking.balanceAmount,
-    currency: booking.currency,
-    paymentMethod: booking.paymentMethod,
-  };
 }
 
 async function applyCheckInCommandMutation(
@@ -4391,6 +5363,7 @@ async function applyCheckInCommandMutation(
 async function applyNoShowCommandMutation(
   client: PmsOperationsCommandClient,
   command: PmsNoShowCommand,
+  acceptedAt: string,
 ): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
   const sources = await findAssignmentsForOperationalCommand(client, command);
   if (sources.length === 0) return reservationNotFound(command.guestBookingId);
@@ -4440,6 +5413,143 @@ async function applyNoShowCommandMutation(
       command.reason ?? "",
     ],
   );
+  await appendPmsManualNoShowNightlyRevenueEvidence(client, command, acceptedAt);
+  return { ok: true };
+}
+
+async function applyManualCancellationCommandMutation(
+  client: PmsOperationsCommandClient,
+  command: PmsManualCancellationCommand,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+  const sources = await findAssignmentsForOperationalCommand(client, command);
+  if (sources.length === 0) return reservationNotFound(command.guestBookingId);
+  if (
+    command.expectedVersion &&
+    sources.some((source) => !assignmentVersionMatches(source, command.expectedVersion!))
+  )
+    return operationalConflict("version_conflict", "Reservation cancellation version is stale.");
+  const invalid = sources.find(
+    ({ assignmentStatus }) => !["pending", "assigned"].includes(assignmentStatus),
+  );
+  if (invalid) return invalidStatusTransition(invalid.assignmentStatus, "canceled");
+
+  const nextVersion = nextAssignmentVersion(sources[0]!);
+  await client.query(
+    `UPDATE pms.operational_booking_assignments SET room_id=NULL,assignment_status='canceled',
+       assigned_at=NULL,assignment_payload=jsonb_set(jsonb_set(COALESCE(assignment_payload,'{}'),
+       '{version}',to_jsonb($4::text),true),'{operationalStatus}',to_jsonb('canceled'::text),true),
+       updated_at=$5::timestamptz
+     WHERE id=ANY($1::uuid[]) AND property_id=$2::uuid AND guest_booking_id=$3::uuid`,
+    [
+      sources.map(({ assignmentId }) => assignmentId),
+      command.propertyId,
+      command.guestBookingId,
+      nextVersion,
+      acceptedAt,
+    ],
+  );
+  try {
+    await cancelPmsManualBooking(client, command, acceptedAt);
+  } catch (error) {
+    if (error instanceof ManualCancellationEvidenceError)
+      return operationalInvalidBody(error.message);
+    if (error instanceof ManualCancellationStateError)
+      return invalidStatusTransition(error.currentStatus, "canceled");
+    throw error;
+  }
+  return { ok: true };
+}
+
+async function applyManualRefundCommandMutation(
+  client: PmsOperationsCommandClient,
+  command: PmsManualRefundCommand,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+  const sources = await findAssignmentsForOperationalCommand(client, command);
+  if (sources.length === 0) return reservationNotFound(command.guestBookingId);
+  if (
+    command.expectedVersion &&
+    sources.some((source) => !assignmentVersionMatches(source, command.expectedVersion!))
+  )
+    return operationalConflict("version_conflict", "Reservation refund version is stale.");
+  try {
+    const financeTransaction = await financeManualBookingRefundTransaction(client);
+    await refundPmsManualBooking(
+      client,
+      command,
+      acceptedAt,
+      createFinanceManualBookingRefundPort(),
+      financeTransaction,
+    );
+  } catch (error) {
+    if (error instanceof ManualRefundEvidenceError) return operationalInvalidBody(error.message);
+    if (error instanceof ManualRefundStateError)
+      return invalidStatusTransition(error.currentStatus, "refunded");
+    throw error;
+  }
+  return { ok: true };
+}
+
+async function applyManualStayCorrectionCommandMutation(
+  client: PmsOperationsCommandClient,
+  command: PmsManualStayCorrectionCommand,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+  const sources = await findAssignmentsForOperationalCommand(client, command);
+  if (sources.length === 0) return reservationNotFound(command.guestBookingId);
+  if (
+    command.expectedVersion &&
+    sources.some((source) => !assignmentVersionMatches(source, command.expectedVersion!))
+  )
+    return operationalConflict("version_conflict", "Reservation stay-correction version is stale.");
+  try {
+    await correctPmsManualStays(client, command, acceptedAt, nextAssignmentVersion(sources[0]!));
+  } catch (error) {
+    if (error instanceof ManualStayCorrectionAvailabilityError)
+      return operationalConflict("room_unavailable", error.message);
+    if (
+      error instanceof ManualStayCorrectionScopeError ||
+      error instanceof ManualStayCorrectionEvidenceError
+    )
+      return operationalInvalidBody(error.message);
+    if (error instanceof ManualStayCorrectionStateError)
+      return invalidStatusTransition(error.currentStatus, "corrected");
+    throw error;
+  }
+  return { ok: true };
+}
+
+async function applyManualPriceCorrectionCommandMutation(
+  client: PmsOperationsCommandClient,
+  command: PmsManualPriceCorrectionCommand,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsOperationalCommandResult, { ok: true }>> {
+  const sources = await findAssignmentsForOperationalCommand(client, command);
+  if (sources.length === 0) return reservationNotFound(command.guestBookingId);
+  if (
+    command.expectedVersion &&
+    sources.some((source) => !assignmentVersionMatches(source, command.expectedVersion!))
+  )
+    return operationalConflict(
+      "version_conflict",
+      "Reservation price-correction version is stale.",
+    );
+  if (
+    sources.some(
+      ({ source, stayEvidenceKind }) => source !== "manual" || stayEvidenceKind !== "exact",
+    )
+  )
+    return operationalInvalidBody("Manual price correction assignment scope is unavailable");
+  try {
+    await correctBookingPmsManualPrices(client, command, acceptedAt);
+  } catch (error) {
+    if (error instanceof ManualPriceCorrectionEvidenceError)
+      return operationalInvalidBody(error.message);
+    if (error instanceof ManualPriceCorrectionStateError)
+      return invalidStatusTransition(error.currentStatus, "corrected");
+    throw error;
+  }
   return { ok: true };
 }
 
@@ -4593,14 +5703,16 @@ async function findAssignmentForCommand(
 ): Promise<PmsAssignmentRow | null> {
   const result = await client.query<PmsAssignmentRow>(
     `SELECT
-       id::text AS "assignmentId",
-       guest_booking_id::text AS "guestBookingId",
-       room_type_id::text AS "roomTypeId",
-       room_id::text AS "roomId",
-       position,
-       assignment_status AS "assignmentStatus",
-       assignment_payload ->> 'version' AS version,
+       assignment.id::text AS "assignmentId",
+       assignment.guest_booking_id::text AS "guestBookingId",
+       assignment.room_type_id::text AS "roomTypeId",
+       assignment.room_id::text AS "roomId",
+       assignment.position,
+       assignment.assignment_status AS "assignmentStatus",
+       assignment.assignment_payload ->> 'version' AS version,
        assignment.updated_at AS "updatedAt",
+       assignment.source,
+       assignment.stay_evidence_kind AS "stayEvidenceKind",
        booking.check_in::text AS "checkIn",
        booking.check_out::text AS "checkOut"
      FROM pms.operational_booking_assignments assignment
@@ -4633,14 +5745,16 @@ async function findAssignmentsForOperationalCommand(
     "stepResults" in command || "inspectionResults" in command ? command.assignmentId : undefined;
   const result = await client.query<PmsAssignmentRow>(
     `SELECT
-       id::text AS "assignmentId",
-       guest_booking_id::text AS "guestBookingId",
-       room_type_id::text AS "roomTypeId",
-       room_id::text AS "roomId",
-       position,
-       assignment_status AS "assignmentStatus",
-       assignment_payload ->> 'version' AS version,
+       assignment.id::text AS "assignmentId",
+       assignment.guest_booking_id::text AS "guestBookingId",
+       assignment.room_type_id::text AS "roomTypeId",
+       assignment.room_id::text AS "roomId",
+       assignment.position,
+       assignment.assignment_status AS "assignmentStatus",
+       assignment.assignment_payload ->> 'version' AS version,
        assignment.updated_at AS "updatedAt",
+       assignment.source,
+       assignment.stay_evidence_kind AS "stayEvidenceKind",
        booking.check_in::text AS "checkIn",
        booking.check_out::text AS "checkOut"
      FROM pms.operational_booking_assignments assignment
@@ -5134,7 +6248,7 @@ async function recordOperationalCommandAuditEvent(
      )
      ON CONFLICT (product, audit_key) DO NOTHING`,
     [
-      `pms.${operation}.${command.idempotencyKey}.audit.v1`,
+      `pms.${operation}.property.${command.propertyId}.key.${keyHash}.audit.v1`,
       `pms.${operation.replace("_command", "")}`,
       command.audit.requestedAt,
       command.propertyId,
@@ -5144,7 +6258,25 @@ async function recordOperationalCommandAuditEvent(
       command.audit.correlationId ?? command.audit.requestId,
       command.commandId,
       JSON.stringify({ commandMeta, idempotencyKeyHash: keyHash }),
-      JSON.stringify({}),
+      JSON.stringify(
+        "pricing" in command
+          ? {
+              accountingDate: command.accountingDate,
+              reason: command.reason ?? null,
+              pricing: command.pricing,
+            }
+          : "stays" in command
+            ? { accountingDate: command.accountingDate, stays: command.stays }
+            : "retainedCharges" in command
+              ? { reason: command.reason ?? null }
+              : "allocations" in command
+                ? {
+                    reason: command.reason ?? null,
+                    paymentEvidenceId: command.paymentEvidenceId,
+                    accountingDate: command.accountingDate,
+                  }
+                : {},
+      ),
       JSON.stringify({
         commandId: command.commandId,
         reason: command.audit.reason,
@@ -5245,7 +6377,7 @@ function assignmentConflict(
 }
 
 function operationalConflict(
-  code: "version_conflict" | "idempotency_conflict",
+  code: "version_conflict" | "idempotency_conflict" | "room_unavailable",
   message: string,
 ): Exclude<PmsOperationalCommandResult, { ok: true }> {
   return {
@@ -5254,6 +6386,12 @@ function operationalConflict(
     code,
     message,
   };
+}
+
+function operationalInvalidBody(
+  message: string,
+): Exclude<PmsOperationalCommandResult, { ok: true }> {
+  return { ok: false, statusCode: 400, code: "invalid_body", message };
 }
 
 function invalidStatusTransition(

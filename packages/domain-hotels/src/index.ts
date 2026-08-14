@@ -18,6 +18,7 @@ export * from "./hotelCatalogStep1.js";
 export * from "./hotelMediaProjection.js";
 export * from "./onboardingLifecycle.js";
 export * from "./onboardingReadiness.js";
+export * from "./platformPropertyLifecycle.js";
 export * from "./propertyMedia.js";
 export * from "./propertyMediaWire.js";
 export * from "./propertySetupDraft.js";

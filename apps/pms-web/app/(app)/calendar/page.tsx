@@ -20,14 +20,14 @@ import {
   CalendarRoom,
   CalendarBooking,
   CalendarBlock,
-  CreateAdminBookingPayload,
 } from "@/services/calendar";
+import type { PmsManualBookingCreateInput } from "@/services/api/pmsManualBookingClient";
 import BlockModal from "@/components/calendar/BlockModal";
 import BlockDetailModal from "@/components/calendar/BlockDetailModal";
-import NewBookingModal from "@/components/calendar/NewBookingModal";
+import TargetManualBookingModal from "@/components/calendar/TargetManualBookingModal";
 import BookingDetailModal from "@/components/calendar/BookingDetailModal";
 import MiniDatePicker from "@/components/calendar/MiniDatePicker";
-import MobileCalendar from "@/components/calendar/MobileCalendar";
+import MobileCalendar, { calendarLaneTop } from "@/components/calendar/MobileCalendar";
 import MonthView from "@/components/calendar/MonthView";
 import { useTranslation } from "@/lib/i18n";
 import { channexService } from "@/services/channex";
@@ -37,6 +37,7 @@ const VIEW_DAYS = 21;
 const VIEW_MODE_STORAGE_KEY = "pms.calendar.viewMode";
 const MOBILE_CALENDAR_QUERY = "(max-width: 767px)";
 const CALENDAR_WRITES_AVAILABLE = false;
+const MANUAL_BOOKINGS_AVAILABLE = true;
 type ViewMode = "timeline" | "month";
 
 const CHANNEL_LEGEND_KEYS: Array<{
@@ -78,6 +79,7 @@ export default function CalendarPage() {
   const [loadError, setLoadError] = useState(false);
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [showNewBookingModal, setShowNewBookingModal] = useState(false);
+  const [bookingNotice, setBookingNotice] = useState("");
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
   const [selectedBlock, setSelectedBlock] = useState<CalendarBlock | null>(null);
   // Mobile-only: the date range selected in MobileCalendar before opening
@@ -322,7 +324,7 @@ export default function CalendarPage() {
     setShowBlockModal(false);
     setPrefill(null);
     setMobilePrefill(null);
-    fetchData();
+    await fetchData();
   };
 
   // Mobile: tapping "Block" opens the shared BlockModal with the selected
@@ -352,24 +354,30 @@ export default function CalendarPage() {
     reason: string;
   }) => {
     if (!selectedBlock) return;
-    await calendarService.updateRoomBlock(selectedBlock.id, updates);
+    await calendarService.updateRoomBlock(selectedBlock.id, selectedBlock.version, updates);
     setSelectedBlock(null);
-    fetchData();
+    await fetchData();
   };
 
   const handleDeleteBlock = async () => {
     if (!selectedBlock) return;
-    await calendarService.deleteRoomBlock(selectedBlock.id);
+    await calendarService.deleteRoomBlock(selectedBlock.id, selectedBlock.version);
     setSelectedBlock(null);
-    fetchData();
+    await fetchData();
   };
 
-  const handleCreateBooking = async (bookingData: CreateAdminBookingPayload) => {
-    await calendarService.createAdminBooking(bookingData);
+  const handleCreateBooking = async (bookingData: PmsManualBookingCreateInput) => {
+    const result = await calendarService.createManualBooking(bookingData);
+    setBookingNotice(
+      result.outcome === "replayed"
+        ? "Booking already existed; calendar refreshed."
+        : "Booking created.",
+    );
     setShowNewBookingModal(false);
     setPrefill(null);
     setMobilePrefill(null);
     fetchData();
+    return result;
   };
 
   // Reorder helpers (VAY-307).
@@ -526,6 +534,9 @@ export default function CalendarPage() {
 
   return (
     <div className="h-full flex flex-col">
+      <p className="sr-only" aria-live="polite">
+        {bookingNotice}
+      </p>
       {/* Mobile Calendar */}
       <div className="md:hidden flex-1 flex flex-col">
         {loading && !data ? (
@@ -546,6 +557,7 @@ export default function CalendarPage() {
             onBlockRoom={handleMobileBlockRoom}
             onSelectBlock={(bl) => setSelectedBlock(bl)}
             writeActionsAvailable={CALENDAR_WRITES_AVAILABLE}
+            manualBookingAvailable={MANUAL_BOOKINGS_AVAILABLE}
           />
         )}
       </div>
@@ -634,10 +646,6 @@ export default function CalendarPage() {
               </button>
               <button
                 type="button"
-                disabled={!CALENDAR_WRITES_AVAILABLE}
-                title={
-                  !CALENDAR_WRITES_AVAILABLE ? "Room blocking is not available yet" : undefined
-                }
                 onClick={() => {
                   setPrefill(null);
                   setShowBlockModal(true);
@@ -648,9 +656,9 @@ export default function CalendarPage() {
               </button>
               <button
                 type="button"
-                disabled={!CALENDAR_WRITES_AVAILABLE}
+                disabled={!MANUAL_BOOKINGS_AVAILABLE}
                 title={
-                  !CALENDAR_WRITES_AVAILABLE
+                  !MANUAL_BOOKINGS_AVAILABLE
                     ? "Manual booking creation is not available yet"
                     : undefined
                 }
@@ -772,11 +780,10 @@ export default function CalendarPage() {
         {!CALENDAR_WRITES_AVAILABLE && (
           <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
             <span>
-              Calendar viewing is active. Creating bookings, blocking, and reordering rooms are not
-              available yet.
+              Manual bookings and room blocks are available. Reordering rooms is not available yet.
             </span>
             <span className="shrink-0 rounded bg-gray-100 px-2 py-1 font-medium text-gray-500">
-              View only
+              Limited writes
             </span>
           </div>
         )}
@@ -815,12 +822,12 @@ export default function CalendarPage() {
             rooms={data.rooms}
             roomTypeMap={roomTypeMap}
             bookingsByRoom={bookingsByRoom}
+            unassignedBookings={unassignedBookings}
             blocksByRoom={blocksByRoom}
             legacyBlocksByRoomType={legacyBlocksByRoomType}
             roomIndexInType={roomIndexInType}
             onSelectBooking={(id) => setSelectedBookingId(id)}
             onSelectBlock={(bl) => setSelectedBlock(bl)}
-            blockEditingAvailable={CALENDAR_WRITES_AVAILABLE}
           />
         ) : (
           <div className="bg-white border border-gray-200 rounded-xl overflow-hidden flex-1 overflow-x-auto">
@@ -943,17 +950,9 @@ export default function CalendarPage() {
                         <td
                           colSpan={VIEW_DAYS}
                           className={`relative h-12 p-0 select-none touch-none ${
-                            reorderMode
-                              ? "pointer-events-none opacity-60"
-                              : CALENDAR_WRITES_AVAILABLE
-                                ? "cursor-cell"
-                                : "cursor-default"
+                            reorderMode ? "pointer-events-none opacity-60" : "cursor-cell"
                           }`}
-                          onPointerDown={(e) =>
-                            CALENDAR_WRITES_AVAILABLE &&
-                            !reorderMode &&
-                            handleCellPointerDown(e, room.id)
-                          }
+                          onPointerDown={(e) => handleCellPointerDown(e, room.id)}
                         >
                           {/* Day grid lines */}
                           <div className="absolute inset-0 flex">
@@ -1013,16 +1012,18 @@ export default function CalendarPage() {
                             const style = getBarStyle(bl.startDate, bl.endDate);
                             if (!style) return null;
                             return (
-                              <div
+                              <button
                                 key={`block-${bl.id}`}
+                                type="button"
                                 data-bar="block"
-                                className="absolute top-1.5 h-8 rounded-md px-2 text-[11px] font-medium leading-8 truncate z-[1] bg-red-100 border border-red-300 border-dashed text-red-600 flex items-center gap-1 cursor-default"
+                                onClick={() => setSelectedBlock(bl)}
+                                className="absolute top-1.5 h-8 rounded-md px-2 text-[11px] font-medium leading-8 truncate z-[1] bg-red-100 border border-red-300 border-dashed text-red-600 flex items-center gap-1 cursor-pointer hover:bg-red-200"
                                 style={style}
                                 title={`Blocked: ${bl.reason || "No reason"}\n${bl.startDate} → ${bl.endDate}${
                                   bl.roomId
                                     ? `\nRoom #${bl.roomNumber ?? ""}`
                                     : `\n${bl.blockedCount} room${bl.blockedCount !== 1 ? "s" : ""}`
-                                }\nBlock editing is not available yet`}
+                                }`}
                               >
                                 <svg
                                   className="w-3.5 h-3.5 flex-shrink-0"
@@ -1038,7 +1039,7 @@ export default function CalendarPage() {
                                   />
                                 </svg>
                                 <span className="truncate">{bl.reason || "Blocked"}</span>
-                              </div>
+                              </button>
                             );
                           })}
                           {/* Booking bars */}
@@ -1053,7 +1054,7 @@ export default function CalendarPage() {
                               : "";
                             return (
                               <div
-                                key={`${b.id}-${b.roomId ?? "na"}`}
+                                key={`${b.id}-${b.roomPosition}`}
                                 data-bar="booking"
                                 className={`absolute top-1.5 h-8 rounded-md px-2 text-[11px] font-medium leading-8 truncate cursor-pointer z-[1] text-white ${channelColor} hover:brightness-110 transition-all flex items-center gap-1.5 ${
                                   isMultiRoom ? "ring-1 ring-inset ring-white/50" : ""
@@ -1094,7 +1095,11 @@ export default function CalendarPage() {
                         {unassignedBookings.length !== 1 ? "s" : ""}
                       </div>
                     </td>
-                    <td colSpan={VIEW_DAYS} className="relative h-12 p-0">
+                    <td
+                      colSpan={VIEW_DAYS}
+                      className="relative p-0"
+                      style={{ height: `${calendarLaneTop(unassignedBookings.length) + 6}px` }}
+                    >
                       <div className="absolute inset-0 flex">
                         {dates.map((d) => {
                           const isToday =
@@ -1115,24 +1120,26 @@ export default function CalendarPage() {
                           );
                         })}
                       </div>
-                      {unassignedBookings.map((b) => {
+                      {unassignedBookings.map((b, index) => {
                         const style = getBarStyle(b.checkIn, b.checkOut);
                         if (!style) return null;
                         const channelColor = getChannelBarColor(b.channel);
+                        // prettier-ignore
+                        const stayLabel = b.numberOfRooms > 1 ? ` · Room ${b.roomPosition + 1} of ${b.numberOfRooms}` : "";
                         return (
                           <div
-                            key={b.id}
+                            key={`${b.id}-${b.roomPosition}`}
                             data-bar="booking"
                             className={`absolute top-1.5 h-8 rounded-md px-2 text-[11px] font-medium leading-8 truncate cursor-pointer z-[1] text-white ${channelColor} hover:brightness-110 transition-all flex items-center gap-1.5 opacity-75`}
-                            style={style}
-                            title={`${b.guestFirstName} ${b.guestLastName} (${b.status}) - Unassigned\n${b.checkIn} → ${b.checkOut}`}
+                            style={{ ...style, top: `${calendarLaneTop(index)}px` }}
+                            title={`${b.guestFirstName} ${b.guestLastName} (${b.status}) - Unassigned${stayLabel}\n${b.checkIn} → ${b.checkOut}`}
                             onClick={() => setSelectedBookingId(b.id)}
                           >
                             <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[9px] font-bold flex-shrink-0">
                               {getInitials(b.guestFirstName, b.guestLastName)}
                             </span>
                             <span className="truncate">
-                              {`${b.guestFirstName} ${b.guestLastName}`.trim()}
+                              {`${b.guestFirstName} ${b.guestLastName}${stayLabel}`.trim()}
                             </span>
                           </div>
                         );
@@ -1148,7 +1155,6 @@ export default function CalendarPage() {
 
       {/* Drag-selection action popover */}
       {prefill &&
-        CALENDAR_WRITES_AVAILABLE &&
         !showBlockModal &&
         !showNewBookingModal &&
         data &&
@@ -1184,22 +1190,29 @@ export default function CalendarPage() {
                 </div>
               </div>
               <div className="p-1">
-                <button
-                  onClick={() => setShowNewBookingModal(true)}
-                  className="w-full flex items-center gap-2.5 px-2.5 py-2 text-sm text-left text-gray-700 hover:bg-primary-50 hover:text-primary-700 rounded-md transition-colors"
-                >
-                  <span className="w-7 h-7 flex items-center justify-center rounded-md bg-primary-50 text-primary-600">
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M12 4v16m8-8H4"
-                      />
-                    </svg>
-                  </span>
-                  <span className="font-medium">{newBookingLabel}</span>
-                </button>
+                {MANUAL_BOOKINGS_AVAILABLE && (
+                  <button
+                    onClick={() => setShowNewBookingModal(true)}
+                    className="w-full flex items-center gap-2.5 px-2.5 py-2 text-sm text-left text-gray-700 hover:bg-primary-50 hover:text-primary-700 rounded-md transition-colors"
+                  >
+                    <span className="w-7 h-7 flex items-center justify-center rounded-md bg-primary-50 text-primary-600">
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M12 4v16m8-8H4"
+                        />
+                      </svg>
+                    </span>
+                    <span className="font-medium">{newBookingLabel}</span>
+                  </button>
+                )}
                 <button
                   onClick={() => setShowBlockModal(true)}
                   className="w-full flex items-center gap-2.5 px-2.5 py-2 text-sm text-left text-gray-700 hover:bg-red-50 hover:text-red-700 rounded-md transition-colors"
@@ -1222,7 +1235,7 @@ export default function CalendarPage() {
         })()}
 
       {/* Block Modal */}
-      {CALENDAR_WRITES_AVAILABLE && showBlockModal && data && (
+      {showBlockModal && data && (
         <BlockModal
           roomTypes={data.roomTypes}
           rooms={data.rooms}
@@ -1243,8 +1256,8 @@ export default function CalendarPage() {
       )}
 
       {/* New Booking Modal */}
-      {CALENDAR_WRITES_AVAILABLE && showNewBookingModal && data && (
-        <NewBookingModal
+      {MANUAL_BOOKINGS_AVAILABLE && showNewBookingModal && data && (
+        <TargetManualBookingModal
           roomTypes={data.roomTypes}
           rooms={data.rooms}
           onSubmit={handleCreateBooking}
@@ -1256,12 +1269,11 @@ export default function CalendarPage() {
           initialRoomId={prefill?.roomId}
           initialCheckIn={prefill?.startDate ?? mobilePrefill?.startDate}
           initialCheckOut={prefill?.endDate ?? mobilePrefill?.endDate}
-          connectedChannelKeys={connectedChannelKeys}
         />
       )}
 
       {/* Block Detail Modal */}
-      {CALENDAR_WRITES_AVAILABLE && selectedBlock && data && (
+      {selectedBlock && data && (
         <BlockDetailModal
           block={selectedBlock}
           roomTypes={data.roomTypes}

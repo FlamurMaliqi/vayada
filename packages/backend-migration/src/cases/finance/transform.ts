@@ -598,7 +598,7 @@ export async function transformFinance(client: pg.Client): Promise<void> {
       provider_payout_id,
       payout_scheduled_at,
       payout_paid_at,
-      payout_metadata
+      payout_metadata || jsonb_build_object('affiliateId', affiliate_resource_id)
     FROM migration_source_finance.affiliate_payout_inputs
   `);
 

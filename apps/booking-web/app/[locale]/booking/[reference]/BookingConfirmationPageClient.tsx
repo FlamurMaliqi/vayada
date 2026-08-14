@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, use } from "react";
-import { useTranslations } from "next-intl";
+import { useState, useEffect, useRef } from "react";
+import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/navigation";
 import BookingNavigation from "@/components/layout/BookingNavigation";
 import BookingFooter from "@/components/layout/BookingFooter";
@@ -10,11 +10,19 @@ import { bookingImageSizes } from "@/components/booking/imageSizes";
 import { useHotel, useSlug } from "@/contexts/HotelContext";
 import { useCurrency } from "@/contexts/CurrencyContext";
 import { Booking } from "@/lib/types";
-import { bookingService, BookingChangeRequest } from "@/services/api/booking";
-import { trackEvent } from "@/services/api/tracking";
 import {
+  bookingService,
+  type BookingChangeRequest,
+  type BookingCreateRequest,
+  type BookingQuote,
+} from "@/services/api/booking";
+import { trackEvent } from "@/services/api/tracking";
+import { ApiError } from "@/services/api/client";
+import {
+  clearPendingBookingCreate,
   readGuestDetails,
   readLastBooking,
+  readPendingBookingCreate,
   saveLastBooking,
   toConfirmationBooking,
 } from "@/lib/storage/bookingDraft";
@@ -47,40 +55,79 @@ function CountdownTimer({ deadline }: { deadline: string }) {
   return <span className="font-mono text-lg font-bold text-amber-600">{timeLeft}</span>;
 }
 
+function displayCardBrand(brand: string): string {
+  return brand.charAt(0).toUpperCase() + brand.slice(1).replaceAll("_", " ");
+}
+
+function formatPropertyDateTime(value: string, locale: string, timeZone?: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  try {
+    return new Intl.DateTimeFormat(locale, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: timeZone || "UTC",
+      timeZoneName: "short",
+    }).format(date);
+  } catch {
+    return date.toISOString();
+  }
+}
+
+function formatPropertyDate(value: string, locale: string, timeZone?: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  try {
+    return new Intl.DateTimeFormat(locale, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      timeZone: timeZone || "UTC",
+    }).format(date);
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
+}
+
 export default function BookingConfirmationPageClient({
-  params,
-  searchParams,
+  reference,
+  emailParam,
+  tokenParam,
 }: {
-  params: Promise<{ reference: string }>;
-  searchParams: Promise<{ email?: string }>;
+  reference: string;
+  emailParam?: string;
+  tokenParam?: string;
 }) {
-  const { reference } = use(params);
-  const { email: emailParam } = use(searchParams);
   const t = useTranslations("confirmation");
+  const locale = useLocale();
   const tc = useTranslations("common");
   const tp = useTranslations("payment");
   const { hotel } = useHotel();
   const { slug } = useSlug();
   const { formatPrice } = useCurrency();
   const [booking, setBooking] = useState<Booking | null>(null);
-  const [status, setStatus] = useState<string>("pending");
+  const [status, setStatus] = useState<string>("");
   const [withdrawing, setWithdrawing] = useState(false);
   const [withdrawError, setWithdrawError] = useState("");
   const [hydrating, setHydrating] = useState(false);
   const [hydrateError, setHydrateError] = useState(false);
   const [changeRequest, setChangeRequest] = useState<BookingChangeRequest | null>(null);
+  const cardRecovery = useRef<Promise<Booking | null> | null>(null);
+  const confirmationLookup = useRef<Promise<Booking | null> | null>(null);
   const [paypalInfo, setPaypalInfo] = useState<{
     email: string;
     windowHours: number;
   } | null>(null);
 
-  // Booking details are written to sessionStorage on the checkout flow, but
-  // sessionStorage is per-tab, so a guest who opens the "View My Booking" link
-  // from the confirmation email on a different device sees no details. The
-  // backend now appends ?email=… to that link — when present, hydrate from the
-  // lookup endpoint so the page works cross-device.
+  // Use the saved booking on refresh. If Stripe redirected away for a payment
+  // challenge, replay the original create command: the backend checks the same
+  // PaymentIntent and materializes the booking without charging again.
   useEffect(() => {
     trackEvent(slug, "completed_booking");
+    setHydrateError(false);
     const stored = readLastBooking();
     if (stored && stored.bookingReference === reference) {
       const guest = readGuestDetails();
@@ -96,6 +143,120 @@ export default function BookingConfirmationPageClient({
       return;
     }
 
+    const recovery = readPendingBookingCreate<BookingQuote, BookingCreateRequest>(slug);
+    if (
+      recovery?.paymentMethod === "card" &&
+      (!tokenParam || recovery.confirmationToken === tokenParam)
+    ) {
+      let cancelled = false;
+      setHydrating(true);
+      cardRecovery.current ??= (async () => {
+        for (let attempt = 0; attempt < 15; attempt += 1) {
+          try {
+            const result = await bookingService.create(
+              slug,
+              recovery.requestBody,
+              recovery.createIdempotencyKey,
+            );
+            if (result.authorizationExpired) {
+              clearPendingBookingCreate();
+              return null;
+            }
+            if (result.authorizationComplete) {
+              const quote = recovery.quote;
+              const request = recovery.requestBody;
+              const normalized = toConfirmationBooking(result.booking, {
+                hotelName: hotel.name,
+                roomName: quote.roomName,
+                guestFirstName: request.guestFirstName,
+                guestLastName: request.guestLastName,
+                guestEmail: request.guestEmail,
+                checkIn: request.checkIn,
+                checkOut: request.checkOut,
+                adults: request.adults,
+                children: request.children,
+                numberOfRooms: request.numberOfRooms,
+                nightlyRate: quote.nightlyRate,
+                totalAmount: quote.totalAmount,
+                depositRequired: quote.depositRequired,
+                depositPercentage: quote.depositPercentage ?? 0,
+                depositAmount: quote.depositAmount,
+                balanceAmount: quote.balanceAmount,
+                addonTotal: quote.addonTotal,
+                addonIds: request.addonIds,
+                addonQuantities: request.addonQuantities,
+                addonDates: request.addonDates,
+                currency: quote.currency,
+                paymentMethod: "card",
+              });
+              if (normalized.bookingReference !== reference) return null;
+              saveLastBooking(normalized);
+              clearPendingBookingCreate();
+              return normalized;
+            }
+          } catch {
+            // A command may still be completing; retry with the same key.
+          }
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+        return null;
+      })();
+      void cardRecovery.current
+        .then((normalized) => {
+          if (cancelled) return;
+          if (!normalized) {
+            setHydrateError(true);
+            return;
+          }
+          setBooking(normalized);
+          setStatus(normalized.status);
+        })
+        .finally(() => {
+          if (!cancelled) setHydrating(false);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (tokenParam) {
+      let cancelled = false;
+      setHydrating(true);
+      confirmationLookup.current ??= (async () => {
+        for (let attempt = 0; attempt < 15; attempt += 1) {
+          try {
+            return await bookingService.confirmation(slug, reference, tokenParam);
+          } catch (error) {
+            if (error instanceof ApiError && error.status !== 409 && error.status < 500) {
+              return null;
+            }
+          }
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+        return null;
+      })();
+      void confirmationLookup.current
+        .then((fetched) => {
+          if (cancelled) return;
+          if (!fetched) {
+            setHydrateError(true);
+            return;
+          }
+          const normalized = toConfirmationBooking(fetched, { hotelName: hotel.name });
+          setBooking(normalized);
+          setStatus(normalized.status);
+          saveLastBooking(normalized);
+        })
+        .finally(() => {
+          if (!cancelled) setHydrating(false);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    // A confirmation-email link carries the guest email so the stored booking
+    // can be hydrated on another device without exposing it by reference alone.
     const email = emailParam;
     if (!email) return;
 
@@ -124,7 +285,7 @@ export default function BookingConfirmationPageClient({
     return () => {
       cancelled = true;
     };
-  }, [reference, emailParam, hotel.name, slug]);
+  }, [reference, emailParam, tokenParam, hotel.name, slug]);
 
   useEffect(() => {
     if (booking?.paymentMethod !== "paypal") return;
@@ -206,6 +367,8 @@ export default function BookingConfirmationPageClient({
 
   const isPending = status === "pending";
   const isConfirmed = status === "confirmed";
+  const isCheckedIn = status === "checked_in";
+  const isCheckedOut = status === "checked_out";
   const isCancelled = status === "cancelled";
   // VAY-404: host-rejected request. Shares the red-X visual with cancelled
   // but uses different copy so the guest doesn't think they cancelled.
@@ -222,13 +385,16 @@ export default function BookingConfirmationPageClient({
       ? booking.numberOfRooms
       : 1;
   const guestEmail = (booking?.guestEmail || emailParam || "").trim();
-  const manageBookingHref = `/my-booking?reference=${encodeURIComponent(reference)}${guestEmail ? `&email=${encodeURIComponent(guestEmail)}` : ""}`;
+  const manageBookingHref = `/my-booking?reference=${encodeURIComponent(reference)}`;
   const requestChangesHref = guestEmail
-    ? `/booking/${encodeURIComponent(reference)}/request-change?email=${encodeURIComponent(guestEmail)}`
+    ? `/booking/${encodeURIComponent(reference)}/request-change`
     : null;
   const isPayAtProperty =
     booking?.paymentMethod === "pay_at_property" || booking?.paymentMethod === "cash";
   const isTotalPaid = booking?.paymentStatus === "captured" || booking?.paymentStatus === "paid";
+  const displayedTotal = isTotalPaid
+    ? booking?.totalAmount
+    : (booking?.balanceAmount ?? booking?.totalAmount);
 
   return (
     <div className="min-h-screen bg-surface">
@@ -266,7 +432,7 @@ export default function BookingConfirmationPageClient({
               </svg>
             </div>
           )}
-          {isConfirmed && (
+          {(isConfirmed || isCheckedIn || isCheckedOut) && (
             <div className="w-16 h-16 bg-success-100 rounded-full flex items-center justify-center mx-auto mb-6">
               <svg
                 className="w-8 h-8 text-success-600"
@@ -325,6 +491,18 @@ export default function BookingConfirmationPageClient({
             <>
               <h1 className="text-2xl font-bold text-gray-900 mb-2">{t("title")}</h1>
               <p className="text-gray-600 mb-6">{t("subtitle")}</p>
+            </>
+          )}
+          {isCheckedIn && (
+            <>
+              <h1 className="text-2xl font-bold text-gray-900 mb-2">{t("checkedInTitle")}</h1>
+              <p className="text-gray-600 mb-6">{t("checkedInSubtitle")}</p>
+            </>
+          )}
+          {isCheckedOut && (
+            <>
+              <h1 className="text-2xl font-bold text-gray-900 mb-2">{t("checkedOutTitle")}</h1>
+              <p className="text-gray-600 mb-6">{t("checkedOutSubtitle")}</p>
             </>
           )}
           {isCancelled && (
@@ -407,6 +585,14 @@ export default function BookingConfirmationPageClient({
                     : "—"}
                 </span>
               </div>
+              {booking?.unitNames && booking.unitNames.length > 0 && (
+                <div className="flex justify-between py-3">
+                  <span className="text-gray-600">{t("unit")}</span>
+                  <span className="font-medium text-gray-900 text-right">
+                    {booking.unitNames.join(", ")}
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between py-3">
                 <span className="text-gray-600">{t("checkIn")}</span>
                 <span className="font-medium text-gray-900">
@@ -452,10 +638,12 @@ export default function BookingConfirmationPageClient({
               )}
               <div className="flex justify-between py-3">
                 <span className="text-gray-600">
-                  {booking?.depositRequired || !isTotalPaid ? tc("total") : t("totalPaid")}
+                  {isTotalPaid ? t("totalPaid") : t("totalDue")}
                 </span>
                 <span className="font-bold text-gray-900 text-lg">
-                  {booking ? formatPrice(booking.totalAmount, booking.currency) : "—"}
+                  {booking && displayedTotal !== undefined
+                    ? formatPrice(displayedTotal, booking.currency)
+                    : "—"}
                 </span>
               </div>
               {booking?.depositRequired && (
@@ -485,20 +673,58 @@ export default function BookingConfirmationPageClient({
                   <span className="text-gray-600">{t("paymentMethodLabel") || "Payment"}</span>
                   <span className="font-medium text-gray-900">
                     {booking.paymentMethod === "card"
-                      ? tp("payWithCard")
+                      ? booking.cardBrand && booking.cardLast4
+                        ? `${displayCardBrand(booking.cardBrand)} •••• ${booking.cardLast4}`
+                        : tp("payWithCard")
                       : isPayAtProperty
                         ? tp("payAtProperty")
                         : booking.paymentMethod === "paypal"
                           ? tp("paypalLabel")
                           : booking.paymentMethod === "bank_transfer"
                             ? tp("bankTransfer")
-                            : booking.paymentMethod === "xendit"
-                              ? tp("xenditTitle")
-                              : booking.paymentMethod || "Other"}
+                            : booking.paymentMethod === "manual_card"
+                              ? t("manualCard")
+                              : booking.paymentMethod === "other"
+                                ? t("otherPayment")
+                                : booking.paymentMethod === "xendit"
+                                  ? tp("xenditTitle")
+                                  : booking.paymentMethod || "Other"}
+                  </span>
+                </div>
+              )}
+              {booking?.paymentStatus && (
+                <div className="flex justify-between py-3">
+                  <span className="text-gray-600">{t("paymentStatusLabel")}</span>
+                  <span className="font-medium text-gray-900 capitalize">
+                    {booking.paymentStatus.replaceAll("_", " ")}
                   </span>
                 </div>
               )}
             </div>
+          )}
+
+          {(isPending || isConfirmed) &&
+            booking?.paymentMethod === "bank_transfer" &&
+            booking.paymentStatus === "unpaid" &&
+            booking.bankTransferDetails && (
+              <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-xl text-left">
+                <p className="text-sm font-semibold text-blue-900">{t("bankTransferPending")}</p>
+                <p className="text-sm text-blue-800 mt-2 whitespace-pre-line">
+                  {booking.bankTransferDetails}
+                </p>
+                {booking.paymentDeadline && (
+                  <p className="text-xs text-blue-700 mt-3">
+                    {t("paymentDeadline")}:{" "}
+                    {formatPropertyDateTime(booking.paymentDeadline, locale, hotel.timezone)}
+                  </p>
+                )}
+              </div>
+            )}
+
+          {isCancelled && booking?.cancelledAt && (
+            <p className="mt-6 text-sm text-gray-600">
+              {t("cancelledOn")}: {formatPropertyDate(booking.cancelledAt, locale, hotel.timezone)}
+            </p>
           )}
 
           {isPending && booking?.paymentMethod === "paypal" && paypalInfo && (
@@ -585,7 +811,7 @@ export default function BookingConfirmationPageClient({
               href="/"
               className="px-6 py-3 bg-primary-600 text-white font-semibold rounded-full hover:bg-primary-700 transition-colors"
             >
-              {t("backToHotel")}
+              {t("backToHotel", { property: hotel.name })}
             </Link>
             <Link
               href={manageBookingHref}
@@ -593,11 +819,23 @@ export default function BookingConfirmationPageClient({
             >
               {t("manageBooking")}
             </Link>
+            {(isConfirmed || isCheckedIn || isCheckedOut) && hotel.contact.email && (
+              <a
+                href={`mailto:${hotel.contact.email}`}
+                className="px-6 py-3 border border-gray-300 text-gray-700 font-semibold rounded-full hover:bg-gray-50 transition-colors"
+              >
+                {t("contactProperty")}
+              </a>
+            )}
           </div>
         </div>
 
         {/* Email notice */}
-        <p className="text-center text-sm text-gray-500 mt-6">{t("emailNotice")}</p>
+        <p className="text-center text-sm text-gray-500 mt-6">
+          {guestEmail
+            ? t("emailNotice", { email: guestEmail })
+            : "A confirmation email has been sent to your email address."}
+        </p>
       </div>
 
       <BookingFooter />

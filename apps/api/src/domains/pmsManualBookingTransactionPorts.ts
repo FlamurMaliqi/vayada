@@ -27,6 +27,10 @@ export type PmsManualBookingTransactionPool = {
 };
 
 export type PmsManualBookingRoom = Readonly<{ roomId: string; roomTypeId: string }>;
+export type PmsManualBookingAttribution = Readonly<{
+  bookingChannel: "direct";
+  directSource: PmsManualBookingCreateCommand["directSource"];
+}>;
 
 export type PmsManualBookingCommandReservation = Readonly<{
   id: string;
@@ -45,6 +49,7 @@ export interface PmsManualBookingBookingOwnerPort {
     preview: ManualBookingPreviewResult;
     guestBookingId: string;
     bookingReference: string;
+    attribution: PmsManualBookingAttribution;
   }): Promise<PmsManualBookingAcceptedWrite>;
   markPaid(input: {
     transaction: PmsManualBookingTransaction;
@@ -77,6 +82,7 @@ export interface PmsManualBookingPlatformOwnerPort {
   writeEvidence(input: {
     transaction: PmsManualBookingTransaction;
     command: PmsManualBookingCreateCommand;
+    preview: ManualBookingPreviewResult;
     result: PmsManualBookingCreateResult;
     reservation: PmsManualBookingCommandReservation;
   }): Promise<void>;
@@ -94,21 +100,13 @@ export interface PmsManualBookingNightlyEvidenceOwnerPort {
     transaction: PmsManualBookingTransaction;
     command: PmsManualBookingCreateCommand;
     guestBookingId: string;
-    bookingReference: string;
     rooms: readonly PmsManualBookingRoom[];
     preview: ManualBookingPreviewResult;
   }): Promise<void>;
 }
 
-/** VAY-1187 implements this Booking-owned boundary after Email lands in VAY-1186. */
 export interface PmsManualBookingAttributionOwnerPort {
-  recordManualAttribution(input: {
-    transaction: PmsManualBookingTransaction;
-    propertyId: string;
-    guestBookingId: string;
-    bookingChannel: "direct";
-    directSource: PmsManualBookingCreateCommand["directSource"];
-  }): Promise<void>;
+  resolveManualAttribution(input: { directSource: unknown }): PmsManualBookingAttribution;
 }
 
 export interface PmsManualBookingTransactionalPricingPort {

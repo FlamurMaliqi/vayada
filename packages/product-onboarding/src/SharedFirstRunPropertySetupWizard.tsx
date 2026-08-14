@@ -370,6 +370,7 @@ export default function SharedFirstRunPropertySetupWizard({
   const createPropertyCommandKey = useRef<string | null>(null);
   const logoUploadKey = useRef<string | null>(null);
   const logoAssignmentKey = useRef<string | null>(null);
+  const profileSaveInFlight = useRef(false);
 
   const view = useMemo(
     () =>
@@ -412,7 +413,7 @@ export default function SharedFirstRunPropertySetupWizard({
       })
       .catch((err) => {
         if (cancelled) return;
-        setError(errorMessage(err));
+        setError(setupErrorMessage(err));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -483,7 +484,7 @@ export default function SharedFirstRunPropertySetupWizard({
         if (cancelled) return;
         setLoadedProfile(null);
         setProfileLoadFailed(true);
-        setError(errorMessage(err));
+        setError(setupErrorMessage(err));
       });
 
     return () => {
@@ -514,13 +515,14 @@ export default function SharedFirstRunPropertySetupWizard({
       await reloadStatus(propertyId);
       await onPropertySelected?.(propertyId);
     } catch (err) {
-      setError(errorMessage(err));
+      setError(setupErrorMessage(err));
     } finally {
       setLoading(false);
     }
   };
 
   const handleSaveProfile = async () => {
+    if (profileSaveInFlight.current) return;
     setError("");
     setFieldErrors({});
     const nextFieldErrors = validateProfileDraft(draft);
@@ -532,6 +534,7 @@ export default function SharedFirstRunPropertySetupWizard({
       return;
     }
 
+    profileSaveInFlight.current = true;
     setSaving(true);
     try {
       if (view.profileMode === "update" && !loadedProfile) {
@@ -547,12 +550,26 @@ export default function SharedFirstRunPropertySetupWizard({
       } else if (loadedProfile) {
         saved = loadedProfile;
       } else {
-        saved = await api.createPropertyProfile(
-          createProfileFromDraft(draft),
-          (createPropertyCommandKey.current = idempotencyKeyForRetry(
-            createPropertyCommandKey.current,
-          )),
-        );
+        const profile = createProfileFromDraft(draft);
+        const idempotencyKey = (createPropertyCommandKey.current = idempotencyKeyForRetry(
+          createPropertyCommandKey.current,
+        ));
+        try {
+          saved = await api.createPropertyProfile(profile, idempotencyKey);
+        } catch (createError) {
+          const code = setupErrorCode(createError);
+          if (code !== "idempotency_key_conflict" && code !== "command_in_progress") {
+            throw createError;
+          }
+
+          const createdPropertyId = setupErrorPropertyId(createError);
+          if (!createdPropertyId) throw createError;
+          saved = await api.getPropertyProfile(createdPropertyId);
+          const recoveredUpdate = profileUpdateFromDraft(draft, saved);
+          if (recoveredUpdate) {
+            saved = await api.updatePropertyProfile(createdPropertyId, recoveredUpdate);
+          }
+        }
       }
       setLoadedProfile(saved);
       saved = await savePropertyLogo({
@@ -591,13 +608,14 @@ export default function SharedFirstRunPropertySetupWizard({
             "These hotel details changed in another session. We refreshed the latest version—review your entries and save again.",
           );
         } catch (refreshError) {
-          setError(errorMessage(refreshError));
+          setError(setupErrorMessage(refreshError));
         }
       } else {
         setFieldErrors(fieldErrorsFromError(err));
-        setError(errorMessage(err));
+        setError(setupErrorMessage(err));
       }
     } finally {
+      profileSaveInFlight.current = false;
       setSaving(false);
     }
   };
@@ -641,10 +659,10 @@ export default function SharedFirstRunPropertySetupWizard({
             );
           }
         } catch (refreshError) {
-          setError(errorMessage(refreshError));
+          setError(setupErrorMessage(refreshError));
         }
       } else {
-        setError(errorMessage(err));
+        setError(setupErrorMessage(err));
       }
     } finally {
       setSaving(false);
@@ -657,7 +675,7 @@ export default function SharedFirstRunPropertySetupWizard({
       const nextStatus = await reloadStatus(task.propertyId);
       setSelectedPlanTaskId(recommendedInlineSetupTaskId(nextStatus));
     } catch (err) {
-      setError(errorMessage(err));
+      setError(setupErrorMessage(err));
       throw err;
     }
   };
@@ -680,8 +698,8 @@ export default function SharedFirstRunPropertySetupWizard({
       setError(INLINE_SETUP_STALE_SAVE_MESSAGE);
       throw new Error(INLINE_SETUP_STALE_SAVE_MESSAGE);
     } catch (err) {
-      if (errorMessage(err) !== INLINE_SETUP_STALE_SAVE_MESSAGE) {
-        setError(errorMessage(err));
+      if (setupErrorMessage(err) !== INLINE_SETUP_STALE_SAVE_MESSAGE) {
+        setError(setupErrorMessage(err));
       }
       throw err;
     }
@@ -3322,9 +3340,66 @@ function propertyTypeOptionsFromCatalog(options: unknown): SharedPropertyTypeOpt
   return options as SharedPropertyTypeOption[];
 }
 
-function errorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
+export function setupErrorMessage(error: unknown): string {
+  const status = setupErrorStatus(error);
+  if (status !== null && status >= 500) {
+    return "Something went wrong on our end. Please try again.";
+  }
+
+  const code = setupErrorCode(error);
+  if (code === "command_in_progress") {
+    return "We're still finishing your setup. Please try again in a moment.";
+  }
+  if (code === "idempotency_key_conflict") {
+    return "Your setup changed during this save. Review it and try again.";
+  }
+
+  const data =
+    error && typeof error === "object"
+      ? (error as { data?: { detail?: unknown; message?: unknown; error?: unknown } }).data
+      : null;
+  const serverMessage = [data?.detail, data?.message, data?.error].find(
+    (value): value is string => typeof value === "string" && value.trim().length > 0,
+  );
+  if (serverMessage && !isRawApiErrorMessage(serverMessage)) return serverMessage;
+
+  if (status === 409) {
+    return "We couldn't save because your setup changed elsewhere. Refresh and try again.";
+  }
+  if (
+    error instanceof TypeError ||
+    (error instanceof Error && /failed to fetch|network/i.test(error.message))
+  ) {
+    return "Couldn't save. Check your connection and try again.";
+  }
+  if (error instanceof Error && error.message && !isRawApiErrorMessage(error.message)) {
+    return error.message;
+  }
   return "Something went wrong. Please try again.";
+}
+
+function setupErrorStatus(error: unknown): number | null {
+  if (error && typeof error === "object") {
+    const status = (error as { status?: unknown }).status;
+    if (typeof status === "number" && Number.isInteger(status)) return status;
+  }
+  if (error instanceof Error) {
+    const match = /^API Error: (\d{3})$/i.exec(error.message.trim());
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+function setupErrorPropertyId(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const data = (error as { data?: { propertyId?: unknown } }).data;
+  return typeof data?.propertyId === "string" && data.propertyId.length > 0
+    ? data.propertyId
+    : null;
+}
+
+function isRawApiErrorMessage(message: string): boolean {
+  return /^API Error: \d{3}$/i.test(message.trim());
 }
 
 function setupErrorCode(error: unknown): string | null {

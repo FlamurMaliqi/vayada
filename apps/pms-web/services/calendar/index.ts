@@ -1,7 +1,11 @@
 import { pmsOperationsClient, pmsOperationsRequestOptions } from "../api/pmsOperationsClient";
 import { propertyEndpoint, resolveSelectedPmsPropertyId } from "../api/pmsPropertyClient";
+import { pmsManualBookingClient } from "../api/pmsManualBookingClient";
 import { unsupportedPmsNextStackFeature } from "../api/unsupported";
 import { BookingAddon } from "../bookings";
+
+// prettier-ignore
+type ManualAddonApi = { addOns: Array<{ addonItemId: string; name: string; description: string; price: string; currency: string; category: string; pricingModel: "per_stay" | "per_night" | "per_guest" | "per_guest_night"; }> };
 
 export interface CalendarRoomType {
   id: string;
@@ -11,6 +15,12 @@ export interface CalendarRoomType {
   baseRate: number;
   maxOccupancy: number;
   currency: string;
+  ratePlans: Array<{
+    id: string;
+    name: string;
+    rateType: "flexible" | "non_refundable" | "package" | "manual";
+    baseRate: number;
+  }>;
   seasons: {
     name?: string;
     tier?: string;
@@ -53,6 +63,7 @@ export interface CalendarBooking {
 
 export interface CalendarBlock {
   id: string;
+  version: string;
   roomTypeId: string;
   roomId: string | null;
   roomNumber: string | null;
@@ -96,6 +107,13 @@ type PmsOperationsRoomType = {
   occupancyLimits: Record<string, number>;
   baseRate: PmsOperationsMoney;
   roomCount: number;
+  ratePlans: Array<{
+    ratePlanId: string;
+    name: string;
+    rateType: "flexible" | "non_refundable" | "package" | "manual";
+    baseRate: PmsOperationsMoney;
+    active: boolean;
+  }>;
 };
 
 type PmsOperationsRoom = {
@@ -108,12 +126,20 @@ type PmsOperationsRoom = {
 
 type PmsOperationsRoomBlock = {
   blockId: string;
+  version: string;
   roomTypeId: string;
   roomId: string | null;
   startsOn: string;
   endsOn: string;
   blockedCount: number;
   reason: string;
+  status: "active" | "released" | "expired";
+};
+
+type PmsRoomBlockCommandResponse = {
+  contractVersion: "pms-operations.v1";
+  propertyId: string;
+  items: PmsOperationsRoomBlock[];
 };
 
 type PmsOperationalReservation = {
@@ -129,7 +155,9 @@ type PmsOperationalReservation = {
     roomNumber: string | null;
     position: number;
     channel: string;
+    stay?: { checkIn: string; checkOut: string };
   }>;
+  roomCount?: number;
 };
 
 type PmsOperationsListResponse<T> = {
@@ -168,20 +196,81 @@ export const calendarService = {
   getCalendarData: (start: string, end: string) =>
     pmsOperationsCalendarReadService.getCalendarData(start, end),
 
-  createRoomBlock: (_data: CreateRoomBlockPayload) =>
-    unsupportedPmsNextStackFeature<CalendarBlock[]>("Room block creation"),
+  getManualBookingCapabilities: pmsManualBookingClient.capabilities,
 
-  updateRoomBlock: (_blockId: string, _data: UpdateRoomBlockPayload) =>
-    unsupportedPmsNextStackFeature<CalendarBlock>("Room block updates"),
+  previewManualBooking: pmsManualBookingClient.preview,
 
-  deleteRoomBlock: (_blockId: string) =>
-    unsupportedPmsNextStackFeature<void>("Room block deletion"),
+  createManualBooking: pmsManualBookingClient.create,
+
+  createRoomBlock: async (data: CreateRoomBlockPayload): Promise<CalendarBlock[]> => {
+    const propertyId = await resolveSelectedPmsPropertyId("creating room block");
+    const command = roomBlockCommandEnvelope();
+    const response = await pmsOperationsClient.post<PmsRoomBlockCommandResponse>(
+      propertyEndpoint(propertyId, "room-blocks"),
+      {
+        ...command,
+        roomTypeId: data.roomTypeId,
+        roomIds: data.roomIds,
+        startsOn: data.startDate,
+        endsOn: addDaysDateOnly(data.endDate, -1),
+        reason: data.reason,
+      },
+      pmsOperationsRequestOptions,
+    );
+    return response.items.map((item) => toCalendarBlock(item, null));
+  },
+
+  updateRoomBlock: async (
+    blockId: string,
+    expectedVersion: string,
+    data: UpdateRoomBlockPayload,
+  ): Promise<CalendarBlock> => {
+    const propertyId = await resolveSelectedPmsPropertyId("updating room block");
+    const response = await pmsOperationsClient.patch<PmsRoomBlockCommandResponse>(
+      propertyEndpoint(propertyId, `room-blocks/${blockId}`),
+      {
+        ...roomBlockCommandEnvelope(),
+        expectedVersion,
+        ...(data.startDate ? { startsOn: data.startDate } : {}),
+        ...(data.endDate ? { endsOn: addDaysDateOnly(data.endDate, -1) } : {}),
+        ...(data.reason !== undefined ? { reason: data.reason } : {}),
+      },
+      pmsOperationsRequestOptions,
+    );
+    return toCalendarBlock(response.items[0]!, null);
+  },
+
+  deleteRoomBlock: async (blockId: string, expectedVersion: string): Promise<void> => {
+    const propertyId = await resolveSelectedPmsPropertyId("deleting room block");
+    await pmsOperationsClient.delete<PmsRoomBlockCommandResponse>(
+      propertyEndpoint(propertyId, `room-blocks/${blockId}`),
+      {
+        ...pmsOperationsRequestOptions,
+        body: JSON.stringify({ ...roomBlockCommandEnvelope(), expectedVersion }),
+      },
+    );
+  },
 
   createAdminBooking: (_data: CreateAdminBookingPayload) =>
     unsupportedPmsNextStackFeature("Manual booking creation"),
 
-  listAvailableAddons: (_roomId: string) =>
-    unsupportedPmsNextStackFeature<BookingAddon[]>("Booking add-ons"),
+  listAvailableAddons: async (_roomId: string): Promise<BookingAddon[]> => {
+    const propertyId = await resolveSelectedPmsPropertyId("loading booking add-ons");
+    const response = await pmsOperationsClient.get<ManualAddonApi>(
+      propertyEndpoint(propertyId, "manual-bookings/addons"),
+      pmsOperationsRequestOptions,
+    );
+    return response.addOns.map((addon) => ({
+      id: addon.addonItemId,
+      name: addon.name,
+      description: addon.description,
+      price: Number(addon.price),
+      currency: addon.currency,
+      category: addon.category,
+      perPerson: addon.pricingModel === "per_guest" || addon.pricingModel === "per_guest_night",
+      perNight: addon.pricingModel === "per_night" || addon.pricingModel === "per_guest_night",
+    }));
+  },
 
   // Booking-engine-equivalent nightly rate for the given room type and check-in
   // date — used by the New Booking modal so the pre-filled rate matches what
@@ -265,6 +354,14 @@ function toCalendarData(
       baseRate: moneyAmount(roomType.baseRate),
       maxOccupancy: maxOccupancy(roomType),
       currency: roomType.baseRate.currency,
+      ratePlans: (roomType.ratePlans ?? [])
+        .filter((plan) => plan.active)
+        .map((plan) => ({
+          id: plan.ratePlanId,
+          name: plan.name,
+          rateType: plan.rateType,
+          baseRate: moneyAmount(plan.baseRate),
+        })),
       seasons: [],
     })),
     rooms: rooms
@@ -277,54 +374,57 @@ function toCalendarData(
         floor: room.floor ?? "",
         status: room.status,
       })),
-    bookings: reservations
-      .filter(
-        (reservation) =>
-          reservation.stay.checkIn < range.end && reservation.stay.checkOut > range.start,
-      )
-      .flatMap((reservation) => calendarBookingsForReservation(reservation, roomTypesById)),
-    blocks: blocks.map((block) => ({
-      id: block.blockId,
-      roomTypeId: block.roomTypeId,
-      roomId: block.roomId,
-      roomNumber: block.roomId ? (roomsById.get(block.roomId)?.roomNumber ?? null) : null,
-      startDate: block.startsOn,
-      endDate: addDaysDateOnly(block.endsOn, 1),
-      blockedCount: block.blockedCount,
-      reason: block.reason,
-      createdAt: `${block.startsOn}T00:00:00.000Z`,
-    })),
+    bookings: reservations.flatMap((reservation) =>
+      calendarBookingsForReservation(reservation, roomTypesById, range),
+    ),
+    blocks: blocks
+      .filter((block) => block.status === "active")
+      .map((block) =>
+        toCalendarBlock(
+          block,
+          block.roomId ? (roomsById.get(block.roomId)?.roomNumber ?? null) : null,
+        ),
+      ),
   };
 }
 
 function calendarBookingsForReservation(
   reservation: PmsOperationalReservation,
   roomTypesById: Map<string, PmsOperationsRoomType>,
+  range: { start: string; end: string },
 ): CalendarBooking[] {
   const status = toCalendarStatus(reservation.status);
   if (!status) return [];
 
   const assignments = reservation.assignments.length > 0 ? reservation.assignments : [null];
+  const numberOfRooms = Math.max(reservation.roomCount ?? reservation.assignments.length, 1);
   const [guestFirstName, guestLastName] = splitGuestName(reservation.primaryGuest.displayName);
-  return assignments.map((assignment, index) => {
-    const roomType = assignment ? roomTypesById.get(assignment.roomTypeId) : undefined;
-    return {
-      id: reservation.guestBookingId,
-      roomTypeId: assignment?.roomTypeId ?? "",
-      roomName: roomType?.name ?? "",
-      guestFirstName,
-      guestLastName,
-      checkIn: reservation.stay.checkIn,
-      checkOut: reservation.stay.checkOut,
-      status,
-      roomId: assignment?.roomId ?? null,
-      roomNumber: assignment?.roomNumber ?? null,
-      channel: assignment?.channel ?? reservationSource(reservation.source),
-      bookingReference: reservation.bookingReference,
-      numberOfRooms: assignments.length,
-      roomPosition: assignment?.position ?? index,
-    };
-  });
+  return assignments
+    .map((assignment, index): CalendarBooking | null => {
+      const stay = assignment?.stay ?? (numberOfRooms === 1 ? reservation.stay : null);
+      if (!stay) return null;
+      const roomType = assignment ? roomTypesById.get(assignment.roomTypeId) : undefined;
+      return {
+        id: reservation.guestBookingId,
+        roomTypeId: assignment?.roomTypeId ?? "",
+        roomName: roomType?.name ?? "",
+        guestFirstName,
+        guestLastName,
+        checkIn: stay.checkIn,
+        checkOut: stay.checkOut,
+        status,
+        roomId: assignment?.roomId ?? null,
+        roomNumber: assignment?.roomNumber ?? null,
+        channel: assignment?.channel ?? reservationSource(reservation.source),
+        bookingReference: reservation.bookingReference,
+        numberOfRooms,
+        roomPosition: assignment ? Math.max(assignment.position - 1, 0) : index,
+      };
+    })
+    .filter(
+      (booking): booking is CalendarBooking =>
+        booking !== null && booking.checkIn < range.end && booking.checkOut > range.start,
+    );
 }
 
 function splitGuestName(displayName: string): [string, string] {
@@ -366,4 +466,24 @@ function addDaysDateOnly(date: string, days: number): string {
   const parsed = Date.parse(`${date}T00:00:00.000Z`);
   if (!Number.isFinite(parsed)) return date;
   return new Date(parsed + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+function roomBlockCommandEnvelope(): { commandId: string; idempotencyKey: string } {
+  const commandId = globalThis.crypto.randomUUID();
+  return { commandId, idempotencyKey: `pms-room-block:${commandId}` };
+}
+
+function toCalendarBlock(block: PmsOperationsRoomBlock, roomNumber: string | null): CalendarBlock {
+  return {
+    id: block.blockId,
+    version: block.version,
+    roomTypeId: block.roomTypeId,
+    roomId: block.roomId,
+    roomNumber,
+    startDate: block.startsOn,
+    endDate: addDaysDateOnly(block.endsOn, 1),
+    blockedCount: block.blockedCount,
+    reason: block.reason,
+    createdAt: `${block.startsOn}T00:00:00.000Z`,
+  };
 }

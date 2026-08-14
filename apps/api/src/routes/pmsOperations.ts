@@ -11,9 +11,16 @@ import type {
   BookingGuestPiiPort,
   BookingGuestPiiProjection,
 } from "@vayada/domain-booking";
-import type { PmsInventoryPublicOfferProjectionPort } from "@vayada/domain-distribution";
+import type {
+  PmsInventoryPublicOfferProjectionPort,
+  PublicBookabilityPublicationCommandPort,
+} from "@vayada/domain-distribution";
 import { PROPERTY_FEATURE_LIMITS, type PropertyPlanReadModel } from "@vayada/domain-finance";
 import type { PropertyPlanReadRepository } from "../domains/propertyPlanReadModel.js";
+import {
+  isBookingAcceptanceMode,
+  type BookingAcceptanceSettingsPort,
+} from "../domains/bookingAcceptanceSettings.js";
 import type {
   PmsCalendarDay,
   PmsOperationsReadRepository,
@@ -278,6 +285,78 @@ export type PmsNoShowCommand = {
   audit: PmsOperationsCommandAudit;
 };
 
+export type PmsManualCancellationCommand = {
+  propertyId: string;
+  guestBookingId: string;
+  commandId: string;
+  idempotencyKey: string;
+  expectedVersion?: string;
+  reason?: string;
+  accountingDate: string | null;
+  retainedCharges: Array<{
+    linePosition: number;
+    stayDate: string;
+    amount: PmsMoney;
+  }>;
+  audit: PmsOperationsCommandAudit;
+};
+
+export type PmsManualRefundCommand = {
+  propertyId: string;
+  guestBookingId: string;
+  commandId: string;
+  idempotencyKey: string;
+  expectedVersion?: string;
+  paymentEvidenceId: string;
+  accountingDate: string;
+  reason?: string;
+  allocations: Array<{ evidenceId: string; amount: PmsMoney }>;
+  audit: PmsOperationsCommandAudit;
+};
+
+export type PmsManualStayCorrectionCommand = {
+  propertyId: string;
+  guestBookingId: string;
+  commandId: string;
+  idempotencyKey: string;
+  expectedVersion?: string;
+  accountingDate: string;
+  stays: Array<{
+    assignmentId: string;
+    position: number;
+    roomId: string;
+    checkIn: string;
+    checkOut: string;
+    nightly: Array<{
+      stayDate: string;
+      amount: PmsMoney | null;
+      evidenceQuality: "exact" | "inferred" | "missing";
+    }>;
+  }>;
+  audit: PmsOperationsCommandAudit;
+};
+
+export type PmsManualPriceCorrectionCommand = {
+  propertyId: string;
+  guestBookingId: string;
+  commandId: string;
+  idempotencyKey: string;
+  expectedVersion?: string;
+  accountingDate: string;
+  reason?: string;
+  pricing:
+    | {
+        kind: "exact";
+        nights: Array<{ targetEvidenceId: string; replacementAmount: PmsMoney }>;
+      }
+    | {
+        kind: "equal_inferred";
+        targetEvidenceIds: string[];
+        replacementTotal: PmsMoney;
+      };
+  audit: PmsOperationsCommandAudit;
+};
+
 export type PmsBookingLifecycleCommand = {
   propertyId: string;
   guestBookingId: string;
@@ -346,6 +425,39 @@ export type PmsRoomTypeUpdateCommand = {
   audit: PmsOperationsCommandAudit;
 };
 
+export type PmsRoomBlockCreateCommand = {
+  propertyId: string;
+  commandId: string;
+  idempotencyKey: string;
+  roomTypeId: string;
+  roomIds: string[];
+  startsOn: string;
+  endsOn: string;
+  reason: string;
+  audit: PmsOperationsCommandAudit;
+};
+
+export type PmsRoomBlockUpdateCommand = {
+  propertyId: string;
+  blockId: string;
+  commandId: string;
+  idempotencyKey: string;
+  expectedVersion: string;
+  startsOn?: string;
+  endsOn?: string;
+  reason?: string;
+  audit: PmsOperationsCommandAudit;
+};
+
+export type PmsRoomBlockReleaseCommand = {
+  propertyId: string;
+  blockId: string;
+  commandId: string;
+  idempotencyKey: string;
+  expectedVersion: string;
+  audit: PmsOperationsCommandAudit;
+};
+
 export type PmsPrivateNoteCreateCommand = PmsPrivateNoteCreateRequest & {
   propertyId: string;
   guestBookingId: string;
@@ -407,6 +519,13 @@ export type PmsRoomTypeCommandResponse = {
   contractVersion: PmsOperationsContractVersion;
   propertyId: string;
   item: PmsRoomType;
+  commandMeta: PmsCommandMeta;
+};
+
+export type PmsRoomBlockCommandResponse = {
+  contractVersion: PmsOperationsContractVersion;
+  propertyId: string;
+  items: PmsRoomBlockSummary[];
   commandMeta: PmsCommandMeta;
 };
 
@@ -541,7 +660,7 @@ export type PmsOperationalCommandResult =
   | {
       ok: false;
       statusCode: 409;
-      code: "version_conflict" | "idempotency_conflict";
+      code: "version_conflict" | "idempotency_conflict" | "room_unavailable";
       message: string;
     };
 
@@ -666,7 +785,29 @@ export type PmsRoomTypeCommandResult =
       message: string;
     };
 
+export type PmsRoomBlockCommandResult =
+  | {
+      ok: true;
+      items: PmsRoomBlockSummary[];
+      commandMeta: PmsCommandMeta;
+      replayed?: boolean;
+    }
+  | {
+      ok: false;
+      statusCode: 404 | 409 | 500;
+      code:
+        | "room_block_not_found"
+        | "room_block_conflict"
+        | "version_conflict"
+        | "idempotency_conflict"
+        | "side_effect_failed";
+      message: string;
+    };
+
 export type PmsOperationsCommandRepository = {
+  createRoomBlocks?(command: PmsRoomBlockCreateCommand): Promise<PmsRoomBlockCommandResult>;
+  updateRoomBlock?(command: PmsRoomBlockUpdateCommand): Promise<PmsRoomBlockCommandResult>;
+  releaseRoomBlock?(command: PmsRoomBlockReleaseCommand): Promise<PmsRoomBlockCommandResult>;
   createRoomType(command: PmsRoomTypeCreateCommand): Promise<PmsRoomTypeCommandResult>;
   updateRoomTypeLocation(command: PmsRoomTypeUpdateCommand): Promise<PmsRoomTypeCommandResult>;
   executeAssignmentCommand(command: PmsAssignmentCommand): Promise<PmsAssignmentCommandResult>;
@@ -675,6 +816,14 @@ export type PmsOperationsCommandRepository = {
   ): Promise<PmsOperationalCommandResult>;
   executeCheckInCommand(command: PmsCheckInCommand): Promise<PmsOperationalCommandResult>;
   executeNoShowCommand(command: PmsNoShowCommand): Promise<PmsOperationalCommandResult>;
+  cancelManualBooking?(command: PmsManualCancellationCommand): Promise<PmsOperationalCommandResult>;
+  refundManualBooking?(command: PmsManualRefundCommand): Promise<PmsOperationalCommandResult>;
+  correctManualBookingStays?(
+    command: PmsManualStayCorrectionCommand,
+  ): Promise<PmsOperationalCommandResult>;
+  correctManualBookingPrices?(
+    command: PmsManualPriceCorrectionCommand,
+  ): Promise<PmsOperationalCommandResult>;
   acceptBooking(command: PmsBookingLifecycleCommand): Promise<PmsOperationalCommandResult>;
   markBookingPaid(command: PmsBookingLifecycleCommand): Promise<PmsOperationalCommandResult>;
   listPrivateNotes(propertyId: string, guestBookingId: string): Promise<PmsPrivateNote[] | null>;
@@ -713,6 +862,8 @@ export type PmsOperationsRoutesOptions = {
   inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
   allowedOrigins?: string[];
   propertyPlanReadRepository?: PropertyPlanReadRepository;
+  bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
+  publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort;
 };
 
 type PmsPropertyParams = {
@@ -721,6 +872,10 @@ type PmsPropertyParams = {
 
 type PmsRoomTypeParams = PmsPropertyParams & {
   roomTypeId: string;
+};
+
+type PmsRoomBlockParams = PmsPropertyParams & {
+  blockId: string;
 };
 
 type PmsReservationParams = PmsPropertyParams & {
@@ -793,6 +948,7 @@ type PmsOperationsErrorCategory =
   | "validation"
   | "conflict"
   | "read_model"
+  | "side_effect"
   | "not_found";
 
 type PmsOperationsErrorCode =
@@ -814,10 +970,14 @@ type PmsOperationsErrorCode =
   | "room_photo_plan_limit_reached"
   | "read_model_unavailable"
   | "room_type_not_found"
+  | "room_block_not_found"
+  | "room_block_conflict"
+  | "side_effect_failed"
   | "reservation_not_found"
   | "additional_guest_not_found"
   | "note_not_found"
-  | "charge_not_found";
+  | "charge_not_found"
+  | "property_not_found";
 
 type PmsOperationsError = {
   statusCode: 400 | 401 | 403 | 404 | 409 | 500;
@@ -843,6 +1003,7 @@ export async function registerPmsOperationsRoutes(
     await commandRepository?.close?.();
     await bookingGuestPiiPort?.close?.();
     await options.propertyPlanReadRepository?.close?.();
+    await options.bookingAcceptanceSettings?.close?.();
   });
 
   for (const path of [
@@ -853,9 +1014,11 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/plan-limits",
     "/properties/:propertyId/calendar",
     "/properties/:propertyId/room-blocks",
+    "/properties/:propertyId/room-blocks/:blockId",
     "/properties/:propertyId/payment-settings",
     "/properties/:propertyId/profile",
     "/properties/:propertyId/calendar-settings",
+    "/properties/:propertyId/booking-acceptance",
     "/properties/:propertyId/channex/status",
     "/properties/:propertyId/channex/channels",
     "/properties/:propertyId/messaging/unread-count",
@@ -878,6 +1041,9 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/reservations/:guestBookingId/accept",
     "/properties/:propertyId/reservations/:guestBookingId/mark-paid",
     "/properties/:propertyId/reservations/:guestBookingId/no-show",
+    "/properties/:propertyId/reservations/:guestBookingId/cancel",
+    "/properties/:propertyId/reservations/:guestBookingId/correct-stays",
+    "/properties/:propertyId/reservations/:guestBookingId/correct-prices",
   ]) {
     app.options(path, async (request, reply) => {
       if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
@@ -1120,6 +1286,75 @@ export async function registerPmsOperationsRoutes(
     },
   );
 
+  if (
+    commandRepository?.createRoomBlocks &&
+    commandRepository.updateRoomBlock &&
+    commandRepository.releaseRoomBlock
+  ) {
+    app.post<{ Params: PmsPropertyParams; Body: unknown }>(
+      "/properties/:propertyId/room-blocks",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toRoomBlockCreateCommand(propertyId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await commandRepository.createRoomBlocks!(command.value);
+        if (!result.ok) return sendPmsRoomBlockCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          items: result.items,
+          commandMeta: result.commandMeta,
+        } satisfies PmsRoomBlockCommandResponse;
+      },
+    );
+
+    app.patch<{ Params: PmsRoomBlockParams; Body: unknown }>(
+      "/properties/:propertyId/room-blocks/:blockId",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId, blockId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toRoomBlockUpdateCommand(propertyId, blockId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await commandRepository.updateRoomBlock!(command.value);
+        if (!result.ok) return sendPmsRoomBlockCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          items: result.items,
+          commandMeta: result.commandMeta,
+        } satisfies PmsRoomBlockCommandResponse;
+      },
+    );
+
+    app.delete<{ Params: PmsRoomBlockParams; Body: unknown }>(
+      "/properties/:propertyId/room-blocks/:blockId",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId, blockId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toRoomBlockReleaseCommand(propertyId, blockId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await commandRepository.releaseRoomBlock!(command.value);
+        if (!result.ok) return sendPmsRoomBlockCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          items: result.items,
+          commandMeta: result.commandMeta,
+        } satisfies PmsRoomBlockCommandResponse;
+      },
+    );
+  }
+
   app.get<{ Params: PmsPropertyParams }>(
     "/properties/:propertyId/profile",
     async (request, reply) => {
@@ -1157,6 +1392,91 @@ export async function registerPmsOperationsRoutes(
         reply,
         readModelUnavailable("PMS property profile write model is unavailable."),
       );
+    },
+  );
+
+  app.get<{ Params: PmsPropertyParams }>(
+    "/properties/:propertyId/booking-acceptance",
+    async (request, reply) => {
+      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+        return sendPmsOperationsError(reply, {
+          statusCode: 403,
+          code: "missing_permission",
+          category: "authorization",
+          message: "PMS operations origin is not allowed.",
+        });
+      }
+      const { propertyId } = request.params;
+      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      try {
+        const acceptanceMode =
+          await options.bookingAcceptanceSettings?.findAcceptanceMode(propertyId);
+        if (!acceptanceMode) {
+          return sendPmsOperationsError(reply, {
+            statusCode: 404,
+            code: "property_not_found",
+            category: "not_found",
+            message: "Booking acceptance settings were not found.",
+          });
+        }
+        return bookingAcceptanceResponse(propertyId, acceptanceMode);
+      } catch {
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("Booking acceptance settings are unavailable."),
+        );
+      }
+    },
+  );
+
+  app.put<{ Params: PmsPropertyParams; Body: unknown }>(
+    "/properties/:propertyId/booking-acceptance",
+    async (request, reply) => {
+      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+        return sendPmsOperationsError(reply, {
+          statusCode: 403,
+          code: "missing_permission",
+          category: "authorization",
+          message: "PMS operations origin is not allowed.",
+        });
+      }
+      const { propertyId } = request.params;
+      if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+      const body = request.body;
+      if (
+        !body ||
+        typeof body !== "object" ||
+        Array.isArray(body) ||
+        Object.keys(body).length !== 1 ||
+        !isBookingAcceptanceMode((body as Record<string, unknown>)["acceptanceMode"])
+      ) {
+        return sendPmsOperationsError(
+          reply,
+          invalidBody("acceptanceMode must be either instant or request."),
+        );
+      }
+      try {
+        const acceptanceMode = await options.bookingAcceptanceSettings?.updateAcceptanceMode(
+          propertyId,
+          (body as { acceptanceMode: "instant" | "request" }).acceptanceMode,
+        );
+        if (!acceptanceMode) {
+          return sendPmsOperationsError(reply, {
+            statusCode: 404,
+            code: "property_not_found",
+            category: "not_found",
+            message: "Booking acceptance settings were not found.",
+          });
+        }
+        await options.publicBookabilityPublisher?.publish({ propertyId });
+        return bookingAcceptanceResponse(propertyId, acceptanceMode);
+      } catch (error) {
+        request.log.error({ err: error, propertyId }, "Booking acceptance settings update failed");
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("Booking acceptance settings could not be saved."),
+        );
+      }
     },
   );
 
@@ -2235,7 +2555,141 @@ export async function registerPmsOperationsRoutes(
         } satisfies PmsOperationsCommandResponse;
       },
     );
+
+    app.post<{ Params: PmsReservationParams; Querystring: unknown; Body: unknown }>(
+      "/properties/:propertyId/reservations/:guestBookingId/cancel",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, {
+            statusCode: 403,
+            code: "missing_permission",
+            category: "authorization",
+            message: "PMS operations origin is not allowed.",
+          });
+        }
+        const { propertyId, guestBookingId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        if (
+          requestsRetainedCharge(request.body) &&
+          !enforcePmsFinanceManagePolicy(request, reply, propertyId)
+        )
+          return reply;
+        const command = toManualCancellationCommand(propertyId, guestBookingId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        if (!commandRepository.cancelManualBooking)
+          return sendPmsOperationsError(
+            reply,
+            readModelUnavailable("Cancellation is unavailable."),
+          );
+        const result = await commandRepository.cancelManualBooking(command.value);
+        if (!result.ok) return sendPmsOperationalCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          reservation: result.reservation,
+          commandMeta: result.commandMeta,
+        } satisfies PmsOperationsCommandResponse;
+      },
+    );
+
+    app.post<{ Params: PmsReservationParams; Querystring: unknown; Body: unknown }>(
+      "/properties/:propertyId/reservations/:guestBookingId/refund",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? []))
+          return sendPmsOperationsError(reply, {
+            statusCode: 403,
+            code: "missing_permission",
+            category: "authorization",
+            message: "PMS operations origin is not allowed.",
+          });
+        const { propertyId, guestBookingId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        if (!enforcePmsFinanceManagePolicy(request, reply, propertyId)) return reply;
+        const command = toManualRefundCommand(propertyId, guestBookingId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        if (!commandRepository.refundManualBooking)
+          return sendPmsOperationsError(reply, readModelUnavailable("Refund is unavailable."));
+        const result = await commandRepository.refundManualBooking(command.value);
+        if (!result.ok) return sendPmsOperationalCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          reservation: result.reservation,
+          commandMeta: result.commandMeta,
+        } satisfies PmsOperationsCommandResponse;
+      },
+    );
+
+    app.post<{ Params: PmsReservationParams; Querystring: unknown; Body: unknown }>(
+      "/properties/:propertyId/reservations/:guestBookingId/correct-stays",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? []))
+          return sendPmsOperationsError(reply, {
+            statusCode: 403,
+            code: "missing_permission",
+            category: "authorization",
+            message: "PMS operations origin is not allowed.",
+          });
+        const { propertyId, guestBookingId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toManualStayCorrectionCommand(propertyId, guestBookingId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        if (!commandRepository.correctManualBookingStays)
+          return sendPmsOperationsError(
+            reply,
+            readModelUnavailable("Manual stay correction is unavailable."),
+          );
+        const result = await commandRepository.correctManualBookingStays(command.value);
+        if (!result.ok) return sendPmsOperationalCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          reservation: result.reservation,
+          commandMeta: result.commandMeta,
+        } satisfies PmsOperationsCommandResponse;
+      },
+    );
+
+    app.post<{ Params: PmsReservationParams; Querystring: unknown; Body: unknown }>(
+      "/properties/:propertyId/reservations/:guestBookingId/correct-prices",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? []))
+          return sendPmsOperationsError(reply, {
+            statusCode: 403,
+            code: "missing_permission",
+            category: "authorization",
+            message: "PMS operations origin is not allowed.",
+          });
+        const { propertyId, guestBookingId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        if (!enforcePmsFinanceManagePolicy(request, reply, propertyId)) return reply;
+        const command = toManualPriceCorrectionCommand(propertyId, guestBookingId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        if (!commandRepository.correctManualBookingPrices)
+          return sendPmsOperationsError(
+            reply,
+            readModelUnavailable("Manual price correction is unavailable."),
+          );
+        const result = await commandRepository.correctManualBookingPrices(command.value);
+        if (!result.ok) return sendPmsOperationalCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          reservation: result.reservation,
+          commandMeta: result.commandMeta,
+        } satisfies PmsOperationsCommandResponse;
+      },
+    );
   }
+}
+
+function bookingAcceptanceResponse(propertyId: string, acceptanceMode: "instant" | "request") {
+  return {
+    contractVersion: "booking-acceptance.v1",
+    propertyId,
+    acceptanceMode,
+    instantBook: acceptanceMode === "instant",
+  } as const;
 }
 
 async function listCalendarReservationsOverlappingStayRange(
@@ -2353,6 +2807,31 @@ function enforcePmsOperationsManagePolicy(
   }
 }
 
+function enforcePmsFinanceManagePolicy(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  propertyId: string,
+): boolean {
+  try {
+    const resource = {
+      product: "pms",
+      resourceType: "pms_property",
+      resourceId: propertyId,
+    } as const;
+    enforceRoutePolicy(request, {
+      permission: "pms.finance.manage",
+      entitlement: { product: "booking", key: "direct-booking-finance", resource },
+      resource: { ...resource, allowedRelationships: ["owner", "finance_manager"] },
+    });
+    return true;
+  } catch (error) {
+    const contractError = toPmsOperationsAccessError(error, request, propertyId);
+    if (!contractError) throw error;
+    sendPmsOperationsError(reply, contractError);
+    return false;
+  }
+}
+
 function sendPmsOperationsError(reply: FastifyReply, error: PmsOperationsError): FastifyReply {
   return reply.status(error.statusCode).send(error);
 }
@@ -2406,6 +2885,32 @@ function sendPmsRoomTypeCommandError(
           : "conflict",
     message: result.message,
   });
+}
+
+function sendPmsRoomBlockCommandError(
+  reply: FastifyReply,
+  result: Exclude<PmsRoomBlockCommandResult, { ok: true }>,
+): FastifyReply {
+  return sendPmsOperationsError(reply, {
+    statusCode: result.statusCode,
+    code: result.code,
+    category:
+      result.statusCode === 404
+        ? "not_found"
+        : result.statusCode === 500
+          ? "side_effect"
+          : "conflict",
+    message: result.message,
+  });
+}
+
+function originNotAllowed(): PmsOperationsError {
+  return {
+    statusCode: 403,
+    code: "missing_permission",
+    category: "authorization",
+    message: "PMS operations origin is not allowed.",
+  };
 }
 
 function sendPmsCheckOutCommandError(
@@ -2465,6 +2970,119 @@ function writePmsOperationsCorsHeaders(
     .header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
     .header("Vary", "Origin");
   return true;
+}
+
+function toRoomBlockCreateCommand(
+  propertyId: string,
+  request: FastifyRequest<{ Body: unknown }>,
+): { value: PmsRoomBlockCreateCommand } | { error: PmsOperationsError } {
+  const raw = objectBody(request.body);
+  if (!raw) return { error: invalidBody("Room block create body must be an object.") };
+  const commandId = stringField(raw.commandId);
+  const idempotencyKey = stringField(raw.idempotencyKey);
+  const roomTypeId = stringField(raw.roomTypeId);
+  const startsOn = stringField(raw.startsOn);
+  const endsOn = stringField(raw.endsOn);
+  const roomIds = [...new Set(toStringArray(raw.roomIds))];
+  if (!commandId || !idempotencyKey || !roomTypeId || !startsOn || !endsOn) {
+    return {
+      error: invalidBody(
+        "Room block create requires commandId, idempotencyKey, roomTypeId, startsOn, and endsOn.",
+      ),
+    };
+  }
+  if (!isUuid(roomTypeId) || roomIds.length === 0 || roomIds.some((id) => !isUuid(id))) {
+    return { error: invalidBody("Room block create requires valid roomTypeId and roomIds.") };
+  }
+  if (!isDateOnly(startsOn) || !isDateOnly(endsOn) || startsOn > endsOn) {
+    return { error: invalidBody("Room block create requires an ordered date range.") };
+  }
+  return {
+    value: {
+      propertyId,
+      commandId,
+      idempotencyKey,
+      roomTypeId,
+      roomIds,
+      startsOn,
+      endsOn,
+      reason: typeof raw.reason === "string" ? raw.reason.trim() : "",
+      audit: pmsOperationsCommandAudit(request, commandId, "Create room block"),
+    },
+  };
+}
+
+function toRoomBlockUpdateCommand(
+  propertyId: string,
+  blockId: string,
+  request: FastifyRequest<{ Body: unknown }>,
+): { value: PmsRoomBlockUpdateCommand } | { error: PmsOperationsError } {
+  const raw = objectBody(request.body);
+  if (!raw || !isUuid(blockId)) return { error: invalidBody("Room block update is invalid.") };
+  const commandId = stringField(raw.commandId);
+  const idempotencyKey = stringField(raw.idempotencyKey);
+  const expectedVersion = stringField(raw.expectedVersion);
+  const startsOn = raw.startsOn === undefined ? undefined : stringField(raw.startsOn);
+  const endsOn = raw.endsOn === undefined ? undefined : stringField(raw.endsOn);
+  const reason = raw.reason === undefined ? undefined : String(raw.reason).trim();
+  if (!commandId || !idempotencyKey || !expectedVersion) {
+    return {
+      error: invalidBody(
+        "Room block update requires commandId, idempotencyKey, and expectedVersion.",
+      ),
+    };
+  }
+  if (startsOn === undefined && endsOn === undefined && reason === undefined) {
+    return { error: invalidBody("Room block update requires at least one changed field.") };
+  }
+  if (
+    (raw.startsOn !== undefined && (!startsOn || !isDateOnly(startsOn))) ||
+    (raw.endsOn !== undefined && (!endsOn || !isDateOnly(endsOn)))
+  ) {
+    return { error: invalidBody("Room block update requires valid dates.") };
+  }
+  return {
+    value: {
+      propertyId,
+      blockId,
+      commandId,
+      idempotencyKey,
+      expectedVersion,
+      startsOn,
+      endsOn,
+      reason,
+      audit: pmsOperationsCommandAudit(request, commandId, "Update room block"),
+    },
+  };
+}
+
+function toRoomBlockReleaseCommand(
+  propertyId: string,
+  blockId: string,
+  request: FastifyRequest<{ Body: unknown }>,
+): { value: PmsRoomBlockReleaseCommand } | { error: PmsOperationsError } {
+  const raw = objectBody(request.body);
+  if (!raw || !isUuid(blockId)) return { error: invalidBody("Room block release is invalid.") };
+  const commandId = stringField(raw.commandId);
+  const idempotencyKey = stringField(raw.idempotencyKey);
+  const expectedVersion = stringField(raw.expectedVersion);
+  if (!commandId || !idempotencyKey || !expectedVersion) {
+    return {
+      error: invalidBody(
+        "Room block release requires commandId, idempotencyKey, and expectedVersion.",
+      ),
+    };
+  }
+  return {
+    value: {
+      propertyId,
+      blockId,
+      commandId,
+      idempotencyKey,
+      expectedVersion,
+      audit: pmsOperationsCommandAudit(request, commandId, "Release room block"),
+    },
+  };
 }
 
 function toRoomTypeCreateCommand(
@@ -3593,6 +4211,430 @@ function toNoShowCommand(
   };
 }
 
+function toManualCancellationCommand(
+  propertyId: string,
+  guestBookingId: string,
+  request: FastifyRequest<{ Querystring: unknown; Body: unknown }>,
+): { value: PmsManualCancellationCommand } | { error: PmsOperationsError } {
+  if (!objectBody(request.query) || Object.keys(request.query as object).length)
+    return { error: invalidBody("Cancellation query fields are not supported.") };
+  const metadata = toOperationalCommandMetadata(request.body, "Cancellation command");
+  if ("error" in metadata) return metadata;
+  if (
+    metadata.value.commandId.length > 200 ||
+    metadata.value.idempotencyKey.length > 200 ||
+    (metadata.value.expectedVersion?.length ?? 0) > 200
+  )
+    return { error: invalidBody("Cancellation command metadata is too long.") };
+  const raw = request.body as Record<string, unknown>;
+  if (
+    Object.keys(raw).some(
+      (key) =>
+        ![
+          "commandId",
+          "idempotencyKey",
+          "expectedVersion",
+          "reason",
+          "accountingDate",
+          "retainedCharges",
+        ].includes(key),
+    ) ||
+    !Array.isArray(raw.retainedCharges) ||
+    raw.retainedCharges.length > 20 * 366
+  )
+    return { error: invalidBody("Cancellation command contains unknown or invalid fields.") };
+  const accountingDate = raw.accountingDate === null ? null : stringField(raw.accountingDate);
+  const reason = optionalStringField(raw.reason);
+  const retainedCharges = raw.retainedCharges.map((value) => {
+    const charge = objectBody(value);
+    const amount = objectBody(charge?.amount);
+    if (
+      !charge ||
+      Object.keys(charge).some((key) => !["linePosition", "stayDate", "amount"].includes(key)) ||
+      !amount ||
+      Object.keys(amount).some((key) => !["amountDecimal", "currency"].includes(key))
+    )
+      return null;
+    const amountDecimal = stringField(amount.amountDecimal);
+    const currency = stringField(amount.currency);
+    return Number.isInteger(charge.linePosition) &&
+      Number(charge.linePosition) > 0 &&
+      typeof charge.stayDate === "string" &&
+      isDateOnly(charge.stayDate) &&
+      amountDecimal &&
+      isMoneyAmount(amountDecimal) &&
+      !/^0(?:\.0+)?$/.test(amountDecimal) &&
+      currency &&
+      /^[A-Z]{3}$/.test(currency)
+      ? {
+          linePosition: Number(charge.linePosition),
+          stayDate: charge.stayDate,
+          amount: { amountDecimal, currency },
+        }
+      : null;
+  });
+  const chargeKeys = retainedCharges.map(
+    (charge) => charge && `${charge.stayDate}:${charge.linePosition}`,
+  );
+  if (
+    retainedCharges.some((charge) => !charge) ||
+    new Set(chargeKeys).size !== chargeKeys.length ||
+    (retainedCharges.length === 0
+      ? accountingDate !== null
+      : !accountingDate || !isDateOnly(accountingDate)) ||
+    (reason?.length ?? 0) > 1000
+  )
+    return { error: invalidBody("Cancellation retained-charge evidence is invalid.") };
+  return {
+    value: {
+      propertyId,
+      guestBookingId,
+      ...metadata.value,
+      reason,
+      accountingDate: accountingDate ?? null,
+      retainedCharges: retainedCharges as PmsManualCancellationCommand["retainedCharges"],
+      audit: pmsOperationsCommandAudit(request, metadata.value.commandId, "Cancel manual booking"),
+    },
+  };
+}
+
+function toManualRefundCommand(
+  propertyId: string,
+  guestBookingId: string,
+  request: FastifyRequest<{ Querystring: unknown; Body: unknown }>,
+): { value: PmsManualRefundCommand } | { error: PmsOperationsError } {
+  if (!objectBody(request.query) || Object.keys(request.query as object).length)
+    return { error: invalidBody("Refund query fields are not supported.") };
+  const metadata = toOperationalCommandMetadata(request.body, "Refund command");
+  if ("error" in metadata) return metadata;
+  const raw = request.body as Record<string, unknown>;
+  if (
+    metadata.value.commandId.length > 200 ||
+    metadata.value.idempotencyKey.length > 200 ||
+    (metadata.value.expectedVersion?.length ?? 0) > 200 ||
+    Object.keys(raw).some(
+      (key) =>
+        ![
+          "commandId",
+          "idempotencyKey",
+          "expectedVersion",
+          "paymentEvidenceId",
+          "accountingDate",
+          "reason",
+          "allocations",
+        ].includes(key),
+    ) ||
+    !Array.isArray(raw.allocations) ||
+    raw.allocations.length < 1 ||
+    raw.allocations.length > 20 * 366
+  )
+    return { error: invalidBody("Refund command contains unknown or invalid fields.") };
+  const paymentEvidenceId = stringField(raw.paymentEvidenceId);
+  const accountingDate = stringField(raw.accountingDate);
+  const reason = optionalStringField(raw.reason);
+  const allocations = raw.allocations.map((value) => {
+    const allocation = objectBody(value);
+    const amount = objectBody(allocation?.amount);
+    if (
+      !allocation ||
+      Object.keys(allocation).some((key) => !["evidenceId", "amount"].includes(key)) ||
+      !amount ||
+      Object.keys(amount).some((key) => !["amountDecimal", "currency"].includes(key))
+    )
+      return null;
+    const evidenceId = stringField(allocation.evidenceId);
+    const amountDecimal = stringField(amount.amountDecimal);
+    const currency = stringField(amount.currency);
+    return evidenceId &&
+      isUuid(evidenceId) &&
+      amountDecimal &&
+      isMoneyAmount(amountDecimal) &&
+      !/^0(?:\.0+)?$/.test(amountDecimal) &&
+      currency &&
+      /^[A-Z]{3}$/.test(currency)
+      ? { evidenceId, amount: { amountDecimal, currency } }
+      : null;
+  });
+  if (
+    !paymentEvidenceId ||
+    !isUuid(paymentEvidenceId) ||
+    !accountingDate ||
+    !isDateOnly(accountingDate) ||
+    (raw.reason !== undefined && reason === undefined) ||
+    (reason?.length ?? 0) > 1000 ||
+    allocations.some((allocation) => !allocation) ||
+    new Set(allocations.map((allocation) => allocation?.evidenceId)).size !== allocations.length
+  )
+    return { error: invalidBody("Refund payment or allocation evidence is invalid.") };
+  return {
+    value: {
+      propertyId,
+      guestBookingId,
+      ...metadata.value,
+      paymentEvidenceId,
+      accountingDate,
+      reason,
+      allocations: allocations as PmsManualRefundCommand["allocations"],
+      audit: pmsOperationsCommandAudit(request, metadata.value.commandId, "Refund manual booking"),
+    },
+  };
+}
+
+function toManualStayCorrectionCommand(
+  propertyId: string,
+  guestBookingId: string,
+  request: FastifyRequest<{ Querystring: unknown; Body: unknown }>,
+): { value: PmsManualStayCorrectionCommand } | { error: PmsOperationsError } {
+  if (!objectBody(request.query) || Object.keys(request.query as object).length)
+    return { error: invalidBody("Stay-correction query fields are not supported.") };
+  const metadata = toOperationalCommandMetadata(request.body, "Stay-correction command");
+  if ("error" in metadata) return metadata;
+  const raw = request.body as Record<string, unknown>;
+  if (
+    metadata.value.commandId.length > 200 ||
+    metadata.value.idempotencyKey.length > 200 ||
+    (metadata.value.expectedVersion?.length ?? 0) > 200 ||
+    Object.keys(raw).some(
+      (key) =>
+        !["commandId", "idempotencyKey", "expectedVersion", "accountingDate", "stays"].includes(
+          key,
+        ),
+    ) ||
+    !Array.isArray(raw.stays) ||
+    raw.stays.length < 1 ||
+    raw.stays.length > 20
+  )
+    return { error: invalidBody("Stay-correction command contains unknown or invalid fields.") };
+  const accountingDate = stringField(raw.accountingDate);
+  const stays = raw.stays.map((value) => {
+    const stay = objectBody(value);
+    if (
+      !stay ||
+      Object.keys(stay).some(
+        (key) =>
+          !["assignmentId", "position", "roomId", "checkIn", "checkOut", "nightly"].includes(key),
+      ) ||
+      !Array.isArray(stay.nightly)
+    )
+      return null;
+    const assignmentId = stringField(stay.assignmentId);
+    const roomId = stringField(stay.roomId);
+    const checkIn = stringField(stay.checkIn);
+    const checkOut = stringField(stay.checkOut);
+    if (
+      !assignmentId ||
+      !isUuid(assignmentId) ||
+      !roomId ||
+      !isUuid(roomId) ||
+      !checkIn ||
+      !checkOut ||
+      !isDateOnly(checkIn) ||
+      !isDateOnly(checkOut) ||
+      !Number.isInteger(stay.position) ||
+      Number(stay.position) < 1
+    )
+      return null;
+    const nights = daysInclusive(checkIn, checkOut) - 1;
+    if (nights < 1 || nights > 366 || stay.nightly.length !== nights) return null;
+    const nightly = stay.nightly.map((entry, index) => {
+      const night = objectBody(entry);
+      if (
+        !night ||
+        Object.keys(night).some(
+          (key) => !["stayDate", "amount", "evidenceQuality"].includes(key),
+        ) ||
+        night.stayDate !== dateOffset(checkIn, index) ||
+        !["exact", "inferred", "missing"].includes(String(night.evidenceQuality))
+      )
+        return null;
+      const evidenceQuality = night.evidenceQuality as "exact" | "inferred" | "missing";
+      if (evidenceQuality === "missing")
+        return night.amount === null
+          ? { stayDate: night.stayDate as string, amount: null, evidenceQuality }
+          : null;
+      const amount = objectBody(night.amount);
+      const amountDecimal = stringField(amount?.amountDecimal);
+      const currency = stringField(amount?.currency);
+      return amount &&
+        Object.keys(amount).every((key) => ["amountDecimal", "currency"].includes(key)) &&
+        amountDecimal &&
+        isMoneyAmount(amountDecimal) &&
+        currency &&
+        /^[A-Z]{3}$/.test(currency)
+        ? {
+            stayDate: night.stayDate as string,
+            amount: { amountDecimal, currency },
+            evidenceQuality,
+          }
+        : null;
+    });
+    return nightly.some((night) => !night)
+      ? null
+      : {
+          assignmentId,
+          position: Number(stay.position),
+          roomId,
+          checkIn,
+          checkOut,
+          nightly: nightly as PmsManualStayCorrectionCommand["stays"][number]["nightly"],
+        };
+  });
+  const positions = stays.map((stay) => stay?.position).sort((a, b) => (a ?? 0) - (b ?? 0));
+  if (
+    !accountingDate ||
+    !isDateOnly(accountingDate) ||
+    stays.some((stay) => !stay) ||
+    positions.some((position, index) => position !== index + 1) ||
+    new Set(stays.map((stay) => stay?.assignmentId)).size !== stays.length
+  )
+    return { error: invalidBody("Stay-correction stay or nightly evidence is invalid.") };
+  return {
+    value: {
+      propertyId,
+      guestBookingId,
+      ...metadata.value,
+      accountingDate,
+      stays: stays as PmsManualStayCorrectionCommand["stays"],
+      audit: pmsOperationsCommandAudit(
+        request,
+        metadata.value.commandId,
+        "Correct manual booking stays",
+      ),
+    },
+  };
+}
+
+function toManualPriceCorrectionCommand(
+  propertyId: string,
+  guestBookingId: string,
+  request: FastifyRequest<{ Querystring: unknown; Body: unknown }>,
+): { value: PmsManualPriceCorrectionCommand } | { error: PmsOperationsError } {
+  if (!objectBody(request.query) || Object.keys(request.query as object).length)
+    return { error: invalidBody("Price-correction query fields are not supported.") };
+  const metadata = toOperationalCommandMetadata(request.body, "Price-correction command");
+  if ("error" in metadata) return metadata;
+  const raw = request.body as Record<string, unknown>;
+  if (
+    metadata.value.commandId.length > 200 ||
+    metadata.value.idempotencyKey.length > 200 ||
+    (metadata.value.expectedVersion?.length ?? 0) > 200 ||
+    Object.keys(raw).some(
+      (key) =>
+        ![
+          "commandId",
+          "idempotencyKey",
+          "expectedVersion",
+          "accountingDate",
+          "reason",
+          "pricing",
+        ].includes(key),
+    )
+  )
+    return { error: invalidBody("Price-correction command contains unknown or invalid fields.") };
+  const accountingDate = stringField(raw.accountingDate);
+  const reason = optionalStringField(raw.reason);
+  const pricing = objectBody(raw.pricing);
+  const parsed = pricing && parseManualPriceCorrectionPricing(pricing);
+  if (
+    !accountingDate ||
+    !isDateOnly(accountingDate) ||
+    (raw.reason !== undefined && reason === undefined) ||
+    (reason?.length ?? 0) > 1000 ||
+    !parsed
+  )
+    return { error: invalidBody("Price-correction pricing evidence is invalid.") };
+  return {
+    value: {
+      propertyId,
+      guestBookingId,
+      ...metadata.value,
+      accountingDate,
+      reason,
+      pricing: parsed,
+      audit: pmsOperationsCommandAudit(
+        request,
+        metadata.value.commandId,
+        "Correct manual booking prices",
+      ),
+    },
+  };
+}
+
+function parseManualPriceCorrectionPricing(
+  pricing: Record<string, unknown>,
+): PmsManualPriceCorrectionCommand["pricing"] | null {
+  if (pricing.kind === "exact") {
+    if (
+      Object.keys(pricing).some((key) => !["kind", "nights"].includes(key)) ||
+      !Array.isArray(pricing.nights) ||
+      pricing.nights.length < 1 ||
+      pricing.nights.length > 20 * 366
+    )
+      return null;
+    const nights = pricing.nights.map((value) => {
+      const night = objectBody(value);
+      if (
+        !night ||
+        Object.keys(night).some((key) => !["targetEvidenceId", "replacementAmount"].includes(key))
+      )
+        return null;
+      const targetEvidenceId = stringField(night.targetEvidenceId);
+      const replacementAmount = parsePriceCorrectionMoney(night.replacementAmount);
+      return targetEvidenceId && isUuid(targetEvidenceId) && replacementAmount
+        ? { targetEvidenceId, replacementAmount }
+        : null;
+    });
+    if (
+      nights.some((night) => !night) ||
+      new Set(nights.map((night) => night?.targetEvidenceId)).size !== nights.length
+    )
+      return null;
+    return { kind: "exact", nights: nights as NonNullable<(typeof nights)[number]>[] };
+  }
+  if (
+    pricing.kind !== "equal_inferred" ||
+    Object.keys(pricing).some(
+      (key) => !["kind", "targetEvidenceIds", "replacementTotal"].includes(key),
+    ) ||
+    !Array.isArray(pricing.targetEvidenceIds) ||
+    pricing.targetEvidenceIds.length < 1 ||
+    pricing.targetEvidenceIds.length > 20 * 366
+  )
+    return null;
+  const targetEvidenceIds = pricing.targetEvidenceIds.map(stringField);
+  const replacementTotal = parsePriceCorrectionMoney(pricing.replacementTotal);
+  return targetEvidenceIds.every((id) => id && isUuid(id)) &&
+    new Set(targetEvidenceIds).size === targetEvidenceIds.length &&
+    replacementTotal
+    ? { kind: "equal_inferred", targetEvidenceIds: targetEvidenceIds as string[], replacementTotal }
+    : null;
+}
+
+function parsePriceCorrectionMoney(value: unknown): PmsMoney | null {
+  const money = objectBody(value);
+  if (!money || Object.keys(money).some((key) => !["amountDecimal", "currency"].includes(key)))
+    return null;
+  const amountDecimal = stringField(money.amountDecimal);
+  const currency = stringField(money.currency);
+  return amountDecimal &&
+    /^(0|[1-9]\d{0,14})(?:\.\d{1,4})?$/.test(amountDecimal) &&
+    currency &&
+    /^[A-Z]{3}$/.test(currency)
+    ? { amountDecimal, currency }
+    : null;
+}
+
+function dateOffset(from: string, days: number): string {
+  const date = new Date(`${from}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function requestsRetainedCharge(body: unknown): boolean {
+  const charges = objectBody(body)?.retainedCharges;
+  return !Array.isArray(charges) || charges.length > 0;
+}
+
 function toOperationalCommandMetadata(
   body: unknown,
   commandName: string,
@@ -3605,14 +4647,19 @@ function toOperationalCommandMetadata(
   const raw = body as Record<string, unknown>;
   const commandId = stringField(raw.commandId);
   const idempotencyKey = stringField(raw.idempotencyKey);
-  if (!commandId || !idempotencyKey) {
+  const expectedVersion = optionalStringField(raw.expectedVersion);
+  if (
+    !commandId ||
+    !idempotencyKey ||
+    (raw.expectedVersion !== undefined && expectedVersion === undefined)
+  ) {
     return { error: invalidBody(`${commandName} requires commandId and idempotencyKey.`) };
   }
   return {
     value: {
       commandId,
       idempotencyKey,
-      expectedVersion: optionalStringField(raw.expectedVersion),
+      expectedVersion,
     },
   };
 }

@@ -9,6 +9,7 @@ import { injectJson } from "@vayada/backend-test";
 import type {
   BookingDashboardMetricsReadModel,
   BookingDashboardMetricsReadPort,
+  BookingPageViewTimelineReadModel,
   BookingSourceMixReadModel,
   BookingSparklineReadModel,
 } from "@vayada/domain-booking";
@@ -21,6 +22,7 @@ import {
 } from "./platform/bookingDashboard.js";
 import type {
   BookingDashboardSparklinesResponse,
+  BookingDashboardPageViewsResponse,
   BookingDashboardSourceMixResponse,
   BookingDashboardStatsResponse,
 } from "./routes/bookingDashboard.js";
@@ -87,6 +89,9 @@ describe("Booking dashboard routes", () => {
         async getSparklines(input) {
           return fakeSparklines(input.propertyId);
         },
+        async getPageViewTimeline(input) {
+          return fakePageViews(input.propertyId);
+        },
       },
     });
 
@@ -141,6 +146,34 @@ describe("Booking dashboard routes", () => {
     expect(sparklines.body.sparklines.points).toHaveLength(7);
   });
 
+  it("returns the property-local page-view timeline and zero-filled empty days", async () => {
+    app = buildDashboardApp();
+    const response = await injectJson<BookingDashboardPageViewsResponse>(app, {
+      method: "GET",
+      url: "/api/booking/properties/prop_alpenrose/dashboard/page-views",
+      headers: { authorization: "Bearer valid-token" },
+      query: { windowStart: "2026-06-08", windowEnd: "2026-06-14" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.pageViews.timeZone).toBe("Europe/Vienna");
+    expect(response.body.pageViews.buckets).toHaveLength(7);
+    expect(response.body.pageViews.buckets[1]).toEqual({ date: "2026-06-09", count: 0 });
+  });
+
+  it("denies page-view reads outside the caller's property scope", async () => {
+    app = buildDashboardApp({ linkedPropertyId: "prop_other" });
+    const response = await injectJson<{ code: string }>(app, {
+      method: "GET",
+      url: "/api/booking/properties/prop_alpenrose/dashboard/page-views",
+      headers: { authorization: "Bearer valid-token" },
+      query: { windowStart: "2026-06-08", windowEnd: "2026-06-14" },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.body.code).toBe("missing_resource_access");
+  });
+
   it("closes the dashboard read port on app shutdown", async () => {
     let closed = false;
     app = buildDashboardApp({
@@ -171,6 +204,9 @@ describe("Booking dashboard routes", () => {
         },
         async getSparklines(input) {
           return fakeSparklines(input.propertyId);
+        },
+        async getPageViewTimeline(input) {
+          return fakePageViews(input.propertyId);
         },
       },
     });
@@ -203,6 +239,9 @@ describe("Booking dashboard routes", () => {
         },
         async getSparklines(input) {
           return fakeSparklines(input.propertyId);
+        },
+        async getPageViewTimeline(input) {
+          return fakePageViews(input.propertyId);
         },
       },
     });
@@ -307,6 +346,8 @@ describe("target Booking dashboard metrics read port", () => {
           },
         ],
       },
+      { rows: [pageViewRow("2026-06-01", "28")] },
+      { rows: [pageViewRow("2026-05-01", "21")] },
       {
         rows: [
           {
@@ -335,6 +376,7 @@ describe("target Booking dashboard metrics read port", () => {
           },
         ],
       },
+      { rows: [pageViewRow("2026-06-01", "4")] },
     ]);
     const readPort = createTargetBookingDashboardMetricsReadPort({
       connectionString: "postgres://target",
@@ -361,15 +403,22 @@ describe("target Booking dashboard metrics read port", () => {
 
     expect(metrics?.current.totalRevenue.amountDecimal).toBe("3600.00");
     expect(metrics?.current.avgNightlyRate.amountDecimal).toBe("120.00");
+    expect(metrics?.current.pageViewCount).toBe(28);
     expect(metrics?.nextArrivalDate).toBe("2026-07-04");
     expect(sourceMix.items[0].revenueSharePercent).toBe(83.3);
     expect(sparklines.points[0].avgNightlyRate.amountDecimal).toBe("100.00");
+    expect(sparklines.points[0].pageViewCount).toBe(4);
     expect(pool.queries.join("\n")).toContain("booking.guest_bookings");
+    expect(pool.queries.join("\n")).toContain("platform.domain_events");
+    expect(pool.queries.join("\n")).toContain("trafficClass");
     expect(pool.queries.join("\n")).not.toContain("booking.booking_guests");
   });
 
   it("builds seven indexed sparkline buckets that keep the requested tail date", async () => {
-    const pool = createQueuedDashboardPool([{ rows: [] }]);
+    const pool = createQueuedDashboardPool([
+      { rows: [] },
+      { rows: [pageViewRow("2026-06-01", "0")] },
+    ]);
     const readPort = createTargetBookingDashboardMetricsReadPort({
       connectionString: "postgres://target",
       pool,
@@ -385,6 +434,44 @@ describe("target Booking dashboard metrics read port", () => {
     expect(sql).toContain("generate_series(0, 6)");
     expect(sql).toContain("bucket.bucket_end::text");
     expect(sql).not.toContain("LIMIT 7");
+  });
+
+  it("buckets deduplicated human page views in the property timezone", async () => {
+    const pool = createQueuedDashboardPool([
+      {
+        rows: [
+          pageViewRow("2026-06-01", "21", "Asia/Makassar"),
+          pageViewRow("2026-06-08", "28", "Asia/Makassar"),
+          pageViewRow("2026-06-09", "0", "Asia/Makassar"),
+        ],
+      },
+    ]);
+    const readPort = createTargetBookingDashboardMetricsReadPort({
+      connectionString: "postgres://target",
+      pool,
+    });
+
+    const timeline = await readPort.getPageViewTimeline({
+      propertyId: "booking_hotel_alpenrose",
+      windowStart: "2026-06-08",
+      windowEnd: "2026-06-14",
+    });
+
+    expect(timeline).toMatchObject({
+      timeZone: "Asia/Makassar",
+      total: 28,
+      previousTotal: 21,
+      buckets: [
+        { date: "2026-06-08", count: 28 },
+        { date: "2026-06-09", count: 0 },
+      ],
+    });
+    expect(pool.queries[0]).toContain("AT TIME ZONE scope.time_zone");
+    expect(pool.queries[0]).toContain("COUNT(DISTINCT event.id)");
+    expect(pool.queries[0]).toContain("event.property_id = scope.property_id");
+    expect(pool.queries[0]).toContain("COUNT(DISTINCT slug_owner.property_id)");
+    expect(pool.queries[0]).toContain("NOT IN ('bot', 'test')");
+    expect(pool.queries[0]).toContain("hotel_catalog.property_slugs");
   });
 
   it("returns null metrics when the target property cannot be resolved", async () => {
@@ -415,6 +502,8 @@ describe("target Booking dashboard metrics read port", () => {
           },
         ],
       },
+      { rows: [{ propertyFound: false, timeZone: null, pageViewCount: "0" }] },
+      { rows: [{ propertyFound: false, timeZone: null, pageViewCount: "0" }] },
     ]);
     const readPort = createTargetBookingDashboardMetricsReadPort({
       connectionString: "postgres://target",
@@ -505,6 +594,9 @@ function fakeReadPort(): BookingDashboardMetricsReadPort {
     async getSparklines(input) {
       return fakeSparklines(input.propertyId);
     },
+    async getPageViewTimeline(input) {
+      return fakePageViews(input.propertyId);
+    },
   };
 }
 
@@ -515,11 +607,13 @@ function fakeMetrics(): BookingDashboardMetricsReadModel {
       totalRevenue: { amountDecimal: "3600.00", currency: "EUR" },
       bookingCount: 10,
       avgNightlyRate: { amountDecimal: "120.00", currency: "EUR" },
+      pageViewCount: 28,
     },
     previous: {
       totalRevenue: { amountDecimal: "2880.00", currency: "EUR" },
       bookingCount: 8,
       avgNightlyRate: { amountDecimal: "120.00", currency: "EUR" },
+      pageViewCount: 21,
     },
     nextArrivalDate: "2026-07-04",
     liveSinceDate: "2025-01-15",
@@ -558,7 +652,31 @@ function fakeSparklines(propertyId: string): BookingSparklineReadModel {
       revenue: { amountDecimal: String(400 + index * 20), currency: "EUR" },
       bookingCount: index + 1,
       avgNightlyRate: { amountDecimal: "120.00", currency: "EUR" },
+      pageViewCount: index,
     })),
+  };
+}
+
+function fakePageViews(propertyId: string): BookingPageViewTimelineReadModel {
+  const buckets = Array.from({ length: 7 }, (_, index) => ({
+    date: `2026-06-${String(index + 8).padStart(2, "0")}`,
+    count: index === 1 ? 0 : index + 1,
+  }));
+  const previousBuckets = Array.from({ length: 7 }, (_, index) => ({
+    date: `2026-06-${String(index + 1).padStart(2, "0")}`,
+    count: index,
+  }));
+  return {
+    propertyId,
+    timeZone: "Europe/Vienna",
+    windowStart: "2026-06-08",
+    windowEnd: "2026-06-14",
+    previousWindowStart: "2026-06-01",
+    previousWindowEnd: "2026-06-07",
+    buckets,
+    previousBuckets,
+    total: buckets.reduce((sum, bucket) => sum + bucket.count, 0),
+    previousTotal: previousBuckets.reduce((sum, bucket) => sum + bucket.count, 0),
   };
 }
 
@@ -576,4 +694,8 @@ function createQueuedDashboardPool(
     },
     async end() {},
   };
+}
+
+function pageViewRow(bucketDate: string, pageViewCount: string, timeZone = "Europe/Vienna") {
+  return { propertyFound: true, timeZone, bucketDate, pageViewCount };
 }

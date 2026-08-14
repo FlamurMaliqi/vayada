@@ -40,6 +40,7 @@ describe("Stripe booking payments", () => {
         amountMinor: 6050,
         applicationFeeAmountMinor: 303,
         currency: "EUR",
+        captureMethod: "automatic",
         idempotencyKey: "booking-payment-1",
       }),
     ).resolves.toMatchObject({
@@ -53,10 +54,17 @@ describe("Stripe booking payments", () => {
     });
     expect(new URLSearchParams(calls[0]!.body).get("transfer_data[destination]")).toBe("acct_1");
     expect(new URLSearchParams(calls[0]!.body).get("payment_method_types[0]")).toBe("card");
+    expect(new URLSearchParams(calls[0]!.body).get("capture_method")).toBe("automatic");
     expect(new URLSearchParams(calls[0]!.body).get("application_fee_amount")).toBe("303");
     expect(new URLSearchParams(calls[0]!.body).has("automatic_payment_methods[enabled]")).toBe(
       false,
     );
+
+    await provider.capturePaymentIntent("pi_booking_1", "capture-booking-payment-1");
+    expect(calls[1]).toMatchObject({
+      url: "https://api.stripe.com/v1/payment_intents/pi_booking_1/capture",
+      key: "capture-booking-payment-1",
+    });
   });
 
   it("rejects a provider replay bound to another property", async () => {
@@ -88,8 +96,79 @@ describe("Stripe booking payments", () => {
         amountMinor: 6050,
         applicationFeeAmountMinor: 303,
         currency: "EUR",
+        captureMethod: "automatic",
         idempotencyKey: "booking-payment-1",
       }),
     ).rejects.toThrow("different property booking");
+  });
+
+  it("retrieves safe card display details from the PaymentIntent", async () => {
+    let requestedUrl = "";
+    const provider = createStripeBookingPaymentProvider({
+      secretKey: "sk_test",
+      fetch: async (input) => {
+        requestedUrl = String(input);
+        return new Response(
+          JSON.stringify({
+            id: "pi_booking_1",
+            client_secret: "pi_booking_1_secret_test",
+            status: "succeeded",
+            amount: 6050,
+            currency: "eur",
+            metadata: {
+              vayada_property_id: "property-1",
+              vayada_booking_reference: "B-001",
+            },
+            transfer_data: { destination: "acct_1" },
+            payment_method: { card: { brand: "visa", last4: "4242" } },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+
+    await expect(provider.retrievePaymentIntent("pi_booking_1")).resolves.toMatchObject({
+      cardBrand: "visa",
+      cardLast4: "4242",
+    });
+    expect(new URL(requestedUrl).searchParams.get("expand[]")).toBe("payment_method");
+  });
+
+  it("creates request-mode PaymentIntents with manual capture", async () => {
+    let body = "";
+    const provider = createStripeBookingPaymentProvider({
+      secretKey: "sk_test",
+      fetch: async (_input, init) => {
+        body = String(init?.body);
+        return new Response(
+          JSON.stringify({
+            id: "pi_request_1",
+            client_secret: "pi_request_1_secret_test",
+            status: "requires_payment_method",
+            amount: 6050,
+            currency: "eur",
+            metadata: {
+              vayada_property_id: "property-1",
+              vayada_booking_reference: "B-REQUEST-1",
+            },
+            transfer_data: { destination: "acct_1" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+
+    await provider.createPaymentIntent({
+      propertyId: "property-1",
+      bookingReference: "B-REQUEST-1",
+      providerAccountRef: "acct_1",
+      amountMinor: 6050,
+      applicationFeeAmountMinor: 303,
+      currency: "EUR",
+      captureMethod: "manual",
+      idempotencyKey: "booking-request-payment-1",
+    });
+
+    expect(new URLSearchParams(body).get("capture_method")).toBe("manual");
   });
 });

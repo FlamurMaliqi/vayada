@@ -11,6 +11,11 @@ import {
   type PmsReservationSink,
 } from "@vayada/domain-pms";
 
+export {
+  parseFlexibleCancellationTerms as parseBookingFlexibleCancellationTerms,
+  type FlexibleCancellationTerms as BookingFlexibleCancellationTerms,
+} from "@vayada/domain-pms";
+
 export * from "./onboardingPublication.js";
 export * from "./bookingLaunchEvidence.js";
 export * from "./bookingLaunchReadiness.js";
@@ -44,6 +49,7 @@ export type BookingRevenueStats = {
   totalRevenue: BookingMoney;
   bookingCount: number;
   avgNightlyRate: BookingMoney;
+  pageViewCount: number;
 };
 
 export type BookingSourceMixItem = {
@@ -71,12 +77,32 @@ export type BookingSparklinePoint = {
   revenue: BookingMoney;
   bookingCount: number;
   avgNightlyRate: BookingMoney;
+  pageViewCount: number;
 };
 
 export type BookingSparklineReadModel = {
   propertyId: string;
   /** 7 contiguous non-overlapping date buckets */
   points: readonly BookingSparklinePoint[];
+};
+
+export type BookingPageViewBucket = {
+  /** Property-local calendar date. */
+  date: BookingDate;
+  count: number;
+};
+
+export type BookingPageViewTimelineReadModel = {
+  propertyId: string;
+  timeZone: string;
+  windowStart: BookingDate;
+  windowEnd: BookingDate;
+  previousWindowStart: BookingDate;
+  previousWindowEnd: BookingDate;
+  buckets: readonly BookingPageViewBucket[];
+  previousBuckets: readonly BookingPageViewBucket[];
+  total: number;
+  previousTotal: number;
 };
 
 export type BookingDashboardMetricsReadModel = {
@@ -121,6 +147,11 @@ export type BookingDashboardMetricsReadPort = {
     windowStart: BookingDate;
     windowEnd: BookingDate;
   }): Promise<BookingSparklineReadModel>;
+  getPageViewTimeline(input: {
+    propertyId: string;
+    windowStart: BookingDate;
+    windowEnd: BookingDate;
+  }): Promise<BookingPageViewTimelineReadModel | null>;
 };
 
 // ─── Booking reservations read model ────────────────────────────────────────

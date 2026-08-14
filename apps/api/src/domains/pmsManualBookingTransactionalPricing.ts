@@ -1,4 +1,6 @@
 import type { QueryResultRow } from "pg";
+import type { HotelMediaResolutionPort } from "@vayada/domain-hotels";
+import type { RoomAmenityVocabularyValidationPort } from "@vayada/domain-pms";
 
 import {
   createPgTargetBookingAddonItemsRepository,
@@ -6,6 +8,9 @@ import {
 } from "../routes/bookingAddonItems.js";
 import { calculateManualBookingPreview } from "../routes/pmsManualBookingPreviewCalculation.js";
 import { readCurrentBookingGuestPolicyRevision } from "./bookingGuestPolicyRepository.js";
+import { loadPmsPricingSourceSnapshot } from "./pmsPricingReadModel.js";
+import { createPgPmsRoomFactsReadModel } from "./pmsRoomFactsReadModel.js";
+import { createPgPmsRoomPublicationReadModel } from "./pmsRoomPublicationReadModel.js";
 import type {
   PmsManualBookingCurrentPricingEvidence,
   PmsManualBookingTransaction,
@@ -13,6 +18,32 @@ import type {
 } from "./pmsManualBookingTransactionPorts.js";
 import { createTargetPmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import { loadPmsRecurringPricingBookingEvidence } from "./pmsRecurringPricingReadModel.js";
+
+export function createPmsManualBookingCurrentPricingEvidence(config: {
+  amenityVocabulary: RoomAmenityVocabularyValidationPort;
+  mediaResolver: HotelMediaResolutionPort;
+  now?: () => Date;
+}): PmsManualBookingCurrentPricingEvidence {
+  return {
+    getPricingSourceSnapshot: ({ transaction, propertyId }) =>
+      loadPmsPricingSourceSnapshot(transaction, propertyId, (config.now ?? (() => new Date()))()),
+    getRoomPublicationSnapshot: async ({ transaction, propertyId, organizationId }) => {
+      const roomFacts = createPgPmsRoomFactsReadModel({
+        connectionString: "caller-transaction",
+        pool: transaction,
+      });
+      const publication = createPgPmsRoomPublicationReadModel({
+        connectionString: "caller-transaction",
+        pool: transaction,
+        roomFacts,
+        roomCapacity: roomFacts,
+        amenityVocabulary: config.amenityVocabulary,
+        mediaResolver: config.mediaResolver,
+      });
+      return publication.getRoomPublicationSnapshot({ propertyId, organizationId });
+    },
+  };
+}
 
 export function createPmsManualBookingTransactionalPricingPort(
   current: PmsManualBookingCurrentPricingEvidence,

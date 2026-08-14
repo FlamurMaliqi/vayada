@@ -4,6 +4,25 @@
 rebuilds, source-to-target transforms, and parity checks for the TypeScript
 backend rewrite.
 
+## Target Manual-Booking Readiness
+
+Run the read-only VAY-1259 gate with a reviewed rehearsal manifest:
+
+```bash
+TARGET_DATABASE_URL=<staging target database> \
+  npm --workspace @vayada/backend-migration run target:manual-booking:readiness -- \
+  --evidence-manifest <manifest.json> --reviewed-sha256 <approved digest> --pretty
+```
+
+It reconciles bookings, stays/nights, add-ons, Finance, attribution, causal and
+privacy evidence. The fixture matrix covers every payment method in paid/unpaid
+states, every add-on model, rates, Email, heterogeneous dates, cancellation, no-show, refund,
+stay correction, and price correction. The manifest records the
+source snapshot, successful restore rehearsal, cutover review, exact property
+cohort, booking IDs and expected target facts. The local bytes must
+match the separately supplied reviewed SHA-256, and the CLI runs in a read-only
+transaction. Any blocker exits non-zero.
+
 ## Full-Fixture Smoke
 
 Use the full-fixture smoke command after updating `main` and before marking

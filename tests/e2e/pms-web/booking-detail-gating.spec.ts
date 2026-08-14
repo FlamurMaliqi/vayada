@@ -7,6 +7,65 @@ import {
   pmsWebReservation,
 } from "../support/pmsWebMocks";
 import { watchPageHealth } from "../support/pageHealth";
+import { createAdaptiveHotelSetupStatusMock } from "../support/sharedHotelSetupMocks";
+
+test("hydrates the selected property on direct booking navigation without a reload", async ({
+  page,
+}, testInfo) => {
+  const assertHealthy = watchPageHealth(page, testInfo);
+  await mockPmsWebAuthenticatedSession(page);
+  await page.addInitScript(() => {
+    window.localStorage.removeItem("selectedHotelId");
+    window.localStorage.removeItem("selectedSharedPropertyId");
+  });
+  await mockPmsWebTargetRoutes(page);
+
+  let releaseDiscovery!: () => void;
+  const discoveryGate = new Promise<void>((resolve) => {
+    releaseDiscovery = resolve;
+  });
+  let statusRequests = 0;
+  await page.route("**/api/hotel-setup/status**", async (route) => {
+    statusRequests += 1;
+    if (statusRequests > 1) await discoveryGate;
+    await route.fulfill({
+      json: createAdaptiveHotelSetupStatusMock({
+        entryProduct: "pms",
+        organizationId: "org_pms_owner",
+        organizationDisplayName: "Alpenrose Hotel Group",
+        selectedTracks: ["hotel_operations"],
+        propertyId: PMS_WEB_PROPERTY_ID,
+        propertyDisplayName: "Alpenrose Munich",
+      }),
+    });
+  });
+  await page.route(
+    `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}`,
+    (route) => route.fulfill({ json: { item: pmsWebReservation } }),
+  );
+  await page.route(
+    `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}/notes`,
+    (route) => route.fulfill({ json: { items: [] } }),
+  );
+  await page.route(
+    `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}/additional-guests`,
+    (route) => route.fulfill({ json: { items: [] } }),
+  );
+  await page.route(
+    `**/api/booking/hotels/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}/change-request`,
+    (route) => route.fulfill({ json: null }),
+  );
+
+  await page.goto(`/bookings/${PMS_WEB_RESERVATION_ID}`);
+
+  await expect(page.getByRole("heading", { name: "Booking VAY-ADA" })).toBeVisible();
+  await expect(page.getByText("No properties", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Loading...", { exact: true })).toBeVisible();
+  releaseDiscovery();
+  await expect(page.getByRole("button", { name: "Alpenrose Munich" })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/bookings/${PMS_WEB_RESERVATION_ID}$`));
+  await assertHealthy();
+});
 
 test("gates legacy booking writes while keeping supported hotel actions active", async ({
   page,

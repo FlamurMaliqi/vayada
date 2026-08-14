@@ -12,6 +12,7 @@ import type { BookingPublicationAttemptStatusPort } from "./bookingPublicationAt
 import {
   BookingPublicationActiveRevisionConflictError,
   BookingPublicationLeaseLostError,
+  BookingPublicationPropertyUnavailableError,
   type DistributionBookingPublicationInput,
   type DistributionBookingPublicationProjectionPort,
 } from "./distributionBookingPublicationProjection.js";
@@ -187,6 +188,16 @@ export function createBookingPublicationProjector(config: {
             config.attempts,
             claim,
             "source_content_changed",
+            projectedAt,
+          );
+        }
+        if (error instanceof BookingPublicationPropertyUnavailableError) {
+          return await terminalFailure(
+            pool,
+            config.projection,
+            config.attempts,
+            claim,
+            "projection_failed",
             projectedAt,
           );
         }
@@ -680,6 +691,8 @@ async function parsePublicationInput(
       value["expectedActiveContentRevisionId"] === null ||
       isUuid(value["expectedActiveContentRevisionId"])
     ) ||
+    !Number.isSafeInteger(value["expectedPropertyLifecycleRevision"]) ||
+    Number(value["expectedPropertyLifecycleRevision"]) < 1 ||
     readiness["contractVersion"] !== "onboarding-product-readiness.v1" ||
     readiness["product"] !== "booking" ||
     readiness["status"] !== "ready" ||
@@ -708,6 +721,7 @@ async function parsePublicationInput(
     organizationId: value["organizationId"],
     propertyId: value["propertyId"],
     expectedActiveRevisionId: value["expectedActiveContentRevisionId"],
+    expectedPropertyLifecycleRevision: Number(value["expectedPropertyLifecycleRevision"]),
     requestedByUserId: value["requestedByUserId"],
     readiness: {
       contractVersion: "onboarding-product-readiness.v1",

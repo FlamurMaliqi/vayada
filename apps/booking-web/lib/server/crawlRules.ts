@@ -4,6 +4,7 @@ const PRIVATE_CRAWL_PATHS = [
   "/booking",
   "/booking-status",
   "/checkout",
+  "/confirmation",
   "/my-booking",
   "/payment",
 ] as const;

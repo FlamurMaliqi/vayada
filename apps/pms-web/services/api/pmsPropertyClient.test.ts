@@ -15,9 +15,14 @@ vi.mock("./sharedHotelSetupClient", () => ({
   },
 }));
 
-import { getPmsPropertyProfile, updatePmsPropertyProfile } from "./pmsPropertyClient";
+import {
+  getPmsPropertyProfile,
+  resolveSelectedPmsPropertyId,
+  updatePmsPropertyProfile,
+} from "./pmsPropertyClient";
 
 const propertyId = "property-1";
+const storedValues = new Map<string, string>();
 const status: AdaptiveHotelSetupStatus = {
   contractVersion: "adaptive-hotel-setup.v1",
   organization: {
@@ -117,11 +122,13 @@ const profile = {
 describe("PMS property profile", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    storedValues.clear();
+    storedValues.set("selectedHotelId", propertyId);
     vi.stubGlobal("window", {
       localStorage: {
-        getItem: vi.fn(() => propertyId),
-        setItem: vi.fn(),
-        removeItem: vi.fn(),
+        getItem: vi.fn((key: string) => storedValues.get(key) ?? null),
+        setItem: vi.fn((key: string, value: string) => storedValues.set(key, value)),
+        removeItem: vi.fn((key: string) => storedValues.delete(key)),
       },
     });
     mocks.getStatus.mockResolvedValue(status);
@@ -177,5 +184,71 @@ describe("PMS property profile", () => {
       "PMS booking acceptance settings is not available on PMS next-stack yet.",
     );
     expect(mocks.updatePropertyProfile).not.toHaveBeenCalled();
+  });
+
+  it("waits for property discovery when direct navigation starts without a stored selection", async () => {
+    storedValues.clear();
+    let finishDiscovery!: (value: AdaptiveHotelSetupStatus) => void;
+    mocks.getStatus.mockReturnValueOnce(
+      new Promise<AdaptiveHotelSetupStatus>((resolve) => {
+        finishDiscovery = resolve;
+      }),
+    );
+
+    const resolution = resolveSelectedPmsPropertyId("loading booking details");
+    finishDiscovery(status);
+
+    await expect(resolution).resolves.toBe(propertyId);
+    expect(storedValues.get("selectedHotelId")).toBe(propertyId);
+    expect(storedValues.get("selectedSharedPropertyId")).toBe(propertyId);
+  });
+
+  it("uses a property selected by another initializer while multi-property discovery is pending", async () => {
+    storedValues.clear();
+    const secondPropertyId = "property-2";
+    let finishDiscovery!: (value: AdaptiveHotelSetupStatus) => void;
+    mocks.getStatus.mockReturnValueOnce(
+      new Promise<AdaptiveHotelSetupStatus>((resolve) => {
+        finishDiscovery = resolve;
+      }),
+    );
+
+    const resolution = resolveSelectedPmsPropertyId("loading booking details");
+    storedValues.set("selectedSharedPropertyId", secondPropertyId);
+    finishDiscovery({
+      ...status,
+      propertySelection: {
+        state: "multiple_properties",
+        selectedPropertyId: null,
+        availableProperties: [
+          ...status.propertySelection.availableProperties,
+          {
+            propertyId: secondPropertyId,
+            publicId: "vienna-house",
+            displayName: "Vienna House",
+            locationSummary: "Vienna, Austria",
+          },
+        ],
+      },
+    });
+
+    await expect(resolution).resolves.toBe(secondPropertyId);
+    expect(storedValues.get("selectedHotelId")).toBe(secondPropertyId);
+  });
+
+  it("reports no selection only after discovery confirms there are no properties", async () => {
+    storedValues.clear();
+    mocks.getStatus.mockResolvedValueOnce({
+      ...status,
+      propertySelection: {
+        state: "no_property",
+        selectedPropertyId: null,
+        availableProperties: [],
+      },
+    });
+
+    await expect(resolveSelectedPmsPropertyId("loading booking details")).rejects.toThrow(
+      "Select a PMS property before loading booking details.",
+    );
   });
 });

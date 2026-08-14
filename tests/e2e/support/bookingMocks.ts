@@ -68,6 +68,10 @@ const publicHotelProfile = {
     summary: hotel.description,
     images: hotel.images.map((url) => ({ url, alt: hotel.name })),
     amenities: hotel.amenities,
+    publicContacts: [
+      { type: "email", value: hotel.contact.email },
+      { type: "phone", value: hotel.contact.phone },
+    ],
     policies: {
       checkInFrom: hotel.checkInTime,
       checkOutUntil: hotel.checkOutTime,

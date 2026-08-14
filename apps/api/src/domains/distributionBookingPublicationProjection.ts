@@ -32,6 +32,7 @@ export type DistributionBookingPublicationInput = {
   outboxLeaseToken: string;
   propertyId: string;
   expectedActiveRevisionId: string | null;
+  expectedPropertyLifecycleRevision: number;
   requestedByUserId: string;
   readiness: {
     contractVersion: "onboarding-product-readiness.v1";
@@ -78,6 +79,13 @@ export class BookingPublicationLeaseLostError extends Error {
   constructor() {
     super("The Booking publication outbox lease is no longer current");
     this.name = "BookingPublicationLeaseLostError";
+  }
+}
+
+export class BookingPublicationPropertyUnavailableError extends Error {
+  constructor() {
+    super("The property is not active for public Booking publication");
+    this.name = "BookingPublicationPropertyUnavailableError";
   }
 }
 
@@ -155,6 +163,7 @@ export function createPgDistributionBookingPublicationProjection(config: {
       try {
         await client.query("BEGIN");
         await lockPublicationScope(client, input.propertyId);
+        await assertActiveProperty(client, input.propertyId);
         const current = await selectActive(client, input.propertyId, true);
         if ((current?.revisionId ?? null) !== input.expectedActiveRevisionId) {
           throw new BookingPublicationActiveRevisionConflictError(current?.revisionId ?? null);
@@ -194,6 +203,11 @@ export function createPgDistributionBookingPublicationProjection(config: {
       try {
         await client.query("BEGIN");
         await lockPublicationScope(client, input.propertyId);
+        await assertActiveProperty(
+          client,
+          input.propertyId,
+          input.expectedPropertyLifecycleRevision,
+        );
         await assertCurrentOutboxLease(client, input);
         const current = await selectActive(client, input.propertyId, true);
         const existing = await selectRevision(client, input.operationId);
@@ -285,6 +299,22 @@ async function lockPublicationScope(
      )`,
     [propertyId],
   );
+}
+
+async function assertActiveProperty(
+  client: DistributionBookingPublicationTransaction,
+  propertyId: string,
+  expectedLifecycleRevision?: number,
+): Promise<void> {
+  const result = await client.query(
+    `SELECT id
+     FROM hotel_catalog.properties
+     WHERE id = $1::uuid AND lifecycle_status = 'active'
+       AND ($2::bigint IS NULL OR lifecycle_revision = $2::bigint)
+     FOR SHARE`,
+    [propertyId, expectedLifecycleRevision ?? null],
+  );
+  if (result.rowCount !== 1) throw new BookingPublicationPropertyUnavailableError();
 }
 
 async function selectActive(

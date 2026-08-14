@@ -52,6 +52,21 @@ export async function resolveSelectedPmsPropertyId(action = "loading PMS data"):
     return storedPropertyId;
   }
 
+  const status = await sharedHotelSetupApi.getStatus({ entryProduct: "pms" });
+  const selectedPropertyId =
+    getStoredPmsPropertyId() ?? status.propertySelection.selectedPropertyId;
+  const propertyId =
+    status.propertySelection.availableProperties.find(
+      (property) => property.propertyId === selectedPropertyId,
+    )?.propertyId ??
+    (status.propertySelection.availableProperties.length === 1
+      ? status.propertySelection.availableProperties[0]!.propertyId
+      : null);
+  if (propertyId) {
+    storeSelectedPmsPropertyId(propertyId);
+    return propertyId;
+  }
+
   throw new Error(`Select a PMS property before ${action}.`);
 }
 

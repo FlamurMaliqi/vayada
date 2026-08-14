@@ -23,12 +23,14 @@ const futureReservation = {
 
 const futureBlock = {
   blockId: "room_block_future",
+  version: "room-block-v1",
   roomTypeId: PMS_WEB_ROOM_TYPE_ID,
   roomId: PMS_WEB_ROOM_ID,
   startsOn: "2027-02-20",
   endsOn: "2027-02-20",
   blockedCount: 1,
   reason: "Owner maintenance",
+  status: "active",
 };
 
 test.describe("mobile PMS calendar", () => {

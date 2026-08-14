@@ -18,6 +18,7 @@ import { CalendarBooking, CalendarBlock, CalendarRoomType } from "@/services/cal
 import { getChannelBarColor } from "@/lib/constants/statusStyles";
 
 const WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+export const calendarLaneTop = (index: number) => index * 36 + 6;
 
 interface MobileCalendarProps {
   currentMonth: Date;
@@ -34,6 +35,7 @@ interface MobileCalendarProps {
   onBlockRoom: (startDate: string, endDate: string) => void;
   onSelectBlock: (block: CalendarBlock) => void;
   writeActionsAvailable?: boolean;
+  manualBookingAvailable?: boolean;
 }
 
 export default function MobileCalendar({
@@ -49,6 +51,7 @@ export default function MobileCalendar({
   onBlockRoom,
   onSelectBlock,
   writeActionsAvailable = true,
+  manualBookingAvailable = writeActionsAvailable,
 }: MobileCalendarProps) {
   // Selection model: tap a day to single-select it (so the user can browse
   // that day's bookings/blocks); drag from one day onto another to form a
@@ -170,7 +173,7 @@ export default function MobileCalendar({
         if (isWithinInterval(day, { start, end })) {
           const key = format(day, "yyyy-MM-dd");
           if (!map[key]) map[key] = [];
-          if (!map[key].find((x) => x.id === b.id)) {
+          if (!map[key].find((x) => x.id === b.id && x.roomPosition === b.roomPosition)) {
             map[key].push(b);
           }
         }
@@ -233,8 +236,9 @@ export default function MobileCalendar({
     const out: CalendarBooking[] = [];
     for (const d of rangeDays) {
       for (const b of bookingsByDay[format(d, "yyyy-MM-dd")] || []) {
-        if (!seen.has(b.id)) {
-          seen.add(b.id);
+        const key = `${b.id}:${b.roomPosition}`;
+        if (!seen.has(key)) {
+          seen.add(key);
           out.push(b);
         }
       }
@@ -442,8 +446,6 @@ export default function MobileCalendar({
               {rangeStartStr && rangeEndStr && (
                 <button
                   type="button"
-                  disabled={!writeActionsAvailable}
-                  title={!writeActionsAvailable ? "Room blocking is not available yet" : undefined}
                   onClick={() => onBlockRoom(rangeStartStr, rangeEndStr)}
                   className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-red-600 border border-red-200 bg-white rounded-lg hover:bg-red-50 transition-colors disabled:cursor-not-allowed disabled:text-gray-400 disabled:border-gray-200"
                 >
@@ -460,9 +462,9 @@ export default function MobileCalendar({
               )}
               <button
                 type="button"
-                disabled={!writeActionsAvailable}
+                disabled={!manualBookingAvailable}
                 title={
-                  !writeActionsAvailable
+                  !manualBookingAvailable
                     ? "Manual booking creation is not available yet"
                     : undefined
                 }
@@ -501,10 +503,6 @@ export default function MobileCalendar({
                   <button
                     key={`block-${bl.id}`}
                     type="button"
-                    disabled={!writeActionsAvailable}
-                    title={
-                      !writeActionsAvailable ? "Block editing is not available yet" : undefined
-                    }
                     onClick={() => onSelectBlock(bl)}
                     className="w-full bg-red-50 rounded-lg border border-dashed border-red-200 p-3 text-left hover:bg-red-100 transition-colors disabled:cursor-default disabled:hover:bg-red-50"
                   >
@@ -548,7 +546,7 @@ export default function MobileCalendar({
                 const channelColor = getChannelBarColor(b.channel);
                 return (
                   <button
-                    key={b.id}
+                    key={`${b.id}:${b.roomPosition}`}
                     onClick={() => onSelectBooking(b.id)}
                     className="w-full bg-white rounded-lg border border-gray-200 p-3 text-left hover:border-gray-300 transition-colors"
                   >
@@ -564,6 +562,8 @@ export default function MobileCalendar({
                           {b.guestFirstName} {b.guestLastName}
                         </div>
                         <div className="text-[11px] text-gray-500">
+                          {b.numberOfRooms > 1 &&
+                            `Room ${b.roomPosition + 1} of ${b.numberOfRooms} · `}
                           {b.checkIn} → {b.checkOut}
                         </div>
                       </div>
