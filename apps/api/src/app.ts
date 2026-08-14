@@ -164,6 +164,7 @@ import {
   type PmsManualBookingPreviewRoutesOptions,
 } from "./routes/pmsManualBookingPreview.js";
 import {
+  registerPmsManualBookingCapabilityRoutes,
   registerPmsManualBookingCreateRoutes,
   type PmsManualBookingCreateRoutesOptions,
 } from "./routes/pmsManualBookingCreate.js";
@@ -549,6 +550,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       ...options.pmsRoomPublication,
     });
   }
+  app.register(registerPmsManualBookingCapabilityRoutes, { prefix: "/api/pms" });
   if (options.pmsManualBookingPreview) {
     app.register(registerPmsManualBookingPreviewRoutes, {
       prefix: "/api/pms",

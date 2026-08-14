@@ -2,6 +2,7 @@ import { UnauthorizedError } from "@vayada/backend-auth";
 import { AuthorizationError } from "@vayada/backend-authorization";
 import { roundBookingPriceDecimalToMinorUnits } from "@vayada/domain-booking";
 import {
+  PMS_MANUAL_BOOKING_CONTRACT_VERSION,
   PMS_MANUAL_BOOKING_DIRECT_SOURCES,
   PMS_MANUAL_BOOKING_PAYMENT_METHODS,
   PmsManualBookingCreateError,
@@ -84,6 +85,49 @@ const bodySchema = z.strictObject({
 export type PmsManualBookingCreateRoutesOptions = {
   command: PmsManualBookingCreatePort;
 };
+
+export async function registerPmsManualBookingCapabilityRoutes(
+  app: FastifyInstance,
+): Promise<void> {
+  app.get<{ Params: { propertyId: string }; Querystring: unknown }>(
+    "/properties/:propertyId/manual-bookings/capabilities",
+    async (request, reply) => {
+      try {
+        const scope = authorize(request, false);
+        if (
+          !request.query ||
+          typeof request.query !== "object" ||
+          Array.isArray(request.query) ||
+          Object.keys(request.query).length
+        )
+          throw new PmsManualBookingCreateError("unknown_field");
+        return reply.send({
+          contractVersion: PMS_MANUAL_BOOKING_CONTRACT_VERSION,
+          canRecordPaidPayment: hasPaidPolicy(request, scope.propertyId),
+        });
+      } catch (error) {
+        if (error instanceof UnauthorizedError)
+          return reply
+            .status(401)
+            .send({ code: "unauthenticated", message: "Authentication required." });
+        if (error instanceof AuthorizationError) {
+          const entitlement = error.message.startsWith("Missing active entitlement");
+          return reply.status(403).send({
+            code: entitlement ? "entitlement_required" : "forbidden",
+            message: entitlement ? "Active PMS entitlement required." : "Access forbidden.",
+          });
+        }
+        if (error instanceof PmsManualBookingCreateError)
+          return reply.status(statusFor(error.code)).send(errorBody(error));
+        request.log.error({ err: error }, "manual booking capability read failed");
+        return reply.status(500).send({
+          code: "manual_booking_create_unavailable",
+          message: "Manual booking capabilities are unavailable.",
+        });
+      }
+    },
+  );
+}
 
 export async function registerPmsManualBookingCreateRoutes(
   app: FastifyInstance,
@@ -218,6 +262,10 @@ function authorize(request: FastifyRequest, paid: boolean): AuthorizedScope {
 }
 
 function enforcePaidPolicy(request: FastifyRequest, propertyId: string): void {
+  if (!hasPaidPolicy(request, propertyId)) throw new PmsManualBookingCreateError("paid_forbidden");
+}
+
+function hasPaidPolicy(request: FastifyRequest, propertyId: string): boolean {
   const resource = {
     product: "pms",
     resourceType: "pms_property",
@@ -229,9 +277,9 @@ function enforcePaidPolicy(request: FastifyRequest, propertyId: string): void {
       entitlement: { product: "booking", key: "direct-booking-finance", resource },
       resource: { ...resource, allowedRelationships: ["owner", "finance_manager"] },
     });
+    return true;
   } catch (error) {
-    if (error instanceof AuthorizationError)
-      throw new PmsManualBookingCreateError("paid_forbidden");
+    if (error instanceof AuthorizationError) return false;
     throw error;
   }
 }
