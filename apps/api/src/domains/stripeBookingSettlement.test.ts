@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { settleStripeBookingPayment } from "./stripeBookingSettlement.js";
+import {
+  reconcileStripeBookingPaymentProviderDetails,
+  settleStripeBookingPayment,
+} from "./stripeBookingSettlement.js";
 
 describe("Stripe booking lifecycle notifications", () => {
   it.each([
@@ -23,6 +26,53 @@ describe("Stripe booking lifecycle notifications", () => {
     expect(fixture.pmsJobs).toEqual([
       "booking-checkout:create:b9fccec2-eb4c-4c35-bfd3-02a748c2e117:v1",
     ]);
+  });
+
+  it("persists the exact connected-account Stripe fee and net payout", async () => {
+    const calls: Array<{ sql: string; values: readonly unknown[] }> = [];
+    await reconcileStripeBookingPaymentProviderDetails(
+      {
+        async query(sql, values = []) {
+          calls.push({ sql, values });
+          return { rows: [] };
+        },
+      },
+      {
+        paymentIntentId: "pi_booking_1",
+        clientSecret: null,
+        status: "succeeded",
+        amountMinor: 10_000,
+        currency: "EUR",
+        propertyId: "property-1",
+        bookingReference: "VAY-ABC123",
+        providerAccountRef: "acct_property_1",
+        cardBrand: "visa",
+        cardLast4: "4242",
+        feeBreakdown: {
+          balanceTransactionId: "txn_booking_1",
+          chargeId: "ch_booking_1",
+          currency: "EUR",
+          grossAmountMinor: 10_000,
+          processorFeeAmountMinor: 320,
+          applicationFeeAmountMinor: 500,
+          netPayoutAmountMinor: 9_180,
+        },
+      },
+      new Date("2026-09-01T10:00:00.000Z"),
+    );
+
+    expect(calls[0]?.sql).toContain("processor_fee_breakdown");
+    expect(calls[0]?.sql).toContain("account.provider_account_id = $2");
+    expect(calls[0]?.sql).toContain("payment.payment_metadata ->> 'chargeType' = 'direct'");
+    expect(calls[0]?.values).toEqual(
+      expect.arrayContaining(["pi_booking_1", "acct_property_1", "ch_booking_1"]),
+    );
+    expect(JSON.parse(String(calls[0]?.values[4]))).toMatchObject({
+      status: "available",
+      stripeFeeAmount: "3.20",
+      applicationFeeAmount: "5.00",
+      netPayoutAmount: "91.80",
+    });
   });
 });
 

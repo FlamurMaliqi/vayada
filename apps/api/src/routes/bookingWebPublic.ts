@@ -24,6 +24,7 @@ import {
   authorizeStripeBookingPayment,
   captureDirectNightlyRevenueEvidence,
   pmsCreateJobKey,
+  reconcileStripeBookingPaymentProviderDetails,
   settleStripeBookingPayment,
   targetNightlyRoomAmounts,
 } from "../domains/stripeBookingSettlement.js";
@@ -1197,6 +1198,7 @@ type TargetCardPaymentRow = QueryResultRow & {
   paymentId: string;
   providerPaymentIntentId: string;
   providerAccountRef: string;
+  chargeType: string | null;
   cardBrand?: string | null;
   cardLast4?: string | null;
 };
@@ -1745,6 +1747,7 @@ export function createTargetBookingWebCheckoutAdapter(
           confirmationTokenExpiresAt: confirmation.expiresAt,
           ...(cardPayment ? { draftId: booking.guestBookingId } : {}),
           ...(cardPayment ? { providerPaymentIntentId: cardPayment.paymentIntentId } : {}),
+          ...(cardPayment ? { stripeAccountId: cardPayment.providerAccountRef } : {}),
           pmsHandoff: { status: cardPayment ? "awaiting_payment" : "pending_handoff" },
         };
         await recordTargetCheckoutCommand(client, {
@@ -1818,6 +1821,7 @@ export function createTargetBookingWebCheckoutAdapter(
         if (!authorizationComplete || !payment.cardBrand || !payment.cardLast4) {
           const intent = await config.stripePaymentProvider!.retrievePaymentIntent(
             payment.providerPaymentIntentId,
+            payment.chargeType === "direct" ? payment.providerAccountRef : null,
           );
           assertStripePaymentReady(
             booking,
@@ -1825,11 +1829,12 @@ export function createTargetBookingWebCheckoutAdapter(
             intent,
             booking.paymentStatus === "paid" ? "instant" : acceptanceMode,
           );
-          await recordTargetCardDisplayDetails(client, intent, context.occurredAt);
+          await reconcileStripeBookingPaymentProviderDetails(client, intent, context.occurredAt);
           if (!authorizationComplete) {
             if (acceptanceMode === "request") {
               await authorizeStripeBookingPayment(client, {
                 paymentIntentId: intent.paymentIntentId,
+                providerAccountRef: intent.providerAccountRef,
                 amountMinor: intent.amountMinor,
                 currency: intent.currency,
                 occurredAt: context.occurredAt,
@@ -1837,6 +1842,7 @@ export function createTargetBookingWebCheckoutAdapter(
             } else {
               await settleStripeBookingPayment(client, {
                 paymentIntentId: intent.paymentIntentId,
+                providerAccountRef: intent.providerAccountRef,
                 amountMinor: intent.amountMinor,
                 currency: intent.currency,
                 occurredAt: context.occurredAt,
@@ -1967,6 +1973,7 @@ export function createTargetBookingWebCheckoutAdapter(
           const payment = await loadTargetCardPayment(pool, booking);
           const intent = await config.stripePaymentProvider.retrievePaymentIntent(
             payment.providerPaymentIntentId,
+            payment.chargeType === "direct" ? payment.providerAccountRef : null,
           );
           const acceptanceMode = targetAcceptanceMode(
             objectValue(booking.bookingMetadata)["acceptanceMode"],
@@ -1977,7 +1984,11 @@ export function createTargetBookingWebCheckoutAdapter(
             intent,
             booking.paymentStatus === "paid" ? "instant" : acceptanceMode,
           );
-          await recordTargetCardDisplayDetails(pool, intent, context?.occurredAt ?? new Date());
+          await reconcileStripeBookingPaymentProviderDetails(
+            pool,
+            intent,
+            context?.occurredAt ?? new Date(),
+          );
           booking = await loadTargetBooking(
             pool,
             property.propertyId,
@@ -3497,12 +3508,12 @@ async function createTargetCardPayment(
        property_id, guest_booking_id, provider_account_id, source_system,
        idempotency_key, payment_kind, payment_method, status, amount,
        fee_amount, net_amount, refunded_amount, currency,
-       provider_payment_intent_id, payment_metadata, visibility_class,
+       provider_payment_intent_id, processor_fee_breakdown, payment_metadata, visibility_class,
        created_at, updated_at
      ) VALUES (
        $1::uuid, $2::uuid, $3::uuid, 'finance', $4, 'full', 'card',
        'requires_action', $5::numeric, $6::numeric, $7::numeric, 0, $8, $9,
-       $10::jsonb, 'pms_finance', $11::timestamptz, $11::timestamptz
+       $10::jsonb, $11::jsonb, 'pms_finance', $12::timestamptz, $12::timestamptz
      )
      ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
     [
@@ -3516,6 +3527,11 @@ async function createTargetCardPayment(
       booking.currency,
       intent.paymentIntentId,
       JSON.stringify({
+        contractVersion: "stripe-direct-charge.v1",
+        status: "pending",
+        currency: booking.currency,
+      }),
+      JSON.stringify({
         providerStatus: intent.status,
         captureMethod: acceptanceMode === "request" ? "manual" : "automatic",
         acceptanceMode,
@@ -3523,6 +3539,9 @@ async function createTargetCardPayment(
         billingPlan: billingConfig?.activePlan ?? "commission",
         platformFeePercent:
           billingConfig?.activePlan === "commission" ? billingConfig.bookingEngineFeePercent : 0,
+        chargeType: "direct",
+        applicationFeeAmount: stripeAmountDecimal(applicationFeeAmountMinor, booking.currency),
+        applicationFeeCurrency: booking.currency,
         reconciliationStatus: "pending",
       }),
       context.occurredAt.toISOString(),
@@ -3556,11 +3575,15 @@ async function hydrateTargetCardCheckoutReplay(
 ): Promise<unknown> {
   const body = objectValue(value);
   const paymentIntentId = stringValue(body["providerPaymentIntentId"]);
+  const stripeAccountId = stringValue(body["stripeAccountId"]);
   if (!paymentIntentId) return value;
   if (!config.stripePaymentProvider) {
     throw createHttpError(503, "Target card authorization is not configured.");
   }
-  const intent = await config.stripePaymentProvider.retrievePaymentIntent(paymentIntentId);
+  const intent = await config.stripePaymentProvider.retrievePaymentIntent(
+    paymentIntentId,
+    stripeAccountId,
+  );
   const bookingId = stringValue(body["draftId"]);
   if (intent.status === "canceled") {
     return {
@@ -3584,6 +3607,7 @@ async function hydrateTargetCardCheckoutReplay(
       if (booking.paymentStatus !== "paid") {
         await settleStripeBookingPayment(client, {
           paymentIntentId,
+          providerAccountRef: intent.providerAccountRef,
           amountMinor: intent.amountMinor,
           currency: intent.currency,
           occurredAt: context.occurredAt,
@@ -3594,12 +3618,13 @@ async function hydrateTargetCardCheckoutReplay(
       assertStripePaymentReady(booking, payment.providerAccountRef, intent, acceptanceMode);
       await authorizeStripeBookingPayment(client, {
         paymentIntentId,
+        providerAccountRef: intent.providerAccountRef,
         amountMinor: intent.amountMinor,
         currency: intent.currency,
         occurredAt: context.occurredAt,
       });
     }
-    await recordTargetCardDisplayDetails(client, intent, context.occurredAt);
+    await reconcileStripeBookingPaymentProviderDetails(client, intent, context.occurredAt);
     const finalized = await loadTargetHotelBooking(client, propertyId, bookingId);
     return {
       ...body,
@@ -3625,6 +3650,7 @@ async function loadTargetCardPayment(
             payment.provider_payment_intent_id AS "providerPaymentIntentId",
             payment.payment_metadata ->> 'cardBrand' AS "cardBrand",
             payment.payment_metadata ->> 'cardLast4' AS "cardLast4",
+            payment.payment_metadata ->> 'chargeType' AS "chargeType",
             account.provider_account_id AS "providerAccountRef"
        FROM finance.payments payment
        JOIN finance.payment_provider_accounts account ON account.id = payment.provider_account_id
@@ -3640,26 +3666,6 @@ async function loadTargetCardPayment(
   const payment = result.rows[0];
   if (!payment) throw createHttpError(404, "Card payment authorization was not found.");
   return payment;
-}
-
-async function recordTargetCardDisplayDetails(
-  client: BookingWebQueryExecutor,
-  intent: StripeBookingPaymentIntent,
-  occurredAt: Date,
-): Promise<void> {
-  if (!intent.cardBrand || !intent.cardLast4 || !/^\d{4}$/.test(intent.cardLast4)) return;
-  await client.query(
-    `UPDATE finance.payments
-        SET payment_metadata = payment_metadata || $2::jsonb,
-            updated_at = $3::timestamptz
-      WHERE provider_payment_intent_id = $1
-        AND payment_method = 'card'`,
-    [
-      intent.paymentIntentId,
-      JSON.stringify({ cardBrand: intent.cardBrand, cardLast4: intent.cardLast4 }),
-      occurredAt.toISOString(),
-    ],
-  );
 }
 
 function assertStripePaymentReady(

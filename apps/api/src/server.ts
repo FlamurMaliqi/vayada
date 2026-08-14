@@ -799,6 +799,7 @@ const app = buildApp({
         store: createPgProviderWebhookStore({
           connectionString: targetDatabaseUrl,
           stripeConnectProvider,
+          stripePaymentProvider: stripeBookingPaymentProvider,
         }),
       }
     : undefined,

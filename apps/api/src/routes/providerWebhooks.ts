@@ -575,6 +575,7 @@ function previewStripeEvent(
   eventCreatedFallback: number,
 ): ProviderWebhookNormalizedPreview {
   const eventType = requiredString(payload, "type", "Stripe event");
+  const providerAccountRef = optionalString(payload, "account");
   const dataObject = optionalRecord(optionalRecord(payload, "data"), "object") ?? {};
   const objectId = optionalString(dataObject, "id") ?? receiptKey;
   const eventId = requiredString(payload, "id", "Stripe event");
@@ -623,7 +624,8 @@ function previewStripeEvent(
       semanticAction: `stripe-event-${requiredString(payload, "id", "Stripe event")}`,
       paymentId: objectId,
       amount,
-      domainEventKey: `payment.authorized:stripe:${objectId}:${amount}:v1`,
+      providerAccountRef,
+      domainEventKey: `payment.authorized:stripe:${providerAccountRef ?? "platform"}:${objectId}:${amount}:v2`,
       rawPayload: payload,
     });
   }
@@ -634,7 +636,8 @@ function previewStripeEvent(
       semanticAction: `stripe-event-${requiredString(payload, "id", "Stripe event")}`,
       paymentId: objectId,
       amount,
-      domainEventKey: `payment.captured:stripe:${objectId}:${amount}:v1`,
+      providerAccountRef,
+      domainEventKey: `payment.captured:stripe:${providerAccountRef ?? "platform"}:${objectId}:${amount}:v2`,
       rawPayload: payload,
     });
   }
@@ -646,9 +649,34 @@ function previewStripeEvent(
       semanticAction: `stripe-event-${requiredString(payload, "id", "Stripe event")}`,
       paymentId: objectId,
       amount,
-      domainEventKey: `payment.terminal:stripe:${objectId}:${status}:v1`,
+      providerAccountRef,
+      domainEventKey: `payment.terminal:stripe:${providerAccountRef ?? "platform"}:${objectId}:${status}:v2`,
       rawPayload: payload,
     });
+  }
+  if (eventType === "charge.updated") {
+    const paymentIntent = dataObject["payment_intent"];
+    const paymentIntentId =
+      typeof paymentIntent === "string"
+        ? paymentIntent
+        : optionalString(optionalRecord(dataObject, "payment_intent"), "id");
+    const balanceTransaction = dataObject["balance_transaction"];
+    const balanceTransactionId =
+      typeof balanceTransaction === "string"
+        ? balanceTransaction
+        : optionalString(optionalRecord(dataObject, "balance_transaction"), "id");
+    if (paymentIntentId && balanceTransactionId) {
+      return paymentPreview({
+        provider: "stripe",
+        domainEventType: "payment.fee_updated",
+        semanticAction: `stripe-charge-updated-${requiredString(payload, "id", "Stripe event")}`,
+        paymentId: paymentIntentId,
+        amount,
+        providerAccountRef,
+        domainEventKey: `payment.fee-updated:stripe:${providerAccountRef ?? "platform"}:${paymentIntentId}:${balanceTransactionId}:v1`,
+        rawPayload: payload,
+      });
+    }
   }
   if (eventType === "account.updated") {
     const eventId = requiredString(payload, "id", "Stripe event");
@@ -854,17 +882,23 @@ function previewChannexEvent(
 
 function paymentPreview(input: {
   provider: "stripe" | "xendit";
-  domainEventType: "payment.authorized" | "payment.captured" | "payment.terminal";
+  domainEventType:
+    | "payment.authorized"
+    | "payment.captured"
+    | "payment.terminal"
+    | "payment.fee_updated";
   semanticAction: string;
   paymentId: string;
   amount: number;
+  providerAccountRef?: string | null;
   domainEventKey: string;
   rawPayload: Record<string, unknown>;
 }): ProviderWebhookNormalizedPreview {
   const financeStatus =
     input.domainEventType === "payment.authorized"
       ? "authorized"
-      : input.domainEventType === "payment.captured"
+      : input.domainEventType === "payment.captured" ||
+          input.domainEventType === "payment.fee_updated"
         ? "paid"
         : financePaymentTerminalStatus(input.provider, input.rawPayload);
   return {
@@ -878,6 +912,7 @@ function paymentPreview(input: {
     jobType: "payment.reconcile-status",
     payload: {
       provider: input.provider,
+      providerAccountRef: input.providerAccountRef ?? null,
       paymentId: input.paymentId,
       amount: input.amount,
       currency: optionalString(

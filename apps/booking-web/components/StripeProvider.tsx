@@ -1,17 +1,22 @@
 "use client";
 
 import { Elements } from "@stripe/react-stripe-js";
-import stripePromise from "@/lib/stripe";
+import stripeForAccount from "@/lib/stripe";
 
 interface StripeProviderProps {
   clientSecret: string;
+  stripeAccountId?: string | null;
   children: React.ReactNode;
 }
 
-export default function StripeProvider({ clientSecret, children }: StripeProviderProps) {
+export default function StripeProvider({
+  clientSecret,
+  stripeAccountId,
+  children,
+}: StripeProviderProps) {
   return (
     <Elements
-      stripe={stripePromise}
+      stripe={stripeForAccount(stripeAccountId)}
       options={{
         clientSecret,
         appearance: {

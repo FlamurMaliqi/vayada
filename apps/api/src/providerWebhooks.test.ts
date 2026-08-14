@@ -272,7 +272,7 @@ describe("target provider webhook routes", () => {
       "webhook:xendit:payout:po_xendit_123:SUCCEEDED",
     ]);
     expect(store.domainEvents.map((event) => event.domainEventKey)).toEqual([
-      "payment.captured:stripe:pi_stripe_123:42000:v1",
+      "payment.captured:stripe:platform:pi_stripe_123:42000:v2",
       "payout.status:stripe:po_stripe_123:paid:v1",
       "payment.captured:xendit:inv_xendit_paid:42000:v1",
       "payout.status:xendit:po_xendit_123:SUCCEEDED:v1",
@@ -295,6 +295,47 @@ describe("target provider webhook routes", () => {
     expect(
       store.receipts.map((receipt) => receipt.normalizedPreview.payload.financeStatus),
     ).toEqual(["paid", "paid", "paid", "paid"]);
+    await app.close();
+  });
+
+  it("normalizes connected-account charge updates for exact Stripe fee reconciliation", async () => {
+    const store = createMemoryProviderWebhookStore();
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { stripe: "whsec_stripe_test" },
+        modes: { stripe: "mutating" },
+        store,
+        now: () => fixedNow,
+      },
+    });
+    const payload = {
+      id: "evt_stripe_charge_updated",
+      type: "charge.updated",
+      account: "acct_property_123",
+      data: {
+        object: {
+          id: "ch_stripe_123",
+          payment_intent: "pi_stripe_123",
+          balance_transaction: "txn_stripe_123",
+          amount: 42_000,
+          currency: "eur",
+        },
+      },
+    };
+
+    const response = await postProviderPayload(app, "stripe", payload);
+
+    expect(response.statusCode).toBe(200);
+    expect(store.domainEvents[0]).toMatchObject({
+      domainEventKey:
+        "payment.fee-updated:stripe:acct_property_123:pi_stripe_123:txn_stripe_123:v1",
+      domainEventType: "payment.fee_updated",
+      resourceId: "pi_stripe_123",
+    });
+    expect(store.domainEvents[0]?.payload).toMatchObject({
+      providerAccountRef: "acct_property_123",
+      financeStatus: "paid",
+    });
     await app.close();
   });
 
@@ -855,7 +896,13 @@ type MemoryProviderWebhookStore = ProviderWebhookStore & {
       lifecycleStatus: ProviderWebhookReceiptLifecycleStatus;
     }
   >;
-  domainEvents: Array<{ domainEventId: string; domainEventKey: string }>;
+  domainEvents: Array<{
+    domainEventId: string;
+    domainEventKey: string;
+    domainEventType: string;
+    resourceId: string;
+    payload: Record<string, unknown>;
+  }>;
   jobs: Array<{ jobId: string; jobKey: string }>;
   auditEvents: Array<{
     auditEventId: string;
@@ -914,6 +961,9 @@ function createMemoryProviderWebhookStore(): MemoryProviderWebhookStore {
         domainEvents.push({
           domainEventId,
           domainEventKey: input.normalizedPreview.domainEventKey,
+          domainEventType: input.normalizedPreview.domainEventType,
+          resourceId: input.normalizedPreview.resourceId,
+          payload: input.normalizedPreview.payload,
         });
       }
       const jobId = existingJob?.jobId ?? `job_${jobs.length + 1}`;

@@ -191,6 +191,7 @@ describe("booking lifecycle scheduler jobs", () => {
 
     expect(stripePaymentProvider.cancelPaymentIntent).toHaveBeenCalledWith(
       "pi_expiring",
+      "acct_property",
       expect.stringContaining("booking-card-expire"),
     );
     expect(fixture.inventoryReservationPort.release).toHaveBeenCalledOnce();
@@ -250,6 +251,7 @@ describe("booking lifecycle scheduler jobs", () => {
     expect(result.runs[0]?.mutations[0]).toMatchObject({ applied: true, toStatus: "expired" });
     expect(stripePaymentProvider.cancelPaymentIntent).toHaveBeenCalledWith(
       "pi_expiring",
+      "acct_property",
       expect.stringContaining("booking-card-request-expire"),
     );
     expect(fixture.calls.some((sql) => sql.includes("FOR UPDATE OF payment, booking"))).toBe(true);
@@ -457,6 +459,7 @@ function pgLifecycleFixture(
               ? {
                   providerPaymentIntentId: "pi_expiring",
                   providerAccountRef: "acct_property",
+                  chargeType: "direct",
                   publicReference: "B-EXPIRING",
                 }
               : {}),
