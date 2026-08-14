@@ -54,6 +54,8 @@ import { createPgPmsRoomPublicationReadModel } from "./domains/pmsRoomPublicatio
 import { createPgPropertySetupFinanceOwnerScopePort } from "./domains/propertySetupFinanceOwnerScope.js";
 import { createPgPropertySetupPmsOwnerRepository } from "./domains/propertySetupPmsOwnerRepository.js";
 import { createPgPmsPricingReadModel } from "./domains/pmsPricingReadModel.js";
+import { createPgPmsManualBookingCommandRepository } from "./domains/pmsManualBookingCommandRepository.js";
+import { createPmsManualBookingProductionCommandConfig } from "./domains/pmsManualBookingProductionRuntime.js";
 import { createPgPmsRecurringPricingReadModel } from "./domains/pmsRecurringPricingReadModel.js";
 import { createPgPmsMandatoryChargeConfirmationReadModel } from "./domains/pmsMandatoryChargeConfirmationReadModel.js";
 import { createPgHotelCatalogOperatingCalendarPropertyProfileEvidencePort } from "./domains/hotelCatalogOperatingCalendarPropertyProfileEvidence.js";
@@ -579,8 +581,17 @@ const pmsRoomPublicationRuntime = bookingDesignMediaAdapter
         amenityVocabulary,
         mediaResolver,
       });
-      return { commandRepository, readModel };
+      return { amenityVocabulary, mediaResolver, commandRepository, readModel };
     })()
+  : undefined;
+
+const pmsManualBookingCommandConfig = createPmsManualBookingProductionCommandConfig({
+  connectionString: targetDatabaseUrl,
+  pmsOperationsReady: Boolean(pmsOperationsRepository),
+  roomPublication: pmsRoomPublicationRuntime,
+});
+const pmsManualBookingCommandRepository = pmsManualBookingCommandConfig
+  ? createPgPmsManualBookingCommandRepository(pmsManualBookingCommandConfig)
   : undefined;
 
 const bookingGuestPolicyCurrentOwnerEvidence = createBookingGuestPolicyCurrentOwnerEvidenceAdapter({
@@ -833,6 +844,9 @@ const app = buildApp({
           },
         }
       : undefined,
+  pmsManualBookingCreate: pmsManualBookingCommandRepository
+    ? { command: pmsManualBookingCommandRepository }
+    : undefined,
   pmsModuleActivationRepository,
   pmsReviewRepository: createPgPmsReviewRepository({ connectionString: targetDatabaseUrl }),
   pmsOperationsCommandRepository,
@@ -958,6 +972,7 @@ app.addHook("onClose", async () => {
     bookingDesignMediaAdapter?.close?.(),
     pmsRoomPublicationRuntime?.commandRepository.close(),
     pmsRoomPublicationRuntime?.readModel.close(),
+    pmsManualBookingCommandRepository?.close(),
     ...(!platformMediaRuntime ? [hotelCatalogStep1Repository.close()] : []),
   ]);
 });
