@@ -87,7 +87,7 @@ export function createPgPmsChannexIframeSessionPort(config: {
            actor_type, actor_user_id, target_resource_product, target_resource_type,
            target_resource_id, correlation_id, redacted_payload, audit_metadata
          ) VALUES ($1, 'pms', 'pms.channex.iframe_session.created', $2::timestamptz,
-           'property', $3::uuid, 'user', $4::uuid, 'pms', 'channex_connection', $3,
+           'property', $3::uuid, 'user', $4::uuid, 'pms', 'channex_connection', $3::text,
            $5, '{}'::jsonb, jsonb_build_object('expiresInSeconds', 900))`,
         [
           `channex.iframe-session:${context.audit.requestId}`,

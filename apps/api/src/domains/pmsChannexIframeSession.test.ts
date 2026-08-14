@@ -36,6 +36,7 @@ describe("PMS Channex iframe sessions", () => {
       }),
     );
     expect(db.sql()).toContain("pms.channex.iframe_session.created");
+    expect(db.sql()).toContain("$3::text");
     expect(db.values()).not.toContain("one-time-secret");
   });
 
