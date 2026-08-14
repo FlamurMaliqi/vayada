@@ -47,6 +47,14 @@ test("fresh hotel and creator onboarding reaches every next-stack handoff and sa
   let primaryError: unknown;
 
   try {
+    const creatorContext = await browser.newContext();
+    let foreignAccessToken: string;
+    try {
+      foreignAccessToken = await runCreatorFlow(creatorContext, request, environment, users);
+    } finally {
+      await creatorContext.close();
+    }
+
     const hotelContext = await browser.newContext();
     try {
       hotel = await runHotelFlow(
@@ -55,6 +63,7 @@ test("fresh hotel and creator onboarding reaches every next-stack handoff and sa
         environment,
         users,
         bookings,
+        foreignAccessToken,
         testInfo,
         (resource) => {
           hotel = resource;
@@ -62,13 +71,6 @@ test("fresh hotel and creator onboarding reaches every next-stack handoff and sa
       );
     } finally {
       await hotelContext.close();
-    }
-
-    const creatorContext = await browser.newContext();
-    try {
-      await runCreatorFlow(creatorContext, request, environment, users);
-    } finally {
-      await creatorContext.close();
     }
   } catch (error) {
     primaryError = error;
@@ -93,6 +95,7 @@ async function runHotelFlow(
   environment: SmokeEnvironment,
   users: SyntheticUser[],
   bookings: BookingResource[],
+  foreignAccessToken: string,
   testInfo: TestInfo,
   registerHotel: (resource: HotelResource) => void,
 ): Promise<HotelResource> {
@@ -325,6 +328,7 @@ async function runHotelFlow(
     accessToken: session.accessToken,
     bookings,
     environment,
+    foreignAccessToken,
     page,
     propertyId: setup.propertyId,
     request,
@@ -352,7 +356,7 @@ async function runCreatorFlow(
   request: APIRequestContext,
   environment: SmokeEnvironment,
   users: SyntheticUser[],
-): Promise<void> {
+): Promise<string> {
   const page = await context.newPage();
   const user = await test.step("create a unique verified creator identity", async () => {
     const created = await createSyntheticUser(request, environment, "creator");
@@ -360,7 +364,7 @@ async function runCreatorFlow(
     return created;
   });
 
-  await test.step("complete creator onboarding, submit review and enter Marketplace", async () => {
+  return test.step("complete creator onboarding, submit review and enter Marketplace", async () => {
     await login(page, user, environment.password);
     await acceptNecessaryCookies(page);
     await page.getByRole("radio", { name: /i’m a creator/i }).click();
@@ -395,6 +399,7 @@ async function runCreatorFlow(
     await page.getByRole("button", { name: "Open marketplace" }).click();
     await expect(page).toHaveURL(/\/marketplace$/);
     await expect(page.getByRole("heading", { name: "Marketplace", exact: true })).toBeVisible();
+    return session.accessToken;
   });
 }
 

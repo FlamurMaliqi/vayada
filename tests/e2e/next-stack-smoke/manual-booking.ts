@@ -22,6 +22,7 @@ type Args = {
   api: JsonApi;
   bookings: BookingResource[];
   environment: SmokeEnvironment;
+  foreignAccessToken: string;
   page: Page;
   propertyId: string;
   request: APIRequestContext;
@@ -137,6 +138,15 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
     expect(replayed.outcome).toBe("replayed");
     expect(replayed.guestBookingId).toBe(bookingId);
     expect(replayed.paymentEvidenceId).toBe(created.result.paymentEvidenceId);
+    const payments = await api.json<Record<string, unknown>>(
+      "GET",
+      `/api/finance/properties/${propertyId}/reconciliation/payments?limit=100`,
+    );
+    expect(
+      arrayField(payments, "items")
+        .map(record)
+        .filter((item) => item.subjectId === replayed.paymentEvidenceId),
+    ).toHaveLength(1);
 
     const list = await api.json<Record<string, unknown>>(
       "GET",
@@ -161,8 +171,19 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
       409,
       "room_unavailable",
     );
+    const firstStay = record(arrayField(created.body, "stays")[0]);
     await expectFailure(
-      post(request, accessToken, randomUUID(), fresh(created.body)),
+      post(
+        request,
+        accessToken,
+        propertyId,
+        fresh(created.body, { stays: [firstStay, { ...firstStay, position: 2 }] }),
+      ),
+      409,
+      "room_unavailable",
+    );
+    await expectFailure(
+      post(request, args.foreignAccessToken, propertyId, fresh(created.body)),
       403,
       "forbidden",
     );
@@ -256,18 +277,23 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
         bookings.push(manualResource(result, email, slug));
         assertCreatedResult(result, status);
 
+        const bookingId = stringField(result, "guestBookingId");
         const detail = recordField(
-            await api.json(
-              "GET",
-              `/api/pms/properties/${propertyId}/reservations/${stringField(result, "guestBookingId")}`,
-            ),
+            await api.json("GET", `/api/pms/properties/${propertyId}/reservations/${bookingId}`),
             "item",
           ),
           payment = recordField(detail, "payment");
         expect(payment.expectedMethod).toBe(expectedMethod);
         expect(payment.status).toBe(status);
+        await page.goto(`${NEXT_STACK_ORIGINS.pms}/bookings/${bookingId}`);
+        await expect(page.getByText(methodLabel(expectedMethod), { exact: true })).toBeVisible();
       }
     }
+    const payments = await api.json<Record<string, unknown>>(
+      "GET",
+      `/api/finance/properties/${propertyId}/reconciliation/payments?limit=100`,
+    );
+    expect(payments.total).toBe(6);
   });
 }
 
@@ -335,4 +361,8 @@ function futureDate(offset: number): string {
   date.setUTCHours(0, 0, 0, 0);
   date.setUTCDate(date.getUTCDate() + offset);
   return date.toISOString().slice(0, 10);
+}
+
+function methodLabel(value: (typeof METHODS)[number]): string {
+  return value.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
 }
