@@ -39,10 +39,7 @@ const SOURCE_KINDS = [
   "non_refundable",
 ] as const satisfies readonly PmsRecurringPricingSourceKind[];
 
-/**
- * Unmounted ONB-16 adapter. Composition remains deferred until the reviewed
- * PMS onboarding cutover supplies the cross-domain currency guard.
- */
+/** Target recurring-pricing owner adapter. */
 export async function registerPmsRecurringPricingRoutes(
   app: FastifyInstance,
   options: PmsRecurringPricingRoutesOptions,

@@ -182,6 +182,15 @@ import {
   registerPmsRoomPublicationRoutes,
   type PmsRoomPublicationRoutesOptions,
 } from "./routes/pmsRoomPublication.js";
+import { registerPmsPricingRoutes, type PmsPricingRoutesOptions } from "./routes/pmsPricing.js";
+import {
+  registerPmsRecurringPricingRoutes,
+  type PmsRecurringPricingRoutesOptions,
+} from "./routes/pmsRecurringPricing.js";
+import {
+  registerPmsMandatoryChargeConfirmationRoutes,
+  type PmsMandatoryChargeConfirmationRoutesOptions,
+} from "./routes/pmsMandatoryChargeConfirmation.js";
 import {
   registerPmsModuleActivationRoutes,
   type PmsModuleActivationRepository,
@@ -227,6 +236,9 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   propertyPlanReadRepository?: PropertyPlanReadRepository;
   bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
   pmsRoomPublication?: PmsRoomPublicationRoutesOptions;
+  pmsPricing?: PmsPricingRoutesOptions;
+  pmsRecurringPricing?: PmsRecurringPricingRoutesOptions;
+  pmsMandatoryChargeConfirmation?: PmsMandatoryChargeConfirmationRoutesOptions;
   bookingDashboardMetricsReadPort?: BookingRoutesOptions["dashboardMetricsReadPort"];
   bookingAddonItemsRepository?: BookingAddonItemsRepository;
   bookingPromoCodesRepository?: BookingPromoCodesRepository;
@@ -584,6 +596,21 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPmsRoomPublicationRoutes, {
       prefix: "/api/pms",
       ...options.pmsRoomPublication,
+    });
+  }
+  if (options.pmsPricing) {
+    app.register(registerPmsPricingRoutes, { prefix: "/api/pms", ...options.pmsPricing });
+  }
+  if (options.pmsRecurringPricing) {
+    app.register(registerPmsRecurringPricingRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsRecurringPricing,
+    });
+  }
+  if (options.pmsMandatoryChargeConfirmation) {
+    app.register(registerPmsMandatoryChargeConfirmationRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsMandatoryChargeConfirmation,
     });
   }
   app.register(registerPmsManualBookingCapabilityRoutes, { prefix: "/api/pms" });
