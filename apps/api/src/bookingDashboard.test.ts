@@ -22,6 +22,7 @@ import {
 } from "./platform/bookingDashboard.js";
 import type {
   BookingDashboardSparklinesResponse,
+  BookingDashboardPageViewsResponse,
   BookingDashboardSourceMixResponse,
   BookingDashboardStatsResponse,
 } from "./routes/bookingDashboard.js";
@@ -143,6 +144,34 @@ describe("Booking dashboard routes", () => {
     expect(sparklines.statusCode).toBe(200);
     expect(sparklines.body.contractVersion).toBe("booking-dashboard.v1");
     expect(sparklines.body.sparklines.points).toHaveLength(7);
+  });
+
+  it("returns the property-local page-view timeline and zero-filled empty days", async () => {
+    app = buildDashboardApp();
+    const response = await injectJson<BookingDashboardPageViewsResponse>(app, {
+      method: "GET",
+      url: "/api/booking/properties/prop_alpenrose/dashboard/page-views",
+      headers: { authorization: "Bearer valid-token" },
+      query: { windowStart: "2026-06-08", windowEnd: "2026-06-14" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.pageViews.timeZone).toBe("Europe/Vienna");
+    expect(response.body.pageViews.buckets).toHaveLength(7);
+    expect(response.body.pageViews.buckets[1]).toEqual({ date: "2026-06-09", count: 0 });
+  });
+
+  it("denies page-view reads outside the caller's property scope", async () => {
+    app = buildDashboardApp({ linkedPropertyId: "prop_other" });
+    const response = await injectJson<{ code: string }>(app, {
+      method: "GET",
+      url: "/api/booking/properties/prop_alpenrose/dashboard/page-views",
+      headers: { authorization: "Bearer valid-token" },
+      query: { windowStart: "2026-06-08", windowEnd: "2026-06-14" },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.body.code).toBe("missing_resource_access");
   });
 
   it("closes the dashboard read port on app shutdown", async () => {

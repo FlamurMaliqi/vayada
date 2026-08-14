@@ -254,6 +254,7 @@ export type BookingPropertySettingsReadModel = {
   address?: string | null;
   city?: string | null;
   country?: string | null;
+  timeZone?: string | null;
   instagram?: string | null;
   facebook?: string | null;
   tiktok?: string | null;
@@ -892,6 +893,7 @@ type TargetBookingPropertySettingsRow = TargetBookingSettingsRow & {
   address: string | null;
   city: string | null;
   country: string | null;
+  timezone: string | null;
   instagram: string | null;
   facebook: string | null;
   tiktok: string | null;
@@ -1047,6 +1049,7 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
     ) AS address,
     location.city,
     location.country_code AS country,
+    location.timezone,
     to_char(policy.check_in_time, 'HH24:MI') AS check_in_time,
     to_char(policy.check_out_time, 'HH24:MI') AS check_out_time,
     policy.terms_and_conditions,
@@ -1601,6 +1604,7 @@ function toTargetPropertySettings(
     address: row.address,
     city: row.city,
     country: row.country,
+    timeZone: row.timezone,
     instagram: row.instagram,
     facebook: row.facebook,
     tiktok: row.tiktok,
@@ -3539,6 +3543,7 @@ export function toPropertySettingsResponse(
     address: settings.address ?? "",
     city: settings.city ?? "",
     country: settings.country ?? "",
+    time_zone: settings.timeZone ?? "",
     instagram: settings.instagram ?? "",
     facebook: settings.facebook ?? "",
     tiktok: settings.tiktok ?? "",
