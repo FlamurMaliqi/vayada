@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const migration = await readFile(
-  join(import.meta.dirname, "../migrations/0085_booking_admin_affiliate_management.sql"),
+  join(import.meta.dirname, "../migrations/0087_booking_admin_affiliate_management.sql"),
   "utf8",
 );
 

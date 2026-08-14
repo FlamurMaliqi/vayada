@@ -1825,6 +1825,11 @@ describe("Booking Web public bootstrap parity", () => {
     expect(
       optionalPhone.calls.find((text) => text.includes("SELECT * FROM booking_row")),
     ).not.toContain("pms.inventory_days");
+    const lifecycleGuard = optionalPhone.calls.find((text) =>
+      text.includes("FROM hotel_catalog.property_slugs"),
+    );
+    expect(lifecycleGuard).toContain("p.lifecycle_status = 'active'");
+    expect(lifecycleGuard).toContain("FOR SHARE OF p");
     expect(
       optionalPhone.calls.find((text) => text.includes("FROM booking.quote_sessions")),
     ).toContain('requested_check_in::text AS "requestedCheckIn"');
