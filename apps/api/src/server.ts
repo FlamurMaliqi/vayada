@@ -3,7 +3,10 @@ import {
   createPgEntitlementRepository,
   createPgRolePermissionRepository,
 } from "@vayada/backend-authorization";
-import { createBookingDesignReadinessProvider } from "@vayada/domain-booking";
+import {
+  createBookingDesignReadinessProvider,
+  createBookingMandatoryChargeConfirmationEvidenceAdapter,
+} from "@vayada/domain-booking";
 import { createHotelMediaResolutionPort } from "@vayada/domain-hotels";
 import pg from "pg";
 
@@ -14,6 +17,7 @@ import { createPgBookingDesignRepository } from "./domains/bookingDesignReposito
 import { createBookingGuestPolicyCatalogCurrentOwnerEvidenceAdapter } from "./domains/bookingGuestPolicyCatalogCurrentOwnerEvidence.js";
 import { createBookingGuestPolicyCurrentOwnerEvidenceAdapter } from "./domains/bookingGuestPolicyCurrentOwnerEvidence.js";
 import { createPgBookingGuestPolicyRepository } from "./domains/bookingGuestPolicyRepository.js";
+import { createBookingGuestPolicyProductionApplication } from "./domains/bookingGuestPolicyProductionRuntime.js";
 import { createPgBookingGuestPolicyScopeAuthorizationPort } from "./domains/bookingGuestPolicyScopeAuthorization.js";
 import { createPgHotelCatalogCurrentOwnerEvidencePorts } from "./domains/hotelCatalogCurrentOwnerEvidence.js";
 import { createPgHotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Repository.js";
@@ -607,6 +611,7 @@ const propertySetupPmsRuntime = (() => {
   return {
     roomFacts,
     recurringPricing,
+    mandatoryCharges,
     provider: createPropertySetupPmsStateProvider({
       owner,
       pricing: pmsPricingReadModel,
@@ -667,6 +672,21 @@ const bookingGuestPolicyCurrentOwnerEvidence = createBookingGuestPolicyCurrentOw
   pms: propertySetupPmsRuntime.bookingGuestPolicyEvidence,
   catalog: bookingGuestPolicyCatalogCurrentOwnerEvidence,
 });
+const bookingGuestPolicyApplication = pmsRoomPublicationRuntime
+  ? createBookingGuestPolicyProductionApplication({
+      repository: bookingGuestPolicyRepository,
+      catalogPool: propertySetupOwnerPool,
+      ownerEvidence: {
+        rooms: pmsRoomPublicationRuntime.readModel,
+        pricing: pmsPricingReadModel,
+        recurringPricing: propertySetupPmsRuntime.recurringPricing,
+        mandatoryChargeConfirmation: createBookingMandatoryChargeConfirmationEvidenceAdapter(
+          propertySetupPmsRuntime.mandatoryCharges,
+        ),
+      },
+      currentOwnerEvidence: bookingGuestPolicyCurrentOwnerEvidence,
+    })
+  : undefined;
 
 const propertySetupRouteStateReadPort = createPropertySetupRouteStateReadPort({
   draftRepository: propertySetupDraftRepository,
@@ -880,6 +900,9 @@ const app = buildApp({
       }
     : undefined,
   bookingReservationsRepository,
+  bookingGuestPolicy: bookingGuestPolicyApplication
+    ? { application: bookingGuestPolicyApplication }
+    : undefined,
   bookingChangeRequestRepository: bookingWebCheckoutAdapter,
   bookingAddonItemsRepository,
   bookingPromoCodesRepository,
