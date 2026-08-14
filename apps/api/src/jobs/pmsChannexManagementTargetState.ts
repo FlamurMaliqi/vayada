@@ -40,27 +40,33 @@ export async function applyPmsChannexManagementProgress(
   if (connectionStatus === "connected") {
     await client.query(
       `INSERT INTO pms.channel_connections (
-         property_id, provider, connection_status, external_property_id, connection_metadata
-       ) VALUES ($1::uuid, 'channex', 'connected', $2, jsonb_build_object('connectedChannels', $3::jsonb))
+         property_id, provider, connection_status, external_property_id
+       ) VALUES ($1::uuid, 'channex', 'connected', $2)
        ON CONFLICT (property_id, provider) DO UPDATE SET connection_status = 'connected',
          external_property_id = COALESCE(EXCLUDED.external_property_id, pms.channel_connections.external_property_id),
-         connection_metadata = pms.channel_connections.connection_metadata || EXCLUDED.connection_metadata,
-         updated_at = $4::timestamptz`,
-      [
-        job.propertyId,
-        result.externalPropertyId ?? null,
-        JSON.stringify(result.channels ?? []),
-        now.toISOString(),
-      ],
+         updated_at = $3::timestamptz`,
+      [job.propertyId, result.externalPropertyId ?? null, now.toISOString()],
     );
   }
   if (connectionStatus === "disconnected") {
     await client.query(
       `UPDATE pms.channel_connections SET connection_status = 'disconnected',
-         external_property_id = NULL, updated_at = $2::timestamptz
+         external_property_id = NULL, messaging_app_installed = FALSE,
+         connection_metadata = connection_metadata - 'connectedChannels',
+         updated_at = $2::timestamptz
        WHERE property_id = $1::uuid AND provider = 'channex'`,
       [job.propertyId, now.toISOString()],
     );
+    for (const table of ["channel_room_type_mappings", "channel_rate_plan_mappings"]) {
+      await client.query(
+        `UPDATE pms.${table} SET status = 'disabled', updated_at = $2::timestamptz
+         WHERE property_id = $1::uuid AND connection_id = (
+           SELECT id FROM pms.channel_connections
+           WHERE property_id = $1::uuid AND provider = 'channex'
+         )`,
+        [job.propertyId, now.toISOString()],
+      );
+    }
   }
   if (result.roomTypeMappings?.length || result.ratePlanMappings?.length) {
     await applyMappings(client, job, result);
@@ -72,7 +78,7 @@ export async function applyPmsChannexManagementProgress(
       [job.propertyId, now.toISOString()],
     );
   }
-  if (result.channels) {
+  if (result.channels !== undefined) {
     await client.query(
       `UPDATE pms.channel_connections SET
          connection_metadata = connection_metadata || jsonb_build_object('connectedChannels', $2::jsonb),

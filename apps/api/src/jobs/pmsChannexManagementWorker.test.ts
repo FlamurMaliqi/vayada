@@ -4,6 +4,7 @@ import {
   channexManagementFailureIsRetryable,
   runPmsChannexManagementWorkerOnce,
   type ChannexManagementJob,
+  type ChannexManagementProvider,
   type ChannexManagementWorkerStore,
 } from "./pmsChannexManagementWorker.js";
 
@@ -12,9 +13,11 @@ const now = new Date("2026-08-13T10:00:00.000Z");
 describe("PMS Channex management worker", () => {
   it("claims provider work and persists success", async () => {
     const harness = store(job());
-    const provider = {
-      execute: vi.fn().mockResolvedValue({ ok: true, providerRequestId: "req-1" }),
-    };
+    const execute = vi.fn<ChannexManagementProvider["execute"]>(async (_job, input) => {
+      await input?.onProgress?.();
+      return { ok: true as const, providerRequestId: "req-1" };
+    });
+    const provider = { execute };
 
     await expect(
       runPmsChannexManagementWorkerOnce({
@@ -24,7 +27,11 @@ describe("PMS Channex management worker", () => {
         now,
       }),
     ).resolves.toEqual({ outcome: "succeeded", jobId: "job-1", operationType: "enable" });
-    expect(provider.execute).toHaveBeenCalledWith(job());
+    expect(execute).toHaveBeenCalledWith(
+      job(),
+      expect.objectContaining({ onProgress: expect.any(Function) }),
+    );
+    expect(harness.heartbeat).toHaveBeenCalledWith(job(), { workerId: "worker-1" });
     expect(harness.succeed).toHaveBeenCalledWith(
       job(),
       { ok: true, providerRequestId: "req-1" },
@@ -122,6 +129,36 @@ describe("PMS Channex management worker", () => {
       }),
     ).toBe(false);
   });
+
+  it("schedules retries from provider completion time", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const harness = store(job());
+      harness.fail.mockResolvedValue("retry_scheduled");
+      await runPmsChannexManagementWorkerOnce({
+        store: harness.port,
+        provider: {
+          execute: vi.fn(async () => {
+            vi.setSystemTime(new Date(now.getTime() + 30_000));
+            return { ok: false, code: "timeout", message: "timed out" } as const;
+          }),
+        },
+        workerId: "worker-1",
+      });
+
+      expect(harness.fail).toHaveBeenCalledWith(
+        job(),
+        expect.objectContaining({ code: "timeout" }),
+        expect.objectContaining({
+          now: new Date(now.getTime() + 30_000),
+          retryAt: new Date(now.getTime() + 31_000),
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function job(): ChannexManagementJob {
@@ -138,9 +175,11 @@ function job(): ChannexManagementJob {
 function store(claimed: ChannexManagementJob | null) {
   const succeed = vi.fn<ChannexManagementWorkerStore["succeed"]>();
   const fail = vi.fn<ChannexManagementWorkerStore["fail"]>();
+  const heartbeat = vi.fn<ChannexManagementWorkerStore["heartbeat"]>();
   return {
     succeed,
     fail,
-    port: { claim: vi.fn().mockResolvedValue(claimed), succeed, fail },
+    heartbeat,
+    port: { claim: vi.fn().mockResolvedValue(claimed), heartbeat, succeed, fail },
   };
 }

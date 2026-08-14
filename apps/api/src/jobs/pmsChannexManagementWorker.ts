@@ -44,11 +44,13 @@ export type ChannexManagementProviderFailure = {
 export type ChannexManagementProvider = {
   execute(
     job: ChannexManagementJob,
+    input?: { onProgress?: () => Promise<void> },
   ): Promise<ChannexManagementProviderSuccess | ChannexManagementProviderFailure>;
 };
 
 export type ChannexManagementWorkerStore = {
   claim(input: { workerId: string; now: Date }): Promise<ChannexManagementJob | null>;
+  heartbeat(job: ChannexManagementJob, input: { workerId: string }): Promise<void>;
   succeed(
     job: ChannexManagementJob,
     result: ChannexManagementProviderSuccess,
@@ -78,13 +80,16 @@ export async function runPmsChannexManagementWorkerOnce(input: {
   workerId: string;
   now?: Date;
 }): Promise<ChannexManagementWorkerResult> {
-  const now = input.now ?? new Date();
+  const clock = input.now ? () => input.now! : () => new Date();
+  const now = clock();
   const job = await input.store.claim({ workerId: input.workerId, now });
   if (!job) return { outcome: "idle" };
 
   let result: ChannexManagementProviderSuccess | ChannexManagementProviderFailure;
   try {
-    result = await input.provider.execute(job);
+    result = await input.provider.execute(job, {
+      onProgress: () => input.store.heartbeat(job, { workerId: input.workerId }),
+    });
   } catch (error) {
     result = {
       ok: false,
@@ -93,18 +98,19 @@ export async function runPmsChannexManagementWorkerOnce(input: {
     };
   }
   if (result.ok) {
-    await input.store.succeed(job, result, { workerId: input.workerId, now });
+    await input.store.succeed(job, result, { workerId: input.workerId, now: clock() });
     return { outcome: "succeeded", jobId: job.jobId, operationType: job.input.operationType };
   }
 
   const retryable = channexManagementFailureIsRetryable(result);
+  const completedAt = clock();
   const retryAt =
     retryable && job.attemptNumber < job.maxAttempts
-      ? new Date(now.getTime() + retryDelayMs(job.attemptNumber))
+      ? new Date(completedAt.getTime() + retryDelayMs(job.attemptNumber))
       : null;
   const outcome = await input.store.fail(job, result, {
     workerId: input.workerId,
-    now,
+    now: completedAt,
     retryable,
     retryAt,
   });

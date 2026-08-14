@@ -54,7 +54,8 @@ export function createPgPmsChannexManagementWorkerStore(config: {
   const pool =
     config.pool ?? new pg.Pool({ connectionString: required(config.connectionString), max: 5 });
   return {
-    claim: (input) => claim(pool, input),
+    claim: (input) => claim(pool, config.targetState, input),
+    heartbeat: (job, input) => heartbeat(pool, job, input),
     succeed: (job, result, input) => complete(pool, config.targetState, job, result, input),
     fail: (job, failure, input) => fail(pool, config.targetState, job, failure, input),
     async close() {
@@ -65,81 +66,83 @@ export function createPgPmsChannexManagementWorkerStore(config: {
 
 async function claim(
   pool: Pool,
+  targetState: ChannexManagementTargetStatePort,
   input: { workerId: string; now: Date },
 ): Promise<ChannexManagementJob | null> {
   return transaction(pool, async (client) => {
-    const staleAt = new Date(input.now.getTime() - LEASE_MS);
     const result = await client.query<JobRow>(
       `SELECT id::text AS "jobId", property_id::text AS "propertyId",
          correlation_id AS "correlationId", status, attempts_count AS "attemptsCount",
          max_attempts AS "maxAttempts", payload
        FROM platform.jobs
        WHERE queue_name = $1 AND (
-         (status = 'pending' AND run_after <= $2::timestamptz)
-         OR (status = 'running' AND locked_at <= $3::timestamptz)
+         (status = 'pending' AND run_after <= now())
+         OR (status = 'running' AND locked_at <= now() - ($2::bigint * interval '1 millisecond'))
        )
        ORDER BY priority DESC, run_after, created_at
        FOR UPDATE SKIP LOCKED LIMIT 1`,
-      [PMS_CHANNEX_MANAGEMENT_QUEUE, input.now.toISOString(), staleAt.toISOString()],
+      [PMS_CHANNEX_MANAGEMENT_QUEUE, LEASE_MS],
     );
     const row = result.rows[0];
     if (!row) return null;
     if (row.status === "running" && row.attemptsCount > 0) {
       await client.query(
-        `UPDATE platform.job_attempts SET status = 'timed_out', finished_at = $3::timestamptz,
+        `UPDATE platform.job_attempts SET status = 'timed_out', finished_at = now(),
            error_type = 'worker_lease_expired', error_message = 'Channex worker lease expired',
            error_metadata = error_metadata || '{"retryable":true}'::jsonb
          WHERE job_id = $1::uuid AND attempt_number = $2 AND status = 'running'`,
-        [row.jobId, row.attemptsCount, input.now.toISOString()],
+        [row.jobId, row.attemptsCount],
       );
     }
     const attemptNumber = row.attemptsCount + 1;
     if (attemptNumber > row.maxAttempts) {
-      const exhaustedJob: ChannexManagementJob = {
-        jobId: row.jobId,
-        propertyId: row.propertyId,
-        correlationId: row.correlationId,
-        attemptNumber: row.attemptsCount,
-        maxAttempts: row.maxAttempts,
-        input: row.payload,
+      const expiredJob = toJob(row, row.attemptsCount);
+      const failure: ChannexManagementProviderFailure = {
+        ok: false,
+        code: "provider_unavailable",
+        message: "Channex worker lease expired after the final attempt",
       };
+      await targetState.fail(client, expiredJob, failure, { now: input.now, retryAt: null });
       await client.query(
-        `UPDATE platform.jobs SET status = 'dead_lettered', finished_at = $2::timestamptz,
-           locked_at = NULL, locked_by = NULL, updated_at = $2::timestamptz,
-           job_metadata = job_metadata || '{"lastErrorCode":"max_attempts_exhausted"}'::jsonb
+        `UPDATE platform.jobs SET status = 'dead_lettered', finished_at = now(),
+           locked_at = NULL, locked_by = NULL, updated_at = now(),
+           job_metadata = job_metadata || jsonb_build_object(
+             'lastErrorCode', $2::text, 'lastErrorMessage', $3::text)
          WHERE id = $1::uuid`,
-        [row.jobId, input.now.toISOString()],
+        [row.jobId, failure.code, failure.message],
       );
-      await insertDeadLetter(client, exhaustedJob, {
+      await insertDeadLetter(client, expiredJob, {
         reasonCode: "max_attempts_exhausted",
-        failureSummary: "Channex job exceeded max attempts",
+        failureSummary: failure.message,
         replayEligible: true,
       });
-      await finishIdempotency(client, exhaustedJob, input.now, "failed");
-      await insertOutcomeAudit(client, exhaustedJob, input.now, "failed");
+      await finishIdempotency(client, expiredJob, input.now, "failed");
+      await insertOutcomeAudit(client, expiredJob, input.now, "failed");
       return null;
     }
     await client.query(
       `UPDATE platform.jobs SET status = 'running', attempts_count = $3,
-         locked_at = $4::timestamptz, locked_by = $2, updated_at = $4::timestamptz
+         locked_at = now(), locked_by = $2, updated_at = now()
        WHERE id = $1::uuid`,
-      [row.jobId, input.workerId, attemptNumber, input.now.toISOString()],
+      [row.jobId, input.workerId, attemptNumber],
     );
     await client.query(
       `INSERT INTO platform.job_attempts (
          job_id, attempt_number, status, worker_id, started_at, error_metadata
-       ) VALUES ($1::uuid, $2, 'running', $3, $4::timestamptz, '{"provider":"channex"}'::jsonb)`,
-      [row.jobId, attemptNumber, input.workerId, input.now.toISOString()],
+       ) VALUES ($1::uuid, $2, 'running', $3, now(), '{"provider":"channex"}'::jsonb)`,
+      [row.jobId, attemptNumber, input.workerId],
     );
-    return {
-      jobId: row.jobId,
-      propertyId: row.propertyId,
-      correlationId: row.correlationId,
-      attemptNumber,
-      maxAttempts: row.maxAttempts,
-      input: row.payload,
-    };
+    return toJob(row, attemptNumber);
   });
+}
+
+async function heartbeat(pool: Pool, job: ChannexManagementJob, input: { workerId: string }) {
+  const client = await pool.connect();
+  try {
+    await assertLease(client, job, input);
+  } finally {
+    client.release();
+  }
 }
 
 async function complete(
@@ -150,8 +153,9 @@ async function complete(
   input: { workerId: string; now: Date },
 ): Promise<void> {
   await transaction(pool, async (client) => {
+    await assertLease(client, job, input);
     await targetState.succeed(client, job, result, input.now);
-    await client.query(
+    const attemptUpdate = await client.query(
       `UPDATE platform.job_attempts SET status = 'succeeded', finished_at = $4::timestamptz,
          error_metadata = error_metadata || jsonb_build_object('providerRequestId', $5::text)
        WHERE job_id = $1::uuid AND attempt_number = $2 AND worker_id = $3 AND status = 'running'`,
@@ -163,12 +167,19 @@ async function complete(
         result.providerRequestId,
       ],
     );
+    assertLeaseUpdated(attemptUpdate);
     const jobUpdate = await client.query(
-      `UPDATE platform.jobs SET status = 'succeeded', finished_at = $3::timestamptz,
-         locked_at = NULL, locked_by = NULL, updated_at = $3::timestamptz,
-         job_metadata = job_metadata || jsonb_build_object('providerRequestId', $4::text)
-       WHERE id = $1::uuid AND locked_by = $2`,
-      [job.jobId, input.workerId, input.now.toISOString(), result.providerRequestId],
+      `UPDATE platform.jobs SET status = 'succeeded', finished_at = $4::timestamptz,
+         locked_at = NULL, locked_by = NULL, updated_at = $4::timestamptz,
+         job_metadata = job_metadata || jsonb_build_object('providerRequestId', $5::text)
+       WHERE id = $1::uuid AND locked_by = $2 AND attempts_count = $3 AND status = 'running'`,
+      [
+        job.jobId,
+        input.workerId,
+        job.attemptNumber,
+        input.now.toISOString(),
+        result.providerRequestId,
+      ],
     );
     assertLeaseUpdated(jobUpdate);
     await finishIdempotency(client, job, input.now, "completed");
@@ -184,7 +195,8 @@ async function fail(
   input: { workerId: string; now: Date; retryable: boolean; retryAt: Date | null },
 ): Promise<"retry_scheduled" | "dead_lettered"> {
   return transaction(pool, async (client) => {
-    await client.query(
+    await assertLease(client, job, input);
+    const attemptUpdate = await client.query(
       `UPDATE platform.job_attempts SET status = 'failed', finished_at = $4::timestamptz,
          error_type = $5, error_message = $6, retry_after = $7::timestamptz,
          error_metadata = error_metadata || jsonb_build_object(
@@ -204,17 +216,19 @@ async function fail(
         failure.providerRequestId ?? null,
       ],
     );
+    assertLeaseUpdated(attemptUpdate);
     await targetState.fail(client, job, failure, input);
     if (input.retryAt) {
       const jobUpdate = await client.query(
-        `UPDATE platform.jobs SET status = 'pending', run_after = $3::timestamptz,
-           locked_at = NULL, locked_by = NULL, updated_at = $4::timestamptz,
+        `UPDATE platform.jobs SET status = 'pending', run_after = $4::timestamptz,
+           locked_at = NULL, locked_by = NULL, updated_at = $5::timestamptz,
            job_metadata = job_metadata || jsonb_build_object(
-             'lastErrorCode', $5::text, 'lastErrorMessage', $6::text)
-         WHERE id = $1::uuid AND locked_by = $2`,
+             'lastErrorCode', $6::text, 'lastErrorMessage', $7::text)
+         WHERE id = $1::uuid AND locked_by = $2 AND attempts_count = $3 AND status = 'running'`,
         [
           job.jobId,
           input.workerId,
+          job.attemptNumber,
           input.retryAt.toISOString(),
           input.now.toISOString(),
           failure.code,
@@ -225,14 +239,15 @@ async function fail(
       return "retry_scheduled";
     }
     const jobUpdate = await client.query(
-      `UPDATE platform.jobs SET status = 'dead_lettered', finished_at = $3::timestamptz,
-         locked_at = NULL, locked_by = NULL, updated_at = $3::timestamptz,
+      `UPDATE platform.jobs SET status = 'dead_lettered', finished_at = $4::timestamptz,
+         locked_at = NULL, locked_by = NULL, updated_at = $4::timestamptz,
          job_metadata = job_metadata || jsonb_build_object(
-           'lastErrorCode', $4::text, 'lastErrorMessage', $5::text)
-       WHERE id = $1::uuid AND locked_by = $2`,
+           'lastErrorCode', $5::text, 'lastErrorMessage', $6::text)
+       WHERE id = $1::uuid AND locked_by = $2 AND attempts_count = $3 AND status = 'running'`,
       [
         job.jobId,
         input.workerId,
+        job.attemptNumber,
         input.now.toISOString(),
         failure.code,
         failure.message.slice(0, 500),
@@ -248,6 +263,17 @@ async function fail(
     await insertOutcomeAudit(client, job, input.now, "failed", failure.providerRequestId);
     return "dead_lettered";
   });
+}
+
+async function assertLease(client: Client, job: ChannexManagementJob, input: { workerId: string }) {
+  const result = await client.query(
+    `UPDATE platform.jobs SET locked_at = now(), updated_at = now()
+     WHERE id = $1::uuid AND locked_by = $2 AND status = 'running'
+       AND attempts_count = $3
+     RETURNING id`,
+    [job.jobId, input.workerId, job.attemptNumber],
+  );
+  if (result.rowCount !== 1) throw new Error(`Lost Channex job lease ${job.jobId}`);
 }
 
 async function insertDeadLetter(
@@ -279,6 +305,17 @@ async function insertDeadLetter(
       input.replayEligible,
     ],
   );
+}
+
+function toJob(row: JobRow, attemptNumber: number): ChannexManagementJob {
+  return {
+    jobId: row.jobId,
+    propertyId: row.propertyId,
+    correlationId: row.correlationId,
+    attemptNumber,
+    maxAttempts: row.maxAttempts,
+    input: row.payload,
+  };
 }
 
 async function finishIdempotency(

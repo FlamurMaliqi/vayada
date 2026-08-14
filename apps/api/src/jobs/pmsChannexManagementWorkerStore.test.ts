@@ -89,6 +89,12 @@ describe("PMS Channex management worker store", () => {
     expect(harness.db.sql()).toContain("status = 'dead_lettered'");
     expect(harness.db.sql()).toContain("platform.dead_letter_events");
     expect(harness.db.sql()).not.toContain("INSERT INTO platform.job_attempts");
+    expect(harness.state.fail).toHaveBeenCalledWith(
+      expect.objectContaining({ query: expect.any(Function) }),
+      expect.objectContaining({ attemptNumber: 5 }),
+      expect.objectContaining({ code: "provider_unavailable" }),
+      { now, retryAt: null },
+    );
   });
 
   it("rolls back rather than finalizing when the worker lease is lost", async () => {
@@ -100,7 +106,7 @@ describe("PMS Channex management worker store", () => {
         { ok: true, providerRequestId: "provider-1" },
         { workerId: "worker-1", now },
       ),
-    ).rejects.toThrow("Channex job lease lost");
+    ).rejects.toThrow(`Lost Channex job lease ${job.jobId}`);
 
     expect(harness.db.sql()).not.toContain("platform.idempotency_keys");
     expect(harness.db.calls.at(-1)?.text).toBe("ROLLBACK");
@@ -122,6 +128,33 @@ describe("PMS Channex management worker store", () => {
 
     expect(harness.db.releasedWith).toBe(rollbackError);
   });
+
+  it("fences heartbeats by attempt even when the worker id is reused", async () => {
+    const harness = setup({ leaseUpdateRowCount: 0 });
+
+    await expect(harness.store.heartbeat(job, { workerId: "worker-1" })).rejects.toThrow(
+      `Lost Channex job lease ${job.jobId}`,
+    );
+
+    const heartbeat = harness.db.calls.find(({ text }) => text.includes("RETURNING id"));
+    expect(heartbeat?.text).toContain("attempts_count = $3");
+    expect(heartbeat?.text).toContain("locked_at = now()");
+    expect(heartbeat?.values).toEqual([job.jobId, "worker-1", job.attemptNumber]);
+  });
+
+  it("rolls back when the running attempt cannot be finalized", async () => {
+    const harness = setup({ attemptUpdateRowCount: 0 });
+
+    await expect(
+      harness.store.succeed(
+        job,
+        { ok: true, providerRequestId: "provider-1" },
+        { workerId: "worker-1", now },
+      ),
+    ).rejects.toThrow("Channex job lease lost");
+
+    expect(harness.db.calls.at(-1)?.text).toBe("ROLLBACK");
+  });
 });
 
 type FakeJobRow = {
@@ -133,6 +166,8 @@ type FakeJobRow = {
 type FakeDbOptions = Partial<FakeJobRow> & {
   withJob?: boolean;
   jobUpdateRowCount?: number;
+  leaseUpdateRowCount?: number;
+  attemptUpdateRowCount?: number;
   rollbackError?: Error;
 };
 
@@ -183,13 +218,21 @@ class FakeDb {
             },
           ]
         : [];
+    const leaseUpdate = text.includes("UPDATE platform.jobs SET locked_at = now()");
+    const attemptUpdate =
+      text.includes("UPDATE platform.job_attempts SET status = 'succeeded'") ||
+      text.includes("UPDATE platform.job_attempts SET status = 'failed'");
     const guardedJobUpdate =
-      text.includes("UPDATE platform.jobs") && text.includes("locked_by = $2");
-    const rowCount = guardedJobUpdate
-      ? (this.options.jobUpdateRowCount ?? 1)
-      : text.trimStart().startsWith("SELECT")
-        ? rows.length
-        : 1;
+      text.includes("UPDATE platform.jobs SET status") && text.includes("locked_by = $2");
+    const rowCount = leaseUpdate
+      ? (this.options.leaseUpdateRowCount ?? this.options.jobUpdateRowCount ?? 1)
+      : attemptUpdate
+        ? (this.options.attemptUpdateRowCount ?? 1)
+        : guardedJobUpdate
+          ? (this.options.jobUpdateRowCount ?? 1)
+          : text.trimStart().startsWith("SELECT")
+            ? rows.length
+            : 1;
     return { rows: rows as T[], rowCount };
   }
 }

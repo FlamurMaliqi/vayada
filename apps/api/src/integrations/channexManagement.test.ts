@@ -6,6 +6,7 @@ import { channexRequests, createChannexManagementProvider } from "./channexManag
 describe("Channex management provider", () => {
   it("executes a prepared action with provider authentication", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response(204));
+    const onProgress = vi.fn();
     const provider = createChannexManagementProvider({
       apiBaseUrl: "https://staging.channex.io",
       apiKey: "secret",
@@ -13,7 +14,10 @@ describe("Channex management provider", () => {
       fetch: fetcher,
     });
 
-    await expect(provider.execute(job("sync_ari"))).resolves.toMatchObject({ ok: true });
+    await expect(provider.execute(job("sync_ari"), { onProgress })).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(onProgress).toHaveBeenCalledOnce();
     expect(fetcher).toHaveBeenCalledWith(
       "https://staging.channex.io/api/v1/availability",
       expect.objectContaining({
