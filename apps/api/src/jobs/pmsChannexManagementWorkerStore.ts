@@ -16,7 +16,7 @@ export type ChannexManagementQueryClient = {
     text: string,
     values?: unknown[],
   ): Promise<{ rows: T[]; rowCount?: number | null }>;
-  release(): void;
+  release(error?: Error | boolean): void;
 };
 type Client = ChannexManagementQueryClient;
 type Pool = { connect(): Promise<Client>; end(): Promise<void> };
@@ -94,7 +94,31 @@ async function claim(
       );
     }
     const attemptNumber = row.attemptsCount + 1;
-    if (attemptNumber > row.maxAttempts) throw new Error("Channex job exceeded max attempts");
+    if (attemptNumber > row.maxAttempts) {
+      const exhaustedJob: ChannexManagementJob = {
+        jobId: row.jobId,
+        propertyId: row.propertyId,
+        correlationId: row.correlationId,
+        attemptNumber: row.attemptsCount,
+        maxAttempts: row.maxAttempts,
+        input: row.payload,
+      };
+      await client.query(
+        `UPDATE platform.jobs SET status = 'dead_lettered', finished_at = $2::timestamptz,
+           locked_at = NULL, locked_by = NULL, updated_at = $2::timestamptz,
+           job_metadata = job_metadata || '{"lastErrorCode":"max_attempts_exhausted"}'::jsonb
+         WHERE id = $1::uuid`,
+        [row.jobId, input.now.toISOString()],
+      );
+      await insertDeadLetter(client, exhaustedJob, {
+        reasonCode: "max_attempts_exhausted",
+        failureSummary: "Channex job exceeded max attempts",
+        replayEligible: true,
+      });
+      await finishIdempotency(client, exhaustedJob, input.now, "failed");
+      await insertOutcomeAudit(client, exhaustedJob, input.now, "failed");
+      return null;
+    }
     await client.query(
       `UPDATE platform.jobs SET status = 'running', attempts_count = $3,
          locked_at = $4::timestamptz, locked_by = $2, updated_at = $4::timestamptz
@@ -129,7 +153,7 @@ async function complete(
     await targetState.succeed(client, job, result, input.now);
     await client.query(
       `UPDATE platform.job_attempts SET status = 'succeeded', finished_at = $4::timestamptz,
-         error_metadata = error_metadata || jsonb_build_object('providerRequestId', $5)
+         error_metadata = error_metadata || jsonb_build_object('providerRequestId', $5::text)
        WHERE job_id = $1::uuid AND attempt_number = $2 AND worker_id = $3 AND status = 'running'`,
       [
         job.jobId,
@@ -139,13 +163,14 @@ async function complete(
         result.providerRequestId,
       ],
     );
-    await client.query(
+    const jobUpdate = await client.query(
       `UPDATE platform.jobs SET status = 'succeeded', finished_at = $3::timestamptz,
          locked_at = NULL, locked_by = NULL, updated_at = $3::timestamptz,
-         job_metadata = job_metadata || jsonb_build_object('providerRequestId', $4)
+         job_metadata = job_metadata || jsonb_build_object('providerRequestId', $4::text)
        WHERE id = $1::uuid AND locked_by = $2`,
       [job.jobId, input.workerId, input.now.toISOString(), result.providerRequestId],
     );
+    assertLeaseUpdated(jobUpdate);
     await finishIdempotency(client, job, input.now, "completed");
     await insertOutcomeAudit(client, job, input.now, "succeeded", result.providerRequestId);
   });
@@ -163,7 +188,8 @@ async function fail(
       `UPDATE platform.job_attempts SET status = 'failed', finished_at = $4::timestamptz,
          error_type = $5, error_message = $6, retry_after = $7::timestamptz,
          error_metadata = error_metadata || jsonb_build_object(
-           'retryable', $8, 'statusCode', $9, 'providerRequestId', $10)
+           'retryable', $8::boolean, 'statusCode', $9::integer,
+           'providerRequestId', $10::text)
        WHERE job_id = $1::uuid AND attempt_number = $2 AND worker_id = $3 AND status = 'running'`,
       [
         job.jobId,
@@ -180,11 +206,11 @@ async function fail(
     );
     await targetState.fail(client, job, failure, input);
     if (input.retryAt) {
-      await client.query(
+      const jobUpdate = await client.query(
         `UPDATE platform.jobs SET status = 'pending', run_after = $3::timestamptz,
            locked_at = NULL, locked_by = NULL, updated_at = $4::timestamptz,
            job_metadata = job_metadata || jsonb_build_object(
-             'lastErrorCode', $5, 'lastErrorMessage', $6)
+             'lastErrorCode', $5::text, 'lastErrorMessage', $6::text)
          WHERE id = $1::uuid AND locked_by = $2`,
         [
           job.jobId,
@@ -195,13 +221,14 @@ async function fail(
           failure.message.slice(0, 500),
         ],
       );
+      assertLeaseUpdated(jobUpdate);
       return "retry_scheduled";
     }
-    await client.query(
+    const jobUpdate = await client.query(
       `UPDATE platform.jobs SET status = 'dead_lettered', finished_at = $3::timestamptz,
          locked_at = NULL, locked_by = NULL, updated_at = $3::timestamptz,
          job_metadata = job_metadata || jsonb_build_object(
-           'lastErrorCode', $4, 'lastErrorMessage', $5)
+           'lastErrorCode', $4::text, 'lastErrorMessage', $5::text)
        WHERE id = $1::uuid AND locked_by = $2`,
       [
         job.jobId,
@@ -211,33 +238,47 @@ async function fail(
         failure.message.slice(0, 500),
       ],
     );
-    await client.query(
-      `INSERT INTO platform.dead_letter_events (
-         source_kind, job_id, job_attempt_id, tenant_scope, property_id,
-         resource_product, resource_type, resource_id, correlation_id,
-         idempotency_key_hash, reason_code, failure_summary, failure_payload
-       ) SELECT 'job', $1::uuid, attempt.id, 'property', $2::uuid,
-         'pms', 'channex_connection', $2, $3, $4, $5, $6,
-         jsonb_build_object('operationType', $7, 'attemptCount', $8, 'replayEligible', $9)
-       FROM platform.job_attempts attempt
-       WHERE attempt.job_id = $1::uuid AND attempt.attempt_number = $8
-       ON CONFLICT DO NOTHING`,
-      [
-        job.jobId,
-        job.propertyId,
-        job.correlationId,
-        sha256(job.input.idempotencyKey),
-        input.retryable ? "max_attempts_exhausted" : "non_retryable_error",
-        failure.message.slice(0, 500),
-        job.input.operationType,
-        job.attemptNumber,
-        input.retryable,
-      ],
-    );
+    assertLeaseUpdated(jobUpdate);
+    await insertDeadLetter(client, job, {
+      reasonCode: input.retryable ? "max_attempts_exhausted" : "non_retryable_error",
+      failureSummary: failure.message.slice(0, 500),
+      replayEligible: input.retryable,
+    });
     await finishIdempotency(client, job, input.now, "failed");
     await insertOutcomeAudit(client, job, input.now, "failed", failure.providerRequestId);
     return "dead_lettered";
   });
+}
+
+async function insertDeadLetter(
+  client: Client,
+  job: ChannexManagementJob,
+  input: { reasonCode: string; failureSummary: string; replayEligible: boolean },
+) {
+  await client.query(
+    `INSERT INTO platform.dead_letter_events (
+       source_kind, job_id, job_attempt_id, tenant_scope, property_id,
+       resource_product, resource_type, resource_id, correlation_id,
+       idempotency_key_hash, reason_code, failure_summary, failure_payload
+     ) SELECT 'job', $1::uuid, attempt.id, 'property', $2::uuid,
+       'pms', 'channex_connection', $2::text, $3, $4, $5, $6,
+       jsonb_build_object('operationType', $7::text, 'attemptCount', $8::integer,
+         'replayEligible', $9::boolean)
+     FROM platform.job_attempts attempt
+     WHERE attempt.job_id = $1::uuid AND attempt.attempt_number = $8
+     ON CONFLICT DO NOTHING`,
+    [
+      job.jobId,
+      job.propertyId,
+      job.correlationId,
+      sha256(job.input.idempotencyKey),
+      input.reasonCode,
+      input.failureSummary,
+      job.input.operationType,
+      job.attemptNumber,
+      input.replayEligible,
+    ],
+  );
 }
 
 async function finishIdempotency(
@@ -276,9 +317,9 @@ async function insertOutcomeAudit(
        target_resource_product, target_resource_type, target_resource_id, job_id,
        correlation_id, redacted_payload, audit_metadata
      ) VALUES ($1, 'pms', $2, $3::timestamptz, 'property', $4::uuid, 'system',
-       'pms', 'channex_connection', $4, $5::uuid, $6,
-       jsonb_build_object('operationType', $7, 'outcome', $8),
-       jsonb_build_object('providerRequestId', $9))
+       'pms', 'channex_connection', $4::text, $5::uuid, $6,
+       jsonb_build_object('operationType', $7::text, 'outcome', $8::text),
+       jsonb_build_object('providerRequestId', $9::text))
      ON CONFLICT (product, audit_key) DO NOTHING`,
     [
       `channex.management.${outcome}:${job.jobId}`,
@@ -296,17 +337,26 @@ async function insertOutcomeAudit(
 
 async function transaction<T>(pool: Pool, work: (client: Client) => Promise<T>): Promise<T> {
   const client = await pool.connect();
+  let releaseError: Error | undefined;
   try {
     await client.query("BEGIN");
     const result = await work(client);
     await client.query("COMMIT");
     return result;
   } catch (error) {
-    await client.query("ROLLBACK");
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      releaseError = rollbackError instanceof Error ? rollbackError : new Error("Rollback failed");
+    }
     throw error;
   } finally {
-    client.release();
+    client.release(releaseError);
   }
+}
+
+function assertLeaseUpdated(result: { rowCount?: number | null }) {
+  if (result.rowCount !== 1) throw new Error("Channex job lease lost");
 }
 
 function sha256(value: string) {

@@ -17,13 +17,15 @@ const job: ChannexManagementJob = {
 };
 
 describe("PMS Channex management worker store", () => {
-  it("leases work, persists completion, and dead-letters terminal failure", async () => {
-    let harness = setup(true);
+  it("leases work", async () => {
+    const harness = setup({ withJob: true });
     await expect(harness.store.claim({ workerId: "worker-1", now })).resolves.toEqual(job);
     expect(harness.db.sql()).toContain("FOR UPDATE SKIP LOCKED");
     expect(harness.db.sql()).toContain("INSERT INTO platform.job_attempts");
+  });
 
-    harness = setup();
+  it("persists completion", async () => {
+    const harness = setup();
     await harness.store.succeed(
       job,
       { ok: true, providerRequestId: "provider-1" },
@@ -33,8 +35,10 @@ describe("PMS Channex management worker store", () => {
     expect(harness.db.sql()).toMatch(
       /platform\.jobs[\s\S]*platform\.idempotency_keys[\s\S]*platform\.product_audit_events/,
     );
+  });
 
-    harness = setup();
+  it("dead-letters terminal failure", async () => {
+    const harness = setup();
     await expect(
       harness.store.fail(
         job,
@@ -57,11 +61,83 @@ describe("PMS Channex management worker store", () => {
     ).resolves.toBe("retry_scheduled");
     expect(harness.state.fail).toHaveBeenCalled();
     expect(harness.db.sql()).not.toContain("platform.dead_letter_events");
+    expect(harness.db.sql()).not.toContain("platform.idempotency_keys");
+    expect(harness.db.sql()).not.toContain("platform.product_audit_events");
+    expect(harness.db.calls.at(-1)?.text).toBe("COMMIT");
+  });
+
+  it("times out a stale lease before reclaiming it", async () => {
+    const harness = setup({ withJob: true, status: "running", attemptsCount: 1 });
+
+    await expect(harness.store.claim({ workerId: "worker-2", now })).resolves.toMatchObject({
+      attemptNumber: 2,
+    });
+
+    expect(harness.db.sql()).toContain("status = 'timed_out'");
+  });
+
+  it("dead-letters an exhausted stale job instead of blocking the queue", async () => {
+    const harness = setup({
+      withJob: true,
+      status: "running",
+      attemptsCount: 5,
+      maxAttempts: 5,
+    });
+
+    await expect(harness.store.claim({ workerId: "worker-2", now })).resolves.toBeNull();
+
+    expect(harness.db.sql()).toContain("status = 'dead_lettered'");
+    expect(harness.db.sql()).toContain("platform.dead_letter_events");
+    expect(harness.db.sql()).not.toContain("INSERT INTO platform.job_attempts");
+  });
+
+  it("rolls back rather than finalizing when the worker lease is lost", async () => {
+    const harness = setup({ jobUpdateRowCount: 0 });
+
+    await expect(
+      harness.store.succeed(
+        job,
+        { ok: true, providerRequestId: "provider-1" },
+        { workerId: "worker-1", now },
+      ),
+    ).rejects.toThrow("Channex job lease lost");
+
+    expect(harness.db.sql()).not.toContain("platform.idempotency_keys");
+    expect(harness.db.calls.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("preserves the original error when rollback fails", async () => {
+    const rollbackError = new Error("rollback failed");
+    const originalError = new Error("target update failed");
+    const harness = setup({ rollbackError });
+    vi.mocked(harness.state.succeed).mockRejectedValue(originalError);
+
+    await expect(
+      harness.store.succeed(
+        job,
+        { ok: true, providerRequestId: "provider-1" },
+        { workerId: "worker-1", now },
+      ),
+    ).rejects.toBe(originalError);
+
+    expect(harness.db.releasedWith).toBe(rollbackError);
   });
 });
 
-function setup(withJob = false) {
-  const db = new FakeDb(withJob);
+type FakeJobRow = {
+  status: "pending" | "running";
+  attemptsCount: number;
+  maxAttempts: number;
+};
+
+type FakeDbOptions = Partial<FakeJobRow> & {
+  withJob?: boolean;
+  jobUpdateRowCount?: number;
+  rollbackError?: Error;
+};
+
+function setup(options: FakeDbOptions = {}) {
+  const db = new FakeDb(options);
   const state: ChannexManagementTargetStatePort = { succeed: vi.fn(), fail: vi.fn() };
   const store = createPgPmsChannexManagementWorkerStore({
     connectionString: "postgresql://target",
@@ -71,12 +147,19 @@ function setup(withJob = false) {
   return { db, state, store };
 }
 
+// SQL-shape fake only; it does not replace a real PostgreSQL schema integration test.
 class FakeDb {
   calls: Array<{ text: string; values?: unknown[] }> = [];
-  constructor(private readonly withJob: boolean) {}
+  releasedWith: Error | boolean | undefined;
+  constructor(private readonly options: FakeDbOptions) {}
   pool() {
     return {
-      connect: async () => ({ query: this.query.bind(this), release() {} }),
+      connect: async () => ({
+        query: this.query.bind(this),
+        release: (error?: Error | boolean) => {
+          this.releasedWith = error;
+        },
+      }),
       end: async () => undefined,
     };
   }
@@ -85,20 +168,28 @@ class FakeDb {
   }
   async query<T>(text: string, values?: unknown[]) {
     this.calls.push({ text, values });
+    if (text === "ROLLBACK" && this.options.rollbackError) throw this.options.rollbackError;
     const rows =
-      this.withJob && text.includes("FROM platform.jobs")
+      this.options.withJob && text.includes("FROM platform.jobs")
         ? [
             {
               jobId: job.jobId,
               propertyId: job.propertyId,
               correlationId: job.correlationId,
-              status: "pending",
-              attemptsCount: 0,
-              maxAttempts: 5,
+              status: this.options.status ?? "pending",
+              attemptsCount: this.options.attemptsCount ?? 0,
+              maxAttempts: this.options.maxAttempts ?? 5,
               payload: job.input,
             },
           ]
         : [];
-    return { rows: rows as T[], rowCount: rows.length };
+    const guardedJobUpdate =
+      text.includes("UPDATE platform.jobs") && text.includes("locked_by = $2");
+    const rowCount = guardedJobUpdate
+      ? (this.options.jobUpdateRowCount ?? 1)
+      : text.trimStart().startsWith("SELECT")
+        ? rows.length
+        : 1;
+    return { rows: rows as T[], rowCount };
   }
 }
