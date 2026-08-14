@@ -3264,6 +3264,7 @@ function roomTypeAttributes(
   for (const key of [
     "shortDescription",
     "bedType",
+    "bathroomType",
     "cancellationPolicy",
     "nonRefundableCancellationPolicy",
   ]) {

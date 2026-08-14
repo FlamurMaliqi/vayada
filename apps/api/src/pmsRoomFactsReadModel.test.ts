@@ -127,6 +127,7 @@ describe("PMS room-facts read model", () => {
           bedType: "1 King Bed, 2 Single Beds",
           bedrooms: 1,
           bathrooms: 1,
+          bathroomType: "private",
           size: 32.5,
         },
       }),
