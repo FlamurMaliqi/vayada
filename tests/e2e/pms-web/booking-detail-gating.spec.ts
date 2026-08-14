@@ -67,6 +67,71 @@ test("hydrates the selected property on direct booking navigation without a relo
   await assertHealthy();
 });
 
+test("shows the exact connected-account payment breakdown to the host", async ({
+  page,
+}, testInfo) => {
+  const assertHealthy = watchPageHealth(page, testInfo);
+  let vayadaCommission = "5.00";
+  let netPayout = "91.80";
+  await mockPmsWebAuthenticatedSession(page);
+  await mockPmsWebTargetRoutes(page);
+  await page.route(
+    `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}`,
+    (route) =>
+      route.fulfill({
+        json: {
+          item: {
+            ...pmsWebReservation,
+            pricing: {
+              totalAmount: { amountDecimal: "100.00", currency: "EUR" },
+              balanceAmount: { amountDecimal: "0.00", currency: "EUR" },
+            },
+            payment: {
+              method: "card",
+              expectedMethod: "manual_card",
+              status: "paid",
+              breakdown: {
+                grossAmount: { amountDecimal: "100.00", currency: "EUR" },
+                stripeFee: { amountDecimal: "3.20", currency: "EUR" },
+                vayadaCommission: { amountDecimal: vayadaCommission, currency: "EUR" },
+                netPayout: { amountDecimal: netPayout, currency: "EUR" },
+              },
+            },
+          },
+        },
+      }),
+  );
+  await page.route(
+    `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}/notes`,
+    (route) => route.fulfill({ json: { items: [] } }),
+  );
+  await page.route(
+    `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}/additional-guests`,
+    (route) => route.fulfill({ json: { items: [] } }),
+  );
+  await page.route(
+    `**/api/booking/hotels/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}/change-request`,
+    (route) => route.fulfill({ json: null }),
+  );
+
+  await page.goto(`/bookings/${PMS_WEB_RESERVATION_ID}`);
+
+  await expect(page.getByText("Gross amount")).toBeVisible();
+  await expect(page.getByText("Stripe fee")).toBeVisible();
+  await expect(page.getByText("Vayada commission")).toBeVisible();
+  await expect(page.getByText("Net payout")).toBeVisible();
+  await expect(page.getByText("€91.80")).toBeVisible();
+  await expect(page.getByText(/Stripe processing fees may not be returned/i)).toBeVisible();
+
+  vayadaCommission = "0.00";
+  netPayout = "96.80";
+  await page.reload();
+  await expect(page.getByText("Gross amount")).toBeVisible();
+  await expect(page.getByText("Vayada commission")).toHaveCount(0);
+  await expect(page.getByText("€96.80")).toBeVisible();
+  await assertHealthy();
+});
+
 test("gates legacy booking writes while keeping supported hotel actions active", async ({
   page,
 }, testInfo) => {

@@ -79,6 +79,13 @@ export interface Booking {
   paymentMethod: string | null;
   expectedPaymentMethod: BookingExpectedPaymentMethod;
   paymentStatus: string | null;
+  paymentBreakdown?: {
+    grossAmount: number;
+    stripeFee: number;
+    vayadaCommission: number;
+    netPayout: number;
+    currency: string;
+  } | null;
   checkInPendingFlags: string[];
   checkedInAt: string | null;
   checkedOutAt: string | null;
@@ -292,6 +299,12 @@ type PmsOperationalReservation = {
     method: string | null;
     expectedMethod?: BookingExpectedPaymentMethod;
     status: string;
+    breakdown?: {
+      grossAmount: PmsOperationsMoney;
+      stripeFee: PmsOperationsMoney;
+      vayadaCommission: PmsOperationsMoney;
+      netPayout: PmsOperationsMoney;
+    };
   };
   hostResponseDeadlineAt?: string | null;
 };
@@ -1012,6 +1025,7 @@ function toBooking(
     paymentMethod: reservation.payment?.method ?? null,
     expectedPaymentMethod: reservation.payment?.expectedMethod ?? "unknown",
     paymentStatus: reservation.payment?.status ?? null,
+    paymentBreakdown: toPaymentBreakdown(reservation.payment?.breakdown),
     checkInPendingFlags: reservation.checkin.pendingFlags,
     checkedInAt: reservation.checkin.completedAt,
     checkedOutAt: reservation.checkout.completedAt,
@@ -1029,6 +1043,28 @@ function toBooking(
     guestWithdrawn: false,
     createdAt: `${reservation.stay.checkIn}T00:00:00.000Z`,
     updatedAt: `${reservation.stay.checkIn}T00:00:00.000Z`,
+  };
+}
+
+function toPaymentBreakdown(
+  breakdown: NonNullable<PmsOperationalReservation["payment"]>["breakdown"],
+): Booking["paymentBreakdown"] {
+  if (!breakdown) return null;
+  const currency = breakdown.grossAmount.currency;
+  if (
+    !currency ||
+    [breakdown.stripeFee, breakdown.vayadaCommission, breakdown.netPayout].some(
+      (amount) => amount.currency !== currency,
+    )
+  ) {
+    return null;
+  }
+  return {
+    grossAmount: moneyAmount(breakdown.grossAmount),
+    stripeFee: moneyAmount(breakdown.stripeFee),
+    vayadaCommission: moneyAmount(breakdown.vayadaCommission),
+    netPayout: moneyAmount(breakdown.netPayout),
+    currency,
   };
 }
 

@@ -98,6 +98,46 @@ describe("PMS target booking projection", () => {
     });
   });
 
+  it("maps the exact Stripe fee, commission, and net payout", async () => {
+    mocks.get.mockImplementation(async (endpoint: string) =>
+      endpoint.endsWith("/room-types")
+        ? { items: [] }
+        : {
+            items: [
+              {
+                ...reservation,
+                payment: {
+                  method: "card",
+                  expectedMethod: "manual_card",
+                  status: "paid",
+                  breakdown: {
+                    grossAmount: { amountDecimal: "100.00", currency: "EUR" },
+                    stripeFee: { amountDecimal: "3.20", currency: "EUR" },
+                    vayadaCommission: { amountDecimal: "5.00", currency: "EUR" },
+                    netPayout: { amountDecimal: "91.80", currency: "EUR" },
+                  },
+                },
+              },
+            ],
+            pagination: { total: 1, limit: 50, offset: 0 },
+          },
+    );
+
+    await expect(bookingsService.list()).resolves.toMatchObject({
+      bookings: [
+        {
+          paymentBreakdown: {
+            grossAmount: 100,
+            stripeFee: 3.2,
+            vayadaCommission: 5,
+            netPayout: 91.8,
+            currency: "EUR",
+          },
+        },
+      ],
+    });
+  });
+
   it("keeps an assigned room type authoritative over the booked-offer fallback", async () => {
     mocks.get.mockImplementation(async (endpoint: string) => {
       if (endpoint.endsWith("/room-types")) {

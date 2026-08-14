@@ -71,6 +71,10 @@ function roomTypeColor(roomTypeId: string | null | undefined): string {
   return ROOM_TYPE_PALETTE[hash % ROOM_TYPE_PALETTE.length];
 }
 
+function formatPaymentCurrency(amount: number, currency: string): string {
+  return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(amount);
+}
+
 function formatDateLong(iso: string): string {
   if (!iso) return "";
   const d = new Date(iso + "T00:00:00");
@@ -1989,6 +1993,54 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                 )}
               </div>
             </div>
+            {booking.paymentBreakdown && (
+              <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm">
+                <div className="flex justify-between gap-4 py-1">
+                  <span className="text-gray-600">Gross amount</span>
+                  <span className="font-medium text-gray-900">
+                    {formatPaymentCurrency(
+                      booking.paymentBreakdown.grossAmount,
+                      booking.paymentBreakdown.currency,
+                    )}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-4 py-1">
+                  <span className="text-gray-600">Stripe fee</span>
+                  <span className="font-medium text-gray-900">
+                    -
+                    {formatPaymentCurrency(
+                      booking.paymentBreakdown.stripeFee,
+                      booking.paymentBreakdown.currency,
+                    )}
+                  </span>
+                </div>
+                {booking.paymentBreakdown.vayadaCommission > 0 && (
+                  <div className="flex justify-between gap-4 py-1">
+                    <span className="text-gray-600">Vayada commission</span>
+                    <span className="font-medium text-gray-900">
+                      -
+                      {formatPaymentCurrency(
+                        booking.paymentBreakdown.vayadaCommission,
+                        booking.paymentBreakdown.currency,
+                      )}
+                    </span>
+                  </div>
+                )}
+                <div className="mt-2 flex justify-between gap-4 border-t border-gray-200 pt-3">
+                  <span className="font-semibold text-gray-900">Net payout</span>
+                  <span className="font-bold text-green-700">
+                    {formatPaymentCurrency(
+                      booking.paymentBreakdown.netPayout,
+                      booking.paymentBreakdown.currency,
+                    )}
+                  </span>
+                </div>
+                <p className="mt-3 border-t border-gray-200 pt-3 text-xs text-gray-500">
+                  Stripe processing fees may not be returned when a payment is refunded. Account for
+                  them in your cancellation policy.
+                </p>
+              </div>
+            )}
             {booking.depositRequired && (
               <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-3 text-sm">
                 <div className="flex items-center justify-between gap-4">
