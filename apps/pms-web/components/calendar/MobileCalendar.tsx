@@ -18,6 +18,7 @@ import { CalendarBooking, CalendarBlock, CalendarRoomType } from "@/services/cal
 import { getChannelBarColor } from "@/lib/constants/statusStyles";
 
 const WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+export const calendarLaneTop = (index: number) => index * 36 + 6;
 
 interface MobileCalendarProps {
   currentMonth: Date;

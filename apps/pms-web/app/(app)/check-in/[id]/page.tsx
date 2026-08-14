@@ -15,6 +15,7 @@ import { CheckinChecklistStep, settingsService } from "@/services/settings";
 import { formatCurrency } from "@/lib/formatCurrency";
 import BookingStaySummary, {
   expectedPaymentMethodLabel,
+  settlementLabel,
 } from "@/components/bookings/BookingStaySummary";
 
 type GuestDraft = BookingAdditionalGuestPayload & { id?: string; position: number };
@@ -584,13 +585,9 @@ export default function CheckInPage() {
               </div>
             </Card>
 
-            <Card title="Payment on arrival">
-              <div className="mb-3 text-sm">
-                <Info
-                  label="Expected method"
-                  value={expectedPaymentMethodLabel(booking.expectedPaymentMethod)}
-                />
-              </div>
+            <Card title="Payment">
+              {/* prettier-ignore */}
+              <div className="mb-3 text-sm"><Info label="Expected method" value={expectedPaymentMethodLabel(booking.expectedPaymentMethod)} /></div>
               {booking.depositRequired && (
                 <div className="mb-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm">
                   <p className="font-semibold text-gray-900">
@@ -607,16 +604,12 @@ export default function CheckInPage() {
                 <p
                   className={`font-semibold ${isPaid(booking) ? "text-green-800" : "text-amber-950"}`}
                 >
-                  {isPaid(booking)
-                    ? booking.paymentMethod === "paypal"
-                      ? "PayPal payment received"
-                      : "Paid at property"
-                    : booking.paymentMethod === "paypal"
-                      ? `${formatCurrency(booking.totalAmount, booking.currency)} awaiting PayPal payment.`
-                      : `${formatCurrency(
-                          booking.depositRequired ? booking.balanceAmount : booking.totalAmount,
-                          booking.currency,
-                        )} due at property. Pay at property.`}
+                  {/* prettier-ignore */}
+                  {settlementLabel(
+                    isPaid(booking),
+                    booking.depositRequired ? booking.balanceAmount : booking.totalAmount,
+                    booking.currency,
+                  )}
                 </p>
                 {(!booking.depositRequired || booking.balanceAmount > 0) && (
                   <div className="mt-3">
