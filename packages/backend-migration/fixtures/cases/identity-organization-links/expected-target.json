@@ -6,7 +6,7 @@
     "identity.organization_memberships": 1,
     "identity.organization_resource_links": 3,
     "identity.product_entitlements": 2,
-    "identity.permission_catalog": 28,
+    "identity.permission_catalog": 29,
     "identity.role_permission_grants": 52
   },
   "idStability": {

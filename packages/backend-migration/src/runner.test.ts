@@ -777,14 +777,24 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "addon_definitions",
         "booking_addon_selections",
         "booking_change_requests",
+        "booking_design_revisions",
         "booking_guests",
         "booking_notes_public",
+        "booking_policy_confirmations",
         "booking_publication_attempts",
         "booking_settings",
         "booking_status_events",
         "checkout_contexts",
+        "current_working_design_revisions",
+        "current_working_guest_policy_revisions",
         "direct_booking_summary_read_model",
+        "finance_booking_attribution",
+        "finance_nightly_revenue_evidence",
         "guest_bookings",
+        "guest_policy_projection_receipts",
+        "guest_policy_revisions",
+        "nightly_revenue_evidence",
+        "nightly_revenue_room_scopes",
         "promo_applications",
         "promo_definitions",
         "quote_sessions",
@@ -878,13 +888,29 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "channel_sync_status",
         "checkin_checklist_templates",
         "checkout_inspection_templates",
+        "inventory_coverage_validation_queue",
         "inventory_days",
+        "inventory_materialization_coverage",
+        "inventory_reservation_day_watermarks",
+        "inventory_reservation_receipts",
+        "inventory_reservation_statuses",
+        "mandatory_charge_confirmation_revisions",
         "message_attachments",
         "message_threads",
         "messages",
+        "non_refundable_rate_plan_source_rooms",
+        "operating_calendar_recurring_periods",
+        "operating_calendar_revisions",
+        "operating_calendar_room_bindings",
         "operational_booking_assignments",
+        "property_pricing_settings",
         "rate_plans",
         "rate_rules",
+        "recurring_pricing_materialization_receipts",
+        "recurring_pricing_materialization_source_receipts",
+        "recurring_pricing_materialized_rows",
+        "recurring_pricing_source_room_values",
+        "recurring_pricing_sources",
         "room_blocks",
         "room_type_media",
         "room_types",
@@ -1212,16 +1238,18 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       );
 
       expect(financeTableRows.map((row) => row.table_name)).toEqual([
+        "affiliate_payout_payment_evidence",
+        "affiliate_payout_payment_evidence_items",
         "billing_entitlements",
         "commission_rate_changes",
         "commission_rules",
         "expense_categories",
         "expenses",
+        "finance_visibility_read_model",
         "folio_lines",
         "folio_payment_references",
         "folio_revisions",
         "folios",
-        "finance_visibility_read_model",
         "payment_provider_accounts",
         "payment_settings",
         "payments",
@@ -1529,7 +1557,9 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
           AND ccu.constraint_name = tc.constraint_name
          WHERE tc.table_schema = 'finance'
            AND tc.constraint_type = 'FOREIGN KEY'
-           AND ccu.table_schema NOT IN ('booking', 'finance', 'hotel_catalog', 'identity')
+           AND ccu.table_schema NOT IN (
+             'booking', 'finance', 'hotel_catalog', 'identity', 'platform', 'pms'
+           )
          ORDER BY tc.constraint_name`,
       );
 
@@ -1709,6 +1739,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
 
       expect(marketplaceTableRows.map((row) => row.table_name)).toEqual([
         "active_hotel_submission_revisions",
+        "affiliate_lifecycle_changes",
         "collaboration_deliverables",
         "collaborations",
         "creator_platform_authorizations",
@@ -1719,6 +1750,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "creator_profiles",
         "creator_ratings",
         "external_collaborations",
+        "hotel_collaboration_preferences",
         "hotel_submission_moderation",
         "hotel_submission_revisions",
         "invite_codes",
@@ -1731,6 +1763,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "offer_compensation_options",
         "offer_creator_requirements",
         "offer_deliverables",
+        "property_affiliates",
         "trips",
       ]);
 
@@ -2162,7 +2195,9 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
           AND ccu.constraint_name = tc.constraint_name
          WHERE tc.table_schema = 'marketplace'
            AND tc.constraint_type = 'FOREIGN KEY'
-           AND ccu.table_schema NOT IN ('finance', 'hotel_catalog', 'identity', 'marketplace')
+           AND ccu.table_schema NOT IN (
+             'finance', 'hotel_catalog', 'identity', 'marketplace', 'platform'
+           )
          ORDER BY tc.constraint_name`,
       );
 
@@ -4918,9 +4953,10 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
 
       expect(retiredIntelligencePermissions).toHaveLength(0);
 
-      const { rows: retiredIntelligenceResourceLinkConstraints } =
-        await verifyClient.query<{ constraint_name: string }>(
-          `SELECT con.conname AS constraint_name
+      const { rows: retiredIntelligenceResourceLinkConstraints } = await verifyClient.query<{
+        constraint_name: string;
+      }>(
+        `SELECT con.conname AS constraint_name
            FROM pg_constraint con
            JOIN pg_class rel ON rel.oid = con.conrelid
            JOIN pg_namespace ns ON ns.oid = rel.relnamespace
@@ -4930,7 +4966,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
                'uq_identity_resource_links_id_organization',
                'uq_identity_resource_links_id_organization_resource'
              )`,
-        );
+      );
 
       expect(retiredIntelligenceResourceLinkConstraints).toHaveLength(0);
     } finally {

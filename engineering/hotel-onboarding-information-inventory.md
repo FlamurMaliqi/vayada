@@ -3974,8 +3974,8 @@ Do not pull these back into the critical path:
   bank details;
 - Vayada Payment, Xendit, or another provider beyond the approved V1 methods;
 - direct bank transfer before VAY-1041;
-- Ask Intelligence and external AI bookability enhancements beyond consuming
-  the final approved setup/readiness read models.
+- future hotel employee agent work from VAY-1091 and external AI bookability
+  enhancements beyond consuming the final approved setup/readiness read models.
 
 Create only the remaining Linear child issues in dependency order as their
 prerequisite contracts are approved. Start implementation with the scheduled

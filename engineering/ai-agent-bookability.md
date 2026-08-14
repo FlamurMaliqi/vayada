@@ -257,12 +257,10 @@ should depend on internal product services for hotel identity, room/rate
 availability, payment/policy capabilities, and booking URL generation, but
 external clients should not see those internal service boundaries.
 
-That domain should be separate from the hotel-owner Ask Intelligence agent from
-VAY-601. Ask Intelligence helps authenticated owners understand and improve
-their hotel. AI bookability helps external agents discover, quote, and later
-book Vayada hotels. They can share curated metrics and setup-completeness
-signals, but they have different authorization, privacy, caching, and freshness
-contracts.
+That domain is separate from any future hotel employee agent. AI bookability
+helps external agents discover, quote, and later book Vayada hotels. VAY-1091
+must define a new authenticated agent design, including its authorization,
+privacy, caching, freshness, and storage boundaries.
 
 ## Follow-up implementation tickets
 

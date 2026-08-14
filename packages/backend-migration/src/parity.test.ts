@@ -524,7 +524,7 @@ describe.skipIf(!TEST_DATABASE_URL)("rebuild with fixture loading (integration)"
            bool_or(key = 'hotel_catalog.products.manage') AS has_products_manage
          FROM identity.permission_catalog`,
       );
-      expect(perms.rows[0].count).toBe(26);
+      expect(perms.rows[0].count).toBe(29);
       expect(perms.rows[0].has_products_manage).toBe(true);
 
       const entitlements = await client.query(
