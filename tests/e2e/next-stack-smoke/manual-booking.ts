@@ -61,7 +61,6 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
       secondCheckIn = futureDate(6),
       secondCheckOut = futureDate(9);
     await dialog.getByLabel("Room 1 check-in").fill(firstCheckIn);
-    await dialog.getByLabel("Room 1 check-out").fill(firstCheckOut);
     await dialog.getByRole("button", { name: "+ Add another room" }).click();
     await dialog.getByLabel("Room 2 check-in").fill(secondCheckIn);
     await dialog.getByLabel("Room 2 check-out").fill(secondCheckOut);
@@ -84,6 +83,16 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
     await dialog
       .getByLabel("Private note (staff only)")
       .fill("Internal QA note — never show guest");
+    const previewResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        response.request().method() === "POST" &&
+        url.pathname === `/api/pms/properties/${propertyId}/manual-bookings/preview`
+      );
+    });
+    await dialog.getByLabel("Room 1 check-out").fill(firstCheckOut);
+    const previewResponse = await previewResponsePromise;
+    expect(previewResponse.status(), await previewResponse.text()).toBe(200);
     await expect(dialog.getByText("Server total pending")).toHaveCount(0);
     await expect(dialog.getByRole("button", { name: "Create booking" })).toBeEnabled();
     await page.screenshot({
