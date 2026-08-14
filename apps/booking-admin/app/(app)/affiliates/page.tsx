@@ -69,14 +69,23 @@ export default function AffiliatesPage() {
     }
     let active = true;
     setDetail(null);
-    affiliatesService
-      .get(selectedId)
-      .then((nextDetail) => {
+    void (async () => {
+      try {
+        const affiliate = await affiliatesService.get(selectedId);
         if (!active) return;
-        setDetail(nextDetail);
-        setOverrideDraft(nextDetail.commission.overridePercentageRate ?? "");
-      })
-      .catch((nextError) => active && setError(errorMessage(nextError)));
+        setDetail({ affiliate, commission: null });
+        try {
+          const commission = await affiliatesService.getCommission(selectedId);
+          if (!active) return;
+          setDetail({ affiliate, commission });
+          setOverrideDraft(commission.overridePercentageRate ?? "");
+        } catch (nextError) {
+          if (active) setError(errorMessage(nextError));
+        }
+      } catch (nextError) {
+        if (active) setError(errorMessage(nextError));
+      }
+    })();
     return () => {
       active = false;
     };
@@ -123,7 +132,7 @@ export default function AffiliatesPage() {
   };
 
   const saveOverride = async (inherit = false) => {
-    if (!detail) return;
+    if (!detail?.commission) return;
     if (!inherit && !validRate(overrideDraft)) return setError("Enter a percentage from 0 to 100.");
     setBusy("commission");
     setError(null);

@@ -64,11 +64,14 @@ describe("Booking Admin affiliate target client", () => {
     ]);
   });
 
-  it("composes Marketplace detail with Finance commission without payout fields", async () => {
+  it("keeps Marketplace detail independent from Finance commission access", async () => {
     const { client, calls } = fakeClient();
-    const detail = await testService(client).get(" affiliate/with space ");
+    const service = testService(client);
+    const detail = await service.get(" affiliate/with space ");
+    const affiliateCommission = await service.getCommission(" affiliate/with space ");
 
-    expect(detail).toEqual({ affiliate, commission });
+    expect(detail).toEqual(affiliate);
+    expect(affiliateCommission).toEqual(commission);
     expect(calls).toEqual([
       {
         method: "get",
@@ -83,7 +86,9 @@ describe("Booking Admin affiliate target client", () => {
         options: omitHotelContext,
       },
     ]);
-    expect(JSON.stringify(detail)).not.toMatch(/payout|iban|bankAccount|paymentMethod/i);
+    expect(JSON.stringify({ detail, affiliateCommission })).not.toMatch(
+      /payout|iban|bankAccount|paymentMethod/i,
+    );
   });
 
   it("posts lifecycle actions with a stable command/idempotency pair", async () => {

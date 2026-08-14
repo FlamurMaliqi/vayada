@@ -40,7 +40,7 @@ export interface AffiliateCommission {
 
 export interface AffiliateDetail {
   affiliate: Affiliate;
-  commission: AffiliateCommission;
+  commission: AffiliateCommission | null;
 }
 
 type LifecycleResult = {
@@ -103,20 +103,21 @@ export function createAffiliatesService(
       );
     },
 
-    async get(affiliateId: string): Promise<AffiliateDetail> {
+    async get(affiliateId: string): Promise<Affiliate> {
       const { encodedPropertyId } = await scope();
       const encodedAffiliateId = requiredAffiliateId(affiliateId);
-      const [affiliate, commission] = await Promise.all([
-        client.get<Affiliate>(
-          `/api/marketplace/properties/${encodedPropertyId}/affiliates/${encodedAffiliateId}`,
-          omitHotelContext,
-        ),
-        client.get<AffiliateCommission>(
-          `/api/finance/properties/${encodedPropertyId}/affiliates/${encodedAffiliateId}/commission`,
-          omitHotelContext,
-        ),
-      ]);
-      return { affiliate, commission };
+      return client.get<Affiliate>(
+        `/api/marketplace/properties/${encodedPropertyId}/affiliates/${encodedAffiliateId}`,
+        omitHotelContext,
+      );
+    },
+
+    async getCommission(affiliateId: string): Promise<AffiliateCommission> {
+      const { encodedPropertyId } = await scope();
+      return client.get<AffiliateCommission>(
+        `/api/finance/properties/${encodedPropertyId}/affiliates/${requiredAffiliateId(affiliateId)}/commission`,
+        omitHotelContext,
+      );
     },
 
     async updateStatus(
