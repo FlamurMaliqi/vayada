@@ -85,7 +85,7 @@ async function executeReconcile(
   const fingerprint = sha256(serializeReconcilePhysicalRoomUnitsFingerprint(command));
   try {
     await client.query("BEGIN");
-    if (!(await lockAuthorizedPropertyScope(client, command, occurredAt))) {
+    if (!(await lockAuthorizedPmsPhysicalRoomScope(client, command, occurredAt))) {
       await client.query("ROLLBACK");
       return failure({ code: "setup_scope_unavailable" });
     }
@@ -133,9 +133,9 @@ async function executeReconcile(
   }
 }
 
-async function lockAuthorizedPropertyScope(
+export async function lockAuthorizedPmsPhysicalRoomScope(
   client: PmsPhysicalRoomUnitReconcileClient,
-  command: ReconcilePhysicalRoomUnitsCommand,
+  command: Pick<ReconcilePhysicalRoomUnitsCommand, "organizationId" | "propertyId" | "audit">,
   occurredAt: Date,
 ): Promise<boolean> {
   if (command.audit.actor.kind !== "user") return false;
