@@ -22,6 +22,7 @@ interface MonthViewProps {
   rooms: CalendarRoom[];
   roomTypeMap: Record<string, { name: string; category: string }>;
   bookingsByRoom: Record<string, CalendarBooking[]>;
+  unassignedBookings: CalendarBooking[];
   blocksByRoom: Record<string, CalendarBlock[]>;
   legacyBlocksByRoomType: Record<string, CalendarBlock[]>;
   roomIndexInType: Record<string, number>;
@@ -46,6 +47,7 @@ export default function MonthView({
   rooms,
   roomTypeMap,
   bookingsByRoom,
+  unassignedBookings,
   blocksByRoom,
   legacyBlocksByRoomType,
   roomIndexInType,
@@ -60,6 +62,8 @@ export default function MonthView({
   }, [monthStart]);
 
   const today = new Date();
+  // prettier-ignore
+  const displayedRooms = unassignedBookings.length ? [...rooms, { id: "", roomTypeId: "", roomTypeName: "Unassigned", roomNumber: "—", floor: "", status: "unassigned" }] : rooms;
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl overflow-hidden flex-1 overflow-y-auto">
@@ -72,9 +76,9 @@ export default function MonthView({
         ))}
       </div>
 
-      {rooms.map((room) => {
+      {displayedRooms.map((room) => {
         const rt = roomTypeMap[room.roomTypeId];
-        const roomBookings = bookingsByRoom[room.id] || [];
+        const roomBookings = room.id ? bookingsByRoom[room.id] || [] : unassignedBookings;
         const roomBlocks = [
           ...(blocksByRoom[room.id] || []),
           ...(legacyBlocksByRoomType[room.roomTypeId] || []).filter(
@@ -172,7 +176,7 @@ export default function MonthView({
                               : "";
                             return (
                               <button
-                                key={`booking-${b.id}-${b.roomId ?? "na"}-${day.toISOString()}`}
+                                key={`booking-${b.id}-${b.roomPosition}-${day.toISOString()}`}
                                 type="button"
                                 onClick={() => onSelectBooking(b.id)}
                                 title={`${b.guestFirstName} ${b.guestLastName} (${b.status})\n${b.checkIn} → ${b.checkOut}\nChannel: ${b.channel}${multiRoomTitle}`}

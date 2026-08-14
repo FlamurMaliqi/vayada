@@ -27,7 +27,7 @@ import BlockDetailModal from "@/components/calendar/BlockDetailModal";
 import TargetManualBookingModal from "@/components/calendar/TargetManualBookingModal";
 import BookingDetailModal from "@/components/calendar/BookingDetailModal";
 import MiniDatePicker from "@/components/calendar/MiniDatePicker";
-import MobileCalendar from "@/components/calendar/MobileCalendar";
+import MobileCalendar, { calendarLaneTop } from "@/components/calendar/MobileCalendar";
 import MonthView from "@/components/calendar/MonthView";
 import { useTranslation } from "@/lib/i18n";
 import { channexService } from "@/services/channex";
@@ -822,6 +822,7 @@ export default function CalendarPage() {
             rooms={data.rooms}
             roomTypeMap={roomTypeMap}
             bookingsByRoom={bookingsByRoom}
+            unassignedBookings={unassignedBookings}
             blocksByRoom={blocksByRoom}
             legacyBlocksByRoomType={legacyBlocksByRoomType}
             roomIndexInType={roomIndexInType}
@@ -1053,7 +1054,7 @@ export default function CalendarPage() {
                               : "";
                             return (
                               <div
-                                key={`${b.id}-${b.roomId ?? "na"}`}
+                                key={`${b.id}-${b.roomPosition}`}
                                 data-bar="booking"
                                 className={`absolute top-1.5 h-8 rounded-md px-2 text-[11px] font-medium leading-8 truncate cursor-pointer z-[1] text-white ${channelColor} hover:brightness-110 transition-all flex items-center gap-1.5 ${
                                   isMultiRoom ? "ring-1 ring-inset ring-white/50" : ""
@@ -1094,7 +1095,11 @@ export default function CalendarPage() {
                         {unassignedBookings.length !== 1 ? "s" : ""}
                       </div>
                     </td>
-                    <td colSpan={VIEW_DAYS} className="relative h-12 p-0">
+                    <td
+                      colSpan={VIEW_DAYS}
+                      className="relative p-0"
+                      style={{ height: `${calendarLaneTop(unassignedBookings.length) + 6}px` }}
+                    >
                       <div className="absolute inset-0 flex">
                         {dates.map((d) => {
                           const isToday =
@@ -1115,24 +1120,26 @@ export default function CalendarPage() {
                           );
                         })}
                       </div>
-                      {unassignedBookings.map((b) => {
+                      {unassignedBookings.map((b, index) => {
                         const style = getBarStyle(b.checkIn, b.checkOut);
                         if (!style) return null;
                         const channelColor = getChannelBarColor(b.channel);
+                        // prettier-ignore
+                        const stayLabel = b.numberOfRooms > 1 ? ` · Room ${b.roomPosition + 1} of ${b.numberOfRooms}` : "";
                         return (
                           <div
-                            key={b.id}
+                            key={`${b.id}-${b.roomPosition}`}
                             data-bar="booking"
                             className={`absolute top-1.5 h-8 rounded-md px-2 text-[11px] font-medium leading-8 truncate cursor-pointer z-[1] text-white ${channelColor} hover:brightness-110 transition-all flex items-center gap-1.5 opacity-75`}
-                            style={style}
-                            title={`${b.guestFirstName} ${b.guestLastName} (${b.status}) - Unassigned\n${b.checkIn} → ${b.checkOut}`}
+                            style={{ ...style, top: `${calendarLaneTop(index)}px` }}
+                            title={`${b.guestFirstName} ${b.guestLastName} (${b.status}) - Unassigned${stayLabel}\n${b.checkIn} → ${b.checkOut}`}
                             onClick={() => setSelectedBookingId(b.id)}
                           >
                             <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[9px] font-bold flex-shrink-0">
                               {getInitials(b.guestFirstName, b.guestLastName)}
                             </span>
                             <span className="truncate">
-                              {`${b.guestFirstName} ${b.guestLastName}`.trim()}
+                              {`${b.guestFirstName} ${b.guestLastName}${stayLabel}`.trim()}
                             </span>
                           </div>
                         );

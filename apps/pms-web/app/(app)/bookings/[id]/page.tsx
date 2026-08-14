@@ -35,6 +35,9 @@ import {
   calculateAddOnsTotal,
   clampAddOnQuantity,
 } from "@/components/bookings/AddOnListPicker";
+import BookingStaySummary, {
+  expectedPaymentMethodLabel,
+} from "@/components/bookings/BookingStaySummary";
 import {
   BOOKING_STATUS_STYLES,
   PAYMENT_STATUS_STYLES,
@@ -1549,6 +1552,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       roomNumber: assigned?.roomNumber ?? null,
     };
   });
+  const hasHeterogeneousStays = booking.numberOfRooms > 1;
 
   // Per-room guest count: explicit additional-guest assignments only, plus
   // the booker who lives implicitly in the primary room (position 0).
@@ -1750,8 +1754,17 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             </button>
           </div>
 
+          {hasHeterogeneousStays && (
+            <div className="mb-6">
+              <BookingStaySummary stays={booking.stays} expectedCount={booking.numberOfRooms} />
+            </div>
+          )}
+
           {/* Summary row */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mb-6">
+          <div
+            hidden={hasHeterogeneousStays}
+            className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mb-6"
+          >
             <div>
               <p className="text-xs text-gray-500 uppercase tracking-wide">Check-in</p>
               <p className="font-semibold text-gray-900">{formatDateLong(booking.checkIn)}</p>
@@ -1777,7 +1790,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
           </div>
 
           {/* ROOMS sub-section */}
-          <div className="mb-6">
+          <div hidden={hasHeterogeneousStays} className="mb-6">
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
               Rooms ({roomRows.length})
             </p>
@@ -1871,16 +1884,19 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               Pricing
             </p>
             <div className="space-y-1.5 text-sm">
-              <div className="flex justify-between text-gray-700">
-                <span>
-                  {roomRows.length} room{roomRows.length !== 1 ? "s" : ""} × {booking.nights} night
-                  {booking.nights !== 1 ? "s" : ""} ×{" "}
-                  {formatCurrency(booking.nightlyRate, booking.currency)}
-                </span>
-                <span className="font-medium text-gray-900">
-                  {formatCurrency(pricingBreakdown?.roomsCost ?? 0, booking.currency)}
-                </span>
-              </div>
+              {!hasHeterogeneousStays && (
+                <div className="flex justify-between text-gray-700">
+                  <span>
+                    {roomRows.length} room{roomRows.length !== 1 ? "s" : ""} × {booking.nights}{" "}
+                    night
+                    {booking.nights !== 1 ? "s" : ""} ×{" "}
+                    {formatCurrency(booking.nightlyRate, booking.currency)}
+                  </span>
+                  <span className="font-medium text-gray-900">
+                    {formatCurrency(pricingBreakdown?.roomsCost ?? 0, booking.currency)}
+                  </span>
+                </div>
+              )}
               {(pricingBreakdown?.addonsCost ?? 0) > 0 && (
                 <div className="flex justify-between text-gray-700">
                   <span>Add-ons</span>
@@ -1895,7 +1911,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   {formatCurrency(booking.totalAmount, booking.currency)}
                 </span>
               </div>
-              {pricingBreakdown?.mismatch && (
+              {!hasHeterogeneousStays && pricingBreakdown?.mismatch && (
                 <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
                   Charged total {formatCurrency(booking.totalAmount, booking.currency)} doesn&apos;t
                   match the line-item math (
@@ -1928,6 +1944,12 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
               <div>
+                <p className="text-xs text-gray-500">Expected method</p>
+                <p className="font-medium text-gray-900">
+                  {expectedPaymentMethodLabel(booking.expectedPaymentMethod)}
+                </p>
+              </div>
+              <div>
                 <p className="text-xs text-gray-500">Method</p>
                 <p className="font-medium text-gray-900">
                   {booking.paymentMethod === "card"
@@ -1953,10 +1975,12 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   <p className="text-gray-400">—</p>
                 )}
               </div>
-              <div>
-                <p className="text-xs text-gray-500">Rate plan</p>
-                <p className="font-medium text-gray-900">{rateType}</p>
-              </div>
+              {!hasHeterogeneousStays && (
+                <div>
+                  <p className="text-xs text-gray-500">Rate plan</p>
+                  <p className="font-medium text-gray-900">{rateType}</p>
+                </div>
+              )}
               <div>
                 <p className="text-xs text-gray-500">Source</p>
                 <p className="font-medium text-gray-900">{channelLabel}</p>
