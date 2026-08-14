@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { channexService, type ChannexOperation, type ChannexSnapshot } from "@/services/channex";
 
 export const terminalChannexStatuses = new Set(["succeeded", "failed", "dead_lettered"]);
+const markupChannels = new Set(["booking_com", "airbnb"]);
 
 export function useChannexManager() {
   const [snapshot, setSnapshot] = useState<ChannexSnapshot | null>(null);
@@ -57,10 +58,12 @@ export function useChannexManager() {
     if (!snapshot) return [];
     return Array.from(
       new Set([
-        ...snapshot.channels.map((channel) => channel.application),
+        ...snapshot.channels.map((channel) => channel.key),
         ...snapshot.markups.map((markup) => markup.channel),
       ]),
-    ).sort();
+    )
+      .filter((channel) => markupChannels.has(channel))
+      .sort();
   }, [snapshot]);
 
   useEffect(() => {
