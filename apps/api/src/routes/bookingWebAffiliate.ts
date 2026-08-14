@@ -148,15 +148,14 @@ type PgBookingWebAffiliateRepositoryConfig = {
   max?: number;
   now?: () => Date;
   stripeConnectProvider?: BookingWebAffiliateStripeConnectProvider;
+  pool?: pg.Pool;
 };
 
 export function createPgBookingWebAffiliateRepository(
   config: PgBookingWebAffiliateRepositoryConfig,
 ): BookingWebAffiliateRepository {
-  const pool = new pg.Pool({
-    connectionString: config.connectionString,
-    max: config.max,
-  });
+  const pool =
+    config.pool ?? new pg.Pool({ connectionString: config.connectionString, max: config.max });
   const now = config.now ?? (() => new Date());
 
   return {
