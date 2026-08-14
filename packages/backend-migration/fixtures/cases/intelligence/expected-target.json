@@ -3,7 +3,7 @@
     "identity.users": 1,
     "identity.organizations": 1,
     "identity.organization_memberships": 1,
-    "identity.role_permission_grants": 35,
+    "identity.role_permission_grants": 53,
     "identity.organization_resource_links": 4,
     "identity.product_entitlements": 3,
     "hotel_catalog.properties": 1,
