@@ -20,11 +20,11 @@ import {
   CalendarRoom,
   CalendarBooking,
   CalendarBlock,
-  CreateAdminBookingPayload,
 } from "@/services/calendar";
+import type { PmsManualBookingCreateInput } from "@/services/api/pmsManualBookingClient";
 import BlockModal from "@/components/calendar/BlockModal";
 import BlockDetailModal from "@/components/calendar/BlockDetailModal";
-import NewBookingModal from "@/components/calendar/NewBookingModal";
+import TargetManualBookingModal from "@/components/calendar/TargetManualBookingModal";
 import BookingDetailModal from "@/components/calendar/BookingDetailModal";
 import MiniDatePicker from "@/components/calendar/MiniDatePicker";
 import MobileCalendar from "@/components/calendar/MobileCalendar";
@@ -37,6 +37,7 @@ const VIEW_DAYS = 21;
 const VIEW_MODE_STORAGE_KEY = "pms.calendar.viewMode";
 const MOBILE_CALENDAR_QUERY = "(max-width: 767px)";
 const CALENDAR_WRITES_AVAILABLE = false;
+const MANUAL_BOOKINGS_AVAILABLE = true;
 type ViewMode = "timeline" | "month";
 
 const CHANNEL_LEGEND_KEYS: Array<{
@@ -78,6 +79,7 @@ export default function CalendarPage() {
   const [loadError, setLoadError] = useState(false);
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [showNewBookingModal, setShowNewBookingModal] = useState(false);
+  const [bookingNotice, setBookingNotice] = useState("");
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
   const [selectedBlock, setSelectedBlock] = useState<CalendarBlock | null>(null);
   // Mobile-only: the date range selected in MobileCalendar before opening
@@ -364,12 +366,18 @@ export default function CalendarPage() {
     await fetchData();
   };
 
-  const handleCreateBooking = async (bookingData: CreateAdminBookingPayload) => {
-    await calendarService.createAdminBooking(bookingData);
+  const handleCreateBooking = async (bookingData: PmsManualBookingCreateInput) => {
+    const result = await calendarService.createManualBooking(bookingData);
+    setBookingNotice(
+      result.outcome === "replayed"
+        ? "Booking already existed; calendar refreshed."
+        : "Booking created.",
+    );
     setShowNewBookingModal(false);
     setPrefill(null);
     setMobilePrefill(null);
     fetchData();
+    return result;
   };
 
   // Reorder helpers (VAY-307).
@@ -526,6 +534,9 @@ export default function CalendarPage() {
 
   return (
     <div className="h-full flex flex-col">
+      <p className="sr-only" aria-live="polite">
+        {bookingNotice}
+      </p>
       {/* Mobile Calendar */}
       <div className="md:hidden flex-1 flex flex-col">
         {loading && !data ? (
@@ -546,6 +557,7 @@ export default function CalendarPage() {
             onBlockRoom={handleMobileBlockRoom}
             onSelectBlock={(bl) => setSelectedBlock(bl)}
             writeActionsAvailable={CALENDAR_WRITES_AVAILABLE}
+            manualBookingAvailable={MANUAL_BOOKINGS_AVAILABLE}
           />
         )}
       </div>
@@ -644,9 +656,9 @@ export default function CalendarPage() {
               </button>
               <button
                 type="button"
-                disabled={!CALENDAR_WRITES_AVAILABLE}
+                disabled={!MANUAL_BOOKINGS_AVAILABLE}
                 title={
-                  !CALENDAR_WRITES_AVAILABLE
+                  !MANUAL_BOOKINGS_AVAILABLE
                     ? "Manual booking creation is not available yet"
                     : undefined
                 }
@@ -768,8 +780,7 @@ export default function CalendarPage() {
         {!CALENDAR_WRITES_AVAILABLE && (
           <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
             <span>
-              Room blocks are available. Creating bookings and reordering rooms are not available
-              yet.
+              Manual bookings and room blocks are available. Reordering rooms is not available yet.
             </span>
             <span className="shrink-0 rounded bg-gray-100 px-2 py-1 font-medium text-gray-500">
               Limited writes
@@ -1172,7 +1183,7 @@ export default function CalendarPage() {
                 </div>
               </div>
               <div className="p-1">
-                {CALENDAR_WRITES_AVAILABLE && (
+                {MANUAL_BOOKINGS_AVAILABLE && (
                   <button
                     onClick={() => setShowNewBookingModal(true)}
                     className="w-full flex items-center gap-2.5 px-2.5 py-2 text-sm text-left text-gray-700 hover:bg-primary-50 hover:text-primary-700 rounded-md transition-colors"
@@ -1238,8 +1249,8 @@ export default function CalendarPage() {
       )}
 
       {/* New Booking Modal */}
-      {CALENDAR_WRITES_AVAILABLE && showNewBookingModal && data && (
-        <NewBookingModal
+      {MANUAL_BOOKINGS_AVAILABLE && showNewBookingModal && data && (
+        <TargetManualBookingModal
           roomTypes={data.roomTypes}
           rooms={data.rooms}
           onSubmit={handleCreateBooking}
@@ -1251,7 +1262,6 @@ export default function CalendarPage() {
           initialRoomId={prefill?.roomId}
           initialCheckIn={prefill?.startDate ?? mobilePrefill?.startDate}
           initialCheckOut={prefill?.endDate ?? mobilePrefill?.endDate}
-          connectedChannelKeys={connectedChannelKeys}
         />
       )}
 

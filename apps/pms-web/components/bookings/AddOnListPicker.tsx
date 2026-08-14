@@ -170,7 +170,7 @@ export function AddOnListPicker({
           <button
             type="button"
             onClick={onDone}
-            className="px-3 py-1.5 text-sm font-medium text-white bg-gray-900 hover:bg-black rounded-lg"
+            className="px-3 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-lg"
           >
             Done
           </button>
