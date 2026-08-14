@@ -100,18 +100,6 @@ export interface ChannexSnapshot {
   activeOperation: ChannexOperation | null;
 }
 
-export interface ChannexSyncStatus {
-  isConnected: boolean;
-  channexPropertyId: string | null;
-  roomTypesProvisioned: number;
-  ratePlansProvisioned: number;
-  lastBookingSyncAt: string | null;
-  lastAriSyncAt: string | null;
-  lastAriSyncError: string | null;
-  lastAriSyncFailedAt: string | null;
-  messagingAppInstalled: boolean;
-}
-
 export interface ChannelMarkup {
   channel: string;
   markupPct: number;
@@ -185,33 +173,6 @@ export const channexService = {
     );
   },
 
-  async getStatus(): Promise<ChannexSyncStatus> {
-    const snapshot = await this.getSnapshot();
-    return {
-      isConnected: ["connected", "degraded"].includes(snapshot.connection.status),
-      channexPropertyId: snapshot.connection.externalPropertyId,
-      roomTypesProvisioned: snapshot.mappings.roomTypes.length,
-      ratePlansProvisioned: snapshot.mappings.ratePlans.length,
-      lastBookingSyncAt: snapshot.sync.booking.lastSuccessAt,
-      lastAriSyncAt: snapshot.sync.ari.lastSuccessAt,
-      lastAriSyncError: snapshot.sync.ari.lastErrorMessage,
-      lastAriSyncFailedAt: snapshot.sync.ari.lastAttemptAt,
-      messagingAppInstalled: snapshot.connection.messagingAppInstalled,
-    };
-  },
-
-  async listRoomTypeMappings() {
-    return (await this.getSnapshot()).mappings.roomTypes;
-  },
-  async listRatePlanMappings() {
-    return (await this.getSnapshot()).mappings.ratePlans;
-  },
-  async getMarkups() {
-    const { markups } = await this.getSnapshot();
-    return {
-      markups: markups.map(({ channel, markupPercent }) => ({ channel, markupPct: markupPercent })),
-    };
-  },
   async listChannels() {
     return { channels: (await this.getSnapshot()).channels };
   },

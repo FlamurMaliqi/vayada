@@ -91,6 +91,23 @@ describe("PMS Channex management command routes", () => {
     expect(harness.enqueue).not.toHaveBeenCalled();
   });
 
+  it("applies authentication policy before command or markup validation", async () => {
+    const harness = await testApp({ authenticated: false });
+    app = harness.app;
+    for (const [method, path] of [
+      ["POST", "commands"],
+      ["PUT", "markups"],
+    ] as const) {
+      const response = await app.inject({
+        method,
+        url: `/properties/${propertyId}/channex/${path}`,
+        payload: { malformed: true },
+      });
+      expect(response.statusCode).toBe(401);
+    }
+    expect(harness.enqueue).not.toHaveBeenCalled();
+  });
+
   it("validates and queues target-owned markups", async () => {
     const harness = await testApp();
     app = harness.app;
@@ -112,6 +129,19 @@ describe("PMS Channex management command routes", () => {
       operationType: "update_markups",
       markups: [{ channel: "airbnb", markupPercent: 12.5 }],
     });
+
+    const invalid = await app.inject({
+      method: "PUT",
+      url: `/properties/${propertyId}/channex/markups`,
+      headers: { authorization: "Bearer valid" },
+      payload: {
+        commandId: "command-3",
+        idempotencyKey: "key-3",
+        markups: [{ channel: "direct", markupPercent: 10 }],
+      },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(harness.enqueue).toHaveBeenCalledTimes(1);
   });
 
   it("guards short-lived iframe sessions with the iframe cutover mode", async () => {

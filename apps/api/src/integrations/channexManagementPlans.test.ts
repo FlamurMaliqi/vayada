@@ -34,7 +34,7 @@ describe("target Channex management plans", () => {
     await expect(port.plan(job("disable"))).resolves.toMatchObject({ requests: [] });
   });
 
-  it("orders unmapped rooms before dependent target rate plans", async () => {
+  it("orders missing or disabled rooms before dependent target rate plans", async () => {
     const db = new FakePool("provision");
     const port = createPgChannexManagementPlanPort({
       connectionString: "postgresql://target",
@@ -47,15 +47,27 @@ describe("target Channex management plans", () => {
       "/api/v1/room_types",
       "/api/v1/rate_plans",
       "/api/v1/rate_plans",
+      "/api/v1/rate_plans",
+      "/api/v1/rate_plans",
+      "/api/v1/rate_plans",
+      "/api/v1/rate_plans",
       "/api/v1/channels",
     ]);
+    expect(plan.requests[1]?.body).toMatchObject({
+      room_type: { occ_infants: 0, default_occupancy: 1 },
+    });
     expect(plan.requests[0]?.query).toMatchObject({ "filter[title]": "Deluxe" });
-    expect(plan.requests[2]?.query).toMatchObject({ "filter[title]": "Flexible" });
+    expect(plan.requests[2]?.query).toMatchObject({ "filter[title]": "Flexible - Standard" });
+    expect(plan.requests[4]?.query).toMatchObject({ "filter[title]": "Flexible - BDC Standard" });
+    expect(plan.requests[6]?.query).toMatchObject({
+      "filter[title]": "Flexible - Airbnb Standard",
+    });
     expect(plan.checkpoint).toEqual(expect.any(Function));
     expect(db.sql()).toContain("pms.channel_room_type_mappings");
     expect(db.sql()).toContain("pms.channel_rate_plan_mappings");
     expect(db.sql()).toContain("mapping.connection_id = connection.id");
     expect(db.sql()).toContain("connection.provider = 'channex'");
+    expect(db.sql()).toContain("mapping.status <> 'active'");
   });
 
   it("builds ARI from target inventory/mappings and delegates booking intake", async () => {
@@ -106,7 +118,7 @@ class FakePool {
     return this.calls.join("\n");
   }
   async end() {}
-  async query<T>(text: string, _values?: unknown[]) {
+  async query<T>(text: string) {
     this.calls.push(text);
     let rows: unknown[] = [];
     if (text.includes("hotel_catalog.properties")) rows = [{ title: "Hotel", currency: "EUR" }];
@@ -123,24 +135,28 @@ class FakePool {
           name: "Deluxe",
           currency: "EUR",
           countOfRooms: 2,
-          adults: 2,
+          adults: 1,
           children: 0,
         },
       ];
     else if (text.includes("FROM pms.rate_plans plan") && this.mode === "provision")
       rows = [
-        {
-          roomTypeId: "room-1",
-          ratePlanId: "rate-1",
-          name: "Flexible",
-          currency: "EUR",
-          sellMode: "per_room",
-          baseRate: 100,
-          channel: "direct",
-          markupPercent: 0,
-          externalRoomTypeId: null,
-        },
-      ];
+        ["direct", "Standard"],
+        ["booking_com", "BDC Standard"],
+        ["airbnb", "Airbnb Standard"],
+      ].map(([channel, label]) => ({
+        roomTypeId: "room-1",
+        ratePlanId: "rate-1",
+        name: "Flexible",
+        currency: "EUR",
+        sellMode: "per_room",
+        baseRate: 100,
+        channel,
+        markupPercent: 0,
+        providerTitle: `Flexible - ${label}`,
+        defaultOccupancy: 1,
+        externalRoomTypeId: null,
+      }));
     else if (text.includes("FROM pms.inventory_days"))
       rows = [
         {

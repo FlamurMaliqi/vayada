@@ -250,7 +250,11 @@ export default function ChannelManagerPage() {
                               [channel]: event.target.value,
                             }))
                           }
-                          disabled={busy || !modeAllowsChanges(snapshot.capabilityModes.markups)}
+                          disabled={
+                            busy ||
+                            !connected ||
+                            !modeAllowsChanges(snapshot.capabilityModes.markups)
+                          }
                           className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-3 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:bg-gray-50"
                         />
                         <span className="pointer-events-none absolute right-3 top-2 text-sm text-gray-500">
@@ -263,7 +267,9 @@ export default function ChannelManagerPage() {
                     <button
                       type="button"
                       onClick={() => void saveMarkups()}
-                      disabled={busy || !modeAllowsChanges(snapshot.capabilityModes.markups)}
+                      disabled={
+                        busy || !connected || !modeAllowsChanges(snapshot.capabilityModes.markups)
+                      }
                       className={`${buttonClass} bg-primary-600 text-white hover:bg-primary-700`}
                     >
                       Save markups

@@ -139,9 +139,16 @@ export function createPgPmsChannexManagementReadRepository(config: {
           ratePlans: rateMappings.rows as ChannexManagementSnapshot["mappings"]["ratePlans"],
         },
         channels: connectedChannels(row?.metadata),
-        markups: uniqueMarkups(
-          rateMappings.rows as Array<{ channel: string; markupPercent: number }>,
-        ),
+        markups:
+          row && (row.status === "connected" || row.status === "degraded")
+            ? uniqueMarkups(
+                rateMappings.rows as Array<{
+                  channel: string;
+                  markupPercent: number;
+                  status: string;
+                }>,
+              )
+            : [],
         sync,
         capabilityModes,
         activeOperation: activeOperation.rows[0]
@@ -235,10 +242,14 @@ function isConnectedChannel(value: unknown): value is ChannexConnectedChannel {
   );
 }
 
-function uniqueMarkups(rows: Array<{ channel: string; markupPercent: number }>) {
-  return [...new Map(rows.map((row) => [row.channel, row.markupPercent])).entries()].map(
-    ([channel, markupPercent]) => ({ channel, markupPercent }),
-  );
+function uniqueMarkups(rows: Array<{ channel: string; markupPercent: number; status: string }>) {
+  return [
+    ...new Map(
+      rows
+        .filter((row) => row.status === "active" && row.channel !== "direct")
+        .map((row) => [row.channel, row.markupPercent]),
+    ).entries(),
+  ].map(([channel, markupPercent]) => ({ channel, markupPercent }));
 }
 
 function required(value: string): string {

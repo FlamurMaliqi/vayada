@@ -27,6 +27,33 @@ test("shows guarded target state and disables observe-only controls", async ({
   await assertHealthy();
 });
 
+test("does not allow stale markup edits while disconnected", async ({ page }, testInfo) => {
+  const assertHealthy = watchPageHealth(page, testInfo);
+  await mockPmsWebAuthenticatedSession(page);
+  await mockPmsWebTargetRoutes(page);
+  await page.unroute(routeBase);
+  await page.route(routeBase, (route) =>
+    route.fulfill({
+      json: {
+        ...pmsWebChannexSnapshot,
+        markups: [{ channel: "booking_com", markupPercent: 12 }],
+        capabilityModes: Object.fromEntries(
+          Object.keys(pmsWebChannexSnapshot.capabilityModes).map((capability) => [
+            capability,
+            "mutating",
+          ]),
+        ),
+      },
+    }),
+  );
+
+  await page.goto("/channel-manager");
+
+  await expect(page.getByRole("spinbutton")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Save markups" })).toBeDisabled();
+  await assertHealthy();
+});
+
 test("runs a durable sync and shows connected channel management", async ({ page }, testInfo) => {
   const assertHealthy = watchPageHealth(page, testInfo);
   await mockPmsWebAuthenticatedSession(page);

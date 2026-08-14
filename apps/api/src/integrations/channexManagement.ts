@@ -53,6 +53,7 @@ type ChannexRequest = {
         channel: string;
         sellMode: "per_room" | "per_person";
         markupPercent: number;
+        externalRoomTypeId?: string;
       }
     | { kind: "messaging_list" }
     | { kind: "messaging_installed" };
@@ -186,7 +187,9 @@ export function createChannexManagementProvider(config: {
               }
             }
             if (request.capture?.kind === "rate_plan") {
-              const externalRoomTypeId = externalRoomTypeIds.get(request.capture.roomTypeId);
+              const externalRoomTypeId =
+                request.capture.externalRoomTypeId ??
+                externalRoomTypeIds.get(request.capture.roomTypeId);
               if (!externalRoomTypeId) {
                 return failure("invalid_state", new Error("Missing room mapping"));
               }
@@ -561,6 +564,7 @@ export const channexRequests = {
       channel: input.channel,
       sellMode: input.sellMode,
       markupPercent: input.markupPercent,
+      externalRoomTypeId: input.externalRoomTypeId,
     },
   }),
   listRatePlans: (
