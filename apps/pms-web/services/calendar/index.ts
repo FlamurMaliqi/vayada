@@ -5,7 +5,7 @@ import { unsupportedPmsNextStackFeature } from "../api/unsupported";
 import { BookingAddon } from "../bookings";
 
 // prettier-ignore
-type ManualAddonApi = { addOns: Array<{ addonItemId: string; name: string; description: string; price: string; currency: string; category: string; pricingModel: "per_stay" | "per_night" | "per_guest" | "per_guest_night"; status: string; }> };
+type ManualAddonApi = { addOns: Array<{ addonItemId: string; name: string; description: string; price: string; currency: string; category: string; pricingModel: "per_stay" | "per_night" | "per_guest" | "per_guest_night"; }> };
 
 export interface CalendarRoomType {
   id: string;
@@ -258,18 +258,16 @@ export const calendarService = {
       propertyEndpoint(propertyId, "manual-bookings/addons"),
       pmsOperationsRequestOptions,
     );
-    return response.addOns
-      .filter((addon) => addon.status === "active")
-      .map((addon) => ({
-        id: addon.addonItemId,
-        name: addon.name,
-        description: addon.description,
-        price: Number(addon.price),
-        currency: addon.currency,
-        category: addon.category,
-        perPerson: addon.pricingModel === "per_guest" || addon.pricingModel === "per_guest_night",
-        perNight: addon.pricingModel === "per_night" || addon.pricingModel === "per_guest_night",
-      }));
+    return response.addOns.map((addon) => ({
+      id: addon.addonItemId,
+      name: addon.name,
+      description: addon.description,
+      price: Number(addon.price),
+      currency: addon.currency,
+      category: addon.category,
+      perPerson: addon.pricingModel === "per_guest" || addon.pricingModel === "per_guest_night",
+      perNight: addon.pricingModel === "per_night" || addon.pricingModel === "per_guest_night",
+    }));
   },
 
   // Booking-engine-equivalent nightly rate for the given room type and check-in

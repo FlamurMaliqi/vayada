@@ -80,7 +80,7 @@ describe("target manual-booking preview", () => {
   });
 
   // prettier-ignore
-  it("lists active add-ons for front-desk PMS users", async () => { const state: State = { reads: [] }; app = await testApp(state, { relationship: "front_desk" }); const response = await app.inject({ method: "GET", url: `/properties/${propertyId}/manual-bookings/addons`, headers: headers() }); expect(response.statusCode).toBe(200); expect(response.json().addOns.map((addon: any) => addon.addonItemId)).toEqual(addonIds); expect(state.reads).toEqual(["addons"]); });
+  it("lists only active add-on fields for front-desk PMS users", async () => { const state: State = { reads: [] }; app = await testApp(state, { relationship: "front_desk" }); const response = await app.inject({ method: "GET", url: `/properties/${propertyId}/manual-bookings/addons`, headers: headers() }); expect(response.statusCode).toBe(200); expect(response.json().addOns.map((addon: any) => addon.addonItemId)).toEqual(addonIds); expect(Object.keys(response.json().addOns[0]).sort()).toEqual(["addonItemId", "category", "currency", "description", "name", "price", "pricingModel"]); expect((await app.inject({ method: "GET", url: `/properties/${propertyId}/manual-bookings/addons?propertyId=other`, headers: headers() })).statusCode).toBe(400); expect(state.reads).toEqual(["addons"]); });
 
   it.each([
     [false, "150.00"],
@@ -290,7 +290,7 @@ function ports(state: State): PmsManualBookingPreviewRoutesOptions {
     },
     roomPublication: { async getRoomPublicationSnapshot() { read("publication"); return evidence.roomPublication; } },
     booking: {
-      async listAddonItemsByHotelId() { read("addons"); return { addonItems: addonIds.map((addonItemId, index) => ({ addonItemId, propertyId, price: ["10.00", "5.00", "4.00", "2.00"][index], currency: state.addonCurrency ?? "EUR", pricingModel: ["per_stay", "per_guest", "per_night", "per_guest_night"][index], status: "active" })), propertyPlan: {} } as any; },
+      async listAddonItemsByHotelId() { read("addons"); return { addonItems: addonIds.map((addonItemId, index) => ({ addonItemId, propertyId, name: `Add-on ${index + 1}`, description: "", category: "dining", price: ["10.00", "5.00", "4.00", "2.00"][index], currency: state.addonCurrency ?? "EUR", pricingModel: ["per_stay", "per_guest", "per_night", "per_guest_night"][index], status: "active" })), propertyPlan: {} } as any; },
       async getCurrentGuestPolicy() { read("policy"); return { organizationId, propertyId, bundle: { pricingCurrency: "EUR", pricingSourceFingerprint: state.staleFingerprint ? "stale" : fingerprint, rates: [{ roomTypeId, flexible: { source: { entityId: planId, revision: String(state.stalePlan ? 4 : 3) } }, additionalGuest: { source: { source: { entityId: extraId, revision: "3" }, validationRevision: 2, materializationRevision: state.staleExtra ? 2 : 1 }, includedGuestsPerRoom: 1, amountDecimal: "5.00", currency: "EUR", countedGuestTypes: state.childrenEnabled === false ? ["adult"] : ["adult", "child"] } }] } } as any; },
     },
   };
