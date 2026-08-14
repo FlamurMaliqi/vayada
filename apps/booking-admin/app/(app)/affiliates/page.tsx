@@ -33,12 +33,15 @@ export default function AffiliatesPage() {
   const [commissionError, setCommissionError] = useState<string | null>(null);
   const [defaultAvailable, setDefaultAvailable] = useState<boolean | null>(null);
   const selectedIdRef = useRef(selectedId);
+  const listRequestIdRef = useRef(0);
+  const loadApplicationsRef = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
 
   const loadApplications = useCallback(async () => {
+    const requestId = ++listRequestIdRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -48,6 +51,11 @@ export default function AffiliatesPage() {
         limit: 50,
         offset,
       });
+      if (requestId !== listRequestIdRef.current) return;
+      if (result.affiliates.length === 0 && offset > 0 && result.total <= offset) {
+        setOffset(Math.max(0, offset - 50));
+        return;
+      }
       setApplications(result);
       setSelectedId((current) =>
         current && result.affiliates.some((item) => item.affiliateId === current)
@@ -55,13 +63,13 @@ export default function AffiliatesPage() {
           : (result.affiliates[0]?.affiliateId ?? null),
       );
     } catch (nextError) {
-      setError(errorMessage(nextError));
+      if (requestId === listRequestIdRef.current) setError(errorMessage(nextError));
     } finally {
-      setLoading(false);
+      if (requestId === listRequestIdRef.current) setLoading(false);
     }
   }, [offset, search, status]);
-
   useEffect(() => {
+    loadApplicationsRef.current = loadApplications;
     void loadApplications();
   }, [loadApplications]);
 
@@ -132,7 +140,7 @@ export default function AffiliatesPage() {
           : current,
       );
       setNotice(`${affiliateName(result.affiliate)} ${pastTense(action)}.`);
-      await loadApplications();
+      await loadApplicationsRef.current();
     } catch (nextError) {
       setError(errorMessage(nextError));
     } finally {
