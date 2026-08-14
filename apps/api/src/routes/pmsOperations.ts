@@ -3100,11 +3100,7 @@ function toRoomTypeCreateCommand(
   const locationAttributes = roomTypeLocationAttributes(raw, "Room type create");
   if ("error" in locationAttributes) return { error: invalidBody(locationAttributes.error) };
   const attributes = roomTypeAttributes(raw);
-  if (
-    attributes.bathroomType !== undefined &&
-    attributes.bathroomType !== "private" &&
-    attributes.bathroomType !== "shared"
-  ) {
+  if (attributes.bathroomType !== "private" && attributes.bathroomType !== "shared") {
     return { error: invalidBody("Room type create bathroomType is invalid.") };
   }
   if (attributes.bathroomType === "private" && !(Number(attributes.bathrooms) > 0)) {
