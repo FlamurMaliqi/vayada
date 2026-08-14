@@ -27,6 +27,7 @@
     "@vayada/domain-hotels": "*",
     "@vayada/locale-constants": "*",
     "countries-and-timezones": "^3.9.0",
+    "libphonenumber-js": "^1.13.11",
     "tz-lookup": "^6.1.25"
   },
   "peerDependencies": {

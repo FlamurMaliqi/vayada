@@ -2642,6 +2642,8 @@ describe("shared hotel setup status route", () => {
     expect(sql).toContain("'purpose', contact.purpose");
     expect(sql).toContain("'isPublic', contact.is_public");
     expect(sql).toContain("contact.source_system = 'platform'");
+    expect(sql).toContain("contact.is_public = TRUE");
+    expect(sql).toContain("contact.channel_type IN ('phone', 'whatsapp', 'email')");
     expect(sql).not.toContain("property_public_profile_read_model");
     expect(sql).not.toContain("property_profiles profile");
     expect(sql).not.toContain("property_media media");
@@ -2879,6 +2881,8 @@ describe("shared hotel setup status route", () => {
     expect(createSql).toContain("contact_input.is_public");
     expect(createSql).toContain("SET purpose = EXCLUDED.purpose");
     expect(createSql).toContain("is_public = EXCLUDED.is_public");
+    expect(createSql).toContain("deleted_external_guest_contacts");
+    expect(createSql).toContain("contact.source_system <> 'platform'");
     expect(createSql).not.toContain("INSERT INTO hotel_catalog.property_profiles");
     expect(createSql).not.toContain("INSERT INTO hotel_catalog.property_media");
     expect(createSql).not.toContain("INSERT INTO identity.organizations");

@@ -665,16 +665,156 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical property profile repository", () 
       organizationId,
     );
     await expect(
-      client.query<{ value: string }>(
-        `SELECT value
+      client.query<{ value: string; sourceSystem: string }>(
+        `SELECT value, source_system AS "sourceSystem"
          FROM hotel_catalog.property_contact_channels
          WHERE property_id = $1::uuid
            AND channel_type = 'phone'
-           AND source_system = 'booking'`,
+           AND is_public = TRUE`,
         [created.propertyId],
       ),
     ).resolves.toMatchObject({
-      rows: [{ value: "+49 30 7654321" }],
+      rows: [{ value: "+49 30 7654321", sourceSystem: "booking" }],
+    });
+  });
+
+  it("keeps public guest contacts canonical across setup and Booking settings", async () => {
+    const created = await repository.createPropertyProfile({
+      organizationId,
+      idempotencyKey: "external-guest-contacts-create",
+      correlationId: "external-guest-contacts-create",
+      profile: { ...profile, displayName: "External Guest Contacts Hotel" },
+    });
+    await client.query(
+      `INSERT INTO hotel_catalog.property_contact_channels (
+         property_id,
+         channel_type,
+         value,
+         purpose,
+         is_public,
+         source_system
+       )
+       VALUES
+         ($1::uuid, 'phone', '+49 30 7000001', 'general', TRUE, 'booking'),
+         ($1::uuid, 'whatsapp', '+49 30 7000002', 'general', TRUE, 'booking'),
+         ($1::uuid, 'email', 'guest@example.test', 'general', TRUE, 'marketplace')`,
+      [created.propertyId],
+    );
+
+    const loaded = await repository.getPropertyProfile({
+      organizationId,
+      propertyId: created.propertyId,
+    });
+    if (!loaded) throw new Error("Expected the shared profile to load");
+    expect(loaded.profile.contacts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ channelType: "phone", value: "+49 30 7000001" }),
+        expect.objectContaining({ channelType: "whatsapp", value: "+49 30 7000002" }),
+        expect.objectContaining({ channelType: "email", value: "guest@example.test" }),
+      ]),
+    );
+
+    const updated = await repository.updatePropertyProfile({
+      organizationId,
+      propertyId: created.propertyId,
+      expectedProfileRevision: loaded.profileRevision,
+      profile: {
+        ...loaded.profile,
+        contacts: [
+          ...loaded.profile.contacts.filter((contact) => !contact.isPublic),
+          {
+            channelType: "phone",
+            value: "+49 30 7000001",
+            purpose: "general",
+            isPublic: true,
+          },
+          {
+            channelType: "email",
+            value: "new-guest@example.test",
+            purpose: "general",
+            isPublic: true,
+          },
+        ],
+      },
+    });
+    expect(updated).not.toBeNull();
+
+    await expect(
+      client.query<{
+        channelType: string;
+        value: string;
+        sourceSystem: string;
+      }>(
+        `SELECT
+           channel_type AS "channelType",
+           value,
+           source_system AS "sourceSystem"
+         FROM hotel_catalog.property_contact_channels
+         WHERE property_id = $1::uuid
+           AND is_public = TRUE
+           AND channel_type IN ('phone', 'whatsapp', 'email')
+         ORDER BY channel_type, value`,
+        [created.propertyId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          channelType: "email",
+          value: "new-guest@example.test",
+          sourceSystem: "platform",
+        },
+        {
+          channelType: "phone",
+          value: "+49 30 7000001",
+          sourceSystem: "platform",
+        },
+      ],
+    });
+
+    await bookingSettingsRepository.updatePropertySettingsByHotelId?.(
+      created.propertyId,
+      {
+        reservationEmail: "booking-guest@example.test",
+        phoneNumber: "+49 30 7000001",
+        whatsappNumber: "+49 30 8000002",
+      },
+      organizationId,
+    );
+    await expect(
+      client.query<{
+        channelType: string;
+        value: string;
+        sourceSystem: string;
+      }>(
+        `SELECT
+           channel_type AS "channelType",
+           value,
+           source_system AS "sourceSystem"
+         FROM hotel_catalog.property_contact_channels
+         WHERE property_id = $1::uuid
+           AND is_public = TRUE
+           AND channel_type IN ('phone', 'whatsapp', 'email')
+         ORDER BY channel_type, value`,
+        [created.propertyId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          channelType: "email",
+          value: "booking-guest@example.test",
+          sourceSystem: "booking",
+        },
+        {
+          channelType: "phone",
+          value: "+49 30 7000001",
+          sourceSystem: "booking",
+        },
+        {
+          channelType: "whatsapp",
+          value: "+49 30 8000002",
+          sourceSystem: "booking",
+        },
+      ],
     });
   });
 

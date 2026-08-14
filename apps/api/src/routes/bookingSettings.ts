@@ -1385,18 +1385,17 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
     DELETE FROM hotel_catalog.property_contact_channels contact
     USING writable_target
     WHERE contact.property_id = writable_target.property_id
-      AND contact.source_system = 'booking'
+      AND (
+        contact.source_system = 'booking'
+        OR (
+          contact.is_public = TRUE
+          AND contact.channel_type IN ('email', 'phone', 'whatsapp')
+        )
+      )
       AND EXISTS (
         SELECT 1
         FROM jsonb_to_recordset($2::jsonb) AS input(channel_type text, value text)
         WHERE input.channel_type = contact.channel_type
-      )
-      AND NOT EXISTS (
-        SELECT 1
-        FROM jsonb_to_recordset($2::jsonb) AS input(channel_type text, value text)
-        WHERE input.channel_type = contact.channel_type
-          AND input.value = contact.value
-          AND NULLIF(input.value, '') IS NOT NULL
       )
     RETURNING contact.property_id
   ),
@@ -1422,6 +1421,7 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
       'booking',
       now()
     FROM writable_contact_input
+    CROSS JOIN (SELECT count(*) FROM deleted_contacts) deleted_contact_status
     WHERE NULLIF(writable_contact_input.value, '') IS NOT NULL
     ON CONFLICT (property_id, channel_type, value) DO UPDATE
     SET is_public = TRUE,

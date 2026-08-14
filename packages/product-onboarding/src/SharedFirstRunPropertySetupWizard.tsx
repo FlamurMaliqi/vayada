@@ -49,13 +49,18 @@ import {
   LANGUAGE_OPTIONS,
   POPULAR_LANGUAGE_CODES,
 } from "@vayada/locale-constants";
+import {
+  getCountries,
+  getCountryCallingCode,
+  parsePhoneNumberFromString,
+  type CountryCode,
+} from "libphonenumber-js/min";
 
 import { HotelIcon } from "./HotelIcon";
 import GoogleAddressMap from "./GoogleAddressMap";
 import GooglePlacesAddressField from "./GooglePlacesAddressField";
 import TimezoneField from "./TimezoneField";
 import { availableTimezones, defaultTimezoneForCountry, timezoneForCoordinates } from "./timezones";
-import { isValidSharedAccountPhone } from "./sharedAccountDetails";
 import {
   isSetupTaskActionable,
   resolveSharedFirstRunSetupView,
@@ -125,9 +130,9 @@ type ProfileDraft = {
   latitude: number | null;
   longitude: number | null;
   timezone: string;
-  website: string;
   contactEmail: string;
   phone: string;
+  whatsapp: string;
   localityPublic: boolean;
   logoFile: File | null;
   logoMediaObjectId: string | null;
@@ -287,7 +292,7 @@ const BASE_PROFILE_STEP_FIELDS: ReadonlyArray<ReadonlyArray<string>> = [
     "location.countryCode",
     "location.timezone",
   ],
-  ["contactEmail", "phone", "website"],
+  ["phone", "whatsapp", "contactEmail"],
 ];
 const LAUNCH_SETTINGS_STEP_FIELDS = [
   "defaultCurrency",
@@ -297,7 +302,7 @@ const LAUNCH_SETTINGS_STEP_FIELDS = [
   "tiktok",
   "youtube",
 ] as const;
-const BASE_PROFILE_STEP_TITLES = ["About your hotel", "Location", "Hotel contact"] as const;
+const BASE_PROFILE_STEP_TITLES = ["About your hotel", "Location", "Contact information"] as const;
 const PROFILE_STEP_FIELDS_WITH_LAUNCH: ReadonlyArray<ReadonlyArray<string>> = [
   BASE_PROFILE_STEP_FIELDS[0],
   BASE_PROFILE_STEP_FIELDS[1],
@@ -308,7 +313,7 @@ const PROFILE_STEP_TITLES_WITH_LAUNCH = [
   "About your hotel",
   "Location",
   "Guest preferences",
-  "Hotel contact",
+  "Contact information",
 ] as const;
 
 const PROPERTY_TYPE_ICONS = new Map<string, IconComponent>([
@@ -1172,6 +1177,9 @@ function ProfileForm({
   const focusAddressFieldsWhenShown = useRef(false);
   const stepHeading = useRef<HTMLHeadingElement>(null);
   const timezoneWasAutoDetected = useRef(false);
+  const [whatsappFollowsPhone, setWhatsappFollowsPhone] = useState(
+    () => !draft.whatsapp || draft.whatsapp === draft.phone,
+  );
 
   useEffect(() => {
     const errorStep = profileStepFields.findIndex((fields) =>
@@ -1218,6 +1226,17 @@ function ProfileForm({
     setLogoPreviewUrl(previewUrl);
     return () => URL.revokeObjectURL(previewUrl);
   }, [draft.logoFile, draft.logoPublicUrl]);
+
+  useEffect(() => {
+    if (
+      step === contactStep &&
+      whatsappFollowsPhone &&
+      draft.phone &&
+      draft.whatsapp !== draft.phone
+    ) {
+      onChange({ ...draft, whatsapp: draft.phone });
+    }
+  }, [contactStep, draft, onChange, step, whatsappFollowsPhone]);
 
   if (loading) {
     return (
@@ -1444,42 +1463,49 @@ function ProfileForm({
               tabIndex={-1}
               className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
             >
-              How can Vayada reach your hotel?
+              How can guests reach you?
             </h3>
             <p className="mt-2 text-sm text-gray-500">
-              Existing published contacts keep their visibility. Any new details you add here stay
-              private.
+              This information is shown when guests click &apos;Contact&apos; on your booking page.
             </p>
           </div>
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-4">
+            <PhoneField
+              label="Phone number"
+              value={draft.phone}
+              countryCode={draft.countryCode}
+              placeholder="+94 77 123 4567"
+              required
+              error={fieldErrors.phone?.[0]}
+              onChange={(value) =>
+                onChange({
+                  ...draft,
+                  phone: value,
+                  whatsapp: whatsappFollowsPhone ? value : draft.whatsapp,
+                })
+              }
+            />
+            <PhoneField
+              label="WhatsApp number"
+              value={draft.whatsapp}
+              countryCode={draft.countryCode}
+              placeholder="Same as phone or a different number."
+              helper="Leave blank if you don't use WhatsApp."
+              error={fieldErrors.whatsapp?.[0]}
+              onChange={(value) => {
+                setWhatsappFollowsPhone(value === draft.phone && Boolean(value));
+                setField("whatsapp", value);
+              }}
+            />
             <TextField
-              label="Contact email"
+              label="Email"
               value={draft.contactEmail}
-              placeholder="hello@hotel-alpenrose.com"
+              placeholder="hello@yourhotel.com"
               type="email"
               required
               error={fieldErrors.contactEmail?.[0]}
               onChange={(value) => setField("contactEmail", value)}
             />
-            <TextField
-              label="Phone number"
-              value={draft.phone}
-              placeholder="+49 89 123456"
-              type="tel"
-              required
-              error={fieldErrors.phone?.[0]}
-              onChange={(value) => setField("phone", value)}
-            />
-            <div className="md:col-span-2">
-              <TextField
-                label="Website"
-                value={draft.website}
-                placeholder="https://hotel-alpenrose.com"
-                type="url"
-                error={fieldErrors.website?.[0]}
-                onChange={(value) => setField("website", value)}
-              />
-            </div>
           </div>
         </div>
       </section>
@@ -2705,7 +2731,7 @@ export function validateProfileDraft(draft: ProfileDraft): Record<string, string
   if (!draft.timezone.trim()) {
     errors["location.timezone"] = ["Time zone is required."];
   }
-  if (!draft.contactEmail.trim()) errors.contactEmail = ["Contact email is required."];
+  if (!draft.contactEmail.trim()) errors.contactEmail = ["Email is required."];
   if (!draft.phone.trim()) errors.phone = ["Phone number is required."];
   if (draft.timezone.trim() && !isValidIanaTimezone(draft.timezone.trim())) {
     errors["location.timezone"] = ["Enter a valid IANA time zone."];
@@ -2713,11 +2739,11 @@ export function validateProfileDraft(draft: ProfileDraft): Record<string, string
   if (draft.contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.contactEmail)) {
     errors.contactEmail = ["Enter a valid email address."];
   }
-  if (!isValidSharedAccountPhone(draft.phone)) {
+  if (draft.phone.trim() && !isValidInternationalPhone(draft.phone)) {
     errors.phone = ["Enter a valid phone number."];
   }
-  if (draft.website && !isHttpUrl(draft.website)) {
-    errors.website = ["Enter a complete website URL, including https://."];
+  if (draft.whatsapp && !isValidInternationalPhone(draft.whatsapp)) {
+    errors.whatsapp = ["Enter a valid WhatsApp number."];
   }
 
   return errors;
@@ -2801,6 +2827,153 @@ function TextField({
       )}
       {error && (
         <p id={errorId} className="mt-1 text-xs text-red-600" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+const SUPPORTED_PHONE_COUNTRIES = new Set(getCountries());
+const PHONE_COUNTRY_OPTIONS = COUNTRY_OPTIONS.filter(({ code }) =>
+  SUPPORTED_PHONE_COUNTRIES.has(code as CountryCode),
+).map((country) => ({
+  ...country,
+  callingCode: `+${getCountryCallingCode(country.code as CountryCode)}`,
+}));
+
+function phoneCountry(value: string, fallback: string): CountryCode {
+  const parsed = parsePhoneNumberFromString(value);
+  if (parsed?.country) return parsed.country;
+  const normalizedFallback = fallback.trim().toUpperCase() as CountryCode;
+  return SUPPORTED_PHONE_COUNTRIES.has(normalizedFallback) ? normalizedFallback : "US";
+}
+
+export function normalizedPhoneNumber(value: string, countryCode?: CountryCode): string {
+  const parsed = parsePhoneNumberFromString(value, countryCode);
+  return parsed?.isValid() ? parsed.formatInternational() : value;
+}
+
+function isValidInternationalPhone(value: string): boolean {
+  return value.trim().startsWith("+") && Boolean(parsePhoneNumberFromString(value)?.isValid());
+}
+
+export function phoneWithCountryCallingCode(
+  value: string,
+  countryCode: CountryCode,
+  previousCountryCode?: CountryCode,
+): string {
+  const callingCode = `+${getCountryCallingCode(countryCode)}`;
+  const parsed = parsePhoneNumberFromString(value);
+  if (parsed?.nationalNumber) return `${callingCode} ${parsed.nationalNumber}`;
+
+  const digits = value.replace(/\D/g, "");
+  const previousCallingCode = previousCountryCode
+    ? getCountryCallingCode(previousCountryCode)
+    : undefined;
+  const nationalNumber =
+    previousCallingCode && digits.startsWith(previousCallingCode)
+      ? digits.slice(previousCallingCode.length)
+      : digits.replace(/^0+/, "");
+  return nationalNumber ? `${callingCode} ${nationalNumber}` : `${callingCode} `;
+}
+
+function PhoneField({
+  label,
+  value,
+  countryCode,
+  onChange,
+  error,
+  helper,
+  placeholder,
+  required = false,
+}: {
+  label: string;
+  value: string;
+  countryCode: string;
+  onChange: (value: string) => void;
+  error?: string;
+  helper?: string;
+  placeholder: string;
+  required?: boolean;
+}) {
+  const generatedId = useId();
+  const inputId = `setup-${generatedId}`;
+  const helperId = helper ? `${inputId}-helper` : undefined;
+  const errorId = error ? `${inputId}-error` : undefined;
+  const describedBy = [helperId, errorId].filter(Boolean).join(" ") || undefined;
+  const [selectedCountry, setSelectedCountry] = useState<CountryCode>(() =>
+    phoneCountry(value, countryCode),
+  );
+
+  useEffect(() => {
+    const parsedCountry = parsePhoneNumberFromString(value)?.country;
+    if (parsedCountry) {
+      setSelectedCountry((current) => (current === parsedCountry ? current : parsedCountry));
+    } else if (!value.trim()) {
+      const fallbackCountry = phoneCountry("", countryCode);
+      setSelectedCountry((current) => (current === fallbackCountry ? current : fallbackCountry));
+    }
+  }, [countryCode, value]);
+
+  return (
+    <div>
+      <label
+        htmlFor={inputId}
+        className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-gray-700"
+      >
+        <span>{label}</span>
+        {!required && (
+          <span aria-hidden="true" className="text-xs text-gray-400">
+            Optional
+          </span>
+        )}
+      </label>
+      {helper && (
+        <p id={helperId} className="mt-1 text-xs text-gray-500">
+          {helper}
+        </p>
+      )}
+      <div
+        className={`mt-2 flex overflow-hidden rounded-xl border transition focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-100 ${
+          error ? "border-red-300 bg-red-50" : "border-gray-200 bg-white"
+        }`}
+      >
+        <select
+          aria-label={`${label} country code`}
+          value={selectedCountry}
+          onChange={(event) => {
+            const nextCountry = event.target.value as CountryCode;
+            const previousCountry = selectedCountry;
+            setSelectedCountry(nextCountry);
+            onChange(phoneWithCountryCallingCode(value, nextCountry, previousCountry));
+          }}
+          className="w-32 shrink-0 border-0 border-r border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none"
+        >
+          {PHONE_COUNTRY_OPTIONS.map((country) => (
+            <option key={country.code} value={country.code}>
+              {country.flag} {country.callingCode}
+            </option>
+          ))}
+        </select>
+        <input
+          id={inputId}
+          type="tel"
+          value={value}
+          placeholder={placeholder}
+          aria-invalid={Boolean(error)}
+          aria-describedby={describedBy}
+          aria-required={required}
+          onChange={(event) => onChange(normalizedPhoneNumber(event.target.value, selectedCountry))}
+          onBlur={() => {
+            const normalized = normalizedPhoneNumber(value, selectedCountry);
+            if (normalized !== value) onChange(normalized);
+          }}
+          className="min-w-0 flex-1 border-0 bg-transparent px-4 py-2.5 text-base outline-none sm:text-sm"
+        />
+      </div>
+      {error && (
+        <p id={errorId} role="alert" className="mt-1.5 text-xs text-red-600">
           {error}
         </p>
       )}
@@ -3087,6 +3260,12 @@ function draftFromProfile(
   const publicLogo = publicResponse?.publicProfile.media.find(
     ({ mediaType }) => mediaType === "logo",
   );
+  const phone = contactValue(profile.contacts, "phone");
+  const whatsapp = contactValue(profile.contacts, "whatsapp");
+  const profileCountry = profile.location.countryCode.trim().toUpperCase() as CountryCode;
+  const profilePhoneCountry = SUPPORTED_PHONE_COUNTRIES.has(profileCountry)
+    ? profileCountry
+    : undefined;
   return {
     displayName: profile.displayName,
     propertyType: profile.propertyType,
@@ -3097,9 +3276,9 @@ function draftFromProfile(
     latitude: profile.location.latitude,
     longitude: profile.location.longitude,
     timezone: profile.location.timezone,
-    website: contactValue(profile.contacts, "website"),
     contactEmail: contactValue(profile.contacts, "email"),
-    phone: contactValue(profile.contacts, "phone"),
+    phone: normalizedPhoneNumber(phone, profilePhoneCountry),
+    whatsapp: normalizedPhoneNumber(whatsapp, profilePhoneCountry),
     localityPublic: profile.location.localityPublic,
     logoFile: null,
     logoMediaObjectId: pendingLogo?.mediaObjectId ?? publicLogo?.mediaObjectId ?? null,
@@ -3178,9 +3357,9 @@ function newPropertyDraft(timezone = ""): ProfileDraft {
     latitude: null,
     longitude: null,
     timezone,
-    website: "",
     contactEmail: "",
     phone: "",
+    whatsapp: "",
     localityPublic: false,
     logoFile: null,
     logoMediaObjectId: null,
@@ -3217,24 +3396,15 @@ function visibleChoiceCodes(
   );
 }
 
-function isHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
 function contactsFromDraft(
   draft: ProfileDraft,
   existing: PropertyProfileContact[] = [],
 ): PropertyProfileContact[] {
   return (
     [
-      ["email", draft.contactEmail],
       ["phone", draft.phone],
-      ["website", draft.website],
+      ["whatsapp", draft.whatsapp],
+      ["email", draft.contactEmail],
     ] as const
   ).reduce<PropertyProfileContact[]>(
     (contacts, [channelType, value]) => replaceContact(contacts, channelType, value),
@@ -3251,26 +3421,26 @@ function replaceContact(
   const exactIndex = contacts.findIndex(
     (contact) => contact.channelType === channelType && contact.value === trimmed,
   );
-  const index = contacts.findIndex(
-    (contact) =>
-      contact.channelType === channelType && contact.purpose === "general" && !contact.isPublic,
-  );
   if (!trimmed) {
-    return index < 0 ? contacts : contacts.filter((_, contactIndex) => contactIndex !== index);
+    return contacts.filter((contact) => contact.channelType !== channelType || !contact.isPublic);
   }
-  if (exactIndex >= 0) return contacts;
-  if (index >= 0) {
-    return contacts.map((contact, contactIndex) =>
-      contactIndex === index ? { ...contact, value: trimmed } : contact,
-    );
+
+  if (exactIndex >= 0) {
+    return contacts.flatMap((contact, contactIndex) => {
+      if (contactIndex === exactIndex) {
+        return [{ ...contact, purpose: "general" as const, isPublic: true }];
+      }
+      return contact.channelType === channelType && contact.isPublic ? [] : [contact];
+    });
   }
+
   return [
-    ...contacts,
+    ...contacts.filter((contact) => contact.channelType !== channelType || !contact.isPublic),
     {
       channelType,
       value: trimmed,
       purpose: "general",
-      isPublic: false,
+      isPublic: true,
     },
   ];
 }
@@ -3282,11 +3452,11 @@ function contactValue(
   return (
     contacts.find(
       (contact) =>
-        contact.channelType === channelType && contact.purpose === "general" && !contact.isPublic,
+        contact.channelType === channelType && contact.purpose === "general" && contact.isPublic,
     )?.value ??
+    contacts.find((contact) => contact.channelType === channelType && contact.isPublic)?.value ??
     contacts.find((contact) => contact.channelType === channelType && contact.purpose === "general")
       ?.value ??
-    contacts.find((contact) => contact.channelType === channelType && !contact.isPublic)?.value ??
     contacts.find((contact) => contact.channelType === channelType)?.value ??
     ""
   );
