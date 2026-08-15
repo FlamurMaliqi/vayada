@@ -95,7 +95,14 @@ test("fresh hotel and creator onboarding reaches every next-stack handoff and sa
     primaryError = error;
   }
 
-  const cleanupErrors = await cleanupSmokeResources(request, environment, users, bookings, hotel);
+  const cleanupErrors = await cleanupSmokeResources(
+    request,
+    environment,
+    users,
+    bookings,
+    hotel,
+    platformAdmin,
+  );
   if (primaryError && cleanupErrors.length === 0) throw primaryError;
   if (cleanupErrors.length) {
     const failures = [primaryError, ...cleanupErrors].filter((error): error is unknown =>
@@ -302,19 +309,27 @@ async function runHotelFlow(
         primaryColor: "#2946E8",
         fontPairing: "modern-minimalist",
       });
-      const activation = await targetApi(request, platformAdmin.accessToken).json<
-        Record<string, unknown>
-      >(
+      const platformAdminApi = targetApi(request, platformAdmin.accessToken);
+      const impact = await platformAdminApi.json<Record<string, unknown>>(
+        "GET",
+        `/api/platform/admin/properties/${setup.propertyId}/retirement-impact`,
+      );
+      expect(impact.lifecycleStatus).toBe("provisioning");
+      const expectedLifecycleRevision = numberField(impact, "lifecycleRevision");
+      const activation = await platformAdminApi.json<Record<string, unknown>>(
         "PATCH",
         `/api/platform/admin/properties/${setup.propertyId}/status`,
         {
-          expectedLifecycleRevision: 1,
+          expectedLifecycleRevision,
           status: "active",
           reason: "Approve the isolated next-stack smoke property",
         },
         { "Idempotency-Key": `next-smoke:${environment.runId}:property-active` },
       );
-      expect(activation).toMatchObject({ lifecycleStatus: "active", lifecycleRevision: 2 });
+      expect(activation).toMatchObject({
+        lifecycleStatus: "active",
+        lifecycleRevision: expectedLifecycleRevision + 1,
+      });
       const result = await api.json<Record<string, unknown>>(
         "POST",
         `/api/booking/hotels/${setup.propertyId}/public-bookability`,

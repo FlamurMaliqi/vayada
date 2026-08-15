@@ -2,13 +2,17 @@ import type { APIRequestContext } from "@playwright/test";
 
 import { waitForNoPublicOffer, type BookingResource, type Stay } from "./booking-lifecycle";
 import {
+  authenticateSyntheticPlatformAdmin,
+  numberField,
   publicApi,
+  targetApi,
   workosApi,
   workosMembershipIdsForUser,
   workosOrganizationsForUser,
   workosUserIdsForEmail,
   type JsonApi,
   type SmokeEnvironment,
+  type SyntheticPlatformAdmin,
   type SyntheticUser,
 } from "./support";
 
@@ -26,6 +30,7 @@ export async function cleanupSmokeResources(
   users: SyntheticUser[],
   bookings: BookingResource[],
   hotel?: HotelResource,
+  platformAdmin?: SyntheticPlatformAdmin,
 ): Promise<unknown[]> {
   const errors: unknown[] = [];
   const publicClient = publicApi(request);
@@ -89,6 +94,34 @@ export async function cleanupSmokeResources(
       );
       if (hotel.slug && hotel.stay) {
         await waitForNoPublicOffer(request, hotel.slug, hotel.stay);
+      }
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  if (hotel) {
+    try {
+      if (!platformAdmin) throw new Error("Synthetic Platform Admin was not created.");
+      const platformAdminApi = targetApi(
+        request,
+        await authenticateSyntheticPlatformAdmin(request, platformAdmin, environment.password),
+      );
+      const impact = await platformAdminApi.json<Record<string, unknown>>(
+        "GET",
+        `/api/platform/admin/properties/${hotel.propertyId}/retirement-impact`,
+      );
+      if (impact.lifecycleStatus !== "retired") {
+        await platformAdminApi.json(
+          "POST",
+          `/api/platform/admin/properties/${hotel.propertyId}/retire`,
+          {
+            expectedLifecycleRevision: numberField(impact, "lifecycleRevision"),
+            confirmation: "RETIRE",
+            reason: "Retire the isolated next-stack smoke property",
+          },
+          { "Idempotency-Key": `next-smoke:${environment.runId}:property-retired` },
+        );
       }
     } catch (error) {
       errors.push(error);

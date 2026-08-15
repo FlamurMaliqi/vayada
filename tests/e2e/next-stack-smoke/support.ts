@@ -40,6 +40,7 @@ export type SyntheticUser = {
 
 export type SyntheticPlatformAdmin = {
   accessToken: string;
+  email: string;
   membershipId: string;
   userId: string;
 };
@@ -200,7 +201,15 @@ export async function createSyntheticPlatformAdmin(
   );
   const membershipId = stringField(membership, "id");
   const accessToken = await waitForPlatformAdminLogin(request, email, environment.password);
-  return { accessToken, membershipId, userId };
+  return { accessToken, email, membershipId, userId };
+}
+
+export async function authenticateSyntheticPlatformAdmin(
+  request: APIRequestContext,
+  account: SyntheticPlatformAdmin,
+  password: string,
+): Promise<string> {
+  return waitForPlatformAdminLogin(request, account.email, password);
 }
 
 export async function login(page: Page, user: SyntheticUser, password: string): Promise<void> {

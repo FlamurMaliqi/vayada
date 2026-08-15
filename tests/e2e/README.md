@@ -65,6 +65,11 @@ WORKOS_API_KEY='<key used by deployed next-api>' \
 npm run e2e:next-stack-smoke
 ```
 
+The `next-smoke` environment is restricted to reviewed `main` runs and requires explicit approval
+before releasing its secrets. Each run creates a temporary Platform Admin for the production
+lifecycle command. Cleanup restores inventory and disables public offers, reauthenticates the
+temporary admin to retire the synthetic property, then deletes its membership and user.
+
 Cleanup runs even after a failed assertion. It cancels or withdraws every
 synthetic booking, changes the synthetic property to the non-checkout `other`
 payment method and waits until public quotes disappear, then deletes the
