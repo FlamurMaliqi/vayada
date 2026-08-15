@@ -66,8 +66,21 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
     await page.route(`**/api/pms/properties/${propertyId}/manual-bookings/preview`, (route) =>
       previewEnabled ? route.continue() : route.abort(),
     );
+    const roomsResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        response.request().method() === "GET" &&
+        url.pathname === `/api/pms/properties/${propertyId}/rooms`
+      );
+    });
     await page.goto(`${NEXT_STACK_ORIGINS.pms}/calendar`);
+    const roomsResponse = await roomsResponsePromise;
+    const rooms = record(await roomsResponse.json());
+    expect(roomsResponse.status(), JSON.stringify(rooms)).toBe(200);
+    expect(rooms.propertyId).toBe(propertyId);
+    expect(arrayField(rooms, "items")).toHaveLength(2);
     await expect(page.getByRole("heading", { name: "Calendar", exact: true })).toBeVisible();
+    await expect(page.getByText("#QA-101", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "+ New Booking", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "New booking" });
     await expect(dialog).toBeVisible();
