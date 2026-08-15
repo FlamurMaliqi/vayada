@@ -1,4 +1,5 @@
 import { PUBLIC_BOOKABILITY_FIXTURES } from "@vayada/domain-distribution/fixtures";
+import { buildBookingPublicContent } from "@vayada/domain-distribution/booking-publication";
 import type { QueryResultRow } from "pg";
 import { describe, expect, it } from "vitest";
 
@@ -14,7 +15,7 @@ describe("active immutable Booking publication profile reads", () => {
       connectionString: "postgresql://unused",
       pool: pool(async (text, values) => {
         calls.push({ text, values });
-        return [{ propertyId: profile.hotel.propertyId, profile }];
+        return [{ propertyId: profile.hotel.propertyId, publicContent: content(profile) }];
       }),
     });
 
@@ -32,7 +33,12 @@ describe("active immutable Booking publication profile reads", () => {
     privateProfile.hotel.trust.reasonCodes = ["unpublished"];
     const repository = createActiveBookingPublicationProfileRepository({
       connectionString: "postgresql://unused",
-      pool: pool(async () => [{ propertyId: profile.hotel.propertyId, profile: privateProfile }]),
+      pool: pool(async () => [
+        {
+          propertyId: profile.hotel.propertyId,
+          publicContent: { ...content(profile), profile: privateProfile },
+        },
+      ]),
     });
 
     await expect(repository.findProfileBySlug(profile.hotel.slug)).resolves.toBeNull();
@@ -53,7 +59,9 @@ describe("active immutable Booking publication profile reads", () => {
       connectionString: "postgresql://unused",
       pool: pool(async (text, values) => {
         calls.push([text, values]);
-        return [{ propertyId: domainProfile.hotel.propertyId, profile: domainProfile }];
+        return [
+          { propertyId: domainProfile.hotel.propertyId, publicContent: content(domainProfile) },
+        ];
       }),
     });
 
@@ -65,6 +73,61 @@ describe("active immutable Booking publication profile reads", () => {
     expect(calls[0]?.[1]).toEqual(["book.example.test"]);
   });
 });
+
+function content(value: typeof profile) {
+  const result = buildBookingPublicContent({
+    sourceManifestHash: `sha256:${"1".repeat(64)}`,
+    readinessHash: `sha256:${"2".repeat(64)}`,
+    profile: value,
+    rooms: [
+      {
+        roomTypeId: "room-1",
+        name: "Room",
+        description: "A room.",
+        category: null,
+        occupancy: { maxGuests: 2, maxAdults: 2, maxChildren: 0 },
+        beds: [{ type: "double", quantity: 1 }],
+        bedrooms: 1,
+        bathrooms: 1,
+        bathroomType: "private",
+        size: null,
+        images: [{ url: "https://cdn.example/room.jpg" }],
+        amenities: ["wifi"],
+        rates: [
+          {
+            ratePlanId: "rate-1",
+            currency: "EUR",
+            baseNightlyAmount: "100.00",
+            refundable: true,
+            paymentTiming: "pay_at_property",
+          },
+        ],
+      },
+    ],
+    calendar: {
+      sourceRevision: "calendar-1",
+      materializedRevision: "calendar-1",
+      currentLocalDate: "2026-06-06",
+      coverageFrom: "2026-06-06",
+      coverageThrough: "2027-06-06",
+      materializedThrough: "2027-06-06",
+      expectedDayCount: 366,
+      materializedDayCount: 366,
+      gapCount: 0,
+      roomTypeIds: ["room-1"],
+      observedAt: value.generatedAt,
+    },
+    finance: {
+      defaultCurrency: "EUR",
+      supportedCurrencies: ["EUR"],
+      onlinePayment: true,
+      payAtProperty: true,
+      readyPaymentMethods: ["card", "pay_at_property"],
+    },
+  });
+  if (!result) throw new Error("Expected valid Booking public content fixture");
+  return result.publicContent;
+}
 
 function pool(
   query: (text: string, values?: readonly unknown[]) => Promise<QueryResultRow[]>,

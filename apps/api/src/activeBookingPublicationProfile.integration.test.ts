@@ -1,6 +1,7 @@
 import { PUBLIC_BOOKABILITY_FIXTURES } from "@vayada/domain-distribution/fixtures";
+import { buildBookingPublicContent } from "@vayada/domain-distribution/booking-publication";
 import pg, { type QueryResultRow } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createActiveBookingPublicationProfileRepository } from "./routes/activeBookingPublicationProfile.js";
 import type { PublicHotelProfileReadPool } from "./routes/aiHotels.js";
@@ -12,6 +13,7 @@ const propertyB = "85858585-8585-4585-8585-858585858503";
 const revisionA = "85858585-8585-4585-8585-858585858504";
 const revisionB = "85858585-8585-4585-8585-858585858505";
 const inactiveRevision = "85858585-8585-4585-8585-858585858506";
+const malformedRevision = "85858585-8585-4585-8585-858585858507";
 const hostname = "book.alpenrose.example";
 const fixture = PUBLIC_BOOKABILITY_FIXTURES.find(({ caseId }) => caseId === "custom_domain")!;
 
@@ -43,7 +45,11 @@ describe.skipIf(!TEST_DATABASE_URL)("active Booking publication reads in Postgre
     await seedProperty(propertyB, revisionB, "hotel-alpenrose-next");
     await seedRevision(propertyA, inactiveRevision, "inactive-alpenrose", 2, false);
     await seedRedirect(propertyA, "former-alpenrose", "hotel-alpenrose");
+    await assignDomain(propertyA);
   });
+
+  beforeEach(async () => admin.query("SAVEPOINT active_profile_test"));
+  afterEach(async () => admin.query("ROLLBACK TO SAVEPOINT active_profile_test"));
 
   afterAll(async () => {
     await admin.query("ROLLBACK");
@@ -51,13 +57,16 @@ describe.skipIf(!TEST_DATABASE_URL)("active Booking publication reads in Postgre
   });
 
   it("stops serving a revoked domain and follows a verified reassignment", async () => {
-    await assignDomain(propertyA);
     await expect(repository.findProfileByCustomDomain?.(hostname)).resolves.toMatchObject({
+      hotel: { propertyId: propertyA },
+    });
+    await expect(repository.findProfileBySlug("hotel-alpenrose")).resolves.toMatchObject({
       hotel: { propertyId: propertyA },
     });
 
     await admin.query("DELETE FROM hotel_catalog.property_domains WHERE hostname = $1", [hostname]);
     await expect(repository.findProfileByCustomDomain?.(hostname)).resolves.toBeNull();
+    await expect(repository.findProfileBySlug("hotel-alpenrose")).resolves.toBeNull();
 
     await assignDomain(propertyB);
     await expect(repository.findProfileByCustomDomain?.(hostname)).resolves.toMatchObject({
@@ -70,6 +79,34 @@ describe.skipIf(!TEST_DATABASE_URL)("active Booking publication reads in Postgre
       hotel: { propertyId: propertyA, slug: "hotel-alpenrose" },
     });
     await expect(repository.findProfileBySlug("inactive-alpenrose")).resolves.toBeNull();
+  });
+
+  it("fails closed when the active revision omits required public content", async () => {
+    await admin.query(
+      `INSERT INTO distribution.public_booking_content_revisions (
+         id, property_id, revision_number, readiness_contract_version,
+         source_manifest, source_manifest_hash, readiness_hash,
+         readiness_product, readiness_status, public_content, built_by_user_id
+       )
+       SELECT $2::uuid, property_id, 3, readiness_contract_version,
+              source_manifest, source_manifest_hash, readiness_hash,
+              readiness_product, readiness_status,
+              jsonb_build_object(
+                'contractVersion', 'booking-public-content.v1',
+                'profile', public_content -> 'profile'
+              ),
+              built_by_user_id
+       FROM distribution.public_booking_content_revisions
+       WHERE id = $1::uuid`,
+      [revisionA, malformedRevision],
+    );
+    await admin.query(
+      `UPDATE distribution.active_public_booking_revision
+       SET content_revision_id = $2::uuid
+       WHERE property_id = $1::uuid`,
+      [propertyA, malformedRevision],
+    );
+    await expect(repository.findProfileBySlug("hotel-alpenrose")).resolves.toBeNull();
   });
 
   async function seedProperty(propertyId: string, revisionId: string, slug: string): Promise<void> {
@@ -113,7 +150,7 @@ describe.skipIf(!TEST_DATABASE_URL)("active Booking publication reads in Postgre
         JSON.stringify(sourceManifest),
         `sha256:${"1".repeat(64)}`,
         `sha256:${"2".repeat(64)}`,
-        JSON.stringify({ contractVersion: "booking-public-content.v1", profile }),
+        JSON.stringify(publicContent(profile)),
         userId,
       ],
     );
@@ -150,6 +187,61 @@ describe.skipIf(!TEST_DATABASE_URL)("active Booking publication reads in Postgre
     );
   }
 });
+
+function publicContent(profile: (typeof fixture)["profile"]) {
+  const result = buildBookingPublicContent({
+    sourceManifestHash: `sha256:${"1".repeat(64)}`,
+    readinessHash: `sha256:${"2".repeat(64)}`,
+    profile,
+    rooms: [
+      {
+        roomTypeId: "room-1",
+        name: "Room",
+        description: "A room.",
+        category: null,
+        occupancy: { maxGuests: 2, maxAdults: 2, maxChildren: 0 },
+        beds: [{ type: "double", quantity: 1 }],
+        bedrooms: 1,
+        bathrooms: 1,
+        bathroomType: "private",
+        size: null,
+        images: [{ url: "https://cdn.example/room.jpg" }],
+        amenities: ["wifi"],
+        rates: [
+          {
+            ratePlanId: "rate-1",
+            currency: "EUR",
+            baseNightlyAmount: "100.00",
+            refundable: true,
+            paymentTiming: "pay_at_property",
+          },
+        ],
+      },
+    ],
+    calendar: {
+      sourceRevision: "calendar-1",
+      materializedRevision: "calendar-1",
+      currentLocalDate: "2026-06-06",
+      coverageFrom: "2026-06-06",
+      coverageThrough: "2027-06-06",
+      materializedThrough: "2027-06-06",
+      expectedDayCount: 366,
+      materializedDayCount: 366,
+      gapCount: 0,
+      roomTypeIds: ["room-1"],
+      observedAt: profile.generatedAt,
+    },
+    finance: {
+      defaultCurrency: "EUR",
+      supportedCurrencies: ["EUR"],
+      onlinePayment: true,
+      payAtProperty: true,
+      readyPaymentMethods: ["card", "pay_at_property"],
+    },
+  });
+  if (!result) throw new Error("Expected valid Booking public content fixture");
+  return result.publicContent;
+}
 
 function assertTestDatabase(connectionString: string): void {
   const database = new URL(connectionString).pathname.slice(1);
