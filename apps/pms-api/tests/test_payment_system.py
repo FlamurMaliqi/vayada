@@ -36,11 +36,11 @@ def mock_capture_payment_intent(pi_id, **kwargs):
     return {"id": pi_id, "status": "succeeded"}
 
 
-def mock_cancel_payment_intent(pi_id):
+def mock_cancel_payment_intent(pi_id, **kwargs):
     return {"id": pi_id, "status": "canceled"}
 
 
-def mock_create_refund(pi_id, amount=None):
+def mock_create_refund(pi_id, amount=None, **kwargs):
     return {"id": "re_test_123", "status": "succeeded", "amount": amount or 10000}
 
 
@@ -1046,9 +1046,8 @@ class TestCardPaymentDraft:
         assert draft_row is not None
         assert draft_row["materialized_booking_id"] == booking_row["id"]
 
-    async def test_webhook_payment_failed_drops_draft(self, client, hotel_with_rooms):
-        """A failed PaymentIntent must release the soft hold; no booking
-        row is ever created in this branch."""
+    async def test_webhook_payment_failed_keeps_retryable_draft(self, client, hotel_with_rooms):
+        """A failed payment-method attempt keeps the same checkout retryable."""
         body = await self._create_card_draft(
             client,
             hotel_with_rooms["hotel"],
@@ -1071,7 +1070,7 @@ class TestCardPaymentDraft:
         draft_row = await Database.fetchrow(
             "SELECT id FROM booking_drafts WHERE id = $1", body["draftId"]
         )
-        assert draft_row is None
+        assert draft_row is not None
         booking_count = await Database.fetchval(
             "SELECT COUNT(*) FROM bookings WHERE hotel_id = $1",
             str(hotel_with_rooms["hotel"]["id"]),
@@ -1123,7 +1122,10 @@ class TestHostAcceptReject:
         assert body["paymentStatus"] == "captured"
         assert body["platformFeeAmount"] is not None
         assert body["propertyPayoutAmount"] is not None
-        mock_capture.assert_called_once_with("pi_test_capture")
+        mock_capture.assert_called_once_with(
+            "pi_test_capture",
+            idempotency_key=f"booking-capture-{booking['id']}",
+        )
 
     async def test_host_accept_pay_at_property(self, client, cleanup_database):
         """Accepting a pay-at-property booking just confirms it."""
@@ -1404,10 +1406,23 @@ class TestGuestCancellation:
 
         assert resp.status_code == 200
         assert resp.json()["status"] == "cancelled"
-        mock_refund.assert_called_once_with("pi_test_deposit_refund", amount=None)
         payment = await Database.fetchrow(
-            "SELECT status, refund_amount FROM payments WHERE booking_id = $1 AND payment_purpose = 'deposit'",
+            "SELECT id, status, refund_amount FROM payments "
+            "WHERE booking_id = $1 AND payment_purpose = 'deposit'",
             str(booking["id"]),
+        )
+        command_id = f"guest-cancellation-refund-{booking['id']}-full"
+        mock_refund.assert_called_once_with(
+            "pi_test_deposit_refund",
+            amount=None,
+            idempotency_key=command_id,
+            metadata={
+                "booking_id": str(booking["id"]),
+                "payment_id": str(payment["id"]),
+                "refund_command_id": command_id,
+                "refund_amount_minor": "30000",
+                "refund_currency": "eur",
+            },
         )
         assert payment["status"] == "refunded"
         assert float(payment["refund_amount"]) == 300.0

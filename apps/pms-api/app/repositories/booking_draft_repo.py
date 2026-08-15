@@ -50,6 +50,10 @@ class BookingDraftRepository:
         number_of_rooms: int,
         booking_reference: str,
         stripe_payment_intent_id: str,
+        stripe_account_id: str | None,
+        stripe_application_fee_amount: float,
+        stripe_platform_fee_amount: float,
+        stripe_affiliate_commission_amount: float,
         payload: dict,
         ttl_minutes: int = DRAFT_TTL_MINUTES,
     ) -> dict:
@@ -58,8 +62,10 @@ class BookingDraftRepository:
             """
             INSERT INTO booking_drafts (
                 hotel_id, room_type_id, check_in, check_out, number_of_rooms,
-                booking_reference, stripe_payment_intent_id, payload, expires_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+                booking_reference, stripe_payment_intent_id, stripe_account_id,
+                stripe_application_fee_amount, stripe_platform_fee_amount,
+                stripe_affiliate_commission_amount, payload, expires_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13)
             RETURNING *
             """,
             hotel_id,
@@ -69,6 +75,10 @@ class BookingDraftRepository:
             number_of_rooms,
             booking_reference,
             stripe_payment_intent_id,
+            stripe_account_id,
+            stripe_application_fee_amount,
+            stripe_platform_fee_amount,
+            stripe_affiliate_commission_amount,
             json.dumps(payload),
             expires_at,
         )

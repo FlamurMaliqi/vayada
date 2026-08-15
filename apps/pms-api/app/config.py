@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     # Stripe
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
+    STRIPE_CONNECT_WEBHOOK_SECRET: str = ""
     STRIPE_PLATFORM_ACCOUNT_ID: str = ""
 
     # Xendit

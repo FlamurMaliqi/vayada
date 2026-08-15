@@ -570,8 +570,11 @@ async def update_booking_status(
     booking = await BookingRepository.get_by_id(booking_id)
     if not booking or str(booking["hotel_id"]) != hotel_id:
         raise HTTPException(status_code=404, detail="Booking not found")
+    if await PaymentRepository.has_active_stripe_refund(booking_id):
+        raise HTTPException(status_code=409, detail="A refund is still processing")
 
-    await BookingRepository.update_status(booking_id, data.status)
+    if not await BookingRepository.update_status(booking_id, data.status):
+        raise HTTPException(status_code=409, detail="Booking status is currently locked")
     updated = await BookingRepository.get_by_id(booking_id)
 
     # Push availability to Channex (only affected dates)
@@ -614,6 +617,8 @@ async def complete_booking_check_in(
     booking = await BookingRepository.get_by_id(booking_id)
     if not booking or str(booking["hotel_id"]) != hotel_id:
         raise HTTPException(status_code=404, detail="Booking not found")
+    if await PaymentRepository.has_active_stripe_refund(booking_id):
+        raise HTTPException(status_code=409, detail="A refund is still processing")
 
     if booking["status"] not in ("confirmed", "checked_in"):
         raise HTTPException(status_code=400, detail="Only confirmed bookings can be checked in")
@@ -638,7 +643,7 @@ async def complete_booking_check_in(
                 booking_id, data.pending_flags, conn=conn
             )
             if not updated:
-                raise HTTPException(status_code=404, detail="Booking not found")
+                raise HTTPException(status_code=409, detail="Booking check-in is currently locked")
 
             await CheckinChecklistRepository.create_record(
                 booking_id=booking_id,
