@@ -48,7 +48,12 @@ export async function configureGuestPolicyForManualBooking(args: Args): Promise<
         .map(record)
         .filter((room) => stringField(room, "roomTypeId") === roomTypeId);
     expect(physicalRooms).toHaveLength(2);
-    await verifyOperationalLabels(api, propertyId, roomTypeId, physicalRooms);
+    const roomUnitsRevision = await verifyOperationalLabels(
+      api,
+      propertyId,
+      roomTypeId,
+      physicalRooms,
+    );
     const roomId = stringField(physicalRooms[0]!, "roomId"),
       previewCommand = manualPreviewCommand(roomId);
     expect(await previewStatus(request, accessToken, propertyId, previewCommand)).toEqual([
@@ -56,6 +61,7 @@ export async function configureGuestPolicyForManualBooking(args: Args): Promise<
       "property_not_found",
     ]);
     await configurePricing(api, propertyId, roomTypeId);
+    await configureInventory(api, propertyId, roomTypeId, roomUnitsRevision);
 
     const choices = {
         defaultGuestLanguage: "en",
@@ -100,7 +106,7 @@ async function verifyOperationalLabels(
   propertyId: string,
   roomTypeId: string,
   rooms: Record<string, unknown>[],
-) {
+): Promise<number> {
   let expectedRevision = 1;
   for (const [index, room] of rooms.entries()) {
     const roomId = stringField(room, "roomId"),
@@ -119,6 +125,84 @@ async function verifyOperationalLabels(
     });
     expectedRevision = numberField(response, "roomUnitsRevision");
   }
+  return expectedRevision;
+}
+
+async function configureInventory(
+  api: JsonApi,
+  propertyId: string,
+  roomTypeId: string,
+  roomUnitsRevision: number,
+): Promise<void> {
+  const profile = await api.json<Record<string, unknown>>(
+      "GET",
+      `/api/hotel-setup/properties/${propertyId}/steps/present-hotel`,
+    ),
+    proposal = {
+      expectedCalendarRevision: 0,
+      expectedPropertyProfileRevision: numberField(profile, "profileRevision"),
+      schedule: { mode: "year_round", periods: [] },
+      defaultMinimumStayNights: 1,
+      roomTypeLimits: [
+        {
+          roomTypeId,
+          expectedRoomFactsRevision: 1,
+          expectedRoomUnitsRevision: roomUnitsRevision,
+          startingSellableLimitCount: 2,
+        },
+      ],
+    },
+    preview = await api.json<Record<string, unknown>>(
+      "POST",
+      `/api/pms/properties/${propertyId}/operating-calendar/impact-preview`,
+      proposal,
+    );
+  expect(preview.propertyId).toBe(propertyId);
+  const calendar = await api.json<Record<string, unknown>>(
+    "PUT",
+    `/api/pms/properties/${propertyId}/operating-calendar`,
+    { ...proposal, impactConfirmation: recordField(preview, "confirmation") },
+    { "Idempotency-Key": `next-smoke:operating-calendar:${propertyId}` },
+  );
+  expect(calendar.outcome).toBe("created");
+  expect(recordField(calendar, "configuration")).toMatchObject({
+    propertyId,
+    calendarRevision: 1,
+  });
+
+  const horizon = berlinInventoryHorizon(),
+    materialized = await api.json<Record<string, unknown>>(
+      "POST",
+      `/api/pms/properties/${propertyId}/inventory-materialization`,
+      { expectedCalendarRevision: 1, horizon },
+      { "Idempotency-Key": `next-smoke:inventory-materialization:${propertyId}` },
+    );
+  expect(materialized).toMatchObject({
+    ok: true,
+    outcome: "applied",
+    coverage: {
+      materializedRevision: 1,
+      coverageFrom: horizon.from,
+      coverageThrough: horizon.through,
+    },
+  });
+}
+
+function berlinInventoryHorizon(): { from: string; through: string } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Europe/Berlin",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date()),
+    value = (type: "year" | "month" | "day") => parts.find((part) => part.type === type)?.value,
+    from = `${value("year")}-${value("month")}-${value("day")}`,
+    start = Date.parse(`${from}T00:00:00.000Z`);
+  if (!Number.isFinite(start)) throw new Error("Hotel-local inventory horizon is invalid.");
+  return {
+    from,
+    through: new Date(start + 365 * 86_400_000).toISOString().slice(0, 10),
+  };
 }
 
 async function configurePricing(api: JsonApi, propertyId: string, roomTypeId: string) {
