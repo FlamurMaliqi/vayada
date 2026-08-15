@@ -26,6 +26,10 @@
     "./booking-publication-owner-snapshots": {
       "types": "./dist/bookingPublicationOwnerSnapshots.d.ts",
       "default": "./dist/bookingPublicationOwnerSnapshots.js"
+    },
+    "./booking-publication-builder": {
+      "types": "./dist/bookingPublicationBuilder.d.ts",
+      "default": "./dist/bookingPublicationBuilder.js"
     }
   },
   "scripts": {
