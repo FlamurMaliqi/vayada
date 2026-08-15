@@ -53,9 +53,11 @@ export class JsonApi {
     route: string,
     body?: unknown,
     headers: Record<string, string> = {},
+    timeout?: number,
   ): Promise<T> {
     const response = await this.request.fetch(new URL(route, this.origin).toString(), {
       method,
+      ...(timeout === undefined ? {} : { timeout }),
       headers: {
         ...(this.authorization ? { authorization: this.authorization } : {}),
         ...headers,

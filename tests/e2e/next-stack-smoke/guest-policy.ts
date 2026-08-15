@@ -176,6 +176,7 @@ async function configureInventory(
       `/api/pms/properties/${propertyId}/inventory-materialization`,
       { expectedCalendarRevision: 1, horizon },
       { "Idempotency-Key": `next-smoke:inventory-materialization:${propertyId}` },
+      60_000,
     );
   expect(materialized).toMatchObject({
     ok: true,
