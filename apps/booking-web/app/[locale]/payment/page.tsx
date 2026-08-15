@@ -135,6 +135,7 @@ function PaymentPageContent() {
   // show a recovery CTA back to the room list instead of a dead-end error.
   const [soldOut, setSoldOut] = useState(false);
   const [clientSecret, setClientSecret] = useState<string | null>(null);
+  const [stripeAccountId, setStripeAccountId] = useState<string | null>(null);
   const [pendingBooking, setPendingBooking] = useState<Booking | null>(null);
   // VAY-388: draft id returned for card payments — passed to
   // confirmAuthorization once Stripe authorizes the card.
@@ -322,6 +323,7 @@ function PaymentPageContent() {
         // booking after Stripe authorizes the card.
         setPendingBooking(booking);
         setClientSecret(result.clientSecret);
+        setStripeAccountId(result.stripeAccountId || null);
         setDraftId(result.draftId || null);
       } else if (paymentMethod === "xendit" && result.xenditInvoiceUrl) {
         // Redirect to Xendit payment page (QRIS, e-wallets, VA)
@@ -380,7 +382,7 @@ function PaymentPageContent() {
   // If we have a client secret, render the Stripe payment form
   if (clientSecret && pendingBooking) {
     return (
-      <StripeProvider clientSecret={clientSecret}>
+      <StripeProvider clientSecret={clientSecret} stripeAccountId={stripeAccountId}>
         <StripeConfirmStep
           hotel={hotel}
           room={room}
