@@ -213,7 +213,7 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
     await expectFailure(
       post(request, args.foreignAccessToken, propertyId, fresh(created.body)),
       403,
-      "entitlement_required",
+      "forbidden",
     );
     await expectFailure(post(request, "", propertyId, fresh(created.body)), 401, "unauthenticated");
 
