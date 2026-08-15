@@ -41,7 +41,12 @@ export function createBookingPublicationBuilder(config: {
   pms: BookingPublicationOwnerSnapshotPort<"pms">;
   finance: BookingPublicationOwnerSnapshotPort<"finance">;
   bookingWeb(
-    input: Readonly<{ propertyId: string; slug: string }>,
+    input: Readonly<{
+      propertyId: string;
+      slug: string;
+      customDomainUrl: string | null;
+      domainVerified: boolean;
+    }>,
   ): PublicBookabilityProducerInputs["bookingWeb"];
 }): BookingPublicationBuilderPort {
   return {
@@ -95,6 +100,7 @@ export function createBookingPublicationBuilder(config: {
         const bookingWeb = config.bookingWeb({
           propertyId: request.propertyId,
           slug: catalog.content.slug,
+          ...catalog.content.bookingWeb,
         });
         if (!validBookingWeb(bookingWeb)) return rejected("public_content_incomplete");
         const profile = buildPublicBookabilityProfileProjection(input.generatedAt, {
