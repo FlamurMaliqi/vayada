@@ -22,6 +22,7 @@ type Args = {
   api: JsonApi;
   bookings: BookingResource[];
   environment: SmokeEnvironment;
+  foreignAccessToken: string;
   page: Page;
   propertyId: string;
   request: APIRequestContext;
@@ -31,6 +32,17 @@ type Args = {
 
 export async function runManualBookingAcceptance(args: Args): Promise<void> {
   const { api, bookings, environment, page, propertyId, request, slug, testInfo } = args;
+  await test.step("verify paid manual-booking capability", async () => {
+    const response = await request.get(
+      `${NEXT_STACK_ORIGINS.api}/api/pms/properties/${propertyId}/manual-bookings/capabilities`,
+      { headers: { authorization: `Bearer ${args.accessToken}` } },
+    );
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual({
+      contractVersion: "pms-manual-booking.v1",
+      canRecordPaidPayment: true,
+    });
+  });
   await test.step("create target manual-booking add-on evidence", async () => {
     const addon = await api.json<Record<string, unknown>>(
       "POST",
@@ -137,6 +149,15 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
     expect(replayed.outcome).toBe("replayed");
     expect(replayed.guestBookingId).toBe(bookingId);
     expect(replayed.paymentEvidenceId).toBe(created.result.paymentEvidenceId);
+    const payments = await api.json<Record<string, unknown>>(
+      "GET",
+      `/api/finance/properties/${propertyId}/reconciliation/payments?limit=100`,
+    );
+    expect(
+      arrayField(payments, "items")
+        .map(record)
+        .filter((item) => item.subjectId === replayed.paymentEvidenceId),
+    ).toHaveLength(1);
 
     const list = await api.json<Record<string, unknown>>(
       "GET",
@@ -161,10 +182,25 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
       409,
       "room_unavailable",
     );
+    const firstStay = {
+      ...record(arrayField(created.body, "stays")[0]),
+      checkIn: futureDate(12),
+      checkOut: futureDate(14),
+    };
     await expectFailure(
-      post(request, accessToken, randomUUID(), fresh(created.body)),
+      post(
+        request,
+        accessToken,
+        propertyId,
+        fresh(created.body, { stays: [firstStay, { ...firstStay, position: 2 }] }),
+      ),
+      409,
+      "room_unavailable",
+    );
+    await expectFailure(
+      post(request, args.foreignAccessToken, propertyId, fresh(created.body)),
       403,
-      "forbidden",
+      "entitlement_required",
     );
     await expectFailure(post(request, "", propertyId, fresh(created.body)), 401, "unauthenticated");
 
@@ -256,18 +292,38 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
         bookings.push(manualResource(result, email, slug));
         assertCreatedResult(result, status);
 
+        const bookingId = stringField(result, "guestBookingId");
         const detail = recordField(
-            await api.json(
-              "GET",
-              `/api/pms/properties/${propertyId}/reservations/${stringField(result, "guestBookingId")}`,
-            ),
+            await api.json("GET", `/api/pms/properties/${propertyId}/reservations/${bookingId}`),
             "item",
           ),
           payment = recordField(detail, "payment");
         expect(payment.expectedMethod).toBe(expectedMethod);
         expect(payment.status).toBe(status);
+        await page.goto(`${NEXT_STACK_ORIGINS.pms}/bookings/${bookingId}`);
+        const paymentGrid = page
+          .getByText("Expected method", { exact: true })
+          .locator("..")
+          .locator("..");
+        await expect(
+          paymentGrid
+            .getByText("Expected method", { exact: true })
+            .locator("..")
+            .getByText(methodLabel(expectedMethod), { exact: true }),
+        ).toBeVisible();
+        await expect(
+          paymentGrid
+            .getByText("Status", { exact: true })
+            .locator("..")
+            .getByText(status === "paid" ? "Paid" : "Unpaid", { exact: true }),
+        ).toBeVisible();
       }
     }
+    const payments = await api.json<Record<string, unknown>>(
+      "GET",
+      `/api/finance/properties/${propertyId}/reconciliation/payments?limit=100`,
+    );
+    expect(payments.total).toBe(6);
   });
 }
 
@@ -335,4 +391,8 @@ function futureDate(offset: number): string {
   date.setUTCHours(0, 0, 0, 0);
   date.setUTCDate(date.getUTCDate() + offset);
   return date.toISOString().slice(0, 10);
+}
+
+function methodLabel(value: (typeof METHODS)[number]): string {
+  return value.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
 }

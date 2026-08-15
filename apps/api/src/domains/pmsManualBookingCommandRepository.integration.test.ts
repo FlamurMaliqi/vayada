@@ -1277,9 +1277,12 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     for (const [methodIndex, method] of methods.entries()) {
       for (const [statusIndex, status] of (["unpaid", "paid"] as const).entries()) {
         const day = String(10 + methodIndex * 4 + statusIndex * 2).padStart(2, "0");
-        const created = await repository.createManualBooking(
-          command(`${method}-${status}`, status, method, `2027-02-${day}`, false),
-        );
+        const input = command(`${method}-${status}`, status, method, `2027-02-${day}`, false);
+        const created = await repository.createManualBooking(input);
+        await expect(repository.createManualBooking(input)).resolves.toEqual({
+          ...created,
+          outcome: "replayed",
+        });
         const row = await admin.query(
           `SELECT expected_payment_method AS method, payment_status AS status,
              balance_amount::text AS balance
@@ -1296,7 +1299,13 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
         ).resolves.toMatchObject({ payment: { expectedMethod: method, status } });
       }
     }
-    expect((await counts()).payment).toBe("5");
+    await expect(counts()).resolves.toMatchObject({
+      booking: "10",
+      payment: "5",
+      outbox: "40",
+      audit: "10",
+      commands: "10",
+    });
   });
 
   it("persists every canonical manual direct source", async () => {

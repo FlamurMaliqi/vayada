@@ -47,6 +47,19 @@ test("fresh hotel and creator onboarding reaches every next-stack handoff and sa
   let primaryError: unknown;
 
   try {
+    const foreignHotelContext = await browser.newContext();
+    let foreignAccessToken: string;
+    try {
+      foreignAccessToken = await runForeignHotelFlow(
+        foreignHotelContext,
+        request,
+        environment,
+        users,
+      );
+    } finally {
+      await foreignHotelContext.close();
+    }
+
     const hotelContext = await browser.newContext();
     try {
       hotel = await runHotelFlow(
@@ -55,6 +68,7 @@ test("fresh hotel and creator onboarding reaches every next-stack handoff and sa
         environment,
         users,
         bookings,
+        foreignAccessToken,
         testInfo,
         (resource) => {
           hotel = resource;
@@ -93,6 +107,7 @@ async function runHotelFlow(
   environment: SmokeEnvironment,
   users: SyntheticUser[],
   bookings: BookingResource[],
+  foreignAccessToken: string,
   testInfo: TestInfo,
   registerHotel: (resource: HotelResource) => void,
 ): Promise<HotelResource> {
@@ -325,6 +340,7 @@ async function runHotelFlow(
     accessToken: session.accessToken,
     bookings,
     environment,
+    foreignAccessToken,
     page,
     propertyId: setup.propertyId,
     request,
@@ -345,6 +361,63 @@ async function runHotelFlow(
   });
 
   return resource;
+}
+
+async function runForeignHotelFlow(
+  context: BrowserContext,
+  request: APIRequestContext,
+  environment: SmokeEnvironment,
+  users: SyntheticUser[],
+): Promise<string> {
+  const page = await context.newPage();
+  const user = await createSyntheticUser(request, environment, "hotel", "foreign");
+  users.push(user);
+  await login(page, user, environment.password);
+  await acceptNecessaryCookies(page);
+  await page.getByRole("radio", { name: /i manage a hotel/i }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByLabel("First name").fill(user.firstName);
+  await page.getByLabel("Last name").fill(user.lastName);
+  await page.getByLabel("Phone number").fill("+49 30 5550199");
+  await page.getByRole("button", { name: "Continue to hotel setup" }).click();
+  await expect(page.getByRole("heading", { name: "Your profile is ready" })).toBeVisible();
+  await page.getByRole("button", { name: "Set up my first hotel" }).click();
+  await expect(page.getByRole("heading", { name: "Choose how you’ll use Vayada" })).toBeVisible();
+  const session = await readAuthSession(page);
+  expect(session.organizationKind).toBe("hotel_group");
+  const api = targetApi(request, session.accessToken);
+  await api.json(
+    "PUT",
+    "/api/hotel-setup/tracks",
+    { selectedTracks: ["hotel_operations"], expectedRevision: 0 },
+    { "Idempotency-Key": `next-smoke:${environment.runId}:foreign-tracks` },
+  );
+  await api.json(
+    "POST",
+    "/api/hotel-setup/properties",
+    {
+      displayName: `QA Foreign Hotel ${environment.runId}`,
+      propertyType: "hotel",
+      location: {
+        streetAddress: "Potsdamer Platz 1",
+        postalCode: "10785",
+        city: "Berlin",
+        countryCode: "DE",
+        timezone: "Europe/Berlin",
+        latitude: null,
+        longitude: null,
+        localityPublic: false,
+        geoPublic: false,
+        mapDisplayMode: "hidden",
+      },
+      contacts: [
+        { channelType: "email", value: user.email, purpose: "general", isPublic: false },
+        { channelType: "phone", value: "+49 30 5550199", purpose: "general", isPublic: false },
+      ],
+    },
+    { "Idempotency-Key": `next-smoke:${environment.runId}:foreign-property` },
+  );
+  return session.accessToken;
 }
 
 async function runCreatorFlow(
