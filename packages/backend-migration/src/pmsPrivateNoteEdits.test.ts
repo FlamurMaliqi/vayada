@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { assertSafeTestDatabase } from "./testUtils.js";
 
 const migration = await readFile(
-  join(import.meta.dirname, "../migrations/0091_pms_private_note_edits.sql"),
+  join(import.meta.dirname, "../migrations/0092_pms_private_note_edits.sql"),
   "utf8",
 );
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
