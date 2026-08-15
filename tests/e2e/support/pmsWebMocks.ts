@@ -145,6 +145,9 @@ export const pmsWebReservation = {
     displayName: "Ada Lovelace",
     email: "ada@example.com",
     phone: "+431234567",
+    countryCode: "AT",
+    countryCodeRaw: null,
+    countryCodeReviewRequired: false,
   },
   assignments: [
     {

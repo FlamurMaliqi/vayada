@@ -114,7 +114,11 @@ export type PmsReservationDetailResponse = {
   sourceFreshness: PmsSourceFreshness;
 };
 
-export type PmsOperationalReservationDetail = PmsOperationalReservation & {
+export type PmsOperationalReservationDetail = Omit<PmsOperationalReservation, "primaryGuest"> & {
+  primaryGuest: PmsOperationalReservation["primaryGuest"] & {
+    countryCodeRaw: string | null;
+    countryCodeReviewRequired: boolean;
+  };
   additionalGuests?: readonly BookingGuestPii[];
 };
 
@@ -573,7 +577,6 @@ export type PmsPrimaryGuestNationalityCommandResponse = {
   propertyId: string;
   guestBookingId: string;
   primaryGuest: BookingGuestPii;
-  reservation: PmsOperationalReservationDetail;
   commandMeta: BookingGuestPiiCommandMeta;
 };
 
@@ -1694,19 +1697,11 @@ export async function registerPmsOperationsRoutes(
             readModelUnavailable("Corrected primary guest projection is unavailable."),
           );
         }
-        const reservation = await reservationWithAdditionalGuestProjection(
-          repository,
-          propertyId,
-          guestBookingId,
-          result.projection,
-        );
-        if (!reservation) return sendPmsOperationsError(reply, reservationNotFoundError());
         return {
           contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
           propertyId,
           guestBookingId,
           primaryGuest,
-          reservation,
           commandMeta: result.commandMeta,
         } satisfies PmsPrimaryGuestNationalityCommandResponse;
       },
@@ -3960,7 +3955,7 @@ async function withAdditionalGuestProjection(
   propertyId: string,
   guestBookingId: string,
 ): Promise<PmsOperationalReservationDetail> {
-  if (!bookingGuestPiiPort) return reservation;
+  if (!bookingGuestPiiPort) return applyAdditionalGuestProjection(reservation, null);
   const projection = await bookingGuestPiiPort.listGuestPiiForPmsOperations({
     propertyId,
     guestBookingId,
@@ -3982,11 +3977,26 @@ function applyAdditionalGuestProjection(
   reservation: PmsOperationalReservation,
   projection: BookingGuestPiiProjection | null,
 ): PmsOperationalReservationDetail {
-  if (!projection) return { ...reservation, additionalGuests: [] };
+  const primaryGuest = projection?.primaryGuest;
   return {
     ...reservation,
-    additionalGuestCount: projection.additionalGuests.length,
-    additionalGuests: projection.additionalGuests,
+    primaryGuest: primaryGuest
+      ? {
+          displayName: primaryGuest.displayName,
+          email: primaryGuest.email,
+          phone: primaryGuest.phone,
+          countryCode: primaryGuest.countryCode,
+          specialRequests: primaryGuest.specialRequests,
+          countryCodeRaw: primaryGuest.countryCodeRaw,
+          countryCodeReviewRequired: primaryGuest.countryCodeReviewRequired,
+        }
+      : {
+          ...reservation.primaryGuest,
+          countryCodeRaw: null,
+          countryCodeReviewRequired: false,
+        },
+    additionalGuestCount: projection?.additionalGuests.length ?? reservation.additionalGuestCount,
+    additionalGuests: projection?.additionalGuests ?? [],
   };
 }
 

@@ -11830,6 +11830,11 @@ describe("vayada-api", () => {
         item: {
           guestBookingId: pmsReservations[0].guestBookingId,
           assignments: [{ assignmentStatus: "assigned", roomNumber: "101" }],
+          primaryGuest: {
+            countryCode: "AT",
+            countryCodeRaw: null,
+            countryCodeReviewRequired: false,
+          },
         },
       },
     );
@@ -12107,6 +12112,12 @@ describe("vayada-api", () => {
       permissions: ["pms.operations.manage"],
       entitlements: [{ product: "pms", key: "property-management", status: "active" }],
       bookingGuestPiiPort,
+      pmsOperationsRepository: {
+        ...pmsOperationsRepository,
+        async findReservationByGuestBookingId() {
+          throw new Error("post-commit PMS read must not be required");
+        },
+      },
     });
 
     const response = await injectJson(app, {

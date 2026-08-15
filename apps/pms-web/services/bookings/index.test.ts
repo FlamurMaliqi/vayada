@@ -2,12 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
+  patch: vi.fn(),
   post: vi.fn(),
   resolvePropertyId: vi.fn(),
 }));
 
 vi.mock("../api/pmsOperationsClient", () => ({
-  pmsOperationsClient: { get: mocks.get, post: mocks.post },
+  pmsOperationsClient: { get: mocks.get, patch: mocks.patch, post: mocks.post },
   pmsOperationsRequestOptions: { headers: { "X-Vayada-Omit-Hotel-Context": "true" } },
 }));
 
@@ -257,6 +258,44 @@ describe("PMS target booking projection", () => {
       commandId: "pms.booking.mark-paid:booking-1:v1",
       idempotencyKey: "pms.booking.mark-paid:booking-1:v1",
     });
+  });
+  it("uses the authoritative Booking correction response without a fallible reload", async () => {
+    mocks.patch.mockResolvedValue({
+      primaryGuest: {
+        guestId: "guest-1",
+        guestBookingId: "booking-1",
+        role: "booker",
+        displayName: "Ada Lovelace",
+        firstName: "Ada",
+        lastName: "Lovelace",
+        email: "ada@example.com",
+        phone: null,
+        countryCode: "NL",
+        countryCodeRaw: null,
+        countryCodeReviewRequired: false,
+        arrivalTime: null,
+        specialRequests: null,
+      },
+    });
+
+    await expect(
+      bookingsService.correctPrimaryGuestNationality("booking-1", "NL"),
+    ).resolves.toEqual({
+      guestCountry: "NL",
+      guestCountryRaw: null,
+      guestCountryReviewRequired: false,
+    });
+    expect(mocks.get).not.toHaveBeenCalled();
+
+    expect(mocks.patch).toHaveBeenCalledWith(
+      "/api/pms/properties/property-1/reservations/booking-1/primary-guest/nationality",
+      {
+        commandId: expect.any(String),
+        idempotencyKey: expect.any(String),
+        countryCode: "NL",
+      },
+      expect.any(Object),
+    );
   });
 
   it("maps exact and partial stay evidence without copying booking-wide values", async () => {
