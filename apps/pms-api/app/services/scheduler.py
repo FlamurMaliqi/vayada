@@ -93,7 +93,9 @@ async def process_property_payouts():
                 )
                 continue
 
-            await PayoutRepository.update_status(payout_id, "processing")
+            if not await PayoutRepository.claim_for_processing(payout_id):
+                logger.info("Payout %s is no longer eligible for processing", payout_id)
+                continue
 
             if provider == "xendit":
                 if not settings.get("xendit_account_number"):
@@ -179,7 +181,9 @@ async def process_affiliate_payouts():
                         payout_id,
                     )
                     continue
-                await PayoutRepository.update_status(payout_id, "processing")
+                if not await PayoutRepository.claim_for_processing(payout_id):
+                    logger.info("Payout %s is no longer eligible for processing", payout_id)
+                    continue
                 xendit_id = await dispatch_xendit_payout(
                     payout_id,
                     float(payout["amount"]),
@@ -204,7 +208,9 @@ async def process_affiliate_payouts():
                         payout_id,
                     )
                     continue
-                await PayoutRepository.update_status(payout_id, "processing")
+                if not await PayoutRepository.claim_for_processing(payout_id):
+                    logger.info("Payout %s is no longer eligible for processing", payout_id)
+                    continue
                 transfer_id = await dispatch_stripe_transfer(
                     payout_id,
                     float(payout["amount"]),

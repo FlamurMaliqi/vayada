@@ -22,6 +22,7 @@ os.environ.setdefault("SMTP_HOST", "")
 # S3 config for tests that still exercise legacy S3-backed helpers.
 os.environ.setdefault("STRIPE_SECRET_KEY", "sk_test_fake")
 os.environ.setdefault("STRIPE_WEBHOOK_SECRET", "whsec_test_fake")
+os.environ.setdefault("STRIPE_CONNECT_WEBHOOK_SECRET", "whsec_connect_test_fake")
 os.environ.setdefault("STRIPE_PLATFORM_ACCOUNT_ID", "")
 os.environ.setdefault("XENDIT_SECRET_KEY", "xnd_test_fake")
 os.environ.setdefault("XENDIT_WEBHOOK_SECRET", "xendit_webhook_test_secret")

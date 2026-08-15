@@ -14,6 +14,7 @@ async def create_payment_intent(
     currency: str,
     metadata: dict,
     stripe_account: str | None = None,
+    application_fee_amount: int = 0,
     capture_method: str = "manual",
 ) -> dict:
     """Create a PaymentIntent.
@@ -28,10 +29,13 @@ async def create_payment_intent(
         "capture_method": capture_method,
         "metadata": metadata,
     }
-    if stripe_account:
-        params["transfer_data"] = {"destination": stripe_account}
+    if stripe_account and application_fee_amount > 0:
+        params["application_fee_amount"] = application_fee_amount
 
-    pi = stripe.PaymentIntent.create(**params)
+    pi = stripe.PaymentIntent.create(
+        **params,
+        **({"stripe_account": stripe_account} if stripe_account else {}),
+    )
     return {
         "id": pi.id,
         "client_secret": pi.client_secret,
@@ -39,9 +43,14 @@ async def create_payment_intent(
     }
 
 
-async def retrieve_payment_intent(payment_intent_id: str) -> dict:
+async def retrieve_payment_intent(
+    payment_intent_id: str, stripe_account: str | None = None
+) -> dict:
     """Load the authoritative Stripe state after client-side confirmation."""
-    pi = stripe.PaymentIntent.retrieve(payment_intent_id)
+    pi = stripe.PaymentIntent.retrieve(
+        payment_intent_id,
+        **({"stripe_account": stripe_account} if stripe_account else {}),
+    )
     return {
         "id": pi.id,
         "status": pi.status,
@@ -49,18 +58,32 @@ async def retrieve_payment_intent(payment_intent_id: str) -> dict:
     }
 
 
-async def capture_payment_intent(payment_intent_id: str, amount: int | None = None) -> dict:
+async def capture_payment_intent(
+    payment_intent_id: str,
+    amount: int | None = None,
+    stripe_account: str | None = None,
+    idempotency_key: str | None = None,
+) -> dict:
     """Capture a previously authorized PaymentIntent."""
     params = {}
     if amount is not None:
         params["amount_to_capture"] = amount
-    pi = stripe.PaymentIntent.capture(payment_intent_id, **params)
+    if idempotency_key:
+        params["idempotency_key"] = idempotency_key
+    pi = stripe.PaymentIntent.capture(
+        payment_intent_id,
+        **params,
+        **({"stripe_account": stripe_account} if stripe_account else {}),
+    )
     return {"id": pi.id, "status": pi.status}
 
 
-async def cancel_payment_intent(payment_intent_id: str) -> dict:
+async def cancel_payment_intent(payment_intent_id: str, stripe_account: str | None = None) -> dict:
     """Cancel (release hold on) a PaymentIntent."""
-    pi = stripe.PaymentIntent.cancel(payment_intent_id)
+    pi = stripe.PaymentIntent.cancel(
+        payment_intent_id,
+        **({"stripe_account": stripe_account} if stripe_account else {}),
+    )
     return {"id": pi.id, "status": pi.status}
 
 
@@ -68,6 +91,9 @@ async def create_refund(
     payment_intent_id: str,
     amount: int | None = None,
     idempotency_key: str | None = None,
+    stripe_account: str | None = None,
+    refund_application_fee: bool = False,
+    metadata: dict | None = None,
 ) -> dict:
     """Create a full or partial refund."""
     params = {"payment_intent": payment_intent_id}
@@ -75,6 +101,12 @@ async def create_refund(
         params["amount"] = amount
     if idempotency_key:
         params["idempotency_key"] = idempotency_key
+    if stripe_account:
+        params["stripe_account"] = stripe_account
+    if refund_application_fee:
+        params["refund_application_fee"] = True
+    if metadata:
+        params["metadata"] = metadata
     refund = stripe.Refund.create(**params)
     return {"id": refund.id, "status": refund.status, "amount": refund.amount}
 
@@ -117,6 +149,12 @@ async def create_connect_account_link(account_id: str, return_url: str, refresh_
     return link.url
 
 
-def construct_webhook_event(payload: bytes, signature: str) -> stripe.Event:
+def construct_webhook_event(
+    payload: bytes, signature: str, webhook_secret: str | None = None
+) -> stripe.Event:
     """Verify and parse a Stripe webhook event."""
-    return stripe.Webhook.construct_event(payload, signature, settings.STRIPE_WEBHOOK_SECRET)
+    return stripe.Webhook.construct_event(
+        payload,
+        signature,
+        webhook_secret or settings.STRIPE_WEBHOOK_SECRET,
+    )

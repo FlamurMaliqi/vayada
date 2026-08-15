@@ -430,10 +430,26 @@ class BookingRepository:
         row = await Database.fetchrow(
             """
             UPDATE bookings SET status = $2, updated_at = now()
-            WHERE id = $1
+            WHERE id = $1 AND NOT stripe_refund_processing
             RETURNING *
             """,
             booking_id,
+            new_status,
+        )
+        return dict(row) if row else None
+
+    @staticmethod
+    async def transition_status(
+        booking_id: str, expected_status: str, new_status: str
+    ) -> dict | None:
+        row = await Database.fetchrow(
+            """
+            UPDATE bookings SET status = $3, updated_at = now()
+            WHERE id = $1 AND status = $2 AND stripe_refund_processing
+            RETURNING *
+            """,
+            booking_id,
+            expected_status,
             new_status,
         )
         return dict(row) if row else None
@@ -450,7 +466,7 @@ class BookingRepository:
                 check_in_pending_flags = $2::jsonb,
                 checked_in_at = COALESCE(checked_in_at, now()),
                 updated_at = now()
-            WHERE id = $1
+            WHERE id = $1 AND NOT stripe_refund_processing
             RETURNING *
             """,
             booking_id,
@@ -705,6 +721,7 @@ WHERE id = $1""",
                   OR (status = 'confirmed' AND finalization_started_at IS NOT NULL)
               )
               AND finalization_completed_at IS NULL
+              AND NOT stripe_refund_processing
               AND (
                   finalization_token IS NULL
                   OR finalization_started_at < now() - interval '15 minutes'
@@ -715,6 +732,17 @@ WHERE id = $1""",
             finalization_token,
         )
         return row is not None
+
+    @staticmethod
+    async def release_stripe_refund_reservation(booking_id: str) -> None:
+        await Database.execute(
+            """
+            UPDATE bookings
+            SET stripe_refund_processing = false, updated_at = now()
+            WHERE id = $1
+            """,
+            booking_id,
+        )
 
     @staticmethod
     async def release_finalization_claim(booking_id: str, finalization_token: str) -> None:

@@ -137,7 +137,19 @@ async def _materialize_or_get_booking_for_pi(pi_id: str, payment_status: str) ->
 
 @router.post("/webhooks/stripe")
 async def stripe_webhook(request: Request):
-    """Handle Stripe webhook events."""
+    """Handle platform-account Stripe events during the compatibility window."""
+    return await _handle_stripe_webhook(request, settings.STRIPE_WEBHOOK_SECRET)
+
+
+@router.post("/webhooks/stripe/connect")
+async def stripe_connect_webhook(request: Request):
+    """Handle events emitted by direct charges on connected accounts."""
+    if not settings.STRIPE_CONNECT_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="Connect webhook is not configured")
+    return await _handle_stripe_webhook(request, settings.STRIPE_CONNECT_WEBHOOK_SECRET)
+
+
+async def _handle_stripe_webhook(request: Request, webhook_secret: str):
     payload = await request.body()
     sig = request.headers.get("stripe-signature")
 
@@ -145,7 +157,7 @@ async def stripe_webhook(request: Request):
         raise HTTPException(status_code=400, detail="Missing stripe-signature header")
 
     try:
-        event = stripe_service.construct_webhook_event(payload, sig)
+        event = stripe_service.construct_webhook_event(payload, sig, webhook_secret)
     except Exception as e:
         logger.warning("Webhook signature verification failed: %s", e)
         raise HTTPException(status_code=400, detail="Invalid signature") from e
@@ -244,16 +256,39 @@ async def stripe_webhook(request: Request):
 
     elif event_type == "payment_intent.payment_failed":
         pi_id = data["id"]
-        # No booking row exists for a failed card draft — drop the soft
-        # hold and we're done. Existing bookings (manual-capture failures
-        # post-authorization) still flow through the legacy path.
-        if await BookingDraftRepository.delete_by_payment_intent(pi_id):
-            logger.info("Draft soft hold released after PI failure: %s", pi_id)
+        # A PaymentIntent remains reusable after a failed payment-method
+        # attempt. Keep its draft so the guest can retry the same checkout;
+        # only the terminal `payment_intent.canceled` event releases the hold.
+        draft = await BookingDraftRepository.get_by_payment_intent(pi_id)
+        if draft:
+            if draft.get("materialized_booking_id"):
+                logger.info("Stale PI failure ignored after draft materialization: %s", pi_id)
+            else:
+                logger.info("Draft kept for PI payment-method retry: %s", pi_id)
+            return {"received": True}
         payment = await PaymentRepository.get_by_stripe_pi(pi_id)
-        if payment:
+        if payment and payment["status"] in ("pending", "unpaid", "authorized"):
             await PaymentRepository.update_status(str(payment["id"]), "failed")
             await BookingRepository.update_payment_status(str(payment["booking_id"]), "failed")
             logger.info("Payment failed via webhook: %s", pi_id)
+        elif payment:
+            logger.info(
+                "Stale PI failure ignored for payment %s in terminal state %s",
+                pi_id,
+                payment["status"],
+            )
+
+    elif event_type in ("refund.created", "refund.updated", "refund.failed"):
+        from app.services.booking_service import reconcile_stripe_refund_event
+
+        refund_id = data["id"]
+        if not data.get("status"):
+            data["status"] = "failed" if event_type == "refund.failed" else "pending"
+        payment = await reconcile_stripe_refund_event(data)
+        if payment:
+            logger.info("Stripe refund %s reconciled as %s", refund_id, data["status"])
+        else:
+            raise RuntimeError(f"Stripe refund {refund_id} could not be reconciled")
 
     elif event_type == "account.updated":
         # Stripe Connect account status update
