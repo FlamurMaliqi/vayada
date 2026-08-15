@@ -148,6 +148,10 @@ Before activation, verify every property in the rollout cohort has an active
 pointer to a valid `booking-public-content.v1` revision and smoke canonical
 slug, redirect slug, and verified custom-domain reads. A missing, malformed,
 stale, non-bookable, revoked-domain, or unpointed revision fails closed.
+With the next runtime and target Booking, PMS, and Finance dependencies ready,
+the protected publication route and retry worker run while
+`PUBLIC_HOTEL_PROFILE_SOURCE=target`; use that dark write path to build and
+validate the cohort before switching public reads to `active_publication`.
 
 For rollback, set `PUBLIC_HOTEL_PROFILE_SOURCE=target`; do not mutate or delete
 the immutable revisions or active pointers. Reconcile the failing cohort, build

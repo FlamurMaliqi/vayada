@@ -641,6 +641,16 @@ describe("api config", () => {
     ).toBe("target");
   });
 
+  it("loads target Booking Web events with active publication profiles", () => {
+    expect(
+      loadConfig({
+        ...completeCreatorMarketplaceEnv,
+        PUBLIC_HOTEL_PROFILE_SOURCE: "active_publication",
+        BOOKING_WEB_EVENT_SINK: "target",
+      }).bookingWebEventSink,
+    ).toBe("target");
+  });
+
   it("rejects target Booking Web events with a legacy public profile boundary", () => {
     expect(() =>
       loadConfig({
@@ -651,7 +661,9 @@ describe("api config", () => {
         WORKOS_AUDIENCE: "client",
         BOOKING_WEB_EVENT_SINK: "target",
       }),
-    ).toThrow("BOOKING_WEB_EVENT_SINK=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target");
+    ).toThrow(
+      "BOOKING_WEB_EVENT_SINK=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target or active_publication",
+    );
   });
 
   it("requires auth config for the target Booking Web event sink", () => {

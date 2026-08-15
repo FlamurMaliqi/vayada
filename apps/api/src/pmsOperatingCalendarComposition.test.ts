@@ -16,6 +16,7 @@ it("mounts the protected calendar and materialization routes only with the produ
     readPort: input.operatingCalendar,
     materializationPort: { materializeInventory: expect.any(Function) },
   });
+  expect(runtime.inventory.getInventoryLaunchReadiness).toEqual(expect.any(Function));
 
   const disabled = buildApp({ logger: false });
   expect(
