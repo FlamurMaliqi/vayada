@@ -244,7 +244,7 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
     expect(primaryGuest.countryCode).toBe("DE");
     expect(detail.privateNoteCount).toBe(1);
     expect(assignments).toHaveLength(2);
-    expect(assignments.map((assignment) => assignment.channel)).toEqual(["email", "email"]);
+    expect(assignments.map((assignment) => assignment.channel)).toEqual(["direct", "direct"]);
 
     const lookup = await request.post(
       `${NEXT_STACK_ORIGINS.api}/api/booking-web/hotels/${slug}/bookings/lookup`,
@@ -343,6 +343,8 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
 
 function assertCreatedResult(result: Record<string, unknown>, status: "paid" | "unpaid"): void {
   expect(result.outcome).toBe("created");
+  expect(result.bookingChannel).toBe("direct");
+  expect(result.directSource).toBe("email");
   expect(result.paymentStatus).toBe(status);
   expect(arrayField(result, "sideEffects").slice().sort()).toEqual(
     ["ari_changed", "audit_event", "calendar_refresh", "guest_confirmation"].sort(),
