@@ -154,6 +154,7 @@ jobs:
           npm --workspace @vayada/backend-migration run test --
           --no-file-parallelism
           src/bookingAddonEconomics.test.ts
+          src/manualBookingReadiness.integration.test.ts
         env:
           TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
 

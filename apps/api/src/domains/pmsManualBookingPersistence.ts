@@ -252,19 +252,25 @@ async function insertAddons(
     };
   });
   if (snapshots.length === 0) return;
-  await transaction.query(
+  const inserted = await transaction.query(
     `INSERT INTO booking.booking_addon_selections (
        property_id, guest_booking_id, addon_definition_id, addon_snapshot,
-       quantity, total_amount, currency
+       quantity, total_amount, currency,
+       ownership_kind_snapshot, partner_commission_rate_snapshot
      )
      SELECT $1::uuid, $2::uuid, item."addonId"::uuid, item.snapshot,
-       item."packageCount", item."totalAmount"::numeric, item.currency
+       item."packageCount", item."totalAmount"::numeric, item.currency,
+       definition.ownership_kind, definition.partner_commission_rate
      FROM jsonb_to_recordset($3::jsonb) AS item(
        "addonId" text, "packageCount" int, "totalAmount" text,
        currency text, snapshot jsonb
-     )`,
+     )
+     JOIN booking.addon_definitions definition
+       ON definition.id = item."addonId"::uuid
+      AND definition.property_id = $1::uuid`,
     [command.propertyId, guestBookingId, JSON.stringify(snapshots)],
   );
+  if (inserted.rowCount !== snapshots.length) throw new CommandError("addon_not_found", "addonId");
 }
 
 async function insertPrivateNote(

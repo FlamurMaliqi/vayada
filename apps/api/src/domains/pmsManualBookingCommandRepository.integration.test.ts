@@ -120,6 +120,12 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
   });
 
   it("atomically creates heterogeneous owned facts, outbox evidence, and an exact replay", async () => {
+    await admin.query(
+      `UPDATE booking.addon_definitions
+       SET ownership_kind = 'partner', partner_commission_rate = 12.5
+       WHERE id = $1::uuid AND property_id = $2::uuid`,
+      [addonId, propertyId],
+    );
     const input = command("full", "unpaid", "cash", "2027-01-01", true);
     const created = await repository.createManualBooking(input);
     await expect(repository.createManualBooking(input)).resolves.toEqual({
@@ -191,6 +197,20 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       [created.guestBookingId],
     );
     expect(financeAttribution.rows[0]).toEqual({ channel: "direct", source: "email" });
+    await admin.query(
+      `UPDATE booking.addon_definitions
+       SET ownership_kind = 'property', partner_commission_rate = NULL
+       WHERE id = $1::uuid AND property_id = $2::uuid`,
+      [addonId, propertyId],
+    );
+    const addonEconomics = await admin.query(
+      `SELECT ownership_kind AS ownership,
+         partner_commission_rate = 12.5 AS "commissionMatches"
+       FROM booking.finance_addon_purchase_evidence
+       WHERE guest_booking_id = $1::uuid`,
+      [created.guestBookingId],
+    );
+    expect(addonEconomics.rows).toEqual([{ ownership: "partner", commissionMatches: true }]);
     const nightly = await admin.query(
       `SELECT stay_date::text AS date, line_position AS position,
          gross_room_amount::text AS amount, source_kind AS source,
