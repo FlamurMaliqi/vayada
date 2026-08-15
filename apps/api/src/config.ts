@@ -43,7 +43,7 @@ export type ApiAuthSessionConfig = {
   authMarketplaceWebLogoutUrl?: string;
 };
 
-export type PublicHotelProfileSource = "legacy" | "target";
+export type PublicHotelProfileSource = "legacy" | "target" | "active_publication";
 export type BookingDomainResolutionSource = "legacy" | "target";
 export type PublicBookabilitySource = "legacy" | "target";
 export type MarketplaceAdminSource = "disabled" | "target";
@@ -186,6 +186,7 @@ const REMOVED_LEGACY_PYTHON_INTEGRATION_ENV_KEYS = [
 type NextRuntimeSourceRequirement = {
   key: string;
   value: string;
+  allowedValues?: readonly string[];
   allowExplicitDisabled?: boolean;
 };
 
@@ -647,7 +648,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const publicHotelProfileSource = readSourceEnv(
     env,
     "PUBLIC_HOTEL_PROFILE_SOURCE",
-    ["legacy", "target"],
+    ["legacy", "target", "active_publication"],
     "legacy",
   );
   const bookingDomainResolutionSource = readSourceEnv(
@@ -740,16 +741,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   if (publicHotelProfileSource === "target" && !targetDatabaseUrl) {
     throw new Error("PUBLIC_HOTEL_PROFILE_SOURCE=target requires TARGET_DATABASE_URL");
   }
-  if (bookingDomainResolutionSource === "target" && publicHotelProfileSource !== "target") {
+  if (publicHotelProfileSource === "active_publication" && !targetDatabaseUrl) {
+    throw new Error("PUBLIC_HOTEL_PROFILE_SOURCE=active_publication requires TARGET_DATABASE_URL");
+  }
+  if (bookingDomainResolutionSource === "target" && publicHotelProfileSource === "legacy") {
     throw new Error(
-      "BOOKING_DOMAIN_RESOLUTION_SOURCE=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target",
+      "BOOKING_DOMAIN_RESOLUTION_SOURCE=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target or active_publication",
     );
   }
   if (publicBookabilitySource === "target" && !targetDatabaseUrl) {
     throw new Error("PUBLIC_BOOKABILITY_SOURCE=target requires TARGET_DATABASE_URL");
   }
-  if (publicBookabilitySource === "target" && publicHotelProfileSource !== "target") {
-    throw new Error("PUBLIC_BOOKABILITY_SOURCE=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target");
+  if (publicBookabilitySource === "target" && publicHotelProfileSource === "legacy") {
+    throw new Error(
+      "PUBLIC_BOOKABILITY_SOURCE=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target or active_publication",
+    );
   }
   if (bookingWebEventSink === "target" && publicHotelProfileSource !== "target") {
     throw new Error("BOOKING_WEB_EVENT_SINK=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target");
@@ -912,7 +918,11 @@ function assertNextApiRuntimeConfig(
   }
 
   const requiredTargetSources = [
-    { key: "PUBLIC_HOTEL_PROFILE_SOURCE", value: config.publicHotelProfileSource },
+    {
+      key: "PUBLIC_HOTEL_PROFILE_SOURCE",
+      value: config.publicHotelProfileSource,
+      allowedValues: ["target", "active_publication"],
+    },
     { key: "BOOKING_DOMAIN_RESOLUTION_SOURCE", value: config.bookingDomainResolutionSource },
     { key: "PUBLIC_BOOKABILITY_SOURCE", value: config.publicBookabilitySource },
     { key: "BOOKING_SETTINGS_SOURCE", value: config.bookingSettingsSource },
@@ -937,7 +947,7 @@ function nextRuntimeSourceRequirements(
   env: NodeJS.ProcessEnv,
   source: NextRuntimeSourceRequirement,
 ): string[] {
-  if (source.value === "target") return [];
+  if ((source.allowedValues ?? ["target"]).includes(source.value)) return [];
   if (
     source.allowExplicitDisabled &&
     source.value === "disabled" &&
@@ -945,6 +955,8 @@ function nextRuntimeSourceRequirements(
   ) {
     return [];
   }
-  const suffix = source.allowExplicitDisabled ? "target or explicit disabled" : "target";
+  const suffix = source.allowExplicitDisabled
+    ? "target or explicit disabled"
+    : (source.allowedValues?.join(" or ") ?? "target");
   return [`${source.key}=${suffix}`];
 }

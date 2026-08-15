@@ -109,6 +109,7 @@ type PmsOperationsRoomType = {
   roomCount: number;
   ratePlans: Array<{
     ratePlanId: string;
+    pricingContractVersion?: string | null;
     name: string;
     rateType: "flexible" | "non_refundable" | "package" | "manual";
     baseRate: PmsOperationsMoney;
@@ -355,7 +356,7 @@ function toCalendarData(
       maxOccupancy: maxOccupancy(roomType),
       currency: roomType.baseRate.currency,
       ratePlans: (roomType.ratePlans ?? [])
-        .filter((plan) => plan.active)
+        .filter((plan) => plan.active && plan.pricingContractVersion === "pms-pricing.v1")
         .map((plan) => ({
           id: plan.ratePlanId,
           name: plan.name,

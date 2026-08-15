@@ -27,6 +27,7 @@ import {
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import { lockPmsInventoryMutationScope } from "./pmsInventoryMutationLock.js";
+import { loadPmsOperatingCalendarConfigurationByRevision } from "./pmsOperatingCalendarReadModel.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import { lockPmsRoomFactsMutationScope } from "./pmsRoomFactsMutationLock.js";
 
@@ -108,6 +109,9 @@ type InventoryDayRow = {
   availableCount: number | string;
   sourceFreshness: unknown;
 };
+
+type CurrentCalendarRevisionRow = { calendarRevision: number | string | null };
+type CurrentRoomFactsRow = { roomTypeId: string; roomFactsRevision: number | string };
 
 type CoverageRow = {
   organizationId: string;
@@ -282,18 +286,15 @@ async function executeMaterialization(
           await lockPmsPhysicalRoomUnitMutationScope(client, command.propertyId, roomTypeId);
         }
 
-        const current = await config.operatingCalendar.getCurrentOperatingCalendarConfiguration(
+        const exact = await loadLockedCurrentConfiguration(
+          client,
           command.propertyId,
-        );
-        const exact = await config.operatingCalendar.getOperatingCalendarConfigurationBySource(
-          command.configurationSource,
+          config.propertyProfileEvidence,
         );
         if (
-          !current ||
-          current.sourceStatus !== "current" ||
           !exact ||
           !sameConfigurationIdentity(immutable, exact) ||
-          !sameConfigurationIdentity(current.configuration, exact)
+          !(await roomFactsStillMatch(client, exact))
         ) {
           return finalizeMaterialization(
             client,
@@ -396,7 +397,7 @@ async function executeMaterialization(
           return finalizeMaterialization(client, command, reservation, keyHash, result, acceptedAt);
         }
 
-        for (const day of plan.changedDays) await persistChangedDay(client, day, acceptedAt);
+        await persistChangedDays(client, plan.changedDays, acceptedAt);
         const intent = projectionRefreshIntent(command, plan.coverage, plan.outcome);
         const event = await enqueueProjectionRefresh(
           client,
@@ -439,6 +440,47 @@ async function executeMaterialization(
   } finally {
     client.release();
   }
+}
+
+async function loadLockedCurrentConfiguration(
+  client: PmsInventoryMaterializationRepositoryClient,
+  propertyId: string,
+  registry: PmsOperatingCalendarPropertyProfileEvidencePort,
+): Promise<PmsOperatingCalendarConfigurationSnapshot | null> {
+  const result = await client.query<CurrentCalendarRevisionRow>(
+    `SELECT max(calendar_revision) AS "calendarRevision"
+     FROM pms.operating_calendar_revisions
+     WHERE property_id = $1::uuid`,
+    [propertyId],
+  );
+  const revision = nullablePositiveInteger(result.rows[0]?.calendarRevision ?? null);
+  return revision === null
+    ? null
+    : loadPmsOperatingCalendarConfigurationByRevision(client, propertyId, revision, registry);
+}
+
+async function roomFactsStillMatch(
+  client: PmsInventoryMaterializationRepositoryClient,
+  configuration: PmsOperatingCalendarConfigurationSnapshot,
+): Promise<boolean> {
+  const result = await client.query<CurrentRoomFactsRow>(
+    `SELECT id::text AS "roomTypeId", room_facts_revision AS "roomFactsRevision"
+     FROM pms.room_types
+     WHERE property_id = $1::uuid AND active IS TRUE
+     ORDER BY id::text`,
+    [configuration.propertyId],
+  );
+  const expected = [...configuration.sourceInputs.roomBindings].sort((left, right) =>
+    compareCodeUnits(left.roomTypeId, right.roomTypeId),
+  );
+  return (
+    result.rows.length === expected.length &&
+    result.rows.every(
+      (row, index) =>
+        normalizeUuid(row.roomTypeId) === expected[index]?.roomTypeId &&
+        positiveInteger(row.roomFactsRevision) === expected[index]?.sourceRoomFactsRevision,
+    )
+  );
 }
 
 async function capacitiesStillMatch(
@@ -668,11 +710,12 @@ function inventoryDayFromRow(row: InventoryDayRow): PmsInventoryDaySnapshot | nu
   });
 }
 
-async function persistChangedDay(
+async function persistChangedDays(
   client: PmsInventoryMaterializationRepositoryClient,
-  day: PmsInventoryDaySnapshot,
+  days: readonly PmsInventoryDaySnapshot[],
   acceptedAt: Date,
 ): Promise<void> {
+  if (days.length === 0) return;
   const result = await client.query(
     `INSERT INTO pms.inventory_days (
        property_id, room_type_id, stay_date, total_count, assigned_count,
@@ -682,10 +725,16 @@ async function persistChangedDay(
        effective_sellable_limit_count, generated_source_revision,
        channel_source_revision, manual_source_revision, block_source_revision,
        booking_source_revision
-     ) VALUES (
-       $1::uuid, $2::uuid, $3::date, $4, $5, $6, $7, $8, $9::timestamptz,
-       $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
      )
+     SELECT day.property_id, day.room_type_id, day.stay_date, day.total_count,
+       day.assigned_count, day.blocked_count, day.available_count, day.status,
+       day.updated_at, day.calendar_revision, day.inventory_revision,
+       day.generated_sellable_limit_count, day.channel_sellable_limit_count,
+       day.manual_sellable_limit_count, day.effective_sellable_limit_count,
+       day.generated_source_revision, day.channel_source_revision,
+       day.manual_source_revision, day.block_source_revision,
+       day.booking_source_revision
+     FROM jsonb_populate_recordset(NULL::pms.inventory_days, $1::jsonb) AS day
      ON CONFLICT (property_id, room_type_id, stay_date)
      DO UPDATE SET
        total_count = EXCLUDED.total_count,
@@ -706,29 +755,33 @@ async function persistChangedDay(
        block_source_revision = EXCLUDED.block_source_revision,
        booking_source_revision = EXCLUDED.booking_source_revision`,
     [
-      day.propertyId,
-      day.roomTypeId,
-      day.stayDate,
-      day.physicalCapacityCount,
-      day.assignedCount,
-      day.blockedCount,
-      day.availableCount,
-      day.operatingStatus,
-      acceptedAt.toISOString(),
-      day.calendarRevision,
-      day.inventoryRevision,
-      day.generatedSellableLimitCount,
-      day.channelSellableLimitCount,
-      day.manualSellableLimitCount,
-      day.effectiveSellableLimitCount,
-      day.sourceRevisions.generated,
-      day.sourceRevisions.channel,
-      day.sourceRevisions.manual,
-      day.sourceRevisions.block,
-      day.sourceRevisions.booking,
+      JSON.stringify(
+        days.map((day) => ({
+          property_id: day.propertyId,
+          room_type_id: day.roomTypeId,
+          stay_date: day.stayDate,
+          total_count: day.physicalCapacityCount,
+          assigned_count: day.assignedCount,
+          blocked_count: day.blockedCount,
+          available_count: day.availableCount,
+          status: day.operatingStatus,
+          updated_at: acceptedAt.toISOString(),
+          calendar_revision: day.calendarRevision,
+          inventory_revision: day.inventoryRevision,
+          generated_sellable_limit_count: day.generatedSellableLimitCount,
+          channel_sellable_limit_count: day.channelSellableLimitCount,
+          manual_sellable_limit_count: day.manualSellableLimitCount,
+          effective_sellable_limit_count: day.effectiveSellableLimitCount,
+          generated_source_revision: day.sourceRevisions.generated,
+          channel_source_revision: day.sourceRevisions.channel,
+          manual_source_revision: day.sourceRevisions.manual,
+          block_source_revision: day.sourceRevisions.block,
+          booking_source_revision: day.sourceRevisions.booking,
+        })),
+      ),
     ],
   );
-  if (result.rowCount !== 1) throw new Error("PMS inventory day persistence failed");
+  if (result.rowCount !== days.length) throw new Error("PMS inventory day persistence failed");
 }
 
 async function persistCoverage(

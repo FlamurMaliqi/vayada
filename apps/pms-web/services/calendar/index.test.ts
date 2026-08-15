@@ -107,3 +107,59 @@ describe("calendarService room block commands", () => {
     );
   });
 });
+
+describe("calendarService manual-booking rates", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.resolvePropertyId.mockResolvedValue("property-1");
+    mocks.get.mockImplementation(async (route: string) => {
+      if (route.endsWith("/room-types"))
+        return {
+          items: [
+            {
+              roomTypeId: "room-type-1",
+              name: "Suite",
+              category: null,
+              occupancyLimits: { adults: 2, children: 0, total: 2 },
+              baseRate: { amountDecimal: "100.00", currency: "EUR" },
+              roomCount: 1,
+              ratePlans: [
+                {
+                  ratePlanId: "legacy-plan",
+                  pricingContractVersion: null,
+                  name: "Legacy flexible",
+                  rateType: "flexible",
+                  baseRate: { amountDecimal: "100.00", currency: "EUR" },
+                  active: true,
+                },
+                {
+                  ratePlanId: "canonical-plan",
+                  pricingContractVersion: "pms-pricing.v1",
+                  name: "Flexible",
+                  rateType: "flexible",
+                  baseRate: { amountDecimal: "150.00", currency: "EUR" },
+                  active: true,
+                },
+              ],
+            },
+          ],
+        };
+      if (route.includes("/reservations?"))
+        return { items: [], pagination: { total: 0, limit: 500, offset: 0 } };
+      return { items: [] };
+    });
+  });
+
+  it("offers only the canonical flexible plan", async () => {
+    const result = await calendarService.getCalendarData("2026-08-20", "2026-08-24");
+
+    expect(result.roomTypes[0]?.ratePlans).toEqual([
+      {
+        id: "canonical-plan",
+        name: "Flexible",
+        rateType: "flexible",
+        baseRate: 150,
+      },
+    ]);
+  });
+});

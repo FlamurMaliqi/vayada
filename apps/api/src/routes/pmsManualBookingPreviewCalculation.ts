@@ -117,7 +117,10 @@ export async function calculateManualBookingPreview(
       fail(422, "occupancy_exceeded", "stays", stay.position);
     let standards: bigint[] | null = null;
     if (stay.ratePlanId !== null) {
-      const plan = roomType.ratePlans.find((item) => item.ratePlanId === stay.ratePlanId);
+      const plan = roomType.ratePlans.find(
+        (item) =>
+          item.ratePlanId === stay.ratePlanId && item.pricingContractVersion === "pms-pricing.v1",
+      );
       if (!plan) fail(404, "rate_plan_not_found", "ratePlanId", stay.position);
       if (!plan.active) fail(422, "inactive_rate_plan", "ratePlanId", stay.position);
       standards = standardNights(
