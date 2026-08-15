@@ -351,7 +351,7 @@ VALUES
         "last_name": "Guest",
         "email": "mira.guest@example.test",
         "phone": "+4312345678",
-        "country_code": "AT",
+        "country_code": "Holland",
         "arrival_time": "18:00",
         "special_requests": "Gluten-free breakfast if available.",
         "pii_retention_until": "2027-07-04"

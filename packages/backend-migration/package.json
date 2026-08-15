@@ -37,6 +37,7 @@
     "target:booking-public-bookability:backfill:dist": "node dist/cli/bookingPublicBookabilityBackfill.js"
   },
   "dependencies": {
+    "@vayada/locale-constants": "*",
     "@workos-inc/node": "^10.2.0",
     "pg": "^8.16.3"
   },

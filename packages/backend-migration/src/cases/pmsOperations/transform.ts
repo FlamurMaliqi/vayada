@@ -1,5 +1,7 @@
 import type pg from "pg";
 
+import { importedNationalityMap } from "../../importedNationality.js";
+
 export async function transformPmsOperations(client: pg.Client): Promise<void> {
   await client.query(`
     INSERT INTO identity.users (id, email, name, status)
@@ -168,9 +170,17 @@ export async function transformPmsOperations(client: pg.Client): Promise<void> {
     FROM migration_source_pms.operations_snapshot_inputs
   `);
 
-  await client.query(`
+  const nationalityValues = await client.query<{ value: string | null }>(`
+    SELECT DISTINCT guest_country_code AS value
+    FROM migration_source_pms.operations_snapshot_inputs
+  `);
+  const nationality = importedNationalityMap(nationalityValues.rows.map((row) => row.value));
+
+  await client.query(
+    `
     INSERT INTO booking.booking_guests
-      (id, guest_booking_id, guest_role, first_name, last_name, email, phone, country_code, pii_retention_until)
+      (id, guest_booking_id, guest_role, first_name, last_name, email, phone,
+       country_code, country_code_raw, country_code_review_required, pii_retention_until)
     SELECT
       booking_guest_id,
       guest_booking_id,
@@ -179,10 +189,22 @@ export async function transformPmsOperations(client: pg.Client): Promise<void> {
       guest_last_name,
       guest_email,
       guest_phone,
-      guest_country_code,
+      nationality.country_code,
+      nationality.country_code_raw,
+      COALESCE(nationality.review_required, FALSE),
       pii_retention_until
-    FROM migration_source_pms.operations_snapshot_inputs
-  `);
+    FROM migration_source_pms.operations_snapshot_inputs source
+    LEFT JOIN unnest($1::text[], $2::text[], $3::text[], $4::boolean[])
+      AS nationality(source_value, country_code, country_code_raw, review_required)
+      ON nationality.source_value = source.guest_country_code
+  `,
+    [
+      nationality.sourceValues,
+      nationality.countryCodes,
+      nationality.rawValues,
+      nationality.reviewRequired,
+    ],
+  );
 
   await client.query(`
     INSERT INTO booking.direct_booking_summary_read_model
