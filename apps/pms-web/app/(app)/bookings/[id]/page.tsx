@@ -28,7 +28,9 @@ import {
 import { individualRoomsService, Room } from "@/services/rooms";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import Modal from "@/components/Modal";
+import { NationalitySelect } from "@/components/NationalitySelect";
 import { formatCurrency } from "@/lib/formatCurrency";
+import { nationalityDisplayLabel } from "@/lib/nationalities";
 import {
   AddOnListPicker,
   SelectedAddOnSummary,
@@ -410,8 +412,7 @@ function AdditionalGuestRow({
               value={form.lastName}
               onChange={(v) => setForm({ ...form, lastName: v })}
             />
-            <Field
-              label="Nationality"
+            <NationalitySelect
               value={form.nationality}
               onChange={(v) => setForm({ ...form, nationality: v })}
             />
@@ -2157,8 +2158,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                     { value: "prefer_not_to_say", label: "Prefer not to say" },
                   ]}
                 />
-                <Field
-                  label="Nationality"
+                <NationalitySelect
                   value={bookerForm.guestCountry}
                   onChange={(v) => setBookerForm({ ...bookerForm, guestCountry: v })}
                 />
@@ -2211,7 +2211,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                 <button
                   onClick={handleSaveBooker}
                   disabled={bookerSaving}
-                  className="px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-black disabled:opacity-50"
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                 >
                   {bookerSaving ? "Saving…" : "Save"}
                 </button>
@@ -2236,7 +2236,9 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                 </div>
                 <div>
                   <p className="text-xs text-gray-500">Nationality</p>
-                  <p className="font-medium text-gray-900">{booking.guestCountry || "—"}</p>
+                  <p className="font-medium text-gray-900">
+                    {nationalityDisplayLabel(booking.guestCountry) || "—"}
+                  </p>
                 </div>
                 {booking.guestGender && (
                   <div>
