@@ -45,28 +45,32 @@ describe.skipIf(!TEST_DATABASE_URL)("manual-booking readiness (PostgreSQL)", () 
        VALUES ($1, $2, 'Malformed readiness add-on', 'per_night', 10, 'EUR')`,
       [ADDON, PROPERTY],
     );
-    await client.query(
-      `INSERT INTO booking.booking_addon_selections
-        (property_id, guest_booking_id, addon_definition_id, addon_snapshot, quantity, total_amount, currency)
-       VALUES ($1, $2, $3,
-         '{"pricingModel":"per_night","unitPrice":{"amountDecimal":"10","currency":"EUR"},"serviceUnits":{"not":"an-array"}}',
-         1, 10, 'EUR')`,
-      [PROPERTY, BOOKING, ADDON],
-    );
   });
 
   afterEach(async () => {
     try {
       await client.query("ROLLBACK");
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query("DELETE FROM booking.booking_addon_selections WHERE property_id=$1", [
+        PROPERTY,
+      ]);
       await client.query("DELETE FROM booking.guest_bookings WHERE id=$1", [BOOKING]);
       await client.query("DELETE FROM booking.addon_definitions WHERE id=$1", [ADDON]);
       await client.query("DELETE FROM hotel_catalog.properties WHERE id=$1", [PROPERTY]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
     } finally {
       await client.end();
     }
   });
 
   it("executes the real query read-only and reports malformed add-on JSON", async () => {
+    await seedAddonSelection(
+      '{"pricingModel":"per_night","unitPrice":{"amountDecimal":"10","currency":"EUR"},"serviceUnits":{"not":"an-array"}}',
+    );
     await client.query("BEGIN TRANSACTION READ ONLY");
     const report = await runManualBookingReadiness(client, {
       manifest: manifest(),
@@ -92,11 +96,8 @@ describe.skipIf(!TEST_DATABASE_URL)("manual-booking readiness (PostgreSQL)", () 
   });
 
   it("reports malformed unit-price JSON independently", async () => {
-    await client.query(
-      `UPDATE booking.booking_addon_selections
-       SET addon_snapshot='{"pricingModel":"per_night","unitPrice":"malformed","serviceUnits":[{"serviceDate":"2027-01-01","guestCount":null}]}'
-       WHERE guest_booking_id=$1`,
-      [BOOKING],
+    await seedAddonSelection(
+      '{"pricingModel":"per_night","unitPrice":"malformed","serviceUnits":[{"serviceDate":"2027-01-01","guestCount":null}]}',
     );
     await client.query("BEGIN TRANSACTION READ ONLY");
     const report = await runManualBookingReadiness(client, {
@@ -106,6 +107,16 @@ describe.skipIf(!TEST_DATABASE_URL)("manual-booking readiness (PostgreSQL)", () 
     });
     expect(report.findings.map(({ code }) => code)).toContain("ADDON_SNAPSHOT_INVALID");
   });
+
+  async function seedAddonSelection(snapshot: string) {
+    await client.query(
+      `INSERT INTO booking.booking_addon_selections
+        (property_id, guest_booking_id, addon_definition_id, addon_snapshot,
+         quantity, total_amount, currency)
+       VALUES ($1, $2, $3, $4::jsonb, 1, 10, 'EUR')`,
+      [PROPERTY, BOOKING, ADDON, snapshot],
+    );
+  }
 });
 
 function manifest(): ManualBookingEvidenceManifest {
