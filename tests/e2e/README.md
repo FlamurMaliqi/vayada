@@ -65,6 +65,17 @@ WORKOS_API_KEY='<key used by deployed next-api>' \
 npm run e2e:next-stack-smoke
 ```
 
+The `next-smoke` environment accepts reviewed `main` runs only, releases its secrets only after
+FlamurMaliqi approves the deployment, and does not let administrators bypass that approval. Each run
+creates a temporary Platform Admin for the production lifecycle command. Cleanup restores inventory
+and disables public offers, reauthenticates the temporary admin to retire the synthetic property,
+then deletes its membership and user. If retirement fails, cleanup reports `recovery_run_id`,
+`recovery_property_id`, and a signed `recovery_receipt` while still deleting the temporary admin.
+Supply all three values to a later protected workflow run; the receipt binds recovery to that exact
+synthetic property. Recovery creates a fresh temporary admin, retires the property, and deletes the
+recovery admin. It reuses the signed run identity, so rerunning the same recovery also cleans up an
+admin left by an interrupted recovery.
+
 Cleanup runs even after a failed assertion. It cancels or withdraws every
 synthetic booking, changes the synthetic property to the non-checkout `other`
 payment method and waits until public quotes disappear, then deletes the

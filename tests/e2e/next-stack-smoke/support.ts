@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -17,6 +17,9 @@ export const NEXT_STACK_ORIGINS = Object.freeze({
 export type SmokeEnvironment = {
   emailDomain: string;
   password: string;
+  recoveryPropertyId?: string;
+  recoveryReceipt?: string;
+  recoveryRunId?: string;
   runId: string;
   workosApiKey: string;
 };
@@ -40,6 +43,7 @@ export type SyntheticUser = {
 
 export type SyntheticPlatformAdmin = {
   accessToken: string;
+  email: string;
   membershipId: string;
   userId: string;
 };
@@ -123,14 +127,75 @@ export function loadSmokeEnvironment(): SmokeEnvironment {
   if (!/^[a-z0-9.-]+\.test$/.test(emailDomain)) {
     throw new Error("NEXT_STACK_SMOKE_EMAIL_DOMAIN must use the reserved .test suffix.");
   }
+  const recoveryRunId = process.env.NEXT_STACK_SMOKE_RECOVERY_RUN_ID?.trim();
+  const recoveryPropertyId = process.env.NEXT_STACK_SMOKE_RECOVERY_PROPERTY_ID?.trim();
+  const recoveryReceipt = process.env.NEXT_STACK_SMOKE_RECOVERY_RECEIPT?.trim();
+  const recoveryValueCount = [recoveryRunId, recoveryPropertyId, recoveryReceipt].filter(
+    Boolean,
+  ).length;
+  if (recoveryValueCount !== 0 && recoveryValueCount !== 3) {
+    throw new Error("Provide all three next-stack smoke recovery values or none.");
+  }
+  if (recoveryRunId && !/^\d{14}-[a-f0-9]{8}$/.test(recoveryRunId)) {
+    throw new Error("NEXT_STACK_SMOKE_RECOVERY_RUN_ID is invalid.");
+  }
+  if (
+    recoveryPropertyId &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      recoveryPropertyId,
+    )
+  ) {
+    throw new Error("NEXT_STACK_SMOKE_RECOVERY_PROPERTY_ID must be a UUID.");
+  }
+  if (recoveryReceipt && !/^[a-f0-9]{64}$/.test(recoveryReceipt)) {
+    throw new Error("NEXT_STACK_SMOKE_RECOVERY_RECEIPT is invalid.");
+  }
+  if (
+    recoveryRunId &&
+    recoveryPropertyId &&
+    recoveryReceipt &&
+    !validSmokeRecoveryReceipt(workosApiKey, recoveryRunId, recoveryPropertyId, recoveryReceipt)
+  ) {
+    throw new Error("The next-stack smoke recovery receipt does not match this property and run.");
+  }
 
   const timestamp = new Date().toISOString().replace(/\D/g, "").slice(0, 14);
   return {
     emailDomain,
     password,
+    ...(recoveryPropertyId ? { recoveryPropertyId } : {}),
+    ...(recoveryReceipt ? { recoveryReceipt } : {}),
+    ...(recoveryRunId ? { recoveryRunId } : {}),
     runId: `${timestamp}-${randomBytes(4).toString("hex")}`,
     workosApiKey,
   };
+}
+
+export function smokeRecoveryReceipt(
+  environment: Pick<SmokeEnvironment, "workosApiKey">,
+  runId: string,
+  propertyId: string,
+): string {
+  return createHmac("sha256", environment.workosApiKey)
+    .update(`vayada-next-smoke-recovery:v1:${runId}:${propertyId}`)
+    .digest("hex");
+}
+
+function validSmokeRecoveryReceipt(
+  workosApiKey: string,
+  runId: string,
+  propertyId: string,
+  receipt: string,
+): boolean {
+  const expected = Buffer.from(smokeRecoveryReceipt({ workosApiKey }, runId, propertyId), "hex");
+  return timingSafeEqual(expected, Buffer.from(receipt, "hex"));
+}
+
+export function syntheticPlatformAdminEmail(
+  environment: SmokeEnvironment,
+  runId = environment.runId,
+): string {
+  return `qa-next-platform-${runId}@${environment.emailDomain}`;
 }
 
 export async function createSyntheticUser(
@@ -156,14 +221,15 @@ export async function createSyntheticUser(
 export async function createSyntheticPlatformAdmin(
   request: APIRequestContext,
   environment: SmokeEnvironment,
+  runId = environment.runId,
 ): Promise<SyntheticPlatformAdmin> {
-  const email = `qa-next-platform-${environment.runId}@${environment.emailDomain}`;
+  const email = syntheticPlatformAdminEmail(environment, runId);
   const workos = workosApi(request, environment.workosApiKey);
   const user = await workos.json<Record<string, unknown>>("POST", "/user_management/users", {
     email,
     password: environment.password,
     first_name: "Parker",
-    last_name: `Smoke ${environment.runId.slice(-8)}`,
+    last_name: `Smoke ${runId.slice(-8)}`,
     email_verified: true,
   });
   const userId = stringField(user, "id");
@@ -200,7 +266,15 @@ export async function createSyntheticPlatformAdmin(
   );
   const membershipId = stringField(membership, "id");
   const accessToken = await waitForPlatformAdminLogin(request, email, environment.password);
-  return { accessToken, membershipId, userId };
+  return { accessToken, email, membershipId, userId };
+}
+
+export async function authenticateSyntheticPlatformAdmin(
+  request: APIRequestContext,
+  account: SyntheticPlatformAdmin,
+  password: string,
+): Promise<string> {
+  return waitForPlatformAdminLogin(request, account.email, password);
 }
 
 export async function login(page: Page, user: SyntheticUser, password: string): Promise<void> {
