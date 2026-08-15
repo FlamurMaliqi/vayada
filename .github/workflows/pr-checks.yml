@@ -143,6 +143,7 @@ jobs:
           src/domains/pmsOperatingCalendarImpact.integration.test.ts
           src/domains/pmsManualBookingCommandRepository.integration.test.ts
           src/domains/bookingGuestPolicyRepository.integration.test.ts
+          src/routes/bookingWebPublicAttribution.integration.test.ts
           src/jobs/financeSubscriptions.integration.test.ts
           src/platform/workosWebhooks.integration.test.ts
         env:
