@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  createReadyProductReadinessEvidence,
   hashSourceManifest,
   type ProductReadinessResult,
+  type ReadyProductReadinessEvidence,
   type ReadinessProviderFailure,
   type SourceManifest,
 } from "@vayada/domain-hotels";
+import type { BookingPublicationBuilderPort } from "@vayada/domain-distribution/booking-publication-builder";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import type { BookingPublicationAttemptStatusPort } from "./bookingPublicationAttemptStatusRepository.js";
@@ -44,7 +47,7 @@ type ProjectionClaim = ClaimedRow & {
   workerId: string;
 };
 
-type ParsedPublication = DistributionBookingPublicationInput & {
+type ParsedPublication = Omit<DistributionBookingPublicationInput, "publicContent"> & {
   organizationId: string;
 };
 
@@ -82,6 +85,7 @@ export function createBookingPublicationProjector(config: {
   projection: DistributionBookingPublicationProjectionPort;
   attempts: BookingPublicationAttemptStatusPort;
   readiness: BookingPublicationProjectionReadinessPort;
+  builder: BookingPublicationBuilderPort;
   max?: number;
   pool?: BookingPublicationProjectorPool;
   now?: () => Date;
@@ -145,7 +149,39 @@ export function createBookingPublicationProjector(config: {
           projectedAt,
         );
       }
-      if (!(await hasCurrentReadiness(config.readiness, publication))) {
+      const readiness = await currentReadiness(config.readiness, publication);
+      if (!readiness) {
+        return await terminalFailure(
+          pool,
+          config.projection,
+          config.attempts,
+          claim,
+          "source_content_changed",
+          projectedAt,
+        );
+      }
+      const built = await config.builder.build({
+        organizationId: publication.organizationId,
+        readiness,
+        generatedAt: projectedAt.toISOString(),
+      });
+      if (built.outcome === "rejected") {
+        if (built.code === "owner_snapshot_unavailable") throw new Error(built.code);
+        return await terminalFailure(
+          pool,
+          config.projection,
+          config.attempts,
+          claim,
+          built.code === "source_manifest_mismatch"
+            ? "source_content_changed"
+            : "projection_failed",
+          projectedAt,
+        );
+      }
+      if (
+        built.build.sourceManifestHash !== publication.readiness.sourceManifestHash ||
+        built.build.readinessHash !== publication.readiness.readinessHash
+      ) {
         return await terminalFailure(
           pool,
           config.projection,
@@ -156,7 +192,10 @@ export function createBookingPublicationProjector(config: {
         );
       }
       try {
-        const active = await config.projection.projectPublication(publication);
+        const active = await config.projection.projectPublication({
+          ...publication,
+          publicContent: built.build.publicContent,
+        });
         try {
           await config.attempts.markSucceeded({
             operationId: publication.operationId,
@@ -737,22 +776,30 @@ async function parsePublicationInput(
   };
 }
 
-async function hasCurrentReadiness(
+async function currentReadiness(
   readiness: BookingPublicationProjectionReadinessPort,
   publication: ParsedPublication,
-): Promise<boolean> {
+): Promise<ReadyProductReadinessEvidence<"booking"> | null> {
   const current = await readiness.getBookingReadiness({
     organizationId: publication.organizationId,
     propertyId: publication.propertyId,
   });
-  return (
-    current.outcome === "evaluated" &&
+  if (current.outcome === "provider_failure") {
+    throw new Error(current.error.code);
+  }
+  if (
     current.product === "booking" &&
     current.status === "ready" &&
     current.propertyId === publication.propertyId &&
     current.sourceManifestHash === publication.readiness.sourceManifestHash &&
     current.readinessHash === publication.readiness.readinessHash
-  );
+  ) {
+    return createReadyProductReadinessEvidence(current, {
+      propertyId: publication.propertyId,
+      product: "booking",
+    });
+  }
+  return null;
 }
 
 function positiveInteger(value: number | undefined, fallback: number): number {
