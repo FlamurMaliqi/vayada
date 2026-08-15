@@ -186,7 +186,7 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
     for (const directSource of ["booking_engine", "vayada"]) {
       await expectFailure(
         post(request, accessToken, propertyId, fresh(created.body, { directSource })),
-        400,
+        422,
         "invalid_source",
       );
     }
