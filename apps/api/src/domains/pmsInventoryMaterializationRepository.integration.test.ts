@@ -135,7 +135,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory materialization re
       availableCount: 0,
     });
 
-    fixture.calendarState.currentRevision = 2;
+    await activateCalendarRevision(admin, fixture, 2);
     const rematerialized = await fixture.repository.materializeInventory(
       materializationCommand(fixture, "revision-two", 2, "2026-08-04", "2026-08-07"),
     );
@@ -189,6 +189,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory materialization re
       changedDayCount: 366,
       coverage: { expectedDayCount: 366, materializedDayCount: 366, gaps: [] },
     });
+    expect(fixture.calendarState.readCount).toBe(0);
     const count = await admin.query<{ count: string }>(
       `SELECT count(*)::text AS count
        FROM pms.inventory_days
@@ -296,7 +297,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory materialization re
 
   it("rejects stale evidence and adopts only pristine onboarding inventory", async () => {
     const newerCalendar = await createFixture(admin, repositories, [2, 1]);
-    newerCalendar.calendarState.currentRevision = 2;
+    await activateCalendarRevision(admin, newerCalendar, 2);
     await expect(
       newerCalendar.repository.materializeInventory(
         materializationCommand(newerCalendar, "newer-calendar", 1, "2026-08-04", "2026-08-04"),
@@ -488,14 +489,16 @@ async function createFixture(
       startingLimit: startingLimits[index]!,
     });
     configurations.set(revision, configuration);
-    await seedCalendarRevision(admin, {
-      organizationId,
-      propertyId,
-      roomTypeId,
-      actorUserId,
-      revision,
-      startingLimit: startingLimits[index]!,
-    });
+    if (revision === 1) {
+      await seedCalendarRevision(admin, {
+        organizationId,
+        propertyId,
+        roomTypeId,
+        actorUserId,
+        revision,
+        startingLimit: startingLimits[index]!,
+      });
+    }
   }
 
   const calendarState = {
@@ -599,6 +602,25 @@ async function createFixture(
   };
 }
 
+async function activateCalendarRevision(
+  admin: pg.Client,
+  fixture: Fixture,
+  revision: number,
+): Promise<void> {
+  const configuration = fixture.configurations.get(revision);
+  const binding = configuration?.sourceInputs.roomBindings[0];
+  if (!configuration || !binding) throw new Error("Missing calendar revision fixture");
+  await seedCalendarRevision(admin, {
+    organizationId: fixture.organizationId,
+    propertyId: fixture.propertyId,
+    roomTypeId: fixture.roomTypeId,
+    actorUserId: fixture.actorUserId,
+    revision,
+    startingLimit: binding.startingSellableLimitCount,
+  });
+  fixture.calendarState.currentRevision = revision;
+}
+
 function configurationSnapshot(input: {
   propertyId: string;
   roomTypeId: string;
@@ -631,8 +653,8 @@ function configurationSnapshot(input: {
       },
       schedule: { mode: "year_round", periods: [] },
       defaultMinimumStayNights: 1,
-      createdAt: "2026-08-04T08:00:00.000Z",
-      updatedAt: "2026-08-04T08:00:00.000Z",
+      createdAt: ACCEPTED_AT.toISOString(),
+      updatedAt: ACCEPTED_AT.toISOString(),
     },
     {
       ownerDomain: "hotel_catalog",

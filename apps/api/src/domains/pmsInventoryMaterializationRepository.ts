@@ -27,6 +27,7 @@ import {
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import { lockPmsInventoryMutationScope } from "./pmsInventoryMutationLock.js";
+import { loadPmsOperatingCalendarConfigurationByRevision } from "./pmsOperatingCalendarReadModel.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import { lockPmsRoomFactsMutationScope } from "./pmsRoomFactsMutationLock.js";
 
@@ -108,6 +109,9 @@ type InventoryDayRow = {
   availableCount: number | string;
   sourceFreshness: unknown;
 };
+
+type CurrentCalendarRevisionRow = { calendarRevision: number | string | null };
+type CurrentRoomFactsRow = { roomTypeId: string; roomFactsRevision: number | string };
 
 type CoverageRow = {
   organizationId: string;
@@ -282,18 +286,15 @@ async function executeMaterialization(
           await lockPmsPhysicalRoomUnitMutationScope(client, command.propertyId, roomTypeId);
         }
 
-        const current = await config.operatingCalendar.getCurrentOperatingCalendarConfiguration(
+        const exact = await loadLockedCurrentConfiguration(
+          client,
           command.propertyId,
-        );
-        const exact = await config.operatingCalendar.getOperatingCalendarConfigurationBySource(
-          command.configurationSource,
+          config.propertyProfileEvidence,
         );
         if (
-          !current ||
-          current.sourceStatus !== "current" ||
           !exact ||
           !sameConfigurationIdentity(immutable, exact) ||
-          !sameConfigurationIdentity(current.configuration, exact)
+          !(await roomFactsStillMatch(client, exact))
         ) {
           return finalizeMaterialization(
             client,
@@ -439,6 +440,47 @@ async function executeMaterialization(
   } finally {
     client.release();
   }
+}
+
+async function loadLockedCurrentConfiguration(
+  client: PmsInventoryMaterializationRepositoryClient,
+  propertyId: string,
+  registry: PmsOperatingCalendarPropertyProfileEvidencePort,
+): Promise<PmsOperatingCalendarConfigurationSnapshot | null> {
+  const result = await client.query<CurrentCalendarRevisionRow>(
+    `SELECT max(calendar_revision) AS "calendarRevision"
+     FROM pms.operating_calendar_revisions
+     WHERE property_id = $1::uuid`,
+    [propertyId],
+  );
+  const revision = nullablePositiveInteger(result.rows[0]?.calendarRevision ?? null);
+  return revision === null
+    ? null
+    : loadPmsOperatingCalendarConfigurationByRevision(client, propertyId, revision, registry);
+}
+
+async function roomFactsStillMatch(
+  client: PmsInventoryMaterializationRepositoryClient,
+  configuration: PmsOperatingCalendarConfigurationSnapshot,
+): Promise<boolean> {
+  const result = await client.query<CurrentRoomFactsRow>(
+    `SELECT id::text AS "roomTypeId", room_facts_revision AS "roomFactsRevision"
+     FROM pms.room_types
+     WHERE property_id = $1::uuid AND active IS TRUE
+     ORDER BY id::text`,
+    [configuration.propertyId],
+  );
+  const expected = [...configuration.sourceInputs.roomBindings].sort((left, right) =>
+    compareCodeUnits(left.roomTypeId, right.roomTypeId),
+  );
+  return (
+    result.rows.length === expected.length &&
+    result.rows.every(
+      (row, index) =>
+        normalizeUuid(row.roomTypeId) === expected[index]?.roomTypeId &&
+        positiveInteger(row.roomFactsRevision) === expected[index]?.sourceRoomFactsRevision,
+    )
+  );
 }
 
 async function capacitiesStillMatch(
