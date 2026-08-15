@@ -15,6 +15,7 @@ import { createPgPmsOperatingCalendarImpactService } from "./pmsOperatingCalenda
 
 export type PmsOperatingCalendarProductionRuntime = Readonly<{
   routes: PmsOperatingCalendarRoutesOptions;
+  inventory: ReturnType<typeof createPgPmsInventoryMaterializationRepository>;
   close(): Promise<void>;
 }>;
 
@@ -50,6 +51,7 @@ export function createPmsOperatingCalendarProductionRuntime(input: {
     roomCapacity: input.roomEvidence.roomCapacity,
   });
   return Object.freeze({
+    inventory: materialization,
     routes: Object.freeze({
       commandPort: command,
       impactPreviewPort: impact,

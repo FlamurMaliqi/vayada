@@ -77,6 +77,10 @@ import { createPgHotelCatalogOperatingCalendarPropertyProfileEvidencePort } from
 import { createPgPmsOperatingCalendarReadModel } from "./domains/pmsOperatingCalendarReadModel.js";
 import { createPmsOperatingCalendarProductionRuntime } from "./domains/pmsOperatingCalendarProductionRuntime.js";
 import { createPgFinancePaymentReadinessReadModel } from "./domains/financePaymentReadinessReadModel.js";
+import {
+  createBookingPublicationProductionRuntime,
+  startBookingPublicationWorker,
+} from "./domains/bookingPublicationProductionRuntime.js";
 import { createTargetFinanceBillingConfigReadPort } from "./domains/financeBillingConfigReadModel.js";
 import { createFinanceSubscriptionService } from "./domains/financeSubscriptionService.js";
 import { createPgFinanceSubscriptionStore } from "./domains/financeSubscriptionStore.js";
@@ -238,7 +242,7 @@ const propertyLaunchSettingsRepository =
     : undefined;
 
 const publicBookabilityPublisher =
-  config.bookingSettingsSource === "target"
+  config.bookingSettingsSource === "target" && config.publicHotelProfileSource === "target"
     ? createTargetPublicBookabilityPublicationCommandPort({
         connectionString: targetDatabaseUrl,
         bookingHostBase: config.bookingHostBase,
@@ -719,6 +723,8 @@ const bookingGuestPolicyCurrentOwnerEvidence = createBookingGuestPolicyCurrentOw
   pms: propertySetupPmsRuntime.bookingGuestPolicyEvidence,
   catalog: bookingGuestPolicyCatalogCurrentOwnerEvidence,
 });
+const bookingMandatoryChargeConfirmationEvidence =
+  createBookingMandatoryChargeConfirmationEvidenceAdapter(propertySetupPmsRuntime.mandatoryCharges);
 const bookingGuestPolicyApplication = pmsRoomPublicationRuntime
   ? createBookingGuestPolicyProductionApplication({
       repository: bookingGuestPolicyRepository,
@@ -727,13 +733,43 @@ const bookingGuestPolicyApplication = pmsRoomPublicationRuntime
         rooms: pmsRoomPublicationRuntime.readModel,
         pricing: pmsPricingReadModel,
         recurringPricing: propertySetupPmsRuntime.recurringPricing,
-        mandatoryChargeConfirmation: createBookingMandatoryChargeConfirmationEvidenceAdapter(
-          propertySetupPmsRuntime.mandatoryCharges,
-        ),
+        mandatoryChargeConfirmation: bookingMandatoryChargeConfirmationEvidence,
       },
       currentOwnerEvidence: bookingGuestPolicyCurrentOwnerEvidence,
     })
   : undefined;
+
+const bookingPublicationRuntime = (() => {
+  if (config.publicHotelProfileSource === "legacy") return undefined;
+  const dependenciesMissing =
+    config.apiRuntime !== "next" ||
+    config.bookingSettingsSource !== "target" ||
+    config.pmsOperationsSource !== "target" ||
+    config.financeSource !== "target" ||
+    !bookingDesignReadinessProvider ||
+    !pmsRoomPublicationRuntime ||
+    !pmsOperatingCalendarRuntime;
+  if (dependenciesMissing && config.publicHotelProfileSource === "active_publication") {
+    throw new Error(
+      "Active Booking publication requires the next runtime and target Booking, PMS, Finance, and Platform Media dependencies",
+    );
+  }
+  if (dependenciesMissing) return undefined;
+  return createBookingPublicationProductionRuntime({
+    connectionString: targetDatabaseUrl,
+    bookingHostBase: config.bookingHostBase,
+    mediaResolver: pmsRoomPublicationRuntime.mediaResolver,
+    design: bookingDesignReadinessProvider,
+    guestPolicy: bookingGuestPolicyRepository,
+    rooms: pmsRoomPublicationRuntime.readModel,
+    pricing: pmsPricingReadModel,
+    recurringPricing: propertySetupPmsRuntime.recurringPricing,
+    operatingCalendar: propertySetupPmsRuntime.operatingCalendar,
+    inventory: pmsOperatingCalendarRuntime.inventory,
+    mandatoryChargeConfirmation: bookingMandatoryChargeConfirmationEvidence,
+    finance: financePaymentReadinessReadModel,
+  });
+})();
 
 const propertySetupRouteStateReadPort = createPropertySetupRouteStateReadPort({
   draftRepository: propertySetupDraftRepository,
@@ -1112,6 +1148,7 @@ const app = buildApp({
   bookingDesignReadiness: bookingDesignReadinessProvider
     ? { readinessPort: bookingDesignReadinessProvider }
     : undefined,
+  bookingPublication: bookingPublicationRuntime?.routes,
   marketplaceDiscoveryAllowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
   identityPrivacyRepository: config.auth
     ? createPgIdentityPrivacyRepository({
@@ -1145,7 +1182,17 @@ const app = buildApp({
   platformMedia: platformMediaRuntime?.routes,
 });
 
+const bookingPublicationWorker = bookingPublicationRuntime
+  ? startBookingPublicationWorker({
+      projector: bookingPublicationRuntime.projector,
+      workerId: `booking-publication:${process.pid}`,
+      warn: (error, message) => app.log.warn(error, message),
+    })
+  : undefined;
+
 app.addHook("onClose", async () => {
+  await bookingPublicationWorker?.close();
+  await bookingPublicationRuntime?.close();
   await Promise.all([
     marketplaceHotelCollaborationPreferencesRepository.close(),
     bookingDesignRepository.close(),
