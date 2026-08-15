@@ -135,8 +135,10 @@ test("shows the exact connected-account payment breakdown to the host", async ({
 test("gates legacy booking writes while keeping supported hotel actions active", async ({
   page,
 }, testInfo) => {
-  const assertHealthy = watchPageHealth(page, testInfo);
+  let assertHealthy = watchPageHealth(page, testInfo);
   let approvals = 0;
+  let noteCreates = 0;
+  let noteUpdates = 0;
   let createdGuest: Record<string, unknown> | null = null;
 
   await mockPmsWebAuthenticatedSession(page);
@@ -170,9 +172,62 @@ test("gates legacy booking writes while keeping supported hotel actions active",
     `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}`,
     (route) => route.fulfill({ json: { item: pmsWebReservation } }),
   );
+  const originalNote = {
+    noteId: "f6855900-0000-4000-8000-000000000001",
+    body: "Guest prefers a quiet room.",
+    authorUserId: "user_original_author",
+    authorDisplayName: "Original Author",
+    createdAt: "2026-08-01T10:00:00.000Z",
+    auditMetadata: {
+      editedByUserId: null,
+      editedByDisplayName: null,
+      editedAt: null,
+    },
+  };
+  const secondNote = {
+    ...originalNote,
+    noteId: "f6855900-0000-4000-8000-000000000003",
+    body: "Prepare the extra pillow.",
+  };
   await page.route(
-    `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}/notes`,
-    (route) => route.fulfill({ json: { items: [] } }),
+    `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}/notes**`,
+    async (route) => {
+      const method = route.request().method();
+      if (method === "PATCH") {
+        noteUpdates += 1;
+        if (noteUpdates === 1) {
+          return route.fulfill({ status: 500, json: { detail: "Temporary note failure" } });
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        return route.fulfill({
+          json: {
+            note: {
+              ...originalNote,
+              body: "Guest prefers a quiet room away from the lift.",
+              auditMetadata: {
+                editedByUserId: "user_pms_owner",
+                editedByDisplayName: "PMS Owner",
+                editedAt: "2026-08-13T18:00:00.000Z",
+              },
+            },
+          },
+        });
+      }
+      if (method === "POST") {
+        noteCreates += 1;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        return route.fulfill({
+          json: {
+            note: {
+              ...originalNote,
+              noteId: "f6855900-0000-4000-8000-000000000002",
+              body: "Late arrival confirmed.",
+            },
+          },
+        });
+      }
+      return route.fulfill({ json: { items: [originalNote, secondNote] } });
+    },
   );
   await page.route(
     `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/reservations/${PMS_WEB_RESERVATION_ID}/additional-guests`,
@@ -221,6 +276,29 @@ test("gates legacy booking writes while keeping supported hotel actions active",
   await expect(page.getByRole("button", { name: "Cancellation unavailable" })).toBeDisabled();
   await expect(page.getByRole("link", { name: "Check in guest" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add note" })).toBeEnabled();
+  await expect(page.getByText("Guest prefers a quiet room.")).toBeVisible();
+  await assertHealthy();
+  await page.getByRole("button", { name: "Edit note" }).first().click();
+  await page.getByLabel("Edit note text").fill("Guest prefers a quiet room away from the lift.");
+  await page.getByRole("button", { name: "Save edit" }).click();
+  await expect(page.getByText("Temporary note failure")).toBeVisible();
+  assertHealthy = watchPageHealth(page, testInfo);
+  await page.getByRole("button", { name: "Save edit" }).click();
+  await expect(page.getByText("Temporary note failure")).toHaveCount(0);
+  await expect(page.getByLabel("Edit note text")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Edit note" }).nth(1)).toBeDisabled();
+  await expect.poll(() => noteUpdates).toBe(2);
+  await expect(page.getByText(/Edited by PMS Owner/)).toBeVisible();
+  await expect(page.getByText(/Original Author/).first()).toBeVisible();
+  await page.getByRole("button", { name: "Add note" }).click();
+  await page.getByPlaceholder(/Notes are only visible/).fill("Late arrival confirmed.");
+  await page.getByRole("button", { name: "Save note" }).evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect(page.getByPlaceholder(/Notes are only visible/)).toBeDisabled();
+  await expect.poll(() => noteCreates).toBe(1);
+  await expect(page.getByText("Late arrival confirmed.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Add guest" })).toBeEnabled();
   await page.getByRole("button", { name: "Add guest" }).click();
   await expect(page.getByLabel("First name")).toBeEditable();

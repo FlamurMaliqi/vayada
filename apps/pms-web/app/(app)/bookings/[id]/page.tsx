@@ -1134,6 +1134,12 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   const [rejectReason, setRejectReason] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
   const [noteDraftOpen, setNoteDraftOpen] = useState(false);
+  const [noteSaving, setNoteSaving] = useState(false);
+  const noteSavePending = useRef(false);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteDraft, setEditingNoteDraft] = useState("");
+  const [noteEditSaving, setNoteEditSaving] = useState(false);
+  const noteEditPending = useRef(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   const [cancelling, setCancelling] = useState(false);
@@ -1306,7 +1312,10 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
 
   const handleSaveNote = async () => {
     const body = noteDraft.trim();
-    if (!body) return;
+    if (!body || noteSavePending.current) return;
+    noteSavePending.current = true;
+    setError("");
+    setNoteSaving(true);
     try {
       const note = await bookingsService.createNote(id, body);
       setNotes((prev) => [note, ...prev]);
@@ -1314,6 +1323,28 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       setNoteDraftOpen(false);
     } catch (err) {
       setError(errMessage(err, "Failed to save note"));
+    } finally {
+      noteSavePending.current = false;
+      setNoteSaving(false);
+    }
+  };
+
+  const handleSaveNoteEdit = async () => {
+    const body = editingNoteDraft.trim();
+    if (!editingNoteId || !body || noteEditPending.current) return;
+    noteEditPending.current = true;
+    setError("");
+    setNoteEditSaving(true);
+    try {
+      const note = await bookingsService.updateNote(id, editingNoteId, body);
+      setNotes((prev) => prev.map((candidate) => (candidate.id === note.id ? note : candidate)));
+      setEditingNoteId(null);
+      setEditingNoteDraft("");
+    } catch (err) {
+      setError(errMessage(err, "Failed to update note"));
+    } finally {
+      noteEditPending.current = false;
+      setNoteEditSaving(false);
     }
   };
 
@@ -1324,6 +1355,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       confirmLabel: "Delete",
       onConfirm: async () => {
         setConfirmDialog(null);
+        setError("");
         try {
           await bookingsService.deleteNote(id, noteId);
           setNotes((prev) => prev.filter((n) => n.id !== noteId));
@@ -2339,6 +2371,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             <h2 className="text-sm font-semibold text-gray-900">Internal notes</h2>
             <button
               onClick={() => setNoteDraftOpen((v) => !v)}
+              disabled={noteEditSaving}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-900 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
             >
               <PlusIcon className="w-4 h-4" />
@@ -2350,6 +2383,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               <textarea
                 value={noteDraft}
                 onChange={(e) => setNoteDraft(e.target.value)}
+                disabled={noteSaving}
                 placeholder="Notes are only visible to your team — never shown to the guest."
                 rows={3}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent resize-none"
@@ -2360,16 +2394,17 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                     setNoteDraft("");
                     setNoteDraftOpen(false);
                   }}
+                  disabled={noteSaving}
                   className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleSaveNote}
-                  disabled={!noteDraft.trim()}
+                  disabled={!noteDraft.trim() || noteSaving}
                   className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
                 >
-                  Save note
+                  {noteSaving ? "Saving…" : "Save note"}
                 </button>
               </div>
             </div>
@@ -2395,15 +2430,63 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                         </span>
                       )}
                     </div>
-                    <button
-                      onClick={() => handleDeleteNote(n.id)}
-                      className="p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50"
-                      aria-label="Delete note"
-                    >
-                      <TrashIcon className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => {
+                          setEditingNoteId(n.id);
+                          setEditingNoteDraft(n.body);
+                        }}
+                        disabled={noteEditSaving}
+                        className="rounded p-1 text-gray-400 hover:bg-blue-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+                        aria-label="Edit note"
+                      >
+                        <PencilSquareIcon className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteNote(n.id)}
+                        disabled={noteEditSaving}
+                        className="p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        aria-label="Delete note"
+                      >
+                        <TrashIcon className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
-                  <p className="mt-1.5 text-sm text-gray-900 whitespace-pre-wrap">{n.body}</p>
+                  {editingNoteId === n.id ? (
+                    <div className="mt-2">
+                      <textarea
+                        aria-label="Edit note text"
+                        value={editingNoteDraft}
+                        onChange={(event) => setEditingNoteDraft(event.target.value)}
+                        disabled={noteEditSaving}
+                        rows={3}
+                        className="w-full resize-y rounded-lg border border-gray-300 px-3 py-2 text-base text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-gray-900"
+                      />
+                      <div className="mt-2 flex justify-end gap-2">
+                        <button
+                          onClick={() => setEditingNoteId(null)}
+                          disabled={noteEditSaving}
+                          className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-200 disabled:opacity-50"
+                        >
+                          Cancel edit
+                        </button>
+                        <button
+                          onClick={handleSaveNoteEdit}
+                          disabled={!editingNoteDraft.trim() || noteEditSaving}
+                          className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          {noteEditSaving ? "Saving…" : "Save edit"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mt-1.5 text-sm text-gray-900 whitespace-pre-wrap">{n.body}</p>
+                  )}
+                  {n.editedAt && (
+                    <p className="mt-1.5 text-xs text-gray-500">
+                      Edited by {n.editedByName || "Unknown"} · {formatDateTime(n.editedAt)}
+                    </p>
+                  )}
                 </div>
               ))}
             </div>

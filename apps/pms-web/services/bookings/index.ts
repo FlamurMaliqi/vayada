@@ -820,6 +820,15 @@ export const bookingsService = {
     return toBookingNote(response.note, id);
   },
 
+  updateNote: async (id: string, noteId: string, body: string) => {
+    const response = await pmsOperationsClient.patch<{ note: PmsPrivateNote }>(
+      await reservationEndpoint(id, `/notes/${encodeURIComponent(noteId)}`),
+      { ...commandMetadata("pms.note.update"), body },
+      pmsOperationsRequestOptions,
+    );
+    return toBookingNote(response.note, id);
+  },
+
   deleteNote: async (id: string, noteId: string) => {
     await pmsOperationsClient.delete<void>(await reservationEndpoint(id, `/notes/${noteId}`), {
       ...pmsOperationsRequestOptions,
