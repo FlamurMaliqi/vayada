@@ -125,6 +125,21 @@ async function persistBookingFacts(
       command.contractVersion,
     ],
   );
+  await transaction.query(
+    `INSERT INTO booking.booking_status_events (
+       guest_booking_id, event_type, from_status, to_status, actor_type,
+       actor_user_id, public_visible, event_payload, occurred_at
+     ) VALUES (
+       $1::uuid, 'guest_booking.accepted', NULL, 'confirmed', 'property_user',
+       $2::uuid, FALSE, jsonb_build_object('contractVersion', $3::text), $4::timestamptz
+     )`,
+    [
+      guestBookingId,
+      command.audit.actor.userId,
+      command.contractVersion,
+      command.audit.requestedAt,
+    ],
+  );
   await insertGuest(transaction, command, guestBookingId);
   await insertAddons(transaction, command, guestBookingId, preview);
   return { guestBookingId, bookingReference, total, checkIn, checkOut };
