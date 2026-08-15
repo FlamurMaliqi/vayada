@@ -196,6 +196,10 @@ import {
   type PmsMandatoryChargeConfirmationRoutesOptions,
 } from "./routes/pmsMandatoryChargeConfirmation.js";
 import {
+  registerPmsOperatingCalendarRoutes,
+  type PmsOperatingCalendarRoutesOptions,
+} from "./routes/pmsOperatingCalendar.js";
+import {
   registerPmsModuleActivationRoutes,
   type PmsModuleActivationRepository,
 } from "./routes/pmsModuleActivations.js";
@@ -243,6 +247,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   pmsPricing?: PmsPricingRoutesOptions;
   pmsRecurringPricing?: PmsRecurringPricingRoutesOptions;
   pmsMandatoryChargeConfirmation?: PmsMandatoryChargeConfirmationRoutesOptions;
+  pmsOperatingCalendar?: PmsOperatingCalendarRoutesOptions;
   pmsPhysicalRoomOperationalLabels?: PmsPhysicalRoomOperationalLabelRoutesOptions;
   bookingDashboardMetricsReadPort?: BookingRoutesOptions["dashboardMetricsReadPort"];
   bookingAddonItemsRepository?: BookingAddonItemsRepository;
@@ -616,6 +621,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPmsMandatoryChargeConfirmationRoutes, {
       prefix: "/api/pms",
       ...options.pmsMandatoryChargeConfirmation,
+    });
+  }
+  if (options.pmsOperatingCalendar) {
+    app.register(registerPmsOperatingCalendarRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsOperatingCalendar,
     });
   }
   if (options.pmsPhysicalRoomOperationalLabels) {
