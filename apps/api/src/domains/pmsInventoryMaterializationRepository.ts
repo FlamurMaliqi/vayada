@@ -837,7 +837,7 @@ async function findReplay(
   const stored = dataRecord(existing.idempotencyMetadata)
     ? existing.idempotencyMetadata["result"]
     : undefined;
-  const parsed = parseStoredMaterializationResult(stored);
+  const parsed = parsePmsInventoryMaterializationResult(stored);
   if (
     !parsed ||
     !materializationReplayMatchesCommand(parsed, command) ||
@@ -1423,7 +1423,7 @@ function sameConfigurationIdentity(
   );
 }
 
-function parseStoredMaterializationResult(
+export function parsePmsInventoryMaterializationResult(
   value: unknown,
 ): PmsInventoryMaterializationResult | null {
   if (!dataRecord(value) || typeof value.ok !== "boolean") return null;
