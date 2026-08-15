@@ -1312,10 +1312,12 @@ const BOOKING_LOOKUP_RATE_LIMIT = 5;
 const BOOKING_LOOKUP_RATE_WINDOW_MS = 60 * 1000;
 
 type TargetCheckoutCommandReservation =
-  { status: "reserved" } | { status: "replay"; body: unknown };
+  | { status: "reserved" }
+  | { status: "replay"; body: unknown };
 
 type TargetBookingChangeDecisionReservation =
-  { status: "reserved" } | { status: "replay"; body: unknown };
+  | { status: "reserved" }
+  | { status: "replay"; body: unknown };
 
 async function withTargetCheckoutTransaction<T>(
   pool: pg.Pool,
