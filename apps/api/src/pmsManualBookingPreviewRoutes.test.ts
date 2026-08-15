@@ -17,6 +17,7 @@ const propertyId = id(1),
   weekendId = id(6),
   extraId = id(7),
   otherRoomTypeId = id(8),
+  legacyPlanId = id(9),
   roomIds = [id(10), id(11), id(12)],
   addonIds = [id(20), id(21), id(22), id(23)],
   now = "2026-08-12T12:00:00.000Z";
@@ -213,6 +214,7 @@ describe("target manual-booking preview", () => {
     [422, "occupancy_exceeded", (body) => (body.stays[0].adults = 5), {}],
     [422, "occupancy_exceeded", (body) => (body.stays[0].adults = 0), {}],
     [404, "rate_plan_not_found", (body) => (body.stays[0].ratePlanId = propertyId), {}],
+    [404, "rate_plan_not_found", (body) => (body.stays[0].ratePlanId = legacyPlanId), {}],
     [422, "inactive_rate_plan", () => undefined, { inactivePlan: true }],
     [422, "currency_mismatch", () => undefined, { addonCurrency: "USD" }],
     [404, "addon_not_found", (body) => (body.addOns[0].addonId = propertyId), {}],
@@ -281,7 +283,7 @@ function ports(state: State): PmsManualBookingPreviewRoutesOptions {
   const ports: PmsManualBookingPreviewRoutesOptions = {
     pms: {
       async listRoomsByPropertyId() { read("rooms"); return { items: roomIds.map((roomId) => ({ roomId, roomTypeId })) } as any; },
-      async listRoomTypesByPropertyId() { read("types"); return { items: [{ roomTypeId, active: true, occupancyLimits: { adults: 4, children: 4, total: 4 }, ratePlans: [{ ratePlanId: planId, active: !state.inactivePlan }] }] } as any; },
+      async listRoomTypesByPropertyId() { read("types"); return { items: [{ roomTypeId, active: true, occupancyLimits: { adults: 4, children: 4, total: 4 }, ratePlans: [{ ratePlanId: legacyPlanId, pricingContractVersion: null, active: true }, { ratePlanId: planId, pricingContractVersion: "pms-pricing.v1", active: !state.inactivePlan }] }] } as any; },
       async getPhysicalRoomAvailability(_propertyId, stays) { read("available"); return stays.map((_, index) => state.unavailable || (state.capacityUnavailable && index === 1) ? false : true); },
     },
     pricing: {

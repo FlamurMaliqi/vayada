@@ -218,6 +218,86 @@ describe("target PMS room media compatibility", () => {
       "jsonb_typeof(legacy_media.item -> 'mediaObjectId') IS DISTINCT FROM 'string'",
     );
   });
+
+  it("projects the pricing contract that distinguishes canonical rate plans", async () => {
+    let roomTypeQuery = "";
+    const pool: PmsOperationsReadPool = {
+      async query<T extends QueryResultRow = QueryResultRow>(
+        text: string,
+      ): Promise<QueryResult<T>> {
+        roomTypeQuery = text;
+        const rows = [
+          {
+            roomTypeId: "room-type-1",
+            name: "Suite",
+            description: "Suite",
+            category: null,
+            occupancyLimits: { adults: 2, children: 0, total: 2 },
+            attributes: {},
+            amenities: [],
+            media: [],
+            roomMediaRevision: 1,
+            baseRateAmount: "100.00",
+            currency: "EUR",
+            active: true,
+            sortOrder: 1,
+            ratePlans: [
+              {
+                ratePlanId: "legacy-plan",
+                pricingContractVersion: null,
+                code: "FLEX",
+                name: "Legacy flexible",
+                rateType: "flexible",
+                mealPlan: null,
+                baseRate: { amountDecimal: "100.00", currency: "EUR" },
+                active: true,
+              },
+              {
+                ratePlanId: "canonical-plan",
+                pricingContractVersion: "pms-pricing.v1",
+                code: "ONB15-FLEX",
+                name: "Flexible",
+                rateType: "flexible",
+                mealPlan: null,
+                baseRate: { amountDecimal: "150.00", currency: "EUR" },
+                active: true,
+              },
+            ],
+            minStayNights: null,
+            maxStayNights: null,
+            closedToArrival: false,
+            closedToDeparture: false,
+            activeRuleCount: 0,
+            roomCount: 1,
+          },
+        ];
+        return {
+          command: "SELECT",
+          rowCount: 1,
+          oid: 0,
+          fields: [],
+          rows: rows as unknown as T[],
+        };
+      },
+    };
+    const repository = createTargetPmsOperationsReadRepository({
+      connectionString: "postgresql://pms-operations-read",
+      pool,
+    });
+
+    const result = await repository.listRoomTypesByPropertyId("property-1");
+
+    expect(roomTypeQuery).toContain("'pricingContractVersion', rate_plan.pricing_contract_version");
+    expect(
+      result.items[0]?.ratePlans.map(({ ratePlanId, pricingContractVersion }) => [
+        ratePlanId,
+        pricingContractVersion,
+      ]),
+    ).toEqual([
+      ["legacy-plan", null],
+      ["canonical-plan", "pms-pricing.v1"],
+    ]);
+  });
 });
 
 describe("target PMS room block calendar projection", () => {

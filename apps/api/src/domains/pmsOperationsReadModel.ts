@@ -34,6 +34,7 @@ export type PmsRoom = {
 
 export type PmsRatePlan = {
   ratePlanId: string;
+  pricingContractVersion?: string | null;
   code: string;
   name: string;
   rateType: "flexible" | "non_refundable" | "package" | "manual";
@@ -927,6 +928,7 @@ async function listRoomTypes(
        SELECT jsonb_agg(
                 jsonb_build_object(
                   'ratePlanId', rate_plan.id::text,
+                  'pricingContractVersion', rate_plan.pricing_contract_version,
                   'code', rate_plan.code,
                   'name', rate_plan.name,
                   'rateType', rate_plan.rate_type,
@@ -1362,6 +1364,8 @@ function toRatePlans(value: unknown): PmsRatePlan[] {
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
     .map((item) => ({
       ratePlanId: String(item.ratePlanId ?? ""),
+      pricingContractVersion:
+        typeof item.pricingContractVersion === "string" ? item.pricingContractVersion : null,
       code: String(item.code ?? ""),
       name: String(item.name ?? ""),
       rateType: toRateType(item.rateType),
