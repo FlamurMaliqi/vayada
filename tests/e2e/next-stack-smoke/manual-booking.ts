@@ -122,6 +122,28 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
     previewEnabled = true;
     await dialog.getByLabel("Room 1 check-out").fill(firstCheckOut);
     const previewResponse = await previewResponsePromise;
+    if (!previewResponse.ok()) {
+      await testInfo.attach("manual-booking-preview-diagnostics", {
+        body: JSON.stringify(
+          {
+            response: await previewResponse.text(),
+            request: previewResponse.request().postDataJSON(),
+            pricing: await api.json("GET", `/api/pms/properties/${propertyId}/pricing-source`),
+            recurring: await api.json(
+              "GET",
+              `/api/pms/properties/${propertyId}/pricing-source/recurring-booking-evidence`,
+            ),
+            policy: await api.json(
+              "GET",
+              `/api/booking/properties/${propertyId}/booking-guest-policy`,
+            ),
+          },
+          null,
+          2,
+        ),
+        contentType: "application/json",
+      });
+    }
     expect(previewResponse.status(), await previewResponse.text()).toBe(200);
     await expect(dialog.getByText("Server total pending")).toHaveCount(0);
     await expect(dialog.getByRole("button", { name: "Create booking" })).toBeEnabled();
