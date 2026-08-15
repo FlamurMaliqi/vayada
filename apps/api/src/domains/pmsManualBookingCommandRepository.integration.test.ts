@@ -162,6 +162,29 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
         commandId: input.commandId,
       },
     });
+    const acceptance = await admin.query(
+      `SELECT event_type AS "eventType", from_status AS "fromStatus",
+         to_status AS "toStatus", actor_type AS "actorType",
+         actor_user_id::text AS "actorUserId", public_visible AS "publicVisible",
+         public_message AS "publicMessage", event_payload AS payload,
+         occurred_at = $2::timestamptz AS "occurredAtMatches"
+       FROM booking.booking_status_events
+       WHERE guest_booking_id = $1::uuid AND event_type = 'guest_booking.accepted'`,
+      [created.guestBookingId, acceptedAt.toISOString()],
+    );
+    expect(acceptance.rows).toEqual([
+      {
+        eventType: "guest_booking.accepted",
+        fromStatus: null,
+        toStatus: "confirmed",
+        actorType: "property_user",
+        actorUserId: actorId,
+        publicVisible: false,
+        publicMessage: null,
+        payload: { contractVersion: "pms-manual-booking.v1" },
+        occurredAtMatches: true,
+      },
+    ]);
     const financeAttribution = await admin.query(
       `SELECT booking_channel AS channel, direct_booking_source AS source
        FROM booking.finance_booking_attribution WHERE guest_booking_id = $1::uuid`,
@@ -188,7 +211,11 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     );
     expect(projection).toMatchObject({
       stay: { checkIn: "2027-01-01", checkOut: "2027-01-04", adults: 3, children: 0 },
-      primaryGuest: { specialRequests: "Quiet room" },
+      primaryGuest: {
+        email: "ada@example.test",
+        phone: "+306900000000",
+        specialRequests: "Quiet room",
+      },
       addOns: [{ addonId, name: "Breakfast", quantity: 1 }],
       payment: { expectedMethod: "cash", status: "unpaid" },
       assignments: [
