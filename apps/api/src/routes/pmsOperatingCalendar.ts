@@ -2,6 +2,7 @@ import { UnauthorizedError } from "@vayada/backend-auth";
 import { AuthorizationError } from "@vayada/backend-authorization";
 import {
   PMS_OPERATING_CALENDAR_AUTHORIZATION,
+  PMS_INVENTORY_HORIZON_MAX_DAYS,
   createPmsOperatingCalendarSourceRevision,
   parsePmsOperatingCalendarCommandResult,
   parsePmsOperatingCalendarConfigurationSnapshot,
@@ -20,11 +21,15 @@ import {
   type PmsOperatingCalendarImpactPreviewError,
   type PmsOperatingCalendarImpactPreviewPort,
   type PmsOperatingCalendarReadPort,
+  type PmsInventoryMaterializationCommand,
+  type PmsInventoryMaterializationPort,
+  type PmsInventoryMaterializationResult,
   type UpsertPmsOperatingCalendarCommand,
 } from "@vayada/domain-pms";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createHash } from "node:crypto";
 
+import { parsePmsInventoryMaterializationResult } from "../domains/pmsInventoryMaterializationRepository.js";
 import { enforceRoutePolicy } from "./policy.js";
 
 type PropertyParams = { propertyId: string };
@@ -39,6 +44,7 @@ export type PmsOperatingCalendarRoutesOptions = {
   impactPreviewPort: PmsOperatingCalendarImpactPreviewPort;
   readPort: PmsOperatingCalendarReadPort;
   timeZoneRegistry: PmsOperatingCalendarCanonicalTimeZoneRegistry;
+  materializationPort?: PmsInventoryMaterializationPort;
 };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -125,6 +131,44 @@ export async function registerPmsOperatingCalendarRoutes(
         : sendCommandError(reply, result.error);
     },
   );
+
+  if (options.materializationPort) {
+    app.post<{ Params: PropertyParams; Querystring: unknown; Body: unknown }>(
+      "/properties/:propertyId/inventory-materialization",
+      { onRequest: authorize },
+      async (request, reply) => {
+        const scope = requireAuthorizedScope(authorized, request);
+        if (!emptyQuery(request.query))
+          return invalidRequest(reply, "Query parameters are invalid.");
+        const idempotencyKey = readIdempotencyKey(request);
+        if (!idempotencyKey) return invalidRequest(reply, "A single Idempotency-Key is required.");
+        const body = parseMaterializationBody(request.body);
+        if (!body) return invalidRequest(reply, "The inventory materialization body is invalid.");
+        const command: PmsInventoryMaterializationCommand = {
+          organizationId: scope.context.selectedOrganization.organizationId,
+          propertyId: scope.propertyId,
+          configurationSource: createPmsOperatingCalendarSourceRevision(
+            scope.propertyId,
+            body.expectedCalendarRevision,
+          ),
+          expectedMaterializedRevision: body.expectedCalendarRevision,
+          horizon: body.horizon,
+          idempotencyKey,
+          audit: commandAudit(scope.context),
+        };
+        const result = parsePmsInventoryMaterializationResult(
+          await options.materializationPort!.materializeInventory(command),
+        );
+        if (!result || !matchesMaterializationResult(result, command)) {
+          return invalidPortResult(reply);
+        }
+        if (result.ok) return reply.status(200).send(result);
+        return reply
+          .status(result.error.code === "configuration_not_found" ? 404 : 409)
+          .send(result);
+      },
+    );
+  }
 
   app.get<{ Params: PropertyParams }>(
     "/properties/:propertyId/operating-calendar",
@@ -235,6 +279,89 @@ function matchesCommand(
       binding.startingSellableLimitCount === expected.startingSellableLimitCount
     );
   });
+}
+
+function matchesMaterializationResult(
+  result: PmsInventoryMaterializationResult,
+  command: PmsInventoryMaterializationCommand,
+): boolean {
+  if (!result.ok) return true;
+  const coverage = result.coverage;
+  if (
+    coverage.configurationSource.entityId !== command.propertyId ||
+    coverage.configurationSource.revision !== command.configurationSource.revision ||
+    coverage.materializedRevision !== command.expectedMaterializedRevision ||
+    coverage.coverageFrom !== command.horizon.from ||
+    coverage.coverageThrough !== command.horizon.through
+  ) {
+    return false;
+  }
+  const intent = result.projectionRefreshIntent;
+  return (
+    intent === null ||
+    (intent.organizationId === command.organizationId &&
+      intent.propertyId === command.propertyId &&
+      intent.configurationSource.entityId === command.propertyId &&
+      intent.configurationSource.revision === command.configurationSource.revision &&
+      intent.materializedRevision === command.expectedMaterializedRevision &&
+      intent.coverageFrom === command.horizon.from &&
+      intent.coverageThrough === command.horizon.through)
+  );
+}
+
+function parseMaterializationBody(value: unknown): Readonly<{
+  expectedCalendarRevision: number;
+  horizon: Readonly<{ from: string; through: string }>;
+}> | null {
+  if (!exactDataRecord(value, ["expectedCalendarRevision", "horizon"])) return null;
+  if (
+    !Number.isInteger(value.expectedCalendarRevision) ||
+    (value.expectedCalendarRevision as number) < 1 ||
+    (value.expectedCalendarRevision as number) > MAX_REVISION ||
+    !exactDataRecord(value.horizon, ["from", "through"])
+  ) {
+    return null;
+  }
+  const count = inclusiveDateCount(value.horizon.from, value.horizon.through);
+  return count !== null && count <= PMS_INVENTORY_HORIZON_MAX_DAYS
+    ? {
+        expectedCalendarRevision: value.expectedCalendarRevision as number,
+        horizon: { from: value.horizon.from as string, through: value.horizon.through as string },
+      }
+    : null;
+}
+
+function inclusiveDateCount(from: unknown, through: unknown): number | null {
+  if (typeof from !== "string" || typeof through !== "string") return null;
+  const fromDate = canonicalDateNumber(from);
+  const throughDate = canonicalDateNumber(through);
+  if (fromDate === null || throughDate === null || throughDate < fromDate) return null;
+  return Math.floor((throughDate - fromDate) / 86_400_000) + 1;
+}
+
+function canonicalDateNumber(value: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const timestamp = Date.parse(`${value}T00:00:00.000Z`);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value
+    ? timestamp
+    : null;
+}
+
+function emptyQuery(value: unknown): boolean {
+  return exactDataRecord(value, []);
+}
+
+function exactDataRecord(
+  value: unknown,
+  keys: readonly string[],
+): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return (
+    (prototype === Object.prototype || prototype === null) &&
+    Object.keys(value).length === keys.length &&
+    keys.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+  );
 }
 
 function commandAudit(context: AuthorizedScope["context"]): PmsOperatingCalendarCommandAudit {
