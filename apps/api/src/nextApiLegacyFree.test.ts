@@ -1,4 +1,5 @@
 import { injectJson } from "@vayada/backend-test";
+import { buildBookingPublicContent } from "@vayada/domain-distribution/booking-publication";
 import { PUBLIC_BOOKABILITY_FIXTURES } from "@vayada/domain-distribution/fixtures";
 import type { FastifyInstance } from "fastify";
 import type { QueryResultRow } from "pg";
@@ -56,7 +57,10 @@ const publicHotelProfilePool: PublicHotelProfileReadPool = {
 
     return {
       rows: [
-        { propertyId: fixtureProfile.hotel.propertyId, profile: fixtureProfile },
+        {
+          propertyId: fixtureProfile.hotel.propertyId,
+          publicContent: activeContent(fixtureProfile),
+        },
       ] as unknown as T[],
     };
   },
@@ -166,6 +170,61 @@ describe("next-api legacy-free runtime check", () => {
     );
   });
 });
+
+function activeContent(profile: typeof publicBookabilityFixture.profile) {
+  const result = buildBookingPublicContent({
+    sourceManifestHash: `sha256:${"1".repeat(64)}`,
+    readinessHash: `sha256:${"2".repeat(64)}`,
+    profile,
+    rooms: [
+      {
+        roomTypeId: "room-1",
+        name: "Room",
+        description: "A room.",
+        category: null,
+        occupancy: { maxGuests: 2, maxAdults: 2, maxChildren: 0 },
+        beds: [{ type: "double", quantity: 1 }],
+        bedrooms: 1,
+        bathrooms: 1,
+        bathroomType: "private",
+        size: null,
+        images: [{ url: "https://cdn.example/room.jpg" }],
+        amenities: ["wifi"],
+        rates: [
+          {
+            ratePlanId: "rate-1",
+            currency: "EUR",
+            baseNightlyAmount: "100.00",
+            refundable: true,
+            paymentTiming: "pay_at_property",
+          },
+        ],
+      },
+    ],
+    calendar: {
+      sourceRevision: "calendar-1",
+      materializedRevision: "calendar-1",
+      currentLocalDate: "2026-06-06",
+      coverageFrom: "2026-06-06",
+      coverageThrough: "2027-06-06",
+      materializedThrough: "2027-06-06",
+      expectedDayCount: 366,
+      materializedDayCount: 366,
+      gapCount: 0,
+      roomTypeIds: ["room-1"],
+      observedAt: profile.generatedAt,
+    },
+    finance: {
+      defaultCurrency: "EUR",
+      supportedCurrencies: ["EUR"],
+      onlinePayment: true,
+      payAtProperty: true,
+      readyPaymentMethods: ["card", "pay_at_property"],
+    },
+  });
+  if (!result) throw new Error("Expected valid active-publication fixture");
+  return result.publicContent;
+}
 
 function targetPublicHotelQuoteRow(): QueryResultRow {
   const quote = publicBookabilityFixture.quote!;
