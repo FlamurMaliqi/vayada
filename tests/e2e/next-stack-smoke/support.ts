@@ -11,6 +11,7 @@ export const NEXT_STACK_ORIGINS = Object.freeze({
   bookingAdmin: "https://next-booking-admin.vayada.com",
   marketplace: "https://next-marketplace.vayada.com",
   pms: "https://next-pms.vayada.com",
+  platformAdmin: "https://next-admin.vayada.com",
 });
 
 export type SmokeEnvironment = {
@@ -35,6 +36,12 @@ export type SyntheticUser = {
   firstName: string;
   lastName: string;
   role: "hotel" | "creator";
+};
+
+export type SyntheticPlatformAdmin = {
+  accessToken: string;
+  membershipId: string;
+  userId: string;
 };
 
 export type UploadedMedia = {
@@ -146,6 +153,56 @@ export async function createSyntheticUser(
   return { id: stringField(user, "id"), email, firstName, lastName, role };
 }
 
+export async function createSyntheticPlatformAdmin(
+  request: APIRequestContext,
+  environment: SmokeEnvironment,
+): Promise<SyntheticPlatformAdmin> {
+  const email = `qa-next-platform-${environment.runId}@${environment.emailDomain}`;
+  const workos = workosApi(request, environment.workosApiKey);
+  const user = await workos.json<Record<string, unknown>>("POST", "/user_management/users", {
+    email,
+    password: environment.password,
+    first_name: "Parker",
+    last_name: `Smoke ${environment.runId.slice(-8)}`,
+    email_verified: true,
+  });
+  const userId = stringField(user, "id");
+  await primePlatformIdentity(request, email, environment.password);
+  const organizations = await workos.json<Record<string, unknown>>(
+    "GET",
+    "/organizations?limit=100",
+  );
+  const platformOrganizations = arrayField(organizations, "data")
+    .map(record)
+    .filter((organization) => {
+      const metadata = organization.metadata;
+      return (
+        organization.organization_kind === "platform" ||
+        (metadata !== null &&
+          typeof metadata === "object" &&
+          !Array.isArray(metadata) &&
+          (metadata as Record<string, unknown>).organization_kind === "platform")
+      );
+    });
+  if (platformOrganizations.length !== 1) {
+    throw new Error(
+      `Expected one WorkOS platform organization, found ${platformOrganizations.length}.`,
+    );
+  }
+  const membership = await workos.json<Record<string, unknown>>(
+    "POST",
+    "/user_management/organization_memberships",
+    {
+      user_id: userId,
+      organization_id: stringField(platformOrganizations[0]!, "id"),
+      role_slug: "admin",
+    },
+  );
+  const membershipId = stringField(membership, "id");
+  const accessToken = await waitForPlatformAdminLogin(request, email, environment.password);
+  return { accessToken, membershipId, userId };
+}
+
 export async function login(page: Page, user: SyntheticUser, password: string): Promise<void> {
   await page.goto(`${NEXT_STACK_ORIGINS.marketplace}/login?returnTo=/onboarding`);
   await page.getByLabel("Email address").fill(user.email);
@@ -228,6 +285,20 @@ export async function workosOrganizationsForUser(
   return arrayField(response, "data")
     .map(record)
     .map((membership) => stringField(membership, "organization_id"));
+}
+
+export async function workosMembershipIdsForUser(
+  request: APIRequestContext,
+  apiKey: string,
+  userId: string,
+): Promise<string[]> {
+  const response = await workosApi(request, apiKey).json<Record<string, unknown>>(
+    "GET",
+    `/user_management/organization_memberships?user_id=${encodeURIComponent(userId)}&limit=100`,
+  );
+  return arrayField(response, "data")
+    .map(record)
+    .map((membership) => stringField(membership, "id"));
 }
 
 export async function workosUserIdsForEmail(
@@ -350,6 +421,44 @@ function mediaFrom(value: Record<string, unknown>): UploadedMedia {
   return {
     mediaObjectId: stringField(record(arrayField(value, "mediaObjects")[0]), "mediaObjectId"),
   };
+}
+
+async function waitForPlatformAdminLogin(
+  request: APIRequestContext,
+  email: string,
+  password: string,
+): Promise<string> {
+  const deadline = Date.now() + 45_000;
+  let latest = "identity sync pending";
+  while (Date.now() < deadline) {
+    const response = await request.post(`${NEXT_STACK_ORIGINS.platformAdmin}/auth/password/login`, {
+      headers: { origin: NEXT_STACK_ORIGINS.platformAdmin },
+      data: { email, password, surface: "platform-admin" },
+    });
+    const body = await response.text();
+    if (response.ok()) {
+      return stringField(record(JSON.parse(body)), "accessToken");
+    }
+    latest = `${response.status()}: ${safeError(body)}`;
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error(`Synthetic platform-admin login did not become ready: ${latest}`);
+}
+
+async function primePlatformIdentity(
+  request: APIRequestContext,
+  email: string,
+  password: string,
+): Promise<void> {
+  const response = await request.post(`${NEXT_STACK_ORIGINS.platformAdmin}/auth/password/login`, {
+    headers: { origin: NEXT_STACK_ORIGINS.platformAdmin },
+    data: { email, password, surface: "platform-admin" },
+  });
+  if (response.status() !== 403) {
+    throw new Error(
+      `Expected first platform login to fail closed with 403, received ${response.status()}: ${safeError(await response.text())}`,
+    );
+  }
 }
 
 function stringRecord(value: unknown): Record<string, string> {

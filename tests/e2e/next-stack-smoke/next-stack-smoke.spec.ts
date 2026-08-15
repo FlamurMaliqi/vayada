@@ -12,6 +12,7 @@ import {
 import {
   NEXT_STACK_ORIGINS,
   arrayField,
+  createSyntheticPlatformAdmin,
   createSyntheticUser,
   futureStay,
   loadSmokeEnvironment,
@@ -24,6 +25,7 @@ import {
   targetApi,
   uploadPropertyCover,
   type SmokeEnvironment,
+  type SyntheticPlatformAdmin,
   type SyntheticUser,
 } from "./support";
 import { runQuoteLifecycle, waitForOffer, type BookingResource } from "./booking-lifecycle";
@@ -45,9 +47,12 @@ test("fresh hotel and creator onboarding reaches every next-stack handoff and sa
   const users: SyntheticUser[] = [];
   const bookings: BookingResource[] = [];
   let hotel: HotelResource | undefined;
+  let platformAdmin: SyntheticPlatformAdmin | undefined;
   let primaryError: unknown;
 
   try {
+    platformAdmin = await test.step("create temporary platform lifecycle approver", () =>
+      createSyntheticPlatformAdmin(request, environment));
     const foreignHotelContext = await browser.newContext();
     let foreignAccessToken: string;
     try {
@@ -70,6 +75,7 @@ test("fresh hotel and creator onboarding reaches every next-stack handoff and sa
         users,
         bookings,
         foreignAccessToken,
+        platformAdmin,
         testInfo,
         (resource) => {
           hotel = resource;
@@ -109,6 +115,7 @@ async function runHotelFlow(
   users: SyntheticUser[],
   bookings: BookingResource[],
   foreignAccessToken: string,
+  platformAdmin: SyntheticPlatformAdmin,
   testInfo: TestInfo,
   registerHotel: (resource: HotelResource) => void,
 ): Promise<HotelResource> {
@@ -295,6 +302,19 @@ async function runHotelFlow(
         primaryColor: "#2946E8",
         fontPairing: "modern-minimalist",
       });
+      const activation = await targetApi(request, platformAdmin.accessToken).json<
+        Record<string, unknown>
+      >(
+        "PATCH",
+        `/api/platform/admin/properties/${setup.propertyId}/status`,
+        {
+          expectedLifecycleRevision: 1,
+          status: "active",
+          reason: "Approve the isolated next-stack smoke property",
+        },
+        { "Idempotency-Key": `next-smoke:${environment.runId}:property-active` },
+      );
+      expect(activation).toMatchObject({ lifecycleStatus: "active", lifecycleRevision: 2 });
       const result = await api.json<Record<string, unknown>>(
         "POST",
         `/api/booking/hotels/${setup.propertyId}/public-bookability`,

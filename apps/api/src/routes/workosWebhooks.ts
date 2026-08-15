@@ -357,8 +357,11 @@ function toWorkosMembershipPayload(event: WorkosWebhookEvent): WorkosMembershipP
   return {
     workosMembershipId: requiredString(event.data, "id"),
     workosUserId:
-      optionalNestedString(event.data, ["user", "id"]) ?? requiredString(event.data, "user_id"),
+      optionalString(event.data, "userId") ??
+      optionalNestedString(event.data, ["user", "id"]) ??
+      requiredString(event.data, "user_id"),
     workosOrgId:
+      optionalString(event.data, "organizationId") ??
       optionalNestedString(event.data, ["organization", "id"]) ??
       requiredString(event.data, "organization_id"),
     roleKey: role,
