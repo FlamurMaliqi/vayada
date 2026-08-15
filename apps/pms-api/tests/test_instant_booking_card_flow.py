@@ -169,6 +169,13 @@ async def _stripe_webhook(
         )
 
 
+class _StripeObjectWithoutGet(dict):
+    get = None
+
+    def to_dict(self):
+        return dict(self)
+
+
 @contextmanager
 def _lifecycle_spies():
     targets = {
@@ -751,6 +758,30 @@ async def test_returned_failed_refund_is_persisted_without_cancelling_booking(
         "stripe_refund_id": "re_failed_status",
         "stripe_refund_status": "failed",
     }
+
+
+async def test_refund_webhook_normalizes_legacy_stripe_objects(client):
+    refund = _StripeObjectWithoutGet(id="re_legacy_object", status="succeeded")
+    with (
+        patch("app.services.stripe_service.construct_webhook_event") as construct_event,
+        patch(
+            "app.services.booking_service.reconcile_stripe_refund_event",
+            new_callable=AsyncMock,
+            return_value={"id": "payment_1"},
+        ) as reconcile,
+    ):
+        construct_event.return_value = {
+            "type": "refund.updated",
+            "data": {"object": refund},
+        }
+        response = await client.post(
+            "/webhooks/stripe/connect",
+            content=b"{}",
+            headers={"stripe-signature": "test"},
+        )
+
+    assert response.status_code == 200, response.text
+    reconcile.assert_awaited_once_with({"id": "re_legacy_object", "status": "succeeded"})
 
 
 @pytest.mark.parametrize(

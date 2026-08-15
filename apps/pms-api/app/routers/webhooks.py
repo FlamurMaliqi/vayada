@@ -164,6 +164,10 @@ async def _handle_stripe_webhook(request: Request, webhook_secret: str):
 
     event_type = event["type"]
     data = event["data"]["object"]
+    if hasattr(data, "to_dict_recursive"):
+        data = data.to_dict_recursive()
+    elif hasattr(data, "to_dict"):
+        data = data.to_dict()
     mode = settings.provider_webhook_cutover_mode("stripe")
     non_mutating_response = await _non_mutating_webhook_response(
         "stripe",
