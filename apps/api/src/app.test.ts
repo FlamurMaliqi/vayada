@@ -137,6 +137,7 @@ import type {
   PmsPrivateNoteCreateCommand,
   PmsPrivateNoteDeleteCommand,
   PmsPrivateNoteDeleteResponse,
+  PmsPrivateNoteUpdateCommand,
   PmsOperationsReadRepository,
   PmsRoom,
   PmsRoomBlockCreateCommand,
@@ -1418,6 +1419,7 @@ function createPmsOperationsCommandRepository(
   checkoutChargeWaives: PmsCheckoutChargeWaiveCommand[];
   noteCreates: PmsPrivateNoteCreateCommand[];
   noteDeletes: PmsPrivateNoteDeleteCommand[];
+  noteUpdates: PmsPrivateNoteUpdateCommand[];
   roomTypeCreates: PmsRoomTypeCreateCommand[];
   roomTypeUpdates: PmsRoomTypeUpdateCommand[];
   roomBlockCreates: PmsRoomBlockCreateCommand[];
@@ -1439,6 +1441,7 @@ function createPmsOperationsCommandRepository(
   const checkoutChargeWaives: PmsCheckoutChargeWaiveCommand[] = [];
   const noteCreates: PmsPrivateNoteCreateCommand[] = [];
   const noteDeletes: PmsPrivateNoteDeleteCommand[] = [];
+  const noteUpdates: PmsPrivateNoteUpdateCommand[] = [];
   const roomTypeCreates: PmsRoomTypeCreateCommand[] = [];
   const roomTypeUpdates: PmsRoomTypeUpdateCommand[] = [];
   const roomBlockCreates: PmsRoomBlockCreateCommand[] = [];
@@ -1515,6 +1518,7 @@ function createPmsOperationsCommandRepository(
     checkoutChargeWaives,
     noteCreates,
     noteDeletes,
+    noteUpdates,
     roomTypeCreates,
     roomTypeUpdates,
     roomBlockCreates,
@@ -1998,6 +2002,35 @@ function createPmsOperationsCommandRepository(
           commandId: command.commandId,
           idempotencyKey: command.idempotencyKey,
           acceptedAt: "2026-08-14T17:05:00.000Z",
+          sideEffects: ["audit_event"],
+        },
+      };
+    },
+    async updatePrivateNote(command) {
+      noteUpdates.push(command);
+      const notes = notesByReservation.get(command.guestBookingId);
+      const note = notes?.find((candidate) => candidate.noteId === command.noteId);
+      if (!note) {
+        return {
+          ok: false,
+          statusCode: 404,
+          code: notes ? "note_not_found" : "reservation_not_found",
+          message: notes ? "PMS private note not found." : "PMS reservation not found.",
+        };
+      }
+      note.body = command.body;
+      note.auditMetadata.editedByUserId = command.actorUserId;
+      note.auditMetadata.editedByDisplayName = command.editorDisplayName;
+      note.auditMetadata.editedAt = "2026-08-14T17:03:00.000Z";
+      auditEvents.push(`private_note_edited:${note.noteId}`);
+      return {
+        ok: true,
+        note: structuredClone(note),
+        commandMeta: {
+          contractVersion: "pms-operations.v1",
+          commandId: command.commandId,
+          idempotencyKey: command.idempotencyKey,
+          acceptedAt: note.auditMetadata.editedAt,
           sideEffects: ["audit_event"],
         },
       };
@@ -11819,7 +11852,7 @@ describe("vayada-api", () => {
     expect(findForbiddenPublicBookabilityKeys(seededPublicQuote)).toEqual([]);
   });
 
-  it("creates and deletes PMS private notes with audit-only command side effects", async () => {
+  it("creates, edits, and deletes PMS private notes with audit-only command side effects", async () => {
     const createCase = pmsPrivateNoteCases["private-note-create"]!;
     const deleteCase = pmsPrivateNoteCases["private-note-delete"]!;
     const commandRepository = createPmsOperationsCommandRepository();
@@ -11844,6 +11877,17 @@ describe("vayada-api", () => {
       },
     });
     const createBody = created.body as PmsPrivateNoteCommandResponse;
+    const updated = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/reservations/${pmsReservations[0].guestBookingId}/notes/${createBody.note.noteId}`,
+      payload: {
+        commandId: "f6855d00-0000-4000-8000-000000000010",
+        idempotencyKey: "pms-note-update-1",
+        body: "Updated note body",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const updateBody = updated.body as PmsPrivateNoteCommandResponse;
     const deleted = await injectJson(app, {
       method: deleteCase.request.method ?? "DELETE",
       url: deleteCase.request.path,
@@ -11868,6 +11912,17 @@ describe("vayada-api", () => {
       idempotencyKey: createCase.request.body?.idempotencyKey,
       sideEffects: createCase.expected.commandMeta?.sideEffects,
     });
+    expect(updated.statusCode).toBe(200);
+    expect(updateBody.note).toMatchObject({
+      body: "Updated note body",
+      authorUserId: createBody.note.authorUserId,
+      createdAt: createBody.note.createdAt,
+      auditMetadata: {
+        editedByUserId: "user_hotel_owner",
+        editedByDisplayName: "owner@example.com",
+        editedAt: "2026-08-14T17:03:00.000Z",
+      },
+    });
     expect(deleted.statusCode).toBe(deleteCase.expected.status);
     expect(deleteBody).toMatchObject({
       noteId: "f6855900-0000-0000-0000-000000000001",
@@ -11878,9 +11933,11 @@ describe("vayada-api", () => {
       },
     });
     expect(commandRepository.noteCreates).toHaveLength(1);
+    expect(commandRepository.noteUpdates).toHaveLength(1);
     expect(commandRepository.noteDeletes).toHaveLength(1);
     expect(commandRepository.auditEvents).toEqual([
       "private_note_created:f6855900-0000-0000-0000-000000000002",
+      "private_note_edited:f6855900-0000-0000-0000-000000000002",
       "private_note_deleted:f6855900-0000-0000-0000-000000000001",
     ]);
     expect(commandRepository.outboxEnqueues).toEqual([]);
