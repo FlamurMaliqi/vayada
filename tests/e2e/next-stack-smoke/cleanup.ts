@@ -4,6 +4,7 @@ import { waitForNoPublicOffer, type BookingResource, type Stay } from "./booking
 import {
   publicApi,
   workosApi,
+  workosMembershipIdsForUser,
   workosOrganizationsForUser,
   workosUserIdsForEmail,
   type JsonApi,
@@ -155,6 +156,27 @@ export async function cleanupSmokeResources(
     } catch (error) {
       errors.push(error);
     }
+  }
+  try {
+    const platformEmail = `qa-next-platform-${environment.runId}@${environment.emailDomain}`;
+    for (const userId of await workosUserIdsForEmail(
+      request,
+      environment.workosApiKey,
+      platformEmail,
+    )) {
+      for (const membershipId of await workosMembershipIdsForUser(
+        request,
+        environment.workosApiKey,
+        userId,
+      )) {
+        await workos.deleteIfPresent(
+          `/user_management/organization_memberships/${encodeURIComponent(membershipId)}`,
+        );
+      }
+      await workos.deleteIfPresent(`/user_management/users/${encodeURIComponent(userId)}`);
+    }
+  } catch (error) {
+    errors.push(error);
   }
   for (const userId of [...userIds].reverse()) {
     try {
