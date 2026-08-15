@@ -97,9 +97,13 @@ export async function cleanupSmokeResources(
   const workos = workosApi(request, environment.workosApiKey);
   const userIds = new Set(users.map(({ id }) => id));
   const userRoles = new Map(users.map(({ id, role }) => [id, role]));
-  for (const role of ["hotel", "creator"] as const) {
+  for (const [role, qualifier] of [
+    ["hotel", ""],
+    ["hotel", "foreign-"],
+    ["creator", ""],
+  ] as const) {
     try {
-      const email = `qa-next-${role}-${environment.runId}@${environment.emailDomain}`;
+      const email = `qa-next-${qualifier}${role}-${environment.runId}@${environment.emailDomain}`;
       for (const userId of await workosUserIdsForEmail(request, environment.workosApiKey, email)) {
         userIds.add(userId);
         userRoles.set(userId, role);
