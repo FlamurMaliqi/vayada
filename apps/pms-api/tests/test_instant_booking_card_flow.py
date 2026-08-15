@@ -169,11 +169,15 @@ async def _stripe_webhook(
         )
 
 
-class _StripeObjectWithoutGet(dict):
-    get = None
+class _StripeObjectWithoutGet:
+    def __init__(self, **values):
+        self._values = values
+
+    def __getitem__(self, key):
+        return self._values[key]
 
     def to_dict(self):
-        return dict(self)
+        return dict(self._values)
 
 
 @contextmanager
@@ -778,10 +782,12 @@ async def test_refund_webhook_normalizes_legacy_stripe_objects(client):
             "/webhooks/stripe/connect",
             content=b"{}",
             headers={"stripe-signature": "test"},
-        )
+    )
 
     assert response.status_code == 200, response.text
-    reconcile.assert_awaited_once_with({"id": "re_legacy_object", "status": "succeeded"})
+    normalized = reconcile.await_args.args[0]
+    assert type(normalized) is dict
+    assert normalized == {"id": "re_legacy_object", "status": "succeeded"}
 
 
 @pytest.mark.parametrize(
