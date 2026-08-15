@@ -106,6 +106,7 @@ type InventoryDayRow = {
   assignedCount: number | string;
   blockedCount: number | string;
   availableCount: number | string;
+  sourceFreshness: unknown;
 };
 
 type CoverageRow = {
@@ -532,7 +533,8 @@ async function lockCurrentDays(
             effective_sellable_limit_count AS "effectiveSellableLimitCount",
             assigned_count AS "assignedCount",
             blocked_count AS "blockedCount",
-            available_count AS "availableCount"
+            available_count AS "availableCount",
+            source_freshness AS "sourceFreshness"
      FROM pms.inventory_days
      WHERE property_id = $1::uuid
        AND room_type_id = ANY($2::uuid[])
@@ -541,16 +543,75 @@ async function lockCurrentDays(
      FOR UPDATE`,
     [command.propertyId, roomTypeIds, command.horizon.from, command.horizon.through],
   );
-  return Object.freeze(
-    result.rows.map((row) => {
-      const day = inventoryDayFromRow(row);
-      if (!day) {
-        throw new InventoryInvariantError(
-          "PMS inventory materialization encountered a legacy or malformed day",
-        );
-      }
-      return day;
-    }),
+  const bindings = new Map(
+    configuration.sourceInputs.roomBindings.map((binding) => [binding.roomTypeId, binding]),
+  );
+  const days: PmsInventoryDaySnapshot[] = [];
+  for (const row of result.rows) {
+    const day = inventoryDayFromRow(row);
+    if (day) {
+      days.push(day);
+      continue;
+    }
+    const roomTypeId = normalizeUuid(row.roomTypeId);
+    const binding = roomTypeId ? bindings.get(roomTypeId) : undefined;
+    if (!binding || !pristineOnboardingLegacyDay(row, binding.physicalCapacityCount)) {
+      throw new InventoryInvariantError(
+        "PMS inventory materialization encountered a legacy or malformed day",
+      );
+    }
+  }
+  return Object.freeze(days);
+}
+
+function pristineOnboardingLegacyDay(row: InventoryDayRow, physicalCapacityCount: number): boolean {
+  const freshness = exactDataRecord(row.sourceFreshness, ["pms"])
+    ? row.sourceFreshness["pms"]
+    : null;
+  const total = nullableNonNegativeInteger(row.totalCount);
+  const assigned = nullableNonNegativeInteger(row.assignedCount);
+  const blocked = nullableNonNegativeInteger(row.blockedCount);
+  const available = nullableNonNegativeInteger(row.availableCount);
+  return (
+    row.calendarRevision === null &&
+    row.inventoryRevision === null &&
+    row.generatedSellableLimitCount === null &&
+    row.channelSellableLimitCount === null &&
+    row.manualSellableLimitCount === null &&
+    row.effectiveSellableLimitCount === null &&
+    row.generatedSourceRevision === null &&
+    row.channelSourceRevision === null &&
+    row.manualSourceRevision === null &&
+    row.blockSourceRevision === null &&
+    row.bookingSourceRevision === null &&
+    exactDataRecord(freshness, ["status", "generatedAt", "horizonDays"]) &&
+    freshness["status"] === "fresh" &&
+    freshness["horizonDays"] === 366 &&
+    databaseTimestampValue(freshness["generatedAt"]) &&
+    total === physicalCapacityCount &&
+    assigned === 0 &&
+    blocked === 0 &&
+    ((row.status === "open" && available === total) || (row.status === "closed" && available === 0))
+  );
+}
+
+function databaseTimestampValue(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/,
+  );
+  if (!match) return false;
+  const calendarDate = `${match[1]}-${match[2]}-${match[3]}`;
+  const midnight = new Date(`${calendarDate}T00:00:00.000Z`);
+  const offset = match[7]!;
+  return (
+    validDate(midnight) &&
+    midnight.toISOString().slice(0, 10) === calendarDate &&
+    Number(match[4]) <= 23 &&
+    Number(match[5]) <= 59 &&
+    Number(match[6]) <= 59 &&
+    (offset === "Z" || (Number(offset.slice(1, 3)) <= 23 && Number(offset.slice(4)) <= 59)) &&
+    validDate(new Date(value))
   );
 }
 
