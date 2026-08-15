@@ -227,8 +227,95 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
     await expect(
       page.getByText("Internal QA note — never show guest", { exact: true }),
     ).toBeVisible();
+
+    await page.getByRole("button", { name: "Edit nationality" }).click();
+    const nationality = page.getByRole("combobox", { name: "Nationality" }),
+      nationalityListId = await nationality.getAttribute("list");
+    if (!nationalityListId) throw new Error("Nationality search is missing its option list.");
+    const nationalityOptions = page.locator(`[id="${nationalityListId}"] option`);
+    expect(await nationalityOptions.count()).toBeGreaterThanOrEqual(251);
+    await expect(
+      page.locator(`[id="${nationalityListId}"] option[value="Netherlands"]`),
+    ).toHaveCount(1);
+    await expect(page.locator(`[id="${nationalityListId}"] option[value="Stateless"]`)).toHaveCount(
+      1,
+    );
+    await expect(page.locator(`[id="${nationalityListId}"] option[value="Unknown"]`)).toHaveCount(
+      1,
+    );
+    await nationality.fill("Neth");
+    await expect(nationality).toHaveValue("Neth");
+    await nationality.fill("Netherlands");
+    const saveNationality = page.getByRole("button", { name: "Save nationality" });
+    await expect(saveNationality).toHaveClass(/bg-blue-600/);
+    const nationalityResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        response.request().method() === "PATCH" &&
+        url.pathname ===
+          `/api/pms/properties/${propertyId}/reservations/${bookingId}/primary-guest/nationality`
+      );
+    });
+    await saveNationality.click();
+    expect((await nationalityResponse).status()).toBe(200);
+    await expect(page.getByText("Netherlands", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "Edit note" }).first().click();
+    await page
+      .getByLabel("Edit note text")
+      .fill("Internal QA note — edited once and still never shown to the guest");
+    const saveEdit = page.getByRole("button", { name: "Save edit" });
+    await expect(saveEdit).toHaveClass(/bg-blue-600/);
+    const noteEditResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        response.request().method() === "PATCH" &&
+        url.pathname.startsWith(
+          `/api/pms/properties/${propertyId}/reservations/${bookingId}/notes/`,
+        )
+      );
+    });
+    await saveEdit.click();
+    expect((await noteEditResponse).status()).toBe(200);
+    await expect(
+      page.getByText("Internal QA note — edited once and still never shown to the guest", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByText(`Edited by Harper Smoke ${environment.runId.slice(-8)}`, { exact: false }),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: "Add note" }).click();
+    await page.getByPlaceholder(/Notes are only visible/).fill("Late arrival confirmed once.");
+    const saveNote = page.getByRole("button", { name: "Save note" });
+    await expect(saveNote).toHaveClass(/bg-blue-600/);
+    let noteCreateRequests = 0;
+    page.on("request", (outgoingRequest) => {
+      const url = new URL(outgoingRequest.url());
+      if (
+        outgoingRequest.method() === "POST" &&
+        url.pathname === `/api/pms/properties/${propertyId}/reservations/${bookingId}/notes`
+      ) {
+        noteCreateRequests += 1;
+      }
+    });
+    const noteCreateResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        response.request().method() === "POST" &&
+        url.pathname === `/api/pms/properties/${propertyId}/reservations/${bookingId}/notes`
+      );
+    });
+    await saveNote.evaluate((button: HTMLButtonElement) => {
+      button.click();
+      button.click();
+    });
+    expect((await noteCreateResponse).status()).toBe(200);
+    await expect(page.getByText("Late arrival confirmed once.", { exact: true })).toBeVisible();
+    expect(noteCreateRequests).toBe(1);
     await page.screenshot({
-      path: testInfo.outputPath("manual-booking-detail.png"),
+      path: testInfo.outputPath("manual-booking-vay-637-detail.png"),
       fullPage: true,
     });
 
@@ -241,8 +328,8 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
     expect(detail.source).toBe("manual");
     expect(primaryGuest.email).toBe(created.email);
     expect(primaryGuest.phone).toBe("+49305550105");
-    expect(primaryGuest.countryCode).toBe("DE");
-    expect(detail.privateNoteCount).toBe(1);
+    expect(primaryGuest.countryCode).toBe("NL");
+    expect(detail.privateNoteCount).toBe(2);
     expect(assignments).toHaveLength(2);
     expect(assignments.map((assignment) => assignment.channel)).toEqual(["direct", "direct"]);
 
@@ -256,11 +343,16 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
       },
     );
     expect(lookup.ok()).toBe(true);
-    expect(JSON.stringify(await lookup.json())).not.toContain(
-      "Internal QA note — never show guest",
+    const publicLookup = JSON.stringify(await lookup.json());
+    expect(publicLookup).not.toContain(
+      "Internal QA note — edited once and still never shown to the guest",
     );
+    expect(publicLookup).not.toContain("Late arrival confirmed once.");
 
     await page.goto(`${NEXT_STACK_ORIGINS.pms}/check-in/${bookingId}`);
+    await expect(page.getByRole("combobox", { name: "Nationality" }).first()).toHaveValue(
+      "Netherlands",
+    );
     await expect(page.getByText("Bank transfer", { exact: true })).toBeVisible();
     await expect(page.getByText("Payment recorded", { exact: true })).toBeVisible();
     await page.screenshot({
