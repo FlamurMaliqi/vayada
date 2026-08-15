@@ -178,6 +178,26 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory materialization re
     });
   });
 
+  it("persists the complete 366-day launch horizon", async () => {
+    const fixture = await createFixture(admin, repositories, [2]);
+    const result = await fixture.repository.materializeInventory(
+      materializationCommand(fixture, "full-horizon", 1, "2026-08-04", "2027-08-04"),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      outcome: "applied",
+      changedDayCount: 366,
+      coverage: { expectedDayCount: 366, materializedDayCount: 366, gaps: [] },
+    });
+    const count = await admin.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM pms.inventory_days
+       WHERE property_id = $1::uuid`,
+      [fixture.propertyId],
+    );
+    expect(count.rows[0]?.count).toBe("366");
+  });
+
   it("serializes concurrent exact commands to one durable mutation and one receipt-free replay", async () => {
     const fixture = await createFixture(admin, repositories, [2]);
     const command = materializationCommand(fixture, "concurrent", 1, "2026-08-04", "2026-08-06");
