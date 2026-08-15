@@ -30,7 +30,9 @@ describe("target PMS reservation stay dates", () => {
                 primaryGuestEmail: "ada@example.com",
                 primaryGuestPhone: null,
                 primaryGuestCountryCode: "GB",
+                primaryGuestSpecialRequests: "Quiet room",
                 guestContactAccepted: false,
+                addOns: [{ addonId: "addon-1", name: "Breakfast", quantity: 2 }],
                 assignments: [],
                 checkinCompletedAt: null,
                 checkinPendingFlags: [],
@@ -82,6 +84,8 @@ describe("target PMS reservation stay dates", () => {
     expect(listQuery).toContain("quote.selected_offer_snapshot ->> 'roomName'");
     expect(listQuery).toContain("booking.booking_metadata #>> '{selectedOffer,roomName}'");
     expect(listQuery).toContain('AS "guestContactAccepted"');
+    expect(listQuery).toContain('primary_guest.special_requests AS "primaryGuestSpecialRequests"');
+    expect(listQuery).toContain("FROM booking.booking_addon_selections selection");
     expect(listQuery).toContain("contact_event.actor_type = 'property_user'");
     expect(listQuery).toContain("booking.booking_metadata ->> 'acceptedPaymentDeadlineAt'");
     expect(listQuery).toContain('booking.expected_payment_method AS "expectedPaymentMethod"');
@@ -100,7 +104,9 @@ describe("target PMS reservation stay dates", () => {
         email: "Hidden until you accept",
         phone: "Hidden until you accept",
         countryCode: "GB",
+        specialRequests: "Quiet room",
       },
+      addOns: [{ addonId: "addon-1", name: "Breakfast", quantity: 2 }],
       bookedOffer: {
         roomTypeId: "room-type-1",
         roomName: "Munich Booking Room",
@@ -146,7 +152,9 @@ describe("target PMS reservation stay dates", () => {
               primaryGuestEmail: "ada@example.com",
               primaryGuestPhone: null,
               primaryGuestCountryCode: "GB",
+              primaryGuestSpecialRequests: null,
               guestContactAccepted: true,
+              addOns: [],
               assignments: [],
               checkinCompletedAt: null,
               checkinPendingFlags: [],

@@ -40,7 +40,9 @@ const reservation = {
     email: "ada@example.com",
     phone: null,
     countryCode: "GB",
+    specialRequests: null,
   },
+  addOns: [],
   assignments: [],
   checkin: { completedAt: null, pendingFlags: [] },
   checkout: { completedAt: null, pendingFlags: [] },
@@ -95,6 +97,37 @@ describe("PMS target booking projection", () => {
       balanceAmount: 155,
       currency: "EUR",
       guestCountry: "GB",
+    });
+  });
+
+  it("maps guest requests and purchased add-ons into booking detail", async () => {
+    const detailed = {
+      ...reservation,
+      primaryGuest: { ...reservation.primaryGuest, specialRequests: "Quiet room" },
+      addOns: [{ addonId: "addon-1", name: "Breakfast", quantity: 2 }],
+    };
+    mocks.get.mockImplementation(async (endpoint: string) =>
+      endpoint.endsWith("/room-types") ? { items: [] } : { item: detailed },
+    );
+
+    await expect(bookingsService.get("booking-1")).resolves.toMatchObject({
+      specialRequests: "Quiet room",
+      addonIds: ["addon-1"],
+      addonNames: ["Breakfast"],
+      addonQuantities: { "addon-1": 2 },
+    });
+  });
+
+  it("defaults additive booking evidence while an older API instance rolls out", async () => {
+    const { addOns: _addOns, ...legacyReservation } = reservation;
+    mocks.get.mockImplementation(async (endpoint: string) =>
+      endpoint.endsWith("/room-types")
+        ? { items: [] }
+        : { items: [legacyReservation], pagination: { total: 1, limit: 50, offset: 0 } },
+    );
+
+    await expect(bookingsService.list()).resolves.toMatchObject({
+      bookings: [{ addonIds: [], addonNames: [], addonQuantities: {} }],
     });
   });
 

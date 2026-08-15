@@ -199,7 +199,13 @@ type PmsOperationalReservation = {
   status: string;
   source: "direct_booking" | "channel" | "manual" | "migration";
   stay: { checkIn: PmsDate; checkOut: PmsDate; adults: number; children: number };
-  primaryGuest: { displayName: string; email: string | null; phone: string | null };
+  primaryGuest: {
+    displayName: string;
+    email: string | null;
+    phone: string | null;
+    specialRequests: string | null;
+  };
+  addOns: { addonId: string; name: string; quantity: number }[];
   assignments: PmsOperationalAssignment[];
   checkin: { completedAt: PmsUtcDateTime | null; pendingFlags: string[] };
   checkout: { completedAt: PmsUtcDateTime | null; pendingFlags: string[] };

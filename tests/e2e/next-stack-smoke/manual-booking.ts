@@ -221,8 +221,9 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
     await expect(page.getByText("Expected payment method", { exact: true })).toBeVisible();
     await expect(page.getByText("Bank transfer", { exact: true })).toBeVisible();
     await expect(page.getByText("Payment recorded", { exact: true })).toBeVisible();
-    await expect.soft(page.getByText("Quiet room near the lift", { exact: true })).toBeVisible();
-    await expect.soft(page.getByText("QA breakfast basket", { exact: true })).toBeVisible();
+    await page.goto(`${NEXT_STACK_ORIGINS.pms}/bookings/${bookingId}`);
+    await expect(page.getByText("Quiet room near the lift", { exact: true })).toBeVisible();
+    await expect(page.getByText("QA breakfast basket", { exact: true })).toBeVisible();
     await expect(
       page.getByText("Internal QA note — never show guest", { exact: true }),
     ).toBeVisible();
