@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { assertSafeTestDatabase } from "./testUtils.js";
 
 const migration = await readFile(
-  join(import.meta.dirname, "../migrations/0072_booking_addon_economics.sql"),
+  join(import.meta.dirname, "../migrations/0091_booking_addon_economics.sql"),
   "utf8",
 );
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
@@ -21,6 +21,10 @@ describe("Booking add-on economics migration contract", () => {
     const projection = migration.slice(migration.indexOf("CREATE VIEW"));
     expect(projection).toContain("booking.finance_addon_purchase_evidence");
     expect(projection).not.toMatch(/addon_snapshot|metadata|source_system/i);
+    expect(migration).toContain("ADD COLUMN ownership_kind TEXT NOT NULL DEFAULT 'property'");
+    expect(migration).toContain(
+      "ADD COLUMN ownership_kind_snapshot TEXT NOT NULL DEFAULT 'property'",
+    );
   });
 });
 
@@ -31,32 +35,51 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking add-on economics (PostgreSQL)", () 
     assertSafeTestDatabase(TEST_DATABASE_URL!);
     client = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await client.connect();
-    await client.query(`
-      DROP SCHEMA IF EXISTS booking CASCADE; CREATE SCHEMA booking;
-      CREATE TABLE booking.addon_definitions (
-        id UUID PRIMARY KEY, property_id UUID NOT NULL, metadata JSONB NOT NULL DEFAULT '{}'
-      );
-      CREATE TABLE booking.booking_addon_selections (
-        id UUID PRIMARY KEY, property_id UUID NOT NULL, guest_booking_id UUID,
-        quote_session_id UUID, addon_definition_id UUID, addon_snapshot JSONB NOT NULL DEFAULT '{}',
-        quantity INTEGER NOT NULL DEFAULT 1, service_date DATE,
-        total_amount NUMERIC(15, 2) NOT NULL DEFAULT 0, currency CHAR(3) NOT NULL
-      );
-      INSERT INTO booking.addon_definitions (id, property_id)
-      VALUES ('${DEFINITION_ID}', '${PROPERTY_ID}');
-      INSERT INTO booking.booking_addon_selections
-        (id, property_id, guest_booking_id, addon_definition_id, total_amount, currency)
-      VALUES ('${PURCHASED_ID}', '${PROPERTY_ID}', '${BOOKING_ID}', '${DEFINITION_ID}', 25, 'EUR');
-      INSERT INTO booking.booking_addon_selections
-        (id, property_id, quote_session_id, addon_definition_id, total_amount, currency)
-      VALUES ('${PROVISIONAL_ID}', '${PROPERTY_ID}', '${QUOTE_ID}', '${DEFINITION_ID}', 10, 'EUR');
-    `);
-    await client.query(migration);
+    await cleanup();
+    await client.query(
+      `INSERT INTO hotel_catalog.properties (id, public_id, display_name)
+       VALUES ($1, 'vay-1190-addon-economics', 'VAY-1190 add-on economics')`,
+      [PROPERTY_ID],
+    );
+    await client.query(
+      `INSERT INTO booking.guest_bookings
+         (id, property_id, public_reference, lifecycle_status, check_in, check_out,
+          currency, total_amount, balance_amount, booking_channel, direct_booking_source)
+       VALUES ($1, $2, 'VAY-1190-BOOKING', 'confirmed', '2026-09-01', '2026-09-02',
+               'EUR', 25, 25, 'direct', 'call')`,
+      [BOOKING_ID, PROPERTY_ID],
+    );
+    await client.query(
+      `INSERT INTO booking.quote_sessions
+         (id, property_id, request_hash, public_quote_reference,
+          requested_check_in, requested_check_out, currency, expires_at)
+       VALUES ($1, $2, 'vay-1190-quote-hash', 'VAY-1190-QUOTE',
+               '2026-09-01', '2026-09-02', 'EUR', '2026-09-01T00:00:00Z')`,
+      [QUOTE_ID, PROPERTY_ID],
+    );
+    await client.query(
+      `INSERT INTO booking.addon_definitions
+         (id, property_id, name, pricing_model, price_amount, currency)
+       VALUES ($1, $2, 'Airport transfer', 'per_stay', 25, 'EUR')`,
+      [DEFINITION_ID, PROPERTY_ID],
+    );
+    await client.query(
+      `INSERT INTO booking.booking_addon_selections
+         (id, property_id, guest_booking_id, addon_definition_id, total_amount, currency)
+       VALUES ($1, $2, $3, $4, 25, 'EUR')`,
+      [PURCHASED_ID, PROPERTY_ID, BOOKING_ID, DEFINITION_ID],
+    );
+    await client.query(
+      `INSERT INTO booking.booking_addon_selections
+         (id, property_id, quote_session_id, addon_definition_id, total_amount, currency)
+       VALUES ($1, $2, $3, $4, 10, 'EUR')`,
+      [PROVISIONAL_ID, PROPERTY_ID, QUOTE_ID, DEFINITION_ID],
+    );
   });
 
   afterAll(async () => {
     try {
-      await client.query("DROP SCHEMA IF EXISTS booking CASCADE");
+      await cleanup();
     } finally {
       await client.end();
     }
@@ -171,4 +194,28 @@ describe.skipIf(!TEST_DATABASE_URL)("Booking add-on economics (PostgreSQL)", () 
       client.query("DELETE FROM booking.finance_addon_purchase_evidence"),
     ).rejects.toMatchObject({ code: "55000" });
   });
+
+  async function cleanup() {
+    await client.query("BEGIN");
+    try {
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query("DELETE FROM booking.booking_addon_selections WHERE property_id = $1", [
+        PROPERTY_ID,
+      ]);
+      await client.query("DELETE FROM booking.guest_bookings WHERE property_id = $1", [
+        PROPERTY_ID,
+      ]);
+      await client.query("DELETE FROM booking.quote_sessions WHERE property_id = $1", [
+        PROPERTY_ID,
+      ]);
+      await client.query("DELETE FROM booking.addon_definitions WHERE property_id = $1", [
+        PROPERTY_ID,
+      ]);
+      await client.query("DELETE FROM hotel_catalog.properties WHERE id = $1", [PROPERTY_ID]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    }
+  }
 });

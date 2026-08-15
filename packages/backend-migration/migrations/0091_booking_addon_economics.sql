@@ -1,4 +1,4 @@
--- Migration: 0072_booking_addon_economics
+-- Migration: 0091_booking_addon_economics
 -- Owner: domain-booking; see VAY-1190 and engineering/pms-financials-contracts.md
 ALTER TABLE booking.addon_definitions
   ADD COLUMN ownership_kind TEXT NOT NULL DEFAULT 'property',
