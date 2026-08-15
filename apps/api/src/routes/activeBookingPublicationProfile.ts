@@ -1,14 +1,14 @@
 import type { PublicBookabilityProfileProjection } from "@vayada/domain-distribution";
-import { parsePublicBookabilityProfileProjection } from "@vayada/domain-distribution/public-bookability-profile-parser";
+import { parseBookingPublicContent } from "@vayada/domain-distribution/booking-publication";
 import pg, { type QueryResultRow } from "pg";
 
 import type { PublicHotelProfileReadPool, PublicHotelProfileRepository } from "./aiHotels.js";
 
-type ActiveProfileRow = QueryResultRow & { propertyId: string; profile: unknown };
+type ActiveProfileRow = QueryResultRow & { propertyId: string; publicContent: unknown };
 
 const ACTIVE_PROFILE_SELECT = `SELECT
   active.property_id::text AS "propertyId",
-  revision.public_content -> 'profile' AS profile
+  revision.public_content AS "publicContent"
 FROM distribution.active_public_booking_revision active
 JOIN distribution.public_booking_content_revisions revision
   ON revision.id = active.content_revision_id
@@ -51,7 +51,7 @@ export function createActiveBookingPublicationProfileRepository(config: {
          LIMIT 1`,
         [slug],
       );
-      return activeProfile(result.rows[0]);
+      return currentActiveProfile(pool, result.rows[0]);
     },
 
     async findProfileByCustomDomain(value) {
@@ -86,13 +86,35 @@ function activeProfile(
   row: ActiveProfileRow | undefined,
 ): PublicBookabilityProfileProjection | null {
   if (!row) return null;
-  const profile = parsePublicBookabilityProfileProjection(row.profile);
+  const profile = parseBookingPublicContent(row.publicContent)?.profile;
   return profile &&
     profile.hotel.propertyId === row.propertyId &&
     profile.hotel.trust.bookabilityStatus === "bookable" &&
     profile.freshness.status === "fresh"
     ? profile
     : null;
+}
+
+async function currentActiveProfile(
+  pool: PublicHotelProfileReadPool,
+  row: ActiveProfileRow | undefined,
+): Promise<PublicBookabilityProfileProjection | null> {
+  const profile = activeProfile(row);
+  if (!profile?.hotel.customDomainUrl || !row) return profile;
+  const domain = normalizedDomain(profile.hotel.customDomainUrl);
+  if (!domain) return null;
+  const result = await pool.query<QueryResultRow & { verified: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+       FROM hotel_catalog.property_domains current_domain
+       WHERE current_domain.property_id = $1::uuid
+         AND current_domain.hostname = $2
+         AND current_domain.verification_status = 'verified'
+         AND current_domain.canonical_when_verified = TRUE
+     ) AS verified`,
+    [row.propertyId, domain],
+  );
+  return result.rows[0]?.verified === true ? profile : null;
 }
 
 const normalizedSlug = (value: string) => {
