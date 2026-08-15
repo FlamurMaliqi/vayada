@@ -29,7 +29,7 @@ import {
   type SyntheticUser,
 } from "./support";
 import { runQuoteLifecycle, waitForOffer, type BookingResource } from "./booking-lifecycle";
-import { cleanupSmokeResources, type HotelResource } from "./cleanup";
+import { cleanupSmokeResources, recoverSmokeProperty, type HotelResource } from "./cleanup";
 import { configureGuestPolicyForManualBooking } from "./guest-policy";
 import { runManualBookingAcceptance } from "./manual-booking";
 
@@ -44,6 +44,12 @@ test("fresh hotel and creator onboarding reaches every next-stack handoff and sa
   test.setTimeout(15 * 60_000);
 
   const environment = loadSmokeEnvironment();
+  const { recoveryRunId, recoveryPropertyId, recoveryReceipt } = environment;
+  if (recoveryRunId && recoveryPropertyId && recoveryReceipt) {
+    await test.step("recover a failed synthetic property cleanup", () =>
+      recoverSmokeProperty(request, environment, recoveryRunId, recoveryPropertyId));
+    return;
+  }
   const users: SyntheticUser[] = [];
   const bookings: BookingResource[] = [];
   let hotel: HotelResource | undefined;
