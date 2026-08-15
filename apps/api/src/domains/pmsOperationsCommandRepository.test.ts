@@ -112,7 +112,14 @@ const baseReservation: PmsOperationalReservation = {
   status: "assigned",
   source: "direct_booking",
   stay: { checkIn: "2026-08-15", checkOut: "2026-08-18", adults: 2, children: 0 },
-  primaryGuest: { displayName: "Alex Guest", email: null, phone: null, countryCode: null },
+  primaryGuest: {
+    displayName: "Alex Guest",
+    email: null,
+    phone: null,
+    countryCode: null,
+    specialRequests: null,
+  },
+  addOns: [],
   assignments: [
     {
       assignmentId: assignmentOneId,

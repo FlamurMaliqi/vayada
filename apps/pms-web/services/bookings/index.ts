@@ -274,7 +274,9 @@ type PmsOperationalReservation = {
     email: string | null;
     phone: string | null;
     countryCode: string | null;
+    specialRequests?: string | null;
   };
+  addOns?: Array<{ addonId: string; name: string; quantity: number }>;
   assignments: Array<{
     assignmentId?: string | null;
     roomTypeId: string;
@@ -954,6 +956,7 @@ function toBooking(
     : baseRate * Math.max(nights, 1) * numberOfRooms;
   const nightlyRate = roomType ? baseRate : totalAmount / Math.max(nights, 1) / numberOfRooms;
   const [guestFirstName, guestLastName] = splitGuestName(reservation.primaryGuest.displayName);
+  const addOns = reservation.addOns ?? [];
   // prettier-ignore
   const capacities = reservation.assignments.map((assignment) => maxOccupancy(roomTypesById.get(assignment.roomTypeId)));
   const knownCapacity = capacities.reduce((sum, capacity) => sum + capacity, 0);
@@ -976,7 +979,7 @@ function toBooking(
     guestGender: "",
     guestDateOfBirth: null,
     guestPassportNumber: "",
-    specialRequests: "",
+    specialRequests: reservation.primaryGuest.specialRequests ?? "",
     checkIn: reservation.stay.checkIn,
     checkOut: reservation.stay.checkOut,
     nights,
@@ -1033,10 +1036,10 @@ function toBooking(
     platformFeeAmount: null,
     affiliateCommissionAmount: null,
     propertyPayoutAmount: null,
-    addonIds: [],
-    addonNames: [],
+    addonIds: addOns.map(({ addonId }) => addonId),
+    addonNames: addOns.map(({ name }) => name),
     addonTotal: 0,
-    addonQuantities: {},
+    addonQuantities: Object.fromEntries(addOns.map(({ addonId, quantity }) => [addonId, quantity])),
     addonDates: {},
     estimatedArrivalTime: null,
     numberOfGuests: reservation.stay.adults + reservation.stay.children,

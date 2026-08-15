@@ -188,6 +188,8 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     );
     expect(projection).toMatchObject({
       stay: { checkIn: "2027-01-01", checkOut: "2027-01-04", adults: 3, children: 0 },
+      primaryGuest: { specialRequests: "Quiet room" },
+      addOns: [{ addonId, name: "Breakfast", quantity: 1 }],
       payment: { expectedMethod: "cash", status: "unpaid" },
       assignments: [
         {

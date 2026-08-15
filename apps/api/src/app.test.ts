@@ -1157,7 +1157,9 @@ const pmsReservations: PmsOperationalReservation[] = [
       email: "nora.ops@example.test",
       phone: "+43111222333",
       countryCode: "AT",
+      specialRequests: null,
     },
+    addOns: [],
     assignments: [
       {
         assignmentId: "f6855500-0000-0000-0000-000000000001",
@@ -1187,7 +1189,9 @@ const pmsReservations: PmsOperationalReservation[] = [
       email: "una@example.test",
       phone: null,
       countryCode: null,
+      specialRequests: null,
     },
+    addOns: [],
     assignments: [
       {
         assignmentId: "f6855500-0000-0000-0000-000000000002",
@@ -10006,6 +10010,8 @@ describe("vayada-api", () => {
         commandId: "cmd-room-type-photo-limit",
         idempotencyKey: "room-type-photo-limit",
         name: "Loft Suite",
+        bathroomType: "private",
+        bathrooms: 1,
         baseRate: 240,
         currency: "EUR",
         operatingPeriods: [{ from: "01-01", to: "12-31" }],
@@ -10763,6 +10769,8 @@ describe("vayada-api", () => {
       onboardingSetup: true,
       initialSetupOnly: false,
       name: "Pool Villa",
+      bathroomType: "private",
+      bathrooms: 1,
       maxOccupancy: 4,
       baseRate: "280.00",
       currency: "USD",
@@ -11059,6 +11067,8 @@ describe("vayada-api", () => {
         commandId: "cmd-room-type-create-conflict",
         idempotencyKey: "room-type-create-conflict",
         name: "Loft Suite",
+        bathroomType: "private",
+        bathrooms: 1,
         baseRate: 240,
         currency: "EUR",
         operatingPeriods: [{ from: "01-01", to: "12-31" }],

@@ -156,7 +156,9 @@ export type PmsOperationalReservation = {
     email: string | null;
     phone: string | null;
     countryCode: string | null;
+    specialRequests: string | null;
   };
+  addOns: Array<{ addonId: string; name: string; quantity: number }>;
   assignments: PmsOperationalAssignment[];
   checkin: { completedAt: PmsUtcDateTime | null; pendingFlags: string[] };
   checkout: { completedAt: PmsUtcDateTime | null; pendingFlags: string[] };
@@ -612,7 +614,9 @@ type TargetPmsOperationalReservationRow = {
   primaryGuestEmail: string | null;
   primaryGuestPhone: string | null;
   primaryGuestCountryCode: string | null;
+  primaryGuestSpecialRequests: string | null;
   guestContactAccepted: boolean;
+  addOns: unknown;
   assignments: unknown;
   checkinCompletedAt: Date | string | null;
   checkinPendingFlags: unknown;
@@ -672,6 +676,7 @@ const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
   primary_guest.email AS "primaryGuestEmail",
   primary_guest.phone AS "primaryGuestPhone",
   primary_guest.country_code AS "primaryGuestCountryCode",
+  primary_guest.special_requests AS "primaryGuestSpecialRequests",
   ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
   COALESCE(
     NULLIF(quote.selected_offer_snapshot ->> 'roomTypeId', ''),
@@ -697,6 +702,7 @@ const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
     booking.booking_metadata ->> 'pendingExpiresAt'
   ) AS "hostResponseDeadlineAt",
   COALESCE(assignments.items, '[]'::jsonb) AS "assignments",
+  COALESCE(addons.items, '[]'::jsonb) AS "addOns",
   checkin.completed_at AS "checkinCompletedAt",
   COALESCE(checkin.pending_flags, '[]'::jsonb) AS "checkinPendingFlags",
   checkout.completed_at AS "checkoutCompletedAt",
@@ -744,7 +750,8 @@ LEFT JOIN LATERAL (
   LIMIT 1
 ) primary_assignment ON TRUE
 LEFT JOIN LATERAL (
-  SELECT guest.first_name, guest.last_name, guest.email, guest.phone, guest.country_code
+  SELECT guest.first_name, guest.last_name, guest.email, guest.phone, guest.country_code,
+    guest.special_requests
   FROM booking.booking_guests guest
   WHERE guest.guest_booking_id = booking.id
   ORDER BY
@@ -818,6 +825,25 @@ LEFT JOIN LATERAL (
   WHERE assignment.guest_booking_id = booking.id
     AND assignment.property_id = booking.property_id
 ) assignments ON TRUE
+LEFT JOIN LATERAL (
+  SELECT jsonb_agg(
+           jsonb_build_object(
+             'addonId', COALESCE(selection.addon_definition_id, selection.id)::text,
+             'name', COALESCE(
+               NULLIF(selection.addon_snapshot ->> 'name', ''),
+               definition.name,
+               'Unavailable add-on'
+             ),
+             'quantity', selection.quantity
+           ) ORDER BY selection.created_at, selection.id
+         ) AS items
+  FROM booking.booking_addon_selections selection
+  LEFT JOIN booking.addon_definitions definition
+    ON definition.id = selection.addon_definition_id
+   AND definition.property_id = selection.property_id
+  WHERE selection.guest_booking_id = booking.id
+    AND selection.property_id = booking.property_id
+) addons ON TRUE
 LEFT JOIN LATERAL (
   SELECT record.completed_at, record.pending_flags
   FROM pms.booking_checkin_records record
@@ -1074,7 +1100,9 @@ function toPmsOperationalReservation(
       email: contact.email,
       phone: contact.phone,
       countryCode: row.primaryGuestCountryCode,
+      specialRequests: row.primaryGuestSpecialRequests,
     },
+    addOns: toBookingAddOns(row.addOns),
     assignments: toOperationalAssignments(row.assignments),
     checkin: {
       completedAt: toIsoDateTimeOrNull(row.checkinCompletedAt),
@@ -1179,6 +1207,16 @@ function toOperationalAssignments(value: unknown): PmsOperationalAssignment[] {
       };
     })
     .filter((item) => item.assignmentId.length > 0 && item.roomTypeId.length > 0);
+}
+
+function toBookingAddOns(value: unknown): PmsOperationalReservation["addOns"] {
+  return toRecordArray(value)
+    .map((item) => ({
+      addonId: String(item.addonId ?? ""),
+      name: String(item.name ?? ""),
+      quantity: toInteger(Number(item.quantity ?? 0)),
+    }))
+    .filter((item) => item.addonId.length > 0 && item.name.length > 0 && item.quantity > 0);
 }
 
 function toOperationalNights(value: unknown): PmsOperationalNight[] {
