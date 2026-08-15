@@ -406,6 +406,8 @@ describe("@vayada/domain-booking guest PII port contract", () => {
         email: "nora@example.test",
         phone: null,
         countryCode: "CH",
+        countryCodeRaw: null,
+        countryCodeReviewRequired: false,
         arrivalTime: null,
         specialRequests: null,
       },
@@ -414,6 +416,14 @@ describe("@vayada/domain-booking guest PII port contract", () => {
     const stub: import("./index.js").BookingGuestPiiPort = {
       async listGuestPiiForPmsOperations() {
         return projection;
+      },
+      async correctPrimaryGuestNationalityForPmsOperations() {
+        return {
+          ok: false,
+          statusCode: 404,
+          code: "primary_guest_not_found",
+          message: "Primary guest not found.",
+        };
       },
       async createAdditionalGuestForPmsOperations(command) {
         const additionalGuest = {
@@ -426,6 +436,8 @@ describe("@vayada/domain-booking guest PII port contract", () => {
           email: command.guest.email ?? null,
           phone: command.guest.phone ?? null,
           countryCode: command.guest.countryCode ?? null,
+          countryCodeRaw: null,
+          countryCodeReviewRequired: false,
           arrivalTime: command.guest.arrivalTime ?? null,
           specialRequests: command.guest.specialRequests ?? null,
         };

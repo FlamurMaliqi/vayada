@@ -988,6 +988,7 @@ type PmsOperationsErrorCode =
   | "room_block_conflict"
   | "side_effect_failed"
   | "reservation_not_found"
+  | "primary_guest_not_found"
   | "additional_guest_not_found"
   | "note_not_found"
   | "charge_not_found"

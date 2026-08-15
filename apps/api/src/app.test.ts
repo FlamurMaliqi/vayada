@@ -1243,6 +1243,8 @@ const bookingPrimaryGuestPii: BookingGuestPii = {
   email: "nora.ops@example.test",
   phone: "+43111222333",
   countryCode: "AT",
+  countryCodeRaw: null,
+  countryCodeReviewRequired: false,
   arrivalTime: "15:30",
   specialRequests: null,
 };
@@ -1293,6 +1295,14 @@ function createBookingGuestPiiPort(): BookingGuestPiiPort & {
       expect(input.propertyId).toBe(pmsPropertyId);
       return projection(input.propertyId, input.guestBookingId);
     },
+    async correctPrimaryGuestNationalityForPmsOperations() {
+      return {
+        ok: false,
+        statusCode: 404,
+        code: "primary_guest_not_found",
+        message: "Primary guest not found.",
+      };
+    },
     async createAdditionalGuestForPmsOperations(command) {
       creates.push(command);
       const guests = guestsByReservation.get(command.guestBookingId);
@@ -1314,6 +1324,8 @@ function createBookingGuestPiiPort(): BookingGuestPiiPort & {
         email: command.guest.email ?? null,
         phone: command.guest.phone ?? null,
         countryCode: command.guest.countryCode ?? null,
+        countryCodeRaw: null,
+        countryCodeReviewRequired: false,
         arrivalTime: command.guest.arrivalTime ?? null,
         specialRequests: command.guest.specialRequests ?? null,
       };
