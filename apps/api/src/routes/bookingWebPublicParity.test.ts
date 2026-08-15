@@ -1829,7 +1829,7 @@ describe("Booking Web public bootstrap parity", () => {
     const inventoryReservation = optionalPhone.calls.find((text) =>
       text.includes("UPDATE pms.inventory_days"),
     );
-    expect(inventoryReservation).toContain("pg_advisory_xact_lock");
+    expect(optionalPhone.calls.some((text) => text.includes("pg_advisory_xact_lock"))).toBe(true);
     expect(inventoryReservation).toContain(
       "assigned_count = inventory.assigned_count + $6::integer",
     );
@@ -2380,7 +2380,7 @@ describe("Booking Web public bootstrap parity", () => {
             ],
           };
         }
-        if (text.includes("WITH inventory_lock AS")) {
+        if (text.includes("WITH reservation_guard AS")) {
           return { rows: [{ reserved: true }] };
         }
         if (text.includes("FROM hotel_catalog.properties p")) {
@@ -2670,7 +2670,7 @@ describe("Booking Web public bootstrap parity", () => {
             ],
           };
         }
-        if (text.includes("WITH inventory_lock AS")) return { rows: [{ reserved: true }] };
+        if (text.includes("WITH reservation_guard AS")) return { rows: [{ reserved: true }] };
         if (text.includes("INSERT INTO booking.guest_bookings")) return { rows: [booking()] };
         if (
           text.startsWith("UPDATE booking.guest_bookings") &&
