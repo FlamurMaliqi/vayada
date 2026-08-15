@@ -9,6 +9,7 @@ import {
 } from "@vayada/domain-booking";
 import { createHotelMediaResolutionPort } from "@vayada/domain-hotels";
 import pg from "pg";
+import { createHmac } from "node:crypto";
 
 import { buildApp, type ApiAuthOptions } from "./app.js";
 import { type ApiConfig, loadConfig, stripeSubscriptionRuntimeEnabled } from "./config.js";
@@ -74,6 +75,7 @@ import { createPgPmsMandatoryChargeConfirmationReadModel } from "./domains/pmsMa
 import { createPgPmsMandatoryChargeConfirmationCommandRepository } from "./domains/pmsMandatoryChargeConfirmationCommandRepository.js";
 import { createPgHotelCatalogOperatingCalendarPropertyProfileEvidencePort } from "./domains/hotelCatalogOperatingCalendarPropertyProfileEvidence.js";
 import { createPgPmsOperatingCalendarReadModel } from "./domains/pmsOperatingCalendarReadModel.js";
+import { createPmsOperatingCalendarProductionRuntime } from "./domains/pmsOperatingCalendarProductionRuntime.js";
 import { createPgFinancePaymentReadinessReadModel } from "./domains/financePaymentReadinessReadModel.js";
 import { createTargetFinanceBillingConfigReadPort } from "./domains/financeBillingConfigReadModel.js";
 import { createFinanceSubscriptionService } from "./domains/financeSubscriptionService.js";
@@ -618,6 +620,8 @@ const propertySetupPmsRuntime = (() => {
   });
   return {
     roomFacts,
+    propertyProfileEvidence,
+    operatingCalendar,
     recurringPricing,
     mandatoryCharges,
     provider: createPropertySetupPmsStateProvider({
@@ -645,6 +649,22 @@ const propertySetupPmsRuntime = (() => {
     ],
   };
 })();
+const pmsOperatingCalendarRuntime = createPmsOperatingCalendarProductionRuntime({
+  enabled: config.pmsOperationsSource === "target" && Boolean(config.auth && config.authSession),
+  connectionString: targetDatabaseUrl,
+  confirmationSecret: config.authSession
+    ? createHmac("sha256", config.authSession.authCookieSecret)
+        .update("vayada.pms.operating-calendar-impact.v1")
+        .digest("base64url")
+    : "",
+  authorizationPool: propertySetupOwnerPool,
+  propertyProfileEvidence: propertySetupPmsRuntime.propertyProfileEvidence,
+  roomEvidence: {
+    roomFacts: propertySetupPmsRuntime.roomFacts,
+    roomCapacity: propertySetupPmsRuntime.roomFacts,
+  },
+  operatingCalendar: propertySetupPmsRuntime.operatingCalendar,
+});
 const pmsGuestPolicySetupCommands =
   config.pmsOperationsSource === "target"
     ? {
@@ -987,6 +1007,7 @@ const app = buildApp({
         readPort: propertySetupPmsRuntime.mandatoryCharges,
       }
     : undefined,
+  pmsOperatingCalendar: pmsOperatingCalendarRuntime?.routes,
   pmsPhysicalRoomOperationalLabels: pmsPhysicalRoomOperationalLabels
     ? { commandPort: pmsPhysicalRoomOperationalLabels }
     : undefined,
@@ -1137,6 +1158,7 @@ app.addHook("onClose", async () => {
     pmsGuestPolicySetupCommands?.recurringPricing.close(),
     pmsGuestPolicySetupCommands?.mandatoryCharges.close(),
     pmsPhysicalRoomOperationalLabels?.close(),
+    pmsOperatingCalendarRuntime?.close(),
     ...(!platformMediaRuntime ? [hotelCatalogStep1Repository.close()] : []),
   ]);
 });
