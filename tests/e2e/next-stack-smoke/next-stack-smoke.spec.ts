@@ -28,6 +28,7 @@ import {
 } from "./support";
 import { runQuoteLifecycle, waitForOffer, type BookingResource } from "./booking-lifecycle";
 import { cleanupSmokeResources, type HotelResource } from "./cleanup";
+import { configureGuestPolicyForManualBooking } from "./guest-policy";
 import { runManualBookingAcceptance } from "./manual-booking";
 
 test("fresh hotel and creator onboarding reaches every next-stack handoff and safe checkout", async ({
@@ -335,6 +336,13 @@ async function runHotelFlow(
     stay,
   };
   registerHotel(resource);
+  await configureGuestPolicyForManualBooking({
+    api,
+    accessToken: session.accessToken,
+    propertyId: setup.propertyId,
+    request,
+    roomTypeId: setup.roomTypeId,
+  });
   await runManualBookingAcceptance({
     api,
     accessToken: session.accessToken,
