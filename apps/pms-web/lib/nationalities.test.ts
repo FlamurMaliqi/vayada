@@ -6,7 +6,7 @@ import {
   nationalityInputLabel,
   nationalityLabel,
   normalizeNationalityCode,
-} from "./nationalities";
+} from "@vayada/locale-constants";
 
 describe("nationalities", () => {
   it("exposes ISO countries, Kosovo, and the two operational edge cases", () => {

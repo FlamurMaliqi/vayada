@@ -16,6 +16,7 @@
   "dependencies": {
     "@heroicons/react": "^2.2.0",
     "@vayada/feature-hub": "*",
+    "@vayada/locale-ui": "*",
     "@vayada/product-onboarding": "*",
     "clsx": "^2.0.0",
     "date-fns": "^4.1.0",

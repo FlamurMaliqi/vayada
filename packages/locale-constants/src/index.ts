@@ -370,3 +370,66 @@ export const COUNTRY_OPTIONS: CountryOption[] = [
 ].sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
 
 export const POPULAR_COUNTRY_CODES = ["ID", "US", "GB", "DE", "FR", "AU", "SG", "TH", "JP"];
+
+const SPECIAL_NATIONALITIES: readonly CountryOption[] = [
+  { code: "XS", name: "Stateless", flag: "🏳️" },
+  { code: "XX", name: "Unknown", flag: "❔" },
+];
+
+export const NATIONALITY_OPTIONS: readonly CountryOption[] = [
+  ...COUNTRY_OPTIONS,
+  ...SPECIAL_NATIONALITIES,
+].sort((left, right) => left.name.localeCompare(right.name));
+
+const NATIONALITY_BY_CODE = new Map(NATIONALITY_OPTIONS.map((option) => [option.code, option]));
+const NATIONALITY_BY_NAME = new Map(
+  NATIONALITY_OPTIONS.map((option) => [normalizedNationalityName(option.name), option.code]),
+);
+const NATIONALITY_ALIASES = new Map([
+  ["america", "US"],
+  ["dutch", "NL"],
+  ["great britain", "GB"],
+  ["holland", "NL"],
+  ["the netherlands", "NL"],
+  ["uk", "GB"],
+  ["unknown nationality", "XX"],
+  ["us", "US"],
+  ["usa", "US"],
+]);
+
+export function normalizeNationalityCode(value: string | null | undefined): string | null {
+  const input = value?.trim();
+  if (!input) return null;
+  const code = input.toUpperCase();
+  if (NATIONALITY_BY_CODE.has(code)) return code;
+  const name = normalizedNationalityName(input);
+  return NATIONALITY_ALIASES.get(name) ?? NATIONALITY_BY_NAME.get(name) ?? null;
+}
+
+export function nationalityOption(value: string | null | undefined): CountryOption | null {
+  const code = normalizeNationalityCode(value);
+  return code ? (NATIONALITY_BY_CODE.get(code) ?? null) : null;
+}
+
+export function nationalityLabel(value: string | null | undefined): string | null {
+  return nationalityOption(value)?.name ?? null;
+}
+
+export function nationalityInputLabel(value: string | null | undefined): string {
+  return nationalityLabel(value) ?? value?.trim() ?? "";
+}
+
+export function nationalityDisplayLabel(value: string | null | undefined): string | null {
+  const input = value?.trim();
+  if (!input) return null;
+  return nationalityLabel(input) ?? `${input} · Needs review`;
+}
+
+function normalizedNationalityName(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
