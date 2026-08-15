@@ -18,7 +18,13 @@ const PMS_CALENDAR_ENTITY_TYPE = "pms_operating_calendar.v1";
 export type BookingPublicationSnapshotOwner = "hotel_catalog" | "booking" | "pms" | "finance";
 type FreshContent = Readonly<{ freshness: Readonly<{ status: "fresh"; lastUpdatedAt: string }> }>;
 export type BookingPublicationSnapshotContent = {
-  hotel_catalog: PublicBookabilityProducerInputs["hotelCatalog"] & FreshContent;
+  hotel_catalog: PublicBookabilityProducerInputs["hotelCatalog"] &
+    FreshContent & {
+      bookingWeb: Readonly<{
+        customDomainUrl: string | null;
+        domainVerified: boolean;
+      }>;
+    };
   booking: PublicBookabilityProducerInputs["booking"] & FreshContent;
   pms: PublicBookabilityProducerInputs["pms"] &
     FreshContent & {

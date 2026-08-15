@@ -58,6 +58,18 @@ describe("Booking publication builder", () => {
       }),
     ).resolves.toEqual({ outcome: "rejected", code: "public_content_incomplete" });
 
+    await expect(
+      run(readiness, {
+        hotel_catalog: {
+          ...snapshots.hotel_catalog,
+          content: {
+            ...snapshots.hotel_catalog.content,
+            publicContacts: [{ type: "email", value: "not-an-email" }],
+          },
+        },
+      }),
+    ).resolves.toEqual({ outcome: "rejected", code: "public_content_incomplete" });
+
     await expect(run(readiness, {}, "http")).resolves.toEqual({
       outcome: "rejected",
       code: "public_content_incomplete",
@@ -143,7 +155,7 @@ function snapshotSet(readiness: ReadyProductReadinessEvidence<"booking">) {
   const profile = structuredClone(PUBLIC_BOOKABILITY_FIXTURES[0]!.profile);
   const freshness = { status: "fresh" as const, lastUpdatedAt: "2026-06-06T10:55:00.000Z" };
   // prettier-ignore
-  const content: BookingPublicationSnapshotContent = { hotel_catalog: { propertyId, slug: profile.hotel.slug, name: profile.hotel.name, timezone: profile.hotel.timezone, defaultLocale: profile.hotel.defaultLocale, supportedLocales: profile.hotel.supportedLocales, location: profile.hotel.location, summary: profile.hotel.summary, images: profile.hotel.images, amenities: profile.hotel.amenities, profileComplete: true, profileVerified: true, freshness }, booking: { branding: { ...profile.hotel.branding, wholesaleCost: "private" } as never, policies: profile.hotel.policies, capabilities: profile.hotel.capabilities, supportedQuoteParameters: profile.hotel.supportedQuoteParameters, freshness }, pms: { availabilityReady: true, rooms: rooms(), calendar: calendar(), freshness }, finance: { defaultCurrency: "EUR", supportedCurrencies: ["EUR"], onlinePayment: true, payAtProperty: true, readyPaymentMethods: ["card", "pay_at_property"], freshness } };
+  const content: BookingPublicationSnapshotContent = { hotel_catalog: { propertyId, slug: profile.hotel.slug, name: profile.hotel.name, timezone: profile.hotel.timezone, defaultLocale: profile.hotel.defaultLocale, supportedLocales: profile.hotel.supportedLocales, location: profile.hotel.location, summary: profile.hotel.summary, images: profile.hotel.images, amenities: profile.hotel.amenities, profileComplete: true, profileVerified: true, bookingWeb: { customDomainUrl: null, domainVerified: false }, freshness }, booking: { branding: { logoUrl: null, heroImage: profile.hotel.images[0]!.url, heroHeading: profile.hotel.name, heroSubtext: profile.hotel.summary, primaryColor: "#0077b6", fontPairing: "modern", wholesaleCost: "private" } as never, policies: profile.hotel.policies, capabilities: profile.hotel.capabilities, supportedQuoteParameters: profile.hotel.supportedQuoteParameters, freshness }, pms: { availabilityReady: true, rooms: rooms(), calendar: calendar(), freshness }, finance: { defaultCurrency: "EUR", supportedCurrencies: ["EUR"], onlinePayment: true, payAtProperty: true, readyPaymentMethods: ["card", "pay_at_property"], freshness } };
   // prettier-ignore
   return Object.fromEntries((["hotel_catalog", "booking", "pms", "finance"] as const).map((owner) => [owner, { outcome: "snapshot", contractVersion: BOOKING_OWNER_SNAPSHOT_VERSION, owner, organizationId, propertyId, sourceManifestHash: readiness.sourceManifestHash, resolvedSources: readiness.sourceManifest.sources.filter((source) => source.ownerDomain === owner && source.entityType !== "booking_launch_dependency_set.v1"), content: content[owner] }])) as unknown as { [Owner in BookingPublicationSnapshotOwner]: BookingPublicationOwnerSnapshot<Owner> };
 }

@@ -1,5 +1,9 @@
 import { PUBLIC_BOOKABILITY_FIXTURES } from "./fixtures.js";
-import { buildBookingPublicContent, type BookingPublicRoom } from "./bookingPublication.js";
+import {
+  buildBookingPublicContent,
+  parseBookingPublicContent,
+  type BookingPublicRoom,
+} from "./bookingPublication.js";
 import { describe, expect, it } from "vitest";
 
 const hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111" as const;
@@ -23,6 +27,48 @@ describe("Booking public content", () => {
     expect(Object.isFrozen(result)).toBe(true);
   });
 
+  it("omits rates whose payment method is not ready", () => {
+    const publicProfile = profile();
+    publicProfile.hotel.capabilities.onlinePayment = false;
+    const room = rooms()[0]!;
+    const result = build({
+      profile: publicProfile,
+      rooms: [
+        {
+          ...room,
+          rates: [
+            ...room.rates,
+            {
+              ratePlanId: "nonref",
+              currency: "EUR",
+              baseNightlyAmount: "100.00",
+              refundable: false,
+              paymentTiming: "prepay_full",
+            },
+          ],
+        },
+      ],
+      finance: {
+        ...finance(),
+        onlinePayment: false,
+        readyPaymentMethods: ["pay_at_property"],
+      },
+    });
+
+    expect(result?.publicContent.rooms[0]?.rates).toEqual(room.rates);
+  });
+
+  it("parses only the complete exact stored content contract", () => {
+    const content = build()?.publicContent;
+    expect(parseBookingPublicContent(content)).toEqual(content);
+    expect(parseBookingPublicContent({ ...content, rooms: undefined })).toBeNull();
+    expect(parseBookingPublicContent({ ...content, privateNotes: "secret" })).toBeNull();
+
+    const poisoned = structuredClone(content!);
+    (poisoned.rooms[0]!.rates[0] as { paymentTiming: string }).paymentTiming = "bank_transfer";
+    expect(parseBookingPublicContent(poisoned)).toBeNull();
+  });
+
   // prettier-ignore
   it("scales calendar evidence across rooms", () => expect(build({ rooms: [rooms()[0]!, { ...rooms()[0]!, roomTypeId: "room-suite" }], calendar: { ...calendar(), roomTypeIds: ["room-deluxe", "room-suite"], expectedDayCount: 732, materializedDayCount: 732 } })).not.toBeNull());
 
@@ -43,6 +89,21 @@ describe("Booking public content", () => {
     ["currencies", () => ({ finance: { ...finance(), supportedCurrencies: ["EUR", "EUR"] } })],
     ["Finance mismatch", () => ({ finance: { ...finance(), onlinePayment: false } })],
     ["payment", () => ({ finance: { ...finance(), readyPaymentMethods: [] } })],
+    [
+      "payment timing",
+      () => {
+        const value = rooms();
+        (value[0]!.rates[0] as { paymentTiming: string }).paymentTiming = "bank_transfer";
+        return { rooms: value };
+      },
+    ],
+    [
+      "public contact",
+      () =>
+        changeProfile((value) =>
+          value.hotel.publicContacts.push({ type: "email", value: "not-an-email" }),
+        ),
+    ],
   ] as const)("rejects incomplete %s evidence", (_case, override) => {
     expect(build(override())).toBeNull();
   });

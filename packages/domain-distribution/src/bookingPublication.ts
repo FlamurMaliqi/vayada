@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import type { ProductReadinessHash, SourceManifestHash } from "@vayada/domain-hotels";
 
 import {
@@ -7,6 +9,7 @@ import {
   assertPublicBookabilityPublicSafe,
   type PublicBookabilityProfileProjection,
 } from "./index.js";
+import { parsePublicBookabilityProfileProjection } from "./publicBookabilityProfileParser.js";
 
 export const BOOKING_PUBLIC_CONTENT_CONTRACT_VERSION = "booking-public-content.v1" as const;
 export type BookingPublicPaymentMethod = "card" | "pay_at_property";
@@ -80,15 +83,17 @@ export function buildBookingPublicContent(input: {
   finance: BookingPublicFinanceEvidence;
 }): BookingPublicContentBuild | null {
   if (!validHash(input.sourceManifestHash) || !validHash(input.readinessHash)) return null;
+  const profile = parsePublicBookabilityProfileProjection(input.profile);
+  if (!profile) return null;
   const readyMethods = [...new Set(input.finance.readyPaymentMethods)]
     .filter((method) => method === "card" || method === "pay_at_property")
     .sort();
   const rooms = sanitizeRooms(input.rooms, input.finance, readyMethods);
-  const calendar = sanitizeCalendar(input.calendar, rooms, input.profile);
+  const calendar = sanitizeCalendar(input.calendar, rooms, profile);
   if (
     !rooms ||
     !calendar ||
-    !validProfile(input.profile, input.finance) ||
+    !validProfile(profile, input.finance) ||
     readyMethods.includes("card") !== input.finance.onlinePayment ||
     readyMethods.includes("pay_at_property") !== input.finance.payAtProperty
   )
@@ -96,7 +101,7 @@ export function buildBookingPublicContent(input: {
 
   const publicContent = deepFreeze({
     contractVersion: BOOKING_PUBLIC_CONTENT_CONTRACT_VERSION,
-    profile: structuredClone(input.profile),
+    profile: structuredClone(profile),
     rooms,
     calendar,
     payments: { readyMethods },
@@ -107,6 +112,33 @@ export function buildBookingPublicContent(input: {
     readinessHash: input.readinessHash,
     publicContent,
   });
+}
+
+/** Parses stored immutable JSON into the exact public Booking content contract. */
+export function parseBookingPublicContent(value: unknown): BookingPublicContent | null {
+  try {
+    if (!record(value) || !Array.isArray(value.rooms) || !record(value.calendar)) return null;
+    const profile = parsePublicBookabilityProfileProjection(value.profile);
+    const payments = record(value.payments) ? value.payments.readyMethods : null;
+    if (!profile || !Array.isArray(payments)) return null;
+    const built = buildBookingPublicContent({
+      sourceManifestHash: `sha256:${"0".repeat(64)}`,
+      readinessHash: `sha256:${"0".repeat(64)}`,
+      profile,
+      rooms: value.rooms as BookingPublicRoom[],
+      calendar: value.calendar as BookingPublicCalendarSnapshot,
+      finance: {
+        defaultCurrency: profile.hotel.defaultCurrency,
+        supportedCurrencies: profile.hotel.supportedCurrencies,
+        onlinePayment: profile.hotel.capabilities.onlinePayment,
+        payAtProperty: profile.hotel.capabilities.payAtProperty,
+        readyPaymentMethods: payments as BookingPublicPaymentMethod[],
+      },
+    });
+    return built && isDeepStrictEqual(built.publicContent, value) ? built.publicContent : null;
+  } catch {
+    return null;
+  }
 }
 
 function validProfile(
@@ -161,27 +193,27 @@ function sanitizeRooms(
     if (!validRoomFacts(room) || roomIds.has(room.roomTypeId)) return null;
     roomIds.add(room.roomTypeId);
     const rateIds = new Set<string>();
-    const rates = room.rates.map((rate) => {
-      const method = rate.paymentTiming === "prepay_full" ? "card" : "pay_at_property";
+    const rates = room.rates.flatMap((rate) => {
       if (
-        !nonEmpty(rate.ratePlanId) ||
+        !validRateFacts(rate) ||
         rateIds.has(rate.ratePlanId) ||
-        !/^\d+\.\d{2}$/.test(rate.baseNightlyAmount) ||
-        Number(rate.baseNightlyAmount) < 0 ||
         rate.currency !== finance.defaultCurrency ||
-        !finance.supportedCurrencies.includes(rate.currency) ||
-        !readyMethods.includes(method)
+        !finance.supportedCurrencies.includes(rate.currency)
       )
-        return null;
+        return [null];
+      const method = rate.paymentTiming === "prepay_full" ? "card" : "pay_at_property";
+      if (!readyMethods.includes(method)) return [];
       rateIds.add(rate.ratePlanId);
-      return {
-        ratePlanId: rate.ratePlanId,
-        currency: rate.currency,
-        baseNightlyAmount: rate.baseNightlyAmount,
-        refundable: rate.refundable,
-        ...(rate.cancellation === undefined ? {} : { cancellation: rate.cancellation }),
-        paymentTiming: rate.paymentTiming,
-      };
+      return [
+        {
+          ratePlanId: rate.ratePlanId,
+          currency: rate.currency,
+          baseNightlyAmount: rate.baseNightlyAmount,
+          refundable: rate.refundable,
+          ...(rate.cancellation === undefined ? {} : { cancellation: rate.cancellation }),
+          paymentTiming: rate.paymentTiming,
+        },
+      ];
     });
     if (rates.length === 0 || rates.some((rate) => !rate)) return null;
     return {
@@ -204,9 +236,19 @@ function sanitizeRooms(
 }
 
 function validRoomFacts(room: BookingPublicRoom): boolean {
+  if (
+    !record(room) ||
+    !record(room.occupancy) ||
+    !Array.isArray(room.beds) ||
+    !Array.isArray(room.images) ||
+    !Array.isArray(room.amenities) ||
+    !Array.isArray(room.rates)
+  )
+    return false;
   const { maxGuests, maxAdults, maxChildren } = room.occupancy;
   return (
     [room.roomTypeId, room.name].every(nonEmpty) &&
+    typeof room.description === "string" &&
     room.description.length <= 5_000 &&
     !room.description.includes("\0") &&
     (room.category === null || nonEmpty(room.category)) &&
@@ -216,17 +258,39 @@ function validRoomFacts(room: BookingPublicRoom): boolean {
     maxAdults + maxChildren >= maxGuests &&
     room.beds.length > 0 &&
     new Set(room.beds.map(({ type }) => type)).size === room.beds.length &&
-    room.beds.every(
-      ({ type, quantity }) => nonEmpty(type) && Number.isInteger(quantity) && quantity > 0,
-    ) &&
+    room.beds.every(({ type, quantity }) => nonEmpty(type) && integer(quantity, 1)) &&
     (room.bedrooms === null || (Number.isInteger(room.bedrooms) && room.bedrooms >= 0)) &&
-    (room.bathrooms === null || (room.bathrooms > 0 && room.bathrooms <= 100)) &&
+    (room.bathrooms === null || integer(room.bathrooms, 1)) &&
     (room.bathroomType === "private" ||
       (room.bathroomType === "shared" && room.bathrooms === null)) &&
-    (room.size === null || (room.size.value > 0 && room.size.unit === "sqm")) &&
+    (room.size === null ||
+      (record(room.size) &&
+        typeof room.size.value === "number" &&
+        Number.isFinite(room.size.value) &&
+        room.size.value > 0 &&
+        room.size.unit === "sqm")) &&
     room.images.length > 0 &&
     new Set(room.images.map(({ url }) => url)).size === room.images.length &&
-    room.images.every(({ url }) => validHttpsUrl(url))
+    room.images.every(
+      (image) =>
+        record(image) &&
+        validHttpsUrl(image.url) &&
+        (image.alt === undefined || image.alt === null || nonEmpty(image.alt)),
+    ) &&
+    new Set(room.amenities).size === room.amenities.length &&
+    room.amenities.every(nonEmpty)
+  );
+}
+
+function validRateFacts(rate: BookingPublicRate): boolean {
+  return (
+    record(rate) &&
+    nonEmpty(rate.ratePlanId) &&
+    /^\d+\.\d{2}$/.test(rate.baseNightlyAmount) &&
+    Number(rate.baseNightlyAmount) >= 0 &&
+    typeof rate.refundable === "boolean" &&
+    (rate.paymentTiming === "prepay_full" || rate.paymentTiming === "pay_at_property") &&
+    (rate.cancellation === undefined || rate.cancellation === null || nonEmpty(rate.cancellation))
   );
 }
 
@@ -291,17 +355,31 @@ function validDate(value: string): boolean {
 }
 
 function validInstant(value: unknown): value is string {
-  return typeof value === "string" && Number.isFinite(Date.parse(value));
+  if (typeof value !== "string") return false;
+  try {
+    const canonical = value.replace(
+      /(?:\.(\d{1,3}))?Z$/,
+      (_match, fraction = "") => `.${fraction.padEnd(3, "0")}Z`,
+    );
+    return new Date(value).toISOString() === canonical;
+  } catch {
+    return false;
+  }
 }
 
 const validHash = (value: string) => /^sha256:[0-9a-f]{64}$/.test(value);
-const validHttpsUrl = (value: string) =>
-  URL.canParse(value) && new URL(value).protocol === "https:";
+const validHttpsUrl = (value: unknown) => {
+  if (typeof value !== "string" || !URL.canParse(value)) return false;
+  const url = new URL(value);
+  return url.protocol === "https:" && !url.username && !url.password && !url.hash;
+};
 
 const integer = (value: number, minimum: number, maximum = 100) =>
   Number.isInteger(value) && value >= minimum && value <= maximum;
 const nonEmpty = (value: unknown): value is string =>
   typeof value === "string" && value.trim().length > 0;
+const record = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
