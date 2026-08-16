@@ -99,6 +99,7 @@ export async function resolveRequestContext(
         providerOrganizationId: session.workosOrgId,
       },
       email: user.email,
+      name: user.name,
       status: user.status,
     },
     selectedOrganization: {

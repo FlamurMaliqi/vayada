@@ -403,6 +403,7 @@ const identityRepository: IdentityRepository = {
     return {
       userId: "user_hotel_owner",
       email: "owner@example.com",
+      name: "Harper Owner",
       status: "active",
     };
   },
@@ -11949,8 +11950,10 @@ describe("vayada-api", () => {
     expect(createBody.note).toMatchObject({
       body: createCase.request.body?.body,
       authorUserId: "user_hotel_owner",
+      authorDisplayName: "Harper Owner",
       auditMetadata: {
         createdByUserId: "user_hotel_owner",
+        createdByDisplayName: "Harper Owner",
         privacyScope: "internal",
       },
     });
@@ -11966,7 +11969,7 @@ describe("vayada-api", () => {
       createdAt: createBody.note.createdAt,
       auditMetadata: {
         editedByUserId: "user_hotel_owner",
-        editedByDisplayName: "owner@example.com",
+        editedByDisplayName: "Harper Owner",
         editedAt: "2026-08-14T17:03:00.000Z",
       },
     });

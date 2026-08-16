@@ -33,7 +33,7 @@ import type {
   PmsRoomType,
   PmsSourceFreshness,
 } from "../domains/pmsOperationsReadModel.js";
-import { requireAuthContext } from "@vayada/backend-auth";
+import { requireAuthContext, type RequestActor } from "@vayada/backend-auth";
 import { enforceRoutePolicy } from "./policy.js";
 
 export const PMS_OPERATIONS_CONTRACT_VERSION = "pms-operations.v1" as const;
@@ -3597,6 +3597,10 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function actorDisplayName(actor: RequestActor): string {
+  return actor.name?.trim() || actor.email;
+}
+
 function toPrivateNoteCreateCommand(
   propertyId: string,
   guestBookingId: string,
@@ -3627,7 +3631,7 @@ function toPrivateNoteCreateCommand(
       idempotencyKey,
       body: noteBody,
       actorUserId: context.actor.internalUserId,
-      authorDisplayName: context.actor.email,
+      authorDisplayName: actorDisplayName(context.actor),
     },
   };
 }
@@ -3773,7 +3777,7 @@ function toPrivateNoteUpdateCommand(
       idempotencyKey,
       body: noteBody,
       actorUserId: context.actor.internalUserId,
-      editorDisplayName: context.actor.email,
+      editorDisplayName: actorDisplayName(context.actor),
     },
   };
 }
