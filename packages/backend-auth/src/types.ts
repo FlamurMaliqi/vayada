@@ -89,6 +89,7 @@ export type RequestActor = {
   internalUserId: string;
   providerIdentity: ProviderIdentity;
   email: string;
+  name?: string | null;
   status: InternalUserStatus;
 };
 
