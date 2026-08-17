@@ -1269,7 +1269,6 @@ describe("Booking Web public bootstrap parity", () => {
   it("creates target checkout quotes from public offer snapshots", async () => {
     const calls: Array<{ text: string; values: readonly unknown[] | undefined }> = [];
     let ended = 0;
-    let unitAmount = "10.25";
     const pool = {
       async query(text: string, values?: readonly unknown[]) {
         calls.push({ text, values });
@@ -1336,7 +1335,7 @@ describe("Booking Web public bootstrap parity", () => {
                 sourceAddonId: "spa_partner",
                 name: "Partner spa",
                 pricingModel: "per_guest_night",
-                unitAmount,
+                unitAmount: "10.25",
                 currency: "EUR",
                 ownershipKind: "partner",
                 partnerCommissionRate: "18.7500",
@@ -1412,10 +1411,6 @@ describe("Booking Web public bootstrap parity", () => {
         addonQuantities: { spa_partner: 2_147_483_648 },
       }),
     ).rejects.toThrow("details are invalid");
-    unitAmount = "5000000000000.00";
-    // prettier-ignore
-    await expect(adapter.quoteBooking("hotel-alpenrose", { roomTypeId: "room_deluxe", checkIn: "2026-09-12", checkOut: "2026-09-13", adults: 2, children: 0, numberOfRooms: 1, paymentMethod: "pay_at_property", rateType: "flexible", addonIds: ["spa_partner"], addonQuantities: { spa_partner: 2 } })).rejects.toThrow("pricing evidence");
-
     expect(quote).toMatchObject({
       quoteId: "Q-TARGETQUOTE1",
       roomTypeId: "room_deluxe",

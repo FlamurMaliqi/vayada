@@ -4167,6 +4167,10 @@ async function previewTargetDateChange(
   if (booking.lifecycleStatus !== "confirmed") {
     return blocked("This booking can no longer be changed.");
   }
+  const selectedOffer = objectValue(objectValue(booking.bookingMetadata)["selectedOffer"]);
+  // prettier-ignore
+  if (Array.isArray(selectedOffer["addonPurchases"]) && selectedOffer["addonPurchases"].length > 0)
+    return blocked("Bookings with purchased add-ons cannot be changed online yet.");
   if (booking.paymentStatus !== "unpaid") {
     return blocked("Paid bookings require a payment adjustment and cannot be changed online yet.");
   }
@@ -4185,7 +4189,6 @@ async function previewTargetDateChange(
   if (checkIn === dateOnly(booking.checkIn) && checkOut === dateOnly(booking.checkOut)) {
     return blocked("Choose different dates before submitting a change request.");
   }
-  const selectedOffer = objectValue(objectValue(booking.bookingMetadata)["selectedOffer"]);
   const publicOfferKey = stringValue(selectedOffer["publicOfferKey"]);
   const roomTypeId = stringValue(selectedOffer["roomTypeId"]);
   if (!publicOfferKey || !roomTypeId) {
