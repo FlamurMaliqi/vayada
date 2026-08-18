@@ -345,6 +345,11 @@ function successfulOperationalHandler(status = "assigned"): QueryHandler {
     if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
     if (text.includes("FROM platform.idempotency_keys")) return ok();
     if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([{ id: "idem" }], 1);
+    if (text.includes("SELECT DISTINCT scope.room_type_id")) {
+      return ok([{ roomTypeId }]);
+    }
+    if (text.includes("pg_advisory_xact_lock")) return ok();
+    if (text.includes("room_type_id = ANY") && text.includes("FOR UPDATE")) return ok();
     if (text.includes("FROM pms.operational_booking_assignments")) {
       return ok(assignmentRows(status));
     }
@@ -406,6 +411,9 @@ function successfulAssignmentHandler(): QueryHandler {
     if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
     if (text.includes("FROM platform.idempotency_keys")) return ok();
     if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([{ id: "idem" }], 1);
+    if (text.includes('SELECT room_type_id::text AS "roomTypeId"')) {
+      return ok([{ roomTypeId: assignmentRows()[0]!.roomTypeId }]);
+    }
     if (text.includes("FROM pms.operational_booking_assignments assignment")) {
       return ok([assignmentRows()[0]!]);
     }
@@ -508,6 +516,9 @@ function successfulCheckoutHandler(
     if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
     if (text.includes("FROM platform.idempotency_keys")) return ok();
     if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([{ id: "idem" }], 1);
+    if (text.includes("SELECT DISTINCT scope.room_type_id")) return ok([{ roomTypeId }]);
+    if (text.includes("pg_advisory_xact_lock")) return ok();
+    if (text.includes("room_type_id = ANY") && text.includes("FOR UPDATE")) return ok();
     if (text.includes("FROM pms.operational_booking_assignments")) {
       return ok(assignmentRows(options.assignmentStatus ?? "in_house"));
     }
@@ -1088,12 +1099,18 @@ describe("target PMS operations command repository", () => {
       const roomLockIndex = client.calls.findIndex(
         ({ text }) => text.includes("room_type_id = $2::uuid") && text.includes("FOR UPDATE"),
       );
+      const assignmentLockIndex = client.calls.findIndex(
+        ({ text }) =>
+          text.includes("FROM pms.operational_booking_assignments assignment") &&
+          text.includes("FOR UPDATE OF assignment"),
+      );
       const eligibilityIndex = client.calls.findIndex(
         ({ text }) => text.includes("status = 'available'") && text.includes("FROM pms.rooms"),
       );
       expect(advisoryLockIndex).toBeGreaterThan(-1);
       expect(advisoryLockIndex).toBeLessThan(roomLockIndex);
-      expect(roomLockIndex).toBeLessThan(eligibilityIndex);
+      expect(roomLockIndex).toBeLessThan(assignmentLockIndex);
+      expect(assignmentLockIndex).toBeLessThan(eligibilityIndex);
       expect(requiredCall(client, "UPDATE pms.operational_booking_assignments").values[0]).toBe(
         "f6855100-0000-0000-0000-000000000003",
       );
@@ -1107,6 +1124,9 @@ describe("target PMS operations command repository", () => {
         if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
         if (text.includes("FROM platform.idempotency_keys")) return ok();
         if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([{ id: "idem" }]);
+        if (text.includes('SELECT room_type_id::text AS "roomTypeId"')) {
+          return ok([{ roomTypeId: assignmentRows()[0]!.roomTypeId }]);
+        }
         if (text.includes("pg_advisory_xact_lock")) return ok([{ locked: true }]);
         if (text.includes("FROM pms.operational_booking_assignments assignment")) {
           return ok([assignmentRows()[0]!]);
@@ -1144,6 +1164,9 @@ describe("target PMS operations command repository", () => {
       if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
       if (text.includes("FROM platform.idempotency_keys")) return ok();
       if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([{ id: "idem" }]);
+      if (text.includes('SELECT room_type_id::text AS "roomTypeId"')) {
+        return ok([{ roomTypeId: assignmentRows()[0]!.roomTypeId }]);
+      }
       if (text.includes("pg_advisory_xact_lock")) return ok([{ locked: true }]);
       if (text.includes("FROM pms.operational_booking_assignments assignment")) {
         const row = assignmentRows()[assignmentLookup];
@@ -1181,6 +1204,20 @@ describe("target PMS operations command repository", () => {
     const result = await repository.executeCheckInCommand(baseCheckInCommand());
 
     expect(result.ok).toBe(true);
+    const advisoryIndex = client.calls.findIndex(({ text }) =>
+      text.includes("pg_advisory_xact_lock"),
+    );
+    const roomLockIndex = client.calls.findIndex(
+      ({ text }) => text.includes("room_type_id = ANY") && text.includes("FOR UPDATE"),
+    );
+    const assignmentLockIndex = client.calls.findIndex(
+      ({ text }) =>
+        text.includes("FROM pms.operational_booking_assignments assignment") &&
+        text.includes("assignment.position") &&
+        text.includes("FOR UPDATE OF assignment"),
+    );
+    expect(advisoryIndex).toBeLessThan(roomLockIndex);
+    expect(roomLockIndex).toBeLessThan(assignmentLockIndex);
     const checkInInsert = requiredCall(client, "INSERT INTO pms.booking_checkin_records");
     expect(checkInInsert.values[6]).toEqual([assignmentOneId, assignmentTwoId]);
 
@@ -1198,6 +1235,35 @@ describe("target PMS operations command repository", () => {
       actorOrganizationId: organizationId,
       commandId: "cmd-checkin-001",
     });
+  });
+
+  it("retries check-in when an assignment moves into an unlocked room scope", async () => {
+    const successful = successfulOperationalHandler();
+    let scopeRead = 0;
+    const changedRoomTypeId = "f6855200-0000-0000-0000-000000000002";
+    const { client, repository } = createRepository((text, values) => {
+      if (text.includes("SELECT DISTINCT scope.room_type_id")) {
+        scopeRead += 1;
+        return scopeRead === 1
+          ? ok([{ roomTypeId }])
+          : ok([{ roomTypeId }, { roomTypeId: changedRoomTypeId }]);
+      }
+      return successful(text, values);
+    });
+
+    const result = await repository.executeCheckInCommand(baseCheckInCommand());
+
+    expect(result).toMatchObject({
+      ok: false,
+      statusCode: 409,
+      code: "version_conflict",
+      message: "Reservation room scope changed. Retry the command.",
+    });
+    expect(scopeRead).toBe(2);
+    expect(
+      client.calls.some((call) => call.text.includes("INSERT INTO pms.booking_checkin_records")),
+    ).toBe(false);
+    expect(client.calls.at(-1)?.text).toBe("ROLLBACK");
   });
 
   it("rejects invalid explicit transition jumps before assignment update or audit", async () => {
@@ -1338,10 +1404,12 @@ describe("target PMS operations command repository", () => {
     const result = await repository.executeNoShowCommand(baseNoShowCommand());
 
     expect(result.ok).toBe(true);
-    const assignmentSelect = requiredCall(
-      client,
-      "FROM pms.operational_booking_assignments assignment",
-    );
+    const assignmentSelect = client.calls.find(
+      ({ text }) =>
+        text.includes("FROM pms.operational_booking_assignments assignment") &&
+        text.includes("assignment.position") &&
+        text.includes("FOR UPDATE OF assignment"),
+    )!;
     expect(assignmentSelect.values[2]).toBeNull();
     const assignmentUpdate = requiredCall(client, "UPDATE pms.operational_booking_assignments");
     expect(assignmentUpdate.values[0]).toEqual([assignmentOneId, assignmentTwoId]);
@@ -1388,10 +1456,12 @@ describe("target PMS operations command repository", () => {
     const result = await repository.executeNoShowCommand(command);
 
     expect(result.ok).toBe(true);
-    const assignmentSelect = requiredCall(
-      client,
-      "FROM pms.operational_booking_assignments assignment",
-    );
+    const assignmentSelect = client.calls.find(
+      ({ text }) =>
+        text.includes("FROM pms.operational_booking_assignments assignment") &&
+        text.includes("assignment.position") &&
+        text.includes("FOR UPDATE OF assignment"),
+    )!;
     expect(assignmentSelect.values[2]).toBeNull();
     const assignmentUpdate = requiredCall(client, "UPDATE pms.operational_booking_assignments");
     expect(assignmentUpdate.values[0]).toEqual([assignmentOneId, assignmentTwoId]);
@@ -1462,6 +1532,8 @@ describe("target PMS operations command repository", () => {
       if (text.includes("FROM pms.operational_booking_assignments")) {
         return ok(assignmentRows("in_house").filter((row) => row.assignmentId === assignmentOneId));
       }
+      if (text.includes("pg_advisory_xact_lock")) return ok();
+      if (text.includes("room_type_id = ANY") && text.includes("FOR UPDATE")) return ok();
       if (text.includes("FROM pms.booking_checkout_records")) return ok();
       if (text.includes("FROM pms.booking_checkout_charges charge")) {
         expect(text).toContain(
