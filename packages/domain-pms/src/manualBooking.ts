@@ -72,8 +72,7 @@ export type PmsManualBookingCreateCommand = Readonly<{
   payment: Readonly<{
     expectedMethod: PmsManualBookingPaymentMethod;
     settlement:
-      | Readonly<{ status: "unpaid" }>
-      | Readonly<{ status: "paid"; reference: string | null }>;
+      Readonly<{ status: "unpaid" }> | Readonly<{ status: "paid"; reference: string | null }>;
   }>;
   audit: Readonly<{
     actor: Readonly<{ kind: "user"; userId: string; organizationId: string }>;
@@ -99,6 +98,7 @@ export type PmsManualBookingCreateResult = Readonly<{
   balance: PmsManualBookingMoney;
   paymentStatus: "unpaid" | "paid";
   paymentEvidenceId: string | null;
+  rearrangedBookingCount: number;
   sideEffects: readonly ["calendar_refresh", "ari_changed", "guest_confirmation", "audit_event"];
 }>;
 

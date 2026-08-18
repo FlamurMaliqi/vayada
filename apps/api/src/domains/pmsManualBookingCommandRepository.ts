@@ -113,13 +113,16 @@ export function createPgPmsManualBookingCommandRepository(config: {
         );
         if (paymentEvidenceId)
           await config.dependencies.booking.markPaid({ transaction, guestBookingId });
-        await config.dependencies.roomAssignmentOptimization.afterCreate({
+        const optimization = await config.dependencies.roomAssignmentOptimization.afterCreate({
           transaction,
           command,
           rooms,
           acceptedAt,
         });
-        const result = createResult(command, accepted, paymentEvidenceId);
+        const rearrangedBookingCount = new Set(
+          optimization.flatMap(({ rearrangedGuestBookingIds }) => rearrangedGuestBookingIds),
+        ).size;
+        const result = createResult(command, accepted, paymentEvidenceId, rearrangedBookingCount);
         await config.dependencies.platform.writeEvidence({
           transaction,
           command,
@@ -199,6 +202,7 @@ function createResult(
   command: PmsManualBookingCreateCommand,
   accepted: PmsManualBookingAcceptedWrite,
   paymentEvidenceId: string | null,
+  rearrangedBookingCount: number,
 ): PmsManualBookingCreateResult {
   const paid = paymentEvidenceId !== null;
   return {
@@ -217,6 +221,7 @@ function createResult(
     balance: paid ? { amountDecimal: "0.00", currency: accepted.total.currency } : accepted.total,
     paymentStatus: paid ? "paid" : "unpaid",
     paymentEvidenceId,
+    rearrangedBookingCount,
     sideEffects: ["calendar_refresh", "ari_changed", "guest_confirmation", "audit_event"],
   };
 }

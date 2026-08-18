@@ -13,6 +13,7 @@ import {
 type OptimizationResult = Readonly<{
   roomTypeId: string;
   result: PmsRoomAssignmentOptimizationCommandResult;
+  rearrangedGuestBookingIds: readonly string[];
 }>;
 type OperationalChangeCommand = Readonly<{
   propertyId: string;
@@ -92,9 +93,41 @@ async function optimizeRoomTypes(
     ) {
       throw new Error(`PMS room optimization ${reason} trigger failed: ${result.outcome}`);
     }
-    results.push({ roomTypeId, result });
+    results.push({
+      roomTypeId,
+      result,
+      rearrangedGuestBookingIds: await rearrangedGuestBookingIds(
+        transaction,
+        command.propertyId,
+        roomTypeId,
+        result,
+      ),
+    });
   }
   return results;
+}
+
+async function rearrangedGuestBookingIds(
+  transaction: PmsManualBookingTransaction,
+  propertyId: string,
+  roomTypeId: string,
+  result: PmsRoomAssignmentOptimizationCommandResult,
+): Promise<readonly string[]> {
+  if (result.outcome !== "optimized" || result.moves.length === 0) return [];
+  const assignmentIds = result.moves.map(({ occupancyId }) => occupancyId);
+  const found = await transaction.query<{ assignmentId: string; guestBookingId: string }>(
+    `SELECT id::text AS "assignmentId", guest_booking_id::text AS "guestBookingId"
+     FROM pms.operational_booking_assignments
+     WHERE property_id = $1::uuid AND room_type_id = $2::uuid
+       AND id = ANY($3::uuid[])`,
+    [propertyId, roomTypeId, assignmentIds],
+  );
+  if (
+    found.rows.length !== assignmentIds.length ||
+    found.rows.some(({ assignmentId }) => !assignmentIds.includes(assignmentId))
+  )
+    throw new Error("PMS room optimization moved-booking evidence is incomplete");
+  return [...new Set(found.rows.map(({ guestBookingId }) => guestBookingId))].sort();
 }
 
 async function propertyLocalDate(

@@ -23,6 +23,10 @@ type IdempotencyRow = {
   metadata: unknown;
 };
 
+type StoredManualBookingResult = Omit<PmsManualBookingCreateResult, "rearrangedBookingCount"> & {
+  rearrangedBookingCount?: number;
+};
+
 export function createPgPmsManualBookingPlatformOwnerPort(): PmsManualBookingPlatformOwnerPort {
   return {
     findReplay: ({ transaction, command }) => findManualBookingReplay(transaction, command),
@@ -85,7 +89,11 @@ export async function findManualBookingReplay(
   );
   if (row.responseResourceId !== result.guestBookingId || booking.rowCount !== 1)
     throw new Error("Stored manual booking replay is invalid");
-  return { ...result, outcome: "replayed" };
+  return {
+    ...result,
+    rearrangedBookingCount: result.rearrangedBookingCount ?? 0,
+    outcome: "replayed",
+  };
 }
 
 export async function reserveManualBookingCommand(
@@ -288,7 +296,7 @@ async function insertAudit(
 function isStoredResult(
   value: unknown,
   command: PmsManualBookingCreateCommand,
-): value is PmsManualBookingCreateResult {
+): value is StoredManualBookingResult {
   const input = record(value);
   const total = record(input?.["total"]);
   const balance = record(input?.["balance"]);
@@ -302,7 +310,7 @@ function isStoredResult(
     command.stays[0]!.checkOut,
   );
   return (
-    exact(input, [
+    exactOneOf(input, [
       "contractVersion",
       "outcome",
       "commandId",
@@ -336,12 +344,19 @@ function isStoredResult(
     total["currency"] === balance["currency"] &&
     input["paymentStatus"] === (paid ? "paid" : "unpaid") &&
     (paid ? uuid(input["paymentEvidenceId"]) : input["paymentEvidenceId"] === null) &&
+    (input["rearrangedBookingCount"] === undefined ||
+      (Number.isSafeInteger(input["rearrangedBookingCount"]) &&
+        Number(input["rearrangedBookingCount"]) >= 0)) &&
     (paid
       ? balance["amountDecimal"] === "0.00"
       : balance["amountDecimal"] === total["amountDecimal"]) &&
     JSON.stringify(input["sideEffects"]) ===
       '["calendar_refresh","ari_changed","guest_confirmation","audit_event"]'
   );
+}
+
+function exactOneOf(value: Record<string, unknown> | null, baseKeys: string[]): boolean {
+  return exact(value, baseKeys) || exact(value, [...baseKeys, "rearrangedBookingCount"]);
 }
 
 function exact(

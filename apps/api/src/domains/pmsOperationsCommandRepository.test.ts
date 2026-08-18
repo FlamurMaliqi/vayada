@@ -16,6 +16,7 @@ import type {
   PmsCheckOutCommand,
   PmsCheckOutRecord,
   PmsCommandMeta,
+  PmsManualCancellationCommand,
   PmsNoShowCommand,
   PmsOperationalReservation,
   PmsOperationalStatusCommand,
@@ -275,6 +276,22 @@ function baseNoShowCommand(overrides: Partial<PmsNoShowCommand> = {}): PmsNoShow
       reason: "Mark reservation no-show",
       requestedAt: "2026-08-15T15:45:00.000Z",
     },
+    ...overrides,
+  };
+}
+
+function baseManualCancellationCommand(
+  overrides: Partial<PmsManualCancellationCommand> = {},
+): PmsManualCancellationCommand {
+  return {
+    propertyId,
+    guestBookingId,
+    commandId: "cmd-cancel-001",
+    idempotencyKey: "pms-cancel-001",
+    expectedVersion: "reservation-v7",
+    accountingDate: "2026-08-15",
+    retainedCharges: [],
+    audit: baseNoShowCommand().audit,
     ...overrides,
   };
 }
@@ -809,7 +826,7 @@ describe("target PMS operations command repository", () => {
 
   it("rejects bank acceptance after the canonical pending-payment deadline", async () => {
     const { client, repository } = createRepository((text) => {
-      if (text === "BEGIN" || text === "ROLLBACK") return ok();
+      if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
       if (text.includes("FROM platform.idempotency_keys")) return ok();
       if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([{ id: "idem" }], 1);
       if (text.includes("FROM booking.guest_bookings booking") && text.includes("FOR UPDATE")) {
@@ -1362,6 +1379,8 @@ describe("target PMS operations command repository", () => {
           {
             status: "completed",
             requestFingerprintHash: replayFingerprintHash,
+            responseStatusCode: 200,
+            responseBodyHash: sha256(stableJson(replayMeta)),
             idempotencyMetadata: { commandMeta: replayMeta },
           },
         ]);
@@ -1377,6 +1396,55 @@ describe("target PMS operations command repository", () => {
         call.text.includes("INSERT INTO pms.booking_checkin_records"),
       ),
     ).toBe(false);
+
+    const cancelCommand = baseManualCancellationCommand();
+    const cancelMeta: PmsCommandMeta = {
+      ...replayMeta,
+      commandId: cancelCommand.commandId,
+      idempotencyKey: cancelCommand.idempotencyKey,
+      rearrangedBookingCount: 2,
+    };
+    const cancelReplay = createRepository((text) => {
+      if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
+      if (text.includes("FROM platform.idempotency_keys"))
+        return ok([
+          {
+            status: "completed",
+            requestFingerprintHash: commandFingerprintHash(cancelCommand),
+            responseStatusCode: 200,
+            responseBodyHash: sha256(stableJson(cancelMeta)),
+            idempotencyMetadata: { commandMeta: cancelMeta },
+          },
+        ]);
+      throw new Error(`Replay should not mutate SQL: ${text}`);
+    });
+    await expect(
+      cancelReplay.repository.cancelManualBooking!(cancelCommand),
+    ).resolves.toMatchObject({
+      ok: true,
+      replayed: true,
+      commandMeta: { rearrangedBookingCount: 2 },
+    });
+
+    const poisonedMeta = { ...cancelMeta, rearrangedBookingCount: 99 };
+    const poisonedReplay = createRepository((text) => {
+      if (text === "BEGIN" || text === "ROLLBACK") return ok();
+      if (text.includes("FROM platform.idempotency_keys"))
+        return ok([
+          {
+            status: "completed",
+            requestFingerprintHash: commandFingerprintHash(cancelCommand),
+            responseStatusCode: 200,
+            responseBodyHash: sha256(stableJson(cancelMeta)),
+            idempotencyMetadata: { commandMeta: poisonedMeta },
+          },
+        ]);
+      if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([], 0);
+      throw new Error(`Poisoned replay should not mutate SQL: ${text}`);
+    });
+    await expect(
+      poisonedReplay.repository.cancelManualBooking!(cancelCommand),
+    ).resolves.toMatchObject({ ok: false, code: "idempotency_conflict" });
 
     const duplicateSetup = createRepository(successfulOperationalHandler("checked_in"));
     const duplicateResult = await duplicateSetup.repository.executeCheckInCommand(
@@ -1694,7 +1762,9 @@ function requiredCall(client: RecordingCommandClient, sqlFragment: string): Reco
   return call;
 }
 
-function commandFingerprintHash(command: PmsCheckInCommand | PmsCheckOutCommand): string {
+function commandFingerprintHash(
+  command: PmsCheckInCommand | PmsCheckOutCommand | PmsManualCancellationCommand,
+): string {
   const { audit: _audit, ...fingerprint } = command;
   return sha256(stableJson(fingerprint));
 }
