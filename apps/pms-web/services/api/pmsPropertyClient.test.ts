@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
   getStatus: vi.fn(),
   getPropertyProfile: vi.fn(),
   updatePropertyProfile: vi.fn(),
+  operationsGet: vi.fn(),
+  operationsPatch: vi.fn(),
 }));
 
 vi.mock("./sharedHotelSetupClient", () => ({
@@ -15,9 +17,17 @@ vi.mock("./sharedHotelSetupClient", () => ({
   },
 }));
 
+vi.mock("./pmsOperationsClient", () => ({
+  pmsOperationsClient: { get: mocks.operationsGet, patch: mocks.operationsPatch },
+  pmsOperationsRequestOptions: { cache: "no-store" },
+}));
+
 import {
   getPmsPropertyProfile,
+  getPmsCalendarSettings,
+  listPmsRoomShuffleHistory,
   resolveSelectedPmsPropertyId,
+  updatePmsCalendarSettings,
   updatePmsPropertyProfile,
 } from "./pmsPropertyClient";
 
@@ -177,6 +187,40 @@ describe("PMS property profile", () => {
       }),
     );
     expect(result).toMatchObject({ country: "AT", timezone: "Europe/Vienna" });
+  });
+
+  it("reads and updates target room-packing settings", async () => {
+    const settings = {
+      contractVersion: "pms-operations.v1",
+      propertyId,
+      autoRearrangeEnabled: true,
+      updatedAt: null,
+    };
+    mocks.operationsGet.mockResolvedValue(settings);
+    mocks.operationsPatch.mockResolvedValue({ ...settings, autoRearrangeEnabled: false });
+
+    await expect(getPmsCalendarSettings()).resolves.toBe(settings);
+    await expect(updatePmsCalendarSettings(false)).resolves.toMatchObject({
+      autoRearrangeEnabled: false,
+    });
+    expect(mocks.operationsGet).toHaveBeenCalledWith(
+      `/api/pms/properties/${propertyId}/calendar-settings`,
+      expect.any(Object),
+    );
+    expect(mocks.operationsPatch).toHaveBeenCalledWith(
+      `/api/pms/properties/${propertyId}/calendar-settings`,
+      { autoRearrangeEnabled: false },
+      expect.any(Object),
+    );
+  });
+
+  it("forwards the opaque room-shuffle history cursor", async () => {
+    mocks.operationsGet.mockResolvedValue({ items: [], nextCursor: null });
+    await listPmsRoomShuffleHistory(25, "opaque/cursor+");
+    expect(mocks.operationsGet).toHaveBeenCalledWith(
+      `/api/pms/properties/${propertyId}/calendar-shuffles?limit=25&cursor=opaque%2Fcursor%2B`,
+      expect.any(Object),
+    );
   });
 
   it("keeps unsupported booking acceptance fields behind their explicit gate", async () => {

@@ -5,6 +5,7 @@ import {
 import type { AdaptiveHotelSetupStatus } from "@vayada/product-onboarding";
 
 import { sharedHotelSetupApi } from "./sharedHotelSetupClient";
+import { pmsOperationsClient, pmsOperationsRequestOptions } from "./pmsOperationsClient";
 import { unsupportedPmsNextStackFeature } from "./unsupported";
 
 export interface PmsPropertySummary {
@@ -26,14 +27,32 @@ export interface PmsPropertyProfile extends PmsPropertySummary {
 }
 
 export interface PmsCalendarSettings {
+  contractVersion: "pms-operations.v1";
+  propertyId: string;
   autoRearrangeEnabled: boolean;
-  autoOpenEnabled: boolean;
-  autoOpenMode: "rolling" | "fixed";
-  autoOpenMonths: 12 | 18 | 24;
-  autoOpenFixedMonth: string | null;
-  autoOpenThrough: string | null;
-  autoOpenWarnings: string[];
+  updatedAt: string | null;
 }
+
+export type PmsRoomShuffleHistoryItem = {
+  shuffleId: string;
+  assignmentId: string;
+  guestBookingId: string | null;
+  bookingReference: string | null;
+  roomTypeId: string;
+  fromRoom: { roomId: string; label: string | null } | null;
+  toRoom: { roomId: string; label: string | null };
+  reason: "create" | "cancel" | "modify";
+  actor: { kind: "system" } | { kind: "user"; userId: string };
+  correlationId: string;
+  occurredAt: string;
+};
+
+export type PmsRoomShuffleHistoryPage = {
+  contractVersion: "pms-operations.v1";
+  propertyId: string;
+  items: PmsRoomShuffleHistoryItem[];
+  nextCursor: string | null;
+};
 
 export async function listPmsProperties(): Promise<PmsPropertySummary[]> {
   const status = await sharedHotelSetupApi.getStatus({ entryProduct: "pms" });
@@ -115,14 +134,35 @@ export async function updatePmsPropertyProfile(
 }
 
 export async function getPmsCalendarSettings(): Promise<PmsCalendarSettings> {
-  return unsupportedPmsNextStackFeature("PMS calendar settings");
+  const propertyId = await resolveSelectedPmsPropertyId("loading calendar settings");
+  return pmsOperationsClient.get<PmsCalendarSettings>(
+    propertyEndpoint(propertyId, "calendar-settings"),
+    pmsOperationsRequestOptions,
+  );
 }
 
-export async function updatePmsCalendarSettings(
-  data: Partial<PmsCalendarSettings>,
-): Promise<PmsCalendarSettings> {
-  void data;
-  return unsupportedPmsNextStackFeature("PMS calendar settings");
+export async function updatePmsCalendarSettings(enabled: boolean): Promise<PmsCalendarSettings> {
+  const propertyId = await resolveSelectedPmsPropertyId("saving calendar settings");
+  return pmsOperationsClient.patch<PmsCalendarSettings>(
+    propertyEndpoint(propertyId, "calendar-settings"),
+    { autoRearrangeEnabled: enabled },
+    pmsOperationsRequestOptions,
+  );
+}
+
+export async function listPmsRoomShuffleHistory(
+  limit = 50,
+  cursor?: string,
+): Promise<PmsRoomShuffleHistoryPage> {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+    throw new TypeError("Room shuffle history limit must be between 1 and 100.");
+  const propertyId = await resolveSelectedPmsPropertyId("loading room shuffle history");
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (cursor) query.set("cursor", cursor);
+  return pmsOperationsClient.get<PmsRoomShuffleHistoryPage>(
+    `${propertyEndpoint(propertyId, "calendar-shuffles")}?${query}`,
+    pmsOperationsRequestOptions,
+  );
 }
 
 export async function getPmsMessagingUnreadCount(): Promise<{ unreadCount: number }> {
