@@ -9,6 +9,7 @@ import type { QueryResult, QueryResultRow } from "pg";
 
 import type { ManualBookingPreviewResult } from "../routes/pmsManualBookingPreview.js";
 import type { PmsManualBookingPreviewRoutesOptions } from "../routes/pmsManualBookingPreviewCalculation.js";
+import type { PmsRoomAssignmentOptimizationTriggerPort } from "./pmsRoomAssignmentOptimizationTriggers.js";
 
 export type PmsManualBookingTransaction = {
   query<Row extends QueryResultRow = QueryResultRow>(
@@ -139,6 +140,7 @@ export type PmsManualBookingTransactionDependencies = Readonly<{
   attribution: PmsManualBookingAttributionOwnerPort;
   financeSettlement: FinanceManualBookingSettlementPort;
   pricing: PmsManualBookingTransactionalPricingPort;
+  roomAssignmentOptimization: PmsRoomAssignmentOptimizationTriggerPort;
 }>;
 
 export type PmsManualBookingAcceptedWrite = Readonly<{
