@@ -1259,7 +1259,7 @@ type TargetCheckoutAddonPurchase = AddonEconomicTerms & {
 type TargetCheckoutAddonExpansion = {
   quantity: number;
   serviceDates: string[];
-  error: "unsupported" | "guest_quantity" | "night_quantity" | null;
+  error: "unsupported" | "guest_quantity" | "night_quantity" | "night_selection_mismatch" | null;
 };
 
 type TargetCheckoutQuoteSnapshot = {
@@ -5861,6 +5861,20 @@ function expandTargetCheckoutAddonPurchase(
     : perNight
       ? 1
       : (requestedQuantity ?? 1);
+  if (perGuest && quantity > adults) {
+    return { quantity, serviceDates: [], error: "guest_quantity" };
+  }
+  if (pricingModel === "per_night" && (requestedQuantity ?? 0) > stayDates.length) {
+    return { quantity, serviceDates: [], error: "night_quantity" };
+  }
+  if (
+    pricingModel === "per_night" &&
+    requestedQuantity !== undefined &&
+    requestedDates.length > 0 &&
+    requestedQuantity !== requestedDates.length
+  ) {
+    return { quantity, serviceDates: [], error: "night_selection_mismatch" };
+  }
   const serviceDates = perNight
     ? requestedDates.length > 0
       ? requestedDates
@@ -5868,14 +5882,11 @@ function expandTargetCheckoutAddonPurchase(
         ? stayDates.slice(0, requestedQuantity)
         : stayDates
     : [stayDates[0] ?? ""];
-  const error =
-    perGuest && quantity > adults
-      ? "guest_quantity"
-      : serviceDates.length === 0 ||
-          (pricingModel === "per_night" && (requestedQuantity ?? 0) > stayDates.length)
-        ? "night_quantity"
-        : null;
-  return { quantity, serviceDates, error };
+  return {
+    quantity,
+    serviceDates,
+    error: serviceDates.length === 0 ? "night_quantity" : null,
+  };
 }
 
 function assertTargetCheckoutAddonEvidence(
@@ -6023,6 +6034,9 @@ async function resolveTargetCheckoutAddonPurchases(
     }
     if (expansion.error === "night_quantity") {
       throw createHttpError(400, "Selected add-on nights exceed the stay.");
+    }
+    if (expansion.error === "night_selection_mismatch") {
+      throw createHttpError(400, "Selected add-on quantity must match selected add-on dates.");
     }
     const addonSnapshot = {
       addonDefinitionId: definition.addonDefinitionId,
