@@ -1256,6 +1256,12 @@ type TargetCheckoutAddonPurchase = AddonEconomicTerms & {
   currency: string;
 };
 
+type TargetCheckoutAddonExpansion = {
+  quantity: number;
+  serviceDates: string[];
+  error: "unsupported" | "guest_quantity" | "night_quantity" | null;
+};
+
 type TargetCheckoutQuoteSnapshot = {
   quoteSessionId: string;
   publicQuoteReference: string;
@@ -3049,24 +3055,31 @@ async function loadTargetCheckoutQuoteSnapshot(
   const roomCount = Number(row.roomCount);
   const selectedOfferSnapshot = objectValue(row.selectedOfferSnapshot);
   const totals = objectValue(row.totals);
-  let addonRequest: TargetCheckoutAddonRequest;
-  let addonPurchases: TargetCheckoutAddonPurchase[];
-  try {
-    addonRequest =
-      selectedOfferSnapshot["addonRequest"] === undefined
-        ? { addonIds: [], addonQuantities: {}, addonDates: {} }
-        : parseTargetCheckoutAddonRequest(recordBody(selectedOfferSnapshot["addonRequest"]));
-    const addonPurchasesValue = selectedOfferSnapshot["addonPurchases"] ?? [];
-    if (!Array.isArray(addonPurchasesValue) || !addonPurchasesValue.every(isTargetAddonPurchase)) {
-      throw new Error("invalid add-on purchase");
+  let addonRequest: TargetCheckoutAddonRequest = {
+    addonIds: [],
+    addonQuantities: {},
+    addonDates: {},
+  };
+  if (selectedOfferSnapshot["addonRequest"] !== undefined) {
+    try {
+      addonRequest = parseTargetCheckoutAddonRequest(
+        recordBody(selectedOfferSnapshot["addonRequest"]),
+      );
+    } catch (error) {
+      if (!isHttpError(error) || error.statusCode !== 400) throw error;
+      throw targetCheckoutAddonEvidenceError();
     }
-    addonPurchases = addonPurchasesValue;
-    const definitionIds = new Set(addonPurchases.map(({ addonDefinitionId }) => addonDefinitionId));
-    // prettier-ignore
-    if (definitionIds.size !== addonRequest.addonIds.length || new Set(addonPurchases.map(({ addonDefinitionId, serviceDate }) => `${addonDefinitionId}:${serviceDate}`)).size !== addonPurchases.length || addonRequest.addonIds.some((id) => { const rows = addonPurchases.filter((purchase) => purchase.addonDefinitionId === id || purchase.addonSnapshot["sourceAddonId"] === id); const model = String(rows[0]?.addonSnapshot["pricingModel"]); const requestedQuantity = addonRequest.addonQuantities[id]; const stayDates = dateRange(checkIn, checkOut); const requestedDates = addonRequest.addonDates[id] ?? []; const expectedDates = model.includes("night") ? (requestedDates.length > 0 ? requestedDates : model === "per_night" && requestedQuantity ? stayDates.slice(0, requestedQuantity) : stayDates) : [checkIn]; const expectedQuantity = model.includes("guest") ? (requestedQuantity ?? adults) : model === "per_stay" ? (requestedQuantity ?? 1) : 1; return (model.includes("guest") && expectedQuantity > adults) || (model === "per_night" && (requestedQuantity ?? 0) > stayDates.length) || expectedDates.some((date) => date < checkIn || date >= checkOut) || rows.length !== expectedDates.length || rows.some((row) => row.quantity !== expectedQuantity || !expectedDates.includes(row.serviceDate) || stableJson([row.addonSnapshot, row.ownershipKind, row.partnerCommissionRate]) !== stableJson([rows[0]!.addonSnapshot, rows[0]!.ownershipKind, rows[0]!.partnerCommissionRate])); })) throw new Error("missing add-on");
-  } catch {
-    throw createHttpError(409, "Checkout quote add-on evidence is unavailable. Please refresh.");
   }
+  const addonPurchasesValue = selectedOfferSnapshot["addonPurchases"] ?? [];
+  if (!Array.isArray(addonPurchasesValue) || !addonPurchasesValue.every(isTargetAddonPurchase)) {
+    throw targetCheckoutAddonEvidenceError();
+  }
+  const addonPurchases = addonPurchasesValue;
+  assertTargetCheckoutAddonEvidence(addonRequest, addonPurchases, {
+    checkIn,
+    checkOut,
+    adults,
+  });
   const totalAmount = moneyString(totals["totalAmount"]);
   const balanceAmount = moneyString(totals["balanceAmount"]) ?? totalAmount;
   if (!totalAmount || !balanceAmount) {
@@ -5827,6 +5840,96 @@ function parseTargetCheckoutAddonRequest(
   return { addonIds, addonQuantities, addonDates };
 }
 
+function targetCheckoutAddonEvidenceError(): HttpError {
+  return createHttpError(409, "Checkout quote add-on evidence is unavailable. Please refresh.");
+}
+
+function expandTargetCheckoutAddonPurchase(
+  pricingModel: string,
+  requestedQuantity: number | undefined,
+  requestedDates: string[],
+  stayDates: string[],
+  adults: number,
+): TargetCheckoutAddonExpansion {
+  const perGuest = pricingModel === "per_guest" || pricingModel === "per_guest_night";
+  const perNight = pricingModel === "per_night" || pricingModel === "per_guest_night";
+  if (!perGuest && !perNight && pricingModel !== "per_stay") {
+    return { quantity: 0, serviceDates: [], error: "unsupported" };
+  }
+  const quantity = perGuest
+    ? (requestedQuantity ?? adults)
+    : perNight
+      ? 1
+      : (requestedQuantity ?? 1);
+  const serviceDates = perNight
+    ? requestedDates.length > 0
+      ? requestedDates
+      : pricingModel === "per_night" && requestedQuantity
+        ? stayDates.slice(0, requestedQuantity)
+        : stayDates
+    : [stayDates[0] ?? ""];
+  const error =
+    perGuest && quantity > adults
+      ? "guest_quantity"
+      : serviceDates.length === 0 ||
+          (pricingModel === "per_night" && (requestedQuantity ?? 0) > stayDates.length)
+        ? "night_quantity"
+        : null;
+  return { quantity, serviceDates, error };
+}
+
+function assertTargetCheckoutAddonEvidence(
+  request: TargetCheckoutAddonRequest,
+  purchases: TargetCheckoutAddonPurchase[],
+  stay: { checkIn: string; checkOut: string; adults: number },
+): void {
+  const definitionIds = new Set(purchases.map(({ addonDefinitionId }) => addonDefinitionId));
+  const selectionKeys = new Set(
+    purchases.map(({ addonDefinitionId, serviceDate }) => `${addonDefinitionId}:${serviceDate}`),
+  );
+  if (definitionIds.size !== request.addonIds.length || selectionKeys.size !== purchases.length) {
+    throw targetCheckoutAddonEvidenceError();
+  }
+  const stayDates = dateRange(stay.checkIn, stay.checkOut);
+  for (const addonId of request.addonIds) {
+    const rows = purchases.filter(
+      (purchase) =>
+        purchase.addonDefinitionId === addonId ||
+        purchase.addonSnapshot["sourceAddonId"] === addonId,
+    );
+    const first = rows[0];
+    const pricingModel = stringValue(first?.addonSnapshot["pricingModel"]);
+    if (!first || !pricingModel) throw targetCheckoutAddonEvidenceError();
+    const expansion = expandTargetCheckoutAddonPurchase(
+      pricingModel,
+      request.addonQuantities[addonId],
+      request.addonDates[addonId] ?? [],
+      stayDates,
+      stay.adults,
+    );
+    const economics = stableJson([
+      first.addonSnapshot,
+      first.ownershipKind,
+      first.partnerCommissionRate,
+    ]);
+    const hasOutOfStayDate = expansion.serviceDates.some((date) => !stayDates.includes(date));
+    const hasInconsistentRow = rows.some(
+      (row) =>
+        row.quantity !== expansion.quantity ||
+        !expansion.serviceDates.includes(row.serviceDate) ||
+        stableJson([row.addonSnapshot, row.ownershipKind, row.partnerCommissionRate]) !== economics,
+    );
+    if (
+      expansion.error !== null ||
+      hasOutOfStayDate ||
+      rows.length !== expansion.serviceDates.length ||
+      hasInconsistentRow
+    ) {
+      throw targetCheckoutAddonEvidenceError();
+    }
+  }
+}
+
 function isTargetAddonPurchase(value: unknown): value is TargetCheckoutAddonPurchase {
   const purchase = objectValue(value);
   const snapshot = objectValue(purchase["addonSnapshot"]);
@@ -5905,30 +6008,20 @@ async function resolveTargetCheckoutAddonPurchases(
     if (requestedDates.some((date) => !stayDateSet.has(date))) {
       throw createHttpError(400, "Selected add-on dates must be within the stay.");
     }
-    const perGuest = ["per_guest", "per_guest_night"].includes(definition.pricingModel);
-    const perNight = ["per_night", "per_guest_night"].includes(definition.pricingModel);
-    if (!perGuest && !perNight && definition.pricingModel !== "per_stay") {
+    const expansion = expandTargetCheckoutAddonPurchase(
+      String(definition.pricingModel),
+      requestedQuantity,
+      requestedDates,
+      stayDates,
+      input.adults,
+    );
+    if (expansion.error === "unsupported") {
       throw createHttpError(409, "Selected add-on pricing model is not supported.");
     }
-    const quantity = perGuest
-      ? (requestedQuantity ?? input.adults)
-      : perNight
-        ? 1
-        : (requestedQuantity ?? 1);
-    if (perGuest && quantity > input.adults) {
+    if (expansion.error === "guest_quantity") {
       throw createHttpError(400, "Selected add-on quantity exceeds the adult guest count.");
     }
-    const serviceDates = perNight
-      ? requestedDates.length > 0
-        ? requestedDates
-        : definition.pricingModel === "per_night" && requestedQuantity
-          ? stayDates.slice(0, requestedQuantity)
-          : stayDates
-      : [input.checkIn];
-    if (
-      serviceDates.length === 0 ||
-      (definition.pricingModel === "per_night" && (requestedQuantity ?? 0) > stayDates.length)
-    ) {
+    if (expansion.error === "night_quantity") {
       throw createHttpError(400, "Selected add-on nights exceed the stay.");
     }
     const addonSnapshot = {
@@ -5941,13 +6034,15 @@ async function resolveTargetCheckoutAddonPurchases(
       unitAmount: definition.unitAmount,
       currency: definition.currency,
     };
-    for (const serviceDate of serviceDates) {
+    for (const serviceDate of expansion.serviceDates) {
       purchases.push({
         addonDefinitionId: definition.addonDefinitionId,
         addonSnapshot,
-        quantity,
+        quantity: expansion.quantity,
         serviceDate,
-        totalAmount: moneyFromCents(moneyToCents(definition.unitAmount) * BigInt(quantity)),
+        totalAmount: moneyFromCents(
+          moneyToCents(definition.unitAmount) * BigInt(expansion.quantity),
+        ),
         currency: definition.currency,
         ...economicTerms,
       });

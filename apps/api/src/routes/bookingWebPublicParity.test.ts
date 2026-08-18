@@ -1612,6 +1612,7 @@ describe("Booking Web public bootstrap parity", () => {
       phoneRequired: boolean,
       addonTotal = "20.50",
       quotedAcceptanceMode: "instant" | "request" = "request",
+      addonUnitAmount = "10.25",
     ) => {
       const calls: string[] = [];
       let bookingWriteValues: readonly unknown[] | undefined;
@@ -1663,7 +1664,7 @@ describe("Booking Web public bootstrap parity", () => {
                       {
                         addonDefinitionId: "d8000000-0000-0000-0000-000000000682",
                         // prettier-ignore
-                        addonSnapshot: { addonDefinitionId: "d8000000-0000-0000-0000-000000000682", sourceAddonId: "spa_partner", name: "Partner spa", pricingModel: "per_guest", unitAmount: "10.25", currency: "EUR" },
+                        addonSnapshot: { addonDefinitionId: "d8000000-0000-0000-0000-000000000682", sourceAddonId: "spa_partner", name: "Partner spa", pricingModel: "per_guest", unitAmount: addonUnitAmount, currency: "EUR" },
                         quantity: 2,
                         serviceDate: "2026-09-12",
                         totalAmount: "20.50",
@@ -1829,6 +1830,13 @@ describe("Booking Web public bootstrap parity", () => {
     await expect(
       createAdapter(false, "19.00").adapter.createBooking("hotel-alpenrose", request, context),
     ).rejects.toThrow("add-on evidence");
+    await expect(
+      createAdapter(false, "20.50", "request", "invalid").adapter.createBooking(
+        "hotel-alpenrose",
+        request,
+        context,
+      ),
+    ).rejects.toThrow("Checkout pricing evidence is invalid");
 
     const optionalPhone = createAdapter(false);
     await expect(
