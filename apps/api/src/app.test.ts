@@ -96,6 +96,8 @@ import {
   type PmsOperationsReadPool,
 } from "./domains/pmsOperationsReadModel.js";
 import type { BookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
+import type { PmsRoomAssignmentSettingsPort } from "./domains/pmsRoomAssignmentSettings.js";
+import type { PmsRoomAssignmentOptimizationHistoryPort } from "./domains/pmsRoomAssignmentOptimizationHistory.js";
 import {
   createCompatibilityPmsBookingReservationsReadRepository,
   type BookingReservationsReadPool,
@@ -2470,6 +2472,7 @@ const publicHotelQuoteRepository: PublicHotelQuoteRepository = {
 function identityRepositoryWithResources(
   hotelId: string | null = "booking_hotel_alpenrose",
   linkedPmsPropertyId: string | null = pmsPropertyId,
+  linkedPmsRelationship: "owner" | "operator" | "front_desk" = "operator",
 ): IdentityRepository {
   return {
     ...identityRepository,
@@ -2489,7 +2492,7 @@ function identityRepositoryWithResources(
           product: "pms",
           resourceType: "pms_property",
           resourceId: linkedPmsPropertyId,
-          relationship: "operator",
+          relationship: linkedPmsRelationship,
           status: "active",
         });
       }
@@ -2516,6 +2519,8 @@ function buildAuthenticatedApp(
     pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
     pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
     bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
+    pmsRoomAssignmentSettings?: PmsRoomAssignmentSettingsPort;
+    pmsRoomAssignmentHistory?: PmsRoomAssignmentOptimizationHistoryPort;
     bookingGuestPiiPort?: BookingGuestPiiPort;
     pmsOperationsAllowedOrigins?: string[];
     propertyPlanReadRepository?: PropertyPlanReadRepository;
@@ -2523,6 +2528,7 @@ function buildAuthenticatedApp(
     pmsFinanceCompatibilityRepository?: FinancePropertyReadRepository;
     browserAllowedOrigins?: string[];
     linkedPmsPropertyId?: string | null;
+    linkedPmsRelationship?: "owner" | "operator" | "front_desk";
   } = {},
 ): ReturnType<typeof buildApp> {
   return buildApp({
@@ -2534,6 +2540,8 @@ function buildAuthenticatedApp(
     pmsCheckoutChargeMarkPaidFreezeEnabled: options.pmsCheckoutChargeMarkPaidFreezeEnabled,
     pmsOperationsCommandRepository: options.pmsOperationsCommandRepository,
     bookingAcceptanceSettings: options.bookingAcceptanceSettings,
+    pmsRoomAssignmentSettings: options.pmsRoomAssignmentSettings,
+    pmsRoomAssignmentHistory: options.pmsRoomAssignmentHistory,
     bookingGuestPiiPort: options.bookingGuestPiiPort,
     pmsOperationsAllowedOrigins: options.pmsOperationsAllowedOrigins,
     propertyPlanReadRepository: options.propertyPlanReadRepository,
@@ -2552,6 +2560,7 @@ function buildAuthenticatedApp(
       repository: identityRepositoryWithResources(
         options.linkedHotelId,
         options.linkedPmsPropertyId,
+        options.linkedPmsRelationship,
       ),
       rolePermissionRepository: {
         async findPermissionsForRole() {
@@ -10339,6 +10348,106 @@ describe("vayada-api", () => {
       category: "authorization",
       message: "Missing required PMS operations permission.",
     });
+  });
+
+  it("manages room-packing settings and paginates its audit log", async () => {
+    let enabled = true;
+    const historyPages: unknown[] = [];
+    const nextCursor = {
+      occurredAt: "2026-08-18T10:00:00.123456Z",
+      shuffleId: "10000000-0000-4000-8000-000000000001",
+    };
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsOperationsAllowedOrigins: ["https://pms.localhost"],
+      pmsRoomAssignmentSettings: {
+        async find(propertyId) {
+          return { propertyId, autoRearrangeEnabled: enabled, updatedAt: null };
+        },
+        async update(propertyId, value) {
+          enabled = value;
+          return {
+            propertyId,
+            autoRearrangeEnabled: enabled,
+            updatedAt: "2026-08-18T10:01:00.000Z",
+          };
+        },
+      },
+      pmsRoomAssignmentHistory: {
+        async list(_propertyId, page) {
+          historyPages.push(page);
+          return {
+            items: [],
+            nextCursor: historyPages.length === 1 ? nextCursor : null,
+          };
+        },
+      },
+    });
+    const headers = { authorization: "Bearer valid-token", origin: "https://pms.localhost" };
+
+    const initial = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-settings`,
+      headers,
+    });
+    const updated = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-settings`,
+      headers,
+      payload: { autoRearrangeEnabled: false },
+    });
+    const firstPage = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-shuffles?limit=25`,
+      headers,
+    });
+    const opaqueCursor = (firstPage.body as { nextCursor: string }).nextCursor;
+    const secondPage = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-shuffles?limit=25&cursor=${opaqueCursor}`,
+      headers,
+    });
+
+    expect(initial.body).toMatchObject({ autoRearrangeEnabled: true, updatedAt: null });
+    expect(updated.body).toMatchObject({ autoRearrangeEnabled: false });
+    expect(opaqueCursor).toEqual(expect.any(String));
+    expect((secondPage.body as { nextCursor: null }).nextCursor).toBeNull();
+    expect(historyPages).toEqual([{ limit: 25 }, { limit: 25, before: nextCursor }]);
+
+    const invalid = await app.inject({
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-shuffles?cursor=invalid`,
+      headers,
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json()).toMatchObject({ code: "invalid_query" });
+    expect(historyPages).toHaveLength(2);
+  });
+
+  it("reserves room-packing settings and history for owners and operators", async () => {
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      linkedPmsRelationship: "front_desk",
+      pmsRoomAssignmentSettings: {
+        async find(propertyId) {
+          return { propertyId, autoRearrangeEnabled: true, updatedAt: null };
+        },
+        async update() {
+          throw new Error("unreachable");
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-settings`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: "missing_resource_access" });
   });
 
   it("returns explicit unavailable errors for retired PMS Web placeholder facades", async () => {
