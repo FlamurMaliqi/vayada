@@ -24,6 +24,7 @@ import {
 import type { PmsManualBookingCreateInput } from "@/services/api/pmsManualBookingClient";
 import BlockModal from "@/components/calendar/BlockModal";
 import BlockDetailModal from "@/components/calendar/BlockDetailModal";
+import RoomShuffleNotice from "@/components/calendar/RoomShuffleNotice";
 import TargetManualBookingModal from "@/components/calendar/TargetManualBookingModal";
 import BookingDetailModal from "@/components/calendar/BookingDetailModal";
 import MiniDatePicker from "@/components/calendar/MiniDatePicker";
@@ -80,6 +81,10 @@ export default function CalendarPage() {
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [showNewBookingModal, setShowNewBookingModal] = useState(false);
   const [bookingNotice, setBookingNotice] = useState("");
+  const [roomShuffleNotice, setRoomShuffleNotice] = useState<{
+    eventId: string;
+    bookingCount: number;
+  } | null>(null);
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
   const [selectedBlock, setSelectedBlock] = useState<CalendarBlock | null>(null);
   // Mobile-only: the date range selected in MobileCalendar before opening
@@ -373,6 +378,12 @@ export default function CalendarPage() {
         ? "Booking already existed; calendar refreshed."
         : "Booking created.",
     );
+    if (result.rearrangedBookingCount > 0) {
+      setRoomShuffleNotice({
+        eventId: result.commandId,
+        bookingCount: result.rearrangedBookingCount,
+      });
+    }
     setShowNewBookingModal(false);
     setPrefill(null);
     setMobilePrefill(null);
@@ -537,6 +548,7 @@ export default function CalendarPage() {
       <p className="sr-only" aria-live="polite">
         {bookingNotice}
       </p>
+      {roomShuffleNotice && <RoomShuffleNotice {...roomShuffleNotice} />}
       {/* Mobile Calendar */}
       <div className="md:hidden flex-1 flex flex-col">
         {loading && !data ? (
