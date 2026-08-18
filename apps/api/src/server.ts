@@ -69,6 +69,7 @@ import {
 } from "./domains/pmsPricingCurrencyCapabilities.js";
 import { createPgPmsManualBookingCommandRepository } from "./domains/pmsManualBookingCommandRepository.js";
 import { createPmsManualBookingProductionCommandConfig } from "./domains/pmsManualBookingProductionRuntime.js";
+import { createPmsRoomAssignmentOptimizationTriggerPort } from "./domains/pmsRoomAssignmentOptimizationTriggers.js";
 import { createPgPmsRecurringPricingReadModel } from "./domains/pmsRecurringPricingReadModel.js";
 import { createPgPmsRecurringPricingCommandRepository } from "./domains/pmsRecurringPricingCommandRepository.js";
 import { createPgPmsMandatoryChargeConfirmationReadModel } from "./domains/pmsMandatoryChargeConfirmationReadModel.js";
@@ -369,6 +370,7 @@ const pmsOperationsCommandRepository = pmsOperationsRepository
       connectionString: targetDatabaseUrl,
       readRepository: pmsOperationsRepository,
       stripePaymentProvider: stripeBookingPaymentProvider,
+      roomAssignmentOptimization: createPmsRoomAssignmentOptimizationTriggerPort(),
     })
   : undefined;
 

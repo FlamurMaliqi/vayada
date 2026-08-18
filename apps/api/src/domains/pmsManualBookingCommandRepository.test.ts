@@ -199,6 +199,7 @@ it("rolls back the booking transaction when create optimization fails", async ()
         afterCreate: vi.fn(async () => {
           throw new Error("optimizer failed");
         }),
+        afterChange: vi.fn(),
       },
     },
   });

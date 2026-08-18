@@ -45,6 +45,8 @@ const acceptedAt = new Date("2026-08-12T22:30:00.000Z");
 
 describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transaction", () => {
   const admin = new pg.Pool({ connectionString: TEST_DATABASE_URL ?? "postgresql://disabled" });
+  const optimizationCalls: Array<{ reason: string; roomTypeIds: readonly string[] }> = [];
+  let optimizationFailure = false;
   const repository = createPgPmsManualBookingCommandRepository({
     connectionString: TEST_DATABASE_URL ?? "postgresql://disabled",
     now: () => acceptedAt,
@@ -58,6 +60,14 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
         return { guestBookingId: requestedGuestBookingId } as never;
       },
     } as unknown as PmsOperationsReadRepository,
+    roomAssignmentOptimization: {
+      afterCreate: async () => [],
+      afterChange: async ({ reason, roomTypeIds }) => {
+        optimizationCalls.push({ reason, roomTypeIds });
+        if (optimizationFailure) throw new Error("forced optimization failure");
+        return [];
+      },
+    },
   });
   const readRepository = createTargetPmsOperationsReadRepository({
     connectionString: TEST_DATABASE_URL ?? "postgresql://disabled",
@@ -111,7 +121,11 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     );
   });
 
-  beforeEach(async () => cleanup(false));
+  beforeEach(async () => {
+    optimizationCalls.length = 0;
+    optimizationFailure = false;
+    await cleanup(false);
+  });
 
   afterAll(async () => {
     await operations.close?.();
@@ -426,6 +440,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       ok: true,
       commandMeta: { sideEffects: ["calendar_refresh", "ari_changed", "audit_event"] },
     });
+    expect(optimizationCalls).toEqual([{ reason: "modify", roomTypeIds: [roomTypeId] }]);
     await expect(operations.correctManualBookingStays!(correction)).resolves.toMatchObject({
       ok: true,
       replayed: true,
@@ -936,6 +951,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       ok: true,
       commandMeta: { sideEffects: ["calendar_refresh", "ari_changed", "audit_event"] },
     });
+    expect(optimizationCalls).toEqual([{ reason: "cancel", roomTypeIds: [roomTypeId] }]);
     await expect(operations.cancelManualBooking!(cancellation)).resolves.toMatchObject({
       ok: true,
       replayed: true,
@@ -1042,6 +1058,36 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       events: 0,
       outbox: 0,
     });
+  });
+
+  it("rolls cancellation back when room optimization fails", async () => {
+    const created = await repository.createManualBooking(
+      command("cancel-optimization-rollback", "unpaid", "cash", "2026-08-20", false),
+    );
+    optimizationFailure = true;
+    await expect(
+      operations.cancelManualBooking!({
+        propertyId,
+        guestBookingId: created.guestBookingId,
+        commandId: "cancel-optimization-rollback-command",
+        idempotencyKey: "cancel-optimization-rollback-key",
+        accountingDate: null,
+        retainedCharges: [],
+        audit: {
+          actor: { kind: "user", userId: actorId, organizationId },
+          requestId: "cancel-optimization-rollback-request",
+          reason: "Cancel manual booking",
+          requestedAt: acceptedAt.toISOString(),
+        },
+      }),
+    ).rejects.toThrow("forced optimization failure");
+    const state = await admin.query(
+      `SELECT booking.lifecycle_status AS status,assignment.assignment_status AS assignment
+       FROM booking.guest_bookings booking JOIN pms.operational_booking_assignments assignment
+         ON assignment.guest_booking_id=booking.id WHERE booking.id=$1::uuid`,
+      [created.guestBookingId],
+    );
+    expect(state.rows).toEqual([{ status: "confirmed", assignment: "assigned" }]);
   });
 
   it("atomically records an exact partial manual refund and replays it", async () => {
