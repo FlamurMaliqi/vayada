@@ -24,7 +24,6 @@ const nextApiLegacyFreeEnv: NodeJS.ProcessEnv = {
   API_RUNTIME: "next",
   TARGET_DATABASE_URL: "postgresql://target-db",
   PUBLIC_HOTEL_PROFILE_SOURCE: "active_publication",
-  PUBLIC_BOOKABILITY_SOURCE: "target",
   PMS_OPERATIONS_SOURCE: "target",
   FINANCE_SOURCE: "target",
   BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
@@ -117,7 +116,6 @@ describe("next-api legacy-free runtime check", () => {
     expect(config).toMatchObject({
       apiRuntime: "next",
       publicHotelProfileSource: "active_publication",
-      publicBookabilitySource: "target",
       pmsOperationsSource: "target",
       financeSource: "target",
       bookingCheckoutCommandSource: "target",

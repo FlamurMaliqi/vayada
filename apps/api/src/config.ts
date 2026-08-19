@@ -44,7 +44,6 @@ export type ApiAuthSessionConfig = {
 };
 
 export type PublicHotelProfileSource = "target" | "active_publication";
-export type PublicBookabilitySource = "legacy" | "target";
 export type MarketplaceAdminSource = "disabled" | "target";
 export type BookingCheckoutCommandSource = "legacy_proxy" | "target";
 export type PmsOperationsSource = "disabled" | "target";
@@ -139,7 +138,6 @@ export type ApiConfig = {
   authSession?: ApiAuthSessionConfig;
   targetDatabaseUrl?: string;
   publicHotelProfileSource: PublicHotelProfileSource;
-  publicBookabilitySource: PublicBookabilitySource;
   marketplaceAdminSource: MarketplaceAdminSource;
   marketplaceAdminLegacySuperadminFallbackEnabled: boolean;
   pmsOperationsSource: PmsOperationsSource;
@@ -640,12 +638,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     ["target", "active_publication"],
     "target",
   );
-  const publicBookabilitySource = readSourceEnv(
-    env,
-    "PUBLIC_BOOKABILITY_SOURCE",
-    ["legacy", "target"],
-    "legacy",
-  );
   const marketplaceAdminSource = readSourceEnv(
     env,
     "MARKETPLACE_ADMIN_SOURCE",
@@ -681,7 +673,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   assertNextApiRuntimeConfig(env, {
     apiRuntime,
     publicHotelProfileSource,
-    publicBookabilitySource,
     pmsOperationsSource,
     financeSource,
     bookingCheckoutCommandSource,
@@ -697,9 +688,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   }
   if (financeSource === "target" && !targetDatabaseUrl) {
     throw new Error("FINANCE_SOURCE=target requires TARGET_DATABASE_URL");
-  }
-  if (publicBookabilitySource === "target" && !targetDatabaseUrl) {
-    throw new Error("PUBLIC_BOOKABILITY_SOURCE=target requires TARGET_DATABASE_URL");
   }
   if (bookingWebEventSink === "target" && !auth) {
     throw new Error("BOOKING_WEB_EVENT_SINK=target requires complete auth config");
@@ -756,7 +744,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     authSession,
     targetDatabaseUrl,
     publicHotelProfileSource,
-    publicBookabilitySource,
     marketplaceAdminSource,
     marketplaceAdminLegacySuperadminFallbackEnabled: readBooleanEnv(
       env,
@@ -835,7 +822,6 @@ function assertNextApiRuntimeConfig(
     ApiConfig,
     | "apiRuntime"
     | "publicHotelProfileSource"
-    | "publicBookabilitySource"
     | "pmsOperationsSource"
     | "financeSource"
     | "bookingCheckoutCommandSource"
@@ -849,7 +835,6 @@ function assertNextApiRuntimeConfig(
       value: config.publicHotelProfileSource,
       allowedValues: ["target", "active_publication"],
     },
-    { key: "PUBLIC_BOOKABILITY_SOURCE", value: config.publicBookabilitySource },
     {
       key: "PMS_OPERATIONS_SOURCE",
       value: config.pmsOperationsSource,

@@ -233,10 +233,9 @@ Compatibility rules:
    payment-settings route is retired.
 6. `NEXT_PUBLIC_PMS_URL` in Booking Web is legacy configuration. Target Booking
    Web should need only the public Booking/distribution API origin.
-7. `PMS_PUBLIC_API_URL` in the TypeScript API quote adapter is a transitional
-   Distribution compatibility input, not a target Booking Web dependency. It
-   should disappear once Distribution has canonical room offer and quote read
-   models.
+7. TypeScript quote and offer reads use the target Distribution projections.
+   `PMS_PUBLIC_API_URL` is rejected as stale Python integration configuration
+   and is not a target Booking Web dependency.
 8. Booking lifecycle compatibility must preserve current guest-visible behavior
    for card soft holds, manual payments, request-to-book states, cancellation
    previews, and change request previews until parity fixtures cover the target

@@ -35,7 +35,6 @@ import type { QueryResult, QueryResultRow } from "pg";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  createCompatibilityPublicHotelQuoteRepository,
   createTargetPublicHotelQuoteRepository,
   serializePublicHotelQuoteProjection,
   toUnavailablePublicHotelQuoteProjection,
@@ -3534,76 +3533,6 @@ describe("vayada-api", () => {
     expect(calendar.json()).toMatchObject({
       calendar: { unavailableDates: ["2026-09-14"] },
       freshness: { status: "fresh" },
-    });
-  });
-
-  it("returns unavailable public AI quotes when no target quote read model is configured", async () => {
-    const repository = createCompatibilityPublicHotelQuoteRepository({
-      profileRepository: publicHotelProfileRepository,
-      now: () => new Date("2026-06-06T11:00:00.000Z"),
-    });
-
-    const quote = await repository.findQuoteBySlug("hotel-alpenrose", {
-      check_in: "2026-09-12",
-      check_out: "2026-09-15",
-      adults: "2",
-      children: "0",
-      rooms: "1",
-      currency: "EUR",
-      locale: "en",
-    });
-
-    expect(quote).toMatchObject({
-      status: "unavailable",
-      unavailableReasons: [
-        { code: "unavailable_data", detail: "Public quote read model is not ready yet." },
-      ],
-    });
-    expect(quote!.quote).toBeUndefined();
-  });
-
-  it("returns quote request validation reasons before target quote data is available", async () => {
-    const repository = createCompatibilityPublicHotelQuoteRepository({
-      profileRepository: publicHotelProfileRepository,
-      now: () => new Date("2026-06-06T11:00:00.000Z"),
-    });
-
-    const quote = await repository.findQuoteBySlug("hotel-alpenrose", {
-      check_in: "2026-09-12",
-      check_out: "2026-09-15",
-      adults: "20",
-      children: "0",
-      rooms: "1",
-      currency: "EUR",
-      locale: "en",
-    });
-
-    expect(quote).toMatchObject({
-      status: "unavailable",
-      unavailableReasons: [{ code: "unsupported_occupancy" }],
-    });
-    expect(quote!.quote).toBeUndefined();
-  });
-
-  it("does not return bookable public AI quote totals for promo codes before promo pricing is wired", async () => {
-    const repository = createCompatibilityPublicHotelQuoteRepository({
-      profileRepository: publicHotelProfileRepository,
-      now: () => new Date("2026-06-06T11:00:00.000Z"),
-    });
-
-    const quote = await repository.findQuoteBySlug("hotel-alpenrose", {
-      check_in: "2026-09-12",
-      check_out: "2026-09-15",
-      adults: "2",
-      currency: "EUR",
-      locale: "en",
-      promo_code: "SUMMER10",
-    });
-
-    expect(quote).toMatchObject({
-      status: "unavailable",
-      request: { promoCode: "SUMMER10" },
-      unavailableReasons: [{ code: "promo_not_applicable" }],
     });
   });
 

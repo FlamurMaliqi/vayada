@@ -12,7 +12,8 @@ This complements:
 > **Retirement update:** The legacy public-profile repository and the public
 > profile and Booking settings source selectors are removed from `apps/api`.
 > The legacy Booking settings repository and `BOOKING_DATABASE_URL` are also
-> removed.
+> removed. Public bookability now directly composes the target quote/calendar
+> repositories with no compatibility selector.
 > Historical entries below describe the earlier VAY-880 state.
 
 ## Scope

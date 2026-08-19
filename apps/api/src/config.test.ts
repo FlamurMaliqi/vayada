@@ -327,7 +327,6 @@ describe("api config", () => {
       API_RUNTIME: "next",
       TARGET_DATABASE_URL: "postgresql://target-db",
       PUBLIC_HOTEL_PROFILE_SOURCE: "target",
-      PUBLIC_BOOKABILITY_SOURCE: "target",
       PMS_OPERATIONS_SOURCE: "target",
       FINANCE_SOURCE: "target",
       BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
@@ -336,7 +335,6 @@ describe("api config", () => {
     expect(config).toMatchObject({
       apiRuntime: "next",
       publicHotelProfileSource: "target",
-      publicBookabilitySource: "target",
       pmsOperationsSource: "target",
       financeSource: "target",
       bookingCheckoutCommandSource: "target",
@@ -348,7 +346,6 @@ describe("api config", () => {
       API_RUNTIME: "next",
       TARGET_DATABASE_URL: "postgresql://target-db",
       PUBLIC_HOTEL_PROFILE_SOURCE: "target",
-      PUBLIC_BOOKABILITY_SOURCE: "target",
       PMS_OPERATIONS_SOURCE: "disabled",
       FINANCE_SOURCE: "target",
       BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
@@ -375,7 +372,9 @@ describe("api config", () => {
         API_RUNTIME: "next",
         TARGET_DATABASE_URL: "postgresql://target-db",
       }),
-    ).toThrow("API_RUNTIME=next requires target runtime sources: PUBLIC_BOOKABILITY_SOURCE=target");
+    ).toThrow(
+      "API_RUNTIME=next requires target runtime sources: PMS_OPERATIONS_SOURCE=target or explicit disabled, FINANCE_SOURCE=target, BOOKING_CHECKOUT_COMMAND_SOURCE=target",
+    );
   });
 
   it("defaults provider webhook intake modes to observe-only shadow intake", () => {
@@ -657,37 +656,6 @@ describe("api config", () => {
           "https://marketplace.localhost, https://admin.localhost,",
       }).marketplaceDiscoveryAllowedOrigins,
     ).toEqual(["https://marketplace.localhost", "https://admin.localhost"]);
-  });
-
-  it("defaults public bookability to the legacy source", () => {
-    expect(loadConfig({}).publicBookabilitySource).toBe("legacy");
-  });
-
-  it("loads target public bookability config", () => {
-    const config = loadConfig({
-      TARGET_DATABASE_URL: "postgresql://target-db",
-      PUBLIC_HOTEL_PROFILE_SOURCE: "target",
-      PUBLIC_BOOKABILITY_SOURCE: "target",
-    });
-
-    expect(config.targetDatabaseUrl).toBe("postgresql://target-db");
-    expect(config.publicBookabilitySource).toBe("target");
-  });
-
-  it("requires target database config for target public bookability", () => {
-    expect(() =>
-      loadConfig({
-        PUBLIC_BOOKABILITY_SOURCE: "target",
-      }),
-    ).toThrow("PUBLIC_BOOKABILITY_SOURCE=target requires TARGET_DATABASE_URL");
-  });
-
-  it("rejects unsupported public bookability source config", () => {
-    expect(() =>
-      loadConfig({
-        PUBLIC_BOOKABILITY_SOURCE: "preview",
-      }),
-    ).toThrow("PUBLIC_BOOKABILITY_SOURCE must be one of: legacy, target");
   });
 
   it("keeps Booking Web checkout commands on the legacy proxy source by default", () => {
