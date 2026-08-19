@@ -175,6 +175,8 @@ type PmsOperationalMutationSuccess = {
   sideEffects?: PmsOperationsCommandSideEffect[];
 };
 
+class PmsRoomScopeChangedError extends Error {}
+
 type BookingPaymentLifecycleRow = QueryResultRow & {
   guestBookingId: string;
   propertyId: string;
@@ -1553,6 +1555,7 @@ async function executeCheckOutCommand(
       return checkOutConflict("Check-out command idempotency key could not be reserved.");
     }
 
+    await lockOperationalCommandRoomScopes(client, command);
     const sources = await findAssignmentsForOperationalCommand(client, command);
     if (sources.length === 0) {
       await client.query("ROLLBACK");
@@ -1635,6 +1638,9 @@ async function executeCheckOutCommand(
     return checkOutResultForCommand(config, command, commandMeta, checkout, charges, false);
   } catch (error) {
     await rollbackQuietly(client);
+    if (error instanceof PmsRoomScopeChangedError) {
+      return checkOutVersionConflict("Reservation room scope changed. Retry check-out.");
+    }
     if (isPgUniqueViolation(error)) {
       return checkOutConflict("Check-out command conflicts with the current reservation state.");
     }
@@ -4221,6 +4227,17 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
       );
     }
 
+    if (
+      [
+        "status_command",
+        "checkin_command",
+        "no_show_command",
+        "manual_cancellation_command",
+        "manual_stay_correction_command",
+      ].includes(operation)
+    ) {
+      await lockOperationalCommandRoomScopes(client, command);
+    }
     const mutation = await mutate(client, command, acceptedAt);
     if (!mutation.ok) {
       await client.query("ROLLBACK");
@@ -4242,6 +4259,12 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
     await client.query("COMMIT");
   } catch (error) {
     await rollbackQuietly(client);
+    if (error instanceof PmsRoomScopeChangedError) {
+      return operationalConflict(
+        "version_conflict",
+        "Reservation room scope changed. Retry the command.",
+      );
+    }
     if (isPgUniqueViolation(error)) {
       return operationalConflict(
         "idempotency_conflict",
@@ -5724,8 +5747,13 @@ async function applyAssignmentCommandMutation(
   client: PmsOperationsCommandClient,
   command: PmsAssignmentCommand,
 ): Promise<{ ok: true } | Exclude<PmsAssignmentCommandResult, { ok: true }>> {
+  const roomTypeId = await findAssignmentRoomTypeForCommand(client, command);
+  if (!roomTypeId) return reservationNotFound(command.guestBookingId);
+  await lockRoomTypeRoomsForAssignment(client, command.propertyId, roomTypeId);
   const source = await findAssignmentForCommand(client, command);
-  if (!source) return reservationNotFound(command.guestBookingId);
+  if (!source || source.roomTypeId !== roomTypeId) {
+    return assignmentConflict("assignment_conflict", "Reservation assignment changed.");
+  }
 
   if (command.expectedVersion && !assignmentVersionMatches(source, command.expectedVersion)) {
     return assignmentConflict("version_conflict", "Reservation assignment version is stale.");
@@ -5761,7 +5789,6 @@ async function applyAssignmentCommandMutation(
     return assignmentConflict("room_unavailable", "Requested room is unavailable for this stay.");
   }
 
-  await lockRoomTypeRoomsForAssignment(client, command.propertyId, source.roomTypeId);
   const room = await findAvailableRoomForAssignment(client, command.propertyId, command.roomId);
   if (!room || room.roomTypeId !== source.roomTypeId) {
     return assignmentConflict("room_unavailable", "Requested room is unavailable for this stay.");
@@ -5810,7 +5837,6 @@ async function applySwapAssignmentCommand(
       "Target assignment room type is incompatible.",
     );
   }
-  await lockRoomTypeRoomsForAssignment(client, command.propertyId, source.roomTypeId);
   if (
     !(await roomIdsHaveVerifiedOperationalIdentity(
       client,
@@ -5862,6 +5888,27 @@ async function applySwapAssignmentCommand(
     ],
   );
   return { ok: true };
+}
+
+async function findAssignmentRoomTypeForCommand(
+  client: PmsOperationsCommandClient,
+  command: PmsAssignmentCommand,
+): Promise<string | null> {
+  const result = await client.query<{ roomTypeId: string }>(
+    `SELECT room_type_id::text AS "roomTypeId"
+     FROM pms.operational_booking_assignments
+     WHERE property_id = $1::uuid AND guest_booking_id = $2::uuid
+       AND (($3::uuid IS NOT NULL AND id = $3::uuid)
+         OR ($3::uuid IS NULL AND position = COALESCE($4::integer, 1)))
+     LIMIT 1`,
+    [
+      command.propertyId,
+      command.guestBookingId,
+      command.assignmentId ?? null,
+      command.position ?? null,
+    ],
+  );
+  return result.rows[0]?.roomTypeId ?? null;
 }
 
 async function findAssignmentForCommand(
@@ -5939,6 +5986,61 @@ async function findAssignmentsForOperationalCommand(
     [command.propertyId, command.guestBookingId, assignmentId ?? null],
   );
   return result.rows;
+}
+
+async function lockOperationalCommandRoomScopes(
+  client: PmsOperationsCommandClient,
+  command: PmsOperationalCommand | PmsCheckOutCommand,
+): Promise<void> {
+  const roomTypeIds = await readOperationalCommandRoomTypeIds(client, command);
+  const lockedRoomTypeIds = new Set(roomTypeIds);
+  for (const roomTypeId of roomTypeIds) {
+    await lockPmsPhysicalRoomUnitMutationScope(client, command.propertyId, roomTypeId);
+  }
+  if (roomTypeIds.length > 0) {
+    await client.query(
+      `SELECT id FROM pms.rooms
+       WHERE property_id = $1::uuid AND room_type_id = ANY($2::uuid[])
+       ORDER BY id FOR UPDATE`,
+      [command.propertyId, roomTypeIds],
+    );
+  }
+  await client.query(
+    `SELECT assignment.id
+     FROM pms.operational_booking_assignments assignment
+     WHERE assignment.property_id = $1::uuid AND assignment.guest_booking_id = $2::uuid
+     ORDER BY assignment.id FOR UPDATE OF assignment`,
+    [command.propertyId, command.guestBookingId],
+  );
+  const currentRoomTypeIds = await readOperationalCommandRoomTypeIds(client, command);
+  if (currentRoomTypeIds.some((roomTypeId) => !lockedRoomTypeIds.has(roomTypeId))) {
+    throw new PmsRoomScopeChangedError();
+  }
+}
+
+async function readOperationalCommandRoomTypeIds(
+  client: PmsOperationsCommandClient,
+  command: PmsOperationalCommand | PmsCheckOutCommand,
+): Promise<string[]> {
+  const requestedRoomIds =
+    "stays" in command
+      ? command.stays.flatMap((stay) => ("roomId" in stay ? [stay.roomId] : []))
+      : [];
+  const scopes = await client.query<{ roomTypeId: string }>(
+    `SELECT DISTINCT scope.room_type_id::text AS "roomTypeId"
+     FROM (
+       SELECT assignment.room_type_id
+       FROM pms.operational_booking_assignments assignment
+       WHERE assignment.property_id = $1::uuid AND assignment.guest_booking_id = $2::uuid
+       UNION ALL
+       SELECT room.room_type_id
+       FROM pms.rooms room
+       WHERE room.property_id = $1::uuid AND room.id = ANY($3::uuid[])
+    ) scope
+     ORDER BY "roomTypeId"`,
+    [command.propertyId, command.guestBookingId, requestedRoomIds],
+  );
+  return scopes.rows.map(({ roomTypeId }) => roomTypeId);
 }
 
 async function updateAssignmentsOperationalStatus(

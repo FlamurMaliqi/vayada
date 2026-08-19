@@ -10,6 +10,7 @@ import type {
   PmsManualBookingRoom,
   PmsManualBookingTransaction,
 } from "./pmsManualBookingTransactionPorts.js";
+import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 
 type RoomRow = { roomId: string; roomTypeId: string };
 
@@ -18,6 +19,16 @@ export async function lockManualBookingRooms(
   command: PmsManualBookingCreateCommand,
 ): Promise<readonly PmsManualBookingRoom[]> {
   const roomIds = [...new Set(command.stays.map(({ roomId }) => roomId))].sort();
+  const scopes = await transaction.query<{ roomTypeId: string }>(
+    `SELECT DISTINCT room_type_id::text AS "roomTypeId"
+     FROM pms.rooms
+     WHERE property_id = $1::uuid AND id = ANY($2::uuid[])
+     ORDER BY "roomTypeId"`,
+    [command.propertyId, roomIds],
+  );
+  for (const { roomTypeId } of scopes.rows) {
+    await lockPmsPhysicalRoomUnitMutationScope(transaction, command.propertyId, roomTypeId);
+  }
   const result = await transaction.query<RoomRow>(
     `SELECT id::text AS "roomId", room_type_id::text AS "roomTypeId"
      FROM pms.rooms
