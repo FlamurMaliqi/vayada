@@ -407,3 +407,5 @@ export type RoomInventorySnapshot = {
 export type RoomInventoryReadPort = {
   getRoomInventorySnapshot(propertyId: string): Promise<RoomInventorySnapshot | null>;
 };
+
+export * from "./roomAssignmentOptimization.js";
