@@ -11,7 +11,12 @@ import {
 } from "@heroicons/react/24/outline";
 import { HotelIcon } from "@vayada/product-onboarding";
 import { bookingsService } from "@/services/bookings";
-import { getPmsPropertyProfile, updatePmsPropertyProfile } from "@/services/api/pmsPropertyClient";
+import {
+  getPmsCalendarSettings,
+  getPmsPropertyProfile,
+  updatePmsCalendarSettings,
+  updatePmsPropertyProfile,
+} from "@/services/api/pmsPropertyClient";
 import { useTranslation } from "@/lib/i18n";
 import {
   SettingsCard,
@@ -22,6 +27,7 @@ import {
 import { PropertySection } from "@/components/settings/PropertySection";
 import { LocalizationSection } from "@/components/settings/LocalizationSection";
 import { BookingEngineSection } from "@/components/settings/BookingEngineSection";
+import { CalendarSection } from "@/components/settings/CalendarSection";
 import { settingsService, type BookingAcceptanceMode } from "@/services/settings";
 import { OtaCommissionSettingsSection } from "@/components/settings/OtaCommissionSettingsSection";
 import { humanizeApiError } from "@/components/settings/constants";
@@ -67,6 +73,10 @@ export default function SettingsPage() {
   const [acceptanceLoadError, setAcceptanceLoadError] = useState("");
   const [loadingAcceptance, setLoadingAcceptance] = useState(true);
   const [savingAcceptance, setSavingAcceptance] = useState(false);
+  const [autoRearrangeEnabled, setAutoRearrangeEnabled] = useState(false);
+  const [calendarLoading, setCalendarLoading] = useState(true);
+  const [calendarSaving, setCalendarSaving] = useState(false);
+  const [calendarLoadError, setCalendarLoadError] = useState("");
 
   // Currency
   const [currency, setCurrency] = useState("");
@@ -119,6 +129,21 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const loadCalendarSettings = useCallback(async () => {
+    setCalendarLoading(true);
+    setCalendarLoadError("");
+    try {
+      const settings = await getPmsCalendarSettings();
+      setAutoRearrangeEnabled(settings.autoRearrangeEnabled);
+    } catch (loadError) {
+      setCalendarLoadError(
+        humanizeApiError(loadError, "We couldn’t load automatic room-assignment settings."),
+      );
+    } finally {
+      setCalendarLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     bookingsService
       .getPaymentSettings()
@@ -136,7 +161,8 @@ export default function SettingsPage() {
 
     void loadPropertyProfile();
     void loadAcceptanceMode();
-  }, [loadAcceptanceMode, loadPropertyProfile]);
+    void loadCalendarSettings();
+  }, [loadAcceptanceMode, loadCalendarSettings, loadPropertyProfile]);
 
   const saveAcceptanceMode = async (instantBook: boolean) => {
     setSavingAcceptance(true);
@@ -152,6 +178,21 @@ export default function SettingsPage() {
       setError(humanizeApiError(saveError, "Couldn’t save booking acceptance settings."));
     } finally {
       setSavingAcceptance(false);
+    }
+  };
+
+  const saveAutoRearrange = async (enabled: boolean) => {
+    setCalendarSaving(true);
+    setError("");
+    setSuccess("");
+    try {
+      const saved = await updatePmsCalendarSettings(enabled);
+      setAutoRearrangeEnabled(saved.autoRearrangeEnabled);
+      setSuccess("Calendar settings saved");
+    } catch (saveError) {
+      setError(humanizeApiError(saveError, "Couldn’t save calendar settings."));
+    } finally {
+      setCalendarSaving(false);
     }
   };
 
@@ -269,12 +310,18 @@ export default function SettingsPage() {
       onSelect={handleSelect}
     >
       {error && (
-        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+        <div
+          role="alert"
+          className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700"
+        >
           {error}
         </div>
       )}
       {success && (
-        <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
+        <div
+          role="status"
+          className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700"
+        >
           {success}
         </div>
       )}
@@ -301,10 +348,13 @@ export default function SettingsPage() {
         onRetry={() => void loadAcceptanceMode()}
       />
 
-      <UnavailableSettingsSection
-        id="calendar"
-        title="Calendar"
-        description="Automatic room rearrangement and future-calendar controls are not available yet."
+      <CalendarSection
+        enabled={autoRearrangeEnabled}
+        loading={calendarLoading}
+        saving={calendarSaving}
+        loadError={calendarLoadError}
+        onToggle={(next) => void saveAutoRearrange(next)}
+        onRetry={() => void loadCalendarSettings()}
       />
 
       <UnavailableSettingsSection
