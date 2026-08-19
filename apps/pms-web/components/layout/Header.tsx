@@ -12,6 +12,7 @@ import {
 } from "@/services/api/pmsPropertyClient";
 import { isPmsOperationsReadModelEnabled } from "@/services/api/pmsOperationsClient";
 import {
+  formatPropertyDate,
   getArrivalsToday,
   getDeparturesToday,
   getPropertyToday,
@@ -22,6 +23,7 @@ import { CURRENCY_OPTIONS } from "@/lib/constants/options";
 import SearchModal from "./SearchModal";
 
 interface DayStats {
+  today: string;
   arrivals: number;
   remainingArrivals: number;
   departures: number;
@@ -44,6 +46,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
   const [userName, setUserName] = useState("");
   const [userEmail, setUserEmail] = useState("");
   const [stats, setStats] = useState<DayStats>({
+    today: getPropertyToday(),
     arrivals: 0,
     remainingArrivals: 0,
     departures: 0,
@@ -134,6 +137,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
         const arrivalsToday = getArrivalsToday(bookings, today);
         const departuresToday = getDeparturesToday(bookings, today);
         setStats({
+          today,
           arrivals: arrivalsToday.length,
           remainingArrivals: getRemainingArrivals(arrivalsToday),
           departures: departuresToday.length,
@@ -151,8 +155,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
         .slice(0, 2)
     : "?";
 
-  const today = new Date();
-  const dateStr = today.toLocaleDateString("en-US", {
+  const dateStr = formatPropertyDate(stats.today, {
     weekday: "long",
     month: "short",
     day: "numeric",

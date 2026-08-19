@@ -61,7 +61,7 @@ const propertyProfile = {
   sameDayBookingCutoffTime: "18:00",
 };
 
-const sharedPropertyProfile = {
+export const sharedPropertyProfile = {
   propertyId: PMS_WEB_PROPERTY_ID,
   profileRevision: 1,
   profile: {
