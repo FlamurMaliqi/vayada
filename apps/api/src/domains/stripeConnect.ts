@@ -1,6 +1,9 @@
 import { Buffer } from "node:buffer";
 
-import type { FinanceStripeConnectProvider } from "@vayada/domain-finance";
+import {
+  StripeConnectAccountNotFoundError,
+  type FinanceStripeConnectProvider,
+} from "@vayada/domain-finance";
 
 type StripeObject = Record<string, unknown>;
 
@@ -38,6 +41,9 @@ export function createStripeConnectProvider(config: {
     );
     const payload = object(await response.json());
     if (!response.ok) {
+      if (response.status === 404) {
+        throw new StripeConnectAccountNotFoundError();
+      }
       throw new Error(
         text(object(payload["error"])["message"]) ?? `Stripe failed (${response.status}).`,
       );
@@ -99,6 +105,16 @@ export function createStripeConnectProvider(config: {
     },
     createOnboardingLink(input) {
       return onboardingLink(input.providerAccountRef, input.idempotencyKey, input.returnSurface);
+    },
+    async createLoginLink(input) {
+      const link = await request(
+        "POST",
+        `/accounts/${encodeURIComponent(input.providerAccountRef)}/login_links`,
+        [],
+      );
+      const url = text(link["url"]);
+      if (!url) throw new Error("Stripe did not return a dashboard login URL.");
+      return url;
     },
     async retrieveAccount(input) {
       const account = await request(

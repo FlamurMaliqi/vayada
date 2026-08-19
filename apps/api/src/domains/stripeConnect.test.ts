@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { StripeConnectAccountNotFoundError } from "@vayada/domain-finance";
 
 import { createStripeConnectProvider } from "./stripeConnect.js";
 
@@ -18,20 +19,28 @@ describe("Stripe Connect provider", () => {
           key: new Headers(init?.headers).get("Idempotency-Key"),
         });
         const url = String(input);
+        if (url.includes("acct_deleted")) {
+          return new Response(JSON.stringify({ error: { message: "No such account" } }), {
+            status: 404,
+            headers: { "content-type": "application/json" },
+          });
+        }
         return new Response(
           JSON.stringify(
-            url.endsWith("/accounts")
-              ? { id: "acct_property_1" }
-              : url.includes("/accounts/acct_property_1")
-                ? {
-                    id: "acct_property_1",
-                    charges_enabled: true,
-                    payouts_enabled: true,
-                    details_submitted: true,
-                    default_currency: "eur",
-                    capabilities: { card_payments: "active" },
-                  }
-                : { url: "https://connect.stripe.test/setup/acct_property_1" },
+            url.endsWith("/login_links")
+              ? { url: "https://connect.stripe.test/express/session" }
+              : url.endsWith("/accounts")
+                ? { id: "acct_property_1" }
+                : url.includes("/accounts/acct_property_1")
+                  ? {
+                      id: "acct_property_1",
+                      charges_enabled: true,
+                      payouts_enabled: true,
+                      details_submitted: true,
+                      default_currency: "eur",
+                      capabilities: { card_payments: "active" },
+                    }
+                  : { url: "https://connect.stripe.test/setup/acct_property_1" },
           ),
           { status: 200, headers: { "content-type": "application/json" } },
         );
@@ -63,6 +72,12 @@ describe("Stripe Connect provider", () => {
       "https://admin.booking.test/settings?stripe=return",
     );
 
+    await expect(provider.createLoginLink({ providerAccountRef: "acct_property_1" })).resolves.toBe(
+      "https://connect.stripe.test/express/session",
+    );
+    expect(calls[3]?.url).toMatch(/\/accounts\/acct_property_1\/login_links$/);
+    expect(calls[3]?.key).toBeNull();
+
     await expect(
       provider.retrieveAccount({ providerAccountRef: "acct_property_1" }),
     ).resolves.toEqual({
@@ -73,5 +88,9 @@ describe("Stripe Connect provider", () => {
       cardPaymentsStatus: "active",
       defaultCurrency: "eur",
     });
+
+    await expect(
+      provider.createLoginLink({ providerAccountRef: "acct_deleted" }),
+    ).rejects.toBeInstanceOf(StripeConnectAccountNotFoundError);
   });
 });

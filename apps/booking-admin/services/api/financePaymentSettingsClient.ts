@@ -123,6 +123,10 @@ export interface FinanceStripeProviderAccountResponse {
   onboardingUrl: string;
 }
 
+export interface FinanceStripeDashboardLinkResponse {
+  url: string;
+}
+
 export class FinancePaymentSettingsClientError extends Error {
   statusCode: number;
   code: string;
@@ -230,6 +234,21 @@ export async function issueFinanceStripeOnboardingLink(
         idempotencyKey: commandId,
         returnSurface: "booking_admin",
       },
+      omitHotelContext,
+    );
+  } catch (error) {
+    throw toFinancePaymentSettingsClientError(error);
+  }
+}
+
+export async function createFinanceStripeDashboardLink(
+  input: { propertyId: string },
+  client: FinanceProviderAccountApiClient = apiClient,
+): Promise<FinanceStripeDashboardLinkResponse> {
+  try {
+    return await client.post<FinanceStripeDashboardLinkResponse>(
+      `${buildFinancePaymentSettingsBaseEndpoint(input)}/provider-accounts/stripe/dashboard-link`,
+      undefined,
       omitHotelContext,
     );
   } catch (error) {
