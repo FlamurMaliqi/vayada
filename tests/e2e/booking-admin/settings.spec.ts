@@ -344,4 +344,82 @@ test.describe("booking-admin settings no-legacy guard", () => {
     await assertNoLegacyCalls();
     await assertHealthy();
   });
+
+  test("opens Stripe Express Dashboard only for a connected property account", async ({
+    page,
+  }, testInfo) => {
+    test.skip(
+      !PROD,
+      "Requires a production booking-admin build so the authenticated shell hydrates.",
+    );
+    const assertHealthy = watchPageHealth(page, testInfo);
+    await mockBookingAdminAuthenticatedSession(page);
+    await mockBookingAdminShellRoutes(page);
+
+    let stripeConnected = true;
+    await page.route(`**${BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH}`, (route) =>
+      route.fulfill({
+        json: {
+          paymentSettings: {
+            paymentsEnabled: true,
+            paymentProvider: "stripe",
+            acceptedMethods: ["card"],
+            defaultCurrency: "EUR",
+            supportedCurrencies: ["EUR"],
+            requiresManualReview: false,
+            providerAccount: {
+              providerAccountId: stripeConnected
+                ? "acct_property_e2e"
+                : `settings-choice:${BOOKING_ADMIN_PROPERTY_ID}:stripe`,
+              provider: "stripe",
+              status: stripeConnected ? "active" : "not_configured",
+              onboardingStatus: stripeConnected ? "completed" : "not_started",
+              chargesEnabled: stripeConnected,
+              payoutsEnabled: stripeConnected,
+              capabilities: stripeConnected ? ["card_payments", "transfers"] : [],
+            },
+          },
+        },
+      }),
+    );
+
+    let dashboardRequest: { method: string; body: string | null } | null = null;
+    await page.route(
+      `**/api/finance/properties/${BOOKING_ADMIN_PROPERTY_ID}/provider-accounts/stripe/dashboard-link`,
+      async (route) => {
+        dashboardRequest = {
+          method: route.request().method(),
+          body: route.request().postData(),
+        };
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        await route.fulfill({
+          json: { url: new URL("/stripe-dashboard-opened", page.url()).toString() },
+        });
+      },
+    );
+
+    await page.goto("/settings");
+    await page.getByRole("button", { name: "Payments", exact: true }).click();
+    const dashboardButton = page.getByRole("button", { name: "View Stripe Dashboard" });
+    await expect(dashboardButton).toBeVisible();
+    await expect(
+      page.getByText(
+        "Check your payouts, balance, and payment history, or update your bank account.",
+      ),
+    ).toBeVisible();
+
+    const popupPromise = page.waitForEvent("popup");
+    await dashboardButton.click();
+    await expect(page.getByRole("button", { name: "Opening Stripe..." })).toBeDisabled();
+    const stripeDashboard = await popupPromise;
+    await stripeDashboard.waitForURL("**/stripe-dashboard-opened");
+    expect(dashboardRequest).toEqual({ method: "POST", body: null });
+
+    stripeConnected = false;
+    await page.reload();
+    await page.getByRole("button", { name: "Payments", exact: true }).click();
+    await expect(page.getByRole("button", { name: "View Stripe Dashboard" })).toHaveCount(0);
+
+    await assertHealthy();
+  });
 });
