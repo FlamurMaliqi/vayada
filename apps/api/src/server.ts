@@ -42,6 +42,7 @@ import { createTargetBookingReservationsReadRepository } from "./platform/bookin
 import { createPgProviderWebhookStore } from "./platform/providerWebhooks.js";
 import { composePlatformMediaRuntime } from "./platform/platformMediaRuntime.js";
 import { createWorkOSAuthKitClient } from "./platform/workosAuthKit.js";
+import { installPostgresPoolRuntime } from "./platform/postgresRuntime.js";
 import {
   createPgWorkosWebhookStore,
   createWorkosWebhookVerifier,
@@ -183,6 +184,7 @@ import {
   createUnavailableProviderCredentialVault,
 } from "./platform/providerCredentialVault.js";
 
+const postgresRuntime = installPostgresPoolRuntime(pg);
 const config = loadConfig();
 
 function buildAuthOptions(auth: ApiConfig["auth"]): ApiAuthOptions | undefined {
@@ -1193,6 +1195,12 @@ const app = buildApp({
   bookingWebAffiliateHotelResolver,
   bookingWebAffiliateRepository,
   platformMedia: platformMediaRuntime?.routes,
+});
+
+const stopPostgresTelemetry = postgresRuntime.startTelemetry(app.log);
+app.addHook("onClose", async () => {
+  stopPostgresTelemetry();
+  await postgresRuntime.close();
 });
 
 const bookingPublicationWorker = bookingPublicationRuntime

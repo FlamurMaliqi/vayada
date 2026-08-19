@@ -155,6 +155,7 @@ jobs:
           src/domains/financeGeneratedExpenseRepository.integration.test.ts
           src/routes/bookingWebPublicAttribution.integration.test.ts
           src/jobs/financeSubscriptions.integration.test.ts
+          src/platform/postgresRuntime.integration.test.ts
           src/platform/workosWebhooks.integration.test.ts
         env:
           TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test

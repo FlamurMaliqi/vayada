@@ -14,6 +14,7 @@ import {
 } from "@vayada/backend-authorization";
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 
+import { isPostgresUnavailableError } from "./platform/postgresRuntime.js";
 import type { HotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
 import type { HotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Repository.js";
 import type { PropertyMediaCommandRepository } from "./domains/propertyMediaCommandRepository.js";
@@ -334,6 +335,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     trustProxy: options.trustProxy ?? false,
     disableRequestLogging: (request) =>
       request.url.startsWith("/api/marketplace/creator-platform-oauth/"),
+  });
+
+  app.setErrorHandler((error, request, reply) => {
+    if (!isPostgresUnavailableError(error)) return reply.send(error);
+    request.log.warn({ err: error }, "PostgreSQL connection unavailable");
+    return reply.status(503).send({
+      statusCode: 503,
+      error: "Service Unavailable",
+      message: "Database is temporarily unavailable",
+      code: "database_unavailable",
+    });
   });
 
   registerBrowserCors(app, options.browserAllowedOrigins ?? []);
