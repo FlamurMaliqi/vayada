@@ -39,6 +39,8 @@ describe("target booking add-on plan enforcement", () => {
                 currency: "EUR",
                 publicVisible: true,
                 status: "active",
+                ownershipKind: "property",
+                partnerCommissionRate: null,
                 metadata: { imageUrl: null, duration: null, sortOrder: 3 },
                 createdAt: "2026-08-11T10:00:00.000Z",
                 updatedAt: "2026-08-11T10:00:00.000Z",
@@ -74,11 +76,19 @@ describe("target booking add-on plan enforcement", () => {
       publicVisible: true,
       status: "active",
       sortOrder: 3,
+      ownershipKind: "property",
+      partnerCommissionRate: null,
     });
 
     expect(result).toMatchObject({
       outcome: "created",
-      addonItem: { addonItemId, name: "Spa ritual", sortOrder: 3 },
+      addonItem: {
+        addonItemId,
+        name: "Spa ritual",
+        sortOrder: 3,
+        ownershipKind: "property",
+        partnerCommissionRate: null,
+      },
     });
     const insertIndex = queries.findIndex((query) =>
       query.text.includes("INSERT INTO booking.addon_definitions"),
@@ -88,6 +98,7 @@ describe("target booking add-on plan enforcement", () => {
     );
     expect(insertIndex).toBeGreaterThan(-1);
     expect(readIndex).toBeGreaterThan(insertIndex);
+    expect(queries[insertIndex]?.values?.slice(9, 11)).toEqual(["property", null]);
     expect(queries[readIndex]?.values).toEqual([addonItemId]);
     expect(queries.at(-1)?.text).toBe("COMMIT");
   });
@@ -137,6 +148,8 @@ describe("target booking add-on plan enforcement", () => {
       publicVisible: true,
       status: "active",
       sortOrder: 3,
+      ownershipKind: "property",
+      partnerCommissionRate: null,
     });
 
     expect(result).toMatchObject({
