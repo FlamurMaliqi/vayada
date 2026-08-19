@@ -24,6 +24,11 @@ import { createPgHotelCatalogCurrentOwnerEvidencePorts } from "./domains/hotelCa
 import { createPgHotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Repository.js";
 import { createPgMarketplaceHotelCollaborationPreferencesRepository } from "./domains/marketplaceHotelCollaborationPreferencesRepository.js";
 import { createPgFinanceOtaCommissionRuleRepository } from "./domains/financeOtaCommissionRuleRepository.js";
+import { createPgFinanceExpenseCategoryRepository } from "./domains/financeExpenseCategoryRepository.js";
+import { createPgFinanceManualExpenseRepository } from "./domains/financeManualExpenseRepository.js";
+import { createPgFinanceRecurringExpenseRuleRepository } from "./domains/financeRecurringExpenseRuleRepository.js";
+// prettier-ignore
+import { createPgFinanceExpensePropertyContextReadPort, createPgFinanceExpenseReadModel } from "./domains/financeExpenseReadModel.js";
 import { createPgHotelMediaResolutionPort } from "./platform/hotelMediaResolver.js";
 import { createPgBookingWebEventSink } from "./platform/bookingWebEvents.js";
 import { createTargetBookingDashboardMetricsReadPort } from "./platform/bookingDashboard.js";
@@ -483,6 +488,13 @@ const propertySetupDraftRepository = createPgPropertySetupDraftRepository({
 const pmsPricingReadModel = createPgPmsPricingReadModel({
   connectionString: targetDatabaseUrl,
 });
+// prettier-ignore
+const financeExpenseRuntime = config.financeSource === "target" ? (() => {
+  const propertyContext = createPgFinanceExpensePropertyContextReadPort(targetDatabaseUrl);
+  const read = createPgFinanceExpenseReadModel({ connectionString: targetDatabaseUrl, pricing: pmsPricingReadModel, propertyContext });
+  const categories = createPgFinanceExpenseCategoryRepository(targetDatabaseUrl), expenses = createPgFinanceManualExpenseRepository(targetDatabaseUrl), recurring = createPgFinanceRecurringExpenseRuleRepository(targetDatabaseUrl);
+  return { routes: { read, categories, expenses, recurring }, close: () => Promise.all([read.close(), propertyContext.close(), categories.close(), expenses.close(), recurring.close()]) };
+})() : undefined;
 
 const xenditBankValidator = config.xenditSecretKey
   ? createXenditBankValidator({
@@ -1081,6 +1093,7 @@ const app = buildApp({
   financeRepository,
   financeSubscriptionService,
   financeOtaCommissionSettingsRepository,
+  financeExpenses: financeExpenseRuntime?.routes,
   pmsFinanceCompatibilityRepository,
   financeXenditBankValidator: xenditBankValidator,
   financePublicHotelProfileRepository,
@@ -1217,6 +1230,7 @@ app.addHook("onClose", async () => {
     bookingDesignRepository.close(),
     bookingDesignCatalogEvidenceRepository?.close(),
     financeOtaCommissionSettingsRepository?.close(),
+    financeExpenseRuntime?.close(),
     bookingDesignMediaAdapter?.close?.(),
     pmsRoomPublicationRuntime?.commandRepository.close(),
     pmsRoomPublicationRuntime?.readModel.close(),

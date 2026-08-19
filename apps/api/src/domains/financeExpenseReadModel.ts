@@ -46,6 +46,13 @@ export class FinanceExpenseEvidenceError extends Error {
   readonly code = "evidence_unavailable";
 }
 
+// Production adapter for the Finance-owned property-context port.
+// prettier-ignore
+export function createPgFinanceExpensePropertyContextReadPort(connectionString: string): FinanceExpensePropertyContextReadPort & { close(): Promise<void> } {
+  const pool = new pg.Pool({ connectionString });
+  return { async getPropertyContext(propertyId) { const row = (await pool.query<{ propertyId: string; profileRevision: string; timeZone: string | null; updatedAt: Date | string }>(`SELECT property.id::text AS "propertyId",property.profile_revision::text AS "profileRevision",location.timezone AS "timeZone",GREATEST(property.updated_at,COALESCE(location.updated_at,property.updated_at)) AS "updatedAt" FROM hotel_catalog.properties property LEFT JOIN hotel_catalog.property_locations location ON location.property_id=property.id WHERE property.id=$1::uuid`, [propertyId])).rows[0]; return row ? { source: { ownerDomain: "hotel_catalog", entityType: "property_profile", entityId: row.propertyId, revision: `profile:${row.profileRevision}` }, timeZone: row.timeZone, updatedAt: new Date(row.updatedAt).toISOString() } : null; }, close: () => pool.end() };
+}
+
 type Meta = {
   propertyId: string;
   currency: string;
