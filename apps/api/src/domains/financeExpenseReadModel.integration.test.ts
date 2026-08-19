@@ -66,7 +66,7 @@ describe.skipIf(!URL)("PostgreSQL Finance expense read model", () => {
         ('12130000-0000-4000-8000-000000000017','${OTHER}','${OTHER_CATEGORY}','manual','expense','2026-08-10',NULL,'Other tenant',500,'USD','unpaid',NULL,NULL,NULL);
       SET session_replication_role=replica;
       INSERT INTO finance.expenses (id,property_id,category_id,origin,incurred_on,vendor,amount,currency) VALUES ('${MISMATCH}','${PROPERTY}','${CATEGORY}','manual','2026-08-10','Wrong currency',999,'USD');
-      INSERT INTO finance.expenses (id,property_id,category_id,origin,incurred_on,vendor,amount,currency) VALUES ('12130000-0000-4000-8000-000000000019','${PROPERTY}','${CATEGORY}','manual','2026-10-10','Gap currency',5,'GBP');
+      INSERT INTO finance.expenses (id,property_id,category_id,origin,incurred_on,vendor,amount,currency) VALUES ('12130000-0000-4000-8000-000000000019','${PROPERTY}','${CATEGORY}','manual','2026-07-20','Gap currency',5,'GBP');
       INSERT INTO booking.nightly_revenue_evidence (property_id,guest_booking_id,room_type_id,stay_date,recognized_on,currency,gross_room_amount,occupied_room_nights,economic_event,lifecycle_state,source_kind,evidence_quality,source_revision,command_key) VALUES
         ('${PROPERTY}',gen_random_uuid(),gen_random_uuid(),'2026-08-10','2026-08-10','EUR',30,1,'room_night','confirmed','direct','exact',1,'read-current-1'),
         ('${PROPERTY}',gen_random_uuid(),gen_random_uuid(),'2026-08-09','2026-08-09','EUR',30,1,'room_night','confirmed','direct','exact',1,'read-current-2'),
@@ -89,7 +89,7 @@ describe.skipIf(!URL)("PostgreSQL Finance expense read model", () => {
     expect(result).toMatchObject({ contractVersion: "pms-financials.v1", currency: "EUR", timeZone: "America/Los_Angeles",
       summary: { totalMtd: { value: { amount: "25.0000" }, absoluteChange: { amount: "-75.0000" }, percentChange: "-0.7500" }, perOccupiedNight: { value: { amount: "8.3333" }, absoluteChange: { amount: "-41.6667" }, percentChange: "-0.8333" }, unpaidAmount: { value: { amount: "95.0000" } }, unpaidCount: { value: 3 } },
       categories: [{ category: { id: CATEGORY }, amount: { amount: "15.0000" } }, { category: { id: SECOND_CATEGORY }, amount: { amount: "10.0000" } }],
-      incompleteEvidence: [{ code: "expense_currency_mismatch", count: 1, amount: { amount: "999.0000", currency: "USD" } }, { code: "occupancy_currency_mismatch", count: 1 }] });
+      incompleteEvidence: [{ code: "expense_currency_mismatch", count: 1, amount: { amount: "5.0000", currency: "GBP" } }, { code: "expense_currency_mismatch", count: 1, amount: { amount: "999.0000", currency: "USD" } }, { code: "occupancy_currency_mismatch", count: 1 }] });
     expect(result?.page.items.map(({ id }) => id)).toEqual([EXPENSE, RECURRING, SMALL, CORRECTION, "12130000-0000-4000-8000-000000000008"]);
     await expect(read.expenses(OTHER, query({ limit: 10 }))).resolves.toMatchObject({ incompleteEvidence: [{ code: "occupancy_unavailable", count: 1 }] });
     const future = await read.expenses(PROPERTY, query({ from: "2027-01-01", to: "2027-01-31", limit: 10 })); expect(future?.incompleteEvidence.some(({ amount }) => amount?.currency === "GBP")).toBe(false);
@@ -104,6 +104,7 @@ describe.skipIf(!URL)("PostgreSQL Finance expense read model", () => {
     const defaultFirst = await read.expenses(PROPERTY, query());
     expect(defaultFirst?.page.items.map(({ id }) => id)).toEqual([EXPENSE, RECURRING]);
     await expect(read.expenses(PROPERTY, { ...query(), cursor: defaultFirst!.page.nextCursor! })).resolves.toMatchObject({ page: { items: [{ id: SMALL }, { id: CORRECTION }] } });
+    await expect(read.expenses(OTHER, { ...query(), cursor: defaultFirst!.page.nextCursor! })).rejects.toBeInstanceOf(FinanceExpenseCursorError);
     const filtered = query({ categoryId: CATEGORY, paymentStatus: "unpaid", recurring: false, origin: "manual", search: "Alpha", sort: "amount_desc", limit: 2 });
     const first = await read.expenses(PROPERTY, filtered);
     expect(first?.page.items.map(({ id }) => id)).toEqual([CORRECTION, EXPENSE]);

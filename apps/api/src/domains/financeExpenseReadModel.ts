@@ -109,12 +109,12 @@ export function createPgFinanceExpenseReadModel(config: { connectionString?: str
     async expenses(propertyId, rawQuery) {
       const query = parseFinanceExpenseQuery(rawQuery); if (!query || !date(query.from) || !date(query.to)) throw new TypeError("Finance expense query is malformed");
       const meta = await envelope(propertyId); if (!meta) return null;
-      const cursor = query.cursor ? decodeCursor(query.cursor, query) : null;
+      const cursor = query.cursor ? decodeCursor(query.cursor, meta.propertyId, query) : null;
       const period = comparisonPeriod(meta.generatedAt, meta.timeZone);
       const { summary, categories, page, mismatches } = await consistentRead(pool, async (client) => {
         const summary = await readSummary(client, meta, period); const categories = await readCategoryTotals(client, meta, period.currentFrom, period.currentTo);
         const page = await readPage(client, meta, query, cursor);
-        return { summary, categories, page, mismatches: await readMismatches(client, meta, query.from, query.to, period.priorFrom, period.currentTo) };
+        return { summary, categories, page, mismatches: await readMismatches(client, meta, query.from, query.to, period.currentFrom, period.currentTo, period.priorFrom, period.priorTo) };
       });
       const current = fixed(summary.currentTotal), prior = fixed(summary.priorTotal);
       const currentNights = number(summary.currentNights), priorNights = number(summary.priorNights);
@@ -160,11 +160,11 @@ async function readPage(pool: Pick<FinanceReadClient, "query">, meta: Meta, quer
   values.push(query.limit + 1); const order = query.sort === "amount_desc" ? `e.amount DESC,e.incurred_on DESC,e.id` : `e.incurred_on DESC,e.id`;
   const rows = (await pool.query<ExpenseRow>(`SELECT ${EXPENSE_COLUMNS} FROM finance.expenses e JOIN finance.expense_categories c ON c.id=e.category_id AND c.property_id=e.property_id WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT $${values.length}`, values)).rows;
   const items = rows.slice(0, query.limit).map(expense);
-  return { items, nextCursor: rows.length > query.limit ? encodeCursor(query, items.at(-1)!) : null, limit: query.limit };
+  return { items, nextCursor: rows.length > query.limit ? encodeCursor(meta.propertyId, query, items.at(-1)!) : null, limit: query.limit };
 }
 
 // prettier-ignore
-async function readMismatches(pool: Pick<FinanceReadClient, "query">, meta: Meta, listFrom: string, listTo: string, summaryFrom: string, summaryTo: string): Promise<MismatchRow[]> { return (await pool.query<MismatchRow>(`WITH events AS (${EVENTS}) SELECT currency::text AS currency,count(DISTINCT id)::int AS count,COALESCE(sum(amount),0)::text AS amount FROM events WHERE currency<>$2 AND (incurred_on BETWEEN $3::date AND $4::date OR incurred_on BETWEEN $5::date AND $6::date) GROUP BY currency ORDER BY currency`, [meta.propertyId, meta.currency, listFrom, listTo, summaryFrom, summaryTo])).rows; }
+async function readMismatches(pool: Pick<FinanceReadClient, "query">, meta: Meta, listFrom: string, listTo: string, currentFrom: string, currentTo: string, priorFrom: string, priorTo: string): Promise<MismatchRow[]> { return (await pool.query<MismatchRow>(`WITH events AS (${EVENTS}) SELECT currency::text AS currency,count(DISTINCT id)::int AS count,COALESCE(sum(amount),0)::text AS amount FROM events WHERE currency<>$2 AND (incurred_on BETWEEN $3::date AND $4::date OR incurred_on BETWEEN $5::date AND $6::date OR incurred_on BETWEEN $7::date AND $8::date) GROUP BY currency ORDER BY currency`, [meta.propertyId, meta.currency, listFrom, listTo, currentFrom, currentTo, priorFrom, priorTo])).rows; }
 
 type Period = { currentFrom: string; currentTo: string; priorFrom: string; priorTo: string };
 type Cursor = { incurredOn: string; id: string; amount?: string };
@@ -178,19 +178,19 @@ function comparisonPeriod(instant: string, timeZone: string): Period {
   return { currentFrom: `${year}-${pad(month)}-01`, currentTo: `${year}-${pad(month)}-${pad(day)}`, priorFrom: `${prior.getUTCFullYear()}-${pad(prior.getUTCMonth() + 1)}-01`, priorTo: `${prior.getUTCFullYear()}-${pad(prior.getUTCMonth() + 1)}-${pad(priorDay)}` };
 }
 // prettier-ignore
-function encodeCursor(query: FinanceExpenseQuery, item: FinanceExpense): string { return Buffer.from(JSON.stringify({ v: 1, q: snapshot(query), p: query.sort === "amount_desc" ? [item.incurredOn, item.id, item.amount.amount] : [item.incurredOn, item.id] })).toString("base64url"); }
+function encodeCursor(propertyId: string, query: FinanceExpenseQuery, item: FinanceExpense): string { return Buffer.from(JSON.stringify({ v: 1, q: snapshot(propertyId, query), p: query.sort === "amount_desc" ? [item.incurredOn, item.id, item.amount.amount] : [item.incurredOn, item.id] })).toString("base64url"); }
 // prettier-ignore
-function decodeCursor(token: string, query: FinanceExpenseQuery): Cursor {
+function decodeCursor(token: string, propertyId: string, query: FinanceExpenseQuery): Cursor {
   try {
     if (!/^(?=.{2,4096}$)(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-]{2,3})?$/.test(token)) throw 0;
     const decoded = Buffer.from(token, "base64url"); if (decoded.toString("base64url") !== token) throw 0;
     const value = JSON.parse(decoded.toString("utf8")) as { v?: unknown; q?: unknown; p?: unknown };
-    if (!exact(value, ["v", "q", "p"]) || value.v !== 1 || JSON.stringify(value.q) !== JSON.stringify(snapshot(query)) || !Array.isArray(value.p) || value.p.length !== (query.sort === "amount_desc" ? 3 : 2) || !date(value.p[0]) || !UUID.test(String(value.p[1])) || (value.p[2] !== undefined && !/^\d{1,15}(?:\.\d{1,4})?$/.test(String(value.p[2])))) throw 0;
+    if (!exact(value, ["v", "q", "p"]) || value.v !== 1 || JSON.stringify(value.q) !== JSON.stringify(snapshot(propertyId, query)) || !Array.isArray(value.p) || value.p.length !== (query.sort === "amount_desc" ? 3 : 2) || !date(value.p[0]) || !UUID.test(String(value.p[1])) || (value.p[2] !== undefined && !/^\d{1,15}(?:\.\d{1,4})?$/.test(String(value.p[2])))) throw 0;
     return { incurredOn: value.p[0], id: String(value.p[1]), amount: value.p[2] === undefined ? undefined : String(value.p[2]) };
   } catch { throw new FinanceExpenseCursorError("Finance expense cursor is invalid for this query"); }
 }
 // prettier-ignore
-function snapshot(q: FinanceExpenseQuery) { return [q.from, q.to, q.categoryId?.toLowerCase() ?? null, q.paymentStatus ?? null, q.recurring ?? null, q.origin ?? null, q.search?.toLowerCase() ?? null, q.sort]; }
+function snapshot(propertyId: string, q: FinanceExpenseQuery) { return [propertyId, q.from, q.to, q.categoryId?.toLowerCase() ?? null, q.paymentStatus ?? null, q.recurring ?? null, q.origin ?? null, q.search?.toLowerCase() ?? null, q.sort]; }
 // prettier-ignore
 function base(meta: Meta, sourceFreshness: Record<string, string> = {}, incompleteEvidence: FinanceExpenseEnvelope["incompleteEvidence"] = []): FinanceExpenseEnvelope { const { sourceFreshness: owners, ...envelope } = meta; return { contractVersion: PMS_FINANCIALS_CONTRACT_VERSION, ...envelope, sourceFreshness: { ...owners, ...sourceFreshness }, incompleteEvidence }; }
 function expense(row: ExpenseRow): FinanceExpense {
