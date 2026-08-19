@@ -43,6 +43,7 @@ import {
   ManualPriceCorrectionStateError,
 } from "./bookingPmsManualPriceCorrection.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
+import { lockPmsRoomOrder, pmsRoomOrderVersion } from "./pmsRoomOrder.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import type { PmsRoomAssignmentOptimizationTriggerPort } from "./pmsRoomAssignmentOptimizationTriggers.js";
 import {
@@ -2122,6 +2123,7 @@ async function insertInitialRooms(
   acceptedAt: string,
 ): Promise<number> {
   if (command.roomCount === 0) return 0;
+  await lockPmsRoomOrder(client, command.propertyId);
   const result = await client.query(
     `INSERT INTO pms.rooms (
        property_id,
@@ -2247,6 +2249,7 @@ async function executeRoomOrderCommand(
       );
     }
 
+    await lockPmsRoomOrder(client, command.propertyId);
     const roomTypeIds = await client.query<{ roomTypeId: string }>(
       `SELECT DISTINCT room_type_id::text AS "roomTypeId"
        FROM pms.rooms
@@ -2257,13 +2260,17 @@ async function executeRoomOrderCommand(
     for (const { roomTypeId } of roomTypeIds.rows) {
       await lockPmsPhysicalRoomUnitMutationScope(client, command.propertyId, roomTypeId);
     }
-    const current = await client.query<{ roomId: string; sortOrder: number }>(
-      `SELECT id::text AS "roomId", sort_order AS "sortOrder" FROM pms.rooms
+    const current = await client.query<{ roomId: string }>(
+      `SELECT id::text AS "roomId" FROM pms.rooms
        WHERE property_id = $1::uuid AND status <> 'retired'
-       ORDER BY id FOR UPDATE`,
+       ORDER BY sort_order ASC, room_number ASC, id ASC FOR UPDATE`,
       [command.propertyId],
     );
     const currentRoomIds = current.rows.map(({ roomId }) => roomId);
+    if (pmsRoomOrderVersion(currentRoomIds) !== command.expectedVersion) {
+      await client.query("ROLLBACK");
+      return roomOrderConflict("version_conflict", "Room order changed since it was loaded.");
+    }
     if (
       currentRoomIds.length !== command.orderedRoomIds.length ||
       currentRoomIds.some((roomId) => !command.orderedRoomIds.includes(roomId))
@@ -2290,22 +2297,18 @@ async function executeRoomOrderCommand(
     if (result.rowCount !== command.orderedRoomIds.length) {
       throw new Error("PMS room reorder update count mismatch");
     }
-    await insertRoomOrderAuditEvent(
+    await insertRoomOrderAuditEvent(client, command, currentRoomIds, commandMeta, keyHash);
+    const orderVersion = pmsRoomOrderVersion(command.orderedRoomIds);
+    await completeRoomOrderCommandIdempotency(
       client,
       command,
-      current.rows
-        .slice()
-        .sort(
-          (left, right) =>
-            left.sortOrder - right.sortOrder || left.roomId.localeCompare(right.roomId),
-        )
-        .map(({ roomId }) => roomId),
       commandMeta,
+      orderVersion,
       keyHash,
+      acceptedAt,
     );
-    await completeRoomOrderCommandIdempotency(client, command, commandMeta, keyHash, acceptedAt);
     await client.query("COMMIT");
-    return { ok: true, orderedRoomIds: command.orderedRoomIds, commandMeta };
+    return { ok: true, orderedRoomIds: command.orderedRoomIds, orderVersion, commandMeta };
   } catch (error) {
     await rollbackQuietly(client);
     throw error;
@@ -2339,15 +2342,17 @@ async function findRoomOrderCommandReplay(
   }
   const commandMeta = existing.idempotencyMetadata?.["commandMeta"];
   const orderedRoomIds = existing.idempotencyMetadata?.["orderedRoomIds"];
+  const orderVersion = existing.idempotencyMetadata?.["orderVersion"];
   if (
     existing.status !== "completed" ||
     !isPmsCommandMeta(commandMeta) ||
     !Array.isArray(orderedRoomIds) ||
-    !orderedRoomIds.every((roomId) => typeof roomId === "string")
+    !orderedRoomIds.every((roomId) => typeof roomId === "string") ||
+    typeof orderVersion !== "string"
   ) {
     return roomOrderConflict("idempotency_conflict", "Room reorder is already in progress.");
   }
-  return { ok: true, orderedRoomIds, commandMeta, replayed: true };
+  return { ok: true, orderedRoomIds, orderVersion, commandMeta, replayed: true };
 }
 
 async function recordRoomOrderCommandIdempotency(
@@ -2381,10 +2386,11 @@ async function completeRoomOrderCommandIdempotency(
   client: PmsOperationsCommandClient,
   command: PmsRoomOrderCommand,
   commandMeta: PmsCommandMeta,
+  orderVersion: string,
   keyHash: string,
   acceptedAt: string,
 ): Promise<void> {
-  const metadata = { commandMeta, orderedRoomIds: command.orderedRoomIds };
+  const metadata = { commandMeta, orderedRoomIds: command.orderedRoomIds, orderVersion };
   await client.query(
     `UPDATE platform.idempotency_keys
      SET status = 'completed', response_status_code = 200,
@@ -2440,7 +2446,7 @@ function roomOrderCommandFingerprint(command: PmsRoomOrderCommand): unknown {
 }
 
 function roomOrderConflict(
-  code: "idempotency_conflict" | "room_order_conflict",
+  code: "idempotency_conflict" | "room_order_conflict" | "version_conflict",
   message: string,
 ): Exclude<PmsRoomOrderCommandResult, { ok: true }> {
   return { ok: false, statusCode: 409, code, message };
@@ -5003,8 +5009,7 @@ async function insertPrivateNoteAuditEvent(
   input: {
     action: "pms.private_note.created" | "pms.private_note.edited" | "pms.private_note.deleted";
     auditKey: string;
-    command:
-      PmsPrivateNoteCreateCommand | PmsPrivateNoteUpdateCommand | PmsPrivateNoteDeleteCommand;
+  command: PmsPrivateNoteCreateCommand | PmsPrivateNoteUpdateCommand | PmsPrivateNoteDeleteCommand;
     keyHash: string;
     noteId: string;
     occurredAt: string;
