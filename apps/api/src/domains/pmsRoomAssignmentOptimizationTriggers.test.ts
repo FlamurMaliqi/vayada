@@ -131,7 +131,11 @@ describe("PMS room assignment optimization triggers", () => {
         acceptedAt: new Date("2026-08-18T00:00:00.000Z"),
       }),
     ).resolves.toEqual([
-      { roomTypeId: roomTypeA, result: { outcome: "infeasible", unassignedOccupancyIds: [] } },
+      {
+        roomTypeId: roomTypeA,
+        result: { outcome: "infeasible", unassignedOccupancyIds: [] },
+        rearrangedGuestBookingIds: [],
+      },
     ]);
     expect(optimize).toHaveBeenCalledTimes(2);
     expect(optimize.mock.calls[0]![1]).not.toHaveProperty("searchBudget");
@@ -139,6 +143,55 @@ describe("PMS room assignment optimization triggers", () => {
       commandId: `manual-create-1:optimize:create:${roomTypeA}`,
       searchBudget: 100_000,
     });
+  });
+
+  it("reports distinct bookings represented by moved assignments", async () => {
+    const assignmentIds = [
+      "81000000-0000-4000-8000-000000000031",
+      "81000000-0000-4000-8000-000000000032",
+    ];
+    const query = vi.fn(async (text: string) =>
+      text.includes("property_locations")
+        ? { rows: [{ timeZone: "Etc/UTC" }], rowCount: 1 }
+        : {
+            rows: assignmentIds.map((assignmentId) => ({
+              assignmentId,
+              guestBookingId: "81000000-0000-4000-8000-000000000040",
+            })),
+            rowCount: 2,
+          },
+    );
+    const port = createPmsRoomAssignmentOptimizationTriggerPort({
+      optimize: vi.fn(async () => ({
+        outcome: "optimized" as const,
+        moves: assignmentIds.map((occupancyId, index) => ({
+          occupancyId,
+          fromRoomId: null,
+          toRoomId: `81000000-0000-4000-8000-00000000005${index}`,
+        })),
+        gapNightsBefore: 0,
+        gapNightsAfter: 0,
+        usedRoomsBefore: 0,
+        usedRoomsAfter: 1,
+      })),
+    });
+
+    await expect(
+      port.afterCreate({
+        transaction: { query } as unknown as PmsManualBookingTransaction,
+        command: {
+          propertyId,
+          commandId: "manual-create-2",
+          audit: { actor: { kind: "system" }, requestId: "request-2" },
+        } as unknown as PmsManualBookingCreateCommand,
+        rooms: [{ roomId: "room-a", roomTypeId: roomTypeA }],
+        acceptedAt: new Date("2026-08-18T00:00:00.000Z"),
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        rearrangedGuestBookingIds: ["81000000-0000-4000-8000-000000000040"],
+      }),
+    ]);
   });
 
   it("optimizes every old and new room type after a stay modification", async () => {

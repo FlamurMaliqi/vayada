@@ -321,6 +321,7 @@ function result(
     balance: { amountDecimal: paid ? "0.00" : "200.00", currency: "EUR" },
     paymentStatus: paid ? "paid" : "unpaid",
     paymentEvidenceId: paid ? "81000000-0000-4000-8000-000000000006" : null,
+    rearrangedBookingCount: 0,
     sideEffects: ["calendar_refresh", "ari_changed", "guest_confirmation", "audit_event"],
   };
 }

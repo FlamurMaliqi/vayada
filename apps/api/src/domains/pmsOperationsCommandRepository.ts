@@ -148,6 +148,8 @@ type PmsIdempotencyRow = {
   status: string;
   requestFingerprintHash: string;
   idempotencyMetadata: Record<string, unknown> | null;
+  responseBodyHash?: string | null;
+  responseStatusCode?: number | null;
 };
 
 type PmsOperationalCommand =
@@ -4249,13 +4251,19 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
       (operation === "manual_cancellation_command" ||
         operation === "manual_stay_correction_command")
     ) {
-      await config.roomAssignmentOptimization.afterChange({
+      const optimization = await config.roomAssignmentOptimization.afterChange({
         transaction: client,
         command,
         roomTypeIds,
         reason: operation === "manual_cancellation_command" ? "cancel" : "modify",
         acceptedAt: new Date(acceptedAt),
       });
+      commandMeta = {
+        ...commandMeta,
+        rearrangedBookingCount: new Set(
+          optimization.flatMap(({ rearrangedGuestBookingIds }) => rearrangedGuestBookingIds),
+        ).size,
+      };
     }
 
     await recordOperationalCommandAuditEvent(client, command, operation, commandMeta, keyHash);
@@ -4908,6 +4916,8 @@ async function findOperationalCommandReplay(
     `SELECT
        status,
        request_fingerprint_hash AS "requestFingerprintHash",
+       response_body_hash AS "responseBodyHash",
+       response_status_code AS "responseStatusCode",
        idempotency_metadata AS "idempotencyMetadata"
      FROM platform.idempotency_keys
      WHERE operation_scope = 'pms'
@@ -4934,7 +4944,11 @@ async function findOperationalCommandReplay(
   }
 
   const commandMeta = existing.idempotencyMetadata?.["commandMeta"];
-  return isPmsCommandMeta(commandMeta) ? commandMeta : null;
+  return isOperationalReplayMeta(commandMeta, command) &&
+    existing.responseStatusCode === 200 &&
+    existing.responseBodyHash === sha256(stableJson(commandMeta))
+    ? commandMeta
+    : null;
 }
 
 async function recordAssignmentCommandIdempotency(
@@ -6893,7 +6907,25 @@ function isPmsCommandMeta(value: unknown): value is PmsCommandMeta {
     typeof (value as PmsCommandMeta).commandId === "string" &&
     typeof (value as PmsCommandMeta).idempotencyKey === "string" &&
     typeof (value as PmsCommandMeta).acceptedAt === "string" &&
-    Array.isArray((value as PmsCommandMeta).sideEffects)
+    Array.isArray((value as PmsCommandMeta).sideEffects) &&
+    ((value as PmsCommandMeta).rearrangedBookingCount === undefined ||
+      (Number.isSafeInteger((value as PmsCommandMeta).rearrangedBookingCount) &&
+        (value as PmsCommandMeta).rearrangedBookingCount! >= 0))
+  );
+}
+
+function isOperationalReplayMeta(
+  value: unknown,
+  command: PmsOperationalCommand,
+): value is PmsCommandMeta {
+  if (!isPmsCommandMeta(value)) return false;
+  const keys = Object.keys(value).sort().join(",");
+  return (
+    (keys === "acceptedAt,commandId,contractVersion,idempotencyKey,sideEffects" ||
+      keys ===
+        "acceptedAt,commandId,contractVersion,idempotencyKey,rearrangedBookingCount,sideEffects") &&
+    value.commandId === command.commandId &&
+    value.idempotencyKey === command.idempotencyKey
   );
 }
 

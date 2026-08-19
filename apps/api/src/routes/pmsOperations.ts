@@ -144,6 +144,7 @@ export type PmsCommandMeta = {
   idempotencyKey: string;
   acceptedAt: string;
   sideEffects: PmsOperationsCommandSideEffect[];
+  rearrangedBookingCount?: number;
 };
 
 export type PmsOperationsCommandAudit = {
