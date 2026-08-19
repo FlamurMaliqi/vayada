@@ -513,6 +513,29 @@
       }
     },
     {
+      "caseId": "ota-commission-settings-list",
+      "request": {
+        "path": "/api/finance/properties/f3000000-0000-4000-8000-000000000686/financials/ota-commission-settings",
+        "method": "GET"
+      },
+      "expected": { "status": 200, "mustExclude": ["providerSecret", "guestEmail"] }
+    },
+    {
+      "caseId": "ota-commission-settings-update",
+      "request": {
+        "path": "/api/finance/properties/f3000000-0000-4000-8000-000000000686/financials/ota-commission-settings/booking_com",
+        "method": "PUT",
+        "body": {
+          "commandId": "command-1",
+          "idempotencyKey": "key-1",
+          "expectedRevision": 0,
+          "percentageRate": "15",
+          "effectiveFrom": "2026-08-08T00:00:00.000Z"
+        }
+      },
+      "expected": { "status": 201, "mustExclude": ["providerSecret", "guestEmail"] }
+    },
+    {
       "caseId": "authorization-denial-matrix-missing-permission",
       "description": "Finance property reads deny authenticated users without pms.finance.read.",
       "request": {
