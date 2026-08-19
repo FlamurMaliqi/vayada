@@ -140,4 +140,38 @@ describe("PMS room assignment optimization triggers", () => {
       searchBudget: 100_000,
     });
   });
+
+  it("optimizes every old and new room type after a stay modification", async () => {
+    const optimize = vi.fn(
+      async (
+        _transaction: PmsManualBookingTransaction,
+        _command: PmsRoomAssignmentOptimizationCommand,
+      ) => ({ outcome: "infeasible" as const, unassignedOccupancyIds: [] }),
+    );
+    const port = createPmsRoomAssignmentOptimizationTriggerPort({ optimize });
+    await port.afterChange({
+      transaction: {
+        query: vi.fn(async () => ({ rows: [{ timeZone: "Europe/Berlin" }], rowCount: 1 })),
+      } as unknown as PmsManualBookingTransaction,
+      command: {
+        propertyId,
+        commandId: "stay-change-1",
+        audit: { actor: { kind: "system" }, requestId: "request-2" },
+      },
+      roomTypeIds: [roomTypeB, roomTypeA, roomTypeA],
+      reason: "modify",
+      acceptedAt: new Date("2026-08-18T23:30:00.000Z"),
+    });
+
+    expect(optimize.mock.calls.map(([, command]) => command)).toEqual([
+      expect.objectContaining({
+        roomTypeId: roomTypeA,
+        reason: "modify",
+        currentDate: "2026-08-19",
+        commandId: `stay-change-1:optimize:modify:${roomTypeA}`,
+        actor: { kind: "system" },
+      }),
+      expect.objectContaining({ roomTypeId: roomTypeB }),
+    ]);
+  });
 });

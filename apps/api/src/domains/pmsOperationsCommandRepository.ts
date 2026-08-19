@@ -44,6 +44,7 @@ import {
 } from "./bookingPmsManualPriceCorrection.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
+import type { PmsRoomAssignmentOptimizationTriggerPort } from "./pmsRoomAssignmentOptimizationTriggers.js";
 import {
   captureDirectNightlyRevenueEvidence,
   reconcileStripeBookingPaymentProviderDetails,
@@ -119,6 +120,7 @@ export type TargetPmsOperationsCommandRepositoryConfig = {
   readRepository: PmsOperationsReadRepository;
   stripePaymentProvider?: StripeBookingPaymentProvider;
   now?: () => Date;
+  roomAssignmentOptimization?: PmsRoomAssignmentOptimizationTriggerPort;
 };
 
 type PmsAssignmentRow = {
@@ -202,18 +204,13 @@ type BookingPaymentLifecycleRow = QueryResultRow & {
   chargeType: string | null;
 };
 type PmsOperationalTemplateOperation =
-  | "checkin_checklist_template_update"
-  | "checkout_inspection_template_update";
+  "checkin_checklist_template_update" | "checkout_inspection_template_update";
 type PmsCheckoutChargeOperation =
-  | "checkout_charge_create"
-  | "checkout_charge_mark_paid"
-  | "checkout_charge_waive";
+  "checkout_charge_create" | "checkout_charge_mark_paid" | "checkout_charge_waive";
 type PmsRoomTypeCommandOperation = "room_type_create" | "room_type_location_update";
 type PmsRoomTypeCommand = PmsRoomTypeCreateCommand | PmsRoomTypeUpdateCommand;
 type PmsRoomBlockCommand =
-  | PmsRoomBlockCreateCommand
-  | PmsRoomBlockUpdateCommand
-  | PmsRoomBlockReleaseCommand;
+  PmsRoomBlockCreateCommand | PmsRoomBlockUpdateCommand | PmsRoomBlockReleaseCommand;
 type PmsRoomBlockOperation = "room_block_create" | "room_block_update" | "room_block_release";
 
 type PmsRoomBlockRow = {
@@ -4179,6 +4176,7 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
     acceptedAt,
     sideEffects,
   };
+  let roomTypeIds: string[] = [];
 
   try {
     await client.query("BEGIN");
@@ -4236,7 +4234,7 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
         "manual_stay_correction_command",
       ].includes(operation)
     ) {
-      await lockOperationalCommandRoomScopes(client, command);
+      roomTypeIds = await lockOperationalCommandRoomScopes(client, command);
     }
     const mutation = await mutate(client, command, acceptedAt);
     if (!mutation.ok) {
@@ -4245,6 +4243,19 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
     }
     if (mutation.sideEffects) {
       commandMeta = { ...commandMeta, sideEffects: mutation.sideEffects };
+    }
+    if (
+      config.roomAssignmentOptimization &&
+      (operation === "manual_cancellation_command" ||
+        operation === "manual_stay_correction_command")
+    ) {
+      await config.roomAssignmentOptimization.afterChange({
+        transaction: client,
+        command,
+        roomTypeIds,
+        reason: operation === "manual_cancellation_command" ? "cancel" : "modify",
+        acceptedAt: new Date(acceptedAt),
+      });
     }
 
     await recordOperationalCommandAuditEvent(client, command, operation, commandMeta, keyHash);
@@ -4722,9 +4733,7 @@ async function insertPrivateNoteAuditEvent(
     action: "pms.private_note.created" | "pms.private_note.edited" | "pms.private_note.deleted";
     auditKey: string;
     command:
-      | PmsPrivateNoteCreateCommand
-      | PmsPrivateNoteUpdateCommand
-      | PmsPrivateNoteDeleteCommand;
+      PmsPrivateNoteCreateCommand | PmsPrivateNoteUpdateCommand | PmsPrivateNoteDeleteCommand;
     keyHash: string;
     noteId: string;
     occurredAt: string;
@@ -5991,7 +6000,7 @@ async function findAssignmentsForOperationalCommand(
 async function lockOperationalCommandRoomScopes(
   client: PmsOperationsCommandClient,
   command: PmsOperationalCommand | PmsCheckOutCommand,
-): Promise<void> {
+): Promise<string[]> {
   const roomTypeIds = await readOperationalCommandRoomTypeIds(client, command);
   const lockedRoomTypeIds = new Set(roomTypeIds);
   for (const roomTypeId of roomTypeIds) {
@@ -6016,6 +6025,7 @@ async function lockOperationalCommandRoomScopes(
   if (currentRoomTypeIds.some((roomTypeId) => !lockedRoomTypeIds.has(roomTypeId))) {
     throw new PmsRoomScopeChangedError();
   }
+  return roomTypeIds;
 }
 
 async function readOperationalCommandRoomTypeIds(
