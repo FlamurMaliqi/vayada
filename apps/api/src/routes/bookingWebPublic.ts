@@ -58,8 +58,6 @@ import {
   type BookingWebAffiliateRepository,
 } from "./bookingWebAffiliate.js";
 
-export type BookingDomainResolutionSource = "legacy" | "target";
-
 type BookingWebHostParams = {
   host: string;
 };
@@ -415,7 +413,6 @@ export type BookingWebPublicRoutesOptions = {
   profileRepository: PublicHotelProfileRepository;
   quoteRepository?: PublicHotelQuoteRepository;
   calendarRepository?: BookingWebCalendarRepository;
-  bookingDomainResolutionSource?: BookingDomainResolutionSource;
   checkoutAdapter?: BookingWebCheckoutAdapter;
   affiliateHotelResolver?: BookingWebAffiliateHotelResolver;
   affiliateRepository?: BookingWebAffiliateRepository;
@@ -458,7 +455,6 @@ export async function registerBookingWebPublicRoutes(
     const profile = await findProfileForHost({
       repository: options.profileRepository,
       host,
-      source: options.bookingDomainResolutionSource ?? "legacy",
     });
     if (!profile) {
       throw createHttpError(404, "Booking Web host not found.");
@@ -5330,7 +5326,6 @@ function normalizeChangeRequest(request: BookingWebChangeRequest): BookingWebCha
 async function findProfileForHost(config: {
   repository: PublicHotelProfileRepository;
   host: string;
-  source: BookingDomainResolutionSource;
 }): Promise<PublicBookabilityProfileProjection | null> {
   const { repository, host } = config;
   const subdomainSlug = slugFromKnownBookingHost(host);
@@ -5338,15 +5333,7 @@ async function findProfileForHost(config: {
     return repository.findProfileBySlug(subdomainSlug);
   }
 
-  if (config.source === "target") {
-    return repository.findProfileByCustomDomain?.(host) ?? null;
-  }
-
-  if (repository.findProfileByCustomDomain) {
-    return repository.findProfileByCustomDomain(host);
-  }
-
-  return null;
+  return repository.findProfileByCustomDomain?.(host) ?? null;
 }
 
 function serializeHostResolution(

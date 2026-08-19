@@ -381,63 +381,6 @@ describe("Booking Web public bootstrap parity", () => {
     await app.close();
   });
 
-  it("passes target-mode host parity for known subdomain, renamed, and custom-domain hotels", async () => {
-    const knownHostApp = buildParityApp({
-      hotel: legacyHotel,
-      rooms: legacyRooms,
-      unavailableDates: legacyUnavailableDates,
-      domainResolutionSource: "target",
-    });
-    const knownHostResponse = await knownHostApp.inject({
-      method: "GET",
-      url: "/api/booking-web/hosts/hotel-alpenrose.booking.localhost",
-    });
-    expect(knownHostResponse.statusCode).toBe(200);
-    expect(
-      compareHostParity("target-known-subdomain", legacyHotel, knownHostResponse.json()),
-    ).toEqual([]);
-    await knownHostApp.close();
-
-    const renamedApp = buildParityApp({
-      hotel: legacyRenamedHotel,
-      rooms: legacyRooms,
-      unavailableDates: legacyUnavailableDates,
-      slugAliases: {
-        "hotel-alpenrose": legacyRenamedHotel,
-      },
-      domainResolutionSource: "target",
-    });
-    const renamedResponse = await renamedApp.inject({
-      method: "GET",
-      url: "/api/booking-web/hosts/hotel-alpenrose.booking.localhost",
-    });
-    expect(renamedResponse.statusCode).toBe(200);
-    expect(
-      compareCanonicalRedirectParity("target-renamed-property", renamedResponse.json()),
-    ).toEqual([]);
-    await renamedApp.close();
-
-    const customDomainApp = buildParityApp({
-      hotel: legacyCustomDomainHotel,
-      rooms: legacyRooms,
-      unavailableDates: legacyUnavailableDates,
-      domainResolutionSource: "target",
-    });
-    const customDomainResponse = await customDomainApp.inject({
-      method: "GET",
-      url: "/api/booking-web/hosts/book.alpenrose.example",
-    });
-    expect(customDomainResponse.statusCode).toBe(200);
-    expect(
-      compareHostParity(
-        "target-custom-domain",
-        legacyCustomDomainHotel,
-        customDomainResponse.json(),
-      ),
-    ).toEqual([]);
-    await customDomainApp.close();
-  });
-
   it("maps legacy rooms to target offers for localized currency searches", async () => {
     const app = buildParityApp({
       hotel: legacyHotel,
@@ -3377,7 +3320,6 @@ function buildParityApp(config: {
   hotel: LegacyHotelResponse;
   rooms: LegacyRoomResponse[];
   unavailableDates: LegacyUnavailableDatesResponse;
-  domainResolutionSource?: "legacy" | "target";
   slugAliases?: Record<string, LegacyHotelResponse>;
 }): ReturnType<typeof buildApp> {
   const profileRepository = createProfileRepository(config.hotel, config.slugAliases ?? {});
@@ -3389,7 +3331,6 @@ function buildParityApp(config: {
     publicHotelProfileRepository: profileRepository,
     publicHotelQuoteRepository: quoteRepository,
     bookingWebCalendarRepository: calendarRepository,
-    bookingDomainResolutionSource: config.domainResolutionSource,
     bookingWebPublicNow: () => new Date("2026-06-06T11:00:00.000Z"),
   });
 }

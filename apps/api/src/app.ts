@@ -133,7 +133,6 @@ import {
   type BookingWebCalendarRepository,
   type BookingWebCheckoutAdapter,
   type BookingWebPublicRoutesOptions,
-  type BookingDomainResolutionSource,
 } from "./routes/bookingWebPublic.js";
 import type { BookingHotelChangeRequestRepository } from "./routes/bookingChangeRequests.js";
 import {
@@ -309,7 +308,6 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   platformPropertyLifecycle?: PlatformPropertyLifecycleRoutesOptions;
   marketplaceDiscoveryAllowedOrigins?: string[];
   identityPrivacyAllowedOrigins?: string[];
-  bookingDomainResolutionSource?: BookingDomainResolutionSource;
   bookingWebCalendarRepository?: BookingWebCalendarRepository;
   bookingWebCheckoutAdapter?: BookingWebCheckoutAdapter;
   bookingWebAffiliateHotelResolver?: BookingWebAffiliateHotelResolver;
@@ -390,7 +388,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       prefix: "/api/booking-web",
       profileRepository: options.publicHotelProfileRepository,
       quoteRepository: options.publicHotelQuoteRepository,
-      bookingDomainResolutionSource: options.bookingDomainResolutionSource,
       calendarRepository: options.bookingWebCalendarRepository,
       checkoutAdapter: options.bookingWebCheckoutAdapter,
       affiliateHotelResolver:

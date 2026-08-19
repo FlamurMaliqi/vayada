@@ -80,13 +80,10 @@ Implementation owner: TypeScript `apps/api` route backed by a
 Booking, PMS, Marketplace, Finance, or Channex-shaped payloads directly. Legacy
 product systems may feed the read model through compatibility adapters during
 the rewrite, but the HTTP response is the distribution projection.
-Until VAY-666 adds the canonical distribution table/backfill, `apps/api` uses a
-Booking DB compatibility adapter that maps legacy public hotel fields into the
-distribution projection and treats PMS availability freshness as unknown.
-The compatibility route is registered only when `BOOKING_DATABASE_URL` is
-configured. Without that repository config, `/api/ai/hotels/{slug}` is not
-mounted and consumers should treat the response as route-not-found/404 rather
-than an empty distribution projection.
+`apps/api` now always serves this contract from `TARGET_DATABASE_URL`, using
+either the target public profile projection or the active immutable Booking
+publication. The legacy `booking_hotels` database reader and profile source
+were retired after the next deployment lane made them unreachable.
 
 Intended consumers:
 
