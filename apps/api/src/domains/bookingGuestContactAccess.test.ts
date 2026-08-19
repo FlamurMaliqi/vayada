@@ -53,7 +53,13 @@ describe("guestContactForPropertyPlan", () => {
   });
 
   it("does not treat payment confirmation as host acceptance", () => {
-    expect(BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL).toContain("actor_type = 'property_user'");
+    expect(BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL).not.toContain("actor_type = 'property_user'");
+    expect(BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL).toContain("'guest_booking.created'");
+    expect(BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL).toContain("'guest_booking.payment_received'");
+    expect(BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL).toContain(
+      "booking.booking_metadata ->> 'acceptanceMode' = 'instant'",
+    );
+    expect(BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL).toContain("to_status = 'confirmed'");
     expect(BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL).not.toContain("payment_status");
   });
 

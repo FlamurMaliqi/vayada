@@ -678,7 +678,10 @@ describe("target PMS operations command repository", () => {
             children: 0,
             roomCount: 1,
             totalAmount: "600.00",
-            bookingMetadata: directRevenueFields.bookingMetadata,
+            bookingMetadata: {
+              ...directRevenueFields.bookingMetadata,
+              acceptanceMode: "request",
+            },
           },
         ]);
       }
@@ -723,6 +726,12 @@ describe("target PMS operations command repository", () => {
     expect(client.calls.some(({ text }) => text.includes("SET status = 'paid'"))).toBe(true);
     expect(captureCalls).toBe(1);
     expect(client.calls.some(({ text }) => text.includes("nightly_revenue_evidence"))).toBe(true);
+    expect(
+      client.calls.some(
+        ({ text, values }) =>
+          text.includes("'guest_booking.accepted'") && values.includes("property_user"),
+      ),
+    ).toBe(true);
     expect(
       client.calls.some(({ values }) => values.some((value) => String(value).includes("email."))),
     ).toBe(true);
@@ -936,11 +945,39 @@ describe("target PMS operations command repository", () => {
   });
 
   it.each([
-    { method: "paypal", lifecycleStatus: "pending_payment" },
-    { method: "pay_at_property", lifecycleStatus: "confirmed" },
+    {
+      method: "paypal",
+      lifecycleStatus: "pending_payment",
+      acceptanceMode: "instant",
+      automaticallyAccepted: true,
+    },
+    {
+      method: "paypal",
+      lifecycleStatus: "pending_payment",
+      acceptanceMode: "request",
+      automaticallyAccepted: false,
+    },
+    {
+      method: "pay_at_property",
+      lifecycleStatus: "confirmed",
+      acceptanceMode: "instant",
+      automaticallyAccepted: true,
+    },
+    {
+      method: "paypal",
+      lifecycleStatus: "pending_payment",
+      acceptanceMode: undefined,
+      automaticallyAccepted: false,
+    },
+    {
+      method: "paypal",
+      lifecycleStatus: "pending_payment",
+      acceptanceMode: "legacy",
+      automaticallyAccepted: false,
+    },
   ] as const)(
-    "records commission-aware $method settlement",
-    async ({ method, lifecycleStatus }) => {
+    "records commission-aware $method settlement in $acceptanceMode mode",
+    async ({ method, lifecycleStatus, acceptanceMode, automaticallyAccepted }) => {
       const { client, repository } = createRepository((text, values) => {
         if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
         if (text.includes("FROM platform.idempotency_keys")) return ok();
@@ -976,6 +1013,10 @@ describe("target PMS operations command repository", () => {
               guestName: "Alex Guest",
               propertyName: "Hotel Alpenrose",
               ...directRevenueFields,
+              bookingMetadata: {
+                ...directRevenueFields.bookingMetadata,
+                acceptanceMode,
+              },
               acceptedMethods: [method],
               depositPolicy: { paypalEmail: "host@example.test" },
             },
@@ -1077,6 +1118,8 @@ describe("target PMS operations command repository", () => {
       expect(mutation.text).toContain("payment_status = 'paid'");
       expect(mutation.text).toContain("balance_amount = 0");
       expect(mutation.values[4]).toBe("property_user");
+      expect(mutation.values[8]).toBe(automaticallyAccepted);
+      expect(mutation.text).toContain("automatic_acceptance_event");
       const financePayment = requiredCall(client, "INSERT INTO finance.payments");
       expect(financePayment.values).toContain(method);
       expect(financePayment.values).toContain("600.00");

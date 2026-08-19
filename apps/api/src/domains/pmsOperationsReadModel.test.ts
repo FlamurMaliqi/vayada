@@ -86,7 +86,8 @@ describe("target PMS reservation stay dates", () => {
     expect(listQuery).toContain('AS "guestContactAccepted"');
     expect(listQuery).toContain('primary_guest.special_requests AS "primaryGuestSpecialRequests"');
     expect(listQuery).toContain("FROM booking.booking_addon_selections selection");
-    expect(listQuery).toContain("contact_event.actor_type = 'property_user'");
+    expect(listQuery).toContain("'guest_booking.accepted'");
+    expect(listQuery).not.toContain("contact_event.actor_type = 'property_user'");
     expect(listQuery).toContain("booking.booking_metadata ->> 'acceptedPaymentDeadlineAt'");
     expect(listQuery).toContain('booking.expected_payment_method AS "expectedPaymentMethod"');
     expect(listQuery).toContain("FROM booking.nightly_revenue_evidence evidence");

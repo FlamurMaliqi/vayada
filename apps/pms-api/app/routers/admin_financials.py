@@ -30,6 +30,10 @@ from app.models.financials import (
 )
 from app.repositories.booking_repo import BookingRepository
 from app.repositories.payment_repo import PaymentRepository
+from app.services.guest_contact_access import (
+    fetch_guest_contact_plan,
+    mask_booking_guest_contacts,
+)
 from app.services.invoice_service import (
     _amount_paid,
     derive_payment_status,
@@ -63,15 +67,20 @@ async def _load_invoice_pairs(
     derived (not a column). `fetch_limit` caps how many bookings come
     back; pagination + counts are computed against the derived list.
     """
+    plan = await fetch_guest_contact_plan(hotel_id)
     bookings = await BookingRepository.list_by_hotel_id(
-        hotel_id, search=search, limit=fetch_limit, offset=0
+        hotel_id,
+        search=search,
+        hide_unaccepted_guest_contact=plan == "commission",
+        limit=fetch_limit,
+        offset=0,
     )
     if not bookings:
         return []
     booking_ids = [str(b["id"]) for b in bookings]
     payments = await PaymentRepository.list_by_booking_ids(booking_ids)
     grouped = index_payments_by_booking(payments)
-    return [(b, grouped.get(str(b["id"]), [])) for b in bookings]
+    return [(mask_booking_guest_contacts(b, plan), grouped.get(str(b["id"]), [])) for b in bookings]
 
 
 @router.get("/summary", response_model=FinancialsSummary)
@@ -185,7 +194,8 @@ async def _load_invoice_or_404(hotel_id: str, booking_id: str) -> tuple[dict, li
     if not booking or str(booking["hotel_id"]) != hotel_id:
         raise HTTPException(status_code=404, detail="Invoice not found")
     payments = await PaymentRepository.list_by_booking_ids([booking_id])
-    return booking, payments
+    plan = await fetch_guest_contact_plan(hotel_id)
+    return mask_booking_guest_contacts(booking, plan), payments
 
 
 @router.get("/invoices/export.csv")
@@ -304,7 +314,8 @@ async def record_payment(
         data.payment_method,
         derive_status(booking_after, new_paid),
     )
-    return to_detail(booking_after, payments_after)
+    plan = await fetch_guest_contact_plan(hotel_id)
+    return to_detail(mask_booking_guest_contacts(booking_after, plan), payments_after)
 
 
 @router.get("/payments", response_model=PaymentLedgerResponse)

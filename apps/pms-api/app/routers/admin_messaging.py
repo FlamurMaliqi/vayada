@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
+from app.database import Database
 from app.dependencies import require_hotel_admin
 from app.models.messaging import (
     Message,
@@ -25,6 +26,11 @@ from app.repositories.platform_media_repo import (
     normalize_attachment_content_type,
 )
 from app.services import channex_service
+from app.services.guest_contact_access import (
+    HIDDEN_GUEST_CONTACT,
+    fetch_guest_contact_plan,
+    guest_contacts_are_visible,
+)
 from app.utils import get_hotel_id
 
 logger = logging.getLogger(__name__)
@@ -119,6 +125,42 @@ def _thread_to_model(row: dict) -> MessageThread:
     )
 
 
+async def _mask_thread_guest_contacts(rows: list[dict], hotel_id: str) -> list[dict]:
+    plan = await fetch_guest_contact_plan(hotel_id)
+    if plan == "fixed":
+        return rows
+    booking_ids = list({str(row["booking_id"]) for row in rows if row.get("booking_id")})
+    booking_rows = (
+        await Database.fetch(
+            """
+            SELECT id, status, contact_details_revealed_at,
+                   finalization_started_at, finalization_completed_at
+              FROM bookings
+             WHERE hotel_id = $1 AND id = ANY($2::uuid[])
+            """,
+            hotel_id,
+            booking_ids,
+        )
+        if booking_ids
+        else []
+    )
+    bookings = {str(row["id"]): dict(row) for row in booking_rows}
+    return [
+        row
+        if (
+            row.get("booking_id")
+            and (booking := bookings.get(str(row["booking_id"])))
+            and guest_contacts_are_visible(booking, plan)
+        )
+        else {**row, "guest_email": HIDDEN_GUEST_CONTACT}
+        for row in rows
+    ]
+
+
+async def _masked_thread_model(row: dict, hotel_id: str) -> MessageThread:
+    return _thread_to_model((await _mask_thread_guest_contacts([row], hotel_id))[0])
+
+
 def _message_to_model(row: dict, attachments: list) -> Message:
     return Message(
         id=str(row["id"]),
@@ -155,7 +197,7 @@ async def list_threads(
         limit=limit,
         before=before,
     )
-    threads = [_thread_to_model(r) for r in rows]
+    threads = [_thread_to_model(r) for r in await _mask_thread_guest_contacts(rows, hotel_id)]
     next_cursor = (
         rows[-1]["last_message_at"].isoformat()
         if len(rows) == limit and rows[-1].get("last_message_at")
@@ -183,7 +225,7 @@ async def get_thread(
         _message_to_model(m, attachments_by_msg.get(str(m["id"]), [])) for m in message_rows
     ]
     return ThreadDetailResponse(
-        thread=_thread_to_model(thread_row),
+        thread=await _masked_thread_model(thread_row, hotel_id),
         messages=messages,
     )
 
@@ -398,7 +440,7 @@ async def mark_thread_read(
     row = await MessageThreadRepository.mark_all_read(thread_id, hotel_id)
     if not row:
         raise HTTPException(status_code=404, detail="Thread not found")
-    return _thread_to_model(row)
+    return await _masked_thread_model(row, hotel_id)
 
 
 @router.post("/messaging/threads/{thread_id}/close", response_model=MessageThread)
@@ -418,7 +460,7 @@ async def close_thread(
         logger.warning("Channex close_thread failed (continuing locally): %s", e)
 
     row = await MessageThreadRepository.update_status(thread_id, hotel_id, "closed")
-    return _thread_to_model(row) if row else _thread_to_model(thread)
+    return await _masked_thread_model(row or thread, hotel_id)
 
 
 @router.post("/messaging/threads/{thread_id}/no-reply-needed", response_model=MessageThread)
@@ -443,7 +485,7 @@ async def mark_no_reply_needed(
         raise HTTPException(status_code=502, detail=f"Channex call failed: {e}") from e
 
     row = await MessageThreadRepository.update_status(thread_id, hotel_id, "no_reply_needed")
-    return _thread_to_model(row) if row else _thread_to_model(thread)
+    return await _masked_thread_model(row or thread, hotel_id)
 
 
 @router.get("/messaging/unread-count", response_model=UnreadCountResponse)

@@ -7,6 +7,10 @@ from urllib.parse import quote, urlparse
 
 from app.channels import channel_label as _ota_channel_label  # re-exported for tests
 from app.config import settings
+from app.services.guest_contact_access import (
+    fetch_guest_contact_plan,
+    mask_booking_guest_contacts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -347,6 +351,12 @@ def _booking_request_reply_to(booking: dict) -> str:
     return settings.VAYADA_OPS_EMAIL
 
 
+async def _booking_for_host(booking: dict) -> dict:
+    hotel_id = booking.get("hotel_id")
+    plan = await fetch_guest_contact_plan(str(hotel_id)) if hotel_id else "commission"
+    return mask_booking_guest_contacts(booking, plan)
+
+
 def _bank_transfer_details_html(booking: dict) -> str:
     details = booking.get("bank_details") or {}
     if booking.get("payment_method") != "bank_transfer" or not details:
@@ -385,8 +395,9 @@ def _bank_transfer_details_html(booking: dict) -> str:
 
 async def send_booking_request_notification(hotel_email: str, booking: dict):
     """Notify host of new booking request with Accept/Reject actions."""
-    subject, html_body = _render_request_status_email(booking, "pending")
-    reply_to = _booking_request_reply_to(booking)
+    host_booking = await _booking_for_host(booking)
+    subject, html_body = _render_request_status_email(host_booking, "pending")
+    reply_to = _booking_request_reply_to(host_booking)
     await _send_to_host_and_ops(hotel_email, subject, html_body, reply_to=reply_to)
 
 
@@ -526,19 +537,19 @@ async def send_guest_booking_expired(guest_email: str, booking: dict):
 
 async def send_host_booking_withdrawn(hotel_email: str, booking: dict):
     """Notify host that guest withdrew their pending booking request."""
-    subject, html_body = _render_request_status_email(booking, "cancelled")
+    subject, html_body = _render_request_status_email(await _booking_for_host(booking), "cancelled")
     await _send_to_host_and_ops(hotel_email, subject, html_body)
 
 
 async def send_host_booking_expired(hotel_email: str, booking: dict):
     """Notify host that a booking expired because they didn't respond."""
-    subject, html_body = _render_request_status_email(booking, "expired")
+    subject, html_body = _render_request_status_email(await _booking_for_host(booking), "expired")
     await _send_to_host_and_ops(hotel_email, subject, html_body)
 
 
 async def send_host_booking_rejected(hotel_email: str, booking: dict, reason: str | None = None):
     """Notify host (and ops) that they declined the booking request."""
-    subject, html_body = _render_request_status_email(booking, "declined")
+    subject, html_body = _render_request_status_email(await _booking_for_host(booking), "declined")
     await _send_to_host_and_ops(hotel_email, subject, html_body)
 
 
@@ -599,13 +610,13 @@ async def send_guest_booking_withdrawn(guest_email: str, booking: dict):
 
 async def send_host_booking_accepted(hotel_email: str, booking: dict):
     """Confirm to host that they accepted the booking."""
-    subject, html_body = _render_request_status_email(booking, "accepted")
+    subject, html_body = _render_request_status_email(await _booking_for_host(booking), "accepted")
     return await _send_to_host_and_ops(hotel_email, subject, html_body)
 
 
 async def send_host_booking_accepted_to(recipient_email: str, booking: dict):
     """Send one accepted-booking host/ops delivery for retry checkpointing."""
-    subject, html_body = _render_request_status_email(booking, "accepted")
+    subject, html_body = _render_request_status_email(await _booking_for_host(booking), "accepted")
     return await _send_email(recipient_email, subject, html_body)
 
 
@@ -849,7 +860,7 @@ async def send_host_ota_booking_imported(
 
 async def send_host_guest_cancelled(hotel_email: str, booking: dict):
     """Notify host that a guest cancelled their confirmed booking."""
-    subject, html_body = _render_request_status_email(booking, "cancelled")
+    subject, html_body = _render_request_status_email(await _booking_for_host(booking), "cancelled")
     await _send_to_host_and_ops(hotel_email, subject, html_body)
 
 
@@ -898,6 +909,7 @@ def _change_diff_html(booking: dict, change_request: dict) -> str:
 async def send_host_change_request(hotel_email: str, booking: dict, change_request: dict):
     """Notify host of a guest's change request, with a deep link into PMS
     and approve/decline shortcut buttons."""
+    booking = await _booking_for_host(booking)
     booking_id = booking.get("id", "")
     pms_link = f"https://pms.vayada.com/bookings/{booking_id}"
     subject = f"Booking Change Requested — {booking['booking_reference']}"
