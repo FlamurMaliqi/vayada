@@ -13,12 +13,16 @@ const OTHER_CATEGORY = "12100000-0000-4000-8000-000000000005";
 const ARCHIVED_CATEGORY = "12100000-0000-4000-8000-000000000006";
 const EXPENSE = "12100000-0000-4000-8000-00000000000a";
 const RECEIPT = "12100000-0000-4000-8000-000000000008";
+const ACCEPTED_AT = "2026-08-11T00:30:00.000Z";
 if (URL && !/(^|[_-])(test|verify)([_-]|$)/i.test(new globalThis.URL(URL).pathname))
   throw new Error("Unsafe test database");
 
 describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
   const admin = new pg.Client({ connectionString: URL ?? "postgresql://disabled" });
-  const repository = createPgFinanceManualExpenseRepository(URL ?? "postgresql://disabled");
+  const repository = createPgFinanceManualExpenseRepository(
+    URL ?? "postgresql://disabled",
+    () => new Date(ACCEPTED_AT),
+  );
 
   beforeAll(async () => {
     await admin.connect();
@@ -26,6 +30,7 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
     await admin.query(`INSERT INTO identity.users (id,email,name,status) VALUES ('${ACTOR}','manual-expense@example.test','Manual expense','active');
       INSERT INTO hotel_catalog.properties (id,public_id,display_name) VALUES ('${PROPERTY}','manual-expense','Manual expense'),
         ('${OTHER_PROPERTY}','manual-expense-other','Manual expense other');
+      INSERT INTO hotel_catalog.property_locations (property_id,timezone) VALUES ('${PROPERTY}','America/Los_Angeles'),('${OTHER_PROPERTY}','Europe/Berlin');
       INSERT INTO pms.property_pricing_settings (property_id,currency) VALUES ('${PROPERTY}','EUR'),('${OTHER_PROPERTY}','USD');
       INSERT INTO finance.expense_categories (id,property_id,name,color,archived_at) VALUES ('${CATEGORY}','${PROPERTY}','Operations','#123456',NULL),
         ('${OTHER_CATEGORY}','${OTHER_PROPERTY}','Other','#654321',NULL),
@@ -34,6 +39,153 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
         VALUES ('${RECEIPT}','test','manual-expense-receipt','private','finance.expense.receipt','${PROPERTY}',
          'finance','expense','${EXPENSE}','active','${ACTOR}'),('12100000-0000-4000-8000-000000000009','test','wrong-purpose','private','pms.messaging.attachment','${PROPERTY}','pms','expense','${EXPENSE}','active','${ACTOR}')`);
   });
+
+  it("archives exactly once with canonical timezone and confidential evidence", async () => {
+    const sourceId = crypto.randomUUID();
+    await expect(repository.create(command(sourceId, "archive-source"))).resolves.toMatchObject({
+      ok: true,
+      outcome: "created",
+    });
+    // prettier-ignore
+    await expect(repository.archive({ ...archiveCommand("archive-cross-property", 1, sourceId), propertyId: OTHER_PROPERTY })).resolves.toEqual({ ok: false, code: "not_found" });
+    // prettier-ignore
+    expect((await admin.query(`SELECT (SELECT count(*)::int FROM finance.expenses WHERE reverses_expense_id=$1) AS reversals,(SELECT count(*)::int FROM platform.idempotency_keys WHERE property_id=$2 AND operation='finance.manual_expense.archive') AS keys,(SELECT count(*)::int FROM platform.product_audit_events WHERE property_id=$2 AND action='finance.manual_expense.archive') AS audits`, [sourceId, OTHER_PROPERTY])).rows[0]).toEqual({ reversals: 0, keys: 0, audits: 0 });
+    // prettier-ignore
+    await expect(repository.archive(archiveCommand("archive-stale", 2, sourceId))).resolves.toEqual({ ok: false, code: "revision_conflict" });
+    await admin.query("DELETE FROM hotel_catalog.property_locations WHERE property_id=$1", [
+      PROPERTY,
+    ]);
+    // prettier-ignore
+    await expect(repository.archive(archiveCommand("archive-zone-missing", 1, sourceId))).resolves.toEqual({ ok: false, code: "evidence_mismatch" });
+    for (const [index, timeZone] of ["Foo/Bar", "US/Eastern"].entries()) {
+      await admin.query(
+        `INSERT INTO hotel_catalog.property_locations (property_id,timezone) VALUES ($1,$2)
+         ON CONFLICT (property_id) DO UPDATE SET timezone=EXCLUDED.timezone`,
+        [PROPERTY, timeZone],
+      );
+      // prettier-ignore
+      await expect(repository.archive(archiveCommand(`archive-zone-${index}`, 1, sourceId))).resolves.toEqual({ ok: false, code: "evidence_mismatch" });
+    }
+    await admin.query(
+      "UPDATE hotel_catalog.property_locations SET timezone='America/Los_Angeles' WHERE property_id=$1",
+      [PROPERTY],
+    );
+    const attempts = [
+      archiveCommand("archive-a", 1, sourceId),
+      archiveCommand("archive-b", 1, sourceId),
+    ];
+    attempts[0] = {
+      ...attempts[0]!,
+      commandId: attempts[0]!.commandId.toUpperCase(),
+      propertyId: PROPERTY.toUpperCase(),
+      expenseId: sourceId.toUpperCase(),
+    };
+    const raced = await Promise.all(attempts.map((value) => repository.archive(value)));
+    // prettier-ignore
+    expect(raced.map((value) => value.ok ? value.outcome : value.code).sort()).toEqual(["archived", "revision_conflict"]);
+    const winnerIndex = raced.findIndex((value) => value.ok);
+    const winner = attempts[winnerIndex]!;
+    const archiveId = winner.commandId.toLowerCase();
+    expect(raced[winnerIndex]).toMatchObject({
+      ok: true,
+      outcome: "archived",
+      item: {
+        id: archiveId,
+        incurredOn: "2026-08-10",
+        sourceKey: `finance.manual_expense.archive:${archiveId}`,
+        reversesExpenseId: sourceId,
+        revision: 1,
+      },
+    });
+    await admin.query("UPDATE finance.expenses SET notes='later',revision=2 WHERE id=$1", [
+      archiveId,
+    ]);
+    // prettier-ignore
+    await expect(repository.archive(winner)).resolves.toMatchObject({ ok: true, outcome: "replayed", item: { id: archiveId, revision: 1 } });
+    // prettier-ignore
+    await expect(repository.archive({ ...winner, commandId: crypto.randomUUID() })).resolves.toEqual({ ok: false, code: "idempotency_conflict" });
+    // prettier-ignore
+    await expect(repository.archive(archiveCommand("archive-repeat", 1, sourceId))).resolves.toEqual({ ok: false, code: "revision_conflict" });
+    // prettier-ignore
+    await expect(repository.archive({ ...archiveCommand("archive-hostile", 1, sourceId), unexpected: "private" } as never)).resolves.toEqual({ ok: false, code: "invalid_command" });
+
+    const evidence = await admin.query(
+      `SELECT (SELECT jsonb_agg(jsonb_build_object('id',id::text,'kind',entry_kind,'reverses',reverses_expense_id::text) ORDER BY created_at,id)
+         FROM finance.expenses WHERE id=$1 OR reverses_expense_id=$1) AS history,
+        jsonb_build_object('key',audit_key,'redacted',redacted_payload,'private',private_payload,'metadata',audit_metadata) AS audit
+       FROM platform.product_audit_events WHERE action='finance.manual_expense.archive' AND target_resource_id=$2`,
+      [sourceId, archiveId],
+    );
+    expect(evidence.rows[0].history).toEqual([
+      { id: sourceId, kind: "expense", reverses: null },
+      { id: archiveId, kind: "reversal", reverses: sourceId },
+    ]);
+    // prettier-ignore
+    expect(evidence.rows[0].audit).toMatchObject({ key: expect.stringContaining(`.property.${PROPERTY}.expense.${archiveId}.`),
+      redacted: { commandId: archiveId, previousExpenseId: sourceId, expenseId: archiveId, outcome: "archived", revision: 1 },
+      private: { reason: "test", acceptedAt: ACCEPTED_AT, propertyTimeZone: "America/Los_Angeles", previous: { id: sourceId }, next: { id: archiveId, entryKind: "reversal" } },
+      metadata: { requestId: winner.audit.requestId, actorOrganizationId: winner.audit.actor.organizationId.toLowerCase() } });
+    expect(evidence.rows[0].audit.redacted).not.toHaveProperty("reason");
+    const correctionSource = crypto.randomUUID();
+    const correctionId = crypto.randomUUID();
+    await repository.create(command(correctionSource, "archive-correction-source"));
+    // prettier-ignore
+    await expect(repository.update({ ...mutation("archive-correction", 1, correctionSource, correctionId), incurredOn: "2026-08-11" })).resolves.toMatchObject({ ok: true, outcome: "corrected" });
+    // prettier-ignore
+    await expect(repository.archive(archiveCommand("archive-current-correction", 1, correctionId))).resolves.toMatchObject({ ok: true, outcome: "archived", item: { reversesExpenseId: correctionId } });
+
+    const rollbackSource = crypto.randomUUID();
+    await repository.create(command(rollbackSource, "archive-rollback-source"));
+    const rollback = archiveCommand("archive-rollback", 1, rollbackSource);
+    rollback.audit.actor.userId = crypto.randomUUID();
+    await expect(repository.archive(rollback)).rejects.toMatchObject({ code: "23503" });
+    const rolledBack = await admin.query(
+      `SELECT (SELECT count(*)::int FROM finance.expenses WHERE reverses_expense_id=$1) AS reversals,
+        (SELECT count(*)::int FROM platform.idempotency_keys WHERE operation='finance.manual_expense.archive' AND correlation_id=$2) AS keys,
+        (SELECT count(*)::int FROM platform.product_audit_events WHERE action='finance.manual_expense.archive' AND causation_id=$3) AS audits`,
+      [rollbackSource, rollback.audit.correlationId, rollback.audit.requestId],
+    );
+    expect(rolledBack.rows[0]).toEqual({ reversals: 0, keys: 0, audits: 0 });
+    await admin.query(
+      `UPDATE platform.idempotency_keys SET idempotency_metadata=jsonb_set(idempotency_metadata,'{result,item,unexpected}','true')
+       WHERE operation='finance.manual_expense.archive' AND response_resource_id=$1`,
+      [archiveId],
+    );
+    await expect(repository.archive(winner)).rejects.toThrow("archive replay evidence");
+    const commandRaceSource = crypto.randomUUID();
+    await repository.create(command(commandRaceSource, "archive-update-source"));
+    const archiveRace = archiveCommand("archive-update-archive", 1, commandRaceSource);
+    // prettier-ignore
+    const updateRace = { ...mutation("archive-update-update", 1, commandRaceSource), notes: "late update" };
+    // prettier-ignore
+    await admin.query(`BEGIN; SELECT pg_advisory_xact_lock(hashtextextended('finance.manual_expense|${PROPERTY}|${commandRaceSource}',0))`);
+    // prettier-ignore
+    const pendingRace = Promise.all([repository.archive(archiveRace), repository.update(updateRace)]);
+    let waiters = 0;
+    for (const deadline = Date.now() + 1_500; Date.now() < deadline && waiters < 2; ) {
+      // prettier-ignore
+      const staged = await admin.query<{ waiters: number }>(`SELECT count(*)::int AS waiters FROM pg_locks waiter JOIN pg_locks holder USING (locktype,database,classid,objid,objsubid) WHERE waiter.locktype='advisory' AND NOT waiter.granted AND holder.granted AND holder.pid=pg_backend_pid() AND waiter.pid<>holder.pid`);
+      waiters = staged.rows[0]?.waiters ?? 0;
+      if (waiters < 2) await admin.query("SELECT pg_sleep(0.01)");
+    }
+    await admin.query("ROLLBACK");
+    const commandRace = await pendingRace;
+    expect(waiters).toBe(2);
+    expect(commandRace.filter((value) => value.ok)).toHaveLength(1);
+    // prettier-ignore
+    expect(commandRace.find((value) => !value.ok)).toEqual({ ok: false, code: "revision_conflict" });
+    // prettier-ignore
+    await admin.query(`BEGIN; SELECT pg_advisory_xact_lock(hashtextextended('finance.manual_expense|${PROPERTY}|${commandRaceSource}',0))`);
+    // prettier-ignore
+    const timeouts = await Promise.all([repository.archive(archiveCommand("archive-timeout", 1, commandRaceSource)), repository.update({ ...mutation("update-timeout", 1, commandRaceSource), notes: "late" })]);
+    await admin.query("ROLLBACK");
+    // prettier-ignore
+    expect(timeouts).toEqual([{ ok: false, code: "write_unavailable" }, { ok: false, code: "write_unavailable" }]);
+    await admin.query(`BEGIN; SET LOCAL session_replication_role=replica;
+      DELETE FROM finance.expenses WHERE property_id='${PROPERTY}';
+      DELETE FROM platform.product_audit_events WHERE property_id='${PROPERTY}';
+      DELETE FROM platform.idempotency_keys WHERE property_id='${PROPERTY}'; COMMIT`);
+  }, 15_000);
   // prettier-ignore
   afterAll(async () => { await repository.close(); await cleanup(); await admin.end(); });
 
@@ -201,6 +353,7 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
       DELETE FROM platform.media_objects WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}') AND purpose='finance.expense.receipt';
       DELETE FROM finance.expense_categories WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
       DELETE FROM pms.property_pricing_settings WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
+      DELETE FROM hotel_catalog.property_locations WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
       DELETE FROM hotel_catalog.properties WHERE id IN ('${PROPERTY}','${OTHER_PROPERTY}');
       DELETE FROM identity.users WHERE id='${ACTOR}'; COMMIT`);
   }
@@ -232,4 +385,16 @@ function mutation(key: string, expectedRevision: number, expenseId = EXPENSE,
   const base = command(commandId, key);
   return { commandId, idempotencyKey: key, propertyId: PROPERTY, audit: base.audit,
     expectedRevision, expenseId };
+}
+
+function archiveCommand(key: string, expectedRevision: number, expenseId: string) {
+  const base = command(crypto.randomUUID(), key);
+  return {
+    commandId: base.commandId,
+    idempotencyKey: key,
+    propertyId: PROPERTY,
+    expectedRevision,
+    expenseId,
+    audit: base.audit,
+  };
 }
