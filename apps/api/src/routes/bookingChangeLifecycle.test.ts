@@ -36,6 +36,7 @@ class LifecyclePool {
         publicOfferKey: "room-deluxe:flex",
         roomTypeId: "6e14c338-b483-471f-95bc-47a3bc322910",
         rateType: "flexible",
+        addonPurchases: [] as Record<string, unknown>[],
       },
       inventoryReservation: {
         contractVersion: "pms.inventory-reservation.v1",
@@ -325,6 +326,7 @@ describe("target booking date-change lifecycle", () => {
       blocked: true,
       blockReason: "Only booking date changes are supported right now.",
     });
+    pool.booking.bookingMetadata.selectedOffer.addonPurchases = [{}];
     pool.booking.bookingMetadata.paymentMethod = "bank_transfer";
     await expect(
       adapter.previewChangeRequest("hotel", bookingId, {
@@ -334,8 +336,9 @@ describe("target booking date-change lifecycle", () => {
       }),
     ).resolves.toMatchObject({
       blocked: true,
-      blockReason: "Only unpaid pay-at-property bookings can be changed online right now.",
+      blockReason: "Bookings with purchased add-ons cannot be changed online yet.",
     });
+    pool.booking.bookingMetadata.selectedOffer.addonPurchases = [];
     await expect(
       adapter.submitChangeRequest(
         "hotel",
