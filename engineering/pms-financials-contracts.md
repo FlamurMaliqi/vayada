@@ -98,6 +98,20 @@ integration boundary.
 - Percentage change is `null` when the comparison denominator is zero. Absolute
   values are still returned.
 
+### OTA commission rules
+
+- Canonical OTA keys are `booking_com`, `airbnb`, `expedia`, `agoda` and
+  `other_ota`, aligned with Booking attribution.
+- Finance owns property-scoped percentage rule versions. Rates are decimal
+  strings from 0 through 100 with at most four fractional digits.
+- Effective windows are half-open `[startsAt, endsAt)` and cannot overlap for
+  one property/channel. A boundary where one version ends and another starts is
+  valid.
+- Resolution returns one applied rule identity/rate or explicit missing
+  evidence. It never substitutes a default rate.
+- Reporting consumes an immutable applied snapshot; changing a rule does not
+  reprice historical reservation economics.
+
 ### Expenses
 
 - Categories are property scoped. Defaults have stable system keys while their
@@ -214,7 +228,7 @@ match the named tab's query type after normalization; unknown keys return `400`.
 | `GET`              | `/revenue`                                                  | `RevenueQuery` → `RevenueResponse`                                              |
 | `GET/POST`         | `/expense-categories`                                       | none / `CategoryWrite` → `ItemResponse<Category[]>` / `WriteResponse<Category>` |
 | `PATCH/DELETE`     | `/expense-categories/:categoryId`                           | `CategoryPatch` / `Command` → `WriteResponse<Category>`                         |
-| `GET/POST`         | `/expenses`                                                 | `ExpenseQuery` / `ExpenseWrite` → `ExpensesResponse` / `WriteResponse<Expense>` |
+| `GET/POST`         | `/expenses`                                                 | `ExpenseQuery` / `ExpenseWrite` → conditional response; see below               |
 | `GET/PATCH/DELETE` | `/expenses/:expenseId`                                      | none / `ExpensePatch` / `Command` → item / `WriteResponse<Expense>`             |
 | `GET/PATCH/DELETE` | `/recurring-expenses/:ruleId`                               | none / `RecurrencePatch` / `Command` → item / `WriteResponse<RecurringRule>`    |
 | `GET`              | `/profit-loss`                                              | `ProfitLossQuery` → `ProfitLossResponse`                                        |
@@ -223,6 +237,8 @@ match the named tab's query type after normalization; unknown keys return `400`.
 
 V1 exports CSV for all five tabs. It does not create, retrieve, render, or send
 an official invoice document and does not promise PDF renditions.
+
+`POST /expenses` returns `WriteResponse<Expense>` without `recurrence`. With `recurrence`, it creates and returns only a `WriteResponse<RecurringRule>`; VAY-1232 owns future expense generation, and no current expense is created because no atomic expense-and-rule coordinator exists.
 
 P&L is computed from ledger/evidence rows; no second source-of-truth table is
 introduced.
