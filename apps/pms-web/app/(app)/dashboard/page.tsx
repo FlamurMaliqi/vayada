@@ -8,13 +8,13 @@ import { bookingsService, Booking, BookingAdditionalGuest, BookingNote } from "@
 import { pmsSettingsService } from "@/services/settings";
 import { formatCurrency } from "@/lib/formatCurrency";
 import {
+  formatPropertyDate,
   getArrivalsToday,
   getDeparturesToday,
   getOccupiedTonight,
   getPropertyToday,
   getRemainingArrivals,
   getRemainingDepartures,
-  isCheckedInArrival,
   isCheckedOutDeparture,
   isNotCheckedInDeparture,
 } from "@/lib/dashboardBookings";
@@ -240,7 +240,7 @@ export default function DashboardPage() {
     );
   }
 
-  const dateLabel = new Date().toLocaleDateString("en-US", {
+  const dateLabel = formatPropertyDate(today, {
     weekday: "long",
     month: "long",
     day: "numeric",
@@ -360,14 +360,8 @@ export default function DashboardPage() {
                       <span className="text-gray-500">{roomLabel(b)}</span>
                     </p>
                   </div>
-                  <span
-                    className={`shrink-0 text-[11px] font-medium px-2 py-0.5 rounded-full ${
-                      isCheckedInArrival(b)
-                        ? "bg-sky-100 text-sky-700"
-                        : "bg-green-100 text-green-700"
-                    }`}
-                  >
-                    {isCheckedInArrival(b) ? t("dashboard.checkedIn") : t("dashboard.confirmed")}
+                  <span className="shrink-0 rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-medium text-green-700">
+                    {t("dashboard.confirmed")}
                   </span>
                 </button>
               ))}
