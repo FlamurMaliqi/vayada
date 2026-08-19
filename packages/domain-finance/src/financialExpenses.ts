@@ -76,7 +76,7 @@ export type FinanceExpenseRecurrenceWrite = {
 // prettier-ignore
 export type FinanceExpenseWrite = FinanceExpenseCommand & { incurredOn: string; vendor: string;
   categoryId: string; amount: FinanceExpenseMoney; notes?: string; supplierInvoiceNumber?: string;
-  recurrence?: FinanceExpenseRecurrenceWrite } & FinanceExpensePaymentWrite;
+  receiptMediaId?: string; recurrence?: FinanceExpenseRecurrenceWrite } & FinanceExpensePaymentWrite;
 export type FinanceExpenseCommandResult<T> =
   | { ok: true; outcome: "created" | "updated" | "replayed"; item: T }
   | {
@@ -148,6 +148,8 @@ export function parseFinanceExpenseWrite(value: unknown): FinanceExpenseWrite | 
       : value.paidOn !== undefined && value.paidOn !== null) ||
     !optionalTrimmed(value.notes, 1, 2000) ||
     !optionalTrimmed(value.supplierInvoiceNumber, 1, 200) ||
+    !optionalUuid(value.receiptMediaId) ||
+    (recurrence !== undefined && value.receiptMediaId !== undefined) ||
     recurrence === null
   )
     return null;
@@ -164,6 +166,7 @@ export function parseFinanceExpenseWrite(value: unknown): FinanceExpenseWrite | 
     ...payment,
     notes: value.notes as string | undefined,
     supplierInvoiceNumber: value.supplierInvoiceNumber as string | undefined,
+    receiptMediaId: value.receiptMediaId as string | undefined,
     recurrence: recurrence ?? undefined,
   });
 }
@@ -179,6 +182,7 @@ const EXPENSE_WRITE_KEYS = [
   "paidOn",
   "notes",
   "supplierInvoiceNumber",
+  "receiptMediaId",
   "recurrence",
 ];
 

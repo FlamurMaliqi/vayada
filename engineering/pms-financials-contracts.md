@@ -179,8 +179,9 @@ type RecurringRule = { id: string; categoryId: string; vendor: string; amount: M
   nextDueOn: Date; endsOn: Date | null; active: boolean; revision: number };
 type CategoryWrite = Command & { name: string; color: string; sortOrder: number }; type CategoryPatch = Command & Partial<Pick<Category, "name" | "color" | "sortOrder">>;
 type ExpenseWrite = Command & { incurredOn: Date; vendor: string; categoryId: string; amount: Money; notes?: string;
-  supplierInvoiceNumber?: string; recurrence?: { cadence: "weekly" | "monthly" | "yearly"; startsOn: Date; endsOn?: Date } } & ExpensePaymentWrite;
-type ExpensePatch = Command & Partial<Omit<ExpenseWrite, keyof Command | "recurrence" | keyof ExpensePaymentWrite>> & ExpenseSettlementPatch;
+  supplierInvoiceNumber?: string; receiptMediaId?: string;
+  recurrence?: { cadence: "weekly" | "monthly" | "yearly"; startsOn: Date; endsOn?: Date } } & ExpensePaymentWrite;
+type ExpensePatch = Command & Partial<Omit<ExpenseWrite, keyof Command | "receiptMediaId" | "recurrence" | keyof ExpensePaymentWrite>> & ExpenseSettlementPatch;
 type RecurrencePatch = Command & Partial<Pick<RecurringRule,
   "categoryId" | "vendor" | "amount" | "notes" | "paymentStatus" | "cadence" | "nextDueOn" | "endsOn">>;
 type ExportWrite = Command & ({ tab: "dashboard"; filters: DashboardQuery } |
@@ -238,7 +239,7 @@ match the named tab's query type after normalization; unknown keys return `400`.
 V1 exports CSV for all five tabs. It does not create, retrieve, render, or send
 an official invoice document and does not promise PDF renditions.
 
-`POST /expenses` returns `WriteResponse<Expense>` without `recurrence`. With `recurrence`, it creates and returns only a `WriteResponse<RecurringRule>`; VAY-1232 owns future expense generation, and no current expense is created because no atomic expense-and-rule coordinator exists.
+`POST /expenses` returns `WriteResponse<Expense>` without `recurrence`. A `receiptMediaId` is valid only on that non-recurring write. With `recurrence`, it creates and returns only a `WriteResponse<RecurringRule>`; VAY-1232 owns future expense generation, and no current expense is created because no atomic expense-and-rule coordinator exists.
 
 P&L is computed from ledger/evidence rows; no second source-of-truth table is
 introduced.
