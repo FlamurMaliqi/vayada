@@ -325,7 +325,7 @@ async function mutate(pool: pg.Pool, raw: UpdateFinanceManualExpenseCommand): Pr
       expenseId: next.id, outcome, revision: next.revision };
     // prettier-ignore
     const privateEvidence = { reason: raw.audit.reason, previous, next: { ...next,
-      notes: merged.notes ?? null, receiptMediaId: correction ? (receiptChanged ? raw.receiptMediaId ?? null : null) : previous.receiptMediaId } };
+      notes: merged.notes ?? null, receiptMediaId: correction ? (receiptChanged ? raw.receiptMediaId?.toLowerCase() ?? null : null) : previous.receiptMediaId } };
     await client.query(
       `INSERT INTO platform.product_audit_events
          (audit_key,product,action,occurred_at,tenant_scope,property_id,actor_type,
@@ -337,7 +337,7 @@ async function mutate(pool: pg.Pool, raw: UpdateFinanceManualExpenseCommand): Pr
                jsonb_build_object('requestId',$9::text,'requestedAt',$12::text,'actorOrganizationId',$13::text),
                'financial','confidential')`,
       // prettier-ignore
-      [`${UPDATE_OPERATION}.property.${raw.propertyId}.expense.${next.id}.key.${keyHash}.v1`,
+      [`${UPDATE_OPERATION}.property.${raw.propertyId.toLowerCase()}.expense.${next.id}.key.${keyHash}.v1`,
         UPDATE_OPERATION, acceptedAt, raw.propertyId, actor.kind === "user" ? actor.userId : null,
         next.id, reserved.rows[0].id, raw.audit.correlationId ?? raw.audit.requestId,
         raw.audit.requestId, JSON.stringify(redacted), JSON.stringify(privateEvidence),

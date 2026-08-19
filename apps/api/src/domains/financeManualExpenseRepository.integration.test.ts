@@ -180,12 +180,13 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
       `SELECT (SELECT count(*)::int FROM finance.expenses WHERE property_id=$1) AS expenses,
         (SELECT count(*)::int FROM platform.product_audit_events WHERE property_id=$1) AS audits,
         (SELECT count(*)::int FROM platform.idempotency_keys WHERE property_id=$1) AS keys,
+        (SELECT jsonb_build_object('key',audit_key,'private',private_payload) FROM platform.product_audit_events WHERE property_id=$1 AND causation_id=$3) AS "correctionAudit",
         (SELECT jsonb_build_object('redacted',redacted_payload,'private',private_payload,'metadata',audit_metadata)
          FROM platform.product_audit_events WHERE property_id=$1 AND causation_id=$2) AS audit`,
-      [PROPERTY, update.audit.requestId],
+      [PROPERTY, update.audit.requestId, correct.audit.requestId],
     );
-    expect(evidence.rows[0]).toMatchObject({ expenses: 2, audits: 7, keys: 7 });
     // prettier-ignore
+    expect(evidence.rows[0]).toMatchObject({ expenses: 2, audits: 7, keys: 7, correctionAudit: { key: expect.stringContaining(`.property.${PROPERTY}.`), private: { next: { receiptMediaId: goodReceipt } } } });
     expect(evidence.rows[0].audit).toMatchObject({ redacted: { commandId: update.commandId, outcome: "updated" },
       private: { reason: "test", previous: { notes: "later" }, next: { notes: "Updated note" } },
       metadata: { requestId: update.audit.requestId, actorOrganizationId: update.audit.actor.organizationId } });
