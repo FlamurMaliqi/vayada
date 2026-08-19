@@ -217,6 +217,7 @@ import {
   registerBookingGuestPolicyRoutes,
   type BookingGuestPolicyRoutesOptions,
 } from "./routes/bookingGuestPolicy.js";
+import { registerFinanceOtaCommissionSettingsRoutes as registerOtaSettings } from "./routes/financeOtaCommissionSettings.js";
 
 export type ApiAuthOptions = Omit<BackendAuthPluginOptions, "authorizationResolver"> & {
   rolePermissionRepository: RolePermissionRepository;
@@ -317,6 +318,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   affiliateDashboardRepository?: Partial<AffiliateDashboardReadRepository>;
   financeRepository?: FinanceRoutesOptions["repository"];
   financeSubscriptionService?: FinanceSubscriptionService;
+  financeOtaCommissionSettingsRepository?: Parameters<typeof registerOtaSettings>[1]["repository"];
   pmsFinanceCompatibilityRepository?: PmsFinanceCompatibilityRoutesOptions["repository"];
   financeXenditBankValidator?: FinanceXenditBankValidator;
   financePublicHotelProfileRepository?: PublicHotelProfileRepository;
@@ -697,6 +699,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerFinanceSubscriptionRoutes, {
       prefix: "/api",
       service: options.financeSubscriptionService,
+    });
+  }
+  if (options.financeOtaCommissionSettingsRepository) {
+    app.register(registerOtaSettings, {
+      prefix: "/api",
+      repository: options.financeOtaCommissionSettingsRepository,
     });
   }
   if (options.platformContactIntake) {
