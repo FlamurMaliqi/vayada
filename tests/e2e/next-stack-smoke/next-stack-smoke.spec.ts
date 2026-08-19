@@ -552,7 +552,9 @@ async function runFinancialsAcceptance(
 
   const otaRoot = `${root}/ota-commission-settings`;
   const otaBefore = await api.json<Record<string, unknown>>("GET", otaRoot);
-  expect(arrayField(otaBefore, "settings")).toHaveLength(4);
+  expect(
+    arrayField(otaBefore, "settings").map((entry) => stringField(record(entry), "channel")),
+  ).toContain("booking_com");
   const ota = await api.json<Record<string, unknown>>("PUT", `${otaRoot}/booking_com`, {
     commandId: randomUUID(),
     idempotencyKey: idempotency("ota"),

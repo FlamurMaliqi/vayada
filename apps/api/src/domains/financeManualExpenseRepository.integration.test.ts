@@ -212,10 +212,13 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
       ),
     ).resolves.toMatchObject({ rows: [{ lifecycle_status: "staged", retained: true }] });
     await admin.query("BEGIN");
-    await admin.query("SELECT id FROM platform.media_objects WHERE id=$1 FOR UPDATE", [RECEIPT]);
-    // prettier-ignore
-    await expect(repository.create({ ...input, idempotencyKey: "receipt-timeout" })).resolves.toEqual({ ok: false, code: "write_unavailable" });
-    await admin.query("ROLLBACK");
+    try {
+      await admin.query("SELECT id FROM platform.media_objects WHERE id=$1 FOR UPDATE", [RECEIPT]);
+      // prettier-ignore
+      await expect(repository.create({ ...input, idempotencyKey: "receipt-timeout" })).resolves.toEqual({ ok: false, code: "write_unavailable" });
+    } finally {
+      await admin.query("ROLLBACK");
+    }
     // prettier-ignore
     await admin.query(`BEGIN; SELECT id FROM hotel_catalog.properties WHERE id='${PROPERTY}' FOR KEY SHARE`);
     // prettier-ignore
