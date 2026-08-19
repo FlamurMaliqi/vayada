@@ -1,4 +1,4 @@
--- Migration: 0095_pms_room_assignment_optimization_settings
+-- Migration: 0097_pms_room_assignment_optimization_settings
 -- Owner: domain-pms; see VAY-667
 
 CREATE TABLE pms.room_assignment_optimization_settings (
