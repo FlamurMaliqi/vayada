@@ -38,11 +38,11 @@ behavior is called out per route:
 
 | TypeScript surface                                                                    | Legacy surface covered                                                             | Status                                                                                                                                        |
 | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET/PUT /api/booking/hotels/:hotelId/settings/addons`                                | Booking admin add-on settings.                                                     | Migrated route shape, still uses `BOOKING_DATABASE_URL`.                                                                                      |
-| `GET/PUT /api/booking/hotels/:hotelId/settings/guest-form`                            | Booking/PMS guest-form settings.                                                   | Migrated route shape, still uses `BOOKING_DATABASE_URL`; the retired PMS Python client is not called.                                         |
-| `GET/PUT /api/booking/hotels/:hotelId/settings/benefits`                              | Booking/PMS benefits.                                                              | Migrated route shape, still uses `BOOKING_DATABASE_URL`.                                                                                      |
-| `GET/PUT /api/booking/hotels/:hotelId/settings/localization`                          | Booking localization/currency settings.                                            | Migrated route shape, still uses `BOOKING_DATABASE_URL`.                                                                                      |
-| `GET/PUT /api/booking/hotels/:hotelId/settings/room-filters`                          | Booking design/room-filter settings.                                               | Migrated route shape, still uses `BOOKING_DATABASE_URL`.                                                                                      |
+| `GET/PUT /api/booking/hotels/:hotelId/settings/addons`                                | Booking admin add-on settings.                                                     | Migrated route shape always reads and writes the target Booking settings projection.                                                          |
+| `GET/PUT /api/booking/hotels/:hotelId/settings/guest-form`                            | Booking/PMS guest-form settings.                                                   | Migrated route shape always reads and writes the target projection; the retired PMS Python client is not called.                              |
+| `GET/PUT /api/booking/hotels/:hotelId/settings/benefits`                              | Booking/PMS benefits.                                                              | Migrated route shape always reads and writes the target Booking settings projection.                                                          |
+| `GET/PUT /api/booking/hotels/:hotelId/settings/localization`                          | Booking localization/currency settings.                                            | Migrated route shape always reads and writes the target Booking settings projection.                                                          |
+| `GET/PUT /api/booking/hotels/:hotelId/settings/room-filters`                          | Booking design/room-filter settings.                                               | Migrated route shape always reads and writes the target Booking settings projection.                                                          |
 | `GET /api/booking/hotels/:hotelId/reservations`                                       | Booking-admin reservation list backed by target Booking/PMS/Finance projections.   | Migrated route and target read model; no legacy PMS database connection.                                                                      |
 | `GET /api/ai/hotels/:slug` and `/api/booking-web/hotels/:slug`                        | Public hotel profile.                                                              | Migrated response contract always uses the target profile or active immutable publication through `TARGET_DATABASE_URL`.                      |
 | `GET /api/ai/hotels/:slug/quote` and `/api/booking-web/hotels/:slug/offers`           | Public room/rate quote.                                                            | Target mode reads the target projection; compatibility mode returns an unavailable quote without calling a legacy service.                    |
@@ -67,21 +67,21 @@ behavior is called out per route:
 
 ### Booking admin property, setup, domain, and design
 
-| Routes                                                                                                                                                                    | Consumers                      | apps/api status                                                                      | Disposition                                                                                                                                                                                                     |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /admin/hotels`, `GET /admin/me`                                                                                                                                      | BA, VA                         | Not migrated                                                                         | WorkOS identity plus hotel/resource selection. Replace with organization resource links and selected-property context.                                                                                          |
-| `GET /admin/settings/setup-status`                                                                                                                                        | BA, PMS setup links            | Not migrated                                                                         | Port as hotel-catalog/booking setup read model after canonical property setup facts exist.                                                                                                                      |
-| `GET /admin/settings/property`, `POST /admin/hotels`, `PATCH /admin/settings/property`, `GET /admin/hotels/{hotel_id}/deletion-impact`, `DELETE /admin/hotels/{hotel_id}` | BA, PMS, VA                    | Partially covered by public profile/settings but admin property CRUD is not migrated | Hotel catalog owns canonical property identity; Booking owns booking capabilities; Finance owns billing/payment flags. Split into contract-first setup/profile commands rather than porting this row wholesale. |
-| `POST /admin/settings/custom-domain`, `DELETE /admin/settings/custom-domain`, `GET /admin/settings/custom-domain/status`                                                  | BA, PMS custom-domain settings | Host read partially covered; admin writes not migrated                               | Port to target property/domain verification. Coordinate cutover with Booking Web host-resolution because custom-domain traffic breaks if verification state is not migrated.                                    |
-| `GET /admin/settings/design`, `PATCH /admin/settings/design`, `POST /admin/upload/images`                                                                                 | BA, PMS, VA design studio      | Upload proxy retired; design/media settings otherwise legacy-compatible              | Booking Admin uploads now use platform media sessions directly. `POST /admin/upload/images` is no longer registered.                                                                                            |
+| Routes                                                                                                                                                                    | Consumers                      | apps/api status                                                                                    | Disposition                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /admin/hotels`, `GET /admin/me`                                                                                                                                      | BA, VA                         | Not migrated                                                                                       | WorkOS identity plus hotel/resource selection. Replace with organization resource links and selected-property context.                                                                                          |
+| `GET /admin/settings/setup-status`                                                                                                                                        | BA, PMS setup links            | Not migrated                                                                                       | Port as hotel-catalog/booking setup read model after canonical property setup facts exist.                                                                                                                      |
+| `GET /admin/settings/property`, `POST /admin/hotels`, `PATCH /admin/settings/property`, `GET /admin/hotels/{hotel_id}/deletion-impact`, `DELETE /admin/hotels/{hotel_id}` | BA, PMS, VA                    | Partially covered by public profile/settings but admin property CRUD is not migrated               | Hotel catalog owns canonical property identity; Booking owns booking capabilities; Finance owns billing/payment flags. Split into contract-first setup/profile commands rather than porting this row wholesale. |
+| `POST /admin/settings/custom-domain`, `DELETE /admin/settings/custom-domain`, `GET /admin/settings/custom-domain/status`                                                  | BA, PMS custom-domain settings | Host read partially covered; admin writes not migrated                                             | Port to target property/domain verification. Coordinate cutover with Booking Web host-resolution because custom-domain traffic breaks if verification state is not migrated.                                    |
+| `GET /admin/settings/design`, `PATCH /admin/settings/design`, `POST /admin/upload/images`                                                                                 | BA, PMS, VA design studio      | Design settings migrated to target-backed `/api/booking/.../settings/design`; upload proxy retired | Booking Admin uses the typed settings route and platform media sessions. Audit any remaining external consumers before retiring the old Python routes.                                                          |
 
 ### Booking admin settings and commercial controls
 
-| Routes                                                                                                                                                                       | Consumers                   | apps/api status                                                                     | Disposition                                                                                          |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `GET /admin/addons`, `POST /admin/addons`, `PATCH /admin/addons/{addon_id}`, `DELETE /admin/addons/{addon_id}`, `GET /admin/settings/addons`, `PATCH /admin/settings/addons` | BA, VA, BW checkout         | Settings GET/PUT migrated; add-on catalog CRUD not migrated                         | Booking/checkout vertical. Reads first, then catalog CRUD and settings writes in the cutover window. |
-| `GET /admin/benefits`, `PUT /admin/benefits`                                                                                                                                 | BA, PMS                     | Migrated as target-shaped `/api/booking/.../settings/benefits`, legacy-backed       | Replace legacy route after target settings repository lands.                                         |
-| `GET /admin/promo-codes`, `POST /admin/promo-codes`, `PATCH /admin/promo-codes/{promo_id}`, `DELETE /admin/promo-codes/{promo_id}`                                           | BA, VA, BW promo validation | Public validation proxied through `BOOKING_PUBLIC_API_URL`; admin CRUD not migrated | Booking/checkout commercial rules vertical. Needed before legacy promo validation can disappear.     |
+| Routes                                                                                                                                                                       | Consumers                   | apps/api status                                                         | Disposition                                                                                                |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `GET /admin/addons`, `POST /admin/addons`, `PATCH /admin/addons/{addon_id}`, `DELETE /admin/addons/{addon_id}`, `GET /admin/settings/addons`, `PATCH /admin/settings/addons` | BA, VA, BW checkout         | Settings and add-on catalog CRUD migrated to target-backed typed routes | Keep Booking Admin on the target clients; audit external consumers before retiring the old Python routes.  |
+| `GET /admin/benefits`, `PUT /admin/benefits`                                                                                                                                 | BA, PMS                     | Migrated to target-backed `/api/booking/.../settings/benefits`          | Keep Booking Admin on the target client; audit external consumers before retiring the old Python routes.   |
+| `GET /admin/promo-codes`, `POST /admin/promo-codes`, `PATCH /admin/promo-codes/{promo_id}`, `DELETE /admin/promo-codes/{promo_id}`                                           | BA, VA, BW promo validation | Admin CRUD migrated to target-backed typed routes                       | Public promo validation is owned by the Booking Web checkout command surface, not this admin route family. |
 
 ### Booking analytics and events
 
@@ -180,9 +180,9 @@ Consequences:
 
 ### PMS admin property and setup
 
-| Routes                                                                                                                                                                                                                                                                                                                                             | Consumers                                  | apps/api status                                                                                  | Disposition                                                                                                                                                                                     |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /admin/register-hotel`, `GET /admin/hotel`, `PATCH /admin/hotel`, `GET /admin/hotel/deletion-impact`, `DELETE /admin/hotel`, `GET /admin/setup-status`, `GET /admin/benefits`, `PUT /admin/benefits`, `GET /admin/guest-form-settings`, `PATCH /admin/guest-form-settings`, `GET /admin/calendar-settings`, `PATCH /admin/calendar-settings` | PMS, BA setup handoff, API guest-form sync | Benefits/guest-form partly covered by Booking settings; PMS property/setup/calendar not migrated | Split: hotel catalog owns property identity; Booking owns guest-facing settings; PMS owns operational calendar settings. Guest-form sync is removed after target settings become shared source. |
+| Routes                                                                                                                                                                                                                                                                                                                                             | Consumers                                             | apps/api status                                                                              | Disposition                                                                                                                                                |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /admin/register-hotel`, `GET /admin/hotel`, `PATCH /admin/hotel`, `GET /admin/hotel/deletion-impact`, `DELETE /admin/hotel`, `GET /admin/setup-status`, `GET /admin/benefits`, `PUT /admin/benefits`, `GET /admin/guest-form-settings`, `PATCH /admin/guest-form-settings`, `GET /admin/calendar-settings`, `PATCH /admin/calendar-settings` | PMS, BA setup handoff, historical API guest-form sync | Benefits and guest-form settings are target-backed; PMS property/setup/calendar are separate | Hotel catalog owns property identity, Booking owns guest-facing settings, and PMS owns operational calendar settings. No apps/api guest-form sync remains. |
 
 ### PMS operations: inventory, rooms, room types, calendar, blocks
 
@@ -249,16 +249,17 @@ controls is not enough for staging rehearsal.
 
 ## Migration vertical order
 
-1. **B1: Booking settings target repository**
-   Replace the existing legacy-backed settings routes in `apps/api` for add-ons,
-   guest form, benefits, localization, and room filters. This removes one
-   `BOOKING_DATABASE_URL` use and gives Booking Admin a proven target write
-   path before larger booking commands.
+1. **Completed B1: Booking settings target repository**
+   The add-on, guest-form, benefits, localization, and room-filter routes now
+   always use the target settings read/write model. The source selector and
+   runtime branch are retired. The legacy repository is now unreachable and
+   remains only for the next deletion slice; `BOOKING_DATABASE_URL` is accepted
+   but inert until the following configuration cleanup.
 
-2. **B2: Public profile, host resolution, and domain verification**
-   Replace public profile/host reads and custom-domain admin writes with target
-   hotel catalog/domain verification. This gates Booking Web custom-domain
-   traffic and public AI profile correctness.
+2. **Completed B2: Public profile and host resolution**
+   Public profile and host-resolution reads use target hotel catalog/domain
+   models. Custom-domain admin writes also use the target domain-verification
+   route family.
 
 3. **B3: Public bookability quote/calendar reads**
    Replace PMS rooms and unavailable-date proxying with target distribution
@@ -331,27 +332,25 @@ The staging rehearsal milestone is gated by these verticals:
   payouts, booking expiry/cancellation, or calendar auto-open must be disabled
   or explicitly owned by the target runtime during the rehearsal.
 
-## First follow-up tickets to create
+## Immediate follow-up slices
 
-1. **VAY follow-up: Replace Booking settings legacy repository with target
-   repository**
-   - Scope: target read/write repository for add-ons, guest form, benefits,
-     localization, room filters; remove guest-form PMS sync from the route.
+1. **VAY follow-up: Delete the unreachable Booking settings legacy repository**
+   - Scope: remove `createPgBookingSettingsReadRepository`, its
+     `booking_hotels` SQL and legacy-only tests. Keep the inert
+     `BOOKING_DATABASE_URL` setting for the immediately following configuration
+     cleanup.
 
-2. **VAY follow-up: Replace public profile and Booking Web host resolution with
-   target property/domain read models**
-   - Scope: profile repository, custom-domain verification, host resolution,
-     parity fixtures for renamed/custom-domain hotels.
+2. **VAY follow-up: Remove the inert Booking database configuration**
+   - Scope: remove `BOOKING_DATABASE_URL` from config, tests, local scripts, and
+     environment documentation after the dormant settings adapter is gone.
 
-3. **VAY follow-up: Replace PMS public quote/calendar proxies with target
-   distribution read models**
-   - Scope: offers, calendar, freshness, unavailable reason parity; remove
-     read use of `PMS_PUBLIC_API_URL`.
+3. **VAY follow-up: Remove the public-bookability compatibility selector**
+   - Scope: keep the existing target quote/calendar repositories and remove
+     `PUBLIC_BOOKABILITY_SOURCE=legacy` plus its unavailable-quote branch.
 
-4. **VAY follow-up: Move Booking Web checkout commands to target Booking
-   handlers**
-   - Scope: create, confirm, status, lookup, cancel, withdraw, change request,
-     payment instructions, promo validation, and idempotent PMS handoff.
+4. **VAY follow-up: Remove the checkout-command compatibility selector**
+   - Scope: keep the existing target Booking command adapter and remove
+     `BOOKING_CHECKOUT_COMMAND_SOURCE=legacy_proxy` plus its unavailable branch.
 
 5. **VAY follow-up: Define PMS operations route contracts for rooms, room
    types, calendar, and operational reservations**

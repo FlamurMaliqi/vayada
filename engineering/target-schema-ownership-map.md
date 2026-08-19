@@ -145,7 +145,7 @@ Owner package: `domain-booking`.
 | `nightly_revenue_room_scopes`       | Booking/checkout            | Immutable PMS/offer integration attestations for property room types.                                        | Binds nightly evidence without a runtime dependency on PMS operational tables.                                                             |
 | `booking_guests`                    | Booking/checkout            | PMS booking guest fields, additional guests, booker guest details, guest country, arrival fields.            | Guest PII; private retention rules required.                                                                                               |
 | `addon_definitions`                 | Booking/checkout            | Booking `booking_addons`, PMS add-on catalog/configuration fields.                                           | Property-scoped add-on catalog; no guest PII.                                                                                              |
-| `booking_settings`                  | Booking/checkout            | Booking `booking_hotels` settings columns for add-ons, guest form, benefits, localization, and room filters. | Target settings read/write model activated behind `BOOKING_SETTINGS_SOURCE`.                                                               |
+| `booking_settings`                  | Booking/checkout            | Booking `booking_hotels` settings columns for add-ons, guest form, benefits, localization, and room filters. | Active `apps/api` settings read/write model through `TARGET_DATABASE_URL`; the legacy source selector is retired.                          |
 | `booking_design_revisions`          | Booking/checkout            | Booking branding settings plus canonical Catalog media references.                                           | Private versioned design draft; the live page never reads it directly.                                                                     |
 | `booking_guest_experience_settings` | Booking/checkout            | Booking language, guest-form, children, and arrival settings plus composed policy references.                | Owns guest-facing settings and policy-confirmation evidence; Catalog stores only its public policy projection.                             |
 | `booking_policy_confirmations`      | Booking/checkout            | New target table.                                                                                            | Immutable confirmation hash and actor/time bound to PMS rate-policy, Booking guest-setting, Catalog timezone, and room-capacity revisions. |
@@ -271,16 +271,16 @@ Owner package: `domain-distribution`.
 
 Former owner package: `domain-intelligence`.
 
-| Historical table or read model | Former owner     | Source migration histories / former tables                                                                            | Notes                                                                         |
-| ------------------------------ | ---------------- | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `metric_definitions`           | Ask Intelligence | New target catalog, informed by booking/PMS/finance/marketplace metrics.                                              | Removed by migration `0090`.                                                  |
-| `metric_snapshot_runs`         | Ask Intelligence | PMS bookings/payments/rooms, booking events, marketplace collaborations, finance read models.                         | Removed by migration `0090`.                                                  |
-| `setup_completeness_snapshots` | Ask Intelligence | Property setup status, booking platform status, PMS module activation/setup fields, marketplace profile completeness. | Removed by migration `0090`.                                                  |
-| `ai_evidence_catalog`          | Ask Intelligence | New target registry.                                                                                                  | Removed by migration `0090`.                                                  |
-| `ask_conversations`            | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0090`, including stored conversations.                  |
-| `ask_runs`                     | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0090`, including run history.                           |
-| `ask_tool_calls`               | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0090`, including tool traces.                           |
-| `ask_answer_audits`            | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0090`, including answer audit history.                  |
+| Historical table or read model | Former owner     | Source migration histories / former tables                                                                            | Notes                                                        |
+| ------------------------------ | ---------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `metric_definitions`           | Ask Intelligence | New target catalog, informed by booking/PMS/finance/marketplace metrics.                                              | Removed by migration `0090`.                                 |
+| `metric_snapshot_runs`         | Ask Intelligence | PMS bookings/payments/rooms, booking events, marketplace collaborations, finance read models.                         | Removed by migration `0090`.                                 |
+| `setup_completeness_snapshots` | Ask Intelligence | Property setup status, booking platform status, PMS module activation/setup fields, marketplace profile completeness. | Removed by migration `0090`.                                 |
+| `ai_evidence_catalog`          | Ask Intelligence | New target registry.                                                                                                  | Removed by migration `0090`.                                 |
+| `ask_conversations`            | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0090`, including stored conversations. |
+| `ask_runs`                     | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0090`, including run history.          |
+| `ask_tool_calls`               | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0090`, including tool traces.          |
+| `ask_answer_audits`            | Ask Intelligence | New target table.                                                                                                     | Removed by migration `0090`, including answer audit history. |
 
 ### Platform Media
 
@@ -515,12 +515,12 @@ workflows are not part of this retirement.
 This section ensures every current migration history is represented. Counts are
 from the repo at the time of this decision.
 
-| Source history                    | File count | Target disposition                                                                                                                                                         |
-| --------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `auth-db/migrations`              | 5          | Identity/auth owns internal users, external identities, organizations, memberships, permissions, consent/privacy retention, and auth reconciliation.                       |
-| `apps/marketplace-api/migrations` | 38         | Marketplace owns creator/listing/collaboration/trip/chat/notification tables. Removed local auth tables are retired; consent/GDPR history maps to privacy.                 |
-| `apps/booking-api/migrations`     | 41         | Property catalog, booking/checkout, finance, and distribution split ownership of current booking hotel profile/config, add-ons, promos, events, and status.                |
-| `apps/pms-api/migrations`         | 102        | PMS operations, booking/checkout, finance, distribution, Platform Media, and jobs/events split ownership of operational PMS facts and side-effect state.                   |
+| Source history                    | File count | Target disposition                                                                                                                                          |
+| --------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auth-db/migrations`              | 5          | Identity/auth owns internal users, external identities, organizations, memberships, permissions, consent/privacy retention, and auth reconciliation.        |
+| `apps/marketplace-api/migrations` | 38         | Marketplace owns creator/listing/collaboration/trip/chat/notification tables. Removed local auth tables are retired; consent/GDPR history maps to privacy.  |
+| `apps/booking-api/migrations`     | 41         | Property catalog, booking/checkout, finance, and distribution split ownership of current booking hotel profile/config, add-ons, promos, events, and status. |
+| `apps/pms-api/migrations`         | 102        | PMS operations, booking/checkout, finance, distribution, Platform Media, and jobs/events split ownership of operational PMS facts and side-effect state.    |
 
 ### Current Source Table Mapping
 

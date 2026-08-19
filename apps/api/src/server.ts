@@ -142,10 +142,7 @@ import { createPgTargetBookingAddonItemsRepository } from "./routes/bookingAddon
 import { createPgTargetBookingPromoCodesRepository } from "./routes/bookingPromoCodes.js";
 import { promotePulledChannexBookingRevision } from "./routes/providerWebhooks.js";
 import { createTargetBookingWebCheckoutAdapter } from "./routes/bookingWebPublic.js";
-import {
-  createPgBookingSettingsReadRepository,
-  createPgTargetBookingSettingsRepository,
-} from "./routes/bookingSettings.js";
+import { createPgTargetBookingSettingsRepository } from "./routes/bookingSettings.js";
 import { createTargetBookingCustomDomainRepository } from "./routes/bookingCustomDomain.js";
 import {
   createTargetFinancePropertySettingsRepository,
@@ -223,34 +220,21 @@ const {
   marketplaceDiscoveryRepository,
 } = createPublicRuntimeRepositories(config);
 
-const bookingSettingsRepository =
-  config.bookingSettingsSource === "target"
-    ? createPgTargetBookingSettingsRepository({
-        connectionString: targetDatabaseUrl,
-      })
-    : config.bookingDatabaseUrl
-      ? createPgBookingSettingsReadRepository({
-          connectionString: config.bookingDatabaseUrl,
-        })
-      : undefined;
-const findPropertyLaunchSettings = bookingSettingsRepository?.findPropertySettingsByHotelId;
-const updatePropertyLaunchSettings = bookingSettingsRepository?.updatePropertySettingsByHotelId;
-if (
-  config.bookingSettingsSource === "target" &&
-  (!findPropertyLaunchSettings || !updatePropertyLaunchSettings)
-) {
+const bookingSettingsRepository = createPgTargetBookingSettingsRepository({
+  connectionString: targetDatabaseUrl,
+});
+const findPropertyLaunchSettings = bookingSettingsRepository.findPropertySettingsByHotelId;
+const updatePropertyLaunchSettings = bookingSettingsRepository.updatePropertySettingsByHotelId;
+if (!findPropertyLaunchSettings || !updatePropertyLaunchSettings) {
   throw new Error("Target property launch settings repository is unavailable");
 }
-const propertyLaunchSettingsRepository =
-  config.bookingSettingsSource === "target"
-    ? {
-        findPropertySettingsByHotelId: findPropertyLaunchSettings!,
-        updatePropertySettingsByHotelId: updatePropertyLaunchSettings!,
-      }
-    : undefined;
+const propertyLaunchSettingsRepository = {
+  findPropertySettingsByHotelId: findPropertyLaunchSettings,
+  updatePropertySettingsByHotelId: updatePropertyLaunchSettings,
+};
 
 const publicBookabilityPublisher =
-  config.bookingSettingsSource === "target" && config.publicHotelProfileSource === "target"
+  config.publicHotelProfileSource === "target"
     ? createTargetPublicBookabilityPublicationCommandPort({
         connectionString: targetDatabaseUrl,
         bookingHostBase: config.bookingHostBase,
@@ -760,7 +744,6 @@ const bookingGuestPolicyApplication = pmsRoomPublicationRuntime
 const bookingPublicationRuntime = (() => {
   const dependenciesMissing =
     config.apiRuntime !== "next" ||
-    config.bookingSettingsSource !== "target" ||
     config.pmsOperationsSource !== "target" ||
     config.financeSource !== "target" ||
     !bookingDesignReadinessProvider ||
@@ -1415,7 +1398,6 @@ if (pmsInventoryPublicOfferProjector) {
   const retryEnabled =
     config.pmsInventoryPublicOfferRetryEnabled &&
     config.pmsOperationsSource === "target" &&
-    config.bookingSettingsSource === "target" &&
     config.publicBookabilitySource === "target";
   pmsPublicOfferRetryTimer = retryEnabled
     ? setInterval(runRetryBatch, config.pmsInventoryPublicOfferRetryIntervalMs)
