@@ -599,6 +599,8 @@ export function buildRoomSetupRequest(
     maxOccupancy: positiveInteger(draft.maxOccupancy, "Maximum occupancy"),
     maxAdults: positiveInteger(draft.maxOccupancy, "Maximum occupancy"),
     maxChildren: 0,
+    bathroomType: "private",
+    bathrooms: 1,
     baseRate: rate,
     currency,
     isActive: true,
@@ -735,6 +737,7 @@ export function isPublicationReady(publication: PublicBookabilityPublication): b
 
 export function hotelOperationsErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiErrorResponse) {
+    if (error.data.code === "invalid_body") return fallback;
     const detail = error.data.detail;
     if (typeof detail === "string" && detail.trim()) return detail;
     if (typeof error.data.message === "string" && error.data.message.trim()) {

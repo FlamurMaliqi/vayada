@@ -45,6 +45,7 @@ vi.mock("./hotelPresentationClient", () => ({
 import {
   buildPaymentSettingsRequest,
   buildRoomSetupRequest,
+  hotelOperationsErrorMessage,
   hotelOperationsSetupApi,
   hotelOperationsWriteMayHaveCommitted,
   isPropertyCurrencyConflict,
@@ -374,6 +375,8 @@ describe("hotel operations setup client", () => {
       name: "Double room",
       totalRooms: 4,
       maxOccupancy: 2,
+      bathroomType: "private",
+      bathrooms: 1,
       baseRate: "189.50",
       currency: "EUR",
       operatingPeriods: [{ from: "01-01", to: "12-31" }],
@@ -388,6 +391,18 @@ describe("hotel operations setup client", () => {
     });
     expect(first.commandId).toBe(first.idempotencyKey);
     expect(retry.commandId).toBe(first.commandId);
+  });
+
+  it("keeps target validation details out of the host-facing setup error", () => {
+    expect(
+      hotelOperationsErrorMessage(
+        new ApiErrorResponse(400, {
+          code: "invalid_body",
+          message: "Room type create bathroomType is invalid.",
+        }),
+        "The room type could not be saved.",
+      ),
+    ).toBe("The room type could not be saved.");
   });
 
   it("distinguishes ambiguous room writes from definitive client rejections", () => {
