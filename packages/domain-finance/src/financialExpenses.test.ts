@@ -12,6 +12,7 @@ const COMMAND = {
   idempotencyKey: "expense-command-1",
 };
 const CATEGORY_ID = "20000000-0000-4000-8000-000000000001";
+const RECEIPT_ID = "30000000-0000-4000-8000-000000000001";
 
 describe("Financials expense contract", () => {
   it("uses the accepted contract and complete origin vocabulary", () => {
@@ -72,6 +73,8 @@ describe("Financials expense contract", () => {
     expect(parsed?.amount).toEqual({ amount: "125.5000", currency: "EUR" });
     expect(parsed?.recurrence?.cadence).toBe("monthly");
     // prettier-ignore
+    expect(parseFinanceExpenseWrite({ ...COMMAND, incurredOn: "2026-08-08", vendor: "Utility Co", categoryId: CATEGORY_ID, amount: { amount: "1", currency: "EUR" }, paymentStatus: "unpaid", receiptMediaId: RECEIPT_ID })?.receiptMediaId).toBe(RECEIPT_ID);
+    // prettier-ignore
     expect(parseFinanceExpenseWrite({ ...COMMAND, incurredOn: "2026-08-08", vendor: "Utility Co", categoryId: CATEGORY_ID, amount: { amount: "1", currency: "EUR" }, paymentStatus: "unpaid", paidOn: null })?.paidOn).toBeNull();
   });
 
@@ -79,6 +82,17 @@ describe("Financials expense contract", () => {
     { amount: { amount: "0", currency: "EUR" }, paymentStatus: "unpaid" },
     { amount: { amount: "1", currency: "eur" }, paymentStatus: "unpaid" },
     { amount: { amount: "1", currency: "EUR" }, paymentStatus: "paid" },
+    {
+      amount: { amount: "1", currency: "EUR" },
+      paymentStatus: "unpaid",
+      receiptMediaId: "invalid",
+    },
+    {
+      amount: { amount: "1", currency: "EUR" },
+      paymentStatus: "unpaid",
+      receiptMediaId: RECEIPT_ID,
+      recurrence: { cadence: "monthly", startsOn: "2026-08-08" },
+    },
   ])("rejects inconsistent expense money or payment state", (change) => {
     expect(
       parseFinanceExpenseWrite({

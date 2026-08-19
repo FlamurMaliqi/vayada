@@ -123,6 +123,7 @@ export async function registerFinanceExpenseRoutes(app: FastifyInstance, options
     const parsed = parseFinanceExpenseWrite(request.body);
     if (!empty(request.query) || !parsed || parsed.expectedRevision !== undefined || !headerMatches(request, parsed.idempotencyKey)) return bad(reply);
     parsed.commandId = parsed.commandId.toLowerCase(); parsed.categoryId = parsed.categoryId.toLowerCase();
+    if (parsed.receiptMediaId) parsed.receiptMediaId = parsed.receiptMediaId.toLowerCase();
     if (parsed.supplierInvoiceNumber) return failure(reply, "write_unavailable");
     const current = scope(request);
     if (parsed.recurrence) {

@@ -203,6 +203,8 @@ export function createPgFinanceManualExpenseRepository(
         return result;
       } catch (error) {
         await rollback(client);
+        // prettier-ignore
+        if (["55P03", "57014"].includes(String((error as { code?: unknown }).code))) return { ok: false, code: "write_unavailable" };
         throw error;
       } finally {
         client.release();

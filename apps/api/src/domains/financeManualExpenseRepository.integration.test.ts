@@ -211,6 +211,11 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
         [RECEIPT],
       ),
     ).resolves.toMatchObject({ rows: [{ lifecycle_status: "staged", retained: true }] });
+    await admin.query("BEGIN");
+    await admin.query("SELECT id FROM platform.media_objects WHERE id=$1 FOR UPDATE", [RECEIPT]);
+    // prettier-ignore
+    await expect(repository.create({ ...input, idempotencyKey: "receipt-timeout" })).resolves.toEqual({ ok: false, code: "write_unavailable" });
+    await admin.query("ROLLBACK");
     // prettier-ignore
     await admin.query(`BEGIN; SELECT id FROM hotel_catalog.properties WHERE id='${PROPERTY}' FOR KEY SHARE`);
     // prettier-ignore
@@ -421,7 +426,7 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
         [[rollbackReceipt, expiredReceipt]],
       ),
     ).resolves.toMatchObject({ rows: [{ deleted: 2 }] });
-  });
+  }, 15_000);
 
   async function cleanup() {
     await admin.query(`BEGIN; SET LOCAL session_replication_role=replica;

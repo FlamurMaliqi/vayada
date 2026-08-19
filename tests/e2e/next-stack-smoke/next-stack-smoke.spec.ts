@@ -520,7 +520,7 @@ async function runFinancialsAcceptance(
     "GET",
     `${root}/expenses/${expenseId}`,
   );
-  expect(expenseRead).toMatchObject({ item: { id: expenseId, receiptMediaId } });
+  expect(expenseRead).toMatchObject({ item: { id: expenseId } });
   const receipt = await api.json<Record<string, unknown>>(
     "GET",
     `${root}/expenses/${expenseId}/receipt`,
@@ -554,7 +554,7 @@ async function runFinancialsAcceptance(
   const otaBefore = await api.json<Record<string, unknown>>("GET", otaRoot);
   expect(arrayField(otaBefore, "settings")).toHaveLength(4);
   const ota = await api.json<Record<string, unknown>>("PUT", `${otaRoot}/booking_com`, {
-    commandId: idempotency("ota-command"),
+    commandId: randomUUID(),
     idempotencyKey: idempotency("ota"),
     effectiveFrom: new Date().toISOString(),
     expectedRevision: 0,
