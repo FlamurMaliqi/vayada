@@ -378,12 +378,14 @@ export default function CalendarPage() {
         ? "Booking already existed; calendar refreshed."
         : "Booking created.",
     );
-    if (result.rearrangedBookingCount > 0) {
-      setRoomShuffleNotice({
-        eventId: result.commandId,
-        bookingCount: result.rearrangedBookingCount,
-      });
-    }
+    setRoomShuffleNotice(
+      result.rearrangedBookingCount > 0
+        ? {
+            eventId: result.commandId,
+            bookingCount: result.rearrangedBookingCount,
+          }
+        : null,
+    );
     setShowNewBookingModal(false);
     setPrefill(null);
     setMobilePrefill(null);
