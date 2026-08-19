@@ -11,8 +11,8 @@ This complements:
 
 > **Retirement update:** The legacy public-profile repository and the public
 > profile and Booking settings source selectors are removed from `apps/api`.
-> The dormant Booking settings repository is deleted next;
-> `BOOKING_DATABASE_URL` no longer selects an adapter and is removed afterward.
+> The legacy Booking settings repository is also deleted;
+> `BOOKING_DATABASE_URL` no longer selects an adapter and is removed next.
 > Historical entries below describe the earlier VAY-880 state.
 
 ## Scope

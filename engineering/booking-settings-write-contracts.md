@@ -43,8 +43,8 @@ documents a nullable field.
 
 `apps/api` always reads and writes `booking.booking_settings` through
 `TARGET_DATABASE_URL`; `BOOKING_SETTINGS_SOURCE` is retired. The legacy
-`booking_hotels` reader/writer remains temporarily in source but is not composed,
-and `BOOKING_DATABASE_URL` is accepted but unused until the stacked cleanups.
+`booking_hotels` reader/writer is deleted, while `BOOKING_DATABASE_URL` remains
+temporarily accepted but unused until the stacked configuration cleanup.
 Guest-form settings writes do not call the PMS admin API. The next
 TypeScript/public Booking paths consume the target projection; separately
 deployed legacy Python PMS behavior remains a rollback/retirement concern
@@ -367,6 +367,5 @@ TypeScript repository; it is not a reason to keep a runtime adapter in
 - Booking Admin clients live under `apps/booking-admin/services/api/` and share
   the typed settings error mapping. The remaining `settingsService` property
   and design helpers also call target routes.
-- The dormant PostgreSQL legacy settings reader is not composed after the
-  source-selector removal. Its deletion and the subsequent
-  `BOOKING_DATABASE_URL` cleanup are separate stacked slices.
+- The PostgreSQL legacy settings reader and source selector are removed. The
+  subsequent `BOOKING_DATABASE_URL` cleanup is a separate stacked slice.

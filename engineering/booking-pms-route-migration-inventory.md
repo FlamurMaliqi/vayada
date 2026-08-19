@@ -252,9 +252,9 @@ controls is not enough for staging rehearsal.
 1. **Completed B1: Booking settings target repository**
    The add-on, guest-form, benefits, localization, and room-filter routes now
    always use the target settings read/write model. The source selector and
-   runtime branch are retired. The legacy repository is now unreachable and
-   remains only for the next deletion slice; `BOOKING_DATABASE_URL` is accepted
-   but inert until the following configuration cleanup.
+   runtime branch are retired, and the legacy repository is deleted.
+   `BOOKING_DATABASE_URL` is accepted but inert until the following
+   configuration cleanup.
 
 2. **Completed B2: Public profile and host resolution**
    Public profile and host-resolution reads use target hotel catalog/domain
@@ -334,11 +334,9 @@ The staging rehearsal milestone is gated by these verticals:
 
 ## Immediate follow-up slices
 
-1. **VAY follow-up: Delete the unreachable Booking settings legacy repository**
-   - Scope: remove `createPgBookingSettingsReadRepository`, its
-     `booking_hotels` SQL and legacy-only tests. Keep the inert
-     `BOOKING_DATABASE_URL` setting for the immediately following configuration
-     cleanup.
+1. **Completed: Delete the unreachable Booking settings legacy repository**
+   - `createPgBookingSettingsReadRepository`, its `booking_hotels` SQL, and its
+     legacy-only tests are removed.
 
 2. **VAY follow-up: Remove the inert Booking database configuration**
    - Scope: remove `BOOKING_DATABASE_URL` from config, tests, local scripts, and
