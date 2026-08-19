@@ -19,7 +19,7 @@ cut over one surface at a time while Python keeps serving everything else.
 | Typed client       | `apps/booking-admin/services/api/bookingReservationsClient.ts` |
 | Sidebar nav link   | `apps/booking-admin/components/layout/Sidebar.tsx`             |
 | TypeScript route   | `apps/api/src/routes/bookingReservations.ts` (VAY-702/705)     |
-| Runtime read model | `createCompatibilityPmsBookingReservationsReadRepository`      |
+| Runtime read model | `createTargetBookingReservationsReadRepository`                |
 
 ## Feature flag
 
@@ -49,18 +49,16 @@ GET {NEXT_PUBLIC_API_URL}/api/booking/hotels/:hotelId/reservations
 ```
 
 For the migrated behavior, `NEXT_PUBLIC_API_URL` (booking-admin) **must** resolve
-that path to the TypeScript backend (`apps/api`), and `apps/api` must have
-`BOOKING_RESERVATIONS_READ_DATABASE_URL` configured so the route serves the
-contract instead of returning a 404 (`app.test.ts`: "does not expose booking
-reservations until a read model is configured").
+that path to the TypeScript backend (`apps/api`). The API always composes the
+target reservation read model from `TARGET_DATABASE_URL`.
 
 ## Enable conditions (all must hold)
 
 Only set `NEXT_PUBLIC_BOOKING_RESERVATIONS_ENABLED=true` in an environment where:
 
 1. `apps/api` is deployed and reachable.
-2. `apps/api` has `BOOKING_RESERVATIONS_READ_DATABASE_URL` set, so
-   `/api/booking/hotels/:hotelId/reservations` returns the contract (not 404).
+2. `apps/api` has its required `TARGET_DATABASE_URL`, so
+   `/api/booking/hotels/:hotelId/reservations` returns the target-backed contract.
 3. booking-admin's `NEXT_PUBLIC_API_URL` routes that path to `apps/api`.
 
 If the flag is enabled while any condition is false, the sidebar link appears but

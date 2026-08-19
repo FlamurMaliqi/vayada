@@ -140,12 +140,10 @@ export type ApiConfig = {
   authSession?: ApiAuthSessionConfig;
   targetDatabaseUrl?: string;
   bookingDatabaseUrl?: string;
-  bookingReservationsSource: "legacy" | "target";
   publicHotelProfileSource: PublicHotelProfileSource;
   bookingDomainResolutionSource: BookingDomainResolutionSource;
   publicBookabilitySource: PublicBookabilitySource;
   bookingSettingsSource: "legacy" | "target";
-  bookingReservationsReadDatabaseUrl?: string;
   marketplaceAdminSource: MarketplaceAdminSource;
   marketplaceAdminLegacySuperadminFallbackEnabled: boolean;
   pmsOperationsSource: PmsOperationsSource;
@@ -172,10 +170,7 @@ export type ApiConfig = {
   xenditSecretKey?: string;
 };
 
-const NEXT_API_FORBIDDEN_LEGACY_ENV_KEYS = [
-  "BOOKING_DATABASE_URL",
-  "BOOKING_RESERVATIONS_READ_DATABASE_URL",
-] as const;
+const NEXT_API_FORBIDDEN_LEGACY_ENV_KEYS = ["BOOKING_DATABASE_URL"] as const;
 
 const REMOVED_LEGACY_PYTHON_INTEGRATION_ENV_KEYS = [
   "BOOKING_PUBLIC_API_URL",
@@ -694,17 +689,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     ["disabled", "target"],
     "disabled",
   );
-  const bookingReservationsSource = readSourceEnv(
-    env,
-    "BOOKING_RESERVATIONS_SOURCE",
-    ["legacy", "target"] as const,
-    "legacy",
-  );
   const bookingDatabaseUrl = readOptionalPgConnectionEnv(env, "BOOKING_DATABASE_URL");
-  const bookingReservationsReadDatabaseUrl = readOptionalPgConnectionEnv(
-    env,
-    "BOOKING_RESERVATIONS_READ_DATABASE_URL",
-  );
   const auth = loadAuthConfig(env);
   const authSession = loadAuthSessionConfig(env);
   const creatorPlatformConnections = loadCreatorPlatformConnectionsConfig(env);
@@ -718,7 +703,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     bookingDomainResolutionSource,
     publicBookabilitySource,
     bookingSettingsSource,
-    bookingReservationsSource,
     pmsOperationsSource,
     financeSource,
     bookingCheckoutCommandSource,
@@ -817,12 +801,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     authSession,
     targetDatabaseUrl,
     bookingDatabaseUrl,
-    bookingReservationsSource,
     publicHotelProfileSource,
     bookingDomainResolutionSource,
     publicBookabilitySource,
     bookingSettingsSource,
-    bookingReservationsReadDatabaseUrl,
     marketplaceAdminSource,
     marketplaceAdminLegacySuperadminFallbackEnabled: readBooleanEnv(
       env,
@@ -904,7 +886,6 @@ function assertNextApiRuntimeConfig(
     | "bookingDomainResolutionSource"
     | "publicBookabilitySource"
     | "bookingSettingsSource"
-    | "bookingReservationsSource"
     | "pmsOperationsSource"
     | "financeSource"
     | "bookingCheckoutCommandSource"
@@ -928,7 +909,6 @@ function assertNextApiRuntimeConfig(
     { key: "BOOKING_DOMAIN_RESOLUTION_SOURCE", value: config.bookingDomainResolutionSource },
     { key: "PUBLIC_BOOKABILITY_SOURCE", value: config.publicBookabilitySource },
     { key: "BOOKING_SETTINGS_SOURCE", value: config.bookingSettingsSource },
-    { key: "BOOKING_RESERVATIONS_SOURCE", value: config.bookingReservationsSource },
     {
       key: "PMS_OPERATIONS_SOURCE",
       value: config.pmsOperationsSource,

@@ -140,7 +140,6 @@ import {
 } from "./routes/bookingWebAffiliate.js";
 import { createPgTargetBookingAddonItemsRepository } from "./routes/bookingAddonItems.js";
 import { createPgTargetBookingPromoCodesRepository } from "./routes/bookingPromoCodes.js";
-import { createCompatibilityPmsBookingReservationsReadRepository } from "./routes/bookingReservations.js";
 import { promotePulledChannexBookingRevision } from "./routes/providerWebhooks.js";
 import { createTargetBookingWebCheckoutAdapter } from "./routes/bookingWebPublic.js";
 import {
@@ -305,23 +304,13 @@ const bookingPromoCodesRepository = createPgTargetBookingPromoCodesRepository({
   connectionString: targetDatabaseUrl,
 });
 
-const bookingReservationsRepository =
-  config.bookingReservationsSource === "target"
-    ? createTargetBookingReservationsReadRepository({
-        connectionString: targetDatabaseUrl,
-      })
-    : config.bookingReservationsReadDatabaseUrl
-      ? createCompatibilityPmsBookingReservationsReadRepository({
-          connectionString: config.bookingReservationsReadDatabaseUrl,
-        })
-      : undefined;
+const bookingReservationsRepository = createTargetBookingReservationsReadRepository({
+  connectionString: targetDatabaseUrl,
+});
 
-const bookingDashboardMetricsReadPort =
-  config.bookingReservationsSource === "target"
-    ? createTargetBookingDashboardMetricsReadPort({
-        connectionString: targetDatabaseUrl,
-      })
-    : undefined;
+const bookingDashboardMetricsReadPort = createTargetBookingDashboardMetricsReadPort({
+  connectionString: targetDatabaseUrl,
+});
 
 const stripeBookingPaymentProvider = config.stripeSubscriptions.secretKey
   ? createStripeBookingPaymentProvider({ secretKey: config.stripeSubscriptions.secretKey })

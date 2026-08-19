@@ -104,24 +104,20 @@ state handling belongs in the typed booking-admin API client and screen.
 
 VAY-705 wires this route into the real `apps/api` runtime through
 `BookingReservationsReadRepository`, not through SQL inside the Fastify handler.
-The temporary runtime implementation is
-`createCompatibilityPmsBookingReservationsReadRepository`.
+The runtime implementation is `createTargetBookingReservationsReadRepository`.
 
 Configuration:
 
-| Field          | Value                                     |
-| -------------- | ----------------------------------------- |
-| Env var        | `BOOKING_RESERVATIONS_READ_DATABASE_URL`  |
-| Current source | Legacy PMS `bookings` read schema         |
-| Runtime owner  | `apps/api` composition in `src/server.ts` |
-| Route owner    | Booking/checkout product contract         |
+| Field          | Value                                                   |
+| -------------- | ------------------------------------------------------- |
+| Env var        | `TARGET_DATABASE_URL`                                   |
+| Current source | Target Booking, PMS operations, and Finance read models |
+| Runtime owner  | `apps/api` composition in `src/server.ts`               |
+| Route owner    | Booking/checkout product contract                       |
 
-This compatibility repository exists only for staged cutover while the legacy
-PMS `bookings`, `room_types`, `rooms`, and `booking_rooms` tables remain the
-production reservation read source. The route itself must continue to depend on
-the product-level `BookingReservationsReadRepository` interface. The removal
-condition is an accepted target Booking/checkout read model that can implement
-the same contract without reading the legacy PMS schema.
+The route continues to depend on the product-level
+`BookingReservationsReadRepository` interface. Its production composition no
+longer supports a legacy PMS database source.
 
 ## Reservation fields
 

@@ -99,8 +99,6 @@ import type { BookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceS
 import type { PmsRoomAssignmentSettingsPort } from "./domains/pmsRoomAssignmentSettings.js";
 import type { PmsRoomAssignmentOptimizationHistoryPort } from "./domains/pmsRoomAssignmentOptimizationHistory.js";
 import {
-  createCompatibilityPmsBookingReservationsReadRepository,
-  type BookingReservationsReadPool,
   type BookingReservationListFilters,
   type BookingReservationsReadRepository,
 } from "./routes/bookingReservations.js";
@@ -151,6 +149,10 @@ import type {
   PmsRoomTypeUpdateCommand,
 } from "./routes/pmsOperations.js";
 import { createTargetBookingReservationsReadRepository } from "./platform/bookingReservations.js";
+
+type BookingReservationsReadPool = NonNullable<
+  Parameters<typeof createTargetBookingReservationsReadRepository>[0]["pool"]
+>;
 
 type PmsOperationsTestListResponse<T> = {
   contractVersion: "pms-operations.v1";
@@ -6106,83 +6108,6 @@ describe("vayada-api", () => {
     });
   });
 
-  it("serves booking reservations from the configured compatibility read model", async () => {
-    const queries: { text: string; values?: readonly unknown[] }[] = [];
-    let poolClosed = false;
-    const pool: BookingReservationsReadPool = {
-      async query<T extends QueryResultRow = QueryResultRow>(
-        text: string,
-        values?: readonly unknown[],
-      ): Promise<Pick<QueryResult<T>, "rows">> {
-        queries.push({ text, values });
-        if (text.includes("COUNT(*)")) {
-          return {
-            rows: [{ total: "1" }] as unknown as T[],
-          };
-        }
-
-        return {
-          rows: [reservation] as unknown as T[],
-        };
-      },
-      async end() {
-        poolClosed = true;
-      },
-    };
-
-    app = buildAuthenticatedApp({
-      reservationsRepository: createCompatibilityPmsBookingReservationsReadRepository({
-        connectionString: "postgresql://booking-reservations-read",
-        pool,
-      }),
-    });
-
-    const response = await injectJson(app, {
-      method: "GET",
-      url: "/api/booking/hotels/booking_hotel_alpenrose/reservations?status=confirmed&search=Ada&limit=25&offset=5",
-      headers: {
-        authorization: "Bearer valid-token",
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toMatchObject({
-      bookings: [
-        {
-          id: "reservation_1",
-          bookingReference: "VAY-2026-0001",
-          roomName: "Suite",
-          guestFirstName: "Ada",
-          status: "confirmed",
-        },
-      ],
-      total: 1,
-      limit: 25,
-      offset: 5,
-    });
-    expect(queries).toHaveLength(2);
-    expect(queries[0]?.text).toContain("FROM bookings b");
-    expect(queries[0]?.text).toContain(
-      "JOIN room_types rt ON rt.id = b.room_type_id AND rt.hotel_id = b.hotel_id",
-    );
-    expect(queries[0]?.text).toContain(
-      "LEFT JOIN rooms rm ON rm.id = b.room_id AND rm.hotel_id = b.hotel_id",
-    );
-    expect(queries[0]?.text).toContain(
-      "JOIN rooms brm ON brm.id = br.room_id AND brm.hotel_id = b.hotel_id",
-    );
-    expect(queries[0]?.values).toEqual(["booking_hotel_alpenrose", "confirmed", "%Ada%", 25, 5]);
-    expect(queries[1]?.text).toContain("COUNT(*)");
-    expect(queries[1]?.text).toContain(
-      "JOIN room_types rt ON rt.id = b.room_type_id AND rt.hotel_id = b.hotel_id",
-    );
-    expect(queries[1]?.values).toEqual(["booking_hotel_alpenrose", "confirmed", "%Ada%"]);
-
-    await app.close();
-    app = null;
-    expect(poolClosed).toBe(true);
-  });
-
   it("serves booking reservations from the target read model without the legacy PMS URL", async () => {
     const queries: { text: string; values?: readonly unknown[] }[] = [];
     let poolClosed = false;
@@ -6357,12 +6282,6 @@ describe("vayada-api", () => {
     await app.close();
     app = null;
     expect(poolClosed).toBe(true);
-  });
-
-  it("rejects empty booking reservations repository connection strings", async () => {
-    expect(() =>
-      createCompatibilityPmsBookingReservationsReadRepository({ connectionString: " " }),
-    ).toThrow("Booking reservations repository connectionString must not be empty");
   });
 
   it("rejects empty target booking reservations repository connection strings", async () => {
