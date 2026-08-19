@@ -1396,9 +1396,7 @@ if (pmsInventoryPublicOfferProjector) {
   };
 
   const retryEnabled =
-    config.pmsInventoryPublicOfferRetryEnabled &&
-    config.pmsOperationsSource === "target" &&
-    config.publicBookabilitySource === "target";
+    config.pmsInventoryPublicOfferRetryEnabled && config.pmsOperationsSource === "target";
   pmsPublicOfferRetryTimer = retryEnabled
     ? setInterval(runRetryBatch, config.pmsInventoryPublicOfferRetryIntervalMs)
     : undefined;

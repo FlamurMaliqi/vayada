@@ -45,8 +45,8 @@ behavior is called out per route:
 | `GET/PUT /api/booking/hotels/:hotelId/settings/room-filters`                          | Booking design/room-filter settings.                                               | Migrated route shape always reads and writes the target Booking settings projection.                                                          |
 | `GET /api/booking/hotels/:hotelId/reservations`                                       | Booking-admin reservation list backed by target Booking/PMS/Finance projections.   | Migrated route and target read model; no legacy PMS database connection.                                                                      |
 | `GET /api/ai/hotels/:slug` and `/api/booking-web/hotels/:slug`                        | Public hotel profile.                                                              | Migrated response contract always uses the target profile or active immutable publication through `TARGET_DATABASE_URL`.                      |
-| `GET /api/ai/hotels/:slug/quote` and `/api/booking-web/hotels/:slug/offers`           | Public room/rate quote.                                                            | Target mode reads the target projection; compatibility mode returns an unavailable quote without calling a legacy service.                    |
-| `GET /api/booking-web/hotels/:slug/calendar`                                          | Public unavailable dates.                                                          | Target mode reads the target projection; compatibility mode returns an unavailable calendar projection without calling a legacy service.      |
+| `GET /api/ai/hotels/:slug/quote` and `/api/booking-web/hotels/:slug/offers`           | Public room/rate quote.                                                            | Always reads the target projection; target validation/readiness failures retain the contract-valid unavailable response shape.                |
+| `GET /api/booking-web/hotels/:slug/calendar`                                          | Public unavailable dates.                                                          | Always reads the target calendar projection.                                                                                                  |
 | `GET /api/booking-web/hosts/:host`                                                    | Booking host/custom-domain resolution.                                             | Contract uses the selected target profile repository for known subdomains and verified custom domains; the legacy domain selector is removed. |
 | Booking Web checkout, guest command, promo, affiliate routes under `/api/booking-web` | PMS public checkout routes, Booking promo validation, PMS affiliate public routes. | Target adapters own migrated behavior; compatibility mode returns explicit unavailable responses without a legacy Python client.              |
 | `POST /api/booking-web/events` and `/hotels/:slug/attribution/clicks`                 | Booking public telemetry and affiliate click tracking.                             | Target event sink writes platform events/audit rows; legacy telemetry forwarding to `BOOKING_PUBLIC_API_URL /api/events` is retired.          |
@@ -341,9 +341,9 @@ The staging rehearsal milestone is gated by these verticals:
    - `BOOKING_DATABASE_URL` is removed from config, tests, local scripts, and
      environment documentation.
 
-3. **VAY follow-up: Remove the public-bookability compatibility selector**
-   - Scope: keep the existing target quote/calendar repositories and remove
-     `PUBLIC_BOOKABILITY_SOURCE=legacy` plus its unavailable-quote branch.
+3. **Completed: Remove the public-bookability compatibility selector**
+   - The target quote/calendar repositories remain; the legacy source value and
+     unavailable-quote adapter are removed.
 
 4. **VAY follow-up: Remove the checkout-command compatibility selector**
    - Scope: keep the existing target Booking command adapter and remove

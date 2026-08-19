@@ -1,6 +1,5 @@
 import type { ApiConfig } from "./config.js";
 import {
-  createCompatibilityPublicHotelQuoteRepository,
   createTargetPublicHotelQuoteRepository,
   type PublicHotelQuoteReadPool,
 } from "./routes/aiHotelQuotes.js";
@@ -37,24 +36,16 @@ export function createPublicRuntimeRepositories(config: ApiConfig, pools: Public
           pool: pools.publicHotelProfilePool,
         });
 
-  const publicHotelQuoteRepository =
-    config.publicBookabilitySource === "target"
-      ? createTargetPublicHotelQuoteRepository({
-          connectionString: requireTargetDatabaseUrl(config),
-          profileRepository: publicHotelProfileRepository,
-          pool: pools.publicHotelQuotePool,
-        })
-      : createCompatibilityPublicHotelQuoteRepository({
-          profileRepository: publicHotelProfileRepository,
-        });
+  const publicHotelQuoteRepository = createTargetPublicHotelQuoteRepository({
+    connectionString: requireTargetDatabaseUrl(config),
+    profileRepository: publicHotelProfileRepository,
+    pool: pools.publicHotelQuotePool,
+  });
 
-  const bookingWebCalendarRepository =
-    config.publicBookabilitySource === "target"
-      ? createTargetBookingWebCalendarRepository({
-          connectionString: requireTargetDatabaseUrl(config),
-          pool: pools.bookingWebCalendarPool,
-        })
-      : undefined;
+  const bookingWebCalendarRepository = createTargetBookingWebCalendarRepository({
+    connectionString: requireTargetDatabaseUrl(config),
+    pool: pools.bookingWebCalendarPool,
+  });
 
   const marketplaceDiscoveryRepository = createPgMarketplaceDiscoveryReadRepository({
     connectionString: requireTargetDatabaseUrl(config),

@@ -195,19 +195,16 @@ Implementation owner: TypeScript `apps/api` route backed by a
 canonical checkout deep link only. It does not create reservations, hold
 inventory, authorize payment, or let an external agent complete a booking.
 
-Until VAY-666 adds the canonical distribution quote table/backfill, `apps/api`
-wires a temporary compatibility quote repository from the public profile
-projection plus the PMS public room-search API configured by
-`PMS_PUBLIC_API_URL`. That compatibility path validates public request shape,
-hotel quote limits, locale/currency support, and same-property-day requests
-using the hotel timezone, then maps the existing public PMS room search response
-into the distribution quote projection. If `PMS_PUBLIC_API_URL` is not
-configured or the PMS public API is unavailable, it returns `unavailable_data`.
-It must not expose Booking, PMS, Finance, Channex, or promo/provider internals
-in the HTTP response.
+`apps/api` composes `createTargetPublicHotelQuoteRepository`, which reads the
+canonical Distribution quote projection through `TARGET_DATABASE_URL`. It
+validates public request shape, hotel quote limits, locale/currency support,
+and same-property-day requests using the hotel timezone. Missing or failed
+target projection reads return contract-valid unavailable reasons without
+exposing Booking, PMS, Finance, Channex, promo, or provider internals.
 
-`PMS_PUBLIC_API_URL` is a server-side Distribution compatibility input, not a
-target Booking Web dependency. VAY-655 defines the Booking Web public API split:
+`PMS_PUBLIC_API_URL` is a rejected stale Python integration variable, not a
+quote input or target Booking Web dependency. VAY-655 defines the Booking Web
+public API split:
 Booking Web should call Booking/checkout and Distribution/bookability contracts,
 while any PMS route access remains hidden behind temporary adapters and is
 removed after canonical offer and quote read models exist.
