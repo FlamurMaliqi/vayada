@@ -435,8 +435,8 @@ async function selectPrivateAttachmentsPastRetention(
        NULL::text AS "replacedByMediaObjectId"
      FROM platform.media_objects
      WHERE visibility = 'private'
-       AND purpose IN ('marketplace.collaboration_chat.attachment', 'pms.messaging.attachment')
-       AND lifecycle_status IN ('active', 'retained', 'delete_requested')
+       AND purpose IN ('marketplace.collaboration_chat.attachment', 'pms.messaging.attachment', 'finance.expense.receipt')
+       AND lifecycle_status IN ('staged', 'active', 'retained', 'delete_requested')
        AND retained_until IS NOT NULL
        AND retained_until <= $1::timestamptz
      ORDER BY retained_until ASC, updated_at ASC
@@ -544,6 +544,11 @@ async function updateMediaObjectLifecycle(
 ): Promise<PlatformMediaCleanupMutationResult> {
   if (mutation.action === "abandoned-staging-upload") {
     throw new Error("Upload-session cleanup cannot mutate a media object");
+  }
+  if (candidate.propertyId) {
+    await client.query("SELECT id FROM hotel_catalog.properties WHERE id=$1::uuid FOR KEY SHARE", [
+      candidate.propertyId,
+    ]);
   }
   const storage = await lockEligibleMediaStorageForCleanup(
     client,
@@ -662,8 +667,8 @@ function mediaCleanupEligibilitySql(
        AND COALESCE(media.source_metadata ->> 'replacementReason', '') = 'replaced'`;
     case "delete-private-attachment-after-retention":
       return `media.visibility = 'private'
-       AND media.purpose IN ('marketplace.collaboration_chat.attachment', 'pms.messaging.attachment')
-       AND media.lifecycle_status IN ('active', 'retained', 'delete_requested')
+       AND media.purpose IN ('marketplace.collaboration_chat.attachment', 'pms.messaging.attachment', 'finance.expense.receipt')
+       AND media.lifecycle_status IN ('staged', 'active', 'retained', 'delete_requested')
        AND media.retained_until IS NOT NULL
        AND media.retained_until <= $2::timestamptz`;
     case "cleanup-rollback-window-object":

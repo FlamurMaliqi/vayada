@@ -1,7 +1,11 @@
 import { normalizeFinanceExpenseAmount } from "@vayada/domain-finance";
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
+import {
+  createPgPlatformMediaCleanupStore,
+  runPlatformMediaCleanupJobs,
+} from "../jobs/platformMediaCleanup.js";
 import { createPgFinanceManualExpenseRepository } from "./financeManualExpenseRepository.js";
 
 const URL = process.env["TEST_DATABASE_URL"];
@@ -35,9 +39,9 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
       INSERT INTO finance.expense_categories (id,property_id,name,color,archived_at) VALUES ('${CATEGORY}','${PROPERTY}','Operations','#123456',NULL),
         ('${OTHER_CATEGORY}','${OTHER_PROPERTY}','Other','#654321',NULL),
         ('${ARCHIVED_CATEGORY}','${PROPERTY}','Archived','#111111',now());
-      INSERT INTO platform.media_objects (id,bucket,storage_key,visibility,purpose,property_id,resource_product,resource_type,resource_id,lifecycle_status,created_by_user_id)
-        VALUES ('${RECEIPT}','test','manual-expense-receipt','private','finance.expense.receipt','${PROPERTY}',
-         'finance','expense','${EXPENSE}','active','${ACTOR}'),('12100000-0000-4000-8000-000000000009','test','wrong-purpose','private','pms.messaging.attachment','${PROPERTY}','pms','expense','${EXPENSE}','active','${ACTOR}')`);
+      INSERT INTO platform.media_objects (id,bucket,storage_key,visibility,purpose,property_id,resource_product,resource_type,resource_id,lifecycle_status,retained_until,created_by_user_id)
+        VALUES ('${RECEIPT}','test','private/finance/manual-expense-receipt.webp','private','finance.expense.receipt','${PROPERTY}',
+         'finance','expense','${EXPENSE}','staged','2026-08-11T01:30:00Z','${ACTOR}'),('12100000-0000-4000-8000-000000000009','test','wrong-purpose','private','pms.messaging.attachment','${PROPERTY}','pms','expense','${EXPENSE}','active',NULL,'${ACTOR}')`);
   });
 
   it("archives exactly once with canonical timezone and confidential evidence", async () => {
@@ -201,6 +205,12 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
     // prettier-ignore
     for (const badReceipt of [{ ...input, commandId: crypto.randomUUID() }, { ...input, receiptMediaId: "12100000-0000-4000-8000-000000000009" }])
       await expect(repository.create(badReceipt)).resolves.toEqual(mismatch);
+    await expect(
+      admin.query(
+        "SELECT lifecycle_status,retained_until IS NOT NULL AS retained FROM platform.media_objects WHERE id=$1",
+        [RECEIPT],
+      ),
+    ).resolves.toMatchObject({ rows: [{ lifecycle_status: "staged", retained: true }] });
     // prettier-ignore
     await admin.query(`BEGIN; SELECT id FROM hotel_catalog.properties WHERE id='${PROPERTY}' FOR KEY SHARE`);
     // prettier-ignore
@@ -210,6 +220,21 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
     expect(raced.map((result) => result.ok ? result.outcome : result.code).sort()).toEqual(["created", "replayed"]);
     // prettier-ignore
     for (const result of raced) expect(result).toMatchObject({ ok: true, item: { id: EXPENSE, origin: "manual", revision: 1, amount: { amount: "10.0000" } } });
+    await expect(
+      admin.query(
+        "SELECT lifecycle_status,retained_until FROM platform.media_objects WHERE id=$1",
+        [RECEIPT],
+      ),
+    ).resolves.toMatchObject({ rows: [{ lifecycle_status: "active", retained_until: null }] });
+    await expect(repository.receipt(PROPERTY, EXPENSE)).resolves.toMatchObject({
+      mediaId: RECEIPT,
+      propertyId: PROPERTY,
+      resourceId: EXPENSE,
+      purpose: "finance.expense.receipt",
+      lifecycleStatus: "active",
+      storageKey: "private/finance/manual-expense-receipt.webp",
+    });
+    await expect(repository.receipt(OTHER_PROPERTY, EXPENSE)).resolves.toBeNull();
     // prettier-ignore
     await admin.query("UPDATE finance.expenses SET notes='later',revision=2 WHERE id=$1", [EXPENSE]);
     // prettier-ignore
@@ -218,6 +243,8 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
     await expect(repository.create({ ...input, commandId: crypto.randomUUID() })).resolves.toEqual({ ok: false, code: "idempotency_conflict" });
     // prettier-ignore
     await expect(repository.create({ ...input, idempotencyKey: "duplicate-id" })).resolves.toEqual({ ok: false, code: "idempotency_conflict" });
+    // prettier-ignore
+    expect((await Promise.all([repository.create({ ...input, idempotencyKey: "same-command-other-key" }), repository.create({ ...input, commandId: crypto.randomUUID(), idempotencyKey: "same-receipt-other-command" })])).map((result) => result.ok ? result.outcome : result.code).sort()).toEqual(["evidence_mismatch", "idempotency_conflict"]);
     const update = { ...mutation("update", 2), notes: "Updated note" };
     // prettier-ignore
     await expect(repository.update(update)).resolves.toMatchObject({ ok: true, outcome: "updated", item: { id: EXPENSE, revision: 3 } });
@@ -318,6 +345,38 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
     // prettier-ignore
     rollback.audit.actor = { kind: "user", userId: crypto.randomUUID(), organizationId: crypto.randomUUID() };
     await expect(repository.create(rollback)).rejects.toMatchObject({ code: "23503" });
+    const rollbackExpense = crypto.randomUUID(),
+      rollbackReceipt = crypto.randomUUID(),
+      expiredExpense = crypto.randomUUID(),
+      expiredReceipt = crypto.randomUUID();
+    await admin.query(
+      `INSERT INTO platform.media_objects (id,bucket,storage_key,visibility,purpose,property_id,resource_product,resource_type,resource_id,lifecycle_status,retained_until,created_by_user_id) VALUES ($1,'test',$2,'private','finance.expense.receipt',$3,'finance','expense',$4,'staged','2026-08-11T01:30:00Z',$5),($6,'test',$7,'private','finance.expense.receipt',$3,'finance','expense',$8,'staged','2026-08-11T00:29:00Z',$5)`,
+      [
+        rollbackReceipt,
+        `private/finance/${rollbackReceipt}/receipt.webp`,
+        PROPERTY,
+        rollbackExpense,
+        ACTOR,
+        expiredReceipt,
+        `private/finance/${expiredReceipt}/receipt.webp`,
+        expiredExpense,
+      ],
+    );
+    const receiptRollback = {
+      ...command(rollbackExpense, "receipt-rollback"),
+      receiptMediaId: rollbackReceipt,
+    };
+    receiptRollback.audit.actor.userId = crypto.randomUUID();
+    await expect(repository.create(receiptRollback)).rejects.toMatchObject({ code: "23503" });
+    await expect(
+      admin.query(
+        "SELECT lifecycle_status,retained_until IS NOT NULL AS retained FROM platform.media_objects WHERE id=$1",
+        [rollbackReceipt],
+      ),
+    ).resolves.toMatchObject({ rows: [{ lifecycle_status: "staged", retained: true }] });
+    await expect(repository.receipt(PROPERTY, rollbackExpense)).resolves.toBeNull();
+    // prettier-ignore
+    await expect(repository.create({ ...command(expiredExpense, "expired-receipt"), receiptMediaId: expiredReceipt })).resolves.toEqual({ ok: false, code: "evidence_mismatch" });
     // prettier-ignore
     await admin.query("UPDATE finance.expense_categories SET archived_at=now() WHERE id=$1", [CATEGORY]);
     // prettier-ignore
@@ -342,6 +401,26 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
     expect(evidence.rows[0].audit).toMatchObject({ redacted: { commandId: update.commandId, outcome: "updated" },
       private: { reason: "test", previous: { notes: "later" }, next: { notes: "Updated note" } },
       metadata: { requestId: update.audit.requestId, actorOrganizationId: update.audit.actor.organizationId } });
+    const cleanup = createPgPlatformMediaCleanupStore({
+      connectionString: URL!,
+      objectDeleter: {
+        deleteObject: vi.fn(async () => undefined),
+        deletePrefix: vi.fn(async () => undefined),
+      },
+    });
+    await expect(
+      runPlatformMediaCleanupJobs(cleanup, {
+        now: new Date("2026-08-11T02:00:00Z"),
+        run: ["privateAttachmentRetention"],
+      }),
+    ).resolves.toMatchObject({ scanned: 2, applied: 2, failed: 0 });
+    await cleanup.close();
+    await expect(
+      admin.query(
+        "SELECT count(*)::int AS deleted FROM platform.media_objects WHERE id=ANY($1::uuid[]) AND lifecycle_status='deleted'",
+        [[rollbackReceipt, expiredReceipt]],
+      ),
+    ).resolves.toMatchObject({ rows: [{ deleted: 2 }] });
   });
 
   async function cleanup() {

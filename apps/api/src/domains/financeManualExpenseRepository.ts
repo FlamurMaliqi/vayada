@@ -26,6 +26,23 @@ export type ArchiveFinanceManualExpenseCommand = MutationBase;
 export type ArchiveFinanceManualExpenseResult =
   | { ok: true; outcome: "archived" | "replayed"; item: FinanceExpense }
   | ExpenseFailure;
+export type FinanceExpenseReceipt = {
+  mediaId: string;
+  propertyId: string;
+  resourceId: string;
+  purpose: "finance.expense.receipt";
+  resourceProduct: "finance";
+  resourceType: "expense";
+  visibility: "private";
+  lifecycleStatus: "active";
+  bucketName: string;
+  storageKey: string;
+  originalFilename?: string;
+  contentType?: string;
+};
+export type FinanceExpenseReceiptReadPort = {
+  receipt(propertyId: string, expenseId: string): Promise<FinanceExpenseReceipt | null>;
+};
 
 // prettier-ignore
 type IdempotencyRow = { status: string; fingerprint: string; responseHash: string | null; metadata: unknown };
@@ -56,7 +73,7 @@ export function createPgFinanceManualExpenseRepository(
       raw: CreateFinanceManualExpenseCommand,
     ): Promise<CreateFinanceManualExpenseResult> {
       if (!valid(raw)) return { ok: false, code: "invalid_command" };
-      const acceptedAt = new Date().toISOString();
+      const acceptedAt = clock().toISOString();
       const keyHash = hash(raw.idempotencyKey);
       const fingerprint = commandFingerprint(raw);
       const lockKey = `${OPERATION}|${raw.propertyId.toLowerCase()}|${keyHash}`;
@@ -91,16 +108,18 @@ export function createPgFinanceManualExpenseRepository(
         if (!reserved.rows[0])
           return await stop(client, { ok: false, code: "idempotency_conflict" });
 
-        const category = await client.query<{ archivedAt: unknown; receiptActive: boolean }>(
+        const category = await client.query<{ archivedAt: unknown; receiptReady: boolean }>(
           `SELECT archived_at AS "archivedAt",$3::uuid IS NULL OR COALESCE((
-             SELECT lifecycle_status='active' FROM platform.media_objects
-             WHERE id=$3::uuid AND property_id=$2::uuid AND purpose='finance.expense.receipt' AND resource_product='finance' AND resource_type='expense' AND resource_id=$4::uuid::text FOR SHARE),FALSE) AS "receiptActive"
+             SELECT (lifecycle_status='staged' AND retained_until>$5::timestamptz) OR (lifecycle_status='active' AND EXISTS (
+               SELECT 1 FROM finance.expenses WHERE id=$4::uuid AND property_id=$2::uuid AND receipt_media_id=$3::uuid))
+             FROM platform.media_objects
+             WHERE id=$3::uuid AND property_id=$2::uuid AND purpose='finance.expense.receipt' AND resource_product='finance' AND resource_type='expense' AND resource_id=$4::uuid::text FOR UPDATE),FALSE) AS "receiptReady"
            FROM finance.expense_categories
            WHERE id=$1::uuid AND property_id=$2::uuid`,
-          [raw.categoryId, raw.propertyId, raw.receiptMediaId ?? null, raw.commandId],
+          [raw.categoryId, raw.propertyId, raw.receiptMediaId ?? null, raw.commandId, acceptedAt],
         );
         // prettier-ignore
-        if (!category.rows[0] || category.rows[0].archivedAt !== null || !category.rows[0].receiptActive)
+        if (!category.rows[0] || category.rows[0].archivedAt !== null || !category.rows[0].receiptReady)
           return await stop(client, { ok: false, code: "evidence_mismatch" });
 
         let inserted: pg.QueryResult<FinanceExpense>;
@@ -128,6 +147,17 @@ export function createPgFinanceManualExpenseRepository(
           throw error;
         }
         const expense = inserted.rows[0]!;
+        if (raw.receiptMediaId) {
+          const attached = await client.query(
+            `UPDATE platform.media_objects SET lifecycle_status='active',retained_until=NULL,
+               source_metadata=source_metadata || jsonb_build_object('attachmentState','attached'),updated_at=$4::timestamptz
+             WHERE id=$1::uuid AND property_id=$2::uuid AND purpose='finance.expense.receipt'
+               AND resource_product='finance' AND resource_type='expense' AND resource_id=$3::uuid::text
+               AND lifecycle_status='staged' AND retained_until>$4::timestamptz`,
+            [raw.receiptMediaId, raw.propertyId, expense.id, acceptedAt],
+          );
+          if (attached.rowCount !== 1) throw new Error("Finance receipt attachment changed");
+        }
         const result = { ok: true as const, outcome: "created" as const, item: expense };
         const actor = raw.audit.actor;
         await client.query(
@@ -177,6 +207,25 @@ export function createPgFinanceManualExpenseRepository(
       } finally {
         client.release();
       }
+    },
+    async receipt(propertyId: string, expenseId: string): Promise<FinanceExpenseReceipt | null> {
+      if (!uuid(propertyId) || !uuid(expenseId)) return null;
+      const result = await pool.query<FinanceExpenseReceipt>(
+        `SELECT media.id::text AS "mediaId",media.property_id::text AS "propertyId",
+           media.resource_id AS "resourceId",media.purpose,media.resource_product AS "resourceProduct",
+           media.resource_type AS "resourceType",media.visibility,media.lifecycle_status AS "lifecycleStatus",
+           media.bucket AS "bucketName",media.storage_key AS "storageKey",
+           media.original_filename AS "originalFilename",media.content_type AS "contentType"
+         FROM finance.expenses expense JOIN platform.media_objects media ON media.id=expense.receipt_media_id
+         WHERE expense.id=$2::uuid AND expense.property_id=$1::uuid AND media.property_id=expense.property_id
+           AND media.purpose='finance.expense.receipt' AND media.resource_product='finance'
+           AND media.resource_type='expense' AND media.resource_id=expense.id::text
+           AND media.visibility='private' AND media.lifecycle_status='active'
+           AND media.storage_kind='vayada_managed' AND media.bucket IS NOT NULL
+           AND media.storage_key LIKE 'private/%'`,
+        [propertyId, expenseId],
+      );
+      return result.rows[0] ?? null;
     },
     update: (raw: UpdateFinanceManualExpenseCommand) => mutate(pool, raw),
     archive: (raw: ArchiveFinanceManualExpenseCommand) => archive(pool, raw, clock),

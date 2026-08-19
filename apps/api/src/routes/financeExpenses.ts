@@ -29,9 +29,16 @@ import type {
   ArchiveFinanceManualExpenseResult,
   CreateFinanceManualExpenseCommand,
   CreateFinanceManualExpenseResult,
+  FinanceExpenseReceipt,
+  FinanceExpenseReceiptReadPort,
   MutateFinanceManualExpenseResult,
   UpdateFinanceManualExpenseCommand,
 } from "../domains/financeManualExpenseRepository.js";
+import {
+  createPrivateDownloadPolicy,
+  type PlatformMediaServingConfig,
+} from "../platform/mediaServing.js";
+import type { PlatformMediaPrivateDownloadSigner } from "../platform/platformMediaS3.js";
 import type {
   CreateFinanceRecurringExpenseRuleCommand,
   DisableFinanceRecurringExpenseRuleCommand,
@@ -64,6 +71,12 @@ export type FinanceExpenseRoutesOptions = {
   categories: CategoryPort;
   expenses: ExpensePort;
   recurring: RecurringPort;
+  receiptMedia?: {
+    read: FinanceExpenseReceiptReadPort;
+    signer: PlatformMediaPrivateDownloadSigner;
+    serving: PlatformMediaServingConfig;
+    now?: () => Date;
+  };
 };
 
 const ROOT = "/finance/properties/:propertyId/financials";
@@ -123,6 +136,23 @@ export async function registerFinanceExpenseRoutes(app: FastifyInstance, options
   app.get(`${ROOT}/expenses/:expenseId`, { onRequest: read }, async (request, reply) => safe(reply, async () => {
     const expenseId = pathId(request, "expenseId"); if (!expenseId || !empty(request.query)) return bad(reply);
     return sendRead(reply, await options.read.expense(scope(request).propertyId, expenseId), scope(request), "expense", expenseId);
+  }));
+  app.get(`${ROOT}/expenses/:expenseId/receipt`, { onRequest: read }, async (request, reply) => safe(reply, async () => {
+    const expenseId = pathId(request, "expenseId"), current = scope(request);
+    if (!expenseId || !empty(request.query)) return bad(reply);
+    if (!options.receiptMedia) return missing(reply);
+    const media = await options.receiptMedia.read.receipt(current.propertyId, expenseId);
+    if (!media) return missing(reply);
+    if (!validReceipt(media, current.propertyId, expenseId)) return violation(reply);
+    const policy = createPrivateDownloadPolicy(options.receiptMedia.serving, {
+      bucketName: media.bucketName, storageKey: media.storageKey, visibility: media.visibility,
+      status: media.lifecycleStatus, originalFilename: media.originalFilename, contentType: media.contentType,
+    });
+    const url = await options.receiptMedia.signer.signPrivateDownload(policy);
+    if (!secureUrl(url)) return violation(reply);
+    const expiresAt = new Date((options.receiptMedia.now?.() ?? new Date()).getTime() + policy.expiresInSeconds * 1000).toISOString();
+    return reply.send({ contractVersion: "pms-financials-receipt.v1", propertyId: current.propertyId,
+      expenseId, receipt: { mediaId: media.mediaId, disposition: { method: "GET", url, expiresAt } } });
   }));
   app.patch(`${ROOT}/expenses/:expenseId`, { onRequest: write }, async (request, reply) => safe(reply, async () => {
     const value = expensePatch(request), current = scope(request), expenseId = pathId(request, "expenseId");
@@ -303,6 +333,16 @@ function zone(value: unknown): value is string { try { return typeof value === "
 function money(value: unknown, expectedCurrency?: string) { return record(value) && exact(value, ["amount", "currency"]) && typeof value.amount === "string" && /^-?(?:0|[1-9]\d{0,14})\.\d{4}$/.test(value.amount) && currency(value.currency) && (!expectedCurrency || value.currency === expectedCurrency); }
 // prettier-ignore
 function stringRecord(value: unknown) { return record(value) && Object.entries(value).every(([key, part]) => text(key, 1, 100) && text(part, 1, 200)); }
+
+// prettier-ignore
+function validReceipt(value: FinanceExpenseReceipt, propertyId: string, expenseId: string) { const keys = ["mediaId", "propertyId", "resourceId", "purpose", "resourceProduct", "resourceType", "visibility", "lifecycleStatus", "bucketName", "storageKey", "originalFilename", "contentType"]; return record(value) && Object.keys(value).every((key) => keys.includes(key)) && keys.slice(0, 10).every((key) => Object.hasOwn(value, key)) && uuid(value.mediaId) && value.propertyId === propertyId && value.resourceId === expenseId && value.purpose === "finance.expense.receipt" && value.resourceProduct === "finance" && value.resourceType === "expense" && value.visibility === "private" && value.lifecycleStatus === "active" && text(value.bucketName, 1, 200) && text(value.storageKey, 1, 1024) && (value.originalFilename === undefined || text(value.originalFilename, 1, 500)) && (value.contentType === undefined || text(value.contentType, 1, 200)); }
+function secureUrl(value: unknown) {
+  try {
+    return typeof value === "string" && new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 
 // prettier-ignore
 async function safe(reply: FastifyReply, work: () => Promise<unknown>) { try { return await work(); } catch (cause) { if (cause instanceof FinanceExpenseCursorError) return bad(reply, cause.code); if (cause instanceof FinanceExpenseEvidenceError) return reply.status(422).send({ code: cause.code }); return violation(reply); } }
