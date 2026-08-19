@@ -112,7 +112,8 @@ export function LocalizationMultiSelect<T extends { code: string; flag: string }
         {showResults && (
           <div
             id={resultsId}
-            role="listbox"
+            role={filtered.length === 0 ? "status" : "listbox"}
+            aria-multiselectable={filtered.length === 0 ? undefined : true}
             className={`absolute left-0 right-0 top-full z-20 mt-1 max-h-56 overflow-y-auto border border-gray-200 bg-white shadow-lg ${comfortable ? "rounded-xl" : "rounded-lg"}`}
           >
             {filtered.length === 0 ? (
