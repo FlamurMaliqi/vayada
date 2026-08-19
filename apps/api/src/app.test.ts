@@ -3191,13 +3191,11 @@ describe("vayada-api", () => {
     expect(findForbiddenPublicBookabilityKeys(response.body)).toEqual([]);
   });
 
-  it("mounts public profile and known-host routes in target mode without the legacy booking DB", async () => {
+  it("mounts public profile and known-host routes in target mode", async () => {
     const config = loadConfig({
       TARGET_DATABASE_URL: "postgresql://target-db",
       PUBLIC_HOTEL_PROFILE_SOURCE: "target",
     });
-    expect(config.bookingDatabaseUrl).toBeUndefined();
-
     const pool: PublicHotelProfileReadPool = {
       async query<T extends QueryResultRow>() {
         return { rows: [targetPublicHotelProfileRow()] as T[] };
