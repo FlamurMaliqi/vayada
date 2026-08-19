@@ -144,9 +144,9 @@ Dates:
 - `checkIn`, `checkOut`, and `guestDateOfBirth` use `YYYY-MM-DD`.
 - Timestamp fields use ISO 8601 UTC strings when present.
 - Optional timestamps are `null` when absent or invalid in the read model.
-- The current compatibility adapter maps invalid required audit timestamps to
-  `""`; follow-up route tightening should only change this with tests and a
-  frontend compatibility note.
+- The shared reservation read-model mapper maps invalid required audit
+  timestamps to `""`; follow-up route tightening should only change this with
+  tests and a frontend compatibility note.
 
 Money and currency:
 

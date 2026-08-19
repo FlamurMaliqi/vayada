@@ -308,9 +308,10 @@ const bookingReservationsRepository = createTargetBookingReservationsReadReposit
   connectionString: targetDatabaseUrl,
 });
 
-const bookingDashboardMetricsReadPort = createTargetBookingDashboardMetricsReadPort({
-  connectionString: targetDatabaseUrl,
-});
+const bookingDashboardMetricsReadPort =
+  config.apiRuntime === "next"
+    ? createTargetBookingDashboardMetricsReadPort({ connectionString: targetDatabaseUrl })
+    : undefined;
 
 const stripeBookingPaymentProvider = config.stripeSubscriptions.secretKey
   ? createStripeBookingPaymentProvider({ secretKey: config.stripeSubscriptions.secretKey })
