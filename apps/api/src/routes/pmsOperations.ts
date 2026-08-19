@@ -553,6 +553,21 @@ export type PmsRoomBlockCommandResponse = {
   commandMeta: PmsCommandMeta;
 };
 
+export type PmsRoomOrderCommand = {
+  propertyId: string;
+  commandId: string;
+  idempotencyKey: string;
+  orderedRoomIds: string[];
+  audit: PmsOperationsCommandAudit;
+};
+
+export type PmsRoomOrderCommandResponse = {
+  contractVersion: PmsOperationsContractVersion;
+  propertyId: string;
+  orderedRoomIds: string[];
+  commandMeta: PmsCommandMeta;
+};
+
 export type PmsAdditionalGuestsResponse = {
   contractVersion: PmsOperationsContractVersion;
   propertyId: string;
@@ -833,7 +848,22 @@ export type PmsRoomBlockCommandResult =
       message: string;
     };
 
+export type PmsRoomOrderCommandResult =
+  | {
+      ok: true;
+      orderedRoomIds: string[];
+      commandMeta: PmsCommandMeta;
+      replayed?: boolean;
+    }
+  | {
+      ok: false;
+      statusCode: 409;
+      code: "idempotency_conflict" | "room_order_conflict";
+      message: string;
+    };
+
 export type PmsOperationsCommandRepository = {
+  reorderRooms?(command: PmsRoomOrderCommand): Promise<PmsRoomOrderCommandResult>;
   createRoomBlocks?(command: PmsRoomBlockCreateCommand): Promise<PmsRoomBlockCommandResult>;
   updateRoomBlock?(command: PmsRoomBlockUpdateCommand): Promise<PmsRoomBlockCommandResult>;
   releaseRoomBlock?(command: PmsRoomBlockReleaseCommand): Promise<PmsRoomBlockCommandResult>;
@@ -1000,6 +1030,7 @@ type PmsOperationsErrorCode =
   | "finance_bridge_required"
   | PmsAssignmentCommandConflictCode
   | "property_currency_conflict"
+  | "room_order_conflict"
   | "room_type_conflict"
   | "room_photo_plan_limit_reached"
   | "read_model_unavailable"
@@ -1043,6 +1074,7 @@ export async function registerPmsOperationsRoutes(
   for (const path of [
     "/properties",
     "/properties/:propertyId/rooms",
+    "/properties/:propertyId/rooms/reorder",
     "/properties/:propertyId/room-types",
     "/properties/:propertyId/room-types/:roomTypeId",
     "/properties/:propertyId/plan-limits",
@@ -1172,6 +1204,29 @@ export async function registerPmsOperationsRoutes(
       }
     },
   );
+
+  if (commandRepository?.reorderRooms) {
+    app.patch<{ Params: PmsPropertyParams; Body: unknown }>(
+      "/properties/:propertyId/rooms/reorder",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toRoomOrderCommand(propertyId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await commandRepository.reorderRooms!(command.value);
+        if (!result.ok) return sendPmsRoomOrderCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          orderedRoomIds: result.orderedRoomIds,
+          commandMeta: result.commandMeta,
+        } satisfies PmsRoomOrderCommandResponse;
+      },
+    );
+  }
 
   app.get<{ Params: PmsPropertyParams }>(
     "/properties/:propertyId/room-types",
@@ -3074,6 +3129,18 @@ function sendPmsRoomBlockCommandError(
   });
 }
 
+function sendPmsRoomOrderCommandError(
+  reply: FastifyReply,
+  result: Exclude<PmsRoomOrderCommandResult, { ok: true }>,
+): FastifyReply {
+  return sendPmsOperationsError(reply, {
+    statusCode: result.statusCode,
+    code: result.code,
+    category: "conflict",
+    message: result.message,
+  });
+}
+
 function originNotAllowed(): PmsOperationsError {
   return {
     statusCode: 403,
@@ -3140,6 +3207,37 @@ function writePmsOperationsCorsHeaders(
     .header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
     .header("Vary", "Origin");
   return true;
+}
+
+function toRoomOrderCommand(
+  propertyId: string,
+  request: FastifyRequest<{ Body: unknown }>,
+): { value: PmsRoomOrderCommand } | { error: PmsOperationsError } {
+  const raw = objectBody(request.body);
+  if (!raw) return { error: invalidBody("Room reorder body must be an object.") };
+  const commandId = stringField(raw.commandId);
+  const idempotencyKey = stringField(raw.idempotencyKey);
+  const orderedRoomIds = toStringArray(raw.orderedRoomIds);
+  if (!commandId || !idempotencyKey || orderedRoomIds.length === 0) {
+    return {
+      error: invalidBody("Room reorder requires commandId, idempotencyKey, and orderedRoomIds."),
+    };
+  }
+  if (
+    orderedRoomIds.some((roomId) => !isUuid(roomId)) ||
+    new Set(orderedRoomIds).size !== orderedRoomIds.length
+  ) {
+    return { error: invalidBody("orderedRoomIds must contain unique room UUIDs.") };
+  }
+  return {
+    value: {
+      propertyId,
+      commandId,
+      idempotencyKey,
+      orderedRoomIds,
+      audit: pmsOperationsCommandAudit(request, commandId, "Reorder rooms"),
+    },
+  };
 }
 
 function toRoomBlockCreateCommand(
