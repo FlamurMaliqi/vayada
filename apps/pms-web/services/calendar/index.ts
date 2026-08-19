@@ -77,6 +77,7 @@ export interface CalendarBlock {
 export interface CalendarData {
   roomTypes: CalendarRoomType[];
   rooms: CalendarRoom[];
+  roomOrderVersion: string;
   bookings: CalendarBooking[];
   blocks: CalendarBlock[];
 }
@@ -143,6 +144,13 @@ type PmsRoomBlockCommandResponse = {
   items: PmsOperationsRoomBlock[];
 };
 
+type PmsRoomOrderCommandResponse = {
+  contractVersion: "pms-operations.v1";
+  propertyId: string;
+  orderedRoomIds: string[];
+  orderVersion: string;
+};
+
 type PmsOperationalReservation = {
   guestBookingId: string;
   bookingReference: string;
@@ -166,6 +174,10 @@ type PmsOperationsListResponse<T> = {
   propertyId: string;
   items: T[];
   sourceFreshness: Record<string, string | number | boolean | null>;
+};
+
+type PmsRoomsResponse = PmsOperationsListResponse<PmsOperationsRoom> & {
+  orderVersion: string;
 };
 
 type PmsOperationsReservationListResponse = PmsOperationsListResponse<PmsOperationalReservation> & {
@@ -283,7 +295,21 @@ export const calendarService = {
       "Resolved room rates",
     ),
 
-  reorderRooms: (_orderedRoomIds: string[]) => unsupportedPmsNextStackFeature("Room reordering"),
+  reorderRooms: async (orderedRoomIds: string[], expectedVersion: string): Promise<string> => {
+    const propertyId = await resolveSelectedPmsPropertyId("reordering rooms");
+    const commandId = globalThis.crypto.randomUUID();
+    const response = await pmsOperationsClient.patch<PmsRoomOrderCommandResponse>(
+      propertyEndpoint(propertyId, "rooms/reorder"),
+      {
+        commandId,
+        idempotencyKey: `pms-room-reorder:${commandId}`,
+        expectedVersion,
+        orderedRoomIds,
+      },
+      pmsOperationsRequestOptions,
+    );
+    return response.orderVersion;
+  },
 };
 
 const pmsOperationsCalendarReadService = {
@@ -295,7 +321,7 @@ const pmsOperationsCalendarReadService = {
         propertyEndpoint(propertyId, "room-types"),
         pmsOperationsRequestOptions,
       ),
-      pmsOperationsClient.get<PmsOperationsListResponse<PmsOperationsRoom>>(
+      pmsOperationsClient.get<PmsRoomsResponse>(
         propertyEndpoint(propertyId, "rooms"),
         pmsOperationsRequestOptions,
       ),
@@ -308,6 +334,7 @@ const pmsOperationsCalendarReadService = {
     return toCalendarData(roomTypes.items, rooms.items, blocks.items, reservations, {
       start,
       end,
+      roomOrderVersion: rooms.orderVersion,
     });
   },
 };
@@ -341,7 +368,7 @@ function toCalendarData(
   rooms: PmsOperationsRoom[],
   blocks: PmsOperationsRoomBlock[],
   reservations: PmsOperationalReservation[],
-  range: { start: string; end: string },
+  range: { start: string; end: string; roomOrderVersion: string },
 ): CalendarData {
   const roomTypesById = new Map(roomTypes.map((roomType) => [roomType.roomTypeId, roomType]));
   const roomsById = new Map(rooms.map((room) => [room.roomId, room]));
@@ -375,6 +402,7 @@ function toCalendarData(
         floor: room.floor ?? "",
         status: room.status,
       })),
+    roomOrderVersion: range.roomOrderVersion,
     bookings: reservations.flatMap((reservation) =>
       calendarBookingsForReservation(reservation, roomTypesById, range),
     ),
