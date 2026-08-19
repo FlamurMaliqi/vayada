@@ -35,6 +35,7 @@ import { runQuoteLifecycle, waitForOffer, type BookingResource } from "./booking
 import { cleanupSmokeResources, recoverSmokeProperty, type HotelResource } from "./cleanup";
 import { configureGuestPolicyForManualBooking } from "./guest-policy";
 import { runManualBookingAcceptance } from "./manual-booking";
+import { runRoomShuffleAcceptance } from "./room-shuffle";
 
 test("fresh hotel and creator onboarding reaches every next-stack handoff and safe checkout", async ({
   browser,
@@ -389,6 +390,16 @@ async function runHotelFlow(
   });
   await test.step("exercise deployed Financials writes, reads, OTA settings and receipts", () =>
     runFinancialsAcceptance(request, api, setup.propertyId, environment.runId));
+  await runRoomShuffleAcceptance({
+    api,
+    bookings,
+    environment,
+    page,
+    propertyId: setup.propertyId,
+    roomTypeId: setup.roomTypeId,
+    slug: publication.slug,
+    testInfo,
+  });
   await runManualBookingAcceptance({
     api,
     accessToken: session.accessToken,

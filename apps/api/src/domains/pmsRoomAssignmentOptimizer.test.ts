@@ -100,6 +100,43 @@ describe("PMS room assignment optimizer command", () => {
     expect(calls.some(({ text }) => text.includes("platform.domain_events"))).toBe(false);
   });
 
+  it("keeps a pinned future stay fixed while packing movable stays around it", async () => {
+    const { client, calls } = setup({ pinnedAssignmentIndex: 0 });
+
+    const result = await optimizePmsRoomAssignmentsInTransaction(client, command);
+
+    expect(result).toMatchObject({ outcome: "optimized", usedRoomsBefore: 3, usedRoomsAfter: 1 });
+    const moveUpdates = calls.filter(({ text }) =>
+        text.includes("UPDATE pms.operational_booking_assignments"),
+      ),
+      moves = JSON.parse(String(moveUpdates[0]!.values[2])) as Array<{
+        assignment_id: string;
+        from_room_id: string;
+        to_room_id: string;
+      }>;
+    expect(moves).toHaveLength(2);
+    expect(moves.some(({ assignment_id }) => assignment_id === assignmentIds[0])).toBe(false);
+    expect(moves.every(({ to_room_id }) => to_room_id === roomIds[0])).toBe(true);
+  });
+
+  it("scopes optimizer reads and guarded writes to the requested room type", async () => {
+    const { client, calls } = setup();
+
+    await optimizePmsRoomAssignmentsInTransaction(client, command);
+
+    const scopedCalls = calls.filter(
+      ({ text }) =>
+        text.includes("FROM pms.rooms") ||
+        text.includes("FROM pms.operational_booking_assignments assignment") ||
+        text.includes("FROM pms.room_blocks") ||
+        text.includes("UPDATE pms.operational_booking_assignments assignment"),
+    );
+    expect(scopedCalls.length).toBeGreaterThan(0);
+    expect(
+      scopedCalls.every(({ values }) => values[0] === propertyId && values[1] === roomTypeId),
+    ).toBe(true);
+  });
+
   it("rejects a stale guarded move before evidence or completion", async () => {
     const { client, calls } = setup({ moveRowCount: 0 });
 
@@ -155,6 +192,7 @@ function setup(
     moveRowCount?: number;
     evidenceFailure?: boolean;
     budgetFixture?: boolean;
+    pinnedAssignmentIndex?: number;
   } = {},
 ): {
   client: PmsRoomAssignmentOptimizationClient;
@@ -238,7 +276,7 @@ function setup(
           stayEvidenceKind: "exact",
           checkIn: `2026-08-${20 + index * 2}`,
           checkOut: `2026-08-${22 + index * 2}`,
-          pinned: false,
+          pinned: options.pinnedAssignmentIndex === index,
           version: `reservation-v${index + 1}`,
         })),
         rowCount: 3,
