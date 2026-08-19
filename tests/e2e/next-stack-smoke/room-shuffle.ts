@@ -478,6 +478,7 @@ function bookingBody(
 ): Record<string, unknown> {
   const commandId = randomUUID();
   return {
+    contractVersion: "pms-manual-booking.v1",
     commandId,
     idempotencyKey: commandId,
     stays: [
