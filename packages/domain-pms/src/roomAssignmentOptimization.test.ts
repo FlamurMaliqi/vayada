@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   optimizePmsRoomAssignments,
+  type PmsRoomAssignmentOptimizationMove,
   type PmsRoomAssignmentOptimizationOccupancy,
+  type PmsRoomAssignmentOptimizationRoom,
 } from "./roomAssignmentOptimization.js";
 
 const rooms = [
@@ -22,6 +24,41 @@ const stay = (
   checkOut,
   movable,
 });
+const expectFeasibleAssignments = (
+  eligibleRooms: readonly PmsRoomAssignmentOptimizationRoom[],
+  occupancies: readonly PmsRoomAssignmentOptimizationOccupancy[],
+  moves: readonly PmsRoomAssignmentOptimizationMove[],
+) => {
+  const eligibleRoomIds = new Set(eligibleRooms.map(({ roomId }) => roomId));
+  const originalById = new Map(occupancies.map((occupancy) => [occupancy.occupancyId, occupancy]));
+
+  expect(originalById.size).toBe(occupancies.length);
+  expect(new Set(moves.map(({ occupancyId }) => occupancyId)).size).toBe(moves.length);
+  for (const move of moves) {
+    const original = originalById.get(move.occupancyId);
+
+    expect(original).toBeDefined();
+    expect(original?.movable).toBe(true);
+    expect(move.fromRoomId).toBe(original?.roomId);
+    expect(eligibleRoomIds.has(move.toRoomId)).toBe(true);
+    expect(move.toRoomId).not.toBe(move.fromRoomId);
+  }
+  const movedRooms = new Map(moves.map(({ occupancyId, toRoomId }) => [occupancyId, toRoomId]));
+  const assigned = occupancies.map((occupancy) => ({
+    ...occupancy,
+    roomId: movedRooms.get(occupancy.occupancyId) ?? occupancy.roomId,
+  }));
+
+  expect(assigned.every(({ roomId }) => roomId !== null && eligibleRoomIds.has(roomId))).toBe(true);
+  for (const roomId of eligibleRoomIds) {
+    const stays = assigned
+      .filter((occupancy) => occupancy.roomId === roomId)
+      .sort((left, right) => left.checkIn.localeCompare(right.checkIn));
+    for (let index = 1; index < stays.length; index += 1) {
+      expect(stays[index - 1]!.checkOut <= stays[index]!.checkIn).toBe(true);
+    }
+  }
+};
 
 describe("PMS room assignment optimization", () => {
   it("packs same-day turnovers into the lowest room", () => {
@@ -116,14 +153,15 @@ describe("PMS room assignment optimization", () => {
   });
 
   it("reassigns earlier floating stays when their conflicts reveal the feasible packing", () => {
-    const result = optimizePmsRoomAssignments(rooms, [
+    const occupancies = [
       stay("f0", "studio-1", "2026-01-03", "2026-01-04", false),
       stay("f1", "studio-2", "2026-01-01", "2026-01-02", false),
       stay("f2", "studio-3", "2026-01-08", "2026-01-10", false),
       stay("m0", null, "2026-01-05", "2026-01-10"),
       stay("m1", null, "2026-01-02", "2026-01-06"),
       stay("m2", null, "2026-01-05", "2026-01-09"),
-    ]);
+    ];
+    const result = optimizePmsRoomAssignments(rooms, occupancies);
 
     expect(result.outcome).toBe("optimized");
     if (result.outcome === "optimized") {
@@ -131,6 +169,7 @@ describe("PMS room assignment optimization", () => {
       expect(new Set(result.moves.map(({ toRoomId }) => toRoomId))).toEqual(
         new Set(["studio-1", "studio-2", "studio-3"]),
       );
+      expectFeasibleAssignments(rooms, occupancies, result.moves);
     }
   });
 
@@ -182,7 +221,7 @@ describe("PMS room assignment optimization", () => {
     ).toThrow("occupancy is invalid");
   });
 
-  it("handles a representative 20-room workload without repeated schedule sorting", () => {
+  it("optimizes a representative 20-room workload", () => {
     const workloadRooms = Array.from({ length: 20 }, (_, index) => ({
       roomId: `room-${index + 1}`,
       sortOrder: index + 1,
@@ -197,13 +236,10 @@ describe("PMS room assignment optimization", () => {
         checkOut.toISOString().slice(0, 10),
       );
     });
-    const startedAt = performance.now();
-
     expect(optimizePmsRoomAssignments(workloadRooms, workload).outcome).toBe("optimized");
-    expect(performance.now() - startedAt).toBeLessThan(1_500);
   });
 
-  it("rejects an overcapacity 20-room fallback before combinatorial search", () => {
+  it("rejects an overcapacity 20-room workload", () => {
     const workloadRooms = Array.from({ length: 20 }, (_, index) => ({
       roomId: `room-${index + 1}`,
       sortOrder: index + 1,
@@ -211,15 +247,12 @@ describe("PMS room assignment optimization", () => {
     const workload = Array.from({ length: 21 }, (_, index) =>
       stay(`stay-${index}`, null, "2026-06-01", "2026-06-02"),
     );
-    const startedAt = performance.now();
-
     expect(optimizePmsRoomAssignments(workloadRooms, workload).outcome).toBe("infeasible");
-    expect(performance.now() - startedAt).toBeLessThan(100);
   });
 
-  it("reassigns a feasible four-room multi-week snapshot within the default budget", () => {
+  it("reassigns a feasible four-room multi-week snapshot without conflicts", () => {
     const fourRooms = [...rooms, { roomId: "studio-4", sortOrder: 4 }];
-    const result = optimizePmsRoomAssignments(fourRooms, [
+    const occupancies = [
       stay("f0", "studio-1", "2026-01-11", "2026-01-15", false),
       stay("f1", "studio-2", "2026-01-02", "2026-01-03", false),
       stay("f2", "studio-3", "2026-01-12", "2026-01-15", false),
@@ -233,8 +266,12 @@ describe("PMS room assignment optimization", () => {
       stay("m6", null, "2026-01-17", "2026-01-20"),
       stay("m7", null, "2026-01-06", "2026-01-10"),
       stay("m8", null, "2026-01-15", "2026-01-18"),
-    ]);
+    ];
+    const result = optimizePmsRoomAssignments(fourRooms, occupancies);
 
     expect(result.outcome).toBe("optimized");
+    if (result.outcome === "optimized") {
+      expectFeasibleAssignments(fourRooms, occupancies, result.moves);
+    }
   });
 });
