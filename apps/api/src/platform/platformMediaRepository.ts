@@ -62,6 +62,7 @@ const supportedPurposes = new Set([
   "marketplace.offer.media",
   "marketplace.collaboration_chat.attachment",
   "pms.room_type.media",
+  "finance.expense.receipt",
 ]);
 const propertyMediaPurposes = new Set([
   "property.hero_image",
@@ -677,7 +678,8 @@ function mediaObjectFor(
     checksumSha256: originalSafe.checksumSha256,
     originalFilename: file.sessionFile.filename,
     retainedUntil:
-      session.purpose === "marketplace.collaboration_chat.attachment"
+      session.purpose === "marketplace.collaboration_chat.attachment" ||
+      session.purpose === "finance.expense.receipt"
         ? new Date(Date.parse(now) + 60 * 60 * 1000).toISOString()
         : null,
     variants,
@@ -753,7 +755,8 @@ async function insertMediaObject(
 ): Promise<void> {
   const sourceMetadata = {
     requestedVisibility: mediaObject.requestedVisibility,
-    ...(mediaObject.purpose === "marketplace.collaboration_chat.attachment"
+    ...(mediaObject.purpose === "marketplace.collaboration_chat.attachment" ||
+    mediaObject.purpose === "finance.expense.receipt"
       ? { attachmentState: "orphan" }
       : {}),
   };
@@ -769,7 +772,7 @@ async function insertMediaObject(
         $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::jsonb,
         $19,
         CASE
-          WHEN $5 = 'marketplace.collaboration_chat.attachment'
+          WHEN $5 IN ('marketplace.collaboration_chat.attachment', 'finance.expense.receipt')
             THEN $21::timestamptz + interval '1 hour'
           ELSE NULL
         END,

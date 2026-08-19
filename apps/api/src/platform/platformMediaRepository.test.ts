@@ -293,6 +293,45 @@ describe("PostgreSQL platform media repository", () => {
     });
   });
 
+  it("persists Finance receipts as bounded staged orphans", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    await createSession(repository, "marketplace.collaboration_chat.attachment");
+    database.updateSession({
+      purpose: "finance.expense.receipt",
+      resource: {
+        product: "pms",
+        resourceType: "pms_property",
+        resourceId: PROPERTY_ID,
+        propertyId: PROPERTY_ID,
+        targetResourceId: "00000000-0000-4000-8000-000000000060",
+      },
+      target: {
+        resourceProduct: "finance",
+        resourceType: "expense",
+        resourceId: "00000000-0000-4000-8000-000000000060",
+        propertyId: PROPERTY_ID,
+      },
+    });
+    const session = database.session!;
+    const completed = await repository.completeUploadSession(completionInput(session));
+
+    expect(completed.mediaObjects[0]).toMatchObject({
+      purpose: "finance.expense.receipt",
+      resourceProduct: "finance",
+      resourceType: "expense",
+      lifecycleStatus: "staged",
+      retainedUntil: "2026-07-16T13:01:00.000Z",
+      variants: [expect.objectContaining({ variantName: "provider_original" })],
+    });
+    const objectInsert = database.clientQueries.find(({ text }) =>
+      text.includes("INSERT INTO platform.media_objects"),
+    );
+    expect(JSON.parse(String(objectInsert?.values?.[17]))).toMatchObject({
+      attachmentState: "orphan",
+    });
+  });
+
   it("resolves a chat target only when the source resource belongs to the collaboration", async () => {
     const query = vi.fn(async () => ({
       rows: [{ collaborationId: "collaboration-target-001", propertyId: PROPERTY_ID }],
@@ -734,6 +773,7 @@ async function createSession(
 function completionInput(session: PlatformMediaSessionRecord) {
   const isPrivate = session.effectiveVisibility === "private";
   const isChat = session.purpose === "marketplace.collaboration_chat.attachment";
+  const isFinance = session.purpose === "finance.expense.receipt";
   const isPropertyMedia = [
     "property.hero_image",
     "property.gallery_image",
@@ -742,7 +782,7 @@ function completionInput(session: PlatformMediaSessionRecord) {
   ].includes(session.purpose);
   const variantNames = isPropertyMedia
     ? PROPERTY_MEDIA_PUBLIC_VARIANTS
-    : [isChat ? ("provider_original" as const) : ("original_safe" as const)];
+    : [isChat || isFinance ? ("provider_original" as const) : ("original_safe" as const)];
   return {
     session,
     files: [

@@ -1093,7 +1093,20 @@ const app = buildApp({
   financeRepository,
   financeSubscriptionService,
   financeOtaCommissionSettingsRepository,
-  financeExpenses: financeExpenseRuntime?.routes,
+  financeExpenses: financeExpenseRuntime
+    ? {
+        ...financeExpenseRuntime.routes,
+        ...(platformMediaRuntime
+          ? {
+              receiptMedia: {
+                read: financeExpenseRuntime.routes.expenses,
+                signer: platformMediaRuntime.collaborationAttachments.signer,
+                serving: platformMediaRuntime.collaborationAttachments.serving,
+              },
+            }
+          : {}),
+      }
+    : undefined,
   pmsFinanceCompatibilityRepository,
   financeXenditBankValidator: xenditBankValidator,
   financePublicHotelProfileRepository,
