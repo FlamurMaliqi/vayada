@@ -335,13 +335,12 @@ describe("api config", () => {
     ).toBe("postgresql://target-db");
   });
 
-  it("loads next API runtime only with target sources and no legacy product envs", () => {
+  it("loads next API runtime only with target sources", () => {
     const config = loadConfig({
       API_RUNTIME: "next",
       TARGET_DATABASE_URL: "postgresql://target-db",
       PUBLIC_HOTEL_PROFILE_SOURCE: "target",
       PUBLIC_BOOKABILITY_SOURCE: "target",
-      BOOKING_SETTINGS_SOURCE: "target",
       PMS_OPERATIONS_SOURCE: "target",
       FINANCE_SOURCE: "target",
       BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
@@ -352,7 +351,6 @@ describe("api config", () => {
       bookingDatabaseUrl: undefined,
       publicHotelProfileSource: "target",
       publicBookabilitySource: "target",
-      bookingSettingsSource: "target",
       pmsOperationsSource: "target",
       financeSource: "target",
       bookingCheckoutCommandSource: "target",
@@ -365,7 +363,6 @@ describe("api config", () => {
       TARGET_DATABASE_URL: "postgresql://target-db",
       PUBLIC_HOTEL_PROFILE_SOURCE: "target",
       PUBLIC_BOOKABILITY_SOURCE: "target",
-      BOOKING_SETTINGS_SOURCE: "target",
       PMS_OPERATIONS_SOURCE: "disabled",
       FINANCE_SOURCE: "target",
       BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
@@ -381,7 +378,6 @@ describe("api config", () => {
         TARGET_DATABASE_URL: "postgresql://target-db",
         PUBLIC_HOTEL_PROFILE_SOURCE: "target",
         PUBLIC_BOOKABILITY_SOURCE: "target",
-        BOOKING_SETTINGS_SOURCE: "target",
         PMS_OPERATIONS_SOURCE: "target",
         FINANCE_SOURCE: "target",
         BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
@@ -409,20 +405,6 @@ describe("api config", () => {
         TARGET_DATABASE_URL: "postgresql://target-db",
       }),
     ).toThrow("API_RUNTIME=next requires target runtime sources: PUBLIC_BOOKABILITY_SOURCE=target");
-  });
-
-  it("requires target Booking settings for the next API runtime", () => {
-    expect(() =>
-      loadConfig({
-        API_RUNTIME: "next",
-        TARGET_DATABASE_URL: "postgresql://target-db",
-        PUBLIC_HOTEL_PROFILE_SOURCE: "target",
-        PUBLIC_BOOKABILITY_SOURCE: "target",
-        PMS_OPERATIONS_SOURCE: "target",
-        FINANCE_SOURCE: "target",
-        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
-      }),
-    ).toThrow("API_RUNTIME=next requires target runtime sources: BOOKING_SETTINGS_SOURCE=target");
   });
 
   it("defaults provider webhook intake modes to observe-only shadow intake", () => {
@@ -522,35 +504,6 @@ describe("api config", () => {
     ).toThrow(
       "STRIPE_WEBHOOK_INTAKE_MODE must be one of: observe_only, mutating, ack_only_with_receipt",
     );
-  });
-
-  it("keeps booking settings on the legacy source by default", () => {
-    expect(loadConfig({}).bookingSettingsSource).toBe("legacy");
-  });
-
-  it("loads optional booking settings source config", () => {
-    expect(
-      loadConfig({
-        BOOKING_SETTINGS_SOURCE: "target",
-        TARGET_DATABASE_URL: "postgresql://target-db",
-      }).bookingSettingsSource,
-    ).toBe("target");
-  });
-
-  it("requires target database config when booking settings use the target source", () => {
-    expect(() =>
-      loadConfig({
-        BOOKING_SETTINGS_SOURCE: "target",
-      }),
-    ).toThrow("TARGET_DATABASE_URL is required when BOOKING_SETTINGS_SOURCE=target");
-  });
-
-  it("rejects invalid booking settings source config", () => {
-    expect(() =>
-      loadConfig({
-        BOOKING_SETTINGS_SOURCE: "preview",
-      }),
-    ).toThrow("BOOKING_SETTINGS_SOURCE must be one of: legacy, target");
   });
 
   it("defaults Booking Web event sink to disabled until target auth config is explicit", () => {

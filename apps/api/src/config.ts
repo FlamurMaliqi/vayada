@@ -141,7 +141,6 @@ export type ApiConfig = {
   bookingDatabaseUrl?: string;
   publicHotelProfileSource: PublicHotelProfileSource;
   publicBookabilitySource: PublicBookabilitySource;
-  bookingSettingsSource: "legacy" | "target";
   marketplaceAdminSource: MarketplaceAdminSource;
   marketplaceAdminLegacySuperadminFallbackEnabled: boolean;
   pmsOperationsSource: PmsOperationsSource;
@@ -650,12 +649,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     ["legacy", "target"],
     "legacy",
   );
-  const bookingSettingsSource = readSourceEnv(
-    env,
-    "BOOKING_SETTINGS_SOURCE",
-    ["legacy", "target"],
-    "legacy",
-  );
   const marketplaceAdminSource = readSourceEnv(
     env,
     "MARKETPLACE_ADMIN_SOURCE",
@@ -693,14 +686,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     apiRuntime,
     publicHotelProfileSource,
     publicBookabilitySource,
-    bookingSettingsSource,
     pmsOperationsSource,
     financeSource,
     bookingCheckoutCommandSource,
   });
-  if (bookingSettingsSource === "target" && !targetDatabaseUrl) {
-    throw new Error("TARGET_DATABASE_URL is required when BOOKING_SETTINGS_SOURCE=target");
-  }
   if (marketplaceAdminSource === "target" && !targetDatabaseUrl) {
     throw new Error("TARGET_DATABASE_URL is required when MARKETPLACE_ADMIN_SOURCE=target");
   }
@@ -773,7 +762,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     bookingDatabaseUrl,
     publicHotelProfileSource,
     publicBookabilitySource,
-    bookingSettingsSource,
     marketplaceAdminSource,
     marketplaceAdminLegacySuperadminFallbackEnabled: readBooleanEnv(
       env,
@@ -853,7 +841,6 @@ function assertNextApiRuntimeConfig(
     | "apiRuntime"
     | "publicHotelProfileSource"
     | "publicBookabilitySource"
-    | "bookingSettingsSource"
     | "pmsOperationsSource"
     | "financeSource"
     | "bookingCheckoutCommandSource"
@@ -875,7 +862,6 @@ function assertNextApiRuntimeConfig(
       allowedValues: ["target", "active_publication"],
     },
     { key: "PUBLIC_BOOKABILITY_SOURCE", value: config.publicBookabilitySource },
-    { key: "BOOKING_SETTINGS_SOURCE", value: config.bookingSettingsSource },
     {
       key: "PMS_OPERATIONS_SOURCE",
       value: config.pmsOperationsSource,

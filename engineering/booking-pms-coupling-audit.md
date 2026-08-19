@@ -45,9 +45,9 @@ Target disposition means:
 ## Executive Summary
 
 The TypeScript Booking target path is currently cleaner than the legacy Python
-apps: `apps/api/src` exposes an optional `BOOKING_DATABASE_URL` and the Booking
-reservation route depends on a repository interface, not PMS tables or Channex
-symbols.
+apps: `apps/api/src` uses `TARGET_DATABASE_URL` for Booking settings and
+reservation repositories, not legacy product database URLs, PMS tables, or
+Channex symbols.
 
 The highest-risk legacy couplings are elsewhere:
 

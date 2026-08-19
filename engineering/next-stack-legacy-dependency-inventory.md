@@ -9,6 +9,12 @@ This complements:
 - [marketplace route migration inventory](marketplace-route-migration-inventory.md)
 - [RequestContext contract](request-context-contract.md)
 
+> **Retirement update:** The legacy public-profile repository and the public
+> profile and Booking settings source selectors are removed from `apps/api`.
+> The dormant Booking settings repository is deleted next;
+> `BOOKING_DATABASE_URL` no longer selects an adapter and is removed afterward.
+> Historical entries below describe the earlier VAY-880 state.
+
 ## Scope
 
 Audited next-stack surfaces:
@@ -380,7 +386,7 @@ Remaining legacy-runtime env requirements outside the covered route groups:
 
 | Env requirement                        | Remaining surface / retirement condition                           | Owner ticket             | Forbidden by `test:legacy-free` |
 | -------------------------------------- | ------------------------------------------------------------------ | ------------------------ | ------------------------------- |
-| `BOOKING_DATABASE_URL`                 | Legacy Booking settings/profile fallback removed                   | VAY-760, VAY-883         | Yes                             |
+| `BOOKING_DATABASE_URL`                 | Inert config key removed in the stacked settings config cleanup    | VAY-760, VAY-883         | Yes                             |
 | `BOOKING_PUBLIC_API_URL`               | Public domain/promo and Booking Admin helper fallbacks removed     | VAY-760, VAY-883         | Yes                             |
 | `PMS_API_URL`                          | PMS guest-form sync and Booking Admin/PMS helper fallbacks removed | VAY-878, VAY-883         | Yes                             |
 | `PMS_PUBLIC_API_URL`                   | Public checkout/status/lookup proxy fallbacks removed              | VAY-760 follow-up tracks | Yes                             |
