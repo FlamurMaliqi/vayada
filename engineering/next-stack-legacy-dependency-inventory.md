@@ -13,7 +13,8 @@ This complements:
 > profile and Booking settings source selectors are removed from `apps/api`.
 > The legacy Booking settings repository and `BOOKING_DATABASE_URL` are also
 > removed. Public bookability now directly composes the target quote/calendar
-> repositories with no compatibility selector.
+> repositories with no compatibility selector. Booking Web checkout commands
+> and lifecycle jobs likewise compose only target adapters.
 > Historical entries below describe the earlier VAY-880 state.
 
 ## Scope
@@ -54,7 +55,7 @@ The next-stack debt falls into four groups:
      `PUBLIC_HOTEL_PROFILE_SOURCE=legacy`, `BOOKING_*_SOURCE=legacy`,
      `PMS_OPERATIONS_SOURCE=disabled`, `FINANCE_SOURCE=legacy`,
      `BOOKING_PUBLIC_API_URL`, `PMS_PUBLIC_API_URL`, `PMS_API_URL`, and the
-     legacy checkout proxy flag (lines 306-468). The concrete legacy product
+     now-retired legacy checkout proxy flag (lines 306-468). The concrete legacy product
      runtime envs are `BOOKING_DATABASE_URL`, `BOOKING_PUBLIC_API_URL`,
      `PMS_API_URL`, and `PMS_PUBLIC_API_URL` (lines 424-457).
    - **Current consumer:** all next frontends using target API routes.

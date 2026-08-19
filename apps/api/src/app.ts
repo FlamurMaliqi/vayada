@@ -384,12 +384,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   }
   if (options.publicHotelProfileRepository) {
+    const bookingWebCheckoutAdapter = options.bookingWebCheckoutAdapter;
+    if (!bookingWebCheckoutAdapter) {
+      throw new Error("Booking Web checkout adapter is required when public routes are mounted");
+    }
     app.register(registerBookingWebPublicRoutes, {
       prefix: "/api/booking-web",
       profileRepository: options.publicHotelProfileRepository,
       quoteRepository: options.publicHotelQuoteRepository,
       calendarRepository: options.bookingWebCalendarRepository,
-      checkoutAdapter: options.bookingWebCheckoutAdapter,
+      checkoutAdapter: bookingWebCheckoutAdapter,
       affiliateHotelResolver:
         options.bookingWebAffiliateHotelResolver ?? options.publicHotelProfileRepository,
       affiliateRepository: options.bookingWebAffiliateRepository,

@@ -25,7 +25,6 @@ import type {
 } from "./bookingWebAffiliate.js";
 import {
   createTargetBookingWebCheckoutAdapter,
-  createUnavailableBookingWebCheckoutAdapter,
   recordTargetCheckoutCommand,
   resolveTargetCheckoutAmountSnapshot,
   targetCardPaymentIdempotencyKey,
@@ -34,6 +33,8 @@ import {
   type BookingWebCalendarReadPool,
   type BookingWebCheckoutAdapter,
 } from "./bookingWebPublic.js";
+
+const unusedBookingWebCheckoutAdapter = {} as BookingWebCheckoutAdapter;
 
 type LegacyHotelResponse = {
   id: string;
@@ -203,6 +204,7 @@ describe("Booking Web public bootstrap parity", () => {
     const app = buildApp({
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
       bookingWebPublicNow: () => new Date("2026-06-06T11:00:00.000Z"),
       bookingWebAttributionSink: {
         async recordAffiliateClick(event) {
@@ -239,6 +241,7 @@ describe("Booking Web public bootstrap parity", () => {
     const app = buildApp({
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
       bookingWebPublicNow: () => new Date("2026-06-06T11:00:00.000Z"),
       bookingWebAttributionSink: {
         async recordAffiliateClick() {},
@@ -279,6 +282,7 @@ describe("Booking Web public bootstrap parity", () => {
     const app = buildApp({
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
       bookingWebAttributionSink: {
         async recordAffiliateClick() {},
         async recordTelemetryEvent(event) {
@@ -302,6 +306,7 @@ describe("Booking Web public bootstrap parity", () => {
     const app = buildApp({
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await app.inject({
@@ -440,124 +445,12 @@ describe("Booking Web public bootstrap parity", () => {
     await app.close();
   });
 
-  it("fails closed for checkout lifecycle routes without a target checkout adapter", async () => {
-    const app = buildApp({
-      logger: false,
-      publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
-    });
-
-    const checkoutConfig = await app.inject({
-      method: "GET",
-      url: "/api/booking-web/hotels/hotel-alpenrose/checkout-config",
-    });
-    const create = await app.inject({
-      method: "POST",
-      url: "/api/booking-web/hotels/hotel-alpenrose/bookings",
-      payload: {
-        roomTypeId: "room_deluxe",
-        guestEmail: "guest@example.com",
-        checkIn: "2026-09-12",
-        checkOut: "2026-09-13",
-        paymentMethod: "pay_at_property",
-      },
-    });
-    const quote = await app.inject({
-      method: "POST",
-      url: "/api/booking-web/hotels/hotel-alpenrose/bookings/quote",
-      payload: {
-        roomTypeId: "room_deluxe",
-        guestEmail: "guest@example.com",
-        checkIn: "2026-09-12",
-        checkOut: "2026-09-15",
-        paymentMethod: "pay_at_property",
-      },
-    });
-    const confirm = await app.inject({
-      method: "POST",
-      url: "/api/booking-web/hotels/hotel-alpenrose/bookings/draft_1/confirm-authorization",
-    });
-    const status = await app.inject({
-      method: "GET",
-      url: "/api/booking-web/hotels/hotel-alpenrose/bookings/status?reference=ALP-1001&email=guest%40example.com",
-    });
-    const lookup = await app.inject({
-      method: "POST",
-      url: "/api/booking-web/hotels/hotel-alpenrose/bookings/lookup",
-      payload: { bookingReference: "ALP-1001", guestEmail: "guest@example.com" },
-    });
-    const paymentInstructions = await app.inject({
-      method: "GET",
-      url: "/api/booking-web/hotels/hotel-alpenrose/bookings/ALP-1001/payment-instructions",
-    });
-    const promo = await app.inject({
-      method: "POST",
-      url: "/api/booking-web/hotels/hotel-alpenrose/promo/validate",
-      payload: { code: "SUMMER10" },
-    });
-
-    expect([
-      checkoutConfig.statusCode,
-      create.statusCode,
-      quote.statusCode,
-      confirm.statusCode,
-      status.statusCode,
-      lookup.statusCode,
-      promo.statusCode,
-    ]).toEqual([404, 404, 404, 400, 404, 404, 404]);
-    expect(paymentInstructions.statusCode).toBe(404);
-    expect(create.json()).toMatchObject({
-      message: "Booking Web checkout command adapter is not configured.",
-    });
-    expect(promo.json()).toMatchObject({
-      message: "Booking Web promo validation adapter is not configured.",
-    });
-    await app.close();
-  });
-
-  it("does not proxy checkout commands to legacy PMS unless explicitly enabled", async () => {
-    const app = buildApp({
-      logger: false,
-      publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
-    });
-
-    const create = await app.inject({
-      method: "POST",
-      url: "/api/booking-web/hotels/hotel-alpenrose/bookings",
-      payload: { guestEmail: "guest@example.com" },
-    });
-    const confirm = await app.inject({
-      method: "POST",
-      url: "/api/booking-web/hotels/hotel-alpenrose/bookings/draft_1/confirm-authorization",
-    });
-    const withdraw = await app.inject({
-      method: "POST",
-      url: "/api/booking-web/hotels/hotel-alpenrose/bookings/booking_pending/withdraw",
-      payload: { guestEmail: "guest@example.com" },
-    });
-    const cancelPreview = await app.inject({
-      method: "POST",
-      url: "/api/booking-web/hotels/hotel-alpenrose/bookings/booking_1/cancel-preview",
-      payload: { guestEmail: "guest@example.com" },
-    });
-    const changePreview = await app.inject({
-      method: "POST",
-      url: "/api/booking-web/hotels/hotel-alpenrose/bookings/booking_1/change-request/preview",
-      payload: changeRequestPayload(),
-    });
-
-    expect(create.statusCode).toBe(404);
-    expect(confirm.statusCode).toBe(400);
-    expect(withdraw.statusCode).toBe(404);
-    expect(cancelPreview.statusCode).toBe(404);
-    expect(changePreview.statusCode).toBe(404);
-    await app.close();
-  });
-
   it("serves target-owned affiliate routes without PMS public API config", async () => {
     const affiliateRepository = new InMemoryAffiliateRepository();
     const app = buildApp({
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
       bookingWebAffiliateRepository: affiliateRepository,
     });
 
@@ -959,7 +852,7 @@ describe("Booking Web public bootstrap parity", () => {
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
       bookingWebCheckoutAdapter: {
-        ...createUnavailableBookingWebCheckoutAdapter(),
+        ...unusedBookingWebCheckoutAdapter,
         async consumeLookupAttempt() {
           throw Object.assign(new Error("Too many booking lookup attempts."), { statusCode: 429 });
         },
@@ -987,7 +880,7 @@ describe("Booking Web public bootstrap parity", () => {
       trustProxy: ["10.0.0.1"],
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
       bookingWebCheckoutAdapter: {
-        ...createUnavailableBookingWebCheckoutAdapter(),
+        ...unusedBookingWebCheckoutAdapter,
         async consumeLookupAttempt(hash) {
           hashes.push(hash);
         },
@@ -1021,7 +914,7 @@ describe("Booking Web public bootstrap parity", () => {
       logger: false,
       publicHotelProfileRepository: createProfileRepository(legacyHotel, {}),
       bookingWebCheckoutAdapter: {
-        ...createUnavailableBookingWebCheckoutAdapter(),
+        ...unusedBookingWebCheckoutAdapter,
         async confirmAuthorization() {
           called = true;
           return {};
@@ -1042,7 +935,7 @@ describe("Booking Web public bootstrap parity", () => {
   it("keeps one checkout attempt replayable while distinct attempt tokens create distinct quotes", async () => {
     const keys: string[] = [];
     const checkoutAdapter: BookingWebCheckoutAdapter = {
-      ...createUnavailableBookingWebCheckoutAdapter(),
+      ...unusedBookingWebCheckoutAdapter,
       async quoteBooking(_slug, _request, context) {
         if (!context) throw new Error("Missing checkout command context");
         keys.push(context.idempotencyKey);
@@ -3331,6 +3224,7 @@ function buildParityApp(config: {
     publicHotelProfileRepository: profileRepository,
     publicHotelQuoteRepository: quoteRepository,
     bookingWebCalendarRepository: calendarRepository,
+    bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     bookingWebPublicNow: () => new Date("2026-06-06T11:00:00.000Z"),
   });
 }
