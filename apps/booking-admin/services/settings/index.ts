@@ -290,6 +290,8 @@ export interface AddonItem {
   perPerson?: boolean;
   perNight?: boolean;
   sortOrder?: number;
+  ownershipKind: "property" | "partner";
+  partnerCommissionRate: string | null;
   location?: string;
   maxGuests?: string;
   highlights?: string[];
