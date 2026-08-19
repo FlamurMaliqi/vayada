@@ -46,7 +46,6 @@ import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import type { PropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
 import {
-  createPgPublicHotelProfileRepository,
   createTargetPublicHotelProfileRepository,
   serializePublicHotelProfileProjection,
   toPublicHotelProfileProjection,
@@ -3173,7 +3172,6 @@ describe("vayada-api", () => {
         },
       },
       publicHotelQuoteRepository,
-      bookingDomainResolutionSource: "target",
     });
 
     const response = await injectJson(app, {
@@ -3198,7 +3196,6 @@ describe("vayada-api", () => {
     const config = loadConfig({
       TARGET_DATABASE_URL: "postgresql://target-db",
       PUBLIC_HOTEL_PROFILE_SOURCE: "target",
-      BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
     });
     expect(config.bookingDatabaseUrl).toBeUndefined();
 
@@ -3215,7 +3212,6 @@ describe("vayada-api", () => {
     app = buildApp({
       logger: false,
       publicHotelProfileRepository: targetRepository,
-      bookingDomainResolutionSource: config.bookingDomainResolutionSource,
     });
 
     const aiProfile = await injectJson(app, {
@@ -6370,16 +6366,7 @@ describe("vayada-api", () => {
   });
 
   it("does not close injected public hotel profile pools", async () => {
-    let legacyPoolClosed = false;
     let targetPoolClosed = false;
-    const legacyPool: PublicHotelProfileReadPool = {
-      async query<T extends QueryResultRow>() {
-        return { rows: [] as T[] };
-      },
-      async end() {
-        legacyPoolClosed = true;
-      },
-    };
     const targetPool: PublicHotelProfileReadPool = {
       async query<T extends QueryResultRow>() {
         return { rows: [] as T[] };
@@ -6389,19 +6376,13 @@ describe("vayada-api", () => {
       },
     };
 
-    const legacyRepository = createPgPublicHotelProfileRepository({
-      connectionString: "postgresql://booking-db",
-      pool: legacyPool,
-    });
     const targetRepository = createTargetPublicHotelProfileRepository({
       connectionString: "postgresql://target-db",
       pool: targetPool,
     });
 
-    await legacyRepository.close?.();
     await targetRepository.close?.();
 
-    expect(legacyPoolClosed).toBe(false);
     expect(targetPoolClosed).toBe(false);
   });
 

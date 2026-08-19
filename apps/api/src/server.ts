@@ -758,7 +758,6 @@ const bookingGuestPolicyApplication = pmsRoomPublicationRuntime
   : undefined;
 
 const bookingPublicationRuntime = (() => {
-  if (config.publicHotelProfileSource === "legacy") return undefined;
   const dependenciesMissing =
     config.apiRuntime !== "next" ||
     config.bookingSettingsSource !== "target" ||
@@ -1203,7 +1202,6 @@ const app = buildApp({
   identityPrivacyAllowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
   publicHotelProfileRepository,
   publicHotelQuoteRepository,
-  bookingDomainResolutionSource: config.bookingDomainResolutionSource,
   bookingWebCalendarRepository,
   bookingWebCheckoutAdapter,
   bookingWebAttributionSink:

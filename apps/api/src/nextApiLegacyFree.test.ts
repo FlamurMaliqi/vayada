@@ -25,7 +25,6 @@ const nextApiLegacyFreeEnv: NodeJS.ProcessEnv = {
   API_RUNTIME: "next",
   TARGET_DATABASE_URL: "postgresql://target-db",
   PUBLIC_HOTEL_PROFILE_SOURCE: "active_publication",
-  BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
   PUBLIC_BOOKABILITY_SOURCE: "target",
   BOOKING_SETTINGS_SOURCE: "target",
   PMS_OPERATIONS_SOURCE: "target",
@@ -121,7 +120,6 @@ describe("next-api legacy-free runtime check", () => {
       apiRuntime: "next",
       bookingDatabaseUrl: undefined,
       publicHotelProfileSource: "active_publication",
-      bookingDomainResolutionSource: "target",
       publicBookabilitySource: "target",
       bookingSettingsSource: "target",
       pmsOperationsSource: "target",
@@ -139,7 +137,6 @@ describe("next-api legacy-free runtime check", () => {
     app = buildApp({
       logger: false,
       ...publicRuntime,
-      bookingDomainResolutionSource: config.bookingDomainResolutionSource,
     });
     await app.ready();
 

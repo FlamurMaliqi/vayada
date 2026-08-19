@@ -43,8 +43,7 @@ export type ApiAuthSessionConfig = {
   authMarketplaceWebLogoutUrl?: string;
 };
 
-export type PublicHotelProfileSource = "legacy" | "target" | "active_publication";
-export type BookingDomainResolutionSource = "legacy" | "target";
+export type PublicHotelProfileSource = "target" | "active_publication";
 export type PublicBookabilitySource = "legacy" | "target";
 export type MarketplaceAdminSource = "disabled" | "target";
 export type BookingCheckoutCommandSource = "legacy_proxy" | "target";
@@ -141,7 +140,6 @@ export type ApiConfig = {
   targetDatabaseUrl?: string;
   bookingDatabaseUrl?: string;
   publicHotelProfileSource: PublicHotelProfileSource;
-  bookingDomainResolutionSource: BookingDomainResolutionSource;
   publicBookabilitySource: PublicBookabilitySource;
   bookingSettingsSource: "legacy" | "target";
   marketplaceAdminSource: MarketplaceAdminSource;
@@ -643,14 +641,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const publicHotelProfileSource = readSourceEnv(
     env,
     "PUBLIC_HOTEL_PROFILE_SOURCE",
-    ["legacy", "target", "active_publication"],
-    "legacy",
-  );
-  const bookingDomainResolutionSource = readSourceEnv(
-    env,
-    "BOOKING_DOMAIN_RESOLUTION_SOURCE",
-    ["legacy", "target"],
-    "legacy",
+    ["target", "active_publication"],
+    "target",
   );
   const publicBookabilitySource = readSourceEnv(
     env,
@@ -700,7 +692,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   assertNextApiRuntimeConfig(env, {
     apiRuntime,
     publicHotelProfileSource,
-    bookingDomainResolutionSource,
     publicBookabilitySource,
     bookingSettingsSource,
     pmsOperationsSource,
@@ -722,29 +713,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   if (financeSource === "target" && !targetDatabaseUrl) {
     throw new Error("FINANCE_SOURCE=target requires TARGET_DATABASE_URL");
   }
-  if (publicHotelProfileSource === "target" && !targetDatabaseUrl) {
-    throw new Error("PUBLIC_HOTEL_PROFILE_SOURCE=target requires TARGET_DATABASE_URL");
-  }
-  if (publicHotelProfileSource === "active_publication" && !targetDatabaseUrl) {
-    throw new Error("PUBLIC_HOTEL_PROFILE_SOURCE=active_publication requires TARGET_DATABASE_URL");
-  }
-  if (bookingDomainResolutionSource === "target" && publicHotelProfileSource === "legacy") {
-    throw new Error(
-      "BOOKING_DOMAIN_RESOLUTION_SOURCE=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target or active_publication",
-    );
-  }
   if (publicBookabilitySource === "target" && !targetDatabaseUrl) {
     throw new Error("PUBLIC_BOOKABILITY_SOURCE=target requires TARGET_DATABASE_URL");
-  }
-  if (publicBookabilitySource === "target" && publicHotelProfileSource === "legacy") {
-    throw new Error(
-      "PUBLIC_BOOKABILITY_SOURCE=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target or active_publication",
-    );
-  }
-  if (bookingWebEventSink === "target" && publicHotelProfileSource === "legacy") {
-    throw new Error(
-      "BOOKING_WEB_EVENT_SINK=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target or active_publication",
-    );
   }
   if (bookingWebEventSink === "target" && !auth) {
     throw new Error("BOOKING_WEB_EVENT_SINK=target requires complete auth config");
@@ -802,7 +772,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     targetDatabaseUrl,
     bookingDatabaseUrl,
     publicHotelProfileSource,
-    bookingDomainResolutionSource,
     publicBookabilitySource,
     bookingSettingsSource,
     marketplaceAdminSource,
@@ -883,7 +852,6 @@ function assertNextApiRuntimeConfig(
     ApiConfig,
     | "apiRuntime"
     | "publicHotelProfileSource"
-    | "bookingDomainResolutionSource"
     | "publicBookabilitySource"
     | "bookingSettingsSource"
     | "pmsOperationsSource"
@@ -906,7 +874,6 @@ function assertNextApiRuntimeConfig(
       value: config.publicHotelProfileSource,
       allowedValues: ["target", "active_publication"],
     },
-    { key: "BOOKING_DOMAIN_RESOLUTION_SOURCE", value: config.bookingDomainResolutionSource },
     { key: "PUBLIC_BOOKABILITY_SOURCE", value: config.publicBookabilitySource },
     { key: "BOOKING_SETTINGS_SOURCE", value: config.bookingSettingsSource },
     {
