@@ -339,8 +339,6 @@ async function runHotelFlow(
         lifecycleStatus: "active",
         lifecycleRevision: expectedLifecycleRevision + 1,
       });
-      await test.step("exercise deployed Financials writes, reads, OTA settings and receipts", () =>
-        runFinancialsAcceptance(request, api, setup.propertyId, environment.runId));
       const result = await api.json<Record<string, unknown>>(
         "POST",
         `/api/booking/hotels/${setup.propertyId}/public-bookability`,
@@ -389,6 +387,8 @@ async function runHotelFlow(
     request,
     roomTypeId: setup.roomTypeId,
   });
+  await test.step("exercise deployed Financials writes, reads, OTA settings and receipts", () =>
+    runFinancialsAcceptance(request, api, setup.propertyId, environment.runId));
   await runManualBookingAcceptance({
     api,
     accessToken: session.accessToken,
@@ -429,12 +429,6 @@ async function runFinancialsAcceptance(
     moduleId: "financials",
     isActive: true,
   });
-  await api.json(
-    "PUT",
-    `/api/pms/properties/${propertyId}/pricing-source/currency`,
-    { expectedPricingCurrencyRevision: 0, currency: "EUR" },
-    { "Idempotency-Key": idempotency("pricing-currency") },
-  );
 
   const categoryResponse = await api.json<Record<string, unknown>>(
     "POST",
