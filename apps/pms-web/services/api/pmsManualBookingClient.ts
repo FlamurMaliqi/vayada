@@ -93,15 +93,12 @@ export type PmsManualBookingCreateResult = {
   balance: PmsManualBookingMoney;
   paymentStatus: "unpaid" | "paid";
   paymentEvidenceId: string | null;
+  rearrangedBookingCount: number;
   sideEffects: Array<"calendar_refresh" | "ari_changed" | "guest_confirmation" | "audit_event">;
 };
 
 export type PmsManualBookingErrorCategory =
-  | "validation"
-  | "authorization"
-  | "not_found"
-  | "conflict"
-  | "unavailable";
+  "validation" | "authorization" | "not_found" | "conflict" | "unavailable";
 export const PMS_MANUAL_BOOKING_ERROR_CODES = [
   "unauthenticated",
   "invalid_body",
