@@ -24,7 +24,8 @@ export type MutateFinanceManualExpenseResult =
   | ExpenseFailure;
 export type ArchiveFinanceManualExpenseCommand = MutationBase;
 export type ArchiveFinanceManualExpenseResult =
-  { ok: true; outcome: "archived" | "replayed"; item: FinanceExpense } | ExpenseFailure;
+  | { ok: true; outcome: "archived" | "replayed"; item: FinanceExpense }
+  | ExpenseFailure;
 
 // prettier-ignore
 type IdempotencyRow = { status: string; fingerprint: string; responseHash: string | null; metadata: unknown };

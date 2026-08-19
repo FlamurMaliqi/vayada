@@ -48,7 +48,8 @@ export type CreateBookingAddonItemBody = {
 } & AddonEconomicTerms;
 
 type UpdateAddonEconomicTerms =
-  { ownershipKind?: never; partnerCommissionRate?: never } | AddonEconomicTerms;
+  | { ownershipKind?: never; partnerCommissionRate?: never }
+  | AddonEconomicTerms;
 
 export type UpdateBookingAddonItemBody = Partial<
   Omit<CreateBookingAddonItemBody, keyof AddonEconomicTerms>
