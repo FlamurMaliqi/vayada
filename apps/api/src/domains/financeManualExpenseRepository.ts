@@ -188,8 +188,9 @@ async function mutate(pool: pg.Pool, raw: UpdateFinanceManualExpenseCommand): Pr
   try {
     await client.query("BEGIN");
     await client.query("SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='10s'");
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`${UPDATE_OPERATION}|${raw.propertyId.toLowerCase()}|${keyHash}`]);
     const property = await client.query(
-      "SELECT id FROM hotel_catalog.properties WHERE id=$1::uuid FOR UPDATE",
+      "SELECT id FROM hotel_catalog.properties WHERE id=$1::uuid FOR KEY SHARE",
       [raw.propertyId],
     );
     if (property.rowCount !== 1) return await stop(client, { ok: false, code: "not_found" });

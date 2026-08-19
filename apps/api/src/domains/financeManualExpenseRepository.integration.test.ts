@@ -74,16 +74,16 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
     // prettier-ignore
     await expect(repository.update({ ...update, notes: "Changed reuse" })).resolves.toEqual({ ok: false, code: "idempotency_conflict" });
     // prettier-ignore
-    const races = [{ ...mutation("race-a", 3), notes: "Concurrent A" }, { ...mutation("race-b", 3), notes: "Concurrent B" }];
-    const updateRace = await Promise.all(races.map((value) => repository.update(value)));
+    await admin.query(`BEGIN; SELECT id FROM hotel_catalog.properties WHERE id='${PROPERTY}' FOR KEY SHARE`);
     // prettier-ignore
-    expect(updateRace.map((value) => value.ok ? value.outcome : value.code).sort()).toEqual(["revision_conflict", "updated"]);
-    for (const [index, patch] of [
-      { paymentStatus: "unpaid", paidOn: "2026-08-11" },
-      { vendor: null },
-      { incurredOn: null },
-    ].entries())
-      // prettier-ignore
+    const race = { ...mutation("race", 3), propertyId: PROPERTY.toUpperCase(), notes: "Concurrent" };
+    // prettier-ignore
+    const updateRace = await Promise.all([repository.update(race), repository.update({ ...race, propertyId: PROPERTY })]);
+    await admin.query("ROLLBACK");
+    // prettier-ignore
+    expect(updateRace.map((value) => value.ok ? value.outcome : value.code).sort()).toEqual(["replayed", "updated"]);
+    // prettier-ignore
+    for (const [index, patch] of [{ paymentStatus: "unpaid", paidOn: "2026-08-11" }, { vendor: null }, { incurredOn: null }].entries())
       await expect(repository.update({ ...mutation(`invalid-${index}`, 4), ...patch } as never)).resolves.toEqual({ ok: false, code: "invalid_command" });
     for (const target of ["command", "audit", "actor"] as const) {
       const hostile = { ...mutation(`hostile-${target}`, 4), notes: "private" };
@@ -181,12 +181,12 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
         (SELECT count(*)::int FROM platform.product_audit_events WHERE property_id=$1) AS audits,
         (SELECT count(*)::int FROM platform.idempotency_keys WHERE property_id=$1) AS keys,
         (SELECT jsonb_build_object('key',audit_key,'private',private_payload) FROM platform.product_audit_events WHERE property_id=$1 AND causation_id=$3) AS "correctionAudit",
-        (SELECT jsonb_build_object('redacted',redacted_payload,'private',private_payload,'metadata',audit_metadata)
-         FROM platform.product_audit_events WHERE property_id=$1 AND causation_id=$2) AS audit`,
+        (SELECT jsonb_build_object('redacted',redacted_payload,'private',private_payload,'metadata',audit_metadata) FROM platform.product_audit_events WHERE property_id=$1 AND causation_id=$2) AS audit`,
       [PROPERTY, update.audit.requestId, correct.audit.requestId],
     );
     // prettier-ignore
     expect(evidence.rows[0]).toMatchObject({ expenses: 2, audits: 7, keys: 7, correctionAudit: { key: expect.stringContaining(`.property.${PROPERTY}.`), private: { next: { receiptMediaId: goodReceipt } } } });
+    // prettier-ignore
     expect(evidence.rows[0].audit).toMatchObject({ redacted: { commandId: update.commandId, outcome: "updated" },
       private: { reason: "test", previous: { notes: "later" }, next: { notes: "Updated note" } },
       metadata: { requestId: update.audit.requestId, actorOrganizationId: update.audit.actor.organizationId } });
@@ -198,8 +198,7 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
       DELETE FROM platform.product_audit_events WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
       DELETE FROM platform.idempotency_keys WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
       DELETE FROM platform.media_objects WHERE id IN ('${RECEIPT}','12100000-0000-4000-8000-000000000009');
-      DELETE FROM platform.media_objects WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}')
-        AND purpose='finance.expense.receipt';
+      DELETE FROM platform.media_objects WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}') AND purpose='finance.expense.receipt';
       DELETE FROM finance.expense_categories WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
       DELETE FROM pms.property_pricing_settings WHERE property_id IN ('${PROPERTY}','${OTHER_PROPERTY}');
       DELETE FROM hotel_catalog.properties WHERE id IN ('${PROPERTY}','${OTHER_PROPERTY}');
