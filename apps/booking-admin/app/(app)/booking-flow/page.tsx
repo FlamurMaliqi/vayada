@@ -175,6 +175,8 @@ function toSettingsAddonItem(item: BookingAddonItem): AddonItem {
     perPerson: item.pricingModel === "per_guest" || item.pricingModel === "per_guest_night",
     perNight: item.pricingModel === "per_night" || item.pricingModel === "per_guest_night",
     sortOrder: item.sortOrder,
+    ownershipKind: item.ownershipKind,
+    partnerCommissionRate: item.partnerCommissionRate,
   };
 }
 
@@ -186,7 +188,7 @@ function toAddonPricingModel(addon: { perPerson?: boolean; perNight?: boolean })
 }
 
 function toAddonWritableFields(values: AddonItemFormValues) {
-  return {
+  const fields = {
     name: values.name,
     description: values.description,
     price: values.price,
@@ -196,6 +198,17 @@ function toAddonWritableFields(values: AddonItemFormValues) {
     duration: values.duration || null,
     pricingModel: toAddonPricingModel(values) as BookingAddonPricingModel,
   };
+  return values.ownershipKind === "partner"
+    ? {
+        ...fields,
+        ownershipKind: "partner" as const,
+        partnerCommissionRate: values.partnerCommissionRate,
+      }
+    : {
+        ...fields,
+        ownershipKind: "property" as const,
+        partnerCommissionRate: null,
+      };
 }
 
 function toAddonCreateBody(
