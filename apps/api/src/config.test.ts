@@ -131,8 +131,6 @@ describe("api config", () => {
       PLATFORM_MEDIA_CDN_BASE_URL: "https://cdn.staging.vayada.com",
       PLATFORM_MEDIA_CDN_ORIGIN_HOST: "vayada-media-staging.s3.us-east-1.amazonaws.com",
       BOOKING_DATABASE_URL: "postgresql://user:pass@booking-db:5432/booking?sslmode=require",
-      BOOKING_RESERVATIONS_READ_DATABASE_URL:
-        "postgresql://user:pass@reservations-db:5432/reservations?sslmode=require",
     });
 
     expect(config.auth?.databaseUrl).toBe(
@@ -143,9 +141,6 @@ describe("api config", () => {
     );
     expect(config.bookingDatabaseUrl).toBe(
       "postgresql://user:pass@booking-db:5432/booking?sslmode=require&uselibpqcompat=true",
-    );
-    expect(config.bookingReservationsReadDatabaseUrl).toBe(
-      "postgresql://user:pass@reservations-db:5432/reservations?sslmode=require&uselibpqcompat=true",
     );
   });
 
@@ -366,7 +361,6 @@ describe("api config", () => {
       BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
       PUBLIC_BOOKABILITY_SOURCE: "target",
       BOOKING_SETTINGS_SOURCE: "target",
-      BOOKING_RESERVATIONS_SOURCE: "target",
       PMS_OPERATIONS_SOURCE: "target",
       FINANCE_SOURCE: "target",
       BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
@@ -375,12 +369,10 @@ describe("api config", () => {
     expect(config).toMatchObject({
       apiRuntime: "next",
       bookingDatabaseUrl: undefined,
-      bookingReservationsReadDatabaseUrl: undefined,
       publicHotelProfileSource: "target",
       bookingDomainResolutionSource: "target",
       publicBookabilitySource: "target",
       bookingSettingsSource: "target",
-      bookingReservationsSource: "target",
       pmsOperationsSource: "target",
       financeSource: "target",
       bookingCheckoutCommandSource: "target",
@@ -395,7 +387,6 @@ describe("api config", () => {
       BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
       PUBLIC_BOOKABILITY_SOURCE: "target",
       BOOKING_SETTINGS_SOURCE: "target",
-      BOOKING_RESERVATIONS_SOURCE: "target",
       PMS_OPERATIONS_SOURCE: "disabled",
       FINANCE_SOURCE: "target",
       BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
@@ -413,7 +404,6 @@ describe("api config", () => {
         BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
         PUBLIC_BOOKABILITY_SOURCE: "target",
         BOOKING_SETTINGS_SOURCE: "target",
-        BOOKING_RESERVATIONS_SOURCE: "target",
         PMS_OPERATIONS_SOURCE: "target",
         FINANCE_SOURCE: "target",
         BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
@@ -453,7 +443,6 @@ describe("api config", () => {
         PUBLIC_HOTEL_PROFILE_SOURCE: "target",
         BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
         PUBLIC_BOOKABILITY_SOURCE: "target",
-        BOOKING_RESERVATIONS_SOURCE: "target",
         PMS_OPERATIONS_SOURCE: "target",
         FINANCE_SOURCE: "target",
         BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
@@ -587,36 +576,6 @@ describe("api config", () => {
         BOOKING_SETTINGS_SOURCE: "preview",
       }),
     ).toThrow("BOOKING_SETTINGS_SOURCE must be one of: legacy, target");
-  });
-
-  it("loads optional booking reservations read database config", () => {
-    expect(
-      loadConfig({
-        BOOKING_RESERVATIONS_READ_DATABASE_URL: "postgresql://booking-reservations-read",
-      }).bookingReservationsReadDatabaseUrl,
-    ).toBe("postgresql://booking-reservations-read");
-  });
-
-  it("defaults booking reservations to the legacy source", () => {
-    expect(loadConfig({}).bookingReservationsSource).toBe("legacy");
-  });
-
-  it("loads target booking reservations config", () => {
-    const config = loadConfig({
-      TARGET_DATABASE_URL: "postgresql://target-db",
-      BOOKING_RESERVATIONS_SOURCE: "target",
-    });
-
-    expect(config.targetDatabaseUrl).toBe("postgresql://target-db");
-    expect(config.bookingReservationsSource).toBe("target");
-  });
-
-  it("rejects unsupported booking reservations source config", () => {
-    expect(() =>
-      loadConfig({
-        BOOKING_RESERVATIONS_SOURCE: "pms",
-      }),
-    ).toThrow("BOOKING_RESERVATIONS_SOURCE must be one of: legacy, target");
   });
 
   it("defaults Booking Web event sink to disabled until target auth config is explicit", () => {

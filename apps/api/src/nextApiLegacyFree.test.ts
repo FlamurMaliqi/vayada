@@ -15,7 +15,6 @@ import type { MarketplaceDiscoveryReadPool } from "./routes/marketplaceDiscovery
 
 const legacyRuntimeEnvKeys = [
   "BOOKING_DATABASE_URL",
-  "BOOKING_RESERVATIONS_READ_DATABASE_URL",
   "BOOKING_PUBLIC_API_URL",
   "PMS_API_URL",
   "PMS_PUBLIC_API_URL",
@@ -29,7 +28,6 @@ const nextApiLegacyFreeEnv: NodeJS.ProcessEnv = {
   BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
   PUBLIC_BOOKABILITY_SOURCE: "target",
   BOOKING_SETTINGS_SOURCE: "target",
-  BOOKING_RESERVATIONS_SOURCE: "target",
   PMS_OPERATIONS_SOURCE: "target",
   FINANCE_SOURCE: "target",
   BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
@@ -122,12 +120,10 @@ describe("next-api legacy-free runtime check", () => {
     expect(config).toMatchObject({
       apiRuntime: "next",
       bookingDatabaseUrl: undefined,
-      bookingReservationsReadDatabaseUrl: undefined,
       publicHotelProfileSource: "active_publication",
       bookingDomainResolutionSource: "target",
       publicBookabilitySource: "target",
       bookingSettingsSource: "target",
-      bookingReservationsSource: "target",
       pmsOperationsSource: "target",
       financeSource: "target",
       bookingCheckoutCommandSource: "target",
