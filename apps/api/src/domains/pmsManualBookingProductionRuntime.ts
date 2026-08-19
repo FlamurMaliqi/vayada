@@ -14,6 +14,7 @@ import {
   createPmsManualBookingCurrentPricingEvidence,
   createPmsManualBookingTransactionalPricingPort,
 } from "./pmsManualBookingTransactionalPricing.js";
+import { createPmsRoomAssignmentOptimizationTriggerPort } from "./pmsRoomAssignmentOptimizationTriggers.js";
 
 type RoomPublicationRuntime = Readonly<{
   amenityVocabulary: RoomAmenityVocabularyValidationPort;
@@ -38,6 +39,7 @@ export function createPmsManualBookingProductionCommandConfig(input: {
       pricing: createPmsManualBookingTransactionalPricingPort(
         createPmsManualBookingCurrentPricingEvidence(input.roomPublication),
       ),
+      roomAssignmentOptimization: createPmsRoomAssignmentOptimizationTriggerPort(),
     },
   };
 }

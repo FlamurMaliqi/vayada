@@ -113,6 +113,12 @@ export function createPgPmsManualBookingCommandRepository(config: {
         );
         if (paymentEvidenceId)
           await config.dependencies.booking.markPaid({ transaction, guestBookingId });
+        await config.dependencies.roomAssignmentOptimization.afterCreate({
+          transaction,
+          command,
+          rooms,
+          acceptedAt,
+        });
         const result = createResult(command, accepted, paymentEvidenceId);
         await config.dependencies.platform.writeEvidence({
           transaction,

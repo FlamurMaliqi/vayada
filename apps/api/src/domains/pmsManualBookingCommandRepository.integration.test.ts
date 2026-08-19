@@ -30,6 +30,7 @@ import type {
   PmsManualBookingTransactionDependencies,
   PmsManualBookingTransactionalPricingPort,
 } from "./pmsManualBookingTransactionPorts.js";
+import { createPmsRoomAssignmentOptimizationTriggerPort } from "./pmsRoomAssignmentOptimizationTriggers.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const uuid = (suffix: number) => `82000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
@@ -1568,6 +1569,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       financeSettlement: createFinanceManualBookingSettlementPort(),
       attribution: createBookingPmsManualAttributionOwner(),
       nightlyEvidence: createBookingPmsManualNightlyRevenueEvidenceOwner(),
+      roomAssignmentOptimization: createPmsRoomAssignmentOptimizationTriggerPort(),
       ...override,
     };
   }

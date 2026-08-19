@@ -29,6 +29,7 @@ it("rejects an invalid manual source before transaction collaborators run", asyn
       nightlyEvidence: unusedPort,
       financeSettlement: unusedPort,
       pricing: unusedPort,
+      roomAssignmentOptimization: unusedPort,
     } as PmsManualBookingTransactionDependencies,
   });
 
@@ -132,6 +133,7 @@ it("composes the exact production owners only when both PMS runtimes are ready",
     "operations",
     "platform",
     "pricing",
+    "roomAssignmentOptimization",
   ]);
   expect(config?.dependencies).toMatchObject({
     attribution: { resolveManualAttribution: expect.any(Function) },
@@ -141,5 +143,78 @@ it("composes the exact production owners only when both PMS runtimes are ready",
     operations: { persistOperationalFacts: expect.any(Function) },
     platform: { reserveCommand: expect.any(Function) },
     pricing: { calculate: expect.any(Function) },
+    roomAssignmentOptimization: { afterCreate: expect.any(Function) },
   });
+});
+
+it("rolls back the booking transaction when create optimization fails", async () => {
+  const query = vi.fn(async (_sql: string) => ({ rows: [], rowCount: 0 }));
+  const transaction = { query, release: vi.fn() };
+  const writeEvidence = vi.fn();
+  const completeCommand = vi.fn();
+  const repository = createPgPmsManualBookingCommandRepository({
+    connectionString: "postgresql://unused",
+    pool: { connect: vi.fn(async () => transaction) },
+    now: () => new Date("2026-08-18T00:00:00.000Z"),
+    randomId: () => "81000000-0000-4000-8000-000000000099",
+    dependencies: {
+      attribution: createBookingPmsManualAttributionOwner(),
+      booking: {
+        assertSourceCommandUnused: vi.fn(),
+        persistBookingFacts: vi.fn(async () => ({
+          guestBookingId: "81000000-0000-4000-8000-000000000099",
+          bookingReference: "PMS-TEST",
+          total: { amountDecimal: "100.00", currency: "EUR" },
+          checkIn: "2026-08-20",
+          checkOut: "2026-08-21",
+        })),
+        markPaid: vi.fn(),
+      },
+      operations: {
+        lockRooms: vi.fn(async () => [{ roomId: "room-1", roomTypeId: "type-1" }]),
+        persistOperationalFacts: vi.fn(),
+      },
+      platform: {
+        findReplay: vi.fn(async () => null),
+        reserveCommand: vi.fn(async () => ({
+          id: "81000000-0000-4000-8000-000000000098",
+          keyHash: "key-hash",
+          requestFingerprint: "fingerprint",
+        })),
+        writeEvidence,
+        completeCommand,
+      },
+      nightlyEvidence: { appendExactNightlyEvidence: vi.fn() },
+      financeSettlement: { settleFull: vi.fn() },
+      pricing: {
+        calculate: vi.fn(async () => ({
+          contractVersion: "pms-manual-booking.v1" as const,
+          currency: "EUR" as never,
+          stays: [],
+          addOns: [],
+          grandTotal: { amountDecimal: "100.00", currency: "EUR" },
+        })),
+      },
+      roomAssignmentOptimization: {
+        afterCreate: vi.fn(async () => {
+          throw new Error("optimizer failed");
+        }),
+      },
+    },
+  });
+  const command = {
+    contractVersion: "pms-manual-booking.v1",
+    commandId: "create-1",
+    idempotencyKey: "key-1",
+    propertyId,
+    directSource: "email",
+    stays: [{ checkIn: "2026-08-20", checkOut: "2026-08-21" }],
+    payment: { expectedMethod: "cash", settlement: { status: "unpaid" } },
+  } as unknown as PmsManualBookingCreateCommand;
+
+  await expect(repository.createManualBooking(command)).rejects.toThrow("optimizer failed");
+  expect(query.mock.calls.map(([sql]) => sql)).toEqual(["BEGIN", "ROLLBACK"]);
+  expect(writeEvidence).not.toHaveBeenCalled();
+  expect(completeCommand).not.toHaveBeenCalled();
+  expect(transaction.release).toHaveBeenCalledOnce();
 });
