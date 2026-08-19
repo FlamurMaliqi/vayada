@@ -295,10 +295,12 @@ export default function RoomDetailModal({
   return (
     <div
       className="fixed inset-0 z-[100] flex items-stretch md:items-center justify-center bg-black/50 backdrop-blur-sm"
-      onClick={onClose}
+      onClick={(event) => event.target === event.currentTarget && onClose()}
     >
       <div
-        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="room-detail-title"
         className="bg-white md:rounded-2xl shadow-2xl w-full md:max-w-5xl h-full md:h-[90vh] overflow-hidden flex flex-col overscroll-contain"
       >
         {/* Top bar with nav */}
@@ -329,6 +331,7 @@ export default function RoomDetailModal({
           </button>
           <button
             onClick={onClose}
+            aria-label="Close room details"
             className="p-1.5 rounded-full border border-gray-200 hover:bg-gray-50 text-gray-500 ml-1"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -447,7 +450,9 @@ export default function RoomDetailModal({
                 </div>
               )}
               <div className="flex items-center gap-2 mb-2">
-                <h2 className="text-2xl font-bold text-gray-900">{room.name}</h2>
+                <h2 id="room-detail-title" className="text-2xl font-bold text-gray-900">
+                  {room.name}
+                </h2>
                 {room.category && (
                   <span className="text-xs font-medium px-2.5 py-0.5 rounded-full bg-primary-50 text-primary-700 border border-primary-200">
                     {room.category}

@@ -4,7 +4,9 @@ import { useEffect, useState, useCallback } from "react";
 import { getBookingHotelPropertyLink } from "@/services/api/bookingPropertyLinkClient";
 import {
   buildFinancePaymentSettingsBody,
+  createFinanceStripeDashboardLink,
   createFinanceStripeProviderAccount,
+  FinancePaymentSettingsClientError,
   getFinancePaymentSettings,
   issueFinanceStripeOnboardingLink,
   updateFinancePaymentSettings,
@@ -32,6 +34,7 @@ import {
   TrashIcon,
   ArrowUpIcon,
   ArrowDownIcon,
+  ArrowTopRightOnSquareIcon,
 } from "@heroicons/react/24/outline";
 import { HotelIcon } from "@vayada/product-onboarding";
 import {
@@ -71,6 +74,10 @@ const POI_COLORS = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#0d9488", "#db2
 const PROPERTY_MAP_CENTERING_UNAVAILABLE =
   "Automatic property map centering is not available on next-api yet.";
 const BILLING_SETTINGS_UNAVAILABLE = "Billing settings are not available on next-api yet.";
+const STRIPE_DASHBOARD_ERROR =
+  "Couldn't open your Stripe Dashboard right now. Please try again in a moment.";
+const STRIPE_NOT_CONNECTED =
+  "Your Stripe account isn't connected. Connect Stripe in your payment settings to access the dashboard.";
 
 function readBookingHotelId(settings: PropertySettings): string {
   if (settings.id?.trim()) return settings.id.trim();
@@ -265,6 +272,8 @@ export default function SettingsPage() {
   // Stripe Connect / Payments
   const [stripeAccountId, setStripeAccountId] = useState<string | null>(null);
   const [stripeOnboarded, setStripeOnboarded] = useState(false);
+  const [openingStripeDashboard, setOpeningStripeDashboard] = useState(false);
+  const [stripeDashboardToast, setStripeDashboardToast] = useState("");
   const [connectEmail] = useState(() =>
     typeof window !== "undefined" ? localStorage.getItem("userEmail") || "" : "",
   );
@@ -374,7 +383,10 @@ export default function SettingsPage() {
         const ps = res.paymentSettings;
         const providerAccount = ps.providerAccount;
         const stripeAccountId =
-          providerAccount.provider === "stripe" ? providerAccount.providerAccountId : null;
+          providerAccount.provider === "stripe" &&
+          !providerAccount.providerAccountId?.startsWith("settings-choice:")
+            ? providerAccount.providerAccountId
+            : null;
         setStripeAccountId(stripeAccountId);
         setStripeOnboarded(
           providerAccount.provider === "stripe" &&
@@ -479,6 +491,38 @@ export default function SettingsPage() {
     } catch (err: unknown) {
       stripeTab.close();
       setPaymentError(errorMessage(err, t("settings.billing.errorOnboardingLink")));
+    }
+  };
+
+  const handleStripeDashboard = async () => {
+    setStripeDashboardToast("");
+    if (!billingPropertyId || !stripeAccountId) {
+      setStripeDashboardToast(STRIPE_NOT_CONNECTED);
+      return;
+    }
+
+    const stripeTab = window.open("about:blank", "_blank");
+    if (!stripeTab) {
+      setStripeDashboardToast(STRIPE_DASHBOARD_ERROR);
+      return;
+    }
+    stripeTab.opener = null;
+    setOpeningStripeDashboard(true);
+    try {
+      const { url } = await createFinanceStripeDashboardLink({
+        propertyId: billingPropertyId,
+      });
+      stripeTab.location.assign(url);
+    } catch (error) {
+      stripeTab.close();
+      setStripeDashboardToast(
+        error instanceof FinancePaymentSettingsClientError &&
+          error.code === "provider_account_not_found"
+          ? STRIPE_NOT_CONNECTED
+          : STRIPE_DASHBOARD_ERROR,
+      );
+    } finally {
+      setOpeningStripeDashboard(false);
     }
   };
 
@@ -775,6 +819,12 @@ export default function SettingsPage() {
         setActiveSection(id as Section);
       }}
     >
+      {stripeDashboardToast && (
+        <div className="fixed right-4 top-4 z-50 w-[min(24rem,calc(100vw-2rem))]" role="alert">
+          <FeedbackAlert type="error" message={stripeDashboardToast} />
+        </div>
+      )}
+
       {/* Feedback banner */}
       {feedback && (
         <FeedbackAlert type={feedback.type} message={feedback.message} className="mb-4" />
@@ -2471,6 +2521,21 @@ export default function SettingsPage() {
                         </button>
                       </div>
                     )}
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3">
+                      <button
+                        type="button"
+                        onClick={handleStripeDashboard}
+                        disabled={openingStripeDashboard}
+                        className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-[13px] font-medium text-gray-800 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <ArrowTopRightOnSquareIcon className="h-4 w-4" aria-hidden="true" />
+                        {openingStripeDashboard ? "Opening Stripe..." : "View Stripe Dashboard"}
+                      </button>
+                      <p className="mt-2 text-[12px] text-gray-500">
+                        Check your payouts, balance, and payment history, or update your bank
+                        account.
+                      </p>
+                    </div>
                     <div className="flex justify-end pt-2">
                       <SaveButton onClick={savePaymentProviderSettings} saving={savingPayment}>
                         {t("common.save")}

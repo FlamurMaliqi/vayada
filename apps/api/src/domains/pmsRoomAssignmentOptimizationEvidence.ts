@@ -110,7 +110,7 @@ async function appendAudits(
        'pms.assignment.auto_rearranged', now(), 'property', $2::uuid, $3, $4::uuid,
        'pms', 'operational_booking_assignment', move.assignment_id, $5::uuid, $6::uuid, $7, $8,
        jsonb_build_object('fromRoomId', move.from_room_id, 'toRoomId', move.to_room_id,
-                          'reason', $9, 'roomTypeId', $10)
+                          'reason', $9::text, 'roomTypeId', $10::text)
      FROM jsonb_to_recordset($11::jsonb) AS move(
        assignment_id text, from_room_id text, to_room_id text
      )`,

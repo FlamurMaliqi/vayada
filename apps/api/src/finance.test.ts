@@ -437,6 +437,105 @@ describe("finance route contracts", () => {
     });
   });
 
+  it("creates a no-store Stripe dashboard link from the authorized property only", async () => {
+    const requestedProperties: string[] = [];
+    app = buildFinanceApp({
+      permissions: financeManagePermissions(),
+      repository: {
+        ...financeRepository,
+        async issueStripeDashboardLoginLink(requestedPropertyId) {
+          requestedProperties.push(requestedPropertyId);
+          return { ok: true, url: "https://connect.stripe.test/express/session" };
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/finance/properties/${propertyId}/provider-accounts/stripe/dashboard-link`,
+      payload: { providerAccountId: "acct_foreign_must_be_ignored" },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({ url: "https://connect.stripe.test/express/session" });
+    expect(requestedProperties).toEqual([propertyId]);
+  });
+
+  it("rejects unauthenticated, unprivileged, and foreign-property dashboard requests", async () => {
+    const foreignPropertyId = "f3000000-0000-0000-0000-000000000999";
+    const cases: Array<[string, string | undefined, PermissionKey[], string, number]> = [
+      ["missing auth", undefined, financeManagePermissions(), propertyId, 401],
+      ["invalid auth", "Bearer invalid-token", financeManagePermissions(), propertyId, 401],
+      ["missing permission", "Bearer valid-token", ["pms.finance.read"], propertyId, 403],
+      [
+        "another property's account",
+        "Bearer valid-token",
+        financeManagePermissions(),
+        foreignPropertyId,
+        403,
+      ],
+    ];
+
+    for (const [name, authorization, permissions, requestedPropertyId, expectedStatus] of cases) {
+      let issued = false;
+      app = buildFinanceApp({
+        permissions,
+        repository: {
+          ...financeRepository,
+          async issueStripeDashboardLoginLink() {
+            issued = true;
+            return { ok: true, url: "https://connect.stripe.test/express/session" };
+          },
+        },
+      });
+      const response = await injectJson<Record<string, unknown>>(app, {
+        method: "POST",
+        url: `/api/finance/properties/${requestedPropertyId}/provider-accounts/stripe/dashboard-link`,
+        headers: authorization ? { authorization } : {},
+      });
+      await app.close();
+      app = null;
+
+      expect(response.statusCode, name).toBe(expectedStatus);
+      expect(issued, name).toBe(false);
+    }
+  });
+
+  it("rate-limits Stripe dashboard links per authorized user and property", async () => {
+    let issued = 0;
+    app = buildFinanceApp({
+      permissions: financeManagePermissions(),
+      repository: {
+        ...financeRepository,
+        async issueStripeDashboardLoginLink() {
+          issued += 1;
+          return { ok: true, url: `https://connect.stripe.test/express/session-${issued}` };
+        },
+      },
+    });
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/finance/properties/${propertyId}/provider-accounts/stripe/dashboard-link`,
+        headers: { authorization: "Bearer valid-token" },
+      });
+      expect(response.statusCode, `attempt ${attempt + 1}`).toBe(200);
+    }
+
+    const limited = await app.inject({
+      method: "POST",
+      url: `/api/finance/properties/${propertyId}/provider-accounts/stripe/dashboard-link`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.headers["retry-after"]).toBeDefined();
+    expect(limited.json()).toMatchObject({ code: "rate_limited", category: "rate_limit" });
+    expect(issued).toBe(10);
+  });
+
   it("compensates when Stripe succeeds but the target provider-account write fails", async () => {
     const provider = fakeStripeConnectProvider();
     const target = targetStripeProviderAccountPool({ failInsert: true });
@@ -534,6 +633,71 @@ describe("finance route contracts", () => {
     expect(result.response.onboardingUrl).toBe(
       "https://connect.stripe.test/onboard/acct_target_property_686/2",
     );
+  });
+
+  it("issues fresh Stripe dashboard links from the property's stored provider account", async () => {
+    const provider = fakeStripeConnectProvider();
+    const target = targetStripeProviderAccountPool();
+    const repository = createTargetFinancePropertySettingsRepository({
+      connectionString: "postgresql://finance-target",
+      pool: target.pool,
+      stripeConnectProvider: provider,
+    });
+    target.existingAccount = {
+      providerAccountId: "f7000000-0000-0000-0000-000000000686",
+      providerAccountRef: "acct_target_property_686",
+      status: "active",
+      onboardingStatus: "completed",
+      onboardingUrl: null,
+    };
+
+    await expect(repository.issueStripeDashboardLoginLink!(propertyId)).resolves.toEqual({
+      ok: true,
+      url: "https://connect.stripe.test/dashboard/acct_target_property_686",
+    });
+    expect(target.requiredCall("FROM finance.payment_provider_accounts").values).toEqual([
+      propertyId,
+    ]);
+    expect(target.requiredCall("FROM finance.payment_provider_accounts").text).toContain(
+      "JOIN finance.payment_settings settings",
+    );
+  });
+
+  it("maps missing and disconnected Stripe dashboard accounts without exposing provider errors", async () => {
+    const target = targetStripeProviderAccountPool();
+    const provider = fakeStripeConnectProvider();
+    const repository = createTargetFinancePropertySettingsRepository({
+      connectionString: "postgresql://finance-target",
+      pool: target.pool,
+      stripeConnectProvider: provider,
+    });
+
+    await expect(repository.issueStripeDashboardLoginLink!(propertyId)).resolves.toMatchObject({
+      ok: false,
+      statusCode: 404,
+      code: "provider_account_not_found",
+    });
+
+    target.existingAccount = {
+      providerAccountId: "f7000000-0000-0000-0000-000000000686",
+      providerAccountRef: "acct_disconnected",
+      status: "active",
+      onboardingStatus: "completed",
+      onboardingUrl: null,
+    };
+    provider.createLoginLink = async () => {
+      throw Object.assign(new Error("No such account: acct_disconnected"), {
+        code: "stripe_connect_account_not_found",
+      });
+    };
+    const result = await repository.issueStripeDashboardLoginLink!(propertyId);
+    expect(result).toEqual({
+      ok: false,
+      statusCode: 404,
+      code: "provider_account_not_found",
+      message: "Finance provider account was not found.",
+    });
+    expect(JSON.stringify(result)).not.toContain("acct_disconnected");
   });
 
   it("passes F1i affiliate payout settings and payout ledger fixtures in target mode", async () => {
@@ -1219,7 +1383,7 @@ describe("finance route contracts", () => {
     });
   });
 
-  it("reads requires_manual_review from the target payment settings row", async () => {
+  it("reads requires_manual_review and hides provider-choice placeholders", async () => {
     const repository = createTargetFinancePropertySettingsRepository({
       connectionString: "postgresql://finance-target",
       pool: {
@@ -1244,7 +1408,7 @@ describe("finance route contracts", () => {
                 statementDescriptor: "ALPENROSE",
                 requiresManualReview: true,
                 updatedAt: "2026-06-12T10:00:00.000Z",
-                providerAccountId: "acct_target_alpenrose",
+                providerAccountId: `settings-choice:${propertyId}:stripe`,
                 provider: "stripe",
                 providerStatus: "active",
                 providerOnboardingStatus: "completed",
@@ -1261,7 +1425,7 @@ describe("finance route contracts", () => {
 
     await expect(repository.getPaymentSettings(propertyId)).resolves.toMatchObject({
       requiresManualReview: true,
-      providerAccount: { status: "active" },
+      providerAccount: { providerAccountId: null, status: "active" },
     });
   });
 
@@ -2421,6 +2585,9 @@ function fakeStripeConnectProvider(): FinanceStripeConnectProvider & {
     },
     async createOnboardingLink(request) {
       return `https://connect.stripe.test/onboard/${request.providerAccountRef}/2`;
+    },
+    async createLoginLink(request) {
+      return `https://connect.stripe.test/dashboard/${request.providerAccountRef}`;
     },
     async retrieveAccount(request) {
       return {
