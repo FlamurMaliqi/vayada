@@ -1,5 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { mockPmsWebAuthenticatedSession, mockPmsWebTargetRoutes } from "../support/pmsWebMocks";
+import {
+  PMS_WEB_PROPERTY_ID,
+  mockPmsWebAuthenticatedSession,
+  mockPmsWebTargetRoutes,
+  pmsWebRoomType,
+} from "../support/pmsWebMocks";
 import { watchNoLegacyCalls } from "../support/noLegacyCalls";
 import { watchPageHealth } from "../support/pageHealth";
 
@@ -99,6 +104,87 @@ test.describe("pms-web smoke", () => {
     await expect(page.getByRole("link", { name: /Ada Lovelace/ }).first()).toBeVisible();
 
     await assertNoLegacyCalls();
+    await assertHealthy();
+  });
+
+  test("creates a room type without updating payment settings", async ({ page }, testInfo) => {
+    const assertHealthy = watchPageHealth(page, testInfo);
+    let paymentSettingsWrites = 0;
+    let roomTypeCreates = 0;
+    let notePaymentSettingsRequested!: () => void;
+    let releasePaymentSettings!: () => void;
+    const paymentSettingsRequested = new Promise<void>((resolve) => {
+      notePaymentSettingsRequested = resolve;
+    });
+    const paymentSettingsRelease = new Promise<void>((resolve) => {
+      releasePaymentSettings = resolve;
+    });
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.route(
+      `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/payment-settings`,
+      async (route) => {
+        if (route.request().method() === "GET") {
+          notePaymentSettingsRequested();
+          await paymentSettingsRelease;
+          return route.fallback();
+        }
+        paymentSettingsWrites += 1;
+        return route.fulfill({
+          status: 501,
+          json: { message: "Payment settings updates is not available on PMS next-stack yet." },
+        });
+      },
+    );
+    await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-types`, async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      roomTypeCreates += 1;
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      expect(body).toMatchObject({ name: "Castrop Suite", currency: "USD" });
+      return route.fulfill({
+        json: {
+          contractVersion: "pms-operations.v1",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          item: pmsWebRoomType,
+          commandMeta: { replayed: false },
+        },
+      });
+    });
+
+    await page.goto("/rooms/new");
+    await page.getByPlaceholder("e.g. Two-Bedroom Villa").fill("Castrop Suite");
+    await page.getByRole("button", { name: "Pricing & Rates" }).click();
+    await page.getByRole("button", { name: "Add season" }).click();
+    const seasonCard = page.getByPlaceholder("Season name").locator("xpath=../..");
+    await page.getByPlaceholder("Season name").fill("Year-round");
+    await seasonCard.getByRole("combobox").nth(1).selectOption("1");
+    await seasonCard.getByRole("combobox").nth(2).selectOption("1");
+    await seasonCard.getByRole("combobox").nth(3).selectOption("31");
+    await seasonCard.getByRole("combobox").nth(4).selectOption("12");
+    const rateTable = page.getByText("Set rates per season").locator("xpath=../..");
+    const currency = rateTable.getByRole("combobox");
+    await paymentSettingsRequested;
+    await currency.selectOption("USD");
+    const paymentSettingsResponse = page.waitForResponse(
+      `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/payment-settings`,
+    );
+    releasePaymentSettings();
+    await paymentSettingsResponse;
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    );
+    await expect(currency).toHaveValue("USD");
+    await rateTable.getByRole("spinbutton").first().fill("200");
+    await page.getByRole("button", { name: "Create Room Type" }).click();
+
+    await expect(page).toHaveURL(/\/rooms$/);
+    expect(roomTypeCreates).toBe(1);
+    expect(paymentSettingsWrites).toBe(0);
+    await expect(
+      page.getByText("Payment settings updates is not available on PMS next-stack yet."),
+    ).toHaveCount(0);
     await assertHealthy();
   });
 });

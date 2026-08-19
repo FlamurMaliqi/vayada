@@ -102,7 +102,7 @@ export const sharedPropertyProfile = {
   },
 };
 
-const roomType = {
+export const pmsWebRoomType = {
   roomTypeId: PMS_WEB_ROOM_TYPE_ID,
   name: "Alpine Suite",
   description: "Mountain-facing suite",
@@ -345,7 +345,24 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
     route.fulfill({ json: targetList([room]) }),
   );
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-types*`, (route) =>
-    route.fulfill({ json: targetList([roomType]) }),
+    route.fulfill({ json: targetList([pmsWebRoomType]) }),
+  );
+  await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/plan-limits`, (route) =>
+    route.fulfill({
+      json: {
+        contractVersion: "pms-operations.v1",
+        propertyId: PMS_WEB_PROPERTY_ID,
+        propertyPlan: {
+          propertyId: PMS_WEB_PROPERTY_ID,
+          plan: "commission",
+          limits: {
+            maxRoomPhotosPerType: 10,
+            maxAddons: 3,
+            guestContactAccess: "after_acceptance",
+          },
+        },
+      },
+    }),
   );
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-blocks*`, (route) =>
     route.fulfill({ json: targetList([]) }),
