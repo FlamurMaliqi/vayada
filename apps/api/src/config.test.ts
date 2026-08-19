@@ -682,7 +682,10 @@ describe("api config", () => {
   it("requires the Stripe mutation and recovery runtime for checkout in production", () => {
     const complete = {
       NODE_ENV: "production",
+      API_RUNTIME: "next",
       TARGET_DATABASE_URL: "postgresql://target-db",
+      PUBLIC_HOTEL_PROFILE_SOURCE: "target",
+      PMS_OPERATIONS_SOURCE: "target",
       FINANCE_SOURCE: "target",
       RESEND_API_KEY: "re_test",
       BOOKING_EMAIL_FROM: "Vayada <bookings@example.test>",
@@ -695,10 +698,12 @@ describe("api config", () => {
       { ...complete, STRIPE_SECRET_KEY: undefined },
       { ...complete, STRIPE_WEBHOOK_SECRET: undefined },
       { ...complete, STRIPE_WEBHOOK_INTAKE_MODE: "observe_only" },
-      { ...complete, FINANCE_SOURCE: "legacy" },
     ]) {
       expect(() => loadConfig(env)).toThrow("requires STRIPE_SECRET_KEY");
     }
+    expect(() => loadConfig({ ...complete, FINANCE_SOURCE: "legacy" })).toThrow(
+      "API_RUNTIME=next requires target runtime sources: FINANCE_SOURCE=target",
+    );
   });
 
   it("loads optional booking host base config", () => {

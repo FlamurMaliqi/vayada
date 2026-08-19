@@ -82,9 +82,9 @@ import {
 import {
   createTargetBookingWebCalendarRepository,
   type BookingWebCalendarReadPool,
-  type BookingWebCheckoutAdapter,
   type BookingHotelChangeRequestRepository,
 } from "./routes/bookingWebPublic.js";
+import { unusedBookingWebCheckoutAdapter } from "./routes/bookingWebPublic.fixtures.js";
 import type {
   PlatformAdminDashboardRepository,
   PlatformAdminGrowthDashboard,
@@ -2389,8 +2389,6 @@ const publicHotelProfileRepository: PublicHotelProfileRepository = {
     return domain === "book.alpenrose.example" ? seededCustomDomainProfile : null;
   },
 };
-
-const unusedBookingWebCheckoutAdapter = {} as BookingWebCheckoutAdapter;
 
 function targetPublicHotelProfileRow(): QueryResultRow {
   return {
