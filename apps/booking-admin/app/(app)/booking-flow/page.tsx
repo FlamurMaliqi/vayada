@@ -89,7 +89,13 @@ import {
 } from "@/components/booking-flow/useBookingFlowSettingsTabs";
 
 type Tab =
-  "rooms" | "addons" | "benefits" | "promo-codes" | "localization" | "guest-form" | "last-minute";
+  | "rooms"
+  | "addons"
+  | "benefits"
+  | "promo-codes"
+  | "localization"
+  | "guest-form"
+  | "last-minute";
 
 type PmsRoomsResponse = {
   items?: {
