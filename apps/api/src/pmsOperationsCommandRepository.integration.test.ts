@@ -1,10 +1,11 @@
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
 import type { PmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
+import { pmsRoomOrderVersion } from "./domains/pmsRoomOrder.js";
 import { createPgPmsRoomFactsReadModel } from "./domains/pmsRoomFactsReadModel.js";
-import type { PmsRoomTypeCreateCommand } from "./routes/pmsOperations.js";
+import type { PmsRoomOrderCommand, PmsRoomTypeCreateCommand } from "./routes/pmsOperations.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const actorUserId = "95959595-9595-4595-8595-959595959501";
@@ -67,6 +68,10 @@ describe.skipIf(!TEST_DATABASE_URL)("first-run PMS room setup concurrency", () =
     );
   });
 
+  beforeEach(async () => {
+    await cleanupPmsData();
+  });
+
   afterAll(async () => {
     await repository.close?.();
     await cleanup();
@@ -123,6 +128,103 @@ describe.skipIf(!TEST_DATABASE_URL)("first-run PMS room setup concurrency", () =
     });
   });
 
+  it("serializes concurrent room appends across room types", async () => {
+    await control.query("BEGIN");
+    await control.query(
+      `SELECT pg_advisory_xact_lock(
+         hashtextextended('pms.room-order:' || $1::uuid::text, 0)
+       )`,
+      [propertyId],
+    );
+
+    const first = repository.createRoomType(roomCommand("append-first", "Garden Room", false));
+    const second = repository.createRoomType(roomCommand("append-second", "Courtyard Room", false));
+
+    try {
+      await waitForAdvisoryWaiters(2);
+      await control.query("COMMIT");
+    } catch (error) {
+      await control.query("ROLLBACK");
+      await Promise.allSettled([first, second]);
+      throw error;
+    }
+
+    expect(await Promise.all([first, second])).toEqual([
+      expect.objectContaining({ ok: true }),
+      expect.objectContaining({ ok: true }),
+    ]);
+    await expect(
+      control.query<{ roomCount: string; distinctOrderCount: string }>(
+        `SELECT count(*)::text AS "roomCount",
+                count(DISTINCT sort_order)::text AS "distinctOrderCount"
+         FROM pms.rooms
+         WHERE property_id = $1::uuid AND status <> 'retired'`,
+        [propertyId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ roomCount: "2", distinctOrderCount: "2" }] });
+  });
+
+  it("persists reorder across connections and rejects a stale session without duplicate audit", async () => {
+    await repository.createRoomType(roomCommand("order-first", "Garden Room", false));
+    await repository.createRoomType(roomCommand("order-second", "Courtyard Room", false));
+    await control.query("UPDATE pms.rooms SET sort_order = 1 WHERE property_id = $1::uuid", [
+      propertyId,
+    ]);
+    const initial = await control.query<{ roomId: string }>(
+      `SELECT id::text AS "roomId"
+       FROM pms.rooms
+       WHERE property_id = $1::uuid AND status <> 'retired'
+       ORDER BY sort_order ASC, room_number ASC, id ASC`,
+      [propertyId],
+    );
+    const initialIds = initial.rows.map(({ roomId }) => roomId);
+    const desiredIds = [...initialIds].reverse();
+    const command = roomOrderCommand("saved", desiredIds, pmsRoomOrderVersion(initialIds));
+
+    const saved = await repository.reorderRooms!(command);
+    const replayed = await repository.reorderRooms!(command);
+    const stale = await repository.reorderRooms!(
+      roomOrderCommand("stale", initialIds, pmsRoomOrderVersion(initialIds)),
+    );
+
+    expect(saved).toMatchObject({ ok: true, orderedRoomIds: desiredIds });
+    expect(replayed).toMatchObject({ ok: true, orderedRoomIds: desiredIds, replayed: true });
+    expect(stale).toMatchObject({ ok: false, code: "version_conflict" });
+
+    const fresh = new pg.Client({ connectionString: TEST_DATABASE_URL! });
+    await fresh.connect();
+    try {
+      const persisted = await fresh.query<{ roomId: string; sortOrder: number }>(
+        `SELECT id::text AS "roomId", sort_order AS "sortOrder"
+         FROM pms.rooms
+         WHERE property_id = $1::uuid AND status <> 'retired'
+         ORDER BY sort_order ASC, room_number ASC, id ASC`,
+        [propertyId],
+      );
+      expect(persisted.rows).toEqual(
+        desiredIds.map((roomId, index) => ({ roomId, sortOrder: index + 1 })),
+      );
+      await expect(
+        fresh.query<{ auditCount: string }>(
+          `SELECT count(*)::text AS "auditCount"
+           FROM platform.product_audit_events
+           WHERE property_id = $1::uuid AND action = 'pms.rooms.reordered'`,
+          [propertyId],
+        ),
+      ).resolves.toMatchObject({ rows: [{ auditCount: "1" }] });
+      await expect(
+        fresh.query<{ commandCount: string }>(
+          `SELECT count(*)::text AS "commandCount"
+           FROM platform.idempotency_keys
+           WHERE property_id = $1::uuid AND operation = 'room_reorder'`,
+          [propertyId],
+        ),
+      ).resolves.toMatchObject({ rows: [{ commandCount: "1" }] });
+    } finally {
+      await fresh.end();
+    }
+  });
+
   async function waitForAdvisoryWaiters(expected: number): Promise<void> {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const result = await control.query<{ count: string }>(
@@ -140,7 +242,6 @@ describe.skipIf(!TEST_DATABASE_URL)("first-run PMS room setup concurrency", () =
   async function cleanup(): Promise<void> {
     await control.query("BEGIN");
     try {
-      await control.query("SET LOCAL session_replication_role = replica");
       await control.query("DELETE FROM platform.outbox_events WHERE property_id = $1::uuid", [
         propertyId,
       ]);
@@ -169,15 +270,43 @@ describe.skipIf(!TEST_DATABASE_URL)("first-run PMS room setup concurrency", () =
       throw error;
     }
   }
+
+  async function cleanupPmsData(): Promise<void> {
+    await control.query("BEGIN");
+    try {
+      await control.query("DELETE FROM platform.outbox_events WHERE property_id = $1::uuid", [
+        propertyId,
+      ]);
+      await control.query("DELETE FROM platform.domain_events WHERE property_id = $1::uuid", [
+        propertyId,
+      ]);
+      await control.query(
+        "DELETE FROM platform.product_audit_events WHERE property_id = $1::uuid",
+        [propertyId],
+      );
+      await control.query("DELETE FROM platform.idempotency_keys WHERE property_id = $1::uuid", [
+        propertyId,
+      ]);
+      await control.query("DELETE FROM pms.room_types WHERE property_id = $1::uuid", [propertyId]);
+      await control.query("COMMIT");
+    } catch (error) {
+      await control.query("ROLLBACK");
+      throw error;
+    }
+  }
 });
 
-function roomCommand(suffix: string, name: string): PmsRoomTypeCreateCommand {
+function roomCommand(
+  suffix: string,
+  name: string,
+  initialSetupOnly = true,
+): PmsRoomTypeCreateCommand {
   const commandId = `pms-room-race-${suffix}`;
   return {
     propertyId,
     commandId,
     idempotencyKey: commandId,
-    initialSetupOnly: true,
+    initialSetupOnly,
     name,
     description: "",
     category: "double",
@@ -213,6 +342,28 @@ function roomCommand(suffix: string, name: string): PmsRoomTypeCreateCommand {
       requestId: commandId,
       correlationId: commandId,
       reason: "Create first room during hotel setup",
+      requestedAt: "2026-07-27T13:00:00.000Z",
+    },
+  };
+}
+
+function roomOrderCommand(
+  suffix: string,
+  orderedRoomIds: string[],
+  expectedVersion: string,
+): PmsRoomOrderCommand {
+  const commandId = `pms-room-order-${suffix}`;
+  return {
+    propertyId,
+    commandId,
+    idempotencyKey: commandId,
+    expectedVersion,
+    orderedRoomIds,
+    audit: {
+      actor: { kind: "user", userId: actorUserId, organizationId },
+      requestId: commandId,
+      correlationId: commandId,
+      reason: "Reorder rooms",
       requestedAt: "2026-07-27T13:00:00.000Z",
     },
   };
