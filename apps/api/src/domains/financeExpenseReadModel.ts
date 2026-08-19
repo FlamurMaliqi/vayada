@@ -53,19 +53,25 @@ type Meta = {
   generatedAt: string;
   sourceFreshness: Record<string, string>;
 };
-type ExpenseRow = Omit<FinanceExpense, "amount"> & {
+type ExpenseRow = Omit<FinanceExpense, "amount" | "paymentStatus" | "paidOn"> & {
   amount: string;
   currency: string;
+  paymentStatus: FinanceExpense["paymentStatus"];
+  paidOn: string | null;
   updatedAt: string;
 };
 type CategoryRow = FinanceExpenseCategory & { updatedAt: string; amount?: string };
-type RuleRow = FinanceRecurringExpenseRule & { updatedAt: string };
+type RuleRow = Omit<FinanceRecurringExpenseRule, "notes"> & {
+  notes: string | null;
+  updatedAt: string;
+};
 // prettier-ignore
 type SummaryRow = { currentTotal: string; priorTotal: string; currentUnpaid: string; priorUnpaid: string; currentUnpaidCount: number; priorUnpaidCount: number; currentNights: number; priorNights: number; occupancyMismatch: number; financeFreshAt: string | null; bookingFreshThrough: string | null };
 type MismatchRow = { currency: string; count: number; amount: string };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EXPENSE_COLUMNS = `e.id::text AS id,e.category_id::text AS "categoryId",e.origin,e.incurred_on::text AS "incurredOn",e.paid_on::text AS "paidOn",e.vendor,e.amount::text AS amount,e.currency::text AS currency,e.payment_status AS "paymentStatus",e.recurring_rule_id::text AS "recurringRuleId",e.source_key AS "sourceKey",e.reverses_expense_id::text AS "reversesExpenseId",e.revision::int AS revision,e.updated_at::text AS "updatedAt"`;
 const CATEGORY_COLUMNS = `c.id::text AS id,c.system_key AS "systemKey",c.name,c.color,c.sort_order AS "sortOrder",(c.archived_at IS NOT NULL) AS archived,c.revision::int AS revision,c.updated_at::text AS "updatedAt"`;
+const RULE_COLUMNS = `r.id::text AS id,r.category_id::text AS "categoryId",r.vendor,jsonb_build_object('amount',r.amount::text,'currency',r.currency::text) AS amount,r.notes,r.payment_status AS "paymentStatus",r.cadence,r.starts_on::text AS "startsOn",r.next_due_on::text AS "nextDueOn",r.ends_on::text AS "endsOn",r.active,r.revision::int AS revision,r.updated_at::text AS "updatedAt"`;
 const ACTIVE = `e.entry_kind<>'reversal' AND NOT EXISTS (SELECT 1 FROM finance.expenses child WHERE child.reverses_expense_id=e.id)`;
 const EVENTS = `SELECT e.id,e.category_id,e.incurred_on,e.currency,CASE WHEN e.entry_kind='reversal' THEN -e.amount ELSE e.amount END AS amount FROM finance.expenses e WHERE e.property_id=$1::uuid UNION ALL SELECT correction.id,prior.category_id,correction.incurred_on,prior.currency,-prior.amount FROM finance.expenses correction JOIN finance.expenses prior ON prior.id=correction.reverses_expense_id WHERE correction.property_id=$1::uuid AND correction.entry_kind='correction'`;
 
@@ -79,7 +85,7 @@ export function createPgFinanceExpenseReadModel(config: { connectionString?: str
     propertyId = uuid(propertyId);
     const [pricing, context] = await Promise.all([config.pricing.getPropertyPricingCurrency(propertyId), config.propertyContext.getPropertyContext(propertyId)]);
     if (!context) return null;
-    if (!pricing || pricing.contractVersion !== PMS_PRICING_CONTRACT_VERSION || pricing.propertyId.toLowerCase() !== propertyId || !/^[A-Z]{3}$/.test(pricing.currency) || !Number.isSafeInteger(pricing.pricingCurrencyRevision) || pricing.pricingCurrencyRevision < 1 || context.source.ownerDomain !== "hotel_catalog" || context.source.entityType !== "property_profile" || context.source.entityId.toLowerCase() !== propertyId || !/^profile:[1-9]\d*$/.test(context.source.revision) || !canonicalZone(context.timeZone) || !utc(pricing.updatedAt) || !utc(context.updatedAt)) throw new FinanceExpenseEvidenceError("Property currency or timezone evidence is unavailable");
+    if (!pricing || pricing.contractVersion !== PMS_PRICING_CONTRACT_VERSION || typeof pricing.propertyId !== "string" || pricing.propertyId.toLowerCase() !== propertyId || !/^[A-Z]{3}$/.test(pricing.currency) || !Number.isSafeInteger(pricing.pricingCurrencyRevision) || pricing.pricingCurrencyRevision < 1 || !context.source || context.source.ownerDomain !== "hotel_catalog" || context.source.entityType !== "property_profile" || typeof context.source.entityId !== "string" || context.source.entityId.toLowerCase() !== propertyId || !/^profile:[1-9]\d*$/.test(context.source.revision) || !canonicalZone(context.timeZone) || !utc(pricing.createdAt) || !utc(pricing.updatedAt) || !utc(context.updatedAt)) throw new FinanceExpenseEvidenceError("Property currency or timezone evidence is unavailable");
     return { propertyId, currency: pricing.currency, timeZone: context.timeZone, generatedAt: (config.now?.() ?? new Date()).toISOString(), sourceFreshness: { pmsPricing: pricing.updatedAt, pmsPricingRevision: String(pricing.pricingCurrencyRevision), hotelCatalog: context.updatedAt, hotelCatalogRevision: context.source.revision } };
   };
   const wrap = <T>(meta: Meta, item: T, freshAt?: string, incomplete: FinanceExpenseIncompleteEvidence[] = []) => ({ ...base(meta, freshAt ? { financeExpenses: freshAt } : {}, incomplete), item });
@@ -97,7 +103,7 @@ export function createPgFinanceExpenseReadModel(config: { connectionString?: str
     },
     async recurringRule(propertyId, ruleId) {
       const meta = await envelope(propertyId); if (!meta) return null;
-      const row = (await pool.query<RuleRow>(`SELECT r.id::text AS id,r.cadence,r.next_due_on::text AS "nextDueOn",r.ends_on::text AS "endsOn",r.active,r.revision::int AS revision,r.updated_at::text AS "updatedAt" FROM finance.recurring_expense_rules r WHERE r.property_id=$1::uuid AND r.id=$2::uuid AND r.currency=$3`, [meta.propertyId, uuid(ruleId), meta.currency])).rows[0];
+      const row = (await pool.query<RuleRow>(`SELECT ${RULE_COLUMNS} FROM finance.recurring_expense_rules r WHERE r.property_id=$1::uuid AND r.id=$2::uuid AND r.currency=$3`, [meta.propertyId, uuid(ruleId), meta.currency])).rows[0];
       return row ? wrap(meta, rule(row), row.updatedAt) : null;
     },
     async expenses(propertyId, rawQuery) {
@@ -125,7 +131,8 @@ export function createPgFinanceExpenseReadModel(config: { connectionString?: str
 
 // prettier-ignore
 async function readSummary(pool: Pick<FinanceReadClient, "query">, meta: Meta, p: Period): Promise<SummaryRow> {
-  const row = (await pool.query<SummaryRow>(`WITH events AS (${EVENTS}), active AS (SELECT e.* FROM finance.expenses e WHERE e.property_id=$1::uuid AND e.currency=$2 AND ${ACTIVE}), expense AS (SELECT COALESCE(sum(amount) FILTER (WHERE currency=$2 AND incurred_on BETWEEN $3::date AND $4::date),0)::text AS "currentTotal",COALESCE(sum(amount) FILTER (WHERE currency=$2 AND incurred_on BETWEEN $5::date AND $6::date),0)::text AS "priorTotal" FROM events), unpaid AS (SELECT COALESCE(sum(amount) FILTER (WHERE payment_status='unpaid' AND incurred_on BETWEEN $3::date AND $4::date),0)::text AS "currentUnpaid",COALESCE(sum(amount) FILTER (WHERE payment_status='unpaid' AND incurred_on BETWEEN $5::date AND $6::date),0)::text AS "priorUnpaid",count(*) FILTER (WHERE payment_status='unpaid' AND incurred_on BETWEEN $3::date AND $4::date)::int AS "currentUnpaidCount",count(*) FILTER (WHERE payment_status='unpaid' AND incurred_on BETWEEN $5::date AND $6::date)::int AS "priorUnpaidCount" FROM active), occupancy AS (SELECT COALESCE(sum(occupied_room_nights) FILTER (WHERE currency=$2 AND recognized_on BETWEEN $3::date AND $4::date),0)::int AS "currentNights",COALESCE(sum(occupied_room_nights) FILTER (WHERE currency=$2 AND recognized_on BETWEEN $5::date AND $6::date),0)::int AS "priorNights",count(*) FILTER (WHERE currency<>$2 AND recognized_on BETWEEN $5::date AND $4::date)::int AS "occupancyMismatch",max(recognized_on)::text AS "bookingFreshThrough" FROM booking.finance_nightly_revenue_evidence WHERE property_id=$1::uuid), evidence AS (SELECT max(updated_at)::text AS "financeFreshAt" FROM finance.expenses WHERE property_id=$1::uuid) SELECT * FROM expense CROSS JOIN unpaid CROSS JOIN occupancy CROSS JOIN evidence`, [meta.propertyId, meta.currency, p.currentFrom, p.currentTo, p.priorFrom, p.priorTo])).rows[0];
+  // Migration 0073 owns this Booking projection and explicitly curates it as Finance-safe; raw Booking tables stay outside this boundary and the shared snapshot prevents cross-pool drift.
+  const row = (await pool.query<SummaryRow>(`WITH events AS (${EVENTS}), active AS (SELECT e.* FROM finance.expenses e WHERE e.property_id=$1::uuid AND e.currency=$2 AND ${ACTIVE}), expense AS (SELECT COALESCE(sum(amount) FILTER (WHERE currency=$2 AND incurred_on BETWEEN $3::date AND $4::date),0)::text AS "currentTotal",COALESCE(sum(amount) FILTER (WHERE currency=$2 AND incurred_on BETWEEN $5::date AND $6::date),0)::text AS "priorTotal" FROM events), unpaid AS (SELECT COALESCE(sum(amount) FILTER (WHERE payment_status='unpaid' AND incurred_on BETWEEN $3::date AND $4::date),0)::text AS "currentUnpaid",COALESCE(sum(amount) FILTER (WHERE payment_status='unpaid' AND incurred_on BETWEEN $5::date AND $6::date),0)::text AS "priorUnpaid",count(*) FILTER (WHERE payment_status='unpaid' AND incurred_on BETWEEN $3::date AND $4::date)::int AS "currentUnpaidCount",count(*) FILTER (WHERE payment_status='unpaid' AND incurred_on BETWEEN $5::date AND $6::date)::int AS "priorUnpaidCount" FROM active), occupancy AS (SELECT COALESCE(sum(occupied_room_nights) FILTER (WHERE currency=$2 AND recognized_on BETWEEN $3::date AND $4::date),0)::int AS "currentNights",COALESCE(sum(occupied_room_nights) FILTER (WHERE currency=$2 AND recognized_on BETWEEN $5::date AND $6::date),0)::int AS "priorNights",count(*) FILTER (WHERE currency<>$2 AND (recognized_on BETWEEN $3::date AND $4::date OR recognized_on BETWEEN $5::date AND $6::date))::int AS "occupancyMismatch",max(recognized_on)::text AS "bookingFreshThrough" FROM booking.finance_nightly_revenue_evidence WHERE property_id=$1::uuid), evidence AS (SELECT max(updated_at)::text AS "financeFreshAt" FROM finance.expenses WHERE property_id=$1::uuid) SELECT * FROM expense CROSS JOIN unpaid CROSS JOIN occupancy CROSS JOIN evidence`, [meta.propertyId, meta.currency, p.currentFrom, p.currentTo, p.priorFrom, p.priorTo])).rows[0];
   if (!row) throw new Error("Finance expense summary query returned no row"); return row;
 }
 
@@ -186,13 +193,21 @@ function decodeCursor(token: string, query: FinanceExpenseQuery): Cursor {
 function snapshot(q: FinanceExpenseQuery) { return [q.from, q.to, q.categoryId?.toLowerCase() ?? null, q.paymentStatus ?? null, q.recurring ?? null, q.origin ?? null, q.search?.toLowerCase() ?? null, q.sort]; }
 // prettier-ignore
 function base(meta: Meta, sourceFreshness: Record<string, string> = {}, incompleteEvidence: FinanceExpenseEnvelope["incompleteEvidence"] = []): FinanceExpenseEnvelope { const { sourceFreshness: owners, ...envelope } = meta; return { contractVersion: PMS_FINANCIALS_CONTRACT_VERSION, ...envelope, sourceFreshness: { ...owners, ...sourceFreshness }, incompleteEvidence }; }
-// prettier-ignore
-function expense(row: ExpenseRow): FinanceExpense { const { amount, currency, updatedAt: _, ...rest } = row; return { ...rest, amount: { amount: amount as FinanceExpense["amount"]["amount"], currency } }; }
+function expense(row: ExpenseRow): FinanceExpense {
+  const { amount, currency, updatedAt: _, paymentStatus, paidOn, ...rest } = row;
+  const item = {
+    ...rest,
+    amount: { amount: amount as FinanceExpense["amount"]["amount"], currency },
+  };
+  if (paymentStatus === "paid" && paidOn !== null) return { ...item, paymentStatus, paidOn };
+  if (paymentStatus === "unpaid" && paidOn === null) return { ...item, paymentStatus, paidOn };
+  throw new FinanceExpenseEvidenceError("Expense payment evidence is inconsistent");
+}
 // prettier-ignore
 function category(row: CategoryRow): FinanceExpenseCategory { const { updatedAt: _, amount: __, ...item } = row; return item; }
 function rule(row: RuleRow): FinanceRecurringExpenseRule {
-  const { updatedAt: _, ...item } = row;
-  return item;
+  const { updatedAt: _, notes, ...item } = row;
+  return notes === null ? item : { ...item, notes };
 }
 // prettier-ignore
 function moneyMetric(value: bigint, prior: bigint, currency: string): MoneyMetric { return { value: money(value, currency), absoluteChange: money(value - prior, currency), percentChange: prior === 0n ? null : decimal(roundDivide((value - prior) * 10_000n, prior)) }; }
@@ -223,7 +238,15 @@ function date(value: unknown): value is string { return typeof value === "string
 // prettier-ignore
 function canonicalZone(value: unknown): value is string { if (typeof value !== "string") return false; try { const zone = getTimezone(value); return zone?.name === value && zone.aliasOf === null; } catch { return false; } }
 function utc(value: unknown): value is string {
-  return typeof value === "string" && Number.isFinite(Date.parse(value));
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)
+  )
+    return false;
+  const parsed = new Date(value);
+  return (
+    Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 19) === value.slice(0, 19)
+  );
 }
 // prettier-ignore
 function exact(value: unknown, keys: string[]): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key)); }

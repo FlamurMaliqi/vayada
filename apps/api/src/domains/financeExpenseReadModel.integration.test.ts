@@ -6,6 +6,7 @@ import { createPgPmsPricingReadModel } from "./pmsPricingReadModel.js";
 import {
   createPgFinanceExpenseReadModel,
   FinanceExpenseCursorError,
+  FinanceExpenseEvidenceError,
 } from "./financeExpenseReadModel.js";
 
 const URL = process.env["TEST_DATABASE_URL"];
@@ -51,8 +52,8 @@ describe.skipIf(!URL)("PostgreSQL Finance expense read model", () => {
       INSERT INTO pms.property_pricing_settings (property_id,currency) VALUES ('${PROPERTY}','EUR'),('${EMPTY}','EUR'),('${OTHER}','USD');
       INSERT INTO finance.expense_categories (id,property_id,name,color,sort_order) VALUES
         ('${CATEGORY}','${PROPERTY}','Operations','#123456',1),('${SECOND_CATEGORY}','${PROPERTY}','Utilities','#654321',2),('${OTHER_CATEGORY}','${OTHER}','Other','#111111',1);
-      INSERT INTO finance.recurring_expense_rules (id,property_id,category_id,cadence,starts_on,next_due_on,vendor,amount,currency) VALUES
-        ('${RULE}','${PROPERTY}','${SECOND_CATEGORY}','monthly','2026-08-01','2026-09-01','Recurring vendor',10,'EUR');
+      INSERT INTO finance.recurring_expense_rules (id,property_id,category_id,cadence,starts_on,next_due_on,ends_on,vendor,amount,currency,payment_status,notes) VALUES
+        ('${RULE}','${PROPERTY}','${SECOND_CATEGORY}','monthly','2026-08-01','2026-09-01','2026-12-01','Recurring vendor',10,'EUR','paid','Monthly service');
       INSERT INTO finance.expenses (id,property_id,category_id,origin,entry_kind,incurred_on,paid_on,vendor,amount,currency,payment_status,recurring_rule_id,source_key,reverses_expense_id) VALUES
         ('12130000-0000-4000-8000-000000000008','${PROPERTY}','${CATEGORY}','manual','expense','2026-07-05','2026-07-05','Prior Alpha',20,'EUR','paid',NULL,NULL,NULL),
         ('${EXPENSE}','${PROPERTY}','${CATEGORY}','manual','expense','2026-08-10',NULL,'Alpha vendor',30,'EUR','unpaid',NULL,NULL,NULL),
@@ -72,7 +73,8 @@ describe.skipIf(!URL)("PostgreSQL Finance expense read model", () => {
         ('${PROPERTY}',gen_random_uuid(),gen_random_uuid(),'2026-08-08','2026-08-08','EUR',30,1,'room_night','confirmed','direct','exact',1,'read-current-3'),
         ('${PROPERTY}',gen_random_uuid(),gen_random_uuid(),'2026-07-05','2026-07-05','EUR',20,1,'room_night','completed','direct','exact',1,'read-prior-1'),
         ('${PROPERTY}',gen_random_uuid(),gen_random_uuid(),'2026-07-06','2026-07-06','EUR',20,1,'room_night','completed','direct','exact',1,'read-prior-2'),
-        ('${PROPERTY}',gen_random_uuid(),gen_random_uuid(),'2026-08-10','2026-08-10','USD',10,1,'room_night','confirmed','direct','exact',1,'read-wrong-currency');
+        ('${PROPERTY}',gen_random_uuid(),gen_random_uuid(),'2026-08-10','2026-08-10','USD',10,1,'room_night','confirmed','direct','exact',1,'read-wrong-currency'),
+        ('${PROPERTY}',gen_random_uuid(),gen_random_uuid(),'2026-07-20','2026-07-20','USD',10,1,'room_night','confirmed','direct','exact',1,'read-gap-wrong-currency');
       SET session_replication_role=origin;`);
   });
   afterAll(async () => { await read.close(); await pricing.close(); await cleanup(); await admin.end(); });
@@ -81,7 +83,7 @@ describe.skipIf(!URL)("PostgreSQL Finance expense read model", () => {
     await expect(read.expense(OTHER, EXPENSE)).resolves.toBeNull();
     await expect(read.expense(PROPERTY, CORRECTION)).resolves.toMatchObject({ item: { vendor: "Corrected Alpha", reversesExpenseId: "12130000-0000-4000-8000-000000000013" } });
     await expect(read.expense(PROPERTY, MISMATCH)).resolves.toMatchObject({ incompleteEvidence: [{ code: "expense_currency_mismatch", count: 1, amount: { amount: "999.0000", currency: "USD" } }] });
-    await expect(read.recurringRule(PROPERTY, RULE)).resolves.toMatchObject({ item: { cadence: "monthly", active: true } });
+    await expect(read.recurringRule(PROPERTY, RULE)).resolves.toMatchObject({ item: { id: RULE, categoryId: SECOND_CATEGORY, vendor: "Recurring vendor", amount: { amount: "10.0000", currency: "EUR" }, notes: "Monthly service", paymentStatus: "paid", cadence: "monthly", startsOn: "2026-08-01", nextDueOn: "2026-09-01", endsOn: "2026-12-01", active: true, revision: 1 } });
     await expect(read.categories(PROPERTY)).resolves.toMatchObject({ item: [{ id: CATEGORY }, { id: SECOND_CATEGORY }] });
     const result = await read.expenses(PROPERTY, query({ limit: 10 }));
     expect(result).toMatchObject({ contractVersion: "pms-financials.v1", currency: "EUR", timeZone: "America/Los_Angeles",
@@ -92,6 +94,8 @@ describe.skipIf(!URL)("PostgreSQL Finance expense read model", () => {
     await expect(read.expenses(OTHER, query({ limit: 10 }))).resolves.toMatchObject({ incompleteEvidence: [{ code: "occupancy_unavailable", count: 1 }] });
     const future = await read.expenses(PROPERTY, query({ from: "2027-01-01", to: "2027-01-31", limit: 10 })); expect(future?.incompleteEvidence.some(({ amount }) => amount?.currency === "GBP")).toBe(false);
     await expect(read.expenses(EMPTY, query({ limit: 10 }))).resolves.toMatchObject({ summary: { totalMtd: { value: { amount: "0.0000" }, percentChange: null } }, categories: [], page: { items: [], nextCursor: null }, incompleteEvidence: [], sourceFreshness: { pmsPricing: expect.any(String), hotelCatalog: expect.any(String) } });
+    const wrongTenant = createPgFinanceExpenseReadModel({ connectionString: URL, pricing, propertyContext: { async getPropertyContext() { const context = (await propertyContext.getPropertyContext(PROPERTY))!; return { ...context, source: { ...context.source, entityId: OTHER } }; } } });
+    await expect(wrongTenant.categories(PROPERTY)).rejects.toBeInstanceOf(FinanceExpenseEvidenceError); await wrongTenant.close();
     const localBoundary = createPgFinanceExpenseReadModel({ connectionString: URL, pricing, propertyContext, now: () => new Date("2026-08-01T01:00:00.000Z") });
     await expect(localBoundary.expenses(PROPERTY, query({ limit: 10 }))).resolves.toMatchObject({ summary: { totalMtd: { value: { amount: "100.0000" } } } }); await localBoundary.close();
   });
