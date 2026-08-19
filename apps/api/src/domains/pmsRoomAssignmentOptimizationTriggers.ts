@@ -53,7 +53,8 @@ export function createPmsRoomAssignmentOptimizationTriggerPort(
         if (
           result.outcome === "budget_exhausted" ||
           result.outcome === "idempotency_conflict" ||
-          result.outcome === "command_in_progress"
+          result.outcome === "command_in_progress" ||
+          result.outcome === "invalid_snapshot"
         ) {
           throw new Error(`PMS room optimization create trigger failed: ${result.outcome}`);
         }
