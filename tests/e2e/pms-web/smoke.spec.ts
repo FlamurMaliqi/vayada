@@ -33,6 +33,29 @@ test.describe("pms-web smoke", () => {
     await assertHealthy();
   });
 
+  test("shows Settings and Feature Hub after Channel Manager", async ({ page }, testInfo) => {
+    const assertHealthy = watchPageHealth(page, testInfo);
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.goto("/dashboard");
+
+    const navigation = page.getByRole("navigation");
+    const channelManager = navigation.getByText("Channel Manager", { exact: true }).locator("..");
+    const settings = channelManager.locator("xpath=following-sibling::*[1]");
+    const featureHub = settings.locator("xpath=following-sibling::*[1]");
+
+    await expect(settings).toHaveAttribute("href", "/settings");
+    await expect(featureHub).toHaveAttribute("href", "/settings/feature-hub");
+
+    await settings.click();
+    await expect(page.getByRole("heading", { name: /settings/i })).toBeVisible();
+    await featureHub.click();
+    await expect(page.getByRole("heading", { name: "Feature Hub" })).toBeVisible();
+
+    await assertHealthy();
+  });
+
   test("loads migrated PMS operations surfaces without legacy helper calls", async ({
     page,
   }, testInfo) => {
