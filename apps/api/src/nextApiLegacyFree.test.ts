@@ -14,7 +14,6 @@ import type { BookingWebCalendarReadPool } from "./routes/bookingWebPublic.js";
 import type { MarketplaceDiscoveryReadPool } from "./routes/marketplaceDiscovery.js";
 
 const legacyRuntimeEnvKeys = [
-  "BOOKING_DATABASE_URL",
   "BOOKING_PUBLIC_API_URL",
   "PMS_API_URL",
   "PMS_PUBLIC_API_URL",
@@ -117,7 +116,6 @@ describe("next-api legacy-free runtime check", () => {
     const config = loadConfig(nextApiLegacyFreeEnv);
     expect(config).toMatchObject({
       apiRuntime: "next",
-      bookingDatabaseUrl: undefined,
       publicHotelProfileSource: "active_publication",
       publicBookabilitySource: "target",
       pmsOperationsSource: "target",

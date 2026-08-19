@@ -138,7 +138,6 @@ export type ApiConfig = {
   auth?: ApiAuthConfig;
   authSession?: ApiAuthSessionConfig;
   targetDatabaseUrl?: string;
-  bookingDatabaseUrl?: string;
   publicHotelProfileSource: PublicHotelProfileSource;
   publicBookabilitySource: PublicBookabilitySource;
   marketplaceAdminSource: MarketplaceAdminSource;
@@ -166,8 +165,6 @@ export type ApiConfig = {
   bookingEmailDelivery?: BookingEmailDeliveryConfig;
   xenditSecretKey?: string;
 };
-
-const NEXT_API_FORBIDDEN_LEGACY_ENV_KEYS = ["BOOKING_DATABASE_URL"] as const;
 
 const REMOVED_LEGACY_PYTHON_INTEGRATION_ENV_KEYS = [
   "BOOKING_PUBLIC_API_URL",
@@ -674,7 +671,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     ["disabled", "target"],
     "disabled",
   );
-  const bookingDatabaseUrl = readOptionalPgConnectionEnv(env, "BOOKING_DATABASE_URL");
   const auth = loadAuthConfig(env);
   const authSession = loadAuthSessionConfig(env);
   const creatorPlatformConnections = loadCreatorPlatformConnectionsConfig(env);
@@ -759,7 +755,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     auth,
     authSession,
     targetDatabaseUrl,
-    bookingDatabaseUrl,
     publicHotelProfileSource,
     publicBookabilitySource,
     marketplaceAdminSource,
@@ -847,13 +842,6 @@ function assertNextApiRuntimeConfig(
   >,
 ): void {
   if (config.apiRuntime !== "next") return;
-
-  const forbiddenEnvKeys = NEXT_API_FORBIDDEN_LEGACY_ENV_KEYS.filter((key) =>
-    Boolean(readOptionalEnv(env, key)),
-  );
-  if (forbiddenEnvKeys.length > 0) {
-    throw new Error(`API_RUNTIME=next forbids legacy runtime envs: ${forbiddenEnvKeys.join(", ")}`);
-  }
 
   const requiredTargetSources = [
     {

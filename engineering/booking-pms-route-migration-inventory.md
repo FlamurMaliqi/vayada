@@ -253,8 +253,7 @@ controls is not enough for staging rehearsal.
    The add-on, guest-form, benefits, localization, and room-filter routes now
    always use the target settings read/write model. The source selector and
    runtime branch are retired, and the legacy repository is deleted.
-   `BOOKING_DATABASE_URL` is accepted but inert until the following
-   configuration cleanup.
+   `BOOKING_DATABASE_URL` is also removed.
 
 2. **Completed B2: Public profile and host resolution**
    Public profile and host-resolution reads use target hotel catalog/domain
@@ -338,9 +337,9 @@ The staging rehearsal milestone is gated by these verticals:
    - `createPgBookingSettingsReadRepository`, its `booking_hotels` SQL, and its
      legacy-only tests are removed.
 
-2. **VAY follow-up: Remove the inert Booking database configuration**
-   - Scope: remove `BOOKING_DATABASE_URL` from config, tests, local scripts, and
-     environment documentation after the dormant settings adapter is gone.
+2. **Completed: Remove the inert Booking database configuration**
+   - `BOOKING_DATABASE_URL` is removed from config, tests, local scripts, and
+     environment documentation.
 
 3. **VAY follow-up: Remove the public-bookability compatibility selector**
    - Scope: keep the existing target quote/calendar repositories and remove

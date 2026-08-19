@@ -130,7 +130,6 @@ describe("api config", () => {
       PLATFORM_MEDIA_BUCKET: "vayada-media-staging",
       PLATFORM_MEDIA_CDN_BASE_URL: "https://cdn.staging.vayada.com",
       PLATFORM_MEDIA_CDN_ORIGIN_HOST: "vayada-media-staging.s3.us-east-1.amazonaws.com",
-      BOOKING_DATABASE_URL: "postgresql://user:pass@booking-db:5432/booking?sslmode=require",
     });
 
     expect(config.auth?.databaseUrl).toBe(
@@ -138,9 +137,6 @@ describe("api config", () => {
     );
     expect(config.targetDatabaseUrl).toBe(
       "postgresql://user:pass@target-db:5432/target?sslmode=require&uselibpqcompat=true",
-    );
-    expect(config.bookingDatabaseUrl).toBe(
-      "postgresql://user:pass@booking-db:5432/booking?sslmode=require&uselibpqcompat=true",
     );
   });
 
@@ -283,22 +279,13 @@ describe("api config", () => {
     ).toThrow("CREATOR_PLATFORM_CREDENTIAL_VAULT=memory is not allowed in production");
   });
 
-  it("loads optional booking database config", () => {
-    expect(
-      loadConfig({
-        BOOKING_DATABASE_URL: "postgresql://booking-db",
-      }).bookingDatabaseUrl,
-    ).toBe("postgresql://booking-db");
-  });
-
-  it("loads target public hotel profile config without the legacy booking DB", () => {
+  it("loads target public hotel profile config", () => {
     expect(
       loadConfig({
         TARGET_DATABASE_URL: "postgresql://target-db",
         PUBLIC_HOTEL_PROFILE_SOURCE: "target",
       }),
     ).toMatchObject({
-      bookingDatabaseUrl: undefined,
       targetDatabaseUrl: "postgresql://target-db",
       publicHotelProfileSource: "target",
     });
@@ -348,7 +335,6 @@ describe("api config", () => {
 
     expect(config).toMatchObject({
       apiRuntime: "next",
-      bookingDatabaseUrl: undefined,
       publicHotelProfileSource: "target",
       publicBookabilitySource: "target",
       pmsOperationsSource: "target",
@@ -369,21 +355,6 @@ describe("api config", () => {
     });
 
     expect(config.pmsOperationsSource).toBe("disabled");
-  });
-
-  it("rejects next API runtime when legacy product envs are present", () => {
-    expect(() =>
-      loadConfig({
-        API_RUNTIME: "next",
-        TARGET_DATABASE_URL: "postgresql://target-db",
-        PUBLIC_HOTEL_PROFILE_SOURCE: "target",
-        PUBLIC_BOOKABILITY_SOURCE: "target",
-        PMS_OPERATIONS_SOURCE: "target",
-        FINANCE_SOURCE: "target",
-        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
-        BOOKING_DATABASE_URL: "postgresql://booking-db",
-      }),
-    ).toThrow("API_RUNTIME=next forbids legacy runtime envs: BOOKING_DATABASE_URL");
   });
 
   it("rejects removed legacy Python integration URL envs in every runtime", () => {

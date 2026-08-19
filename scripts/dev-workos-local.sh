@@ -140,7 +140,6 @@ ensure_workos_role platform_admin "Platform Admin"
 ensure_workos_role hotel_owner "Hotel Owner"
 ensure_workos_role creator_owner "Creator Owner"
 
-unset BOOKING_DATABASE_URL
 unset BOOKING_PUBLIC_API_URL
 unset PMS_API_URL
 unset PMS_PUBLIC_API_URL
