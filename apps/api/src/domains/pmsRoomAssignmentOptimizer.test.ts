@@ -119,6 +119,25 @@ describe("PMS room assignment optimizer command", () => {
     expect(moves.every(({ to_room_id }) => to_room_id === roomIds[0])).toBe(true);
   });
 
+  it("keeps an in-house stay fixed while packing movable stays around it", async () => {
+    const { client, calls } = setup({ inHouseAssignmentIndex: 0 });
+
+    const result = await optimizePmsRoomAssignmentsInTransaction(client, command);
+
+    expect(result).toMatchObject({ outcome: "optimized", usedRoomsBefore: 3, usedRoomsAfter: 1 });
+    const moveUpdates = calls.filter(({ text }) =>
+        text.includes("UPDATE pms.operational_booking_assignments"),
+      ),
+      moves = JSON.parse(String(moveUpdates[0]!.values[2])) as Array<{
+        assignment_id: string;
+        from_room_id: string;
+        to_room_id: string;
+      }>;
+    expect(moves).toHaveLength(2);
+    expect(moves.some(({ assignment_id }) => assignment_id === assignmentIds[0])).toBe(false);
+    expect(moves.every(({ to_room_id }) => to_room_id === roomIds[0])).toBe(true);
+  });
+
   it("scopes optimizer reads and guarded writes to the requested room type", async () => {
     const { client, calls } = setup();
 
@@ -193,6 +212,7 @@ function setup(
     evidenceFailure?: boolean;
     budgetFixture?: boolean;
     pinnedAssignmentIndex?: number;
+    inHouseAssignmentIndex?: number;
   } = {},
 ): {
   client: PmsRoomAssignmentOptimizationClient;
@@ -272,7 +292,7 @@ function setup(
           assignmentId,
           guestBookingId: bookingIds[index],
           roomId: roomIds[index],
-          assignmentStatus: "assigned",
+          assignmentStatus: options.inHouseAssignmentIndex === index ? "in_house" : "assigned",
           stayEvidenceKind: "exact",
           checkIn: `2026-08-${20 + index * 2}`,
           checkOut: `2026-08-${22 + index * 2}`,
