@@ -98,6 +98,20 @@ integration boundary.
 - Percentage change is `null` when the comparison denominator is zero. Absolute
   values are still returned.
 
+### OTA commission rules
+
+- Canonical OTA keys are `booking_com`, `airbnb`, `expedia`, `agoda` and
+  `other_ota`, aligned with Booking attribution.
+- Finance owns property-scoped percentage rule versions. Rates are decimal
+  strings from 0 through 100 with at most four fractional digits.
+- Effective windows are half-open `[startsAt, endsAt)` and cannot overlap for
+  one property/channel. A boundary where one version ends and another starts is
+  valid.
+- Resolution returns one applied rule identity/rate or explicit missing
+  evidence. It never substitutes a default rate.
+- Reporting consumes an immutable applied snapshot; changing a rule does not
+  reprice historical reservation economics.
+
 ### Expenses
 
 - Categories are property scoped. Defaults have stable system keys while their
