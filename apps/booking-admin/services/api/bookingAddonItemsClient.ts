@@ -15,6 +15,7 @@ type UpdateClient = Pick<ApiClient, "patch">;
 type DeleteClient = Pick<ApiClient, "delete">;
 
 export type BookingAddonPricingModel = "per_stay" | "per_night" | "per_guest" | "per_guest_night";
+export type BookingAddonOwnershipKind = "property" | "partner";
 
 export interface BookingAddonItem {
   addonItemId: string;
@@ -31,6 +32,8 @@ export interface BookingAddonItem {
   publicVisible: boolean;
   status: "active" | "disabled" | "retired";
   sortOrder: number;
+  ownershipKind: BookingAddonOwnershipKind;
+  partnerCommissionRate: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -50,7 +53,7 @@ export interface BookingPropertyPlan {
   };
 }
 
-export type CreateBookingAddonItemBody = {
+type BookingAddonItemWriteFields = {
   name: string;
   description?: string;
   price: string;
@@ -64,7 +67,15 @@ export type CreateBookingAddonItemBody = {
   sortOrder?: number;
 };
 
-export type UpdateBookingAddonItemBody = Partial<CreateBookingAddonItemBody>;
+type BookingAddonEconomicTerms =
+  | { ownershipKind?: never; partnerCommissionRate?: never }
+  | { ownershipKind: "property"; partnerCommissionRate?: null }
+  | { ownershipKind: "partner"; partnerCommissionRate: string };
+
+export type CreateBookingAddonItemBody = BookingAddonItemWriteFields & BookingAddonEconomicTerms;
+
+export type UpdateBookingAddonItemBody = Partial<BookingAddonItemWriteFields> &
+  BookingAddonEconomicTerms;
 
 export class BookingAddonItemsClientError extends Error {
   statusCode: BookingSettingsClientErrorStatusCode;

@@ -781,6 +781,8 @@ const bookingAddonItem: BookingAddonItem = {
   publicVisible: true,
   status: "active",
   sortOrder: 0,
+  ownershipKind: "property",
+  partnerCommissionRate: null,
   createdAt: "2026-06-01T10:00:00.000Z",
   updatedAt: "2026-06-01T10:00:00.000Z",
 };
@@ -798,6 +800,15 @@ const commissionPropertyPlan = {
 function addonItemFromBody(
   body: CreateBookingAddonItemBody | UpdateBookingAddonItemBody,
 ): BookingAddonItem {
+  const ownershipKind = body.ownershipKind ?? bookingAddonItem.ownershipKind;
+  const economicTerms =
+    ownershipKind === "partner"
+      ? {
+          ownershipKind: "partner" as const,
+          partnerCommissionRate:
+            body.partnerCommissionRate ?? bookingAddonItem.partnerCommissionRate ?? "0",
+        }
+      : { ownershipKind: "property" as const, partnerCommissionRate: null };
   return {
     ...bookingAddonItem,
     addonItemId: "0f840001-0000-4000-8000-000000000002",
@@ -812,6 +823,7 @@ function addonItemFromBody(
     publicVisible: body.publicVisible ?? bookingAddonItem.publicVisible,
     status: body.status ?? bookingAddonItem.status,
     sortOrder: body.sortOrder ?? bookingAddonItem.sortOrder,
+    ...economicTerms,
     updatedAt: "2026-06-01T11:00:00.000Z",
   };
 }
@@ -5222,6 +5234,8 @@ describe("vayada-api", () => {
         publicVisible: false,
         status: "disabled",
         sortOrder: 3,
+        ownershipKind: "partner",
+        partnerCommissionRate: "18.7500",
       },
     });
 
@@ -5241,6 +5255,8 @@ describe("vayada-api", () => {
       publicVisible: false,
       status: "disabled",
       sortOrder: 3,
+      ownershipKind: "partner",
+      partnerCommissionRate: "18.7500",
     });
   });
 
@@ -5299,6 +5315,8 @@ describe("vayada-api", () => {
         price: "55.00",
         pricingModel: "per_guest",
         publicVisible: false,
+        ownershipKind: "property",
+        partnerCommissionRate: null,
       },
     });
 
@@ -5310,6 +5328,8 @@ describe("vayada-api", () => {
       price: "55.00",
       pricingModel: "per_guest",
       publicVisible: false,
+      ownershipKind: "property",
+      partnerCommissionRate: null,
     });
   });
 
@@ -5421,6 +5441,7 @@ describe("vayada-api", () => {
         category: "legacy",
         status: "retired",
         legacyField: true,
+        ownershipKind: "partner",
       },
     });
 
@@ -5432,6 +5453,9 @@ describe("vayada-api", () => {
       message: "Booking add-on item payload is invalid.",
     });
     expect(response.body.details).toEqual(expect.any(Array));
+    expect(response.body.details).toContain(
+      "ownershipKind and partnerCommissionRate must be property/null or partner/a 0..100 decimal with at most four decimal places.",
+    );
   });
 
   it("lists booking promo codes with the typed target route", async () => {
@@ -8295,39 +8319,45 @@ describe("vayada-api", () => {
   ])("serves and updates target booking add-on items by %s", async (_label, hotelId) => {
     const queries: { text: string; values?: unknown[] }[] = [];
     const canonicalPropertyId = "d3000000-0000-0000-0000-000000000682";
-    const pool: BookingAddonItemsPool = {
-      async query<T extends QueryResultRow = QueryResultRow>(
-        text: string,
-        values?: unknown[],
-      ): Promise<Pick<QueryResult<T>, "rows">> {
-        queries.push({ text, values });
-        if (text.includes("WITH direct_property AS")) {
-          return {
-            rows: [{ propertyId: canonicalPropertyId }] as unknown as T[],
-          };
-        }
-        if (text.includes("SELECT plan_key AS plan")) {
-          return { rows: [] as T[] };
-        }
+    async function query<T extends QueryResultRow = QueryResultRow>(
+      text: string,
+      values?: unknown[],
+    ): Promise<Pick<QueryResult<T>, "rows">> {
+      queries.push({ text, values });
+      if (text.includes("WITH direct_property AS")) {
         return {
-          rows: [
-            {
-              addonItemId: "0f840001-0000-4000-8000-000000000001",
-              propertyId: "d3000000-0000-0000-0000-000000000682",
-              name: "Migrated add-on",
-              description: null,
-              category: "food",
-              pricingModel: "per_stay",
-              price: "45.00",
-              currency: "EUR",
-              publicVisible: true,
-              status: "active",
-              metadata: {},
-              createdAt: "2026-06-01T10:00:00.000Z",
-              updatedAt: "2026-06-01T10:00:00.000Z",
-            },
-          ] as unknown as T[],
+          rows: [{ propertyId: canonicalPropertyId }] as unknown as T[],
         };
+      }
+      if (text.includes("SELECT plan_key AS plan")) {
+        return { rows: [] as T[] };
+      }
+      return {
+        rows: [
+          {
+            addonItemId: "0f840001-0000-4000-8000-000000000001",
+            propertyId: "d3000000-0000-0000-0000-000000000682",
+            name: "Migrated add-on",
+            description: null,
+            category: "food",
+            pricingModel: "per_stay",
+            price: "45.00",
+            currency: "EUR",
+            publicVisible: true,
+            status: "active",
+            ownershipKind: "property",
+            partnerCommissionRate: null,
+            metadata: {},
+            createdAt: "2026-06-01T10:00:00.000Z",
+            updatedAt: "2026-06-01T10:00:00.000Z",
+          },
+        ] as unknown as T[],
+      };
+    }
+    const pool: BookingAddonItemsPool = {
+      query,
+      async connect() {
+        return { query, release() {} };
       },
       async end() {},
     };
@@ -8355,6 +8385,8 @@ describe("vayada-api", () => {
           publicVisible: true,
           status: "active",
           sortOrder: 0,
+          ownershipKind: "property",
+          partnerCommissionRate: null,
           createdAt: "2026-06-01T10:00:00.000Z",
           updatedAt: "2026-06-01T10:00:00.000Z",
         },
@@ -8364,8 +8396,30 @@ describe("vayada-api", () => {
         propertyId: canonicalPropertyId,
       },
     });
+    await expect(
+      repository.updateAddonItemByHotelId(hotelId, "not-a-uuid", {
+        partnerCommissionRate: "15.5000",
+      } as unknown as UpdateBookingAddonItemBody),
+    ).rejects.toThrow("Add-on economic updates require a complete valid ownership pair");
     const updated = await repository.updateAddonItemByHotelId(hotelId, "not-a-uuid", {
       name: "Updated",
+      ownershipKind: "partner",
+      partnerCommissionRate: "15.5000",
+    });
+    await repository.createAddonItemByHotelId(hotelId, {
+      name: "Partner transfer",
+      description: "Private transfer",
+      price: "50.00",
+      currency: "EUR",
+      category: "transport",
+      imageUrl: null,
+      duration: null,
+      pricingModel: "per_stay",
+      publicVisible: true,
+      status: "active",
+      sortOrder: 1,
+      ownershipKind: "partner",
+      partnerCommissionRate: "12.5000",
     });
 
     expect(updated?.hotelId).toBe(hotelId);
@@ -8373,12 +8427,21 @@ describe("vayada-api", () => {
       query.text.includes("addon_definitions.status <> 'retired'"),
     );
     expect(listQuery?.text).toContain("COALESCE(addon_definitions.category, 'other') AS category");
+    expect(listQuery?.text).toContain('addon_definitions.ownership_kind AS "ownershipKind"');
+    const updateQuery = queries.find((query) => query.text.includes("WITH updated AS ("));
+    expect(updateQuery?.text).toContain("partner_commission_rate");
+    expect(updateQuery?.values).toContain("15.5000");
+    const insertQuery = queries.find((query) =>
+      query.text.includes("INSERT INTO booking.addon_definitions ("),
+    );
+    expect(insertQuery?.text).toContain("ownership_kind, partner_commission_rate");
+    expect(insertQuery?.values).toContain("12.5000");
     expect(queries[0]?.text).toContain("property.id::text = $1");
     expect(queries[0]?.text).toContain("UNION ALL");
     expect(queries[0]?.text).toContain("NOT EXISTS (SELECT 1 FROM direct_property)");
     expect(queries[0]?.values).toEqual([hotelId]);
     expect(queries.filter((query) => query.text.includes("WITH direct_property AS"))).toHaveLength(
-      2,
+      3,
     );
     expect(queries.map((query) => query.text).join("\n")).not.toContain("$2::uuid");
   });
