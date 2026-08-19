@@ -27,17 +27,6 @@ const COUNTRY_DEFAULTS: Record<
   PH: { defaultCurrency: "PHP", defaultLanguage: "en", supportedLanguages: [] },
 };
 
-export const ONBOARDING_POPULAR_CURRENCY_CODES = [
-  "AUD",
-  "CAD",
-  "CHF",
-  "EUR",
-  "GBP",
-  "JPY",
-  "SGD",
-  "THB",
-] as const;
-
 export function propertyLaunchSettingsDefaults(countryCode: string): PropertyLaunchSettings {
   const defaults = COUNTRY_DEFAULTS[countryCode.trim().toUpperCase()] ?? {
     defaultCurrency: "USD",
