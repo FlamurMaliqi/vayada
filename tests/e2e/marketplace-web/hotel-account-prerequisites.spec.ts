@@ -152,6 +152,25 @@ test.describe("hotel account prerequisites", () => {
     await page.getByRole("button", { name: "Continue" }).click();
 
     await expect(page.getByText("Step 3 of 4 · Guest preferences")).toBeVisible();
+    await expect(page.getByRole("button", { name: "🇺🇸 USD", exact: true })).toBeVisible();
+    const currencySearch = page.getByPlaceholder('Search currencies, e.g. "Dollar" or "USD"...');
+    await currencySearch.fill("USD");
+    await page.getByRole("option", { name: "🇺🇸 US Dollar · USD" }).click();
+    await currencySearch.fill("LKR");
+    await page.getByRole("option", { name: "🇱🇰 Sri Lankan Rupee · LKR" }).click();
+    await expect(
+      page.getByRole("button", { name: "Remove USD" }).locator("xpath=.."),
+    ).toContainText("🇺🇸 USD");
+    await expect(
+      page.getByRole("button", { name: "Remove LKR" }).locator("xpath=.."),
+    ).toContainText("🇱🇰 LKR");
+
+    const languageSearch = page.getByPlaceholder('Search languages, e.g. "German" or "Deutsch"...');
+    await languageSearch.fill("Nederlands");
+    await page.locator('button[role="option"]').filter({ hasText: "Dutch · Nederlands" }).click();
+    await expect(
+      page.getByRole("button", { name: "Remove Nederlands" }).locator("xpath=.."),
+    ).toContainText("🇳🇱 Nederlands");
     await page.getByRole("button", { name: "Continue" }).click();
     await expect(page.getByText("Step 4 of 4 · Contact information")).toBeVisible();
     await page.getByRole("textbox", { name: "Phone number", exact: true }).fill("+49 89 123456");
@@ -194,6 +213,13 @@ test.describe("hotel account prerequisites", () => {
       },
     });
     expect(assignmentWrite?.idempotencyKey).toBeTruthy();
+    const launchSettingsWrite = writes.find(({ path }) => path.endsWith("/launch-settings"));
+    expect(launchSettingsWrite?.body).toMatchObject({
+      defaultCurrency: "EUR",
+      supportedCurrencies: ["USD", "LKR"],
+      defaultLanguage: "de",
+      supportedLanguages: ["en", "nl"],
+    });
   });
 
   test("resumes a finalized logo assignment after reload and replays the exact command", async ({

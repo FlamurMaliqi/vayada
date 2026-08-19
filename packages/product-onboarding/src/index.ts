@@ -30,7 +30,6 @@ export {
 } from "./sharedAccountProfileImage";
 export { sharedPropertyLogoError, type PendingPropertyLogoAssignment } from "./sharedPropertyLogo";
 export {
-  ONBOARDING_POPULAR_CURRENCY_CODES,
   propertyLaunchSettingsDefaults,
   validatePropertyLaunchSettings,
   type PropertyLaunchSettings,

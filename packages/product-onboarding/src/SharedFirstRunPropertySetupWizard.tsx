@@ -47,6 +47,7 @@ import {
   COUNTRY_OPTIONS,
   CURRENCY_OPTIONS,
   LANGUAGE_OPTIONS,
+  POPULAR_CURRENCY_CODES,
   POPULAR_LANGUAGE_CODES,
 } from "@vayada/locale-constants";
 import {
@@ -57,6 +58,7 @@ import {
 } from "libphonenumber-js/min";
 
 import { HotelIcon } from "./HotelIcon";
+import { LocalizationMultiSelect } from "./LocalizationMultiSelect";
 import GoogleAddressMap from "./GoogleAddressMap";
 import GooglePlacesAddressField from "./GooglePlacesAddressField";
 import TimezoneField from "./TimezoneField";
@@ -78,7 +80,6 @@ import {
   type PendingPropertyLogoAssignment,
 } from "./sharedPropertyLogo";
 import {
-  ONBOARDING_POPULAR_CURRENCY_CODES,
   propertyLaunchSettingsDefaults,
   validatePropertyLaunchSettings,
   type PropertyLaunchSettings,
@@ -1549,19 +1550,42 @@ function ProfileForm({
                     })
                   }
                 />
-                <MultiChoiceField
-                  label="Additional currencies"
-                  helper="Guests can view prices in these currencies."
-                  values={launchSettings.supportedCurrencies}
-                  options={visibleChoiceCodes(
-                    ONBOARDING_POPULAR_CURRENCY_CODES,
-                    launchSettings.supportedCurrencies,
-                    launchSettings.defaultCurrency,
-                  ).map((code) => ({ value: code, label: code }))}
-                  onChange={(supportedCurrencies) =>
-                    onLaunchSettingsChange({ ...launchSettings, supportedCurrencies })
-                  }
-                />
+                <div>
+                  <label
+                    htmlFor="hotel-setup-additional-currencies"
+                    className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-gray-700"
+                  >
+                    <span>Additional currencies</span>
+                    <span aria-hidden="true" className="text-xs text-gray-400">
+                      Optional
+                    </span>
+                  </label>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Guests can view prices in these currencies.
+                  </p>
+                  <div className="mt-3">
+                    <LocalizationMultiSelect
+                      id="hotel-setup-additional-currencies"
+                      selected={launchSettings.supportedCurrencies}
+                      onToggle={(code) =>
+                        onLaunchSettingsChange({
+                          ...launchSettings,
+                          supportedCurrencies: launchSettings.supportedCurrencies.includes(code)
+                            ? launchSettings.supportedCurrencies.filter((value) => value !== code)
+                            : [...launchSettings.supportedCurrencies, code],
+                        })
+                      }
+                      options={CURRENCY_OPTIONS}
+                      excludeCode={launchSettings.defaultCurrency}
+                      placeholder={`Search currencies, e.g. "Dollar" or "USD"...`}
+                      getLabel={(option) => option.code}
+                      getSearchLabel={(option) => `${option.name} · ${option.code}`}
+                      popularCodes={POPULAR_CURRENCY_CODES}
+                      emptyMessage={`No additional currencies added — your booking page will show only ${launchSettings.defaultCurrency}`}
+                      comfortable
+                    />
+                  </div>
+                </div>
               </div>
 
               <div className="space-y-5 rounded-2xl border border-gray-100 p-4 sm:p-5">
@@ -1585,22 +1609,42 @@ function ProfileForm({
                     })
                   }
                 />
-                <MultiChoiceField
-                  label="Additional languages"
-                  helper="Add languages you can support for international guests."
-                  values={launchSettings.supportedLanguages}
-                  options={visibleChoiceCodes(
-                    POPULAR_LANGUAGE_CODES,
-                    launchSettings.supportedLanguages,
-                    launchSettings.defaultLanguage,
-                  ).map((code) => ({
-                    value: code,
-                    label: LANGUAGE_OPTIONS.find((option) => option.code === code)?.name ?? code,
-                  }))}
-                  onChange={(supportedLanguages) =>
-                    onLaunchSettingsChange({ ...launchSettings, supportedLanguages })
-                  }
-                />
+                <div>
+                  <label
+                    htmlFor="hotel-setup-additional-languages"
+                    className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-gray-700"
+                  >
+                    <span>Additional languages</span>
+                    <span aria-hidden="true" className="text-xs text-gray-400">
+                      Optional
+                    </span>
+                  </label>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Add languages you can support for international guests.
+                  </p>
+                  <div className="mt-3">
+                    <LocalizationMultiSelect
+                      id="hotel-setup-additional-languages"
+                      selected={launchSettings.supportedLanguages}
+                      onToggle={(code) =>
+                        onLaunchSettingsChange({
+                          ...launchSettings,
+                          supportedLanguages: launchSettings.supportedLanguages.includes(code)
+                            ? launchSettings.supportedLanguages.filter((value) => value !== code)
+                            : [...launchSettings.supportedLanguages, code],
+                        })
+                      }
+                      options={LANGUAGE_OPTIONS}
+                      excludeCode={launchSettings.defaultLanguage}
+                      placeholder={`Search languages, e.g. "German" or "Deutsch"...`}
+                      getLabel={(option) => option.nativeName}
+                      getSearchLabel={(option) => `${option.name} · ${option.nativeName}`}
+                      popularCodes={POPULAR_LANGUAGE_CODES}
+                      emptyMessage={`No additional languages added — your booking page will show only ${launchSettings.defaultLanguage.toUpperCase()}`}
+                      comfortable
+                    />
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -3200,57 +3244,6 @@ function SelectField({
   );
 }
 
-function MultiChoiceField({
-  label,
-  helper,
-  values,
-  options,
-  onChange,
-}: {
-  label: string;
-  helper: string;
-  values: string[];
-  options: Array<{ value: string; label: string }>;
-  onChange: (values: string[]) => void;
-}) {
-  return (
-    <fieldset>
-      <legend className="text-sm font-medium text-gray-700">
-        {label}
-        <span aria-hidden="true" className="ml-2 text-xs text-gray-400">
-          Optional
-        </span>
-      </legend>
-      <p className="mt-1 text-xs text-gray-500">{helper}</p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {options.map((option) => {
-          const checked = values.includes(option.value);
-          return (
-            <label key={option.value} className="cursor-pointer">
-              <input
-                type="checkbox"
-                checked={checked}
-                onChange={() =>
-                  onChange(
-                    checked
-                      ? values.filter((value) => value !== option.value)
-                      : [...values, option.value],
-                  )
-                }
-                className="peer sr-only"
-              />
-              <span className="inline-flex min-h-9 items-center rounded-full border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:border-primary-300 peer-checked:border-primary-500 peer-checked:bg-primary-50 peer-checked:text-primary-800 peer-focus-visible:ring-2 peer-focus-visible:ring-primary-600 peer-focus-visible:ring-offset-2">
-                {checked && <CheckIcon className="mr-1.5 h-4 w-4" aria-hidden="true" />}
-                {option.label}
-              </span>
-            </label>
-          );
-        })}
-      </div>
-    </fieldset>
-  );
-}
-
 function draftFromProfile(
   response: PropertyProfileResponse,
   publicResponse: PublicPropertyProfileResponse | null,
@@ -3384,16 +3377,6 @@ function normalizedPropertyLaunchSettings(
     tiktok: settings.tiktok.trim(),
     youtube: settings.youtube.trim(),
   };
-}
-
-function visibleChoiceCodes(
-  popularCodes: readonly string[],
-  selectedCodes: readonly string[],
-  defaultCode: string,
-): string[] {
-  return Array.from(new Set([...selectedCodes, ...popularCodes])).filter(
-    (code) => code !== defaultCode,
-  );
 }
 
 function contactsFromDraft(
