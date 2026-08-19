@@ -162,7 +162,7 @@ describe.skipIf(!URL)("PostgreSQL Finance manual expense repository", () => {
     // prettier-ignore
     const pendingRace = Promise.all([repository.archive(archiveRace), repository.update(updateRace)]);
     let waiters = 0;
-    for (const deadline = Date.now() + 1_500; Date.now() < deadline && waiters < 2;) {
+    for (const deadline = Date.now() + 1_500; Date.now() < deadline && waiters < 2; ) {
       // prettier-ignore
       const staged = await admin.query<{ waiters: number }>(`SELECT count(*)::int AS waiters FROM pg_locks waiter JOIN pg_locks holder USING (locktype,database,classid,objid,objsubid) WHERE waiter.locktype='advisory' AND NOT waiter.granted AND holder.granted AND holder.pid=pg_backend_pid() AND waiter.pid<>holder.pid`);
       waiters = staged.rows[0]?.waiters ?? 0;
