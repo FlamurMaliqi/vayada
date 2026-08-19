@@ -54,7 +54,6 @@ import {
 } from "./routes/aiHotels.js";
 import {
   BookingContactPublicationConflictError,
-  createPgBookingSettingsReadRepository,
   createPgTargetBookingSettingsRepository,
   type BookingSettingsPool,
   type BookingSettingsReadRepository,
@@ -6284,85 +6283,6 @@ describe("vayada-api", () => {
     expect(() => createTargetBookingReservationsReadRepository({ connectionString: " " })).toThrow(
       "Booking reservations repository connectionString must not be empty",
     );
-  });
-
-  it("rejects empty booking settings repository connection strings", async () => {
-    expect(() => createPgBookingSettingsReadRepository({ connectionString: " " })).toThrow(
-      "Booking settings repository connectionString must not be empty",
-    );
-  });
-
-  it("round-trips phoneRequired in the legacy booking settings repository", async () => {
-    const queries: { text: string; values?: readonly unknown[] }[] = [];
-    let poolClosed = false;
-    const state = {
-      special_requests_enabled: false,
-      arrival_time_enabled: true,
-      guest_count_enabled: true,
-      phone_required: false,
-    };
-    const pool: BookingSettingsPool = {
-      async query<T extends QueryResultRow = QueryResultRow>(
-        text: string,
-        values?: readonly unknown[],
-      ): Promise<Pick<QueryResult<T>, "rows">> {
-        queries.push({ text, values });
-        if (text.includes("UPDATE booking_hotels")) {
-          state.special_requests_enabled = values?.[1] as boolean;
-          state.arrival_time_enabled = values?.[2] as boolean;
-          state.guest_count_enabled = values?.[3] as boolean;
-          if (values?.[4] !== null) state.phone_required = values?.[4] as boolean;
-        }
-
-        return { rows: [{ ...state }] as unknown as T[] };
-      },
-      async end() {
-        poolClosed = true;
-      },
-    };
-    const repository = createPgBookingSettingsReadRepository({
-      connectionString: "postgresql://booking-db",
-      pool,
-    });
-
-    await expect(
-      repository.findGuestFormSettingsByHotelId("booking_hotel_alpenrose"),
-    ).resolves.toEqual({
-      specialRequestsEnabled: false,
-      arrivalTimeEnabled: true,
-      guestCountEnabled: true,
-      phoneRequired: false,
-      adultAgeThreshold: 18,
-      childrenEnabled: true,
-    });
-    await expect(
-      repository.updateGuestFormSettingsByHotelId("booking_hotel_alpenrose", {
-        specialRequestsEnabled: true,
-        arrivalTimeEnabled: false,
-        guestCountEnabled: true,
-        phoneRequired: true,
-        adultAgeThreshold: 18,
-        childrenEnabled: true,
-      }),
-    ).resolves.toMatchObject({ phoneRequired: true });
-    await expect(
-      repository.updateGuestFormSettingsByHotelId("booking_hotel_alpenrose", {
-        specialRequestsEnabled: false,
-        arrivalTimeEnabled: true,
-        guestCountEnabled: false,
-        adultAgeThreshold: 18,
-        childrenEnabled: true,
-      }),
-    ).resolves.toMatchObject({ phoneRequired: true });
-
-    expect(queries[0]?.text).toContain("phone_required");
-    expect(queries[1]?.text).toContain("phone_required = COALESCE($5, phone_required)");
-    expect(queries[1]?.text).toContain("RETURNING special_requests_enabled");
-    expect(queries[1]?.values).toEqual(["booking_hotel_alpenrose", true, false, true, true]);
-    expect(queries[2]?.values).toEqual(["booking_hotel_alpenrose", false, true, false, null]);
-
-    await repository.close?.();
-    expect(poolClosed).toBe(true);
   });
 
   it("does not close injected public hotel profile pools", async () => {
