@@ -150,6 +150,7 @@ import {
   type PmsFinanceCompatibilityRoutesOptions,
 } from "./routes/finance.js";
 import { registerFinanceSubscriptionRoutes } from "./routes/financeSubscriptions.js";
+import { registerFinanceExpenseRoutes } from "./routes/financeExpenses.js";
 import {
   registerAffiliateDashboardRoutes,
   type AffiliateDashboardReadRepository,
@@ -319,6 +320,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   financeRepository?: FinanceRoutesOptions["repository"];
   financeSubscriptionService?: FinanceSubscriptionService;
   financeOtaCommissionSettingsRepository?: Parameters<typeof registerOtaSettings>[1]["repository"];
+  financeExpenses?: Parameters<typeof registerFinanceExpenseRoutes>[1];
   pmsFinanceCompatibilityRepository?: PmsFinanceCompatibilityRoutesOptions["repository"];
   financeXenditBankValidator?: FinanceXenditBankValidator;
   financePublicHotelProfileRepository?: PublicHotelProfileRepository;
@@ -706,6 +708,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       prefix: "/api",
       repository: options.financeOtaCommissionSettingsRepository,
     });
+  }
+  if (options.financeExpenses) {
+    app.register(registerFinanceExpenseRoutes, { prefix: "/api", ...options.financeExpenses });
   }
   if (options.platformContactIntake) {
     app.register(registerPlatformContactIntakeRoutes, {
