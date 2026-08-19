@@ -147,6 +147,7 @@ jobs:
           src/domains/financeExpenseCategoryRepository.integration.test.ts
           src/domains/financeManualExpenseRepository.integration.test.ts
           src/domains/financeRecurringExpenseRuleRepository.integration.test.ts
+          src/domains/financeExpenseReadModel.integration.test.ts
           src/routes/bookingWebPublicAttribution.integration.test.ts
           src/jobs/financeSubscriptions.integration.test.ts
           src/platform/workosWebhooks.integration.test.ts
