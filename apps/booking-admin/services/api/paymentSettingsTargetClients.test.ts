@@ -7,6 +7,7 @@ import {
 import { omitHotelContext, type ApiClient } from "./client";
 import {
   buildFinancePaymentSettingsBody,
+  createFinanceStripeDashboardLink,
   createFinanceStripeProviderAccount,
   getFinancePaymentSettings,
   issueFinanceStripeOnboardingLink,
@@ -187,6 +188,28 @@ describe("payment settings target clients", () => {
       idempotencyKey: expect.stringMatching(/^stripe-link-test-/),
       returnSurface: "booking_admin",
     });
+  });
+
+  it("requests Stripe dashboard links without sending an account identifier", async () => {
+    const calls: Array<{ endpoint: string; body?: unknown; options?: RequestInit }> = [];
+    const client = {
+      post: async <T>(endpoint: string, body?: unknown, options?: RequestInit) => {
+        calls.push({ endpoint, body, options });
+        return { url: "https://connect.stripe.test/express/session" } as T;
+      },
+    } satisfies Pick<ApiClient, "post">;
+
+    await expect(
+      createFinanceStripeDashboardLink({ propertyId: " property/with space " }, client),
+    ).resolves.toEqual({ url: "https://connect.stripe.test/express/session" });
+    expect(calls).toEqual([
+      {
+        endpoint:
+          "/api/finance/properties/property%2Fwith%20space/provider-accounts/stripe/dashboard-link",
+        body: undefined,
+        options: omitHotelContext,
+      },
+    ]);
   });
 
   it("maps Booking Admin toggles to strict Finance payment methods", () => {

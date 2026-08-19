@@ -31,6 +31,9 @@ export * from "./manualBookingSettlement.js";
 export * from "./subscriptions.js";
 export * from "./platformAffiliatePayouts.js";
 export * from "./affiliateCommission.js";
+export * from "./otaCommissionRules.js";
+export * from "./financialExpenses.js";
+export * from "./generatedExpenses.js";
 
 // ---------------------------------------------------------------------------
 // Scalar aliases
@@ -640,9 +643,23 @@ export type StripeConnectProviderAccountSnapshot = {
   defaultCurrency: string | null;
 };
 
+export class StripeConnectAccountNotFoundError extends Error {
+  readonly code = "stripe_connect_account_not_found";
+}
+
+export type FinanceStripeDashboardLoginLinkResult =
+  | { ok: true; url: string }
+  | {
+      ok: false;
+      statusCode: 404 | 502;
+      code: "provider_account_not_found" | "provider_unavailable";
+      message: string;
+    };
+
 export type FinanceStripeConnectProvider = {
   createAccount(request: StripeConnectAccountCreateRequest): Promise<StripeConnectProviderAccount>;
   createOnboardingLink(request: StripeConnectOnboardingLinkRequest): Promise<string>;
+  createLoginLink(request: { providerAccountRef: string }): Promise<string>;
   retrieveAccount(request: {
     providerAccountRef: string;
   }): Promise<StripeConnectProviderAccountSnapshot>;
@@ -994,6 +1011,9 @@ export type FinancePropertyCommandRepository = {
   issueStripeOnboardingLink(
     command: IssueStripeOnboardingLinkCommand,
   ): Promise<FinanceProviderAccountCommandResult>;
+  issueStripeDashboardLoginLink(
+    propertyId: FinancePropertyId,
+  ): Promise<FinanceStripeDashboardLoginLinkResult>;
   enqueueXenditPayoutReconciliation(
     command: FinanceXenditPayoutReconciliationCommand,
   ): Promise<FinanceXenditPayoutReconciliationResult>;

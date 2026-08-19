@@ -93,6 +93,54 @@ test.describe("booking-web tenant smoke", () => {
     );
   });
 
+  test.describe("mobile room detail modal", () => {
+    test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+
+    test("keeps internal controls open for touch input", async ({ page }, testInfo) => {
+      const assertHealthy = watchPageHealth(page, testInfo);
+      await mockBookingApis(page);
+
+      await page.goto("/");
+      await page.getByRole("button", { name: "View Details", exact: true }).first().tap();
+
+      const modal = page.getByRole("dialog", { name: "Alpine Suite" });
+      await expect(modal).toBeVisible();
+
+      const roomImage = modal.getByAltText("Alpine Suite");
+      await roomImage.evaluate((image) => {
+        const start = new Touch({ identifier: 0, target: image, clientX: 300, clientY: 200 });
+        const end = new Touch({ identifier: 0, target: image, clientX: 100, clientY: 200 });
+        image.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, touches: [start] }));
+        image.dispatchEvent(new TouchEvent("touchend", { bubbles: true, changedTouches: [end] }));
+      });
+      await expect(modal).toBeVisible();
+
+      await modal.getByRole("button", { name: /View Full Amenities/i }).tap();
+      await expect(modal.getByText("Breakfast", { exact: true })).toBeVisible();
+      await expect(modal).toBeVisible();
+
+      await modal.getByRole("button", { name: /Non-Refundable Rate/i }).tap();
+      await expect(modal).toBeVisible();
+
+      await modal.getByRole("button", { name: "Close room details" }).tap();
+      await expect(modal).toBeHidden();
+
+      await page.setViewportSize({ width: 1024, height: 900 });
+      await page.getByRole("button", { name: "View Details", exact: true }).first().tap();
+      await expect(modal).toBeVisible();
+      await page.touchscreen.tap(10, 10);
+      await expect(modal).toBeHidden();
+
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.getByRole("button", { name: "View Details", exact: true }).first().tap();
+      await modal.getByRole("button", { name: /Non-Refundable Rate/i }).tap();
+      await modal.getByRole("button", { name: /Select This Rate/i }).tap();
+      await expect(page).toHaveURL(/\/(addons|book)\?.*rateType=nonrefundable/);
+
+      await assertHealthy();
+    });
+  });
+
   test("uses a constrained header logo without displacing mobile actions", async ({ page }) => {
     await mockBookingApis(page, { headerLogoUrl: "/vayada-logo.png" });
 
@@ -182,12 +230,16 @@ test.describe("booking-web tenant smoke", () => {
     await expect(page.locator('datalist option[value="Netherlands"]')).toHaveCount(1);
     await page.getByLabel("First Name").fill("Ada");
     await page.getByLabel("Last Name").fill("Lovelace");
-    await page.getByLabel("Email Address").fill("ada@example.test");
+    await page
+      .getByRole("textbox", { name: "Email Address *", exact: true })
+      .fill("ada@example.test");
     await page.getByLabel("Phone Number").fill("1234567");
     await page.getByRole("button", { name: "Continue to Payment" }).click();
     await expect
       .poll(() =>
-        page.evaluate(() => JSON.parse(sessionStorage.getItem("guestDetails") ?? "{}").guestCountry),
+        page.evaluate(
+          () => JSON.parse(sessionStorage.getItem("guestDetails") ?? "{}").guestCountry,
+        ),
       )
       .toBe("NL");
 

@@ -37,6 +37,8 @@ const addonItem: BookingAddonItem = {
   publicVisible: true,
   status: "active",
   sortOrder: 0,
+  ownershipKind: "property",
+  partnerCommissionRate: null,
   createdAt: "2026-06-01T10:00:00.000Z",
   updatedAt: "2026-06-01T10:00:00.000Z",
 };
@@ -50,6 +52,10 @@ const propertyPlan = {
     guestContactAccess: "after_acceptance" as const,
   },
 };
+
+// @ts-expect-error Commission updates require an ownership kind.
+const invalidEconomicUpdate: UpdateBookingAddonItemBody = { partnerCommissionRate: null };
+void invalidEconomicUpdate;
 
 describe("booking add-on item clients", () => {
   it("lists add-on items through the typed target endpoint", async () => {
@@ -92,6 +98,8 @@ describe("booking add-on item clients", () => {
       pricingModel: "per_guest",
       publicVisible: false,
       status: "disabled",
+      ownershipKind: "partner",
+      partnerCommissionRate: "20.1250",
     };
     const calls: Array<{ endpoint: string; body: unknown; options?: RequestInit }> = [];
     const client: CreateClient = {
@@ -120,6 +128,8 @@ describe("booking add-on item clients", () => {
     const body: UpdateBookingAddonItemBody = {
       name: "Private airport transfer",
       price: "55.00",
+      ownershipKind: "property",
+      partnerCommissionRate: null,
     };
     const calls: Array<{ endpoint: string; body: unknown; options?: RequestInit }> = [];
     const client: UpdateClient = {

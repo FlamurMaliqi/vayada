@@ -85,6 +85,27 @@ describe("PMS room assignment optimization triggers", () => {
     expect(optimize).not.toHaveBeenCalled();
   });
 
+  it("fails closed when the optimizer snapshot is invalid", async () => {
+    const optimize = vi.fn(async () => ({ outcome: "invalid_snapshot" as const }));
+    const port = createPmsRoomAssignmentOptimizationTriggerPort({ optimize });
+
+    await expect(
+      port.afterCreate({
+        transaction: {
+          query: vi.fn(async () => ({ rows: [{ timeZone: "Etc/UTC" }], rowCount: 1 })),
+        } as unknown as PmsManualBookingTransaction,
+        command: {
+          propertyId,
+          commandId: "manual-create-1",
+          audit: { actor: { userId: propertyId }, requestId: "request-1", correlationId: null },
+        } as PmsManualBookingCreateCommand,
+        rooms: [{ roomId: "room-a", roomTypeId: roomTypeA }],
+        acceptedAt: new Date("2026-08-18T00:00:00.000Z"),
+      }),
+    ).rejects.toThrow("PMS room optimization create trigger failed: invalid_snapshot");
+    expect(optimize).toHaveBeenCalledOnce();
+  });
+
   it("retries budget exhaustion once with the maximum bounded budget", async () => {
     const optimize = vi
       .fn()
