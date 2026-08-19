@@ -82,6 +82,7 @@ import {
 import {
   createTargetBookingWebCalendarRepository,
   type BookingWebCalendarReadPool,
+  type BookingWebCheckoutAdapter,
   type BookingHotelChangeRequestRepository,
 } from "./routes/bookingWebPublic.js";
 import type {
@@ -2389,6 +2390,8 @@ const publicHotelProfileRepository: PublicHotelProfileRepository = {
   },
 };
 
+const unusedBookingWebCheckoutAdapter = {} as BookingWebCheckoutAdapter;
+
 function targetPublicHotelProfileRow(): QueryResultRow {
   return {
     propertyId: "f6893000-0000-0000-0000-000000000001",
@@ -2944,6 +2947,7 @@ describe("vayada-api", () => {
     app = buildApp({
       logger: false,
       publicHotelProfileRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await app.inject({
@@ -3027,6 +3031,15 @@ describe("vayada-api", () => {
     expect(findForbiddenPublicBookabilityKeys(body)).toEqual([]);
   });
 
+  it("requires the target checkout adapter when Booking Web public routes are mounted", () => {
+    expect(() =>
+      buildApp({
+        logger: false,
+        publicHotelProfileRepository,
+      }),
+    ).toThrow("Booking Web checkout adapter is required when public routes are mounted");
+  });
+
   it("returns stable unavailable reason codes for public AI hotel quotes", async () => {
     app = buildApp({
       logger: false,
@@ -3054,6 +3067,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await app.inject({
@@ -3091,6 +3105,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await app.inject({
@@ -3131,6 +3146,7 @@ describe("vayada-api", () => {
         },
       },
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await injectJson(app, {
@@ -3170,6 +3186,7 @@ describe("vayada-api", () => {
         },
       },
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await injectJson(app, {
@@ -3208,6 +3225,7 @@ describe("vayada-api", () => {
     app = buildApp({
       logger: false,
       publicHotelProfileRepository: targetRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const aiProfile = await injectJson(app, {
@@ -3251,6 +3269,7 @@ describe("vayada-api", () => {
         },
       },
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await injectJson(app, {
@@ -3266,6 +3285,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await app.inject({
@@ -3297,6 +3317,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const preflight = await app.inject({
@@ -3340,6 +3361,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const preflight = await app.inject({
@@ -3373,6 +3395,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await app.inject({
@@ -3414,6 +3437,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
       bookingWebPublicNow: () => new Date("2026-06-06T11:00:00.000Z"),
     });
 
@@ -3474,6 +3498,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
       bookingWebCalendarRepository: {
         async findCalendarByHotel(hotel, query) {
           return {
@@ -3595,6 +3620,7 @@ describe("vayada-api", () => {
           return pollutedProfile;
         },
       },
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await app.inject({

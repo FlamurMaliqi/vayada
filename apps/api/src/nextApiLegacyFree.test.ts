@@ -10,7 +10,10 @@ import { loadConfig } from "./config.js";
 import { createPublicRuntimeRepositories } from "./publicRuntime.js";
 import type { PublicHotelQuoteReadPool } from "./routes/aiHotelQuotes.js";
 import type { PublicHotelProfileReadPool } from "./routes/aiHotels.js";
-import type { BookingWebCalendarReadPool } from "./routes/bookingWebPublic.js";
+import type {
+  BookingWebCalendarReadPool,
+  BookingWebCheckoutAdapter,
+} from "./routes/bookingWebPublic.js";
 import type { MarketplaceDiscoveryReadPool } from "./routes/marketplaceDiscovery.js";
 
 const legacyRuntimeEnvKeys = [
@@ -20,13 +23,14 @@ const legacyRuntimeEnvKeys = [
   "MARKETPLACE_DATABASE_URL",
 ] as const;
 
+const unusedBookingWebCheckoutAdapter = {} as BookingWebCheckoutAdapter;
+
 const nextApiLegacyFreeEnv: NodeJS.ProcessEnv = {
   API_RUNTIME: "next",
   TARGET_DATABASE_URL: "postgresql://target-db",
   PUBLIC_HOTEL_PROFILE_SOURCE: "active_publication",
   PMS_OPERATIONS_SOURCE: "target",
   FINANCE_SOURCE: "target",
-  BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
 };
 
 const publicBookabilityFixture = PUBLIC_BOOKABILITY_FIXTURES.find(
@@ -118,7 +122,6 @@ describe("next-api legacy-free runtime check", () => {
       publicHotelProfileSource: "active_publication",
       pmsOperationsSource: "target",
       financeSource: "target",
-      bookingCheckoutCommandSource: "target",
     });
 
     const publicRuntime = createPublicRuntimeRepositories(config, {
@@ -131,6 +134,7 @@ describe("next-api legacy-free runtime check", () => {
     app = buildApp({
       logger: false,
       ...publicRuntime,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
     await app.ready();
 

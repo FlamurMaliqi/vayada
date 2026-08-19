@@ -13,7 +13,8 @@ This complements:
 > profile and Booking settings source selectors are removed from `apps/api`.
 > The legacy Booking settings repository and `BOOKING_DATABASE_URL` are also
 > removed. Public bookability now directly composes the target quote/calendar
-> repositories with no compatibility selector.
+> repositories with no compatibility selector. Booking Web checkout commands
+> and lifecycle jobs likewise compose only target adapters.
 > Historical entries below describe the earlier VAY-880 state.
 
 ## Scope

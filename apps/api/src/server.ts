@@ -301,19 +301,16 @@ const stripeBookingPaymentProvider = config.stripeSubscriptions.secretKey
   ? createStripeBookingPaymentProvider({ secretKey: config.stripeSubscriptions.secretKey })
   : undefined;
 
-const bookingWebCheckoutAdapter =
-  config.bookingCheckoutCommandSource === "target"
-    ? createTargetBookingWebCheckoutAdapter({
-        connectionString: targetDatabaseUrl,
-        inventoryReservationPort: createTargetPmsInventoryReservationPort(),
-        billingConfigReadPortFactory: (executor) =>
-          createTargetFinanceBillingConfigReadPort({
-            connectionString: targetDatabaseUrl,
-            pool: executor,
-          }),
-        stripePaymentProvider: stripeBookingPaymentProvider,
-      })
-    : undefined;
+const bookingWebCheckoutAdapter = createTargetBookingWebCheckoutAdapter({
+  connectionString: targetDatabaseUrl,
+  inventoryReservationPort: createTargetPmsInventoryReservationPort(),
+  billingConfigReadPortFactory: (executor) =>
+    createTargetFinanceBillingConfigReadPort({
+      connectionString: targetDatabaseUrl,
+      pool: executor,
+    }),
+  stripePaymentProvider: stripeBookingPaymentProvider,
+});
 
 const pmsOperationsRepository =
   config.pmsOperationsSource === "target"
@@ -1476,17 +1473,14 @@ if (platformMediaRuntime) {
   });
 }
 
-const bookingLifecycleStore =
-  config.bookingCheckoutCommandSource === "target"
-    ? createPgBookingLifecycleStore({
-        connectionString: targetDatabaseUrl,
-        inventoryReservationPort: createTargetPmsInventoryReservationPort(),
-        stripePaymentProvider: stripeBookingPaymentProvider,
-      })
-    : undefined;
+const bookingLifecycleStore = createPgBookingLifecycleStore({
+  connectionString: targetDatabaseUrl,
+  inventoryReservationPort: createTargetPmsInventoryReservationPort(),
+  stripePaymentProvider: stripeBookingPaymentProvider,
+});
 let activeBookingLifecycleRun: Promise<void> | undefined;
 const runBookingLifecycle = () => {
-  if (!bookingLifecycleStore || activeBookingLifecycleRun) return;
+  if (activeBookingLifecycleRun) return;
   activeBookingLifecycleRun = runBookingLifecycleSchedulerJobs(bookingLifecycleStore)
     .then((result) => {
       if (result.failed > 0) {
@@ -1501,11 +1495,9 @@ const runBookingLifecycle = () => {
       activeBookingLifecycleRun = undefined;
     });
 };
-const bookingLifecycleTimer = bookingLifecycleStore
-  ? setInterval(runBookingLifecycle, 60_000)
-  : undefined;
-bookingLifecycleTimer?.unref();
-if (bookingLifecycleStore) runBookingLifecycle();
+const bookingLifecycleTimer = setInterval(runBookingLifecycle, 60_000);
+bookingLifecycleTimer.unref();
+runBookingLifecycle();
 
 const bookingEmailDelivery = config.bookingEmailDelivery
   ? createResendBookingEmailDelivery(config.bookingEmailDelivery)
@@ -1530,11 +1522,11 @@ const bookingEmailDeliveryTimer = bookingEmailDelivery
 bookingEmailDeliveryTimer?.unref();
 if (bookingEmailDelivery) runBookingEmailDelivery();
 app.addHook("onClose", async () => {
-  if (bookingLifecycleTimer) clearInterval(bookingLifecycleTimer);
+  clearInterval(bookingLifecycleTimer);
   if (bookingEmailDeliveryTimer) clearInterval(bookingEmailDeliveryTimer);
   await activeBookingLifecycleRun;
   await activeBookingEmailDelivery;
-  await bookingLifecycleStore?.close();
+  await bookingLifecycleStore.close();
 });
 
 const propertySetupDraftRetentionWorker = startPropertySetupDraftRetentionWorker({

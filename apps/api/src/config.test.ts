@@ -329,7 +329,6 @@ describe("api config", () => {
       PUBLIC_HOTEL_PROFILE_SOURCE: "target",
       PMS_OPERATIONS_SOURCE: "target",
       FINANCE_SOURCE: "target",
-      BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
     });
 
     expect(config).toMatchObject({
@@ -337,7 +336,6 @@ describe("api config", () => {
       publicHotelProfileSource: "target",
       pmsOperationsSource: "target",
       financeSource: "target",
-      bookingCheckoutCommandSource: "target",
     });
   });
 
@@ -348,7 +346,6 @@ describe("api config", () => {
       PUBLIC_HOTEL_PROFILE_SOURCE: "target",
       PMS_OPERATIONS_SOURCE: "disabled",
       FINANCE_SOURCE: "target",
-      BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
     });
 
     expect(config.pmsOperationsSource).toBe("disabled");
@@ -373,7 +370,7 @@ describe("api config", () => {
         TARGET_DATABASE_URL: "postgresql://target-db",
       }),
     ).toThrow(
-      "API_RUNTIME=next requires target runtime sources: PMS_OPERATIONS_SOURCE=target or explicit disabled, FINANCE_SOURCE=target, BOOKING_CHECKOUT_COMMAND_SOURCE=target",
+      "API_RUNTIME=next requires target runtime sources: PMS_OPERATIONS_SOURCE=target or explicit disabled, FINANCE_SOURCE=target",
     );
   });
 
@@ -436,7 +433,6 @@ describe("api config", () => {
     const stripeRuntimeEnv = {
       TARGET_DATABASE_URL: "postgresql://target-db",
       FINANCE_SOURCE: "target",
-      BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
       STRIPE_SECRET_KEY: "sk_test_subscription",
       STRIPE_FIXED_PLAN_PRICE_ID: "price_fixed",
       STRIPE_WEBHOOK_SECRET: "whsec_subscription",
@@ -454,7 +450,6 @@ describe("api config", () => {
       { ...stripeRuntimeEnv, STRIPE_SECRET_KEY: undefined },
       { ...stripeRuntimeEnv, STRIPE_WEBHOOK_SECRET: undefined },
       { ...stripeRuntimeEnv, STRIPE_WEBHOOK_INTAKE_MODE: "observe_only" },
-      { ...stripeRuntimeEnv, BOOKING_CHECKOUT_COMMAND_SOURCE: "legacy_proxy" },
     ]) {
       expect(stripeSubscriptionRuntimeEnabled(loadConfig(env))).toBe(false);
     }
@@ -658,26 +653,11 @@ describe("api config", () => {
     ).toEqual(["https://marketplace.localhost", "https://admin.localhost"]);
   });
 
-  it("keeps Booking Web checkout commands on the legacy proxy source by default", () => {
-    expect(loadConfig({}).bookingCheckoutCommandSource).toBe("legacy_proxy");
-  });
-
-  it("loads target Booking Web checkout command source config", () => {
-    const config = loadConfig({
-      TARGET_DATABASE_URL: "postgresql://target-db",
-      BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
-    });
-
-    expect(config.bookingCheckoutCommandSource).toBe("target");
-    expect(config.targetDatabaseUrl).toBe("postgresql://target-db");
-  });
-
-  it("requires booking email delivery for target checkout in production", () => {
+  it("requires booking email delivery for checkout in production", () => {
     expect(() =>
       loadConfig({
         NODE_ENV: "production",
         TARGET_DATABASE_URL: "postgresql://target-db",
-        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
       }),
     ).toThrow("requires RESEND_API_KEY and BOOKING_EMAIL_FROM");
 
@@ -685,7 +665,6 @@ describe("api config", () => {
       loadConfig({
         NODE_ENV: "production",
         TARGET_DATABASE_URL: "postgresql://target-db",
-        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
         RESEND_API_KEY: "re_test",
         BOOKING_EMAIL_FROM: "Vayada <bookings@example.test>",
         FINANCE_SOURCE: "target",
@@ -700,11 +679,10 @@ describe("api config", () => {
     });
   });
 
-  it("requires the Stripe mutation and recovery runtime for target checkout in production", () => {
+  it("requires the Stripe mutation and recovery runtime for checkout in production", () => {
     const complete = {
       NODE_ENV: "production",
       TARGET_DATABASE_URL: "postgresql://target-db",
-      BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
       FINANCE_SOURCE: "target",
       RESEND_API_KEY: "re_test",
       BOOKING_EMAIL_FROM: "Vayada <bookings@example.test>",
@@ -712,7 +690,7 @@ describe("api config", () => {
       STRIPE_WEBHOOK_SECRET: "whsec_test",
       STRIPE_WEBHOOK_INTAKE_MODE: "mutating",
     };
-    expect(loadConfig(complete).bookingCheckoutCommandSource).toBe("target");
+    expect(stripeSubscriptionRuntimeEnabled(loadConfig(complete))).toBe(true);
     for (const env of [
       { ...complete, STRIPE_SECRET_KEY: undefined },
       { ...complete, STRIPE_WEBHOOK_SECRET: undefined },
@@ -721,22 +699,6 @@ describe("api config", () => {
     ]) {
       expect(() => loadConfig(env)).toThrow("requires STRIPE_SECRET_KEY");
     }
-  });
-
-  it("requires target database config for target Booking Web checkout commands", () => {
-    expect(() =>
-      loadConfig({
-        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
-      }),
-    ).toThrow("BOOKING_CHECKOUT_COMMAND_SOURCE=target requires TARGET_DATABASE_URL");
-  });
-
-  it("rejects unsupported Booking Web checkout command source config", () => {
-    expect(() =>
-      loadConfig({
-        BOOKING_CHECKOUT_COMMAND_SOURCE: "preview",
-      }),
-    ).toThrow("BOOKING_CHECKOUT_COMMAND_SOURCE must be one of: legacy_proxy, target");
   });
 
   it("loads optional booking host base config", () => {

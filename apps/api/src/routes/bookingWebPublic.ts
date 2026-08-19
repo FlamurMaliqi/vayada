@@ -413,7 +413,7 @@ export type BookingWebPublicRoutesOptions = {
   profileRepository: PublicHotelProfileRepository;
   quoteRepository?: PublicHotelQuoteRepository;
   calendarRepository?: BookingWebCalendarRepository;
-  checkoutAdapter?: BookingWebCheckoutAdapter;
+  checkoutAdapter: BookingWebCheckoutAdapter;
   affiliateHotelResolver?: BookingWebAffiliateHotelResolver;
   affiliateRepository?: BookingWebAffiliateRepository;
   affiliateAdapter?: BookingWebAffiliateAdapter;
@@ -426,7 +426,7 @@ export async function registerBookingWebPublicRoutes(
   options: BookingWebPublicRoutesOptions,
 ): Promise<void> {
   const now = options.now ?? (() => new Date());
-  const checkoutAdapter = options.checkoutAdapter ?? createUnavailableBookingWebCheckoutAdapter();
+  const checkoutAdapter = options.checkoutAdapter;
   const affiliateAdapter =
     options.affiliateAdapter ?? createUnavailableBookingWebAffiliateAdapter();
 
@@ -2294,60 +2294,6 @@ function assertTargetBookingConfirmationTokenActive(
   ) {
     throw createHttpError(404, "Booking confirmation link has expired.");
   }
-}
-
-export function createUnavailableBookingWebCheckoutAdapter(): BookingWebCheckoutAdapter {
-  return {
-    async consumeLookupAttempt() {
-      throw createHttpError(404, "Booking Web checkout adapter is not configured.");
-    },
-    async getCheckoutConfig() {
-      throw createHttpError(404, "Booking Web checkout adapter is not configured.");
-    },
-    async createBooking() {
-      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
-    },
-    async quoteBooking() {
-      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
-    },
-    async confirmAuthorization() {
-      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
-    },
-    async getStatus() {
-      throw createHttpError(404, "Booking Web checkout adapter is not configured.");
-    },
-    async lookup() {
-      throw createHttpError(404, "Booking Web checkout adapter is not configured.");
-    },
-    async withdraw() {
-      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
-    },
-    async cancelPreview() {
-      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
-    },
-    async cancel() {
-      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
-    },
-    async previewChangeRequest() {
-      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
-    },
-    async submitChangeRequest() {
-      throw createHttpError(404, "Booking Web checkout command adapter is not configured.");
-    },
-    async getChangeRequest() {
-      throw createHttpError(404, "Booking Web checkout adapter is not configured.");
-    },
-    async getPaymentInstructions() {
-      throw createHttpError(404, "Booking-scoped payment instructions are not configured.");
-    },
-    async validatePromo(_slug, request) {
-      const code = typeof request.code === "string" ? request.code.trim() : "";
-      if (!code) {
-        return { valid: false, code, message: "Promo code is required" };
-      }
-      throw createHttpError(404, "Booking Web promo validation adapter is not configured.");
-    },
-  };
 }
 
 async function resolveTargetCheckoutProperty(

@@ -45,7 +45,6 @@ export type ApiAuthSessionConfig = {
 
 export type PublicHotelProfileSource = "target" | "active_publication";
 export type MarketplaceAdminSource = "disabled" | "target";
-export type BookingCheckoutCommandSource = "legacy_proxy" | "target";
 export type PmsOperationsSource = "disabled" | "target";
 export type FinanceSource = "legacy" | "target";
 export type BookingWebEventSink = "disabled" | "target";
@@ -90,14 +89,10 @@ export type BookingEmailDeliveryConfig = {
 };
 
 export function stripeSubscriptionRuntimeEnabled(
-  config: Pick<
-    ApiConfig,
-    "bookingCheckoutCommandSource" | "financeSource" | "providerWebhooks" | "stripeSubscriptions"
-  >,
+  config: Pick<ApiConfig, "financeSource" | "providerWebhooks" | "stripeSubscriptions">,
 ): boolean {
   return (
     config.financeSource === "target" &&
-    config.bookingCheckoutCommandSource === "target" &&
     Boolean(config.stripeSubscriptions.secretKey) &&
     Boolean(config.providerWebhooks.stripeSecret) &&
     config.providerWebhooks.stripeMode === "mutating"
@@ -145,7 +140,6 @@ export type ApiConfig = {
   marketplaceDiscoveryAllowedOrigins: string[];
   affiliatePublicSource?: "target";
   pmsOperationsAllowedOrigins: string[];
-  bookingCheckoutCommandSource: BookingCheckoutCommandSource;
   bookingWebEventSink: BookingWebEventSink;
   bookingHostBase?: string;
   platformMediaServing?: PlatformMediaServingConfig;
@@ -644,12 +638,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     ["disabled", "target"],
     "disabled",
   );
-  const bookingCheckoutCommandSource = readSourceEnv(
-    env,
-    "BOOKING_CHECKOUT_COMMAND_SOURCE",
-    ["legacy_proxy", "target"],
-    "legacy_proxy",
-  );
   const pmsOperationsSource = readSourceEnv(
     env,
     "PMS_OPERATIONS_SOURCE",
@@ -675,7 +663,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     publicHotelProfileSource,
     pmsOperationsSource,
     financeSource,
-    bookingCheckoutCommandSource,
   });
   if (marketplaceAdminSource === "target" && !targetDatabaseUrl) {
     throw new Error("TARGET_DATABASE_URL is required when MARKETPLACE_ADMIN_SOURCE=target");
@@ -692,9 +679,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   if (bookingWebEventSink === "target" && !auth) {
     throw new Error("BOOKING_WEB_EVENT_SINK=target requires complete auth config");
   }
-  if (bookingCheckoutCommandSource === "target" && !targetDatabaseUrl) {
-    throw new Error("BOOKING_CHECKOUT_COMMAND_SOURCE=target requires TARGET_DATABASE_URL");
-  }
   if (targetDatabaseUrl && auth && !platformMediaServing) {
     throw new Error(
       "Target Marketplace with complete auth requires complete PLATFORM_MEDIA_* config because creator profile photos are required",
@@ -705,18 +689,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       "Creator platform connections require TARGET_DATABASE_URL and complete auth config",
     );
   }
-  if (
-    env.NODE_ENV === "production" &&
-    bookingCheckoutCommandSource === "target" &&
-    !bookingEmailDelivery
-  ) {
+  if (env.NODE_ENV === "production" && !bookingEmailDelivery) {
     throw new Error(
-      "BOOKING_CHECKOUT_COMMAND_SOURCE=target requires RESEND_API_KEY and BOOKING_EMAIL_FROM in production",
+      "Target booking checkout requires RESEND_API_KEY and BOOKING_EMAIL_FROM in production",
     );
   }
   const prospectiveConfig = {
     financeSource,
-    bookingCheckoutCommandSource,
     stripeSubscriptions: loadStripeSubscriptionConfig(env),
     providerWebhooks: loadProviderWebhookConfig(env),
   };
@@ -727,13 +706,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   ) {
     throw new Error("Mutating PMS Channex capabilities require PMS_OPERATIONS_SOURCE=target");
   }
-  if (
-    env.NODE_ENV === "production" &&
-    bookingCheckoutCommandSource === "target" &&
-    !stripeSubscriptionRuntimeEnabled(prospectiveConfig)
-  ) {
+  if (env.NODE_ENV === "production" && !stripeSubscriptionRuntimeEnabled(prospectiveConfig)) {
     throw new Error(
-      "BOOKING_CHECKOUT_COMMAND_SOURCE=target requires STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_WEBHOOK_INTAKE_MODE=mutating, and FINANCE_SOURCE=target in production",
+      "Target booking checkout requires STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_WEBHOOK_INTAKE_MODE=mutating, and FINANCE_SOURCE=target in production",
     );
   }
 
@@ -761,7 +736,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       "https://admin.booking.localhost",
       "https://marketplace.localhost",
     ]),
-    bookingCheckoutCommandSource,
     bookingWebEventSink,
     bookingHostBase: readOptionalEnv(env, "BOOKING_HOST_BASE"),
     platformMediaServing,
@@ -820,11 +794,7 @@ function assertNextApiRuntimeConfig(
   env: NodeJS.ProcessEnv,
   config: Pick<
     ApiConfig,
-    | "apiRuntime"
-    | "publicHotelProfileSource"
-    | "pmsOperationsSource"
-    | "financeSource"
-    | "bookingCheckoutCommandSource"
+    "apiRuntime" | "publicHotelProfileSource" | "pmsOperationsSource" | "financeSource"
   >,
 ): void {
   if (config.apiRuntime !== "next") return;
@@ -841,7 +811,6 @@ function assertNextApiRuntimeConfig(
       allowExplicitDisabled: true,
     },
     { key: "FINANCE_SOURCE", value: config.financeSource },
-    { key: "BOOKING_CHECKOUT_COMMAND_SOURCE", value: config.bookingCheckoutCommandSource },
   ].flatMap((source) => nextRuntimeSourceRequirements(env, source));
 
   if (requiredTargetSources.length > 0) {
