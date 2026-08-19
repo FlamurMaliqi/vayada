@@ -71,6 +71,8 @@ import {
 import { createPgPmsManualBookingCommandRepository } from "./domains/pmsManualBookingCommandRepository.js";
 import { createPmsManualBookingProductionCommandConfig } from "./domains/pmsManualBookingProductionRuntime.js";
 import { createPmsRoomAssignmentOptimizationTriggerPort } from "./domains/pmsRoomAssignmentOptimizationTriggers.js";
+import { createPgPmsRoomAssignmentSettingsPort } from "./domains/pmsRoomAssignmentSettings.js";
+import { createPgPmsRoomAssignmentOptimizationHistoryPort } from "./domains/pmsRoomAssignmentOptimizationHistory.js";
 import { createPgPmsRecurringPricingReadModel } from "./domains/pmsRecurringPricingReadModel.js";
 import { createPgPmsRecurringPricingCommandRepository } from "./domains/pmsRecurringPricingCommandRepository.js";
 import { createPgPmsMandatoryChargeConfirmationReadModel } from "./domains/pmsMandatoryChargeConfirmationReadModel.js";
@@ -377,6 +379,13 @@ const pmsOperationsCommandRepository = pmsOperationsRepository
 
 const bookingAcceptanceSettings = pmsOperationsRepository
   ? createTargetBookingAcceptanceSettingsPort({ connectionString: targetDatabaseUrl })
+  : undefined;
+
+const pmsRoomAssignmentSettings = pmsOperationsRepository
+  ? createPgPmsRoomAssignmentSettingsPort({ connectionString: targetDatabaseUrl })
+  : undefined;
+const pmsRoomAssignmentHistory = pmsOperationsRepository
+  ? createPgPmsRoomAssignmentOptimizationHistoryPort({ connectionString: targetDatabaseUrl })
   : undefined;
 
 const pmsModuleActivationRepository = config.auth
@@ -1058,6 +1067,8 @@ const app = buildApp({
   pmsReviewRepository: createPgPmsReviewRepository({ connectionString: targetDatabaseUrl }),
   pmsOperationsCommandRepository,
   bookingAcceptanceSettings,
+  pmsRoomAssignmentSettings,
+  pmsRoomAssignmentHistory,
   pmsRoomPublication: pmsRoomPublicationRuntime
     ? {
         mediaCommandPort: pmsRoomPublicationRuntime.commandRepository,

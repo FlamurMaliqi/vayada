@@ -18,6 +18,11 @@ import type {
 } from "@vayada/domain-distribution";
 import { PROPERTY_FEATURE_LIMITS, type PropertyPlanReadModel } from "@vayada/domain-finance";
 import type { PropertyPlanReadRepository } from "../domains/propertyPlanReadModel.js";
+import type { PmsRoomAssignmentSettingsPort } from "../domains/pmsRoomAssignmentSettings.js";
+import type {
+  PmsRoomAssignmentOptimizationHistoryItem,
+  PmsRoomAssignmentOptimizationHistoryPort,
+} from "../domains/pmsRoomAssignmentOptimizationHistory.js";
 import {
   isBookingAcceptanceMode,
   type BookingAcceptanceSettingsPort,
@@ -639,10 +644,7 @@ export type PmsCheckOutCommandResponse = {
 };
 
 export type PmsAssignmentCommandConflictCode =
-  | "version_conflict"
-  | "room_unavailable"
-  | "assignment_conflict"
-  | "idempotency_conflict";
+  "version_conflict" | "room_unavailable" | "assignment_conflict" | "idempotency_conflict";
 
 export type PmsAssignmentCommandResult =
   | {
@@ -891,6 +893,8 @@ export type PmsOperationsRoutesOptions = {
   propertyPlanReadRepository?: PropertyPlanReadRepository;
   bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
   publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort;
+  roomAssignmentSettings?: PmsRoomAssignmentSettingsPort;
+  roomAssignmentHistory?: PmsRoomAssignmentOptimizationHistoryPort;
 };
 
 type PmsPropertyParams = {
@@ -925,6 +929,8 @@ type PmsCalendarQuery = {
   from?: string;
   to?: string;
 };
+
+type PmsShuffleHistoryQuery = { limit?: string; cursor?: string };
 
 type PmsRoomBlocksQuery = {
   from?: string;
@@ -1015,10 +1021,7 @@ type PmsOperationsError = {
 };
 
 type PmsOperationsAuthorizationErrorCode =
-  | "missing_permission"
-  | "missing_entitlement"
-  | "inactive_entitlement"
-  | "missing_resource_access";
+  "missing_permission" | "missing_entitlement" | "inactive_entitlement" | "missing_resource_access";
 
 export async function registerPmsOperationsRoutes(
   app: FastifyInstance,
@@ -1032,6 +1035,8 @@ export async function registerPmsOperationsRoutes(
     await bookingGuestPiiPort?.close?.();
     await options.propertyPlanReadRepository?.close?.();
     await options.bookingAcceptanceSettings?.close?.();
+    await options.roomAssignmentSettings?.close?.();
+    await options.roomAssignmentHistory?.close?.();
   });
 
   for (const path of [
@@ -1046,6 +1051,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/payment-settings",
     "/properties/:propertyId/profile",
     "/properties/:propertyId/calendar-settings",
+    "/properties/:propertyId/calendar-shuffles",
     "/properties/:propertyId/booking-acceptance",
     "/properties/:propertyId/messaging/unread-count",
     "/properties/:propertyId/reservations",
@@ -1518,11 +1524,23 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
-      return sendPmsOperationsError(
-        reply,
-        readModelUnavailable("PMS calendar settings read model is unavailable."),
-      );
+      if (!enforcePmsRoomOptimizationManagePolicy(request, reply, propertyId)) return reply;
+      if (!options.roomAssignmentSettings)
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS calendar settings read model is unavailable."),
+        );
+      try {
+        const settings = await options.roomAssignmentSettings.find(propertyId);
+        return settings
+          ? { contractVersion: PMS_OPERATIONS_CONTRACT_VERSION, ...settings }
+          : sendPmsOperationsError(reply, propertyNotFound(propertyId));
+      } catch {
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS calendar settings read model is unavailable."),
+        );
+      }
     },
   );
 
@@ -1538,11 +1556,73 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
-      return sendPmsOperationsError(
-        reply,
-        readModelUnavailable("PMS calendar settings write model is unavailable."),
-      );
+      if (!enforcePmsRoomOptimizationManagePolicy(request, reply, propertyId)) return reply;
+      if (!options.roomAssignmentSettings)
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS calendar settings write model is unavailable."),
+        );
+      const body = request.body as Record<string, unknown> | null;
+      if (
+        !body ||
+        Array.isArray(body) ||
+        Object.keys(body).length !== 1 ||
+        typeof body["autoRearrangeEnabled"] !== "boolean"
+      )
+        return sendPmsOperationsError(
+          reply,
+          invalidBody("autoRearrangeEnabled must be a boolean."),
+        );
+      try {
+        const settings = await options.roomAssignmentSettings.update(
+          propertyId,
+          body["autoRearrangeEnabled"],
+        );
+        return settings
+          ? { contractVersion: PMS_OPERATIONS_CONTRACT_VERSION, ...settings }
+          : sendPmsOperationsError(reply, propertyNotFound(propertyId));
+      } catch {
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS calendar settings write model is unavailable."),
+        );
+      }
+    },
+  );
+
+  app.get<{ Params: PmsPropertyParams; Querystring: PmsShuffleHistoryQuery }>(
+    "/properties/:propertyId/calendar-shuffles",
+    async (request, reply) => {
+      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? []))
+        return sendPmsOperationsError(reply, missingOriginPermission());
+      const { propertyId } = request.params;
+      if (!enforcePmsRoomOptimizationManagePolicy(request, reply, propertyId)) return reply;
+      if (!options.roomAssignmentHistory)
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS room shuffle history is unavailable."),
+        );
+      const page = shuffleHistoryPage(request.query);
+      if ("error" in page) return sendPmsOperationsError(reply, page.error);
+      try {
+        const result = await options.roomAssignmentHistory.list(propertyId, page.value);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          items: result.items,
+          nextCursor: result.nextCursor ? encodeShuffleCursor(result.nextCursor) : null,
+        } satisfies {
+          contractVersion: PmsOperationsContractVersion;
+          propertyId: string;
+          items: readonly PmsRoomAssignmentOptimizationHistoryItem[];
+          nextCursor: string | null;
+        };
+      } catch {
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS room shuffle history is unavailable."),
+        );
+      }
     },
   );
 
@@ -2871,6 +2951,31 @@ function enforcePmsOperationsManagePolicy(
   }
 }
 
+function enforcePmsRoomOptimizationManagePolicy(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  propertyId: string,
+): boolean {
+  try {
+    const resource = {
+      product: "pms",
+      resourceType: "pms_property",
+      resourceId: propertyId,
+    } as const;
+    enforceRoutePolicy(request, {
+      permission: "pms.operations.manage",
+      entitlement: { product: "pms", key: "property-management", resource },
+      resource: { ...resource, allowedRelationships: ["owner", "operator"] },
+    });
+    return true;
+  } catch (error) {
+    const contractError = toPmsOperationsAccessError(error, request, propertyId);
+    if (!contractError) throw error;
+    sendPmsOperationsError(reply, contractError);
+    return false;
+  }
+}
+
 function enforcePmsFinanceManagePolicy(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -4011,6 +4116,78 @@ function readModelUnavailable(message: string): PmsOperationsError {
     category: "read_model",
     message,
   };
+}
+
+function propertyNotFound(propertyId: string): PmsOperationsError {
+  return {
+    statusCode: 404,
+    code: "property_not_found",
+    category: "not_found",
+    message: `PMS property ${propertyId} was not found.`,
+  };
+}
+
+function missingOriginPermission(): PmsOperationsError {
+  return {
+    statusCode: 403,
+    code: "missing_permission",
+    category: "authorization",
+    message: "PMS operations origin is not allowed.",
+  };
+}
+
+function shuffleHistoryPage(
+  query: PmsShuffleHistoryQuery,
+):
+  | { value: { limit?: number; before?: { occurredAt: string; shuffleId: string } } }
+  | { error: PmsOperationsError } {
+  if (Object.keys(query).some((key) => !["limit", "cursor"].includes(key)))
+    return { error: invalidQuery("Shuffle history query is invalid.") };
+  const limit = query.limit === undefined ? undefined : Number(query.limit);
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 100))
+    return { error: invalidQuery("Shuffle history limit must be between 1 and 100.") };
+  let before: { occurredAt: string; shuffleId: string } | undefined;
+  if (query.cursor !== undefined) {
+    try {
+      const decoded = Buffer.from(query.cursor, "base64url").toString("utf8");
+      if (Buffer.from(decoded).toString("base64url") !== query.cursor) throw new Error();
+      const parsed: unknown = JSON.parse(decoded);
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        Array.isArray(parsed) ||
+        Object.keys(parsed).sort().join(",") !== "occurredAt,shuffleId" ||
+        typeof (parsed as Record<string, unknown>)["occurredAt"] !== "string" ||
+        typeof (parsed as Record<string, unknown>)["shuffleId"] !== "string" ||
+        !isShuffleCursorTime((parsed as Record<string, string>)["occurredAt"]) ||
+        !isShuffleCursorId((parsed as Record<string, string>)["shuffleId"])
+      )
+        throw new Error();
+      before = parsed as { occurredAt: string; shuffleId: string };
+    } catch {
+      return { error: invalidQuery("Shuffle history cursor is invalid.") };
+    }
+  }
+  return { value: { ...(limit === undefined ? {} : { limit }), ...(before ? { before } : {}) } };
+}
+
+function isShuffleCursorTime(value: string): boolean {
+  return (
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(value) &&
+    new Date(value).toISOString() === `${value.slice(0, 23)}Z`
+  );
+}
+
+function isShuffleCursorId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function encodeShuffleCursor(cursor: { occurredAt: string; shuffleId: string }): string {
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+function invalidQuery(message: string): PmsOperationsError {
+  return { statusCode: 400, code: "invalid_query", category: "validation", message };
 }
 
 function toCalendarRange(
