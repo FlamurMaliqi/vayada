@@ -16,9 +16,13 @@ export const BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL = `(
           'booking_accepted'
         )
         OR (
-          contact_event.actor_type = 'property_user'
-          AND contact_event.from_status IS DISTINCT FROM contact_event.to_status
+          contact_event.event_type = 'guest_booking.created'
           AND contact_event.to_status = 'confirmed'
+        )
+        OR (
+          contact_event.event_type = 'guest_booking.payment_received'
+          AND contact_event.to_status = 'confirmed'
+          AND booking.booking_metadata ->> 'acceptanceMode' = 'instant'
         )
         OR (
           contact_event.actor_type = 'migration'

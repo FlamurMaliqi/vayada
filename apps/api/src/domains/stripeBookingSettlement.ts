@@ -233,6 +233,36 @@ export async function settleStripeBookingPayment(
     await captureDirectNightlyRevenueEvidence(client, row, { required: true });
   }
 
+  if (automaticAcceptanceMode(row.bookingMetadata)) {
+    await client.query(
+      `INSERT INTO booking.booking_status_events (
+         guest_booking_id, event_type, from_status, to_status, actor_type,
+         public_visible, public_message, event_payload, occurred_at
+       )
+       SELECT
+         $1::uuid, 'guest_booking.accepted', $2, 'confirmed', 'system', TRUE,
+         'Booking automatically accepted.', $3::jsonb, $4::timestamptz
+       WHERE NOT EXISTS (
+         SELECT 1
+         FROM booking.booking_status_events event
+         WHERE event.guest_booking_id = $1::uuid
+           AND event.event_type IN (
+             'guest_booking.accepted', 'booking.accepted', 'booking_accepted'
+           )
+       )`,
+      [
+        row.guestBookingId,
+        row.lifecycleStatus,
+        JSON.stringify({
+          acceptanceMode: "instant",
+          provider: "stripe",
+          paymentIntentId: input.paymentIntentId,
+        }),
+        input.occurredAt.toISOString(),
+      ],
+    );
+  }
+
   const canonicalTransition = await client.query<
     QueryResultRow & { fromStatus: string | null; toStatus: string }
   >(
@@ -318,6 +348,15 @@ export async function settleStripeBookingPayment(
     ],
   );
   return alreadySettled ? "already_settled" : "settled";
+}
+
+function automaticAcceptanceMode(metadata: unknown): boolean {
+  return (
+    typeof metadata === "object" &&
+    metadata !== null &&
+    !Array.isArray(metadata) &&
+    (metadata as Record<string, unknown>)["acceptanceMode"] === "instant"
+  );
 }
 
 export async function reconcileStripeBookingPaymentProviderDetails(

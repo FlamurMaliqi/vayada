@@ -319,7 +319,8 @@ describe("target booking guest PII contact access", () => {
       phone: "Hidden until you accept",
       countryCode: "GB",
     });
-    expect(queries.join("\n")).toContain("contact_event.actor_type = 'property_user'");
+    expect(queries.join("\n")).toContain("'guest_booking.accepted'");
+    expect(queries.join("\n")).not.toContain("contact_event.actor_type = 'property_user'");
   });
 
   it.each([

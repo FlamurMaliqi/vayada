@@ -26,7 +26,31 @@ describe("Stripe booking lifecycle notifications", () => {
     expect(fixture.pmsJobs).toEqual([
       "booking-checkout:create:b9fccec2-eb4c-4c35-bfd3-02a748c2e117:v1",
     ]);
+    expect(fixture.statusEvents.filter((event) => event === "guest_booking.accepted")).toHaveLength(
+      1,
+    );
   });
+
+  it("does not treat request-mode payment as automatic acceptance", async () => {
+    const fixture = settlementFixture({ acceptanceMode: "request" });
+
+    await expect(fixture.settle("host-acceptance")).resolves.toBe("settled");
+
+    expect(fixture.statusEvents).toContain("guest_booking.payment_received");
+    expect(fixture.statusEvents).not.toContain("guest_booking.accepted");
+  });
+
+  it.each([{}, { acceptanceMode: "" }, { acceptanceMode: "legacy" }, { acceptanceMode: null }])(
+    "fails closed for missing or invalid acceptance metadata: %j",
+    async (metadata) => {
+      const fixture = settlementFixture(metadata);
+
+      await expect(fixture.settle("unknown-acceptance-mode")).resolves.toBe("settled");
+
+      expect(fixture.statusEvents).toContain("guest_booking.payment_received");
+      expect(fixture.statusEvents).not.toContain("guest_booking.accepted");
+    },
+  );
 
   it("persists the exact connected-account Stripe fee and net payout", async () => {
     const calls: Array<{ sql: string; values: readonly unknown[] }> = [];
@@ -76,16 +100,18 @@ describe("Stripe booking lifecycle notifications", () => {
   });
 });
 
-function settlementFixture() {
+function settlementFixture(metadata: Record<string, unknown> = { acceptanceMode: "instant" }) {
   let settled = false;
   const domainEvents = new Map<string, string>();
   const notificationJobs = new Map<string, string>();
   const pmsJobs: string[] = [];
+  const statusEvents: string[] = [];
   const propertyId = "a9fccec2-eb4c-4c35-bfd3-02a748c2e117";
   const guestBookingId = "b9fccec2-eb4c-4c35-bfd3-02a748c2e117";
   const bookingMetadata = {
     requestFingerprint: "a".repeat(64),
     paymentMethod: "card",
+    ...metadata,
     selectedOffer: {
       roomTypeId: "d9fccec2-eb4c-4c35-bfd3-02a748c2e117",
       nightlyRoomAmounts: [12, 13, 14].map((day) => ({
@@ -125,7 +151,13 @@ function settlementFixture() {
         settled = true;
         return { rows: [{ id: guestBookingId }] };
       }
-      if (sql.includes("INSERT INTO booking.booking_status_events")) return { rows: [] };
+      if (sql.includes("INSERT INTO booking.booking_status_events")) {
+        const event = sql.includes("'guest_booking.accepted'")
+          ? "guest_booking.accepted"
+          : "guest_booking.payment_received";
+        if (!statusEvents.includes(event)) statusEvents.push(event);
+        return { rows: [] };
+      }
       if (sql.includes("UPDATE booking.direct_booking_summary_read_model")) return { rows: [] };
       if (sql.includes("WITH booking_scope AS")) return { rows: [] };
       if (sql.includes('from_status AS "fromStatus"')) {
@@ -178,6 +210,7 @@ function settlementFixture() {
   return {
     notificationJobs,
     pmsJobs,
+    statusEvents,
     settle(source: string) {
       return settleStripeBookingPayment(client as never, {
         paymentIntentId: "pi_booking_1",

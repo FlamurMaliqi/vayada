@@ -5293,6 +5293,35 @@ async function captureAcceptedRequestCardBooking(
   if (settlement === "not_found") {
     return invalidStatusTransition("card_payment_not_found", "confirmed/paid");
   }
+  await client.query(
+    `INSERT INTO booking.booking_status_events (
+       guest_booking_id, event_type, from_status, to_status, actor_type,
+       actor_user_id, public_visible, public_message, event_payload, occurred_at
+     )
+     SELECT
+       $1::uuid, 'guest_booking.accepted', 'pending_payment', 'confirmed',
+       $3, $4::uuid, TRUE, 'Booking request accepted.', $5::jsonb, $2::timestamptz
+     WHERE NOT EXISTS (
+       SELECT 1
+       FROM booking.booking_status_events event
+       WHERE event.guest_booking_id = $1::uuid
+         AND event.event_type IN (
+           'guest_booking.accepted', 'booking.accepted', 'booking_accepted'
+         )
+     )`,
+    [
+      command.guestBookingId,
+      acceptedAt,
+      command.audit.actor.kind === "user" ? "property_user" : "system",
+      command.audit.actor.kind === "user" ? command.audit.actor.userId : null,
+      JSON.stringify({
+        commandId: command.commandId,
+        requestId: command.audit.requestId,
+        correlationId: command.audit.correlationId ?? command.audit.requestId,
+        paymentMethod: "card",
+      }),
+    ],
+  );
   await reconcileStripeBookingPaymentProviderDetails(client, intent, new Date(acceptedAt));
   return { ok: true };
 }
@@ -5393,6 +5422,26 @@ async function applyBookingMarkPaidCommandMutation(
          $7::jsonb, $3::timestamptz
        FROM booking_update
      ),
+     automatic_acceptance_event AS (
+       INSERT INTO booking.booking_status_events (
+         guest_booking_id, event_type, from_status, to_status, actor_type,
+         actor_user_id, public_visible, public_message, event_payload, occurred_at
+       )
+       SELECT
+         booking_update.id, 'guest_booking.accepted', $4, 'confirmed',
+         'system', NULL, TRUE, 'Booking automatically accepted.',
+         $7::jsonb || jsonb_build_object('acceptanceMode', 'instant'), $3::timestamptz
+       FROM booking_update
+       WHERE $9::boolean
+         AND NOT EXISTS (
+           SELECT 1
+           FROM booking.booking_status_events event
+           WHERE event.guest_booking_id = booking_update.id
+             AND event.event_type IN (
+               'guest_booking.accepted', 'booking.accepted', 'booking_accepted'
+             )
+         )
+     ),
      summary AS (
        UPDATE booking.direct_booking_summary_read_model summary
           SET lifecycle_status = 'confirmed',
@@ -5418,6 +5467,7 @@ async function applyBookingMarkPaidCommandMutation(
         toPaymentStatus: "paid",
       }),
       paymentDeadline,
+      jsonObject(booking.bookingMetadata)["acceptanceMode"] === "instant",
     ],
   );
   if ((updated.rowCount ?? updated.rows.length) === 0) {

@@ -20,6 +20,7 @@ from app.services.email_service import (
     send_host_booking_withdrawn,
     send_host_guest_cancelled,
 )
+from app.services.guest_contact_access import HIDDEN_GUEST_CONTACT
 
 BOOKING = {
     "id": "booking-uuid-1",
@@ -323,7 +324,7 @@ async def test_missing_hotel_email_still_sends_to_ops():
 
 @pytest.mark.asyncio
 async def test_booking_request_sets_reply_to_guest_email():
-    """Hitting Reply on the host notification must address the guest, not noreply@."""
+    """Fixed-plan hosts may reply directly to the guest before acceptance."""
     sent = []
 
     async def fake_send(to, subject, html_body, reply_to=None):
@@ -331,6 +332,7 @@ async def test_booking_request_sets_reply_to_guest_email():
 
     with (
         patch.object(email_service, "_send_email", side_effect=fake_send),
+        patch.object(email_service, "_booking_for_host", AsyncMock(return_value=BOOKING)),
         patch.object(email_service.settings, "VAYADA_OPS_EMAIL", "ops@vayada.com"),
     ):
         await send_booking_request_notification("host@example.com", BOOKING)
@@ -338,6 +340,58 @@ async def test_booking_request_sets_reply_to_guest_email():
     # Every recipient (host + ops) gets Reply-To set to the guest.
     assert sent, "no emails sent"
     assert all(reply_to == "alice@example.com" for (_to, reply_to) in sent)
+
+
+@pytest.mark.asyncio
+async def test_commission_booking_request_masks_body_and_reply_to():
+    sent = []
+    booking = {**BOOKING, "hotel_id": "hotel-1", "status": "pending"}
+
+    async def fake_send(to, subject, html_body, reply_to=None):
+        sent.append((html_body, reply_to))
+
+    with (
+        patch.object(email_service, "_send_email", side_effect=fake_send),
+        patch.object(
+            email_service,
+            "fetch_guest_contact_plan",
+            AsyncMock(return_value="commission"),
+        ),
+        patch.object(email_service.settings, "VAYADA_OPS_EMAIL", "ops@vayada.com"),
+    ):
+        await send_booking_request_notification("host@example.com", booking)
+
+    assert sent
+    assert all(HIDDEN_GUEST_CONTACT in html for html, _reply_to in sent)
+    assert all("alice@example.com" not in html for html, _reply_to in sent)
+    assert all(reply_to == "ops@vayada.com" for _html, reply_to in sent)
+
+
+@pytest.mark.asyncio
+async def test_commission_host_email_keeps_contact_revealed_after_cancellation():
+    sent = []
+    booking = {
+        **BOOKING,
+        "hotel_id": "hotel-1",
+        "status": "cancelled",
+        "contact_details_revealed_at": "2026-06-01T12:00:00Z",
+    }
+
+    async def fake_send(to, subject, html_body, reply_to=None):
+        sent.append(html_body)
+
+    with (
+        patch.object(email_service, "_send_email", side_effect=fake_send),
+        patch.object(
+            email_service,
+            "fetch_guest_contact_plan",
+            AsyncMock(return_value="commission"),
+        ),
+    ):
+        await send_host_guest_cancelled("host@example.com", booking)
+
+    assert sent
+    assert all("alice@example.com" in html for html in sent)
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,11 @@ Covers:
 """
 
 from datetime import date, datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 
+import pytest
+from app.routers import admin_financials
+from app.services.guest_contact_access import HIDDEN_GUEST_CONTACT
 from app.services.invoice_service import derive_status
 
 from tests.conftest import (
@@ -44,7 +48,59 @@ def test_check_in_today_is_not_overdue():
     )
 
 
+@pytest.mark.asyncio
+async def test_invoice_loader_masks_pending_contact_and_protects_email_search():
+    booking = {
+        "id": "booking-1",
+        "status": "pending",
+        "guest_email": "secret@example.test",
+        "guest_phone": "+491234",
+    }
+    with (
+        patch.object(
+            admin_financials,
+            "fetch_guest_contact_plan",
+            AsyncMock(return_value="commission"),
+        ),
+        patch.object(
+            admin_financials.BookingRepository,
+            "list_by_hotel_id",
+            AsyncMock(return_value=[booking]),
+        ) as list_bookings,
+        patch.object(
+            admin_financials.PaymentRepository,
+            "list_by_booking_ids",
+            AsyncMock(return_value=[]),
+        ),
+    ):
+        pairs = await admin_financials._load_invoice_pairs("hotel-1", search="secret@example.test")
+
+    assert pairs[0][0]["guest_email"] == HIDDEN_GUEST_CONTACT
+    assert pairs[0][0]["guest_phone"] == HIDDEN_GUEST_CONTACT
+    assert list_bookings.await_args.kwargs["hide_unaccepted_guest_contact"] is True
+
+
 class TestListInvoices:
+    async def test_csv_export_masks_pending_contact(self, client, cleanup_database):
+        user = await create_test_user()
+        hotel = await create_test_hotel(str(user["id"]))
+        room = await create_test_room_type(str(hotel["id"]))
+        await create_test_booking(
+            str(hotel["id"]),
+            str(room["id"]),
+            guest_email="pending-secret@example.test",
+            status="pending",
+        )
+
+        resp = await client.get(
+            "/admin/financials/invoices/export.csv",
+            headers=get_auth_headers(user["token"]),
+        )
+
+        assert resp.status_code == 200
+        assert HIDDEN_GUEST_CONTACT in resp.text
+        assert "pending-secret@example.test" not in resp.text
+
     async def test_lists_invoice_for_each_booking(self, client, cleanup_database):
         user = await create_test_user()
         hotel = await create_test_hotel(str(user["id"]))

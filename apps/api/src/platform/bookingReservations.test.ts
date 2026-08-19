@@ -138,7 +138,8 @@ describe("target Booking reservations property scope", () => {
     expect(listQuery.values).toEqual([propertyId, "confirmed", "%Ada%", 25, 5]);
     expect(listQuery.text).toContain("entitlement_key = 'direct-booking-finance'");
     expect(listQuery.text).toContain("COUNT(*) = 1");
-    expect(listQuery.text).toContain("contact_event.actor_type = 'property_user'");
+    expect(listQuery.text).toContain("'guest_booking.accepted'");
+    expect(listQuery.text).not.toContain("contact_event.actor_type = 'property_user'");
 
     await harness.repository.close?.();
     expect(harness.wasClosed()).toBe(true);
@@ -158,6 +159,7 @@ describe("target Booking reservations property scope", () => {
     expect(listQuery?.text).toContain('booking.check_in::text AS "checkIn"');
     expect(listQuery?.text).toContain('booking.check_out::text AS "checkOut"');
     expect(listQuery?.text).toContain('AS "guestContactAccepted"');
-    expect(listQuery?.text).toContain("contact_event.actor_type = 'property_user'");
+    expect(listQuery?.text).toContain("'guest_booking.accepted'");
+    expect(listQuery?.text).not.toContain("contact_event.actor_type = 'property_user'");
   });
 });
