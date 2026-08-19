@@ -55,7 +55,7 @@ The next-stack debt falls into four groups:
      `PUBLIC_HOTEL_PROFILE_SOURCE=legacy`, `BOOKING_*_SOURCE=legacy`,
      `PMS_OPERATIONS_SOURCE=disabled`, `FINANCE_SOURCE=legacy`,
      `BOOKING_PUBLIC_API_URL`, `PMS_PUBLIC_API_URL`, `PMS_API_URL`, and the
-     legacy checkout proxy flag (lines 306-468). The concrete legacy product
+     now-retired legacy checkout proxy flag (lines 306-468). The concrete legacy product
      runtime envs are `BOOKING_DATABASE_URL`, `BOOKING_PUBLIC_API_URL`,
      `PMS_API_URL`, and `PMS_PUBLIC_API_URL` (lines 424-457).
    - **Current consumer:** all next frontends using target API routes.
