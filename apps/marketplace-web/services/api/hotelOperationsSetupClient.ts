@@ -737,7 +737,7 @@ export function isPublicationReady(publication: PublicBookabilityPublication): b
 
 export function hotelOperationsErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiErrorResponse) {
-    if (error.data.code === "invalid_body") return fallback;
+    if (error.data.code === "invalid_body" || error.data.category === "validation") return fallback;
     const detail = error.data.detail;
     if (typeof detail === "string" && detail.trim()) return detail;
     if (typeof error.data.message === "string" && error.data.message.trim()) {

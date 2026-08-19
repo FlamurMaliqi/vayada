@@ -403,6 +403,16 @@ describe("hotel operations setup client", () => {
         "The room type could not be saved.",
       ),
     ).toBe("The room type could not be saved.");
+    expect(
+      hotelOperationsErrorMessage(
+        new ApiErrorResponse(422, {
+          code: "unsupported_room_fact",
+          category: "validation",
+          detail: "Room type create bedType is invalid.",
+        }),
+        "The room type could not be saved.",
+      ),
+    ).toBe("The room type could not be saved.");
   });
 
   it("distinguishes ambiguous room writes from definitive client rejections", () => {

@@ -10641,7 +10641,7 @@ describe("vayada-api", () => {
       pmsOperationsCommandRepository: commandRepository,
     });
 
-    for (const bathroomType of [undefined, null, "", "ensuite"]) {
+    for (const bathroomType of [null, "", "ensuite"]) {
       const invalid = await injectJson(app, {
         method: "POST",
         url: `/api/pms/properties/${pmsPropertyId}/room-types`,
@@ -10652,6 +10652,7 @@ describe("vayada-api", () => {
           bathroomType,
           baseRate: "240.00",
           operatingPeriods: [{ from: "01-01", to: "12-31" }],
+          seasons: [{ name: "Default", rate: "240", from: "01-01", to: "12-31" }],
         },
         headers: { authorization: "Bearer valid-token" },
       });
@@ -10759,6 +10760,47 @@ describe("vayada-api", () => {
     expect(commandRepository.auditEvents).toEqual([
       "room_type_created:f6855000-0000-0000-0000-000000000003",
     ]);
+  });
+
+  it("defaults omitted bathroom facts for room-type create clients", async () => {
+    const commandRepository = createPmsOperationsCommandRepository();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      pmsOperationsCommandRepository: commandRepository,
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: `/api/pms/properties/${pmsPropertyId}/room-types`,
+      payload: {
+        commandId: "cmd-room-type-default-bathroom",
+        idempotencyKey: "room-type-default-bathroom",
+        name: "Simple Room",
+        baseRate: "120.00",
+        operatingPeriods: [{ from: "01-01", to: "12-31" }],
+        seasons: [{ name: "Default", rate: "120", from: "01-01", to: "12-31" }],
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(commandRepository.roomTypeCreates).toHaveLength(1);
+    expect(commandRepository.roomTypeCreates[0]?.attributes).toMatchObject({
+      bathroomType: "private",
+      bathrooms: 1,
+    });
   });
 
   it("creates, updates, and releases target room blocks with refresh and ARI metadata", async () => {
