@@ -265,6 +265,11 @@ class BookingRepository:
               AND b.status IN ('pending', 'confirmed', 'checked_in', 'in_house')
               AND b.check_in < $3
               AND b.check_out > $2
+              AND NOT (
+                b.status = 'pending'
+                AND b.payment_status = 'unpaid'
+                AND b.created_at < NOW() - INTERVAL '30 minutes'
+              )
             ORDER BY b.check_in
             """,
             hotel_id,

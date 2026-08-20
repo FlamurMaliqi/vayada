@@ -157,6 +157,25 @@ class BookingDraftRepository:
         return int(count or 0)
 
     @staticmethod
+    async def list_active_by_hotel_in_range(hotel_id: str, start_date, end_date) -> list[dict]:
+        """Active payment soft holds overlapping a calendar range."""
+        rows = await Database.fetch(
+            """
+            SELECT room_type_id, check_in, check_out, number_of_rooms
+            FROM booking_drafts
+            WHERE hotel_id = $1
+              AND check_in < $3
+              AND check_out > $2
+              AND expires_at > NOW()
+              AND materialized_booking_id IS NULL
+            """,
+            hotel_id,
+            start_date,
+            end_date,
+        )
+        return [dict(row) for row in rows]
+
+    @staticmethod
     async def delete_expired(grace_minutes: int = 60) -> int:
         """Sweep drafts whose hold has lapsed (with a 1h grace period to
         keep recently-expired rows around for debugging). Returns the row
