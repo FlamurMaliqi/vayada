@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeftIcon, CheckIcon } from "@heroicons/react/24/outline";
 import Link from "next/link";
@@ -16,8 +16,8 @@ export default function NewRoomPage() {
   const [saving, setSaving] = useState(false);
   const [setupComplete, setSetupComplete] = useState(false);
   const [error, setError] = useState("");
-  const [initialCurrency, setInitialCurrency] = useState("EUR");
   const [propertyPlan, setPropertyPlan] = useState<PropertyPlan | null>(null);
+  const currencyTouched = useRef(false);
   const [form, setForm] = useState<RoomTypeCreate>({
     name: "",
     description: "",
@@ -51,13 +51,20 @@ export default function NewRoomPage() {
       .getPaymentSettings()
       .then((res) => {
         const c = res.paymentSettings.defaultCurrency;
-        if (c) {
-          setInitialCurrency(c);
+        if (c && !currencyTouched.current) {
           setForm((prev) => ({ ...prev, currency: c }));
         }
       })
       .catch(console.error);
   }, []);
+
+  const handleFormChange: React.Dispatch<React.SetStateAction<RoomTypeCreate>> = (next) => {
+    setForm((current) => {
+      const updated = typeof next === "function" ? next(current) : next;
+      if (updated.currency !== current.currency) currencyTouched.current = true;
+      return updated;
+    });
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -84,9 +91,6 @@ export default function NewRoomPage() {
     setSaving(true);
     setError("");
     try {
-      if (form.currency && form.currency !== initialCurrency) {
-        await bookingsService.updatePaymentSettings({ defaultCurrency: form.currency });
-      }
       await roomsService.create(form);
       if (isOnboarding) {
         setSetupComplete(true);
@@ -193,7 +197,7 @@ export default function NewRoomPage() {
 
       <RoomTypeForm
         form={form}
-        onChange={setForm}
+        onChange={handleFormChange}
         onSubmit={handleSubmit}
         saving={saving}
         error={error}
