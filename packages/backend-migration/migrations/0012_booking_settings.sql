@@ -2,9 +2,9 @@
 -- Owner: domain-booking
 -- See: engineering/booking-settings-write-contracts.md, engineering/apps-api-legacy-runtime-dependency-audit.md
 --
--- Adds the target Booking settings write/read model now used directly by
--- apps/api. Legacy booking_hotels was the migration source at cutover; it is no
--- longer an apps/api runtime dependency.
+-- Adds the target Booking settings write/read model used by apps/api behind
+-- BOOKING_SETTINGS_SOURCE=target. Legacy booking_hotels remains production
+-- source of truth until the cutover write-freeze and final settings snapshot.
 
 CREATE TABLE booking.booking_settings (
   property_id                 UUID        PRIMARY KEY
