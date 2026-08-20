@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { Booking } from "@/services/bookings";
 import {
+  addPropertyDays,
   formatPropertyDate,
   getArrivalsToday,
+  getDashboardOccupancy,
   getDeparturesToday,
   getPropertyToday,
 } from "./dashboardBookings";
@@ -78,5 +80,51 @@ describe("dashboard booking dates", () => {
         year: "numeric",
       }),
     ).toBe("Thursday, June 25, 2026");
+  });
+
+  it("builds date-only forecast windows without the viewer timezone", () => {
+    expect(addPropertyDays("2026-12-31", 1)).toBe("2027-01-01");
+    expect(addPropertyDays("2026-03-29", 13)).toBe("2026-04-11");
+  });
+});
+
+describe("dashboard occupancy", () => {
+  const date = "2026-08-21";
+  const inventoryDay = (occupiedCount: number, availableCount: number) => ({
+    stayDate: date,
+    occupiedCount,
+    availableCount,
+  });
+
+  it("uses occupied assignments plus available units as the sellable denominator", () => {
+    expect(getDashboardOccupancy([inventoryDay(1, 0), inventoryDay(1, 1)], date)).toEqual({
+      occupiedUnits: 2,
+      sellableUnits: 3,
+      percentage: 67,
+    });
+  });
+
+  it("does not treat an inventory hold without an eligible assignment as occupied", () => {
+    expect(getDashboardOccupancy([inventoryDay(0, 1)], date)).toEqual({
+      occupiedUnits: 0,
+      sellableUnits: 1,
+      percentage: 0,
+    });
+  });
+
+  it("keeps occupied units in a closed or reduced-inventory night", () => {
+    expect(getDashboardOccupancy([inventoryDay(2, 0)], date)).toEqual({
+      occupiedUnits: 2,
+      sellableUnits: 2,
+      percentage: 100,
+    });
+  });
+
+  it("renders a night without occupied or sellable units as unavailable", () => {
+    expect(getDashboardOccupancy([inventoryDay(0, 0)], date)).toEqual({
+      occupiedUnits: 0,
+      sellableUnits: 0,
+      percentage: null,
+    });
   });
 });

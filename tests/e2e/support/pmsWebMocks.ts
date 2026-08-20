@@ -364,6 +364,29 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
       },
     }),
   );
+  await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/calendar?*`, (route) => {
+    const stayDate = new URL(route.request().url()).searchParams.get("from") ?? "2026-08-15";
+    return route.fulfill({
+      json: {
+        contractVersion: "pms-operations.v1",
+        propertyId: PMS_WEB_PROPERTY_ID,
+        days: [
+          {
+            stayDate,
+            roomTypeId: PMS_WEB_ROOM_TYPE_ID,
+            totalCount: 1,
+            assignedCount: 1,
+            occupiedCount: 1,
+            blockedCount: 0,
+            availableCount: 0,
+            assignmentRefs: ["assignment_ada"],
+            status: "open",
+          },
+        ],
+        sourceFreshness: {},
+      },
+    });
+  });
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-blocks*`, (route) =>
     route.fulfill({ json: targetList([]) }),
   );

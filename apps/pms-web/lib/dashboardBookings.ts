@@ -12,6 +12,12 @@ const NOT_CHECKED_IN_DEPARTURE_STATUSES = new Set<Booking["status"]>(["confirmed
 const CHECKED_IN_STATUSES = new Set<Booking["status"]>(["checked_in", "in_house", "checked_out"]);
 const CHECKED_OUT_STATUSES = new Set<Booking["status"]>(["checked_out"]);
 
+export type DashboardInventoryDay = {
+  stayDate: string;
+  availableCount: number;
+  occupiedCount: number;
+};
+
 export function getPropertyToday(timezone?: string | null, date = new Date()) {
   let formatter: Intl.DateTimeFormat;
 
@@ -44,6 +50,12 @@ export function formatPropertyDate(date: string, options: Intl.DateTimeFormatOpt
     ...options,
     timeZone: "UTC",
   });
+}
+
+export function addPropertyDays(date: string, days: number) {
+  const parsed = Date.parse(`${date}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed)) return date;
+  return new Date(parsed + days * 86_400_000).toISOString().slice(0, 10);
 }
 
 export function isDashboardBooking(booking: Booking) {
@@ -99,8 +111,14 @@ export function isResolvedDeparture(booking: Booking) {
   return isCheckedOutDeparture(booking);
 }
 
-export function getOccupiedTonight(bookings: Booking[], today: string) {
-  return getDashboardBookings(bookings).filter(
-    (booking) => booking.checkIn <= today && booking.checkOut > today,
-  ).length;
+export function getDashboardOccupancy(days: DashboardInventoryDay[], date: string) {
+  const matchingDays = days.filter((day) => day.stayDate === date);
+  const occupiedUnits = matchingDays.reduce((sum, day) => sum + day.occupiedCount, 0);
+  const sellableUnits = matchingDays.reduce((sum, day) => sum + day.availableCount, occupiedUnits);
+
+  return {
+    occupiedUnits,
+    sellableUnits,
+    percentage: sellableUnits > 0 ? Math.round((occupiedUnits / sellableUnits) * 100) : null,
+  };
 }
