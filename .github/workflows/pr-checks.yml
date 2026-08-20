@@ -152,6 +152,7 @@ jobs:
           src/domains/financeRecurringExpenseRuleRepository.integration.test.ts
           src/domains/financeExpenseReadModel.integration.test.ts
           src/domains/financeProviderFeeEvidence.integration.test.ts
+          src/domains/financeProviderFeeExpenseProjection.integration.test.ts
           src/domains/financeGeneratedExpenseRepository.integration.test.ts
           src/routes/bookingWebPublicAttribution.integration.test.ts
           src/jobs/financeSubscriptions.integration.test.ts
