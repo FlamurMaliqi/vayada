@@ -100,6 +100,91 @@ describe("PMS room assignment optimizer command", () => {
     expect(calls.some(({ text }) => text.includes("platform.domain_events"))).toBe(false);
   });
 
+  it("keeps a pinned future stay fixed while packing movable stays around it", async () => {
+    const protectedIndex = roomIds.length - 1;
+    const { client, calls } = setup({ pinnedAssignmentIndex: protectedIndex });
+
+    const result = await optimizePmsRoomAssignmentsInTransaction(client, command);
+
+    expect(result).toMatchObject({ outcome: "optimized", usedRoomsBefore: 3, usedRoomsAfter: 1 });
+    const moveUpdates = calls.filter(({ text }) =>
+        text.includes("UPDATE pms.operational_booking_assignments"),
+      ),
+      moves = JSON.parse(String(moveUpdates[0]!.values[2])) as Array<{
+        assignment_id: string;
+        from_room_id: string;
+        to_room_id: string;
+      }>;
+    expect(moves).toHaveLength(2);
+    expect(moves.some(({ assignment_id }) => assignment_id === assignmentIds[protectedIndex])).toBe(
+      false,
+    );
+    expect(moves.every(({ to_room_id }) => to_room_id === roomIds[protectedIndex])).toBe(true);
+  });
+
+  it.each(["in_house", "checked_out"] as const)(
+    "keeps an %s stay fixed while packing movable stays around it",
+    async (immovableAssignmentStatus) => {
+      const protectedIndex = roomIds.length - 1;
+      const { client, calls } = setup({ immovableAssignmentStatus });
+
+      const result = await optimizePmsRoomAssignmentsInTransaction(client, command);
+
+      expect(result).toMatchObject({ outcome: "optimized", usedRoomsBefore: 3, usedRoomsAfter: 1 });
+      const moveUpdates = calls.filter(({ text }) =>
+          text.includes("UPDATE pms.operational_booking_assignments"),
+        ),
+        moves = JSON.parse(String(moveUpdates[0]!.values[2])) as Array<{
+          assignment_id: string;
+          from_room_id: string;
+          to_room_id: string;
+        }>;
+      expect(moves).toHaveLength(2);
+      expect(
+        moves.some(({ assignment_id }) => assignment_id === assignmentIds[protectedIndex]),
+      ).toBe(false);
+      expect(moves.every(({ to_room_id }) => to_room_id === roomIds[protectedIndex])).toBe(true);
+    },
+  );
+
+  it("skips assignment reads and evidence when the room type has one room", async () => {
+    const { client, calls } = setup({ roomCount: 1 });
+
+    await expect(optimizePmsRoomAssignmentsInTransaction(client, command)).resolves.toEqual({
+      outcome: "single_room",
+    });
+    for (const fragment of [
+      "FROM pms.operational_booking_assignments assignment",
+      "FROM pms.room_blocks",
+      "UPDATE pms.operational_booking_assignments",
+      "platform.product_audit_events",
+      "platform.domain_events",
+      "platform.outbox_events",
+    ]) {
+      expect(calls.some(({ text }) => text.includes(fragment))).toBe(false);
+    }
+  });
+
+  it("scopes optimizer reads and guarded writes to the requested room type", async () => {
+    const { client, calls } = setup();
+
+    await optimizePmsRoomAssignmentsInTransaction(client, command);
+
+    for (const [fragment, predicate] of [
+      ["FROM pms.rooms", "room_type_id = $2::uuid"],
+      ["FROM pms.operational_booking_assignments assignment", "assignment.room_type_id = $2::uuid"],
+      ["FROM pms.room_blocks", "room_type_id = $2::uuid"],
+      [
+        "UPDATE pms.operational_booking_assignments assignment",
+        "assignment.room_type_id = $2::uuid",
+      ],
+    ]) {
+      const scopedCall = calls.find(({ text }) => text.includes(fragment));
+      expect(scopedCall?.text).toContain(predicate);
+      expect(scopedCall?.values.slice(0, 2)).toEqual([propertyId, roomTypeId]);
+    }
+  });
+
   it("rejects a stale guarded move before evidence or completion", async () => {
     const { client, calls } = setup({ moveRowCount: 0 });
 
@@ -155,6 +240,9 @@ function setup(
     moveRowCount?: number;
     evidenceFailure?: boolean;
     budgetFixture?: boolean;
+    pinnedAssignmentIndex?: number;
+    immovableAssignmentStatus?: "in_house" | "checked_out";
+    roomCount?: number;
   } = {},
 ): {
   client: PmsRoomAssignmentOptimizationClient;
@@ -197,7 +285,7 @@ function setup(
     if (text.includes("FROM pms.rooms")) {
       const ids = options.budgetFixture
         ? Array.from({ length: 8 }, (_, index) => `r${index}`)
-        : roomIds;
+        : roomIds.slice(0, options.roomCount ?? roomIds.length);
       return {
         rows: ids.map((roomId, index) => ({
           roomId,
@@ -234,11 +322,14 @@ function setup(
           assignmentId,
           guestBookingId: bookingIds[index],
           roomId: roomIds[index],
-          assignmentStatus: "assigned",
+          assignmentStatus:
+            index === roomIds.length - 1 && options.immovableAssignmentStatus
+              ? options.immovableAssignmentStatus
+              : "assigned",
           stayEvidenceKind: "exact",
           checkIn: `2026-08-${20 + index * 2}`,
           checkOut: `2026-08-${22 + index * 2}`,
-          pinned: false,
+          pinned: options.pinnedAssignmentIndex === index,
           version: `reservation-v${index + 1}`,
         })),
         rowCount: 3,
