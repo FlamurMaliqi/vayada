@@ -150,6 +150,7 @@ jobs:
           src/domains/financeExpenseCategoryRepository.integration.test.ts
           src/domains/financeManualExpenseRepository.integration.test.ts
           src/domains/financeRecurringExpenseRuleRepository.integration.test.ts
+          src/domains/financeRecurringExpenseGeneration.integration.test.ts
           src/domains/financeExpenseReadModel.integration.test.ts
           src/domains/financeProviderFeeEvidence.integration.test.ts
           src/domains/financeProviderFeeExpenseProjection.integration.test.ts
