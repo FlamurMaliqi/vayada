@@ -7,6 +7,7 @@ import { authService } from "@/services/auth";
 import { bookingsService } from "@/services/bookings";
 import { pmsSettingsService, settingsService, HotelSummary } from "@/services/settings";
 import {
+  formatPropertyDate,
   getArrivalsToday,
   getDeparturesToday,
   getPropertyToday,
@@ -33,6 +34,7 @@ function buildHandoffUrl(baseUrl: string, path: string = ""): string {
 }
 
 interface DayStats {
+  today: string;
   arrivals: number;
   remainingArrivals: number;
   departures: number;
@@ -54,6 +56,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
   const [userName, setUserName] = useState("");
   const [userEmail, setUserEmail] = useState("");
   const [stats, setStats] = useState<DayStats>({
+    today: getPropertyToday(),
     arrivals: 0,
     remainingArrivals: 0,
     departures: 0,
@@ -142,6 +145,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
         const arrivalsToday = getArrivalsToday(bookings, today);
         const departuresToday = getDeparturesToday(bookings, today);
         setStats({
+          today,
           arrivals: arrivalsToday.length,
           remainingArrivals: getRemainingArrivals(arrivalsToday),
           departures: departuresToday.length,
@@ -159,8 +163,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
         .slice(0, 2)
     : "?";
 
-  const today = new Date();
-  const dateStr = today.toLocaleDateString("en-US", {
+  const dateStr = formatPropertyDate(stats.today, {
     weekday: "long",
     month: "short",
     day: "numeric",

@@ -66,8 +66,17 @@ class CalendarBlock(_CamelModel):
     created_at: str
 
 
+class CalendarOccupancyDay(_CamelModel):
+    date: str
+    occupied_units: int
+    remaining_sellable_units: int
+    denominator_units: int
+    percentage: int | None = None
+
+
 class CalendarResponse(_CamelModel):
     room_types: list[CalendarRoomType] = []
     rooms: list[CalendarRoom] = []
     bookings: list[CalendarBooking] = []
     blocks: list[CalendarBlock] = []
+    occupancy_days: list[CalendarOccupancyDay] = []

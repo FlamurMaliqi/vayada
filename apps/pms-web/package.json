@@ -10,7 +10,8 @@
     "build": "next build",
     "start": "next start -p 3004",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
