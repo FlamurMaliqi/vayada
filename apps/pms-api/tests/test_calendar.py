@@ -2,7 +2,7 @@
 Tests for GET /admin/calendar endpoint.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import date, timedelta
 
 from app.database import Database
 
@@ -103,16 +103,34 @@ class TestCalendar:
     async def test_calendar_returns_occupancy_projection(self, client, hotel_with_rooms):
         data = hotel_with_rooms
         await Database.execute(
-            "UPDATE hotels SET timezone = 'UTC', same_day_booking_cutoff_time = NULL WHERE id = $1",
+            """
+            UPDATE hotels
+            SET timezone = 'UTC',
+                same_day_bookings_enabled = TRUE,
+                same_day_booking_cutoff_time = NULL,
+                calendar_auto_open_enabled = FALSE,
+                calendar_auto_open_through = NULL
+            WHERE id = $1
+            """,
             data["hotel"]["id"],
         )
-        today = datetime.now(UTC).date()
-        tomorrow = today + timedelta(days=1)
+        await Database.execute(
+            """
+            UPDATE room_types
+            SET minimum_advance_days = 0,
+                base_rate = 150,
+                is_active = TRUE
+            WHERE id = $1
+            """,
+            data["room"]["id"],
+        )
+        occupancy_date = date(2099, 6, 10)
+        next_date = occupancy_date + timedelta(days=1)
         booking = await create_test_booking(
             str(data["hotel"]["id"]),
             str(data["room"]["id"]),
-            check_in=today.isoformat(),
-            check_out=tomorrow.isoformat(),
+            check_in=occupancy_date.isoformat(),
+            check_out=next_date.isoformat(),
             status="confirmed",
         )
         await Database.execute(
@@ -122,14 +140,14 @@ class TestCalendar:
         )
 
         resp = await client.get(
-            f"/admin/calendar?start={today}&end={tomorrow}",
+            f"/admin/calendar?start={occupancy_date}&end={next_date}",
             headers=get_auth_headers(data["user"]["token"]),
         )
 
         assert resp.status_code == 200
         assert resp.json()["occupancyDays"] == [
             {
-                "date": today.isoformat(),
+                "date": occupancy_date.isoformat(),
                 "occupiedUnits": 1,
                 "remainingSellableUnits": 4,
                 "denominatorUnits": 5,
