@@ -490,7 +490,7 @@ const channexManagementPlans =
   channexCommandsMutating && config.channexManagement.workerEnabled
     ? createPgChannexManagementPlanPort({
         connectionString: targetDatabaseUrl,
-        bookingRevisionHandoff: async ({ propertyId, revisions }) => {
+        bookingRevisionHandoff: async ({ propertyId, providerPropertyId, revisions }) => {
           if (!channexBookingRevisionStore) {
             if (revisions.length > 0) throw new Error("Channex booking intake is unavailable");
             return;
@@ -502,6 +502,7 @@ const channexManagementPlans =
             await promotePulledChannexBookingRevision({
               store: channexBookingRevisionStore,
               propertyId,
+              providerPropertyId,
               revision: revision as Record<string, unknown>,
             });
           }
@@ -974,6 +975,9 @@ const app = buildApp({
           xendit: config.providerWebhooks.xenditMode,
           channex: config.providerWebhooks.channexMode,
         },
+        channexBookingPromotionEnabled:
+          config.channexManagement.capabilityModes.bookingSync === "mutating" &&
+          config.channexManagement.bookingMutationOwner === "target",
         store: createPgProviderWebhookStore({
           connectionString: targetDatabaseUrl,
           stripeConnectProvider,

@@ -1,5 +1,6 @@
-import pytest
 from pathlib import Path
+
+import pytest
 from app.services import channex_admin_cutover as cutover
 from app.services.channex_admin_cutover import ChannexAdminRouteGroup
 from fastapi import HTTPException
@@ -89,17 +90,17 @@ async def test_disabled_blocks_reads_too(monkeypatch):
 @pytest.mark.asyncio
 async def test_target_owned_blocks_legacy_route(monkeypatch):
     _reset_modes(monkeypatch)
-    monkeypatch.setattr(cutover.settings, "CHANNEX_ADMIN_WEBHOOK_SETUP_MODE", "target-owned")
+    monkeypatch.setattr(cutover.settings, "CHANNEX_ADMIN_MANUAL_BOOKING_SYNC_MODE", "target-owned")
 
     with pytest.raises(HTTPException) as exc_info:
         await cutover.guard_channex_admin_route(
-            ChannexAdminRouteGroup.WEBHOOK_SETUP,
+            ChannexAdminRouteGroup.MANUAL_BOOKING_SYNC,
             _FakeRequest(),
             mutation=True,
         )
 
     assert exc_info.value.status_code == 423
-    assert exc_info.value.detail["route_group"] == "webhook-setup"
+    assert exc_info.value.detail["route_group"] == "manual-booking-sync"
     assert exc_info.value.detail["mode"] == "target-owned"
     assert "use the target service" in exc_info.value.detail["message"]
 

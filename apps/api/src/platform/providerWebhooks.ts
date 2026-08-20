@@ -35,6 +35,16 @@ export function createPgProviderWebhookStore(
   });
 
   return {
+    async resolveChannexPropertyId(externalPropertyId) {
+      const result = await pool.query<{ propertyId: string }>(
+        `SELECT property_id::text AS "propertyId" FROM pms.channel_connections
+         WHERE provider = 'channex' AND external_property_id = $1
+           AND connection_status = 'connected' ORDER BY property_id LIMIT 2`,
+        [externalPropertyId],
+      );
+      if (result.rows.length > 1) throw new Error("Ambiguous Channex property ownership");
+      return result.rows[0]?.propertyId ?? null;
+    },
     async recordReceipt(input) {
       return recordReceipt(pool, input);
     },

@@ -36,6 +36,7 @@ const completeAuthSessionEnv = {
 describe("api config", () => {
   it("keeps Channex management fail-closed until each capability is cut over", () => {
     expect(loadConfig({}).channexManagement).toMatchObject({
+      bookingMutationOwner: "legacy",
       workerEnabled: false,
       capabilityModes: {
         connection: "observe_only",
@@ -98,6 +99,27 @@ describe("api config", () => {
         PMS_CHANNEX_IFRAME_MODE: "mutating",
       }).channexManagement,
     ).toMatchObject({ workerEnabled: false, capabilityModes: { iframe: "mutating" } });
+  });
+
+  it("requires an explicit legacy-poll freeze before target booking sync mutates", () => {
+    const base = {
+      TARGET_DATABASE_URL: "postgresql://target-db",
+      PMS_OPERATIONS_SOURCE: "target",
+      CHANNEX_API_BASE_URL: "https://staging.channex.io",
+      CHANNEX_API_KEY: "secret",
+      PMS_CHANNEX_BOOKING_SYNC_MODE: "mutating",
+    };
+    expect(() => loadConfig(base)).toThrow(
+      "Mutating PMS Channex booking sync requires CHANNEX_ADMIN_MANUAL_BOOKING_SYNC_MODE=target-owned",
+    );
+    expect(
+      loadConfig({ ...base, CHANNEX_ADMIN_MANUAL_BOOKING_SYNC_MODE: "target-owned" })
+        .channexManagement,
+    ).toMatchObject({
+      bookingMutationOwner: "target",
+      workerEnabled: true,
+      capabilityModes: { bookingSync: "mutating" },
+    });
   });
 
   it("keeps auth disabled when auth env values are absent", () => {

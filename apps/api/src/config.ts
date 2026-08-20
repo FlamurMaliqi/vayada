@@ -64,6 +64,7 @@ export type ChannexManagementMode = "observe_only" | "mutating";
 export type ChannexManagementConfig = {
   apiBaseUrl?: string;
   apiKey?: string;
+  bookingMutationOwner: "legacy" | "target" | "frozen";
   workerEnabled: boolean;
   capabilityModes: {
     connection: ChannexManagementMode;
@@ -461,6 +462,18 @@ function loadChannexManagementConfig(env: NodeJS.ProcessEnv): ChannexManagementC
   };
   const apiBaseUrl = readOptionalEnv(env, "CHANNEX_API_BASE_URL");
   const apiKey = readOptionalEnv(env, "CHANNEX_API_KEY");
+  const legacyBookingMode = (
+    readOptionalEnv(env, "CHANNEX_ADMIN_MANUAL_BOOKING_SYNC_MODE") ?? "legacy-owned"
+  )
+    .toLowerCase()
+    .replaceAll("_", "-");
+  const bookingMutationOwner = ["legacy", "legacy-owned", "legacy-owned-mode"].includes(
+    legacyBookingMode,
+  )
+    ? "legacy"
+    : ["target", "target-owned"].includes(legacyBookingMode)
+      ? "target"
+      : "frozen";
   const mutating = Object.values(capabilityModes).includes("mutating");
   const durableCommandsMutating = Object.entries(capabilityModes).some(
     ([capability, value]) => capability !== "iframe" && value === "mutating",
@@ -474,9 +487,15 @@ function loadChannexManagementConfig(env: NodeJS.ProcessEnv): ChannexManagementC
   if (durableCommandsMutating && !workerEnabled) {
     throw new Error("Mutating PMS Channex capabilities require PMS_CHANNEX_WORKER_ENABLED=true");
   }
+  if (capabilityModes.bookingSync === "mutating" && bookingMutationOwner !== "target") {
+    throw new Error(
+      "Mutating PMS Channex booking sync requires CHANNEX_ADMIN_MANUAL_BOOKING_SYNC_MODE=target-owned",
+    );
+  }
   return {
     apiBaseUrl,
     apiKey,
+    bookingMutationOwner,
     workerEnabled,
     capabilityModes,
   };

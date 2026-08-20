@@ -454,6 +454,7 @@ def build_scheduler_status(
     scheduler_enabled: bool,
     allowlist_raw: str,
     blocklist_raw: str,
+    manual_booking_sync_mode: str = "legacy-owned",
     scheduler_running: bool = False,
 ) -> SchedulerStatus:
     job_ids = {job.id for job in LEGACY_SCHEDULER_JOBS}
@@ -471,6 +472,12 @@ def build_scheduler_status(
     allowlist_filter_enabled = bool(allowlist)
     known_allowlist_set = set(known_allowlist)
     known_blocklist_set = set(known_blocklist)
+    booking_sync_is_legacy_owned = manual_booking_sync_mode.strip().lower().replace("_", "-") in {
+        "",
+        "legacy",
+        "legacy-owned",
+        "legacy-owned-mode",
+    }
 
     for job in LEGACY_SCHEDULER_JOBS:
         freeze_reason = None
@@ -482,6 +489,8 @@ def build_scheduler_status(
             freeze_reason = "not_in_allowlist"
         elif job.id in known_blocklist_set:
             freeze_reason = "blocklisted"
+        elif job.id == "poll_channex_bookings" and not booking_sync_is_legacy_owned:
+            freeze_reason = "target_owned"
 
         status = "frozen" if freeze_reason else "active"
         job_status = {
@@ -517,6 +526,7 @@ def _status_from_settings(target_scheduler: AsyncIOScheduler) -> SchedulerStatus
         scheduler_enabled=app_settings.PMS_SCHEDULER_ENABLED,
         allowlist_raw=app_settings.PMS_SCHEDULER_JOB_ALLOWLIST,
         blocklist_raw=app_settings.PMS_SCHEDULER_JOB_BLOCKLIST,
+        manual_booking_sync_mode=app_settings.CHANNEX_ADMIN_MANUAL_BOOKING_SYNC_MODE,
         scheduler_running=target_scheduler.running,
     )
 
