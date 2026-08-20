@@ -99,6 +99,7 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
     expect(numberField(follower.result, "rearrangedBookingCount")).toBe(0);
     await expect(page.getByText(/rearranged for optimal room usage/)).toHaveCount(0);
     expect((await toastTiming(page)).shownAt).toBeNull();
+    await stopToastObservation(page);
     expect(stringField(await assignment(args, follower.resource.bookingId), "roomId")).toBe(room2);
     evidence.settingOff = {
       persisted: true,
@@ -144,6 +145,7 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
     const observedMilliseconds = timing.hiddenAt! - timing.shownAt!;
     expect(observedMilliseconds).toBeGreaterThanOrEqual(4_900);
     expect(observedMilliseconds).toBeLessThan(5_500);
+    await stopToastObservation(page);
     evidence.settingOn = {
       persisted: true,
       deterministicDestinationRoomId: room1,
@@ -239,12 +241,12 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
   evidence.inHouseSafety = {
     liveApiCanCreateReversibleFixture: false,
     proof:
-      "The same acceptance workflow runs a focused target optimizer test with an in_house stay and proves it remains fixed while adjacent movable stays pack around it. The target lifecycle has no supported reversible path from in_house to a cancellable synthetic manual booking, so the repeatable browser fixture is intentionally verified at the optimizer boundary.",
+      "The focused target optimizer test fixes an in_house stay in the highest-sort room and proves earlier movable stays target that protected room instead of moving the protected assignment. The target lifecycle has no supported reversible path from in_house to a cancellable synthetic manual booking, so the repeatable browser fixture is intentionally verified at the optimizer boundary.",
   };
   evidence.checkedOutSafety = {
     liveApiCanCreateReversibleFixture: false,
     proof:
-      "The focused target optimizer test also uses a checked_out assignment and proves it remains fixed with no guarded move emitted for the completed stay.",
+      "The focused target optimizer test fixes a checked_out assignment in the highest-sort room and proves earlier movable stays target it with no guarded move emitted for the completed stay.",
   };
   evidence.singleRoomSafety = {
     proof:
@@ -300,6 +302,7 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
     expect(observedMilliseconds).toBeLessThan(4_900);
     expect(zeroResponseToHiddenMilliseconds).toBeGreaterThanOrEqual(0);
     expect(zeroResponseToHiddenMilliseconds).toBeLessThan(500);
+    await stopToastObservation(page);
     evidence.zeroAfterNonzero = {
       previousRearrangedBookingCount: positiveCount,
       nextRearrangedBookingCount: 0,
@@ -384,7 +387,7 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
   evidence.pinnedSafety = {
     liveApiCanCreatePinnedFixture: false,
     proof:
-      "The same acceptance workflow runs a focused target optimizer test with a pinned=true future stay and proves it remains fixed while adjacent movable stays pack around it. The deployed target API has no supported pin-mutation surface, so this criterion is intentionally verified at the optimizer boundary rather than misrepresented as a live fixture.",
+      "The focused target optimizer test fixes a pinned=true future stay in the highest-sort room and proves earlier movable stays target that protected room instead of moving the pinned assignment. The deployed target API has no supported pin-mutation surface, so this criterion is intentionally verified at the optimizer boundary rather than misrepresented as a live fixture.",
   };
   evidence.completedAt = new Date().toISOString();
   await writeFile(
@@ -454,12 +457,11 @@ async function startToastObservation(page: Page): Promise<void> {
   await page.evaluate(() => {
     const global = window as typeof window & {
         __vay667RestoreFetch?: () => void;
-        __vay667ToastObserver?: MutationObserver;
+        __vay667StopToastObservation?: () => void;
         __vay667ToastTiming?: ToastTiming;
       },
       timing: ToastTiming = { hiddenAt: null, shownAt: null, zeroResponseAt: null };
-    global.__vay667RestoreFetch?.();
-    global.__vay667ToastObserver?.disconnect();
+    global.__vay667StopToastObservation?.();
     global.__vay667ToastTiming = timing;
     const originalFetch = window.fetch.bind(window);
     window.fetch = async (...input) => {
@@ -501,10 +503,25 @@ async function startToastObservation(page: Page): Promise<void> {
         }
         wasVisible = visible;
       },
-      observer = new MutationObserver(check);
-    observer.observe(document.body, { childList: true, subtree: true });
-    global.__vay667ToastObserver = observer;
+      observer = new MutationObserver(check),
+      interval = window.setInterval(check, 50);
+    observer.observe(document.body, { attributes: true, childList: true, subtree: true });
+    global.__vay667StopToastObservation = () => {
+      window.clearInterval(interval);
+      observer.disconnect();
+      global.__vay667RestoreFetch?.();
+    };
     check();
+  });
+}
+
+async function stopToastObservation(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    (
+      window as typeof window & {
+        __vay667StopToastObservation?: () => void;
+      }
+    ).__vay667StopToastObservation?.();
   });
 }
 

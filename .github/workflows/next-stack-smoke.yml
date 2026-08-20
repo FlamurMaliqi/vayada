@@ -57,7 +57,7 @@ jobs:
       - name: Build PMS domain contracts
         run: npm --workspace @vayada/domain-pms run build
 
-      - name: Verify pinned-assignment optimizer safety
+      - name: Verify PMS optimizer safety tests
         run: npm --workspace vayada-api test -- src/domains/pmsRoomAssignmentOptimizer.test.ts
 
       - name: Install Chromium

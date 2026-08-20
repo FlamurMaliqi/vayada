@@ -101,7 +101,8 @@ describe("PMS room assignment optimizer command", () => {
   });
 
   it("keeps a pinned future stay fixed while packing movable stays around it", async () => {
-    const { client, calls } = setup({ pinnedAssignmentIndex: 0 });
+    const protectedIndex = roomIds.length - 1;
+    const { client, calls } = setup({ pinnedAssignmentIndex: protectedIndex });
 
     const result = await optimizePmsRoomAssignmentsInTransaction(client, command);
 
@@ -115,13 +116,16 @@ describe("PMS room assignment optimizer command", () => {
         to_room_id: string;
       }>;
     expect(moves).toHaveLength(2);
-    expect(moves.some(({ assignment_id }) => assignment_id === assignmentIds[0])).toBe(false);
-    expect(moves.every(({ to_room_id }) => to_room_id === roomIds[0])).toBe(true);
+    expect(moves.some(({ assignment_id }) => assignment_id === assignmentIds[protectedIndex])).toBe(
+      false,
+    );
+    expect(moves.every(({ to_room_id }) => to_room_id === roomIds[protectedIndex])).toBe(true);
   });
 
   it.each(["in_house", "checked_out"] as const)(
     "keeps an %s stay fixed while packing movable stays around it",
     async (immovableAssignmentStatus) => {
+      const protectedIndex = roomIds.length - 1;
       const { client, calls } = setup({ immovableAssignmentStatus });
 
       const result = await optimizePmsRoomAssignmentsInTransaction(client, command);
@@ -136,8 +140,10 @@ describe("PMS room assignment optimizer command", () => {
           to_room_id: string;
         }>;
       expect(moves).toHaveLength(2);
-      expect(moves.some(({ assignment_id }) => assignment_id === assignmentIds[0])).toBe(false);
-      expect(moves.every(({ to_room_id }) => to_room_id === roomIds[0])).toBe(true);
+      expect(
+        moves.some(({ assignment_id }) => assignment_id === assignmentIds[protectedIndex]),
+      ).toBe(false);
+      expect(moves.every(({ to_room_id }) => to_room_id === roomIds[protectedIndex])).toBe(true);
     },
   );
 
@@ -317,7 +323,7 @@ function setup(
           guestBookingId: bookingIds[index],
           roomId: roomIds[index],
           assignmentStatus:
-            index === 0 && options.immovableAssignmentStatus
+            index === roomIds.length - 1 && options.immovableAssignmentStatus
               ? options.immovableAssignmentStatus
               : "assigned",
           stayEvidenceKind: "exact",
