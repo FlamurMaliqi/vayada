@@ -166,6 +166,7 @@ type PmsCalendarDay = {
   roomTypeId: string;
   totalCount: number;
   assignedCount: number;
+  occupiedCount: number;
   blockedCount: number;
   availableCount: number;
   status: "open" | "closed" | "limited";

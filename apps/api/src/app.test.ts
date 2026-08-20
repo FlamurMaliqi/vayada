@@ -1132,6 +1132,7 @@ const pmsCalendarDays: PmsCalendarDay[] = [
     roomTypeId: pmsRoomTypes[0].roomTypeId,
     totalCount: 2,
     assignedCount: 1,
+    occupiedCount: 1,
     blockedCount: 1,
     availableCount: 0,
     status: "limited",
@@ -1144,6 +1145,7 @@ const pmsCalendarDays: PmsCalendarDay[] = [
     roomTypeId: pmsRoomTypes[0].roomTypeId,
     totalCount: 2,
     assignedCount: 1,
+    occupiedCount: 1,
     blockedCount: 1,
     availableCount: 0,
     status: "limited",
@@ -1156,6 +1158,7 @@ const pmsCalendarDays: PmsCalendarDay[] = [
     roomTypeId: pmsRoomTypes[1].roomTypeId,
     totalCount: 1,
     assignedCount: 0,
+    occupiedCount: 0,
     blockedCount: 0,
     availableCount: 1,
     status: "open",
@@ -11382,6 +11385,7 @@ describe("vayada-api", () => {
       expect.arrayContaining([pmsRoomBlocks[0], pmsRoomBlocks[1]]),
     );
     expect(body.days[0].assignmentRefs).toEqual(["f6855500-0000-0000-0000-000000000001"]);
+    expect(body.days[0].occupiedCount).toBe(1);
     expect(body.days[1].sourceFreshness).toEqual({ pms: { status: "fresh" } });
   });
 
@@ -11404,6 +11408,7 @@ describe("vayada-api", () => {
               roomTypeId: pmsRoomTypes[0].roomTypeId,
               totalCount: 2,
               assignedCount: 1,
+              occupiedCount: 1,
               blockedCount: 1,
               availableCount: 0,
               status: "limited",
@@ -11634,7 +11639,13 @@ describe("vayada-api", () => {
     });
   });
 
-  it("rejects PMS calendar rows that violate the inventory count invariant", async () => {
+  it.each([
+    { name: "over-capacity", override: { availableCount: 1 } },
+    {
+      name: "closed with availability",
+      override: { totalCount: 3, status: "closed" as const, availableCount: 1 },
+    },
+  ])("rejects $name PMS calendar rows", async ({ override }) => {
     app = buildAuthenticatedApp({
       permissions: ["pms.operations.read"],
       entitlements: [
@@ -11648,7 +11659,7 @@ describe("vayada-api", () => {
         ...pmsOperationsRepository,
         async listCalendarDaysByPropertyId() {
           return {
-            items: [{ ...pmsCalendarDays[0], availableCount: 1 }],
+            items: [{ ...pmsCalendarDays[0], ...override }],
           };
         },
       },
@@ -11668,6 +11679,57 @@ describe("vayada-api", () => {
       category: "read_model",
       message: "PMS calendar read model is unavailable.",
     });
+  });
+
+  it("rejects PMS calendar rows whose occupied count exceeds reserved inventory", async () => {
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.read"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsOperationsRepository: {
+        ...pmsOperationsRepository,
+        async listCalendarDaysByPropertyId() {
+          return { items: [{ ...pmsCalendarDays[0], occupiedCount: 2 }] };
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      ...pmsOperationsRequestOptions(pmsCalendarBlocksReadCase.request),
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toMatchObject({
+      code: "read_model_unavailable",
+      category: "read_model",
+    });
+  });
+
+  it.each([
+    { name: "reduced sellable inventory", status: "open" as const, availableCount: 0 },
+    { name: "closed inventory", status: "closed" as const, availableCount: 0 },
+  ])("accepts valid $name calendar rows", async ({ status, availableCount }) => {
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.read"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsOperationsRepository: {
+        ...pmsOperationsRepository,
+        async listCalendarDaysByPropertyId() {
+          return {
+            items: [{ ...pmsCalendarDays[0], totalCount: 3, status, availableCount }],
+          };
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      ...pmsOperationsRequestOptions(pmsCalendarBlocksReadCase.request),
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
   });
 
   it("returns PMS room blocks using the P1b route contract fixture", async () => {
