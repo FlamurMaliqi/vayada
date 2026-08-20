@@ -68,6 +68,7 @@ export interface PmsManualBookingOperationsOwnerPort {
     command: PmsManualBookingCreateCommand;
     rooms: readonly PmsManualBookingRoom[];
     guestBookingId: string;
+    acceptedAt: string;
   }): Promise<void>;
 }
 

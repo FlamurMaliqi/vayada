@@ -30,6 +30,7 @@ import type {
   PmsManualBookingTransactionDependencies,
   PmsManualBookingTransactionalPricingPort,
 } from "./pmsManualBookingTransactionPorts.js";
+import { createTargetPmsInventoryReservationPort } from "./pmsInventoryReservation.js";
 import { createPmsRoomAssignmentOptimizationTriggerPort } from "./pmsRoomAssignmentOptimizationTriggers.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
@@ -285,14 +286,16 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       to: "2027-01-03",
     });
     expect(
-      calendar.items.map(({ stayDate, assignmentRefs }) => ({ stayDate, assignmentRefs })),
+      calendar.items.map(({ stayDate, assignedCount, availableCount, assignmentRefs }) => [
+        stayDate,
+        assignedCount,
+        availableCount,
+        assignmentRefs,
+      ]),
     ).toEqual([
-      { stayDate: "2027-01-01", assignmentRefs: [projection!.assignments[0]!.assignmentId] },
-      {
-        stayDate: "2027-01-02",
-        assignmentRefs: projection!.assignments.map(({ assignmentId }) => assignmentId),
-      },
-      { stayDate: "2027-01-03", assignmentRefs: [projection!.assignments[1]!.assignmentId] },
+      ["2027-01-01", 1, 2, [projection!.assignments[0]!.assignmentId]],
+      ["2027-01-02", 2, 1, projection!.assignments.map(({ assignmentId }) => assignmentId)],
+      ["2027-01-03", 1, 2, [projection!.assignments[1]!.assignmentId]],
     ]);
     await expect(
       readRepository.findReservationByGuestBookingId(otherPropertyId, created.guestBookingId),
@@ -384,6 +387,93 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     );
     expect(assignments.rows).toEqual([{ status: "released", room: null }]);
     expect((await counts()).nightly).toBe("8");
+  });
+
+  it("preserves a public date-change hold while direct assignment handoff is stale", async () => {
+    const bookingId = uuid(20);
+    const quoteSessionId = uuid(25);
+    await fixtureQuery(
+      `INSERT INTO distribution.public_hotel_bookability_profiles (property_id,public_id,
+         canonical_slug,canonical_url,booking_base_url,timezone,default_currency,
+         supported_currencies,profile_status,freshness_status,public_setup_completeness)
+       VALUES ($1,'handoff','handoff','https://booking.test/handoff','https://booking.test','Europe/Berlin',
+         'EUR',ARRAY['EUR'],'public','fresh','{"status":"ready"}')`,
+      [propertyId],
+    );
+    await fixtureQuery(
+      `INSERT INTO distribution.public_room_offer_snapshots (property_id,room_type_id,stay_date,
+         public_offer_key,available_rooms,currency,freshness_status)
+       SELECT $1,$2,day,'handoff:flexible',3,'EUR','fresh'
+       FROM generate_series('2026-09-01'::date,'2026-09-02','1 day') day`,
+      [propertyId, roomTypeId],
+    );
+    const client = await admin.connect();
+    let marker;
+    try {
+      await client.query("BEGIN");
+      marker = await createTargetPmsInventoryReservationPort().reserve({
+        transaction: client,
+        propertyId,
+        quoteSessionId,
+        roomTypeId,
+        publicOfferKey: "handoff:flexible",
+        checkIn: "2026-09-01",
+        checkOut: "2026-09-03",
+        roomCount: 1,
+        currency: "EUR",
+        occurredAt: acceptedAt,
+      });
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    await fixtureQuery(
+      `INSERT INTO booking.guest_bookings (id,property_id,public_reference,source_system,
+         lifecycle_status,check_in,check_out,room_count,currency,booking_channel,
+         direct_booking_source,booking_metadata)
+       VALUES ($1,$2,'VAY-HANDOFF','booking','confirmed','2026-09-01','2026-09-03',1,
+         'EUR','direct','booking_engine',jsonb_build_object('inventoryReservation',$3::jsonb))`,
+      [bookingId, propertyId, JSON.stringify(marker)],
+    );
+    await fixtureQuery(
+      `INSERT INTO pms.operational_booking_assignments (property_id,guest_booking_id,room_type_id,
+         room_id,position,assignment_status,source,stay_evidence_kind,check_in,check_out,adults,children)
+       VALUES ($2,$1,$3,$4,1,'assigned','direct_booking','exact','2026-08-28','2026-08-30',2,0)`,
+      [bookingId, propertyId, roomTypeId, roomIds[1]],
+    );
+    await repository.createManualBooking(
+      command("public-overlap", "unpaid", "cash", "2026-09-01", false),
+    );
+    await expect(inventory("2026-09-01", "2026-09-02")).resolves.toEqual([
+      { date: "2026-09-01", assigned: 2, available: 1 },
+      { date: "2026-09-02", assigned: 2, available: 1 },
+    ]);
+    await admin.query(
+      `UPDATE pms.operational_booking_assignments SET check_in='2026-09-01',check_out='2026-09-03'
+       WHERE property_id=$1 AND guest_booking_id=$2`,
+      [propertyId, bookingId],
+    );
+    await expect(
+      operations.executeNoShowCommand({
+        propertyId,
+        guestBookingId: bookingId,
+        commandId: "handoff-no-show",
+        idempotencyKey: "handoff-no-show",
+        audit: {
+          actor: { kind: "user", userId: actorId, organizationId },
+          requestId: "handoff-no-show",
+          reason: "Mark adopted direct booking no-show",
+          requestedAt: acceptedAt.toISOString(),
+        },
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(inventory("2026-09-01", "2026-09-02")).resolves.toEqual([
+      { date: "2026-09-01", assigned: 1, available: 2 },
+      { date: "2026-09-02", assigned: 1, available: 2 },
+    ]);
   });
 
   it("rolls assignment release back when no-show evidence is unavailable", async () => {
@@ -504,6 +594,13 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
         { serviceDate: "2026-08-23", amount: "100.00", evidenceQuality: "inferred" },
         { serviceDate: "2026-08-24", amount: "100.00", evidenceQuality: "exact" },
       ],
+    ]);
+    await expect(inventory("2026-08-20", "2026-08-24")).resolves.toEqual([
+      { date: "2026-08-20", assigned: 0, available: 3 },
+      { date: "2026-08-21", assigned: 1, available: 2 },
+      { date: "2026-08-22", assigned: 1, available: 2 },
+      { date: "2026-08-23", assigned: 1, available: 2 },
+      { date: "2026-08-24", assigned: 1, available: 2 },
     ]);
   });
 
@@ -1003,6 +1100,10 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       leaks_reason: false,
       audit_reason: "property cancellation",
     });
+    await expect(inventory("2026-08-20", "2026-08-21")).resolves.toEqual([
+      { date: "2026-08-20", assigned: 0, available: 3 },
+      { date: "2026-08-21", assigned: 0, available: 3 },
+    ]);
   });
 
   it("rolls cancellation, room release, audit, and idempotency back on evidence failure", async () => {
@@ -1747,6 +1848,16 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     return result.rows[0];
   }
 
+  async function inventory(from: string, to: string) {
+    const result = await admin.query(
+      `SELECT stay_date::text AS date,assigned_count AS assigned,available_count AS available
+       FROM pms.inventory_days WHERE property_id=$1::uuid AND room_type_id=$2::uuid
+         AND stay_date BETWEEN $3::date AND $4::date ORDER BY stay_date`,
+      [propertyId, roomTypeId, from, to],
+    );
+    return result.rows;
+  }
+
   async function seedInventory() {
     await fixtureQuery(
       `INSERT INTO pms.inventory_days
@@ -1785,6 +1896,8 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
         "DELETE FROM platform.domain_events WHERE property_id = $1::uuid",
         "DELETE FROM platform.idempotency_keys WHERE property_id = $1::uuid",
         "DELETE FROM finance.payments WHERE property_id = $1::uuid",
+        "DELETE FROM distribution.public_room_offer_snapshots WHERE property_id = $1::uuid",
+        "DELETE FROM distribution.public_hotel_bookability_profiles WHERE property_id = $1::uuid",
         "DELETE FROM pms.booking_notes_private WHERE property_id = $1::uuid",
         "DELETE FROM pms.operational_booking_assignments WHERE property_id = $1::uuid",
         "DELETE FROM booking.booking_addon_selections WHERE property_id = $1::uuid",
@@ -1792,11 +1905,13 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
         "DELETE FROM booking.nightly_revenue_room_scopes WHERE property_id = $1::uuid",
         "DELETE FROM booking.booking_guests WHERE guest_booking_id IN (SELECT id FROM booking.guest_bookings WHERE property_id = $1::uuid)",
         "DELETE FROM booking.guest_bookings WHERE property_id = $1::uuid",
+        "DELETE FROM booking.quote_sessions WHERE property_id = $1::uuid",
       ])
         await admin.query(sql, [propertyId]);
       await admin.query(
         `UPDATE pms.inventory_days SET status='open',manual_sellable_limit_count=NULL,
-           effective_sellable_limit_count=3,available_count=3
+           effective_sellable_limit_count=3,assigned_count=0,available_count=3,
+           inventory_revision=1,booking_source_revision=0
          WHERE property_id=$1::uuid`,
         [propertyId],
       );

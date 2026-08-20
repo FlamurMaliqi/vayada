@@ -18,6 +18,7 @@ import type {
   PmsManualBookingTransactionDependencies,
   PmsManualBookingTransactionPool,
 } from "./pmsManualBookingTransactionPorts.js";
+import { lockPmsInventoryMutationScope } from "./pmsInventoryMutationLock.js";
 
 export function createPgPmsManualBookingCommandRepository(config: {
   connectionString: string;
@@ -71,6 +72,7 @@ export function createPgPmsManualBookingCommandRepository(config: {
           transaction,
           commandId: command.commandId,
         });
+        await lockPmsInventoryMutationScope(transaction, command.propertyId);
         const rooms = await config.dependencies.operations.lockRooms({ transaction, command });
         const preview = await config.dependencies.pricing.calculate({
           transaction,
@@ -93,6 +95,7 @@ export function createPgPmsManualBookingCommandRepository(config: {
           command,
           rooms,
           guestBookingId,
+          acceptedAt: acceptedAt.toISOString(),
         });
         await config.dependencies.nightlyEvidence.appendExactNightlyEvidence({
           transaction,

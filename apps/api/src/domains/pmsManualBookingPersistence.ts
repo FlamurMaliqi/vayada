@@ -11,6 +11,10 @@ import type {
   PmsManualBookingTransaction,
 } from "./pmsManualBookingTransactionPorts.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
+import {
+  PmsOccupiedInventoryInvariantError,
+  reconcilePmsOccupiedInventory,
+} from "./pmsOccupiedInventory.js";
 
 type RoomRow = { roomId: string; roomTypeId: string };
 
@@ -162,9 +166,28 @@ async function persistOperationalFacts(
     command: PmsManualBookingCreateCommand;
     rooms: readonly PmsManualBookingRoom[];
     guestBookingId: string;
+    acceptedAt: string;
   },
 ): Promise<void> {
   await insertAssignments(transaction, input.command, input.guestBookingId, input.rooms);
+  const roomTypes = new Map(input.rooms.map((room) => [room.roomId, room.roomTypeId]));
+  try {
+    await reconcilePmsOccupiedInventory(
+      transaction,
+      input.command.propertyId,
+      input.command.stays.map((stay) => ({
+        roomTypeId: roomTypes.get(stay.roomId)!,
+        checkIn: stay.checkIn,
+        checkOut: stay.checkOut,
+      })),
+      input.acceptedAt,
+    );
+  } catch (error) {
+    if (error instanceof PmsOccupiedInventoryInvariantError) {
+      throw new CommandError("room_unavailable");
+    }
+    throw error;
+  }
   if (input.command.privateNote)
     await insertPrivateNote(transaction, input.command, input.guestBookingId);
 }

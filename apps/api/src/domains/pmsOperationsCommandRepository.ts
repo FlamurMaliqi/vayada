@@ -43,6 +43,8 @@ import {
   ManualPriceCorrectionStateError,
 } from "./bookingPmsManualPriceCorrection.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
+import { lockPmsInventoryMutationScope } from "./pmsInventoryMutationLock.js";
+import { reconcilePmsOccupiedInventory } from "./pmsOccupiedInventory.js";
 import { lockPmsRoomOrder, pmsRoomOrderVersion } from "./pmsRoomOrder.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
 import type { PmsRoomAssignmentOptimizationTriggerPort } from "./pmsRoomAssignmentOptimizationTriggers.js";
@@ -209,13 +211,18 @@ type BookingPaymentLifecycleRow = QueryResultRow & {
   chargeType: string | null;
 };
 type PmsOperationalTemplateOperation =
-  "checkin_checklist_template_update" | "checkout_inspection_template_update";
+  | "checkin_checklist_template_update"
+  | "checkout_inspection_template_update";
 type PmsCheckoutChargeOperation =
-  "checkout_charge_create" | "checkout_charge_mark_paid" | "checkout_charge_waive";
+  | "checkout_charge_create"
+  | "checkout_charge_mark_paid"
+  | "checkout_charge_waive";
 type PmsRoomTypeCommandOperation = "room_type_create" | "room_type_location_update";
 type PmsRoomTypeCommand = PmsRoomTypeCreateCommand | PmsRoomTypeUpdateCommand;
 type PmsRoomBlockCommand =
-  PmsRoomBlockCreateCommand | PmsRoomBlockUpdateCommand | PmsRoomBlockReleaseCommand;
+  | PmsRoomBlockCreateCommand
+  | PmsRoomBlockUpdateCommand
+  | PmsRoomBlockReleaseCommand;
 type PmsRoomBlockOperation = "room_block_create" | "room_block_update" | "room_block_release";
 
 type PmsRoomBlockRow = {
@@ -4497,6 +4504,13 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
     }
 
     if (
+      ["no_show_command", "manual_cancellation_command", "manual_stay_correction_command"].includes(
+        operation,
+      )
+    ) {
+      await lockPmsInventoryMutationScope(client, command.propertyId);
+    }
+    if (
       [
         "status_command",
         "checkin_command",
@@ -5009,7 +5023,10 @@ async function insertPrivateNoteAuditEvent(
   input: {
     action: "pms.private_note.created" | "pms.private_note.edited" | "pms.private_note.deleted";
     auditKey: string;
-  command: PmsPrivateNoteCreateCommand | PmsPrivateNoteUpdateCommand | PmsPrivateNoteDeleteCommand;
+    command:
+      | PmsPrivateNoteCreateCommand
+      | PmsPrivateNoteUpdateCommand
+      | PmsPrivateNoteDeleteCommand;
     keyHash: string;
     noteId: string;
     occurredAt: string;
@@ -5945,6 +5962,7 @@ async function applyNoShowCommandMutation(
     ],
   );
   await appendPmsManualNoShowNightlyRevenueEvidence(client, command, acceptedAt);
+  await reconcilePmsOccupiedInventory(client, command.propertyId, sources, acceptedAt);
   return { ok: true };
 }
 
@@ -5989,6 +6007,7 @@ async function applyManualCancellationCommandMutation(
       return invalidStatusTransition(error.currentStatus, "canceled");
     throw error;
   }
+  await reconcilePmsOccupiedInventory(client, command.propertyId, sources, acceptedAt);
   return { ok: true };
 }
 
@@ -6310,8 +6329,8 @@ async function findAssignmentsForOperationalCommand(
        assignment.updated_at AS "updatedAt",
        assignment.source,
        assignment.stay_evidence_kind AS "stayEvidenceKind",
-       booking.check_in::text AS "checkIn",
-       booking.check_out::text AS "checkOut"
+       COALESCE(assignment.check_in,booking.check_in)::text AS "checkIn",
+       COALESCE(assignment.check_out,booking.check_out)::text AS "checkOut"
      FROM pms.operational_booking_assignments assignment
      JOIN booking.guest_bookings booking
        ON booking.id = assignment.guest_booking_id
