@@ -67,21 +67,21 @@ async function project(client:pg.PoolClient,input:FinanceProviderFeeExpenseProje
     if (previous.outcome === "missing") return rejected("correction_conflict");
     const projected = await projection(client, input.propertyId, previous.evidence.evidenceId);
     if (positive(previous.evidence.feeAmount)) {
+      if (!projected) return rejected("predecessor_not_projected");
       if (!projected?.active || projected.entryKind === "reversal")
         return rejected("correction_conflict");
       prior = projected;
-    } else if (
-      ["correction", "reversal"].includes(previous.evidence.state) &&
-      projected?.entryKind !== "reversal" &&
-      (projected ||
-        (await hasPositiveAncestor(
-          client,
-          input.propertyId,
-          input.paymentId,
-          previous.evidence.evidenceId,
-        )))
-    )
-      return rejected("correction_conflict");
+    } else if (["correction", "reversal"].includes(previous.evidence.state)) {
+      const hasAncestor = await hasPositiveAncestor(
+        client,
+        input.propertyId,
+        input.paymentId,
+        previous.evidence.evidenceId,
+      );
+      if (!projected && hasAncestor) return rejected("predecessor_not_projected");
+      if (projected?.entryKind !== "reversal" && (projected || hasAncestor))
+        return rejected("correction_conflict");
+    }
   }
   if (!replay && !prior && evidence.feeAmount === "0.0000")
     return { ok: true, outcome: "ineligible", reason: "known_zero" };

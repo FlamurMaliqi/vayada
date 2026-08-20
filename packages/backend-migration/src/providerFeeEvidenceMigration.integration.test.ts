@@ -61,21 +61,24 @@ describe.skipIf(!URL)("provider fee evidence upgrade", () => {
             environment: "local",
           })
         ).applied,
-      ).toEqual(["0098"]);
+      ).toEqual(["0098", "0099"]);
       target = new pg.Client({ connectionString: targetUrl.href });
       await target.connect();
       expect(
         (await target.query("SELECT fee_amount::text FROM finance.payments ORDER BY id")).rows,
       ).toEqual([{ fee_amount: "0.00" }, { fee_amount: "3.00" }]);
       expect(
-        (await target.query("SELECT count(*)::int count FROM finance.provider_fee_evidence"))
-          .rows[0],
-      ).toEqual({ count: 0 });
+        (
+          await target.query(
+            "SELECT count(*)::int count,(SELECT count(*)::int FROM finance.expense_generation_dispatches WHERE family='provider_fee') dispatches FROM finance.provider_fee_evidence",
+          )
+        ).rows[0],
+      ).toEqual({ count: 0, dispatches: 0 });
     } finally {
       if (target) await target.end();
       await admin.query(`DROP DATABASE IF EXISTS ${DATABASE} WITH (FORCE)`);
       await admin.end();
       await rm(before, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 });
