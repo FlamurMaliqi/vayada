@@ -121,6 +121,7 @@ import {
   runBookingEmailDeliveryJobs,
 } from "./jobs/bookingEmailDelivery.js";
 import { runChannexReviewJobs } from "./jobs/channexReviews.js";
+import { runChannexBookingJobs } from "./jobs/channexBookings.js";
 import { createChannexManagementProvider } from "./integrations/channexManagement.js";
 import { createPgChannexManagementPlanPort } from "./integrations/channexManagementPlans.js";
 import { runPmsChannexManagementWorkerOnce } from "./jobs/pmsChannexManagementWorker.js";
@@ -1258,6 +1259,32 @@ const channexReviewTimer = hasProviderWebhookSecret
   ? setInterval(runChannexReviews, 5_000)
   : undefined;
 
+let activeChannexBookingBatch: Promise<void> | undefined;
+const channexBookingWorkerEnabled =
+  config.channexManagement.capabilityModes.bookingSync === "mutating" &&
+  config.channexManagement.bookingMutationOwner === "target" &&
+  Boolean(config.channexManagement.apiBaseUrl && config.channexManagement.apiKey);
+const runChannexBookings = () => {
+  if (activeChannexBookingBatch || !channexBookingWorkerEnabled) return;
+  activeChannexBookingBatch = runChannexBookingJobs(targetDatabaseUrl, {
+    apiBaseUrl: config.channexManagement.apiBaseUrl!,
+    apiKey: config.channexManagement.apiKey!,
+    ownsMutation: () =>
+      config.channexManagement.capabilityModes.bookingSync === "mutating" &&
+      config.channexManagement.bookingMutationOwner === "target",
+  })
+    .then(({ deadLettered }) => {
+      if (deadLettered) app.log.error({ deadLettered }, "Channex bookings were dead-lettered");
+    })
+    .catch((error: unknown) => app.log.warn({ err: error }, "Channex booking ingestion failed"))
+    .finally(() => {
+      activeChannexBookingBatch = undefined;
+    });
+};
+const channexBookingTimer = channexBookingWorkerEnabled
+  ? setInterval(runChannexBookings, 2_000)
+  : undefined;
+
 app.addHook("onClose", async () => {
   await Promise.all([
     pmsPricingReadModel.close(),
@@ -1272,9 +1299,12 @@ app.addHook("onClose", async () => {
 });
 channexReviewTimer?.unref();
 if (hasProviderWebhookSecret) runChannexReviews();
+channexBookingTimer?.unref();
+if (channexBookingWorkerEnabled) runChannexBookings();
 app.addHook("onClose", async () => {
   if (channexReviewTimer) clearInterval(channexReviewTimer);
-  await activeChannexReviewBatch;
+  if (channexBookingTimer) clearInterval(channexBookingTimer);
+  await Promise.all([activeChannexReviewBatch, activeChannexBookingBatch]);
 });
 
 let activeChannexManagementRun: Promise<void> | undefined;
