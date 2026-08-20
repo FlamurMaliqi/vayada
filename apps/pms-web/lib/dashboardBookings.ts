@@ -1,4 +1,5 @@
 import { Booking } from "@/services/bookings";
+import type { CalendarData } from "@/services/calendar";
 
 const DASHBOARD_BOOKING_STATUSES = new Set<Booking["status"]>([
   "confirmed",
@@ -12,8 +13,7 @@ const NOT_CHECKED_IN_DEPARTURE_STATUSES = new Set<Booking["status"]>(["confirmed
 const CHECKED_IN_STATUSES = new Set<Booking["status"]>(["checked_in", "in_house"]);
 const CHECKED_OUT_STATUSES = new Set<Booking["status"]>(["checked_out"]);
 
-export function getPropertyToday(timezone?: string | null) {
-  const date = new Date();
+export function getPropertyToday(timezone?: string | null, date = new Date()) {
   let formatter: Intl.DateTimeFormat;
 
   try {
@@ -38,6 +38,22 @@ export function getPropertyToday(timezone?: string | null) {
   const day = parts.find((part) => part.type === "day")?.value;
 
   return year && month && day ? `${year}-${month}-${day}` : date.toISOString().slice(0, 10);
+}
+
+export function addDaysToDate(date: string, days: number) {
+  const parsed = Date.parse(`${date}T00:00:00Z`);
+  return new Date(parsed + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+export function formatPropertyDate(
+  date: string,
+  options: Intl.DateTimeFormatOptions,
+  locale = "en-US",
+) {
+  return new Date(`${date}T00:00:00Z`).toLocaleDateString(locale, {
+    ...options,
+    timeZone: "UTC",
+  });
 }
 
 export function isDashboardBooking(booking: Booking) {
@@ -98,8 +114,20 @@ export function isResolvedDeparture(booking: Booking) {
   return isCheckedOutDeparture(booking);
 }
 
-export function getOccupiedTonight(bookings: Booking[], today: string) {
-  return getDashboardBookings(bookings).filter(
-    (booking) => booking.checkIn <= today && booking.checkOut > today,
-  ).length;
+export type DashboardOccupancy = {
+  occupiedUnits: number;
+  remainingSellableUnits: number;
+  denominatorUnits: number;
+  percentage: number | null;
+};
+
+export function getDashboardOccupancy(calendar: CalendarData, date: string): DashboardOccupancy {
+  return (
+    calendar.occupancyDays?.find((day) => day.date === date) ?? {
+      occupiedUnits: 0,
+      remainingSellableUnits: 0,
+      denominatorUnits: 0,
+      percentage: null,
+    }
+  );
 }

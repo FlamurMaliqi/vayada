@@ -3,14 +3,17 @@
 import { useState, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
-import { roomsService, RoomType } from "@/services/rooms";
 import { bookingsService, Booking, BookingAdditionalGuest, BookingNote } from "@/services/bookings";
+import { calendarService, CalendarData } from "@/services/calendar";
 import { pmsSettingsService } from "@/services/settings";
 import { formatCurrency } from "@/lib/formatCurrency";
 import {
+  addDaysToDate,
+  formatPropertyDate,
   getArrivalsToday,
+  getDashboardBookings,
+  getDashboardOccupancy,
   getDeparturesToday,
-  getOccupiedTonight,
   getPropertyToday,
   getRemainingArrivals,
   getRemainingDepartures,
@@ -95,8 +98,8 @@ const FORECAST_MAX_WEEK_OFFSET = 24;
 
 export default function DashboardPage() {
   const { t } = useTranslation();
-  const [rooms, setRooms] = useState<RoomType[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [calendar, setCalendar] = useState<CalendarData | null>(null);
   const [hotelCurrency, setHotelCurrency] = useState("EUR");
   const [hotelTimezone, setHotelTimezone] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -113,22 +116,37 @@ export default function DashboardPage() {
 
   useEffect(() => {
     Promise.all([
-      roomsService.list(),
       bookingsService.listAll(),
       bookingsService.getPaymentSettings(),
       pmsSettingsService.getHotelDetails(),
     ])
-      .then(([roomsList, bookingsList, settingsRes, hotelRes]) => {
-        setRooms(roomsList);
+      .then(async ([bookingsList, settingsRes, hotelRes]) => {
+        const propertyToday = getPropertyToday(hotelRes.timezone || null);
         setBookings(bookingsList);
         setHotelCurrency(settingsRes.paymentSettings.defaultCurrency || "EUR");
         setHotelTimezone(hotelRes.timezone || null);
+        setLoading(false);
+        calendarService
+          .getCalendarData(
+            propertyToday,
+            addDaysToDate(propertyToday, FORECAST_MAX_WEEK_OFFSET * 7 + FORECAST_WINDOW_DAYS),
+          )
+          .then(setCalendar)
+          .catch(console.error);
       })
-      .catch(console.error)
-      .finally(() => setLoading(false));
+      .catch((error) => {
+        console.error(error);
+        setLoading(false);
+      });
   }, []);
 
-  const totalRooms = useMemo(() => rooms.reduce((sum, r) => sum + r.totalRooms, 0), [rooms]);
+  useEffect(() => {
+    const loadedDay = getPropertyToday(hotelTimezone);
+    const interval = window.setInterval(() => {
+      if (getPropertyToday(hotelTimezone) !== loadedDay) window.location.reload();
+    }, 60_000);
+    return () => window.clearInterval(interval);
+  }, [hotelTimezone]);
 
   const arrivalsToday = useMemo(() => getArrivalsToday(bookings, today), [bookings, today]);
 
@@ -140,9 +158,10 @@ export default function DashboardPage() {
     [departuresToday],
   );
 
-  const occupiedTonight = useMemo(() => getOccupiedTonight(bookings, today), [bookings, today]);
-
-  const occupancyPct = totalRooms > 0 ? Math.round((occupiedTonight / totalRooms) * 100) : 0;
+  const occupancyTonight = useMemo(
+    () => (calendar ? getDashboardOccupancy(calendar, today) : null),
+    [calendar, today],
+  );
 
   const openQuickView = (booking: Booking, mode: "arrival" | "departure") => {
     setQuickView({ booking, guests: [], notes: [], loading: true, mode });
@@ -169,13 +188,19 @@ export default function DashboardPage() {
   const handleNoShow = async (bookingId: string) => {
     await bookingsService.markNoShow(bookingId);
     setBookings((prev) => prev.filter((b) => b.id !== bookingId));
+    setCalendar(null);
+    const propertyToday = getPropertyToday(hotelTimezone);
+    calendarService
+      .getCalendarData(
+        propertyToday,
+        addDaysToDate(propertyToday, FORECAST_MAX_WEEK_OFFSET * 7 + FORECAST_WINDOW_DAYS),
+      )
+      .then(setCalendar)
+      .catch(console.error);
     setQuickView(null);
   };
 
-  const monthStartStr = useMemo(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
-  }, []);
+  const monthStartStr = `${today.slice(0, 7)}-01`;
 
   const revenueThisMonth = useMemo(
     () =>
@@ -186,31 +211,28 @@ export default function DashboardPage() {
   const forecastDays = useMemo(() => {
     const days = [];
     const startOffset = weekOffset * 7;
+    const dashboardBookings = getDashboardBookings(bookings);
     for (let i = 0; i < FORECAST_WINDOW_DAYS; i++) {
-      const date = new Date();
-      date.setDate(date.getDate() + startOffset + i);
-      const dateStr = date.toISOString().split("T")[0];
-      const occupying = bookings.filter((b) => b.checkIn <= dateStr && b.checkOut > dateStr);
-      const occupied = occupying.length;
-      const pct = totalRooms > 0 ? Math.round((occupied / totalRooms) * 100) : 0;
+      const dateStr = addDaysToDate(today, startOffset + i);
+      const occupying = dashboardBookings.filter(
+        (booking) => booking.checkIn <= dateStr && booking.checkOut > dateStr,
+      );
+      const occupancy = calendar ? getDashboardOccupancy(calendar, dateStr) : null;
       const adr =
         occupying.length > 0
           ? occupying.reduce((sum, b) => sum + (b.nightlyRate || 0), 0) / occupying.length
           : null;
       days.push({
-        date,
         dateStr,
-        pct,
+        pct: occupancy?.percentage ?? null,
         adr,
         label:
-          dateStr === today
-            ? t("common.today")
-            : date.toLocaleDateString("en-US", { weekday: "short" }),
-        dayNum: date.getDate(),
+          dateStr === today ? t("common.today") : formatPropertyDate(dateStr, { weekday: "short" }),
+        dayNum: Number(dateStr.slice(-2)),
       });
     }
     return days;
-  }, [bookings, totalRooms, weekOffset, today, t]);
+  }, [bookings, calendar, weekOffset, today, t]);
 
   if (loading) {
     return (
@@ -232,7 +254,7 @@ export default function DashboardPage() {
     );
   }
 
-  const dateLabel = new Date().toLocaleDateString("en-US", {
+  const dateLabel = formatPropertyDate(today, {
     weekday: "long",
     month: "long",
     day: "numeric",
@@ -253,10 +275,10 @@ export default function DashboardPage() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard
           label={t("dashboard.occupancyTonight")}
-          value={`${occupancyPct}%`}
+          value={occupancyTonight?.percentage == null ? "—" : `${occupancyTonight.percentage}%`}
           sub={t("dashboard.occupancySub", {
-            occupied: String(occupiedTonight),
-            total: String(totalRooms),
+            occupied: String(occupancyTonight?.occupiedUnits ?? 0),
+            total: String(occupancyTonight?.denominatorUnits ?? 0),
           })}
           icon={<OccupancyIcon />}
         />
@@ -444,12 +466,12 @@ export default function DashboardPage() {
           <div className="flex items-center gap-2 shrink-0">
             {forecastDays.length >= 14 && (
               <p className="text-xs text-gray-400 hidden sm:block">
-                {forecastDays[0].date.toLocaleDateString("en-US", {
+                {formatPropertyDate(forecastDays[0].dateStr, {
                   month: "short",
                   day: "numeric",
                 })}{" "}
                 –{" "}
-                {forecastDays[13].date.toLocaleDateString("en-US", {
+                {formatPropertyDate(forecastDays[13].dateStr, {
                   month: "short",
                   day: "numeric",
                 })}
@@ -737,9 +759,8 @@ function Avatar({ first, last }: { first: string; last: string }) {
 }
 
 type ForecastDay = {
-  date: Date;
   dateStr: string;
-  pct: number;
+  pct: number | null;
   adr: number | null;
   label: string;
   dayNum: number;
@@ -747,7 +768,8 @@ type ForecastDay = {
 
 const HIGH_OCCUPANCY_THRESHOLD = 70;
 
-function occupancyBarClass(pct: number): string {
+function occupancyBarClass(pct: number | null): string {
+  if (pct === null) return "bg-gray-200";
   return pct >= HIGH_OCCUPANCY_THRESHOLD ? "bg-blue-600" : "bg-blue-300";
 }
 
@@ -849,7 +871,8 @@ function ForecastChart({
           <div className="absolute inset-0 flex items-end gap-1">
             {days.map((day) => {
               const isToday = day.dateStr === today;
-              const heightPx = Math.max(Math.round((day.pct / 100) * chartHeight), 2);
+              const heightPx =
+                day.pct === null ? 0 : Math.max(Math.round((day.pct / 100) * chartHeight), 2);
               return (
                 <div
                   key={day.dateStr}
@@ -867,14 +890,14 @@ function ForecastChart({
                   {/* Tooltip */}
                   <div className="pointer-events-none absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:block bg-gray-900 text-white text-[10px] rounded px-2 py-1 whitespace-nowrap z-10 shadow">
                     <div className="font-semibold">
-                      {day.date.toLocaleDateString("en-US", {
+                      {formatPropertyDate(day.dateStr, {
                         weekday: "short",
                         month: "short",
                         day: "numeric",
                       })}
                     </div>
                     <div>
-                      {t("dashboard.occupancyAxis")}: {day.pct}%
+                      {t("dashboard.occupancyAxis")}: {day.pct === null ? "—" : `${day.pct}%`}
                     </div>
                     {day.adr != null && (
                       <div>

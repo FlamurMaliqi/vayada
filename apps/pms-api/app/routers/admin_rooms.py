@@ -7,21 +7,26 @@ from app.dependencies import require_hotel_admin
 from app.models.calendar import (
     CalendarBlock,
     CalendarBooking,
+    CalendarOccupancyDay,
     CalendarResponse,
     CalendarRoom,
     CalendarRoomType,
 )
 from app.models.room import RoomCreate, RoomReorder, RoomResponse, RoomUpdate
+from app.repositories.booking_draft_repo import BookingDraftRepository
 from app.repositories.booking_repo import BookingRepository
 from app.repositories.booking_room_repo import BookingRoomRepository
+from app.repositories.hotel_repo import HotelRepository
 from app.repositories.room_block_repo import RoomBlockRepository
 from app.repositories.room_repo import RoomRepository
 from app.repositories.room_type_repo import RoomTypeRepository
+from app.services.availability_service import occupancy_for_range
 from app.utils import get_hotel_id, parse_jsonb
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin-rooms"])
+MAX_CALENDAR_RANGE_DAYS = 182
 
 
 def _room_to_response(r: dict) -> RoomResponse:
@@ -166,11 +171,21 @@ async def get_calendar(
     end: date = Query(...),
     user_id: str = Depends(require_hotel_admin),
 ):
+    range_days = (end - start).days
+    if range_days <= 0 or range_days > MAX_CALENDAR_RANGE_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Calendar range must be between 1 and {MAX_CALENDAR_RANGE_DAYS} days",
+        )
+
     hotel_id = await get_hotel_id(user_id)
     room_types = await RoomTypeRepository.list_by_hotel_id(hotel_id)
     rooms = await RoomRepository.list_by_hotel_id(hotel_id)
     bookings = await BookingRepository.list_by_hotel_in_range(hotel_id, start, end)
     blocks = await RoomBlockRepository.list_by_hotel_in_range(hotel_id, start, end)
+    drafts = await BookingDraftRepository.list_active_by_hotel_in_range(hotel_id, start, end)
+    hotel = await HotelRepository.get_by_id(hotel_id)
+    calendar_settings = await HotelRepository.get_calendar_settings(hotel_id)
 
     # VAY-403: multi-room bookings occupy more than the primary room. Pull
     # every booking's extra rooms in one batched query and emit an extra
@@ -183,6 +198,19 @@ async def get_calendar(
     extras_by_booking: dict[str, list] = {}
     for er in extra_rows:
         extras_by_booking.setdefault(str(er["booking_id"]), []).append(er)
+
+    occupancy_days = occupancy_for_range(
+        start=start,
+        end=end,
+        room_types=room_types,
+        rooms=rooms,
+        bookings=bookings,
+        extra_rooms=extra_rows,
+        blocks=blocks,
+        drafts=drafts,
+        hotel=hotel,
+        calendar_settings=calendar_settings,
+    )
 
     def _calendar_entries(b: dict) -> list[CalendarBooking]:
         n_rooms = int(b.get("number_of_rooms") or 1)
@@ -264,5 +292,15 @@ async def get_calendar(
                 created_at=bl["created_at"].isoformat(),
             )
             for bl in blocks
+        ],
+        occupancy_days=[
+            CalendarOccupancyDay(
+                date=str(day.date),
+                occupied_units=day.occupied_units,
+                remaining_sellable_units=day.remaining_sellable_units,
+                denominator_units=day.denominator_units,
+                percentage=day.percentage,
+            )
+            for day in occupancy_days
         ],
     )

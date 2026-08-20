@@ -61,11 +61,20 @@ export interface CalendarBlock {
   createdAt: string;
 }
 
+export interface CalendarOccupancyDay {
+  date: string;
+  occupiedUnits: number;
+  remainingSellableUnits: number;
+  denominatorUnits: number;
+  percentage: number | null;
+}
+
 export interface CalendarData {
   roomTypes: CalendarRoomType[];
   rooms: CalendarRoom[];
   bookings: CalendarBooking[];
   blocks: CalendarBlock[];
+  occupancyDays?: CalendarOccupancyDay[];
 }
 
 export interface CreateRoomBlockPayload {
