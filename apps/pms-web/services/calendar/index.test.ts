@@ -108,6 +108,34 @@ describe("calendarService room block commands", () => {
   });
 });
 
+describe("calendarService room order command", () => {
+  it("sends the complete room order to the target property route", async () => {
+    vi.clearAllMocks();
+    mocks.resolvePropertyId.mockResolvedValue("property-1");
+    mocks.patch.mockResolvedValue({
+      contractVersion: "pms-operations.v1",
+      propertyId: "property-1",
+      orderedRoomIds: ["room-2", "room-1"],
+      orderVersion: "room-order-v2",
+    });
+
+    await expect(calendarService.reorderRooms(["room-2", "room-1"], "room-order-v1")).resolves.toBe(
+      "room-order-v2",
+    );
+
+    expect(mocks.patch).toHaveBeenCalledWith(
+      "/api/pms/properties/property-1/rooms/reorder",
+      {
+        commandId: expect.any(String),
+        idempotencyKey: expect.stringMatching(/^pms-room-reorder:/),
+        expectedVersion: "room-order-v1",
+        orderedRoomIds: ["room-2", "room-1"],
+      },
+      { headers: { "X-Vayada-Omit-Hotel-Context": "true" } },
+    );
+  });
+});
+
 describe("calendarService manual-booking rates", () => {
   beforeEach(() => {
     vi.clearAllMocks();

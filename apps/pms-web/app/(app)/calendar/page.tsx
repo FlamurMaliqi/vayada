@@ -22,6 +22,7 @@ import {
   CalendarBlock,
 } from "@/services/calendar";
 import type { PmsManualBookingCreateInput } from "@/services/api/pmsManualBookingClient";
+import { ApiErrorResponse } from "@/services/api/client";
 import BlockModal from "@/components/calendar/BlockModal";
 import BlockDetailModal from "@/components/calendar/BlockDetailModal";
 import RoomShuffleNotice from "@/components/calendar/RoomShuffleNotice";
@@ -37,7 +38,6 @@ import { getChannelBarColor, normalizeChannelKey } from "@/lib/constants/statusS
 const VIEW_DAYS = 21;
 const VIEW_MODE_STORAGE_KEY = "pms.calendar.viewMode";
 const MOBILE_CALENDAR_QUERY = "(max-width: 767px)";
-const CALENDAR_WRITES_AVAILABLE = false;
 const MANUAL_BOOKINGS_AVAILABLE = true;
 type ViewMode = "timeline" | "month";
 
@@ -67,6 +67,18 @@ const LEGEND_KEYS = new Set(CHANNEL_LEGEND_KEYS.map((c) => c.key));
 const normalizeBookingChannel = (channel?: string | null): string => {
   const key = normalizeChannelKey(channel);
   return LEGEND_KEYS.has(key) ? key : "other";
+};
+
+const mergeRoomOrderIntent = (
+  intended: CalendarRoom[],
+  current: CalendarRoom[],
+): CalendarRoom[] => {
+  const currentById = new Map(current.map((room) => [room.id, room]));
+  const intendedIds = new Set(intended.map(({ id }) => id));
+  return [
+    ...intended.flatMap(({ id }) => (currentById.has(id) ? [currentById.get(id)!] : [])),
+    ...current.filter(({ id }) => !intendedIds.has(id)),
+  ];
 };
 
 export default function CalendarPage() {
@@ -105,7 +117,10 @@ export default function CalendarPage() {
   const [showRoomViewMenu, setShowRoomViewMenu] = useState(false);
   const [reorderMode, setReorderMode] = useState(false);
   const [localRooms, setLocalRooms] = useState<CalendarRoom[] | null>(null);
+  const [reorderOrderVersion, setReorderOrderVersion] = useState<string | null>(null);
   const [savingOrder, setSavingOrder] = useState(false);
+  const [roomOrderError, setRoomOrderError] = useState<string | null>(null);
+  const [roomOrderNeedsRefresh, setRoomOrderNeedsRefresh] = useState(false);
   const roomViewMenuRef = useRef<HTMLDivElement | null>(null);
   const latestFetchRef = useRef(0);
 
@@ -157,8 +172,8 @@ export default function CalendarPage() {
     return { start: startDate, end: endDate };
   }, [isMobileViewport, mobileMonth, viewMode, startDate, endDate]);
 
-  const fetchData = useCallback(async () => {
-    if (isMobileViewport === null) return;
+  const fetchData = useCallback(async (): Promise<CalendarData | null> => {
+    if (isMobileViewport === null) return null;
     const fetchId = ++latestFetchRef.current;
     setLoading(true);
     setLoadError(false);
@@ -167,13 +182,17 @@ export default function CalendarPage() {
         format(fetchRange.start, "yyyy-MM-dd"),
         format(fetchRange.end, "yyyy-MM-dd"),
       );
-      if (latestFetchRef.current === fetchId) setData(nextData);
+      if (latestFetchRef.current === fetchId) {
+        setData(nextData);
+        return nextData;
+      }
     } catch (error) {
       console.error(error);
       if (latestFetchRef.current === fetchId) setLoadError(true);
     } finally {
       if (latestFetchRef.current === fetchId) setLoading(false);
     }
+    return null;
   }, [fetchRange, isMobileViewport]);
 
   const handleMobileMonthChange = useCallback((month: Date) => {
@@ -396,17 +415,25 @@ export default function CalendarPage() {
   // Reorder helpers (VAY-307).
   const enterReorderMode = () => {
     if (!data || data.rooms.length <= 1) return;
+    switchView("timeline");
     setShowRoomViewMenu(false);
+    setRoomOrderError(null);
+    setRoomOrderNeedsRefresh(false);
     setLocalRooms(data.rooms.slice());
+    setReorderOrderVersion(data.roomOrderVersion);
     setReorderMode(true);
   };
 
   const cancelReorder = () => {
     setLocalRooms(null);
+    setReorderOrderVersion(null);
     setReorderMode(false);
+    setRoomOrderError(null);
+    setRoomOrderNeedsRefresh(false);
   };
 
   const moveRoom = (idx: number, dir: -1 | 1) => {
+    if (savingOrder) return;
     setLocalRooms((rooms) => {
       if (!rooms) return rooms;
       const next = idx + dir;
@@ -418,16 +445,62 @@ export default function CalendarPage() {
   };
 
   const saveReorder = async () => {
-    if (!localRooms) return;
+    if (!localRooms || !reorderOrderVersion || savingOrder || roomOrderNeedsRefresh) return;
+    const intendedRooms = localRooms.slice();
+    setRoomOrderError(null);
     setSavingOrder(true);
     try {
-      await calendarService.reorderRooms(localRooms.map((r) => r.id));
+      const roomOrderVersion = await calendarService.reorderRooms(
+        intendedRooms.map((room) => room.id),
+        reorderOrderVersion,
+      );
+      setData((current) =>
+        current ? { ...current, rooms: intendedRooms, roomOrderVersion } : current,
+      );
       setReorderMode(false);
       setLocalRooms(null);
-      fetchData();
+      setReorderOrderVersion(null);
+      if (!(await fetchData())) {
+        setRoomOrderNeedsRefresh(true);
+        setRoomOrderError("Room order saved, but the calendar could not refresh.");
+      }
+    } catch (error) {
+      const conflict =
+        error instanceof ApiErrorResponse &&
+        error.status === 409 &&
+        (error.data.code === "room_order_conflict" || error.data.code === "version_conflict");
+      if (!conflict) {
+        setRoomOrderError("Room order could not be saved. Try again.");
+        return;
+      }
+      setRoomOrderNeedsRefresh(true);
+      const refreshed = await fetchData();
+      if (refreshed) {
+        setLocalRooms(mergeRoomOrderIntent(intendedRooms, refreshed.rooms));
+        setReorderOrderVersion(refreshed.roomOrderVersion);
+        setRoomOrderNeedsRefresh(false);
+        setRoomOrderError("Rooms changed elsewhere. Review the refreshed order, then save again.");
+      } else {
+        setRoomOrderError("Rooms changed elsewhere, but the current order could not refresh.");
+      }
     } finally {
       setSavingOrder(false);
     }
+  };
+
+  const retryRoomOrderRefresh = async () => {
+    setSavingOrder(true);
+    const intendedRooms = localRooms;
+    const refreshed = await fetchData();
+    if (refreshed) {
+      if (intendedRooms) {
+        setLocalRooms(mergeRoomOrderIntent(intendedRooms, refreshed.rooms));
+        setReorderOrderVersion(refreshed.roomOrderVersion);
+      }
+      setRoomOrderNeedsRefresh(false);
+      setRoomOrderError(null);
+    }
+    setSavingOrder(false);
   };
 
   // Whether the user has unsaved changes during reorder mode.
@@ -570,7 +643,6 @@ export default function CalendarPage() {
             onNewBooking={handleMobileNewBooking}
             onBlockRoom={handleMobileBlockRoom}
             onSelectBlock={(bl) => setSelectedBlock(bl)}
-            writeActionsAvailable={CALENDAR_WRITES_AVAILABLE}
             manualBookingAvailable={MANUAL_BOOKINGS_AVAILABLE}
           />
         )}
@@ -632,7 +704,7 @@ export default function CalendarPage() {
               </button>
               <button
                 onClick={saveReorder}
-                disabled={savingOrder || !hasUnsavedOrder}
+                disabled={savingOrder || roomOrderNeedsRefresh || !hasUnsavedOrder}
                 className="px-4 py-1.5 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {t("calendar.saveOrder")}
@@ -751,20 +823,14 @@ export default function CalendarPage() {
                         </svg>
                         {t("calendar.viewMonth")}
                       </button>
-                      {viewMode === "timeline" && data.rooms.length > 1 && (
+                      {data.rooms.length > 1 && (
                         <>
                           <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500 bg-gray-50 border-y border-gray-200">
                             {t("calendar.roomView")}
                           </div>
                           <button
-                            disabled={!CALENDAR_WRITES_AVAILABLE}
-                            title={
-                              !CALENDAR_WRITES_AVAILABLE
-                                ? "Room reordering is not available yet"
-                                : undefined
-                            }
                             onClick={enterReorderMode}
-                            className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2 disabled:cursor-not-allowed disabled:text-gray-400"
+                            className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2"
                           >
                             <svg
                               className="w-4 h-4 text-gray-500"
@@ -791,20 +857,28 @@ export default function CalendarPage() {
           )}
         </div>
 
-        {!CALENDAR_WRITES_AVAILABLE && (
-          <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
-            <span>
-              Manual bookings and room blocks are available. Reordering rooms is not available yet.
-            </span>
-            <span className="shrink-0 rounded bg-gray-100 px-2 py-1 font-medium text-gray-500">
-              Limited writes
-            </span>
-          </div>
-        )}
-
         {reorderMode && (
           <div className="mb-4 px-4 py-2.5 bg-primary-50 border border-primary-200 rounded-lg text-xs text-primary-800">
             {t("calendar.reorderHint")}
+          </div>
+        )}
+
+        {roomOrderError && (
+          <div
+            role="alert"
+            className="mb-4 flex items-center justify-between gap-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-800"
+          >
+            <span>{roomOrderError}</span>
+            {roomOrderNeedsRefresh && (
+              <button
+                type="button"
+                disabled={savingOrder}
+                onClick={retryRoomOrderRefresh}
+                className="shrink-0 font-medium underline disabled:opacity-50"
+              >
+                Refresh rooms
+              </button>
+            )}
           </div>
         )}
 
@@ -896,7 +970,7 @@ export default function CalendarPage() {
                               <div className="flex flex-col gap-0.5">
                                 <button
                                   onClick={() => moveRoom(roomIdx, -1)}
-                                  disabled={isFirst}
+                                  disabled={savingOrder || isFirst}
                                   aria-label={t("calendar.moveUp")}
                                   title={t("calendar.moveUp")}
                                   className="w-5 h-5 flex items-center justify-center rounded text-gray-600 hover:bg-gray-100 disabled:text-gray-300 disabled:hover:bg-transparent disabled:cursor-not-allowed"
@@ -917,7 +991,7 @@ export default function CalendarPage() {
                                 </button>
                                 <button
                                   onClick={() => moveRoom(roomIdx, 1)}
-                                  disabled={isLast}
+                                  disabled={savingOrder || isLast}
                                   aria-label={t("calendar.moveDown")}
                                   title={t("calendar.moveDown")}
                                   className="w-5 h-5 flex items-center justify-center rounded text-gray-600 hover:bg-gray-100 disabled:text-gray-300 disabled:hover:bg-transparent disabled:cursor-not-allowed"
