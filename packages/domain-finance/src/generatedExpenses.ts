@@ -43,7 +43,7 @@ export type FinanceGeneratedExpenseResult =
   | { ok: true; outcome: "created" | "replayed" | "corrected" | "reversed"; expenseId: string }
   | { ok: true; outcome: "ineligible"; reason: "not_due" | "known_zero" | "non_positive" }
   | { ok: true; outcome: "missing_evidence"; code: FinanceGeneratedExpenseMissingEvidence }
-  | { ok: false; outcome: "rejected"; code: "invalid_command" | "evidence_mismatch" | "currency_mismatch" | "source_conflict" | "correction_conflict" | "write_unavailable" };
+  | { ok: false; outcome: "rejected"; code: "invalid_command" | "evidence_mismatch" | "currency_mismatch" | "source_conflict" | "correction_conflict" | "predecessor_not_projected" | "write_unavailable" };
 
 // prettier-ignore
 const COMMAND_KEYS = ["commandId", "propertyId", "categoryId", "origin", "action", "incurredOn", "vendor", "description", "amount", "paymentStatus", "paidOn", "reversesExpenseId", "source", "audit"] as const;
