@@ -10784,7 +10784,7 @@ describe("vayada-api", () => {
         commandId: "cmd-room-reorder",
         idempotencyKey: "room-reorder",
         expectedVersion,
-        orderedRoomIds,
+        orderedRoomIds: orderedRoomIds.map((roomId) => roomId.toUpperCase()),
       },
     });
 

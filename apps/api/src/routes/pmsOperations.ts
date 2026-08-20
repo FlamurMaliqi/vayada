@@ -3241,7 +3241,7 @@ function toRoomOrderCommand(
       ),
     };
   }
-  const orderedRoomIds = raw.orderedRoomIds.map((roomId) => roomId.trim());
+  const orderedRoomIds = raw.orderedRoomIds.map((roomId) => roomId.trim().toLowerCase());
   if (
     orderedRoomIds.some((roomId) => !isUuid(roomId)) ||
     new Set(orderedRoomIds).size !== orderedRoomIds.length
