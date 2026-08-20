@@ -414,7 +414,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
             values: readonly unknown[] = [],
           ): Promise<Pick<QueryResult<T>, "rows" | "rowCount">> {
             const result = await client.query<T>(text, [...values]);
-            if (text.includes("pg_advisory_xact_lock")) {
+            if (text.includes("'pms.physical-room-unit:'")) {
               advisoryAcquired();
               await reconcileMayContinue;
             }
