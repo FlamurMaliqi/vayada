@@ -82,6 +82,18 @@ export interface CalendarData {
   blocks: CalendarBlock[];
 }
 
+export interface CalendarInventoryDay {
+  stayDate: string;
+  roomTypeId: string;
+  totalCount: number;
+  assignedCount: number;
+  occupiedCount: number;
+  blockedCount: number;
+  availableCount: number;
+  assignmentRefs: string[];
+  status: "open" | "closed" | "limited";
+}
+
 export interface CreateRoomBlockPayload {
   roomTypeId: string;
   roomIds: string[];
@@ -188,6 +200,13 @@ type PmsOperationsReservationListResponse = PmsOperationsListResponse<PmsOperati
   };
 };
 
+type PmsOperationsCalendarResponse = {
+  contractVersion: "pms-operations.v1";
+  propertyId: string;
+  days: CalendarInventoryDay[];
+  sourceFreshness: Record<string, string | number | boolean | null>;
+};
+
 export interface CreateAdminBookingPayload {
   roomId: string;
   guestFirstName: string;
@@ -208,6 +227,16 @@ export interface CreateAdminBookingPayload {
 export const calendarService = {
   getCalendarData: (start: string, end: string) =>
     pmsOperationsCalendarReadService.getCalendarData(start, end),
+
+  getInventoryDays: async (start: string, end: string): Promise<CalendarInventoryDay[]> => {
+    const propertyId = await resolveSelectedPmsPropertyId("loading inventory days");
+    const query = `?from=${encodeURIComponent(start)}&to=${encodeURIComponent(end)}`;
+    const response = await pmsOperationsClient.get<PmsOperationsCalendarResponse>(
+      `${propertyEndpoint(propertyId, "calendar")}${query}`,
+      pmsOperationsRequestOptions,
+    );
+    return response.days;
+  },
 
   getManualBookingCapabilities: pmsManualBookingClient.capabilities,
 

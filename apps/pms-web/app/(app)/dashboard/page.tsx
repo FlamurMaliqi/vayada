@@ -3,15 +3,17 @@
 import { useState, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
-import { roomsService, RoomType } from "@/services/rooms";
 import { bookingsService, Booking, BookingAdditionalGuest, BookingNote } from "@/services/bookings";
+import { calendarService, CalendarInventoryDay } from "@/services/calendar";
 import { pmsSettingsService } from "@/services/settings";
 import { formatCurrency } from "@/lib/formatCurrency";
 import {
+  addPropertyDays,
   formatPropertyDate,
   getArrivalsToday,
+  getDashboardBookings,
+  getDashboardOccupancy,
   getDeparturesToday,
-  getOccupiedTonight,
   getPropertyToday,
   getRemainingArrivals,
   getRemainingDepartures,
@@ -93,14 +95,23 @@ function incompleteGuestCount(b: Booking, guests: BookingAdditionalGuest[]) {
 
 const FORECAST_WINDOW_DAYS = 14;
 const FORECAST_MAX_WEEK_OFFSET = 24;
+type InventoryLoadStatus = "loading" | "ready" | "error";
 
 export default function DashboardPage() {
   const { t } = useTranslation();
-  const [rooms, setRooms] = useState<RoomType[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [forecastInventoryDays, setForecastInventoryDays] = useState<CalendarInventoryDay[]>([]);
+  const [tonightInventoryDays, setTonightInventoryDays] = useState<CalendarInventoryDay[]>([]);
+  const [forecastInventoryStatus, setForecastInventoryStatus] =
+    useState<InventoryLoadStatus>("loading");
+  const [tonightInventoryStatus, setTonightInventoryStatus] =
+    useState<InventoryLoadStatus>("loading");
+  const [tonightInventoryDate, setTonightInventoryDate] = useState<string | null>(null);
+  const [now, setNow] = useState(() => new Date());
   const [hotelCurrency, setHotelCurrency] = useState("EUR");
   const [hotelTimezone, setHotelTimezone] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [inventoryRefresh, setInventoryRefresh] = useState(0);
   const [incompleteSetupPropertyId, setIncompleteSetupPropertyId] = useState<string | null>(null);
   const [weekOffset, setWeekOffset] = useState(0);
   const [quickView, setQuickView] = useState<{
@@ -111,7 +122,12 @@ export default function DashboardPage() {
     mode: "arrival" | "departure";
   } | null>(null);
 
-  const today = getPropertyToday(hotelTimezone);
+  const today = getPropertyToday(hotelTimezone, now);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(new Date()), 60_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     setIncompleteSetupPropertyId(
@@ -121,13 +137,11 @@ export default function DashboardPage() {
 
   useEffect(() => {
     Promise.all([
-      roomsService.list(),
       bookingsService.listAll(),
       bookingsService.getPaymentSettings(),
       pmsSettingsService.getHotelDetails().catch(() => null),
     ])
-      .then(([roomsList, bookingsList, settingsRes, hotelRes]) => {
-        setRooms(roomsList);
+      .then(([bookingsList, settingsRes, hotelRes]) => {
         setBookings(bookingsList);
         setHotelCurrency(settingsRes.paymentSettings.defaultCurrency || "EUR");
         setHotelTimezone(hotelRes?.timezone || null);
@@ -136,7 +150,58 @@ export default function DashboardPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  const totalRooms = useMemo(() => rooms.reduce((sum, r) => sum + r.totalRooms, 0), [rooms]);
+  const forecastStart = addPropertyDays(today, weekOffset * 7);
+  const forecastEnd = addPropertyDays(forecastStart, FORECAST_WINDOW_DAYS - 1);
+  const forecastIncludesToday = forecastStart <= today && today <= forecastEnd;
+
+  useEffect(() => {
+    if (loading || forecastIncludesToday || tonightInventoryDate === today) return;
+    let active = true;
+    setTonightInventoryStatus("loading");
+    calendarService
+      .getInventoryDays(today, today)
+      .then((days) => {
+        if (!active) return;
+        setTonightInventoryDays(days);
+        setTonightInventoryDate(today);
+        setTonightInventoryStatus("ready");
+      })
+      .catch((error) => {
+        if (active) {
+          setTonightInventoryDate(today);
+          setTonightInventoryStatus("error");
+        }
+        console.error(error);
+      });
+    return () => {
+      active = false;
+    };
+  }, [loading, today, forecastIncludesToday, tonightInventoryDate]);
+
+  useEffect(() => {
+    if (loading) return;
+    let active = true;
+    setForecastInventoryStatus("loading");
+    calendarService
+      .getInventoryDays(forecastStart, forecastEnd)
+      .then((days) => {
+        if (!active) return;
+        setForecastInventoryDays(days);
+        setForecastInventoryStatus("ready");
+        if (forecastIncludesToday) {
+          setTonightInventoryDays(days.filter((day) => day.stayDate === today));
+          setTonightInventoryDate(today);
+          setTonightInventoryStatus("ready");
+        }
+      })
+      .catch((error) => {
+        if (active) setForecastInventoryStatus("error");
+        console.error(error);
+      });
+    return () => {
+      active = false;
+    };
+  }, [loading, forecastStart, forecastEnd, today, forecastIncludesToday, inventoryRefresh]);
 
   const arrivalsToday = useMemo(() => getArrivalsToday(bookings, today), [bookings, today]);
 
@@ -148,9 +213,17 @@ export default function DashboardPage() {
     [departuresToday],
   );
 
-  const occupiedTonight = useMemo(() => getOccupiedTonight(bookings, today), [bookings, today]);
-
-  const occupancyPct = totalRooms > 0 ? Math.round((occupiedTonight / totalRooms) * 100) : 0;
+  const tonightOccupancy = useMemo(
+    () =>
+      getDashboardOccupancy(
+        forecastIncludesToday ? forecastInventoryDays : tonightInventoryDays,
+        today,
+      ),
+    [forecastIncludesToday, forecastInventoryDays, tonightInventoryDays, today],
+  );
+  const displayedTonightStatus = forecastIncludesToday
+    ? forecastInventoryStatus
+    : tonightInventoryStatus;
 
   const openQuickView = (booking: Booking, mode: "arrival" | "departure") => {
     setQuickView({ booking, guests: [], notes: [], loading: true, mode });
@@ -177,13 +250,14 @@ export default function DashboardPage() {
   const handleNoShow = async (bookingId: string) => {
     await bookingsService.markNoShow(bookingId);
     setBookings((prev) => prev.filter((b) => b.id !== bookingId));
+    if (!forecastIncludesToday) setTonightInventoryDate(null);
+    setInventoryRefresh((revision) => revision + 1);
     setQuickView(null);
   };
 
   const monthStartStr = useMemo(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
-  }, []);
+    return `${today.slice(0, 7)}-01`;
+  }, [today]);
 
   const revenueThisMonth = useMemo(
     () =>
@@ -194,31 +268,28 @@ export default function DashboardPage() {
   const forecastDays = useMemo(() => {
     const days = [];
     const startOffset = weekOffset * 7;
+    const eligibleBookings = getDashboardBookings(bookings);
     for (let i = 0; i < FORECAST_WINDOW_DAYS; i++) {
-      const date = new Date();
-      date.setDate(date.getDate() + startOffset + i);
-      const dateStr = date.toISOString().split("T")[0];
-      const occupying = bookings.filter((b) => b.checkIn <= dateStr && b.checkOut > dateStr);
-      const occupied = occupying.length;
-      const pct = totalRooms > 0 ? Math.round((occupied / totalRooms) * 100) : 0;
+      const dateStr = addPropertyDays(today, startOffset + i);
+      const occupancy = getDashboardOccupancy(forecastInventoryDays, dateStr);
+      const occupying = eligibleBookings.filter(
+        (booking) => booking.checkIn <= dateStr && booking.checkOut > dateStr,
+      );
       const adr =
         occupying.length > 0
           ? occupying.reduce((sum, b) => sum + (b.nightlyRate || 0), 0) / occupying.length
           : null;
       days.push({
-        date,
         dateStr,
-        pct,
+        pct: occupancy.percentage,
         adr,
         label:
-          dateStr === today
-            ? t("common.today")
-            : date.toLocaleDateString("en-US", { weekday: "short" }),
-        dayNum: date.getDate(),
+          dateStr === today ? t("common.today") : formatPropertyDate(dateStr, { weekday: "short" }),
+        dayNum: Number(dateStr.slice(-2)),
       });
     }
     return days;
-  }, [bookings, totalRooms, weekOffset, today, t]);
+  }, [bookings, forecastInventoryDays, weekOffset, today, t]);
 
   if (loading) {
     return (
@@ -275,11 +346,23 @@ export default function DashboardPage() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard
           label={t("dashboard.occupancyTonight")}
-          value={`${occupancyPct}%`}
-          sub={t("dashboard.occupancySub", {
-            occupied: String(occupiedTonight),
-            total: String(totalRooms),
-          })}
+          value={
+            displayedTonightStatus === "ready" && tonightOccupancy.percentage !== null
+              ? `${tonightOccupancy.percentage}%`
+              : "—"
+          }
+          sub={
+            displayedTonightStatus === "loading"
+              ? "Loading occupancy…"
+              : displayedTonightStatus === "error"
+                ? "Couldn’t load occupancy"
+                : tonightOccupancy.percentage === null
+                  ? "Unavailable"
+                  : t("dashboard.occupancySub", {
+                      occupied: String(tonightOccupancy.occupiedUnits),
+                      total: String(tonightOccupancy.sellableUnits),
+                    })
+          }
           icon={<OccupancyIcon />}
         />
         <StatCard
@@ -460,12 +543,12 @@ export default function DashboardPage() {
           <div className="flex items-center gap-2 shrink-0">
             {forecastDays.length >= 14 && (
               <p className="text-xs text-gray-400 hidden sm:block">
-                {forecastDays[0].date.toLocaleDateString("en-US", {
+                {formatPropertyDate(forecastDays[0].dateStr, {
                   month: "short",
                   day: "numeric",
                 })}{" "}
                 –{" "}
-                {forecastDays[13].date.toLocaleDateString("en-US", {
+                {formatPropertyDate(forecastDays[13].dateStr, {
                   month: "short",
                   day: "numeric",
                 })}
@@ -502,7 +585,13 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
-        <ForecastChart days={forecastDays} today={today} currency={hotelCurrency} t={t} />
+        <ForecastChart
+          days={forecastDays}
+          today={today}
+          currency={hotelCurrency}
+          inventoryStatus={forecastInventoryStatus}
+          t={t}
+        />
       </div>
 
       {quickView && (
@@ -753,9 +842,8 @@ function Avatar({ first, last }: { first: string; last: string }) {
 }
 
 type ForecastDay = {
-  date: Date;
   dateStr: string;
-  pct: number;
+  pct: number | null;
   adr: number | null;
   label: string;
   dayNum: number;
@@ -800,11 +888,13 @@ function ForecastChart({
   days,
   today,
   currency,
+  inventoryStatus,
   t,
 }: {
   days: ForecastDay[];
   today: string;
   currency: string;
+  inventoryStatus: InventoryLoadStatus;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {
   const chartHeight = 140;
@@ -865,32 +955,52 @@ function ForecastChart({
           <div className="absolute inset-0 flex items-end gap-1">
             {days.map((day) => {
               const isToday = day.dateStr === today;
-              const heightPx = Math.max(Math.round((day.pct / 100) * chartHeight), 2);
+              const percentage = inventoryStatus === "ready" ? day.pct : null;
+              const occupancyText =
+                inventoryStatus === "loading"
+                  ? "Loading…"
+                  : inventoryStatus === "error"
+                    ? "Couldn’t load"
+                    : percentage === null
+                      ? "Unavailable"
+                      : `${percentage}%`;
+              const heightPx =
+                percentage === null ? 2 : Math.max(Math.round((percentage / 100) * chartHeight), 2);
               return (
                 <div
                   key={day.dateStr}
+                  role="img"
+                  aria-label={`${day.dateStr}: ${
+                    inventoryStatus === "loading"
+                      ? "occupancy loading"
+                      : inventoryStatus === "error"
+                        ? "occupancy failed to load"
+                        : percentage === null
+                          ? "occupancy unavailable"
+                          : `${percentage}% occupancy`
+                  }`}
                   className="flex-1 flex justify-center group relative"
                   style={{ height: chartHeight }}
                 >
                   <div className="w-full flex items-end">
                     <div
-                      className={`w-full rounded-t-sm transition-opacity ${occupancyBarClass(day.pct)} ${
-                        isToday ? "ring-2 ring-blue-900 ring-offset-0" : ""
-                      }`}
+                      className={`w-full rounded-t-sm transition-opacity ${
+                        percentage === null ? "bg-gray-200" : occupancyBarClass(percentage)
+                      } ${isToday ? "ring-2 ring-blue-900 ring-offset-0" : ""}`}
                       style={{ height: heightPx }}
                     />
                   </div>
                   {/* Tooltip */}
                   <div className="pointer-events-none absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:block bg-gray-900 text-white text-[10px] rounded px-2 py-1 whitespace-nowrap z-10 shadow">
                     <div className="font-semibold">
-                      {day.date.toLocaleDateString("en-US", {
+                      {formatPropertyDate(day.dateStr, {
                         weekday: "short",
                         month: "short",
                         day: "numeric",
                       })}
                     </div>
                     <div>
-                      {t("dashboard.occupancyAxis")}: {day.pct}%
+                      {t("dashboard.occupancyAxis")}: {occupancyText}
                     </div>
                     {day.adr != null && (
                       <div>
