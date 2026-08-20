@@ -217,7 +217,7 @@ async function validateSource(client:pg.PoolClient,command:FinanceGeneratedExpen
   )
     return rejected("correction_conflict");
   // prettier-ignore
-  const eventOk=command.action==="create"?["room_night","retained_charge","correction"].includes(row.economicEvent):command.action==="correct"?["correction","refund"].includes(row.economicEvent):["room_night_reversal","refund","correction"].includes(row.economicEvent);
+  const eventOk=command.action==="create"?["room_night","retained_charge","correction","occupancy_adjustment"].includes(row.economicEvent):command.action==="correct"?["correction","refund","occupancy_adjustment"].includes(row.economicEvent):["room_night_reversal","refund","correction","occupancy_adjustment"].includes(row.economicEvent);
   if (!eventOk) return rejected("evidence_mismatch");
   const missing = OTA_MISSING[row.state as keyof typeof OTA_MISSING];
   if (missing) return { ok: true, outcome: "missing_evidence", code: missing };

@@ -155,6 +155,7 @@ jobs:
           src/domains/financeProviderFeeEvidence.integration.test.ts
           src/domains/financeProviderFeeExpenseProjection.integration.test.ts
           src/domains/financeGeneratedExpenseRepository.integration.test.ts
+          src/domains/financeOtaCommissionExpenseProjection.integration.test.ts
           src/routes/bookingWebPublicAttribution.integration.test.ts
           src/jobs/financeSubscriptions.integration.test.ts
           src/platform/postgresRuntime.integration.test.ts
