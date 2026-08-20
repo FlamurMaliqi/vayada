@@ -1,16 +1,10 @@
-# Stage 1: Dependencies
-FROM node:20-alpine AS deps
+# Stage 1: Builder
+FROM node:20-alpine AS builder
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm ci
-
-# Stage 2: Builder
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+RUN npm ci
 
 ARG NEXT_PUBLIC_API_URL
 ARG NEXT_PUBLIC_BOOKING_WEB_API_URL
@@ -19,9 +13,10 @@ ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 ENV NEXT_PUBLIC_BOOKING_WEB_API_URL=${NEXT_PUBLIC_BOOKING_WEB_API_URL}
 ENV NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}
 
+WORKDIR /app/apps/booking-web
 RUN npm run build
 
-# Stage 3: Runner
+# Stage 2: Runner
 FROM node:20-alpine AS runner
 WORKDIR /app
 
@@ -30,13 +25,9 @@ ENV NODE_ENV=production
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./app/.next/static
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./apps/booking-web/.next/static
-COPY --from=builder --chown=nextjs:nodejs /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/public ./app/public
-COPY --from=builder --chown=nextjs:nodejs /app/public ./apps/booking-web/public
+COPY --from=builder --chown=nextjs:nodejs /app/apps/booking-web/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/apps/booking-web/.next/static ./apps/booking-web/.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/apps/booking-web/public ./apps/booking-web/public
 
 USER nextjs
 
@@ -45,4 +36,4 @@ EXPOSE 3002
 ENV PORT=3002
 ENV HOSTNAME="0.0.0.0"
 
-CMD ["sh", "-c", "if [ -f server.js ]; then exec node server.js; fi; if [ -f app/server.js ]; then exec node app/server.js; fi; exec node apps/booking-web/server.js"]
+CMD ["node", "apps/booking-web/server.js"]
