@@ -56,12 +56,13 @@
           "days[0].roomTypeId",
           "days[0].totalCount",
           "days[0].assignedCount",
+          "days[0].occupiedCount",
           "days[0].blockedCount",
           "days[0].availableCount",
           "days[0].blocks",
           "days[0].sourceFreshness"
         ],
-        "countInvariant": "availableCount + assignedCount + blockedCount equals totalCount",
+        "countInvariant": "availableCount + assignedCount + blockedCount is no greater than totalCount; occupiedCount is no greater than assignedCount",
         "fixtureNotes": "Seed one room-type block and one room-level maintenance block."
       }
     },

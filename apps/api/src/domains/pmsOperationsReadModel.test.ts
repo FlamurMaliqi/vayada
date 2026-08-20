@@ -351,6 +351,7 @@ describe("target PMS room block calendar projection", () => {
             roomTypeId: "room-type-1",
             totalCount: 2,
             assignedCount: 0,
+            occupiedCount: 0,
             blockedCount: 1,
             availableCount: 1,
             status: "open",
@@ -391,6 +392,12 @@ describe("target PMS room block calendar projection", () => {
     });
 
     expect(calendarQuery).toContain("'version', concat('room-block-v', block.revision)");
+    expect(calendarQuery).toContain(
+      "inventory.assigned_count - COALESCE(ineligible_holds.count, 0)",
+    );
+    expect(calendarQuery).toContain("booking.lifecycle_status IN ('draft', 'pending_payment')");
+    expect(calendarQuery).toContain("booking.lifecycle_status IN ('confirmed', 'completed')");
     expect(result.items[0]?.blocks[0]?.version).toBe("room-block-v3");
+    expect(result.items[0]?.occupiedCount).toBe(0);
   });
 });

@@ -664,7 +664,10 @@ export type PmsCheckOutCommandResponse = {
 };
 
 export type PmsAssignmentCommandConflictCode =
-  "version_conflict" | "room_unavailable" | "assignment_conflict" | "idempotency_conflict";
+  | "version_conflict"
+  | "room_unavailable"
+  | "assignment_conflict"
+  | "idempotency_conflict";
 
 export type PmsAssignmentCommandResult =
   | {
@@ -1058,7 +1061,10 @@ type PmsOperationsError = {
 };
 
 type PmsOperationsAuthorizationErrorCode =
-  "missing_permission" | "missing_entitlement" | "inactive_entitlement" | "missing_resource_access";
+  | "missing_permission"
+  | "missing_entitlement"
+  | "inactive_entitlement"
+  | "missing_resource_access";
 
 export async function registerPmsOperationsRoutes(
   app: FastifyInstance,
@@ -5249,7 +5255,19 @@ function clampInteger(
 }
 
 function hasBalancedCalendarCounts(day: PmsCalendarDay): boolean {
-  return day.availableCount + day.assignedCount + day.blockedCount === day.totalCount;
+  const counts = [
+    day.totalCount,
+    day.assignedCount,
+    day.occupiedCount,
+    day.blockedCount,
+    day.availableCount,
+  ];
+  return (
+    counts.every((count) => Number.isSafeInteger(count) && count >= 0) &&
+    day.availableCount + day.assignedCount + day.blockedCount <= day.totalCount &&
+    (day.status !== "closed" || day.availableCount === 0) &&
+    day.occupiedCount <= day.assignedCount
+  );
 }
 
 function isDateOnly(value: string): boolean {

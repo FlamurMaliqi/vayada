@@ -98,6 +98,7 @@ export type PmsCalendarDay = {
   roomTypeId: string;
   totalCount: number;
   assignedCount: number;
+  occupiedCount: number;
   blockedCount: number;
   availableCount: number;
   status: PmsCalendarStatus;
@@ -367,6 +368,8 @@ export function createTargetPmsOperationsReadRepository(config: {
            inventory.room_type_id::text AS "roomTypeId",
            inventory.total_count AS "totalCount",
            inventory.assigned_count AS "assignedCount",
+           (inventory.assigned_count - COALESCE(ineligible_holds.count, 0))::int
+             AS "occupiedCount",
            inventory.blocked_count AS "blockedCount",
            inventory.available_count AS "availableCount",
            inventory.status,
@@ -400,6 +403,83 @@ export function createTargetPmsOperationsReadRepository(config: {
              AND block.ends_on >= inventory.stay_date
          ) blocks ON TRUE
          LEFT JOIN LATERAL (
+           SELECT SUM(hold.units)::int AS count
+           FROM (
+             SELECT GREATEST(0, receipt.room_count - COALESCE((
+               SELECT COUNT(DISTINCT adopted.id)::int
+               FROM booking.guest_bookings booking
+               JOIN pms.operational_booking_assignments adopted
+                 ON adopted.guest_booking_id = booking.id
+                AND adopted.property_id = booking.property_id
+                AND adopted.source = 'direct_booking'
+                AND adopted.room_type_id = receipt.room_type_id
+               WHERE booking.property_id = receipt.property_id
+                 AND (
+                   booking.booking_metadata #>> '{inventoryReservation,receiptId}' =
+                     receipt.receipt_id::text
+                   OR booking.quote_session_id::text = receipt.quote_session_id
+                   OR booking.booking_metadata #>> '{inventoryReservation,quoteSessionId}' =
+                     receipt.quote_session_id
+                 )
+             ), 0)) AS units
+             FROM pms.inventory_reservation_receipts receipt
+             JOIN pms.inventory_reservation_statuses reservation_status
+               ON reservation_status.receipt_id = receipt.receipt_id
+              AND reservation_status.organization_id = receipt.organization_id
+              AND reservation_status.property_id = receipt.property_id
+             WHERE receipt.property_id = inventory.property_id
+               AND receipt.room_type_id = inventory.room_type_id
+               AND receipt.check_in <= inventory.stay_date
+               AND receipt.check_out > inventory.stay_date
+               AND reservation_status.lifecycle_state IN ('reserved', 'handed_off')
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM booking.guest_bookings booking
+                 WHERE booking.property_id = receipt.property_id
+                   AND booking.lifecycle_status IN ('confirmed', 'completed')
+                   AND (
+                     booking.booking_metadata #>> '{inventoryReservation,receiptId}' =
+                       receipt.receipt_id::text
+                     OR booking.quote_session_id::text = receipt.quote_session_id
+                     OR booking.booking_metadata #>> '{inventoryReservation,quoteSessionId}' =
+                       receipt.quote_session_id
+                   )
+               )
+             UNION ALL
+             SELECT GREATEST(0, booking.room_count - COALESCE((
+               SELECT COUNT(DISTINCT adopted.id)::int
+               FROM pms.operational_booking_assignments adopted
+               WHERE adopted.property_id = booking.property_id
+                 AND adopted.guest_booking_id = booking.id
+                 AND adopted.source = 'direct_booking'
+                 AND adopted.room_type_id = inventory.room_type_id
+                 AND COALESCE(adopted.check_in, booking.check_in) = booking.check_in
+                 AND COALESCE(adopted.check_out, booking.check_out) = booking.check_out
+             ), 0)) AS units
+             FROM booking.guest_bookings booking
+             WHERE booking.property_id = inventory.property_id
+               AND booking.source_system = 'booking'
+               AND booking.lifecycle_status IN ('draft', 'pending_payment')
+               AND booking.booking_metadata #>> '{inventoryReservation,contractVersion}' =
+                 'pms.inventory-reservation.v1'
+               AND booking.booking_metadata #>> '{inventoryReservation,owner}' = 'pms'
+               AND booking.booking_metadata #>> '{inventoryReservation,source}' = 'booking_engine'
+               AND booking.booking_metadata #>> '{inventoryReservation,propertyId}' =
+                 inventory.property_id::text
+               AND booking.booking_metadata #>> '{inventoryReservation,roomTypeId}' =
+                 inventory.room_type_id::text
+               AND booking.check_in <= inventory.stay_date
+               AND booking.check_out > inventory.stay_date
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM pms.inventory_reservation_receipts receipt
+                 WHERE receipt.property_id = booking.property_id
+                   AND receipt.quote_session_id =
+                     booking.booking_metadata #>> '{inventoryReservation,quoteSessionId}'
+               )
+           ) hold
+         ) ineligible_holds ON TRUE
+         LEFT JOIN LATERAL (
            SELECT jsonb_agg(assignment.id::text ORDER BY assignment.position, assignment.id) AS refs
            FROM pms.operational_booking_assignments assignment
            JOIN booking.guest_bookings booking
@@ -408,8 +488,34 @@ export function createTargetPmsOperationsReadRepository(config: {
            WHERE assignment.property_id = inventory.property_id
              AND assignment.room_type_id = inventory.room_type_id
              AND assignment.assignment_status NOT IN ('canceled', 'released')
+             AND booking.lifecycle_status IN ('confirmed', 'completed')
              AND COALESCE(assignment.check_in, booking.check_in) <= inventory.stay_date
              AND COALESCE(assignment.check_out, booking.check_out) > inventory.stay_date
+             AND (
+               assignment.source <> 'direct_booking'
+               OR EXISTS (
+                 SELECT 1
+                 FROM pms.inventory_reservation_receipts receipt
+                 WHERE receipt.property_id = booking.property_id
+                   AND (
+                     booking.booking_metadata #>> '{inventoryReservation,receiptId}' =
+                       receipt.receipt_id::text
+                     OR booking.quote_session_id::text = receipt.quote_session_id
+                     OR booking.booking_metadata #>> '{inventoryReservation,quoteSessionId}' =
+                       receipt.quote_session_id
+                   )
+               )
+               OR (
+                 COALESCE(assignment.check_in, booking.check_in) = booking.check_in
+                 AND COALESCE(assignment.check_out, booking.check_out) = booking.check_out
+                 AND (
+                   booking.booking_metadata #>> '{inventoryReservation,contractVersion}'
+                     IS DISTINCT FROM 'pms.inventory-reservation.v1'
+                   OR booking.booking_metadata #>> '{inventoryReservation,roomTypeId}' =
+                     assignment.room_type_id::text
+                 )
+               )
+             )
          ) assignments ON TRUE
          WHERE inventory.property_id = $1
            AND inventory.stay_date >= $2::date
@@ -593,6 +699,7 @@ type TargetPmsCalendarDayRow = {
   roomTypeId: string;
   totalCount: number;
   assignedCount: number;
+  occupiedCount: number;
   blockedCount: number;
   availableCount: number;
   status: PmsCalendarStatus;
@@ -1064,6 +1171,7 @@ function toPmsCalendarDay(row: TargetPmsCalendarDayRow): PmsCalendarDay {
     roomTypeId: row.roomTypeId,
     totalCount: toInteger(row.totalCount),
     assignedCount: toInteger(row.assignedCount),
+    occupiedCount: toInteger(row.occupiedCount),
     blockedCount: toInteger(row.blockedCount),
     availableCount: toInteger(row.availableCount),
     status: row.status,
