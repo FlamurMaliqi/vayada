@@ -367,6 +367,25 @@ function successfulOperationalHandler(status = "assigned"): QueryHandler {
     }
     if (text.includes("pg_advisory_xact_lock")) return ok();
     if (text.includes("room_type_id = ANY") && text.includes("FOR UPDATE")) return ok();
+    if (text.includes('AS "expectedAssignedCount"')) {
+      const targetDays = JSON.parse(String(values?.[1])) as Array<{
+        roomTypeId: string;
+        stayDate: string;
+      }>;
+      return ok(
+        targetDays.map((target) => ({
+          ...target,
+          totalCount: 2,
+          blockedCount: 0,
+          assignedCount: 2,
+          effectiveSellableLimitCount: 2,
+          inventoryRevision: 1,
+          bookingSourceRevision: 1,
+          status: "open",
+          expectedAssignedCount: 0,
+        })),
+      );
+    }
     if (text.includes("FROM pms.operational_booking_assignments")) {
       return ok(assignmentRows(status));
     }
@@ -377,6 +396,7 @@ function successfulOperationalHandler(status = "assigned"): QueryHandler {
     if (text.includes("FROM pms.booking_checkin_records")) return ok();
     if (text.includes("INSERT INTO pms.booking_checkin_records")) return ok([], 2);
     if (text.includes("UPDATE pms.operational_booking_assignments")) return ok([], 2);
+    if (text.includes("UPDATE pms.inventory_days")) return ok([], 1);
     if (text.includes("booking_metadata->>'contractVersion'")) return ok();
     if (text.includes("INSERT INTO platform.product_audit_events")) return ok([], 1);
     if (text.includes("UPDATE platform.idempotency_keys")) return ok([], 1);

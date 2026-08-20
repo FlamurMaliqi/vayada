@@ -214,7 +214,11 @@ it("rolls back the booking transaction when create optimization fails", async ()
   } as unknown as PmsManualBookingCreateCommand;
 
   await expect(repository.createManualBooking(command)).rejects.toThrow("optimizer failed");
-  expect(query.mock.calls.map(([sql]) => sql)).toEqual(["BEGIN", "ROLLBACK"]);
+  expect(query.mock.calls.map(([sql]) => sql)).toEqual([
+    "BEGIN",
+    expect.stringContaining("pg_advisory_xact_lock"),
+    "ROLLBACK",
+  ]);
   expect(writeEvidence).not.toHaveBeenCalled();
   expect(completeCommand).not.toHaveBeenCalled();
   expect(transaction.release).toHaveBeenCalledOnce();
