@@ -6,6 +6,34 @@ import {
   type PmsOperationsReadPool,
 } from "./pmsOperationsReadModel.js";
 
+describe("target PMS room order", () => {
+  it("uses a stable ID tie-break after sort order and room number", async () => {
+    let roomQuery = "";
+    const pool: PmsOperationsReadPool = {
+      async query<T extends QueryResultRow = QueryResultRow>(
+        text: string,
+      ): Promise<QueryResult<T>> {
+        roomQuery = text;
+        return {
+          command: "SELECT",
+          rowCount: 0,
+          oid: 0,
+          fields: [],
+          rows: [],
+        };
+      },
+    };
+    const repository = createTargetPmsOperationsReadRepository({
+      connectionString: "postgresql://pms-operations-read",
+      pool,
+    });
+
+    await repository.listRoomsByPropertyId("property-1");
+
+    expect(roomQuery).toContain("ORDER BY room.sort_order ASC, room.room_number ASC, room.id ASC");
+  });
+});
+
 describe("target PMS reservation stay dates", () => {
   it("reads DATE columns as text so the calendar date is preserved", async () => {
     const queries: string[] = [];

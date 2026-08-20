@@ -44,6 +44,7 @@ import {
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import type { PropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
+import { pmsRoomOrderVersion } from "./domains/pmsRoomOrder.js";
 import {
   createTargetPublicHotelProfileRepository,
   serializePublicHotelProfileProjection,
@@ -141,6 +142,7 @@ import type {
   PmsRoom,
   PmsRoomBlockCreateCommand,
   PmsRoomBlockSummary,
+  PmsRoomOrderCommand,
   PmsRoomType,
   PmsRoomTypeCommandResponse,
   PmsRoomTypeCreateCommand,
@@ -156,6 +158,7 @@ type PmsOperationsTestListResponse<T> = {
   contractVersion: "pms-operations.v1";
   propertyId: string;
   items: T[];
+  orderVersion?: string;
 };
 
 type PmsOperationsTestPrivateNotesResponse = PmsOperationsTestListResponse<PmsPrivateNote> & {
@@ -1480,6 +1483,7 @@ function createPmsOperationsCommandRepository(
   roomTypeCreates: PmsRoomTypeCreateCommand[];
   roomTypeUpdates: PmsRoomTypeUpdateCommand[];
   roomBlockCreates: PmsRoomBlockCreateCommand[];
+  roomOrderCommands: PmsRoomOrderCommand[];
   templateUpdates: PmsOperationalTemplateUpdateCommand[];
   outboxEnqueues: string[];
   auditEvents: string[];
@@ -1502,6 +1506,7 @@ function createPmsOperationsCommandRepository(
   const roomTypeCreates: PmsRoomTypeCreateCommand[] = [];
   const roomTypeUpdates: PmsRoomTypeUpdateCommand[] = [];
   const roomBlockCreates: PmsRoomBlockCreateCommand[] = [];
+  const roomOrderCommands: PmsRoomOrderCommand[] = [];
   const roomBlocks = structuredClone(pmsRoomBlocks);
   const templateUpdates: PmsOperationalTemplateUpdateCommand[] = [];
   const outboxEnqueues: string[] = [];
@@ -1579,9 +1584,25 @@ function createPmsOperationsCommandRepository(
     roomTypeCreates,
     roomTypeUpdates,
     roomBlockCreates,
+    roomOrderCommands,
     templateUpdates,
     outboxEnqueues,
     auditEvents,
+    async reorderRooms(command) {
+      roomOrderCommands.push(command);
+      return {
+        ok: true as const,
+        orderedRoomIds: command.orderedRoomIds,
+        orderVersion: pmsRoomOrderVersion(command.orderedRoomIds),
+        commandMeta: {
+          contractVersion: "pms-operations.v1" as const,
+          commandId: command.commandId,
+          idempotencyKey: command.idempotencyKey,
+          acceptedAt: "2026-08-14T17:55:00.000Z",
+          sideEffects: ["audit_event" as const],
+        },
+      };
+    },
     async createRoomBlocks(command) {
       roomBlockCreates.push(command);
       const items = command.roomIds.map((roomId, index) => ({
@@ -9988,6 +10009,7 @@ describe("vayada-api", () => {
       "out_of_order",
     ]);
     expect(body.items.map((item) => item.roomNumber)).toEqual(["101", "102", "201"]);
+    expect(body.orderVersion).toBe(pmsRoomOrderVersion(pmsRooms.map(({ roomId }) => roomId)));
   });
 
   it("allows PMS Web browser preflight and read requests from configured origins", async () => {
@@ -10732,6 +10754,82 @@ describe("vayada-api", () => {
     });
     expect(release.statusCode).toBe(200);
     expect(release.body).toMatchObject({ items: [{ status: "released" }] });
+  });
+
+  it("validates and routes a property-scoped room reorder command", async () => {
+    const commandRepository = createPmsOperationsCommandRepository();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      pmsOperationsCommandRepository: commandRepository,
+    });
+    const orderedRoomIds = pmsRooms.map(({ roomId }) => roomId).reverse();
+    const expectedVersion = pmsRoomOrderVersion(pmsRooms.map(({ roomId }) => roomId));
+    const response = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/rooms/reorder`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        commandId: "cmd-room-reorder",
+        idempotencyKey: "room-reorder",
+        expectedVersion,
+        orderedRoomIds: orderedRoomIds.map((roomId) => roomId.toUpperCase()),
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      propertyId: pmsPropertyId,
+      orderedRoomIds,
+      orderVersion: pmsRoomOrderVersion(orderedRoomIds),
+      commandMeta: { sideEffects: ["audit_event"] },
+    });
+    expect(commandRepository.roomOrderCommands).toMatchObject([
+      {
+        propertyId: pmsPropertyId,
+        expectedVersion,
+        orderedRoomIds,
+        audit: { actor: { kind: "user", userId: "user_hotel_owner" } },
+      },
+    ]);
+
+    const duplicate = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/rooms/reorder`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        commandId: "cmd-room-reorder-duplicate",
+        idempotencyKey: "room-reorder-duplicate",
+        expectedVersion,
+        orderedRoomIds: [pmsRooms[0].roomId, pmsRooms[0].roomId],
+      },
+    });
+    expect(duplicate.statusCode).toBe(400);
+
+    const mixed = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/rooms/reorder`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        commandId: "cmd-room-reorder-mixed",
+        idempotencyKey: "room-reorder-mixed",
+        expectedVersion,
+        orderedRoomIds: [pmsRooms[0].roomId, 42],
+      },
+    });
+    expect(mixed.statusCode).toBe(400);
+    expect(commandRepository.roomOrderCommands).toHaveLength(1);
   });
 
   it("rejects stale and unauthorized room-block writes before mutation", async () => {

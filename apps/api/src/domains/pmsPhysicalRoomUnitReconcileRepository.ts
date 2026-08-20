@@ -14,6 +14,7 @@ import {
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
+import { lockPmsRoomOrder } from "./pmsRoomOrder.js";
 
 const OPERATION = "pms.physical_room_units.reconcile";
 
@@ -89,6 +90,7 @@ async function executeReconcile(
       await client.query("ROLLBACK");
       return failure({ code: "setup_scope_unavailable" });
     }
+    await lockPmsRoomOrder(client, command.propertyId);
     await lockPmsPhysicalRoomUnitMutationScope(client, command.propertyId, command.roomTypeId);
     const roomType = await lockActiveRoomType(client, command);
     if (!roomType) {

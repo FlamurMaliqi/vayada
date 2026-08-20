@@ -19,6 +19,7 @@ import type {
 import { PROPERTY_FEATURE_LIMITS, type PropertyPlanReadModel } from "@vayada/domain-finance";
 import type { PropertyPlanReadRepository } from "../domains/propertyPlanReadModel.js";
 import type { PmsRoomAssignmentSettingsPort } from "../domains/pmsRoomAssignmentSettings.js";
+import { pmsRoomOrderVersion } from "../domains/pmsRoomOrder.js";
 import type {
   PmsRoomAssignmentOptimizationHistoryItem,
   PmsRoomAssignmentOptimizationHistoryPort,
@@ -63,6 +64,7 @@ export type PmsRoomsResponse = {
   contractVersion: PmsOperationsContractVersion;
   propertyId: string;
   items: PmsRoom[];
+  orderVersion: string;
   sourceFreshness: PmsSourceFreshness;
 };
 
@@ -557,6 +559,7 @@ export type PmsRoomOrderCommand = {
   propertyId: string;
   commandId: string;
   idempotencyKey: string;
+  expectedVersion: string;
   orderedRoomIds: string[];
   audit: PmsOperationsCommandAudit;
 };
@@ -565,6 +568,7 @@ export type PmsRoomOrderCommandResponse = {
   contractVersion: PmsOperationsContractVersion;
   propertyId: string;
   orderedRoomIds: string[];
+  orderVersion: string;
   commandMeta: PmsCommandMeta;
 };
 
@@ -852,13 +856,14 @@ export type PmsRoomOrderCommandResult =
   | {
       ok: true;
       orderedRoomIds: string[];
+      orderVersion: string;
       commandMeta: PmsCommandMeta;
       replayed?: boolean;
     }
   | {
       ok: false;
       statusCode: 409;
-      code: "idempotency_conflict" | "room_order_conflict";
+      code: "idempotency_conflict" | "room_order_conflict" | "version_conflict";
       message: string;
     };
 
@@ -1194,6 +1199,9 @@ export async function registerPmsOperationsRoutes(
           contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
           propertyId,
           items: result.items,
+          orderVersion: pmsRoomOrderVersion(
+            result.items.filter(({ status }) => status !== "retired").map(({ roomId }) => roomId),
+          ),
           sourceFreshness: result.sourceFreshness ?? {},
         } satisfies PmsRoomsResponse;
       } catch {
@@ -1222,6 +1230,7 @@ export async function registerPmsOperationsRoutes(
           contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
           propertyId,
           orderedRoomIds: result.orderedRoomIds,
+          orderVersion: result.orderVersion,
           commandMeta: result.commandMeta,
         } satisfies PmsRoomOrderCommandResponse;
       },
@@ -3217,12 +3226,22 @@ function toRoomOrderCommand(
   if (!raw) return { error: invalidBody("Room reorder body must be an object.") };
   const commandId = stringField(raw.commandId);
   const idempotencyKey = stringField(raw.idempotencyKey);
-  const orderedRoomIds = toStringArray(raw.orderedRoomIds);
-  if (!commandId || !idempotencyKey || orderedRoomIds.length === 0) {
+  const expectedVersion = stringField(raw.expectedVersion);
+  if (
+    !commandId ||
+    !idempotencyKey ||
+    !expectedVersion ||
+    !Array.isArray(raw.orderedRoomIds) ||
+    raw.orderedRoomIds.length === 0 ||
+    !raw.orderedRoomIds.every((roomId) => typeof roomId === "string" && roomId.trim())
+  ) {
     return {
-      error: invalidBody("Room reorder requires commandId, idempotencyKey, and orderedRoomIds."),
+      error: invalidBody(
+        "Room reorder requires commandId, idempotencyKey, expectedVersion, and orderedRoomIds.",
+      ),
     };
   }
+  const orderedRoomIds = raw.orderedRoomIds.map((roomId) => roomId.trim().toLowerCase());
   if (
     orderedRoomIds.some((roomId) => !isUuid(roomId)) ||
     new Set(orderedRoomIds).size !== orderedRoomIds.length
@@ -3234,6 +3253,7 @@ function toRoomOrderCommand(
       propertyId,
       commandId,
       idempotencyKey,
+      expectedVersion,
       orderedRoomIds,
       audit: pmsOperationsCommandAudit(request, commandId, "Reorder rooms"),
     },

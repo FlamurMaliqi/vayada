@@ -197,6 +197,14 @@ describe("PMS physical room unit reconcile repository", () => {
     expect(sql).not.toContain("platform.outbox_events");
     expect(sql).not.toContain("platform.domain_events");
     expect(sql).not.toMatch(/(?:INSERT INTO|UPDATE|DELETE FROM)\s+booking\./);
+    const roomOrderLock = test.calls.findIndex(({ text }) => text.includes("pms.room-order:"));
+    const roomTypeLock = test.calls.findIndex(({ text }) =>
+      text.includes("pms.physical-room-unit:"),
+    );
+    const insert = test.calls.findIndex(({ text }) => text.includes("INSERT INTO pms.rooms"));
+    expect(roomOrderLock).toBeGreaterThan(-1);
+    expect(roomOrderLock).toBeLessThan(roomTypeLock);
+    expect(roomTypeLock).toBeLessThan(insert);
   });
 
   it("retires the first deterministic eligible identities and preserves protected rows", async () => {

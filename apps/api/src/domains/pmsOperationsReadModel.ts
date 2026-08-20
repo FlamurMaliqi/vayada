@@ -273,7 +273,7 @@ export function createTargetPmsOperationsReadRepository(config: {
            ON room_type.id = room.room_type_id
           AND room_type.property_id = room.property_id
          WHERE room.property_id = $1
-         ORDER BY room.sort_order ASC, room.room_number ASC`,
+         ORDER BY room.sort_order ASC, room.room_number ASC, room.id ASC`,
         [propertyId],
       );
 

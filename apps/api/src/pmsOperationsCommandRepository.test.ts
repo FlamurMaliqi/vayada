@@ -373,6 +373,13 @@ describe("PMS operations command repository", () => {
     expect(target.calls.filter((call) => call.text.includes("INSERT INTO pms.rooms"))).toHaveLength(
       1,
     );
+    const roomOrderLockIndex = target.calls.findIndex((call) =>
+      call.text.includes("pms.room-order:"),
+    );
+    expect(roomOrderLockIndex).toBeGreaterThan(-1);
+    expect(roomOrderLockIndex).toBeLessThan(
+      target.calls.findIndex((call) => call.text.includes("INSERT INTO pms.rooms")),
+    );
     expect(
       target.calls.filter((call) => call.text.includes("INSERT INTO pms.rate_rules")),
     ).toHaveLength(1);
@@ -696,6 +703,8 @@ function targetPrivateNotesPool(options: { generatedRoomConflicts?: number } = {
     if (text.includes("pms-initial-room-setup:")) {
       return emptyRows<T>();
     }
+
+    if (text.includes("pms.room-order:")) return emptyRows<T>();
 
     if (text.includes("SELECT EXISTS") && text.includes("FROM pms.room_types room_type")) {
       return rows([
