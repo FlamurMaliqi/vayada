@@ -10,10 +10,8 @@ import { loadConfig } from "./config.js";
 import { createPublicRuntimeRepositories } from "./publicRuntime.js";
 import type { PublicHotelQuoteReadPool } from "./routes/aiHotelQuotes.js";
 import type { PublicHotelProfileReadPool } from "./routes/aiHotels.js";
-import type {
-  BookingWebCalendarReadPool,
-  BookingWebCheckoutAdapter,
-} from "./routes/bookingWebPublic.js";
+import type { BookingWebCalendarReadPool } from "./routes/bookingWebPublic.js";
+import { unusedBookingWebCheckoutAdapter } from "./routes/bookingWebPublic.fixtures.js";
 import type { MarketplaceDiscoveryReadPool } from "./routes/marketplaceDiscovery.js";
 
 const legacyRuntimeEnvKeys = [
@@ -22,8 +20,6 @@ const legacyRuntimeEnvKeys = [
   "PMS_PUBLIC_API_URL",
   "MARKETPLACE_DATABASE_URL",
 ] as const;
-
-const unusedBookingWebCheckoutAdapter = {} as BookingWebCheckoutAdapter;
 
 const nextApiLegacyFreeEnv: NodeJS.ProcessEnv = {
   API_RUNTIME: "next",

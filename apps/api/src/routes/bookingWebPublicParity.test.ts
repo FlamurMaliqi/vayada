@@ -33,8 +33,7 @@ import {
   type BookingWebCalendarReadPool,
   type BookingWebCheckoutAdapter,
 } from "./bookingWebPublic.js";
-
-const unusedBookingWebCheckoutAdapter = {} as BookingWebCheckoutAdapter;
+import { unusedBookingWebCheckoutAdapter } from "./bookingWebPublic.fixtures.js";
 
 type LegacyHotelResponse = {
   id: string;
@@ -199,6 +198,14 @@ const legacyUnavailableDates: LegacyUnavailableDatesResponse = {
 };
 
 describe("Booking Web public bootstrap parity", () => {
+  it("fails clearly when the non-checkout fixture reaches checkout", () => {
+    const checkoutAdapter: BookingWebCheckoutAdapter = unusedBookingWebCheckoutAdapter;
+    expect(() => checkoutAdapter.getCheckoutConfig("hotel-alpenrose")).toThrow(
+      "Unexpected Booking Web checkout adapter call: getCheckoutConfig",
+    );
+    expect(checkoutAdapter.close).toBeUndefined();
+  });
+
   it("records affiliate click attribution through the configured sink", async () => {
     const events: unknown[] = [];
     const app = buildApp({
