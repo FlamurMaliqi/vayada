@@ -38,6 +38,14 @@ type ToastTiming = {
   zeroResponseAt: number | null;
 };
 
+type ExpectedHistoryMove = {
+  bookingReference: string;
+  fromRoomId: string;
+  guestBookingId: string;
+  reason: "create" | "cancel" | "modify";
+  toRoomId: string;
+};
+
 export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
   const { api, page, propertyId, roomTypeId, testInfo } = args;
   const roomsResponse = await api.json<Record<string, unknown>>(
@@ -51,6 +59,11 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
   expect(rooms).toHaveLength(2);
   const room1 = stringField(rooms[0]!, "roomId"),
     room2 = stringField(rooms[1]!, "roomId");
+  const roomLabels = new Map(
+      rooms.map((room) => [stringField(room, "roomId"), stringField(room, "roomNumber")]),
+    ),
+    expectedHistoryMoves: ExpectedHistoryMove[] = [],
+    historyStartedAt = Date.now() - 30_000;
   const evidence: Record<string, unknown> = {
     propertyId,
     roomTypeId,
@@ -82,9 +95,10 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
     });
 
     const anchor = await createApiBooking(args, "Setting off anchor", room1, 50, 51);
-    const follower = await createUiBooking(args, "Setting off follower", room2, 51, 52);
+    const follower = await createUiBooking(args, "Setting off follower", room2, 51, 52, true);
     expect(numberField(follower.result, "rearrangedBookingCount")).toBe(0);
     await expect(page.getByText(/rearranged for optimal room usage/)).toHaveCount(0);
+    expect((await toastTiming(page)).shownAt).toBeNull();
     expect(stringField(await assignment(args, follower.resource.bookingId), "roomId")).toBe(room2);
     evidence.settingOff = {
       persisted: true,
@@ -161,6 +175,13 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
     const count = numberField(recordField(cancelled, "commandMeta"), "rearrangedBookingCount");
     expect(count).toBe(1);
     expect(stringField(await assignment(args, follower.resource.bookingId), "roomId")).toBe(room1);
+    expectedHistoryMoves.push({
+      bookingReference: stringField(follower.result, "bookingReference"),
+      fromRoomId: room2,
+      guestBookingId: follower.resource.bookingId,
+      reason: "cancel",
+      toRoomId: room1,
+    });
     evidence.cancelTrigger = { rearrangedBookingCount: count, destinationRoomId: room1 };
   });
 
@@ -205,6 +226,13 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
     const count = numberField(recordField(modified, "commandMeta"), "rearrangedBookingCount");
     expect(count).toBe(1);
     expect(stringField(await assignment(args, subject.resource.bookingId), "roomId")).toBe(room1);
+    expectedHistoryMoves.push({
+      bookingReference: stringField(subject.result, "bookingReference"),
+      fromRoomId: room2,
+      guestBookingId: subject.resource.bookingId,
+      reason: "modify",
+      toRoomId: room1,
+    });
     evidence.modifyTrigger = { rearrangedBookingCount: count, destinationRoomId: room1 };
   });
 
@@ -212,6 +240,15 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
     liveApiCanCreateReversibleFixture: false,
     proof:
       "The same acceptance workflow runs a focused target optimizer test with an in_house stay and proves it remains fixed while adjacent movable stays pack around it. The target lifecycle has no supported reversible path from in_house to a cancellable synthetic manual booking, so the repeatable browser fixture is intentionally verified at the optimizer boundary.",
+  };
+  evidence.checkedOutSafety = {
+    liveApiCanCreateReversibleFixture: false,
+    proof:
+      "The focused target optimizer test also uses a checked_out assignment and proves it remains fixed with no guarded move emitted for the completed stay.",
+  };
+  evidence.singleRoomSafety = {
+    proof:
+      "The focused target optimizer test verifies a one-room type returns single_room before assignment reads, moves, audit, domain event, or outbox evidence.",
   };
 
   await test.step("never move a stay into a blocked room", async () => {
@@ -277,6 +314,13 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
     const trigger = await createUiBooking(args, "History trigger", room2, 111, 112);
     const count = numberField(trigger.result, "rearrangedBookingCount");
     expect(count).toBeGreaterThan(0);
+    expectedHistoryMoves.push({
+      bookingReference: stringField(trigger.result, "bookingReference"),
+      fromRoomId: room2,
+      guestBookingId: trigger.resource.bookingId,
+      reason: "create",
+      toRoomId: room1,
+    });
     const toast = page.getByText(
       `${count} ${count === 1 ? "booking" : "bookings"} rearranged for optimal room usage`,
       { exact: true },
@@ -285,9 +329,6 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
     await page.getByRole("button", { name: "View log" }).click();
     const historyDialog = page.getByRole("dialog", { name: "Room move history" });
     await expect(historyDialog).toBeVisible();
-    for (const reason of ["create", "cancel", "modify"]) {
-      await expect(historyDialog.getByText(reason, { exact: true }).first()).toBeVisible();
-    }
     const history = record(
       await api.json("GET", `/api/pms/properties/${propertyId}/calendar-shuffles?limit=100`),
     );
@@ -295,17 +336,36 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
       reasons = [...new Set(items.map((item) => stringField(item, "reason")))].sort();
     expect(reasons).toEqual(expect.arrayContaining(["cancel", "create", "modify"]));
     expect(items.every((item) => stringField(item, "roomTypeId") === roomTypeId)).toBe(true);
-    const selectedRoomIds = new Set(rooms.map((room) => stringField(room, "roomId")));
-    expect(
-      items.every((item) => {
-        const fromRoom = item["fromRoom"],
-          toRoom = recordField(item, "toRoom");
-        return (
-          (fromRoom === null || selectedRoomIds.has(stringField(record(fromRoom), "roomId"))) &&
-          selectedRoomIds.has(stringField(toRoom, "roomId"))
-        );
-      }),
-    ).toBe(true);
+    const historyEndedAt = Date.now() + 30_000;
+    for (const expected of expectedHistoryMoves) {
+      const item = items.find(
+        (candidate) =>
+          stringField(candidate, "guestBookingId") === expected.guestBookingId &&
+          stringField(candidate, "reason") === expected.reason &&
+          stringField(recordField(candidate, "fromRoom"), "roomId") === expected.fromRoomId &&
+          stringField(recordField(candidate, "toRoom"), "roomId") === expected.toRoomId,
+      );
+      expect(item).toBeDefined();
+      expect(stringField(item!, "bookingReference")).toBe(expected.bookingReference);
+      const occurredAt = Date.parse(stringField(item!, "occurredAt"));
+      expect(Number.isFinite(occurredAt)).toBe(true);
+      expect(occurredAt).toBeGreaterThanOrEqual(historyStartedAt);
+      expect(occurredAt).toBeLessThanOrEqual(historyEndedAt);
+
+      const row = historyDialog
+        .getByRole("listitem")
+        .filter({ hasText: expected.bookingReference });
+      await expect(row).toHaveCount(1);
+      await expect(row.getByText(expected.reason, { exact: true })).toBeVisible();
+      await expect(
+        row.getByText(`Room ${roomLabels.get(expected.fromRoomId)}`, { exact: true }),
+      ).toBeVisible();
+      await expect(
+        row.getByText(`Room ${roomLabels.get(expected.toRoomId)}`, { exact: true }),
+      ).toBeVisible();
+      await expect(row).not.toContainText("Invalid Date");
+      await expect(row).not.toContainText("unavailable");
+    }
     await page.screenshot({
       path: testInfo.outputPath("vay-667-room-shuffle-history.png"),
       fullPage: true,
@@ -314,6 +374,7 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
       itemCount: items.length,
       reasons,
       sameRoomTypeOnly: true,
+      verifiedMoves: expectedHistoryMoves,
       optimizerScopeProof:
         "The same acceptance workflow asserts every optimizer room, assignment, block, and guarded-update query is scoped to the requested property and room type.",
       uiVerified: true,
