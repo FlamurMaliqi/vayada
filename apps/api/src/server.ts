@@ -974,6 +974,9 @@ const app = buildApp({
           xendit: config.providerWebhooks.xenditMode,
           channex: config.providerWebhooks.channexMode,
         },
+        channexBookingPromotionEnabled:
+          config.channexManagement.capabilityModes.bookingSync === "mutating" &&
+          config.channexManagement.legacyBookingPollFrozen,
         store: createPgProviderWebhookStore({
           connectionString: targetDatabaseUrl,
           stripeConnectProvider,

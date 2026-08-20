@@ -30,6 +30,10 @@ describe("pulled Channex booking revision handoff", () => {
         normalizedPreview: expect.objectContaining({
           jobType: "channex.ingest-booking",
           queueName: "pms.channex.webhooks",
+          payload: expect.objectContaining({
+            pullRequired: false,
+            revisionSource: "revision_feed",
+          }),
         }),
       }),
     );
@@ -52,6 +56,25 @@ describe("pulled Channex booking revision handoff", () => {
         revision: { booking_id: "booking-1", revision: "2" },
       }),
     ).resolves.toBeNull();
+    expect(promoteReceipt).not.toHaveBeenCalled();
+  });
+
+  it("does not promote a conflicting pulled revision", async () => {
+    const promoteReceipt = vi.fn<ProviderWebhookStore["promoteReceipt"]>();
+    await expect(
+      promotePulledChannexBookingRevision({
+        store: {
+          recordReceipt: vi.fn().mockResolvedValue({
+            status: "conflict",
+            receiptId: "receipt-1",
+            lifecycleStatus: "observed",
+          }),
+          promoteReceipt,
+        },
+        propertyId: "property-1",
+        revision: { booking_id: "booking-1", revision: "2" },
+      }),
+    ).rejects.toThrow("Pulled Channex revision conflicts with receipt");
     expect(promoteReceipt).not.toHaveBeenCalled();
   });
 });

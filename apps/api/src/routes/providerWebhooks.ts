@@ -83,6 +83,7 @@ export type ProviderWebhookStore = {
 export type ProviderWebhookRoutesOptions = {
   secrets: ProviderWebhookSecrets;
   modes?: ProviderWebhookModeConfig;
+  channexBookingPromotionEnabled?: boolean;
   store: ProviderWebhookStore;
   stripeTimestampToleranceSeconds?: number;
   now?: () => Date;
@@ -200,11 +201,12 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
     return handleAuthenticatedProviderWebhook({
       provider: "channex",
       eventType: classification.eventType,
-      mode: modeFor(options, "channex"),
+      mode: channexModeFor(options, classification),
       receiptKey: classification.receiptKey,
       reply,
       request,
       rawPayload: payload.value,
+      payloadHash: channexPayloadHash(payload.value, classification),
       store: options.store,
       normalizedPreview: previewChannexEvent(payload.value, classification),
     });
@@ -227,7 +229,7 @@ export async function promotePulledChannexBookingRevision(input: {
   }
   const receiptKeyHash = sha256(classification.receiptKey);
   const payloadHash = sha256(stableStringify(canonicalPayload(rawPayload)));
-  const normalizedPreview = previewChannexEvent(rawPayload, classification);
+  const normalizedPreview = previewChannexEvent(rawPayload, classification, "revision_feed");
   const receipt = await input.store.recordReceipt({
     provider: "channex",
     receiptKey: classification.receiptKey,
@@ -267,17 +269,20 @@ async function handleAuthenticatedProviderWebhook(input: {
   reply: FastifyReply;
   request: FastifyRequest<{ Body: string }>;
   rawPayload: Record<string, unknown>;
+  payloadHash?: string;
   store: ProviderWebhookStore;
   normalizedPreview: ProviderWebhookNormalizedPreview;
 }) {
   const receiptKeyHash = sha256(input.receiptKey);
+  const payloadHash =
+    input.payloadHash ?? sha256(stableStringify(canonicalPayload(input.rawPayload)));
   const receipt = await input.store.recordReceipt({
     provider: input.provider,
     receiptKey: input.receiptKey,
     receiptKeyHash,
     providerEventId: input.receiptKey,
     eventType: input.eventType,
-    payloadHash: sha256(stableStringify(canonicalPayload(input.rawPayload))),
+    payloadHash,
     rawHeaders: redactedHeaders(input.request),
     rawPayload: input.rawPayload,
     mode: input.mode,
@@ -338,7 +343,7 @@ async function handleAuthenticatedProviderWebhook(input: {
     receiptId: receipt.receiptId,
     receiptKey: input.receiptKey,
     receiptKeyHash,
-    payloadHash: sha256(stableStringify(canonicalPayload(input.rawPayload))),
+    payloadHash,
     rawPayload: input.rawPayload,
     normalizedPreview: input.normalizedPreview,
   });
@@ -375,6 +380,31 @@ const STRIPE_SECRET_FIELDS = new Set(["client_secret", "secret", "access_token",
 
 function modeFor(options: ProviderWebhookRoutesOptions, provider: ProviderWebhookProvider) {
   return options.modes?.[provider] ?? "observe_only";
+}
+
+function channexModeFor(
+  options: ProviderWebhookRoutesOptions,
+  classification: ChannexClassification,
+): ProviderWebhookMode {
+  const mode = modeFor(options, "channex");
+  return classification.family === "booking" &&
+    mode === "mutating" &&
+    !options.channexBookingPromotionEnabled
+    ? "observe_only"
+    : mode;
+}
+
+function channexPayloadHash(
+  payload: Record<string, unknown>,
+  classification: ChannexClassification,
+): string {
+  if (classification.family !== "booking") {
+    return sha256(stableStringify(canonicalPayload(payload)));
+  }
+  const canonical: Record<string, unknown> = { ...payload, event: "booking" };
+  delete canonical.event_type;
+  delete canonical.type;
+  return sha256(stableStringify(canonicalPayload(canonical)));
 }
 
 function verifyStripeSignature(input: {
@@ -611,7 +641,12 @@ function classifyChannexPayload(payload: Record<string, unknown>): ChannexClassi
 
 function channexEventFamily(eventType: string): ChannexEventFamily {
   if (eventType === "message") return "message";
-  if (eventType === "booking" || eventType.startsWith("booking.")) return "booking";
+  if (
+    eventType === "booking" ||
+    eventType.startsWith("booking.") ||
+    ["booking_new", "booking_modification", "booking_cancellation"].includes(eventType)
+  )
+    return "booking";
   if (eventType === "review") return "review";
   if (eventType === "updated_review") return "updated_review";
   return "unsupported";
@@ -854,6 +889,7 @@ function previewXenditEvent(
 function previewChannexEvent(
   payload: Record<string, unknown>,
   classification: ChannexClassification,
+  revisionSource: "webhook_hint" | "revision_feed" = "webhook_hint",
 ): ProviderWebhookNormalizedPreview {
   if (classification.family === "message" && classification.sourceMessageId) {
     const threadId =
@@ -895,6 +931,8 @@ function previewChannexEvent(
         propertyId: classification.propertyId,
         channelBookingId: classification.channelBookingId,
         revision,
+        revisionSource,
+        pullRequired: revisionSource === "webhook_hint",
         rawPayload: payload,
       },
     };

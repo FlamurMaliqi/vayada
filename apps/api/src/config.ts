@@ -64,6 +64,7 @@ export type ChannexManagementMode = "observe_only" | "mutating";
 export type ChannexManagementConfig = {
   apiBaseUrl?: string;
   apiKey?: string;
+  legacyBookingPollFrozen: boolean;
   workerEnabled: boolean;
   capabilityModes: {
     connection: ChannexManagementMode;
@@ -461,6 +462,11 @@ function loadChannexManagementConfig(env: NodeJS.ProcessEnv): ChannexManagementC
   };
   const apiBaseUrl = readOptionalEnv(env, "CHANNEX_API_BASE_URL");
   const apiKey = readOptionalEnv(env, "CHANNEX_API_KEY");
+  const legacyBookingPollFrozen = readBooleanEnv(
+    env,
+    "PMS_CHANNEX_LEGACY_BOOKING_POLL_FROZEN",
+    false,
+  );
   const mutating = Object.values(capabilityModes).includes("mutating");
   const durableCommandsMutating = Object.entries(capabilityModes).some(
     ([capability, value]) => capability !== "iframe" && value === "mutating",
@@ -474,9 +480,15 @@ function loadChannexManagementConfig(env: NodeJS.ProcessEnv): ChannexManagementC
   if (durableCommandsMutating && !workerEnabled) {
     throw new Error("Mutating PMS Channex capabilities require PMS_CHANNEX_WORKER_ENABLED=true");
   }
+  if (capabilityModes.bookingSync === "mutating" && !legacyBookingPollFrozen) {
+    throw new Error(
+      "Mutating PMS Channex booking sync requires PMS_CHANNEX_LEGACY_BOOKING_POLL_FROZEN=true",
+    );
+  }
   return {
     apiBaseUrl,
     apiKey,
+    legacyBookingPollFrozen,
     workerEnabled,
     capabilityModes,
   };

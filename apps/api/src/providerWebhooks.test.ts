@@ -502,6 +502,7 @@ describe("target provider webhook routes", () => {
       providerWebhooks: {
         secrets: { channex: "channex-secret" },
         modes: { channex: "mutating" },
+        channexBookingPromotionEnabled: true,
         store,
         now: () => fixedNow,
       },
@@ -552,8 +553,83 @@ describe("target provider webhook routes", () => {
         propertyId: "prop_alpenrose",
         channelBookingId: "chx_booking_123",
         revision: "7",
+        revisionSource: "webhook_hint",
+        pullRequired: true,
       },
     });
+    await app.close();
+  });
+
+  it("keeps booking receipts observe-only until target booking ingestion owns mutation", async () => {
+    const store = createMemoryProviderWebhookStore();
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { channex: "channex-secret" },
+        modes: { channex: "mutating" },
+        store,
+      },
+    });
+
+    const response = await postChannexPayload(
+      app,
+      channexBookingRevisionPayload({
+        propertyId: "prop_alpenrose",
+        bookingRevisionId: "rev_7",
+        channelBookingId: "booking_123",
+        revision: "7",
+      }),
+    );
+
+    expect(response.json()).toMatchObject({ status: "observed", mode: "observe_only" });
+    expect(store.receipts).toHaveLength(1);
+    expect(store.jobs).toHaveLength(0);
+    await app.close();
+  });
+
+  it("dedupes booking subtype aliases into one semantic revision job", async () => {
+    const store = createMemoryProviderWebhookStore();
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { channex: "channex-secret" },
+        modes: { channex: "mutating" },
+        channexBookingPromotionEnabled: true,
+        store,
+      },
+    });
+
+    const responses = [];
+    for (const event of [
+      "booking",
+      "booking_new",
+      "booking_modification",
+      "booking_cancellation",
+    ] as const) {
+      responses.push(
+        await postChannexPayload(
+          app,
+          channexBookingRevisionPayload({
+            event,
+            propertyId: "prop_alpenrose",
+            bookingRevisionId: "rev_7",
+            channelBookingId: "booking_123",
+            revision: "7",
+          }),
+        ),
+      );
+    }
+
+    expect(responses.map((response) => response.json().status)).toEqual([
+      "promoted",
+      "duplicate",
+      "duplicate",
+      "duplicate",
+    ]);
+    expect(store.receipts).toHaveLength(1);
+    expect(store.domainEvents).toHaveLength(1);
+    expect(store.jobs).toHaveLength(1);
+    expect(store.jobs[0]?.jobKey).toBe(
+      "channex.ingest-booking:channel_booking:prop_alpenrose:booking_123:revision-7:v1",
+    );
     await app.close();
   });
 
@@ -1082,13 +1158,19 @@ function channexMessagePayload(input: {
 }
 
 function channexBookingRevisionPayload(input: {
+  event?:
+    | "booking"
+    | "booking.modified"
+    | "booking_new"
+    | "booking_modification"
+    | "booking_cancellation";
   propertyId: string;
   bookingRevisionId: string;
   channelBookingId: string;
   revision: string;
 }): Record<string, unknown> {
   return {
-    event: "booking.modified",
+    event: input.event ?? "booking.modified",
     payload: {
       property_id: input.propertyId,
       booking_revision_id: input.bookingRevisionId,
