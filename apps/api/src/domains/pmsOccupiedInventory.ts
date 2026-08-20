@@ -18,12 +18,12 @@ export type PmsOccupiedInventoryClient = {
 type InventoryDay = {
   roomTypeId: string;
   stayDate: string;
-  totalCount: number | string;
-  blockedCount: number | string;
-  assignedCount: number | string;
-  effectiveSellableLimitCount: number | string;
+  totalCount: unknown;
+  blockedCount: unknown;
+  assignedCount: unknown;
+  effectiveSellableLimitCount: unknown;
   status: string;
-  expectedAssignedCount: number | string;
+  expectedAssignedCount: unknown;
 };
 
 export class PmsOccupiedInventoryInvariantError extends Error {}
@@ -44,9 +44,8 @@ export async function reconcilePmsOccupiedInventory(
      )
      SELECT day.room_type_id::text AS "roomTypeId",day.stay_date::text AS "stayDate",
        day.total_count AS "totalCount",day.blocked_count AS "blockedCount",
-       day.assigned_count AS "assignedCount",
+       day.assigned_count AS "assignedCount",day.status,
        day.effective_sellable_limit_count AS "effectiveSellableLimitCount",
-       day.status,
        (
          COALESCE((
            SELECT SUM(GREATEST(0,receipt.room_count-COALESCE((
@@ -56,17 +55,13 @@ export async function reconcilePmsOccupiedInventory(
                ON adopted.guest_booking_id=booking.id AND adopted.property_id=booking.property_id
                AND adopted.source='direct_booking' AND adopted.room_type_id=receipt.room_type_id
              WHERE booking.property_id=receipt.property_id
-               AND COALESCE(adopted.check_in,booking.check_in)=receipt.check_in
-               AND COALESCE(adopted.check_out,booking.check_out)=receipt.check_out
                AND (booking.booking_metadata#>>'{inventoryReservation,receiptId}'=
                  receipt.receipt_id::text OR booking.quote_session_id::text=receipt.quote_session_id
-                 OR booking.booking_metadata#>>'{inventoryReservation,quoteSessionId}'=
-                   receipt.quote_session_id)
+                 OR booking.booking_metadata#>>'{inventoryReservation,quoteSessionId}'=receipt.quote_session_id)
            ),0)))::int
            FROM pms.inventory_reservation_receipts receipt
            JOIN pms.inventory_reservation_statuses reservation_status
-             ON reservation_status.receipt_id=receipt.receipt_id
-            AND reservation_status.organization_id=receipt.organization_id
+             ON reservation_status.receipt_id=receipt.receipt_id AND reservation_status.organization_id=receipt.organization_id
             AND reservation_status.property_id=receipt.property_id
            WHERE receipt.property_id=day.property_id
              AND receipt.room_type_id=day.room_type_id
@@ -110,7 +105,12 @@ export async function reconcilePmsOccupiedInventory(
              AND booking.lifecycle_status IN ('confirmed','completed')
              AND COALESCE(assignment.check_in,booking.check_in)<=day.stay_date
              AND COALESCE(assignment.check_out,booking.check_out)>day.stay_date
-             AND (assignment.source<>'direct_booking' OR (
+             AND (assignment.source<>'direct_booking' OR EXISTS (
+               SELECT 1 FROM pms.inventory_reservation_receipts receipt WHERE receipt.property_id=booking.property_id
+                 AND (booking.booking_metadata#>>'{inventoryReservation,receiptId}'=
+                   receipt.receipt_id::text OR booking.quote_session_id::text=receipt.quote_session_id
+                   OR booking.booking_metadata#>>'{inventoryReservation,quoteSessionId}'=receipt.quote_session_id)
+             ) OR (
                COALESCE(assignment.check_in,booking.check_in)=booking.check_in
                AND COALESCE(assignment.check_out,booking.check_out)=booking.check_out
                AND (booking.booking_metadata#>>'{inventoryReservation,contractVersion}'
@@ -174,7 +174,8 @@ function occupiedDays(spans: readonly PmsOccupiedInventorySpan[]) {
   return [...days.values()];
 }
 
-function integer(value: number | string): number | null {
+function integer(value: unknown): number | null {
+  if (typeof value !== "number" && typeof value !== "string") return null;
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
