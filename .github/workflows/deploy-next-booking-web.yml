@@ -7,6 +7,9 @@ on:
       - main
     paths:
       - "apps/booking-web/**"
+      - "packages/**"
+      - "package.json"
+      - "package-lock.json"
       - ".github/workflows/deploy-next-booking-web.yml"
 
 permissions:
@@ -48,7 +51,8 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
-          context: ./${{ env.APP_DIR }}
+          context: .
+          file: ./${{ env.APP_DIR }}/Dockerfile
           platforms: linux/amd64
           push: true
           build-args: |
