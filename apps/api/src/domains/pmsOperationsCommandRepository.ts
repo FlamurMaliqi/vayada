@@ -94,6 +94,8 @@ import {
   type PmsRoomBlockReleaseCommand,
   type PmsRoomBlockSummary,
   type PmsRoomBlockUpdateCommand,
+  type PmsRoomOrderCommand,
+  type PmsRoomOrderCommandResult,
   type PmsRoomType,
   type PmsRoomTypeCommandResult,
   type PmsRoomTypeCreateCommand,
@@ -315,6 +317,9 @@ export function createTargetPmsOperationsCommandRepository(
   const now = config.now ?? (() => new Date());
 
   return {
+    reorderRooms(command) {
+      return executeRoomOrderCommand(pool, now, command);
+    },
     createRoomBlocks(command) {
       return executeRoomBlockCommand(pool, now, "room_block_create", command);
     },
@@ -2133,7 +2138,7 @@ async function insertInitialRooms(
        $2::uuid,
        concat($3::text, ' ', room_number_seed.max_suffix + source.n),
        'available',
-       source.n,
+       room_order_seed.max_sort_order + source.n,
        jsonb_build_object('roomTypeName', $3::text),
        $5::timestamptz,
        $5::timestamptz
@@ -2146,6 +2151,11 @@ async function insertInitialRooms(
        WHERE property_id = $1::uuid
          AND left(room_number, char_length($3::text) + 1) = $3::text || ' '
      ) room_number_seed
+     CROSS JOIN (
+       SELECT COALESCE(MAX(sort_order), 0) AS max_sort_order
+       FROM pms.rooms
+       WHERE property_id = $1::uuid AND status <> 'retired'
+     ) room_order_seed
      CROSS JOIN generate_series(1, $4::integer) AS source(n)
      ON CONFLICT (property_id, room_number) DO NOTHING
      RETURNING id`,
@@ -2181,6 +2191,259 @@ function roomTypeFromCommand(
     },
     roomCount: command.roomCount,
   };
+}
+
+async function executeRoomOrderCommand(
+  pool: PmsOperationsCommandPool,
+  now: () => Date,
+  command: PmsRoomOrderCommand,
+): Promise<PmsRoomOrderCommandResult> {
+  const client = await pool.connect();
+  const acceptedAt = now().toISOString();
+  const keyHash = sha256(command.idempotencyKey);
+  const requestFingerprintHash = sha256(stableJson(roomOrderCommandFingerprint(command)));
+  const commandMeta: PmsCommandMeta = {
+    contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+    commandId: command.commandId,
+    idempotencyKey: command.idempotencyKey,
+    acceptedAt,
+    sideEffects: ["audit_event"],
+  };
+
+  try {
+    await client.query("BEGIN");
+    const replay = await findRoomOrderCommandReplay(
+      client,
+      command,
+      keyHash,
+      requestFingerprintHash,
+    );
+    if (replay) {
+      await client.query("ROLLBACK");
+      return replay;
+    }
+    if (
+      !(await recordRoomOrderCommandIdempotency(
+        client,
+        command,
+        keyHash,
+        requestFingerprintHash,
+        acceptedAt,
+      ))
+    ) {
+      const concurrentReplay = await findRoomOrderCommandReplay(
+        client,
+        command,
+        keyHash,
+        requestFingerprintHash,
+      );
+      await client.query("ROLLBACK");
+      return (
+        concurrentReplay ??
+        roomOrderConflict(
+          "idempotency_conflict",
+          "Room reorder idempotency key could not be reserved.",
+        )
+      );
+    }
+
+    const roomTypeIds = await client.query<{ roomTypeId: string }>(
+      `SELECT DISTINCT room_type_id::text AS "roomTypeId"
+       FROM pms.rooms
+       WHERE property_id = $1::uuid AND status <> 'retired'
+       ORDER BY room_type_id::text`,
+      [command.propertyId],
+    );
+    for (const { roomTypeId } of roomTypeIds.rows) {
+      await lockPmsPhysicalRoomUnitMutationScope(client, command.propertyId, roomTypeId);
+    }
+    const current = await client.query<{ roomId: string; sortOrder: number }>(
+      `SELECT id::text AS "roomId", sort_order AS "sortOrder" FROM pms.rooms
+       WHERE property_id = $1::uuid AND status <> 'retired'
+       ORDER BY id FOR UPDATE`,
+      [command.propertyId],
+    );
+    const currentRoomIds = current.rows.map(({ roomId }) => roomId);
+    if (
+      currentRoomIds.length !== command.orderedRoomIds.length ||
+      currentRoomIds.some((roomId) => !command.orderedRoomIds.includes(roomId))
+    ) {
+      await client.query("ROLLBACK");
+      return roomOrderConflict(
+        "room_order_conflict",
+        "orderedRoomIds must contain every active room of this property exactly once.",
+      );
+    }
+
+    const result = await client.query(
+      `WITH desired AS (
+         SELECT room_id, sort_order::integer
+         FROM unnest($2::uuid[]) WITH ORDINALITY AS input(room_id, sort_order)
+       )
+       UPDATE pms.rooms room
+       SET sort_order = desired.sort_order, updated_at = $3::timestamptz
+       FROM desired
+       WHERE room.property_id = $1::uuid AND room.status <> 'retired'
+         AND room.id = desired.room_id`,
+      [command.propertyId, command.orderedRoomIds, acceptedAt],
+    );
+    if (result.rowCount !== command.orderedRoomIds.length) {
+      throw new Error("PMS room reorder update count mismatch");
+    }
+    await insertRoomOrderAuditEvent(
+      client,
+      command,
+      current.rows
+        .slice()
+        .sort(
+          (left, right) =>
+            left.sortOrder - right.sortOrder || left.roomId.localeCompare(right.roomId),
+        )
+        .map(({ roomId }) => roomId),
+      commandMeta,
+      keyHash,
+    );
+    await completeRoomOrderCommandIdempotency(client, command, commandMeta, keyHash, acceptedAt);
+    await client.query("COMMIT");
+    return { ok: true, orderedRoomIds: command.orderedRoomIds, commandMeta };
+  } catch (error) {
+    await rollbackQuietly(client);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function findRoomOrderCommandReplay(
+  client: PmsOperationsCommandClient,
+  command: PmsRoomOrderCommand,
+  keyHash: string,
+  requestFingerprintHash: string,
+): Promise<PmsRoomOrderCommandResult | null> {
+  const result = await client.query<PmsIdempotencyRow>(
+    `SELECT status, request_fingerprint_hash AS "requestFingerprintHash",
+            idempotency_metadata AS "idempotencyMetadata"
+     FROM platform.idempotency_keys
+     WHERE operation_scope = 'pms' AND operation = 'room_reorder' AND key_hash = $1
+       AND tenant_scope = 'property' AND property_id = $2::uuid
+     FOR UPDATE`,
+    [keyHash, command.propertyId],
+  );
+  const existing = result.rows[0];
+  if (!existing) return null;
+  if (existing.requestFingerprintHash !== requestFingerprintHash) {
+    return roomOrderConflict(
+      "idempotency_conflict",
+      "Idempotency key was used with a different room order.",
+    );
+  }
+  const commandMeta = existing.idempotencyMetadata?.["commandMeta"];
+  const orderedRoomIds = existing.idempotencyMetadata?.["orderedRoomIds"];
+  if (
+    existing.status !== "completed" ||
+    !isPmsCommandMeta(commandMeta) ||
+    !Array.isArray(orderedRoomIds) ||
+    !orderedRoomIds.every((roomId) => typeof roomId === "string")
+  ) {
+    return roomOrderConflict("idempotency_conflict", "Room reorder is already in progress.");
+  }
+  return { ok: true, orderedRoomIds, commandMeta, replayed: true };
+}
+
+async function recordRoomOrderCommandIdempotency(
+  client: PmsOperationsCommandClient,
+  command: PmsRoomOrderCommand,
+  keyHash: string,
+  requestFingerprintHash: string,
+  acceptedAt: string,
+): Promise<boolean> {
+  const result = await client.query(
+    `INSERT INTO platform.idempotency_keys (
+       operation_scope, operation, key_hash, request_fingerprint_hash, status,
+       tenant_scope, property_id, correlation_id, expires_at, idempotency_metadata
+     ) VALUES (
+       'pms', 'room_reorder', $1, $2, 'in_progress', 'property', $3::uuid, $4,
+       $5::timestamptz + interval '24 hours', $6::jsonb
+     ) ON CONFLICT DO NOTHING RETURNING id`,
+    [
+      keyHash,
+      requestFingerprintHash,
+      command.propertyId,
+      command.audit.correlationId ?? command.audit.requestId,
+      acceptedAt,
+      JSON.stringify({ commandId: command.commandId, audit: command.audit }),
+    ],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+async function completeRoomOrderCommandIdempotency(
+  client: PmsOperationsCommandClient,
+  command: PmsRoomOrderCommand,
+  commandMeta: PmsCommandMeta,
+  keyHash: string,
+  acceptedAt: string,
+): Promise<void> {
+  const metadata = { commandMeta, orderedRoomIds: command.orderedRoomIds };
+  await client.query(
+    `UPDATE platform.idempotency_keys
+     SET status = 'completed', response_status_code = 200,
+         response_resource_product = 'pms', response_resource_type = 'room_order',
+         response_resource_id = $1, response_body_hash = $2,
+         completed_at = $3::timestamptz, last_seen_at = $3::timestamptz,
+         idempotency_metadata = $4::jsonb
+     WHERE operation_scope = 'pms' AND operation = 'room_reorder' AND key_hash = $5
+       AND tenant_scope = 'property' AND property_id = $1::uuid`,
+    [
+      command.propertyId,
+      sha256(stableJson(metadata)),
+      acceptedAt,
+      JSON.stringify(metadata),
+      keyHash,
+    ],
+  );
+}
+
+async function insertRoomOrderAuditEvent(
+  client: PmsOperationsCommandClient,
+  command: PmsRoomOrderCommand,
+  previousRoomIds: string[],
+  commandMeta: PmsCommandMeta,
+  keyHash: string,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO platform.product_audit_events (
+       audit_key, product, action, occurred_at, tenant_scope, property_id,
+       actor_type, actor_user_id, target_resource_product, target_resource_type,
+       target_resource_id, correlation_id, causation_id, redacted_payload, audit_metadata
+     ) VALUES (
+       $1, 'pms', 'pms.rooms.reordered', $2::timestamptz, 'property', $3::uuid,
+       $4, $5::uuid, 'pms', 'room_order', $3, $6, $7, $8::jsonb, $9::jsonb
+     ) ON CONFLICT (product, audit_key) DO NOTHING`,
+    [
+      `pms.room_reorder.property.${command.propertyId}.key.${keyHash}.audit.v1`,
+      command.audit.requestedAt,
+      command.propertyId,
+      command.audit.actor.kind,
+      command.audit.actor.kind === "user" ? command.audit.actor.userId : null,
+      command.audit.correlationId ?? command.audit.requestId,
+      command.commandId,
+      JSON.stringify({ commandMeta, previousRoomIds, orderedRoomIds: command.orderedRoomIds }),
+      JSON.stringify({ reason: command.audit.reason, requestId: command.audit.requestId }),
+    ],
+  );
+}
+
+function roomOrderCommandFingerprint(command: PmsRoomOrderCommand): unknown {
+  const { audit: _audit, ...fingerprint } = command;
+  return fingerprint;
+}
+
+function roomOrderConflict(
+  code: "idempotency_conflict" | "room_order_conflict",
+  message: string,
+): Exclude<PmsRoomOrderCommandResult, { ok: true }> {
+  return { ok: false, statusCode: 409, code, message };
 }
 
 async function executeRoomBlockCommand(

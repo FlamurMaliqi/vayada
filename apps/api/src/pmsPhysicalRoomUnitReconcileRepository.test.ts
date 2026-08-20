@@ -130,7 +130,7 @@ function harness(
           })),
         );
       }
-      if (sql.startsWith("WITH inserted AS ( INSERT INTO pms.rooms")) {
+      if (sql.startsWith("WITH room_order_seed AS (")) {
         return queryResult(
           (options.insertedIds ?? [thirdUnitId]).map((roomUnitId) => ({ roomUnitId })),
         );
@@ -190,6 +190,7 @@ describe("PMS physical room unit reconcile repository", () => {
     });
     const sql = test.calls.map(({ text }) => text).join("\n");
     expect(sql).toContain("INSERT INTO pms.rooms");
+    expect(sql).toContain("MAX(sort_order)");
     expect(sql).toContain("room_units_revision = room_units_revision + 1");
     expect(sql).not.toContain("room_facts_revision");
     expect(sql).toContain("INSERT INTO platform.product_audit_events");
