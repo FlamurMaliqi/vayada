@@ -61,6 +61,7 @@ type AriRow = {
 
 export type ChannexBookingRevisionHandoff = (input: {
   propertyId: string;
+  providerPropertyId: string;
   revisions: unknown[];
 }) => Promise<void>;
 
@@ -108,7 +109,8 @@ async function plan(
     return {
       externalPropertyId,
       requests: [channexRequests.bookingRevisionFeed(externalPropertyId)],
-      bookingRevisionHandoff: (revisions) => handoff({ propertyId: job.propertyId, revisions }),
+      bookingRevisionHandoff: (revisions) =>
+        handoff({ propertyId: job.propertyId, providerPropertyId: externalPropertyId, revisions }),
     };
   }
   return {

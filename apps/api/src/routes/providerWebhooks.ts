@@ -75,6 +75,7 @@ export type ProviderWebhookPromotionResult = {
 };
 
 export type ProviderWebhookStore = {
+  resolveChannexPropertyId?(externalPropertyId: string): Promise<string | null>;
   recordReceipt(input: ProviderWebhookReceiptInput): Promise<ProviderWebhookReceiptResult>;
   promoteReceipt(input: ProviderWebhookPromotionInput): Promise<ProviderWebhookPromotionResult>;
   close?(): Promise<void>;
@@ -197,7 +198,10 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
     const payload = parseJsonPayload(request.body);
     if (!payload.ok) return reply.code(400).send({ error: "invalid_channex_payload" });
 
-    const classification = classifyChannexPayload(payload.value);
+    const classification = await resolveChannexPropertyIdentity(
+      options.store,
+      classifyChannexPayload(payload.value),
+    );
     return handleAuthenticatedProviderWebhook({
       provider: "channex",
       eventType: classification.eventType,
@@ -216,19 +220,34 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
 export async function promotePulledChannexBookingRevision(input: {
   store: ProviderWebhookStore;
   propertyId: string;
+  providerPropertyId: string;
   revision: Record<string, unknown>;
 }): Promise<ProviderWebhookPromotionResult | null> {
+  const attributes = optionalRecord(input.revision, "attributes");
+  const revision = attributes
+    ? { ...attributes, id: optionalString(input.revision, "id") ?? attributes["id"] }
+    : input.revision;
+  const declaredPropertyId = optionalString(revision, "property_id");
+  if (declaredPropertyId && declaredPropertyId !== input.providerPropertyId) {
+    throw new Error("Pulled Channex revision belongs to another provider property");
+  }
   const rawPayload = {
     event: "booking",
-    property_id: input.propertyId,
-    payload: input.revision,
+    property_id: input.providerPropertyId,
+    payload: revision,
   };
-  const classification = classifyChannexPayload(rawPayload);
+  const classified = classifyChannexPayload(rawPayload);
+  const classification = {
+    ...classified,
+    propertyId: input.propertyId,
+    providerPropertyId: input.providerPropertyId,
+    receiptKey: bookingReceiptKey(input.propertyId, classified),
+  };
   if (classification.family !== "booking" || !classification.channelBookingId) {
     throw new Error("Pulled Channex revision has no booking identity");
   }
   const receiptKeyHash = sha256(classification.receiptKey);
-  const payloadHash = sha256(stableStringify(canonicalPayload(rawPayload)));
+  const payloadHash = channexPayloadHash(rawPayload, classification);
   const normalizedPreview = previewChannexEvent(rawPayload, classification, "revision_feed");
   const receipt = await input.store.recordReceipt({
     provider: "channex",
@@ -389,7 +408,7 @@ function channexModeFor(
   const mode = modeFor(options, "channex");
   return classification.family === "booking" &&
     mode === "mutating" &&
-    !options.channexBookingPromotionEnabled
+    (!options.channexBookingPromotionEnabled || classification.bookingOwnerResolved === false)
     ? "observe_only"
     : mode;
 }
@@ -398,13 +417,44 @@ function channexPayloadHash(
   payload: Record<string, unknown>,
   classification: ChannexClassification,
 ): string {
-  if (classification.family !== "booking") {
+  if (
+    classification.family !== "booking" ||
+    !classification.channelBookingId ||
+    !classification.revision
+  ) {
     return sha256(stableStringify(canonicalPayload(payload)));
   }
-  const canonical: Record<string, unknown> = { ...payload, event: "booking" };
-  delete canonical.event_type;
-  delete canonical.type;
-  return sha256(stableStringify(canonicalPayload(canonical)));
+  return sha256(
+    stableStringify({
+      propertyId: classification.propertyId,
+      channelBookingId: classification.channelBookingId,
+      revision: classification.revision,
+    }),
+  );
+}
+
+async function resolveChannexPropertyIdentity(
+  store: ProviderWebhookStore,
+  classification: ChannexClassification,
+): Promise<ChannexClassification> {
+  if (classification.family !== "booking") return classification;
+  const providerPropertyId = classification.propertyId;
+  const propertyId = store.resolveChannexPropertyId
+    ? await store.resolveChannexPropertyId(providerPropertyId)
+    : providerPropertyId;
+  return {
+    ...classification,
+    propertyId: propertyId ?? providerPropertyId,
+    providerPropertyId,
+    bookingOwnerResolved: propertyId !== null,
+    receiptKey: bookingReceiptKey(propertyId ?? providerPropertyId, classification),
+  };
+}
+
+function bookingReceiptKey(propertyId: string, classification: ChannexClassification): string {
+  return classification.channelBookingId && classification.revision
+    ? `webhook:channex:booking:${propertyId}:${classification.channelBookingId}:${classification.revision}`
+    : classification.receiptKey;
 }
 
 function verifyStripeSignature(input: {
@@ -524,6 +574,8 @@ type ChannexClassification = {
   family: ChannexEventFamily;
   receiptKey: string;
   propertyId: string;
+  providerPropertyId?: string;
+  bookingOwnerResolved?: boolean;
   sourceMessageId?: string;
   channelBookingId?: string;
   revision?: string;
@@ -574,23 +626,24 @@ function classifyChannexPayload(payload: Record<string, unknown>): ChannexClassi
       optionalRecord(nestedPayload, "booking") ??
       optionalRecord(nestedPayload, "revision") ??
       optionalRecord(payload, "booking") ??
-      {};
+      nestedPayload;
     const revisionId =
       optionalString(nestedPayload, "booking_revision_id") ??
       optionalString(nestedPayload, "revision_id") ??
       optionalString(booking, "booking_revision_id") ??
-      optionalString(booking, "revision_id");
+      optionalString(booking, "revision_id") ??
+      optionalString(nestedPayload, "id");
     const channelBookingId =
       optionalString(nestedPayload, "channel_booking_id") ??
       optionalString(nestedPayload, "booking_id") ??
       optionalString(booking, "channel_booking_id") ??
       optionalString(booking, "id");
     const revision =
+      revisionId ??
       optionalString(nestedPayload, "revision") ??
       optionalString(nestedPayload, "revision_number") ??
       optionalString(booking, "revision") ??
       optionalString(booking, "revision_number") ??
-      revisionId ??
       "unknown";
 
     if (revisionId || channelBookingId) {
@@ -600,7 +653,7 @@ function classifyChannexPayload(payload: Record<string, unknown>): ChannexClassi
         propertyId,
         channelBookingId: channelBookingId ?? revisionId,
         revision,
-        receiptKey: `webhook:channex:booking:${propertyId}:${revisionId ?? channelBookingId}:${revision}`,
+        receiptKey: `webhook:channex:booking:${propertyId}:${channelBookingId ?? revisionId}:${revision}`,
       };
     }
   }
@@ -929,6 +982,7 @@ function previewChannexEvent(
       payload: {
         provider: "channex",
         propertyId: classification.propertyId,
+        providerPropertyId: classification.providerPropertyId ?? classification.propertyId,
         channelBookingId: classification.channelBookingId,
         revision,
         revisionSource,

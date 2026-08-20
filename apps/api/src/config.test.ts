@@ -36,7 +36,7 @@ const completeAuthSessionEnv = {
 describe("api config", () => {
   it("keeps Channex management fail-closed until each capability is cut over", () => {
     expect(loadConfig({}).channexManagement).toMatchObject({
-      legacyBookingPollFrozen: false,
+      bookingMutationOwner: "legacy",
       workerEnabled: false,
       capabilityModes: {
         connection: "observe_only",
@@ -110,12 +110,13 @@ describe("api config", () => {
       PMS_CHANNEX_BOOKING_SYNC_MODE: "mutating",
     };
     expect(() => loadConfig(base)).toThrow(
-      "Mutating PMS Channex booking sync requires PMS_CHANNEX_LEGACY_BOOKING_POLL_FROZEN=true",
+      "Mutating PMS Channex booking sync requires CHANNEX_ADMIN_MANUAL_BOOKING_SYNC_MODE=target-owned",
     );
     expect(
-      loadConfig({ ...base, PMS_CHANNEX_LEGACY_BOOKING_POLL_FROZEN: "true" }).channexManagement,
+      loadConfig({ ...base, CHANNEX_ADMIN_MANUAL_BOOKING_SYNC_MODE: "target-owned" })
+        .channexManagement,
     ).toMatchObject({
-      legacyBookingPollFrozen: true,
+      bookingMutationOwner: "target",
       workerEnabled: true,
       capabilityModes: { bookingSync: "mutating" },
     });

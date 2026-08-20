@@ -170,6 +170,7 @@ describe("target Channex management plans", () => {
     await bookings.bookingRevisionHandoff?.([{ id: "revision-1" }]);
     expect(handoff).toHaveBeenCalledWith({
       propertyId: "property-1",
+      providerPropertyId: "external-1",
       revisions: [{ id: "revision-1" }],
     });
     expect(db.sql()).not.toMatch(/external_webhook_events|legacy/i);
