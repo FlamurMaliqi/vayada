@@ -26,6 +26,11 @@ ECS-backed workflows publish a SHA-pinned image and send an
 service update. GitHub Actions authenticates through
 `arn:aws:iam::269416271598:role/vayada-github-actions-deploy`.
 
+The Next TypeScript API image applies pending target migrations before its HTTP
+server starts. See
+[`target-database-deployment-migrations.md`](target-database-deployment-migrations.md)
+for the deployment gate, evidence, and recovery procedure.
+
 ## Frozen canonical frontends
 
 Canonical frontend services continue to run their existing legacy-API images.

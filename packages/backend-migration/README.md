@@ -4,6 +4,12 @@
 rebuilds, source-to-target transforms, and parity checks for the TypeScript
 backend rewrite.
 
+Deployed `next-api` images run `target:migrate:dist` before starting the HTTP
+server. The image embeds its application commit as `APPLICATION_RELEASE`, and
+the CLI stores that value in `platform.schema_migrations.git_sha`. See
+[`engineering/target-database-deployment-migrations.md`](../../engineering/target-database-deployment-migrations.md)
+for normal deployment, verification, and failure recovery.
+
 ## Target Manual-Booking Readiness
 
 Run the read-only VAY-1259 gate with a reviewed rehearsal manifest:

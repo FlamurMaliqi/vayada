@@ -8,6 +8,7 @@ on:
     paths:
       - "apps/api/**"
       - "packages/**"
+      - "scripts/start-next-api.sh"
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/deploy-next-api.yml"
@@ -57,6 +58,7 @@ jobs:
           push: true
           build-args: |
             API_RUNTIME=next
+            APPLICATION_RELEASE=${{ github.sha }}
           tags: |
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-latest
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-${{ github.sha }}

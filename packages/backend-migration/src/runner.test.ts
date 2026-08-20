@@ -152,6 +152,7 @@ describe.skipIf(!TEST_DATABASE_URL)("runMigrations (integration)", () => {
       migrationsDir: tmpDir,
       environment: "local",
       appliedBy: "test",
+      gitSha: "0123456789abcdef0123456789abcdef01234567",
     });
 
     expect(result.applied).toEqual(["0001"]);
@@ -167,9 +168,10 @@ describe.skipIf(!TEST_DATABASE_URL)("runMigrations (integration)", () => {
         status: string;
         checksum_sha256: string;
         applied_by: string;
+        git_sha: string | null;
         failure_reason: string | null;
       }>(
-        `SELECT version, name, status, checksum_sha256, applied_by, failure_reason
+        `SELECT version, name, status, checksum_sha256, applied_by, git_sha, failure_reason
          FROM platform.schema_migrations WHERE version = '0001'`,
       );
       expect(rows).toHaveLength(1);
@@ -177,6 +179,7 @@ describe.skipIf(!TEST_DATABASE_URL)("runMigrations (integration)", () => {
       expect(rows[0].name).toBe("test");
       expect(rows[0].status).toBe("applied");
       expect(rows[0].applied_by).toBe("test");
+      expect(rows[0].git_sha).toBe("0123456789abcdef0123456789abcdef01234567");
       expect(rows[0].failure_reason).toBeNull();
       expect(rows[0].checksum_sha256).toBe(
         computeChecksum(`CREATE SCHEMA IF NOT EXISTS migration_runner_test;`),
