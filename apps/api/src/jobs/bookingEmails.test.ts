@@ -91,6 +91,7 @@ describe("booking lifecycle email jobs", () => {
       const payload = JSON.parse(
         String(target.requiredCall("INSERT INTO platform.jobs").values?.[8]),
       );
+      expect(payload.subject).not.toContain(paymentMethod);
       expect(payload.text).not.toContain(paymentMethod);
     },
   );
