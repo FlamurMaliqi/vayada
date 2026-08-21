@@ -8,6 +8,7 @@ import {
   FinanceFolioEvidenceError,
   type FinanceFolioReadPool,
 } from "./financeFolioReadRepository.js";
+import type { FinanceFolioRecipientDecoderInput } from "./financeFolioRecipientCodec.js";
 
 const URL = process.env["TEST_DATABASE_URL"];
 const PROPERTY = "11320000-0000-4000-8000-000000000001",
@@ -42,7 +43,8 @@ const propertyContext = {
 describe.skipIf(!URL)("PostgreSQL Finance folio read repository", () => {
   const admin = new pg.Client({ connectionString: URL ?? "postgresql://disabled" });
   const pricing = createPgPmsPricingReadModel({ connectionString: URL ?? "postgresql://disabled" });
-  const read = createPgFinanceFolioReadRepository({ connectionString: URL, pricing, propertyContext, recipientDecoder: { async decode() { return { name: "Ada Lovelace", email: "ada@example.com", taxId: "must-not-leak" }; } }, now: () => new Date("2026-08-20T10:00:00.000Z") });
+  const recipientInputs: FinanceFolioRecipientDecoderInput[] = [];
+  const read = createPgFinanceFolioReadRepository({ connectionString: URL, pricing, propertyContext, recipientDecoder: { async decode(input) { recipientInputs.push(input); return { name: "Ada Lovelace", email: "ada@example.com", taxId: "must-not-leak" }; } }, now: () => new Date("2026-08-20T10:00:00.000Z") });
   beforeAll(async () => {
     await admin.connect(); await cleanup();
     await admin.query(`INSERT INTO hotel_catalog.properties (id,public_id,display_name) VALUES ('${PROPERTY}','folio-read','Folio read'),('${EMPTY}','folio-empty','Folio empty'),('${OTHER}','folio-other','Folio other');
@@ -68,6 +70,7 @@ describe.skipIf(!URL)("PostgreSQL Finance folio read repository", () => {
     await expect(read.detail(OTHER, FOLIO)).resolves.toBeNull();
     const result = await read.detail(PROPERTY, FOLIO);
     expect(result).toMatchObject({ contractVersion: "pms-financials.v1", propertyId: PROPERTY, currency: "EUR", timeZone: "Europe/Berlin", item: { folioId: FOLIO, revision: 2, state: "ready", recipient: { name: "Ada Lovelace", email: "ada@example.com" }, total: { amount: "12.0000", currency: "EUR" }, lines: [{ quantity: "1.5000", unitAmount: { amount: "8.0000" }, total: { amount: "12.0000" } }], paymentRefs: [{ paymentId: PAYMENT, amount: { amount: "12.0000" } }], sourceFreshness: { booking: "2026-08-20T07:00:00.000Z" } } });
+    expect(recipientInputs.at(-1)).toMatchObject({ propertyId: PROPERTY, folioId: FOLIO, revision: 2, encryptionScheme: "envelope_aead_v1", keyVersion: "key-1" });
     const corruptPool: FinanceFolioReadPool = { async query<T extends QueryResultRow>(sql: string, values?: readonly unknown[]) { const result = await admin.query(sql, values as unknown[]); return { rows: result.rows.map((row) => Object.hasOwn(row, "serviceFrom") ? { ...row, serviceFrom: "2026-08-03", serviceTo: "2026-08-02" } : row) as T[] }; } }; const corrupt = createPgFinanceFolioReadRepository({ pool: corruptPool, pricing, propertyContext, recipientDecoder: { async decode() { return { name: "Ada", email: null }; } } }); await expect(corrupt.detail(PROPERTY, FOLIO)).rejects.toBeInstanceOf(FinanceFolioEvidenceError); await corrupt.close();
     expect(Object.keys(result!.item.recipient)).toEqual(["name", "email"]);
     await expect(read.detail(PROPERTY, "11320000-0000-4000-8000-000000000007")).rejects.toBeInstanceOf(FinanceFolioEvidenceError);
