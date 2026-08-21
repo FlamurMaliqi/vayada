@@ -142,6 +142,19 @@ describe("Financials folio read contract", () => {
       }),
     ).toThrow(FinanceFolioCsvError);
   });
+
+  it("rejects a folio whose total does not reconcile with valid line totals", () => {
+    const folio = folioFixture();
+    folio.total.amount = "6.0000";
+
+    expect(() =>
+      buildFinanceFolioCsvArtifact({
+        propertyId: folio.propertyId,
+        currency: folio.currency,
+        folios: [folio],
+      }),
+    ).toThrow(FinanceFolioCsvError);
+  });
 });
 
 function folioFixture(): FinanceFolio {
