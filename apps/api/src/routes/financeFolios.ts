@@ -5,13 +5,16 @@ import {
   parseFinanceFolioQuery,
   type FinanceFolioDetailResponse,
   type FinanceFolioListResponse,
+  type FinanceFolioQuery,
 } from "@vayada/domain-finance";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import {
+  canonicalFinanceFolioZone,
   FinanceFolioCursorError,
   FinanceFolioEvidenceError,
+  isFinanceFolioCursor,
   type FinanceFolioReadRepository,
 } from "../domains/financeFolioReadRepository.js";
 import { enforceRoutePolicy } from "./policy.js";
@@ -38,7 +41,7 @@ export async function registerFinanceFolioRoutes(
       if (!query) return bad(reply);
       const propertyId = scopes.get(request)!.propertyId;
       const value = await options.repository.list(propertyId, query);
-      return value ? reply.send(listResponse(value, propertyId)) : missing(reply);
+      return value ? reply.send(listResponse(value, propertyId, query)) : missing(reply);
     }),
   );
 
@@ -97,7 +100,7 @@ const validInterval = (value: { serviceFrom: string; serviceTo: string }) =>
   value.serviceTo >= value.serviceFrom;
 const folioSummary = z.object(summaryShape).strict().refine(validInterval);
 // prettier-ignore
-const envelope = z.object({ contractVersion: z.literal(PMS_FINANCIALS_CONTRACT_VERSION), propertyId: id, currency, timeZone: z.string().refine(zone), generatedAt: instant, sourceFreshness: z.record(z.string(), z.string()), incompleteEvidence: z.array(z.object({ code: z.string(), count: z.number().int().nonnegative(), amount: money.optional() }).strict()) }).strict();
+const envelope = z.object({ contractVersion: z.literal(PMS_FINANCIALS_CONTRACT_VERSION), propertyId: id, currency, timeZone: z.string().refine(canonicalFinanceFolioZone), generatedAt: instant, sourceFreshness: z.record(z.string(), z.string()), incompleteEvidence: z.array(z.object({ code: z.string(), count: z.number().int().nonnegative(), amount: money.optional() }).strict()) }).strict();
 // prettier-ignore
 const line = z.object({ lineId: id, position: z.number().int().positive(), kind: z.enum(["room", "addon", "fee", "tax", "adjustment"]), description: z.string(), quantity: decimal, unitAmount: money, total: money, serviceOn: date, source: z.object({ type: z.string(), id: z.string(), revision: z.number().int().positive() }).strict() }).strict();
 // prettier-ignore
@@ -113,11 +116,22 @@ const listSchema = envelope.extend({
 });
 const detailSchema = envelope.extend({ item: folio });
 
-function listResponse(value: FinanceFolioListResponse, propertyId: string) {
+function listResponse(
+  value: FinanceFolioListResponse,
+  propertyId: string,
+  query: FinanceFolioQuery,
+) {
   const parsed = listSchema.safeParse(value);
   if (
     !parsed.success ||
     parsed.data.propertyId !== propertyId ||
+    (parsed.data.page.nextCursor !== null &&
+      !isFinanceFolioCursor(
+        parsed.data.page.nextCursor,
+        propertyId,
+        parsed.data.currency,
+        query,
+      )) ||
     parsed.data.incompleteEvidence.some(
       (item) => item.amount && item.amount.currency !== parsed.data.currency,
     ) ||
@@ -158,13 +172,6 @@ function trimmed(value: string) {
 }
 function email(value: string) {
   return trimmed(value) && value.includes("@");
-}
-function zone(value: string) {
-  try {
-    return new Intl.DateTimeFormat("en", { timeZone: value }).resolvedOptions().timeZone === value;
-  } catch {
-    return false;
-  }
 }
 // prettier-ignore
 function utc(value: string) { const match = /^((?!0000)\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?Z$/.exec(value); if (!match) return false; const year=Number(match[1]),month=Number(match[2]),day=Number(match[3]),hour=Number(match[4]),minute=Number(match[5]),second=Number(match[6]),parsed=new Date(0); parsed.setUTCFullYear(year,month-1,day); parsed.setUTCHours(hour,minute,second,0); return Number.isFinite(parsed.getTime()) && parsed.getUTCFullYear()===year && parsed.getUTCMonth()===month-1 && parsed.getUTCDate()===day && parsed.getUTCHours()===hour && parsed.getUTCMinutes()===minute && parsed.getUTCSeconds()===second; }

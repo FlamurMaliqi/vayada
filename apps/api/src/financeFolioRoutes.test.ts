@@ -44,7 +44,7 @@ const summary = {
 };
 const list: FinanceFolioListResponse = {
   ...base,
-  page: { items: [summary], nextCursor: "cursor", limit: 1 },
+  page: { items: [summary], nextCursor: null, limit: 1 },
 };
 // prettier-ignore
 const detail: FinanceFolioDetailResponse = { ...base, item: { ...summary, propertyId, recipient: { name: "Ada Lovelace", email: "ada@example.com" }, currency: "EUR", lines: [{ lineId, position: 1, kind: "room", description: "Stay", quantity: "1.0000", unitAmount: money, total: money, serviceOn: "2026-08-20", source: { type: "booking_night", id: bookingId, revision: 3 } }], paymentRefs: [{ paymentId, amount: money }], sourceDigest: "a".repeat(64), sourceFreshness: { booking: now } } };
@@ -116,17 +116,10 @@ describe("Financials folio read routes", () => {
     expect(invalid.statusCode).toBe(500);
     expect(JSON.stringify(invalid.json())).not.toContain("must-not-leak");
 
-    for (const item of [
-      { ...summary, total: { ...money, amount: "12" } },
-      { ...summary, total: { ...money, currency: "USD" } },
-      { ...summary, createdAt: "2026-02-31T00:00:00.000Z" },
-    ]) {
-      repository.list.mockResolvedValueOnce({
-        ...list,
-        page: { ...list.page, items: [item] },
-      } as never);
-      expect(await instance.inject({ method: "GET", url: root })).toHaveProperty("statusCode", 500);
-    }
+    // prettier-ignore
+    for (const page of [{ ...list.page, items: [{ ...summary, total: { ...money, amount: "12" } }] }, { ...list.page, items: [{ ...summary, total: { ...money, currency: "USD" } }] }, { ...list.page, items: [{ ...summary, createdAt: "2026-02-31T00:00:00.000Z" }] }, { ...list.page, nextCursor: "not valid" }, { ...list.page, nextCursor: Buffer.from(JSON.stringify({ v: 1, q: [otherPropertyId, "EUR", null, null, null, null, "createdAt_desc"], p: [now, folioId] })).toString("base64url") }]) { repository.list.mockResolvedValueOnce({ ...list, page } as never); expect(await instance.inject({ method: "GET", url: root })).toHaveProperty("statusCode", 500); }
+    repository.list.mockResolvedValueOnce({ ...list, timeZone: "Etc/UTC" });
+    expect(await instance.inject({ method: "GET", url: root })).toHaveProperty("statusCode", 200);
   });
 
   it("enforces the complete read denial matrix before validation or ports", async () => {

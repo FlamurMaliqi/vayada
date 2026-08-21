@@ -63,7 +63,7 @@ export function createPgFinanceFolioReadRepository(config: { connectionString?: 
   const meta = async (rawPropertyId: string): Promise<Meta | null> => {
     const propertyId = uuid(rawPropertyId); const [pricing, context] = await Promise.all([config.pricing.getPropertyPricingCurrency(propertyId), config.propertyContext.getPropertyContext(propertyId)]);
     if (!context) return null;
-    if (!pricing || pricing.contractVersion !== PMS_PRICING_CONTRACT_VERSION || pricing.propertyId.toLowerCase() !== propertyId || !/^[A-Z]{3}$/.test(pricing.currency) || !Number.isSafeInteger(pricing.pricingCurrencyRevision) || pricing.pricingCurrencyRevision < 1 || context.source.ownerDomain !== "hotel_catalog" || context.source.entityType !== "property_profile" || context.source.entityId.toLowerCase() !== propertyId || !/^profile:[1-9]\d*$/.test(context.source.revision) || !canonicalZone(context.timeZone) || !utc(pricing.updatedAt) || !utc(context.updatedAt)) throw new FinanceFolioEvidenceError("Property currency or timezone evidence is unavailable");
+    if (!pricing || pricing.contractVersion !== PMS_PRICING_CONTRACT_VERSION || pricing.propertyId.toLowerCase() !== propertyId || !/^[A-Z]{3}$/.test(pricing.currency) || !Number.isSafeInteger(pricing.pricingCurrencyRevision) || pricing.pricingCurrencyRevision < 1 || context.source.ownerDomain !== "hotel_catalog" || context.source.entityType !== "property_profile" || context.source.entityId.toLowerCase() !== propertyId || !/^profile:[1-9]\d*$/.test(context.source.revision) || !canonicalFinanceFolioZone(context.timeZone) || !utc(pricing.updatedAt) || !utc(context.updatedAt)) throw new FinanceFolioEvidenceError("Property currency or timezone evidence is unavailable");
     return { propertyId, currency: pricing.currency, timeZone: context.timeZone, generatedAt: (config.now?.() ?? new Date()).toISOString(), sourceFreshness: { pmsPricing: pricing.updatedAt, pmsPricingRevision: String(pricing.pricingCurrencyRevision), hotelCatalog: context.updatedAt, hotelCatalogRevision: context.source.revision } };
   };
   return {
@@ -249,7 +249,7 @@ function instant(value: Date | string): string {
 }
 // prettier-ignore
 function utc(value: unknown): value is string { if (typeof value !== "string") return false; const match = /^((?!0000)\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?Z$/.exec(value); if (!match) return false; const year=Number(match[1]),month=Number(match[2]),day=Number(match[3]),hour=Number(match[4]),minute=Number(match[5]),second=Number(match[6]), parsed=new Date(0); parsed.setUTCFullYear(year,month-1,day); parsed.setUTCHours(hour,minute,second,0); return Number.isFinite(parsed.getTime()) && parsed.getUTCFullYear()===year && parsed.getUTCMonth()===month-1 && parsed.getUTCDate()===day && parsed.getUTCHours()===hour && parsed.getUTCMinutes()===minute && parsed.getUTCSeconds()===second; }
-function canonicalZone(value: unknown): value is string {
+export function canonicalFinanceFolioZone(value: unknown): value is string {
   if (typeof value !== "string") return false;
   try {
     const zone = getTimezone(value);
@@ -258,6 +258,8 @@ function canonicalZone(value: unknown): value is string {
     return false;
   }
 }
+// prettier-ignore
+export function isFinanceFolioCursor(token: string, propertyId: string, currency: string, query: FinanceFolioQuery): boolean { try { decodeCursor(token, { propertyId, currency, timeZone: "", generatedAt: "", sourceFreshness: {} }, query); return true; } catch { return false; } }
 function scheme(value: string): "envelope_aead_v1" {
   if (value !== "envelope_aead_v1")
     throw new FinanceFolioEvidenceError("Folio recipient encryption evidence is invalid");
