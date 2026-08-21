@@ -1,6 +1,6 @@
 "use client";
 
-import { SettingsSection, SettingsCard, FormRow } from "./layout";
+import { SettingsSection, SettingsCard, FormRow } from "@vayada/settings-ui";
 import { TIMEZONE_OPTIONS } from "./constants";
 import {
   canSavePmsPropertyDetails,
