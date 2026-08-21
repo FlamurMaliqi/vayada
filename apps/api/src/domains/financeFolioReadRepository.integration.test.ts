@@ -94,9 +94,9 @@ describe.skipIf(!URL)("PostgreSQL Finance folio read repository", () => {
   });
 
   it("retries an exact ready manifest with originating currency and whitelisted PII", async () => {
-    const snapshot = await read.captureReadyExport(PROPERTY, "EUR", { state: "ready", search: FOLIO, sort: "createdAt_desc" });
+    const snapshot = await read.captureReadyExport(PROPERTY.toUpperCase(), "EUR", { state: "ready", search: FOLIO, sort: "createdAt_desc" });
     expect(snapshot).toMatchObject({ formatVersion: "pms-financials-folios.v1", propertyId: PROPERTY, currency: "EUR", manifest: [{ folioId: FOLIO, revisionId: REVISION_2, revision: 2, sourceDigest: "c".repeat(64) }] });
-    const artifact = await read.exportReady(PROPERTY, "EUR", snapshot!); expect(artifact).toMatchObject({ rowCount: 1, auditEvidence: [{ folioId: FOLIO, revision: 2 }] });
+    const artifact = await read.exportReady(PROPERTY.toUpperCase(), "EUR", snapshot!); expect(artifact).toMatchObject({ rowCount: 1, auditEvidence: [{ folioId: FOLIO, revision: 2 }] });
     expect(artifact!.body).toContain("Ada Lovelace"); expect(artifact!.body).not.toMatch(/must-not-leak|taxId|11320000-0000-4000-8000-000000000005/);
     await expect(read.exportReady(PROPERTY, "EUR", snapshot!)).resolves.toEqual(artifact);
     await expect(read.exportReady(PROPERTY, "EUR", { ...snapshot!, manifest: [{ ...snapshot!.manifest[0]!, sourceDigest: "d".repeat(64) }] })).rejects.toBeInstanceOf(FinanceFolioEvidenceError);

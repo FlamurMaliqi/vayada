@@ -123,7 +123,7 @@ export function createPgFinanceFolioReadRepository(config: { connectionString?: 
       if (!snapshot) throw new FinanceFolioEvidenceError("Folio export manifest is invalid"); return snapshot;
     },
     async exportReady(propertyId, currency, rawSnapshot) {
-      const snapshot = parseFinanceFolioExportSnapshot(rawSnapshot); if (!snapshot || snapshot.propertyId !== propertyId || snapshot.currency !== currency) throw new FinanceFolioEvidenceError("Folio export manifest scope changed");
+      const snapshot = parseFinanceFolioExportSnapshot(rawSnapshot); if (!snapshot || snapshot.propertyId !== uuid(propertyId) || snapshot.currency !== currency) throw new FinanceFolioEvidenceError("Folio export manifest scope changed");
       const evidence = await meta(propertyId); if (!evidence) return null;
       if (currency !== evidence.currency) throw new FinanceFolioEvidenceError("Folio export currency changed");
       const rows = (await pool.query<DetailRow>(`SELECT ${READY_SUMMARY},${DETAIL} FROM unnest($3::uuid[]) WITH ORDINALITY selected(id,ordinal) JOIN finance.folio_revisions r ON r.id=selected.id JOIN finance.folios f ON f.id=r.folio_id AND f.property_id=r.property_id WHERE f.property_id=$1::uuid AND r.currency=$2 AND r.state='ready' ORDER BY selected.ordinal`, [evidence.propertyId, currency, snapshot.manifest.map(({ revisionId }) => revisionId)])).rows;
