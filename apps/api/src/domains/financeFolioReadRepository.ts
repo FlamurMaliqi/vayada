@@ -2,10 +2,17 @@ import { getTimezone } from "countries-and-timezones";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import {
+  buildFinanceFolioCsvArtifact,
+  FINANCE_FOLIO_CSV_VERSION,
   PMS_FINANCIALS_CONTRACT_VERSION,
+  parseFinanceFolioExportFilters,
+  parseFinanceFolioExportSnapshot,
   parseFinanceFolioQuery,
   type FinanceFolio,
+  type FinanceFolioCsvArtifact,
   type FinanceFolioDetailResponse,
+  type FinanceFolioExportFilters,
+  type FinanceFolioExportSnapshot,
   type FinanceFolioListResponse,
   type FinanceFolioQuery,
   type FinanceFolioSummary,
@@ -21,6 +28,16 @@ export type FinanceFolioReadPool = ReadClient & { end?(): Promise<void> };
 export type FinanceFolioReadRepository = {
   list(propertyId: string, query: FinanceFolioQuery): Promise<FinanceFolioListResponse | null>;
   detail(propertyId: string, folioId: string): Promise<FinanceFolioDetailResponse | null>;
+  captureReadyExport(
+    propertyId: string,
+    currency: string,
+    filters: FinanceFolioExportFilters,
+  ): Promise<FinanceFolioExportSnapshot | null>;
+  exportReady(
+    propertyId: string,
+    currency: string,
+    snapshot: FinanceFolioExportSnapshot,
+  ): Promise<FinanceFolioCsvArtifact | null>;
   close(): Promise<void>;
 };
 export class FinanceFolioCursorError extends TypeError {
@@ -51,6 +68,8 @@ type Cursor = { key: string; id: string };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const STATE = `CASE WHEN EXISTS (SELECT 1 FROM finance.folio_revisions later WHERE later.folio_id=r.folio_id AND later.revision>r.revision) THEN 'superseded' ELSE r.state END`;
 const SUMMARY = `f.id::text AS "folioId",f.guest_booking_id::text AS "bookingId",r.id::text AS "revisionId",r.revision::int AS revision,${STATE} AS state,r.service_from::text AS "serviceFrom",r.service_to::text AS "serviceTo",r.total_amount::text AS "totalAmount",r.currency::text AS currency,to_char(r.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt"`;
+const READY_SUMMARY = SUMMARY.replace(STATE, "r.state");
+const DETAIL = `r.recipient_snapshot_ciphertext AS "recipientCiphertext",r.recipient_encryption_scheme AS "recipientEncryptionScheme",r.recipient_key_version AS "recipientKeyVersion",r.source_digest::text AS "sourceDigest",r.source_freshness AS "sourceFreshness",COALESCE((SELECT jsonb_agg(jsonb_build_object('lineId',l.id::text,'position',l.position,'kind',l.kind,'description',l.description,'quantity',l.quantity::text,'unitAmount',l.unit_amount::text,'total',l.line_total::text,'serviceOn',l.service_on::text,'sourceType',l.source_type,'sourceId',l.source_id,'sourceRevision',l.source_revision) ORDER BY l.position) FROM finance.folio_lines l WHERE l.folio_revision_id=r.id),'[]') AS lines,COALESCE((SELECT jsonb_agg(jsonb_build_object('paymentId',p.payment_id::text,'amount',p.amount::text) ORDER BY p.position) FROM finance.folio_payment_references p WHERE p.folio_revision_id=r.id),'[]') AS "paymentRefs"`;
 
 // PostgreSQL owns only Finance folio rows; currency and timezone cross this boundary through typed owner ports.
 // prettier-ignore
@@ -85,15 +104,59 @@ export function createPgFinanceFolioReadRepository(config: { connectionString?: 
     },
     async detail(propertyId, folioId) {
       const evidence = await meta(propertyId); if (!evidence) return null;
-      const row = (await pool.query<DetailRow>(`SELECT ${SUMMARY},r.recipient_snapshot_ciphertext AS "recipientCiphertext",r.recipient_encryption_scheme AS "recipientEncryptionScheme",r.recipient_key_version AS "recipientKeyVersion",r.source_digest::text AS "sourceDigest",r.source_freshness AS "sourceFreshness",COALESCE((SELECT jsonb_agg(jsonb_build_object('lineId',l.id::text,'position',l.position,'kind',l.kind,'description',l.description,'quantity',l.quantity::text,'unitAmount',l.unit_amount::text,'total',l.line_total::text,'serviceOn',l.service_on::text,'sourceType',l.source_type,'sourceId',l.source_id,'sourceRevision',l.source_revision) ORDER BY l.position) FROM finance.folio_lines l WHERE l.folio_revision_id=r.id),'[]') AS lines,COALESCE((SELECT jsonb_agg(jsonb_build_object('paymentId',p.payment_id::text,'amount',p.amount::text) ORDER BY p.position) FROM finance.folio_payment_references p WHERE p.folio_revision_id=r.id),'[]') AS "paymentRefs" FROM finance.folios f JOIN LATERAL (SELECT * FROM finance.folio_revisions candidate WHERE candidate.folio_id=f.id AND candidate.property_id=f.property_id ORDER BY candidate.revision DESC LIMIT 1) r ON true WHERE f.property_id=$1::uuid AND f.id=$2::uuid AND r.currency=$3`, [evidence.propertyId, uuid(folioId), evidence.currency])).rows[0];
+      const row = (await pool.query<DetailRow>(`SELECT ${SUMMARY},${DETAIL} FROM finance.folios f JOIN LATERAL (SELECT * FROM finance.folio_revisions candidate WHERE candidate.folio_id=f.id AND candidate.property_id=f.property_id ORDER BY candidate.revision DESC LIMIT 1) r ON true WHERE f.property_id=$1::uuid AND f.id=$2::uuid AND r.currency=$3`, [evidence.propertyId, uuid(folioId), evidence.currency])).rows[0];
       if (!row) return null;
-      const itemSummary = summary(row, evidence.currency);
-      const decoded = await config.recipientDecoder.decode({ propertyId: evidence.propertyId, folioId: itemSummary.folioId, revision: itemSummary.revision, ciphertext: row.recipientCiphertext, encryptionScheme: scheme(row.recipientEncryptionScheme), keyVersion: row.recipientKeyVersion });
-      const recipient = whitelistRecipient(decoded), sourceFreshness = stringRecord(row.sourceFreshness);
-      const item: FinanceFolio = { ...itemSummary, propertyId: evidence.propertyId, recipient, currency: evidence.currency, lines: lines(row.lines, evidence.currency), paymentRefs: paymentRefs(row.paymentRefs, evidence.currency), sourceDigest: digest(row.sourceDigest), sourceFreshness };
+      const item = await hydrate(row, evidence, config.recipientDecoder);
       return { ...envelope(evidence, instant(row.createdAt)), item };
     },
+    async captureReadyExport(propertyId, currency, rawFilters) {
+      const filters = parseFinanceFolioExportFilters(rawFilters); if (!filters) throw new TypeError("Finance folio export filters are malformed");
+      const evidence = await meta(propertyId); if (!evidence) return null;
+      if (currency !== evidence.currency) throw new FinanceFolioEvidenceError("Folio export currency changed");
+      const values: unknown[] = [evidence.propertyId, currency]; const where = [`f.property_id=$1::uuid`, `r.currency=$2`, `r.state='ready'`, `NOT EXISTS (SELECT 1 FROM finance.folio_revisions later WHERE later.folio_id=r.folio_id AND later.revision>r.revision)`];
+      const add = (sql: string, value: unknown) => { values.push(value); where.push(sql.replace("?", `$${values.length}`)); };
+      if (filters.from) add(`r.service_from>=?::date`, filters.from); if (filters.to) add(`r.service_from<=?::date`, filters.to);
+      if (filters.search) { values.push(filters.search.toLowerCase()); where.push(`(position($${values.length} in lower(f.id::text))>0 OR position($${values.length} in lower(COALESCE(f.guest_booking_id::text,'')))>0)`); }
+      const column = filters.sort === "amount_desc" ? "r.total_amount" : filters.sort === "serviceFrom_desc" ? "r.service_from" : "r.created_at";
+      const row = (await pool.query<{ snapshotAt: string; manifest: unknown }>(`SELECT to_char(date_trunc('milliseconds',statement_timestamp()) AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "snapshotAt",COALESCE(jsonb_agg(jsonb_build_object('folioId',s."folioId",'revisionId',s."revisionId",'revision',s.revision,'sourceDigest',s."sourceDigest") ORDER BY s.ordinal),'[]') AS manifest FROM (SELECT f.id::text AS "folioId",r.id::text AS "revisionId",r.revision::int AS revision,r.source_digest::text AS "sourceDigest",row_number() OVER(ORDER BY ${column} DESC,r.id ASC) AS ordinal FROM finance.folios f JOIN finance.folio_revisions r ON r.folio_id=f.id AND r.property_id=f.property_id WHERE ${where.join(" AND ")}) s`, values)).rows[0]!;
+      const snapshot = parseFinanceFolioExportSnapshot({ formatVersion: FINANCE_FOLIO_CSV_VERSION, propertyId: evidence.propertyId, currency, filters, ...row });
+      if (!snapshot) throw new FinanceFolioEvidenceError("Folio export manifest is invalid"); return snapshot;
+    },
+    async exportReady(propertyId, currency, rawSnapshot) {
+      const snapshot = parseFinanceFolioExportSnapshot(rawSnapshot); if (!snapshot || snapshot.propertyId !== propertyId || snapshot.currency !== currency) throw new FinanceFolioEvidenceError("Folio export manifest scope changed");
+      const evidence = await meta(propertyId); if (!evidence) return null;
+      if (currency !== evidence.currency) throw new FinanceFolioEvidenceError("Folio export currency changed");
+      const rows = (await pool.query<DetailRow>(`SELECT ${READY_SUMMARY},${DETAIL} FROM unnest($3::uuid[]) WITH ORDINALITY selected(id,ordinal) JOIN finance.folio_revisions r ON r.id=selected.id JOIN finance.folios f ON f.id=r.folio_id AND f.property_id=r.property_id WHERE f.property_id=$1::uuid AND r.currency=$2 AND r.state='ready' ORDER BY selected.ordinal`, [evidence.propertyId, currency, snapshot.manifest.map(({ revisionId }) => revisionId)])).rows;
+      if (rows.length !== snapshot.manifest.length || rows.some((row, index) => row.folioId !== snapshot.manifest[index]?.folioId || row.revisionId !== snapshot.manifest[index]?.revisionId || row.revision !== snapshot.manifest[index]?.revision || row.sourceDigest !== snapshot.manifest[index]?.sourceDigest)) throw new FinanceFolioEvidenceError("Folio export manifest changed");
+      return buildFinanceFolioCsvArtifact({ propertyId: evidence.propertyId, currency, folios: await Promise.all(rows.map((row) => hydrate(row, evidence, config.recipientDecoder))) });
+    },
     async close() { if (ownsPool) await pool.end?.(); },
+  };
+}
+
+async function hydrate(
+  row: DetailRow,
+  evidence: Meta,
+  decoder: FinanceFolioRecipientDecoder,
+): Promise<FinanceFolio> {
+  const item = summary(row, evidence.currency);
+  const decoded = await decoder.decode({
+    propertyId: evidence.propertyId,
+    folioId: item.folioId,
+    revision: item.revision,
+    ciphertext: row.recipientCiphertext,
+    encryptionScheme: scheme(row.recipientEncryptionScheme),
+    keyVersion: row.recipientKeyVersion,
+  });
+  return {
+    ...item,
+    propertyId: evidence.propertyId,
+    recipient: whitelistRecipient(decoded),
+    currency: evidence.currency,
+    lines: lines(row.lines, evidence.currency),
+    paymentRefs: paymentRefs(row.paymentRefs, evidence.currency),
+    sourceDigest: digest(row.sourceDigest),
+    sourceFreshness: stringRecord(row.sourceFreshness),
   };
 }
 

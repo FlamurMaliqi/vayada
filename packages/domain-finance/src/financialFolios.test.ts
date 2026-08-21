@@ -6,6 +6,7 @@ import {
   FinanceFolioCsvError,
   FINANCE_FOLIO_STORED_STATES,
   FINANCE_FOLIO_VIEW_STATES,
+  parseFinanceFolioExportSnapshot,
   parseFinanceFolioQuery,
   type FinanceFolio,
 } from "./financialFolios.js";
@@ -101,6 +102,39 @@ describe("Financials folio read contract", () => {
     expect(artifact.body).toContain('"\'+guest@example.com"');
     expect(artifact.body).not.toContain("providerSecret");
     expect(folio.lines.map((line) => line.position)).toEqual([2, 1]);
+  });
+
+  it("accepts only exact ready export manifests with unique revision evidence", () => {
+    const selected = {
+      folioId: "11320000-0000-4000-8000-000000000003",
+      revisionId: "11320000-0000-4000-8000-000000000009",
+      revision: 2,
+      sourceDigest: "a".repeat(64),
+    };
+    const snapshot = {
+      formatVersion: "pms-financials-folios.v1",
+      propertyId: "11320000-0000-4000-8000-000000000001",
+      currency: "EUR",
+      filters: { state: "ready", sort: "createdAt_desc" },
+      snapshotAt: "2026-08-21T10:00:00.000Z",
+      manifest: [selected],
+    };
+    expect(parseFinanceFolioExportSnapshot(snapshot)).toEqual(snapshot);
+    expect(
+      parseFinanceFolioExportSnapshot({
+        ...snapshot,
+        filters: { ...snapshot.filters, cursor: "eA" },
+      }),
+    ).toBeNull();
+    expect(
+      parseFinanceFolioExportSnapshot({ ...snapshot, manifest: [selected, selected] }),
+    ).toBeNull();
+    expect(
+      parseFinanceFolioExportSnapshot({
+        ...snapshot,
+        manifest: [{ ...selected, sourceDigest: "tampered" }],
+      }),
+    ).toBeNull();
   });
 
   it.each([

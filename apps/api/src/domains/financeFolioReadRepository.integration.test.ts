@@ -20,6 +20,8 @@ const FOLIO = "11320000-0000-4000-8000-000000000004",
 const REVISION_1 = "11320000-0000-4000-8000-000000000011",
   REVISION_2 = "11320000-0000-4000-8000-000000000012",
   SECOND_REVISION = "11320000-0000-4000-8000-000000000013";
+const LATE_FOLIO = "11320000-0000-4000-8000-000000000008",
+  LATE_REVISION = "11320000-0000-4000-8000-000000000016";
 const properties = [PROPERTY, EMPTY, OTHER];
 const SCOPES = properties.map((id) => `'${id}'`).join(",");
 const propertyContext = {
@@ -89,6 +91,25 @@ describe.skipIf(!URL)("PostgreSQL Finance folio read repository", () => {
     await expect(read.list(OTHER, { from: "2026-08-01", to: "2026-08-03", sort: "createdAt_desc", limit: 1, cursor: first!.page.nextCursor! })).rejects.toBeInstanceOf(FinanceFolioCursorError);
     await expect(read.list(PROPERTY, { from: "2026-08-01", to: "2026-08-03", sort: "amount_desc", limit: 1, cursor: first!.page.nextCursor! })).rejects.toBeInstanceOf(FinanceFolioCursorError);
     await expect(read.list(PROPERTY, { search: FOLIO, sort: "createdAt_desc", limit: 10 })).resolves.toMatchObject({ page: { items: [{ folioId: FOLIO, revision: 2 }] } });
+  });
+
+  it("retries an exact ready manifest with originating currency and whitelisted PII", async () => {
+    const snapshot = await read.captureReadyExport(PROPERTY, "EUR", { state: "ready", search: FOLIO, sort: "createdAt_desc" });
+    expect(snapshot).toMatchObject({ formatVersion: "pms-financials-folios.v1", propertyId: PROPERTY, currency: "EUR", manifest: [{ folioId: FOLIO, revisionId: REVISION_2, revision: 2, sourceDigest: "c".repeat(64) }] });
+    const artifact = await read.exportReady(PROPERTY, "EUR", snapshot!); expect(artifact).toMatchObject({ rowCount: 1, auditEvidence: [{ folioId: FOLIO, revision: 2 }] });
+    expect(artifact!.body).toContain("Ada Lovelace"); expect(artifact!.body).not.toMatch(/must-not-leak|taxId|11320000-0000-4000-8000-000000000005/);
+    await expect(read.exportReady(PROPERTY, "EUR", snapshot!)).resolves.toEqual(artifact);
+    await expect(read.exportReady(PROPERTY, "EUR", { ...snapshot!, manifest: [{ ...snapshot!.manifest[0]!, sourceDigest: "d".repeat(64) }] })).rejects.toBeInstanceOf(FinanceFolioEvidenceError);
+    await expect(read.exportReady(PROPERTY, "USD", snapshot!)).rejects.toBeInstanceOf(FinanceFolioEvidenceError);
+    await expect(read.exportReady(OTHER, "USD", snapshot!)).rejects.toBeInstanceOf(FinanceFolioEvidenceError);
+  });
+
+  it("excludes a matching revision committed after the manifest statement from every retry", async () => {
+    const peer = new pg.Client({ connectionString: URL! }); await peer.connect(); await peer.query("BEGIN");
+    await peer.query(`INSERT INTO finance.folios(id,property_id) VALUES('${LATE_FOLIO}','${PROPERTY}'); INSERT INTO finance.folio_revisions(id,folio_id,property_id,revision,state,recipient_snapshot_ciphertext,recipient_encryption_scheme,recipient_key_version,recipient_fingerprint,recipient_fingerprint_key_version,service_from,service_to,currency,total_amount,source_digest,source_freshness) VALUES('${LATE_REVISION}','${LATE_FOLIO}','${PROPERTY}',1,'ready',decode(repeat('ab',32),'hex'),'envelope_aead_v1','key-1',repeat('a',64),'fingerprint-1','2026-08-05','2026-08-05','EUR',1,repeat('f',64),'{}'); INSERT INTO finance.folio_lines(folio_revision_id,folio_id,property_id,folio_revision,currency,position,kind,description,quantity,unit_amount,service_on,source_type,source_id,source_revision) VALUES('${LATE_REVISION}','${LATE_FOLIO}','${PROPERTY}',1,'EUR',1,'fee','Late',1,1,'2026-08-05','finance','late:1',1)`);
+    const snapshot = await read.captureReadyExport(PROPERTY, "EUR", { state: "ready", search: LATE_FOLIO, sort: "createdAt_desc" }); await peer.query("COMMIT"); await peer.end();
+    expect(snapshot?.manifest).toEqual([]); const first = await read.exportReady(PROPERTY, "EUR", snapshot!); expect(first).toMatchObject({ rowCount: 0 }); await expect(read.exportReady(PROPERTY, "EUR", snapshot!)).resolves.toEqual(first);
+    await expect(read.captureReadyExport(PROPERTY, "EUR", { state: "ready", search: LATE_FOLIO, sort: "createdAt_desc" })).resolves.toMatchObject({ manifest: [{ folioId: LATE_FOLIO, revisionId: LATE_REVISION }] });
   });
 
   async function cleanup() { await admin.query(`BEGIN; SET LOCAL session_replication_role=replica; DELETE FROM finance.folio_payment_references WHERE property_id IN (${SCOPES}); DELETE FROM finance.folio_lines WHERE property_id IN (${SCOPES}); DELETE FROM finance.folio_revisions WHERE property_id IN (${SCOPES}); DELETE FROM finance.folios WHERE property_id IN (${SCOPES}); DELETE FROM finance.payments WHERE property_id IN (${SCOPES}); DELETE FROM pms.property_pricing_settings WHERE property_id IN (${SCOPES}); DELETE FROM hotel_catalog.properties WHERE id IN (${SCOPES}); COMMIT`); }
