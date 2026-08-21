@@ -75,14 +75,14 @@ describe("KMS Finance folio recipient decoder", () => {
     expect(decrypt).not.toHaveBeenCalled();
   });
 
-  it("rejects ciphertext above the AWS KMS Decrypt boundary before calling KMS", async () => {
+  it.each([28, 6_145])("rejects ciphertext length %i", async (bytes) => {
     const decrypt = vi.fn(async () => ({ Plaintext: payload, KeyId: KEY }));
     const decoder = createKmsFinanceFolioRecipientDecoder({
       kms: { decrypt },
       allowedKeyArns: [KEY],
     });
     await expect(
-      decoder.decode({ ...input, ciphertext: Buffer.alloc(6_145) }),
+      decoder.decode({ ...input, ciphertext: Buffer.alloc(bytes) }),
     ).rejects.toBeInstanceOf(FinanceFolioRecipientCodecError);
     expect(decrypt).not.toHaveBeenCalled();
   });

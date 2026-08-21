@@ -29,7 +29,7 @@ export class FinanceFolioRecipientCodecError extends Error {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const KMS_KEY_ARN = /^arn:[a-z0-9-]+:kms:[a-z0-9-]+:\d{12}:key\/[a-z0-9-]+$/;
-const MIN_CIPHERTEXT_BYTES = 29;
+const MIN_CIPHERTEXT_BYTES = 29; // Shared app/database envelope floor, not a KMS limit.
 const MAX_CIPHERTEXT_BYTES = 6_144;
 const MAX_PLAINTEXT_BYTES = 4_096;
 
