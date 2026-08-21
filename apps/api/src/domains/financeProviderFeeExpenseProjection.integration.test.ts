@@ -103,9 +103,12 @@ describe.skipIf(!URL)("PostgreSQL provider-fee expense projection", () => {
       restart = input(I.restart, I.payment);
     await expect(run(correction)).resolves.toMatchObject({
       ok: false,
-      code: "correction_conflict",
+      code: "predecessor_not_projected",
     });
-    await expect(run(reversal)).resolves.toMatchObject({ ok: false, code: "correction_conflict" });
+    await expect(run(reversal)).resolves.toMatchObject({
+      ok: false,
+      code: "predecessor_not_projected",
+    });
     await expect(run(applied)).resolves.toMatchObject({ ok: true, outcome: "created" });
     await expect(run(applied)).resolves.toMatchObject({ ok: true, outcome: "replayed" });
     await admin.query("UPDATE finance.expense_categories SET archived_at=now() WHERE id=$1", [
@@ -150,7 +153,10 @@ describe.skipIf(!URL)("PostgreSQL provider-fee expense projection", () => {
       zero = input(I.skipZero, I.skipPayment),
       restart = input(I.skipRestart, I.skipPayment);
     await expect(run(root)).resolves.toMatchObject({ ok: true, outcome: "created" });
-    await expect(run(restart)).resolves.toMatchObject({ ok: false, code: "correction_conflict" });
+    await expect(run(restart)).resolves.toMatchObject({
+      ok: false,
+      code: "predecessor_not_projected",
+    });
     await expect(run(zero)).resolves.toMatchObject({ ok: true, outcome: "reversed" });
     await expect(run(restart)).resolves.toMatchObject({ ok: true, outcome: "created" });
   });

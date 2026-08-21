@@ -130,6 +130,7 @@ import {
   runFinanceSubscriptionNotificationJobs,
   runFinanceSubscriptionWebhookJobs,
 } from "./jobs/financeSubscriptions.js";
+import { runFinanceExpenseGenerationCycle } from "./jobs/financeExpenseGeneration.js";
 import {
   createPgPropertySetupDraftRetentionStore,
   startPropertySetupDraftRetentionWorker,
@@ -468,6 +469,10 @@ const financeExpenseRuntime = config.financeSource === "target" ? (() => {
   const categories = createPgFinanceExpenseCategoryRepository(targetDatabaseUrl), expenses = createPgFinanceManualExpenseRepository(targetDatabaseUrl), recurring = createPgFinanceRecurringExpenseRuleRepository(targetDatabaseUrl);
   return { routes: { read, categories, expenses, recurring }, close: () => Promise.all([read.close(), propertyContext.close(), categories.close(), expenses.close(), recurring.close()]) };
 })() : undefined;
+const financeExpenseGenerationPool =
+  config.financeSource === "target"
+    ? new pg.Pool({ connectionString: targetDatabaseUrl, max: 2, connectionTimeoutMillis: 5_000 })
+    : undefined;
 
 const xenditBankValidator = config.xenditSecretKey
   ? createXenditBankValidator({
@@ -1366,6 +1371,33 @@ if (financeSubscriptionJobsEnabled) runFinanceSubscriptionJobs();
 app.addHook("onClose", async () => {
   if (financeSubscriptionTimer) clearInterval(financeSubscriptionTimer);
   await activeFinanceSubscriptionBatch;
+});
+
+let activeFinanceExpenseGeneration: Promise<void> | undefined;
+const runFinanceExpenseGeneration = () => {
+  if (!financeExpenseGenerationPool || activeFinanceExpenseGeneration) return;
+  activeFinanceExpenseGeneration = runFinanceExpenseGenerationCycle(financeExpenseGenerationPool)
+    .then((result) => {
+      if (result.deadLettered > 0 || result.retryScheduled > 0 || result.incomplete > 0) {
+        app.log.warn(result, "Finance expense generation completed with attention required");
+      } else if (result.discovered > 0 || result.succeeded > 0 || result.replayed > 0) {
+        app.log.info(result, "Finance expense generation completed");
+      }
+    })
+    .catch((error: unknown) => app.log.warn({ err: error }, "Finance expense generation failed"))
+    .finally(() => {
+      activeFinanceExpenseGeneration = undefined;
+    });
+};
+const financeExpenseGenerationTimer = financeExpenseGenerationPool
+  ? setInterval(runFinanceExpenseGeneration, 5_000)
+  : undefined;
+financeExpenseGenerationTimer?.unref();
+if (financeExpenseGenerationPool) runFinanceExpenseGeneration();
+app.addHook("onClose", async () => {
+  if (financeExpenseGenerationTimer) clearInterval(financeExpenseGenerationTimer);
+  await activeFinanceExpenseGeneration;
+  await financeExpenseGenerationPool?.end();
 });
 
 let activeRetryBatch: Promise<void> | undefined;
