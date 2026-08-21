@@ -15,10 +15,11 @@ const URL = process.env["TEST_DATABASE_URL"],
     "11321010-0000-4000-8000-000000000002",
     "11321010-0000-4000-8000-000000000003",
     "11321010-0000-4000-8000-000000000004",
+    "11321010-0000-4000-8000-000000000005",
   ];
 const HASH = "a".repeat(64);
 
-describe.skipIf(!URL)("Finance folio KMS ciphertext 0100 to 0101 upgrade", () => {
+describe.skipIf(!URL)("Finance folio KMS ciphertext 0100 to 0102 upgrade", () => {
   it("rolls back incompatible evidence, preserves valid rows, and enforces the KMS limit", async () => {
     assertSafeTestDatabase(URL!);
     const admin = new pg.Client({ connectionString: URL });
@@ -46,7 +47,7 @@ describe.skipIf(!URL)("Finance folio KMS ciphertext 0100 to 0101 upgrade", () =>
           VALUES ('${PROPERTY}','folio-kms-upgrade','Folio KMS upgrade');
         INSERT INTO pms.property_pricing_settings(property_id,currency) VALUES ('${PROPERTY}','EUR');
         INSERT INTO finance.folios(id,property_id) VALUES
-          ('${FOLIOS[0]}','${PROPERTY}'),('${FOLIOS[1]}','${PROPERTY}'),('${FOLIOS[2]}','${PROPERTY}')`);
+          ('${FOLIOS[0]}','${PROPERTY}'),('${FOLIOS[1]}','${PROPERTY}'),('${FOLIOS[2]}','${PROPERTY}'),('${FOLIOS[3]}','${PROPERTY}')`);
       const addRevision = (folioId: string, bytes: number) =>
         target!.query(
           `INSERT INTO finance.folio_revisions
@@ -64,29 +65,38 @@ describe.skipIf(!URL)("Finance folio KMS ciphertext 0100 to 0101 upgrade", () =>
         join(MIGRATIONS, "0101_finance_folio_recipient_kms_ciphertext.sql"),
         join(before, "0101_finance_folio_recipient_kms_ciphertext.sql"),
       );
-      expect((await run()).failed).toBe("0101");
-      expect(
-        (
-          await target.query(`SELECT array_agg(octet_length(recipient_snapshot_ciphertext) ORDER BY folio_id) sizes,
-            (SELECT count(*)::int FROM pg_constraint WHERE conname='chk_finance_folio_revisions_recipient_kms_ciphertext') constraints
-            FROM finance.folio_revisions`)
-        ).rows[0],
-      ).toEqual({ sizes: [32, 7000], constraints: 0 });
-      await target.query(
-        `BEGIN; SET LOCAL session_replication_role=replica; DELETE FROM finance.folio_revisions WHERE folio_id='${FOLIOS[1]}'; COMMIT`,
-      );
       expect((await run()).applied).toEqual(["0101"]);
-      expect(
-        (
-          await target.query(
-            "SELECT octet_length(recipient_snapshot_ciphertext) size FROM finance.folio_revisions",
-          )
-        ).rows,
-      ).toEqual([{ size: 32 }]);
-      await expect(addRevision(FOLIOS[1]!, 6_144)).resolves.toBeDefined();
       await expect(addRevision(FOLIOS[2]!, 6_145)).rejects.toMatchObject({
         constraint: "chk_finance_folio_revisions_recipient_kms_ciphertext",
       });
+      await expect(addRevision(FOLIOS[2]!, 28)).rejects.toMatchObject({
+        constraint: "chk_finance_folio_revisions_recipient_ciphertext",
+      });
+      await expect(addRevision(FOLIOS[2]!, 6_144)).resolves.toBeDefined();
+      await expect(addRevision(FOLIOS[3]!, 29)).resolves.toBeDefined();
+      await cp(
+        join(MIGRATIONS, "0102_validate_finance_folio_recipient_kms_ciphertext.sql"),
+        join(before, "0102_validate_finance_folio_recipient_kms_ciphertext.sql"),
+      );
+      expect((await run()).failed).toBe("0102");
+      expect(
+        (
+          await target.query(`SELECT array_agg(octet_length(recipient_snapshot_ciphertext) ORDER BY octet_length(recipient_snapshot_ciphertext)) sizes,
+            (SELECT convalidated FROM pg_constraint WHERE conname='chk_finance_folio_revisions_recipient_kms_ciphertext') validated
+            FROM finance.folio_revisions`)
+        ).rows[0],
+      ).toEqual({ sizes: [29, 32, 6144, 7000], validated: false });
+      await target.query(
+        `BEGIN; SET LOCAL session_replication_role=replica; DELETE FROM finance.folio_revisions WHERE folio_id='${FOLIOS[1]}'; COMMIT`,
+      );
+      expect((await run()).applied).toEqual(["0102"]);
+      expect(
+        (
+          await target.query(
+            "SELECT convalidated FROM pg_constraint WHERE conname='chk_finance_folio_revisions_recipient_kms_ciphertext'",
+          )
+        ).rows,
+      ).toEqual([{ convalidated: true }]);
     } finally {
       if (target) await target.end();
       await admin.query(`DROP DATABASE IF EXISTS ${DATABASE} WITH (FORCE)`);

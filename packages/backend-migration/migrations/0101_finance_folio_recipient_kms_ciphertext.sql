@@ -2,4 +2,4 @@
 
 ALTER TABLE finance.folio_revisions
   ADD CONSTRAINT chk_finance_folio_revisions_recipient_kms_ciphertext
-  CHECK (octet_length(recipient_snapshot_ciphertext) BETWEEN 29 AND 6144);
+  CHECK (octet_length(recipient_snapshot_ciphertext) BETWEEN 29 AND 6144) NOT VALID;
