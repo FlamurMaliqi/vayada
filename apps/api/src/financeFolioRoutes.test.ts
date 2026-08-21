@@ -64,7 +64,11 @@ function ports(): Ports {
 }
 
 async function app(repository: Ports, auth: RequestContext | null = context()) {
-  const instance = buildApp({ logger: false, financeFolios: { repository } });
+  const instance = buildApp({
+    logger: false,
+    browserAllowedOrigins: ["https://pms.example"],
+    financeFolios: { repository },
+  });
   instance.decorateRequest("authContext", null);
   instance.addHook("onRequest", async (request) => {
     request.authContext = auth;
@@ -80,12 +84,14 @@ describe("Financials folio read routes", () => {
     const listed = await instance.inject({
       method: "GET",
       url: `${root}?from=2026-08-01&to=2026-08-31&state=ready&search=Guest&sort=amount_desc&limit=1`,
+      headers: { origin: "https://pms.example" },
     });
     expect(listed.statusCode).toBe(200);
     expect(listed.json()).toEqual(list);
     expect(listed.headers).toMatchObject({
       "cache-control": "private, no-store",
-      vary: "Authorization",
+      vary: "Origin, Authorization",
+      "access-control-allow-origin": "https://pms.example",
     });
     expect(repository.list).toHaveBeenCalledWith(propertyId, {
       from: "2026-08-01",
@@ -96,22 +102,37 @@ describe("Financials folio read routes", () => {
       limit: 1,
     });
 
+    const read = await instance.inject({ method: "GET", url: `${root}/${folioId.toUpperCase()}` });
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toEqual(detail);
+    expect(repository.detail).toHaveBeenCalledWith(propertyId, folioId);
+
     repository.detail.mockResolvedValueOnce({
       ...detail,
       providerSecret: "must-not-leak",
       item: { ...detail.item, recipient: { ...detail.item.recipient, taxId: "must-not-leak" } },
     });
-    const read = await instance.inject({ method: "GET", url: `${root}/${folioId.toUpperCase()}` });
-    expect(read.statusCode).toBe(200);
-    expect(read.json()).toEqual(detail);
-    expect(JSON.stringify(read.json())).not.toContain("must-not-leak");
-    expect(repository.detail).toHaveBeenCalledWith(propertyId, folioId);
+    const invalid = await instance.inject({ method: "GET", url: `${root}/${folioId}` });
+    expect(invalid.statusCode).toBe(500);
+    expect(JSON.stringify(invalid.json())).not.toContain("must-not-leak");
+
+    for (const item of [
+      { ...summary, total: { ...money, amount: "12" } },
+      { ...summary, total: { ...money, currency: "USD" } },
+      { ...summary, createdAt: "2026-02-31T00:00:00.000Z" },
+    ]) {
+      repository.list.mockResolvedValueOnce({
+        ...list,
+        page: { ...list.page, items: [item] },
+      } as never);
+      expect(await instance.inject({ method: "GET", url: root })).toHaveProperty("statusCode", 500);
+    }
   });
 
   it("enforces the complete read denial matrix before validation or ports", async () => {
     const allowed = context();
     // prettier-ignore
-    const denied: Array<[RequestContext | null, number]> = [[null, 401], [context({ permissions: [] }), 403], [context({ kind: "platform" }), 403], [context({ entitlements: [] }), 403], [context({ entitlements: [entitlement("property-management")] }), 403], [context({ entitlements: [entitlement("property-management", "suspended"), entitlement("module:financials")] }), 403], [context({ entitlements: [entitlement("property-management"), entitlement("module:financials", "suspended")] }), 403], [context({ links: [] }), 403], [context({ links: [{ ...allowed.linkedResources[0]!, relationship: "operator" }] }), 403], [context({ links: [{ ...allowed.linkedResources[0]!, resourceId: otherPropertyId }] }), 403]];
+    const denied: Array<[RequestContext | null, number]> = [[null, 401], [context({ permissions: [] }), 403], [context({ kind: "platform" }), 403], [context({ entitlements: [] }), 403], [context({ entitlements: [entitlement("property-management")] }), 403], [context({ entitlements: [entitlement("property-management", "suspended"), entitlement("module:financials")] }), 403], [context({ entitlements: [entitlement("property-management"), entitlement("module:financials", "suspended")] }), 403], [context({ links: [] }), 403], [context({ links: [{ ...allowed.linkedResources[0]!, status: "suspended" }] }), 403], [context({ links: [{ ...allowed.linkedResources[0]!, relationship: "operator" }] }), 403], [context({ links: [{ ...allowed.linkedResources[0]!, resourceId: otherPropertyId }] }), 403]];
     for (const [auth, status] of denied) {
       const repository = ports();
       const instance = await app(repository, auth);
@@ -122,6 +143,13 @@ describe("Financials folio read routes", () => {
       expect(response.statusCode).toBe(status);
       expect(repository.list).not.toHaveBeenCalled();
     }
+
+    const financeManager = ports();
+    const instance = await app(
+      financeManager,
+      context({ links: [{ ...allowed.linkedResources[0]!, relationship: "finance_manager" }] }),
+    );
+    expect(await instance.inject({ method: "GET", url: root })).toHaveProperty("statusCode", 200);
   });
 
   it("validates authorized inputs and maps missing or typed repository outcomes", async () => {

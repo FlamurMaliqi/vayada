@@ -3,12 +3,11 @@ import { AuthorizationError } from "@vayada/backend-authorization";
 import {
   PMS_FINANCIALS_CONTRACT_VERSION,
   parseFinanceFolioQuery,
-  type FinanceFolio,
   type FinanceFolioDetailResponse,
   type FinanceFolioListResponse,
-  type FinanceFolioSummary,
 } from "@vayada/domain-finance";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { z } from "zod";
 
 import {
   FinanceFolioCursorError,
@@ -73,7 +72,7 @@ function authorization(scopes: WeakMap<FastifyRequest, Scope>) {
           entitlement: { product: "pms", key, resource },
           resource: { ...resource, allowedRelationships: ["owner", "finance_manager"] },
         });
-      reply.header("Cache-Control", "private, no-store").header("Vary", "Authorization");
+      reply.header("Cache-Control", "private, no-store").header("Vary", "Origin, Authorization");
       scopes.set(request, { propertyId });
     } catch (cause) {
       if (cause instanceof UnauthorizedError)
@@ -85,91 +84,90 @@ function authorization(scopes: WeakMap<FastifyRequest, Scope>) {
   };
 }
 
+// Runtime decoding protects the HTTP boundary even when an injected repository violates its TS type.
+const id = z.string().regex(UUID);
+const currency = z.string().regex(/^[A-Z]{3}$/);
+const decimal = z.string().regex(/^-?(?:0|[1-9]\d*)\.\d{4}$/);
+const instant = z.string().refine(utc);
+const date = z.string().refine(localDate);
+const money = z.object({ amount: decimal, currency }).strict();
+// prettier-ignore
+const summaryShape = { folioId: id, bookingId: id.nullable(), revision: z.number().int().positive(), state: z.enum(["draft", "ready", "superseded", "archived"]), serviceFrom: date, serviceTo: date, total: money, createdAt: instant };
+const validInterval = (value: { serviceFrom: string; serviceTo: string }) =>
+  value.serviceTo >= value.serviceFrom;
+const folioSummary = z.object(summaryShape).strict().refine(validInterval);
+// prettier-ignore
+const envelope = z.object({ contractVersion: z.literal(PMS_FINANCIALS_CONTRACT_VERSION), propertyId: id, currency, timeZone: z.string().refine(zone), generatedAt: instant, sourceFreshness: z.record(z.string(), z.string()), incompleteEvidence: z.array(z.object({ code: z.string(), count: z.number().int().nonnegative(), amount: money.optional() }).strict()) }).strict();
+// prettier-ignore
+const line = z.object({ lineId: id, position: z.number().int().positive(), kind: z.enum(["room", "addon", "fee", "tax", "adjustment"]), description: z.string(), quantity: decimal, unitAmount: money, total: money, serviceOn: date, source: z.object({ type: z.string(), id: z.string(), revision: z.number().int().positive() }).strict() }).strict();
+// prettier-ignore
+const folio = z.object({ ...summaryShape, propertyId: id, recipient: z.object({ name: z.string().refine(trimmed), email: z.string().refine(email).nullable() }).strict(), currency, lines: z.array(line), paymentRefs: z.array(z.object({ paymentId: id, amount: money }).strict()), sourceDigest: z.string().regex(/^[0-9a-f]{64}$/), sourceFreshness: z.record(z.string(), instant) }).strict().refine(validInterval);
+const listSchema = envelope.extend({
+  page: z
+    .object({
+      items: z.array(folioSummary),
+      nextCursor: z.string().min(2).max(4096).nullable(),
+      limit: z.number().int().min(1).max(200),
+    })
+    .strict(),
+});
+const detailSchema = envelope.extend({ item: folio });
+
 function listResponse(value: FinanceFolioListResponse, propertyId: string) {
-  if (!validScope(value, propertyId)) throw new Error("finance_folio_port_contract_violation");
-  return {
-    ...envelope(value),
-    page: {
-      items: value.page.items.map(summary),
-      nextCursor: value.page.nextCursor,
-      limit: value.page.limit,
-    },
-  };
+  const parsed = listSchema.safeParse(value);
+  if (
+    !parsed.success ||
+    parsed.data.propertyId !== propertyId ||
+    parsed.data.incompleteEvidence.some(
+      (item) => item.amount && item.amount.currency !== parsed.data.currency,
+    ) ||
+    parsed.data.page.items.some((item) => item.total.currency !== parsed.data.currency)
+  )
+    throw new Error("finance_folio_port_contract_violation");
+  return parsed.data;
 }
 
 function detailResponse(value: FinanceFolioDetailResponse, propertyId: string) {
-  if (!validScope(value, propertyId) || value.item.propertyId !== propertyId)
+  const parsed = detailSchema.safeParse(value);
+  if (!parsed.success) throw new Error("finance_folio_port_contract_violation");
+  const { data } = parsed;
+  const currencies = [
+    data.item.total.currency,
+    ...data.item.lines.flatMap((item) => [item.unitAmount.currency, item.total.currency]),
+    ...data.item.paymentRefs.map((item) => item.amount.currency),
+  ];
+  if (
+    data.propertyId !== propertyId ||
+    data.item.propertyId !== propertyId ||
+    data.item.currency !== data.currency ||
+    data.incompleteEvidence.some((item) => item.amount && item.amount.currency !== data.currency) ||
+    currencies.some((value) => value !== data.currency)
+  )
     throw new Error("finance_folio_port_contract_violation");
-  const item = value.item;
-  return {
-    ...envelope(value),
-    item: {
-      ...summary(item),
-      propertyId: item.propertyId,
-      recipient: { name: item.recipient.name, email: item.recipient.email },
-      currency: item.currency,
-      lines: item.lines.map((line) => ({
-        lineId: line.lineId,
-        position: line.position,
-        kind: line.kind,
-        description: line.description,
-        quantity: line.quantity,
-        unitAmount: money(line.unitAmount),
-        total: money(line.total),
-        serviceOn: line.serviceOn,
-        source: { type: line.source.type, id: line.source.id, revision: line.source.revision },
-      })),
-      paymentRefs: item.paymentRefs.map((payment) => ({
-        paymentId: payment.paymentId,
-        amount: money(payment.amount),
-      })),
-      sourceDigest: item.sourceDigest,
-      sourceFreshness: { ...item.sourceFreshness },
-    },
-  };
+  return data;
 }
 
-function envelope(value: FinanceFolioListResponse | FinanceFolioDetailResponse) {
-  return {
-    contractVersion: value.contractVersion,
-    propertyId: value.propertyId,
-    currency: value.currency,
-    timeZone: value.timeZone,
-    generatedAt: value.generatedAt,
-    sourceFreshness: { ...value.sourceFreshness },
-    incompleteEvidence: value.incompleteEvidence.map((item) => ({
-      code: item.code,
-      count: item.count,
-      ...(item.amount ? { amount: money(item.amount) } : {}),
-    })),
-  };
-}
-
-function summary(value: FinanceFolioSummary | FinanceFolio) {
-  return {
-    folioId: value.folioId,
-    bookingId: value.bookingId,
-    revision: value.revision,
-    state: value.state,
-    serviceFrom: value.serviceFrom,
-    serviceTo: value.serviceTo,
-    total: money(value.total),
-    createdAt: value.createdAt,
-  };
-}
-
-const money = (value: { amount: string; currency: string }) => ({
-  amount: value.amount,
-  currency: value.currency,
-});
-const validScope = (
-  value: FinanceFolioListResponse | FinanceFolioDetailResponse,
-  propertyId: string,
-) => value.contractVersion === PMS_FINANCIALS_CONTRACT_VERSION && value.propertyId === propertyId;
 const canonicalUuid = (value: unknown) =>
   typeof value === "string" && UUID.test(value.toLowerCase()) ? value.toLowerCase() : null;
 const empty = (value: unknown) =>
   !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0;
+// prettier-ignore
+function localDate(value: string) { if (!/^[1-9]\d{3}-\d{2}-\d{2}$/.test(value)) return false; const parsed = new Date(`${value}T00:00:00Z`); return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value; }
+function trimmed(value: string) {
+  return value.length > 0 && value === value.trim();
+}
+function email(value: string) {
+  return trimmed(value) && value.includes("@");
+}
+function zone(value: string) {
+  try {
+    return new Intl.DateTimeFormat("en", { timeZone: value }).resolvedOptions().timeZone === value;
+  } catch {
+    return false;
+  }
+}
+// prettier-ignore
+function utc(value: string) { const match = /^((?!0000)\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?Z$/.exec(value); if (!match) return false; const year=Number(match[1]),month=Number(match[2]),day=Number(match[3]),hour=Number(match[4]),minute=Number(match[5]),second=Number(match[6]),parsed=new Date(0); parsed.setUTCFullYear(year,month-1,day); parsed.setUTCHours(hour,minute,second,0); return Number.isFinite(parsed.getTime()) && parsed.getUTCFullYear()===year && parsed.getUTCMonth()===month-1 && parsed.getUTCDate()===day && parsed.getUTCHours()===hour && parsed.getUTCMinutes()===minute && parsed.getUTCSeconds()===second; }
 
 async function safe(reply: FastifyReply, work: () => Promise<unknown>) {
   try {
