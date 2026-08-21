@@ -39,6 +39,7 @@ import {
 import { HotelIcon } from "@vayada/product-onboarding";
 import {
   settingsService,
+  type BookingAcceptanceMode,
   type PropertySettings,
   type PropertySettingsUpdate,
   type CustomDomainStatus,
@@ -261,6 +262,10 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<PropertySettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [acceptanceMode, setAcceptanceMode] = useState<BookingAcceptanceMode | null>(null);
+  const [acceptanceLoading, setAcceptanceLoading] = useState(true);
+  const [acceptanceSaving, setAcceptanceSaving] = useState(false);
+  const [acceptanceError, setAcceptanceError] = useState("");
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(
     null,
   );
@@ -312,14 +317,33 @@ export default function SettingsPage() {
     }
   }, [t]);
 
+  const loadBookingAcceptance = useCallback(async (hotelId: string) => {
+    setAcceptanceLoading(true);
+    setAcceptanceMode(null);
+    setAcceptanceError("");
+    try {
+      const result = await settingsService.getBookingAcceptance(hotelId);
+      setAcceptanceMode(result.acceptanceMode);
+    } catch (error) {
+      setAcceptanceError(errorMessage(error, "Booking acceptance settings failed to load."));
+    } finally {
+      setAcceptanceLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     setPaymentSettingsLoaded(false);
     setBillingPlanLoading(true);
+    setAcceptanceLoading(true);
+    setAcceptanceMode(null);
+    setAcceptanceError("");
     const propertyPromise = fetchSettings();
     propertyPromise
       .then(async (property) => {
         if (!property) {
           setBillingPlanLoading(false);
+          setAcceptanceLoading(false);
+          setAcceptanceError("Select a hotel before loading booking acceptance settings.");
           return null;
         }
         settingsService
@@ -334,8 +358,11 @@ export default function SettingsPage() {
         const hotelId = readBookingHotelId(property);
         if (!hotelId) {
           setBillingPlanLoading(false);
+          setAcceptanceLoading(false);
+          setAcceptanceError("Select a hotel before loading booking acceptance settings.");
           return null;
         }
+        void loadBookingAcceptance(hotelId);
         const propertyLink = await getBookingHotelPropertyLink({ hotelId });
         setBillingPropertyId(propertyLink.propertyId);
         const billingReturn =
@@ -427,7 +454,35 @@ export default function SettingsPage() {
         setBillingPlanLoading(false);
         setPaymentError(errorMessage(err, "Payment settings failed to load."));
       });
-  }, [fetchSettings]);
+  }, [fetchSettings, loadBookingAcceptance]);
+
+  const handleAcceptanceToggle = async () => {
+    const hotelId = readBookingHotelId(settings);
+    if (!hotelId || !acceptanceMode) {
+      setAcceptanceError("Load the current booking acceptance setting before changing it.");
+      return;
+    }
+
+    setAcceptanceSaving(true);
+    setAcceptanceError("");
+    try {
+      const saved = await settingsService.updateBookingAcceptance(
+        acceptanceMode === "instant" ? "request" : "instant",
+        hotelId,
+      );
+      setAcceptanceMode(saved.acceptanceMode);
+      setFeedback({ type: "success", message: "Booking acceptance settings saved." });
+    } catch (error) {
+      setAcceptanceError(errorMessage(error, "Booking acceptance settings could not be saved."));
+    } finally {
+      setAcceptanceSaving(false);
+    }
+  };
+
+  const retryBookingAcceptance = () => {
+    const hotelId = readBookingHotelId(settings);
+    if (hotelId) void loadBookingAcceptance(hotelId);
+  };
 
   const handleCreateStripeAccount = async () => {
     if (!connectEmail) return;
@@ -1015,6 +1070,48 @@ export default function SettingsPage() {
       {/* Booking tab */}
       {activeSection === "booking" && (
         <div className="mt-5 space-y-4">
+          <div
+            className="rounded-lg border border-gray-200 bg-white p-4 md:p-5"
+            aria-busy={acceptanceLoading || acceptanceSaving}
+          >
+            {acceptanceMode ? (
+              <ToggleSwitch
+                enabled={acceptanceMode === "instant"}
+                disabled={acceptanceSaving || Boolean(acceptanceError)}
+                onChange={() => void handleAcceptanceToggle()}
+                label="Accept bookings instantly"
+                description="Confirm card and pay-at-property bookings immediately. Bank transfers always require manual review."
+              />
+            ) : acceptanceLoading ? (
+              <div className="py-3" role="status">
+                <p className="text-[13px] font-semibold text-gray-900">
+                  Accept bookings instantly
+                </p>
+                <p className="text-[13px] text-gray-500">Loading current setting…</p>
+              </div>
+            ) : null}
+            <p className="border-t border-gray-100 pt-3 text-[12px] text-gray-500">
+              This setting is shared between PMS and Booking Engine.
+            </p>
+            {acceptanceSaving && (
+              <p className="mt-2 text-[12px] text-gray-500" role="status">
+                Saving…
+              </p>
+            )}
+            {acceptanceError && (
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-3" role="alert">
+                <p className="text-[12px] text-red-700">{acceptanceError}</p>
+                <button
+                  type="button"
+                  onClick={retryBookingAcceptance}
+                  className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-medium text-gray-700 hover:border-gray-400"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+          </div>
+
           {/* Map View */}
           <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5">
             <ToggleSwitch
