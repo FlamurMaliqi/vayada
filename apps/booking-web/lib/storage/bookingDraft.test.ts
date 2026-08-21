@@ -258,10 +258,14 @@ describe("toConfirmationBooking", () => {
   });
 
   it("preserves guest-safe manual payment methods", () => {
+    expect(toConfirmationBooking({ paymentMethod: "credit_card" }).paymentMethod).toBe(
+      "credit_card",
+    );
     expect(toConfirmationBooking({ paymentMethod: "manual_card" }).paymentMethod).toBe(
       "manual_card",
     );
     expect(toConfirmationBooking({ paymentMethod: "other" }).paymentMethod).toBe("other");
+    expect(toConfirmationBooking({ paymentMethod: "future_wallet" }).paymentMethod).toBeNull();
   });
 
   it("normalizes invalid deposit percentages to zero", () => {

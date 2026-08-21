@@ -30,7 +30,7 @@ import ConfirmDialog from "@/components/ConfirmDialog";
 import Modal from "@/components/Modal";
 import { NationalitySelect } from "@/components/NationalitySelect";
 import { formatCurrency } from "@/lib/formatCurrency";
-import { nationalityDisplayLabel } from "@vayada/locale-constants";
+import { nationalityDisplayLabel, paymentMethodLabel } from "@vayada/locale-constants";
 import {
   AddOnListPicker,
   SelectedAddOnSummary,
@@ -2019,15 +2019,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               <div>
                 <p className="text-xs text-gray-500">Method</p>
                 <p className="font-medium text-gray-900">
-                  {booking.paymentMethod === "card"
-                    ? "Card"
-                    : booking.paymentMethod === "paypal"
-                      ? "PayPal"
-                      : booking.paymentMethod === "bank_transfer"
-                        ? "Bank transfer"
-                        : booking.paymentMethod === "pay_at_property"
-                          ? "Pay at property"
-                          : booking.paymentMethod || "—"}
+                  {booking.paymentMethod ? paymentMethodLabel(booking.paymentMethod) : "—"}
                 </p>
               </div>
               <div>
@@ -2114,10 +2106,10 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                     <p className="text-xs text-gray-500">
                       {booking.depositPercentage}% of booking total ·{" "}
                       {booking.paymentStatus === "captured"
-                        ? `Paid via ${booking.paymentMethod === "card" ? "Stripe" : booking.paymentMethod || "manual method"}`
+                        ? `Paid via ${booking.paymentMethod === "card" ? "Stripe" : booking.paymentMethod ? paymentMethodLabel(booking.paymentMethod) : "manual method"}`
                         : booking.paymentStatus === "refunded"
                           ? "Deposit was refunded"
-                          : `Pending (${booking.paymentMethod || "manual method"})`}
+                          : `Pending (${booking.paymentMethod ? paymentMethodLabel(booking.paymentMethod) : "manual method"})`}
                     </p>
                   </div>
                   <span

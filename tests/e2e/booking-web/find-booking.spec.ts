@@ -99,6 +99,47 @@ test("finds a booking from the shared footer on mobile", async ({ page }) => {
   await expect(page.getByText("Booking Found")).toBeVisible();
 });
 
+for (const [paymentMethod, label] of [
+  ["pay_at_property", "Pay at Property"],
+  ["credit_card", "Credit Card"],
+  ["bank_transfer", "Bank Transfer"],
+  ["cash", "Cash"],
+] as const) {
+  test(`shows ${label} instead of ${paymentMethod} on the guest booking review`, async ({
+    page,
+  }) => {
+    await mockBookingApis(page);
+    await page.route(
+      `**/api/booking-web/hotels/${SEEDED_BOOKING_SLUG}/bookings/confirmation`,
+      async (route) => {
+        await route.fulfill({ json: { ...booking, paymentMethod, paymentStatus: "unpaid" } });
+      },
+    );
+
+    await page.goto(`/confirmation?booking=VAY-1268&token=${confirmationToken}`);
+
+    await expect(page.getByText("Payment", { exact: true }).locator("..")).toContainText(label);
+    await expect(page.getByText(paymentMethod, { exact: true })).toHaveCount(0);
+  });
+}
+
+test("does not expose an unknown payment identifier on the guest booking review", async ({
+  page,
+}) => {
+  await mockBookingApis(page);
+  await page.route(
+    `**/api/booking-web/hotels/${SEEDED_BOOKING_SLUG}/bookings/confirmation`,
+    async (route) => {
+      await route.fulfill({ json: { ...booking, paymentMethod: "future_wallet" } });
+    },
+  );
+
+  await page.goto(`/confirmation?booking=VAY-1268&token=${confirmationToken}`);
+
+  await expect(page.getByText("future_wallet", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Payment", { exact: true })).toHaveCount(0);
+});
+
 test("keeps booking lookup failures generic", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 360 });
   await mockBookingApis(page);

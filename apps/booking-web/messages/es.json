@@ -326,6 +326,8 @@
     "totalPaid": "Total Pagado",
     "totalDue": "Total pendiente",
     "paymentMethodLabel": "Pago",
+    "creditCard": "Tarjeta de crédito",
+    "cash": "Efectivo",
     "paymentStatusLabel": "Estado del pago",
     "manualCard": "Tarjeta",
     "otherPayment": "Otro",

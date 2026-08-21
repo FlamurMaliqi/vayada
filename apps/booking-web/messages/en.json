@@ -326,6 +326,8 @@
     "totalPaid": "Total Paid",
     "totalDue": "Total Due",
     "paymentMethodLabel": "Payment",
+    "creditCard": "Credit Card",
+    "cash": "Cash",
     "paymentStatusLabel": "Payment Status",
     "manualCard": "Card",
     "otherPayment": "Other",

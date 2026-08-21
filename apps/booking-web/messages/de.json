@@ -326,6 +326,8 @@
     "totalPaid": "Gesamtbetrag bezahlt",
     "totalDue": "Offener Gesamtbetrag",
     "paymentMethodLabel": "Zahlung",
+    "creditCard": "Kreditkarte",
+    "cash": "Barzahlung",
     "paymentStatusLabel": "Zahlungsstatus",
     "manualCard": "Karte",
     "otherPayment": "Andere",
