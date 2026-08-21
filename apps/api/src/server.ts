@@ -1260,6 +1260,7 @@ const channexReviewTimer = hasProviderWebhookSecret
   : undefined;
 
 let activeChannexBookingBatch: Promise<void> | undefined;
+const channexBookingAbort = new AbortController();
 const channexBookingWorkerEnabled =
   config.channexManagement.capabilityModes.bookingSync === "mutating" &&
   config.channexManagement.bookingMutationOwner === "target" &&
@@ -1269,6 +1270,7 @@ const runChannexBookings = () => {
   activeChannexBookingBatch = runChannexBookingJobs(targetDatabaseUrl, {
     apiBaseUrl: config.channexManagement.apiBaseUrl!,
     apiKey: config.channexManagement.apiKey!,
+    signal: channexBookingAbort.signal,
     ownsMutation: () =>
       config.channexManagement.capabilityModes.bookingSync === "mutating" &&
       config.channexManagement.bookingMutationOwner === "target",
@@ -1304,6 +1306,7 @@ if (channexBookingWorkerEnabled) runChannexBookings();
 app.addHook("onClose", async () => {
   if (channexReviewTimer) clearInterval(channexReviewTimer);
   if (channexBookingTimer) clearInterval(channexBookingTimer);
+  channexBookingAbort.abort();
   await Promise.all([activeChannexReviewBatch, activeChannexBookingBatch]);
 });
 

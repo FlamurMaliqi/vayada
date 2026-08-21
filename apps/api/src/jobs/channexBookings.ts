@@ -1,4 +1,5 @@
 import type { BookingChannel } from "@vayada/domain-booking";
+import { createHash } from "node:crypto";
 import pg from "pg";
 
 const QUEUE = "pms.channex.webhooks",
@@ -7,22 +8,25 @@ const QUEUE = "pms.channex.webhooks",
 // prettier-ignore
 type Payload={propertyId:string;providerPropertyId:string;channelBookingId:string;revision:string;revisionSource:"webhook_hint"|"revision_feed";pullRequired:boolean;rawPayload:Record<string,unknown>};
 // prettier-ignore
-type Job=Payload&{id:string;correlationId:string|null;attempt:number;maxAttempts:number;appliedRevision:string|null;invalidPayload?:true};
+type Job=Payload&{id:string;correlationId:string|null;attempt:number;maxAttempts:number;workerId:string;handledRevisions:Record<string,unknown>;invalidPayload?:true};
 // prettier-ignore
-type Revision={id:string;providerPropertyId:string;bookingId:string;status:"confirmed"|"canceled";checkIn:string;checkOut:string;adults:number;children:number;roomCount:number;currency:string;amount:string;providerSource:string|null;channel:BookingChannel;firstName:string;lastName:string;email:string|null;phone:string|null;insertedAt:string|null};
+type Revision={id:string;providerPropertyId:string;bookingId:string;status:"confirmed"|"canceled";checkIn:string;checkOut:string;adults:number;children:number;roomCount:number;currency:string;amount:string;providerSource:string|null;channel:BookingChannel;hasCustomer:boolean;firstName:string|null;lastName:string|null;email:string|null;phone:string|null;insertedAt:string|null};
 type Counters = { succeeded: number; retryScheduled: number; deadLettered: number };
 // prettier-ignore
 class Failure extends Error{constructor(readonly code:string,readonly retryable:boolean){super(code)}}
+// prettier-ignore
+class LeaseLost extends Error{constructor(){super("lease_lost")}}
 
 // prettier-ignore
 export async function runChannexBookingJobs(
   connectionString: string,
-  options:{apiBaseUrl:string;apiKey:string;ownsMutation:()=>boolean;fetch?:typeof fetch;workerId?:string;limit?:number},
+  options:{apiBaseUrl:string;apiKey:string;ownsMutation:()=>boolean;fetch?:typeof fetch;workerId?:string;limit?:number;signal?:AbortSignal},
 ): Promise<Counters> {
-  const pool = new pg.Pool({ connectionString, max: 2 }),
+  const pool = new pg.Pool({ connectionString, max: 2, connectionTimeoutMillis: 5_000 }),
     counters: Counters = { succeeded: 0, retryScheduled: 0, deadLettered: 0 };
   try {
     for (let index = 0; index < (options.limit ?? 25); index += 1) {
+      if(options.signal?.aborted)break;
       const claimed = await claim(pool, options.workerId ?? `channex-bookings:${process.pid}`);
       if (!claimed) break;
       if ("expired" in claimed) {
@@ -42,12 +46,13 @@ export async function runChannexBookingJobs(
 async function processJob(pool:pg.Pool,job:Job,options:Parameters<typeof runChannexBookingJobs>[1]):Promise<keyof Counters>{
   try {
     if(job.invalidPayload)throw new Failure("invalid_job_payload",false);
-    own(options);
-    const loaded = await loadRevisions(pool, job, options);
-    for(const item of loaded){own(options);const revision=parseRevision(item,job),replayed=await persist(pool,job,revision);own(options);await providerRequest(options,`/api/v1/booking_revisions/${revision.id}/ack`,"POST",replayed)}
+    active(options);
+    const loaded = await loadRevisions(job, options);
+    for(const item of loaded){active(options);const revision=parseRevision(item,job),replayed=await persist(pool,job,revision);await heartbeat(pool,job,options);await providerRequest(options,`/api/v1/booking_revisions/${revision.id}/ack`,"POST",replayed)}
     await finish(pool, job, "succeeded");
     return "succeeded";
   } catch (error) {
+    if(error instanceof LeaseLost)throw error;
     const failure=error instanceof Failure?error:new Failure(pgCode(error)?"write_unavailable":"handler_failed",true);
     return finish(pool, job, failure);
   }
@@ -57,8 +62,8 @@ async function processJob(pool:pg.Pool,job:Job,options:Parameters<typeof runChan
 async function claim(pool:pg.Pool,workerId:string):Promise<Job|{expired:true}|null>{
   return transaction(pool, async (client) => {
     const row = (
-      await client.query<{id:string;propertyId:string|null;resourceId:string;correlationId:string|null;status:"pending"|"running";attemptsCount:number;maxAttempts:number;appliedRevision:string|null;payload:unknown}>(
-        `SELECT id::text,payload->>'propertyId' AS "propertyId",resource_id AS "resourceId",correlation_id AS "correlationId",job_metadata->>'appliedRevisionId' AS "appliedRevision",
+      await client.query<{id:string;propertyId:string|null;resourceId:string;correlationId:string|null;status:"pending"|"running";attemptsCount:number;maxAttempts:number;handledRevisions:unknown;payload:unknown}>(
+        `SELECT id::text,payload->>'propertyId' AS "propertyId",resource_id AS "resourceId",correlation_id AS "correlationId",job_metadata->'handledRevisions' AS "handledRevisions",
           status,attempts_count::int AS "attemptsCount",max_attempts::int AS "maxAttempts",payload
          FROM platform.jobs WHERE queue_name=$1 AND job_type=$2 AND
           ((status='pending' AND run_after<=now() AND attempts_count<max_attempts) OR
@@ -80,12 +85,12 @@ async function claim(pool:pg.Pool,workerId:string):Promise<Job|{expired:true}|nu
     const attempt = row.attemptsCount + 1;
     await client.query("UPDATE platform.jobs SET status='running',attempts_count=$2,locked_at=now(),locked_by=$3,updated_at=now() WHERE id=$1::uuid",[row.id,attempt,workerId]);
     await client.query("INSERT INTO platform.job_attempts(job_id,attempt_number,status,worker_id) VALUES($1::uuid,$2,'running',$3)",[row.id,attempt,workerId]);
-    return {...payload,id:row.id,correlationId:row.correlationId,attempt,maxAttempts:row.maxAttempts,appliedRevision:row.appliedRevision,...(invalidPayload?{invalidPayload:true as const}:{})};
+    return {...payload,id:row.id,correlationId:row.correlationId,attempt,maxAttempts:row.maxAttempts,workerId,handledRevisions:record(row.handledRevisions),...(invalidPayload?{invalidPayload:true as const}:{})};
   });
 }
 
 // prettier-ignore
-async function loadRevisions(pool:pg.Pool,job:Job,options:Parameters<typeof runChannexBookingJobs>[1]):Promise<Record<string,unknown>[]>{
+async function loadRevisions(job:Job,options:Parameters<typeof runChannexBookingJobs>[1]):Promise<Record<string,unknown>[]>{
   if (!job.pullRequired) return [record(record(job.rawPayload).payload)];
   const response=await providerRequest(options,`/api/v1/booking_revisions/feed?filter[property_id]=${encodeURIComponent(job.providerPropertyId)}&order[inserted_at]=asc`,"GET");
   const revisions=Array.isArray(record(response).data)?record(response).data as unknown[]:[];
@@ -94,22 +99,14 @@ async function loadRevisions(pool:pg.Pool,job:Job,options:Parameters<typeof runC
     return text(item.id)===job.revision||(job.revision==="unknown"&&text(attributes.booking_id)===job.channelBookingId);
   });
   if (found.length) return found;
-  const appliedRevision=job.appliedRevision??(job.revision==="unknown"?null:job.revision);
-  if(!appliedRevision)throw new Failure("revision_not_available",true);
-  const applied = await pool.query(
-    `SELECT 1 FROM pms.channel_booking_mappings mapping JOIN pms.channel_connections connection
-       ON connection.id=mapping.connection_id AND connection.property_id=mapping.property_id
-     WHERE mapping.property_id=$1::uuid AND connection.provider='channex'
-       AND mapping.external_booking_id=$2 AND mapping.external_revision_id=$3 LIMIT 1`,
-    [job.propertyId, job.channelBookingId, appliedRevision],
-  );
-  if (applied.rowCount) return [];
+  if(durablyHandled(job))return [];
   throw new Failure("revision_not_available", true);
 }
 
 // prettier-ignore
 async function persist(pool:pg.Pool,job:Job,revision:Revision):Promise<boolean>{
   return transaction(pool, async (client) => {
+    await fence(client,job);
     const connection = (
       await client.query<{id:string}>(
         `SELECT id::text FROM pms.channel_connections WHERE property_id=$1::uuid
@@ -129,12 +126,12 @@ async function persist(pool:pg.Pool,job:Job,revision:Revision):Promise<boolean>{
     ).rows;
     const bookingIds = new Set(mappings.map((row) => row.guestBookingId));
     if (bookingIds.size > 1) throw new Failure("ambiguous_booking_mapping", false);
-    const replayed = mappings.some((row) => row.revisionId === revision.id);
-    await client.query("UPDATE platform.jobs SET job_metadata=job_metadata||jsonb_build_object('appliedRevisionId',$2::text),updated_at=now() WHERE id=$1::uuid",[job.id,revision.id]);
-    if(replayed)return true;
-    const newest = mappings[0]?.insertedAt;
-    if (newest && revision.insertedAt && newest > revision.insertedAt) return true;
+    const replayed=mappings.some(row=>row.revisionId===revision.id),metadata=JSON.stringify({providerSource:revision.providerSource,providerPropertyId:job.providerPropertyId,providerInsertedAt:revision.insertedAt});
+    if(replayed){await recordHandled(client,job,revision,"replayed");return true}
+    const newest=mappings.reduce<string|null>((latest,row)=>row.insertedAt&&(!latest||row.insertedAt>latest)?row.insertedAt:latest,null);
+    if(newest&&revision.insertedAt&&revision.insertedAt<newest){await recordHandled(client,job,revision,"stale");return true}
     let guestBookingId = mappings[0]?.guestBookingId;
+    if(!guestBookingId&&revision.status==="canceled"){await recordHandled(client,job,revision,"ignored");return true}
     if (!guestBookingId) {
       guestBookingId = (
         await client.query<{id:string}>(
@@ -149,19 +146,18 @@ async function persist(pool:pg.Pool,job:Job,revision:Revision):Promise<boolean>{
       await client.query(
         `INSERT INTO booking.booking_guests(guest_booking_id,guest_role,first_name,last_name,email,phone)
          VALUES($1::uuid,'booker',$2,$3,$4,$5)`,
-        [guestBookingId, revision.firstName, revision.lastName, revision.email, revision.phone],
+        [guestBookingId,revision.firstName??"Guest",revision.lastName??"",revision.email,revision.phone],
       );
     } else {
-      await client.query(
-        `UPDATE booking.guest_bookings SET lifecycle_status=$3,check_in=$4::date,check_out=$5::date,
+      await client.query(revision.roomCount?`UPDATE booking.guest_bookings SET lifecycle_status=$3,check_in=$4::date,check_out=$5::date,
            adults=$6,children=$7,room_count=$8,currency=$9,total_amount=$10::numeric,
            balance_amount=CASE WHEN payment_status='unpaid' THEN $10::numeric ELSE balance_amount END,updated_at=now()
-         WHERE id=$1::uuid AND property_id=$2::uuid`,
-        [guestBookingId,job.propertyId,revision.status,revision.checkIn,revision.checkOut,revision.adults,revision.children,revision.roomCount,revision.currency,revision.amount],
+         WHERE id=$1::uuid AND property_id=$2::uuid`:`UPDATE booking.guest_bookings SET lifecycle_status='canceled',updated_at=now() WHERE id=$1::uuid AND property_id=$2::uuid`,
+        revision.roomCount?[guestBookingId,job.propertyId,revision.status,revision.checkIn,revision.checkOut,revision.adults,revision.children,revision.roomCount,revision.currency,revision.amount]:[guestBookingId,job.propertyId],
       );
+      if(revision.hasCustomer)await client.query("UPDATE booking.booking_guests SET first_name=COALESCE($2,first_name),last_name=COALESCE($3,last_name),email=$4,phone=$5,updated_at=now() WHERE guest_booking_id=$1::uuid AND guest_role='booker'",[guestBookingId,revision.firstName,revision.lastName,revision.email,revision.phone]);
     }
-    const metadata=JSON.stringify({providerSource:revision.providerSource,providerPropertyId:job.providerPropertyId,providerInsertedAt:revision.insertedAt});
-    await client.query(
+    if(revision.roomCount)await client.query(
       `INSERT INTO pms.channel_booking_mappings(property_id,connection_id,guest_booking_id,
          external_booking_id,external_revision_id,channel,channel_room_index,sync_status,last_synced_at,mapping_metadata)
        SELECT $1::uuid,$2::uuid,$3::uuid,$4,$5,'channex',slot,'active',now(),$7::jsonb
@@ -170,12 +166,13 @@ async function persist(pool:pg.Pool,job:Job,revision:Revision):Promise<boolean>{
          last_synced_at=now(),mapping_metadata=EXCLUDED.mapping_metadata,updated_at=now()`,
       [job.propertyId,connection[0]!.id,guestBookingId,job.channelBookingId,revision.id,revision.roomCount,metadata],
     );
-    await client.query(
+    if(revision.roomCount)await client.query(
       "UPDATE pms.channel_booking_mappings SET sync_status='superseded',updated_at=now() WHERE connection_id=$1::uuid AND external_booking_id=$2 AND channel_room_index>=$3",
       [connection[0]!.id, job.channelBookingId, revision.roomCount],
     );
+    else await client.query("UPDATE pms.channel_booking_mappings SET external_revision_id=$3,last_synced_at=now(),mapping_metadata=$4::jsonb,updated_at=now() WHERE connection_id=$1::uuid AND external_booking_id=$2",[connection[0]!.id,job.channelBookingId,revision.id,metadata]);
     await client.query("UPDATE pms.channel_connections SET last_booking_sync_at=now(),updated_at=now() WHERE id=$1::uuid",[connection[0]!.id]);
-    return replayed;
+    await recordHandled(client,job,revision,"applied");return false;
   });
 }
 
@@ -190,19 +187,14 @@ async function finish(pool:pg.Pool,job:Job,result:"succeeded"|Failure):Promise<k
       status = succeeded ? "succeeded" : retry ? "pending" : "dead_lettered",
       retryAt=retry?new Date(now.getTime()+Math.min(60_000,1_000*2**(job.attempt-1))):null,
       code = failure?.code ?? null;
-    await client.query(
-      `UPDATE platform.job_attempts SET status=$3,finished_at=$4,error_type=$5,
-         error_message=CASE WHEN $5::text IS NULL THEN NULL ELSE 'Channex booking ingestion failed ('||$5||').' END,
-         retry_after=$6,error_metadata=jsonb_build_object('retryable',$7::boolean)
-       WHERE job_id=$1::uuid AND attempt_number=$2 AND status='running'`,
-      [job.id,job.attempt,succeeded?"succeeded":"failed",now,code,retryAt,failure?.retryable??false],
-    );
-    await client.query(
+    const finished=await client.query(
       `UPDATE platform.jobs SET status=$3,run_after=COALESCE($4::timestamptz,run_after),finished_at=CASE WHEN $3::text='pending' THEN NULL ELSE $5::timestamptz END,
          locked_at=NULL,locked_by=NULL,updated_at=$5::timestamptz,job_metadata=(job_metadata-'lastErrorCode')||jsonb_strip_nulls(jsonb_build_object('lastErrorCode',$6::text))
-       WHERE id=$1::uuid AND attempts_count=$2 AND status='running'`,
-      [job.id, job.attempt, status, retryAt, now, code],
+       WHERE id=$1::uuid AND attempts_count=$2 AND status='running' AND locked_by=$7 RETURNING id`,
+      [job.id,job.attempt,status,retryAt,now,code,job.workerId],
     );
+    if(!finished.rowCount)throw new LeaseLost();
+    await client.query(`UPDATE platform.job_attempts SET status=$3,finished_at=$4,error_type=$5,error_message=CASE WHEN $5::text IS NULL THEN NULL ELSE 'Channex booking ingestion failed ('||$5||').' END,retry_after=$6,error_metadata=jsonb_build_object('retryable',$7::boolean) WHERE job_id=$1::uuid AND attempt_number=$2 AND status='running'`,[job.id,job.attempt,succeeded?"succeeded":"failed",now,code,retryAt,failure?.retryable??false]);
     if (!succeeded && !retry)
       await client.query(
         `INSERT INTO platform.dead_letter_events(source_kind,job_id,job_attempt_id,tenant_scope,
@@ -224,14 +216,15 @@ async function finish(pool:pg.Pool,job:Job,result:"succeeded"|Failure):Promise<k
 }
 
 // prettier-ignore
-async function expire(client:pg.PoolClient,row:{id:string;resourceId:string;correlationId:string|null;attemptsCount:number}){
-  await client.query("UPDATE platform.jobs SET status='dead_lettered',finished_at=now(),locked_at=NULL,locked_by=NULL,updated_at=now() WHERE id=$1::uuid",[row.id]);
+async function expire(client:pg.PoolClient,row:{id:string;propertyId:string|null;resourceId:string;correlationId:string|null;attemptsCount:number}){
+  await client.query("UPDATE platform.jobs SET status='dead_lettered',finished_at=now(),locked_at=NULL,locked_by=NULL,updated_at=now(),job_metadata=job_metadata||jsonb_build_object('lastErrorCode','worker_lease_expired') WHERE id=$1::uuid",[row.id]);
   await client.query(
     `INSERT INTO platform.dead_letter_events(source_kind,job_id,job_attempt_id,tenant_scope,resource_product,resource_type,resource_id,correlation_id,reason_code,failure_summary,failure_payload)
      SELECT 'job',$1::uuid,id,'external','pms','channel_booking',$2,$3,'worker_lease_expired','Channex booking worker lease expired.',jsonb_build_object('replayEligible',true)
      FROM platform.job_attempts WHERE job_id=$1::uuid AND attempt_number=$4`,
     [row.id,row.resourceId,row.correlationId,row.attemptsCount],
   );
+  await client.query(`INSERT INTO platform.product_audit_events(audit_key,product,action,occurred_at,tenant_scope,actor_type,target_resource_product,target_resource_type,target_resource_id,job_id,correlation_id,redacted_payload,retention_class,privacy_scope) VALUES($1,'pms','channex.booking_ingestion.deadLettered',now(),'external','system','pms','channel_booking',$2,$3::uuid,$4,jsonb_strip_nulls(jsonb_build_object('propertyId',$5::text,'outcome','deadLettered','failureCode','worker_lease_expired')),'provider_receipt','restricted')`,[`channex.booking:${row.id}:attempt:${row.attemptsCount}:deadLettered`,row.resourceId,row.id,row.correlationId,row.propertyId]);
 }
 
 // prettier-ignore
@@ -243,8 +236,8 @@ function parsePayload(value:unknown,propertyId:string,resourceId:string):Payload
 
 // prettier-ignore
 function parseRevision(value:Record<string,unknown>,job:Job):Revision{
-  const attributes=Object.keys(record(value.attributes)).length?record(value.attributes):value,id=text(value.id)??text(attributes.id),bookingId=text(attributes.booking_id),providerPropertyId=text(attributes.property_id),rooms=Array.isArray(attributes.rooms)?attributes.rooms.map(record):[],topOccupancy=record(attributes.occupancy),roomCount=Math.max(rooms.length,1),date=(key:string)=>isoDate(attributes[key]),occupancy=(key:string,fallback:number)=>rooms.length?rooms.reduce((sum,room)=>sum+integer(record(room.occupancy)[key],fallback),0):integer(topOccupancy[key],fallback),providerSource=text(attributes.ota_name),status=(text(attributes.status)??"").toLowerCase(),customer=record(attributes.customer),revision:Revision={id:id??"",providerPropertyId:providerPropertyId??"",bookingId:bookingId??"",status:status==="cancelled"||status==="canceled"?"canceled":"confirmed",checkIn:date("arrival_date"),checkOut:date("departure_date"),adults:occupancy("adults",1),children:occupancy("children",0),roomCount,currency:currency(attributes.currency),amount:amount(attributes.amount),providerSource,channel:canonicalChannel(providerSource),firstName:text(customer.name)??"Guest",lastName:text(customer.surname)??"",email:text(customer.mail),phone:text(customer.phone),insertedAt:timestamp(attributes.inserted_at??value.inserted_at)};
-  if(rooms.length>100||revision.adults<1||!revision.id||!revision.insertedAt||!["new","modified","confirmed","cancelled","canceled"].includes(status)||revision.bookingId!==job.channelBookingId||revision.providerPropertyId!==job.providerPropertyId||(job.revision!=="unknown"&&revision.id!==job.revision)||revision.checkIn>=revision.checkOut)throw new Failure("invalid_revision",false);
+  const attributes=Object.keys(record(value.attributes)).length?record(value.attributes):value,id=text(value.id)??text(attributes.id),bookingId=text(attributes.booking_id),providerPropertyId=text(attributes.property_id),rawRooms=attributes.rooms,status=(text(attributes.status)??"").toLowerCase(),canceled=status==="cancelled"||status==="canceled",roomShape=(rawRooms===undefined&&canceled)||(Array.isArray(rawRooms)&&rawRooms.every(item=>isRecord(item)&&(record(item).occupancy===undefined||isRecord(record(item).occupancy)))),rooms=Array.isArray(rawRooms)&&rawRooms.every(isRecord)?rawRooms.map(record):[],topOccupancy=record(attributes.occupancy),date=(key:string)=>isoDate(attributes[key]),occupancy=(key:string,required:boolean)=>rooms.reduce((sum,room)=>{const local=record(room.occupancy),value=local[key]===undefined?topOccupancy[key]:local[key];return sum+integer(value,required?null:0)},0),providerSource=text(attributes.ota_name),customer=record(attributes.customer),revision:Revision={id:id??"",providerPropertyId:providerPropertyId??"",bookingId:bookingId??"",status:canceled?"canceled":"confirmed",checkIn:date("arrival_date"),checkOut:date("departure_date"),adults:rooms.length?occupancy("adults",true):0,children:rooms.length?occupancy("children",false):0,roomCount:rooms.length,currency:currency(attributes.currency),amount:amount(attributes.amount),providerSource,channel:canonicalChannel(providerSource),hasCustomer:Object.keys(customer).length>0,firstName:text(customer.name),lastName:text(customer.surname),email:text(customer.mail),phone:text(customer.phone),insertedAt:timestamp(attributes.inserted_at??value.inserted_at)};
+  if(!roomShape||rooms.length>100||(!canceled&&!rooms.length)||(rooms.length&&revision.adults<1)||!revision.id||!revision.insertedAt||!["new","modified","confirmed","cancelled","canceled"].includes(status)||revision.bookingId!==job.channelBookingId||revision.providerPropertyId!==job.providerPropertyId||(job.revision!=="unknown"&&revision.id!==job.revision)||revision.checkIn>=revision.checkOut)throw new Failure("invalid_revision",false);
   return revision;
 }
 
@@ -252,7 +245,7 @@ function parseRevision(value:Record<string,unknown>,job:Job):Revision{
 async function providerRequest(options:Parameters<typeof runChannexBookingJobs>[1],path:string,method:"GET"|"POST",allowMissing=false):Promise<unknown>{
   let response: Response;
   try {
-    response=await(options.fetch??fetch)(new URL(path,`${options.apiBaseUrl}/`),{method,headers:{"user-api-key":options.apiKey},signal:AbortSignal.timeout(30_000)});
+    response=await(options.fetch??fetch)(new URL(path,`${options.apiBaseUrl}/`),{method,headers:{"user-api-key":options.apiKey},signal:options.signal?AbortSignal.any([options.signal,AbortSignal.timeout(30_000)]):AbortSignal.timeout(30_000)});
   } catch {
     throw new Failure("provider_unavailable", true);
   }
@@ -263,15 +256,25 @@ async function providerRequest(options:Parameters<typeof runChannexBookingJobs>[
 }
 
 // prettier-ignore
-function own(options:Parameters<typeof runChannexBookingJobs>[1]){if(!options.ownsMutation())throw new Failure("ownership_frozen",true)}
+function active(options:Parameters<typeof runChannexBookingJobs>[1]){if(options.signal?.aborted)throw new Failure("worker_shutdown",true);if(!options.ownsMutation())throw new Failure("ownership_frozen",true)}
+// prettier-ignore
+async function heartbeat(pool:pg.Pool,job:Job,options:Parameters<typeof runChannexBookingJobs>[1]){active(options);await transaction(pool,client=>fence(client,job))}
+// prettier-ignore
+async function fence(client:pg.PoolClient,job:Job){const locked=await client.query("UPDATE platform.jobs SET locked_at=now(),updated_at=now() WHERE id=$1::uuid AND attempts_count=$2 AND status='running' AND locked_by=$3 RETURNING id",[job.id,job.attempt,job.workerId]);if(!locked.rowCount)throw new LeaseLost()}
+// prettier-ignore
+async function recordHandled(client:pg.PoolClient,job:Job,revision:Revision,outcome:"applied"|"replayed"|"stale"|"ignored"){const fingerprint=createHash("sha256").update(JSON.stringify(revision)).digest("hex"),prior=text(record(job.handledRevisions[revision.id]).fingerprint);if(prior&&prior!==fingerprint)throw new Failure("revision_fingerprint_conflict",false);const saved=await client.query(`UPDATE platform.jobs SET job_metadata=jsonb_set(job_metadata,'{handledRevisions}',COALESCE(job_metadata->'handledRevisions','{}')||jsonb_build_object($2::text,jsonb_build_object('outcome',$3::text,'fingerprint',$4::text)),true),updated_at=now() WHERE id=$1::uuid AND attempts_count=$5 AND status='running' AND locked_by=$6 RETURNING id`,[job.id,revision.id,outcome,fingerprint,job.attempt,job.workerId]);if(!saved.rowCount)throw new LeaseLost();job.handledRevisions[revision.id]={outcome,fingerprint}}
+// prettier-ignore
+function durablyHandled(job:Job):boolean{const ids=job.revision==="unknown"?Object.keys(job.handledRevisions):[job.revision];return ids.some(id=>{const evidence=record(job.handledRevisions[id]),fingerprint=text(evidence.fingerprint),outcome=text(evidence.outcome);return Boolean(fingerprint&&/^[a-f0-9]{64}$/.test(fingerprint)&&outcome&&["applied","replayed","stale","ignored"].includes(outcome))})}
 // prettier-ignore
 function canonicalChannel(value:string|null):BookingChannel{if(!value)return "unknown";const key=value.replace(/[^a-z0-9]/gi,"").toLowerCase();if(key==="booking"||key==="bookingcom")return "booking_com";if(key==="airbnb")return "airbnb";if(key==="expedia"||key==="expediacom")return "expedia";if(key==="agoda")return "agoda";return "other_ota"}
 // prettier-ignore
 function record(value:unknown):Record<string,unknown>{return value&&typeof value==="object"&&!Array.isArray(value)?value as Record<string,unknown>:{};}
 // prettier-ignore
+function isRecord(value:unknown):value is Record<string,unknown>{return Boolean(value)&&typeof value==="object"&&!Array.isArray(value)}
+// prettier-ignore
 function text(value:unknown):string|null{const parsed=typeof value==="number"&&Number.isFinite(value)?String(value):typeof value==="string"?value.trim():"";return parsed&&parsed.length<=200?parsed:null}
 // prettier-ignore
-function integer(value:unknown,fallback:number):number{return typeof value==="number"&&Number.isInteger(value)&&value>=0&&value<=100?value:fallback}
+function integer(value:unknown,fallback:number|null):number{if(value===undefined&&fallback!==null)return fallback;if(typeof value!=="number"||!Number.isInteger(value)||value<0||value>100)throw new Failure("invalid_revision",false);return value}
 // prettier-ignore
 function isoDate(value:unknown):string{const parsed=text(value);if(!parsed||!/^\d{4}-\d{2}-\d{2}$/.test(parsed)||new Date(`${parsed}T00:00:00Z`).toISOString().slice(0,10)!==parsed)throw new Failure("invalid_revision",false);return parsed}
 // prettier-ignore
@@ -287,6 +290,7 @@ async function transaction<T>(pool:pg.Pool,run:(client:pg.PoolClient)=>Promise<T
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await client.query("SET LOCAL lock_timeout='5s';SET LOCAL statement_timeout='30s'");
     const value = await run(client);
     await client.query("COMMIT");
     return value;
