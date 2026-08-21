@@ -54,6 +54,11 @@ import {
 import { LocationMapPreview } from "@/components/settings/LocationMapPreview";
 import { PoiSearchInput } from "@/components/settings/PoiSearchInput";
 import { useTranslation } from "@/lib/i18n";
+import {
+  buildSettingsSectionUrl,
+  readSettingsSection,
+  type SettingsSectionId,
+} from "@/lib/utils/settingsSectionUrl";
 
 // Audit-driven section IDs (VAY-400):
 // - "account" replaces the old "security" tab — those are personal-account
@@ -61,14 +66,7 @@ import { useTranslation } from "@/lib/i18n";
 // - "payments" is new — Stripe Connect + Xendit moved out of billing into
 //   their own section (billing = what hotel pays Vayada; payments = how hotel
 //   collects from guests).
-type Section =
-  | "property"
-  | "booking"
-  | "location"
-  | "notifications"
-  | "account"
-  | "billing"
-  | "payments";
+type Section = SettingsSectionId;
 
 const POI_COLORS = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#0d9488", "#db2777"];
 const PROPERTY_MAP_CENTERING_UNAVAILABLE =
@@ -241,23 +239,20 @@ function buildTargetSettingsUpdate(
 
 export default function SettingsPage() {
   const { t } = useTranslation();
-  const [activeSection, setActiveSection] = useState<Section>(() => {
-    if (typeof window === "undefined") return "property";
-    const searchParams = new URLSearchParams(window.location.search);
-    const requested = searchParams.get("section");
-    if (
-      requested === "property" ||
-      requested === "booking" ||
-      requested === "location" ||
-      requested === "notifications" ||
-      requested === "account" ||
-      requested === "billing" ||
-      requested === "payments"
-    ) {
-      return requested;
-    }
-    return searchParams.has("billing") ? "billing" : "property";
-  });
+  const [activeSection, setActiveSection] = useState<Section>("property");
+  const selectSection = useCallback((section: Section) => {
+    setActiveSection(section);
+    const nextUrl = buildSettingsSectionUrl(window.location.href, section);
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextUrl !== currentUrl) window.history.pushState(null, "", nextUrl);
+  }, []);
+
+  useEffect(() => {
+    const syncSectionFromUrl = () => setActiveSection(readSettingsSection(window.location.search));
+    syncSectionFromUrl();
+    window.addEventListener("popstate", syncSectionFromUrl);
+    return () => window.removeEventListener("popstate", syncSectionFromUrl);
+  }, []);
   const [settings, setSettings] = useState<PropertySettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -617,7 +612,7 @@ export default function SettingsPage() {
         type: "error",
         message: "Every point of interest needs a label, travel time, latitude, and longitude.",
       });
-      setActiveSection("location");
+      selectSection("location");
       return;
     }
     try {
@@ -815,9 +810,7 @@ export default function SettingsPage() {
       description={t("settings.subtitle")}
       sections={sections}
       activeId={activeSection}
-      onSelect={(id) => {
-        setActiveSection(id as Section);
-      }}
+      onSelect={(id) => selectSection(id as Section)}
     >
       {stripeDashboardToast && (
         <div className="fixed right-4 top-4 z-50 w-[min(24rem,calc(100vw-2rem))]" role="alert">
@@ -2295,7 +2288,7 @@ export default function SettingsPage() {
                 Enable <strong>Online card payment</strong> in{" "}
                 <button
                   type="button"
-                  onClick={() => setActiveSection("billing")}
+                  onClick={() => selectSection("billing")}
                   className="text-primary-600 hover:underline"
                 >
                   Billing &rarr; Payment methods
