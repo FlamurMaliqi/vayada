@@ -12,13 +12,12 @@ import {
 } from "@vayada/domain-finance";
 import { PMS_PRICING_CONTRACT_VERSION, type PmsPricingReadPort } from "@vayada/domain-pms";
 import type { FinanceExpensePropertyContextReadPort } from "./financeExpenseReadModel.js";
+import type { FinanceFolioRecipientDecoder } from "./financeFolioRecipientCodec.js";
 
 // prettier-ignore
 type ReadClient = { query<T extends QueryResultRow = QueryResultRow>(sql: string, values?: readonly unknown[]): Promise<Pick<QueryResult<T>, "rows">> };
 // prettier-ignore
 export type FinanceFolioReadPool = ReadClient & { end?(): Promise<void> };
-// prettier-ignore
-export type FinanceFolioRecipientDecoder = { decode(input: { ciphertext: Buffer; encryptionScheme: "envelope_aead_v1"; keyVersion: string }): Promise<unknown> };
 export type FinanceFolioReadRepository = {
   list(propertyId: string, query: FinanceFolioQuery): Promise<FinanceFolioListResponse | null>;
   detail(propertyId: string, folioId: string): Promise<FinanceFolioDetailResponse | null>;
@@ -88,9 +87,10 @@ export function createPgFinanceFolioReadRepository(config: { connectionString?: 
       const evidence = await meta(propertyId); if (!evidence) return null;
       const row = (await pool.query<DetailRow>(`SELECT ${SUMMARY},r.recipient_snapshot_ciphertext AS "recipientCiphertext",r.recipient_encryption_scheme AS "recipientEncryptionScheme",r.recipient_key_version AS "recipientKeyVersion",r.source_digest::text AS "sourceDigest",r.source_freshness AS "sourceFreshness",COALESCE((SELECT jsonb_agg(jsonb_build_object('lineId',l.id::text,'position',l.position,'kind',l.kind,'description',l.description,'quantity',l.quantity::text,'unitAmount',l.unit_amount::text,'total',l.line_total::text,'serviceOn',l.service_on::text,'sourceType',l.source_type,'sourceId',l.source_id,'sourceRevision',l.source_revision) ORDER BY l.position) FROM finance.folio_lines l WHERE l.folio_revision_id=r.id),'[]') AS lines,COALESCE((SELECT jsonb_agg(jsonb_build_object('paymentId',p.payment_id::text,'amount',p.amount::text) ORDER BY p.position) FROM finance.folio_payment_references p WHERE p.folio_revision_id=r.id),'[]') AS "paymentRefs" FROM finance.folios f JOIN LATERAL (SELECT * FROM finance.folio_revisions candidate WHERE candidate.folio_id=f.id AND candidate.property_id=f.property_id ORDER BY candidate.revision DESC LIMIT 1) r ON true WHERE f.property_id=$1::uuid AND f.id=$2::uuid AND r.currency=$3`, [evidence.propertyId, uuid(folioId), evidence.currency])).rows[0];
       if (!row) return null;
-      const decoded = await config.recipientDecoder.decode({ ciphertext: row.recipientCiphertext, encryptionScheme: scheme(row.recipientEncryptionScheme), keyVersion: row.recipientKeyVersion });
+      const itemSummary = summary(row, evidence.currency);
+      const decoded = await config.recipientDecoder.decode({ propertyId: evidence.propertyId, folioId: itemSummary.folioId, revision: itemSummary.revision, ciphertext: row.recipientCiphertext, encryptionScheme: scheme(row.recipientEncryptionScheme), keyVersion: row.recipientKeyVersion });
       const recipient = whitelistRecipient(decoded), sourceFreshness = stringRecord(row.sourceFreshness);
-      const item: FinanceFolio = { ...summary(row, evidence.currency), propertyId: evidence.propertyId, recipient, currency: evidence.currency, lines: lines(row.lines, evidence.currency), paymentRefs: paymentRefs(row.paymentRefs, evidence.currency), sourceDigest: digest(row.sourceDigest), sourceFreshness };
+      const item: FinanceFolio = { ...itemSummary, propertyId: evidence.propertyId, recipient, currency: evidence.currency, lines: lines(row.lines, evidence.currency), paymentRefs: paymentRefs(row.paymentRefs, evidence.currency), sourceDigest: digest(row.sourceDigest), sourceFreshness };
       return { ...envelope(evidence, instant(row.createdAt)), item };
     },
     async close() { if (ownsPool) await pool.end?.(); },
