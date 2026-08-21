@@ -10,7 +10,7 @@ type Payload={propertyId:string;providerPropertyId:string;channelBookingId:strin
 // prettier-ignore
 type Job=Payload&{id:string;correlationId:string|null;attempt:number;maxAttempts:number;workerId:string;handledRevisions:Record<string,unknown>;invalidPayload?:true};
 // prettier-ignore
-type Revision={id:string;providerPropertyId:string;bookingId:string;status:"confirmed"|"canceled";checkIn:string;checkOut:string;adults:number;children:number;roomCount:number;currency:string;amount:string;providerSource:string|null;channel:BookingChannel;hasCustomer:boolean;firstName:string|null;lastName:string|null;email:string|null;phone:string|null;insertedAt:string|null};
+type Revision={id:string;semanticRevision:string|null;providerPropertyId:string;bookingId:string;status:"confirmed"|"canceled";checkIn:string;checkOut:string;adults:number;children:number;roomCount:number;currency:string;amount:string;providerSource:string|null;channel:BookingChannel;hasCustomer:boolean;hasEmail:boolean;hasPhone:boolean;firstName:string|null;lastName:string|null;email:string|null;phone:string|null;insertedAt:string|null};
 type Counters = { succeeded: number; retryScheduled: number; deadLettered: number };
 // prettier-ignore
 class Failure extends Error{constructor(readonly code:string,readonly retryable:boolean){super(code)}}
@@ -47,7 +47,7 @@ async function processJob(pool:pg.Pool,job:Job,options:Parameters<typeof runChan
   try {
     if(job.invalidPayload)throw new Failure("invalid_job_payload",false);
     active(options);
-    const loaded = await loadRevisions(job, options);
+    const loaded = await loadRevisions(pool,job,options);
     for(const item of loaded){active(options);const revision=parseRevision(item,job),replayed=await persist(pool,job,revision);await heartbeat(pool,job,options);await providerRequest(options,`/api/v1/booking_revisions/${revision.id}/ack`,"POST",replayed)}
     await finish(pool, job, "succeeded");
     return "succeeded";
@@ -90,7 +90,7 @@ async function claim(pool:pg.Pool,workerId:string):Promise<Job|{expired:true}|nu
 }
 
 // prettier-ignore
-async function loadRevisions(job:Job,options:Parameters<typeof runChannexBookingJobs>[1]):Promise<Record<string,unknown>[]>{
+async function loadRevisions(pool:pg.Pool,job:Job,options:Parameters<typeof runChannexBookingJobs>[1]):Promise<Record<string,unknown>[]>{
   if (!job.pullRequired) return [record(record(job.rawPayload).payload)];
   const response=await providerRequest(options,`/api/v1/booking_revisions/feed?filter[property_id]=${encodeURIComponent(job.providerPropertyId)}&order[inserted_at]=asc`,"GET");
   const revisions=Array.isArray(record(response).data)?record(response).data as unknown[]:[];
@@ -99,7 +99,7 @@ async function loadRevisions(job:Job,options:Parameters<typeof runChannexBooking
     return text(attributes.booking_id)===job.channelBookingId&&(job.revision==="unknown"||text(item.id)===job.revision||text(attributes.revision)===job.revision||text(attributes.revision_number)===job.revision);
   });
   if (found.length) return found;
-  if(durablyHandled(job))return [];
+  if(durablyHandled(job)||await converged(pool,job))return [];
   throw new Failure("revision_not_available", true);
 }
 
@@ -117,16 +117,16 @@ async function persist(pool:pg.Pool,job:Job,revision:Revision):Promise<boolean>{
     if (connection.length !== 1) throw new Failure("connection_not_owned", true);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",[`channex-booking:${job.propertyId}:${job.channelBookingId}`]);
     const mappings = (
-      await client.query<{guestBookingId:string;revisionId:string|null;insertedAt:string|null}>(
+      await client.query<{guestBookingId:string;revisionId:string|null;insertedAt:string|null;providerSource:string|null}>(
         `SELECT guest_booking_id::text AS "guestBookingId",external_revision_id AS "revisionId",
-           mapping_metadata->>'providerInsertedAt' AS "insertedAt" FROM pms.channel_booking_mappings
+           mapping_metadata->>'providerInsertedAt' AS "insertedAt",mapping_metadata->>'providerSource' AS "providerSource" FROM pms.channel_booking_mappings
          WHERE connection_id=$1::uuid AND external_booking_id=$2 ORDER BY channel_room_index FOR UPDATE`,
         [connection[0]!.id, job.channelBookingId],
       )
     ).rows;
     const bookingIds = new Set(mappings.map((row) => row.guestBookingId));
     if (bookingIds.size > 1) throw new Failure("ambiguous_booking_mapping", false);
-    const replayed=mappings.some(row=>row.revisionId===revision.id),metadata=JSON.stringify({providerSource:revision.providerSource,providerPropertyId:job.providerPropertyId,providerInsertedAt:revision.insertedAt});
+    const replayed=mappings.some(row=>row.revisionId===revision.id),metadata=JSON.stringify({providerSource:mappings[0]?.providerSource??revision.providerSource,latestProviderSource:revision.providerSource,providerPropertyId:job.providerPropertyId,providerInsertedAt:revision.insertedAt,providerRevision:revision.semanticRevision});
     if(replayed){await recordHandled(client,job,revision,"replayed");return true}
     const newest=mappings.reduce<string|null>((latest,row)=>row.insertedAt&&(!latest||row.insertedAt>latest)?row.insertedAt:latest,null);
     if(newest&&revision.insertedAt&&revision.insertedAt<newest){await recordHandled(client,job,revision,"stale");return true}
@@ -155,22 +155,22 @@ async function persist(pool:pg.Pool,job:Job,revision:Revision):Promise<boolean>{
          WHERE id=$1::uuid AND property_id=$2::uuid`:`UPDATE booking.guest_bookings SET lifecycle_status='canceled',updated_at=now() WHERE id=$1::uuid AND property_id=$2::uuid`,
         revision.roomCount?[guestBookingId,job.propertyId,revision.status,revision.checkIn,revision.checkOut,revision.adults,revision.children,revision.roomCount,revision.currency,revision.amount]:[guestBookingId,job.propertyId],
       );
-      if(revision.hasCustomer)await client.query("UPDATE booking.booking_guests SET first_name=COALESCE($2,first_name),last_name=COALESCE($3,last_name),email=$4,phone=$5,updated_at=now() WHERE guest_booking_id=$1::uuid AND guest_role='booker'",[guestBookingId,revision.firstName,revision.lastName,revision.email,revision.phone]);
+      if(revision.hasCustomer)await client.query("UPDATE booking.booking_guests SET first_name=COALESCE($2,first_name),last_name=COALESCE($3,last_name),email=CASE WHEN $6 THEN $4 ELSE email END,phone=CASE WHEN $7 THEN $5 ELSE phone END,updated_at=now() WHERE guest_booking_id=$1::uuid AND guest_role='booker'",[guestBookingId,revision.firstName,revision.lastName,revision.email,revision.phone,revision.hasEmail,revision.hasPhone]);
     }
     if(revision.roomCount)await client.query(
       `INSERT INTO pms.channel_booking_mappings(property_id,connection_id,guest_booking_id,
          external_booking_id,external_revision_id,channel,channel_room_index,sync_status,last_synced_at,mapping_metadata)
        SELECT $1::uuid,$2::uuid,$3::uuid,$4,$5,'channex',slot,'active',now(),$7::jsonb
        FROM generate_series(0,$6::int-1) slot ON CONFLICT(connection_id,external_booking_id,channel_room_index)
-       DO UPDATE SET external_revision_id=EXCLUDED.external_revision_id,sync_status='active',
-         last_synced_at=now(),mapping_metadata=EXCLUDED.mapping_metadata,updated_at=now()`,
+       DO UPDATE SET external_revision_id=EXCLUDED.external_revision_id,sync_status='active',last_synced_at=now(),
+         mapping_metadata=pms.channel_booking_mappings.mapping_metadata||(EXCLUDED.mapping_metadata-'providerSource'),updated_at=now()`,
       [job.propertyId,connection[0]!.id,guestBookingId,job.channelBookingId,revision.id,revision.roomCount,metadata],
     );
     if(revision.roomCount)await client.query(
       "UPDATE pms.channel_booking_mappings SET sync_status='superseded',updated_at=now() WHERE connection_id=$1::uuid AND external_booking_id=$2 AND channel_room_index>=$3",
       [connection[0]!.id, job.channelBookingId, revision.roomCount],
     );
-    else await client.query("UPDATE pms.channel_booking_mappings SET external_revision_id=$3,last_synced_at=now(),mapping_metadata=$4::jsonb,updated_at=now() WHERE connection_id=$1::uuid AND external_booking_id=$2",[connection[0]!.id,job.channelBookingId,revision.id,metadata]);
+    else await client.query("UPDATE pms.channel_booking_mappings SET external_revision_id=$3,last_synced_at=now(),mapping_metadata=mapping_metadata||($4::jsonb-'providerSource'),updated_at=now() WHERE connection_id=$1::uuid AND external_booking_id=$2",[connection[0]!.id,job.channelBookingId,revision.id,metadata]);
     await client.query("UPDATE pms.channel_connections SET last_booking_sync_at=now(),updated_at=now() WHERE id=$1::uuid",[connection[0]!.id]);
     await recordHandled(client,job,revision,"applied");return false;
   });
@@ -236,7 +236,7 @@ function parsePayload(value:unknown,propertyId:string,resourceId:string):Payload
 
 // prettier-ignore
 function parseRevision(value:Record<string,unknown>,job:Job):Revision{
-  const attributes=Object.keys(record(value.attributes)).length?record(value.attributes):value,id=text(value.id)??text(attributes.id),semanticRevision=text(attributes.revision)??text(attributes.revision_number),bookingId=text(attributes.booking_id),providerPropertyId=text(attributes.property_id),rawRooms=attributes.rooms,status=(text(attributes.status)??"").toLowerCase(),canceled=status==="cancelled"||status==="canceled",roomShape=(rawRooms===undefined&&canceled)||(Array.isArray(rawRooms)&&rawRooms.every(item=>isRecord(item)&&((rawRooms.length===1&&record(item).occupancy===undefined)||isRecord(record(item).occupancy)))),rooms=Array.isArray(rawRooms)&&rawRooms.every(isRecord)?rawRooms.map(record):[],topOccupancy=record(attributes.occupancy),date=(key:string)=>isoDate(attributes[key]),occupancy=(key:string,required:boolean)=>rooms.reduce((sum,room)=>{const local=record(room.occupancy),value=local[key]===undefined?topOccupancy[key]:local[key];return sum+integer(value,required?null:0)},0),providerSource=text(attributes.ota_name),customer=record(attributes.customer),revision:Revision={id:id??"",providerPropertyId:providerPropertyId??"",bookingId:bookingId??"",status:canceled?"canceled":"confirmed",checkIn:date("arrival_date"),checkOut:date("departure_date"),adults:rooms.length?occupancy("adults",true):0,children:rooms.length?occupancy("children",false):0,roomCount:rooms.length,currency:currency(attributes.currency),amount:amount(attributes.amount),providerSource,channel:canonicalChannel(providerSource),hasCustomer:Object.keys(customer).length>0,firstName:text(customer.name),lastName:text(customer.surname),email:text(customer.mail),phone:text(customer.phone),insertedAt:timestamp(attributes.inserted_at??value.inserted_at)};
+  const attributes=Object.keys(record(value.attributes)).length?record(value.attributes):value,id=text(value.id)??text(attributes.id),semanticRevision=text(attributes.revision)??text(attributes.revision_number),bookingId=text(attributes.booking_id),providerPropertyId=text(attributes.property_id),rawRooms=attributes.rooms,status=(text(attributes.status)??"").toLowerCase(),canceled=status==="cancelled"||status==="canceled",roomShape=(rawRooms===undefined&&canceled)||(Array.isArray(rawRooms)&&rawRooms.every(item=>isRecord(item)&&((rawRooms.length===1&&record(item).occupancy===undefined)||isRecord(record(item).occupancy)&&(rawRooms.length===1||record(item.occupancy).adults!==undefined)))),rooms=Array.isArray(rawRooms)&&rawRooms.every(isRecord)?rawRooms.map(record):[],topOccupancy=record(attributes.occupancy),date=(key:string)=>isoDate(attributes[key]),occupancy=(key:string,required:boolean)=>rooms.reduce((sum,room)=>{const local=record(room.occupancy),value=local[key]===undefined?(rooms.length===1?topOccupancy[key]:key==="children"?0:undefined):local[key];return sum+integer(value,required?null:0)},0),providerSource=text(attributes.ota_name),customer=record(attributes.customer),revision:Revision={id:id??"",semanticRevision,providerPropertyId:providerPropertyId??"",bookingId:bookingId??"",status:canceled?"canceled":"confirmed",checkIn:date("arrival_date"),checkOut:date("departure_date"),adults:rooms.length?occupancy("adults",true):0,children:rooms.length?occupancy("children",false):0,roomCount:rooms.length,currency:currency(attributes.currency),amount:amount(attributes.amount),providerSource,channel:canonicalChannel(providerSource),hasCustomer:Object.keys(customer).length>0,hasEmail:Object.hasOwn(customer,"mail"),hasPhone:Object.hasOwn(customer,"phone"),firstName:text(customer.name),lastName:text(customer.surname),email:text(customer.mail),phone:text(customer.phone),insertedAt:timestamp(attributes.inserted_at??value.inserted_at)};
   if(!roomShape||rooms.length>100||(!canceled&&!rooms.length)||(rooms.length&&revision.adults<1)||!revision.id||!revision.insertedAt||!["new","modified","confirmed","cancelled","canceled"].includes(status)||revision.bookingId!==job.channelBookingId||revision.providerPropertyId!==job.providerPropertyId||(job.revision!=="unknown"&&revision.id!==job.revision&&semanticRevision!==job.revision)||revision.checkIn>=revision.checkOut)throw new Failure("invalid_revision",false);
   return revision;
 }
@@ -262,9 +262,11 @@ async function heartbeat(pool:pg.Pool,job:Job,options:Parameters<typeof runChann
 // prettier-ignore
 async function fence(client:pg.PoolClient,job:Job){const locked=await client.query("UPDATE platform.jobs SET locked_at=now(),updated_at=now() WHERE id=$1::uuid AND attempts_count=$2 AND status='running' AND locked_by=$3 RETURNING id",[job.id,job.attempt,job.workerId]);if(!locked.rowCount)throw new LeaseLost()}
 // prettier-ignore
-async function recordHandled(client:pg.PoolClient,job:Job,revision:Revision,outcome:"applied"|"replayed"|"stale"|"ignored"){const fingerprint=createHash("sha256").update(JSON.stringify(revision)).digest("hex"),prior=text(record(job.handledRevisions[revision.id]).fingerprint);if(prior&&prior!==fingerprint)throw new Failure("revision_fingerprint_conflict",false);const saved=await client.query(`UPDATE platform.jobs SET job_metadata=jsonb_set(job_metadata,'{handledRevisions}',COALESCE(job_metadata->'handledRevisions','{}')||jsonb_build_object($2::text,jsonb_build_object('outcome',$3::text,'fingerprint',$4::text)),true),updated_at=now() WHERE id=$1::uuid AND attempts_count=$5 AND status='running' AND locked_by=$6 RETURNING id`,[job.id,revision.id,outcome,fingerprint,job.attempt,job.workerId]);if(!saved.rowCount)throw new LeaseLost();job.handledRevisions[revision.id]={outcome,fingerprint}}
+async function recordHandled(client:pg.PoolClient,job:Job,revision:Revision,outcome:"applied"|"replayed"|"stale"|"ignored"){const fingerprint=createHash("sha256").update(JSON.stringify(revision)).digest("hex"),prior=text(record(job.handledRevisions[revision.id]).fingerprint),aliases=[...new Set([revision.id,revision.semanticRevision].filter((value):value is string=>Boolean(value)))];if(prior&&prior!==fingerprint)throw new Failure("revision_fingerprint_conflict",false);const saved=await client.query(`UPDATE platform.jobs SET job_metadata=jsonb_set(job_metadata,'{handledRevisions}',COALESCE(job_metadata->'handledRevisions','{}')||jsonb_build_object($2::text,jsonb_build_object('outcome',$3::text,'fingerprint',$4::text,'aliases',$7::jsonb)),true),updated_at=now() WHERE id=$1::uuid AND attempts_count=$5 AND status='running' AND locked_by=$6 RETURNING id`,[job.id,revision.id,outcome,fingerprint,job.attempt,job.workerId,JSON.stringify(aliases)]);if(!saved.rowCount)throw new LeaseLost();job.handledRevisions[revision.id]={outcome,fingerprint,aliases}}
 // prettier-ignore
 function durablyHandled(job:Job):boolean{return Object.values(job.handledRevisions).some(value=>{const evidence=record(value),fingerprint=text(evidence.fingerprint),outcome=text(evidence.outcome);return Boolean(fingerprint&&/^[a-f0-9]{64}$/.test(fingerprint)&&outcome&&["applied","replayed","stale","ignored"].includes(outcome))})}
+// prettier-ignore
+async function converged(pool:pg.Pool,job:Job):Promise<boolean>{return Boolean((await transaction(pool,client=>client.query(`SELECT 1 FROM platform.jobs evidence,jsonb_each(COALESCE(evidence.job_metadata->'handledRevisions','{}')) handled WHERE evidence.id<>$1::uuid AND evidence.queue_name=$2 AND evidence.job_type=$3 AND evidence.resource_id=$4 AND evidence.payload->>'propertyId'=$5 AND evidence.payload->>'providerPropertyId'=$6 AND ($7::text='unknown' OR COALESCE(handled.value->'aliases','[]'::jsonb)?$7) AND EXISTS(SELECT 1 FROM pms.channel_connections connection WHERE connection.property_id=$5::uuid AND connection.provider='channex' AND connection.external_property_id=$6 AND connection.connection_status='connected') LIMIT 1`,[job.id,QUEUE,TYPE,job.channelBookingId,job.propertyId,job.providerPropertyId,job.revision]))).rowCount)}
 // prettier-ignore
 function canonicalChannel(value:string|null):BookingChannel{if(!value)return "unknown";const key=value.replace(/[^a-z0-9]/gi,"").toLowerCase();if(key==="booking"||key==="bookingcom")return "booking_com";if(key==="airbnb")return "airbnb";if(key==="expedia"||key==="expediacom")return "expedia";if(key==="agoda")return "agoda";return "other_ota"}
 // prettier-ignore
