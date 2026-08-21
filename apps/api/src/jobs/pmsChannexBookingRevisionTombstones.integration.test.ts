@@ -95,13 +95,11 @@ describe.skipIf(!URL)("Channex booking revision tombstones (PostgreSQL)", () => 
       expect(await activeCount(returned, "expired")).toBe(0);
       await insertTombstone(returned, "cleanup-probe");
       expect(
-        Number(
-          (
-            await db.query(
-              "SELECT count(*) count FROM pms.channel_booking_revision_tombstones WHERE external_booking_id='expired'",
-            )
-          ).rows[0]?.count,
-        ),
+        (
+          await db.query(
+            "SELECT count(*)::int count FROM pms.channel_booking_revision_tombstones WHERE external_booking_id='expired'",
+          )
+        ).rows[0]?.count,
       ).toBe(0);
       await expect(
         db.query(
@@ -124,12 +122,19 @@ describe.skipIf(!URL)("Channex booking revision tombstones (PostgreSQL)", () => 
   });
 
   it("fences a stale writer racing a connection rebind", async () => {
-    const stale = await db.connect(),
-      rebinder = await db.connect(),
-      current = await connection();
-    let insertion: Promise<unknown> | undefined;
+    let stale: pg.PoolClient | undefined,
+      rebinder: pg.PoolClient | undefined,
+      insertion: Promise<unknown> | undefined;
     try {
-      const pid = Number((await stale.query("SELECT pg_backend_pid() pid")).rows[0]?.pid);
+      await db.query("DELETE FROM pms.channel_connections WHERE property_id=$1", [PROPERTY_ID]);
+      await db.query(
+        "INSERT INTO pms.channel_connections(property_id,provider,connection_status,external_property_id) VALUES($1,'channex','connected','race-a')",
+        [PROPERTY_ID],
+      );
+      stale = await db.connect();
+      rebinder = await db.connect();
+      const current = await connection(),
+        pid = Number((await stale.query("SELECT pg_backend_pid() pid")).rows[0]?.pid);
       await rebinder.query("BEGIN");
       await rebinder.query(
         "UPDATE pms.channel_connections SET external_property_id='race-b' WHERE id=$1",
@@ -150,10 +155,10 @@ describe.skipIf(!URL)("Channex booking revision tombstones (PostgreSQL)", () => 
       await rebinder.query("COMMIT");
       expect(await insertion).toMatchObject({ code: "23503" });
     } finally {
-      await rebinder.query("ROLLBACK").catch(() => undefined);
+      if (rebinder) await rebinder.query("ROLLBACK").catch(() => undefined);
       if (insertion) await insertion;
-      stale.release();
-      rebinder.release();
+      stale?.release();
+      rebinder?.release();
     }
   });
 
@@ -182,16 +187,13 @@ describe.skipIf(!URL)("Channex booking revision tombstones (PostgreSQL)", () => 
     );
   }
   async function activeCount(connection: Connection, bookingId: string): Promise<number> {
-    return Number(
-      (
-        await db.query(
-          `SELECT count(*)::int count FROM pms.channel_booking_revision_tombstones
-           WHERE connection_id=$1 AND binding_generation=$2 AND external_booking_id=$3
-             AND resolved_at IS NULL AND retention_expires_at>now()`,
-          [connection.id, connection.generation, bookingId],
-        )
-      ).rows[0]?.count,
+    const result = await db.query<{ count: number }>(
+      `SELECT count(*)::int count FROM pms.channel_booking_revision_tombstones
+       WHERE connection_id=$1 AND binding_generation=$2 AND external_booking_id=$3
+         AND resolved_at IS NULL AND retention_expires_at>now()`,
+      [connection.id, connection.generation, bookingId],
     );
+    return result.rows[0]!.count;
   }
   async function cleanup() {
     await db.query("DELETE FROM pms.channel_connections WHERE property_id=$1", [PROPERTY_ID]);
