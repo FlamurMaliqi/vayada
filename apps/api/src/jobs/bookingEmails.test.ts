@@ -79,6 +79,23 @@ describe("booking lifecycle email jobs", () => {
     expect(payload.text.split("We look forward to welcoming you!")[1]).toBe("");
   });
 
+  it.each(["pay_at_property", "credit_card", "bank_transfer", "cash"])(
+    "does not expose the internal %s identifier in guest email copy",
+    async (paymentMethod) => {
+      const target = createTargetEmailStore();
+      const input = bookingEmailInput({ kind: "final_confirmation" });
+      input.booking.paymentMethod = paymentMethod;
+
+      await enqueueBookingLifecycleEmailJob(target, input);
+
+      const payload = JSON.parse(
+        String(target.requiredCall("INSERT INTO platform.jobs").values?.[8]),
+      );
+      expect(payload.subject).not.toContain(paymentMethod);
+      expect(payload.text).not.toContain(paymentMethod);
+    },
+  );
+
   it("reuses the same customer-facing job for duplicate command retries", async () => {
     const target = createTargetEmailStore();
     const input = bookingEmailInput({

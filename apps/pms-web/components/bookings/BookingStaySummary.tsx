@@ -1,7 +1,8 @@
 import type { Booking, BookingExpectedPaymentMethod, BookingStay } from "@/services/bookings";
 import { formatCurrency } from "@/lib/formatCurrency";
+import { paymentMethodLabel } from "@vayada/locale-constants";
 // prettier-ignore
-export const expectedPaymentMethodLabel = (method: BookingExpectedPaymentMethod) => method === "unknown" ? "Not specified" : method.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
+export const expectedPaymentMethodLabel = (method: BookingExpectedPaymentMethod) => method === "unknown" ? "Not specified" : paymentMethodLabel(method);
 // prettier-ignore
 export const settlementLabel = (paid: boolean, amount: number, currency: string) => paid ? "Payment recorded" : `${formatCurrency(amount, currency)} outstanding`;
 // prettier-ignore

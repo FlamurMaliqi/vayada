@@ -11,6 +11,56 @@ export interface LanguageOption {
   flag: string;
 }
 
+export type PaymentMethodLabelKey =
+  | "card"
+  | "creditCard"
+  | "payAtProperty"
+  | "bankTransfer"
+  | "cash"
+  | "manualCard"
+  | "paypal"
+  | "xendit"
+  | "other";
+
+const PAYMENT_METHOD_LABELS: Record<PaymentMethodLabelKey, string> = {
+  card: "Card",
+  creditCard: "Credit Card",
+  payAtProperty: "Pay at Property",
+  bankTransfer: "Bank Transfer",
+  cash: "Cash",
+  manualCard: "Manual Card",
+  paypal: "PayPal",
+  xendit: "Xendit",
+  other: "Other",
+};
+
+export function paymentMethodLabelKey(value: string | null | undefined): PaymentMethodLabelKey {
+  switch (value) {
+    case "card":
+      return "card";
+    case "credit_card":
+      return "creditCard";
+    case "pay_at_property":
+      return "payAtProperty";
+    case "bank_transfer":
+      return "bankTransfer";
+    case "cash":
+      return "cash";
+    case "manual_card":
+      return "manualCard";
+    case "paypal":
+      return "paypal";
+    case "xendit":
+      return "xendit";
+    default:
+      return "other";
+  }
+}
+
+export function paymentMethodLabel(value: string | null | undefined): string {
+  return PAYMENT_METHOD_LABELS[paymentMethodLabelKey(value)];
+}
+
 export const LANGUAGE_OPTIONS: LanguageOption[] = [
   { code: "en", name: "English", nativeName: "English", flag: "🇬🇧" },
   { code: "de", name: "German", nativeName: "Deutsch", flag: "🇩🇪" },

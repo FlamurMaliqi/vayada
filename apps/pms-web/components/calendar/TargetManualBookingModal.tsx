@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { paymentMethodLabel } from "@vayada/locale-constants";
 
 import Modal from "@/components/Modal";
 import { formatCurrency } from "@/lib/formatCurrency";
@@ -17,7 +18,7 @@ import type { BookingAddon } from "@/services/bookings";
 // prettier-ignore
 const SOURCES = [["call", "Call"], ["email", "Email"], ["whatsapp", "WhatsApp"], ["walk_in", "Walk-in"], ["social_media", "Social media"], ["other", "Other"]] as const;
 // prettier-ignore
-const METHODS = [["pay_at_property", "Pay at property"], ["bank_transfer", "Bank transfer"], ["manual_card", "Manual card"], ["cash", "Cash"], ["other", "Other"]] as const;
+const METHODS = (["pay_at_property", "bank_transfer", "manual_card", "cash", "other"] as const).map((method) => [method, paymentMethodLabel(method)] as const);
 
 // prettier-ignore
 type Props = { roomTypes: CalendarRoomType[]; rooms: CalendarRoom[]; onSubmit: (input: PmsManualBookingCreateInput) => Promise<PmsManualBookingCreateResult>; onClose: () => void; initialRoomId?: string; initialCheckIn?: string; initialCheckOut?: string; canRecordPaidPayment?: boolean; };

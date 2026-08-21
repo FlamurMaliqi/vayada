@@ -326,6 +326,8 @@
     "totalPaid": "Total Dibayar",
     "totalDue": "Total Jatuh Tempo",
     "paymentMethodLabel": "Pembayaran",
+    "creditCard": "Kartu Kredit",
+    "cash": "Tunai",
     "paymentStatusLabel": "Status Pembayaran",
     "manualCard": "Kartu",
     "otherPayment": "Lainnya",

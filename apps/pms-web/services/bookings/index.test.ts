@@ -339,9 +339,9 @@ describe("PMS target calendar projection", () => {
   });
   it("labels every expected method without using settlement state", () => {
     // prettier-ignore
-    expect((["unknown", "pay_at_property", "bank_transfer", "manual_card", "cash", "other"] as const).map(expectedPaymentMethodLabel)).toEqual(["Not specified", "Pay at property", "Bank transfer", "Manual card", "Cash", "Other"]);
+    expect((["unknown", "pay_at_property", "bank_transfer", "manual_card", "cash", "other"] as const).map(expectedPaymentMethodLabel)).toEqual(["Not specified", "Pay at Property", "Bank Transfer", "Manual Card", "Cash", "Other"]);
     // prettier-ignore
-    expect([`${expectedPaymentMethodLabel("bank_transfer")}: ${bookingSettlementLabel({ balanceAmount: 100, currency: "EUR", depositRequired: false, paymentStatus: "unpaid", totalAmount: 100 })}`, `${expectedPaymentMethodLabel("manual_card")}: ${bookingSettlementLabel({ balanceAmount: 0, currency: "EUR", depositRequired: false, paymentStatus: "paid", totalAmount: 100 })}`]).toEqual(["Bank transfer: €100 outstanding", "Manual card: Payment recorded"]);
+    expect([`${expectedPaymentMethodLabel("bank_transfer")}: ${bookingSettlementLabel({ balanceAmount: 100, currency: "EUR", depositRequired: false, paymentStatus: "unpaid", totalAmount: 100 })}`, `${expectedPaymentMethodLabel("manual_card")}: ${bookingSettlementLabel({ balanceAmount: 0, currency: "EUR", depositRequired: false, paymentStatus: "paid", totalAmount: 100 })}`]).toEqual(["Bank Transfer: €100 outstanding", "Manual Card: Payment recorded"]);
   });
 });
 describe("PMS guest contact projection", () => {

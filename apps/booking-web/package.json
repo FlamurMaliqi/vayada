@@ -16,6 +16,7 @@
     "@heroicons/react": "^2.2.0",
     "@stripe/react-stripe-js": "^2.4.0",
     "@stripe/stripe-js": "^2.4.0",
+    "@vayada/locale-constants": "*",
     "@vayada/locale-ui": "*",
     "clsx": "^2.0.0",
     "next": "16.2.6",

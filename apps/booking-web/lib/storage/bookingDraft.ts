@@ -189,6 +189,7 @@ const BOOKING_STATUSES: Booking["status"][] = [
 
 const PAYMENT_METHODS = [
   "card",
+  "credit_card",
   "pay_at_property",
   "cash",
   "xendit",

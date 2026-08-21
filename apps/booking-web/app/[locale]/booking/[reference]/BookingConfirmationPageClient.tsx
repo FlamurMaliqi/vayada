@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useLocale, useTranslations } from "next-intl";
+import { paymentMethodLabelKey, type PaymentMethodLabelKey } from "@vayada/locale-constants";
 import { Link } from "@/i18n/navigation";
 import BookingNavigation from "@/components/layout/BookingNavigation";
 import BookingFooter from "@/components/layout/BookingFooter";
@@ -389,8 +390,17 @@ export default function BookingConfirmationPageClient({
   const requestChangesHref = guestEmail
     ? `/booking/${encodeURIComponent(reference)}/request-change`
     : null;
-  const isPayAtProperty =
-    booking?.paymentMethod === "pay_at_property" || booking?.paymentMethod === "cash";
+  const paymentMethodLabels: Record<PaymentMethodLabelKey, string> = {
+    card: tp("payWithCard"),
+    creditCard: t("creditCard"),
+    payAtProperty: tp("payAtProperty"),
+    bankTransfer: tp("bankTransfer"),
+    cash: t("cash"),
+    manualCard: t("manualCard"),
+    paypal: tp("paypalLabel"),
+    xendit: tp("xenditTitle"),
+    other: t("otherPayment"),
+  };
   const isTotalPaid = booking?.paymentStatus === "captured" || booking?.paymentStatus === "paid";
   const displayedTotal = isTotalPaid
     ? booking?.totalAmount
@@ -672,23 +682,9 @@ export default function BookingConfirmationPageClient({
                 <div className="flex justify-between py-3">
                   <span className="text-gray-600">{t("paymentMethodLabel") || "Payment"}</span>
                   <span className="font-medium text-gray-900">
-                    {booking.paymentMethod === "card"
-                      ? booking.cardBrand && booking.cardLast4
-                        ? `${displayCardBrand(booking.cardBrand)} •••• ${booking.cardLast4}`
-                        : tp("payWithCard")
-                      : isPayAtProperty
-                        ? tp("payAtProperty")
-                        : booking.paymentMethod === "paypal"
-                          ? tp("paypalLabel")
-                          : booking.paymentMethod === "bank_transfer"
-                            ? tp("bankTransfer")
-                            : booking.paymentMethod === "manual_card"
-                              ? t("manualCard")
-                              : booking.paymentMethod === "other"
-                                ? t("otherPayment")
-                                : booking.paymentMethod === "xendit"
-                                  ? tp("xenditTitle")
-                                  : booking.paymentMethod || "Other"}
+                    {booking.paymentMethod === "card" && booking.cardBrand && booking.cardLast4
+                      ? `${displayCardBrand(booking.cardBrand)} •••• ${booking.cardLast4}`
+                      : paymentMethodLabels[paymentMethodLabelKey(booking.paymentMethod)]}
                   </span>
                 </div>
               )}
