@@ -82,6 +82,177 @@ export type FinanceFolioListResponse = FinanceFolioEnvelope & {
 };
 export type FinanceFolioDetailResponse = FinanceFolioEnvelope & { item: FinanceFolio };
 
+export const FINANCE_FOLIO_CSV_VERSION = "pms-financials-folios.v1" as const;
+export const FINANCE_FOLIO_CSV_CONTENT_TYPE = "text/csv; charset=utf-8" as const;
+export const FINANCE_FOLIO_CSV_COLUMNS = [
+  "property_id",
+  "folio_id",
+  "folio_revision",
+  "folio_state",
+  "booking_id",
+  "recipient_name",
+  "recipient_email",
+  "service_from",
+  "service_to",
+  "currency",
+  "folio_total",
+  "line_position",
+  "line_kind",
+  "line_description",
+  "quantity",
+  "unit_amount",
+  "line_total",
+  "service_on",
+  "source_type",
+  "source_id",
+  "source_revision",
+  "payment_reference_ids",
+  "payment_reference_amounts",
+] as const;
+
+export type FinanceFolioCsvArtifact = {
+  formatVersion: typeof FINANCE_FOLIO_CSV_VERSION;
+  contentType: typeof FINANCE_FOLIO_CSV_CONTENT_TYPE;
+  propertyId: string;
+  currency: string;
+  filename: string;
+  rowCount: number;
+  body: string;
+  auditEvidence: Array<{ folioId: string; revision: number; sourceDigest: string }>;
+};
+
+export class FinanceFolioCsvError extends TypeError {
+  readonly code = "invalid_folio_csv_evidence";
+}
+
+export function buildFinanceFolioCsvArtifact(input: {
+  propertyId: string;
+  currency: string;
+  folios: readonly FinanceFolio[];
+}): FinanceFolioCsvArtifact {
+  if (!canonicalUuid(input.propertyId) || !/^[A-Z]{3}$/.test(input.currency)) invalidCsv();
+  const rows: string[][] = [];
+  const auditEvidence: FinanceFolioCsvArtifact["auditEvidence"] = [];
+  const selected = new Set<string>();
+
+  for (const folio of input.folios) {
+    if (
+      folio.propertyId !== input.propertyId ||
+      folio.currency !== input.currency ||
+      folio.state !== "ready" ||
+      !canonicalUuid(folio.folioId) ||
+      (folio.bookingId !== null && !canonicalUuid(folio.bookingId)) ||
+      !Number.isSafeInteger(folio.revision) ||
+      folio.revision < 1 ||
+      !/^[0-9a-f]{64}$/.test(folio.sourceDigest) ||
+      folio.total.currency !== input.currency ||
+      !decimal(folio.total.amount) ||
+      scaled(folio.total.amount) < 0n ||
+      typeof folio.recipient.name !== "string" ||
+      (typeof folio.recipient.email !== "string" && folio.recipient.email !== null) ||
+      !localDate(folio.serviceFrom) ||
+      !localDate(folio.serviceTo) ||
+      folio.serviceTo < folio.serviceFrom ||
+      folio.lines.length === 0 ||
+      selected.has(folio.folioId)
+    )
+      invalidCsv();
+    selected.add(folio.folioId);
+    auditEvidence.push({
+      folioId: folio.folioId,
+      revision: folio.revision,
+      sourceDigest: folio.sourceDigest,
+    });
+
+    const payments = [...folio.paymentRefs].sort((left, right) =>
+      left.paymentId < right.paymentId ? -1 : left.paymentId > right.paymentId ? 1 : 0,
+    );
+    const paymentIdsSeen = new Set<string>();
+    for (const payment of payments) {
+      if (
+        !canonicalUuid(payment.paymentId) ||
+        paymentIdsSeen.has(payment.paymentId) ||
+        payment.amount.currency !== input.currency ||
+        !decimal(payment.amount.amount) ||
+        scaled(payment.amount.amount) <= 0n
+      )
+        invalidCsv();
+      paymentIdsSeen.add(payment.paymentId);
+    }
+    const paymentIds = payments.map((payment) => payment.paymentId).join(";");
+    const paymentAmounts = payments.map((payment) => payment.amount.amount).join(";");
+    const positions = new Set<number>();
+
+    for (const line of [...folio.lines].sort((left, right) => left.position - right.position)) {
+      if (
+        !Number.isSafeInteger(line.position) ||
+        line.position < 1 ||
+        positions.has(line.position) ||
+        !canonicalUuid(line.lineId) ||
+        !FINANCE_FOLIO_LINE_KINDS.includes(line.kind) ||
+        typeof line.description !== "string" ||
+        line.unitAmount.currency !== input.currency ||
+        line.total.currency !== input.currency ||
+        !decimal(line.quantity) ||
+        scaled(line.quantity) <= 0n ||
+        !decimal(line.unitAmount.amount) ||
+        !decimal(line.total.amount) ||
+        scaled(line.total.amount) !== roundedProduct(line.quantity, line.unitAmount.amount) ||
+        !localDate(line.serviceOn) ||
+        line.serviceOn < folio.serviceFrom ||
+        line.serviceOn > folio.serviceTo ||
+        !/^[a-z][a-z0-9_.-]{0,49}$/.test(line.source.type) ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(line.source.id) ||
+        !Number.isSafeInteger(line.source.revision) ||
+        line.source.revision < 1
+      )
+        invalidCsv();
+      positions.add(line.position);
+      rows.push([
+        input.propertyId,
+        folio.folioId,
+        String(folio.revision),
+        "ready",
+        folio.bookingId ?? "",
+        safeText(folio.recipient.name),
+        safeText(folio.recipient.email ?? ""),
+        folio.serviceFrom,
+        folio.serviceTo,
+        input.currency,
+        folio.total.amount,
+        String(line.position),
+        line.kind,
+        safeText(line.description),
+        line.quantity,
+        line.unitAmount.amount,
+        line.total.amount,
+        line.serviceOn,
+        line.source.type,
+        line.source.id,
+        String(line.source.revision),
+        paymentIds,
+        paymentAmounts,
+      ]);
+    }
+    if (
+      folio.lines.reduce((sum, line) => sum + scaled(line.total.amount), 0n) !==
+      scaled(folio.total.amount)
+    )
+      invalidCsv();
+  }
+
+  return {
+    formatVersion: FINANCE_FOLIO_CSV_VERSION,
+    contentType: FINANCE_FOLIO_CSV_CONTENT_TYPE,
+    propertyId: input.propertyId,
+    currency: input.currency,
+    filename: `pms-financials-folios-${input.propertyId}.csv`,
+    rowCount: rows.length,
+    body: [FINANCE_FOLIO_CSV_COLUMNS, ...rows].map(csvRow).join("\r\n") + "\r\n",
+    auditEvidence,
+  };
+}
+
 const QUERY_KEYS = ["from", "to", "state", "search", "sort", "cursor", "limit"] as const;
 
 export function parseFinanceFolioQuery(value: unknown): FinanceFolioQuery | null {
@@ -162,4 +333,24 @@ function queryLimit(value: unknown): number | null {
 }
 function compact<T extends Record<string, unknown>>(value: T): T {
   return Object.fromEntries(Object.entries(value).filter(([, part]) => part !== undefined)) as T;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const canonicalUuid = (value: unknown): value is string =>
+  typeof value === "string" && UUID.test(value) && value === value.toLowerCase();
+const decimal = (value: string) => /^-?(?:0|[1-9]\d{0,14})\.\d{4}$/.test(value);
+const scaled = (value: string) => BigInt(value.replace(".", ""));
+function roundedProduct(left: string, right: string): bigint {
+  const product = scaled(left) * scaled(right);
+  const quotient = product / 10_000n;
+  const remainder = product % 10_000n;
+  return remainder * (remainder < 0n ? -2n : 2n) >= 10_000n
+    ? quotient + (product < 0n ? -1n : 1n)
+    : quotient;
+}
+const safeText = (value: string) => (/^[=+\-@\t\r\n]/.test(value) ? `'${value}` : value);
+const csvRow = (values: readonly string[]) =>
+  values.map((value) => `"${value.replaceAll('"', '""')}"`).join(",");
+function invalidCsv(): never {
+  throw new FinanceFolioCsvError("Folio CSV evidence violates the export contract");
 }
