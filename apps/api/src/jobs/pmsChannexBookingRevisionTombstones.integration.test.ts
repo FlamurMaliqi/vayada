@@ -56,6 +56,7 @@ describe.skipIf(!URL)("Channex booking revision tombstones (PostgreSQL)", () => 
       const rebound = await connection();
       expect(rebound).toMatchObject({ externalPropertyId: "external-b" });
       expect(rebound.generation).not.toBe(first.generation);
+      await insertTombstone(rebound, "booking-b");
       expect(
         (
           await db.query(
@@ -73,6 +74,7 @@ describe.skipIf(!URL)("Channex booking revision tombstones (PostgreSQL)", () => 
       );
       const disconnected = await connection();
       expect(disconnected.generation).not.toBe(rebound.generation);
+      expect(await activeCount(rebound, "booking-b")).toBe(0);
       await applyPmsChannexManagementProgress(
         client,
         job("enable"),
@@ -80,7 +82,7 @@ describe.skipIf(!URL)("Channex booking revision tombstones (PostgreSQL)", () => 
         NOW,
       );
       const returned = await connection();
-      expect(returned.generation).not.toBe(first.generation);
+      expect(returned.generation).not.toBe(disconnected.generation);
       expect(await activeCount(returned, "booking-old")).toBe(0);
 
       await db.query(
@@ -91,6 +93,16 @@ describe.skipIf(!URL)("Channex booking revision tombstones (PostgreSQL)", () => 
         [returned.id, PROPERTY_ID, returned.generation],
       );
       expect(await activeCount(returned, "expired")).toBe(0);
+      await insertTombstone(returned, "cleanup-probe");
+      expect(
+        Number(
+          (
+            await db.query(
+              "SELECT count(*) count FROM pms.channel_booking_revision_tombstones WHERE external_booking_id='expired'",
+            )
+          ).rows[0]?.count,
+        ),
+      ).toBe(0);
       await expect(
         db.query(
           `INSERT INTO pms.channel_booking_revision_tombstones(
@@ -111,6 +123,40 @@ describe.skipIf(!URL)("Channex booking revision tombstones (PostgreSQL)", () => 
     }
   });
 
+  it("fences a stale writer racing a connection rebind", async () => {
+    const stale = await db.connect(),
+      rebinder = await db.connect(),
+      current = await connection();
+    let insertion: Promise<unknown> | undefined;
+    try {
+      const pid = Number((await stale.query("SELECT pg_backend_pid() pid")).rows[0]?.pid);
+      await rebinder.query("BEGIN");
+      await rebinder.query(
+        "UPDATE pms.channel_connections SET external_property_id='race-b' WHERE id=$1",
+        [current.id],
+      );
+      insertion = insertTombstone(current, "stale-race", stale).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await expect
+        .poll(
+          async () =>
+            (await db.query("SELECT wait_event_type FROM pg_stat_activity WHERE pid=$1", [pid]))
+              .rows[0]?.wait_event_type,
+          { timeout: 2_000 },
+        )
+        .toBe("Lock");
+      await rebinder.query("COMMIT");
+      expect(await insertion).toMatchObject({ code: "23503" });
+    } finally {
+      await rebinder.query("ROLLBACK").catch(() => undefined);
+      if (insertion) await insertion;
+      stale.release();
+      rebinder.release();
+    }
+  });
+
   type Connection = { id: string; generation: string; externalPropertyId: string | null };
   async function connection(): Promise<Connection> {
     return (
@@ -122,8 +168,12 @@ describe.skipIf(!URL)("Channex booking revision tombstones (PostgreSQL)", () => 
       )
     ).rows[0]!;
   }
-  async function insertTombstone(connection: Connection, bookingId: string) {
-    await db.query(
+  async function insertTombstone(
+    connection: Connection,
+    bookingId: string,
+    executor: pg.Pool | pg.PoolClient = db,
+  ) {
+    await executor.query(
       `INSERT INTO pms.channel_booking_revision_tombstones(
          connection_id,property_id,binding_generation,external_booking_id,
          authoritative_revision_id,inserted_at)
