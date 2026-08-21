@@ -471,7 +471,7 @@ const financeExpenseRuntime = config.financeSource === "target" ? (() => {
 })() : undefined;
 const financeExpenseGenerationPool =
   config.financeSource === "target"
-    ? new pg.Pool({ connectionString: targetDatabaseUrl, max: 2 })
+    ? new pg.Pool({ connectionString: targetDatabaseUrl, max: 2, connectionTimeoutMillis: 5_000 })
     : undefined;
 
 const xenditBankValidator = config.xenditSecretKey
