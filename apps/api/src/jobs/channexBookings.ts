@@ -108,14 +108,15 @@ async function persist(pool:pg.Pool,job:Job,revision:Revision):Promise<boolean>{
   return transaction(pool, async (client) => {
     await fence(client,job);
     const connection = (
-      await client.query<{id:string}>(
-        `SELECT id::text FROM pms.channel_connections WHERE property_id=$1::uuid
-           AND provider='channex' AND external_property_id=$2 AND connection_status='connected' FOR SHARE`,
+      await client.query<{id:string;bindingGeneration:string}>(
+        `SELECT id::text,binding_generation::text AS "bindingGeneration" FROM pms.channel_connections WHERE property_id=$1::uuid
+           AND provider='channex' AND external_property_id=$2 AND connection_status='connected' FOR UPDATE`,
         [job.propertyId, job.providerPropertyId],
       )
     ).rows;
     if (connection.length !== 1) throw new Failure("connection_not_owned", true);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",[`channex-booking:${job.propertyId}:${job.channelBookingId}`]);
+    const tombstone=(await client.query<{insertedAt:string}>(`SELECT to_char(inserted_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "insertedAt" FROM pms.channel_booking_revision_tombstones WHERE connection_id=$1::uuid AND property_id=$2::uuid AND binding_generation=$3::uuid AND external_booking_id=$4 AND resolved_at IS NULL AND retention_expires_at>now() FOR UPDATE`,[connection[0]!.id,job.propertyId,connection[0]!.bindingGeneration,job.channelBookingId])).rows[0];
     const mappings = (
       await client.query<{guestBookingId:string;revisionId:string|null;insertedAt:string|null;providerSource:string|null}>(
         `SELECT guest_booking_id::text AS "guestBookingId",external_revision_id AS "revisionId",
@@ -126,12 +127,12 @@ async function persist(pool:pg.Pool,job:Job,revision:Revision):Promise<boolean>{
     ).rows;
     const bookingIds = new Set(mappings.map((row) => row.guestBookingId));
     if (bookingIds.size > 1) throw new Failure("ambiguous_booking_mapping", false);
-    const replayed=mappings.some(row=>row.revisionId===revision.id),metadata=JSON.stringify({providerSource:mappings[0]?.providerSource??revision.providerSource,latestProviderSource:revision.providerSource,providerPropertyId:job.providerPropertyId,providerInsertedAt:revision.insertedAt,providerRevision:revision.semanticRevision});
+    const replayed=mappings.some(row=>row.revisionId===revision.id),metadata=JSON.stringify({providerSource:mappings.length?mappings[0]!.providerSource:revision.providerSource,latestProviderSource:revision.providerSource,providerPropertyId:job.providerPropertyId,providerInsertedAt:revision.insertedAt,providerRevision:revision.semanticRevision});
     if(replayed){await recordHandled(client,job,revision,"replayed");return true}
-    const newest=mappings.reduce<string|null>((latest,row)=>row.insertedAt&&(!latest||row.insertedAt>latest)?row.insertedAt:latest,null);
+    const newest=mappings.reduce<string|null>((latest,row)=>row.insertedAt&&(!latest||row.insertedAt>latest)?row.insertedAt:latest,tombstone?.insertedAt??null);
     if(newest&&revision.insertedAt&&revision.insertedAt<newest){await recordHandled(client,job,revision,"stale");return true}
     let guestBookingId = mappings[0]?.guestBookingId;
-    if(!guestBookingId&&revision.status==="canceled"){await recordHandled(client,job,revision,"ignored");return true}
+    if(!guestBookingId&&revision.status==="canceled"){await client.query(`INSERT INTO pms.channel_booking_revision_tombstones(connection_id,property_id,binding_generation,external_booking_id,authoritative_revision_id,inserted_at) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6::timestamptz) ON CONFLICT(connection_id,binding_generation,external_booking_id) DO UPDATE SET authoritative_revision_id=EXCLUDED.authoritative_revision_id,inserted_at=EXCLUDED.inserted_at,resolved_at=NULL,created_at=now(),retention_expires_at=now()+interval '90 days',updated_at=now()`,[connection[0]!.id,job.propertyId,connection[0]!.bindingGeneration,job.channelBookingId,revision.id,revision.insertedAt]);await recordHandled(client,job,revision,"ignored");return true}
     if (!guestBookingId) {
       guestBookingId = (
         await client.query<{id:string}>(
@@ -171,7 +172,7 @@ async function persist(pool:pg.Pool,job:Job,revision:Revision):Promise<boolean>{
       [connection[0]!.id, job.channelBookingId, revision.roomCount],
     );
     else await client.query("UPDATE pms.channel_booking_mappings SET external_revision_id=$3,last_synced_at=now(),mapping_metadata=mapping_metadata||($4::jsonb-'providerSource'),updated_at=now() WHERE connection_id=$1::uuid AND external_booking_id=$2",[connection[0]!.id,job.channelBookingId,revision.id,metadata]);
-    await client.query("UPDATE pms.channel_connections SET last_booking_sync_at=now(),updated_at=now() WHERE id=$1::uuid",[connection[0]!.id]);
+    await client.query("UPDATE pms.channel_booking_revision_tombstones SET resolved_at=COALESCE(resolved_at,now()),updated_at=now() WHERE connection_id=$1::uuid AND binding_generation=$2::uuid AND external_booking_id=$3 AND resolved_at IS NULL",[connection[0]!.id,connection[0]!.bindingGeneration,job.channelBookingId]);await client.query("UPDATE pms.channel_connections SET last_booking_sync_at=now(),updated_at=now() WHERE id=$1::uuid",[connection[0]!.id]);
     await recordHandled(client,job,revision,"applied");return false;
   });
 }
@@ -284,7 +285,7 @@ function currency(value:unknown):string{const parsed=text(value)?.toUpperCase();
 // prettier-ignore
 function amount(value:unknown):string{const parsed=typeof value==="number"&&Number.isFinite(value)?value.toFixed(2):text(value);if(!parsed||!/^\d{1,13}(\.\d{1,2})?$/.test(parsed))throw new Failure("invalid_revision",false);return parsed}
 // prettier-ignore
-function timestamp(value:unknown):string|null{const parsed=text(value),match=parsed?.match(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.(\d{1,6}))?(?:Z|[+-]\d\d:\d\d)$/);return parsed&&match&&!Number.isNaN(Date.parse(parsed))?`${new Date(parsed).toISOString().slice(0,19)}.${(match[1]??"").padEnd(6,"0")}Z`:null}
+function timestamp(value:unknown):string|null{const parsed=text(value),match=parsed?.match(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.(\d{1,6}))?(Z|[+-]\d\d:\d\d)?$/),instant=match&&parsed?(match[2]?parsed:`${parsed}Z`):null;return instant&&!Number.isNaN(Date.parse(instant))?`${new Date(instant).toISOString().slice(0,19)}.${(match?.[1]??"").padEnd(6,"0")}Z`:null}
 // prettier-ignore
 function pgCode(value:unknown):string|null{return value&&typeof value==="object"&&"code" in value&&typeof value.code==="string"?value.code:null}
 // prettier-ignore
