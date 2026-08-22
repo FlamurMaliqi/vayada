@@ -136,9 +136,9 @@ invitation; deactivate/remove identify membership/user; other IDs stay null.
 
 ## Dependencies and exclusions
 
-- VAY-1321 may add who can delegate access, but this contract adds no account
-  hierarchy or `account_type`. Explicit property scope and permission grants do
-  not depend on hierarchy.
+- VAY-1321 extends this foundation through
+  [`external-owner-delegation-contract.md`](external-owner-delegation-contract.md);
+  this contract itself adds no account hierarchy or `account_type`.
 - VAY-1322 owns the shared settings shell and Feature Hub. VAY-1085 will add the
   Team & Access destination only after that integration point is ready.
 - This contract changes no legacy Python behavior and does not authorize
