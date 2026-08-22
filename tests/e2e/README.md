@@ -91,10 +91,13 @@ live Stripe key or card-capable payment method to this workflow.
 ## Deployed Booking Public Canary
 
 `npm run e2e:booking-public-canary` is the unmocked public Booking verification.
-It checks the deployed build SHA, public host resolution, the public-bookability
-profile, and the rendered tenant page. The `Next Booking public canary` workflow
-runs every 15 minutes and after a successful Booking Web image-publish workflow.
-Repository variables supply `NEXT_BOOKING_CANARY_URL` and
+It checks public host resolution, the public-bookability profile, and the
+rendered tenant page, plus the deployed build SHA when one is supplied. The
+`Next Booking public canary` workflow runs every 15 minutes and on manual
+dispatch. The platform deployment workflow performs the build-specific
+post-deploy check after ECS finishes its cutover; the scheduled workflow
+deliberately does not trigger from the earlier image publish step. Repository
+variables supply `NEXT_BOOKING_CANARY_URL` and
 `NEXT_BOOKING_CANARY_NAME`; the URL must identify a dedicated published tenant
 on `*.next-booking.vayada.com`. They are non-secret so scheduled checks can run
 without an environment approval gate.

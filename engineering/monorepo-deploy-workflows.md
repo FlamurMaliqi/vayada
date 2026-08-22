@@ -1,6 +1,6 @@
 # Monorepo deploy workflows
 
-Updated: 2026-07-21
+Updated: 2026-08-22
 
 ## Active delivery lanes
 
@@ -27,10 +27,12 @@ service update. GitHub Actions authenticates through
 `arn:aws:iam::269416271598:role/vayada-github-actions-deploy`.
 
 Next Booking Web also publishes its source SHA through `/api/health`. The
-`Next Booking public canary` workflow waits for that exact SHA after an image
-publish, then verifies an unmocked persistent tenant through host resolution,
-the public-bookability profile, and a browser render. It repeats every 15
-minutes so tenant publication regressions are detected between deployments.
+`vayada-platform` deployment workflow waits for ECS service stability, then
+verifies that exact SHA against an unmocked persistent tenant through host
+resolution, the public-bookability profile, and public page reachability. The
+app repository's Playwright-based `Next Booking public canary` workflow repeats
+the tenant checks every 15 minutes and on manual dispatch so publication
+regressions are detected between deployments without racing the ECS cutover.
 
 The Next TypeScript API image applies pending target migrations before its HTTP
 server starts. See

@@ -4,9 +4,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "*/15 * * * *"
-  workflow_run:
-    workflows: ["Deploy Next Booking Web"]
-    types: [completed]
 
 permissions:
   contents: read
@@ -18,7 +15,6 @@ concurrency:
 jobs:
   verify:
     name: Verify deployed Booking tenant
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -26,14 +22,10 @@ jobs:
       E2E_BOOKING_PUBLIC_CANARY: "1"
       BOOKING_PUBLIC_CANARY_URL: ${{ vars.NEXT_BOOKING_CANARY_URL }}
       BOOKING_PUBLIC_CANARY_NAME: ${{ vars.NEXT_BOOKING_CANARY_NAME }}
-      BOOKING_PUBLIC_CANARY_EXPECTED_BUILD_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
-      BOOKING_PUBLIC_CANARY_TIMEOUT_MS: ${{ github.event_name == 'workflow_run' && '600000' || '60000' }}
 
     steps:
       - name: Checkout deployed source
         uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
