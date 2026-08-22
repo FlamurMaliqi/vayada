@@ -3,7 +3,6 @@ export const SETTINGS_SECTIONS = [
   "booking",
   "location",
   "notifications",
-  "account",
   "billing",
   "payments",
 ] as const;

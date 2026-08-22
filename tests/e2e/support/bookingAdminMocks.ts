@@ -11,6 +11,7 @@ export const BOOKING_ADMIN_PROMO_CODES_PATH = `/api/booking/hotels/${BOOKING_ADM
 export const BOOKING_ADMIN_PROPERTY_LINK_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/property-link`;
 export const BOOKING_ADMIN_PROPERTY_PROFILE_PATH = `/api/hotel-setup/properties/${BOOKING_ADMIN_PROPERTY_ID}/profile`;
 export const BOOKING_ADMIN_PROPERTY_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/property`;
+const BOOKING_ADMIN_BOOKING_ACCEPTANCE_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/booking-acceptance`;
 export const BOOKING_ADMIN_PUBLIC_BOOKABILITY_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/public-bookability`;
 export const BOOKING_ADMIN_ADDON_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/addons`;
 export const BOOKING_ADMIN_BENEFITS_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/benefits`;
@@ -357,6 +358,7 @@ export async function mockBookingAdminShellRoutes(
   options: BookingAdminShellMocksOptions = {},
 ): Promise<void> {
   const propertySettings = options.propertySettings ?? defaultBookingAdminPropertySettings;
+  let bookingAcceptanceMode: "instant" | "request" = "instant";
   await page.route("**/api/pms/properties/*/module-activations", (route) =>
     route.fulfill({ json: { activations: [] } }),
   );
@@ -375,6 +377,22 @@ export async function mockBookingAdminShellRoutes(
   await page.route(`**${BOOKING_ADMIN_PROPERTY_SETTINGS_PATH}*`, (route) =>
     route.fulfill({ json: propertySettings }),
   );
+  await page.route(`**${BOOKING_ADMIN_BOOKING_ACCEPTANCE_PATH}*`, async (route) => {
+    if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON() as { acceptanceMode?: unknown };
+      if (body.acceptanceMode === "instant" || body.acceptanceMode === "request") {
+        bookingAcceptanceMode = body.acceptanceMode;
+      }
+    }
+    await route.fulfill({
+      json: {
+        contractVersion: "booking-acceptance.v1",
+        propertyId: BOOKING_ADMIN_PROPERTY_ID,
+        acceptanceMode: bookingAcceptanceMode,
+        instantBook: bookingAcceptanceMode === "instant",
+      },
+    });
+  });
   await page.route("**/api/booking/hotels/*/settings/design", (route) =>
     route.fulfill({ json: defaultBookingAdminDesignSettings }),
   );

@@ -293,6 +293,22 @@ test.describe("booking-admin settings no-legacy guard", () => {
       "page",
     );
 
+    await page.goto("/settings?section=account", { waitUntil: "networkidle" });
+    await expect(page.getByRole("button", { name: "Property", exact: true })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await expect(page.getByRole("button", { name: "Account", exact: true })).toHaveCount(0);
+    await expect(page.getByText("Personal account security")).toHaveCount(0);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobilePropertyButton = page.getByRole("button", { name: "Property", exact: true });
+    const mobileBookingButton = page.getByRole("button", { name: "Booking", exact: true });
+    await expect(mobileBookingButton).toBeVisible();
+    await mobilePropertyButton.focus();
+    await page.keyboard.press("Tab");
+    await expect(mobileBookingButton).toBeFocused();
+
     await page.goto("/settings?billing=canceled", { waitUntil: "networkidle" });
     await expect(page.getByRole("button", { name: "Billing", exact: true })).toHaveAttribute(
       "aria-current",

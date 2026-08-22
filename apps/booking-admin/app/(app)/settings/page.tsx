@@ -22,7 +22,6 @@ import {
 import {
   CalendarDaysIcon,
   BellIcon,
-  UserCircleIcon,
   CreditCardIcon,
   BanknotesIcon,
   GlobeAltIcon,
@@ -62,11 +61,8 @@ import {
 } from "@/lib/utils/settingsSectionUrl";
 
 // Audit-driven section IDs (VAY-400):
-// - "account" replaces the old "security" tab — those are personal-account
-//   concerns (email/password/2FA), not hotel concerns.
-// - "payments" is new — Stripe Connect + Xendit moved out of billing into
-//   their own section (billing = what hotel pays Vayada; payments = how hotel
-//   collects from guests).
+// - "payments" separates Stripe Connect + Xendit from billing (billing = what
+//   the hotel pays Vayada; payments = how the hotel collects from guests).
 type Section = SettingsSectionId;
 
 const POI_COLORS = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#0d9488", "#db2777"];
@@ -852,9 +848,8 @@ export default function SettingsPage() {
       label: t("settings.tabs.notifications"),
       icon: BellIcon,
     },
-    // TODO i18n: add settings.tabs.account + settings.tabs.payments keys to
-    // messages/*.json. Hardcoded English until then.
-    { id: "account", label: "Account", icon: UserCircleIcon },
+    // TODO i18n: add settings.tabs.payments to messages/*.json.
+    // Hardcoded English until then.
     { id: "billing", label: t("settings.tabs.billing"), icon: CreditCardIcon },
     { id: "payments", label: "Payments", icon: BanknotesIcon },
   ];
@@ -1077,9 +1072,7 @@ export default function SettingsPage() {
               />
             ) : acceptanceLoading ? (
               <div className="py-3" role="status">
-                <p className="text-[13px] font-semibold text-gray-900">
-                  Accept bookings instantly
-                </p>
+                <p className="text-[13px] font-semibold text-gray-900">Accept bookings instantly</p>
                 <p className="text-[13px] text-gray-500">Loading current setting…</p>
               </div>
             ) : null}
@@ -1536,29 +1529,6 @@ export default function SettingsPage() {
             <SaveButton onClick={handleSave} saving={saving}>
               {t("common.save")}
             </SaveButton>
-          </div>
-        </div>
-      )}
-
-      {/* Account tab — personal-account settings (was "Security"). */}
-      {activeSection === "account" && (
-        <div className="mt-5">
-          <div className="rounded-lg border border-gray-200 bg-white p-5">
-            <div className="flex items-start gap-3">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gray-100">
-                <UserCircleIcon className="h-5 w-5 text-gray-500" />
-              </div>
-              <div>
-                <h2 className="text-sm font-semibold text-gray-900">Personal account security</h2>
-                <p className="mt-1 max-w-xl text-[13px] leading-5 text-gray-500">
-                  Email, password, two-factor authentication, and sign-in history are managed by
-                  Vayada sign-in. These controls are not available inside Booking Admin yet.
-                </p>
-                <span className="mt-3 inline-flex rounded-md bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-600">
-                  Not available yet
-                </span>
-              </div>
-            </div>
           </div>
         </div>
       )}
