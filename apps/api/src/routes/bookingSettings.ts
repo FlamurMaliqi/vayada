@@ -6,6 +6,10 @@ import type {
 import pg from "pg";
 import type { QueryResult, QueryResultRow } from "pg";
 
+import {
+  isBookingAcceptanceMode,
+  type BookingAcceptanceSettingsPort,
+} from "../domains/bookingAcceptanceSettings.js";
 import { syncPropertyOfferReadModels } from "./marketplaceAdmin.js";
 import { enforceRoutePolicy } from "./policy.js";
 
@@ -329,6 +333,13 @@ export type BookingHotelPropertyLinkResponse = {
     pmsProperty: boolean;
     financeProperty: boolean;
   };
+};
+
+export type BookingAcceptanceSettingsResponse = {
+  contractVersion: "booking-acceptance.v1";
+  propertyId: string;
+  acceptanceMode: "instant" | "request";
+  instantBook: boolean;
 };
 
 export type BookingPropertySettingsResponse = Record<string, unknown>;
@@ -2052,11 +2063,16 @@ export async function registerBookingSettingsRoutes(
   writeRepository?: BookingSettingsWriteRepository,
   publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort,
   inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort,
+  bookingAcceptanceSettings?: BookingAcceptanceSettingsPort,
 ): Promise<void> {
   const closeables = new Set(
-    [repository, writeRepository, publicBookabilityPublisher, inventoryPublicOfferProjector].filter(
-      Boolean,
-    ),
+    [
+      repository,
+      writeRepository,
+      publicBookabilityPublisher,
+      inventoryPublicOfferProjector,
+      bookingAcceptanceSettings,
+    ].filter(Boolean),
   );
   app.addHook("onClose", async () => {
     await Promise.all([...closeables].map((closeable) => closeable?.close?.()));
@@ -2108,6 +2124,50 @@ export async function registerBookingSettingsRoutes(
       }
 
       return toPropertyLinkResponse(hotelId, propertyLink);
+    },
+  );
+
+  app.get<{ Params: BookingHotelParams }>(
+    "/hotels/:hotelId/settings/booking-acceptance",
+    async (request, reply) => {
+      const { hotelId } = request.params;
+
+      try {
+        enforceBookingSettingsPolicy(request, hotelId);
+      } catch (error) {
+        const contractError = toBookingSettingsAccessError(error, request, hotelId);
+        if (contractError) return sendBookingPropertySettingsError(reply, contractError);
+        throw error;
+      }
+
+      if (!bookingAcceptanceSettings) {
+        return sendBookingPropertySettingsError(reply, bookingAcceptanceReadUnavailable());
+      }
+
+      try {
+        const propertyId = await findBookingAcceptancePropertyId(repository, hotelId);
+        if (!propertyId) {
+          return sendBookingPropertySettingsError(reply, {
+            statusCode: 404,
+            code: "not_found",
+            category: "read_model",
+            message: "Booking acceptance settings were not found.",
+          });
+        }
+        const acceptanceMode = await bookingAcceptanceSettings.findAcceptanceMode(propertyId);
+        if (!acceptanceMode) {
+          return sendBookingPropertySettingsError(reply, {
+            statusCode: 404,
+            code: "not_found",
+            category: "read_model",
+            message: "Booking acceptance settings were not found.",
+          });
+        }
+        return toBookingAcceptanceSettingsResponse(propertyId, acceptanceMode);
+      } catch (error) {
+        request.log.error({ err: error, hotelId }, "Booking acceptance settings read failed");
+        return sendBookingPropertySettingsError(reply, bookingAcceptanceReadUnavailable());
+      }
     },
   );
 
@@ -2522,6 +2582,64 @@ export async function registerBookingSettingsRoutes(
     );
   }
 
+  app.put<{ Params: BookingHotelParams; Body: unknown }>(
+    "/hotels/:hotelId/settings/booking-acceptance",
+    async (request, reply) => {
+      const { hotelId } = request.params;
+
+      try {
+        enforceBookingSettingsPolicy(request, hotelId);
+      } catch (error) {
+        const contractError = toBookingSettingsAccessError(error, request, hotelId);
+        if (contractError) return sendBookingSettingsWriteError(reply, contractError);
+        throw error;
+      }
+
+      const parsed = parseBookingAcceptanceSettingsWriteBody(request.body);
+      if (!parsed.ok) {
+        return sendBookingSettingsWriteError(reply, {
+          statusCode: 422,
+          code: "invalid_payload",
+          category: "validation",
+          message: "Booking acceptance settings payload is invalid.",
+          details: parsed.details,
+        });
+      }
+      if (!bookingAcceptanceSettings) {
+        return sendBookingSettingsWriteError(reply, bookingAcceptanceWriteUnavailable());
+      }
+
+      try {
+        const propertyId = await findBookingAcceptancePropertyId(repository, hotelId);
+        if (!propertyId) {
+          return sendBookingSettingsWriteError(reply, {
+            statusCode: 404,
+            code: "not_found",
+            category: "write_model",
+            message: "Booking acceptance settings were not found.",
+          });
+        }
+        const acceptanceMode = await bookingAcceptanceSettings.updateAcceptanceMode(
+          propertyId,
+          parsed.value.acceptanceMode,
+        );
+        if (!acceptanceMode) {
+          return sendBookingSettingsWriteError(reply, {
+            statusCode: 404,
+            code: "not_found",
+            category: "write_model",
+            message: "Booking acceptance settings were not found.",
+          });
+        }
+        await publicBookabilityPublisher?.publish({ propertyId });
+        return toBookingAcceptanceSettingsResponse(propertyId, acceptanceMode);
+      } catch (error) {
+        request.log.error({ err: error, hotelId }, "Booking acceptance settings update failed");
+        return sendBookingSettingsWriteError(reply, bookingAcceptanceWriteUnavailable());
+      }
+    },
+  );
+
   if (!writeRepository) return;
 
   app.patch<{ Params: BookingHotelParams; Body: unknown }>(
@@ -2662,6 +2780,57 @@ export async function registerBookingSettingsRoutes(
 }
 
 type ValidationResult<T> = { ok: true; value: T } | { ok: false; details: string[] };
+
+function parseBookingAcceptanceSettingsWriteBody(
+  body: unknown,
+): ValidationResult<{ acceptanceMode: "instant" | "request" }> {
+  const parsed = expectStrictObject(body, ["acceptanceMode"]);
+  if (!parsed.ok) return parsed;
+  if (!isBookingAcceptanceMode(parsed.value.acceptanceMode)) {
+    return { ok: false, details: ["acceptanceMode must be either instant or request."] };
+  }
+  return { ok: true, value: { acceptanceMode: parsed.value.acceptanceMode } };
+}
+
+async function findBookingAcceptancePropertyId(
+  repository: BookingSettingsReadRepository,
+  hotelId: string,
+): Promise<string | null> {
+  if (!repository.findPropertyLinkByHotelId) {
+    throw new Error("Booking hotel property link is unavailable.");
+  }
+  return (await repository.findPropertyLinkByHotelId(hotelId))?.propertyId ?? null;
+}
+
+export function toBookingAcceptanceSettingsResponse(
+  propertyId: string,
+  acceptanceMode: "instant" | "request",
+): BookingAcceptanceSettingsResponse {
+  return {
+    contractVersion: "booking-acceptance.v1",
+    propertyId,
+    acceptanceMode,
+    instantBook: acceptanceMode === "instant",
+  };
+}
+
+function bookingAcceptanceReadUnavailable(): BookingHotelPropertyLinkError {
+  return {
+    statusCode: 500,
+    code: "read_model_unavailable",
+    category: "read_model",
+    message: "Booking acceptance settings are unavailable.",
+  };
+}
+
+function bookingAcceptanceWriteUnavailable(): BookingSettingsWriteError {
+  return {
+    statusCode: 500,
+    code: "write_model_unavailable",
+    category: "write_model",
+    message: "Booking acceptance settings could not be saved.",
+  };
+}
 
 async function handleBookingSettingsWrite<TBody, TStored>(input: {
   request: FastifyRequest<{ Params: BookingHotelParams; Body: unknown }>;
