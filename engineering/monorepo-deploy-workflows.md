@@ -26,6 +26,12 @@ ECS-backed workflows publish a SHA-pinned image and send an
 service update. GitHub Actions authenticates through
 `arn:aws:iam::269416271598:role/vayada-github-actions-deploy`.
 
+Next Booking Web also publishes its source SHA through `/api/health`. The
+`Next Booking public canary` workflow waits for that exact SHA after an image
+publish, then verifies an unmocked persistent tenant through host resolution,
+the public-bookability profile, and a browser render. It repeats every 15
+minutes so tenant publication regressions are detected between deployments.
+
 The Next TypeScript API image applies pending target migrations before its HTTP
 server starts. See
 [`target-database-deployment-migrations.md`](target-database-deployment-migrations.md)

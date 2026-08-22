@@ -1,0 +1,60 @@
+name: Next Booking public canary
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_run:
+    workflows: ["Deploy Next Booking Web"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: next-booking-public-canary
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify deployed Booking tenant
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: "true"
+      E2E_BOOKING_PUBLIC_CANARY: "1"
+      BOOKING_PUBLIC_CANARY_URL: ${{ vars.NEXT_BOOKING_CANARY_URL }}
+      BOOKING_PUBLIC_CANARY_NAME: ${{ vars.NEXT_BOOKING_CANARY_NAME }}
+      BOOKING_PUBLIC_CANARY_EXPECTED_BUILD_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
+      BOOKING_PUBLIC_CANARY_TIMEOUT_MS: ${{ github.event_name == 'workflow_run' && '600000' || '60000' }}
+
+    steps:
+      - name: Checkout deployed source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify public Booking tenant
+        run: npm run e2e:booking-public-canary
+
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: next-booking-public-canary-evidence
+          path: |
+            test-results/
+            playwright-report/
