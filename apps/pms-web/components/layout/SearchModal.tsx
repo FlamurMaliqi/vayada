@@ -157,21 +157,6 @@ const SETTINGS: SettingEntry[] = [
     ],
   },
   {
-    id: "same-day-cutoff",
-    labelKey: "search.settingSameDayCutoff",
-    sublabelKey: "search.settingSameDayCutoffHint",
-    href: "/settings#same-day-booking-cutoff",
-    keywords: [
-      "same-day",
-      "same day",
-      "cutoff",
-      "cutoff time",
-      "booking cutoff",
-      "same day booking",
-      "same-day booking",
-    ],
-  },
-  {
     id: "calendar-settings",
     labelKey: "search.settingCalendar",
     sublabelKey: "search.settingCalendarHint",
