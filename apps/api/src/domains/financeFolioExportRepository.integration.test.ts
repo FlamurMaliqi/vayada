@@ -7,6 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { FINANCE_FOLIO_EXPORT_TTL_MS, createPgFinanceFolioExportJobRepository, parseFinanceFolioExportJobPayload } from "./financeFolioExportRepository.js";
 
 const URL = process.env["TEST_DATABASE_URL"];
+const SEARCH_DIGEST_KEY = "VAY-1134-test-search-digest-key!";
 // prettier-ignore
 const ACTOR = "11340000-0000-4000-8000-000000000001", PROPERTY_A = "11340000-0000-4000-8000-000000000002", PROPERTY_B = "11340000-0000-4000-8000-000000000003", MISSING = "11340000-0000-4000-8000-000000000004", REVISION = "11340000-0000-4000-8000-000000000005", ORG = "11340000-0000-4000-8000-000000000006", CAUSE = "11340000-0000-4000-8000-000000000007", ORG_B = "11340000-0000-4000-8000-000000000008";
 if (URL && !/(^|[_-])(test|verify)([_-]|$)/i.test(new globalThis.URL(URL).pathname))
@@ -15,7 +16,7 @@ if (URL && !/(^|[_-])(test|verify)([_-]|$)/i.test(new globalThis.URL(URL).pathna
 describe.skipIf(!URL)("PostgreSQL Finance folio export jobs", () => {
   const admin = new pg.Client({ connectionString: URL ?? "postgresql://disabled" });
   // prettier-ignore
-  const repository = createPgFinanceFolioExportJobRepository({ connectionString: URL ?? "postgresql://disabled" });
+  const repository = createPgFinanceFolioExportJobRepository({ connectionString: URL ?? "postgresql://disabled", searchDigestKey: SEARCH_DIGEST_KEY });
   beforeAll(async () => admin.connect());
   beforeEach(async () => {
     await cleanup();
@@ -56,14 +57,14 @@ describe.skipIf(!URL)("PostgreSQL Finance folio export jobs", () => {
     // prettier-ignore
     expect(evidence.rows[0].job_metadata).toMatchObject({ actorUserId: ACTOR, organizationId: ORG, requestId: "request-shared", correlationId: "correlation-shared", causationId: CAUSE, requestedAt: "2026-08-21T10:00:00.000Z", payloadFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/), manifestDigest: fingerprint([]) });
     // prettier-ignore
-    expect(evidence.rows[0].redacted_payload).toMatchObject({ filters: { searchPresent: true, searchHash: fingerprint("guest@example.test") }, manifestDigest: fingerprint([]) });
+    expect(evidence.rows[0].redacted_payload).toMatchObject({ filters: { searchPresent: true, searchHash: "e3e242b81d2d2ad0c1b2f580bd934e472aa0295ee01f8499579c14ef0fdfd2a0" }, manifestDigest: fingerprint([]) });
     // prettier-ignore
-    expect(evidence.rows[0]).toMatchObject({ jobAiVisible: false, private_payload: {}, correlation_id: "correlation-shared", causation_id: CAUSE, actor_user_id: ACTOR });
+    expect(evidence.rows[0]).toMatchObject({ jobAiVisible: false, correlation_id: "correlation-shared", causation_id: CAUSE, actor_user_id: ACTOR });
+    expect(evidence.rows[0].private_payload).toEqual({});
     expect(Number(evidence.rows[0].ttl)).toBe(FINANCE_FOLIO_EXPORT_TTL_MS);
     expect(evidence.rows[0].audit).not.toContain("guest@example.test");
-    expect(JSON.stringify(evidence.rows[0])).not.toMatch(
-      /VAY-1134-shared|recipient|must-not-leak/i,
-    );
+    // prettier-ignore
+    expect(JSON.stringify(evidence.rows[0])).not.toMatch(/VAY-1134-shared|recipient|must-not-leak/i);
     // prettier-ignore
     await admin.query("UPDATE platform.idempotency_keys SET expires_at='2000-01-01T00:00:00.000Z' WHERE property_id=$1", [PROPERTY_A]);
     await expect(repository.enqueue(shared)).resolves.toEqual({ status: "conflict" });
@@ -72,12 +73,17 @@ describe.skipIf(!URL)("PostgreSQL Finance folio export jobs", () => {
   it("retains the first manifest when a pre-existing transaction commits before retry", async () => {
     const peer = new pg.Client({ connectionString: URL! });
     await peer.connect();
-    await peer.query("BEGIN");
-    // prettier-ignore
-    await peer.query(`INSERT INTO finance.folios(id,property_id) VALUES('${MISSING}','${PROPERTY_A}'); INSERT INTO finance.folio_revisions(id,folio_id,property_id,revision,state,recipient_snapshot_ciphertext,recipient_encryption_scheme,recipient_key_version,recipient_fingerprint,recipient_fingerprint_key_version,service_from,service_to,currency,total_amount,source_digest,source_freshness) VALUES('${REVISION}','${MISSING}','${PROPERTY_A}',1,'ready',decode(repeat('ab',32),'hex'),'envelope_aead_v1','key-1',repeat('a',64),'fingerprint-1','2026-08-01','2026-08-01','EUR',1,repeat('b',64),'{}'); INSERT INTO finance.folio_lines(folio_revision_id,folio_id,property_id,folio_revision,currency,position,kind,description,quantity,unit_amount,service_on,source_type,source_id,source_revision) VALUES('${REVISION}','${MISSING}','${PROPERTY_A}',1,'EUR',1,'fee','Late',1,1,'2026-08-01','finance','late:1',1)`);
-    const first = await repository.enqueue(command("late", PROPERTY_A, []));
-    await peer.query("COMMIT");
-    await peer.end();
+    let first;
+    try {
+      await peer.query("BEGIN");
+      // prettier-ignore
+      await peer.query(`INSERT INTO finance.folios(id,property_id) VALUES('${MISSING}','${PROPERTY_A}'); INSERT INTO finance.folio_revisions(id,folio_id,property_id,revision,state,recipient_snapshot_ciphertext,recipient_encryption_scheme,recipient_key_version,recipient_fingerprint,recipient_fingerprint_key_version,service_from,service_to,currency,total_amount,source_digest,source_freshness) VALUES('${REVISION}','${MISSING}','${PROPERTY_A}',1,'ready',decode(repeat('ab',32),'hex'),'envelope_aead_v1','key-1',repeat('a',64),'fingerprint-1','2026-08-01','2026-08-01','EUR',1,repeat('b',64),'{}'); INSERT INTO finance.folio_lines(folio_revision_id,folio_id,property_id,folio_revision,currency,position,kind,description,quantity,unit_amount,service_on,source_type,source_id,source_revision) VALUES('${REVISION}','${MISSING}','${PROPERTY_A}',1,'EUR',1,'fee','Late',1,1,'2026-08-01','finance','late:1',1)`);
+      first = await repository.enqueue(command("late", PROPERTY_A, []));
+      await peer.query("COMMIT");
+    } finally {
+      await peer.query("ROLLBACK").catch(() => undefined);
+      await peer.end();
+    }
     // prettier-ignore
     const selected = [{ folioId: MISSING, revisionId: REVISION, revision: 1, sourceDigest: "b".repeat(64) }];
     // prettier-ignore
@@ -88,15 +94,15 @@ describe.skipIf(!URL)("PostgreSQL Finance folio export jobs", () => {
   });
 
   it("rolls back the idempotency key, job, and audit together", async () => {
-    await expect(
-      repository.enqueue({ ...command("wrong-org"), organizationId: ORG_B }),
-    ).rejects.toBeInstanceOf(TypeError);
-    await expect(
-      repository.enqueue({ ...command("missing-org"), organizationId: MISSING }),
-    ).rejects.toBeInstanceOf(TypeError);
+    // prettier-ignore
+    for (const [key, organizationId] of [["wrong-org", ORG_B], ["missing-org", MISSING]] as const)
+      await expect(repository.enqueue({ ...command(key), organizationId })).rejects.toBeInstanceOf(TypeError);
     const invalid = command("rollback");
     invalid.audit.actorUserId = MISSING;
     await expect(repository.enqueue(invalid)).rejects.toBeInstanceOf(TypeError);
+    const future = command("future-snapshot");
+    future.snapshot.snapshotAt = new Date(Date.now() + 3_600_000).toISOString();
+    await expect(repository.enqueue(future)).rejects.toBeInstanceOf(TypeError);
     // prettier-ignore
     const residue = await admin.query(`SELECT ((SELECT count(*) FROM platform.jobs WHERE property_id=$1)+(SELECT count(*) FROM platform.idempotency_keys WHERE property_id=$1)+(SELECT count(*) FROM platform.product_audit_events WHERE property_id=$1))::int count`, [PROPERTY_A]);
     expect(residue.rows[0].count).toBe(0);

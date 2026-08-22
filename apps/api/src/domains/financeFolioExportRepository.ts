@@ -1,14 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
-
+import { createHash, createHmac, randomUUID } from "node:crypto";
 // prettier-ignore
 import { FINANCE_FOLIO_CSV_VERSION, parseFinanceFolioExportFilters, parseFinanceFolioExportSnapshot, type FinanceFolioExportFilters, type FinanceFolioExportSnapshot } from "@vayada/domain-finance";
 import pg, { type PoolClient } from "pg";
-
 export const FINANCE_FOLIO_EXPORT_QUEUE = "finance.financials-exports";
 export const FINANCE_FOLIO_EXPORT_JOB = "finance.folio-csv-export.v1";
 export const FINANCE_FOLIO_EXPORT_TTL_MS = 24 * 60 * 60 * 1_000;
 const OPERATION = "financials.folio_export.create.v1";
-
 // prettier-ignore
 export type FinanceFolioExportAudit = { actorUserId: string; requestId: string; correlationId: string; causationId: string; requestedAt: string };
 // prettier-ignore
@@ -21,9 +18,11 @@ type Command = { commandId: string; idempotencyKey: string; organizationId: stri
 type ExpectedPayload = { organizationId: string; propertyId: string; currency: string; payloadFingerprint: string; acceptedAt: string; snapshotAt: string; expiresAt: string; now: Date };
 
 // prettier-ignore
-export function createPgFinanceFolioExportJobRepository(config: { connectionString?: string; pool?: pg.Pool }) {
+export function createPgFinanceFolioExportJobRepository(config: { connectionString?: string; pool?: pg.Pool; searchDigestKey: string }) {
   if (!config.pool && !config.connectionString?.trim())
     throw new Error("Finance folio export jobs require a connection string");
+  if (Buffer.byteLength(config.searchDigestKey) < 32)
+    throw new Error("Finance folio export jobs require a search digest key");
   const pool = config.pool ?? new pg.Pool({ connectionString: config.connectionString, max: 3 });
   return {
     async enqueue(input: Command): Promise<FinanceFolioExportEnqueueResult> {
@@ -102,7 +101,7 @@ export function createPgFinanceFolioExportJobRepository(config: { connectionStri
              'user',$4::uuid,'finance','financials_export',$5::text,$5::uuid,$5::uuid,$6,$7,
              $8::jsonb,$9::jsonb,'financial','confidential')`,
           // prettier-ignore
-          [`finance.financials-export:${exportId}:requested`, acceptedAt, input.propertyId, input.audit.actorUserId, exportId, input.audit.correlationId, input.audit.causationId, JSON.stringify(redacted(input.currency, filters, snapshot)), JSON.stringify({ organizationId: input.organizationId, requestId: input.audit.requestId, requestedAt: input.audit.requestedAt })],
+          [`finance.financials-export:${exportId}:requested`, acceptedAt, input.propertyId, input.audit.actorUserId, exportId, input.audit.correlationId, input.audit.causationId, JSON.stringify(redacted(config.searchDigestKey, input.currency, filters, snapshot)), JSON.stringify({ organizationId: input.organizationId, requestId: input.audit.requestId, requestedAt: input.audit.requestedAt })],
         );
         return { status: "created", exportId };
       });
@@ -112,7 +111,6 @@ export function createPgFinanceFolioExportJobRepository(config: { connectionStri
     },
   };
 }
-
 // prettier-ignore
 export function parseFinanceFolioExportJobPayload(value: unknown, expected: ExpectedPayload): FinanceFolioExportJobPayload {
   const row = object(value),
@@ -157,7 +155,6 @@ async function authorizedScope(client: PoolClient, input: Command) {
   );
   return (result.rowCount ?? 0) > 0;
 }
-
 // prettier-ignore
 function validCommand(input: Command, filters: FinanceFolioExportFilters, snapshot: FinanceFolioExportSnapshot) {
   return (
@@ -199,18 +196,15 @@ function validWindow(row: Record<string, unknown>, snapshot: FinanceFolioExportS
   );
 }
 
-function redacted(
-  currency: string,
-  filters: FinanceFolioExportFilters,
-  snapshot: FinanceFolioExportSnapshot,
-) {
+// prettier-ignore
+function redacted(key: string, currency: string, filters: FinanceFolioExportFilters, snapshot: FinanceFolioExportSnapshot) {
   const { search, ...safe } = filters;
   return {
     currency,
     filters: {
       ...safe,
       searchPresent: Boolean(search),
-      ...(search ? { searchHash: hash(search) } : {}),
+      ...(search ? { searchHash: createHmac("sha256", key).update(search).digest("hex") } : {}),
     },
     formatVersion: FINANCE_FOLIO_CSV_VERSION,
     manifestCount: snapshot.manifest.length,
@@ -226,7 +220,7 @@ async function transaction<T>(pool: pg.Pool, work: (client: PoolClient) => Promi
     await client.query("COMMIT");
     return value;
   } catch (error) {
-    await client.query("ROLLBACK");
+    await client.query("ROLLBACK").catch(() => undefined);
     throw error;
   } finally {
     client.release();
