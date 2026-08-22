@@ -4,7 +4,6 @@ import { useCallback, useState, useEffect } from "react";
 import {
   BoltIcon,
   CalendarDaysIcon,
-  ClockIcon,
   ClipboardDocumentCheckIcon,
   GlobeAltIcon,
   ReceiptPercentIcon,
@@ -18,12 +17,7 @@ import {
   updatePmsPropertyProfile,
 } from "@/services/api/pmsPropertyClient";
 import { useTranslation } from "@/lib/i18n";
-import {
-  SettingsCard,
-  SettingsLayout,
-  SettingsSection,
-  type SettingsNavSection,
-} from "@vayada/settings-ui";
+import { SettingsLayout, type SettingsNavSection } from "@vayada/settings-ui";
 import { PropertySection } from "@/components/settings/PropertySection";
 import { LocalizationSection } from "@/components/settings/LocalizationSection";
 import { BookingEngineSection } from "@/components/settings/BookingEngineSection";
@@ -44,7 +38,6 @@ type SectionId =
   | "ota-commissions"
   | "booking-engine"
   | "calendar"
-  | "check-in-out"
   | "checkin-checklist"
   | "checkout-inspection"
   | "localization";
@@ -56,7 +49,6 @@ const ANCHOR_TO_SECTION: Record<string, SectionId> = {
   "ota-commissions": "ota-commissions",
   "booking-engine": "booking-engine",
   calendar: "calendar",
-  "check-in-out": "check-in-out",
   "checkin-checklist": "checkin-checklist",
   "checkout-inspection": "checkout-inspection",
   currency: "localization",
@@ -268,14 +260,9 @@ export default function SettingsPage() {
       label: "Property",
       icon: HotelIcon,
     },
-    { id: "ota-commissions", label: "OTA commissions", icon: ReceiptPercentIcon },
-    { id: "booking-engine", label: "Booking Engine", icon: BoltIcon },
     { id: "calendar", label: "Calendar", icon: CalendarDaysIcon },
-    {
-      id: "check-in-out",
-      label: t("settings.checkInCheckOut"),
-      icon: ClockIcon,
-    },
+    { id: "booking-engine", label: "Booking Engine", icon: BoltIcon },
+    { id: "ota-commissions", label: "OTA commissions", icon: ReceiptPercentIcon },
     {
       id: "checkin-checklist",
       label: "Check-in checklist",
@@ -338,16 +325,6 @@ export default function SettingsPage() {
         onSave={savePropertyDetails}
       />
 
-      <OtaCommissionSettingsSection />
-
-      <BookingEngineSection
-        instantBook={acceptanceMode === "instant"}
-        saving={savingAcceptance || loadingAcceptance}
-        loadError={acceptanceLoadError}
-        onToggle={(next) => void saveAcceptanceMode(next)}
-        onRetry={() => void loadAcceptanceMode()}
-      />
-
       <CalendarSection
         enabled={autoRearrangeEnabled}
         loading={calendarLoading}
@@ -357,11 +334,15 @@ export default function SettingsPage() {
         onRetry={() => void loadCalendarSettings()}
       />
 
-      <UnavailableSettingsSection
-        id="check-in-out"
-        title={t("settings.checkInCheckOut")}
-        description="Check-in and check-out time controls are not available in PMS yet."
+      <BookingEngineSection
+        instantBook={acceptanceMode === "instant"}
+        saving={savingAcceptance || loadingAcceptance}
+        loadError={acceptanceLoadError}
+        onToggle={(next) => void saveAcceptanceMode(next)}
+        onRetry={() => void loadAcceptanceMode()}
       />
+
+      <OtaCommissionSettingsSection />
 
       <LocalizationSection
         currency={currency}
@@ -369,28 +350,5 @@ export default function SettingsPage() {
         currencyLoadStatus={currencyLoadStatus}
       />
     </SettingsLayout>
-  );
-}
-
-function UnavailableSettingsSection({
-  id,
-  title,
-  description,
-}: {
-  id: string;
-  title: string;
-  description: string;
-}) {
-  return (
-    <SettingsSection id={id} title={title} description={description}>
-      <SettingsCard>
-        <div className="flex items-center justify-between gap-4">
-          <p className="text-sm text-gray-500">No settings can be changed here yet.</p>
-          <span className="shrink-0 rounded-md bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-600">
-            Not available yet
-          </span>
-        </div>
-      </SettingsCard>
-    </SettingsSection>
   );
 }
