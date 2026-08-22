@@ -418,7 +418,7 @@ describe.skipIf(!TEST_DATABASE_URL)("createPgPropertyAccessRepository", () => {
         INSERT INTO identity.organizations (id, kind, name, slug) VALUES ('${DB_ORGANIZATION}', 'hotel_group', 'Property Access Test', 'property-access-test');
         INSERT INTO hotel_catalog.properties (id, public_id, display_name) VALUES ('${DB_PROPERTY}', 'property-access-test', 'Property Access Test');
         INSERT INTO identity.organization_resource_links (organization_id, product, resource_type, resource_id, relationship) VALUES ('${DB_ORGANIZATION}', 'hotel_catalog', 'property', '${DB_PROPERTY}', 'operator');
-        INSERT INTO identity.organization_memberships (id, organization_id, user_id, status, role_key, property_access_mode) VALUES ('${DB_MEMBERSHIP}', '${DB_ORGANIZATION}', '${DB_USER}', 'active', 'front_desk', 'assigned');
+        INSERT INTO identity.organization_memberships (id, organization_id, user_id, status, role_key, property_access_mode, access_origin) VALUES ('${DB_MEMBERSHIP}', '${DB_ORGANIZATION}', '${DB_USER}', 'active', 'front_desk', 'assigned', 'agency');
         INSERT INTO identity.membership_property_assignments VALUES ('${DB_MEMBERSHIP}', '${DB_PROPERTY}');`);
 
       await expect(repository.findMembershipPropertyScope(dbContext)).resolves.toEqual({

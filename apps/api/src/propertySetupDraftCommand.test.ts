@@ -1341,9 +1341,9 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft save repository", () =
     );
     await client.query(
       `INSERT INTO identity.organization_memberships (
-         organization_id, user_id, status, role_key
+         organization_id, user_id, status, role_key, access_origin
        )
-       VALUES ($1::uuid, $2::uuid, 'active', 'hotel_owner')`,
+       VALUES ($1::uuid, $2::uuid, 'active', 'hotel_owner', 'agency')`,
       [fixture.organizationId, fixture.actorUserId],
     );
     await client.query(

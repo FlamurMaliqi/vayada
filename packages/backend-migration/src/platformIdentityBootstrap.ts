@@ -155,13 +155,14 @@ async function applyPlatformIdentityBootstrap(
 
     await client.query(
       `INSERT INTO identity.organization_memberships
-         (organization_id, user_id, status, role_key, property_access_mode, workos_role_slugs, created_at, updated_at)
+         (organization_id, user_id, status, role_key, property_access_mode, access_origin, workos_role_slugs, created_at, updated_at)
        SELECT
          $1::uuid,
          id,
          status,
          'platform_admin',
          'assigned',
+         'agency',
          ARRAY[$3::text],
          created_at,
          updated_at

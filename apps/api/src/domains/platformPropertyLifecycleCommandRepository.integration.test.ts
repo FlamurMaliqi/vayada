@@ -33,8 +33,8 @@ describe.skipIf(!TEST_DATABASE_URL)("platform property lifecycle PostgreSQL comm
     );
     await client.query(
       `INSERT INTO identity.organization_memberships (
-         id, organization_id, user_id, status, role_key
-       ) VALUES ($1::uuid, $2::uuid, $3::uuid, 'active', 'platform_admin')`,
+         id, organization_id, user_id, status, role_key, access_origin
+       ) VALUES ($1::uuid, $2::uuid, $3::uuid, 'active', 'platform_admin', 'agency')`,
       [membershipId, organizationId, actorUserId],
     );
     await client.query(

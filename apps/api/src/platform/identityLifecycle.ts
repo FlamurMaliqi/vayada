@@ -387,7 +387,7 @@ async function grantIdentityAccess(
   }
 }
 
-async function grantIdentityAccessWithClient(
+export async function grantIdentityAccessWithClient(
   client: pg.PoolClient,
   payload: GrantIdentityAccessCommand["payload"],
 ): Promise<string> {
@@ -402,8 +402,8 @@ async function grantIdentityAccessWithClient(
   }
   await client.query(
     `INSERT INTO identity.organization_memberships
-       (organization_id, user_id, status, role_key, property_access_mode, workos_membership_id, workos_role_slugs, invited_at)
-     VALUES ($1, $2, COALESCE($3, 'active'), $4, $5, $6, COALESCE($7::text[], '{}'::text[]), $8)
+       (organization_id, user_id, status, role_key, property_access_mode, access_origin, workos_membership_id, workos_role_slugs, invited_at)
+     VALUES ($1, $2, COALESCE($3, 'active'), $4, $5, 'agency', $6, COALESCE($7::text[], '{}'::text[]), $8)
      ON CONFLICT (organization_id, user_id)
      DO UPDATE SET
        status = EXCLUDED.status,

@@ -528,10 +528,11 @@ async function upsertWorkosMembership(
          status,
          role_key,
          property_access_mode,
+         access_origin,
          workos_membership_id,
          workos_role_slugs
        )
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     VALUES ($1, $2, $3, $4, $5, 'agency', $6, $7)
      ON CONFLICT (organization_id, user_id)
      DO UPDATE SET
        status = CASE

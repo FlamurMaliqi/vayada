@@ -74,7 +74,7 @@ export async function transformIdentityOrganizationLinks(client: pg.Client): Pro
 
   await client.query(`
     INSERT INTO identity.organization_memberships
-      (organization_id, user_id, status, role_key, property_access_mode, workos_membership_id, workos_role_slugs, created_at, updated_at)
+      (organization_id, user_id, status, role_key, property_access_mode, access_origin, workos_membership_id, workos_role_slugs, created_at, updated_at)
     SELECT DISTINCT ON (links.organization_id, links.user_id)
       links.organization_id,
       links.user_id,
@@ -85,6 +85,7 @@ export async function transformIdentityOrganizationLinks(client: pg.Client): Pro
           AND links.role_key IN ('hotel_owner', 'owner', 'operator') THEN 'all'
         ELSE 'assigned'
       END,
+      'agency',
       links.workos_membership_id,
       links.workos_role_slugs,
       min(links.created_at) OVER (PARTITION BY links.organization_id, links.user_id),
