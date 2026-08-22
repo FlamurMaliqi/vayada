@@ -168,7 +168,7 @@ describe("identity admin user routes", () => {
       commandType: "identity.access.grant",
       payload: {
         userId: "user_001",
-        membership: { roleKey: "platform_admin" },
+        membership: { roleKey: "platform_admin", propertyAccessMode: "assigned" },
         resourceLinks: [
           {
             product: "platform",

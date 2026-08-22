@@ -945,6 +945,7 @@ describe("AuthKit session routes", () => {
           }),
           membership: expect.objectContaining({
             roleKey: "hotel_owner",
+            propertyAccessMode: "all",
             permissionKeys: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
           }),
         }),
@@ -2205,6 +2206,7 @@ describe("AuthKit session routes", () => {
           }),
           membership: expect.objectContaining({
             roleKey: "hotel_owner",
+            propertyAccessMode: "all",
             workosMembershipId: "om_onboarding_hotel",
           }),
         }),
