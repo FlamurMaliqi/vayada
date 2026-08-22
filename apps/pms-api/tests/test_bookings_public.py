@@ -244,20 +244,21 @@ class TestCreateBooking:
             "UPDATE hotels SET auto_rearrange_enabled = TRUE WHERE id = $1",
             hotel["id"],
         )
-        for idx, (check_in, check_out) in enumerate(
+        request_check_in = date.today() + timedelta(days=30)
+        for idx, (check_in_offset, check_out_offset) in enumerate(
             [
-                ("2026-08-23", "2026-08-26"),
-                ("2026-08-25", "2026-08-28"),
-                ("2026-08-22", "2026-08-24"),
-                ("2026-08-21", "2026-08-23"),
-                ("2026-08-26", "2026-08-29"),
+                (1, 4),
+                (3, 6),
+                (0, 2),
+                (-1, 1),
+                (4, 7),
             ]
         ):
             existing = await create_test_booking(
                 str(hotel["id"]),
                 str(room["id"]),
-                check_in=check_in,
-                check_out=check_out,
+                check_in=(request_check_in + timedelta(days=check_in_offset)).isoformat(),
+                check_out=(request_check_in + timedelta(days=check_out_offset)).isoformat(),
                 status="confirmed",
                 guest_email=f"packable-{idx}@example.com",
             )
@@ -275,8 +276,8 @@ class TestCreateBooking:
                 "guestLastName": "Guest",
                 "guestEmail": "packable@example.com",
                 "guestPhone": "+1111",
-                "checkIn": "2026-08-22",
-                "checkOut": "2026-08-27",
+                "checkIn": request_check_in.isoformat(),
+                "checkOut": (request_check_in + timedelta(days=5)).isoformat(),
                 "paymentMethod": "pay_at_property",
             },
         )
