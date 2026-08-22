@@ -59,6 +59,7 @@ jobs:
             NEXT_PUBLIC_BOOKING_WEB_API_URL=${{ env.NEXT_API_URL }}
             NEXT_PUBLIC_API_URL=${{ env.NEXT_API_URL }}
             NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_live_51T4q9THtaQeEOmq25xCQRtxOCZ7WKDN8Bpmo2jMuQCKGLPxjoU7cApWRR0fysdKgxjLsEs7zoL00qaAB6boaNMC600tH1jDPWD
+            BOOKING_WEB_BUILD_SHA=${{ github.sha }}
           tags: |
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-latest
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-${{ github.sha }}
@@ -76,5 +77,6 @@ jobs:
               "service": "next-booking-frontend",
               "ecr_repo": "${{ env.ECR_REPOSITORY }}",
               "image_sha": "next-${{ github.sha }}",
+              "source_sha": "${{ github.sha }}",
               "environment": "next"
             }

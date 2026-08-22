@@ -1,8 +1,11 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const nextStackSmokeOnly = process.env.E2E_NEXT_STACK_SMOKE === "1";
+const bookingPublicCanaryOnly = process.env.E2E_BOOKING_PUBLIC_CANARY === "1";
 const startServers =
-  !nextStackSmokeOnly && (process.env.CI === "true" || process.env.E2E_START_SERVERS === "1");
+  !nextStackSmokeOnly &&
+  !bookingPublicCanaryOnly &&
+  (process.env.CI === "true" || process.env.E2E_START_SERVERS === "1");
 const firstPartyAuthOnly = process.env.E2E_FIRST_PARTY_AUTH_ONLY === "1";
 
 const landingBaseURL =
@@ -221,6 +224,19 @@ export default defineConfig({
         },
         screenshot: "off",
         trace: "off",
+        video: "off",
+      },
+    },
+    {
+      name: "booking-public-canary-chromium",
+      testMatch: /booking-public-canary\/.*\.spec\.ts/,
+      retries: 0,
+      workers: 1,
+      use: {
+        ...devices["Desktop Chrome"],
+        baseURL: process.env.BOOKING_PUBLIC_CANARY_URL || "https://next-booking.vayada.com",
+        screenshot: "only-on-failure",
+        trace: "retain-on-failure",
         video: "off",
       },
     },
