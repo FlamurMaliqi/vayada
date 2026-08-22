@@ -2,7 +2,7 @@
 
 import { ReactNode } from "react";
 import Link from "next/link";
-import { cn } from "@/lib/utils";
+import { cn } from "./cn";
 
 export interface SettingsNavSection {
   id: string;
@@ -32,22 +32,18 @@ export function SettingsLayout({
     <div className="min-h-full">
       {(title || description) && (
         <div className="px-4 md:px-6 lg:px-8 pt-4 md:pt-6 pb-3">
-          {title && (
-            <h1 className="text-xl md:text-2xl font-semibold text-gray-900">{title}</h1>
-          )}
-          {description && (
-            <p className="text-[13px] text-gray-500 mt-1">{description}</p>
-          )}
+          {title && <h1 className="text-xl md:text-2xl font-semibold text-gray-900">{title}</h1>}
+          {description && <p className="text-[13px] text-gray-500 mt-1">{description}</p>}
         </div>
       )}
 
       <div className="md:hidden px-4 pb-2 sticky top-0 z-10 bg-white/95 backdrop-blur border-b border-gray-100">
         <div className="flex gap-1.5 overflow-x-auto -mx-1 px-1 py-1.5">
-          {sections.map((s) => (
+          {sections.map((section) => (
             <SettingsNavItem
-              key={s.id}
-              section={s}
-              active={activeId === s.id}
+              key={section.id}
+              section={section}
+              active={activeId === section.id}
               onSelect={onSelect}
               variant="pill"
             />
@@ -58,11 +54,11 @@ export function SettingsLayout({
       <div className="flex">
         <aside className="hidden md:block w-56 shrink-0 border-r border-gray-100 px-3 py-4 sticky top-0 self-start max-h-screen overflow-y-auto">
           <nav className="space-y-0.5">
-            {sections.map((s) => (
+            {sections.map((section) => (
               <SettingsNavItem
-                key={s.id}
-                section={s}
-                active={activeId === s.id}
+                key={section.id}
+                section={section}
+                active={activeId === section.id}
                 onSelect={onSelect}
                 variant="rail"
               />
@@ -106,12 +102,7 @@ function SettingsNavItem({
   const inner = (
     <>
       {Icon && variant === "rail" && (
-        <Icon
-          className={cn(
-            "w-4 h-4 shrink-0",
-            active ? "text-gray-900" : "text-gray-400",
-          )}
-        />
+        <Icon className={cn("w-4 h-4 shrink-0", active ? "text-gray-900" : "text-gray-400")} />
       )}
       <span className={variant === "rail" ? "flex-1" : ""}>{section.label}</span>
     </>

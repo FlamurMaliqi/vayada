@@ -50,7 +50,7 @@ import {
   SettingsSection,
   SettingsCard,
   type SettingsNavSection,
-} from "@/components/settings/layout";
+} from "@vayada/settings-ui";
 import { LocationMapPreview } from "@/components/settings/LocationMapPreview";
 import { PoiSearchInput } from "@/components/settings/PoiSearchInput";
 import { useTranslation } from "@/lib/i18n";

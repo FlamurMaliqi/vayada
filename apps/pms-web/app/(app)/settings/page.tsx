@@ -23,7 +23,7 @@ import {
   SettingsLayout,
   SettingsSection,
   type SettingsNavSection,
-} from "@/components/settings/layout";
+} from "@vayada/settings-ui";
 import { PropertySection } from "@/components/settings/PropertySection";
 import { LocalizationSection } from "@/components/settings/LocalizationSection";
 import { BookingEngineSection } from "@/components/settings/BookingEngineSection";
