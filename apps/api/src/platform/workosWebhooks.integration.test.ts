@@ -255,7 +255,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
         );
         await admin.query(
           `UPDATE identity.organization_memberships
-           SET access_origin = 'external_owner'
+           SET role_key = 'front_desk', access_origin = 'external_owner'
            WHERE id = $1`,
           [subjectMembershipId],
         );
@@ -280,7 +280,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
           slug: `vay-1085-${organizationId}`,
           workosOrgId,
         },
-        membership: { roleKey: "hotel_member", propertyAccessMode: "assigned" },
+        membership: { roleKey: "front_desk", propertyAccessMode: "assigned" },
       });
       await store.upsertWorkosMembership({
         workosMembershipId: ownerWorkosMembershipId,
@@ -292,14 +292,22 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
       });
       expect(
         (
-          await admin.query<{ accessOrigin: string }>(
-            `SELECT access_origin AS "accessOrigin"
+          await admin.query<{
+            accessOrigin: string;
+            propertyAccessMode: string;
+            roleKey: string;
+          }>(
+            `SELECT access_origin AS "accessOrigin",
+                    property_access_mode AS "propertyAccessMode",
+                    role_key AS "roleKey"
              FROM identity.organization_memberships
              WHERE id = $1`,
             [subjectMembershipId],
           )
         ).rows,
-      ).toEqual([{ accessOrigin: "external_owner" }]);
+      ).toEqual([
+        { accessOrigin: "external_owner", propertyAccessMode: "assigned", roleKey: "front_desk" },
+      ]);
     } finally {
       try {
         await admin.query("BEGIN");

@@ -541,8 +541,16 @@ async function upsertWorkosMembership(
          THEN identity.organization_memberships.status
          ELSE EXCLUDED.status
        END,
-       role_key = EXCLUDED.role_key,
-       property_access_mode = EXCLUDED.property_access_mode,
+       role_key = CASE
+         WHEN identity.organization_memberships.access_origin = 'external_owner'
+         THEN identity.organization_memberships.role_key
+         ELSE EXCLUDED.role_key
+       END,
+       property_access_mode = CASE
+         WHEN identity.organization_memberships.access_origin = 'external_owner'
+         THEN identity.organization_memberships.property_access_mode
+         ELSE EXCLUDED.property_access_mode
+       END,
        workos_membership_id = EXCLUDED.workos_membership_id,
        workos_role_slugs = EXCLUDED.workos_role_slugs,
        updated_at = now()`,
