@@ -280,7 +280,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
           slug: `vay-1085-${organizationId}`,
           workosOrgId,
         },
-        membership: { roleKey: "front_desk", propertyAccessMode: "assigned" },
+        membership: { roleKey: "hotel_owner", propertyAccessMode: "all" },
       });
       await store.upsertWorkosMembership({
         workosMembershipId: ownerWorkosMembershipId,
@@ -309,6 +309,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
         { accessOrigin: "external_owner", propertyAccessMode: "assigned", roleKey: "front_desk" },
       ]);
     } finally {
+      let cleanupError: unknown;
       try {
         await admin.query("BEGIN");
         await admin.query(
@@ -325,23 +326,26 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
           "DELETE FROM identity.membership_delegations WHERE organization_id = $1",
           [organizationId],
         );
+        await admin.query(
+          "DELETE FROM identity.organization_memberships WHERE organization_id = $1",
+          [organizationId],
+        );
+        await admin.query("DELETE FROM identity.organizations WHERE id = $1", [organizationId]);
+        await admin.query(
+          "DELETE FROM identity.external_identities WHERE user_id = ANY($1::uuid[])",
+          [[ownerUserId, staffUserId]],
+        );
+        await admin.query("DELETE FROM identity.users WHERE id = ANY($1::uuid[])", [
+          [ownerUserId, staffUserId],
+        ]);
         await admin.query("COMMIT");
       } catch (error) {
-        await admin.query("ROLLBACK");
-        throw error;
+        cleanupError = error;
+        await admin.query("ROLLBACK").catch((rollbackError: unknown) => {
+          cleanupError = new AggregateError([error, rollbackError], "cleanup and rollback failed");
+        });
       }
-      await admin.query(
-        "DELETE FROM identity.organization_memberships WHERE organization_id = $1",
-        [organizationId],
-      );
-      await admin.query("DELETE FROM identity.organizations WHERE id = $1", [organizationId]);
-      await admin.query(
-        "DELETE FROM identity.external_identities WHERE user_id = ANY($1::uuid[])",
-        [[ownerUserId, staffUserId]],
-      );
-      await admin.query("DELETE FROM identity.users WHERE id = ANY($1::uuid[])", [
-        [ownerUserId, staffUserId],
-      ]);
+      expect.soft(cleanupError, "delegation test cleanup").toBeUndefined();
     }
   });
 
