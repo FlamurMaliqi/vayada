@@ -357,9 +357,9 @@ const pmsOperationsCommandRepository = pmsOperationsRepository
     })
   : undefined;
 
-const bookingAcceptanceSettings = pmsOperationsRepository
-  ? createTargetBookingAcceptanceSettingsPort({ connectionString: targetDatabaseUrl })
-  : undefined;
+const bookingAcceptanceSettings = createTargetBookingAcceptanceSettingsPort({
+  connectionString: targetDatabaseUrl,
+});
 
 const pmsRoomAssignmentSettings = pmsOperationsRepository
   ? createPgPmsRoomAssignmentSettingsPort({ connectionString: targetDatabaseUrl })
