@@ -31,6 +31,7 @@ describe("adaptive property setup production mounts", () => {
         readPort: { getCurrentDesign: ownerPort },
       },
       bookingDesignReadiness: {
+        propertyAccessRepository: { findMembershipPropertyScope: ownerPort },
         readinessPort: { getBookingDesignReadiness: ownerPort },
       },
       pmsRoomPublication: {
