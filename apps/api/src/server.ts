@@ -1,6 +1,7 @@
 import { createPgIdentityRepository, createWorkOSVerifier } from "@vayada/backend-auth";
 import {
   createPgEntitlementRepository,
+  createPgPropertyAccessRepository,
   createPgRolePermissionRepository,
 } from "@vayada/backend-authorization";
 import {
@@ -573,6 +574,9 @@ const bookingDesignReadinessProvider = bookingDesignCatalogEvidenceRepository
       coverAssignment: bookingDesignCatalogEvidenceRepository.coverAssignment,
       safeMedia: bookingDesignCatalogEvidenceRepository.safeMedia,
     })
+  : undefined;
+const bookingDesignReadinessPropertyAccessRepository = bookingDesignReadinessProvider
+  ? createPgPropertyAccessRepository({ connectionString: targetDatabaseUrl })
   : undefined;
 
 const platformMediaRuntime = composePlatformMediaRuntime({
@@ -1171,9 +1175,13 @@ const app = buildApp({
     commandPort: bookingDesignRepository,
     readPort: bookingDesignRepository,
   },
-  bookingDesignReadiness: bookingDesignReadinessProvider
-    ? { readinessPort: bookingDesignReadinessProvider }
-    : undefined,
+  bookingDesignReadiness:
+    bookingDesignReadinessProvider && bookingDesignReadinessPropertyAccessRepository
+      ? {
+          propertyAccessRepository: bookingDesignReadinessPropertyAccessRepository,
+          readinessPort: bookingDesignReadinessProvider,
+        }
+      : undefined,
   bookingPublication: bookingPublicationRuntime?.routes,
   marketplaceDiscoveryAllowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
   identityPrivacyRepository: config.auth
@@ -1228,6 +1236,7 @@ app.addHook("onClose", async () => {
     marketplaceHotelCollaborationPreferencesRepository.close(),
     bookingDesignRepository.close(),
     bookingDesignCatalogEvidenceRepository?.close(),
+    bookingDesignReadinessPropertyAccessRepository?.close?.(),
     financeOtaCommissionSettingsRepository?.close(),
     financeExpenseRuntime?.close(),
     bookingDesignMediaAdapter?.close?.(),
