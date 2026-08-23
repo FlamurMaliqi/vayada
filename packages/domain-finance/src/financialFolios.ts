@@ -64,6 +64,23 @@ export type FinanceFolioQuery = {
   cursor?: string;
   limit: number;
 };
+export type FinanceFolioExportFilters = Readonly<
+  Pick<FinanceFolioQuery, "from" | "to" | "search" | "sort"> & { state: "ready" }
+>;
+export type FinanceFolioExportSelection = Readonly<{
+  folioId: string;
+  revisionId: string;
+  revision: number;
+  sourceDigest: string;
+}>;
+export type FinanceFolioExportSnapshot = Readonly<{
+  formatVersion: typeof FINANCE_FOLIO_CSV_VERSION;
+  propertyId: string;
+  currency: string;
+  filters: FinanceFolioExportFilters;
+  snapshotAt: string;
+  manifest: readonly FinanceFolioExportSelection[];
+}>;
 export type FinanceFolioEnvelope = {
   contractVersion: typeof PMS_FINANCIALS_CONTRACT_VERSION;
   propertyId: string;
@@ -288,6 +305,63 @@ export function parseFinanceFolioQuery(value: unknown): FinanceFolioQuery | null
   });
 }
 
+export function parseFinanceFolioExportFilters(value: unknown): FinanceFolioExportFilters | null {
+  if (!record(value) || Object.hasOwn(value, "cursor") || Object.hasOwn(value, "limit"))
+    return null;
+  const query = parseFinanceFolioQuery(value);
+  if (!query || query.state !== "ready") return null;
+  const { from, to, search, sort } = query;
+  return compact({ from, to, search, sort, state: "ready" as const });
+}
+
+export function parseFinanceFolioExportSnapshot(value: unknown): FinanceFolioExportSnapshot | null {
+  if (
+    !record(value) ||
+    Object.keys(value).length !== 6 ||
+    value.formatVersion !== FINANCE_FOLIO_CSV_VERSION ||
+    !canonicalUuid(value.propertyId) ||
+    !/^[A-Z]{3}$/.test(String(value.currency)) ||
+    !canonicalInstant(value.snapshotAt) ||
+    !Array.isArray(value.manifest)
+  )
+    return null;
+  const filters = parseFinanceFolioExportFilters(value.filters),
+    folios = new Set<string>(),
+    revisions = new Set<string>();
+  if (!filters) return null;
+  const manifest: FinanceFolioExportSelection[] = [];
+  for (const raw of value.manifest) {
+    if (
+      !record(raw) ||
+      Object.keys(raw).length !== 4 ||
+      !canonicalUuid(raw.folioId) ||
+      !canonicalUuid(raw.revisionId) ||
+      !Number.isSafeInteger(raw.revision) ||
+      Number(raw.revision) < 1 ||
+      !/^[0-9a-f]{64}$/.test(String(raw.sourceDigest)) ||
+      folios.has(raw.folioId) ||
+      revisions.has(raw.revisionId)
+    )
+      return null;
+    folios.add(raw.folioId);
+    revisions.add(raw.revisionId);
+    manifest.push({
+      folioId: raw.folioId,
+      revisionId: raw.revisionId,
+      revision: Number(raw.revision),
+      sourceDigest: String(raw.sourceDigest),
+    });
+  }
+  return {
+    formatVersion: FINANCE_FOLIO_CSV_VERSION,
+    propertyId: value.propertyId,
+    currency: String(value.currency),
+    filters,
+    snapshotAt: value.snapshotAt,
+    manifest,
+  };
+}
+
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -338,6 +412,10 @@ function compact<T extends Record<string, unknown>>(value: T): T {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const canonicalUuid = (value: unknown): value is string =>
   typeof value === "string" && UUID.test(value) && value === value.toLowerCase();
+const canonicalInstant = (value: unknown): value is string =>
+  typeof value === "string" &&
+  Number.isFinite(new Date(value).getTime()) &&
+  new Date(value).toISOString() === value;
 const decimal = (value: string) => /^-?(?:0|[1-9]\d{0,14})\.\d{4}$/.test(value);
 const scaled = (value: string) => BigInt(value.replace(".", ""));
 function roundedProduct(left: string, right: string): bigint {
