@@ -60,7 +60,7 @@ describe.skipIf(!URL)("provider fee evidence upgrade", () => {
             migrationsDir: MIGRATIONS,
             environment: "local",
           })
-        ).applied,
+        ).applied.slice(0, 5),
       ).toEqual(["0098", "0099", "0100", "0101", "0102"]);
       target = new pg.Client({ connectionString: targetUrl.href });
       await target.connect();

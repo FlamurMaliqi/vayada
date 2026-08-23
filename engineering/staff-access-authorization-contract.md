@@ -28,6 +28,10 @@ Source-native `pms_hotel`, unmapped/ambiguous IDs, and inactive links fail close
 Assignments outside the selected organization or other resource families are
 invalid. Removal takes effect at the next context resolution without new login.
 
+Rollout is phased: deploy the schema with its compatibility default first, then
+make every membership writer set an explicit mode and change the default to
+`assigned` before staff creation or property-scope enforcement ships.
+
 ## Permission controls
 
 Permission levels use explicit keys. Stronger UI levels write required lower
