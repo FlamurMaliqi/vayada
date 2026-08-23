@@ -3914,6 +3914,54 @@ describe("vayada-api", () => {
     });
   });
 
+  it("reads and updates canonical booking acceptance through Booking Admin", async () => {
+    let acceptanceMode: "instant" | "request" = "request";
+    const published: string[] = [];
+    app = buildAuthenticatedApp({
+      linkedPmsPropertyId: null,
+      bookingAcceptanceSettings: {
+        async findAcceptanceMode(propertyId) {
+          expect(propertyId).toBe(pmsPropertyId);
+          return acceptanceMode;
+        },
+        async updateAcceptanceMode(propertyId, nextMode) {
+          expect(propertyId).toBe(pmsPropertyId);
+          acceptanceMode = nextMode;
+          return acceptanceMode;
+        },
+      },
+      publicBookabilityPublisher: {
+        async publish({ propertyId }) {
+          published.push(propertyId);
+          return null;
+        },
+      },
+    });
+
+    const read = await injectJson(app, {
+      method: "GET",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/settings/booking-acceptance",
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const update = await injectJson(app, {
+      method: "PUT",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/settings/booking-acceptance",
+      payload: { acceptanceMode: "instant" },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(read.statusCode).toBe(200);
+    expect(read.body).toEqual({
+      contractVersion: "booking-acceptance.v1",
+      propertyId: pmsPropertyId,
+      acceptanceMode: "request",
+      instantBook: false,
+    });
+    expect(update.statusCode).toBe(200);
+    expect(update.body).toMatchObject({ acceptanceMode: "instant", instantBook: true });
+    expect(published).toEqual([pmsPropertyId]);
+  });
+
   it("publishes Booking setup through the canonical Distribution command boundary", async () => {
     const publishedPropertyIds: string[] = [];
     const projectedPropertyIds: string[] = [];
