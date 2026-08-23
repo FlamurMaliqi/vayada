@@ -91,7 +91,8 @@ owner creation or transfer is a separate identity lifecycle flow.
 Every protected request fails closed in this order:
 
 1. WorkOS identity, selected organization, internal user, and active membership.
-2. VAY-1085 delegation and Housekeeping ceilings.
+2. VAY-1321 delegation ceilings when a live delegation exists, then VAY-1085
+   role ceilings such as Housekeeping.
 3. Explicit deny, explicit grant, then role default.
 4. For property routes, an active organization link, a valid explicit
    membership mode (`all` or `assigned`), matching scope, and a target-native
