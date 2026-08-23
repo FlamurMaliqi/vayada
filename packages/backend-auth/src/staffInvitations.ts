@@ -1,0 +1,242 @@
+import { createHash } from "node:crypto";
+import pg from "pg";
+
+import {
+  hasValidStaffPermissionHierarchy,
+  staffAccessPermissionKeys,
+  validateStaffInviteAccess,
+  type CreateStaffInviteCommand,
+} from "./lifecycle.js";
+import type { RepositoryConfig } from "./repository.js";
+
+type InviterRow = {
+  membership_id: string;
+  name: string | null;
+  email: string;
+  permission_overrides: unknown;
+  role_permissions: string[];
+};
+type InvitationRow = {
+  id: string;
+  request_fingerprint_hash: Buffer;
+  supersedes_invitation_id: string | null;
+};
+
+const permissionKeys = new Set<string>(staffAccessPermissionKeys);
+
+export function createPgStaffInvitationRepository(config: RepositoryConfig) {
+  if (!config.connectionString.trim()) {
+    throw new Error("Staff invitation repository connectionString must not be empty");
+  }
+  const pool = new pg.Pool({ connectionString: config.connectionString, max: config.max });
+
+  return {
+    async persist(command: CreateStaffInviteCommand) {
+      const normalized = normalize(command);
+      if (!normalized) return { outcome: "rejected" as const, reason: "invalid_command" as const };
+      const keyHash = hash(command.idempotencyKey);
+      const fingerprint = hash(JSON.stringify(normalized));
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const inviter = await client.query<InviterRow>(
+          `SELECT membership.id AS membership_id, actor.name, actor.email, membership.permission_overrides,
+                  ARRAY(SELECT grant_row.permission_key FROM identity.role_permission_grants grant_row
+                        WHERE grant_row.organization_kind = organization.kind
+                          AND grant_row.role_key = membership.role_key) AS role_permissions
+           FROM identity.organization_memberships membership
+           JOIN identity.organizations organization ON organization.id = membership.organization_id
+           JOIN identity.users actor ON actor.id = membership.user_id
+           WHERE membership.organization_id = $1 AND membership.user_id = $2
+             AND membership.status = 'active' AND organization.kind = 'hotel_group'
+             AND organization.status = 'active' AND actor.status = 'active'
+           FOR UPDATE OF membership, organization, actor`,
+          [normalized.organizationId, normalized.actorUserId],
+        );
+        const inviterRow = inviter.rows[0];
+        if (!inviterRow || !hasStaffManage(inviterRow)) {
+          await client.query("ROLLBACK");
+          return {
+            outcome: "rejected" as const,
+            reason: "inviter_not_authorized" as const,
+          };
+        }
+
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+          keyHash.toString("hex"),
+        ]);
+        const replay = await client.query<InvitationRow>(
+          `SELECT id, request_fingerprint_hash, supersedes_invitation_id FROM identity.staff_invitations
+           WHERE idempotency_key_hash = $1
+           FOR UPDATE`,
+          [keyHash],
+        );
+        const replayRow = replay.rows[0];
+        if (replayRow) {
+          await client.query("ROLLBACK");
+          if (!replayRow.request_fingerprint_hash.equals(fingerprint)) {
+            return { outcome: "rejected" as const, reason: "idempotency_conflict" as const };
+          }
+          return {
+            outcome: "idempotent_replay" as const,
+            invitationId: replayRow.id,
+            ...(replayRow.supersedes_invitation_id
+              ? { supersededInvitationId: replayRow.supersedes_invitation_id }
+              : {}),
+          };
+        }
+
+        const revision = await client.query<{ id: string }>(
+          `SELECT id FROM identity.staff_invitations WHERE organization_id = $1 AND email = $2
+             AND configuration_revision = $3`,
+          [normalized.organizationId, normalized.email, normalized.configurationRevision],
+        );
+        if (revision.rowCount) {
+          await client.query("ROLLBACK");
+          return { outcome: "rejected" as const, reason: "configuration_conflict" as const };
+        }
+
+        const previous = await client.query<{ id: string; status: string }>(
+          `UPDATE identity.staff_invitations
+           SET status = CASE WHEN expires_at <= now() THEN 'expired' ELSE 'revoked' END, updated_at = now()
+           WHERE organization_id = $1 AND email = $2 AND status = 'pending'
+           RETURNING id, status`,
+          [normalized.organizationId, normalized.email],
+        );
+        const previousRow = previous.rows[0];
+        const supersededId = previousRow?.status === "revoked" ? previousRow.id : null;
+        const inserted = await client.query<{ id: string }>(
+          `INSERT INTO identity.staff_invitations
+             (organization_id, email, display_name, inviter_membership_id, inviter_user_id, inviter_name_snapshot,
+              role_key, permission_overrides, property_access_mode, configuration_revision, command_id,
+              idempotency_key_hash, request_fingerprint_hash, supersedes_invitation_id, request_id,
+              correlation_id, request_source, reason, requested_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, 'assigned', $9, $10, $11, $12,
+                   $13, $14, $15, $16, $17, $18)
+           RETURNING id`,
+          [
+            normalized.organizationId,
+            normalized.email,
+            normalized.name,
+            inviterRow.membership_id,
+            normalized.actorUserId,
+            inviterRow.name ?? inviterRow.email,
+            normalized.roleKey,
+            JSON.stringify(normalized.permissionOverrides),
+            normalized.configurationRevision,
+            command.commandId,
+            keyHash,
+            fingerprint,
+            supersededId,
+            command.audit.requestId,
+            command.audit.correlationId ?? null,
+            command.audit.source,
+            command.audit.reason,
+            new Date(command.audit.requestedAt),
+          ],
+        );
+        const invitationId = inserted.rows[0]!.id;
+        await client.query(
+          `INSERT INTO identity.staff_invitation_property_assignments (invitation_id, property_id)
+             SELECT $1, property_id FROM unnest($2::uuid[]) property_id`,
+          [invitationId, normalized.propertyIds],
+        );
+        await client.query("COMMIT");
+        return {
+          outcome: "created" as const,
+          invitationId,
+          ...(supersededId ? { supersededInvitationId: supersededId } : {}),
+        };
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        if (isPropertyScopeError(error)) {
+          return { outcome: "rejected" as const, reason: "property_scope_invalid" as const };
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    close: () => pool.end(),
+  };
+}
+
+function normalize(command: CreateStaffInviteCommand) {
+  const actor = command.audit.actor;
+  if (
+    actor.kind !== "user" ||
+    actor.organizationId !== command.payload.organizationId ||
+    !actor.userId ||
+    !command.commandId.trim() ||
+    !command.idempotencyKey.trim() ||
+    !command.payload.email.trim() ||
+    !Number.isInteger(command.payload.configurationRevision) ||
+    command.payload.configurationRevision <= 0 ||
+    Number.isNaN(Date.parse(command.audit.requestedAt)) ||
+    validateStaffInviteAccess(command.payload).length
+  ) {
+    return null;
+  }
+  const propertyIds = command.payload.propertyIds.map((id) => id.toLowerCase()).sort();
+  const permissionOverrides = {
+    grant: [...command.payload.permissionOverrides.grant].sort(),
+    deny: [...command.payload.permissionOverrides.deny].sort(),
+  };
+  return {
+    organizationId: command.payload.organizationId,
+    email: command.payload.email.trim().toLowerCase(),
+    name: command.payload.name?.trim() || null,
+    roleKey: command.payload.roleKey,
+    propertyIds,
+    permissionOverrides,
+    configurationRevision: command.payload.configurationRevision,
+    actorUserId: actor.userId,
+  };
+}
+
+function hasStaffManage(row: InviterRow): boolean {
+  if (row.permission_overrides === null) {
+    return row.role_permissions.includes("identity.staff.manage");
+  }
+  if (
+    !row.permission_overrides ||
+    typeof row.permission_overrides !== "object" ||
+    Array.isArray(row.permission_overrides)
+  )
+    return false;
+  const value = row.permission_overrides as Record<string, unknown>;
+  if (Object.keys(value).some((key) => key !== "grant" && key !== "deny")) return false;
+  const grant = value["grant"] ?? [];
+  const deny = value["deny"] ?? [];
+  if (!validPermissionList(grant) || !validPermissionList(deny)) return false;
+  const combined = [...grant, ...deny];
+  if (new Set(combined).size !== combined.length || grant.includes("identity.staff.manage")) {
+    return false;
+  }
+  const effective = new Set(row.role_permissions);
+  grant.forEach((key) => effective.add(key));
+  deny.forEach((key) => effective.delete(key));
+  return effective.has("identity.staff.manage") && hasValidStaffPermissionHierarchy(effective);
+}
+
+function validPermissionList(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) && value.every((key) => typeof key === "string" && permissionKeys.has(key))
+  );
+}
+
+function hash(value: string): Buffer {
+  return createHash("sha256").update(value).digest();
+}
+
+function isPropertyScopeError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const value = error as { code?: string; constraint?: string };
+  return (
+    value.code === "23503" &&
+    [
+      "fk_staff_invitation_property_assignment_canonical_scope",
+      "staff_invitation_property_assignments_property_id_fkey",
+    ].includes(value.constraint ?? "")
+  );
+}
