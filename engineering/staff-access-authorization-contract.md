@@ -91,8 +91,10 @@ owner creation or transfer is a separate identity lifecycle flow.
 Every protected request fails closed in this order:
 
 1. WorkOS identity, selected organization, internal user, and active membership.
-2. VAY-1321 delegation ceilings when a live delegation exists, then VAY-1085
-   role ceilings such as Housekeeping.
+2. Memberships with `access_origin = 'external_owner'` require a valid live
+   VAY-1321 delegation and deny access when it is missing, revoked, or
+   malformed. Apply its owner ceiling, then the VAY-1085 role ceilings such as
+   Housekeeping; agency-origin memberships skip only the delegation check.
 3. Explicit deny, explicit grant, then role default.
 4. For property routes, an active organization link, a valid explicit
    membership mode (`all` or `assigned`), matching scope, and a target-native
@@ -132,8 +134,11 @@ provider reconciliation survive either path.
 
 Audit includes actor ID/name snapshot, target type/ID, organization/property,
 action/outcome, redacted changes, request/correlation IDs. Invite identifies the
-invitation; deactivate/remove identify membership/user; other IDs stay null.
-`lastActiveAt` comes from reconciled WorkOS activity, not product audit.
+invitation and may leave target membership/user null until acceptance;
+acceptance identifies the invitation and activated membership/user;
+deactivate/remove identify membership/user. Identifiers unrelated to the event
+stay null. `lastActiveAt` comes from reconciled WorkOS activity, not product
+audit.
 
 ## Dependencies and exclusions
 
