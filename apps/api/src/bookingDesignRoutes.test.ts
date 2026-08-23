@@ -5,6 +5,7 @@ import type {
   ProductEntitlement,
   RequestContext,
 } from "@vayada/backend-auth";
+import type { MembershipPropertyScope } from "@vayada/backend-authorization";
 import { injectJson } from "@vayada/backend-test";
 import {
   BOOKING_DESIGN_DEFAULT_FONT_PAIRING,
@@ -25,6 +26,7 @@ import {
 
 const propertyId = "123e4567-e89b-42d3-a456-426614174000";
 const otherPropertyId = "223e4567-e89b-42d3-a456-426614174000";
+const foreignPropertyId = "523e4567-e89b-42d3-a456-426614174000";
 const organizationId = "323e4567-e89b-42d3-a456-426614174000";
 const actorUserId = "423e4567-e89b-42d3-a456-426614174000";
 const createdAt = "2026-08-03T12:00:00.000Z";
@@ -35,8 +37,10 @@ type AuthOptions = {
   permissions?: readonly PermissionKey[];
   entitlements?: readonly ProductEntitlement[];
   links?: readonly LinkedResource[];
+  membershipStatus?: RequestContext["membership"]["status"];
+  propertyScope?: MembershipPropertyScope | null;
 };
-type FakePorts = BookingDesignRoutesOptions & {
+type FakePorts = Omit<BookingDesignRoutesOptions, "propertyAccessRepository"> & {
   commands: UpsertBookingDesignCommand[];
   reads: Array<{ organizationId: string; propertyId: string }>;
   readValue: unknown;
@@ -91,19 +95,35 @@ function fakePorts(): FakePorts {
 
 async function testApp(ports: FakePorts, auth: AuthOptions = {}) {
   const app = Fastify({ logger: false });
+  const propertyScope =
+    auth.propertyScope === undefined
+      ? { mode: "all", assignedPropertyIds: [] }
+      : auth.propertyScope;
   app.decorateRequest("authContext", null);
   app.addHook("onRequest", async (request) => {
     if (auth.authenticated === false || request.headers.authorization !== "Bearer valid-token") {
       return;
     }
     request.authContext = {
-      actor: { internalUserId: actorUserId },
+      actor: {
+        internalUserId: actorUserId,
+        providerIdentity: { provider: "workos", providerUserId: "user_1" },
+        email: "owner@example.com",
+        status: "active",
+      },
       selectedOrganization: {
         organizationId,
         kind: auth.organizationKind ?? "hotel_group",
+        status: "active",
       },
-      membership: { permissions: [...(auth.permissions ?? ["booking.settings.manage"])] },
-      linkedResources: [...(auth.links ?? [link()])],
+      membership: {
+        membershipId: "623e4567-e89b-42d3-a456-426614174000",
+        status: auth.membershipStatus ?? "active",
+        roleKey: "hotel_owner",
+        workosRoleSlugs: ["hotel_owner"],
+        permissions: [...(auth.permissions ?? ["booking.settings.manage"])],
+      },
+      linkedResources: [...(auth.links ?? links())],
       entitlements: [...(auth.entitlements ?? [entitlement()])],
       locale: "en",
       currency: "EUR",
@@ -113,9 +133,12 @@ async function testApp(ports: FakePorts, auth: AuthOptions = {}) {
         source: "api",
         receivedAt: createdAt,
       },
-    } as RequestContext;
+    };
   });
-  await app.register(registerBookingDesignRoutes, ports);
+  await app.register(registerBookingDesignRoutes, {
+    ...ports,
+    propertyAccessRepository: { findMembershipPropertyScope: async () => propertyScope },
+  });
   return app;
 }
 
@@ -208,14 +231,30 @@ describe("Booking design routes", () => {
   });
 
   it.each([
-    ["operator", { links: [link("operator")] }, 201],
+    ["operator", { links: links("operator") }, 201],
+    [
+      "assigned property",
+      { propertyScope: { mode: "assigned", assignedPropertyIds: [propertyId] } },
+      201,
+    ],
     ["wrong organization", { organizationKind: "creator_workspace" }, 403],
+    ["inactive membership", { membershipStatus: "inactive" }, 403],
     ["missing permission", { permissions: [] }, 403],
     ["missing entitlement", { entitlements: [] }, 403],
     ["suspended entitlement", { entitlements: [entitlement("suspended")] }, 403],
+    [
+      "no property assignment",
+      { propertyScope: { mode: "assigned", assignedPropertyIds: [] } },
+      403,
+    ],
+    [
+      "unknown property scope",
+      { propertyScope: { mode: "unknown", assignedPropertyIds: [propertyId] } },
+      403,
+    ],
     ["missing link", { links: [] }, 403],
-    ["front desk", { links: [link("front_desk")] }, 403],
-    ["wrong link scope", { links: [link("owner", otherPropertyId)] }, 403],
+    ["front desk", { links: links("front_desk") }, 403],
+    ["wrong link scope", { links: links("owner", otherPropertyId) }, 403],
     ["unauthenticated", { authenticated: false }, 401],
   ] as const)("enforces the %s scope before parsing", async (_name, auth, statusCode) => {
     const ports = fakePorts();
@@ -223,6 +262,27 @@ describe("Booking design routes", () => {
     const response = await put(app, statusCode === 201 ? requestBody() : { unsafe: true });
     expect(response.statusCode).toBe(statusCode);
     expect(ports.commands).toHaveLength(statusCode === 201 ? 1 : 0);
+  });
+
+  it("denies read and write access to unassigned and foreign properties identically", async () => {
+    const ports = fakePorts();
+    app = await testApp(ports, {
+      links: [...links(), ...links("owner", otherPropertyId)],
+      propertyScope: { mode: "assigned", assignedPropertyIds: [propertyId] },
+    });
+
+    const responses = await Promise.all([
+      get(app, otherPropertyId),
+      put(app, requestBody(), "unassigned-key", otherPropertyId),
+      get(app, foreignPropertyId),
+      put(app, requestBody(), "foreign-key", foreignPropertyId),
+    ]);
+
+    expect(responses.map(({ statusCode, body }) => ({ statusCode, body }))).toEqual(
+      Array(4).fill({ statusCode: 403, body: { code: "forbidden" } }),
+    );
+    expect(ports.reads).toHaveLength(0);
+    expect(ports.commands).toHaveLength(0);
   });
 
   it("rejects malformed scope, body, and Idempotency-Key inputs", async () => {
@@ -299,17 +359,26 @@ function entitlement(status: ProductEntitlement["status"] = "active"): ProductEn
   };
 }
 
-function link(
+function links(
   relationship: LinkedResource["relationship"] = "owner",
   resourceId = propertyId,
-): LinkedResource {
-  return {
-    product: "booking",
-    resourceType: "booking_hotel",
-    resourceId,
-    relationship,
-    status: "active",
-  };
+): LinkedResource[] {
+  return [
+    {
+      product: "hotel_catalog",
+      resourceType: "property",
+      resourceId,
+      relationship,
+      status: "active",
+    },
+    {
+      product: "booking",
+      resourceType: "booking_hotel",
+      resourceId,
+      relationship,
+      status: "active",
+    },
+  ];
 }
 
 async function get(app: Awaited<ReturnType<typeof testApp>>, targetPropertyId = propertyId) {
