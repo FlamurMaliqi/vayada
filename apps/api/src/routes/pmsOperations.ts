@@ -1077,7 +1077,6 @@ export async function registerPmsOperationsRoutes(
     await commandRepository?.close?.();
     await bookingGuestPiiPort?.close?.();
     await options.propertyPlanReadRepository?.close?.();
-    await options.bookingAcceptanceSettings?.close?.();
     await options.roomAssignmentSettings?.close?.();
     await options.roomAssignmentHistory?.close?.();
   });

@@ -1,6 +1,6 @@
 "use client";
 
-import { SettingsSection, SettingsCard } from "./layout";
+import { SettingsSection, SettingsCard } from "@vayada/settings-ui";
 import { useTranslation, SUPPORTED_LANGUAGES } from "@/lib/i18n";
 
 interface LocalizationSectionProps {

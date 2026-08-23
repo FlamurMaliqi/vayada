@@ -73,7 +73,7 @@ import {
 } from "@/services/api/bookingFlowSettingsLoader";
 import { apiClient } from "@/services/api/client";
 import { FeedbackAlert } from "@/components/ui";
-import { SettingsLayout, type SettingsNavSection } from "@/components/settings/layout";
+import { SettingsLayout, type SettingsNavSection } from "@vayada/settings-ui";
 import { DEFAULT_LAST_MINUTE_TIERS } from "@vayada/product-onboarding";
 
 import RoomsTab from "@/components/booking-flow/RoomsTab";

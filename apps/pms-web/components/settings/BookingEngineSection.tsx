@@ -1,6 +1,6 @@
 "use client";
 
-import { SettingsSection, SettingsCard } from "./layout";
+import { SettingsSection, SettingsCard } from "@vayada/settings-ui";
 
 interface BookingEngineSectionProps {
   instantBook: boolean;

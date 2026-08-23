@@ -10,6 +10,7 @@ Run from the repo root:
 npm run e2e                       # all specs
 npm run e2e:landing
 npm run e2e:booking-web
+npm run e2e:booking-public-canary
 npm run e2e:affiliate-dashboard
 npm run e2e:booking-admin
 npm run e2e:marketplace-web
@@ -86,6 +87,29 @@ unbookable and inventory is restored. A cleanup failure fails the workflow.
 Real card payments are intentionally outside this command. Stripe coverage must
 use a separate test-mode-only environment and test payment methods; do not add a
 live Stripe key or card-capable payment method to this workflow.
+
+## Deployed Booking Public Canary
+
+`npm run e2e:booking-public-canary` is the unmocked public Booking verification.
+It checks public host resolution, the public-bookability profile, and the
+rendered tenant page, plus the deployed build SHA when one is supplied. The
+`Next Booking public canary` workflow runs every 15 minutes and on manual
+dispatch. The platform deployment workflow performs the build-specific
+post-deploy check after ECS finishes its cutover; the scheduled workflow
+deliberately does not trigger from the earlier image publish step. Repository
+variables supply `NEXT_BOOKING_CANARY_URL` and
+`NEXT_BOOKING_CANARY_NAME`; the URL must identify a dedicated published tenant
+on `*.next-booking.vayada.com`. They are non-secret so scheduled checks can run
+without an environment approval gate.
+
+Run it locally against the same canary with:
+
+```bash
+E2E_BOOKING_PUBLIC_CANARY=1 \
+BOOKING_PUBLIC_CANARY_URL=https://<slug>.next-booking.vayada.com \
+BOOKING_PUBLIC_CANARY_NAME='<expected hotel name>' \
+npm run e2e:booking-public-canary
+```
 
 Server mode starts only the Next.js frontends on ports 3000-3006. It does not
 start `apps/api` on 8003 or the legacy FastAPI APIs on 8000-8002. Current smokes

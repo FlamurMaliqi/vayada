@@ -39,6 +39,7 @@ import {
 import { HotelIcon } from "@vayada/product-onboarding";
 import {
   settingsService,
+  type BookingAcceptanceMode,
   type PropertySettings,
   type PropertySettingsUpdate,
   type CustomDomainStatus,
@@ -50,10 +51,15 @@ import {
   SettingsSection,
   SettingsCard,
   type SettingsNavSection,
-} from "@/components/settings/layout";
+} from "@vayada/settings-ui";
 import { LocationMapPreview } from "@/components/settings/LocationMapPreview";
 import { PoiSearchInput } from "@/components/settings/PoiSearchInput";
 import { useTranslation } from "@/lib/i18n";
+import {
+  buildSettingsSectionUrl,
+  readSettingsSection,
+  type SettingsSectionId,
+} from "@/lib/utils/settingsSectionUrl";
 
 // Audit-driven section IDs (VAY-400):
 // - "account" replaces the old "security" tab — those are personal-account
@@ -61,14 +67,7 @@ import { useTranslation } from "@/lib/i18n";
 // - "payments" is new — Stripe Connect + Xendit moved out of billing into
 //   their own section (billing = what hotel pays Vayada; payments = how hotel
 //   collects from guests).
-type Section =
-  | "property"
-  | "booking"
-  | "location"
-  | "notifications"
-  | "account"
-  | "billing"
-  | "payments";
+type Section = SettingsSectionId;
 
 const POI_COLORS = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#0d9488", "#db2777"];
 const PROPERTY_MAP_CENTERING_UNAVAILABLE =
@@ -241,26 +240,27 @@ function buildTargetSettingsUpdate(
 
 export default function SettingsPage() {
   const { t } = useTranslation();
-  const [activeSection, setActiveSection] = useState<Section>(() => {
-    if (typeof window === "undefined") return "property";
-    const searchParams = new URLSearchParams(window.location.search);
-    const requested = searchParams.get("section");
-    if (
-      requested === "property" ||
-      requested === "booking" ||
-      requested === "location" ||
-      requested === "notifications" ||
-      requested === "account" ||
-      requested === "billing" ||
-      requested === "payments"
-    ) {
-      return requested;
-    }
-    return searchParams.has("billing") ? "billing" : "property";
-  });
+  const [activeSection, setActiveSection] = useState<Section>("property");
+  const selectSection = useCallback((section: Section) => {
+    setActiveSection(section);
+    const nextUrl = buildSettingsSectionUrl(window.location.href, section);
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextUrl !== currentUrl) window.history.pushState(null, "", nextUrl);
+  }, []);
+
+  useEffect(() => {
+    const syncSectionFromUrl = () => setActiveSection(readSettingsSection(window.location.search));
+    syncSectionFromUrl();
+    window.addEventListener("popstate", syncSectionFromUrl);
+    return () => window.removeEventListener("popstate", syncSectionFromUrl);
+  }, []);
   const [settings, setSettings] = useState<PropertySettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [acceptanceMode, setAcceptanceMode] = useState<BookingAcceptanceMode | null>(null);
+  const [acceptanceLoading, setAcceptanceLoading] = useState(true);
+  const [acceptanceSaving, setAcceptanceSaving] = useState(false);
+  const [acceptanceError, setAcceptanceError] = useState("");
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(
     null,
   );
@@ -312,14 +312,33 @@ export default function SettingsPage() {
     }
   }, [t]);
 
+  const loadBookingAcceptance = useCallback(async (hotelId: string) => {
+    setAcceptanceLoading(true);
+    setAcceptanceMode(null);
+    setAcceptanceError("");
+    try {
+      const result = await settingsService.getBookingAcceptance(hotelId);
+      setAcceptanceMode(result.acceptanceMode);
+    } catch (error) {
+      setAcceptanceError(errorMessage(error, "Booking acceptance settings failed to load."));
+    } finally {
+      setAcceptanceLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     setPaymentSettingsLoaded(false);
     setBillingPlanLoading(true);
+    setAcceptanceLoading(true);
+    setAcceptanceMode(null);
+    setAcceptanceError("");
     const propertyPromise = fetchSettings();
     propertyPromise
       .then(async (property) => {
         if (!property) {
           setBillingPlanLoading(false);
+          setAcceptanceLoading(false);
+          setAcceptanceError("Select a hotel before loading booking acceptance settings.");
           return null;
         }
         settingsService
@@ -334,8 +353,11 @@ export default function SettingsPage() {
         const hotelId = readBookingHotelId(property);
         if (!hotelId) {
           setBillingPlanLoading(false);
+          setAcceptanceLoading(false);
+          setAcceptanceError("Select a hotel before loading booking acceptance settings.");
           return null;
         }
+        void loadBookingAcceptance(hotelId);
         const propertyLink = await getBookingHotelPropertyLink({ hotelId });
         setBillingPropertyId(propertyLink.propertyId);
         const billingReturn =
@@ -427,7 +449,35 @@ export default function SettingsPage() {
         setBillingPlanLoading(false);
         setPaymentError(errorMessage(err, "Payment settings failed to load."));
       });
-  }, [fetchSettings]);
+  }, [fetchSettings, loadBookingAcceptance]);
+
+  const handleAcceptanceToggle = async () => {
+    const hotelId = readBookingHotelId(settings);
+    if (!hotelId || !acceptanceMode) {
+      setAcceptanceError("Load the current booking acceptance setting before changing it.");
+      return;
+    }
+
+    setAcceptanceSaving(true);
+    setAcceptanceError("");
+    try {
+      const saved = await settingsService.updateBookingAcceptance(
+        acceptanceMode === "instant" ? "request" : "instant",
+        hotelId,
+      );
+      setAcceptanceMode(saved.acceptanceMode);
+      setFeedback({ type: "success", message: "Booking acceptance settings saved." });
+    } catch (error) {
+      setAcceptanceError(errorMessage(error, "Booking acceptance settings could not be saved."));
+    } finally {
+      setAcceptanceSaving(false);
+    }
+  };
+
+  const retryBookingAcceptance = () => {
+    const hotelId = readBookingHotelId(settings);
+    if (hotelId) void loadBookingAcceptance(hotelId);
+  };
 
   const handleCreateStripeAccount = async () => {
     if (!connectEmail) return;
@@ -617,7 +667,7 @@ export default function SettingsPage() {
         type: "error",
         message: "Every point of interest needs a label, travel time, latitude, and longitude.",
       });
-      setActiveSection("location");
+      selectSection("location");
       return;
     }
     try {
@@ -815,9 +865,7 @@ export default function SettingsPage() {
       description={t("settings.subtitle")}
       sections={sections}
       activeId={activeSection}
-      onSelect={(id) => {
-        setActiveSection(id as Section);
-      }}
+      onSelect={(id) => selectSection(id as Section)}
     >
       {stripeDashboardToast && (
         <div className="fixed right-4 top-4 z-50 w-[min(24rem,calc(100vw-2rem))]" role="alert">
@@ -1015,6 +1063,48 @@ export default function SettingsPage() {
       {/* Booking tab */}
       {activeSection === "booking" && (
         <div className="mt-5 space-y-4">
+          <div
+            className="rounded-lg border border-gray-200 bg-white p-4 md:p-5"
+            aria-busy={acceptanceLoading || acceptanceSaving}
+          >
+            {acceptanceMode ? (
+              <ToggleSwitch
+                enabled={acceptanceMode === "instant"}
+                disabled={acceptanceSaving || Boolean(acceptanceError)}
+                onChange={() => void handleAcceptanceToggle()}
+                label="Accept bookings instantly"
+                description="Confirm card and pay-at-property bookings immediately. Bank transfers always require manual review."
+              />
+            ) : acceptanceLoading ? (
+              <div className="py-3" role="status">
+                <p className="text-[13px] font-semibold text-gray-900">
+                  Accept bookings instantly
+                </p>
+                <p className="text-[13px] text-gray-500">Loading current setting…</p>
+              </div>
+            ) : null}
+            <p className="border-t border-gray-100 pt-3 text-[12px] text-gray-500">
+              This setting is shared between PMS and Booking Engine.
+            </p>
+            {acceptanceSaving && (
+              <p className="mt-2 text-[12px] text-gray-500" role="status">
+                Saving…
+              </p>
+            )}
+            {acceptanceError && (
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-3" role="alert">
+                <p className="text-[12px] text-red-700">{acceptanceError}</p>
+                <button
+                  type="button"
+                  onClick={retryBookingAcceptance}
+                  className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-medium text-gray-700 hover:border-gray-400"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+          </div>
+
           {/* Map View */}
           <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5">
             <ToggleSwitch
@@ -2295,7 +2385,7 @@ export default function SettingsPage() {
                 Enable <strong>Online card payment</strong> in{" "}
                 <button
                   type="button"
-                  onClick={() => setActiveSection("billing")}
+                  onClick={() => selectSection("billing")}
                   className="text-primary-600 hover:underline"
                 >
                   Billing &rarr; Payment methods

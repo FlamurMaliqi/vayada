@@ -47,7 +47,6 @@ describe("membership property-scope migration", () => {
     expect(migration).toContain("link.resource_type = 'property'");
     expect(migration).toContain("link.status = 'active'");
   });
-
   it("keeps every target membership writer explicit before the default flips", async () => {
     for (const path of membershipWriterPaths) {
       const writer = await readFile(join(import.meta.dirname, path), "utf8");
@@ -174,7 +173,6 @@ describe.skipIf(!TEST_DATABASE_URL)("membership property scope (PostgreSQL)", ()
     );
     expect(remaining.rows[0]).toEqual({ count: 0 });
   });
-
   it.each([
     ["marketplace", transformMarketplace],
     ["platform", transformPlatformJobsEventsAudit],
@@ -222,7 +220,6 @@ async function createOrphanSourceMembership(client: pg.Client, source: string): 
     VALUES ('${STAFF_MEMBERSHIP}', '${PROPERTY_A}', '${STAFF}', 'active', 'hotel_owner');
   `);
 }
-
 function insertStaffMembership(client: pg.Client): Promise<pg.QueryResult> {
   return client.query(
     `INSERT INTO identity.organization_memberships
