@@ -61,6 +61,32 @@ test.describe("pms-web smoke", () => {
     await assertHealthy();
   });
 
+  test("settings only lists delivered destinations", async ({ page }, testInfo) => {
+    const assertHealthy = watchPageHealth(page, testInfo);
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.goto("/settings#calendar");
+
+    await expect(page.getByRole("heading", { name: /settings/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Calendar" }).last()).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await expect(page.getByText("Check-in & Check-out", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("No settings can be changed here yet.")).toHaveCount(0);
+    const checklistLinks = page.getByRole("link", { name: "Check-in checklist" });
+    await expect(checklistLinks.last()).toBeVisible();
+    await expect(page.getByRole("link", { name: "Check-out inspection" }).last()).toBeVisible();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(checklistLinks.first()).toBeVisible();
+    await checklistLinks.first().focus();
+    await expect(checklistLinks.first()).toBeFocused();
+
+    await assertHealthy();
+  });
+
   test("loads migrated PMS operations surfaces without legacy helper calls", async ({
     page,
   }, testInfo) => {

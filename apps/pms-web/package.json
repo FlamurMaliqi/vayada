@@ -18,6 +18,7 @@
     "@vayada/feature-hub": "*",
     "@vayada/locale-ui": "*",
     "@vayada/product-onboarding": "*",
+    "@vayada/settings-ui": "*",
     "clsx": "^2.0.0",
     "date-fns": "^4.1.0",
     "@vayada/locale-constants": "*",

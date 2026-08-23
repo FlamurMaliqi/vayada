@@ -4,6 +4,7 @@ interface ToggleSwitchProps {
   label: string;
   description?: string;
   size?: "sm" | "md";
+  disabled?: boolean;
 }
 
 export function ToggleSwitch({
@@ -12,13 +13,17 @@ export function ToggleSwitch({
   label,
   description,
   size = "md",
+  disabled = false,
 }: ToggleSwitchProps) {
   if (size === "sm") {
     return (
       <button
         type="button"
+        role="switch"
+        aria-checked={enabled}
+        disabled={disabled}
         onClick={onChange}
-        className={`flex items-center justify-between p-3 rounded-lg border transition-all text-left w-full ${
+        className={`flex items-center justify-between p-3 rounded-lg border transition-all text-left w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 ${
           enabled ? "border-primary-500 bg-primary-50/30" : "border-gray-200 hover:border-gray-300"
         }`}
       >
@@ -45,8 +50,12 @@ export function ToggleSwitch({
       </div>
       <button
         type="button"
+        role="switch"
+        aria-checked={enabled}
+        aria-label={label}
+        disabled={disabled}
         onClick={onChange}
-        className={`relative w-10 h-[22px] rounded-full transition-colors ${
+        className={`relative w-10 h-[22px] rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 ${
           enabled ? "bg-primary-500" : "bg-gray-300"
         }`}
       >

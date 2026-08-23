@@ -219,6 +219,88 @@ test.describe("booking-admin settings no-legacy guard", () => {
     await assertHealthy();
   });
 
+  test("keeps section deep links in sync with browser history", async ({ page }, testInfo) => {
+    test.skip(
+      !PROD,
+      "Requires a production booking-admin build so the authenticated shell hydrates.",
+    );
+
+    const assertHealthy = watchPageHealth(page, testInfo);
+    await mockBookingAdminAuthenticatedSession(page);
+    await mockBookingAdminShellRoutes(page);
+    await page.route(`**${BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH}`, (route) =>
+      route.fulfill({
+        json: {
+          contractVersion: "finance-route-contracts.v1",
+          propertyId: BOOKING_ADMIN_PROPERTY_ID,
+          paymentSettings: {
+            paymentsEnabled: false,
+            paymentProvider: "vayada",
+            acceptedMethods: ["pay_at_property", "cash"],
+            defaultCurrency: "EUR",
+            supportedCurrencies: ["EUR"],
+            requiresManualReview: false,
+            providerAccount: {
+              providerAccountId: null,
+              provider: null,
+              status: "not_configured",
+              onboardingStatus: "not_started",
+              chargesEnabled: false,
+              payoutsEnabled: false,
+              capabilities: [],
+            },
+          },
+        },
+      }),
+    );
+
+    await page.goto("/settings?billing=canceled&source=email&section=payments", {
+      waitUntil: "networkidle",
+    });
+    await expect(page.getByRole("button", { name: "Payments", exact: true })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await page.reload({ waitUntil: "networkidle" });
+    await expect(page.getByRole("button", { name: "Payments", exact: true })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+
+    await page.getByRole("button", { name: "Booking", exact: true }).click();
+    await expect.poll(() => new URL(page.url()).searchParams.get("section")).toBe("booking");
+    expect(new URL(page.url()).searchParams.get("billing")).toBe("canceled");
+    expect(new URL(page.url()).searchParams.get("source")).toBe("email");
+
+    await page.getByRole("button", { name: "Location map", exact: true }).click();
+    await expect.poll(() => new URL(page.url()).searchParams.get("section")).toBe("location");
+
+    await page.goBack();
+    await expect(page.getByRole("button", { name: "Booking", exact: true })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+
+    await page.goForward();
+    await expect(page.getByRole("button", { name: "Location map", exact: true })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+
+    await page.goto("/settings?section=unknown", { waitUntil: "networkidle" });
+    await expect(page.getByRole("button", { name: "Property", exact: true })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+
+    await page.goto("/settings?billing=canceled", { waitUntil: "networkidle" });
+    await expect(page.getByRole("button", { name: "Billing", exact: true })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await assertHealthy();
+  });
+
   test("switches Fixed through Stripe and schedules Commission at period end", async ({
     page,
   }, testInfo) => {

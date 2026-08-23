@@ -17,6 +17,7 @@
     "@heroicons/react": "^2.2.0",
     "@vayada/feature-hub": "*",
     "@vayada/product-onboarding": "*",
+    "@vayada/settings-ui": "*",
     "@vayada/locale-constants": "*",
     "clsx": "^2.0.0",
     "next": "16.2.6",
