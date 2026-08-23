@@ -1185,7 +1185,12 @@ const app = buildApp({
         readinessPort: bookingDesignReadinessProvider,
       }
     : undefined,
-  bookingPublication: bookingPublicationRuntime?.routes,
+  bookingPublication: bookingPublicationRuntime
+    ? {
+        ...bookingPublicationRuntime.routes,
+        propertyAccessRepository: bookingPropertyAccessRepository,
+      }
+    : undefined,
   marketplaceDiscoveryAllowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
   identityPrivacyRepository: config.auth
     ? createPgIdentityPrivacyRepository({

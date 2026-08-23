@@ -1,4 +1,4 @@
-import { AuthorizationError } from "@vayada/backend-authorization";
+import { AuthorizationError, type PropertyAccessRepository } from "@vayada/backend-authorization";
 import type {
   BookingPublicationCommandPort,
   ReadyBookingPublicationEvidence,
@@ -6,7 +6,7 @@ import type {
 import type { ProductReadinessResult, ReadinessProviderFailure } from "@vayada/domain-hotels";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
-import { enforceRoutePolicy } from "./policy.js";
+import { enforcePropertyRoutePolicy, enforceRoutePolicy } from "./policy.js";
 
 type PropertyParams = { propertyId: string };
 type OperationParams = PropertyParams & { operationId: string };
@@ -23,11 +23,12 @@ export interface BookingPublicationReadinessProvider {
 }
 
 export type BookingPublicationRoutesOptions = {
+  propertyAccessRepository: PropertyAccessRepository;
   repository: BookingPublicationCommandPort;
   readinessProvider: BookingPublicationReadinessProvider;
 };
 type AuthorizedPublicationScope = {
-  context: ReturnType<typeof enforceRoutePolicy>;
+  context: Awaited<ReturnType<typeof enforcePropertyRoutePolicy>>;
   propertyId: string;
 };
 
@@ -36,7 +37,7 @@ const HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 export async function registerBookingPublicationRoutes(
   app: FastifyInstance,
-  { repository, readinessProvider }: BookingPublicationRoutesOptions,
+  { propertyAccessRepository, repository, readinessProvider }: BookingPublicationRoutesOptions,
 ): Promise<void> {
   const authorizedScopes = new WeakMap<FastifyRequest, AuthorizedPublicationScope>();
   app.addHook("onClose", async () => repository.close?.());
@@ -52,6 +53,25 @@ export async function registerBookingPublicationRoutes(
       throw new AuthorizationError("Booking publication requires a hotel-group organization.");
     }
     const propertyId = rawPropertyId.toLowerCase();
+    try {
+      await enforcePropertyRoutePolicy(
+        request,
+        {
+          permission: "booking.settings.manage",
+          property: {
+            propertyId,
+            targetResource: { product: "booking", resourceType: "booking_hotel" },
+          },
+        },
+        propertyAccessRepository,
+      );
+    } catch (error) {
+      if (error instanceof AuthorizationError) {
+        await forbidden(reply);
+        return;
+      }
+      throw error;
+    }
     const resource = {
       product: "booking",
       resourceType: "booking_hotel",
