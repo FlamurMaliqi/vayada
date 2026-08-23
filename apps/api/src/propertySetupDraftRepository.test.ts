@@ -54,9 +54,9 @@ describe.skipIf(!TEST_DATABASE_URL)("property setup draft PostgreSQL repository"
     );
     await client.query(
       `INSERT INTO identity.organization_memberships (
-         id, organization_id, user_id, status, role_key
+         id, organization_id, user_id, status, role_key, access_origin
        )
-       VALUES ($1::uuid, $2::uuid, $3::uuid, 'active', 'hotel_owner')`,
+       VALUES ($1::uuid, $2::uuid, $3::uuid, 'active', 'hotel_owner', 'agency')`,
       [membershipId, scope.organizationId, scope.actorUserId],
     );
     await client.query(

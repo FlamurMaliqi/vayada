@@ -16,6 +16,10 @@ const defaultAssignedMigration = await readFile(
   join(import.meta.dirname, "../migrations/0104_default_membership_property_scope_assigned.sql"),
   "utf8",
 );
+const delegationMigration = await readFile(
+  join(import.meta.dirname, "../migrations/0105_external_owner_membership_delegations.sql"),
+  "utf8",
+);
 const membershipWriterPaths = [
   "nextSmokeBackfill.ts",
   "platformIdentityBootstrap.ts",
@@ -311,6 +315,7 @@ describe.skipIf(!TEST_DATABASE_URL)("membership property scope (PostgreSQL)", ()
     ["marketplace", transformMarketplace],
     ["platform", transformPlatformJobsEventsAudit],
   ])("rejects orphan %s source memberships instead of dropping them", async (source, transform) => {
+    await client.query(delegationMigration);
     const queries: string[] = [];
     await transform({
       async query(sql: string) {

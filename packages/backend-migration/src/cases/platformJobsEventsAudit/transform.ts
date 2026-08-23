@@ -16,7 +16,7 @@ export async function transformPlatformJobsEventsAudit(client: pg.Client): Promi
 
   await client.query(`
     INSERT INTO identity.organization_memberships
-      (id, organization_id, user_id, status, role_key, property_access_mode, workos_membership_id, workos_role_slugs)
+      (id, organization_id, user_id, status, role_key, property_access_mode, access_origin, workos_membership_id, workos_role_slugs)
     SELECT
       memberships.id,
       memberships.organization_id,
@@ -28,6 +28,7 @@ export async function transformPlatformJobsEventsAudit(client: pg.Client): Promi
           AND memberships.role_key IN ('hotel_owner', 'owner', 'operator') THEN 'all'
         ELSE 'assigned'
       END,
+      'agency',
       memberships.workos_membership_id,
       memberships.workos_role_slugs
     FROM migration_source_platform.identity_organization_memberships memberships

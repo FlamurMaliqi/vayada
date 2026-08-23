@@ -25,7 +25,7 @@ export async function transformBookingCheckout(client: pg.Client): Promise<void>
 
   await client.query(`
     INSERT INTO identity.organization_memberships
-      (id, organization_id, user_id, status, role_key, property_access_mode, workos_membership_id, workos_role_slugs)
+      (id, organization_id, user_id, status, role_key, property_access_mode, access_origin, workos_membership_id, workos_role_slugs)
     SELECT
       membership_id,
       organization_id,
@@ -33,6 +33,7 @@ export async function transformBookingCheckout(client: pg.Client): Promise<void>
       membership_status,
       role_key,
       'all',
+      'agency',
       workos_membership_id,
       workos_role_slugs
     FROM migration_source_booking.checkout_flow_inputs

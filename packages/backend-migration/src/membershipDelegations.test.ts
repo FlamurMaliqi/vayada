@@ -6,10 +6,23 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { assertSafeTestDatabase } from "./testUtils.js";
 
-const migration = await readFile(
+const delegationMigration = await readFile(
   join(import.meta.dirname, "../migrations/0105_external_owner_membership_delegations.sql"),
   "utf8",
 );
+const membershipWriterPaths = [
+  "../../../apps/api/src/platform/identityLifecycle.ts",
+  "../../../apps/api/src/platform/workosWebhooks.ts",
+  "cases/bookingCheckout/transform.ts",
+  "cases/distributionBookability/transform.ts",
+  "cases/finance/transform.ts",
+  "cases/identityOrganizationLinks/transform.ts",
+  "cases/marketplace/transform.ts",
+  "cases/platformJobsEventsAudit/transform.ts",
+  "cases/pmsOperations/transform.ts",
+  "nextSmokeBackfill.ts",
+  "platformIdentityBootstrap.ts",
+];
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const ORG_A = "10000000-0000-4000-8000-000000000001";
 const ORG_B = "10000000-0000-4000-8000-000000000002";
@@ -22,6 +35,17 @@ const NEW_STAFF_A = "20000000-0000-4000-8000-000000000006";
 const OWNER_B = "20000000-0000-4000-8000-000000000007";
 const STAFF_B = "20000000-0000-4000-8000-000000000008";
 
+describe("explicit membership access origin", () => {
+  it("makes every mounted writer explicit without overwriting existing provenance", async () => {
+    for (const path of membershipWriterPaths) {
+      const writer = await readFile(join(import.meta.dirname, path), "utf8");
+      expect(writer, path).toMatch(
+        /INSERT INTO identity\.organization_memberships[\s\S]{0,350}access_origin/,
+      );
+      expect(writer, path).not.toContain("access_origin = EXCLUDED.access_origin");
+    }
+  });
+});
 describe.skipIf(!TEST_DATABASE_URL)("membership delegations (PostgreSQL)", () => {
   let client: pg.Client;
 
@@ -48,7 +72,7 @@ describe.skipIf(!TEST_DATABASE_URL)("membership delegations (PostgreSQL)", () =>
         ('${OWNER_B}', '${ORG_B}', 'active', 'external_owner', 'assigned'),
         ('${STAFF_B}', '${ORG_B}', 'active', 'front_desk', 'assigned');
     `);
-    await client.query(migration);
+    await client.query(delegationMigration);
   });
 
   afterEach(async () => {
@@ -59,7 +83,7 @@ describe.skipIf(!TEST_DATABASE_URL)("membership delegations (PostgreSQL)", () =>
     }
   });
 
-  it("backfills agency origin and rejects malformed owner scope", async () => {
+  it("backfills agency origin, accepts explicit provenance, and rejects malformed scope", async () => {
     const origins = await client.query(
       "SELECT DISTINCT access_origin FROM identity.organization_memberships",
     );
@@ -67,8 +91,8 @@ describe.skipIf(!TEST_DATABASE_URL)("membership delegations (PostgreSQL)", () =>
 
     await client.query(
       `INSERT INTO identity.organization_memberships
-         (id, organization_id, status, role_key, property_access_mode)
-       VALUES ($1, $2, 'active', 'front_desk', 'assigned')`,
+         (id, organization_id, status, role_key, property_access_mode, access_origin)
+       VALUES ($1, $2, 'active', 'front_desk', 'assigned', 'agency')`,
       [NEW_STAFF_A, ORG_A],
     );
     expect(

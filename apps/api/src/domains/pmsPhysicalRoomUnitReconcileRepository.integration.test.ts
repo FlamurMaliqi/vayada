@@ -649,8 +649,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
     );
     await admin.query(
       `INSERT INTO identity.organization_memberships (
-         organization_id, user_id, status, role_key
-       ) VALUES ($1::uuid, $2::uuid, 'active', 'hotel_owner')`,
+         organization_id, user_id, status, role_key, access_origin
+       ) VALUES ($1::uuid, $2::uuid, 'active', 'hotel_owner', 'agency')`,
       [organizationId, actorUserId],
     );
     await admin.query(

@@ -87,10 +87,10 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical property profile repository", () 
     );
     await client.query(
       `INSERT INTO identity.organization_memberships (
-         id, organization_id, user_id, status, role_key
+         id, organization_id, user_id, status, role_key, access_origin
        ) VALUES
-         ($1::uuid, $2::uuid, $3::uuid, 'active', 'hotel_owner'),
-         ($4::uuid, $2::uuid, $5::uuid, 'active', 'hotel_owner')`,
+         ($1::uuid, $2::uuid, $3::uuid, 'active', 'hotel_owner', 'agency'),
+         ($4::uuid, $2::uuid, $5::uuid, 'active', 'hotel_owner', 'agency')`,
       [membershipId, organizationId, actorUserId, secondMembershipId, secondActorUserId],
     );
     await client.query(

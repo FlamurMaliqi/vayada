@@ -16,7 +16,7 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
 
   await client.query(`
     INSERT INTO identity.organization_memberships
-      (id, organization_id, user_id, status, role_key, property_access_mode, workos_membership_id, workos_role_slugs)
+      (id, organization_id, user_id, status, role_key, property_access_mode, access_origin, workos_membership_id, workos_role_slugs)
     SELECT
       memberships.id,
       memberships.organization_id,
@@ -28,6 +28,7 @@ export async function transformMarketplace(client: pg.Client): Promise<void> {
           AND memberships.role_key IN ('hotel_owner', 'owner', 'operator') THEN 'all'
         ELSE 'assigned'
       END,
+      'agency',
       memberships.workos_membership_id,
       memberships.workos_role_slugs
     FROM migration_source_marketplace.organization_memberships memberships
