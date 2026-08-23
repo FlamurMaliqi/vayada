@@ -578,9 +578,9 @@ const bookingDesignReadinessProvider = bookingDesignCatalogEvidenceRepository
       safeMedia: bookingDesignCatalogEvidenceRepository.safeMedia,
     })
   : undefined;
-const bookingDesignReadinessPropertyAccessRepository = bookingDesignReadinessProvider
-  ? createPgPropertyAccessRepository({ connectionString: targetDatabaseUrl })
-  : undefined;
+const bookingPropertyAccessRepository = createPgPropertyAccessRepository({
+  connectionString: targetDatabaseUrl,
+});
 
 const platformMediaRuntime = composePlatformMediaRuntime({
   auth: config.auth,
@@ -1176,15 +1176,15 @@ const app = buildApp({
   },
   bookingDesign: {
     commandPort: bookingDesignRepository,
+    propertyAccessRepository: bookingPropertyAccessRepository,
     readPort: bookingDesignRepository,
   },
-  bookingDesignReadiness:
-    bookingDesignReadinessProvider && bookingDesignReadinessPropertyAccessRepository
-      ? {
-          propertyAccessRepository: bookingDesignReadinessPropertyAccessRepository,
-          readinessPort: bookingDesignReadinessProvider,
-        }
-      : undefined,
+  bookingDesignReadiness: bookingDesignReadinessProvider
+    ? {
+        propertyAccessRepository: bookingPropertyAccessRepository,
+        readinessPort: bookingDesignReadinessProvider,
+      }
+    : undefined,
   bookingPublication: bookingPublicationRuntime?.routes,
   marketplaceDiscoveryAllowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
   identityPrivacyRepository: config.auth
@@ -1239,7 +1239,7 @@ app.addHook("onClose", async () => {
     marketplaceHotelCollaborationPreferencesRepository.close(),
     bookingDesignRepository.close(),
     bookingDesignCatalogEvidenceRepository?.close(),
-    bookingDesignReadinessPropertyAccessRepository?.close?.(),
+    bookingPropertyAccessRepository.close?.(),
     financeOtaCommissionSettingsRepository?.close(),
     financeExpenseRuntime?.close(),
     bookingDesignMediaAdapter?.close?.(),
