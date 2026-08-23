@@ -53,6 +53,7 @@ DECLARE
 BEGIN
   IF TG_OP = 'UPDATE' THEN
     replaced_subject := OLD.subject_membership_id;
+    NEW.updated_at := now();
   END IF;
 
   PERFORM 1
@@ -130,13 +131,22 @@ BEGIN
   WHERE subject_membership_id = membership.id;
 
   IF membership.access_origin = 'external_owner' THEN
-    IF subject_edges <> 1
-      OR membership.role_key IN ('hotel_owner', 'external_owner', 'owner', 'operator')
-    THEN
+    IF subject_edges <> 1 THEN
       RAISE EXCEPTION USING
         ERRCODE = '23514',
         CONSTRAINT = 'chk_membership_delegations_subject_origin',
         MESSAGE = 'external-owner-origin staff require exactly one delegation';
+    END IF;
+    IF membership.role_key NOT IN (
+      'hotel_manager',
+      'front_desk',
+      'housekeeping',
+      'hotel_custom'
+    ) THEN
+      RAISE EXCEPTION USING
+        ERRCODE = '23514',
+        CONSTRAINT = 'chk_membership_delegations_subject_origin',
+        MESSAGE = 'external-owner-origin subjects require a delegated staff role';
     END IF;
   ELSIF subject_edges <> 0 THEN
     RAISE EXCEPTION USING

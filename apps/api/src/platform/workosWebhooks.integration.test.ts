@@ -233,7 +233,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
           { userId: staffUserId, roleKey: "hotel_owner", propertyAccessMode: "all" },
         ].sort((left, right) => left.userId.localeCompare(right.userId)),
       );
-
       const membershipIds = await admin.query<{ id: string; userId: string }>(
         `SELECT id, user_id AS "userId"
          FROM identity.organization_memberships

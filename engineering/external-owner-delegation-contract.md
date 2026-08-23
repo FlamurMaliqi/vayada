@@ -30,11 +30,12 @@ label "Owner" maps to `external_owner`; it must never use the historical
 `all`-property access. WorkOS role slugs remain coarse claims and never decide
 this hierarchy.
 
-Provider invitations map internal `external_owner` and every non-admin staff
-role to the configured non-admin `hotel_member` WorkOS role. They never send
-`external_owner` or `hotel_owner` as the provider role for those memberships.
-Provider-call tests assert this mapping; reconciliation preserves the internal
-role independently of the mirrored coarse slug.
+Provider invitations map internal `external_owner` to the configured non-admin
+`hotel_member` WorkOS role, `hotel_manager` to `hotel_admin`, and other staff
+roles to `hotel_member`. They never send `external_owner` or `hotel_owner` as
+the provider role for those memberships. Provider-call tests assert this
+mapping; reconciliation preserves the internal role independently of the
+mirrored coarse slug.
 
 WorkOS reconciliation may reduce access when provider membership becomes
 inactive, but it must not overwrite an existing Vayada-managed `role_key`,
@@ -243,11 +244,14 @@ in SQL before pagination rather than filtering an unscoped result in memory.
 ## Audit
 
 Invitation, acceptance, assignment, permission, delegation, reparenting,
-deactivation, and removal events record actor and subject membership IDs,
-organization ID, affected property IDs, redacted permission changes,
-outcome/reason, request ID, correlation ID, and timestamp. Provider tokens,
-acceptance URLs, and unrelated owner/staff details are never stored in audit
-metadata.
+deactivation, and removal events record organization ID, affected property IDs,
+redacted permission changes, outcome/reason, request ID, correlation ID, and
+timestamp. Actor and subject membership ID fields are nullable because an
+invitation exists before its subject membership; invitation and acceptance
+events require the invitation ID, and acceptance records the activated subject
+membership ID. Other membership-targeting events require their applicable
+actor and subject membership IDs. Provider tokens, acceptance URLs, and
+unrelated owner/staff details are never stored in audit metadata.
 
 ## Required implementation tests
 

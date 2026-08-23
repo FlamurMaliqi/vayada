@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { FormRow, SettingsCard, SettingsSection } from "./layout";
+import { FormRow, SettingsCard, SettingsSection } from "@vayada/settings-ui";
 import {
   OTA_COMMISSION_CHANNELS,
   listOtaCommissionSettings,

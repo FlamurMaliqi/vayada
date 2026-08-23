@@ -46,7 +46,6 @@ describe("explicit membership access origin", () => {
     }
   });
 });
-
 describe.skipIf(!TEST_DATABASE_URL)("membership delegations (PostgreSQL)", () => {
   let client: pg.Client;
 
@@ -119,6 +118,14 @@ describe.skipIf(!TEST_DATABASE_URL)("membership delegations (PostgreSQL)", () =>
         [STAFF_A],
       ),
     ).rejects.toMatchObject({ constraint: "chk_membership_delegations_subject_origin" });
+
+    await client.query(
+      "UPDATE identity.organization_memberships SET role_key='maintenance' WHERE id=$1",
+      [STAFF_A],
+    );
+    await expect(createDelegation(client, ORG_A, STAFF_A, OWNER_A, ADMIN_A)).rejects.toMatchObject({
+      constraint: "chk_membership_delegations_subject_origin",
+    });
   });
 
   it("persists one same-organization owner-to-staff edge", async () => {
@@ -226,9 +233,18 @@ describe.skipIf(!TEST_DATABASE_URL)("membership delegations (PostgreSQL)", () =>
       ).rows[0],
     ).toEqual({ created_by_membership_id: ADMIN_A });
     await client.query(
-      "UPDATE identity.membership_delegations SET delegator_membership_id=$1 WHERE subject_membership_id=$2",
+      `UPDATE identity.membership_delegations
+       SET delegator_membership_id=$1, updated_at='2000-01-01'
+       WHERE subject_membership_id=$2`,
       [OWNER_A_2, STAFF_A],
     );
+    expect(
+      (
+        await client.query(
+          "SELECT updated_at > '2000-01-01'::timestamptz AS touched FROM identity.membership_delegations",
+        )
+      ).rows[0],
+    ).toEqual({ touched: true });
     await expect(
       client.query("DELETE FROM identity.organization_memberships WHERE id=$1", [OWNER_A_2]),
     ).rejects.toMatchObject({ constraint: "fk_membership_delegations_delegator_scope" });
