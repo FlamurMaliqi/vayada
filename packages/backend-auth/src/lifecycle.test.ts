@@ -4,6 +4,7 @@ import {
   identityLifecycleCommandTypes,
   identityLifecycleEventTypes,
   identityLifecycleIdempotencyScope,
+  membershipPropertyAccessModeForProvisioning,
   type CreateAffiliateInviteCommand,
   type CreateCustomerInviteCommand,
   type CreateIdentityRecoveryFlowCommand,
@@ -29,6 +30,18 @@ const audit: IdentityCommandAudit = {
 };
 
 describe("identity lifecycle command contract", () => {
+  it("provisions broad property scope only for hotel owner roles", () => {
+    expect(membershipPropertyAccessModeForProvisioning("hotel_group", "hotel_owner")).toBe("all");
+    expect(membershipPropertyAccessModeForProvisioning("hotel_group", "owner")).toBe("all");
+    expect(membershipPropertyAccessModeForProvisioning("hotel_group", "operator")).toBe("all");
+    expect(membershipPropertyAccessModeForProvisioning("hotel_group", "front_desk")).toBe(
+      "assigned",
+    );
+    expect(membershipPropertyAccessModeForProvisioning("creator_workspace", "creator_owner")).toBe(
+      "assigned",
+    );
+  });
+
   it("catalogs the VAY-656 user lifecycle command surface", () => {
     expect(identityLifecycleCommandTypes).toEqual([
       "identity.user.create",
@@ -87,6 +100,7 @@ describe("identity lifecycle command contract", () => {
         },
         membership: {
           roleKey: "hotel_owner",
+          propertyAccessMode: "all",
           permissionKeys: ["booking.settings.manage"],
         },
         resourceLinks: [
@@ -158,6 +172,7 @@ describe("identity lifecycle command contract", () => {
         },
         membership: {
           roleKey: "affiliate_owner",
+          propertyAccessMode: "assigned",
           permissionKeys: ["affiliate.payout.manage"],
         },
         affiliateResourceLink: {
@@ -189,6 +204,7 @@ describe("identity lifecycle command contract", () => {
         },
         membership: {
           roleKey: "platform_admin",
+          propertyAccessMode: "assigned",
           permissionKeys: ["platform.user.suspend"],
         },
         resourceLinks: [

@@ -155,12 +155,13 @@ async function applyPlatformIdentityBootstrap(
 
     await client.query(
       `INSERT INTO identity.organization_memberships
-         (organization_id, user_id, status, role_key, workos_role_slugs, created_at, updated_at)
+         (organization_id, user_id, status, role_key, property_access_mode, workos_role_slugs, created_at, updated_at)
        SELECT
          $1::uuid,
          id,
          status,
          'platform_admin',
+         'assigned',
          ARRAY[$3::text],
          created_at,
          updated_at
@@ -173,6 +174,7 @@ async function applyPlatformIdentityBootstrap(
        ON CONFLICT (organization_id, user_id) DO UPDATE SET
          status = EXCLUDED.status,
          role_key = EXCLUDED.role_key,
+         property_access_mode = EXCLUDED.property_access_mode,
          workos_role_slugs = EXCLUDED.workos_role_slugs,
          updated_at = EXCLUDED.updated_at`,
       [

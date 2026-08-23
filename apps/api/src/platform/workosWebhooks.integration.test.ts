@@ -9,7 +9,7 @@ import { createPgWorkosWebhookStore } from "./workosWebhooks.js";
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const providerEventId = `evt_vay_1239_${randomUUID()}`;
 
-describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook dead letters", () => {
+describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
   const admin = new pg.Client({
     connectionString: TEST_DATABASE_URL ?? "postgresql://integration-test-disabled",
   });
@@ -132,6 +132,119 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook dead letters", ()
       ]);
     } finally {
       await app.close();
+    }
+  });
+
+  it("persists explicit owner and staff property scopes", async () => {
+    const organizationId = randomUUID();
+    const ownerUserId = randomUUID();
+    const staffUserId = randomUUID();
+    const ownerWorkosUserId = `user_vay_1085_owner_${randomUUID()}`;
+    const staffWorkosUserId = `user_vay_1085_staff_${randomUUID()}`;
+    const workosOrgId = `org_vay_1085_${randomUUID()}`;
+    const ownerWorkosMembershipId = `om_owner_${randomUUID()}`;
+    const staffWorkosMembershipId = `om_staff_${randomUUID()}`;
+
+    try {
+      await admin.query(
+        `INSERT INTO identity.users (id, email, name, status)
+         VALUES ($1, $2, 'Owner', 'active'), ($3, $4, 'Staff', 'active')`,
+        [
+          ownerUserId,
+          `owner-${ownerUserId}@example.test`,
+          staffUserId,
+          `staff-${staffUserId}@example.test`,
+        ],
+      );
+      await admin.query(
+        `INSERT INTO identity.external_identities (user_id, provider, provider_user_id)
+         VALUES ($1, 'workos', $2), ($3, 'workos', $4)`,
+        [ownerUserId, ownerWorkosUserId, staffUserId, staffWorkosUserId],
+      );
+      await admin.query(
+        `INSERT INTO identity.organizations (id, kind, name, slug, status, workos_org_id)
+         VALUES ($1, 'hotel_group', 'VAY-1085 scope test', $2, 'active', $3)`,
+        [organizationId, `vay-1085-${organizationId}`, workosOrgId],
+      );
+
+      await store.upsertWorkosMembership({
+        workosMembershipId: ownerWorkosMembershipId,
+        workosUserId: ownerWorkosUserId,
+        workosOrgId,
+        roleKey: "admin",
+        workosRoleSlugs: ["admin"],
+        status: "active",
+      });
+      await store.upsertWorkosMembership({
+        workosMembershipId: staffWorkosMembershipId,
+        workosUserId: staffWorkosUserId,
+        workosOrgId,
+        roleKey: "hotel_member",
+        workosRoleSlugs: ["hotel_member"],
+        status: "active",
+      });
+
+      const memberships = await admin.query<{
+        propertyAccessMode: string;
+        roleKey: string;
+      }>(
+        `SELECT role_key AS "roleKey", property_access_mode AS "propertyAccessMode"
+         FROM identity.organization_memberships
+         WHERE organization_id = $1
+         ORDER BY role_key`,
+        [organizationId],
+      );
+      expect(memberships.rows).toEqual([
+        { roleKey: "hotel_member", propertyAccessMode: "assigned" },
+        { roleKey: "hotel_owner", propertyAccessMode: "all" },
+      ]);
+
+      await store.upsertWorkosMembership({
+        workosMembershipId: ownerWorkosMembershipId,
+        workosUserId: ownerWorkosUserId,
+        workosOrgId,
+        roleKey: "hotel_member",
+        workosRoleSlugs: ["hotel_member"],
+        status: "active",
+      });
+      await store.upsertWorkosMembership({
+        workosMembershipId: staffWorkosMembershipId,
+        workosUserId: staffWorkosUserId,
+        workosOrgId,
+        roleKey: "admin",
+        workosRoleSlugs: ["admin"],
+        status: "active",
+      });
+
+      expect(
+        (
+          await admin.query(
+            `SELECT user_id AS "userId", role_key AS "roleKey", property_access_mode AS "propertyAccessMode"
+             FROM identity.organization_memberships
+             WHERE organization_id = $1
+             ORDER BY user_id`,
+            [organizationId],
+          )
+        ).rows,
+      ).toEqual(
+        [
+          { userId: ownerUserId, roleKey: "hotel_member", propertyAccessMode: "assigned" },
+          { userId: staffUserId, roleKey: "hotel_owner", propertyAccessMode: "all" },
+        ].sort((left, right) => left.userId.localeCompare(right.userId)),
+      );
+    } finally {
+      await admin.query(
+        "DELETE FROM identity.organization_memberships WHERE organization_id = $1",
+        [organizationId],
+      );
+      await admin.query("DELETE FROM identity.organizations WHERE id = $1", [organizationId]);
+      await admin.query(
+        "DELETE FROM identity.external_identities WHERE user_id = ANY($1::uuid[])",
+        [[ownerUserId, staffUserId]],
+      );
+      await admin.query("DELETE FROM identity.users WHERE id = ANY($1::uuid[])", [
+        [ownerUserId, staffUserId],
+      ]);
     }
   });
 

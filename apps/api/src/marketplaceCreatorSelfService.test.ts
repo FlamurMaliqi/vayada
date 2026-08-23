@@ -98,6 +98,7 @@ describe("marketplace creator self-service routes", () => {
         idempotencyKey: `marketplace-creator-profile:org_creator_workspace:${creatorProfileId}:owner`,
         payload: expect.objectContaining({
           userId: "user_creator",
+          membership: expect.objectContaining({ propertyAccessMode: "assigned" }),
           resourceLinks: [
             {
               organizationId: "org_creator_workspace",

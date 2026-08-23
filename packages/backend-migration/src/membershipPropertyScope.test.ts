@@ -4,12 +4,25 @@ import { join } from "node:path";
 import pg from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { transformMarketplace } from "./cases/marketplace/transform.js";
+import { transformPlatformJobsEventsAudit } from "./cases/platformJobsEventsAudit/transform.js";
 import { assertSafeTestDatabase } from "./testUtils.js";
 
 const migration = await readFile(
   join(import.meta.dirname, "../migrations/0103_membership_property_scope.sql"),
   "utf8",
 );
+const membershipWriterPaths = [
+  "nextSmokeBackfill.ts",
+  "platformIdentityBootstrap.ts",
+  "cases/bookingCheckout/transform.ts",
+  "cases/distributionBookability/transform.ts",
+  "cases/finance/transform.ts",
+  "cases/identityOrganizationLinks/transform.ts",
+  "cases/marketplace/transform.ts",
+  "cases/platformJobsEventsAudit/transform.ts",
+  "cases/pmsOperations/transform.ts",
+];
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const ORG_A = "10000000-0000-4000-8000-000000000001";
 const ORG_B = "10000000-0000-4000-8000-000000000002";
@@ -34,6 +47,14 @@ describe("membership property-scope migration", () => {
     expect(migration).toContain("link.resource_type = 'property'");
     expect(migration).toContain("link.status = 'active'");
   });
+  it("keeps every target membership writer explicit before the default flips", async () => {
+    for (const path of membershipWriterPaths) {
+      const writer = await readFile(join(import.meta.dirname, path), "utf8");
+      expect(writer, path).toMatch(
+        /INSERT INTO identity\.organization_memberships[\s\S]{0,250}property_access_mode/,
+      );
+    }
+  });
 });
 
 describe.skipIf(!TEST_DATABASE_URL)("membership property scope (PostgreSQL)", () => {
@@ -51,6 +72,8 @@ describe.skipIf(!TEST_DATABASE_URL)("membership property scope (PostgreSQL)", ()
     try {
       await client.query("DROP SCHEMA IF EXISTS identity CASCADE");
       await client.query("DROP SCHEMA IF EXISTS hotel_catalog CASCADE");
+      await client.query("DROP SCHEMA IF EXISTS migration_source_marketplace CASCADE");
+      await client.query("DROP SCHEMA IF EXISTS migration_source_platform CASCADE");
     } finally {
       await client.end();
     }
@@ -150,8 +173,53 @@ describe.skipIf(!TEST_DATABASE_URL)("membership property scope (PostgreSQL)", ()
     );
     expect(remaining.rows[0]).toEqual({ count: 0 });
   });
+  it.each([
+    ["marketplace", transformMarketplace],
+    ["platform", transformPlatformJobsEventsAudit],
+  ])("rejects orphan %s source memberships instead of dropping them", async (source, transform) => {
+    const queries: string[] = [];
+    await transform({
+      async query(sql: string) {
+        queries.push(sql);
+        return { rows: [] };
+      },
+    } as never);
+    const membershipInsert = queries.find((query) =>
+      query.includes("INSERT INTO identity.organization_memberships"),
+    );
+    expect(membershipInsert).toBeDefined();
+
+    await createOrphanSourceMembership(client, source);
+    await expect(client.query(membershipInsert!)).rejects.toMatchObject({
+      code: "23503",
+      constraint: "organization_memberships_organization_id_fkey",
+    });
+  });
 });
 
+async function createOrphanSourceMembership(client: pg.Client, source: string): Promise<void> {
+  const schema =
+    source === "marketplace" ? "migration_source_marketplace" : "migration_source_platform";
+  const membershipTable =
+    source === "marketplace" ? "organization_memberships" : "identity_organization_memberships";
+  const organizationTable = source === "marketplace" ? "organizations" : "identity_organizations";
+  await client.query(`
+    CREATE SCHEMA ${schema};
+    CREATE TABLE ${schema}.${organizationTable} (id UUID PRIMARY KEY, kind TEXT NOT NULL);
+    CREATE TABLE ${schema}.${membershipTable} (
+      id UUID PRIMARY KEY,
+      organization_id UUID NOT NULL,
+      user_id UUID NOT NULL,
+      status TEXT NOT NULL,
+      role_key TEXT NOT NULL,
+      workos_membership_id TEXT,
+      workos_role_slugs TEXT[] NOT NULL DEFAULT '{}'
+    );
+    INSERT INTO ${schema}.${membershipTable}
+      (id, organization_id, user_id, status, role_key)
+    VALUES ('${STAFF_MEMBERSHIP}', '${PROPERTY_A}', '${STAFF}', 'active', 'hotel_owner');
+  `);
+}
 function insertStaffMembership(client: pg.Client): Promise<pg.QueryResult> {
   return client.query(
     `INSERT INTO identity.organization_memberships
@@ -184,6 +252,8 @@ async function createPredecessorSchema(client: pg.Client): Promise<void> {
       user_id UUID NOT NULL REFERENCES identity.users(id),
       status TEXT NOT NULL,
       role_key TEXT NOT NULL,
+      workos_membership_id TEXT,
+      workos_role_slugs TEXT[] NOT NULL DEFAULT '{}',
       UNIQUE (organization_id, user_id)
     );
     CREATE TABLE identity.organization_resource_links (

@@ -13,6 +13,7 @@ import type {
   ResourceType,
   TokenVerifier,
 } from "@vayada/backend-auth";
+import { membershipPropertyAccessModeForProvisioning } from "@vayada/backend-auth";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 
 import { mapWorkOSAuthError } from "../platform/workosAuthState.js";
@@ -1398,6 +1399,10 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
           membership: {
             status: membership.status,
             roleKey: signupOrganization.roleKey,
+            propertyAccessMode: membershipPropertyAccessModeForProvisioning(
+              signupOrganization.kind,
+              signupOrganization.roleKey,
+            ),
             permissionKeys:
               signupOrganization.kind === "hotel_group"
                 ? inviteResolution
@@ -2744,6 +2749,10 @@ async function resolveOrCreateIdentity(
               membership: {
                 status: signupContext.membership?.status,
                 roleKey: signupContext.organization.roleKey,
+                propertyAccessMode: membershipPropertyAccessModeForProvisioning(
+                  signupContext.organization.kind,
+                  signupContext.organization.roleKey,
+                ),
                 permissionKeys: hostedSignupPermissionKeys(signupContext),
                 workosMembershipId: signupContext.membership?.workosMembershipId,
                 workosRoleSlugs: signupContext.membership?.workosRoleSlugs ?? [
