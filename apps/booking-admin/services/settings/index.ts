@@ -92,6 +92,15 @@ export interface PointOfInterest {
 
 export type PropertySettingsUpdate = Partial<PropertySettings>;
 
+export type BookingAcceptanceMode = "instant" | "request";
+
+export interface BookingAcceptanceSettings {
+  contractVersion: "booking-acceptance.v1";
+  propertyId: string;
+  acceptanceMode: BookingAcceptanceMode;
+  instantBook: boolean;
+}
+
 export interface DesignSettings {
   header_logo: string;
   header_logo_media_object_id: string | null;
@@ -248,6 +257,10 @@ async function updateTargetPropertySettings(
   );
 }
 
+function bookingAcceptanceEndpoint(hotelId: string): string {
+  return `/api/booking/hotels/${encodeURIComponent(hotelId)}/settings/booking-acceptance`;
+}
+
 async function getTargetDesignSettings(explicitHotelId?: string): Promise<BookingDesignSettings> {
   const hotelId = resolveBookingHotelId(explicitHotelId);
   return apiClient.get<BookingDesignSettings>(
@@ -373,6 +386,19 @@ export const settingsService = {
 
   updatePropertySettings: (data: PropertySettingsUpdate, hotelId?: string) =>
     updateTargetPropertySettings(data, hotelId),
+
+  getBookingAcceptance: (hotelId?: string) =>
+    apiClient.get<BookingAcceptanceSettings>(
+      bookingAcceptanceEndpoint(resolveBookingHotelId(hotelId)),
+      omitHotelContext,
+    ),
+
+  updateBookingAcceptance: (acceptanceMode: BookingAcceptanceMode, hotelId?: string) =>
+    apiClient.put<BookingAcceptanceSettings>(
+      bookingAcceptanceEndpoint(resolveBookingHotelId(hotelId)),
+      { acceptanceMode },
+      omitHotelContext,
+    ),
 
   changePassword: (current_password: string, new_password: string) =>
     apiClient.post("/auth/change-password", { current_password, new_password }),
