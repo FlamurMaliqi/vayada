@@ -10,6 +10,10 @@ const delegationMigration = await readFile(
   join(import.meta.dirname, "../migrations/0105_external_owner_membership_delegations.sql"),
   "utf8",
 );
+const explicitOriginMigration = await readFile(
+  join(import.meta.dirname, "../migrations/0106_drop_membership_access_origin_default.sql"),
+  "utf8",
+);
 const membershipWriterPaths = [
   "../../../apps/api/src/platform/identityLifecycle.ts",
   "../../../apps/api/src/platform/workosWebhooks.ts",
@@ -37,6 +41,7 @@ const STAFF_B = "20000000-0000-4000-8000-000000000008";
 
 describe("explicit membership access origin", () => {
   it("makes every mounted writer explicit without overwriting existing provenance", async () => {
+    expect(explicitOriginMigration).toContain("ALTER COLUMN access_origin DROP DEFAULT");
     for (const path of membershipWriterPaths) {
       const writer = await readFile(join(import.meta.dirname, path), "utf8");
       expect(writer, path).toMatch(
@@ -126,6 +131,25 @@ describe.skipIf(!TEST_DATABASE_URL)("membership delegations (PostgreSQL)", () =>
     await expect(createDelegation(client, ORG_A, STAFF_A, OWNER_A, ADMIN_A)).rejects.toMatchObject({
       constraint: "chk_membership_delegations_subject_origin",
     });
+  });
+
+  it("requires every new membership to declare its access origin", async () => {
+    await client.query(explicitOriginMigration);
+    await expect(
+      client.query(
+        `INSERT INTO identity.organization_memberships
+           (id, organization_id, status, role_key, property_access_mode)
+         VALUES ($1, $2, 'active', 'front_desk', 'assigned')`,
+        [NEW_STAFF_A, ORG_A],
+      ),
+    ).rejects.toMatchObject({ code: "23502", column: "access_origin" });
+
+    await client.query(
+      `INSERT INTO identity.organization_memberships
+         (id, organization_id, status, role_key, property_access_mode, access_origin)
+       VALUES ($1, $2, 'active', 'front_desk', 'assigned', 'agency')`,
+      [NEW_STAFF_A, ORG_A],
+    );
   });
 
   it("persists one same-organization owner-to-staff edge", async () => {
