@@ -17,14 +17,19 @@ import {
   canAccessResource,
   createAuthorizationResolver,
   createPgEntitlementRepository,
+  createPgPropertyAccessRepository,
   hasPermission,
   hasActiveEntitlement,
+  requirePropertyAccess,
   requirePermission,
   requireActiveEntitlement,
   requireResourceAccess,
+  resolveEffectivePropertyAccess,
   createPgRolePermissionRepository,
   type EntitlementRepository,
   type EntitlementRequirement,
+  type MembershipPropertyScope,
+  type PropertyAccessRepository,
   type ResourceAccessRequirement,
   type RolePermissionRepository,
 } from "./index.js";
@@ -166,6 +171,30 @@ const platformContext = contextFor({
   permissions: ["platform.user.suspend"],
   linkedResources: [linkedResource("platform", "platform", "vayada")],
 });
+
+const PROPERTY_A = "10000000-0000-4000-8000-000000000001";
+const PROPERTY_B = "10000000-0000-4000-8000-000000000002";
+const PROPERTY_OTHER_TENANT = "20000000-0000-4000-8000-000000000001";
+const DB_USER = "81000000-0000-4000-8000-000000000001";
+const DB_ORGANIZATION = "82000000-0000-4000-8000-000000000001";
+const DB_MEMBERSHIP = "83000000-0000-4000-8000-000000000001";
+const DB_PROPERTY = "84000000-0000-4000-8000-000000000001";
+
+function propertyContext(): RequestContext {
+  return contextFor({
+    permissions: ["pms.operations.read"],
+    linkedResources: [
+      linkedResource("hotel_catalog", "property", PROPERTY_A),
+      linkedResource("hotel_catalog", "property", PROPERTY_B),
+      linkedResource("booking", "booking_hotel", PROPERTY_A),
+      linkedResource("pms", "pms_property", PROPERTY_A),
+    ],
+  });
+}
+
+function propertyScopeRepository(scope: MembershipPropertyScope | null): PropertyAccessRepository {
+  return { findMembershipPropertyScope: async () => scope };
+}
 
 function requirement(
   permission: PermissionKey,
@@ -359,6 +388,61 @@ describe.skipIf(!TEST_DATABASE_URL)("createPgEntitlementRepository", () => {
   });
 });
 
+describe.skipIf(!TEST_DATABASE_URL)("createPgPropertyAccessRepository", () => {
+  it("loads only an active scope bound to the selected actor and organization", async () => {
+    assertSafeTestDatabase(TEST_DATABASE_URL!);
+    const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
+    await client.connect();
+    const repository = createPgPropertyAccessRepository({ connectionString: TEST_DATABASE_URL! });
+    const cleanup = `
+      DELETE FROM identity.membership_property_assignments WHERE membership_id = '${DB_MEMBERSHIP}';
+      DELETE FROM identity.organization_memberships WHERE id = '${DB_MEMBERSHIP}';
+      DELETE FROM identity.organization_resource_links WHERE organization_id = '${DB_ORGANIZATION}';
+      DELETE FROM identity.organizations WHERE id = '${DB_ORGANIZATION}';
+      DELETE FROM hotel_catalog.properties WHERE id = '${DB_PROPERTY}';
+      DELETE FROM identity.users WHERE id = '${DB_USER}';`;
+    const dbContext = {
+      ...propertyContext(),
+      actor: { ...propertyContext().actor, internalUserId: DB_USER },
+      selectedOrganization: {
+        ...propertyContext().selectedOrganization,
+        organizationId: DB_ORGANIZATION,
+      },
+      membership: { ...propertyContext().membership, membershipId: DB_MEMBERSHIP },
+    };
+
+    try {
+      await client.query(cleanup);
+      await client.query(`
+        INSERT INTO identity.users (id, email) VALUES ('${DB_USER}', 'property-access@example.com');
+        INSERT INTO identity.organizations (id, kind, name, slug) VALUES ('${DB_ORGANIZATION}', 'hotel_group', 'Property Access Test', 'property-access-test');
+        INSERT INTO hotel_catalog.properties (id, public_id, display_name) VALUES ('${DB_PROPERTY}', 'property-access-test', 'Property Access Test');
+        INSERT INTO identity.organization_resource_links (organization_id, product, resource_type, resource_id, relationship) VALUES ('${DB_ORGANIZATION}', 'hotel_catalog', 'property', '${DB_PROPERTY}', 'operator');
+        INSERT INTO identity.organization_memberships (id, organization_id, user_id, status, role_key, property_access_mode) VALUES ('${DB_MEMBERSHIP}', '${DB_ORGANIZATION}', '${DB_USER}', 'active', 'front_desk', 'assigned');
+        INSERT INTO identity.membership_property_assignments VALUES ('${DB_MEMBERSHIP}', '${DB_PROPERTY}');`);
+
+      await expect(repository.findMembershipPropertyScope(dbContext)).resolves.toEqual({
+        mode: "assigned",
+        assignedPropertyIds: [DB_PROPERTY],
+      });
+      await expect(
+        repository.findMembershipPropertyScope({
+          ...dbContext,
+          selectedOrganization: { ...dbContext.selectedOrganization, organizationId: PROPERTY_B },
+        }),
+      ).resolves.toBeNull();
+      await client.query(
+        `UPDATE identity.organization_memberships SET status = 'suspended' WHERE id = '${DB_MEMBERSHIP}'`,
+      );
+      await expect(repository.findMembershipPropertyScope(dbContext)).resolves.toBeNull();
+    } finally {
+      await repository.close?.();
+      await client.query(cleanup);
+      await client.end();
+    }
+  });
+});
+
 describe("authorization helpers", () => {
   it.each([
     [
@@ -494,6 +578,98 @@ describe("authorization helpers", () => {
         requirement("booking.settings.manage", "booking", "booking_hotel", "booking_hotel_other"),
       ),
     ).toThrow(AuthorizationError);
+  });
+});
+
+describe("effective property access", () => {
+  it("allows all-scope and assigned-scope access only through canonical target links", async () => {
+    const context = propertyContext();
+
+    await expect(
+      resolveEffectivePropertyAccess(
+        context,
+        propertyScopeRepository({ mode: "all", assignedPropertyIds: [] }),
+      ),
+    ).resolves.toEqual({ mode: "all", propertyIds: [PROPERTY_A, PROPERTY_B] });
+    await expect(
+      requirePropertyAccess(
+        context,
+        propertyScopeRepository({ mode: "assigned", assignedPropertyIds: [PROPERTY_A] }),
+        {
+          propertyId: PROPERTY_A,
+          targetResource: { product: "pms", resourceType: "pms_property" },
+        },
+      ),
+    ).resolves.toBe(context);
+  });
+
+  it("denies inactive principals, invalid scopes, and properties outside the assignment", async () => {
+    const context = propertyContext();
+    const all = { mode: "all", assignedPropertyIds: [] };
+    const deny = (
+      candidate: RequestContext,
+      scope: MembershipPropertyScope,
+      propertyId = PROPERTY_A,
+    ) =>
+      expect(
+        requirePropertyAccess(candidate, propertyScopeRepository(scope), {
+          propertyId,
+          targetResource: { product: "pms", resourceType: "pms_property" },
+        }),
+      ).rejects.toBeInstanceOf(AuthorizationError);
+
+    await deny({ ...context, actor: { ...context.actor, status: "suspended" } }, all);
+    await deny({ ...context, membership: { ...context.membership, status: "inactive" } }, all);
+    await deny({ ...context, membership: { ...context.membership, status: "suspended" } }, all);
+    await deny(context, { mode: "assigned", assignedPropertyIds: [] });
+    await deny(
+      context,
+      { mode: "assigned", assignedPropertyIds: [PROPERTY_OTHER_TENANT] },
+      PROPERTY_OTHER_TENANT,
+    );
+    await deny(context, { mode: "assigned", assignedPropertyIds: [PROPERTY_A] }, PROPERTY_B);
+    await deny(context, { mode: "unknown", assignedPropertyIds: [PROPERTY_A] });
+    await deny(context, { mode: "assigned", assignedPropertyIds: [PROPERTY_A, null as never] });
+  });
+
+  it("denies a missing target-native link even when canonical scope allows the property", async () => {
+    const context = propertyContext();
+    context.linkedResources = context.linkedResources.filter(
+      (resource) => resource.resourceType !== "booking_hotel",
+    );
+
+    await expect(
+      requirePropertyAccess(
+        context,
+        propertyScopeRepository({ mode: "all", assignedPropertyIds: [] }),
+        {
+          propertyId: PROPERTY_A,
+          targetResource: { product: "booking", resourceType: "booking_hotel" },
+        },
+      ),
+    ).rejects.toBeInstanceOf(AuthorizationError);
+    await expect(
+      requirePropertyAccess(
+        context,
+        propertyScopeRepository({ mode: "all", assignedPropertyIds: [] }),
+        { propertyId: PROPERTY_A } as never,
+      ),
+    ).rejects.toBeInstanceOf(AuthorizationError);
+  });
+
+  it("returns a generic 403 without leaking the requested property", async () => {
+    const error = await requirePropertyAccess(
+      propertyContext(),
+      propertyScopeRepository({ mode: "assigned", assignedPropertyIds: [] }),
+      {
+        propertyId: PROPERTY_OTHER_TENANT,
+        targetResource: { product: "pms", resourceType: "pms_property" },
+      },
+    ).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(AuthorizationError);
+    expect(error).toMatchObject({ statusCode: 403 });
+    expect((error as Error).message).not.toContain(PROPERTY_OTHER_TENANT);
   });
 });
 
