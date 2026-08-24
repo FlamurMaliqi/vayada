@@ -863,12 +863,15 @@ const bookingPromoCode: BookingPromoCode = {
   code: "SUMMER20",
   discountType: "percentage",
   discountValue: "20.00",
-  currency: null,
+  minBookingValue: "500.00",
+  applicableRoomIds: ["0f850001-0000-4000-8000-000000000010"],
   validFrom: "2026-07-01",
   validUntil: "2026-08-31",
+  stayDateFrom: "2026-08-01",
+  stayDateUntil: "2026-09-30",
   isActive: true,
   maxUses: 50,
-  useCount: 3,
+  currentUses: 3,
   createdAt: "2026-06-01T10:00:00.000Z",
   updatedAt: "2026-06-01T10:00:00.000Z",
 };
@@ -882,9 +885,12 @@ function promoCodeFromBody(
     code: body.code ?? bookingPromoCode.code,
     discountType: body.discountType ?? bookingPromoCode.discountType,
     discountValue: body.discountValue ?? bookingPromoCode.discountValue,
-    currency: body.currency ?? bookingPromoCode.currency,
+    minBookingValue: body.minBookingValue ?? bookingPromoCode.minBookingValue,
+    applicableRoomIds: body.applicableRoomIds ?? bookingPromoCode.applicableRoomIds,
     validFrom: body.validFrom ?? bookingPromoCode.validFrom,
     validUntil: body.validUntil ?? bookingPromoCode.validUntil,
+    stayDateFrom: body.stayDateFrom ?? bookingPromoCode.stayDateFrom,
+    stayDateUntil: body.stayDateUntil ?? bookingPromoCode.stayDateUntil,
     isActive: body.isActive ?? bookingPromoCode.isActive,
     maxUses: body.maxUses ?? bookingPromoCode.maxUses,
     updatedAt: "2026-06-01T11:00:00.000Z",
@@ -5532,7 +5538,6 @@ describe("vayada-api", () => {
       code: "SUMMER25",
       discountType: "percentage",
       discountValue: "25.00",
-      currency: null,
       validFrom: "2026-07-01",
       validUntil: "2026-08-31",
       isActive: true,
@@ -5553,7 +5558,7 @@ describe("vayada-api", () => {
         code: "EARLY30",
         discountType: "fixed",
         discountValue: "30.00",
-        currency: "EUR",
+        minBookingValue: "250.00",
       },
     });
 
@@ -5564,7 +5569,7 @@ describe("vayada-api", () => {
       code: "EARLY30",
       discountType: "fixed",
       discountValue: "30.00",
-      currency: "EUR",
+      minBookingValue: "250.00",
     });
   });
 
@@ -5572,7 +5577,6 @@ describe("vayada-api", () => {
     const fixedPromoCode: BookingPromoCode = {
       ...bookingPromoCode,
       discountType: "fixed",
-      currency: "EUR",
     };
     app = buildAuthenticatedApp({
       bookingPromoCodesRepository: {
@@ -5608,7 +5612,6 @@ describe("vayada-api", () => {
     expect(response.body).toMatchObject({
       promoCodeId: bookingPromoCode.promoCodeId,
       discountType: "fixed",
-      currency: "EUR",
     });
   });
 
@@ -5700,6 +5703,7 @@ describe("vayada-api", () => {
         validFrom: "2026-08-31",
         validUntil: "2026-07-01",
         maxUses: 0,
+        currency: "EUR",
         legacyField: true,
       },
     });
@@ -5711,7 +5715,9 @@ describe("vayada-api", () => {
       category: "validation",
       message: "Booking promo-code payload is invalid.",
     });
-    expect(response.body.details).toEqual(expect.any(Array));
+    expect(response.body.details).toEqual(
+      expect.arrayContaining(["currency is not allowed.", "legacyField is not allowed."]),
+    );
   });
 
   it("rejects oversized booking promo-code numeric fields before target persistence", async () => {
@@ -5727,7 +5733,6 @@ describe("vayada-api", () => {
         code: "FIXEDBIG",
         discountType: "fixed",
         discountValue: "10000000000000.00",
-        currency: "EUR",
         maxUses: 2147483648,
       },
     });
@@ -5742,7 +5747,7 @@ describe("vayada-api", () => {
     expect(response.body.details).toEqual(
       expect.arrayContaining([
         "discountValue must fit NUMERIC(15,2).",
-        "maxUses must be null or an integer from 1 to 2147483647.",
+        "maxUses must be an integer from 1 to 2147483647.",
       ]),
     );
   });
@@ -5767,6 +5772,7 @@ describe("vayada-api", () => {
         code: "SUMMER20",
         discountType: "percentage",
         discountValue: "20.00",
+        maxUses: 1,
       },
     });
 
@@ -8326,12 +8332,15 @@ describe("vayada-api", () => {
               code: "SUMMER20",
               discountType: "percentage",
               discountValue: "20.00",
-              currency: null,
+              minBookingValue: "500.00",
+              applicableRoomIds: ["0f850001-0000-4000-8000-000000000010"],
               validFrom: "2026-07-01",
               validUntil: "2026-08-31",
+              stayDateFrom: "2026-08-01",
+              stayDateUntil: "2026-09-30",
               isActive: true,
               maxUses: 50,
-              useCount: 3,
+              currentUses: 3,
               createdAt: "2026-06-01T10:00:00.000Z",
               updatedAt: "2026-06-01T10:00:00.000Z",
             },
@@ -8350,9 +8359,12 @@ describe("vayada-api", () => {
       code: "SUMMER20",
       discountType: "percentage",
       discountValue: "20.00",
-      currency: null,
+      minBookingValue: "500.00",
+      applicableRoomIds: ["0f850001-0000-4000-8000-000000000010"],
       validFrom: "2026-07-01",
       validUntil: "2026-08-31",
+      stayDateFrom: "2026-08-01",
+      stayDateUntil: "2026-09-30",
       isActive: true,
       maxUses: 50,
     });
@@ -8369,12 +8381,15 @@ describe("vayada-api", () => {
         code: "SUMMER20",
         discountType: "percentage",
         discountValue: "20.00",
-        currency: null,
+        minBookingValue: "500.00",
+        applicableRoomIds: ["0f850001-0000-4000-8000-000000000010"],
         validFrom: "2026-07-01",
         validUntil: "2026-08-31",
+        stayDateFrom: "2026-08-01",
+        stayDateUntil: "2026-09-30",
         isActive: true,
         maxUses: 50,
-        useCount: 3,
+        currentUses: 3,
         createdAt: "2026-06-01T10:00:00.000Z",
         updatedAt: "2026-06-01T10:00:00.000Z",
       },

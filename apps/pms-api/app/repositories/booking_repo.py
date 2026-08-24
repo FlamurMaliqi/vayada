@@ -469,6 +469,50 @@ class BookingRepository:
         return dict(row) if row else None
 
     @staticmethod
+    async def cancel_with_promo_reversal(
+        booking_id: str,
+        *,
+        new_status: str = "cancelled",
+        payment_status: str | None = None,
+        guest_withdrawn: bool = False,
+    ) -> dict | None:
+        """Persist cancellation and its promo reversal intent atomically."""
+        row = await Database.fetchrow(
+            """
+            WITH cancelled AS (
+                UPDATE bookings
+                   SET status = $2,
+                       payment_status = COALESCE($3, payment_status),
+                       guest_withdrawn = CASE WHEN $4 THEN true ELSE guest_withdrawn END,
+                       updated_at = NOW()
+                 WHERE id = $1 AND NOT stripe_refund_processing
+                RETURNING *
+            ), queued AS (
+                INSERT INTO booking_promo_usage_state (
+                    booking_reference, hotel_slug, promo_code, desired_state
+                )
+                SELECT cancelled.booking_reference, hotel.slug,
+                       cancelled.promo_code, 'reversed'
+                  FROM cancelled
+                  JOIN hotels hotel ON hotel.id = cancelled.hotel_id
+                 WHERE cancelled.promo_code IS NOT NULL
+                   AND cancelled.promo_code <> ''
+                ON CONFLICT (booking_reference) DO UPDATE
+                   SET desired_state = 'reversed',
+                       next_attempt_at = NOW(),
+                       updated_at = NOW()
+                RETURNING booking_reference
+            )
+            SELECT cancelled.* FROM cancelled
+            """,
+            booking_id,
+            new_status,
+            payment_status,
+            guest_withdrawn,
+        )
+        return dict(row) if row else None
+
+    @staticmethod
     async def transition_status(
         booking_id: str, expected_status: str, new_status: str
     ) -> dict | None:

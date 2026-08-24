@@ -44,6 +44,7 @@ from app.services.email_service import (
 )
 from app.services.occupancy import room_allows_guest_mix
 from app.services.payout_service import calculate_split, fetch_billing_config, schedule_payouts
+from app.services.promo_usage_reconciliation import claim_promo_use, reverse_promo_use
 from app.services.room_assignment import (
     apply_moves_atomic,
     record_auto_rearrange,
@@ -342,32 +343,32 @@ async def _fetch_hotel_addons(slug: str) -> list[dict]:
         return []
 
 
-async def _validate_promo_code(slug: str, code: str) -> dict:
+async def _validate_promo_code(
+    slug: str,
+    code: str,
+    *,
+    check_in: date,
+    room_type_id: str,
+    booking_total: float,
+) -> dict:
     """Validate a promo code against the booking-engine API.
     Returns the API response, or ``{"valid": False}`` on failure."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
                 f"{settings.BOOKING_ENGINE_API_URL}/api/hotels/{slug}/validate-promo",
-                params={"code": code},
+                params={
+                    "code": code,
+                    "check_in": check_in.isoformat(),
+                    "room_type_id": room_type_id,
+                    "booking_total": booking_total,
+                },
             )
             resp.raise_for_status()
             return resp.json()
     except Exception as e:
         logger.warning("Failed to validate promo for %s: %s", slug, e)
         return {"valid": False}
-
-
-async def _increment_promo_use(slug: str, code: str) -> None:
-    """Best-effort: bump the promo's use count after a successful booking."""
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(
-                f"{settings.BOOKING_ENGINE_API_URL}/api/hotels/{slug}/increment-promo",
-                params={"code": code},
-            )
-    except Exception as e:
-        logger.warning("Failed to increment promo use count: %s", e)
 
 
 async def _prepare_booking_context(slug: str, data: BookingCreate) -> BookingContext:
@@ -601,7 +602,13 @@ async def _compute_booking_pricing(
     promo_code_str: str | None = None
     promo_discount = 0.0
     if data.promo_code:
-        promo_result = await _validate_promo_code(slug, data.promo_code)
+        promo_result = await _validate_promo_code(
+            slug,
+            data.promo_code,
+            check_in=data.check_in,
+            room_type_id=data.room_type_id,
+            booking_total=subtotal,
+        )
         if promo_result.get("valid"):
             promo_code_str = promo_result["code"]
             discount_type = promo_result["discountType"]
@@ -610,6 +617,8 @@ async def _compute_booking_pricing(
                 promo_discount = round(subtotal * (discount_value / 100), 2)
             else:
                 promo_discount = min(discount_value, subtotal)
+        else:
+            raise ValueError(promo_result.get("message") or "Invalid promo code.")
 
     # Promo vs last-minute stacking — keep only the larger discount unless
     # the hotel opted in via stackWithPromo.
@@ -919,9 +928,6 @@ async def _create_booking_draft(
         payload=payload,
     )
 
-    if pricing.promo_code:
-        await _increment_promo_use(slug, pricing.promo_code)
-
     preview = _draft_preview_response(
         draft_id=str(draft["id"]),
         booking_reference=booking_reference,
@@ -1132,7 +1138,41 @@ async def materialize_draft(
     if extra_room_ids:
         booking_data["extra_room_ids"] = extra_room_ids
 
-    booking_row = await BookingRepository.create(booking_data)
+    promo_slug = None
+    promo_claimed = False
+    try:
+        if booking_data.get("promo_code"):
+            promo_hotel = await Database.fetchrow(
+                "SELECT slug FROM hotels WHERE id = $1", booking_data["hotel_id"]
+            )
+            if not promo_hotel:
+                raise ValueError("Promo hotel not found")
+            promo_slug = str(promo_hotel["slug"])
+            await claim_promo_use(
+                hotel_slug=promo_slug,
+                promo_code=str(booking_data["promo_code"]),
+                booking_reference=str(booking_data["booking_reference"]),
+                check_in=booking_data["check_in"],
+                room_type_id=str(booking_data["room_type_id"]),
+                booking_total=float(booking_data["total_amount"])
+                + float(booking_data.get("promo_discount") or 0),
+            )
+            promo_claimed = True
+        booking_row = await BookingRepository.create(booking_data)
+    except Exception:
+        if promo_claimed and promo_slug:
+            try:
+                await reverse_promo_use(
+                    hotel_slug=promo_slug,
+                    promo_code=str(booking_data["promo_code"]),
+                    booking_reference=str(booking_data["booking_reference"]),
+                )
+            except Exception:
+                logger.exception("Failed to compensate promo claim after booking insert failure")
+        await BookingDraftRepository.release_materialization_claim(
+            str(claimed["id"]), new_booking_id
+        )
+        raise
     booking_id = str(booking_row["id"])
 
     if rearrange_moves:
@@ -1473,7 +1513,32 @@ async def create_booking_request(slug: str, data: BookingCreate) -> dict:
     if extra_room_ids:
         booking_data["extra_room_ids"] = extra_room_ids
 
-    booking_row = await BookingRepository.create(booking_data)
+    promo_claimed = False
+    if pricing.promo_code:
+        booking_data["booking_reference"] = await BookingDraftRepository.generate_reference()
+    try:
+        if pricing.promo_code:
+            await claim_promo_use(
+                hotel_slug=slug,
+                promo_code=pricing.promo_code,
+                booking_reference=str(booking_data["booking_reference"]),
+                check_in=data.check_in,
+                room_type_id=data.room_type_id,
+                booking_total=pricing.total_amount + pricing.promo_discount,
+            )
+            promo_claimed = True
+        booking_row = await BookingRepository.create(booking_data)
+    except Exception:
+        if promo_claimed:
+            try:
+                await reverse_promo_use(
+                    hotel_slug=slug,
+                    promo_code=pricing.promo_code,
+                    booking_reference=str(booking_data["booking_reference"]),
+                )
+            except Exception:
+                logger.exception("Failed to compensate promo claim after booking insert failure")
+        raise
     booking_id = str(booking_row["id"])
 
     if rearrange_moves:
@@ -1486,24 +1551,36 @@ async def create_booking_request(slug: str, data: BookingCreate) -> dict:
             ),
         )
 
-    if pricing.promo_code:
-        await _increment_promo_use(slug, pricing.promo_code)
-
     # ── Dispatch the chosen payment method ─────────────────────────
-    outcome = await _process_payment_method(
-        payment_method=payment_method,
-        booking_id=booking_id,
-        booking_row=booking_row,
-        hotel=hotel,
-        hotel_id=hotel_id,
-        hotel_settings=hotel_settings,
-        currency=room["currency"],
-        total_amount=pricing.total_amount,
-        guest_email=data.guest_email,
-        use_request_flow=use_request_flow,
-        capture_method=capture_method,
-        deposit=deposit,
-    )
+    try:
+        outcome = await _process_payment_method(
+            payment_method=payment_method,
+            booking_id=booking_id,
+            booking_row=booking_row,
+            hotel=hotel,
+            hotel_id=hotel_id,
+            hotel_settings=hotel_settings,
+            currency=room["currency"],
+            total_amount=pricing.total_amount,
+            guest_email=data.guest_email,
+            use_request_flow=use_request_flow,
+            capture_method=capture_method,
+            deposit=deposit,
+        )
+    except Exception:
+        # Xendit removes the booking when invoice creation fails. Release the
+        # promo claim only when no discounted booking remains persisted.
+        persisted_booking = await BookingRepository.get_by_id(booking_id)
+        if promo_claimed and not persisted_booking:
+            try:
+                await reverse_promo_use(
+                    hotel_slug=slug,
+                    promo_code=str(pricing.promo_code),
+                    booking_reference=str(booking_data["booking_reference"]),
+                )
+            except Exception:
+                logger.exception("Failed to compensate promo claim after payment setup failure")
+        raise
 
     # ── Build response + side effects ──────────────────────────────
     booking = await BookingRepository.get_by_id(booking_id)
@@ -2243,13 +2320,21 @@ async def host_reject_booking(booking_id: str, user_id: str, reason: str | None 
     if terminal_payment_status == "refunded":
         updated = await BookingRepository.get_by_id(booking_id)
         if updated and updated["status"] == "declined":
-            return updated
+            await BookingRepository.cancel_with_promo_reversal(
+                booking_id,
+                new_status="declined",
+                payment_status=terminal_payment_status,
+            )
+            return await BookingRepository.get_by_id(booking_id)
 
     # VAY-404: host-rejected requests are stored as 'declined' so the UI can
     # distinguish them from guest-driven cancellations ('cancelled' covers
     # guest withdraw + guest-initiated cancellation of a confirmed booking).
-    await BookingRepository.update_status(booking_id, "declined")
-    await BookingRepository.update_payment_status(booking_id, terminal_payment_status)
+    await BookingRepository.cancel_with_promo_reversal(
+        booking_id,
+        new_status="declined",
+        payment_status=terminal_payment_status,
+    )
     await PayoutRepository.cancel_by_booking(booking_id)
 
     # Notify guest, host, and ops
@@ -2291,11 +2376,18 @@ async def guest_withdraw_booking(booking_id: str, guest_email: str) -> dict:
     if terminal_payment_status == "refunded":
         updated = await BookingRepository.get_by_id(booking_id)
         if updated and updated["status"] == "cancelled":
-            return updated
+            await BookingRepository.cancel_with_promo_reversal(
+                booking_id,
+                payment_status=terminal_payment_status,
+                guest_withdrawn=True,
+            )
+            return await BookingRepository.get_by_id(booking_id)
 
-    await BookingRepository.update_status(booking_id, "cancelled")
-    await BookingRepository.update_payment_status(booking_id, terminal_payment_status)
-    await Database.execute("UPDATE bookings SET guest_withdrawn = true WHERE id = $1", booking_id)
+    await BookingRepository.cancel_with_promo_reversal(
+        booking_id,
+        payment_status=terminal_payment_status,
+        guest_withdrawn=True,
+    )
 
     # Notify host and guest
     hotel = await Database.fetchrow(
@@ -2541,9 +2633,12 @@ async def handle_guest_cancellation(booking_id: str, guest_email: str) -> dict:
                 target_booking_status="cancelled",
                 idempotency_key=f"guest-cancellation-refund-{booking_id}-{refund_cents or 'full'}",
             )
+            await BookingRepository.cancel_with_promo_reversal(
+                booking_id,
+                payment_status=target_payment_status,
+            )
             return await BookingRepository.get_by_id(booking_id)
 
-    await BookingRepository.update_status(booking_id, "cancelled")
     new_payment_status = (
         "refunded"
         if outcome.refund_pct >= 100 and outcome.refund_amount > 0
@@ -2561,7 +2656,10 @@ async def handle_guest_cancellation(booking_id: str, guest_email: str) -> dict:
             )
         )
     )
-    await BookingRepository.update_payment_status(booking_id, new_payment_status)
+    await BookingRepository.cancel_with_promo_reversal(
+        booking_id,
+        payment_status=new_payment_status,
+    )
     await PayoutRepository.cancel_by_booking(booking_id)
 
     updated = await BookingRepository.get_by_id(booking_id)

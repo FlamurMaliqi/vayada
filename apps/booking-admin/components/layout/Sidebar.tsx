@@ -9,6 +9,7 @@ import {
   ChevronDownIcon,
   CheckIcon,
   Cog6ToothIcon,
+  TicketIcon,
   UserGroupIcon,
 } from "@heroicons/react/24/outline";
 import { cn } from "@/lib/utils";
@@ -38,6 +39,7 @@ const coreNavItems: NavItem[] = [
   { labelKey: "layout.sidebar.designStudio", href: "/design-studio", icon: DesignStudioIcon },
   { labelKey: "layout.sidebar.bookingFlow", href: "/booking-flow", icon: BookingFlowIcon },
   { label: "Affiliates", href: "/affiliates", icon: UserGroupIcon },
+  { label: "Promo Codes", href: "/promo-codes", icon: TicketIcon },
   { labelKey: "layout.sidebar.settings", href: "/settings", icon: Cog6ToothIcon },
 ];
 

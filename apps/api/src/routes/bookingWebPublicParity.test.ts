@@ -1493,6 +1493,7 @@ describe("Booking Web public bootstrap parity", () => {
       addonTotal = "20.50",
       quotedAcceptanceMode: "instant" | "request" = "request",
       addonUnitAmount = "10.25",
+      withPromo = false,
     ) => {
       const calls: string[] = [];
       let bookingWriteValues: readonly unknown[] | undefined;
@@ -1553,9 +1554,22 @@ describe("Booking Web public bootstrap parity", () => {
                         partnerCommissionRate: "18.7500",
                       },
                     ],
+                    ...(withPromo
+                      ? {
+                          promo: {
+                            promoDefinitionId: "d9000000-0000-0000-0000-000000000682",
+                            code: "SUMMER20",
+                            discountType: "percentage",
+                            discountValue: 20,
+                            discountAmount: 20,
+                            currency: "EUR",
+                          },
+                        }
+                      : {}),
                   },
                   // prettier-ignore
-                  totals: { roomTotal: "79.50", addonTotal, totalAmount: "100.00", balanceAmount: "100.00" },
+                  totals: { roomTotal: withPromo ? "99.50" : "79.50", addonTotal, promoDiscount: withPromo ? "20.00" : "0.00", totalAmount: "100.00", balanceAmount: "100.00" },
+                  promoCode: withPromo ? "SUMMER20" : null,
                   policySnapshot: { freeUntilDays: 7 },
                   expiresAt: "2026-09-12T12:00:00.000Z",
                 },
@@ -1580,6 +1594,28 @@ describe("Booking Web public bootstrap parity", () => {
           }
           if (text.includes("UPDATE pms.inventory_days")) {
             return { rows: [{ reserved: true }] };
+          }
+          if (text.includes("FROM booking.promo_definitions promo")) {
+            return {
+              rows: [
+                {
+                  promoDefinitionId: "d9000000-0000-0000-0000-000000000682",
+                  code: "SUMMER20",
+                  discountType: "percentage",
+                  discountValue: "20.00",
+                  propertyCurrency: "EUR",
+                  minBookingValue: null,
+                  applicableRoomIds: null,
+                  validFrom: null,
+                  validUntil: null,
+                  stayDateFrom: null,
+                  stayDateUntil: null,
+                  isActive: true,
+                  maxUses: 10,
+                  currentUses: 2,
+                },
+              ],
+            };
           }
           if (text.includes("SELECT * FROM booking_row")) {
             bookingWriteValues = values;
@@ -1817,6 +1853,21 @@ describe("Booking Web public bootstrap parity", () => {
     expect(
       optionalPhone.calls.find((text) => text.includes("SELECT * FROM booking_row")),
     ).toContain('check_in::text AS "checkIn"');
+
+    const promoBooking = createAdapter(false, "20.50", "request", "10.25", true);
+    await expect(
+      promoBooking.adapter.createBooking(
+        "hotel-alpenrose",
+        { ...request, promoCode: "SUMMER20" },
+        context,
+      ),
+    ).resolves.toMatchObject({ bookingReference: "B-OPTIONAL" });
+    expect(
+      promoBooking.calls.filter((text) => text.includes("SET current_uses = current_uses + 1")),
+    ).toHaveLength(1);
+    expect(
+      promoBooking.calls.filter((text) => text.includes("INSERT INTO booking.promo_applications")),
+    ).toHaveLength(1);
 
     const instant = createAdapter(false, "20.50", "instant");
     await expect(
@@ -2095,6 +2146,11 @@ describe("Booking Web public bootstrap parity", () => {
     expect(calls.some((text) => text.includes("'pms-reservation-handoff'"))).toBe(true);
     expect(calls.filter((text) => text === "COMMIT")).toHaveLength(1);
     expect(calls.filter((text) => text === "ROLLBACK")).toHaveLength(3);
+    const promoReversals = calls.filter((text) =>
+      text.includes("UPDATE booking.promo_applications"),
+    );
+    expect(promoReversals).toHaveLength(1);
+    expect(promoReversals[0]).toContain("current_uses = GREATEST(promo.current_uses - 1, 0)");
   });
 
   it("rejects paid inventory-releasing guest mutations until refunds are integrated", async () => {

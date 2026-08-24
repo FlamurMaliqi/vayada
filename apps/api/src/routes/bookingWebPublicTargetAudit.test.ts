@@ -153,12 +153,88 @@ describe("target Booking public audit regressions", () => {
     expect(target.calls.some((call) => call.text.includes("booking.quote_sessions"))).toBe(false);
     expect(target.calls.map((call) => call.text)).toContain("ROLLBACK");
   });
+
+  it("applies a property-currency promo to the authoritative checkout quote", async () => {
+    const target = quoteHarness({ propertyId: propertyA, promo: {} });
+
+    await expect(
+      target.adapter.quoteBooking(
+        "hotel-a",
+        {
+          roomTypeId: "room-deluxe",
+          checkIn: "2026-09-12",
+          checkOut: "2026-09-15",
+          adults: 2,
+          numberOfRooms: 1,
+          paymentMethod: "pay_at_property",
+          rateType: "nonrefundable",
+          promoCode: "summer20",
+        },
+        quoteContext(),
+      ),
+    ).resolves.toMatchObject({
+      promoCode: "SUMMER20",
+      promoDiscount: 54,
+      totalAmount: 216,
+      currency: "EUR",
+    });
+
+    expect(target.promoApplicationWrite?.values).toEqual([
+      propertyA,
+      "49b3e1e1-95f8-47f2-8bf1-c2d18e3d7a66",
+      "59b3e1e1-95f8-47f2-8bf1-c2d18e3d7a66",
+      "SUMMER20",
+      "54.00",
+      "EUR",
+      expect.any(String),
+    ]);
+  });
+
+  it.each([
+    [{ validUntil: "2026-07-19" }, { code: "SUMMER20" }, "This promo code has expired."],
+    [
+      { stayDateFrom: "2026-09-13" },
+      { code: "SUMMER20", checkIn: "2026-09-12" },
+      "This promo code is not valid for your selected dates.",
+    ],
+    [
+      { applicableRoomIds: ["room-suite"] },
+      { code: "SUMMER20", roomTypeId: "room-deluxe" },
+      "This promo code is not available for the selected room.",
+    ],
+    [
+      { minBookingValue: "500.00" },
+      { code: "SUMMER20", bookingTotal: 270 },
+      "Your booking must be at least EUR 500 to use this code.",
+    ],
+    [
+      { currentUses: 10, maxUses: 10 },
+      { code: "SUMMER20" },
+      "This promo code has reached its maximum number of uses.",
+    ],
+  ])("returns the specific promo rule failure message", async (promo, request, message) => {
+    const target = quoteHarness({ propertyId: propertyA, promo });
+
+    await expect(target.adapter.validatePromo("hotel-a", request)).resolves.toMatchObject({
+      valid: false,
+      code: "SUMMER20",
+      message,
+    });
+  });
 });
 
 function quoteHarness(options: {
   propertyId: string;
   timezone?: string;
   referenceCollision?: boolean;
+  promo?: Partial<{
+    validUntil: string | null;
+    stayDateFrom: string | null;
+    applicableRoomIds: string[] | null;
+    minBookingValue: string | null;
+    currentUses: number;
+    maxUses: number;
+  }>;
 }) {
   const calls: Array<{ text: string; values?: readonly unknown[] }> = [];
   let publicQuoteReference: string | undefined;
@@ -217,6 +293,32 @@ function quoteHarness(options: {
           ],
         };
       }
+      if (text.includes("FROM booking.promo_definitions promo")) {
+        return {
+          rows:
+            options.promo === undefined
+              ? []
+              : [
+                  {
+                    promoDefinitionId: "59b3e1e1-95f8-47f2-8bf1-c2d18e3d7a66",
+                    code: "SUMMER20",
+                    discountType: "percentage",
+                    discountValue: "20.00",
+                    propertyCurrency: "EUR",
+                    minBookingValue: null,
+                    applicableRoomIds: null,
+                    validFrom: null,
+                    validUntil: null,
+                    stayDateFrom: null,
+                    stayDateUntil: null,
+                    isActive: true,
+                    maxUses: 10,
+                    currentUses: 0,
+                    ...options.promo,
+                  },
+                ],
+        };
+      }
       if (text.includes("INSERT INTO platform.idempotency_keys")) {
         return { rows: [{ id: "799e6c2a-95f8-47f2-8bf1-c2d18e3d7a66" }] };
       }
@@ -253,6 +355,9 @@ function quoteHarness(options: {
     },
     get quoteWrite() {
       return calls.find((call) => call.text.includes("INSERT INTO booking.quote_sessions"));
+    },
+    get promoApplicationWrite() {
+      return calls.find((call) => call.text.includes("INSERT INTO booking.promo_applications"));
     },
   };
 }

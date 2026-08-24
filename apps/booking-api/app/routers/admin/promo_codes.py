@@ -1,3 +1,4 @@
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.dependencies import require_current_hotel
@@ -17,11 +18,18 @@ def _promo_to_response(row: dict) -> PromoCodeResponse:
         code=row["code"],
         discount_type=row["discount_type"],
         discount_value=float(row["discount_value"]),
+        min_booking_value=(
+            float(row["min_booking_value"]) if row.get("min_booking_value") is not None else None
+        ),
+        applicable_room_ids=[str(room_id) for room_id in row.get("applicable_room_ids") or []]
+        or None,
         valid_from=row.get("valid_from"),
         valid_until=row.get("valid_until"),
+        stay_date_from=row.get("stay_date_from"),
+        stay_date_until=row.get("stay_date_until"),
         is_active=row["is_active"],
-        max_uses=row.get("max_uses"),
-        use_count=row["use_count"],
+        max_uses=row["max_uses"],
+        current_uses=row["current_uses"],
         created_at=row.get("created_at"),
     )
 
@@ -37,16 +45,24 @@ async def create_promo_code(
     data: CreatePromoCodeRequest,
     hotel: dict = Depends(require_current_hotel),
 ):
-    row = await PromoCodeRepository.create(
-        hotel_id=str(hotel["id"]),
-        code=data.code,
-        discount_type=data.discount_type,
-        discount_value=data.discount_value,
-        valid_from=data.valid_from,
-        valid_until=data.valid_until,
-        is_active=data.is_active,
-        max_uses=data.max_uses,
-    )
+    try:
+        row = await PromoCodeRepository.create(
+            hotel_id=str(hotel["id"]),
+            code=data.code,
+            discount_type=data.discount_type,
+            discount_value=data.discount_value,
+            min_booking_value=data.min_booking_value,
+            applicable_room_ids=[str(room_id) for room_id in data.applicable_room_ids or []]
+            or None,
+            valid_from=data.valid_from,
+            valid_until=data.valid_until,
+            stay_date_from=data.stay_date_from,
+            stay_date_until=data.stay_date_until,
+            is_active=data.is_active,
+            max_uses=data.max_uses,
+        )
+    except asyncpg.UniqueViolationError as error:
+        raise HTTPException(status_code=409, detail="Promo code already exists") from error
     return _promo_to_response(row)
 
 
@@ -61,24 +77,36 @@ async def update_promo_code(
     if not existing:
         raise HTTPException(status_code=404, detail="Promo code not found")
 
-    updates = {}
-    for field in (
-        "code",
-        "discount_type",
-        "discount_value",
-        "valid_from",
-        "valid_until",
-        "is_active",
-        "max_uses",
-    ):
-        value = getattr(data, field)
-        if value is not None:
-            if field == "code":
-                value = value.upper()
-            updates[field] = value
+    updates = data.model_dump(exclude_unset=True)
+    for required_field in ("code", "discount_type", "discount_value", "is_active", "max_uses"):
+        if required_field in updates and updates[required_field] is None:
+            raise HTTPException(status_code=422, detail=f"{required_field} cannot be null")
+    if "code" in updates:
+        updates["code"] = updates["code"].upper()
+    if "applicable_room_ids" in updates and updates["applicable_room_ids"] is not None:
+        updates["applicable_room_ids"] = [
+            str(room_id) for room_id in updates["applicable_room_ids"]
+        ]
+
+    effective = {**existing, **updates}
+    if effective["discount_type"] == "percentage" and effective["discount_value"] > 100:
+        raise HTTPException(status_code=422, detail="Percentage discount cannot exceed 100")
+    if effective.get("valid_from") and effective.get("valid_until"):
+        if effective["valid_until"] < effective["valid_from"]:
+            raise HTTPException(
+                status_code=422, detail="Valid until must be on or after valid from"
+            )
+    if effective.get("stay_date_from") and effective.get("stay_date_until"):
+        if effective["stay_date_until"] < effective["stay_date_from"]:
+            raise HTTPException(
+                status_code=422, detail="Stays until must be on or after stays from"
+            )
 
     if updates:
-        row = await PromoCodeRepository.update(promo_id, hotel_id, updates)
+        try:
+            row = await PromoCodeRepository.update(promo_id, hotel_id, updates)
+        except asyncpg.UniqueViolationError as error:
+            raise HTTPException(status_code=409, detail="Promo code already exists") from error
     else:
         row = existing
 

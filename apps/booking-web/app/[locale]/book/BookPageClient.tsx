@@ -109,6 +109,7 @@ function BookPageContent() {
     variableNightlyRates,
     roomTotal,
     promoDiscount,
+    promoError,
     discountAmount,
     grandTotal,
   } = usePricing({
@@ -394,15 +395,24 @@ function BookPageContent() {
               )}
 
               {/* Promo Discount */}
+              {promoError && promoCodeParam && (
+                <p role="alert" className="border-b border-red-100 py-3 text-sm text-red-600">
+                  {promoError}
+                </p>
+              )}
               {promoDiscount && (
                 <div className="flex items-center justify-between pt-3 pb-3 border-b border-gray-100">
                   <p className="text-sm text-primary-600 font-medium">
-                    Promo {promoCodeParam}
-                    {promoDiscount.type === "percentage" ? ` (-${promoDiscount.value}%)` : ""}
+                    Promo {promoCodeParam}:{" "}
+                    {promoDiscount.type === "percentage"
+                      ? `-${promoDiscount.value}%`
+                      : `-${formatPrice(discountAmount, selectedCurrency)}`}
                   </p>
-                  <p className="text-sm font-semibold text-primary-600">
-                    -{formatPrice(discountAmount, selectedCurrency)}
-                  </p>
+                  {promoDiscount.type === "percentage" && (
+                    <p className="text-sm font-semibold text-primary-600">
+                      -{formatPrice(discountAmount, selectedCurrency)}
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -755,15 +765,24 @@ function BookPageContent() {
               </div>
 
               {/* Promo Discount */}
+              {promoError && promoCodeParam && (
+                <p role="alert" className="pt-2 text-sm text-red-600">
+                  {promoError}
+                </p>
+              )}
               {promoDiscount && (
                 <div className="flex justify-between text-sm pt-2">
                   <span className="text-primary-600 font-medium">
-                    Promo {promoCodeParam}
-                    {promoDiscount.type === "percentage" ? ` (-${promoDiscount.value}%)` : ""}
+                    Promo {promoCodeParam}:{" "}
+                    {promoDiscount.type === "percentage"
+                      ? `-${promoDiscount.value}%`
+                      : `-${formatPrice(discountAmount, selectedCurrency)}`}
                   </span>
-                  <span className="font-semibold text-primary-600">
-                    -{formatPrice(discountAmount, selectedCurrency)}
-                  </span>
+                  {promoDiscount.type === "percentage" && (
+                    <span className="font-semibold text-primary-600">
+                      -{formatPrice(discountAmount, selectedCurrency)}
+                    </span>
+                  )}
                 </div>
               )}
 

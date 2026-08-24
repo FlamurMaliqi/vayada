@@ -6,6 +6,7 @@ export const BOOKING_ADMIN_PROPERTY_ID = "f6853000-0000-4000-8000-000000000001";
 export const BOOKING_ADMIN_ORGANIZATION_ID = "org_hotel_group";
 export const BOOKING_ADMIN_HOTEL_SLUG = "hotel-alpenrose";
 export const BOOKING_ADMIN_ROOMS_PATH = `/api/pms/properties/${BOOKING_ADMIN_HOTEL_ID}/rooms`;
+export const BOOKING_ADMIN_ROOM_TYPES_PATH = `/api/pms/properties/${BOOKING_ADMIN_PROPERTY_ID}/room-types`;
 export const BOOKING_ADMIN_ADDON_ITEMS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/addon-items`;
 export const BOOKING_ADMIN_PROMO_CODES_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/promo-codes`;
 export const BOOKING_ADMIN_PROPERTY_LINK_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/property-link`;
@@ -76,12 +77,15 @@ export interface BookingAdminPromoCodesFixture {
     code: string;
     discountType: string;
     discountValue: string;
-    currency: string | null;
+    minBookingValue: string | null;
+    applicableRoomIds: string[] | null;
     validFrom: string | null;
     validUntil: string | null;
+    stayDateFrom: string | null;
+    stayDateUntil: string | null;
     isActive: boolean;
-    maxUses: number | null;
-    useCount: number;
+    maxUses: number;
+    currentUses: number;
     createdAt: string;
     updatedAt: string;
   }>;
@@ -253,12 +257,15 @@ const defaultPromoCodes: BookingAdminPromoCodesFixture = {
       code: "SUMMER20",
       discountType: "percentage",
       discountValue: "20.00",
-      currency: null,
+      minBookingValue: "500.00",
+      applicableRoomIds: ["f6853000-0000-4000-8000-000000000010"],
       validFrom: "2026-07-01",
       validUntil: "2026-08-31",
+      stayDateFrom: "2026-08-01",
+      stayDateUntil: "2026-09-30",
       isActive: true,
       maxUses: 50,
-      useCount: 3,
+      currentUses: 3,
       createdAt: "2026-06-01T10:00:00.000Z",
       updatedAt: "2026-06-01T10:00:00.000Z",
     },
@@ -567,6 +574,24 @@ export async function mockBookingAdminBookingFlow(
   );
   await page.route(`**${BOOKING_ADMIN_PROMO_CODES_PATH}**`, (route) =>
     route.fulfill({ json: options.promoCodes ?? defaultPromoCodes }),
+  );
+  await page.route(`**${BOOKING_ADMIN_ROOM_TYPES_PATH}**`, (route) =>
+    route.fulfill({
+      json: {
+        contractVersion: "pms-operations.v1",
+        propertyId: BOOKING_ADMIN_PROPERTY_ID,
+        items: [
+          {
+            roomTypeId: "f6853000-0000-4000-8000-000000000010",
+            name: "Sea View Suite",
+          },
+          {
+            roomTypeId: "f6853000-0000-4000-8000-000000000011",
+            name: "Pool Villa",
+          },
+        ],
+      },
+    }),
   );
   await page.route(`**${BOOKING_ADMIN_ADDON_SETTINGS_PATH}*`, (route) =>
     route.fulfill({ json: options.addonSettings ?? defaultAddonSettings }),

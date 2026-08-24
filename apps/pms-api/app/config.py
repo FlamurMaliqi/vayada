@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     BOOKING_ENGINE_API_URL: str = Field(
         "http://localhost:8001", description="Booking engine backend URL for addon lookups"
     )
+    INTERNAL_API_KEY: str = Field(
+        "", description="Shared key for authenticated booking-engine service calls"
+    )
 
     # Stripe
     STRIPE_SECRET_KEY: str = ""
