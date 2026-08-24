@@ -68,9 +68,16 @@ test.describe("pms-web smoke", () => {
 
     await mockPmsWebAuthenticatedSession(page);
     await mockPmsWebTargetRoutes(page);
+    const activationResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname ===
+          `/api/pms/properties/${PMS_WEB_PROPERTY_ID}/module-activations`,
+    );
     await page.goto("/settings/feature-hub");
 
     await expect(page.getByRole("heading", { name: "Feature Hub" })).toBeVisible();
+    await activationResponse;
     await expect(page.locator("article")).toHaveCount(0);
     await expect(page.getByRole("button", { name: /PMS Modules/i })).toHaveCount(0);
     for (const unavailable of ["Inbox", "Financials", "Affiliates"]) {

@@ -174,13 +174,20 @@ test.describe("booking-admin Feature Hub", () => {
         }),
       );
     });
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        }),
+    );
+
+    const navigation = page.getByRole("navigation");
+    await expect(navigation.getByRole("link", { name: "Affiliates" })).toHaveCount(0);
     releaseReads();
 
     const activate = page.getByRole("switch", { name: "Activate Affiliates" });
     await expect(activate).toBeEnabled();
     await expect(activate).not.toBeChecked();
-    await expect(
-      page.getByRole("navigation").getByRole("link", { name: "Affiliates" }),
-    ).toHaveCount(0);
+    await expect(navigation.getByRole("link", { name: "Affiliates" })).toHaveCount(0);
   });
 });
