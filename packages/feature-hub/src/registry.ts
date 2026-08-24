@@ -33,6 +33,7 @@ export const CORE_NAV_ITEMS: Record<FeatureProduct, CoreNavItem[]> = {
     { label: "Dashboard", href: "/dashboard" },
     { label: "Calendar", href: "/calendar" },
     { label: "Reservations", href: "/bookings" },
+    { label: "Reviews", href: "/reviews" },
     { label: "Rooms & Rates", href: "/rooms" },
     { label: "Channel Manager", href: "/channel-manager" },
     { label: "Settings", href: "/settings" },
@@ -41,8 +42,14 @@ export const CORE_NAV_ITEMS: Record<FeatureProduct, CoreNavItem[]> = {
     { label: "Dashboard", href: "/" },
     { label: "Design Studio", href: "/design-studio" },
     { label: "Booking Flow", href: "/booking-flow" },
+    { label: "Promo Codes", href: "/promo-codes" },
     { label: "Settings", href: "/settings" },
   ],
+};
+
+export const FEATURE_MODULE_NAV_INDEX: Record<FeatureProduct, number> = {
+  pms: 6,
+  booking_engine: 3,
 };
 
 export function modulesForProduct(product: FeatureProduct): FeatureModule[] {

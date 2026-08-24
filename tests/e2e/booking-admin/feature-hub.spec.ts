@@ -97,6 +97,26 @@ test.describe("booking-admin Feature Hub", () => {
     await expect(page.getByText("Syncing")).toHaveCount(0);
     await expect(page.getByRole("switch", { name: "Deactivate Affiliates" })).toBeChecked();
     await expect(navigation.getByRole("link", { name: "Affiliates" })).toBeVisible();
+    await expect(navigation.getByRole("link")).toHaveText([
+      "Dashboard",
+      "Design Studio",
+      "Booking Flow",
+      "Affiliates",
+      "Promo Codes",
+      "Settings",
+      "Feature Hub",
+    ]);
+    const preview = page
+      .getByRole("heading", { name: "Booking Engine navigation" })
+      .locator("xpath=ancestor::section");
+    await expect(preview.getByRole("listitem")).toHaveText([
+      "Dashboard",
+      "Design Studio",
+      "Booking Flow",
+      "Affiliates",
+      "Promo Codes",
+      "Settings",
+    ]);
     expect(activationWrites).toBe(1);
 
     const readsBeforeReload = activationReads;

@@ -16,6 +16,7 @@ import {
   activeNavModules,
   CORE_NAV_ITEMS,
   FEATURE_CATEGORIES,
+  FEATURE_MODULE_NAV_INDEX,
   modulesForProduct,
 } from "./registry";
 import type {
@@ -466,7 +467,25 @@ function NavigationPreview({
   const nonNavActive = modulesForProduct(product).filter(
     (module) => active.has(module.id) && !module.navItem && module.settingsNote,
   );
-  const totalItems = CORE_NAV_ITEMS[product].length + navModules.length;
+  const coreNavItems = CORE_NAV_ITEMS[product];
+  const moduleNavIndex = FEATURE_MODULE_NAV_INDEX[product];
+  const previewItems = [
+    ...coreNavItems.slice(0, moduleNavIndex).map((item) => ({
+      key: `core:${item.href}`,
+      label: item.label,
+      isModule: false,
+    })),
+    ...navModules.map((module) => ({
+      key: `module:${module.id}`,
+      label: module.navItem!.label,
+      isModule: true,
+    })),
+    ...coreNavItems.slice(moduleNavIndex).map((item) => ({
+      key: `core:${item.href}`,
+      label: item.label,
+      isModule: false,
+    })),
+  ];
 
   return (
     <section className="rounded-lg border border-gray-200 bg-white">
@@ -483,26 +502,25 @@ function NavigationPreview({
         <ChevronDownIcon className="h-4 w-4 text-gray-400 lg:hidden" />
       </button>
       <div className="p-3">
-        <div className="space-y-1.5">
-          {CORE_NAV_ITEMS[product].map((item) => (
-            <div
-              key={item.href}
-              className="flex h-9 items-center gap-2 rounded-md px-2 text-[13px] text-gray-500"
+        <ol className="space-y-1.5">
+          {previewItems.map((item) => (
+            <li
+              key={item.key}
+              className={cx(
+                "flex h-9 items-center gap-2 rounded-md px-2 text-[13px]",
+                item.isModule ? "bg-primary-50 font-semibold text-primary-700" : "text-gray-500",
+              )}
             >
-              <span className="h-1.5 w-1.5 rounded-full bg-gray-300" />
+              <span
+                className={cx(
+                  "rounded-full",
+                  item.isModule ? "h-2 w-2 bg-primary-500" : "h-1.5 w-1.5 bg-gray-300",
+                )}
+              />
               <span className="truncate">{item.label}</span>
-            </div>
+            </li>
           ))}
-          {navModules.map((module) => (
-            <div
-              key={module.id}
-              className="flex h-9 items-center gap-2 rounded-md bg-primary-50 px-2 text-[13px] font-semibold text-primary-700"
-            >
-              <span className="h-2 w-2 rounded-full bg-primary-500" />
-              <span className="truncate">{module.navItem?.label}</span>
-            </div>
-          ))}
-        </div>
+        </ol>
         {nonNavActive.length > 0 && (
           <div className="mt-4 space-y-2 border-t border-gray-100 pt-3">
             {nonNavActive.map((module) => (
@@ -516,7 +534,7 @@ function NavigationPreview({
           </div>
         )}
         <div className="mt-4 flex items-center justify-between border-t border-gray-100 pt-3 text-xs font-medium text-gray-500">
-          <span>{totalItems} items</span>
+          <span>{previewItems.length} items</span>
           <span>{navModules.length} module items</span>
         </div>
       </div>

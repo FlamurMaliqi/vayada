@@ -83,6 +83,18 @@ test.describe("pms-web smoke", () => {
     for (const unavailable of ["Inbox", "Financials", "Affiliates"]) {
       await expect(page.getByRole("heading", { name: unavailable, exact: true })).toHaveCount(0);
     }
+    const preview = page
+      .getByRole("heading", { name: "PMS navigation" })
+      .locator("xpath=ancestor::section");
+    await expect(preview.getByRole("listitem")).toHaveText([
+      "Dashboard",
+      "Calendar",
+      "Reservations",
+      "Reviews",
+      "Rooms & Rates",
+      "Channel Manager",
+      "Settings",
+    ]);
 
     await assertHealthy();
   });
