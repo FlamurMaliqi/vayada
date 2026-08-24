@@ -42,7 +42,6 @@ import {
   type BookingAcceptanceMode,
   type PropertySettings,
   type PropertySettingsUpdate,
-  type CustomDomainStatus,
 } from "@/services/settings";
 import { ToggleSwitch, FeedbackAlert, SaveButton } from "@/components/ui";
 import { CountrySelect } from "@/components/settings/CountrySelect";
@@ -265,10 +264,6 @@ export default function SettingsPage() {
     null,
   );
 
-  // Custom domain
-  const [domainInput, setDomainInput] = useState("");
-  const [domainStatus, setDomainStatus] = useState<CustomDomainStatus | null>(null);
-
   // Stripe Connect / Payments
   const [stripeAccountId, setStripeAccountId] = useState<string | null>(null);
   const [stripeOnboarded, setStripeOnboarded] = useState(false);
@@ -341,15 +336,6 @@ export default function SettingsPage() {
           setAcceptanceError("Select a hotel before loading booking acceptance settings.");
           return null;
         }
-        settingsService
-          .getCustomDomainStatus()
-          .then(setDomainStatus)
-          .catch((error) => {
-            setDomainStatus(null);
-            const message =
-              error instanceof Error ? error.message : "Failed to load custom domain status.";
-            setFeedback({ type: "error", message });
-          });
         const hotelId = readBookingHotelId(property);
         if (!hotelId) {
           setBillingPlanLoading(false);
@@ -796,53 +782,6 @@ export default function SettingsPage() {
     updatePois(pois);
   };
 
-  const handleConnectDomain = async () => {
-    if (!domainInput.trim()) {
-      setFeedback({ type: "error", message: "Enter a custom domain." });
-      return;
-    }
-
-    try {
-      setSaving(true);
-      setFeedback(null);
-      const status = await settingsService.connectCustomDomain(domainInput);
-      setDomainStatus(status);
-      setDomainInput("");
-      setFeedback({ type: "success", message: t("settings.feedback.domainConnected") });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to connect custom domain.";
-      setFeedback({ type: "error", message });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleDisconnectDomain = async () => {
-    try {
-      setSaving(true);
-      setFeedback(null);
-      await settingsService.disconnectCustomDomain();
-      const status = await settingsService.getCustomDomainStatus();
-      setDomainStatus(status);
-      setFeedback({ type: "success", message: t("settings.feedback.domainRemoved") });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to remove custom domain.";
-      setFeedback({ type: "error", message });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleRefreshDomainStatus = async () => {
-    try {
-      const status = await settingsService.getCustomDomainStatus();
-      setDomainStatus(status);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to refresh custom domain.";
-      setFeedback({ type: "error", message });
-    }
-  };
-
   const sections: SettingsNavSection[] = [
     { id: "property", label: t("settings.tabs.property"), icon: HotelIcon },
     { id: "booking", label: t("settings.tabs.booking"), icon: CalendarDaysIcon },
@@ -1161,112 +1100,6 @@ export default function SettingsPage() {
                 className="w-full px-2.5 py-2 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-y"
               />
             </div>
-          </div>
-
-          {/* Custom Domain */}
-          <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5">
-            <h2 className="text-sm font-semibold text-gray-900">
-              {t("settings.booking.customDomain")}
-            </h2>
-            {domainStatus?.configured ? (
-              <div className="space-y-4 mt-3">
-                <div className="flex items-center gap-3">
-                  <span className="text-[13px] font-medium text-gray-900">
-                    {domainStatus.domain}
-                  </span>
-                  <span
-                    className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium ${
-                      domainStatus.sslStatus === "active"
-                        ? "bg-green-100 text-green-700"
-                        : domainStatus.status === "pending"
-                          ? "bg-yellow-100 text-yellow-700"
-                          : "bg-gray-100 text-gray-700"
-                    }`}
-                  >
-                    {domainStatus.sslStatus === "active"
-                      ? t("settings.booking.active")
-                      : domainStatus.status === "pending"
-                        ? t("settings.booking.pendingDns")
-                        : domainStatus.sslStatus || t("settings.booking.checking")}
-                  </span>
-                  <button
-                    onClick={handleRefreshDomainStatus}
-                    className="text-[11px] text-primary-600 hover:text-primary-700"
-                  >
-                    {t("settings.booking.refresh")}
-                  </button>
-                </div>
-
-                {domainStatus.sslStatus !== "active" && domainStatus.dnsRecords.length > 0 && (
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                    <p className="text-[13px] font-medium text-blue-900 mb-2">
-                      {t("settings.booking.dnsSetupRequired")}
-                    </p>
-                    <p className="text-[13px] text-blue-700 mb-2">
-                      {t("settings.booking.dnsInstructions")}
-                    </p>
-                    {domainStatus.dnsRecords.map((record) => (
-                      <div
-                        key={`${record.type}:${record.name}`}
-                        className="bg-white rounded p-3 font-mono text-[11px] text-gray-800 space-y-1"
-                      >
-                        <div>
-                          <span className="text-gray-500">{t("settings.booking.dnsType")}</span>{" "}
-                          {record.type}
-                        </div>
-                        <div>
-                          <span className="text-gray-500">{t("settings.booking.dnsName")}</span>{" "}
-                          {record.name}
-                        </div>
-                        <div>
-                          <span className="text-gray-500">{t("settings.booking.dnsTarget")}</span>{" "}
-                          {record.value}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {domainStatus.verificationErrors.length > 0 && (
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                    <p className="text-[13px] text-red-700">
-                      {domainStatus.verificationErrors.join(", ")}
-                    </p>
-                  </div>
-                )}
-
-                <button
-                  onClick={handleDisconnectDomain}
-                  disabled={saving}
-                  className="px-4 py-2 text-[13px] font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-60"
-                >
-                  {t("settings.booking.removeDomain")}
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-3 mt-1">
-                <p className="text-[13px] text-gray-500">
-                  {t("settings.booking.customDomainDesc")}
-                </p>
-                <div className="flex flex-col gap-3 sm:flex-row">
-                  <input
-                    type="text"
-                    value={domainInput}
-                    onChange={(e) => setDomainInput(e.target.value)}
-                    placeholder={t("settings.booking.customDomainPlaceholder")}
-                    disabled={saving}
-                    className="flex-1 px-2.5 py-1.5 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:bg-gray-50"
-                  />
-                  <button
-                    onClick={handleConnectDomain}
-                    disabled={saving}
-                    className="px-4 py-2 text-[13px] font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-60"
-                  >
-                    {t("settings.booking.connectDomain")}
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Save button */}

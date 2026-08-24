@@ -159,6 +159,38 @@ test.describe("booking-admin settings no-legacy guard", () => {
         },
       });
     });
+    await page.goto("/settings");
+    await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Booking", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Custom Domain" })).toHaveCount(0);
+    await expect(page.getByPlaceholder("booking.yourdomain.com")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Location map", exact: true }).click();
+    await expect(
+      page.getByText("Automatic property map centering is not available on next-api yet."),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: "Payments", exact: true }).click();
+    await page.getByRole("button", { name: "Save Changes", exact: true }).click();
+    await expect(page.getByText("Payment settings saved").first()).toBeVisible();
+    expect(financePatchCount).toBe(1);
+
+    await assertNoLegacyCalls();
+    await assertHealthy();
+  });
+
+  test("moves custom domain setup to Design Studio and updates the live preview", async ({
+    page,
+  }, testInfo) => {
+    test.skip(
+      !PROD,
+      "Requires a production booking-admin build so the authenticated shell hydrates.",
+    );
+
+    const assertHealthy = watchPageHealth(page, testInfo);
+    await mockBookingAdminAuthenticatedSession(page);
+    await mockBookingAdminShellRoutes(page);
     let customDomain: BookingAdminCustomDomainFixture = defaultCustomDomain;
     await page.route(`**${BOOKING_ADMIN_CUSTOM_DOMAIN_PATH}*`, async (route) => {
       const method = route.request().method();
@@ -166,7 +198,7 @@ test.describe("booking-admin settings no-legacy guard", () => {
         const body = route.request().postDataJSON() as { domain: string };
         customDomain = {
           hotelId: BOOKING_ADMIN_HOTEL_ID,
-          propertyId: "f6853000-0000-0000-0000-000000000001",
+          propertyId: BOOKING_ADMIN_PROPERTY_ID,
           configured: true,
           domain: body.domain,
           status: "pending",
@@ -194,28 +226,30 @@ test.describe("booking-admin settings no-legacy guard", () => {
       await route.fulfill({ json: customDomain });
     });
 
-    await page.goto("/settings");
-    await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+    await page.goto("/design-studio");
 
-    await page.getByRole("button", { name: "Booking", exact: true }).click();
+    const customDomainHeading = page.getByRole("heading", { name: "Custom Domain" });
+    const heroImageHeading = page.getByRole("heading", { name: /Hero Image/ });
+    const preview = page.getByLabel("Live booking page preview");
+    await expect(customDomainHeading).toBeVisible();
+    await expect(heroImageHeading).toBeVisible();
+    const mediaHeadings = await page.locator("h2").allTextContents();
+    expect(mediaHeadings.indexOf("Custom Domain")).toBeLessThan(
+      mediaHeadings.findIndex((heading) => heading.startsWith("Hero Image")),
+    );
+    await expect(preview).toContainText("hotel-alpenrose.booking.vayada.com");
+
     await page.getByPlaceholder("booking.yourdomain.com").fill("book.alpenrose.example");
     await page.getByRole("button", { name: "Connect Domain" }).click();
-    await expect(page.getByText("book.alpenrose.example").first()).toBeVisible();
+
+    await expect(preview).toContainText("book.alpenrose.example");
+    await expect(preview).not.toContainText("hotel-alpenrose.booking.vayada.com");
     await expect(page.getByText("custom.booking.vayada.com")).toBeVisible();
+
     await page.getByRole("button", { name: "Remove Domain" }).click();
+
     await expect(page.getByPlaceholder("booking.yourdomain.com")).toBeVisible();
-
-    await page.getByRole("button", { name: "Location map", exact: true }).click();
-    await expect(
-      page.getByText("Automatic property map centering is not available on next-api yet."),
-    ).toBeVisible();
-
-    await page.getByRole("button", { name: "Payments", exact: true }).click();
-    await page.getByRole("button", { name: "Save Changes", exact: true }).click();
-    await expect(page.getByText("Payment settings saved").first()).toBeVisible();
-    expect(financePatchCount).toBe(1);
-
-    await assertNoLegacyCalls();
+    await expect(preview).toContainText("hotel-alpenrose.booking.vayada.com");
     await assertHealthy();
   });
 
