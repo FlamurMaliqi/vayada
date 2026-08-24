@@ -115,6 +115,21 @@ class BookingDraftRepository:
         return dict(row) if row else None
 
     @staticmethod
+    async def release_materialization_claim(draft_id: str, booking_id: str) -> None:
+        """Release a failed pre-insert claim so a safe retry can materialize the draft."""
+        await Database.execute(
+            """
+            UPDATE booking_drafts draft
+               SET materialized_booking_id = NULL
+             WHERE draft.id = $1
+               AND draft.materialized_booking_id = $2
+               AND NOT EXISTS (SELECT 1 FROM bookings WHERE id = $2)
+            """,
+            draft_id,
+            booking_id,
+        )
+
+    @staticmethod
     async def delete(draft_id: str) -> bool:
         result = await Database.execute("DELETE FROM booking_drafts WHERE id = $1", draft_id)
         return result == "DELETE 1"

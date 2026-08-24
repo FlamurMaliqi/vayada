@@ -1,5 +1,7 @@
 import logging
-from datetime import date
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
@@ -32,6 +34,14 @@ resolve_router = APIRouter(prefix="/api", tags=["domain-resolution"])
 
 class IncrementPromoResponse(BaseModel):
     ok: bool
+
+
+def _hotel_local_date(hotel: dict) -> date:
+    try:
+        timezone = ZoneInfo(str(hotel.get("timezone") or "UTC"))
+    except ZoneInfoNotFoundError:
+        timezone = ZoneInfo("UTC")
+    return datetime.now(UTC).astimezone(timezone).date()
 
 
 class ExchangeRatesResponse(BaseModel):
@@ -120,7 +130,13 @@ async def get_payment_settings(slug: str):
 
 
 @router.get("/{slug}/validate-promo", response_model=ValidatePromoCodeResponse)
-async def validate_promo_code(slug: str, code: str = Query(...)):
+async def validate_promo_code(
+    slug: str,
+    code: str = Query(...),
+    check_in: date | None = Query(default=None),
+    room_type_id: str | None = Query(default=None),
+    booking_total: Decimal | None = Query(default=None, ge=0),
+):
     hotel = await BookingHotelRepository.get_by_slug(slug)
     if not hotel:
         raise HTTPException(status_code=404, detail=f"Hotel '{slug}' not found")
@@ -133,22 +149,56 @@ async def validate_promo_code(slug: str, code: str = Query(...)):
 
     if not promo["is_active"]:
         return ValidatePromoCodeResponse(
-            valid=False, code=code.upper(), message="This promo code is no longer active"
+            valid=False, code=code.upper(), message="This promo code is not active."
         )
 
-    today = date.today()
+    today = _hotel_local_date(hotel)
     if promo["valid_from"] and today < promo["valid_from"]:
         return ValidatePromoCodeResponse(
-            valid=False, code=code.upper(), message="This promo code is not yet valid"
+            valid=False,
+            code=code.upper(),
+            message="This promo code is not valid for your selected dates.",
         )
     if promo["valid_until"] and today > promo["valid_until"]:
         return ValidatePromoCodeResponse(
-            valid=False, code=code.upper(), message="This promo code has expired"
+            valid=False, code=code.upper(), message="This promo code has expired."
         )
 
-    if promo["max_uses"] is not None and promo["use_count"] >= promo["max_uses"]:
+    if promo["current_uses"] >= promo["max_uses"]:
         return ValidatePromoCodeResponse(
-            valid=False, code=code.upper(), message="This promo code has reached its usage limit"
+            valid=False,
+            code=code.upper(),
+            message="This promo code has reached its maximum number of uses.",
+        )
+    if check_in and (
+        (promo.get("stay_date_from") and check_in < promo["stay_date_from"])
+        or (promo.get("stay_date_until") and check_in > promo["stay_date_until"])
+    ):
+        return ValidatePromoCodeResponse(
+            valid=False,
+            code=code.upper(),
+            message="This promo code is not valid for your selected dates.",
+        )
+    if (
+        room_type_id
+        and promo.get("applicable_room_ids")
+        and str(room_type_id) not in {str(room_id) for room_id in promo["applicable_room_ids"]}
+    ):
+        return ValidatePromoCodeResponse(
+            valid=False,
+            code=code.upper(),
+            message="This promo code is not available for the selected room.",
+        )
+    minimum = promo.get("min_booking_value")
+    if booking_total is not None and minimum is not None and booking_total < minimum:
+        currency = hotel.get("default_currency") or "EUR"
+        amount = format(Decimal(minimum), "f")
+        if "." in amount:
+            amount = amount.rstrip("0").rstrip(".")
+        return ValidatePromoCodeResponse(
+            valid=False,
+            code=code.upper(),
+            message=f"Your booking must be at least {currency} {amount} to use this code.",
         )
 
     return ValidatePromoCodeResponse(
@@ -156,7 +206,8 @@ async def validate_promo_code(slug: str, code: str = Query(...)):
         code=promo["code"],
         discount_type=promo["discount_type"],
         discount_value=float(promo["discount_value"]),
-        message="Promo code applied successfully",
+        currency=hotel.get("default_currency") or "EUR",
+        message="Promo code applied successfully.",
     )
 
 
@@ -165,17 +216,59 @@ async def validate_promo_code(slug: str, code: str = Query(...)):
     response_model=IncrementPromoResponse,
     dependencies=[Depends(require_internal_key)],
 )
-async def increment_promo_usage(slug: str, code: str = Query(...)):
-    """Server-to-server: pms-backend calls this when a booking that used a
-    promo code is successfully created. Gated by INTERNAL_API_KEY when the
-    operator opts into enforcement."""
+async def increment_promo_usage(
+    slug: str,
+    code: str = Query(...),
+    redemption_key: str = Query(..., min_length=1, max_length=120),
+    check_in: date = Query(...),
+    room_type_id: str = Query(...),
+    booking_total: Decimal = Query(..., ge=0),
+):
+    """Server-to-server: atomically reserve a promo use for a PMS booking.
+    Gated by INTERNAL_API_KEY when the operator opts into enforcement."""
     hotel = await BookingHotelRepository.get_by_slug(slug)
     if not hotel:
         raise HTTPException(status_code=404, detail="Hotel not found")
     promo = await PromoCodeRepository.get_by_code(code, str(hotel["id"]))
-    if promo:
-        await PromoCodeRepository.increment_use_count(str(promo["id"]))
+    if not promo:
+        raise HTTPException(status_code=404, detail="Promo code not found")
+    ledger_key = _promo_redemption_key(str(hotel["id"]), redemption_key)
+    promo_id = str(promo["id"])
+    redeemed = await PromoCodeRepository.redeem(
+        promo_id,
+        ledger_key,
+        check_in=check_in,
+        room_type_id=room_type_id,
+        booking_total=float(booking_total),
+        property_date=_hotel_local_date(hotel),
+    )
+    if not redeemed:
+        redeemed = await PromoCodeRepository.has_active_redemption(promo_id, ledger_key)
+    if not redeemed:
+        raise HTTPException(status_code=409, detail="Promo code could not be redeemed")
     return IncrementPromoResponse(ok=True)
+
+
+@router.post(
+    "/{slug}/decrement-promo",
+    response_model=IncrementPromoResponse,
+    dependencies=[Depends(require_internal_key)],
+)
+async def decrement_promo_usage(
+    slug: str,
+    redemption_key: str = Query(..., min_length=1, max_length=120),
+):
+    hotel = await BookingHotelRepository.get_by_slug(slug)
+    if not hotel:
+        raise HTTPException(status_code=404, detail="Hotel not found")
+    await PromoCodeRepository.reverse_redemption(
+        str(hotel["id"]), _promo_redemption_key(str(hotel["id"]), redemption_key)
+    )
+    return IncrementPromoResponse(ok=True)
+
+
+def _promo_redemption_key(hotel_id: str, booking_reference: str) -> str:
+    return f"{hotel_id}:{booking_reference}"
 
 
 @exchange_router.get("/exchange-rates", response_model=ExchangeRatesResponse)

@@ -596,7 +596,12 @@ async def update_booking_status(
     if await PaymentRepository.has_active_stripe_refund(booking_id):
         raise HTTPException(status_code=409, detail="A refund is still processing")
 
-    if not await BookingRepository.update_status(booking_id, data.status):
+    updated_status = (
+        await BookingRepository.cancel_with_promo_reversal(booking_id)
+        if data.status == "cancelled"
+        else await BookingRepository.update_status(booking_id, data.status)
+    )
+    if not updated_status:
         raise HTTPException(status_code=409, detail="Booking status is currently locked")
     updated = await BookingRepository.get_by_id(booking_id)
 
@@ -1473,7 +1478,7 @@ async def cancel_booking_with_reason(
         source="booking-detail",
     )
 
-    await BookingRepository.update_status(booking_id, "cancelled")
+    await BookingRepository.cancel_with_promo_reversal(booking_id)
     updated = await BookingRepository.get_by_id(booking_id)
 
     asyncio.create_task(

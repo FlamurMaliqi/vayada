@@ -477,8 +477,10 @@ async def _handle_invoice_callback(data: dict):
 
     elif invoice_status == "EXPIRED":
         await PaymentRepository.update_status(payment_id, "cancelled")
-        await BookingRepository.update_payment_status(booking_id, "cancelled")
-        await BookingRepository.update_status(booking_id, "cancelled")
+        await BookingRepository.cancel_with_promo_reversal(
+            booking_id,
+            payment_status="cancelled",
+        )
         logger.info("Xendit invoice expired: %s booking=%s", xendit_invoice_id, booking_id)
 
     else:

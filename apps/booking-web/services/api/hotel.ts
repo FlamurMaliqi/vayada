@@ -75,16 +75,22 @@ export const hotelService = {
   async validatePromoCode(
     slug: string,
     code: string,
+    context: {
+      checkIn?: string;
+      roomTypeId?: string;
+      bookingTotal?: number;
+    } = {},
   ): Promise<{
     valid: boolean;
     code: string;
     discountType?: string;
     discountValue?: number;
+    currency?: string;
     message: string;
   }> {
     return bookingWebPublic.post(
       `/api/booking-web/hotels/${encodeURIComponent(slug)}/promo/validate`,
-      { code },
+      { code, ...context },
     );
   },
 };

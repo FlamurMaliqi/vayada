@@ -114,6 +114,9 @@ type BookingWebChangeRequestQuery = {
 };
 type BookingWebPromoValidationRequest = {
   code?: string;
+  checkIn?: string;
+  roomTypeId?: string;
+  bookingTotal?: number;
 };
 type BookingWebAttributionClickRequest = {
   referralCode?: string;
@@ -1234,7 +1237,34 @@ type TargetCheckoutQuoteRow = QueryResultRow & {
   selectedOfferSnapshot: unknown;
   totals: unknown;
   policySnapshot: unknown;
+  promoCode: string | null;
   expiresAt: Date | string;
+};
+
+type TargetPromoDefinitionRow = QueryResultRow & {
+  promoDefinitionId: string;
+  code: string;
+  discountType: "percentage" | "fixed";
+  discountValue: string | number;
+  propertyCurrency: string;
+  minBookingValue: string | number | null;
+  applicableRoomIds: string[] | null;
+  validFrom: Date | string | null;
+  validUntil: Date | string | null;
+  stayDateFrom: Date | string | null;
+  stayDateUntil: Date | string | null;
+  isActive: boolean;
+  maxUses: number;
+  currentUses: number;
+};
+
+type TargetPromoSnapshot = {
+  promoDefinitionId: string;
+  code: string;
+  discountType: "percentage" | "fixed";
+  discountValue: number;
+  discountAmount: number;
+  currency: string;
 };
 
 type TargetCheckoutAddonRequest = {
@@ -1710,6 +1740,7 @@ export function createTargetBookingWebCheckoutAdapter(
           billingConfig,
           checkoutConfig,
         );
+        await redeemTargetPromo(client, property, booking, quote, context.occurredAt);
         const confirmation = await issueTargetBookingConfirmationToken(
           client,
           booking,
@@ -1781,7 +1812,6 @@ export function createTargetBookingWebCheckoutAdapter(
       });
     },
     async quoteBooking(slug, request, context) {
-      assertTargetPromoPricingInputSupported(request);
       const action = async (executor: BookingWebQueryExecutor) => {
         const property = await resolveTargetCheckoutProperty(executor, slug, true);
         if (context) {
@@ -2217,7 +2247,12 @@ export function createTargetBookingWebCheckoutAdapter(
         const property = await resolveTargetCheckoutProperty(pool, slug);
         const code = typeof request.code === "string" ? request.code.trim() : "";
         const body = code
-          ? await validateTargetPromo(pool, property.propertyId, code)
+          ? await validateTargetPromo(pool, property, code, {
+              checkIn: dateField(request, "checkIn"),
+              roomTypeId: stringField(request, "roomTypeId"),
+              bookingTotal: moneyNumber(request.bookingTotal),
+              occurredAt: context?.occurredAt ?? new Date(),
+            })
           : { valid: false, code, message: "Promo code is required" };
         return {
           propertyId: property.propertyId,
@@ -2531,12 +2566,30 @@ async function createTargetCheckoutQuote(
       addonPurchases.reduce((total, purchase) => total + moneyToCents(purchase.totalAmount), 0n),
     ),
   );
-  const totalAmount = Number(
+  const bookingTotalBeforePromo = Number(
     moneyFromCents(
       moneyToCents(roomTotal) +
         moneyToCents(taxesAndFees) +
         moneyToCents(addonTotal) -
         moneyToCents(discounts),
+    ),
+  );
+  const promo = await resolveTargetCheckoutPromo(pool, property, {
+    code: stringField(request, "promoCode"),
+    checkIn,
+    roomTypeId,
+    bookingTotal: bookingTotalBeforePromo,
+    currency,
+    occurredAt: requestedAt,
+  });
+  const promoDiscount = promo?.discountAmount ?? 0;
+  const totalAmount = Number(
+    moneyFromCents(
+      moneyToCents(roomTotal) +
+        moneyToCents(taxesAndFees) +
+        moneyToCents(addonTotal) -
+        moneyToCents(discounts) -
+        moneyToCents(promoDiscount),
     ),
   );
   // Manual payment methods do not capture a deposit during checkout, so the
@@ -2568,6 +2621,7 @@ async function createTargetCheckoutQuote(
     generatedAt: toIsoDateTime(offer.generatedAt),
     addonRequest,
     addonPurchases,
+    ...(promo ? { promo } : {}),
   };
   const totals = {
     currency,
@@ -2575,7 +2629,7 @@ async function createTargetCheckoutQuote(
     taxesAndFees,
     discounts,
     addonTotal,
-    promoDiscount: 0,
+    promoDiscount,
     totalAmount,
     depositRequired,
     depositPercentage,
@@ -2668,7 +2722,7 @@ async function createTargetCheckoutQuote(
       JSON.stringify(totals),
       JSON.stringify(objectValue(offer.publicPolicy)),
       JSON.stringify(objectValue(offer.sourceFreshness)),
-      stringField(request, "promoCode"),
+      promo?.code ?? null,
       stringField(request, "referralCode"),
       expiresAt,
       requestedAt.toISOString(),
@@ -2677,6 +2731,27 @@ async function createTargetCheckoutQuote(
   const row = result.rows[0];
   if (!row) {
     throw createHttpError(409, "Checkout quote is no longer available. Please refresh.");
+  }
+  if (promo) {
+    await pool.query(
+      `INSERT INTO booking.promo_applications (
+         property_id, quote_session_id, promo_definition_id, promo_code,
+         application_status, discount_amount, currency, metadata
+       ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, 'applied', $5::numeric, $6, $7::jsonb)`,
+      [
+        property.propertyId,
+        row.quoteSessionId,
+        promo.promoDefinitionId,
+        promo.code,
+        promo.discountAmount.toFixed(2),
+        currency,
+        JSON.stringify({
+          discountType: promo.discountType,
+          discountValue: promo.discountValue,
+          bookingTotalBeforePromo,
+        }),
+      ],
+    );
   }
   return {
     quoteSessionId: row.quoteSessionId,
@@ -2937,6 +3012,7 @@ async function loadTargetCheckoutQuoteSnapshot(
        selected_offer_snapshot AS "selectedOfferSnapshot",
        totals,
        policy_snapshot AS "policySnapshot",
+       promo_code AS "promoCode",
        expires_at AS "expiresAt"
      FROM booking.quote_sessions
      WHERE property_id = $1::uuid
@@ -3027,16 +3103,42 @@ async function loadTargetCheckoutQuoteSnapshot(
   if (!totalAmount || !balanceAmount) {
     throw createHttpError(409, "Checkout quote is no longer available. Please refresh.");
   }
-  if (addonPurchases.length > 0) {
-    // prettier-ignore
-    const purchaseTotal = addonPurchases.reduce((sum, purchase) => sum + moneyToCents(purchase.totalAmount), 0n);
-    // prettier-ignore
-    const quotedTotal = moneyToCents(moneyString(totals["roomTotal"]) ?? "") + moneyToCents(moneyString(totals["taxesAndFees"]) ?? "0") + purchaseTotal - moneyToCents(moneyString(totals["discounts"]) ?? "0");
-    // prettier-ignore
-    if (purchaseTotal !== moneyToCents(moneyString(totals["addonTotal"]) ?? "") || moneyToCents(totalAmount) !== quotedTotal || moneyToCents(totalAmount) > 999_999_999_999_999n || addonPurchases.some(({ currency }) => currency !== row.currency)) throw createHttpError(409, "Checkout quote add-on evidence is unavailable. Please refresh.");
+  const purchaseTotal = addonPurchases.reduce(
+    (sum, purchase) => sum + moneyToCents(purchase.totalAmount),
+    0n,
+  );
+  const addonTotal = moneyString(totals["addonTotal"]) ?? "0";
+  if (
+    purchaseTotal !== moneyToCents(addonTotal) ||
+    addonPurchases.some(({ currency }) => currency !== row.currency)
+  ) {
+    throw targetCheckoutAddonEvidenceError();
   }
-  // prettier-ignore
-  if (addonPurchases.length === 0 && moneyToCents(moneyString(totals["addonTotal"]) ?? "0") !== 0n) throw createHttpError(409, "Checkout quote add-on evidence is unavailable. Please refresh.");
+  const promoSnapshot = objectValue(selectedOfferSnapshot["promo"]);
+  const promoCode = stringValue(promoSnapshot["code"]);
+  const promoDiscount = moneyString(totals["promoDiscount"]) ?? "0";
+  const snapshotPromoDiscount = moneyString(promoSnapshot["discountAmount"]);
+  if (
+    (promoCode && (!snapshotPromoDiscount || snapshotPromoDiscount !== promoDiscount)) ||
+    (!promoCode && moneyToCents(promoDiscount) !== 0n)
+  ) {
+    throw createHttpError(409, "Checkout quote pricing evidence is unavailable. Please refresh.");
+  }
+  const roomTotal = moneyString(totals["roomTotal"]);
+  if (roomTotal) {
+    const quotedTotal =
+      moneyToCents(roomTotal) +
+      moneyToCents(moneyString(totals["taxesAndFees"]) ?? "0") +
+      purchaseTotal -
+      moneyToCents(moneyString(totals["discounts"]) ?? "0") -
+      moneyToCents(promoDiscount);
+    if (
+      moneyToCents(totalAmount) !== quotedTotal ||
+      moneyToCents(totalAmount) > 999_999_999_999_999n
+    ) {
+      throw createHttpError(409, "Checkout quote pricing evidence is unavailable. Please refresh.");
+    }
+  }
 
   const requestedCheckIn = dateField(request, "checkIn");
   const requestedCheckOut = dateField(request, "checkOut");
@@ -3078,6 +3180,10 @@ async function loadTargetCheckoutQuoteSnapshot(
   }
   if (stableJson(parseTargetCheckoutAddonRequest(request)) !== stableJson(addonRequest)) {
     throw createHttpError(409, "Booking add-ons changed. Please refresh the checkout quote.");
+  }
+  const requestedPromoCode = stringField(request, "promoCode")?.toUpperCase() ?? null;
+  if ((row.promoCode?.toUpperCase() ?? null) !== requestedPromoCode) {
+    throw createHttpError(409, "Booking promo code changed. Please refresh the checkout quote.");
   }
 
   return {
@@ -3126,7 +3232,7 @@ function serializeTargetCheckoutQuote(quote: TargetCheckoutQuoteSnapshot): Recor
     numberOfRooms: quote.roomCount,
     roomTotal,
     addonTotal: moneyNumber(quote.totals["addonTotal"]) ?? 0,
-    promoCode: null,
+    promoCode: stringValue(objectValue(quote.selectedOfferSnapshot["promo"])["code"]),
     promoDiscount: moneyNumber(quote.totals["promoDiscount"]) ?? 0,
     lastMinuteDiscountPercent: 0,
     lastMinuteDiscountAmount: 0,
@@ -3871,6 +3977,12 @@ async function withGuestLifecycleMutation(
     if (!updated) {
       throw createHttpError(409, "Booking status changed. Please refresh and try again.");
     }
+    await reverseTargetPromoRedemption(
+      client,
+      updated.propertyId,
+      updated.guestBookingId,
+      context.occurredAt,
+    );
     if (updated.sourceSystem === "booking") {
       await captureDirectNightlyRevenueEvidence(client, updated, {
         clear: true,
@@ -4675,32 +4787,239 @@ async function applyAcceptedTargetDateChange(
 
 async function validateTargetPromo(
   pool: BookingWebQueryExecutor,
-  propertyId: string,
+  property: TargetCheckoutPropertyRow,
   code: string,
+  input: {
+    checkIn: string | null;
+    roomTypeId: string | null;
+    bookingTotal: number | null;
+    occurredAt: Date;
+  },
 ): Promise<Record<string, unknown>> {
-  const result = await pool.query<{
-    promoCode: string;
-    discountAmount: string | number;
-    currency: string;
-  }>(
-    `SELECT promo_code AS "promoCode", discount_amount AS "discountAmount", currency
-       FROM booking.promo_applications
-      WHERE property_id = $1::uuid
-        AND lower(promo_code) = lower($2)
-        AND application_status = 'applied'
-      ORDER BY created_at DESC
-      LIMIT 1`,
-    [propertyId, code],
+  const promo = await loadTargetPromoDefinition(pool, property.propertyId, code);
+  if (!promo) return { valid: false, code: code.toUpperCase(), message: "Invalid promo code." };
+  const message = targetPromoValidationMessage(promo, {
+    ...input,
+    propertyDate: targetPropertyDateOnly(property.timezone, input.occurredAt),
+  });
+  if (message) return { valid: false, code: promo.code, message };
+
+  return {
+    valid: true,
+    code: promo.code,
+    discountType: promo.discountType,
+    discountValue: Number(decimalString(promo.discountValue)),
+    currency: promo.propertyCurrency,
+    message: "Promo code applied successfully.",
+  };
+}
+
+async function loadTargetPromoDefinition(
+  pool: BookingWebQueryExecutor,
+  propertyId: string,
+  codeOrId: string,
+  forUpdate = false,
+): Promise<TargetPromoDefinitionRow | null> {
+  const result = await pool.query<TargetPromoDefinitionRow>(
+    `SELECT
+       promo.id::text AS "promoDefinitionId",
+       promo.code,
+       promo.discount_type AS "discountType",
+       promo.discount_value::text AS "discountValue",
+       COALESCE(settings.default_currency, 'EUR') AS "propertyCurrency",
+       promo.min_booking_value::text AS "minBookingValue",
+       promo.applicable_room_ids::text[] AS "applicableRoomIds",
+       promo.valid_from AS "validFrom",
+       promo.valid_until AS "validUntil",
+       promo.stay_date_from AS "stayDateFrom",
+       promo.stay_date_until AS "stayDateUntil",
+       promo.is_active AS "isActive",
+       promo.max_uses AS "maxUses",
+       promo.current_uses AS "currentUses"
+     FROM booking.promo_definitions promo
+     LEFT JOIN booking.booking_settings settings ON settings.property_id = promo.property_id
+     WHERE promo.property_id = $1::uuid
+       AND (upper(promo.code) = upper($2) OR promo.id::text = $2)
+       AND promo.status <> 'retired'
+     LIMIT 1
+     ${forUpdate ? "FOR UPDATE OF promo" : ""}`,
+    [propertyId, codeOrId],
   );
   const promo = result.rows[0];
-  return promo
-    ? {
-        valid: true,
-        code: promo.promoCode,
-        discountAmount: Number(decimalString(promo.discountAmount)),
-        currency: promo.currency,
-      }
-    : { valid: false, code, message: "Promo code is not active for this property." };
+  return promo ?? null;
+}
+
+function targetPromoValidationMessage(
+  promo: TargetPromoDefinitionRow,
+  input: {
+    propertyDate: string;
+    checkIn: string | null;
+    roomTypeId: string | null;
+    bookingTotal: number | null;
+  },
+): string | null {
+  if (!promo.isActive) return "This promo code is not active.";
+  const validFrom = promoDateString(promo.validFrom);
+  const validUntil = promoDateString(promo.validUntil);
+  if (validUntil && input.propertyDate > validUntil) return "This promo code has expired.";
+  if (validFrom && input.propertyDate < validFrom) {
+    return "This promo code is not valid for your selected dates.";
+  }
+  if (promo.currentUses >= promo.maxUses) {
+    return "This promo code has reached its maximum number of uses.";
+  }
+  const stayDateFrom = promoDateString(promo.stayDateFrom);
+  const stayDateUntil = promoDateString(promo.stayDateUntil);
+  if (
+    input.checkIn &&
+    ((stayDateFrom && input.checkIn < stayDateFrom) ||
+      (stayDateUntil && input.checkIn > stayDateUntil))
+  ) {
+    return "This promo code is not valid for your selected dates.";
+  }
+  if (
+    input.roomTypeId &&
+    promo.applicableRoomIds &&
+    !promo.applicableRoomIds.includes(input.roomTypeId)
+  ) {
+    return "This promo code is not available for the selected room.";
+  }
+  const minimum = promo.minBookingValue === null ? null : Number(promo.minBookingValue);
+  if (input.bookingTotal !== null && minimum !== null && input.bookingTotal < minimum) {
+    return `Your booking must be at least ${promo.propertyCurrency} ${formatPromoAmount(minimum)} to use this code.`;
+  }
+  return null;
+}
+
+async function resolveTargetCheckoutPromo(
+  pool: BookingWebQueryExecutor,
+  property: TargetCheckoutPropertyRow,
+  input: {
+    code: string | null;
+    checkIn: string;
+    roomTypeId: string;
+    bookingTotal: number;
+    currency: string;
+    occurredAt: Date;
+  },
+): Promise<TargetPromoSnapshot | null> {
+  if (!input.code) return null;
+  const promo = await loadTargetPromoDefinition(pool, property.propertyId, input.code);
+  if (!promo) throw createHttpError(409, "Invalid promo code.");
+  const validationMessage = targetPromoValidationMessage(promo, {
+    propertyDate: targetPropertyDateOnly(property.timezone, input.occurredAt),
+    checkIn: input.checkIn,
+    roomTypeId: input.roomTypeId,
+    bookingTotal: input.bookingTotal,
+  });
+  if (validationMessage) throw createHttpError(409, validationMessage);
+  if (promo.propertyCurrency !== input.currency) {
+    throw createHttpError(409, "Property currency changed. Please refresh the checkout quote.");
+  }
+  const discountValue = Number(decimalString(promo.discountValue));
+  const discountAmount =
+    promo.discountType === "percentage"
+      ? Math.min(roundMoney((input.bookingTotal * discountValue) / 100), input.bookingTotal)
+      : Math.min(roundMoney(discountValue), input.bookingTotal);
+  return {
+    promoDefinitionId: promo.promoDefinitionId,
+    code: promo.code,
+    discountType: promo.discountType,
+    discountValue,
+    discountAmount,
+    currency: promo.propertyCurrency,
+  };
+}
+
+function formatPromoAmount(value: number): string {
+  return Number.isInteger(value)
+    ? String(value)
+    : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function promoDateString(value: Date | string | null): string | null {
+  if (!value) return null;
+  return value instanceof Date ? value.toISOString().slice(0, 10) : value.slice(0, 10);
+}
+
+async function redeemTargetPromo(
+  pool: BookingWebQueryExecutor,
+  property: TargetCheckoutPropertyRow,
+  booking: TargetBookingRow,
+  quote: TargetCheckoutQuoteSnapshot,
+  occurredAt: Date,
+): Promise<void> {
+  const snapshot = objectValue(quote.selectedOfferSnapshot["promo"]);
+  const promoDefinitionId = stringValue(snapshot["promoDefinitionId"]);
+  const promoCode = stringValue(snapshot["code"]);
+  if (!promoDefinitionId && !promoCode) return;
+  if (!promoDefinitionId || !promoCode) {
+    throw createHttpError(409, "Checkout quote promo evidence is unavailable. Please refresh.");
+  }
+  const promo = await loadTargetPromoDefinition(pool, property.propertyId, promoDefinitionId, true);
+  if (!promo || promo.code !== promoCode) {
+    throw createHttpError(409, "Checkout quote promo evidence is unavailable. Please refresh.");
+  }
+  const promoDiscount = moneyNumber(quote.totals["promoDiscount"]) ?? 0;
+  const validationMessage = targetPromoValidationMessage(promo, {
+    propertyDate: targetPropertyDateOnly(property.timezone, occurredAt),
+    checkIn: quote.checkIn,
+    roomTypeId: stringValue(quote.selectedOfferSnapshot["roomTypeId"]),
+    bookingTotal: Number(quote.totalAmount) + promoDiscount,
+  });
+  if (validationMessage) throw createHttpError(409, validationMessage);
+  if (promo.propertyCurrency !== quote.currency) {
+    throw createHttpError(409, "Property currency changed. Please refresh the checkout quote.");
+  }
+
+  await pool.query(
+    `UPDATE booking.promo_definitions
+        SET current_uses = current_uses + 1,
+            updated_at = $3::timestamptz
+      WHERE property_id = $1::uuid AND id = $2::uuid`,
+    [property.propertyId, promoDefinitionId, occurredAt.toISOString()],
+  );
+  await pool.query(
+    `INSERT INTO booking.promo_applications (
+       property_id, guest_booking_id, promo_definition_id, promo_code,
+       application_status, discount_amount, currency, metadata
+     ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, 'applied', $5::numeric, $6, $7::jsonb)`,
+    [
+      property.propertyId,
+      booking.guestBookingId,
+      promoDefinitionId,
+      promoCode,
+      promoDiscount.toFixed(2),
+      quote.currency,
+      JSON.stringify({ quoteReference: quote.publicQuoteReference }),
+    ],
+  );
+}
+
+async function reverseTargetPromoRedemption(
+  pool: BookingWebQueryExecutor,
+  propertyId: string,
+  guestBookingId: string,
+  occurredAt: Date,
+): Promise<void> {
+  await pool.query(
+    `WITH reversed AS (
+       UPDATE booking.promo_applications
+          SET application_status = 'reversed',
+              metadata = metadata || jsonb_build_object('reversedAt', $3::text)
+        WHERE property_id = $1::uuid
+          AND guest_booking_id = $2::uuid
+          AND application_status = 'applied'
+      RETURNING promo_definition_id
+     )
+     UPDATE booking.promo_definitions promo
+        SET current_uses = GREATEST(promo.current_uses - 1, 0),
+            updated_at = $3::timestamptz
+       FROM reversed
+      WHERE promo.id = reversed.promo_definition_id
+        AND promo.property_id = $1::uuid`,
+    [propertyId, guestBookingId, occurredAt.toISOString()],
+  );
 }
 
 async function enqueuePmsReservationHandoff(
@@ -5733,15 +6052,6 @@ function assertTargetPaymentMethodReady(method: string | null): void {
     503,
     "Target online payment authorization is not configured for Booking Web checkout.",
   );
-}
-
-function assertTargetPromoPricingInputSupported(record: Record<string, unknown>): void {
-  if (stringField(record, "promoCode")) {
-    throw createHttpError(
-      409,
-      "Target checkout promo pricing is not configured. Please refresh without a promo code.",
-    );
-  }
 }
 
 function parseTargetCheckoutAddonRequest(

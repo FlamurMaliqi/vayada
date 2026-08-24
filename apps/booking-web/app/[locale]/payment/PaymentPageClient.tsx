@@ -85,6 +85,7 @@ function PaymentPageContent() {
     variableNightlyRates,
     roomTotal,
     promoDiscount,
+    promoError,
     discountAmount,
     grandTotal,
   } = usePricing({
@@ -1297,15 +1298,24 @@ function PaymentPageContent() {
               </div>
 
               {/* Promo Discount */}
+              {promoError && promoCodeParam && (
+                <p role="alert" className="pt-2 text-sm text-red-600">
+                  {promoError}
+                </p>
+              )}
               {promoDiscount && (
                 <div className="flex justify-between text-sm pt-2">
                   <span className="text-primary-600 font-medium">
-                    Promo {promoCodeParam}
-                    {promoDiscount.type === "percentage" ? ` (-${promoDiscount.value}%)` : ""}
+                    Promo {promoCodeParam}:{" "}
+                    {promoDiscount.type === "percentage"
+                      ? `-${promoDiscount.value}%`
+                      : `-${formatPrice(quotedPromoDiscount, quotedCurrency)}`}
                   </span>
-                  <span className="font-semibold text-primary-600">
-                    -{formatPrice(quotedPromoDiscount, quotedCurrency)}
-                  </span>
+                  {promoDiscount.type === "percentage" && (
+                    <span className="font-semibold text-primary-600">
+                      -{formatPrice(quotedPromoDiscount, quotedCurrency)}
+                    </span>
+                  )}
                 </div>
               )}
 
