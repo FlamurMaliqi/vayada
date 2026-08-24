@@ -14,6 +14,7 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import type { PropertyMediaCommandRepository } from "./domains/propertyMediaCommandRepository.js";
 
 const organizationId = "11111111-1111-4111-8111-111111111111";
@@ -250,6 +251,7 @@ function buildPropertyMediaApp(options: {
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepository(options),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["hotel_catalog.setup.manage"];

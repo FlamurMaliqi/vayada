@@ -36,6 +36,7 @@ import type { QueryResultRow } from "pg";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import type { PublicHotelProfileRepository } from "./routes/aiHotels.js";
 import {
   createTargetFinancePropertySettingsRepository,
@@ -2833,6 +2834,7 @@ function buildFinanceApp(
         linkedResourceType: options.linkedResourceType,
         linkedAffiliateId: options.linkedAffiliateId,
       }),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["pms.finance.read"];
@@ -2856,6 +2858,7 @@ function buildAffiliateFinanceApp(options: {
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: affiliateIdentityRepository(),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return ["affiliate.payout.manage"];

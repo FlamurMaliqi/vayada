@@ -16,6 +16,7 @@ import type {
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import {
   createTargetBookingDashboardMetricsReadPort,
   type BookingDashboardMetricsReadPool,
@@ -529,6 +530,7 @@ function buildDashboardApp(options: DashboardAppOptions = {}): ReturnType<typeof
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: createIdentityRepository(options.linkedPropertyId),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["booking.analytics.read"];

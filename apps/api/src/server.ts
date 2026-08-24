@@ -1,6 +1,7 @@
 import { createPgIdentityRepository, createWorkOSVerifier } from "@vayada/backend-auth";
 import {
   createPgEntitlementRepository,
+  createPgPropertyAccessRepository,
   createPgRolePermissionRepository,
 } from "@vayada/backend-authorization";
 import {
@@ -207,6 +208,9 @@ function buildAuthOptions(auth: ApiConfig["auth"]): ApiAuthOptions | undefined {
       connectionString: auth.databaseUrl,
     }),
     entitlementRepository: createPgEntitlementRepository({
+      connectionString: auth.databaseUrl,
+    }),
+    propertyAccessRepository: createPgPropertyAccessRepository({
       connectionString: auth.databaseUrl,
     }),
   };

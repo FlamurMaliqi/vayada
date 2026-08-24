@@ -9,6 +9,7 @@ import type { PlatformPropertyRetirementImpact } from "@vayada/domain-hotels";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../../../app.js";
+import { agencyPropertyAccessRepository } from "../../../testAuthorization.js";
 import { PlatformPropertyLifecycleError } from "../../../domains/platformPropertyLifecycleCommandRepository.js";
 
 const propertyId = "11111111-1111-4111-8111-111111111111";
@@ -188,6 +189,7 @@ function buildLifecycleApp(
     auth: {
       verifier: createFakeVerifier(new Map([["platform-token", session]])),
       repository: identityRepository(options.resourceAccess !== false),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["platform.admin.read", "platform.property.status.manage"];

@@ -39,6 +39,8 @@ export type AuthorizationRepositoryConfig = {
 
 export type MembershipPropertyScope = {
   mode: string;
+  roleKey: string;
+  accessOrigin: string;
   assignedPropertyIds: readonly string[];
 };
 
@@ -90,6 +92,8 @@ type ProductEntitlementRow = {
 
 type MembershipPropertyScopeRow = {
   property_access_mode: string;
+  role_key: string;
+  access_origin: string;
   assigned_property_ids: string[];
 };
 
@@ -243,6 +247,8 @@ export function createPgPropertyAccessRepository(
       const result = await pool.query<MembershipPropertyScopeRow>(
         `SELECT
            membership.property_access_mode,
+           membership.role_key,
+           membership.access_origin,
            ARRAY(
              SELECT assignment.property_id::text
              FROM identity.membership_property_assignments assignment
@@ -267,7 +273,12 @@ export function createPgPropertyAccessRepository(
       );
       const row = result.rows[0];
       return row
-        ? { mode: row.property_access_mode, assignedPropertyIds: row.assigned_property_ids }
+        ? {
+            mode: row.property_access_mode,
+            roleKey: row.role_key,
+            accessOrigin: row.access_origin,
+            assignedPropertyIds: row.assigned_property_ids,
+          }
         : null;
     },
     async close() {
@@ -278,9 +289,17 @@ export function createPgPropertyAccessRepository(
 
 export function createAuthorizationResolver(
   rolePermissionRepository: RolePermissionRepository,
-  entitlementRepository?: EntitlementRepository,
+  entitlementRepository: EntitlementRepository | undefined,
+  propertyAccessRepository: PropertyAccessRepository | undefined,
 ): AuthorizationResolver {
   return async (context) => {
+    if (context.selectedOrganization.kind === "hotel_group") {
+      const scope = await propertyAccessRepository?.findMembershipPropertyScope(context);
+      if (!isAgencyMembershipScope(context, scope)) {
+        return { permissions: [], entitlements: [] };
+      }
+    }
+
     const [permissions, entitlements] = await Promise.all([
       rolePermissionRepository.findPermissionsForRole(
         context.selectedOrganization.kind,
@@ -294,6 +313,19 @@ export function createAuthorizationResolver(
       entitlements,
     };
   };
+}
+
+function isAgencyMembershipScope(
+  context: RequestContext,
+  scope: MembershipPropertyScope | null | undefined,
+): scope is MembershipPropertyScope & { mode: "all" | "assigned" } {
+  return (
+    scope != null &&
+    scope.roleKey === context.membership.roleKey &&
+    scope.accessOrigin === "agency" &&
+    (scope.mode === "all" || scope.mode === "assigned") &&
+    (scope.roleKey !== "external_owner" || scope.mode === "assigned")
+  );
 }
 
 export function hasPermission(context: RequestContext, permission: PermissionKey): boolean {
@@ -328,7 +360,7 @@ export async function resolveEffectivePropertyAccess(
   }
 
   const scope = await repository.findMembershipPropertyScope(context);
-  if (!scope || (scope.mode !== "all" && scope.mode !== "assigned")) return null;
+  if (!isAgencyMembershipScope(context, scope)) return null;
   if (
     !Array.isArray(scope.assignedPropertyIds) ||
     scope.assignedPropertyIds.some((propertyId) => typeof propertyId !== "string")

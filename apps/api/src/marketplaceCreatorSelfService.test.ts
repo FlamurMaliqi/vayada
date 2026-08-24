@@ -17,6 +17,7 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import {
   createPgMarketplaceCreatorSelfServiceRepository,
   type MarketplaceCreatorProfileMediaRepository,
@@ -1099,6 +1100,7 @@ function buildMarketplaceCreatorApp(options: {
         linkedResources: options.linkedResources,
         organizationKind: options.organizationKind,
       }),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["marketplace.profile.manage"];

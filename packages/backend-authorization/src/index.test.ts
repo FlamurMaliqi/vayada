@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import pg from "pg";
 
 import type {
@@ -196,6 +196,16 @@ function propertyScopeRepository(scope: MembershipPropertyScope | null): Propert
   return { findMembershipPropertyScope: async () => scope };
 }
 
+function propertyScope(overrides: Partial<MembershipPropertyScope> = {}): MembershipPropertyScope {
+  return {
+    mode: "assigned",
+    roleKey: "hotel_owner",
+    accessOrigin: "agency",
+    assignedPropertyIds: [],
+    ...overrides,
+  };
+}
+
 function requirement(
   permission: PermissionKey,
   product: Product,
@@ -219,7 +229,11 @@ describe("createAuthorizationResolver", () => {
       },
     };
 
-    const resolution = await createAuthorizationResolver(repository)(hotelContext);
+    const resolution = await createAuthorizationResolver(
+      repository,
+      undefined,
+      propertyScopeRepository(propertyScope({ mode: "all" })),
+    )(hotelContext);
 
     expect(calls).toEqual([{ kind: "hotel_group", roleKey: "hotel_owner" }]);
     expect(resolution.permissions).toEqual(["booking.settings.manage", "pms.booking.update"]);
@@ -241,10 +255,44 @@ describe("createAuthorizationResolver", () => {
     const resolution = await createAuthorizationResolver(
       roleRepository,
       entitlementRepository,
+      propertyScopeRepository(propertyScope({ mode: "all" })),
     )(contextFor());
 
     expect(resolution.permissions).toEqual(["booking.settings.manage"]);
     expect(resolution.entitlements).toEqual([entitlement("active")]);
+  });
+
+  it("returns no authorization for delegated or malformed hotel memberships", async () => {
+    const findPermissionsForRole = vi.fn(async () => ["pms.operations.read" as const]);
+    const findEntitlementsForContext = vi.fn(async () => [entitlement("active")]);
+    const resolve = (scope: MembershipPropertyScope | null, candidate = hotelContext) =>
+      createAuthorizationResolver(
+        { findPermissionsForRole },
+        { findEntitlementsForContext },
+        propertyScopeRepository(scope),
+      )(candidate);
+
+    await expect(resolve(propertyScope({ accessOrigin: "external_owner" }))).resolves.toEqual({
+      permissions: [],
+      entitlements: [],
+    });
+    await expect(resolve(null)).resolves.toEqual({ permissions: [], entitlements: [] });
+    await expect(
+      createAuthorizationResolver({ findPermissionsForRole }, undefined, undefined)(hotelContext),
+    ).resolves.toEqual({ permissions: [], entitlements: [] });
+    await expect(resolve(propertyScope({ accessOrigin: "unknown" }))).resolves.toEqual({
+      permissions: [],
+      entitlements: [],
+    });
+    expect(findPermissionsForRole).not.toHaveBeenCalled();
+    expect(findEntitlementsForContext).not.toHaveBeenCalled();
+
+    await expect(
+      resolve(propertyScope({ roleKey: "external_owner", assignedPropertyIds: [PROPERTY_A] }), {
+        ...hotelContext,
+        membership: { ...hotelContext.membership, roleKey: "external_owner" },
+      }),
+    ).resolves.toMatchObject({ permissions: ["pms.operations.read"] });
   });
 });
 
@@ -408,7 +456,11 @@ describe.skipIf(!TEST_DATABASE_URL)("createPgPropertyAccessRepository", () => {
         ...propertyContext().selectedOrganization,
         organizationId: DB_ORGANIZATION,
       },
-      membership: { ...propertyContext().membership, membershipId: DB_MEMBERSHIP },
+      membership: {
+        ...propertyContext().membership,
+        membershipId: DB_MEMBERSHIP,
+        roleKey: "front_desk",
+      },
     };
 
     try {
@@ -423,8 +475,17 @@ describe.skipIf(!TEST_DATABASE_URL)("createPgPropertyAccessRepository", () => {
 
       await expect(repository.findMembershipPropertyScope(dbContext)).resolves.toEqual({
         mode: "assigned",
+        roleKey: "front_desk",
+        accessOrigin: "agency",
         assignedPropertyIds: [DB_PROPERTY],
       });
+      await expect(
+        createAuthorizationResolver(
+          { findPermissionsForRole: async () => ["pms.operations.read"] },
+          undefined,
+          repository,
+        )(dbContext),
+      ).resolves.toMatchObject({ permissions: ["pms.operations.read"] });
       await expect(
         repository.findMembershipPropertyScope({
           ...dbContext,
@@ -588,13 +649,13 @@ describe("effective property access", () => {
     await expect(
       resolveEffectivePropertyAccess(
         context,
-        propertyScopeRepository({ mode: "all", assignedPropertyIds: [] }),
+        propertyScopeRepository(propertyScope({ mode: "all" })),
       ),
     ).resolves.toEqual({ mode: "all", propertyIds: [PROPERTY_A, PROPERTY_B] });
     await expect(
       requirePropertyAccess(
         context,
-        propertyScopeRepository({ mode: "assigned", assignedPropertyIds: [PROPERTY_A] }),
+        propertyScopeRepository(propertyScope({ assignedPropertyIds: [PROPERTY_A] })),
         {
           propertyId: PROPERTY_A,
           targetResource: { product: "pms", resourceType: "pms_property" },
@@ -605,7 +666,7 @@ describe("effective property access", () => {
 
   it("denies inactive principals, invalid scopes, and properties outside the assignment", async () => {
     const context = propertyContext();
-    const all = { mode: "all", assignedPropertyIds: [] };
+    const all = propertyScope({ mode: "all" });
     const deny = (
       candidate: RequestContext,
       scope: MembershipPropertyScope,
@@ -621,15 +682,42 @@ describe("effective property access", () => {
     await deny({ ...context, actor: { ...context.actor, status: "suspended" } }, all);
     await deny({ ...context, membership: { ...context.membership, status: "inactive" } }, all);
     await deny({ ...context, membership: { ...context.membership, status: "suspended" } }, all);
-    await deny(context, { mode: "assigned", assignedPropertyIds: [] });
+    await deny(context, propertyScope());
     await deny(
       context,
-      { mode: "assigned", assignedPropertyIds: [PROPERTY_OTHER_TENANT] },
+      propertyScope({ assignedPropertyIds: [PROPERTY_OTHER_TENANT] }),
       PROPERTY_OTHER_TENANT,
     );
-    await deny(context, { mode: "assigned", assignedPropertyIds: [PROPERTY_A] }, PROPERTY_B);
-    await deny(context, { mode: "unknown", assignedPropertyIds: [PROPERTY_A] });
-    await deny(context, { mode: "assigned", assignedPropertyIds: [PROPERTY_A, null as never] });
+    await deny(context, propertyScope({ assignedPropertyIds: [PROPERTY_A] }), PROPERTY_B);
+    await deny(context, propertyScope({ mode: "unknown", assignedPropertyIds: [PROPERTY_A] }));
+    await deny(context, propertyScope({ assignedPropertyIds: [PROPERTY_A, null as never] }));
+  });
+
+  it("fails closed for malformed or not-yet-enabled owner delegation scopes", async () => {
+    const context = propertyContext();
+    const deny = (scope: MembershipPropertyScope, candidate = context) =>
+      expect(
+        resolveEffectivePropertyAccess(candidate, propertyScopeRepository(scope)),
+      ).resolves.toBe(null);
+
+    await expect(
+      resolveEffectivePropertyAccess(
+        { ...context, membership: { ...context.membership, roleKey: "external_owner" } },
+        propertyScopeRepository(
+          propertyScope({
+            roleKey: "external_owner",
+            assignedPropertyIds: [PROPERTY_A],
+          }),
+        ),
+      ),
+    ).resolves.toEqual({ mode: "assigned", propertyIds: [PROPERTY_A] });
+    await deny(propertyScope({ roleKey: "external_owner", mode: "all" }), {
+      ...context,
+      membership: { ...context.membership, roleKey: "external_owner" },
+    });
+    await deny(propertyScope({ roleKey: "front_desk", accessOrigin: "external_owner" }));
+    await deny(propertyScope({ accessOrigin: "unknown" }));
+    await deny(propertyScope({ roleKey: "front_desk" }));
   });
 
   it("denies a missing target-native link even when canonical scope allows the property", async () => {
@@ -639,28 +727,22 @@ describe("effective property access", () => {
     );
 
     await expect(
-      requirePropertyAccess(
-        context,
-        propertyScopeRepository({ mode: "all", assignedPropertyIds: [] }),
-        {
-          propertyId: PROPERTY_A,
-          targetResource: { product: "booking", resourceType: "booking_hotel" },
-        },
-      ),
+      requirePropertyAccess(context, propertyScopeRepository(propertyScope({ mode: "all" })), {
+        propertyId: PROPERTY_A,
+        targetResource: { product: "booking", resourceType: "booking_hotel" },
+      }),
     ).rejects.toBeInstanceOf(AuthorizationError);
     await expect(
-      requirePropertyAccess(
-        context,
-        propertyScopeRepository({ mode: "all", assignedPropertyIds: [] }),
-        { propertyId: PROPERTY_A } as never,
-      ),
+      requirePropertyAccess(context, propertyScopeRepository(propertyScope({ mode: "all" })), {
+        propertyId: PROPERTY_A,
+      } as never),
     ).rejects.toBeInstanceOf(AuthorizationError);
   });
 
   it("returns a generic 403 without leaking the requested property", async () => {
     const error = await requirePropertyAccess(
       propertyContext(),
-      propertyScopeRepository({ mode: "assigned", assignedPropertyIds: [] }),
+      propertyScopeRepository(propertyScope()),
       {
         propertyId: PROPERTY_OTHER_TENANT,
         targetResource: { product: "pms", resourceType: "pms_property" },

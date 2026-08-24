@@ -9,6 +9,7 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import {
   createPgMarketplaceTripRepository,
   type MarketplaceExternalCollaboration,
@@ -250,6 +251,7 @@ function buildMarketplaceTripApp(
         organizationKind: options.organizationKind,
         linkedResources: options.linkedResources,
       }),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["marketplace.trip.read"];
