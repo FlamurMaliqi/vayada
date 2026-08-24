@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { EyeIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { BOOKING_PAGE_FONT_STYLESHEET_URL, BookingPagePreview } from "@vayada/product-onboarding";
-import { settingsService } from "@/services/settings";
+import { settingsService, type CustomDomainStatus } from "@/services/settings";
 import { requireSelectedBookingHotelId } from "@/services/api/bookingHotelScope";
 import { getBookingHotelPropertyLink } from "@/services/api/bookingPropertyLinkClient";
 import { publishPublicBookabilityProfile } from "@/services/api/publicBookabilityPublicationClient";
@@ -13,7 +13,9 @@ import { FeedbackAlert, SaveButton } from "@/components/ui";
 import { uploadSingleImage, uploadSingleImageWithMediaReference } from "@/lib/utils/uploadImage";
 import { headerLogoUploadError } from "@/lib/utils/headerLogo";
 import { buildBookingPreviewUrl } from "@/lib/utils/bookingPreviewUrl";
+import { useTranslation } from "@/lib/i18n";
 
+import CustomDomainCard from "@/components/design-studio/CustomDomainCard";
 import MediaTab from "@/components/design-studio/MediaTab";
 import ColorsTab from "@/components/design-studio/ColorsTab";
 import FontsTab from "@/components/design-studio/FontsTab";
@@ -21,6 +23,7 @@ import FontsTab from "@/components/design-studio/FontsTab";
 type Tab = "media" | "colors" | "fonts";
 
 export default function DesignStudioPage() {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<Tab>("media");
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -30,6 +33,8 @@ export default function DesignStudioPage() {
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(
     null,
   );
+  const [domainInput, setDomainInput] = useState("");
+  const [domainStatus, setDomainStatus] = useState<CustomDomainStatus | null>(null);
 
   // Media & Content state
   const [heroImage, setHeroImage] = useState("");
@@ -52,16 +57,21 @@ export default function DesignStudioPage() {
 
   // Fonts state
   const [selectedFont, setSelectedFont] = useState("high-end-serif");
-  const bookingPreviewUrl = propertySlug
+  const defaultBookingPreviewUrl = propertySlug
     ? buildBookingPreviewUrl({
         slug: propertySlug,
         template: process.env.NEXT_PUBLIC_BOOKING_PREVIEW_URL_TEMPLATE,
         location: typeof window === "undefined" ? undefined : window.location,
       })
     : null;
+  const bookingPreviewUrl =
+    domainStatus?.configured && domainStatus.domain
+      ? domainStatus.domain
+      : defaultBookingPreviewUrl;
 
   useEffect(() => {
     setLoadFailed(false);
+    setDomainStatus(null);
     propertyIdRef.current = null;
     profileRevisionRef.current = null;
     try {
@@ -72,6 +82,14 @@ export default function DesignStudioPage() {
       return;
     }
     const hotelId = designHotelIdRef.current;
+    settingsService
+      .getCustomDomainStatus()
+      .then(setDomainStatus)
+      .catch((error) => {
+        const message =
+          error instanceof Error ? error.message : "Failed to load custom domain status.";
+        setFeedback({ type: "error", message });
+      });
     Promise.all([
       settingsService.getDesignSettings(hotelId),
       settingsService.getPropertySettings(hotelId).catch(() => null),
@@ -236,6 +254,53 @@ export default function DesignStudioPage() {
     setHeroSubtext("");
   };
 
+  const handleConnectDomain = async () => {
+    if (!domainInput.trim()) {
+      setFeedback({ type: "error", message: "Enter a custom domain." });
+      return;
+    }
+
+    try {
+      setSaving(true);
+      setFeedback(null);
+      const status = await settingsService.connectCustomDomain(domainInput);
+      setDomainStatus(status);
+      setDomainInput("");
+      setFeedback({ type: "success", message: t("settings.feedback.domainConnected") });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to connect custom domain.";
+      setFeedback({ type: "error", message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDisconnectDomain = async () => {
+    try {
+      setSaving(true);
+      setFeedback(null);
+      await settingsService.disconnectCustomDomain();
+      const status = await settingsService.getCustomDomainStatus();
+      setDomainStatus(status);
+      setFeedback({ type: "success", message: t("settings.feedback.domainRemoved") });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to remove custom domain.";
+      setFeedback({ type: "error", message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRefreshDomainStatus = async () => {
+    try {
+      const status = await settingsService.getCustomDomainStatus();
+      setDomainStatus(status);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to refresh custom domain.";
+      setFeedback({ type: "error", message });
+    }
+  };
+
   const handleSave = async () => {
     const hotelId = designHotelIdRef.current;
     if (!hotelId) return;
@@ -367,23 +432,34 @@ export default function DesignStudioPage() {
           {/* Tab content */}
           <div className="mt-3 space-y-3 lg:flex-1 lg:overflow-y-auto lg:pb-3">
             {activeTab === "media" && (
-              <MediaTab
-                heroImage={heroImage}
-                setHeroImage={setHeroImage}
-                heroHeading={heroHeading}
-                setHeroHeading={setHeroHeading}
-                heroSubtext={heroSubtext}
-                setHeroSubtext={setHeroSubtext}
-                fileInputRef={fileInputRef}
-                handleImageUpload={handleImageUpload}
-                removeHeroImage={removeHeroImage}
-                headerLogo={headerLogo}
-                logoInputRef={logoInputRef}
-                handleLogoUpload={handleLogoUpload}
-                removeHeaderLogo={removeHeaderLogo}
-                uploadingLogo={uploadingLogo}
-                resetContent={resetContent}
-              />
+              <>
+                <CustomDomainCard
+                  domainInput={domainInput}
+                  domainStatus={domainStatus}
+                  saving={saving}
+                  onConnect={handleConnectDomain}
+                  onDisconnect={handleDisconnectDomain}
+                  onDomainInputChange={setDomainInput}
+                  onRefresh={handleRefreshDomainStatus}
+                />
+                <MediaTab
+                  heroImage={heroImage}
+                  setHeroImage={setHeroImage}
+                  heroHeading={heroHeading}
+                  setHeroHeading={setHeroHeading}
+                  heroSubtext={heroSubtext}
+                  setHeroSubtext={setHeroSubtext}
+                  fileInputRef={fileInputRef}
+                  handleImageUpload={handleImageUpload}
+                  removeHeroImage={removeHeroImage}
+                  headerLogo={headerLogo}
+                  logoInputRef={logoInputRef}
+                  handleLogoUpload={handleLogoUpload}
+                  removeHeaderLogo={removeHeaderLogo}
+                  uploadingLogo={uploadingLogo}
+                  resetContent={resetContent}
+                />
+              </>
             )}
 
             {activeTab === "colors" && (
