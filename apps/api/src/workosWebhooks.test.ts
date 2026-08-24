@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { buildApp } from "./app.js";
 import { mapWorkosMembershipRoleKey } from "./platform/workosWebhooks.js";
+import {
+  reconcileWorkosWebhookEvent,
+  staffInvitationIdentityNotFoundReasonCode,
+} from "./routes/workosWebhooks.js";
 import type {
+  DeferredStaffInvitationAcceptance,
   WorkosMembershipPayload,
   WorkosOrganizationPayload,
   WorkosUserPayload,
@@ -520,34 +525,99 @@ describe("WorkOS webhook routes", () => {
     await app.close();
   });
 
-  it("dead-letters acceptance until its verified identity exists", async () => {
+  it("retries deferred acceptance only after its verified identity arrives", async () => {
     const store = createMemoryStore();
+    let currentEvent = event(
+      "evt_invitation_deferred",
+      "invitation.accepted",
+      invitationAcceptedData(),
+    );
     const app = buildApp({
       workosWebhooks: {
         secret: "whsec_test",
-        verifier: verifierFor(
-          event("evt_invitation_deferred", "invitation.accepted", invitationAcceptedData()),
-        ),
-        store,
-        staffInvitationAcceptance: {
-          async reconcile() {
-            return { outcome: "deferred", reason: "identity_not_found" };
+        verifier: {
+          async verify() {
+            return currentEvent;
           },
         },
+        store,
+        staffInvitationAcceptance: acceptanceReconciler(store),
         processInline: true,
       },
     });
 
-    const response = await postWebhook(app, "evt_invitation_deferred");
+    const deferred = await postWebhook(app, "evt_invitation_deferred");
 
-    expect(response.json()).toMatchObject({ status: "dead_lettered" });
+    expect(deferred.json()).toMatchObject({ status: "dead_lettered" });
     expect(store.deadLetters).toEqual([
       expect.objectContaining({
-        reasonCode: "identity_reconciliation_failed",
-        failureSummary: "Staff invitation acceptance deferred: identity_not_found",
+        reasonCode: staffInvitationIdentityNotFoundReasonCode,
       }),
     ]);
+
+    currentEvent = event("evt_user_unverified", "user.created", {
+      id: "user_workos_staff",
+      email: "staff@example.com",
+      emailVerified: false,
+      firstName: "Staff",
+      lastName: "Member",
+    });
+    await postWebhook(app, "evt_user_unverified");
+    expect(await store.listDeferredStaffInvitationAcceptances("user_workos_staff")).toHaveLength(1);
+
+    currentEvent = event("evt_user_verified", "user.updated", {
+      ...currentEvent.data,
+      emailVerified: true,
+    });
+    await postWebhook(app, "evt_user_verified");
+    expect(store.users.get("user_workos_staff")).toMatchObject({
+      emailVerified: true,
+      name: "Staff Member",
+    });
+    expect(await store.listDeferredStaffInvitationAcceptances("user_workos_staff")).toEqual([]);
     await app.close();
+  });
+
+  it("closes the race when verified identity arrives before deferred evidence is written", async () => {
+    const store = createMemoryStore();
+    const originalDeadLetter = store.deadLetterReceipt.bind(store);
+    let releaseDeadLetter!: () => void;
+    let reachedDeadLetter!: () => void;
+    const deadLetterReleased = new Promise<void>((resolve) => (releaseDeadLetter = resolve));
+    const deadLetterReached = new Promise<void>((resolve) => (reachedDeadLetter = resolve));
+    store.deadLetterReceipt = async (input) => {
+      reachedDeadLetter();
+      await deadLetterReleased;
+      await originalDeadLetter(input);
+    };
+    const reconciler = acceptanceReconciler(store);
+    const reconcile = (webhookEvent: WorkosWebhookEvent) =>
+      reconcileWorkosWebhookEvent({
+        event: webhookEvent,
+        rawPayload: webhookEvent,
+        rawHeaders: {},
+        signature: "valid-signature",
+        store,
+        staffInvitationAcceptance: reconciler,
+      });
+
+    const acceptance = reconcile(
+      event("evt_invitation_race", "invitation.accepted", invitationAcceptedData()),
+    );
+    await deadLetterReached;
+    await reconcile(
+      event("evt_user_race", "user.created", {
+        id: "user_workos_staff",
+        email: "staff@example.com",
+        emailVerified: true,
+      }),
+    );
+    releaseDeadLetter();
+
+    await expect(acceptance).resolves.toMatchObject({ status: "accepted" });
+    await expect(
+      store.listDeferredStaffInvitationAcceptances("user_workos_staff"),
+    ).resolves.toEqual([]);
   });
 
   it("fails closed when invitation acceptance reconciliation is not configured", async () => {
@@ -707,6 +777,20 @@ function invitationAcceptedData() {
   };
 }
 
+function acceptanceReconciler(store: ReturnType<typeof createMemoryStore>) {
+  return {
+    async reconcile(input: DeferredStaffInvitationAcceptance["event"]) {
+      return store.users.get(input.providerUserId)?.emailVerified
+        ? ({
+            outcome: "accepted",
+            invitationId: "invitation_internal",
+            membershipId: "membership_internal",
+          } as const)
+        : ({ outcome: "deferred", reason: "identity_not_found" } as const);
+    },
+  };
+}
+
 async function postWebhook(app: ReturnType<typeof buildApp>, eventId: string) {
   return app.inject({
     method: "POST",
@@ -726,6 +810,7 @@ function createMemoryStore() {
   const users = new Map<string, WorkosUserPayload>();
   const organizations = new Map<string, WorkosOrganizationPayload>();
   const memberships = new Map<string, WorkosMembershipPayload>();
+  const deferredAcceptances = new Map<string, DeferredStaffInvitationAcceptance>();
   const deadLetters: Array<{
     receiptId: string;
     reasonCode: string;
@@ -774,6 +859,26 @@ function createMemoryStore() {
         reasonCode: input.reasonCode,
         failureSummary: input.failureSummary,
       });
+      const acceptance = input.failurePayload["staffInvitationAcceptance"];
+      if (
+        input.reasonCode === staffInvitationIdentityNotFoundReasonCode &&
+        acceptance &&
+        typeof acceptance === "object" &&
+        !Array.isArray(acceptance)
+      ) {
+        deferredAcceptances.set(input.receiptId, {
+          receiptId: input.receiptId,
+          event: acceptance as DeferredStaffInvitationAcceptance["event"],
+        });
+      }
+    },
+    async listDeferredStaffInvitationAcceptances(providerUserId) {
+      return Array.from(deferredAcceptances.values()).filter(
+        ({ event }) => event.providerUserId === providerUserId,
+      );
+    },
+    async resolveDeferredStaffInvitationAcceptance(receiptId) {
+      deferredAcceptances.delete(receiptId);
     },
     async findUserIdByWorkosUserId(workosUserId) {
       return users.has(workosUserId) ? `internal_${workosUserId}` : null;

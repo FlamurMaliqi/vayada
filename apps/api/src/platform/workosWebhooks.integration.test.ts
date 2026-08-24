@@ -4,6 +4,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { buildApp } from "../app.js";
+import { staffInvitationIdentityNotFoundReasonCode } from "../routes/workosWebhooks.js";
 import { grantIdentityAccessWithClient } from "./identityLifecycle.js";
 import { createPgWorkosWebhookStore } from "./workosWebhooks.js";
 
@@ -348,6 +349,93 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
       }
       expect.soft(cleanupError, "delegation test cleanup").toBeUndefined();
     }
+  });
+
+  it("loads and resolves deferred invitation acceptance for the exact WorkOS user", async () => {
+    const eventId = `evt_vay_1085_deferred_${randomUUID()}`;
+    const providerUserId = `user_vay_1085_deferred_${randomUUID()}`;
+    const acceptance = {
+      providerEventId: eventId,
+      providerInvitationId: `invitation_${randomUUID()}`,
+      providerUserId,
+      providerOrganizationId: `org_${randomUUID()}`,
+      invitationEmail: `staff-${randomUUID()}@example.test`,
+    };
+    const receipt = await store.insertReceipt({
+      providerEventId: eventId,
+      eventType: "invitation.accepted",
+      payloadHash: `sha256:${randomUUID()}`,
+      signatureVerified: true,
+      rawHeaders: {},
+      rawPayload: { id: eventId, event: "invitation.accepted" },
+      webhookKeyHash: `sha256:${randomUUID()}`,
+    });
+    await store.deadLetterReceipt({
+      receiptId: receipt.receiptId,
+      reasonCode: staffInvitationIdentityNotFoundReasonCode,
+      failureSummary: "Staff invitation acceptance deferred: identity_not_found",
+      failurePayload: {
+        staffInvitationAcceptance: acceptance,
+      },
+    });
+    for (const [kind, signatureVerified, override] of [
+      ["unverified", false, {}],
+      ["event-mismatch", true, { providerEventId: `other_${eventId}` }],
+      ["malformed", true, { providerInvitationId: 42 }],
+    ] as const) {
+      const invalidEventId = `${eventId}_${kind}`;
+      const invalidReceipt = await store.insertReceipt({
+        providerEventId: invalidEventId,
+        eventType: "invitation.accepted",
+        payloadHash: `sha256:${randomUUID()}`,
+        signatureVerified,
+        rawHeaders: {},
+        rawPayload: { id: invalidEventId, event: "invitation.accepted" },
+        webhookKeyHash: `sha256:${randomUUID()}`,
+      });
+      await store.deadLetterReceipt({
+        receiptId: invalidReceipt.receiptId,
+        reasonCode: staffInvitationIdentityNotFoundReasonCode,
+        failureSummary: "Staff invitation acceptance deferred: identity_not_found",
+        failurePayload: {
+          staffInvitationAcceptance: {
+            ...acceptance,
+            providerEventId: invalidEventId,
+            ...override,
+          },
+        },
+      });
+    }
+
+    await expect(
+      store.listDeferredStaffInvitationAcceptances(`other_${providerUserId}`),
+    ).resolves.toEqual([]);
+    await expect(store.listDeferredStaffInvitationAcceptances(providerUserId)).resolves.toEqual([
+      { receiptId: receipt.receiptId, event: acceptance },
+    ]);
+
+    await Promise.all([
+      store.resolveDeferredStaffInvitationAcceptance(receipt.receiptId),
+      store.resolveDeferredStaffInvitationAcceptance(receipt.receiptId),
+    ]);
+
+    await expect(store.listDeferredStaffInvitationAcceptances(providerUserId)).resolves.toEqual([]);
+    expect(
+      (
+        await admin.query<{ recoveryStatus: string; normalizedCount: string }>(
+          `SELECT dead.recovery_status AS "recoveryStatus",
+                  count(reconciliation.id)::text AS "normalizedCount"
+           FROM platform.dead_letter_events dead
+           LEFT JOIN identity.auth_reconciliation_events reconciliation
+             ON reconciliation.provider = 'workos'
+            AND reconciliation.provider_event_id = dead.webhook_event_id::text
+            AND reconciliation.event_type = 'workos.webhook.normalized'
+           WHERE dead.webhook_event_id = $1::uuid
+           GROUP BY dead.id`,
+          [receipt.receiptId],
+        )
+      ).rows[0],
+    ).toEqual({ recoveryStatus: "resolved", normalizedCount: "1" });
   });
 
   it("holds accepted WorkOS membership events behind pending Vayada invitation access", async () => {

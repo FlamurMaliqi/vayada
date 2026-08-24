@@ -20,6 +20,13 @@ export type StaffInvitationAcceptanceReconciler = {
   reconcile(input: StaffInvitationAcceptanceEvent): Promise<StaffInvitationAcceptanceResult>;
 };
 
+export type DeferredStaffInvitationAcceptance = {
+  receiptId: string;
+  event: StaffInvitationAcceptanceEvent;
+};
+
+export const staffInvitationIdentityNotFoundReasonCode = "staff_invitation_identity_not_found";
+
 export type WorkosWebhookStore = {
   insertReceipt(input: WorkosWebhookReceiptInput): Promise<WorkosWebhookReceiptResult>;
   markReceiptProcessed(input: {
@@ -35,6 +42,10 @@ export type WorkosWebhookStore = {
     failureSummary: string;
     failurePayload: Record<string, unknown>;
   }): Promise<void>;
+  listDeferredStaffInvitationAcceptances(
+    providerUserId: string,
+  ): Promise<DeferredStaffInvitationAcceptance[]>;
+  resolveDeferredStaffInvitationAcceptance(receiptId: string): Promise<void>;
   findUserIdByWorkosUserId(workosUserId: string): Promise<string | null>;
   findOrganizationIdByWorkosOrgId(workosOrgId: string): Promise<string | null>;
   upsertWorkosUser(input: WorkosUserPayload): Promise<string>;
@@ -234,6 +245,28 @@ async function processWorkosWebhookReceipt(input: {
       input.store,
       input.staffInvitationAcceptance,
     );
+    if (outcome.status === "deferred") {
+      const deferred = { receiptId: input.receiptId, event: outcome.event };
+      await input.store.deadLetterReceipt({
+        receiptId: input.receiptId,
+        reasonCode: staffInvitationIdentityNotFoundReasonCode,
+        failureSummary: "Staff invitation acceptance deferred: identity_not_found",
+        failurePayload: {
+          staffInvitationAcceptance: outcome.event,
+        },
+      });
+      if (
+        input.staffInvitationAcceptance &&
+        (await reconcileDeferredStaffInvitationAcceptance(
+          deferred,
+          input.store,
+          input.staffInvitationAcceptance,
+        ))
+      ) {
+        return { status: "accepted", receiptId: input.receiptId };
+      }
+      return { status: "dead_lettered", receiptId: input.receiptId };
+    }
     await input.store.markReceiptProcessed({
       receiptId: input.receiptId,
       status: outcome.status,
@@ -283,27 +316,40 @@ async function applyWorkosIdentityEvent(
   event: WorkosWebhookEvent,
   store: WorkosWebhookStore,
   staffInvitationAcceptance?: StaffInvitationAcceptanceReconciler,
-): Promise<{
-  status: "normalized" | "ignored";
-  userId?: string;
-  organizationId?: string;
-}> {
+): Promise<
+  | {
+      status: "normalized" | "ignored";
+      userId?: string;
+      organizationId?: string;
+    }
+  | {
+      status: "deferred";
+      event: StaffInvitationAcceptanceEvent;
+    }
+> {
   switch (event.event) {
     case "invitation.accepted": {
       if (!staffInvitationAcceptance) {
         throw new Error("Staff invitation acceptance reconciliation is not configured");
       }
-      const result = await staffInvitationAcceptance.reconcile(
-        toStaffInvitationAcceptanceEvent(event),
-      );
+      const acceptanceEvent = toStaffInvitationAcceptanceEvent(event);
+      const result = await staffInvitationAcceptance.reconcile(acceptanceEvent);
       if (result.outcome === "deferred") {
-        throw new Error(`Staff invitation acceptance deferred: ${result.reason}`);
+        return { status: "deferred", event: acceptanceEvent };
       }
       return { status: "normalized" };
     }
     case "user.created":
     case "user.updated": {
-      const userId = await store.upsertWorkosUser(toWorkosUserPayload(event));
+      const user = toWorkosUserPayload(event);
+      const userId = await store.upsertWorkosUser(user);
+      if (user.emailVerified && staffInvitationAcceptance) {
+        await replayDeferredStaffInvitationAcceptances(
+          user.workosUserId,
+          store,
+          staffInvitationAcceptance,
+        );
+      }
       return { status: "normalized", userId };
     }
     case "user.deleted": {
@@ -353,6 +399,29 @@ async function applyWorkosIdentityEvent(
   }
 }
 
+async function replayDeferredStaffInvitationAcceptances(
+  providerUserId: string,
+  store: WorkosWebhookStore,
+  reconciler: StaffInvitationAcceptanceReconciler,
+): Promise<void> {
+  for (const deferred of await store.listDeferredStaffInvitationAcceptances(providerUserId)) {
+    await reconcileDeferredStaffInvitationAcceptance(deferred, store, reconciler);
+  }
+}
+
+async function reconcileDeferredStaffInvitationAcceptance(
+  deferred: DeferredStaffInvitationAcceptance,
+  store: WorkosWebhookStore,
+  reconciler: StaffInvitationAcceptanceReconciler,
+): Promise<boolean> {
+  const result = await reconciler.reconcile(deferred.event);
+  if (result.outcome === "deferred") {
+    return false;
+  }
+  await store.resolveDeferredStaffInvitationAcceptance(deferred.receiptId);
+  return true;
+}
+
 function toStaffInvitationAcceptanceEvent(
   event: WorkosWebhookEvent,
 ): StaffInvitationAcceptanceEvent {
@@ -372,14 +441,19 @@ function toStaffInvitationAcceptanceEvent(
 }
 
 function toWorkosUserPayload(event: WorkosWebhookEvent): WorkosUserPayload {
-  const firstName = optionalString(event.data, "first_name");
-  const lastName = optionalString(event.data, "last_name");
+  const firstName =
+    optionalString(event.data, "firstName") ?? optionalString(event.data, "first_name");
+  const lastName =
+    optionalString(event.data, "lastName") ?? optionalString(event.data, "last_name");
   const structuredName = [firstName, lastName].filter(Boolean).join(" ");
   return {
     workosUserId: requiredString(event.data, "id"),
     email: requiredString(event.data, "email"),
     name: structuredName || optionalString(event.data, "name"),
-    emailVerified: optionalBoolean(event.data, "email_verified") ?? false,
+    emailVerified:
+      optionalBoolean(event.data, "emailVerified") ??
+      optionalBoolean(event.data, "email_verified") ??
+      false,
     status: "active",
     rawProfile: event.data ?? {},
   };
