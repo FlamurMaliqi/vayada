@@ -19,11 +19,13 @@ import type {
 describe("WorkOS webhook routes", () => {
   it("verifies the signature and reconciles a user event", async () => {
     const store = createMemoryStore();
+    store.listDeferredStaffInvitationAcceptances = () => Promise.reject(new Error("retry failed"));
     const app = buildApp({
       workosWebhooks: {
         secret: "whsec_test",
         verifier: verifierFor(event("evt_user_created", "user.created", userData())),
         store,
+        staffInvitationAcceptance: acceptanceReconciler(store),
         processInline: true,
       },
     });

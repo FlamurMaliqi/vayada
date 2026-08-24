@@ -348,7 +348,9 @@ async function applyWorkosIdentityEvent(
           user.workosUserId,
           store,
           staffInvitationAcceptance,
-        );
+        ).catch(() => {
+          // Deferred evidence remains open for a later retry.
+        });
       }
       return { status: "normalized", userId };
     }
