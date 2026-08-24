@@ -1,4 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
+import type {
+  StaffInvitationAcceptanceEvent,
+  StaffInvitationAcceptanceResult,
+} from "@vayada/backend-auth";
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from "fastify";
 
 export type WorkosWebhookEvent = {
@@ -10,6 +14,10 @@ export type WorkosWebhookEvent = {
 
 export type WorkosWebhookVerifier = {
   verify(input: { payload: string; signature: string }): Promise<WorkosWebhookEvent>;
+};
+
+export type StaffInvitationAcceptanceReconciler = {
+  reconcile(input: StaffInvitationAcceptanceEvent): Promise<StaffInvitationAcceptanceResult>;
 };
 
 export type WorkosWebhookStore = {
@@ -102,6 +110,7 @@ export type WorkosWebhookRoutesOptions = {
   secret: string;
   verifier: WorkosWebhookVerifier;
   store: WorkosWebhookStore;
+  staffInvitationAcceptance?: StaffInvitationAcceptanceReconciler;
   processInline?: boolean;
   scheduleProcessing?: (task: () => Promise<void>) => void;
 };
@@ -144,6 +153,7 @@ export const registerWorkosWebhookRoutes: FastifyPluginAsync<WorkosWebhookRoutes
       rawHeaders: redactedHeaders(request),
       signature,
       store: options.store,
+      staffInvitationAcceptance: options.staffInvitationAcceptance,
     };
 
     if (options.processInline !== false) {
@@ -164,6 +174,7 @@ export const registerWorkosWebhookRoutes: FastifyPluginAsync<WorkosWebhookRoutes
         event,
         receiptId: receipt.receiptId,
         store: options.store,
+        staffInvitationAcceptance: options.staffInvitationAcceptance,
       });
     });
 
@@ -177,6 +188,7 @@ export async function reconcileWorkosWebhookEvent(input: {
   rawHeaders: Record<string, string>;
   signature: string;
   store: WorkosWebhookStore;
+  staffInvitationAcceptance?: StaffInvitationAcceptanceReconciler;
 }): Promise<{ status: "accepted" | "duplicate" | "ignored" | "dead_lettered"; receiptId: string }> {
   const receipt = await recordWorkosWebhookReceipt(input);
 
@@ -188,6 +200,7 @@ export async function reconcileWorkosWebhookEvent(input: {
     event: input.event,
     receiptId: receipt.receiptId,
     store: input.store,
+    staffInvitationAcceptance: input.staffInvitationAcceptance,
   });
 }
 
@@ -213,9 +226,14 @@ async function processWorkosWebhookReceipt(input: {
   event: WorkosWebhookEvent;
   receiptId: string;
   store: WorkosWebhookStore;
+  staffInvitationAcceptance?: StaffInvitationAcceptanceReconciler;
 }): Promise<{ status: "accepted" | "ignored" | "dead_lettered"; receiptId: string }> {
   try {
-    const outcome = await applyWorkosIdentityEvent(input.event, input.store);
+    const outcome = await applyWorkosIdentityEvent(
+      input.event,
+      input.store,
+      input.staffInvitationAcceptance,
+    );
     await input.store.markReceiptProcessed({
       receiptId: input.receiptId,
       status: outcome.status,
@@ -264,12 +282,25 @@ function scheduleWebhookProcessing(
 async function applyWorkosIdentityEvent(
   event: WorkosWebhookEvent,
   store: WorkosWebhookStore,
+  staffInvitationAcceptance?: StaffInvitationAcceptanceReconciler,
 ): Promise<{
   status: "normalized" | "ignored";
   userId?: string;
   organizationId?: string;
 }> {
   switch (event.event) {
+    case "invitation.accepted": {
+      if (!staffInvitationAcceptance) {
+        throw new Error("Staff invitation acceptance reconciliation is not configured");
+      }
+      const result = await staffInvitationAcceptance.reconcile(
+        toStaffInvitationAcceptanceEvent(event),
+      );
+      if (result.outcome === "deferred") {
+        throw new Error(`Staff invitation acceptance deferred: ${result.reason}`);
+      }
+      return { status: "normalized" };
+    }
     case "user.created":
     case "user.updated": {
       const userId = await store.upsertWorkosUser(toWorkosUserPayload(event));
@@ -320,6 +351,24 @@ async function applyWorkosIdentityEvent(
     default:
       return { status: "ignored" };
   }
+}
+
+function toStaffInvitationAcceptanceEvent(
+  event: WorkosWebhookEvent,
+): StaffInvitationAcceptanceEvent {
+  if (requiredString(event.data, "state") !== "accepted") {
+    throw new Error("WorkOS invitation.accepted event has a non-accepted state");
+  }
+  return {
+    providerEventId: event.id,
+    providerInvitationId: requiredString(event.data, "id"),
+    providerUserId:
+      optionalString(event.data, "acceptedUserId") ??
+      requiredString(event.data, "accepted_user_id"),
+    providerOrganizationId:
+      optionalString(event.data, "organizationId") ?? requiredString(event.data, "organization_id"),
+    invitationEmail: requiredString(event.data, "email"),
+  };
 }
 
 function toWorkosUserPayload(event: WorkosWebhookEvent): WorkosUserPayload {
