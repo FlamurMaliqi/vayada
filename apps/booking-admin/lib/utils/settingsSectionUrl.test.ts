@@ -14,6 +14,7 @@ describe("settings section URLs", () => {
   it("falls back to property for a missing or invalid section", () => {
     expect(readSettingsSection("")).toBe("property");
     expect(readSettingsSection("?section=unknown")).toBe("property");
+    expect(readSettingsSection("?section=account")).toBe("property");
   });
 
   it("keeps legacy billing return URLs opening billing", () => {
