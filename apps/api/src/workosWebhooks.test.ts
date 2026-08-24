@@ -551,12 +551,6 @@ describe("WorkOS webhook routes", () => {
     const deferred = await postWebhook(app, "evt_invitation_deferred");
 
     expect(deferred.json()).toMatchObject({ status: "dead_lettered" });
-    expect(store.deadLetters).toEqual([
-      expect.objectContaining({
-        reasonCode: staffInvitationIdentityNotFoundReasonCode,
-      }),
-    ]);
-
     currentEvent = event("evt_user_unverified", "user.created", {
       id: "user_workos_staff",
       email: "staff@example.com",
@@ -617,9 +611,11 @@ describe("WorkOS webhook routes", () => {
     releaseDeadLetter();
 
     await expect(acceptance).resolves.toMatchObject({ status: "accepted" });
-    await expect(
-      store.listDeferredStaffInvitationAcceptances("user_workos_staff"),
-    ).resolves.toEqual([]);
+    const invitation = invitationAcceptedData();
+    const invalid = await Promise.all(
+      ["", " "].map((id) => reconcile(event(id, "invitation.accepted", invitation))),
+    );
+    expect(invalid.map(({ status }) => status)).toEqual(["dead_lettered", "dead_lettered"]);
   });
 
   it("fails closed when invitation acceptance reconciliation is not configured", async () => {

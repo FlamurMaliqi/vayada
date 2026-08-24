@@ -348,9 +348,7 @@ async function applyWorkosIdentityEvent(
           user.workosUserId,
           store,
           staffInvitationAcceptance,
-        ).catch(() => {
-          // Deferred evidence remains open for a later retry.
-        });
+        ).catch(() => undefined);
       }
       return { status: "normalized", userId };
     }
@@ -427,6 +425,7 @@ async function reconcileDeferredStaffInvitationAcceptance(
 function toStaffInvitationAcceptanceEvent(
   event: WorkosWebhookEvent,
 ): StaffInvitationAcceptanceEvent {
+  if (!event.id.trim()) throw new Error("WorkOS invitation.accepted event is missing an event ID");
   if (requiredString(event.data, "state") !== "accepted") {
     throw new Error("WorkOS invitation.accepted event has a non-accepted state");
   }
