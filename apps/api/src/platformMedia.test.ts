@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import {
   createDeterministicPlatformMediaFinalizer,
   createDeterministicPlatformMediaUploadSigner,
@@ -2502,6 +2503,7 @@ function buildMediaApp(
         },
         options.userId,
       ),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["hotel_catalog.setup.manage"];

@@ -42,6 +42,7 @@ import {
   type PublicHotelQuoteRepository,
 } from "./routes/aiHotelQuotes.js";
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import { loadConfig } from "./config.js";
 import type { PropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
 import { pmsRoomOrderVersion } from "./domains/pmsRoomOrder.js";
@@ -508,6 +509,7 @@ function buildPlatformAdminApp(
               },
             }
           : platformIdentityRepository,
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["platform.admin.read"];
@@ -2604,6 +2606,7 @@ function buildAuthenticatedApp(
         options.linkedPmsPropertyId,
         options.linkedPmsRelationship,
       ),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["booking.settings.manage", "booking.reservation.read"];
@@ -3805,6 +3808,7 @@ describe("vayada-api", () => {
       auth: {
         verifier: createFakeVerifier(new Map([["valid-token", session]])),
         repository: identityRepository,
+        propertyAccessRepository: agencyPropertyAccessRepository,
         rolePermissionRepository: {
           async findPermissionsForRole(kind, roleKey) {
             expect(kind).toBe("hotel_group");

@@ -11,6 +11,7 @@ import pg from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import {
   createCreatorPlatformAdapterRegistry,
   type CreatorPlatformAccount,
@@ -1396,6 +1397,7 @@ function buildCreatorPlatformApp(
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepository(),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return ["marketplace.profile.manage"];

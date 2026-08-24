@@ -9,6 +9,7 @@ import { injectJson } from "@vayada/backend-test";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import type {
   IdentityAdminCommandResponse,
   IdentityAdminUsersListResponse,
@@ -193,6 +194,7 @@ function buildAdminApp(
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepository,
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return ["platform.user.suspend"];

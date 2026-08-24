@@ -9,6 +9,7 @@ import type { SetupTrack, UpdateTracksResponse } from "@vayada/domain-hotels";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import type { HotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
 import {
   createPgHotelAccountInviteRepository,
@@ -702,6 +703,7 @@ function buildInviteApp(
         ]),
       ),
       repository: identityRepository,
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return [...permissions];

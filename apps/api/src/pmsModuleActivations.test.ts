@@ -11,6 +11,7 @@ import { injectJson } from "@vayada/backend-test";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import {
   createPgPmsModuleActivationRepository,
   type PmsModuleActivationPool,
@@ -188,6 +189,7 @@ function buildAuthenticatedApp(
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: repo,
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["pms.operations.read", "pms.operations.manage"];

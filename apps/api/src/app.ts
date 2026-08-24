@@ -10,6 +10,7 @@ import type {
 import {
   createAuthorizationResolver,
   type EntitlementRepository,
+  type PropertyAccessRepository,
   type RolePermissionRepository,
 } from "@vayada/backend-authorization";
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
@@ -224,6 +225,7 @@ import { registerFinanceOtaCommissionSettingsRoutes as registerOtaSettings } fro
 export type ApiAuthOptions = Omit<BackendAuthPluginOptions, "authorizationResolver"> & {
   rolePermissionRepository: RolePermissionRepository;
   entitlementRepository?: EntitlementRepository;
+  propertyAccessRepository: PropertyAccessRepository;
 };
 
 type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
@@ -353,12 +355,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   registerBrowserCors(app, options.browserAllowedOrigins ?? []);
 
   if (options.auth) {
-    const { rolePermissionRepository, entitlementRepository, ...authOptions } = options.auth;
+    const {
+      rolePermissionRepository,
+      entitlementRepository,
+      propertyAccessRepository,
+      ...authOptions
+    } = options.auth;
     app.register(backendAuthPlugin, {
       ...authOptions,
       authorizationResolver: createAuthorizationResolver(
         rolePermissionRepository,
         entitlementRepository,
+        propertyAccessRepository,
       ),
     });
   }

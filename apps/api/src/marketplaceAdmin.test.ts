@@ -8,6 +8,7 @@ import type { QueryResultRow } from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import { createPgMarketplaceOfferIdentityAccessCommandPort } from "./platform/marketplaceOfferIdentityAccess.js";
 import {
   createPgMarketplaceAdminRepository,
@@ -1090,6 +1091,7 @@ function buildMarketplaceAdminApp(
         ]),
       ),
       repository: identityRepository,
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole(kind) {
           return kind === "platform" ? ["platform.user.suspend"] : ["marketplace.profile.manage"];
