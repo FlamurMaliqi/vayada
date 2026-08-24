@@ -129,6 +129,10 @@ import {
   type IdentityPrivacyRepository,
 } from "./routes/identityPrivacy.js";
 import {
+  registerStaffInvitationRoutes,
+  type StaffInvitationRoutesOptions,
+} from "./routes/staffInvitations.js";
+import {
   registerBookingWebPublicRoutes,
   type BookingWebAttributionSink,
   type BookingWebCalendarRepository,
@@ -303,6 +307,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
     IdentityAdminUserRoutesOptions,
     "lifecycleCommandBus" | "readRepository"
   >;
+  staffInvitations?: StaffInvitationRoutesOptions;
   platformContactIntake?: PlatformContactIntakeRoutesOptions;
   platformAdminDashboardRepository?: PlatformAdminDashboardRepository;
   platformPropertyLifecycle?: PlatformPropertyLifecycleRoutesOptions;
@@ -586,6 +591,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       lifecycleCommandBus: options.identityLifecycleCommandBus,
       readRepository: options.identityAdminUsersReadRepository,
       ...options.identityAdminUsers,
+    });
+  }
+  if (options.staffInvitations) {
+    app.register(registerStaffInvitationRoutes, {
+      prefix: "/api/identity/staff",
+      ...options.staffInvitations,
     });
   }
   app.register(registerBookingRoutes, {
