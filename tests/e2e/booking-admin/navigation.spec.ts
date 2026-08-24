@@ -4,14 +4,7 @@ import {
   mockBookingAdminShellRoutes,
 } from "../support/bookingAdminMocks";
 
-const NAV_LABELS = [
-  "Dashboard",
-  "Design Studio",
-  "Booking Flow",
-  "Affiliates",
-  "Settings",
-  "Feature Hub",
-];
+const NAV_LABELS = ["Dashboard", "Design Studio", "Booking Flow", "Settings", "Feature Hub"];
 
 test.describe("booking-admin navigation", () => {
   test.beforeEach(async ({ page }) => {
@@ -27,7 +20,7 @@ test.describe("booking-admin navigation", () => {
     await expect(navigation.getByRole("link", { name: "Reservations" })).toHaveCount(0);
 
     await page.getByRole("button", { name: "Collapse" }).click();
-    await expect(navigation.getByRole("link")).toHaveCount(5);
+    await expect(navigation.getByRole("link")).toHaveCount(4);
     expect(
       await navigation.locator("a").evaluateAll((links) => links.map((link) => link.title)),
     ).toEqual(NAV_LABELS.slice(0, -1));

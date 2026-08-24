@@ -61,6 +61,25 @@ test.describe("pms-web smoke", () => {
     await assertHealthy();
   });
 
+  test("keeps unfinished Feature Hub modules and empty product tabs hidden", async ({
+    page,
+  }, testInfo) => {
+    const assertHealthy = watchPageHealth(page, testInfo);
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.goto("/settings/feature-hub");
+
+    await expect(page.getByRole("heading", { name: "Feature Hub" })).toBeVisible();
+    await expect(page.locator("article")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /PMS Modules/i })).toHaveCount(0);
+    for (const unavailable of ["Inbox", "Financials", "Affiliates"]) {
+      await expect(page.getByRole("heading", { name: unavailable, exact: true })).toHaveCount(0);
+    }
+
+    await assertHealthy();
+  });
+
   test("settings only lists delivered destinations", async ({ page }, testInfo) => {
     const assertHealthy = watchPageHealth(page, testInfo);
 

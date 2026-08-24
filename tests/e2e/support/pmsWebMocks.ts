@@ -338,7 +338,13 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
   await page.route("**/api/pms/properties", (route) => route.fulfill({ json: [propertySummary] }));
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/module-activations*`, (route) =>
     route.fulfill({
-      json: { hotelId: PMS_WEB_PROPERTY_ID, activeModules: [], activations: [] },
+      json: {
+        hotelId: PMS_WEB_PROPERTY_ID,
+        canManage: true,
+        supportedModules: ["affiliates"],
+        activeModules: [],
+        activations: [],
+      },
     }),
   );
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/rooms*`, (route) =>
