@@ -109,6 +109,15 @@ export {
 } from "./repository.js";
 
 export { createPgStaffInvitationRepository } from "./staffInvitations.js";
+export {
+  createPgStaffInvitationDeliveryRepository,
+  createStaffInvitationDeliveryCoordinator,
+  type StaffInvitationDeliveryClaim,
+  type StaffInvitationDeliveryRepository,
+  type StaffInvitationProvider,
+  type StaffInvitationProviderResponse,
+  type StaffInvitationProviderRole,
+} from "./staffInvitationDelivery.js";
 
 // RequestContext resolution
 export {
