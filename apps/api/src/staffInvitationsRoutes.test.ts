@@ -112,7 +112,7 @@ describe("staff invitation routes", () => {
     });
     expect(fake.commands[0]).toMatchObject({
       commandType: "identity.invite.staff.create",
-      idempotencyKey: "invite-key",
+      idempotencyKey: `hotel:${organizationId}:invite-key`,
       audit: { actor: { userId: "user-owner", organizationId }, source: "api" },
       payload: { organizationId, propertyAccessMode: "assigned", propertyIds: [propertyId] },
     });

@@ -77,7 +77,7 @@ export async function registerStaffInvitationRoutes(
     const command: CreateStaffInviteCommand = {
       commandType: "identity.invite.staff.create",
       commandId: randomUUID(),
-      idempotencyKey,
+      idempotencyKey: `hotel:${context.selectedOrganization.organizationId}:${idempotencyKey}`,
       audit: {
         actor: {
           kind: "user",
