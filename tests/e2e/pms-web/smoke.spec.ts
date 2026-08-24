@@ -61,6 +61,44 @@ test.describe("pms-web smoke", () => {
     await assertHealthy();
   });
 
+  test("keeps unfinished Feature Hub modules and empty product tabs hidden", async ({
+    page,
+  }, testInfo) => {
+    const assertHealthy = watchPageHealth(page, testInfo);
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    const activationResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname ===
+          `/api/pms/properties/${PMS_WEB_PROPERTY_ID}/module-activations`,
+    );
+    await page.goto("/settings/feature-hub");
+
+    await expect(page.getByRole("heading", { name: "Feature Hub" })).toBeVisible();
+    await activationResponse;
+    await expect(page.locator("article")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /PMS Modules/i })).toHaveCount(0);
+    for (const unavailable of ["Inbox", "Financials", "Affiliates"]) {
+      await expect(page.getByRole("heading", { name: unavailable, exact: true })).toHaveCount(0);
+    }
+    const preview = page
+      .getByRole("heading", { name: "PMS navigation" })
+      .locator("xpath=ancestor::section");
+    await expect(preview.getByRole("listitem")).toHaveText([
+      "Dashboard",
+      "Calendar",
+      "Reservations",
+      "Reviews",
+      "Rooms & Rates",
+      "Channel Manager",
+      "Settings",
+    ]);
+
+    await assertHealthy();
+  });
+
   test("settings only lists delivered destinations", async ({ page }, testInfo) => {
     const assertHealthy = watchPageHealth(page, testInfo);
 

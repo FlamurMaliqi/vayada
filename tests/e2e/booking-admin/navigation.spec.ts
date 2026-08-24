@@ -8,7 +8,7 @@ const NAV_LABELS = [
   "Dashboard",
   "Design Studio",
   "Booking Flow",
-  "Affiliates",
+  "Promo Codes",
   "Settings",
   "Feature Hub",
 ];

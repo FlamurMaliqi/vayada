@@ -365,7 +365,15 @@ export async function mockBookingAdminShellRoutes(
 ): Promise<void> {
   const propertySettings = options.propertySettings ?? defaultBookingAdminPropertySettings;
   await page.route("**/api/pms/properties/*/module-activations", (route) =>
-    route.fulfill({ json: { activations: [] } }),
+    route.fulfill({
+      json: {
+        hotelId: BOOKING_ADMIN_PROPERTY_ID,
+        canManage: true,
+        supportedModules: ["affiliates"],
+        activeModules: [],
+        activations: [],
+      },
+    }),
   );
   await page.route("**/admin/hotels", (route) =>
     route.fulfill({

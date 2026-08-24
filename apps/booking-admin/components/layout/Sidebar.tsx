@@ -10,10 +10,11 @@ import {
   CheckIcon,
   Cog6ToothIcon,
   TicketIcon,
-  UserGroupIcon,
 } from "@heroicons/react/24/outline";
+import { activeNavModules, useFeatureModuleActivations } from "@vayada/feature-hub";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
+import { moduleActivationClient } from "@/services/api/moduleActivationClient";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 import { getAuthCsrfToken } from "@/services/auth/sessionStore";
 import {
@@ -38,10 +39,19 @@ const coreNavItems: NavItem[] = [
   { labelKey: "layout.sidebar.dashboard", href: "/", icon: DashboardIcon },
   { labelKey: "layout.sidebar.designStudio", href: "/design-studio", icon: DesignStudioIcon },
   { labelKey: "layout.sidebar.bookingFlow", href: "/booking-flow", icon: BookingFlowIcon },
-  { label: "Affiliates", href: "/affiliates", icon: UserGroupIcon },
-  { label: "Promo Codes", href: "/promo-codes", icon: TicketIcon },
-  { labelKey: "layout.sidebar.settings", href: "/settings", icon: Cog6ToothIcon },
 ];
+
+const promoCodesNavItem: NavItem = {
+  label: "Promo Codes",
+  href: "/promo-codes",
+  icon: TicketIcon,
+};
+
+const settingsNavItem: NavItem = {
+  labelKey: "layout.sidebar.settings",
+  href: "/settings",
+  icon: Cog6ToothIcon,
+};
 
 export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
@@ -53,7 +63,17 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   );
   const switcherRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
-  const navItems = coreNavItems;
+  const { activeModuleIds, hotelId: activationPropertyId } =
+    useFeatureModuleActivations(moduleActivationClient);
+  const activeFeatureNavItems: NavItem[] = activationPropertyId
+    ? activeNavModules("booking_engine", activeModuleIds).map((module) => module.navItem!)
+    : [];
+  const navItems = [
+    ...coreNavItems,
+    ...activeFeatureNavItems,
+    promoCodesNavItem,
+    settingsNavItem,
+  ];
 
   const switchApp = async (
     baseUrl: string,

@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -388,8 +386,6 @@ async function runHotelFlow(
     request,
     roomTypeId: setup.roomTypeId,
   });
-  await test.step("exercise deployed Financials writes, reads, OTA settings and receipts", () =>
-    runFinancialsAcceptance(request, api, setup.propertyId, environment.runId));
   await runRoomShuffleAcceptance({
     api,
     bookings,
@@ -426,148 +422,6 @@ async function runHotelFlow(
   });
 
   return resource;
-}
-
-async function runFinancialsAcceptance(
-  request: APIRequestContext,
-  api: JsonApi,
-  propertyId: string,
-  runId: string,
-): Promise<void> {
-  const root = `/api/finance/properties/${propertyId}/financials`;
-  const idempotency = (suffix: string) => `next-smoke:${runId}:financials:${suffix}`;
-  await api.json("PATCH", `/api/pms/properties/${propertyId}/module-activations/financials`, {
-    moduleId: "financials",
-    isActive: true,
-  });
-
-  const categoryResponse = await api.json<Record<string, unknown>>(
-    "POST",
-    `${root}/expense-categories`,
-    {
-      commandId: randomUUID(),
-      idempotencyKey: idempotency("category"),
-      name: "QA staging acceptance",
-      color: "#2946E8",
-      sortOrder: 99,
-    },
-  );
-  expect(categoryResponse.outcome).toBe("created");
-  const categoryId = stringField(recordField(categoryResponse, "item"), "id");
-  const expenseId = randomUUID();
-  const receiptBytes = await readFile(
-    path.resolve("apps/marketplace-web/public/creator-category-travel.jpg"),
-  );
-  const upload = await api.json<Record<string, unknown>>("POST", "/api/media/upload-sessions", {
-    idempotencyKey: idempotency("receipt"),
-    purpose: "finance.expense.receipt",
-    visibility: "private",
-    resource: {
-      product: "pms",
-      resourceType: "pms_property",
-      resourceId: propertyId,
-      propertyId,
-      targetResourceId: expenseId,
-    },
-    files: [
-      {
-        clientFileId: "receipt_1",
-        filename: `financials-${runId}.jpg`,
-        contentType: "image/jpeg",
-        sizeBytes: receiptBytes.length,
-      },
-    ],
-  });
-  const uploadSession = recordField(upload, "uploadSession");
-  const target = record(arrayField(upload, "uploadTargets")[0]);
-  const stored = await request.fetch(stringField(target, "uploadUrl"), {
-    method: "PUT",
-    headers: record(target.headers) as Record<string, string>,
-    data: receiptBytes,
-  });
-  expect(stored.ok()).toBe(true);
-  const finalized = await api.json<Record<string, unknown>>(
-    "POST",
-    `/api/media/upload-sessions/${stringField(uploadSession, "sessionId")}/finalize`,
-    {
-      files: [
-        {
-          uploadTargetId: stringField(target, "uploadTargetId"),
-          contentType: "image/jpeg",
-          sizeBytes: receiptBytes.length,
-        },
-      ],
-    },
-  );
-  expect(JSON.stringify(finalized)).not.toMatch(/bucket|storageKey|checksumSha256|variants/);
-  const receiptMediaId = stringField(recordField(finalized, "mediaObject"), "mediaObjectId");
-  const incurredOn = new Date().toISOString().slice(0, 10);
-  const expenseResponse = await api.json<Record<string, unknown>>(
-    "POST",
-    `${root}/expenses`,
-    {
-      commandId: expenseId,
-      idempotencyKey: idempotency("expense"),
-      incurredOn,
-      vendor: "QA staging vendor",
-      categoryId,
-      amount: { amount: "12.3400", currency: "EUR" },
-      paymentStatus: "unpaid",
-      receiptMediaId,
-    },
-    { "Idempotency-Key": idempotency("expense") },
-  );
-  expect(expenseResponse).toMatchObject({
-    outcome: "created",
-    item: { id: expenseId, revision: 1 },
-  });
-  const expenseRead = await api.json<Record<string, unknown>>(
-    "GET",
-    `${root}/expenses/${expenseId}`,
-  );
-  expect(expenseRead).toMatchObject({ item: { id: expenseId } });
-  const receipt = await api.json<Record<string, unknown>>(
-    "GET",
-    `${root}/expenses/${expenseId}/receipt`,
-  );
-  expect(JSON.stringify(receipt)).not.toMatch(/bucket|storageKey/);
-  const disposition = recordField(recordField(receipt, "receipt"), "disposition");
-  expect((await request.get(stringField(disposition, "url"))).ok()).toBe(true);
-
-  const recurringId = randomUUID();
-  const recurringResponse = await api.json<Record<string, unknown>>(
-    "POST",
-    `${root}/expenses`,
-    {
-      commandId: recurringId,
-      idempotencyKey: idempotency("recurring"),
-      incurredOn,
-      vendor: "QA recurring vendor",
-      categoryId,
-      amount: { amount: "25.0000", currency: "EUR" },
-      paymentStatus: "unpaid",
-      recurrence: { cadence: "monthly", startsOn: incurredOn },
-    },
-    { "Idempotency-Key": idempotency("recurring") },
-  );
-  expect(recurringResponse).toMatchObject({ outcome: "created", item: { id: recurringId } });
-  expect(
-    await api.json<Record<string, unknown>>("GET", `${root}/recurring-expenses/${recurringId}`),
-  ).toMatchObject({ item: { id: recurringId, active: true } });
-
-  const otaRoot = `${root}/ota-commission-settings`;
-  const otaBefore = await api.json<Record<string, unknown>>("GET", otaRoot);
-  expect(
-    arrayField(otaBefore, "settings").map((entry) => stringField(record(entry), "channel")),
-  ).toContain("booking_com");
-  const ota = await api.json<Record<string, unknown>>("PUT", `${otaRoot}/booking_com`, {
-    commandId: randomUUID(),
-    idempotencyKey: idempotency("ota"),
-    effectiveFrom: new Date().toISOString(),
-    expectedRevision: 0,
-    percentageRate: "14.25",
-  });
-  expect(ota).toMatchObject({ outcome: "created", setting: { percentageRate: "14.2500" } });
 }
 
 async function runForeignHotelFlow(
