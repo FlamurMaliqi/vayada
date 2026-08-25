@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -13,7 +14,7 @@ import {
   type StaffInvitationAcceptanceEvent,
 } from "./staffInvitationAcceptance.js";
 import { createPgStaffInvitationRepository } from "./staffInvitations.js";
-import type { CreateStaffInviteCommand } from "./lifecycle.js";
+import type { CreateStaffInviteCommand, UpdateStaffAccessCommand } from "./lifecycle.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const org = "11111111-1111-4111-8111-111111111111";
@@ -21,6 +22,7 @@ const otherOrg = "22222222-2222-4222-8222-222222222222";
 const owner = "33333333-3333-4333-8333-333333333333";
 const otherUser = "44444444-4444-4444-8444-444444444444";
 const membership = "55555555-5555-4555-8555-555555555555";
+const otherMembership = "88888888-8888-4888-8888-888888888888";
 const property = "66666666-6666-4666-8666-666666666666";
 const foreignProperty = "77777777-7777-4777-8777-777777777777";
 const workosIdentity = "99999999-9999-4999-8999-999999999999";
@@ -71,6 +73,39 @@ function command(
       propertyIds: input.propertyIds ?? [property],
       permissionOverrides: { grant: [], deny: ["booking.analytics.read"] },
       configurationRevision: input.revision ?? 1,
+    },
+  };
+}
+
+function updateCommand(
+  input: Partial<{
+    idempotencyKey: string;
+    organizationId: string;
+    membershipId: string;
+    actorUserId: string;
+    propertyIds: string[];
+    roleKey: "hotel_manager" | "front_desk" | "housekeeping";
+  }> = {},
+): UpdateStaffAccessCommand {
+  const organizationId = input.organizationId ?? org;
+  return {
+    commandType: "identity.staff.access.update",
+    commandId: randomUUID(),
+    idempotencyKey: input.idempotencyKey ?? `update-${randomUUID()}`,
+    audit: {
+      actor: { kind: "user", userId: input.actorUserId ?? owner, organizationId },
+      source: "admin",
+      requestId: `request-${randomUUID()}`,
+      reason: "Update staff access",
+      requestedAt: "2026-08-24T00:00:00.000Z",
+    },
+    payload: {
+      organizationId,
+      membershipId: input.membershipId ?? staffMembership,
+      roleKey: input.roleKey ?? "front_desk",
+      propertyAccessMode: "assigned",
+      propertyIds: input.propertyIds ?? [property],
+      permissionOverrides: { grant: [], deny: ["booking.analytics.read"] },
     },
   };
 }
@@ -141,7 +176,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
       ON CONFLICT (id) DO NOTHING;
       INSERT INTO identity.organization_memberships (id, organization_id, user_id, status, role_key, property_access_mode, access_origin) VALUES
         ('${membership}', '${org}', '${owner}', 'active', 'hotel_owner', 'all', 'agency'),
-        ('88888888-8888-4888-8888-888888888888', '${otherOrg}', '${otherUser}', 'active', 'hotel_owner', 'all', 'agency'),
+        ('${otherMembership}', '${otherOrg}', '${otherUser}', 'active', 'hotel_owner', 'all', 'agency'),
         ('${staffMembership}', '${org}', '${staffUser}', 'active', 'housekeeping', 'assigned', 'agency')
       ON CONFLICT (id) DO NOTHING;
       INSERT INTO hotel_catalog.properties (id, public_id, display_name) VALUES
@@ -320,6 +355,92 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
       status: "deactivated",
       propertyIds: [],
     });
+  });
+
+  it("atomically updates, audits, and replays staff access", async () => {
+    const edit = updateCommand();
+    await expect(repository.updateAccess(edit)).resolves.toEqual({
+      outcome: "updated",
+      membershipId: staffMembership,
+    });
+    await client.query(
+      "UPDATE identity.organization_resource_links SET status = 'suspended' WHERE organization_id = $1 AND resource_id = $2",
+      [org, property],
+    );
+    await expect(repository.updateAccess({ ...edit, commandId: randomUUID() })).resolves.toEqual({
+      outcome: "idempotent_replay",
+      membershipId: staffMembership,
+    });
+    await client.query(
+      "UPDATE identity.organization_resource_links SET status = 'active' WHERE organization_id = $1 AND resource_id = $2",
+      [org, property],
+    );
+    await expect(
+      repository.updateAccess({
+        ...edit,
+        commandId: randomUUID(),
+        payload: { ...edit.payload, roleKey: "housekeeping" },
+      }),
+    ).resolves.toEqual({ outcome: "rejected", reason: "idempotency_conflict" });
+    const stored = await client.query(
+      `SELECT membership.role_key, membership.permission_overrides, membership.property_access_mode,
+              ARRAY(SELECT property_id::text FROM identity.membership_property_assignments
+                    WHERE membership_id = membership.id ORDER BY property_id) AS properties
+       FROM identity.organization_memberships membership WHERE membership.id = $1`,
+      [staffMembership],
+    );
+    expect(stored.rows[0]).toMatchObject({
+      role_key: "front_desk",
+      permission_overrides: { grant: [], deny: ["booking.analytics.read"] },
+      property_access_mode: "assigned",
+      properties: [property],
+    });
+    const audit = await client.query(
+      `SELECT action, actor_user_id::text, target_resource_id, occurred_at, redacted_payload, audit_metadata
+       FROM platform.product_audit_events WHERE product = 'identity' AND causation_id = $1`,
+      [edit.commandId],
+    );
+    expect(audit.rows[0]).toMatchObject({
+      action: "identity.staff.access.updated",
+      actor_user_id: owner,
+      target_resource_id: staffMembership,
+      redacted_payload: { outcome: "updated", roleKey: "front_desk", propertyCount: 1 },
+      audit_metadata: {
+        requestedAt: edit.audit.requestedAt,
+        actorNameSnapshot: "Owner Example",
+      },
+    });
+    expect(audit.rows[0].occurred_at.toISOString()).not.toBe(edit.audit.requestedAt);
+  });
+
+  it("fails closed for unauthorized, owner, cross-tenant, and foreign-property updates", async () => {
+    await expect(
+      repository.updateAccess(updateCommand({ actorUserId: otherUser })),
+    ).resolves.toEqual({ outcome: "rejected", reason: "inviter_not_authorized" });
+    await expect(
+      repository.updateAccess(updateCommand({ membershipId: membership })),
+    ).resolves.toEqual({ outcome: "rejected", reason: "target_not_found" });
+    await client.query(
+      "UPDATE identity.organization_memberships SET role_key = 'front_desk' WHERE id = $1",
+      [otherMembership],
+    );
+    await expect(
+      repository.updateAccess(
+        updateCommand({
+          membershipId: otherMembership,
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "rejected", reason: "target_not_found" });
+    await expect(
+      repository.updateAccess(updateCommand({ propertyIds: [foreignProperty] })),
+    ).resolves.toEqual({ outcome: "rejected", reason: "property_scope_invalid" });
+    expect(
+      (
+        await client.query("SELECT role_key FROM identity.organization_memberships WHERE id = $1", [
+          staffMembership,
+        ])
+      ).rows[0]?.role_key,
+    ).toBe("housekeeping");
   });
 
   it("persists, normalizes, and replays one intent", async () => {

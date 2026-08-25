@@ -3,6 +3,7 @@ import type {
   IdentityCommandAudit,
   IdentityLifecycleCommand,
   IdentityLifecycleCommandBus,
+  IdentityLifecycleCommandBusCommand,
   InternalUserStatus,
 } from "@vayada/backend-auth";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -308,7 +309,7 @@ export async function registerIdentityAdminUserRoutes(
     async (request, reply) => {
       const userId = request.params.userId;
       const audit = adminAudit(request, `Update identity user ${userId} through Vayada admin`);
-      const commands: IdentityLifecycleCommand[] = [];
+      const commands: IdentityLifecycleCommandBusCommand[] = [];
       if (request.body?.name !== undefined) {
         commands.push({
           commandType: "identity.user.profile.update",
@@ -491,7 +492,7 @@ function adminAudit(request: FastifyRequest, reason: string): IdentityCommandAud
 
 function commandResponse(
   userId: string,
-  commands: IdentityLifecycleCommand[],
+  commands: IdentityLifecycleCommandBusCommand[],
   results: { status: "accepted" | "idempotent_replay" }[],
 ): IdentityAdminCommandResponse {
   return {
