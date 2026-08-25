@@ -125,6 +125,11 @@ export {
   type StaffRemovalJobRepository,
 } from "./staffRemovalJobs.js";
 export {
+  createStaffRemovalCoordinator,
+  type StaffRemovalProvider,
+  type StaffRemovalProviderMembership,
+} from "./staffRemoval.js";
+export {
   createPgStaffInvitationAcceptanceRepository,
   type StaffInvitationAcceptanceEvent,
   type StaffInvitationAcceptanceResult,
