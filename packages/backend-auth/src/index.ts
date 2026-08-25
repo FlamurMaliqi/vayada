@@ -72,6 +72,7 @@ export {
   type StaffInviteAudit,
   type StaffInviteCreatedEvent,
   type StaffAccessUpdatedEvent,
+  type StaffStatusUpdatedEvent,
   type StaffPermissionOverrides,
   type RevokeIdentityAccessCommand,
   type RevokeIdentityAccessPayload,
@@ -83,6 +84,8 @@ export {
   type UpdateIdentityUserProfilePayload,
   type UpdateStaffAccessCommand,
   type UpdateStaffAccessPayload,
+  type UpdateStaffStatusCommand,
+  type UpdateStaffStatusPayload,
   type UpdateIdentityUserStatusCommand,
   type UpdateIdentityUserStatusPayload,
 } from "./lifecycle.js";

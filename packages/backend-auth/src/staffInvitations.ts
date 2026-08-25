@@ -9,6 +9,7 @@ import {
   type CreateStaffInviteCommand,
   type HotelStaffRoleKey,
   type UpdateStaffAccessCommand,
+  type UpdateStaffStatusCommand,
 } from "./lifecycle.js";
 import type { RepositoryConfig } from "./repository.js";
 
@@ -38,6 +39,10 @@ type StaffAccessTargetRow = {
   permission_overrides: unknown;
   property_ids: string[];
 };
+type StaffStatusTargetRow = {
+  user_id: string;
+  status: "active" | "suspended";
+};
 
 export type StaffRosterMember = {
   id: string;
@@ -51,6 +56,7 @@ export type StaffRosterMember = {
 
 const permissionKeys = new Set<string>(staffAccessPermissionKeys);
 const staffAccessUpdateOperation = "staff_access_update";
+const staffStatusUpdateOperation = "staff_status_update";
 
 export function createPgStaffInvitationRepository(config: RepositoryConfig) {
   if (!config.connectionString.trim()) {
@@ -126,6 +132,143 @@ export function createPgStaffInvitationRepository(config: RepositoryConfig) {
         status: row.status,
         lastActiveAt: row.last_active_at?.toISOString() ?? null,
       }));
+    },
+    async updateStatus(command: UpdateStaffStatusCommand) {
+      const normalized = normalizeStaffStatusUpdate(command);
+      if (!normalized) return { outcome: "rejected" as const, reason: "invalid_command" as const };
+      const keyHash = hash(command.idempotencyKey).toString("hex");
+      const fingerprint = hash(JSON.stringify(normalized)).toString("hex");
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const manager = await lockAuthorizedManager(
+          client,
+          normalized.organizationId,
+          normalized.actorUserId,
+        );
+        if (!manager) {
+          await client.query("ROLLBACK");
+          return { outcome: "rejected" as const, reason: "inviter_not_authorized" as const };
+        }
+        const reservation = await client.query<{ id: string }>(
+          `INSERT INTO platform.idempotency_keys
+             (operation_scope, operation, key_hash, request_fingerprint_hash, status,
+              tenant_scope, organization_id, correlation_id, expires_at, idempotency_metadata)
+           VALUES ('identity', $1, $2, $3, 'in_progress', 'organization', $4, $5,
+                   now() + interval '30 days', jsonb_build_object('commandId', $6::text))
+           ON CONFLICT (operation_scope, operation, key_hash, scope_key) DO NOTHING
+           RETURNING id::text AS id`,
+          [
+            staffStatusUpdateOperation,
+            keyHash,
+            fingerprint,
+            normalized.organizationId,
+            command.audit.correlationId ?? command.audit.requestId,
+            command.commandId,
+          ],
+        );
+        const reservationId = reservation.rows[0]?.id;
+        if (!reservationId) {
+          const replay = await client.query<{
+            request_fingerprint_hash: string;
+            status: string;
+            response_resource_id: string | null;
+          }>(
+            `SELECT request_fingerprint_hash, status, response_resource_id
+             FROM platform.idempotency_keys
+             WHERE operation_scope = 'identity' AND operation = $1 AND key_hash = $2
+               AND tenant_scope = 'organization' AND organization_id = $3
+             FOR UPDATE`,
+            [staffStatusUpdateOperation, keyHash, normalized.organizationId],
+          );
+          await client.query("ROLLBACK");
+          const row = replay.rows[0];
+          return row?.request_fingerprint_hash === fingerprint &&
+            row.status === "completed" &&
+            row.response_resource_id === normalized.membershipId
+            ? {
+                outcome: "idempotent_replay" as const,
+                membershipId: row.response_resource_id,
+                membershipStatus: normalized.membershipStatus,
+              }
+            : { outcome: "rejected" as const, reason: "idempotency_conflict" as const };
+        }
+        const target = await client.query<StaffStatusTargetRow>(
+          `SELECT membership.user_id::text, membership.status
+           FROM identity.organization_memberships membership
+           JOIN identity.users staff ON staff.id = membership.user_id
+           WHERE membership.organization_id = $1 AND membership.id = $2
+             AND membership.role_key = ANY($3::text[])
+             AND membership.status IN ('active', 'suspended') AND staff.status = 'active'
+           FOR UPDATE OF membership, staff`,
+          [normalized.organizationId, normalized.membershipId, hotelStaffRoleKeys],
+        );
+        const previous = target.rows[0];
+        if (!previous) {
+          await client.query("ROLLBACK");
+          return { outcome: "rejected" as const, reason: "target_not_found" as const };
+        }
+        await client.query(
+          `UPDATE identity.organization_memberships
+           SET status = $3, updated_at = now()
+           WHERE organization_id = $1 AND id = $2`,
+          [normalized.organizationId, normalized.membershipId, normalized.membershipStatus],
+        );
+        await client.query(
+          `INSERT INTO platform.product_audit_events
+             (audit_key, product, action, occurred_at, tenant_scope, organization_id,
+              actor_type, actor_user_id, target_resource_product, target_resource_type,
+              target_resource_id, idempotency_key_id, correlation_id, causation_id,
+              redacted_payload, private_payload, audit_metadata, retention_class, privacy_scope)
+           VALUES ($1, 'identity', 'identity.staff.status.updated', $2, 'organization', $3,
+                   'user', $4, 'identity', 'organization_membership', $5, $6, $7, $8,
+                   $9::jsonb, $10::jsonb, $11::jsonb, 'security', 'confidential')`,
+          [
+            `staff.status.updated:${reservationId}`,
+            command.audit.requestedAt,
+            normalized.organizationId,
+            normalized.actorUserId,
+            normalized.membershipId,
+            reservationId,
+            command.audit.correlationId ?? command.audit.requestId,
+            command.commandId,
+            JSON.stringify({ outcome: "updated", membershipStatus: normalized.membershipStatus }),
+            JSON.stringify({
+              targetUserId: previous.user_id,
+              previous: { membershipStatus: previous.status },
+              next: { membershipStatus: normalized.membershipStatus },
+            }),
+            JSON.stringify({
+              requestId: command.audit.requestId,
+              source: command.audit.source,
+              reason: command.audit.reason,
+              actorNameSnapshot: manager.name ?? manager.email,
+            }),
+          ],
+        );
+        const result = {
+          outcome: "updated" as const,
+          membershipId: normalized.membershipId,
+          membershipStatus: normalized.membershipStatus,
+        };
+        const completed = await client.query(
+          `UPDATE platform.idempotency_keys
+           SET status = 'completed', response_status_code = 200, completed_at = now(),
+               response_body_hash = $2, response_resource_product = 'identity',
+               response_resource_type = 'organization_membership', response_resource_id = $3,
+               idempotency_metadata = idempotency_metadata || jsonb_build_object('outcome', 'updated')
+           WHERE id = $1 AND status = 'in_progress'`,
+          [reservationId, hash(JSON.stringify(result)).toString("hex"), normalized.membershipId],
+        );
+        if (completed.rowCount !== 1) throw new Error("Staff status idempotency completion failed");
+        await client.query("COMMIT");
+        return result;
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
     },
     async updateAccess(command: UpdateStaffAccessCommand) {
       const normalized = normalizeStaffAccessUpdate(command);
@@ -487,6 +630,28 @@ function normalizeStaffAccessUpdate(command: UpdateStaffAccessCommand) {
       grant: [...command.payload.permissionOverrides.grant].sort(),
       deny: [...command.payload.permissionOverrides.deny].sort(),
     },
+    actorUserId: actor.userId,
+  };
+}
+
+function normalizeStaffStatusUpdate(command: UpdateStaffStatusCommand) {
+  const actor = command.audit.actor;
+  if (
+    actor.kind !== "user" ||
+    actor.organizationId !== command.payload.organizationId ||
+    !actor.userId ||
+    !command.commandId.trim() ||
+    !command.idempotencyKey.trim() ||
+    !canonicalUuid(command.payload.membershipId) ||
+    !["active", "suspended"].includes(command.payload.membershipStatus) ||
+    Number.isNaN(Date.parse(command.audit.requestedAt))
+  ) {
+    return null;
+  }
+  return {
+    organizationId: command.payload.organizationId,
+    membershipId: command.payload.membershipId.toLowerCase(),
+    membershipStatus: command.payload.membershipStatus,
     actorUserId: actor.userId,
   };
 }
