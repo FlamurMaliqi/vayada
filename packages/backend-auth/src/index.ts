@@ -120,6 +120,11 @@ export {
 
 export { createPgStaffInvitationRepository, type StaffRosterMember } from "./staffInvitations.js";
 export {
+  createPgStaffRemovalJobRepository,
+  type StaffRemovalJobClaim,
+  type StaffRemovalJobRepository,
+} from "./staffRemovalJobs.js";
+export {
   createPgStaffInvitationAcceptanceRepository,
   type StaffInvitationAcceptanceEvent,
   type StaffInvitationAcceptanceResult,

@@ -14,6 +14,7 @@ import {
   type StaffInvitationAcceptanceEvent,
 } from "./staffInvitationAcceptance.js";
 import { createPgStaffInvitationRepository } from "./staffInvitations.js";
+import { createPgStaffRemovalJobRepository } from "./staffRemovalJobs.js";
 import type {
   CreateStaffInviteCommand,
   RemoveStaffCommand,
@@ -214,6 +215,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
   let repository: ReturnType<typeof createPgStaffInvitationRepository>;
   let deliveryRepository: ReturnType<typeof createPgStaffInvitationDeliveryRepository>;
   let acceptanceRepository: ReturnType<typeof createPgStaffInvitationAcceptanceRepository>;
+  let removalJobRepository: ReturnType<typeof createPgStaffRemovalJobRepository>;
 
   beforeAll(async () => {
     const dbName = new URL(TEST_DATABASE_URL!).pathname.replace(/^\//, "");
@@ -225,6 +227,9 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
       connectionString: TEST_DATABASE_URL!,
     });
     acceptanceRepository = createPgStaffInvitationAcceptanceRepository({
+      connectionString: TEST_DATABASE_URL!,
+    });
+    removalJobRepository = createPgStaffRemovalJobRepository({
       connectionString: TEST_DATABASE_URL!,
     });
     await client.query(`
@@ -304,6 +309,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
   });
 
   afterAll(async () => {
+    await removalJobRepository.close();
     await deliveryRepository.close();
     await acceptanceRepository.close();
     await repository.close();
@@ -713,6 +719,68 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
     await expect(
       repository.remove(removalCommand({ membershipId: "not-a-membership" })),
     ).resolves.toEqual({ outcome: "rejected", reason: "invalid_command" });
+  });
+
+  it("fences stale removal workers with a unique claim token", async () => {
+    const removed = await repository.remove(removalCommand());
+    if (removed.outcome !== "removed") throw new Error("expected staff removal");
+    const first = await removalJobRepository.claim(removed.providerRevocationJobId);
+    if (first.outcome !== "claimed") throw new Error("expected first claim");
+    await client.query(
+      "UPDATE platform.jobs SET locked_at = now() - interval '6 minutes' WHERE id = $1",
+      [removed.providerRevocationJobId],
+    );
+    const second = await removalJobRepository.claim(removed.providerRevocationJobId);
+    if (second.outcome !== "claimed") throw new Error("expected reclaimed job");
+    expect(second.leaseToken).not.toBe(first.leaseToken);
+    await expect(
+      removalJobRepository.markSucceeded(
+        removed.providerRevocationJobId,
+        first.leaseToken,
+        "deleted",
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      removalJobRepository.markSucceeded(
+        removed.providerRevocationJobId,
+        second.leaseToken,
+        "deleted",
+      ),
+    ).resolves.toBe(true);
+  });
+
+  it("dead-letters a stale final-attempt removal claim", async () => {
+    const removed = await repository.remove(removalCommand());
+    if (removed.outcome !== "removed") throw new Error("expected staff removal");
+    await client.query(
+      `UPDATE platform.jobs SET status = 'running', attempts_count = max_attempts,
+         locked_at = now() - interval '6 minutes', locked_by = 'stale-worker' WHERE id = $1`,
+      [removed.providerRevocationJobId],
+    );
+    await expect(removalJobRepository.claim(removed.providerRevocationJobId)).resolves.toEqual({
+      outcome: "dead_lettered",
+      jobId: removed.providerRevocationJobId,
+    });
+    expect(
+      (
+        await client.query("SELECT status, job_metadata FROM platform.jobs WHERE id = $1", [
+          removed.providerRevocationJobId,
+        ])
+      ).rows[0],
+    ).toMatchObject({
+      status: "dead_lettered",
+      job_metadata: { failureCode: "worker_lease_expired" },
+    });
+  });
+
+  it("returns transient removal failures to the retry queue", async () => {
+    const removed = await repository.remove(removalCommand());
+    if (removed.outcome !== "removed") throw new Error("expected staff removal");
+    const claim = await removalJobRepository.claim(removed.providerRevocationJobId);
+    if (claim.outcome !== "claimed") throw new Error("expected removal claim");
+    await expect(
+      removalJobRepository.markRetryableFailure(removed.providerRevocationJobId, claim.leaseToken),
+    ).resolves.toBe("pending");
   });
 
   it("persists, normalizes, and replays one intent", async () => {
