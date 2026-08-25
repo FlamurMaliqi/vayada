@@ -1,4 +1,9 @@
-import type { CreateStaffInviteCommand, PermissionKey, RequestContext } from "@vayada/backend-auth";
+import type {
+  CreateStaffInviteCommand,
+  PermissionKey,
+  RequestContext,
+  UpdateStaffAccessCommand,
+} from "@vayada/backend-auth";
 import { injectJson } from "@vayada/backend-test";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,7 +17,9 @@ const organizationId = "11111111-1111-4111-8111-111111111111";
 const propertyId = "22222222-2222-4222-8222-222222222222";
 const foreignPropertyId = "33333333-3333-4333-8333-333333333333";
 const invitationId = "44444444-4444-4444-8444-444444444444";
+const staffMembershipId = "55555555-5555-4555-8555-555555555555";
 type PersistResult = Awaited<ReturnType<StaffInvitationRoutesOptions["repository"]["persist"]>>;
+type UpdateResult = Awaited<ReturnType<StaffInvitationRoutesOptions["repository"]["updateAccess"]>>;
 type Auth = {
   authenticated?: boolean;
   actorStatus?: RequestContext["actor"]["status"];
@@ -24,15 +31,21 @@ type Auth = {
 
 function fakes() {
   const commands: CreateStaffInviteCommand[] = [];
+  const accessCommands: UpdateStaffAccessCommand[] = [];
   const deliveries: string[] = [];
   const rosterOrganizations: string[] = [];
   let result: PersistResult = { outcome: "created", invitationId };
+  let updateResult: UpdateResult = { outcome: "updated", membershipId: staffMembershipId };
   return {
     commands,
+    accessCommands,
     deliveries,
     rosterOrganizations,
     setResult(value: PersistResult) {
       result = value;
+    },
+    setUpdateResult(value: UpdateResult) {
+      updateResult = value;
     },
     options: {
       repository: {
@@ -40,7 +53,7 @@ function fakes() {
           rosterOrganizations.push(id);
           return [
             {
-              id: "membership-staff",
+              id: staffMembershipId,
               name: "Staff Example",
               email: "staff@example.test",
               roleKey: "front_desk" as const,
@@ -53,6 +66,10 @@ function fakes() {
         async persist(command) {
           commands.push(command);
           return result;
+        },
+        async updateAccess(command) {
+          accessCommands.push(command);
+          return updateResult;
         },
       },
       delivery: {
@@ -145,7 +162,7 @@ describe("staff invitation routes", () => {
       body: {
         members: [
           {
-            id: "membership-staff",
+            id: staffMembershipId,
             email: "staff@example.test",
             status: "active",
             propertyIds: [propertyId],
@@ -155,6 +172,26 @@ describe("staff invitation routes", () => {
     });
     expect(fake.rosterOrganizations).toEqual([organizationId]);
     expect(JSON.stringify(response.body)).not.toMatch(/workos|provider|token/i);
+  });
+
+  it("updates assigned staff access from authenticated context", async () => {
+    const fake = fakes();
+    app = await testApp(fake.options);
+    expect(await patchAccess(app)).toMatchObject({
+      statusCode: 200,
+      body: { outcome: "updated", membershipId: staffMembershipId },
+    });
+    expect(fake.accessCommands[0]).toMatchObject({
+      commandType: "identity.staff.access.update",
+      idempotencyKey: `hotel:${organizationId}:access-key`,
+      audit: { actor: { userId: "user-owner", organizationId }, source: "api" },
+      payload: {
+        organizationId,
+        membershipId: staffMembershipId,
+        propertyAccessMode: "assigned",
+        propertyIds: [propertyId],
+      },
+    });
   });
 
   it.each([
@@ -169,7 +206,9 @@ describe("staff invitation routes", () => {
     app = await testApp(fake.options, auth as Auth);
     expect((await post(app, { unsafe: true })).statusCode).toBe(statusCode);
     expect((await get(app)).statusCode).toBe(statusCode);
+    expect((await patchAccess(app, { unsafe: true })).statusCode).toBe(statusCode);
     expect(fake.commands).toHaveLength(0);
+    expect(fake.accessCommands).toHaveLength(0);
     expect(fake.rosterOrganizations).toHaveLength(0);
   });
 
@@ -202,6 +241,21 @@ describe("staff invitation routes", () => {
     expect((await post(app)).statusCode).toBe(statusCode);
     expect(fake.deliveries).toHaveLength(0);
   });
+
+  it("rejects malformed and cross-tenant staff access updates", async () => {
+    const fake = fakes();
+    app = await testApp(fake.options);
+    expect((await patchAccess(app, { ...accessBody(), roleKey: "hotel_owner" })).statusCode).toBe(
+      400,
+    );
+    expect((await patchAccess(app, accessBody(), null)).statusCode).toBe(400);
+    fake.setUpdateResult({ outcome: "rejected", reason: "target_not_found" });
+    expect((await patchAccess(app)).statusCode).toBe(404);
+    fake.setUpdateResult({ outcome: "rejected", reason: "property_scope_invalid" });
+    expect((await patchAccess(app)).statusCode).toBe(404);
+    fake.setUpdateResult({ outcome: "rejected", reason: "idempotency_conflict" });
+    expect((await patchAccess(app)).statusCode).toBe(409);
+  });
 });
 
 function body() {
@@ -212,6 +266,14 @@ function body() {
     propertyIds: [propertyId],
     permissionOverrides: { grant: [], deny: [] },
     configurationRevision: 1,
+  };
+}
+
+function accessBody() {
+  return {
+    roleKey: "front_desk",
+    propertyIds: [propertyId],
+    permissionOverrides: { grant: [], deny: [] },
   };
 }
 
@@ -236,5 +298,21 @@ function get(app: Awaited<ReturnType<typeof testApp>>) {
     method: "GET",
     url: "/api/identity/staff/members",
     headers: { authorization: "Bearer valid-token" },
+  });
+}
+
+function patchAccess(
+  app: Awaited<ReturnType<typeof testApp>>,
+  payload: Record<string, unknown> = accessBody(),
+  key: string | null = "access-key",
+) {
+  return injectJson(app, {
+    method: "PATCH",
+    url: `/api/identity/staff/members/${staffMembershipId}`,
+    headers: {
+      authorization: "Bearer valid-token",
+      ...(key === null ? {} : { "idempotency-key": key }),
+    },
+    payload,
   });
 }

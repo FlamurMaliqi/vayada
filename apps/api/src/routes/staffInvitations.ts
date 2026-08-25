@@ -3,6 +3,7 @@ import {
   UnauthorizedError,
   validateStaffInviteAccess,
   type CreateStaffInviteCommand,
+  type UpdateStaffAccessCommand,
   createPgStaffInvitationRepository,
   createStaffInvitationDeliveryCoordinator,
 } from "@vayada/backend-auth";
@@ -13,7 +14,7 @@ import { enforceRoutePolicy } from "./policy.js";
 
 type StaffInvitationRepository = Pick<
   ReturnType<typeof createPgStaffInvitationRepository>,
-  "listRoster" | "persist"
+  "listRoster" | "persist" | "updateAccess"
 >;
 type StaffInvitationDelivery = Pick<
   ReturnType<typeof createStaffInvitationDeliveryCoordinator>,
@@ -29,8 +30,12 @@ type StaffInvitationRequest = Omit<
   CreateStaffInviteCommand["payload"],
   "organizationId" | "propertyAccessMode"
 >;
+type StaffAccessRequest = Omit<
+  UpdateStaffAccessCommand["payload"],
+  "organizationId" | "membershipId" | "propertyAccessMode"
+>;
 
-const allowedBodyKeys = new Set([
+const invitationBodyKeys = new Set([
   "email",
   "name",
   "roleKey",
@@ -38,6 +43,7 @@ const allowedBodyKeys = new Set([
   "permissionOverrides",
   "configurationRevision",
 ]);
+const accessBodyKeys = new Set(["roleKey", "propertyIds", "permissionOverrides"]);
 
 export async function registerStaffInvitationRoutes(
   app: FastifyInstance,
@@ -79,6 +85,48 @@ export async function registerStaffInvitationRoutes(
       return reply.status(500).send({ code: "staff_roster_failed" });
     }
   });
+
+  app.patch<{ Params: { membershipId: string }; Body: unknown }>(
+    "/members/:membershipId",
+    { onRequest: authorize },
+    async (request, reply) => {
+      const context = authorized.get(request);
+      if (!context) throw new Error("Staff access authorization was not resolved");
+      const idempotencyKey = readIdempotencyKey(request);
+      const body = parseStaffAccessRequest(request.body);
+      if (!idempotencyKey || !body) return reply.status(400).send({ code: "invalid_request" });
+      const command: UpdateStaffAccessCommand = {
+        commandType: "identity.staff.access.update",
+        commandId: randomUUID(),
+        idempotencyKey: `hotel:${context.selectedOrganization.organizationId}:${idempotencyKey}`,
+        audit: {
+          actor: {
+            kind: "user",
+            userId: context.actor.internalUserId,
+            organizationId: context.selectedOrganization.organizationId,
+          },
+          source: context.audit.source,
+          requestId: context.audit.requestId,
+          ...(context.audit.correlationId ? { correlationId: context.audit.correlationId } : {}),
+          reason: "Update hotel staff access",
+          requestedAt: context.audit.receivedAt,
+        },
+        payload: {
+          organizationId: context.selectedOrganization.organizationId,
+          membershipId: request.params.membershipId,
+          propertyAccessMode: "assigned",
+          ...body,
+        },
+      };
+      try {
+        const result = await options.repository.updateAccess(command);
+        if (result.outcome === "rejected") return sendAccessUpdateRejection(reply, result.reason);
+        return reply.send(result);
+      } catch {
+        return reply.status(500).send({ code: "staff_access_update_failed" });
+      }
+    },
+  );
 
   app.post<{ Body: unknown }>("/invitations", { onRequest: authorize }, async (request, reply) => {
     const context = authorized.get(request);
@@ -133,42 +181,60 @@ export async function registerStaffInvitationRoutes(
 }
 
 function parseRequest(value: unknown): StaffInvitationRequest | null {
-  if (!plainRecord(value) || Object.keys(value).some((key) => !allowedBodyKeys.has(key)))
+  if (!plainRecord(value) || Object.keys(value).some((key) => !invitationBodyKeys.has(key)))
     return null;
   const email = typeof value["email"] === "string" ? value["email"].trim().toLowerCase() : "";
   const name = typeof value["name"] === "string" ? value["name"].trim() : undefined;
-  const propertyIds = value["propertyIds"];
-  const overrides = value["permissionOverrides"];
+  const access = parseStaffAccess(value);
   if (
     email.length > 320 ||
     !/^[^\s@]+@[^\s@]+$/.test(email) ||
     (value["name"] !== undefined && (!name || name.length > 200)) ||
-    !stringArray(propertyIds) ||
-    !plainRecord(overrides) ||
-    !stringArray(overrides["grant"]) ||
-    !stringArray(overrides["deny"]) ||
-    Object.keys(overrides).some((key) => key !== "grant" && key !== "deny") ||
+    !access ||
     !Number.isSafeInteger(value["configurationRevision"]) ||
     (value["configurationRevision"] as number) < 1 ||
     (value["configurationRevision"] as number) > 2_147_483_647
   ) {
     return null;
   }
+  return {
+    email,
+    ...(name ? { name } : {}),
+    ...access,
+    configurationRevision: value["configurationRevision"] as number,
+  };
+}
+
+function parseStaffAccessRequest(value: unknown): StaffAccessRequest | null {
+  if (!plainRecord(value) || Object.keys(value).some((key) => !accessBodyKeys.has(key)))
+    return null;
+  return parseStaffAccess(value);
+}
+
+function parseStaffAccess(value: Record<string, unknown>): StaffAccessRequest | null {
+  const propertyIds = value["propertyIds"];
+  const overrides = value["permissionOverrides"];
+  if (
+    typeof value["roleKey"] !== "string" ||
+    !stringArray(propertyIds) ||
+    !plainRecord(overrides) ||
+    !stringArray(overrides["grant"]) ||
+    !stringArray(overrides["deny"]) ||
+    Object.keys(overrides).some((key) => key !== "grant" && key !== "deny")
+  ) {
+    return null;
+  }
   const access = {
-    roleKey: value["roleKey"] as string,
+    roleKey: value["roleKey"],
     propertyAccessMode: "assigned",
     propertyIds,
     permissionOverrides: { grant: overrides["grant"], deny: overrides["deny"] },
   };
-  if (typeof value["roleKey"] !== "string" || validateStaffInviteAccess(access).length) return null;
+  if (validateStaffInviteAccess(access).length) return null;
   return {
-    email,
-    ...(name ? { name } : {}),
-    roleKey: value["roleKey"] as StaffInvitationRequest["roleKey"],
+    roleKey: access.roleKey as StaffAccessRequest["roleKey"],
     propertyIds,
-    permissionOverrides:
-      access.permissionOverrides as StaffInvitationRequest["permissionOverrides"],
-    configurationRevision: value["configurationRevision"] as number,
+    permissionOverrides: access.permissionOverrides as StaffAccessRequest["permissionOverrides"],
   };
 }
 
@@ -201,6 +267,20 @@ function sendRejection(reply: FastifyReply, reason: string) {
   }
   if (reason === "idempotency_conflict" || reason === "configuration_conflict") {
     return reply.status(409).send({ code: "staff_invitation_conflict" });
+  }
+  return reply.status(400).send({ code: "invalid_request" });
+}
+
+function sendAccessUpdateRejection(reply: FastifyReply, reason: string) {
+  if (reason === "inviter_not_authorized") return reply.status(403).send({ code: "forbidden" });
+  if (reason === "target_not_found") {
+    return reply.status(404).send({ code: "staff_member_not_found" });
+  }
+  if (reason === "property_scope_invalid") {
+    return reply.status(404).send({ code: "staff_access_scope_not_found" });
+  }
+  if (reason === "idempotency_conflict") {
+    return reply.status(409).send({ code: "staff_access_conflict" });
   }
   return reply.status(400).send({ code: "invalid_request" });
 }
