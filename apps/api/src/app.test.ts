@@ -8372,6 +8372,11 @@ describe("vayada-api", () => {
       isActive: true,
       maxUses: 50,
     });
+    const updated = await repository.updatePromoCodeByHotelId(
+      hotelId,
+      "0f850001-0000-4000-8000-000000000001",
+      { discountValue: "25.00" },
+    );
     const retired = await repository.retirePromoCodeByHotelId(
       hotelId,
       "0f850001-0000-4000-8000-000000000001",
@@ -8399,10 +8404,21 @@ describe("vayada-api", () => {
       },
     ]);
     expect(created?.promoCodeId).toBe("0f850001-0000-4000-8000-000000000001");
+    expect(updated?.promoCodeId).toBe("0f850001-0000-4000-8000-000000000001");
     expect(retired).toBe(true);
     const sql = queries.map((query) => query.text).join("\n");
     expect(sql).toContain("booking.promo_definitions");
     expect(sql).toContain("promo_definitions.status <> 'retired'");
+    const createQuery = queries.find((query) =>
+      query.text.includes("INSERT INTO booking.promo_definitions ("),
+    );
+    expect(createQuery?.text).toContain("RETURNING *");
+    expect(createQuery?.text).toContain("FROM inserted promo_definitions");
+    expect(createQuery?.text).not.toContain("JOIN inserted");
+    const updateQuery = queries.find((query) => query.text.includes("WITH updated AS ("));
+    expect(updateQuery?.text).toContain("RETURNING *");
+    expect(updateQuery?.text).toContain("FROM updated promo_definitions");
+    expect(updateQuery?.text).not.toContain("JOIN updated");
     expect(sql).toContain("property.id::text = $1");
     expect(sql).toContain("UNION ALL");
     expect(sql).toContain("NOT EXISTS (SELECT 1 FROM direct_property)");
@@ -8411,7 +8427,7 @@ describe("vayada-api", () => {
       queries
         .filter((query) => query.text.includes("WITH direct_property AS"))
         .map((query) => query.values),
-    ).toEqual([[hotelId], [hotelId], [hotelId]]);
+    ).toEqual([[hotelId], [hotelId], [hotelId], [hotelId]]);
   });
 
   it("defaults missing booking addon settings fields to the legacy response defaults", async () => {
