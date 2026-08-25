@@ -191,8 +191,12 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
       SET status = 'active', role_key = 'housekeeping', permission_overrides = NULL,
           property_access_mode = 'assigned', workos_membership_id = 'om_staff_acceptance'
       WHERE id = '${staffMembership}';
+      UPDATE identity.organization_memberships
+      SET status = 'active', role_key = 'hotel_owner', property_access_mode = 'all'
+      WHERE organization_id = '${otherOrg}' AND user_id = '${otherUser}';
       UPDATE identity.external_identities
-      SET provider_user_id = 'user_staff_acceptance', provider_email = 'staff@example.com'
+      SET provider_user_id = 'user_staff_acceptance', provider_email = 'staff@example.com',
+          last_login_at = NULL
       WHERE id = '${staffIdentity}';
       UPDATE identity.organization_resource_links SET status = 'active'
       WHERE organization_id = '${org}' AND resource_id IN ('${property}', '${secondProperty}');
@@ -240,6 +244,82 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
       "SELECT count(*)::int AS count FROM identity.staff_invitations",
     );
     expect(count.rows[0]?.count).toBe(0);
+  });
+
+  it("lists active, pending, and deactivated staff without crossing tenant scope", async () => {
+    await client.query(
+      `INSERT INTO identity.membership_property_assignments (membership_id, property_id)
+       VALUES ($1, $2)`,
+      [staffMembership, property],
+    );
+    await client.query("UPDATE identity.external_identities SET last_login_at = $2 WHERE id = $1", [
+      staffIdentity,
+      "2026-08-24T12:00:00.000Z",
+    ]);
+    await client.query(
+      `UPDATE identity.organization_memberships
+       SET role_key = 'front_desk', property_access_mode = 'all'
+       WHERE organization_id = $1 AND user_id = $2`,
+      [otherOrg, otherUser],
+    );
+    const pending = await repository.persist(
+      command({ email: "pending@example.com", idempotencyKey: "pending-roster" }),
+    );
+    if (pending.outcome !== "created") throw new Error("expected invitation creation");
+
+    expect(await repository.listRoster(org)).toEqual([
+      {
+        id: staffMembership,
+        name: "Staff Example",
+        email: "staff@example.com",
+        roleKey: "housekeeping",
+        propertyIds: [property],
+        status: "active",
+        lastActiveAt: "2026-08-24T12:00:00.000Z",
+      },
+      {
+        id: pending.invitationId,
+        name: "Staff Example",
+        email: "pending@example.com",
+        roleKey: "front_desk",
+        propertyIds: [property],
+        status: "pending",
+        lastActiveAt: null,
+      },
+    ]);
+
+    await client.query(
+      `UPDATE identity.organization_memberships SET property_access_mode = 'all' WHERE id = $1`,
+      [staffMembership],
+    );
+    expect((await repository.listRoster(org))[0]?.propertyIds).toEqual([property, secondProperty]);
+    await client.query(
+      `UPDATE identity.staff_invitations
+       SET delivery_state = 'delivered', delivery_attempted_at = now(),
+           provider_invitation_id = 'invitation_expired_roster', expires_at = now() - interval '1 minute'
+       WHERE id = $1`,
+      [pending.invitationId],
+    );
+    await client.query("UPDATE identity.users SET status = 'suspended' WHERE id = $1", [staffUser]);
+    expect(await repository.listRoster(org)).toEqual([
+      expect.objectContaining({ id: staffMembership, status: "deactivated" }),
+    ]);
+
+    await client.query(
+      `UPDATE identity.organization_memberships
+       SET status = 'inactive', property_access_mode = 'assigned' WHERE id = $1`,
+      [staffMembership],
+    );
+    await client.query(
+      `UPDATE identity.organization_resource_links SET status = 'suspended'
+       WHERE organization_id = $1 AND resource_id = $2`,
+      [org, property],
+    );
+    expect((await repository.listRoster(org))[0]).toMatchObject({
+      id: staffMembership,
+      status: "deactivated",
+      propertyIds: [],
+    });
   });
 
   it("persists, normalizes, and replays one intent", async () => {
