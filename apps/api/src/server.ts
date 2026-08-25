@@ -3,7 +3,9 @@ import {
   createPgStaffInvitationAcceptanceRepository,
   createPgStaffInvitationDeliveryRepository,
   createPgStaffInvitationRepository,
+  createPgStaffRemovalJobRepository,
   createStaffInvitationDeliveryCoordinator,
+  createStaffRemovalCoordinator,
   createWorkOSVerifier,
 } from "@vayada/backend-auth";
 import {
@@ -51,6 +53,7 @@ import { createPgProviderWebhookStore } from "./platform/providerWebhooks.js";
 import { composePlatformMediaRuntime } from "./platform/platformMediaRuntime.js";
 import { createWorkOSAuthKitClient } from "./platform/workosAuthKit.js";
 import { createWorkOSStaffInvitationProvider } from "./platform/workosStaffInvitations.js";
+import { createWorkOSStaffRemovalProvider } from "./platform/workosStaffRemoval.js";
 import { installPostgresPoolRuntime } from "./platform/postgresRuntime.js";
 import {
   createPgWorkosWebhookStore,
@@ -880,12 +883,22 @@ const staffInvitationRuntime =
         const deliveryRepository = createPgStaffInvitationDeliveryRepository({
           connectionString: config.auth.databaseUrl,
         });
+        const removalJobRepository = createPgStaffRemovalJobRepository({
+          connectionString: config.auth.databaseUrl,
+        });
         return {
           repository,
           deliveryRepository,
+          removalJobRepository,
           delivery: createStaffInvitationDeliveryCoordinator({
             repository: deliveryRepository,
             provider: createWorkOSStaffInvitationProvider({
+              apiKey: config.authSession.workosApiKey,
+            }),
+          }),
+          removal: createStaffRemovalCoordinator({
+            repository: removalJobRepository,
+            provider: createWorkOSStaffRemovalProvider({
               apiKey: config.authSession.workosApiKey,
             }),
           }),
@@ -1281,6 +1294,7 @@ app.addHook("onClose", async () => {
     bookingPropertyAccessRepository.close?.(),
     staffInvitationRuntime?.repository.close(),
     staffInvitationRuntime?.deliveryRepository.close(),
+    staffInvitationRuntime?.removalJobRepository.close(),
     financeOtaCommissionSettingsRepository?.close(),
     financeExpenseRuntime?.close(),
     bookingDesignMediaAdapter?.close?.(),

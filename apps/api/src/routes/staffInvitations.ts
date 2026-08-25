@@ -3,10 +3,12 @@ import {
   UnauthorizedError,
   validateStaffInviteAccess,
   type CreateStaffInviteCommand,
+  type RemoveStaffCommand,
   type UpdateStaffAccessCommand,
   type UpdateStaffStatusCommand,
   createPgStaffInvitationRepository,
   createStaffInvitationDeliveryCoordinator,
+  createStaffRemovalCoordinator,
 } from "@vayada/backend-auth";
 import { AuthorizationError } from "@vayada/backend-authorization";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -15,16 +17,18 @@ import { enforceRoutePolicy } from "./policy.js";
 
 type StaffInvitationRepository = Pick<
   ReturnType<typeof createPgStaffInvitationRepository>,
-  "listRoster" | "persist" | "updateAccess" | "updateStatus"
+  "listRoster" | "persist" | "remove" | "updateAccess" | "updateStatus"
 >;
 type StaffInvitationDelivery = Pick<
   ReturnType<typeof createStaffInvitationDeliveryCoordinator>,
   "deliver"
 >;
+type StaffRemoval = Pick<ReturnType<typeof createStaffRemovalCoordinator>, "revoke">;
 
 export type StaffInvitationRoutesOptions = {
   repository: StaffInvitationRepository;
   delivery: StaffInvitationDelivery;
+  removal: StaffRemoval;
 };
 
 type StaffInvitationRequest = Omit<
@@ -174,6 +178,63 @@ export async function registerStaffInvitationRoutes(
       } catch {
         return reply.status(500).send({ code: "staff_status_update_failed" });
       }
+    },
+  );
+
+  app.delete<{ Params: { membershipId: string } }>(
+    "/members/:membershipId",
+    { onRequest: authorize },
+    async (request, reply) => {
+      const context = authorized.get(request);
+      if (!context) throw new Error("Staff removal authorization was not resolved");
+      const idempotencyKey = readIdempotencyKey(request);
+      if (!idempotencyKey) return reply.status(400).send({ code: "invalid_request" });
+      const command: RemoveStaffCommand = {
+        commandType: "identity.staff.remove",
+        commandId: randomUUID(),
+        idempotencyKey: `hotel:${context.selectedOrganization.organizationId}:${idempotencyKey}`,
+        audit: {
+          actor: {
+            kind: "user",
+            userId: context.actor.internalUserId,
+            organizationId: context.selectedOrganization.organizationId,
+          },
+          source: context.audit.source,
+          requestId: context.audit.requestId,
+          ...(context.audit.correlationId ? { correlationId: context.audit.correlationId } : {}),
+          reason: "Remove hotel staff member",
+          requestedAt: context.audit.receivedAt,
+        },
+        payload: {
+          organizationId: context.selectedOrganization.organizationId,
+          membershipId: request.params.membershipId,
+        },
+      };
+      let result;
+      try {
+        result = await options.repository.remove(command);
+      } catch {
+        return reply.status(500).send({ code: "staff_removal_failed" });
+      }
+      if (result.outcome === "rejected") return sendAccessUpdateRejection(reply, result.reason);
+
+      let providerStatus: "pending" | "reconciliation_required" | "revoked" = "pending";
+      try {
+        const revocation = await options.removal.revoke(result.providerRevocationJobId);
+        providerStatus =
+          revocation.outcome === "revoked"
+            ? "revoked"
+            : revocation.outcome === "reconciliation_required"
+              ? "reconciliation_required"
+              : "pending";
+      } catch {
+        // Internal access is already revoked atomically; the durable provider job remains retryable.
+      }
+      return reply.status(providerStatus === "revoked" ? 200 : 202).send({
+        membershipId: result.membershipId,
+        status: "removed",
+        providerStatus,
+      });
     },
   );
 
