@@ -273,10 +273,9 @@ export function createPgTargetBookingPromoCodesRepository(config: {
              $1, $2, $3, $4::numeric, $5::numeric, $6::uuid[], $7::date, $8::date,
              $9::date, $10::date, $11, $12
            )
-           RETURNING id
+           RETURNING *
          )
-         ${promoCodeSelectSql()}
-         JOIN inserted ON inserted.id = promo_definitions.id`,
+         ${promoCodeSelectSql("inserted")}`,
         [
           propertyId,
           body.code,
@@ -318,10 +317,9 @@ export function createPgTargetBookingPromoCodesRepository(config: {
            UPDATE booking.promo_definitions
            SET ${sets.join(", ")}
            WHERE property_id = $1 AND id::text = $2 AND status <> 'retired'
-           RETURNING id
+           RETURNING *
          )
-         ${promoCodeSelectSql()}
-         JOIN updated ON updated.id = promo_definitions.id`,
+         ${promoCodeSelectSql("updated")}`,
         values,
       );
       const row = result.rows[0];
@@ -364,7 +362,7 @@ type PromoCodeRow = {
   updatedAt: Date | string;
 };
 
-function promoCodeSelectSql(): string {
+function promoCodeSelectSql(source = "booking.promo_definitions"): string {
   return `SELECT
     promo_definitions.id::text AS "promoCodeId",
     promo_definitions.property_id::text AS "propertyId",
@@ -382,7 +380,7 @@ function promoCodeSelectSql(): string {
     promo_definitions.current_uses AS "currentUses",
     promo_definitions.created_at AS "createdAt",
     promo_definitions.updated_at AS "updatedAt"
-   FROM booking.promo_definitions`;
+   FROM ${source} promo_definitions`;
 }
 
 function addSet(
