@@ -1,5 +1,5 @@
 {
-  "contractVersion": "booking-pms-media-route-retirement.v1",
+  "contractVersion": "booking-pms-media-route-retirement.v2",
   "cases": [
     {
       "legacyPath": "POST /admin/upload/images",
@@ -11,7 +11,7 @@
     {
       "legacyPath": "POST /upload/images",
       "owner": "pms-api",
-      "disposition": "retired",
+      "disposition": "canonical_legacy_compatibility",
       "replacement": "POST /api/media/upload-sessions",
       "purpose": "pms.room_type.media"
     },

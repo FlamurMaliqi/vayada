@@ -28,6 +28,7 @@ from app.routers.platform_admin import router as platform_admin_router
 from app.routers.rooms import router as rooms_router
 from app.routers.super_admin_bookings import router as super_admin_bookings_router
 from app.routers.super_admin_payouts import router as super_admin_payouts_router
+from app.routers.upload import router as upload_router
 from app.routers.webhooks import router as webhooks_router
 from app.services.scheduler import (
     get_scheduler_health_status,
@@ -157,6 +158,7 @@ app.include_router(admin_affiliates_router, dependencies=_admin_deps)
 app.include_router(admin_channex_router, dependencies=_admin_deps)
 app.include_router(admin_messaging_router, dependencies=_admin_deps)
 app.include_router(admin_module_activations_router, dependencies=_admin_deps)
+app.include_router(upload_router)
 app.include_router(affiliates_router)
 app.include_router(webhooks_router)
 app.include_router(affiliate_dashboard_router)
