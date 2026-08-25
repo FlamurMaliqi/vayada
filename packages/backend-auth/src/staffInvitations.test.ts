@@ -784,6 +784,46 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
     ).resolves.toBe("pending");
   });
 
+  it("lists only due or stale staff removal jobs", async () => {
+    await client.query(
+      `UPDATE platform.jobs
+       SET status = 'succeeded', finished_at = now(), locked_at = NULL, locked_by = NULL
+       WHERE queue_name = 'identity-provider'
+         AND job_type = 'workos.organization-membership.delete'
+         AND status IN ('pending', 'running')`,
+    );
+    const removed = await repository.remove(removalCommand());
+    if (removed.outcome !== "removed") throw new Error("expected staff removal");
+    await client.query(
+      "UPDATE platform.jobs SET run_after = now() + interval '1 hour' WHERE id = $1",
+      [removed.providerRevocationJobId],
+    );
+    await expect(removalJobRepository.listDueJobIds()).resolves.toEqual([]);
+
+    await client.query(
+      "UPDATE platform.jobs SET run_after = now() - interval '1 second' WHERE id = $1",
+      [removed.providerRevocationJobId],
+    );
+    await expect(removalJobRepository.listDueJobIds()).resolves.toEqual([
+      removed.providerRevocationJobId,
+    ]);
+    const claim = await removalJobRepository.claim(removed.providerRevocationJobId);
+    if (claim.outcome !== "claimed") throw new Error("expected removal claim");
+    await client.query(
+      "UPDATE platform.jobs SET locked_at = now() - interval '6 minutes' WHERE id = $1",
+      [removed.providerRevocationJobId],
+    );
+    await expect(removalJobRepository.listDueJobIds()).resolves.toEqual([
+      removed.providerRevocationJobId,
+    ]);
+    await removalJobRepository.markSucceeded(
+      removed.providerRevocationJobId,
+      claim.leaseToken,
+      "deleted",
+    );
+    await expect(removalJobRepository.listDueJobIds()).resolves.toEqual([]);
+  });
+
   it("deletes only the expected provider membership and replays safely", async () => {
     const removed = await repository.remove(removalCommand());
     if (removed.outcome !== "removed") throw new Error("expected staff removal");
