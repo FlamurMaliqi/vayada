@@ -25,6 +25,7 @@ export const identityLifecycleCommandTypes = [
   "identity.invite.staff.create",
   "identity.staff.access.update",
   "identity.staff.status.update",
+  "identity.staff.remove",
   "identity.invite.affiliate.create",
   "identity.invite.customer.create",
   "identity.consent.cookie.upsert",
@@ -50,6 +51,7 @@ export const identityLifecycleEventTypes = [
   "identity.invite.staff.created",
   "identity.staff.access.updated",
   "identity.staff.status.updated",
+  "identity.staff.removed",
   "identity.invite.affiliate.created",
   "identity.invite.customer.created",
   "identity.consent.cookie.upserted",
@@ -469,6 +471,11 @@ export type UpdateStaffStatusPayload = {
   membershipStatus: Extract<MembershipStatus, "active" | "suspended">;
 };
 
+export type RemoveStaffPayload = {
+  organizationId: string;
+  membershipId: string;
+};
+
 export type CookieConsentPayload = {
   visitorId: string;
   userId?: string;
@@ -591,6 +598,13 @@ export type UpdateStaffStatusCommand = IdentityLifecycleCommandBase<
   audit: StaffInviteAudit;
 };
 
+export type RemoveStaffCommand = IdentityLifecycleCommandBase<
+  "identity.staff.remove",
+  RemoveStaffPayload
+> & {
+  audit: StaffInviteAudit;
+};
+
 export type CreateCustomerInviteCommand = IdentityLifecycleCommandBase<
   "identity.invite.customer.create",
   CreateCustomerInvitePayload
@@ -635,6 +649,7 @@ export type IdentityLifecycleCommand =
   | CreateStaffInviteCommand
   | UpdateStaffAccessCommand
   | UpdateStaffStatusCommand
+  | RemoveStaffCommand
   | CreateAffiliateInviteCommand
   | CreateCustomerInviteCommand
   | UpsertCookieConsentCommand
@@ -682,6 +697,11 @@ export type StaffStatusUpdatedEvent = IdentityLifecycleEventBase<
   UpdateStaffStatusPayload
 > & { audit: StaffInviteAudit };
 
+export type StaffRemovedEvent = IdentityLifecycleEventBase<
+  "identity.staff.removed",
+  RemoveStaffPayload
+> & { audit: StaffInviteAudit };
+
 export type IdentityLifecycleEvent =
   | IdentityLifecycleEventBase<"identity.user.created", CreateIdentityUserPayload>
   | IdentityLifecycleEventBase<"identity.user.profile.updated", UpdateIdentityUserProfilePayload>
@@ -696,6 +716,7 @@ export type IdentityLifecycleEvent =
   | StaffInviteCreatedEvent
   | StaffAccessUpdatedEvent
   | StaffStatusUpdatedEvent
+  | StaffRemovedEvent
   | IdentityLifecycleEventBase<"identity.invite.affiliate.created", CreateAffiliateInvitePayload>
   | IdentityLifecycleEventBase<"identity.invite.customer.created", CreateCustomerInvitePayload>
   | IdentityLifecycleEventBase<"identity.consent.cookie.upserted", CookieConsentPayload>
