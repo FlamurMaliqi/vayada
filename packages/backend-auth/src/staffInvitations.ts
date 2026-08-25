@@ -8,6 +8,7 @@ import {
   validateStaffInviteAccess,
   type CreateStaffInviteCommand,
   type HotelStaffRoleKey,
+  type RemoveStaffCommand,
   type UpdateStaffAccessCommand,
   type UpdateStaffStatusCommand,
 } from "./lifecycle.js";
@@ -43,6 +44,13 @@ type StaffStatusTargetRow = {
   user_id: string;
   status: "active" | "suspended";
 };
+type StaffRemovalTargetRow = {
+  user_id: string;
+  status: "active" | "suspended";
+  workos_membership_id: string | null;
+  workos_org_id: string | null;
+  workos_user_ids: string[];
+};
 
 export type StaffRosterMember = {
   id: string;
@@ -57,6 +65,7 @@ export type StaffRosterMember = {
 const permissionKeys = new Set<string>(staffAccessPermissionKeys);
 const staffAccessUpdateOperation = "staff_access_update";
 const staffStatusUpdateOperation = "staff_status_update";
+const staffRemovalOperation = "staff_remove";
 
 export function createPgStaffInvitationRepository(config: RepositoryConfig) {
   if (!config.connectionString.trim()) {
@@ -100,7 +109,7 @@ export function createPgStaffInvitationRepository(config: RepositoryConfig) {
            WHERE membership.organization_id = $1 AND organization.kind = 'hotel_group'
              AND organization.status = 'active'
              AND membership.role_key = ANY($2::text[])
-             AND membership.status IN ('active', 'inactive', 'suspended')
+             AND membership.status IN ('active', 'suspended')
            UNION ALL
            SELECT invitation.id, invitation.display_name, invitation.email, invitation.role_key,
                   'pending', NULL,
@@ -270,6 +279,201 @@ export function createPgStaffInvitationRepository(config: RepositoryConfig) {
         client.release();
       }
     },
+    async remove(command: RemoveStaffCommand) {
+      const normalized = normalizeStaffRemoval(command);
+      if (!normalized) return { outcome: "rejected" as const, reason: "invalid_command" as const };
+      const keyHash = hash(command.idempotencyKey).toString("hex");
+      const fingerprint = hash(JSON.stringify(normalized)).toString("hex");
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const manager = await lockAuthorizedManager(
+          client,
+          normalized.organizationId,
+          normalized.actorUserId,
+        );
+        if (!manager) {
+          await client.query("ROLLBACK");
+          return { outcome: "rejected" as const, reason: "inviter_not_authorized" as const };
+        }
+        const reservation = await client.query<{ id: string }>(
+          `INSERT INTO platform.idempotency_keys
+             (operation_scope, operation, key_hash, request_fingerprint_hash, status,
+              tenant_scope, organization_id, correlation_id, expires_at, idempotency_metadata)
+           VALUES ('identity', $1, $2, $3, 'in_progress', 'organization', $4, $5,
+                   now() + interval '30 days', jsonb_build_object('commandId', $6::text))
+           ON CONFLICT (operation_scope, operation, key_hash, scope_key) DO NOTHING
+           RETURNING id::text AS id`,
+          [
+            staffRemovalOperation,
+            keyHash,
+            fingerprint,
+            normalized.organizationId,
+            command.audit.correlationId ?? command.audit.requestId,
+            command.commandId,
+          ],
+        );
+        const reservationId = reservation.rows[0]?.id;
+        if (!reservationId) {
+          const replay = await client.query<{
+            request_fingerprint_hash: string;
+            status: string;
+            response_resource_id: string | null;
+            provider_revocation_job_id: string | null;
+          }>(
+            `SELECT request_fingerprint_hash, status, response_resource_id,
+                    idempotency_metadata ->> 'providerRevocationJobId' AS provider_revocation_job_id
+             FROM platform.idempotency_keys
+             WHERE operation_scope = 'identity' AND operation = $1 AND key_hash = $2
+               AND tenant_scope = 'organization' AND organization_id = $3
+             FOR UPDATE`,
+            [staffRemovalOperation, keyHash, normalized.organizationId],
+          );
+          await client.query("ROLLBACK");
+          const row = replay.rows[0];
+          return row?.request_fingerprint_hash === fingerprint &&
+            row.status === "completed" &&
+            row.response_resource_id === normalized.membershipId &&
+            row.provider_revocation_job_id
+            ? {
+                outcome: "idempotent_replay" as const,
+                membershipId: row.response_resource_id,
+                providerRevocationJobId: row.provider_revocation_job_id,
+              }
+            : { outcome: "rejected" as const, reason: "idempotency_conflict" as const };
+        }
+        const target = await client.query<StaffRemovalTargetRow>(
+          `SELECT membership.user_id::text, membership.status,
+                  NULLIF(btrim(membership.workos_membership_id), '') AS workos_membership_id,
+                  NULLIF(btrim(organization.workos_org_id), '') AS workos_org_id,
+                  ARRAY(SELECT btrim(external.provider_user_id)
+                        FROM identity.external_identities external
+                        WHERE external.user_id = staff.id AND external.provider = 'workos'
+                          AND NULLIF(btrim(external.provider_user_id), '') IS NOT NULL
+                        ORDER BY external.id) AS workos_user_ids
+           FROM identity.organization_memberships membership
+           JOIN identity.users staff ON staff.id = membership.user_id
+           JOIN identity.organizations organization ON organization.id = membership.organization_id
+           WHERE membership.organization_id = $1 AND membership.id = $2
+             AND membership.role_key = ANY($3::text[])
+             AND membership.status IN ('active', 'suspended')
+             AND staff.status IN ('active', 'suspended')
+           FOR UPDATE OF membership, staff, organization`,
+          [normalized.organizationId, normalized.membershipId, hotelStaffRoleKeys],
+        );
+        const previous = target.rows[0];
+        if (!previous) {
+          await client.query("ROLLBACK");
+          return { outcome: "rejected" as const, reason: "target_not_found" as const };
+        }
+        await client.query(
+          `UPDATE identity.organization_memberships
+           SET status = 'inactive', updated_at = now()
+           WHERE organization_id = $1 AND id = $2`,
+          [normalized.organizationId, normalized.membershipId],
+        );
+        const expectedWorkosUserId =
+          previous.workos_user_ids.length === 1 ? previous.workos_user_ids[0] : null;
+        const job = await client.query<{ id: string }>(
+          `INSERT INTO platform.jobs
+             (job_key, queue_name, job_type, max_attempts, tenant_scope, organization_id,
+              resource_product, resource_type, resource_id, correlation_id,
+              idempotency_key_hash, payload, job_metadata)
+           VALUES ($1, 'identity-provider', 'workos.organization-membership.delete', 5,
+                   'organization', $2, 'identity', 'organization_membership', $3, $4, $5,
+                   jsonb_strip_nulls(jsonb_build_object(
+                     'workosMembershipId', $6::text,
+                     'expectedWorkosOrganizationId', $7::text,
+                     'expectedWorkosUserId', $8::text
+                   )),
+                   jsonb_build_object('commandId', $9::text, 'idempotencyKeyId', $10::text))
+           RETURNING id::text AS id`,
+          [
+            `identity.staff.remove:${reservationId}`,
+            normalized.organizationId,
+            normalized.membershipId,
+            command.audit.correlationId ?? command.audit.requestId,
+            keyHash,
+            previous.workos_membership_id,
+            previous.workos_org_id,
+            expectedWorkosUserId,
+            command.commandId,
+            reservationId,
+          ],
+        );
+        const providerRevocationJobId = job.rows[0]?.id;
+        if (!providerRevocationJobId) throw new Error("Staff removal job insert failed");
+        await client.query(
+          `INSERT INTO platform.product_audit_events
+             (audit_key, product, action, occurred_at, tenant_scope, organization_id,
+              actor_type, actor_user_id, target_resource_product, target_resource_type,
+              target_resource_id, idempotency_key_id, job_id, correlation_id, causation_id,
+              redacted_payload, private_payload, audit_metadata, retention_class, privacy_scope)
+           VALUES ($1, 'identity', 'identity.staff.removed', $2, 'organization', $3,
+                   'user', $4, 'identity', 'organization_membership', $5, $6, $7, $8, $9,
+                   $10::jsonb, $11::jsonb, $12::jsonb, 'security', 'confidential')`,
+          [
+            `staff.removed:${reservationId}`,
+            command.audit.requestedAt,
+            normalized.organizationId,
+            normalized.actorUserId,
+            normalized.membershipId,
+            reservationId,
+            providerRevocationJobId,
+            command.audit.correlationId ?? command.audit.requestId,
+            command.commandId,
+            JSON.stringify({
+              outcome: "access_revoked",
+              providerRevocation:
+                previous.workos_membership_id && previous.workos_org_id && expectedWorkosUserId
+                  ? "pending"
+                  : "reconciliation_required",
+            }),
+            JSON.stringify({
+              targetUserId: previous.user_id,
+              previous: { membershipStatus: previous.status },
+              next: { membershipStatus: "inactive" },
+              providerRevocationJobId,
+            }),
+            JSON.stringify({
+              requestId: command.audit.requestId,
+              source: command.audit.source,
+              reason: command.audit.reason,
+              actorNameSnapshot: manager.name ?? manager.email,
+            }),
+          ],
+        );
+        const result = {
+          outcome: "removed" as const,
+          membershipId: normalized.membershipId,
+          providerRevocationJobId,
+        };
+        const completed = await client.query(
+          `UPDATE platform.idempotency_keys
+           SET status = 'completed', response_status_code = 202, completed_at = now(),
+               response_body_hash = $2, response_resource_product = 'identity',
+               response_resource_type = 'organization_membership', response_resource_id = $3,
+               idempotency_metadata = idempotency_metadata ||
+                 jsonb_build_object('outcome', 'removed', 'providerRevocationJobId', $4::text)
+           WHERE id = $1 AND status = 'in_progress'`,
+          [
+            reservationId,
+            hash(JSON.stringify(result)).toString("hex"),
+            normalized.membershipId,
+            providerRevocationJobId,
+          ],
+        );
+        if (completed.rowCount !== 1)
+          throw new Error("Staff removal idempotency completion failed");
+        await client.query("COMMIT");
+        return result;
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     async updateAccess(command: UpdateStaffAccessCommand) {
       const normalized = normalizeStaffAccessUpdate(command);
       if (!normalized) return { outcome: "rejected" as const, reason: "invalid_command" as const };
@@ -338,7 +542,7 @@ export function createPgStaffInvitationRepository(config: RepositoryConfig) {
            FROM identity.organization_memberships membership
            WHERE membership.organization_id = $1 AND membership.id = $2
              AND membership.role_key = ANY($3::text[])
-             AND membership.status IN ('active', 'inactive', 'suspended')
+             AND membership.status IN ('active', 'suspended')
            FOR UPDATE`,
           [normalized.organizationId, normalized.membershipId, hotelStaffRoleKeys],
         );
@@ -652,6 +856,26 @@ function normalizeStaffStatusUpdate(command: UpdateStaffStatusCommand) {
     organizationId: command.payload.organizationId,
     membershipId: command.payload.membershipId.toLowerCase(),
     membershipStatus: command.payload.membershipStatus,
+    actorUserId: actor.userId,
+  };
+}
+
+function normalizeStaffRemoval(command: RemoveStaffCommand) {
+  const actor = command.audit.actor;
+  if (
+    actor.kind !== "user" ||
+    actor.organizationId !== command.payload.organizationId ||
+    !actor.userId ||
+    !command.commandId.trim() ||
+    !command.idempotencyKey.trim() ||
+    !canonicalUuid(command.payload.membershipId) ||
+    Number.isNaN(Date.parse(command.audit.requestedAt))
+  ) {
+    return null;
+  }
+  return {
+    organizationId: command.payload.organizationId,
+    membershipId: command.payload.membershipId.toLowerCase(),
     actorUserId: actor.userId,
   };
 }
