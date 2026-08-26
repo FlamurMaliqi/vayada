@@ -287,9 +287,12 @@ async function upsertDerivedBlocks(
        ON CONFLICT (property_id, ${causeColumn}, room_type_id)
          WHERE block_kind = '${kind}' AND ${causeColumn} IS NOT NULL
        DO UPDATE SET starts_on=EXCLUDED.starts_on, ends_on=EXCLUDED.ends_on,
-                     status='active', released_at=NULL, updated_at=$2::timestamptz
-       WHERE (pms.room_blocks.starts_on, pms.room_blocks.ends_on, pms.room_blocks.status)
-         IS DISTINCT FROM (EXCLUDED.starts_on, EXCLUDED.ends_on, 'active')
+                     source_room_type_id=EXCLUDED.source_room_type_id, status='active',
+                     released_at=NULL, updated_at=$2::timestamptz
+       WHERE (pms.room_blocks.starts_on, pms.room_blocks.ends_on,
+              pms.room_blocks.source_room_type_id, pms.room_blocks.status)
+         IS DISTINCT FROM (EXCLUDED.starts_on, EXCLUDED.ends_on,
+                           EXCLUDED.source_room_type_id, 'active')
        RETURNING id::text AS "blockId",
                  source_room_type_id::text AS "sourceRoomTypeId",
                  room_type_id::text AS "targetRoomTypeId",
