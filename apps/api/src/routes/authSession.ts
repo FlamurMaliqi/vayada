@@ -64,6 +64,12 @@ export type AuthKitClient = {
     ipAddress?: string;
     userAgent?: string;
   }): Promise<AuthKitSession>;
+  authenticateWithOrganizationSelection(input: {
+    organizationId: string;
+    pendingAuthenticationToken: string;
+    ipAddress?: string;
+    userAgent?: string;
+  }): Promise<AuthKitSession>;
   authenticateWithEmailVerification(input: {
     pendingAuthenticationToken: string;
     code: string;
@@ -469,11 +475,42 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       });
     } catch (error) {
       const mapped = mapWorkOSAuthError(error);
-      await recordPasswordLoginFailure(options, request, parsed.surface, mapped.state);
-      if (mapped.state === "auth_failed") {
-        request.log.error({ err: error }, "WorkOS password authentication failed");
+      const canSelectRequestedPlatformOrganization =
+        parsed.surface === "platform-admin" &&
+        parsed.organizationId &&
+        mapped.state === "organization_selection_required" &&
+        mapped.pendingAuthenticationToken &&
+        mapped.organizations?.some(({ id }) => id === parsed.organizationId);
+      if (canSelectRequestedPlatformOrganization) {
+        try {
+          session = await options.authKitClient.authenticateWithOrganizationSelection({
+            organizationId: parsed.organizationId!,
+            pendingAuthenticationToken: mapped.pendingAuthenticationToken!,
+            ipAddress: request.ip,
+            userAgent: request.headers["user-agent"],
+          });
+        } catch (selectionError) {
+          const selectionFailure = mapWorkOSAuthError(selectionError);
+          await recordPasswordLoginFailure(
+            options,
+            request,
+            parsed.surface,
+            selectionFailure.state,
+          );
+          if (selectionFailure.state === "auth_failed") {
+            request.log.error({ err: selectionError }, "WorkOS organization selection failed");
+          }
+          return reply
+            .code(statusForPasswordAuthFailure(selectionFailure.state))
+            .send(selectionFailure);
+        }
+      } else {
+        await recordPasswordLoginFailure(options, request, parsed.surface, mapped.state);
+        if (mapped.state === "auth_failed") {
+          request.log.error({ err: error }, "WorkOS password authentication failed");
+        }
+        return reply.code(statusForPasswordAuthFailure(mapped.state)).send(mapped);
       }
-      return reply.code(statusForPasswordAuthFailure(mapped.state)).send(mapped);
     }
 
     let resolution: IdentityResolution;
@@ -2016,7 +2053,13 @@ function redirectWithOAuthError(reply: FastifyReply, state: GoogleOAuthState, me
 }
 
 function parsePasswordLoginBody(body: unknown):
-  | { ok: true; email: string; password: string; surface: AuthSurface }
+  | {
+      ok: true;
+      email: string;
+      password: string;
+      surface: AuthSurface;
+      organizationId?: string;
+    }
   | {
       ok: false;
       error: { state: "auth_failed"; message: string };
@@ -2027,7 +2070,12 @@ function parsePasswordLoginBody(body: unknown):
       error: { state: "auth_failed", message: "Email and password are required." },
     };
   }
-  const input = body as { email?: unknown; password?: unknown; surface?: unknown };
+  const input = body as {
+    email?: unknown;
+    password?: unknown;
+    surface?: unknown;
+    organizationId?: unknown;
+  };
   const email = typeof input.email === "string" ? input.email.trim() : "";
   const password = typeof input.password === "string" ? input.password : "";
   if (!email || !password) {
@@ -2037,11 +2085,17 @@ function parsePasswordLoginBody(body: unknown):
     };
   }
   try {
+    const surface = parseSurface(typeof input.surface === "string" ? input.surface : undefined);
+    const organizationId =
+      surface === "platform-admin" && typeof input.organizationId === "string"
+        ? input.organizationId.trim()
+        : "";
     return {
       ok: true,
       email,
       password,
-      surface: parseSurface(typeof input.surface === "string" ? input.surface : undefined),
+      surface,
+      ...(organizationId ? { organizationId } : {}),
     };
   } catch {
     return { ok: false, error: { state: "auth_failed", message: "Unsupported login surface." } };

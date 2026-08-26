@@ -308,6 +308,7 @@ describe("admin Vayada API authentication", () => {
 
   it("routes login and the admin compatibility bridge through same-origin auth", async () => {
     vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
+    vi.stubEnv("NEXT_PUBLIC_PLATFORM_WORKOS_ORG_ID", "org_workos_platform");
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -332,6 +333,16 @@ describe("admin Vayada API authentication", () => {
       "/auth/password/login",
       "/auth/compat/marketplace-admin-token",
     ]);
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        body: JSON.stringify({
+          email: "admin@example.com",
+          password: "secret",
+          surface: "platform-admin",
+          organizationId: "org_workos_platform",
+        }),
+      }),
+    );
     expect(getAuthBearerToken()).toBe("compatibility-token");
   });
 
