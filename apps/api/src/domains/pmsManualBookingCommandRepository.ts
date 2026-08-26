@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   PmsManualBookingCreateError,
@@ -19,6 +19,8 @@ import type {
   PmsManualBookingTransactionPool,
 } from "./pmsManualBookingTransactionPorts.js";
 import { lockPmsInventoryMutationScope } from "./pmsInventoryMutationLock.js";
+import { reconcilePmsLinkedInventory } from "./pmsLinkedInventoryReconciler.js";
+import { enqueuePmsLinkedInventorySideEffects } from "./pmsLinkedInventorySideEffects.js";
 
 export function createPgPmsManualBookingCommandRepository(config: {
   connectionString: string;
@@ -125,6 +127,23 @@ export function createPgPmsManualBookingCommandRepository(config: {
         const rearrangedBookingCount = new Set(
           optimization.flatMap(({ rearrangedGuestBookingIds }) => rearrangedGuestBookingIds),
         ).size;
+        const linkedChanges = await reconcilePmsLinkedInventory(
+          transaction,
+          command.propertyId,
+          acceptedAt.toISOString(),
+        );
+        await enqueuePmsLinkedInventorySideEffects(
+          transaction,
+          {
+            propertyId: command.propertyId,
+            operation: "manual_booking_create",
+            commandId: command.commandId,
+            keyHash: createHash("sha256").update(command.idempotencyKey).digest("hex"),
+            acceptedAt: acceptedAt.toISOString(),
+            audit: command.audit,
+          },
+          linkedChanges,
+        );
         const result = createResult(command, accepted, paymentEvidenceId, rearrangedBookingCount);
         await config.dependencies.platform.writeEvidence({
           transaction,

@@ -44,6 +44,8 @@ import {
 } from "./bookingPmsManualPriceCorrection.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import { lockPmsInventoryMutationScope } from "./pmsInventoryMutationLock.js";
+import { reconcilePmsLinkedInventory } from "./pmsLinkedInventoryReconciler.js";
+import { enqueuePmsLinkedInventorySideEffects } from "./pmsLinkedInventorySideEffects.js";
 import { reconcilePmsOccupiedInventory } from "./pmsOccupiedInventory.js";
 import { lockPmsRoomOrder, pmsRoomOrderVersion } from "./pmsRoomOrder.js";
 import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
@@ -1179,7 +1181,7 @@ export function createTargetPmsOperationsCommandRepository(
         commandId: command.commandId,
         idempotencyKey: command.idempotencyKey,
         acceptedAt,
-        sideEffects: ["calendar_refresh", "audit_event"],
+        sideEffects: ["calendar_refresh", "ari_changed", "audit_event"],
       };
 
       try {
@@ -1238,6 +1240,7 @@ export function createTargetPmsOperationsCommandRepository(
           );
         }
 
+        await lockPmsInventoryMutationScope(client, command.propertyId);
         const mutation = await applyAssignmentCommandMutation(client, command);
         if (!mutation.ok) {
           await client.query("ROLLBACK");
@@ -1250,6 +1253,23 @@ export function createTargetPmsOperationsCommandRepository(
           commandMeta,
           keyHash,
           acceptedAt,
+        );
+        const linkedChanges = await reconcilePmsLinkedInventory(
+          client,
+          command.propertyId,
+          acceptedAt,
+        );
+        await enqueuePmsLinkedInventorySideEffects(
+          client,
+          {
+            propertyId: command.propertyId,
+            operation: "assignment_command",
+            commandId: command.commandId,
+            keyHash,
+            acceptedAt,
+            audit: { requestId: command.commandId },
+          },
+          linkedChanges,
         );
         await completeAssignmentCommandIdempotency(
           client,
@@ -2519,6 +2539,7 @@ async function executeRoomBlockCommand(
       );
     }
 
+    await lockPmsInventoryMutationScope(client, command.propertyId);
     const mutation = await applyRoomBlockMutation(client, operation, command, acceptedAt);
     if (!mutation.ok) {
       await client.query("ROLLBACK");
@@ -2526,6 +2547,7 @@ async function executeRoomBlockCommand(
     }
 
     writingSideEffects = true;
+    const linkedChanges = await reconcilePmsLinkedInventory(client, command.propertyId, acceptedAt);
     await enqueueInventoryChangedSideEffects(
       client,
       command,
@@ -2539,6 +2561,18 @@ async function executeRoomBlockCommand(
       commandMeta,
       keyHash,
       acceptedAt,
+    );
+    await enqueuePmsLinkedInventorySideEffects(
+      client,
+      {
+        propertyId: command.propertyId,
+        operation,
+        commandId: command.commandId,
+        keyHash,
+        acceptedAt,
+        audit: command.audit,
+      },
+      linkedChanges,
     );
     await insertRoomBlockAuditEvent(
       client,
@@ -2903,7 +2937,8 @@ async function reconcileRoomBlockInventory(
      )
      UPDATE pms.inventory_days inventory
      SET blocked_count = changes.blocked_count,
-         available_count = CASE WHEN inventory.status = 'closed' THEN 0 ELSE GREATEST(
+         available_count = CASE WHEN inventory.status = 'closed' OR inventory.linked_stop_sell
+           THEN 0 ELSE GREATEST(
            0, COALESCE(inventory.effective_sellable_limit_count, inventory.total_count)
              - inventory.assigned_count - changes.blocked_count
          ) END,
@@ -4461,6 +4496,11 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
     sideEffects,
   };
   let roomTypeIds: string[] = [];
+  const linkedInventoryMutation = [
+    "no_show_command",
+    "manual_cancellation_command",
+    "manual_stay_correction_command",
+  ].includes(operation);
 
   try {
     await client.query("BEGIN");
@@ -4509,11 +4549,7 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
       );
     }
 
-    if (
-      ["no_show_command", "manual_cancellation_command", "manual_stay_correction_command"].includes(
-        operation,
-      )
-    ) {
+    if (linkedInventoryMutation) {
       await lockPmsInventoryMutationScope(client, command.propertyId);
     }
     if (
@@ -4553,6 +4589,25 @@ async function executeOperationalCommand<TCommand extends PmsOperationalCommand>
           optimization.flatMap(({ rearrangedGuestBookingIds }) => rearrangedGuestBookingIds),
         ).size,
       };
+    }
+    if (linkedInventoryMutation) {
+      const linkedChanges = await reconcilePmsLinkedInventory(
+        client,
+        command.propertyId,
+        acceptedAt,
+      );
+      await enqueuePmsLinkedInventorySideEffects(
+        client,
+        {
+          propertyId: command.propertyId,
+          operation,
+          commandId: command.commandId,
+          keyHash,
+          acceptedAt,
+          audit: command.audit,
+        },
+        linkedChanges,
+      );
     }
 
     await recordOperationalCommandAuditEvent(client, command, operation, commandMeta, keyHash);
