@@ -95,6 +95,12 @@ TARGET_DATABASE_URL=<target database url> \
     --confirm platform-identity-bootstrap:v1
 ```
 
+`--admin-email` grants an already-linked active target user canonical platform
+access without opening the legacy auth DB. Deleted same-email users are ignored,
+multiple active matches fail closed, and apply confirmation is bound to the
+normalized email. Follow `engineering/next-admin-platform-access-repair.md` for
+the guarded target/WorkOS repair, deployment, verification, and rollback steps.
+
 Audit the migrated target identity/resource links before a backfill:
 
 ```bash
