@@ -17,16 +17,17 @@ export type PlatformIdentityBootstrapSummary = {
   mode: PlatformIdentityBootstrapMode;
   legacyPlatformUsersTotal: number;
   activeLegacyPlatformUsersTotal: number;
+  requestedTargetPlatformUsersTotal: number;
   targetPlatformMembershipsTotal: number;
+  applyConfirm: string;
   platformOrganizationId: string;
   platformResourceId: string;
 };
 
-type LegacyPlatformUser = {
+export type PlatformIdentityBootstrapUser = {
   id: string;
   email: string;
-  name: string;
-  status: string;
+  name: string | null;
   targetStatus: LegacyUserStatus;
   createdAt: Date;
   updatedAt: Date;
@@ -35,40 +36,58 @@ type LegacyPlatformUser = {
 export async function runPlatformIdentityBootstrap(config: {
   mode: PlatformIdentityBootstrapMode;
   targetConnectionString: string;
-  legacyAuthConnectionString: string;
+  legacyAuthConnectionString?: string;
+  adminEmails?: string[];
   max?: number;
 }): Promise<PlatformIdentityBootstrapSummary> {
   const targetPool = new pg.Pool({
     connectionString: normalizePgConnectionString(config.targetConnectionString),
     max: config.max,
   });
-  const legacyPool = new pg.Pool({
-    connectionString: normalizePgConnectionString(config.legacyAuthConnectionString),
-    max: config.max,
-  });
+  const legacyAuthConnectionString = resolveLegacyAuthConnectionString(
+    config.legacyAuthConnectionString,
+    config.adminEmails,
+  );
+  const legacyPool = legacyAuthConnectionString
+    ? new pg.Pool({
+        connectionString: normalizePgConnectionString(legacyAuthConnectionString),
+        max: config.max,
+      })
+    : null;
 
   try {
-    const legacyUsers = await loadLegacyPlatformUsers(legacyPool);
-    const activeUsers = legacyUsers.filter((user) => user.targetStatus === "active");
-    if (activeUsers.length === 0) {
-      throw new Error("No active legacy platform users found to bootstrap.");
+    const legacyUsers = legacyPool ? await loadLegacyPlatformUsers(legacyPool) : [];
+    const requestedTargetUsers = await loadRequestedTargetPlatformUsers(
+      targetPool,
+      config.adminEmails ?? [],
+    );
+    const requestedEmails = new Set(requestedTargetUsers.map((user) => normalizeEmail(user.email)));
+    const platformUsers = [
+      ...legacyUsers.filter((user) => !requestedEmails.has(normalizeEmail(user.email))),
+      ...requestedTargetUsers,
+    ];
+    if (!platformUsers.some((user) => user.targetStatus === "active")) {
+      throw new Error("No active platform users found to bootstrap.");
     }
 
     if (config.mode === "apply") {
-      await applyPlatformIdentityBootstrap(targetPool, legacyUsers);
+      await applyPlatformIdentityBootstrap(targetPool, platformUsers);
     }
 
     return {
       kind: "platform_identity_bootstrap",
       mode: config.mode,
       legacyPlatformUsersTotal: legacyUsers.length,
-      activeLegacyPlatformUsersTotal: activeUsers.length,
+      activeLegacyPlatformUsersTotal: legacyUsers.filter((user) => user.targetStatus === "active")
+        .length,
+      requestedTargetPlatformUsersTotal: requestedTargetUsers.length,
       targetPlatformMembershipsTotal: await countPlatformMemberships(targetPool),
+      applyConfirm: platformIdentityBootstrapConfirm(config.adminEmails),
       platformOrganizationId: PLATFORM_ORGANIZATION_ID,
       platformResourceId: PLATFORM_RESOURCE_ID,
     };
   } finally {
-    await Promise.all([targetPool.end(), legacyPool.end()]);
+    await Promise.all([targetPool.end(), legacyPool?.end()]);
   }
 }
 
@@ -89,11 +108,43 @@ export function mapLegacyUserStatus(status: string): LegacyUserStatus {
   }
 }
 
-async function loadLegacyPlatformUsers(pool: pg.Pool): Promise<LegacyPlatformUser[]> {
+export function platformIdentityBootstrapConfirm(adminEmails: string[] = []): string {
+  const normalizedEmails = normalizeEmails(adminEmails);
+  return normalizedEmails.length === 0
+    ? PLATFORM_BOOTSTRAP_CONFIRM
+    : `${PLATFORM_BOOTSTRAP_CONFIRM}:admin-email:${normalizedEmails.join(",")}`;
+}
+
+export function resolveLegacyAuthConnectionString(
+  legacyAuthConnectionString: string | undefined,
+  adminEmails: string[] = [],
+): string | undefined {
+  return normalizeEmails(adminEmails).length > 0 ? undefined : legacyAuthConnectionString;
+}
+
+export function selectRequestedPlatformUsersByEmail(
+  users: PlatformIdentityBootstrapUser[],
+  adminEmails: string[],
+): PlatformIdentityBootstrapUser[] {
+  return normalizeEmails(adminEmails).map((email) => {
+    const activeUsers = users.filter(
+      (user) => normalizeEmail(user.email) === email && user.targetStatus === "active",
+    );
+    if (activeUsers.length === 0) {
+      throw new Error(`No active target identity user found for admin email ${email}.`);
+    }
+    if (activeUsers.length > 1) {
+      throw new Error(`Multiple active target identity users found for admin email ${email}.`);
+    }
+    return activeUsers[0];
+  });
+}
+
+async function loadLegacyPlatformUsers(pool: pg.Pool): Promise<PlatformIdentityBootstrapUser[]> {
   const { rows } = await pool.query<{
     id: string;
     email: string;
-    name: string;
+    name: string | null;
     status: string;
     created_at: Date;
     updated_at: Date;
@@ -108,16 +159,50 @@ async function loadLegacyPlatformUsers(pool: pg.Pool): Promise<LegacyPlatformUse
     id: row.id,
     email: row.email,
     name: row.name,
-    status: row.status,
     targetStatus: mapLegacyUserStatus(row.status),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }));
 }
 
+async function loadRequestedTargetPlatformUsers(
+  pool: pg.Pool,
+  adminEmails: string[],
+): Promise<PlatformIdentityBootstrapUser[]> {
+  const normalizedEmails = normalizeEmails(adminEmails);
+  if (normalizedEmails.length === 0) return [];
+
+  const { rows } = await pool.query<{
+    id: string;
+    email: string;
+    name: string | null;
+    status: LegacyUserStatus;
+    created_at: Date;
+    updated_at: Date;
+  }>(
+    `SELECT id::text, email, name, status, created_at, updated_at
+     FROM identity.users
+     WHERE lower(email) = ANY($1::text[])
+     ORDER BY lower(email), id`,
+    [normalizedEmails],
+  );
+
+  return selectRequestedPlatformUsersByEmail(
+    rows.map((row) => ({
+      id: row.id,
+      email: row.email,
+      name: row.name,
+      targetStatus: row.status,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    })),
+    normalizedEmails,
+  );
+}
+
 async function applyPlatformIdentityBootstrap(
   pool: pg.Pool,
-  legacyUsers: LegacyPlatformUser[],
+  legacyUsers: PlatformIdentityBootstrapUser[],
 ): Promise<void> {
   const client = await pool.connect();
   try {
@@ -228,7 +313,7 @@ async function countPlatformMemberships(pool: pg.Pool): Promise<number> {
   return Number(rows[0].count);
 }
 
-function toUserRecord(user: LegacyPlatformUser) {
+function toUserRecord(user: PlatformIdentityBootstrapUser) {
   return {
     id: user.id,
     email: user.email,
@@ -239,11 +324,19 @@ function toUserRecord(user: LegacyPlatformUser) {
   };
 }
 
-function toMembershipRecord(user: LegacyPlatformUser) {
+function toMembershipRecord(user: PlatformIdentityBootstrapUser) {
   return {
     id: user.id,
     status: user.targetStatus === "active" ? "active" : "inactive",
     created_at: user.createdAt.toISOString(),
     updated_at: user.updatedAt.toISOString(),
   };
+}
+
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function normalizeEmails(emails: string[]): string[] {
+  return Array.from(new Set(emails.map(normalizeEmail).filter(Boolean))).sort();
 }

@@ -7,6 +7,9 @@ import {
   PLATFORM_RESOURCE_RELATIONSHIP,
   PLATFORM_WORKOS_ROLE_SLUG,
   mapLegacyUserStatus,
+  platformIdentityBootstrapConfirm,
+  resolveLegacyAuthConnectionString,
+  selectRequestedPlatformUsersByEmail,
 } from "./platformIdentityBootstrap.js";
 
 describe("platform identity bootstrap constants", () => {
@@ -16,6 +19,52 @@ describe("platform identity bootstrap constants", () => {
     expect(PLATFORM_RESOURCE_RELATIONSHIP).toBe("operator");
     expect(PLATFORM_WORKOS_ROLE_SLUG).toBe("admin");
     expect(PLATFORM_BOOTSTRAP_CONFIRM).toBe("platform-identity-bootstrap:v1");
+  });
+});
+
+describe("target platform admin selection", () => {
+  const activeUser = {
+    id: "active-user",
+    email: "Admin@Example.com",
+    name: "Admin",
+    targetStatus: "active" as const,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+  };
+
+  it("selects the single active target user and ignores deleted duplicates", () => {
+    expect(
+      selectRequestedPlatformUsersByEmail(
+        [
+          { ...activeUser, id: "deleted-1", targetStatus: "deleted" },
+          activeUser,
+          { ...activeUser, id: "deleted-2", targetStatus: "deleted" },
+        ],
+        [" admin@example.com "],
+      ),
+    ).toEqual([activeUser]);
+  });
+
+  it("rejects multiple active target users for the requested admin email", () => {
+    expect(() =>
+      selectRequestedPlatformUsersByEmail(
+        [activeUser, { ...activeUser, id: "other-active" }],
+        ["admin@example.com"],
+      ),
+    ).toThrow("Multiple active target identity users found for admin email admin@example.com.");
+  });
+
+  it("binds an admin-email grant to the apply confirmation", () => {
+    expect(platformIdentityBootstrapConfirm([" Admin@Example.com "])).toBe(
+      "platform-identity-bootstrap:v1:admin-email:admin@example.com",
+    );
+  });
+
+  it("never loads legacy platform users in exact admin-email mode", () => {
+    expect(
+      resolveLegacyAuthConnectionString("postgresql://legacy", ["admin@example.com"]),
+    ).toBeUndefined();
+    expect(resolveLegacyAuthConnectionString("postgresql://legacy")).toBe("postgresql://legacy");
   });
 });
 
