@@ -6119,7 +6119,12 @@ describe("vayada-api", () => {
     const propertyReads: string[] = [];
     app = buildAuthenticatedApp({
       linkedHotelId: null,
-      propertyScope: { mode: "assigned", assignedPropertyIds: [pmsPropertyId] },
+      propertyScope: {
+        mode: "assigned",
+        roleKey: "hotel_owner",
+        accessOrigin: "agency",
+        assignedPropertyIds: [pmsPropertyId],
+      },
       reservationsRepository: {
         ...bookingReservationsRepository,
         async listReservationsByPropertyId(propertyId, filters) {
@@ -6142,13 +6147,27 @@ describe("vayada-api", () => {
   it.each([
     [
       "with no assigned properties",
-      { propertyScope: { mode: "assigned", assignedPropertyIds: [] } },
+      {
+        propertyScope: {
+          mode: "assigned",
+          roleKey: "hotel_owner",
+          accessOrigin: "agency",
+          assignedPropertyIds: [],
+        },
+      },
       403,
       "missing_resource_access",
     ],
     [
       "with unknown property scope",
-      { propertyScope: { mode: "unknown", assignedPropertyIds: [pmsPropertyId] } },
+      {
+        propertyScope: {
+          mode: "unknown",
+          roleKey: "hotel_owner",
+          accessOrigin: "agency",
+          assignedPropertyIds: [pmsPropertyId],
+        },
+      },
       403,
       "missing_resource_access",
     ],
@@ -6180,7 +6199,7 @@ describe("vayada-api", () => {
     ],
     ["with an inactive membership", { membershipStatus: "inactive" }, 401, "unauthenticated"],
   ] satisfies Array<[string, Parameters<typeof buildAuthenticatedApp>[0], number, string]>)(
-    "rejects booking reservations $name before reading reservation data",
+    "rejects booking reservations %s before reading reservation data",
     async (_name, appOptions, statusCode, code) => {
       let readCount = 0;
       const reservationsRepository =

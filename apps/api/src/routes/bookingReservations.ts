@@ -78,7 +78,10 @@ export type BookingReservationListResponse = {
 export type BookingReservation = BookingReservationResponse;
 
 export type BookingReservationListErrorCategory =
-  "authentication" | "authorization" | "validation" | "read_model";
+  | "authentication"
+  | "authorization"
+  | "validation"
+  | "read_model";
 
 export type BookingReservationListErrorCode =
   | "unauthenticated"
