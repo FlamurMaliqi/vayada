@@ -24,6 +24,7 @@ type InventoryDay = {
   effectiveSellableLimitCount: unknown;
   status: string;
   expectedAssignedCount: unknown;
+  linkedStopSell: boolean;
 };
 
 export class PmsOccupiedInventoryInvariantError extends Error {}
@@ -45,6 +46,7 @@ export async function reconcilePmsOccupiedInventory(
      SELECT day.room_type_id::text AS "roomTypeId",day.stay_date::text AS "stayDate",
        day.total_count AS "totalCount",day.blocked_count AS "blockedCount",
        day.assigned_count AS "assignedCount",day.status,
+       day.linked_stop_sell AS "linkedStopSell",
        day.effective_sellable_limit_count AS "effectiveSellableLimitCount",
        (
          COALESCE((
@@ -144,7 +146,10 @@ export async function reconcilePmsOccupiedInventory(
       );
     }
     if (assigned === expected) continue;
-    const available = day.status === "closed" ? 0 : Math.max(0, effective! - expected! - blocked!);
+    const available =
+      day.status === "closed" || day.linkedStopSell
+        ? 0
+        : Math.max(0, effective! - expected! - blocked!);
     const updated = await client.query(
       `UPDATE pms.inventory_days SET assigned_count=$4,available_count=$5,
          inventory_revision=inventory_revision+1,
