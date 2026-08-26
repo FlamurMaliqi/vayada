@@ -12,6 +12,7 @@ import { bookingScopedPropertyCte } from "./bookingDashboard.js";
 import {
   BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL,
   guestContactForPropertyPlan,
+  HIDDEN_GUEST_CONTACT,
   PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL,
 } from "../domains/bookingGuestContactAccess.js";
 import { readPropertyPlan } from "../domains/propertyPlanReadModel.js";
@@ -74,6 +75,11 @@ export function createTargetBookingReservationsReadRepository(config: {
       const listParams = [...params, filters.limit, filters.offset];
       const limitParam = params.length + 1;
       const offsetParam = params.length + 2;
+      const guestEmailSql = filters.canReadGuestContact ? "COALESCE(booker.email, '')" : "''";
+      const guestPhoneSql = filters.canReadGuestContact ? "COALESCE(booker.phone, '')" : "''";
+      const guestContactColumnsSql = filters.canReadGuestContact
+        ? ", guest.email, guest.phone"
+        : "";
 
       const [reservationResult, countResult] = await Promise.all([
         pool.query<TargetBookingReservationRow>(
@@ -96,8 +102,8 @@ export function createTargetBookingReservationsReadRepository(config: {
              ) AS "roomMaxOccupancy",
              COALESCE(booker.first_name, '') AS "guestFirstName",
              COALESCE(booker.last_name, '') AS "guestLastName",
-             COALESCE(booker.email, '') AS "guestEmail",
-             COALESCE(booker.phone, '') AS "guestPhone",
+             ${guestEmailSql} AS "guestEmail",
+             ${guestPhoneSql} AS "guestPhone",
              ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
              booker.country_code AS "guestCountry",
              checkout.guest_input #>> '{booker,gender}' AS "guestGender",
@@ -179,7 +185,12 @@ export function createTargetBookingReservationsReadRepository(config: {
              ON quote.id = booking.quote_session_id
             AND quote.property_id = booking.property_id
            LEFT JOIN LATERAL (
-             SELECT guest.*
+             SELECT
+               guest.first_name,
+               guest.last_name,
+               guest.country_code,
+               guest.special_requests,
+               guest.arrival_time${guestContactColumnsSql}
              FROM booking.booking_guests guest
              WHERE guest.guest_booking_id = booking.id
              ORDER BY
@@ -338,11 +349,12 @@ export function createTargetBookingReservationsReadRepository(config: {
       return {
         reservations: propertyPlan
           ? reservationResult.rows.map((reservation) => {
-              const contact = guestContactForPropertyPlan(
-                propertyPlan,
-                reservation.guestContactAccepted,
-                { email: reservation.guestEmail, phone: reservation.guestPhone },
-              );
+              const contact = filters.canReadGuestContact
+                ? guestContactForPropertyPlan(propertyPlan, reservation.guestContactAccepted, {
+                    email: reservation.guestEmail,
+                    phone: reservation.guestPhone,
+                  })
+                : { email: HIDDEN_GUEST_CONTACT, phone: HIDDEN_GUEST_CONTACT };
               return toBookingReservationReadModel({
                 ...reservation,
                 guestEmail: contact.email ?? "",
@@ -373,6 +385,13 @@ function toTargetReservationWhere(
 
   if (filters.search) {
     params.push(`%${filters.search}%`);
+    const guestEmailSearchSql = filters.canReadGuestContact
+      ? `OR (
+                (${PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL}
+                  OR ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL})
+                AND guest.email ILIKE $${params.length}
+              )`
+      : "";
     conditions.push(
       `(booking.public_reference ILIKE $${params.length}
         OR EXISTS (
@@ -383,11 +402,7 @@ function toTargetReservationWhere(
               guest.first_name ILIKE $${params.length}
               OR guest.last_name ILIKE $${params.length}
               OR CONCAT(guest.first_name, ' ', guest.last_name) ILIKE $${params.length}
-              OR (
-                (${PROPERTY_ALWAYS_HAS_GUEST_CONTACT_SQL}
-                  OR ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL})
-                AND guest.email ILIKE $${params.length}
-              )
+              ${guestEmailSearchSql}
             )
         )
         OR EXISTS (

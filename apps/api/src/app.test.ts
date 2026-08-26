@@ -1005,6 +1005,7 @@ const bookingReservationsRepository: BookingReservationsReadRepository = {
     expect(filters).toEqual({
       status: undefined,
       search: undefined,
+      canReadGuestContact: true,
       limit: 50,
       offset: 0,
     });
@@ -2694,7 +2695,13 @@ function buildAuthenticatedApp(
       propertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
-          return options.permissions ?? ["booking.settings.manage", "booking.reservation.read"];
+          return (
+            options.permissions ?? [
+              "booking.settings.manage",
+              "booking.reservation.read",
+              "pms.guest_contact.read",
+            ]
+          );
         },
       },
       entitlementRepository: {
@@ -6143,6 +6150,44 @@ describe("vayada-api", () => {
     expect(response.statusCode).toBe(200);
   });
 
+  it("keeps reservations visible but redacts guest contact without permission", async () => {
+    let observedFilters: BookingReservationListFilters | undefined;
+    app = buildAuthenticatedApp({
+      permissions: ["booking.reservation.read"],
+      reservationsRepository: {
+        ...bookingReservationsRepository,
+        async listReservationsByPropertyId(propertyId, filters) {
+          expect(propertyId).toBe(pmsPropertyId);
+          observedFilters = filters;
+          return {
+            reservations: [reservation],
+            total: 1,
+          };
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/reservations?search=ada@example.com",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      bookings: [
+        {
+          guestEmail: HIDDEN_GUEST_CONTACT,
+          guestPhone: HIDDEN_GUEST_CONTACT,
+        },
+      ],
+    });
+    expect(observedFilters).toMatchObject({
+      search: "ada@example.com",
+      canReadGuestContact: false,
+    });
+  });
+
   it.each([
     [
       "with no assigned properties",
@@ -6470,12 +6515,14 @@ describe("vayada-api", () => {
       {
         status: "confirmed",
         search: "Ada",
+        canReadGuestContact: true,
         limit: 500,
         offset: 0,
       },
       {
         status: undefined,
         search: undefined,
+        canReadGuestContact: true,
         limit: 50,
         offset: 0,
       },
