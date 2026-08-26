@@ -41,6 +41,7 @@ import {
   correctBookingPmsManualPrices,
   ManualPriceCorrectionEvidenceError,
   ManualPriceCorrectionStateError,
+  propertyDate,
 } from "./bookingPmsManualPriceCorrection.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import { lockPmsInventoryMutationScope } from "./pmsInventoryMutationLock.js";
@@ -1243,7 +1244,7 @@ export function createTargetPmsOperationsCommandRepository(
         }
 
         await lockPmsInventoryMutationScope(client, command.propertyId);
-        const mutation = await applyAssignmentCommandMutation(client, command);
+        const mutation = await applyAssignmentCommandMutation(client, command, acceptedAt);
         if (!mutation.ok) {
           await client.query("ROLLBACK");
           return mutation;
@@ -6203,6 +6204,7 @@ async function applyManualPriceCorrectionCommandMutation(
 async function applyAssignmentCommandMutation(
   client: PmsOperationsCommandClient,
   command: PmsAssignmentCommand,
+  acceptedAt: string,
 ): Promise<
   | { ok: true; inventoryTransfer?: AssignmentInventoryTransfer }
   | Exclude<PmsAssignmentCommandResult, { ok: true }>
@@ -6269,6 +6271,21 @@ async function applyAssignmentCommandMutation(
     return assignmentConflict("room_unavailable", "Requested room is unavailable for this stay.");
   }
 
+  if (
+    command.action === "move" &&
+    command.ratePolicy === "target_base" &&
+    room.roomTypeId !== source.roomTypeId
+  ) {
+    const rateChange = await applyTargetBaseRateForMove(
+      client,
+      command,
+      source,
+      room.roomTypeId,
+      acceptedAt,
+    );
+    if (!rateChange.ok) return rateChange;
+  }
+
   const nextVersion = nextAssignmentVersion(source);
   await client.query(
     `UPDATE pms.operational_booking_assignments
@@ -6313,6 +6330,99 @@ async function applyAssignmentCommandMutation(
         }),
   };
 }
+
+type MoveRateScope = {
+  evidenceIds: string[] | null;
+  evidenceCount: number;
+  nightCount: number;
+  targetTotal: string | null;
+  currency: string | null;
+  timezone: string | null;
+};
+
+async function applyTargetBaseRateForMove(
+  client: PmsOperationsCommandClient,
+  command: PmsAssignmentCommand,
+  source: PmsAssignmentRow,
+  targetRoomTypeId: string,
+  acceptedAt: string,
+): Promise<{ ok: true } | Exclude<PmsAssignmentCommandResult, { ok: true }>> {
+  const result = await client.query<MoveRateScope>(
+    `WITH evidence_state AS (
+       SELECT id,stay_date,line_position,
+         SUM(gross_room_amount) OVER scope AS amount,
+         row_number() OVER (scope ORDER BY source_revision DESC,created_at DESC,id DESC) AS tip
+       FROM booking.nightly_revenue_evidence
+       WHERE property_id=$1::uuid AND guest_booking_id=$2::uuid
+         AND economic_event<>'retained_charge'
+       WINDOW scope AS (PARTITION BY stay_date,line_position)
+     ), tips AS (
+       SELECT id,stay_date,amount FROM evidence_state WHERE tip=1 AND line_position=$6::int
+         AND stay_date >= $4::date AND stay_date < $5::date
+     )
+     SELECT array_agg(tips.id::text ORDER BY tips.stay_date)
+         FILTER (WHERE tips.id IS NOT NULL) AS "evidenceIds",
+       COUNT(tips.id)::int AS "evidenceCount",($5::date-$4::date)::int AS "nightCount",
+       (target.base_rate_amount * ($5::date-$4::date))::text AS "targetTotal",
+       target.currency,location.timezone
+     FROM pms.room_types target
+     LEFT JOIN hotel_catalog.property_locations location ON location.property_id=target.property_id
+     LEFT JOIN tips ON TRUE
+     WHERE target.property_id=$1::uuid AND target.id=$3::uuid
+     GROUP BY target.base_rate_amount,target.currency,location.timezone`,
+    [
+      command.propertyId,
+      command.guestBookingId,
+      targetRoomTypeId,
+      source.checkIn,
+      source.checkOut,
+      source.position,
+    ],
+  );
+  const scope = result.rows[0];
+  if (
+    !scope?.timezone ||
+    !scope.targetTotal ||
+    !scope.currency ||
+    !scope.evidenceIds?.length ||
+    scope.evidenceCount !== scope.nightCount
+  )
+    return assignmentConflict(
+      "assignment_conflict",
+      "Target rate requires exact manual price evidence.",
+    );
+  try {
+    await correctBookingPmsManualPrices(
+      client,
+      {
+        propertyId: command.propertyId,
+        guestBookingId: command.guestBookingId,
+        idempotencyKey: `${command.idempotencyKey}:target-base`,
+        accountingDate: [propertyDate(acceptedAt, scope.timezone), previousDate(source.checkOut)]
+          .sort()
+          .at(-1)!,
+        pricing: {
+          kind: "equal_inferred",
+          targetEvidenceIds: scope.evidenceIds,
+          replacementTotal: { amountDecimal: scope.targetTotal, currency: scope.currency },
+        },
+      },
+      acceptedAt,
+      { allowNoChange: true, requirePricedTargets: true },
+    );
+  } catch (error) {
+    if (
+      error instanceof ManualPriceCorrectionEvidenceError ||
+      error instanceof ManualPriceCorrectionStateError
+    )
+      return assignmentConflict("assignment_conflict", error.message);
+    throw error;
+  }
+  return { ok: true };
+}
+
+const previousDate = (date: string) =>
+  new Date(Date.parse(`${date}T00:00:00.000Z`) - 86_400_000).toISOString().slice(0, 10);
 
 type AssignmentInventoryTransfer = {
   sourceRoomTypeId: string;

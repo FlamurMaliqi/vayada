@@ -146,6 +146,7 @@ export type PmsOperationalReservationDetail = Omit<PmsOperationalReservation, "p
 };
 
 export type PmsAssignmentCommandAction = "assign" | "move" | "unassign" | "swap";
+export type PmsAssignmentRatePolicy = "preserve" | "target_base";
 export type PmsOperationsCommandSideEffect =
   | "calendar_refresh"
   | "ari_changed"
@@ -264,6 +265,7 @@ export type PmsAssignmentCommandRequest = {
   roomId?: string | null;
   targetAssignmentId?: string;
   targetPosition?: number;
+  ratePolicy?: PmsAssignmentRatePolicy;
 };
 
 export type PmsPrivateNoteCreateRequest = {
@@ -4686,6 +4688,8 @@ function toAssignmentCommand(
   const position = optionalPositiveInteger(raw.position);
   const targetPosition = optionalPositiveInteger(raw.targetPosition);
   const roomId = nullableStringField(raw.roomId);
+  const hasRatePolicy = Object.hasOwn(raw, "ratePolicy");
+  const ratePolicy = raw.ratePolicy;
 
   for (const [field, value] of [
     ["assignmentId", assignmentId],
@@ -4699,6 +4703,14 @@ function toAssignmentCommand(
 
   if ((inferredAction === "assign" || inferredAction === "move") && !roomId) {
     return { error: invalidAssignmentBodyError("Assign and move commands require roomId.") };
+  }
+  if (
+    hasRatePolicy &&
+    (inferredAction !== "move" ||
+      typeof ratePolicy !== "string" ||
+      !["preserve", "target_base"].includes(ratePolicy))
+  ) {
+    return { error: invalidAssignmentBodyError("ratePolicy is invalid for this command.") };
   }
   if (inferredAction === "unassign" && roomId !== null) {
     return { error: invalidAssignmentBodyError("Unassign commands must not include roomId.") };
@@ -4724,6 +4736,7 @@ function toAssignmentCommand(
       roomId,
       targetAssignmentId,
       targetPosition,
+      ...(inferredAction === "move" && ratePolicy === "target_base" ? { ratePolicy } : {}),
     },
   };
 }
