@@ -129,6 +129,12 @@ type PmsExternalReference = {
   externalRatePlanId?: string;
   opaqueProviderData?: Record<string, string | number | boolean | null>;
 };
+
+type PmsInventoryReservationReceipt = {
+  contractVersion: "pms-inventory-reservation-lifecycle.v1";
+  owner: "pms";
+  receiptId: string;
+};
 ```
 
 Scalar format rules:
@@ -197,6 +203,9 @@ type CreatePmsReservationCommand = {
     source: "direct_booking";
     locale: string;
   };
+  inventoryReservation: {
+    receipt: PmsInventoryReservationReceipt;
+  };
   stay: {
     checkInDate: PmsDate;
     checkOutDate: PmsDate;
@@ -251,6 +260,14 @@ type PmsGuest = {
 Create commands should be emitted only after Booking Engine has committed the
 guest-facing booking. The PMS handoff must not be the source of truth for
 whether checkout succeeded.
+
+For target direct bookings, `inventoryReservation.receipt` is the opaque token
+returned by the PMS inventory reservation lifecycle. Booking persists and
+forwards it unchanged. The Vayada PMS adapter adopts the exact receipt under the
+property inventory lock while creating every assignment position; receipt room
+type, dates, and room count must match the command. External PMS adapters may
+preserve the token as Vayada-owned correlation metadata, but must not parse it
+or use it as a provider reservation ID.
 
 ## Update Command
 
