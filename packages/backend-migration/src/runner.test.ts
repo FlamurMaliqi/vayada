@@ -459,7 +459,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
            VALUES ($1, ARRAY['hotel_operations'], 0)`,
           [organizationId(8)],
         ),
-      ).rejects.toMatchObject({ code: "23514" });
+      ).rejects.toMatchObject({ code: "23503" });
 
       await expect(
         client.query(
@@ -476,7 +476,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
              (organization_id, selected_tracks)
            VALUES ('00000000-0000-4000-8000-000000000099', ARRAY['hotel_operations'])`,
         ),
-      ).rejects.toMatchObject({ code: "23503" });
+      ).rejects.toMatchObject({ code: "23514" });
     } finally {
       await client.end();
     }
@@ -765,6 +765,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     expect(result.applied).toContain("0046");
     expect(result.applied).toContain("0047");
     expect(result.applied).toContain("0090");
+    expect(result.applied).toContain("0108");
 
     const verifyClient = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await verifyClient.connect();
@@ -791,6 +792,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "current_working_design_revisions",
         "current_working_guest_policy_revisions",
         "direct_booking_summary_read_model",
+        "finance_addon_purchase_evidence",
         "finance_booking_attribution",
         "finance_nightly_revenue_evidence",
         "guest_bookings",
@@ -884,6 +886,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "booking_checkout_records",
         "booking_notes_private",
         "channel_booking_mappings",
+        "channel_booking_revision_tombstones",
         "channel_connections",
         "channel_rate_plan_mappings",
         "channel_reviews",
@@ -891,12 +894,14 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "channel_sync_status",
         "checkin_checklist_templates",
         "checkout_inspection_templates",
+        "effective_room_assignment_optimization_settings",
         "inventory_coverage_validation_queue",
         "inventory_days",
         "inventory_materialization_coverage",
         "inventory_reservation_day_watermarks",
         "inventory_reservation_receipts",
         "inventory_reservation_statuses",
+        "linked_inventory_groups",
         "mandatory_charge_confirmation_revisions",
         "message_attachments",
         "message_threads",
@@ -914,6 +919,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "recurring_pricing_materialized_rows",
         "recurring_pricing_source_room_values",
         "recurring_pricing_sources",
+        "room_assignment_optimization_settings",
         "room_blocks",
         "room_type_media",
         "room_types",
@@ -1247,17 +1253,22 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "commission_rate_changes",
         "commission_rules",
         "expense_categories",
+        "expense_generation_dispatches",
         "expenses",
         "finance_visibility_read_model",
         "folio_lines",
         "folio_payment_references",
         "folio_revisions",
         "folios",
+        "ota_commission_evidence",
+        "ota_commission_reporting_evidence",
         "payment_provider_accounts",
         "payment_settings",
         "payments",
         "payout_settings",
         "payouts",
+        "provider_fee_evidence",
+        "provider_fee_reporting_evidence",
         "recurring_expense_rules",
       ]);
 
@@ -4983,6 +4994,68 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       );
 
       expect(retiredIntelligenceResourceLinkConstraints).toHaveLength(0);
+
+      const linkedRoomTypeIds = [
+        "aaaaaaaa-3333-4333-8333-aaaaaaaaaaa2",
+        "aaaaaaaa-3333-4333-8333-aaaaaaaaaaa3",
+      ];
+      const manualBlockId = "aaaaaaaa-5555-4555-8555-aaaaaaaaaaa1";
+      const linkedBlockId = "aaaaaaaa-5555-4555-8555-aaaaaaaaaaa2";
+      await verifyClient.query(
+        `INSERT INTO pms.room_types (id, property_id, name, base_rate_amount, currency)
+         VALUES ($1, $3, 'Linked Twin', 200, 'USD'),
+                ($2, $3, 'Linked Single', 200, 'USD')`,
+        [...linkedRoomTypeIds, distributionPropertyId],
+      );
+      await verifyClient.query(
+        `INSERT INTO pms.room_blocks
+           (id, property_id, room_type_id, starts_on, ends_on, reason)
+         VALUES ($1, $2, $3, DATE '2026-03-01', DATE '2026-03-02', 'Maintenance')`,
+        [manualBlockId, distributionPropertyId, distributionRoomTypeId],
+      );
+      await verifyClient.query(
+        `INSERT INTO pms.room_blocks
+           (id, property_id, room_type_id, starts_on, ends_on, reason, block_kind,
+            source_room_type_id, source_room_block_id)
+         VALUES ($1, $2, $3, DATE '2026-03-01', DATE '2026-03-02', 'Linked',
+                 'linked_manual_block', $4, $5)`,
+        [
+          linkedBlockId,
+          distributionPropertyId,
+          linkedRoomTypeIds[0],
+          distributionRoomTypeId,
+          manualBlockId,
+        ],
+      );
+      await expect(
+        verifyClient.query(
+          `UPDATE pms.room_blocks SET block_kind = 'linked_booking' WHERE id = $1`,
+          [manualBlockId],
+        ),
+      ).rejects.toMatchObject({ code: "23514", constraint: "chk_pms_room_blocks_kind_immutable" });
+      await expect(
+        verifyClient.query(
+          `INSERT INTO pms.room_blocks
+             (property_id, room_type_id, starts_on, ends_on, block_kind,
+              source_room_type_id, source_room_block_id)
+           VALUES ($1, $2, DATE '2026-03-01', DATE '2026-03-02',
+                   'linked_manual_block', $2, $3)`,
+          [distributionPropertyId, linkedRoomTypeIds[1], manualBlockId],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(
+        verifyClient.query(
+          `INSERT INTO pms.room_blocks
+             (property_id, room_type_id, starts_on, ends_on, block_kind,
+              source_room_type_id, source_room_block_id)
+           VALUES ($1, $2, DATE '2026-03-01', DATE '2026-03-02',
+                   'linked_manual_block', $3, $4)`,
+          [distributionPropertyId, linkedRoomTypeIds[1], linkedRoomTypeIds[0], linkedBlockId],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(
+        verifyClient.query(`DELETE FROM pms.room_blocks WHERE id = $1`, [manualBlockId]),
+      ).rejects.toMatchObject({ code: "23503" });
     } finally {
       await verifyClient.end();
     }
