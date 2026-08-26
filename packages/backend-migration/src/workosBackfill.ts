@@ -57,12 +57,14 @@ export type WorkosBackfillCohort = {
 
 export type WorkosBackfillRepository = {
   loadSource(): Promise<WorkosBackfillSource>;
+  close?(): Promise<void>;
   linkUser(input: {
     userId: string;
     workosUserId: string;
     email: string;
     emailVerified: boolean;
     rawProfile: Record<string, unknown>;
+    retireWorkosUserIds?: string[];
   }): Promise<void>;
   linkOrganization(input: {
     organizationId: string;
@@ -178,8 +180,8 @@ export async function runWorkosBackfill(
 
   for (const user of source.users) {
     if (user.workosUserId) {
-      const verified = await verifyExistingUserLink(config, user, summary);
-      if (verified) workosUserIds.set(user.id, user.workosUserId);
+      const verifiedUserId = await verifyExistingUserLink(config, user, summary);
+      if (verifiedUserId) workosUserIds.set(user.id, verifiedUserId);
       continue;
     }
     if (user.status === "deleted") {
@@ -384,24 +386,41 @@ function createWorkosUserInput(user: WorkosBackfillUser) {
 export function createWorkosBackfillCohortForEmail(
   source: WorkosBackfillSource,
   email: string,
+  organizationId?: string,
 ): WorkosBackfillCohort {
   const normalizedEmail = email.trim().toLowerCase();
   if (!normalizedEmail) {
     throw new Error("WorkOS backfill email is required.");
   }
 
-  const users = source.users.filter((user) => user.email.toLowerCase() === normalizedEmail);
-  if (users.length === 0) {
+  const matchingUsers = source.users.filter((user) => user.email.toLowerCase() === normalizedEmail);
+  if (matchingUsers.length === 0) {
     throw new Error(`No target identity user found for email ${email}.`);
   }
+  const users = matchingUsers.filter((user) => user.status !== "deleted");
+  if (users.length === 0) {
+    throw new Error(`No non-deleted target identity user found for email ${email}.`);
+  }
   if (users.length > 1) {
-    throw new Error(`Multiple target identity users found for email ${email}.`);
+    throw new Error(`Multiple non-deleted target identity users found for email ${email}.`);
   }
 
   const user = users[0];
-  const memberships = source.memberships.filter((membership) => membership.userId === user.id);
+  const normalizedOrganizationId = organizationId?.trim();
+  const memberships = source.memberships.filter(
+    (membership) =>
+      membership.userId === user.id &&
+      (!normalizedOrganizationId || membership.organizationId === normalizedOrganizationId),
+  );
+  if (normalizedOrganizationId && memberships.length === 0) {
+    throw new Error(
+      `No target membership found for email ${email} and organization ${normalizedOrganizationId}.`,
+    );
+  }
   return {
-    key: `email:${user.email}`,
+    key: normalizedOrganizationId
+      ? `email:${user.email}:organization:${normalizedOrganizationId}`
+      : `email:${user.email}`,
     userIds: [user.id],
     organizationIds: Array.from(
       new Set(memberships.map((membership) => membership.organizationId)),
@@ -465,6 +484,9 @@ export function createPgWorkosBackfillRepository(config: {
     : null;
 
   return {
+    async close() {
+      await Promise.all([pool.end(), legacyAuthPool?.end()]);
+    },
     async loadSource() {
       const [users, organizations, memberships] = await Promise.all([
         pool.query<WorkosBackfillUser>(
@@ -490,7 +512,9 @@ export function createPgWorkosBackfillRepository(config: {
              (
                SELECT count(*)::int
                FROM identity.external_identities
-               WHERE user_id = users.id AND provider = 'workos'
+               WHERE user_id = users.id
+                 AND provider = 'workos'
+                 AND provider_user_id IS NOT NULL
              ) AS "workosIdentityCount",
              NULL::text AS "passwordHash",
              NULL::text AS "passwordHashType"
@@ -533,52 +557,131 @@ export function createPgWorkosBackfillRepository(config: {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
-        const existing = await client.query<{ provider_user_id: string | null }>(
-          `SELECT provider_user_id
+        const existing = await client.query<{ id: string; provider_user_id: string | null }>(
+          `SELECT id::text, provider_user_id
            FROM identity.external_identities
            WHERE user_id = $1 AND provider = 'workos'
            FOR UPDATE`,
           [input.userId],
         );
-        if (existing.rows.length > 1) {
-          throw new Error(`User ${input.userId} has duplicate local WorkOS identity rows`);
-        }
-        const existingProviderUserId = existing.rows[0]?.provider_user_id;
-        if (existingProviderUserId && existingProviderUserId !== input.workosUserId) {
+        const canonicalRow = existing.rows.find(
+          (row) => row.provider_user_id === input.workosUserId,
+        );
+        const linkedProviderUserIds = existing.rows
+          .map((row) => row.provider_user_id)
+          .filter((providerUserId): providerUserId is string => Boolean(providerUserId));
+        const requestedRetireIds = new Set(input.retireWorkosUserIds ?? []);
+        const conflictingProviderUserId = linkedProviderUserIds.find(
+          (providerUserId) =>
+            providerUserId !== input.workosUserId && !requestedRetireIds.has(providerUserId),
+        );
+        if (conflictingProviderUserId) {
           throw new Error(
-            `User ${input.userId} is already linked to different WorkOS user ${existingProviderUserId}`,
+            `User ${input.userId} is already linked to different WorkOS user ${conflictingProviderUserId}`,
           );
         }
-        const existingProviderMapping = await client.query<{ user_id: string }>(
-          `SELECT user_id::text
+        const existingProviderMapping = await client.query<{
+          id: string;
+          user_id: string;
+          mapped_email: string;
+          mapped_status: string;
+          target_email: string;
+          target_status: string;
+        }>(
+          `SELECT
+             external_identities.id::text,
+             external_identities.user_id::text,
+             mapped_user.email AS mapped_email,
+             mapped_user.status AS mapped_status,
+             target_user.email AS target_email,
+             target_user.status AS target_status
            FROM identity.external_identities
-           WHERE provider = 'workos' AND provider_user_id = $1
-           FOR UPDATE`,
-          [input.workosUserId],
+           JOIN identity.users mapped_user ON mapped_user.id = external_identities.user_id
+           JOIN identity.users target_user ON target_user.id = $2
+           WHERE external_identities.provider = 'workos'
+             AND external_identities.provider_user_id = $1
+           FOR UPDATE OF external_identities, mapped_user, target_user`,
+          [input.workosUserId, input.userId],
         );
-        const existingMappedUserId = existingProviderMapping.rows[0]?.user_id;
-        if (existingMappedUserId && existingMappedUserId !== input.userId) {
-          throw new Error(
-            `WorkOS user ${input.workosUserId} is already linked to user ${existingMappedUserId}`,
+        const mappedIdentity = existingProviderMapping.rows[0];
+        let transferredFromUserId: string | null = null;
+        if (mappedIdentity && mappedIdentity.user_id !== input.userId) {
+          const sameEmail =
+            mappedIdentity.mapped_email.trim().toLowerCase() ===
+            mappedIdentity.target_email.trim().toLowerCase();
+          if (
+            mappedIdentity.mapped_status !== "deleted" ||
+            mappedIdentity.target_status !== "active" ||
+            !sameEmail
+          ) {
+            throw new Error(
+              `WorkOS user ${input.workosUserId} is already linked to user ${mappedIdentity.user_id}`,
+            );
+          }
+          transferredFromUserId = mappedIdentity.user_id;
+          await client.query(
+            `UPDATE identity.external_identities
+             SET raw_profile = COALESCE(raw_profile, '{}'::jsonb) || jsonb_build_object(
+                   'retired_provider_user_id', provider_user_id,
+                   'retired_reason', 'duplicate_user_consolidation',
+                   'retired_to_user_id', $2::text,
+                   'retired_at', now()
+                 ),
+                 provider_user_id = NULL,
+                 provider_email_verified = false,
+                 updated_at = now()
+             WHERE id = $1`,
+            [mappedIdentity.id, input.userId],
           );
         }
 
+        const retiredWorkosUserIds = linkedProviderUserIds.filter((providerUserId) =>
+          requestedRetireIds.has(providerUserId),
+        );
+        if (retiredWorkosUserIds.length > 0) {
+          await client.query(
+            `UPDATE identity.external_identities
+               SET raw_profile = COALESCE(raw_profile, '{}'::jsonb) || jsonb_build_object(
+                     'retired_provider_user_id', provider_user_id,
+                     'retired_reason', 'workos_user_missing',
+                     'retired_at', now()
+                   ),
+                   provider_user_id = NULL,
+                   provider_email_verified = false,
+                   updated_at = now()
+               WHERE user_id = $1
+                 AND provider = 'workos'
+                 AND provider_user_id IS NOT NULL
+                 AND provider_user_id = ANY($2::text[])`,
+            [input.userId, retiredWorkosUserIds],
+          );
+        }
         const updated = await client.query(
           `UPDATE identity.external_identities
            SET provider_user_id = $2,
                provider_email = $3,
                provider_email_verified = $4,
-               raw_profile = $5,
+               raw_profile = COALESCE(raw_profile, '{}'::jsonb) || $5::jsonb,
                updated_at = now()
-           WHERE user_id = $1
-             AND provider = 'workos'
-             AND provider_user_id IS NULL`,
+           WHERE id = COALESCE(
+             $6::uuid,
+             (
+               SELECT id
+               FROM identity.external_identities
+               WHERE user_id = $1
+                 AND provider = 'workos'
+                 AND provider_user_id IS NULL
+               ORDER BY created_at
+               LIMIT 1
+             )
+           )`,
           [
             input.userId,
             input.workosUserId,
             input.email,
             input.emailVerified,
             JSON.stringify(input.rawProfile),
+            canonicalRow?.id ?? null,
           ],
         );
         if (updated.rowCount === 0) {
@@ -607,7 +710,11 @@ export function createPgWorkosBackfillRepository(config: {
           eventType: "workos.backfill.user.linked",
           providerEventId: `backfill:user:${input.userId}`,
           userId: input.userId,
-          payload: { workosUserId: input.workosUserId },
+          payload: {
+            workosUserId: input.workosUserId,
+            retiredWorkosUserIds,
+            transferredFromUserId,
+          },
         });
         await client.query("COMMIT");
       } catch (error) {
@@ -847,34 +954,53 @@ async function verifyExistingUserLink(
   config: WorkosBackfillConfig,
   user: WorkosBackfillUser,
   summary: WorkosBackfillSummary,
-): Promise<boolean> {
+): Promise<string | null> {
   if (!config.workos) {
     summary.users.skipped++;
-    return true;
+    return user.workosUserId;
   }
 
   const workosUser = await config.workos.getUser(user.workosUserId!);
   if (!workosUser) {
-    summary.users.conflicts++;
-    summary.warnings.push(
-      `Local user ${user.id} points at missing WorkOS user ${user.workosUserId}`,
-    );
-    return false;
+    const canonicalUser = await config.workos.getUserByExternalId(user.id);
+    if (!canonicalUser || canonicalUser.externalId !== user.id) {
+      summary.users.conflicts++;
+      summary.warnings.push(
+        `Local user ${user.id} points at missing WorkOS user ${user.workosUserId}`,
+      );
+      return null;
+    }
+    if (config.mode === "apply") {
+      await config.repository.linkUser({
+        userId: user.id,
+        workosUserId: canonicalUser.id,
+        email: user.email,
+        emailVerified: user.emailVerified,
+        rawProfile: { externalId: user.id, source: "vayada-backfill" },
+        retireWorkosUserIds: [user.workosUserId!],
+      });
+    } else {
+      summary.warnings.push(
+        `Would replace missing WorkOS user ${user.workosUserId} with ${canonicalUser.id} for local user ${user.id}`,
+      );
+    }
+    summary.users.linkedExisting++;
+    return canonicalUser.id;
   }
   if (workosUser.externalId && workosUser.externalId !== user.id) {
     summary.users.conflicts++;
     summary.warnings.push(`WorkOS user ${workosUser.id} external_id does not match ${user.id}`);
-    return false;
+    return null;
   }
   if (!workosUser.externalId) {
     if (config.mode === "apply") {
       await config.workos.updateUserExternalId(workosUser.id, user.id);
     }
     summary.users.linkedExisting++;
-    return true;
+    return workosUser.id;
   }
   summary.users.skipped++;
-  return true;
+  return workosUser.id;
 }
 
 async function verifyExistingOrganizationLink(

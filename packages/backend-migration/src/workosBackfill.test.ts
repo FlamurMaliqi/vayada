@@ -1,16 +1,20 @@
-import { describe, expect, it } from "vitest";
+import pg from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   createWorkosBackfillCohortForOrganizationKind,
   createWorkosBackfillCohortForEmail,
+  createPgWorkosBackfillRepository,
   mergeLegacyAuthBackfillFields,
   runWorkosBackfill,
   type WorkosBackfillClient,
   type WorkosBackfillRepository,
   type WorkosBackfillSource,
 } from "./workosBackfill.js";
+import { assertSafeTestDatabase } from "./testUtils.js";
 
 const TEST_BCRYPT_HASH = "$2b$12$abcdefghijklmnopqrstuuJ/lL7AGas7gSUzwl3hBRMaGQJ2dAU1y";
+const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 
 describe("runWorkosBackfill", () => {
   it("builds a one-user cohort from email and includes that user's memberships", () => {
@@ -36,6 +40,57 @@ describe("runWorkosBackfill", () => {
       organizationIds: ["org_internal"],
       membershipIds: ["membership_internal"],
     });
+  });
+
+  it("ignores deleted duplicate users when building an email cohort", () => {
+    const source = {
+      users: [
+        user({ id: "deleted_1", status: "deleted" }),
+        user({ id: "active_user" }),
+        user({ id: "deleted_2", status: "deleted" }),
+      ],
+      organizations: [organization()],
+      memberships: [membership({ userId: "active_user" })],
+    };
+
+    expect(createWorkosBackfillCohortForEmail(source, "owner@example.com")).toEqual({
+      key: "email:owner@example.com",
+      userIds: ["active_user"],
+      organizationIds: ["org_internal"],
+      membershipIds: ["membership_internal"],
+    });
+  });
+
+  it("limits an email cohort to one exact organization", () => {
+    const source = {
+      users: [user()],
+      organizations: [organization(), organization({ id: "other_org" })],
+      memberships: [
+        membership(),
+        membership({ id: "other_membership", organizationId: "other_org" }),
+      ],
+    };
+
+    expect(createWorkosBackfillCohortForEmail(source, "owner@example.com", "org_internal")).toEqual(
+      {
+        key: "email:owner@example.com:organization:org_internal",
+        userIds: ["user_internal"],
+        organizationIds: ["org_internal"],
+        membershipIds: ["membership_internal"],
+      },
+    );
+  });
+
+  it("rejects ambiguous non-deleted duplicate users for an email cohort", () => {
+    const source = {
+      users: [user(), user({ id: "other_active" })],
+      organizations: [],
+      memberships: [],
+    };
+
+    expect(() => createWorkosBackfillCohortForEmail(source, "owner@example.com")).toThrow(
+      "Multiple non-deleted target identity users found for email owner@example.com.",
+    );
   });
 
   it("builds a cohort from active memberships in an organization kind", () => {
@@ -242,6 +297,34 @@ describe("runWorkosBackfill", () => {
         roleSlugs: ["admin"],
       },
     ]);
+  });
+
+  it("replaces a missing local WorkOS link with the canonical external-id user", async () => {
+    const repository = createMemoryRepository({
+      users: [user({ workosUserId: "workos_stale_missing", workosIdentityCount: 2 })],
+      organizations: [],
+      memberships: [],
+    });
+    const workos = createMemoryWorkosClient({
+      existingUsersByExternalId: new Map([["user_internal", "user_workos_canonical"]]),
+    });
+
+    const summary = await runWorkosBackfill({
+      mode: "apply",
+      cohort: { key: "stale-user-link", userIds: ["user_internal"], organizationIds: [] },
+      repository,
+      workos,
+    });
+
+    expect(repository.linkedUsers).toEqual([
+      expect.objectContaining({
+        userId: "user_internal",
+        workosUserId: "user_workos_canonical",
+        retireWorkosUserIds: ["workos_stale_missing"],
+      }),
+    ]);
+    expect(summary.users).toMatchObject({ linkedExisting: 1, conflicts: 0 });
+    expect(summary.parity.missingLocalUserLinks).toBe(0);
   });
 
   it("links an existing WorkOS membership before creating a duplicate", async () => {
@@ -597,6 +680,98 @@ describe("runWorkosBackfill", () => {
       staleLocalMembershipLinks: 0,
       membershipRoleMismatches: 0,
     });
+  });
+});
+
+describe.skipIf(!TEST_DATABASE_URL)("WorkOS identity transfer (PostgreSQL)", () => {
+  const deletedUserId = "a1334000-0000-4000-8000-000000000001";
+  const activeUserId = "a1334000-0000-4000-8000-000000000002";
+  const workosUserId = "workos_vay_1334_transfer";
+  let client: pg.Client;
+  let repository: WorkosBackfillRepository;
+
+  beforeAll(async () => {
+    assertSafeTestDatabase(TEST_DATABASE_URL!);
+    client = new pg.Client({ connectionString: TEST_DATABASE_URL });
+    await client.connect();
+    await client.query(
+      `INSERT INTO identity.users (id, email, status)
+       VALUES ($1, 'Admin@Example.com', 'deleted'), ($2, 'admin@example.com', 'active')`,
+      [deletedUserId, activeUserId],
+    );
+    await client.query(
+      `INSERT INTO identity.external_identities
+         (user_id, provider, provider_user_id, provider_email, provider_email_verified)
+       VALUES ($1, 'workos', $3, 'Admin@Example.com', true),
+              ($2, 'workos', NULL, 'admin@example.com', false)`,
+      [deletedUserId, activeUserId, workosUserId],
+    );
+    repository = createPgWorkosBackfillRepository({ connectionString: TEST_DATABASE_URL! });
+  });
+
+  afterAll(async () => {
+    await repository.close?.();
+    await client.query("DELETE FROM identity.auth_reconciliation_events WHERE user_id = $1", [
+      activeUserId,
+    ]);
+    await client.query("DELETE FROM identity.external_identities WHERE user_id = ANY($1::uuid[])", [
+      [deletedUserId, activeUserId],
+    ]);
+    await client.query("DELETE FROM identity.users WHERE id = ANY($1::uuid[])", [
+      [deletedUserId, activeUserId],
+    ]);
+    await client.end();
+  });
+
+  it("moves a provider mapping only from a deleted same-email user", async () => {
+    await repository.linkUser({
+      userId: activeUserId,
+      workosUserId,
+      email: "admin@example.com",
+      emailVerified: true,
+      rawProfile: { source: "vayada-backfill" },
+    });
+
+    const { rows } = await client.query<{
+      user_id: string;
+      provider_user_id: string | null;
+      retired_reason: string | null;
+    }>(
+      `SELECT user_id::text, provider_user_id, raw_profile ->> 'retired_reason' AS retired_reason
+       FROM identity.external_identities
+       WHERE user_id = ANY($1::uuid[])
+       ORDER BY user_id`,
+      [[deletedUserId, activeUserId]],
+    );
+    expect(rows).toEqual([
+      {
+        user_id: deletedUserId,
+        provider_user_id: null,
+        retired_reason: "duplicate_user_consolidation",
+      },
+      { user_id: activeUserId, provider_user_id: workosUserId, retired_reason: null },
+    ]);
+
+    await client.query(
+      "UPDATE identity.external_identities SET provider_user_id = NULL WHERE user_id = $1",
+      [activeUserId],
+    );
+    await client.query(
+      "UPDATE identity.external_identities SET provider_user_id = $2 WHERE user_id = $1",
+      [deletedUserId, workosUserId],
+    );
+    await client.query("UPDATE identity.users SET status = 'suspended' WHERE id = $1", [
+      activeUserId,
+    ]);
+    await expect(
+      repository.linkUser({
+        userId: activeUserId,
+        workosUserId,
+        email: "admin@example.com",
+        emailVerified: true,
+        rawProfile: { source: "vayada-backfill" },
+      }),
+    ).rejects.toThrow(`WorkOS user ${workosUserId} is already linked to user ${deletedUserId}`);
   });
 });
 
