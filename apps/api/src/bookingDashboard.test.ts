@@ -73,6 +73,7 @@ type DashboardAppOptions = {
   membershipStatus?: "active" | "inactive";
   propertyScope?: MembershipPropertyScope | null;
   resolvedCanonicalPropertyId?: string | null;
+  resolvedPropertyIds?: string[];
   canonicalPropertyResolutionError?: Error;
 };
 
@@ -126,8 +127,15 @@ describe("Booking dashboard routes", () => {
   });
 
   it("allows an explicitly assigned property", async () => {
+    const resolvedPropertyIds: string[] = [];
     app = buildDashboardApp({
-      propertyScope: { mode: "assigned", assignedPropertyIds: [canonicalPropertyId] },
+      propertyScope: {
+        mode: "assigned",
+        roleKey: "hotel_owner",
+        accessOrigin: "agency",
+        assignedPropertyIds: [canonicalPropertyId],
+      },
+      resolvedPropertyIds,
     });
 
     const response = await injectJson(app, {
@@ -138,6 +146,7 @@ describe("Booking dashboard routes", () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(resolvedPropertyIds).toEqual(["prop_alpenrose"]);
   });
 
   it("returns source mix and sparklines with the dashboard contract version", async () => {
@@ -203,7 +212,12 @@ describe("Booking dashboard routes", () => {
       throw new Error("dashboard read must not run");
     };
     app = buildDashboardApp({
-      propertyScope: { mode: "assigned", assignedPropertyIds: [] },
+      propertyScope: {
+        mode: "assigned",
+        roleKey: "hotel_owner",
+        accessOrigin: "agency",
+        assignedPropertyIds: [],
+      },
       readPort: {
         getDashboardMetrics: denied,
         getSourceMix: denied,
@@ -244,7 +258,12 @@ describe("Booking dashboard routes", () => {
 
   it("returns the same denial for unassigned and cross-tenant properties", async () => {
     app = buildDashboardApp({
-      propertyScope: { mode: "assigned", assignedPropertyIds: [otherCanonicalPropertyId] },
+      propertyScope: {
+        mode: "assigned",
+        roleKey: "hotel_owner",
+        accessOrigin: "agency",
+        assignedPropertyIds: [otherCanonicalPropertyId],
+      },
     });
     const unassigned = await injectJson(app, {
       method: "GET",
@@ -257,7 +276,12 @@ describe("Booking dashboard routes", () => {
     app = buildDashboardApp({
       linkedPropertyId: "prop_other",
       linkedCanonicalPropertyId: otherCanonicalPropertyId,
-      propertyScope: { mode: "assigned", assignedPropertyIds: [canonicalPropertyId] },
+      propertyScope: {
+        mode: "assigned",
+        roleKey: "hotel_owner",
+        accessOrigin: "agency",
+        assignedPropertyIds: [canonicalPropertyId],
+      },
     });
     const crossTenant = await injectJson(app, {
       method: "GET",
@@ -416,7 +440,14 @@ describe("Booking dashboard routes", () => {
     },
     {
       name: "when property assignment is empty",
-      appOptions: { propertyScope: { mode: "assigned", assignedPropertyIds: [] } },
+      appOptions: {
+        propertyScope: {
+          mode: "assigned",
+          roleKey: "hotel_owner",
+          accessOrigin: "agency",
+          assignedPropertyIds: [],
+        },
+      },
       headers: { authorization: "Bearer valid-token" },
       expectedStatus: 403,
       expectedCode: "missing_resource_access",
@@ -424,7 +455,12 @@ describe("Booking dashboard routes", () => {
     {
       name: "when property scope is unknown",
       appOptions: {
-        propertyScope: { mode: "unknown", assignedPropertyIds: [canonicalPropertyId] },
+        propertyScope: {
+          mode: "unknown",
+          roleKey: "hotel_owner",
+          accessOrigin: "agency",
+          assignedPropertyIds: [canonicalPropertyId],
+        },
       },
       headers: { authorization: "Bearer valid-token" },
       expectedStatus: 403,
@@ -705,7 +741,8 @@ function buildDashboardApp(options: DashboardAppOptions = {}): ReturnType<typeof
     logger: false,
     bookingDashboardMetricsReadPort: {
       ...(options.readPort ?? fakeReadPort()),
-      async resolveCanonicalPropertyId() {
+      async resolveCanonicalPropertyId(propertyId) {
+        options.resolvedPropertyIds?.push(propertyId);
         if (options.canonicalPropertyResolutionError)
           throw options.canonicalPropertyResolutionError;
         return options.resolvedCanonicalPropertyId === undefined
@@ -716,7 +753,12 @@ function buildDashboardApp(options: DashboardAppOptions = {}): ReturnType<typeof
     bookingPropertyAccessRepository: {
       async findMembershipPropertyScope() {
         return options.propertyScope === undefined
-          ? { mode: "all", assignedPropertyIds: [] }
+          ? {
+              mode: "all",
+              roleKey: "hotel_owner",
+              accessOrigin: "agency",
+              assignedPropertyIds: [],
+            }
           : options.propertyScope;
       },
     },

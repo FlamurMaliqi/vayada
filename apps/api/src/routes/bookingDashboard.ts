@@ -227,6 +227,7 @@ async function enforceBookingDashboardReadPolicy(
   options: BookingDashboardRoutesOptions,
 ): Promise<boolean> {
   try {
+    // Keep unauthorized callers from reaching the property-alias lookup.
     enforceRoutePolicy(request, { permission: "booking.analytics.read" });
     const canonicalPropertyId =
       await options.metricsReadPort.resolveCanonicalPropertyId(propertyId);
