@@ -621,11 +621,16 @@ export function createPgWorkosBackfillRepository(config: {
           transferredFromUserId = mappedIdentity.user_id;
           await client.query(
             `UPDATE identity.external_identities
-             SET raw_profile = COALESCE(raw_profile, '{}'::jsonb) || jsonb_build_object(
-                   'retired_provider_user_id', provider_user_id,
-                   'retired_reason', 'duplicate_user_consolidation',
-                   'retired_to_user_id', $2::text,
-                   'retired_at', now()
+             SET raw_profile = jsonb_set(
+                   COALESCE(raw_profile, '{}'::jsonb),
+                   '{provider_link_history}',
+                   COALESCE(raw_profile -> 'provider_link_history', '[]'::jsonb) ||
+                     jsonb_build_array(jsonb_build_object(
+                       'provider_user_id', provider_user_id,
+                       'reason', 'duplicate_user_consolidation',
+                       'to_user_id', $2::text,
+                       'at', now()
+                     ))
                  ),
                  provider_user_id = NULL,
                  provider_email_verified = false,
@@ -641,10 +646,15 @@ export function createPgWorkosBackfillRepository(config: {
         if (retiredWorkosUserIds.length > 0) {
           await client.query(
             `UPDATE identity.external_identities
-               SET raw_profile = COALESCE(raw_profile, '{}'::jsonb) || jsonb_build_object(
-                     'retired_provider_user_id', provider_user_id,
-                     'retired_reason', 'workos_user_missing',
-                     'retired_at', now()
+               SET raw_profile = jsonb_set(
+                     COALESCE(raw_profile, '{}'::jsonb),
+                     '{provider_link_history}',
+                     COALESCE(raw_profile -> 'provider_link_history', '[]'::jsonb) ||
+                       jsonb_build_array(jsonb_build_object(
+                         'provider_user_id', provider_user_id,
+                         'reason', 'workos_user_missing',
+                         'at', now()
+                       ))
                    ),
                    provider_user_id = NULL,
                    provider_email_verified = false,
