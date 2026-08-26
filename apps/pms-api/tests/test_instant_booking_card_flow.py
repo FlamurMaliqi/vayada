@@ -81,8 +81,9 @@ async def _create_card_draft(
                 },
             )
         )
+        billing_config_fetch = None
         if billing_config is not None:
-            stack.enter_context(
+            billing_config_fetch = stack.enter_context(
                 patch(
                     "app.services.booking_service.fetch_billing_config",
                     new_callable=AsyncMock,
@@ -127,6 +128,8 @@ async def _create_card_draft(
     assert (
         create_intent.call_args.kwargs["application_fee_amount"] == expected_application_fee_cents
     )
+    if billing_config_fetch is not None:
+        billing_config_fetch.assert_awaited_once_with(str(hotel["id"]))
     return user, hotel, room, body
 
 
@@ -516,7 +519,7 @@ async def test_failed_card_attempt_can_succeed_on_same_intent(client, cleanup_da
     }
 
 
-async def test_commission_plan_is_collected_as_application_fee(client, cleanup_database):
+async def test_commission_plan_platform_fee_is_omitted_for_legacy_stripe(client, cleanup_database):
     billing = {
         **DEFAULT_BILLING_CONFIG,
         "active_plan": "commission",
@@ -527,27 +530,24 @@ async def test_commission_plan_is_collected_as_application_fee(client, cleanup_d
         instant_book=True,
         pi_id="pi_commission_fee",
         billing_config=billing,
-        expected_application_fee_cents=2250,
-        expected_platform_fee_amount=22.5,
     )
 
     assert draft["booking"]["totalAmount"] == 450
 
 
 @pytest.mark.parametrize(
-    ("plan", "platform_pct", "affiliate_platform_pct", "application_fee_cents"),
+    ("plan", "platform_pct", "affiliate_platform_pct"),
     [
-        ("commission", 5.0, 0.0, 6750),
-        ("fixed", 0.0, 2.0, 5400),
+        ("commission", 5.0, 0.0),
+        ("fixed", 0.0, 2.0),
     ],
 )
-async def test_affiliate_commission_is_funded_by_direct_charge_application_fee(
+async def test_legacy_stripe_application_fee_only_funds_affiliate_commission(
     client,
     cleanup_database,
     plan,
     platform_pct,
     affiliate_platform_pct,
-    application_fee_cents,
 ):
     billing = {
         **DEFAULT_BILLING_CONFIG,
@@ -560,8 +560,7 @@ async def test_affiliate_commission_is_funded_by_direct_charge_application_fee(
         instant_book=True,
         pi_id=f"pi_affiliate_{plan}",
         billing_config=billing,
-        expected_application_fee_cents=application_fee_cents,
-        expected_platform_fee_amount=22.5 if plan == "commission" else 9,
+        expected_application_fee_cents=4500,
         expected_affiliate_commission_amount=45,
         affiliate_commission_pct=10,
     )
@@ -585,9 +584,9 @@ async def test_affiliate_commission_is_funded_by_direct_charge_application_fee(
         """,
         booking_id,
     )
-    assert float(booking["platform_fee_amount"]) == (22.5 if plan == "commission" else 9)
+    assert float(booking["platform_fee_amount"]) == 0
     assert float(booking["affiliate_commission_amount"]) == 45
-    assert float(booking["property_payout_amount"]) == (382.5 if plan == "commission" else 396)
+    assert float(booking["property_payout_amount"]) == 405
     payouts = await Database.fetch(
         "SELECT recipient_type, amount FROM payouts WHERE booking_id = $1", booking_id
     )
@@ -595,20 +594,29 @@ async def test_affiliate_commission_is_funded_by_direct_charge_application_fee(
 
 
 @pytest.mark.parametrize(
-    ("free_days", "partial_pct", "refund_cents", "payment_status"),
+    (
+        "case",
+        "free_days",
+        "partial_pct",
+        "refund_cents",
+        "payment_status",
+        "historical_application_fee",
+    ),
     [
-        (7, 0, None, "refunded"),
-        (365, 50, 22_500, "partially_refunded"),
+        ("full", 7, 0, None, "refunded", 0),
+        ("partial", 365, 50, 22_500, "partially_refunded", 0),
+        ("historical-fee", 7, 0, None, "refunded", 22.5),
     ],
-    ids=["full", "partial"],
 )
-async def test_direct_charge_refund_returns_application_fee(
+async def test_direct_charge_refund_uses_frozen_application_fee(
     client,
     cleanup_database,
+    case,
     free_days,
     partial_pct,
     refund_cents,
     payment_status,
+    historical_application_fee,
 ):
     billing = {
         **DEFAULT_BILLING_CONFIG,
@@ -618,10 +626,8 @@ async def test_direct_charge_refund_returns_application_fee(
     _user, hotel, _room, draft = await _create_card_draft(
         client,
         instant_book=True,
-        pi_id=f"pi_cancel_{payment_status}",
+        pi_id=f"pi_cancel_{case}",
         billing_config=billing,
-        expected_application_fee_cents=2250,
-        expected_platform_fee_amount=22.5,
     )
     await create_test_cancellation_policy(
         str(hotel["id"]),
@@ -633,12 +639,18 @@ async def test_direct_charge_refund_returns_application_fee(
             client,
             hotel,
             draft["draftId"],
-            f"pi_cancel_{payment_status}",
+            f"pi_cancel_{case}",
             "succeeded",
             "automatic",
         )
 
     booking_id = confirmed.json()["id"]
+    if historical_application_fee:
+        await Database.execute(
+            "UPDATE payments SET stripe_application_fee_amount = $2 WHERE booking_id = $1",
+            booking_id,
+            historical_application_fee,
+        )
     with patch(
         "app.services.stripe_service.create_refund",
         new_callable=AsyncMock,
@@ -655,7 +667,7 @@ async def test_direct_charge_refund_returns_application_fee(
     )
     command_id = f"guest-cancellation-refund-{booking_id}-{refund_cents or 'full'}"
     refund.assert_awaited_once_with(
-        f"pi_cancel_{payment_status}",
+        f"pi_cancel_{case}",
         amount=refund_cents,
         idempotency_key=command_id,
         metadata={
@@ -665,8 +677,8 @@ async def test_direct_charge_refund_returns_application_fee(
             "refund_amount_minor": str(refund_cents or 45_000),
             "refund_currency": payment["currency"].lower(),
         },
-        stripe_account=f"acct_pi_cancel_{payment_status}",
-        refund_application_fee=True,
+        stripe_account=f"acct_pi_cancel_{case}",
+        **({"refund_application_fee": True} if historical_application_fee else {}),
     )
     assert payment["status"] == payment_status
 
@@ -682,8 +694,6 @@ async def test_failed_direct_charge_refund_keeps_booking_confirmed(client, clean
         instant_book=True,
         pi_id="pi_cancel_failure",
         billing_config=billing,
-        expected_application_fee_cents=2250,
-        expected_platform_fee_amount=22.5,
     )
     await create_test_cancellation_policy(str(hotel["id"]), free_cancellation_days=7)
     with _lifecycle_spies():
@@ -782,7 +792,7 @@ async def test_refund_webhook_normalizes_legacy_stripe_objects(client):
             "/webhooks/stripe/connect",
             content=b"{}",
             headers={"stripe-signature": "test"},
-    )
+        )
 
     assert response.status_code == 200, response.text
     normalized = reconcile.await_args.args[0]
@@ -1115,8 +1125,7 @@ async def test_refund_reservation_races_payout_claim_atomically(client, cleanup_
         instant_book=True,
         pi_id=pi_id,
         billing_config=billing,
-        expected_application_fee_cents=6750,
-        expected_platform_fee_amount=22.5,
+        expected_application_fee_cents=4500,
         expected_affiliate_commission_amount=45,
         affiliate_commission_pct=10,
     )
@@ -1345,8 +1354,6 @@ async def test_captured_request_deposit_is_refunded_when_closed(client, cleanup_
         deposit_required=True,
         pi_id=f"pi_request_deposit_{action}",
         billing_config=billing,
-        expected_application_fee_cents=2250,
-        expected_platform_fee_amount=22.5,
     )
     confirmed = await _confirm(
         client,
@@ -1409,7 +1416,6 @@ async def test_captured_request_deposit_is_refunded_when_closed(client, cleanup_
             "refund_currency": payment["currency"].lower(),
         },
         stripe_account=f"acct_pi_request_deposit_{action}",
-        refund_application_fee=True,
     )
     cancel_intent.assert_not_awaited()
 

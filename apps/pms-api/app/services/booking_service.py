@@ -705,19 +705,21 @@ async def _create_card_payment_intent_for_draft(
     application_fee_cents = 0
     split = {"platform_fee": 0.0, "affiliate_commission": 0.0}
     if stripe_account:
-        billing = await fetch_billing_config(hotel_id)
+        # Keep applying due plan switches for other legacy billing consumers.
+        await fetch_billing_config(hotel_id)
         affiliate_commission_pct = 0.0
         if affiliate_id:
             affiliate_commission_pct = (
                 await AffiliateRepository.get_effective_commission_pct(affiliate_id) or 0.0
             )
+        # Legacy Stripe Connect properties are fixed-fee only for now.
         split = calculate_split(
             booking_total_amount,
-            plan=billing["active_plan"],
+            plan="fixed",
             channel="direct",
-            booking_engine_fee_pct=billing["booking_engine_fee_pct"],
-            channel_manager_fee_pct=billing["channel_manager_fee_pct"],
-            affiliate_platform_fee_pct=billing["affiliate_platform_fee_pct"],
+            booking_engine_fee_pct=0,
+            channel_manager_fee_pct=0,
+            affiliate_platform_fee_pct=0,
             has_affiliate=affiliate_id is not None,
             effective_affiliate_commission_pct=affiliate_commission_pct,
         )
