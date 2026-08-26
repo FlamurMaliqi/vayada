@@ -44,6 +44,7 @@ export type BookingRoutesOptions = {
   addonItemsRepository?: BookingAddonItemsRepository;
   promoCodesRepository?: BookingPromoCodesRepository;
   dashboardMetricsReadPort?: BookingDashboardRoutesOptions["metricsReadPort"];
+  propertyAccessRepository?: BookingDashboardRoutesOptions["propertyAccessRepository"];
   reservationsRepository?: BookingReservationsReadRepository;
   settingsRepository?: BookingSettingsReadRepository;
   settingsWriteRepository?: BookingSettingsWriteRepository;
@@ -82,8 +83,12 @@ export async function registerBookingRoutes(
   }
 
   if (options.dashboardMetricsReadPort) {
+    if (!options.propertyAccessRepository) {
+      throw new Error("Booking property access repository is required with dashboard metrics");
+    }
     await registerBookingDashboardRoutes(app, {
       metricsReadPort: options.dashboardMetricsReadPort,
+      propertyAccessRepository: options.propertyAccessRepository,
     });
   }
 

@@ -1056,6 +1056,7 @@ const app = buildApp({
   bookingAddonItemsRepository,
   bookingPromoCodesRepository,
   bookingDashboardMetricsReadPort,
+  bookingPropertyAccessRepository,
   pmsOperationsRepository,
   pmsChannexManagement: pmsChannexManagementRepository
     ? {

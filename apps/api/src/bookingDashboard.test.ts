@@ -5,6 +5,7 @@ import {
   type ProductEntitlement,
   type VerifiedSession,
 } from "@vayada/backend-auth";
+import type { MembershipPropertyScope } from "@vayada/backend-authorization";
 import { injectJson } from "@vayada/backend-test";
 import type {
   BookingDashboardMetricsReadModel,
@@ -29,6 +30,8 @@ import type {
 } from "./routes/bookingDashboard.js";
 
 const futureExpiry = Math.floor(Date.now() / 1000) + 3600;
+const canonicalPropertyId = "123e4567-e89b-42d3-a456-426614174000";
+const otherCanonicalPropertyId = "523e4567-e89b-42d3-a456-426614174000";
 
 const session: VerifiedSession = {
   workosUserId: "workos_booking_analytics_user",
@@ -66,6 +69,11 @@ type DashboardAppOptions = {
   permissions?: PermissionKey[];
   entitlements?: ProductEntitlement[];
   linkedPropertyId?: string;
+  linkedCanonicalPropertyId?: string;
+  membershipStatus?: "active" | "inactive";
+  propertyScope?: MembershipPropertyScope | null;
+  resolvedCanonicalPropertyId?: string | null;
+  canonicalPropertyResolutionError?: Error;
 };
 
 describe("Booking dashboard routes", () => {
@@ -115,6 +123,21 @@ describe("Booking dashboard routes", () => {
         previousPeriodEnd: "2026-05-31",
       },
     ]);
+  });
+
+  it("allows an explicitly assigned property", async () => {
+    app = buildDashboardApp({
+      propertyScope: { mode: "assigned", assignedPropertyIds: [canonicalPropertyId] },
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      url: dashboardStatsUrl,
+      headers: { authorization: "Bearer valid-token" },
+      query: dashboardStatsQuery,
+    });
+
+    expect(response.statusCode).toBe(200);
   });
 
   it("returns source mix and sparklines with the dashboard contract version", async () => {
@@ -173,6 +196,81 @@ describe("Booking dashboard routes", () => {
 
     expect(response.statusCode).toBe(403);
     expect(response.body.code).toBe("missing_resource_access");
+  });
+
+  it("denies every dashboard read before accessing an unassigned property", async () => {
+    const denied = async () => {
+      throw new Error("dashboard read must not run");
+    };
+    app = buildDashboardApp({
+      propertyScope: { mode: "assigned", assignedPropertyIds: [] },
+      readPort: {
+        getDashboardMetrics: denied,
+        getSourceMix: denied,
+        getSparklines: denied,
+        getPageViewTimeline: denied,
+      },
+    });
+    const headers = { authorization: "Bearer valid-token" };
+    const responses = await Promise.all([
+      injectJson(app, {
+        method: "GET",
+        url: dashboardStatsUrl,
+        headers,
+        query: dashboardStatsQuery,
+      }),
+      injectJson(app, {
+        method: "GET",
+        url: "/api/booking/properties/prop_alpenrose/dashboard/bookings-by-source",
+        headers,
+        query: { periodStart: "2026-06-01", periodEnd: "2026-06-30" },
+      }),
+      injectJson(app, {
+        method: "GET",
+        url: "/api/booking/properties/prop_alpenrose/dashboard/sparklines",
+        headers,
+        query: { windowStart: "2026-06-01", windowEnd: "2026-06-30" },
+      }),
+      injectJson(app, {
+        method: "GET",
+        url: "/api/booking/properties/prop_alpenrose/dashboard/page-views",
+        headers,
+        query: { windowStart: "2026-06-01", windowEnd: "2026-06-30" },
+      }),
+    ]);
+
+    expect(responses.map(({ statusCode }) => statusCode)).toEqual([403, 403, 403, 403]);
+  });
+
+  it("returns the same denial for unassigned and cross-tenant properties", async () => {
+    app = buildDashboardApp({
+      propertyScope: { mode: "assigned", assignedPropertyIds: [otherCanonicalPropertyId] },
+    });
+    const unassigned = await injectJson(app, {
+      method: "GET",
+      url: dashboardStatsUrl,
+      headers: { authorization: "Bearer valid-token" },
+      query: dashboardStatsQuery,
+    });
+    await app.close();
+
+    app = buildDashboardApp({
+      linkedPropertyId: "prop_other",
+      linkedCanonicalPropertyId: otherCanonicalPropertyId,
+      propertyScope: { mode: "assigned", assignedPropertyIds: [canonicalPropertyId] },
+    });
+    const crossTenant = await injectJson(app, {
+      method: "GET",
+      url: dashboardStatsUrl,
+      headers: { authorization: "Bearer valid-token" },
+      query: dashboardStatsQuery,
+    });
+
+    expect(unassigned).toMatchObject({
+      statusCode: 403,
+      body: { code: "missing_resource_access" },
+    });
+    expect(crossTenant).toEqual(unassigned);
   });
 
   it("closes the dashboard read port on app shutdown", async () => {
@@ -258,6 +356,42 @@ describe("Booking dashboard routes", () => {
     expect(response.body.code).toBe("read_model_not_found");
   });
 
+  it("returns the generic read-model error when property resolution fails", async () => {
+    let readCount = 0;
+    app = buildDashboardApp({
+      canonicalPropertyResolutionError: new Error("sensitive database error"),
+      readPort: {
+        ...fakeReadPort(),
+        async getDashboardMetrics() {
+          readCount += 1;
+          return fakeMetrics();
+        },
+      },
+    });
+
+    const response = await injectJson<{
+      code: string;
+      category: string;
+      message: string;
+    }>(app, {
+      method: "GET",
+      url: dashboardStatsUrl,
+      headers: { authorization: "Bearer valid-token" },
+      query: dashboardStatsQuery,
+    });
+
+    expect(response).toMatchObject({
+      statusCode: 500,
+      body: {
+        code: "read_model_unavailable",
+        category: "read_model",
+        message: "Booking dashboard read model is unavailable.",
+      },
+    });
+    expect(JSON.stringify(response.body)).not.toContain("sensitive database error");
+    expect(readCount).toBe(0);
+  });
+
   it.each([
     {
       name: "without authentication",
@@ -272,6 +406,36 @@ describe("Booking dashboard routes", () => {
       headers: { authorization: "Bearer valid-token" },
       expectedStatus: 403,
       expectedCode: "missing_permission",
+    },
+    {
+      name: "when membership is inactive",
+      appOptions: { membershipStatus: "inactive" },
+      headers: { authorization: "Bearer valid-token" },
+      expectedStatus: 401,
+      expectedCode: "unauthenticated",
+    },
+    {
+      name: "when property assignment is empty",
+      appOptions: { propertyScope: { mode: "assigned", assignedPropertyIds: [] } },
+      headers: { authorization: "Bearer valid-token" },
+      expectedStatus: 403,
+      expectedCode: "missing_resource_access",
+    },
+    {
+      name: "when property scope is unknown",
+      appOptions: {
+        propertyScope: { mode: "unknown", assignedPropertyIds: [canonicalPropertyId] },
+      },
+      headers: { authorization: "Bearer valid-token" },
+      expectedStatus: 403,
+      expectedCode: "missing_resource_access",
+    },
+    {
+      name: "when the Booking property alias is unresolved",
+      appOptions: { resolvedCanonicalPropertyId: null },
+      headers: { authorization: "Bearer valid-token" },
+      expectedStatus: 403,
+      expectedCode: "missing_resource_access",
     },
     {
       name: "when entitlement is missing",
@@ -319,6 +483,19 @@ describe("Booking dashboard routes", () => {
 });
 
 describe("target Booking dashboard metrics read port", () => {
+  it("resolves a Booking hotel alias to its canonical property", async () => {
+    const pool = createQueuedDashboardPool([{ rows: [{ propertyId: canonicalPropertyId }] }]);
+    const readPort = createTargetBookingDashboardMetricsReadPort({
+      connectionString: "postgres://target",
+      pool,
+    });
+
+    await expect(readPort.resolveCanonicalPropertyId("booking_hotel_alpenrose")).resolves.toBe(
+      canonicalPropertyId,
+    );
+    expect(pool.queries[0]).toContain("hotel_catalog.property_source_links");
+  });
+
   it("maps aggregate target rows into the dashboard metrics contract", async () => {
     const pool = createQueuedDashboardPool([
       {
@@ -526,10 +703,30 @@ describe("target Booking dashboard metrics read port", () => {
 function buildDashboardApp(options: DashboardAppOptions = {}): ReturnType<typeof buildApp> {
   return buildApp({
     logger: false,
-    bookingDashboardMetricsReadPort: options.readPort ?? fakeReadPort(),
+    bookingDashboardMetricsReadPort: {
+      ...(options.readPort ?? fakeReadPort()),
+      async resolveCanonicalPropertyId() {
+        if (options.canonicalPropertyResolutionError)
+          throw options.canonicalPropertyResolutionError;
+        return options.resolvedCanonicalPropertyId === undefined
+          ? canonicalPropertyId
+          : options.resolvedCanonicalPropertyId;
+      },
+    },
+    bookingPropertyAccessRepository: {
+      async findMembershipPropertyScope() {
+        return options.propertyScope === undefined
+          ? { mode: "all", assignedPropertyIds: [] }
+          : options.propertyScope;
+      },
+    },
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
-      repository: createIdentityRepository(options.linkedPropertyId),
+      repository: createIdentityRepository(
+        options.linkedPropertyId,
+        options.linkedCanonicalPropertyId,
+        options.membershipStatus,
+      ),
       propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
@@ -545,7 +742,11 @@ function buildDashboardApp(options: DashboardAppOptions = {}): ReturnType<typeof
   });
 }
 
-function createIdentityRepository(linkedPropertyId = "prop_alpenrose"): IdentityRepository {
+function createIdentityRepository(
+  linkedPropertyId = "prop_alpenrose",
+  linkedCanonicalPropertyId = canonicalPropertyId,
+  membershipStatus: "active" | "inactive" = "active",
+): IdentityRepository {
   return {
     async findUserByProviderUserId() {
       return {
@@ -565,7 +766,7 @@ function createIdentityRepository(linkedPropertyId = "prop_alpenrose"): Identity
     async findActiveMembership() {
       return {
         membershipId: "membership_booking_analytics",
-        status: "active",
+        status: membershipStatus,
         roleKey: "hotel_owner",
         workosMembershipId: "om_booking_analytics",
         workosRoleSlugs: ["hotel_owner"],
@@ -573,6 +774,20 @@ function createIdentityRepository(linkedPropertyId = "prop_alpenrose"): Identity
     },
     async findLinkedResources() {
       return [
+        {
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: linkedCanonicalPropertyId,
+          relationship: "owner",
+          status: "active",
+        },
+        {
+          product: "booking",
+          resourceType: "booking_hotel",
+          resourceId: linkedCanonicalPropertyId,
+          relationship: "owner",
+          status: "active",
+        },
         {
           product: "booking",
           resourceType: "booking_hotel",
