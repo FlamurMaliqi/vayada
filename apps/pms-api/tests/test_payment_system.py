@@ -1315,8 +1315,8 @@ class TestGuestCancellation:
         booking = await create_test_booking_with_payment(
             str(hotel["id"]),
             str(room["id"]),
-            check_in="2026-09-01",
-            check_out="2026-09-05",
+            check_in=(date.today() + timedelta(days=30)).isoformat(),
+            check_out=(date.today() + timedelta(days=34)).isoformat(),
             status="confirmed",
             payment_method="card",
             payment_status="captured",
