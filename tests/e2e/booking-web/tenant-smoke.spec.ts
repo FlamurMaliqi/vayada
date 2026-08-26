@@ -116,7 +116,7 @@ test.describe("booking-web tenant smoke", () => {
       await expect(modal).toBeVisible();
 
       await modal.getByRole("button", { name: /View Full Amenities/i }).tap();
-      await expect(modal.getByText("Breakfast", { exact: true })).toBeVisible();
+      await expect(modal.getByText("Minibar", { exact: true })).toBeVisible();
       await expect(modal).toBeVisible();
 
       await modal.getByRole("button", { name: /Non-Refundable Rate/i }).tap();
@@ -158,6 +158,71 @@ test.describe("booking-web tenant smoke", () => {
     await expect(nav.getByRole("button", { name: "EN", exact: true })).toBeVisible();
     await expect(nav.getByRole("button", { name: "EUR", exact: true })).toBeVisible();
     expect((await nav.boundingBox())?.height).toBe(64);
+  });
+
+  test("previews six room amenities before expanding the full list", async ({ page }) => {
+    await mockBookingApis(page);
+    await page.setViewportSize({ width: 800, height: 900 });
+    await page.goto("/");
+    await page.getByRole("button", { name: "View Details", exact: true }).first().click();
+
+    const dialog = page.getByRole("dialog", { name: "Alpine Suite" });
+    const amenityGrid = dialog.locator('[id^="room-amenities-"]');
+    await expect(amenityGrid.locator(":scope > span")).toHaveText([
+      "Wi-Fi",
+      "Air conditioning",
+      "Flat-screen TV",
+      "Balcony",
+      "Kitchen",
+      "Non-smoking",
+    ]);
+    expect(
+      (
+        await amenityGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns)
+      ).split(" "),
+    ).toHaveLength(2);
+    await expect(dialog.getByText("Minibar", { exact: true })).toHaveCount(0);
+
+    const expand = dialog.getByRole("button", { name: "View Full Amenities (2 more)" });
+    await expect(expand).toHaveAttribute("aria-expanded", "false");
+    await expand.click();
+    await expect(dialog.getByText("Minibar", { exact: true })).toBeVisible();
+    const longAmenity = dialog.getByTitle("Laptop-friendly workspace");
+    expect(await longAmenity.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(
+      true,
+    );
+    await expect(dialog.getByRole("button", { name: "Show less" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await dialog.getByRole("button", { name: "Show less" }).click();
+    await expect(dialog.getByText("Minibar", { exact: true })).toHaveCount(0);
+
+    await page.setViewportSize({ width: 375, height: 812 });
+    expect(
+      (
+        await amenityGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns)
+      ).split(" "),
+    ).toHaveLength(1);
+  });
+
+  test("shows a short amenity list without an expand control", async ({ page }) => {
+    await mockBookingApis(page);
+    await page.goto("/");
+    await page.getByRole("button", { name: "View Details", exact: true }).nth(1).click();
+
+    const dialog = page.getByRole("dialog", { name: "Garden Room" });
+    await expect(dialog.locator('[id^="room-amenities-"] > span')).toHaveText(["Wi-Fi"]);
+    await expect(dialog.getByRole("button", { name: /Amenities|Show less/i })).toHaveCount(0);
+  });
+
+  test("hides reviewed-empty room amenities", async ({ page }) => {
+    await mockBookingApis(page, { gardenAmenities: [] });
+    await page.goto("/");
+    await page.getByRole("button", { name: "View Details", exact: true }).nth(1).click();
+
+    const dialog = page.getByRole("dialog", { name: "Garden Room" });
+    await expect(dialog.locator('[id^="room-amenities-"]')).toHaveCount(0);
   });
 
   test("hides children in the guest selector when the target profile disables them", async ({

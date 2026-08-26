@@ -72,6 +72,8 @@
     "priceHighLow": "Prix : décroissant",
     "upToGuests": "Jusqu'à {count} voyageurs",
     "viewDetails": "Voir les détails",
+    "viewFullAmenities": "Voir tous les équipements ({count} de plus)",
+    "showLess": "Afficher moins",
     "rateOptions": "Options de tarif",
     "selectYourRate": "Choisissez votre tarif",
     "flexibleRate": "Tarif flexible",

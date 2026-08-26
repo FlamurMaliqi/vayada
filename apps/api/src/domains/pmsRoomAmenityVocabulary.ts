@@ -64,6 +64,75 @@ export const PMS_ROOM_AMENITY_KEYS_V1: readonly PmsRoomAmenityKey[] = Object.fre
 
 const PMS_ROOM_AMENITY_KEY_SET_V1 = new Set<string>(PMS_ROOM_AMENITY_KEYS_V1);
 
+const PMS_ROOM_AMENITY_PUBLIC_PRIORITY_V1 = [
+  "wifi",
+  "air_conditioning",
+  "flat_screen_tv",
+  "balcony",
+  "kitchen",
+  "non_smoking",
+  "heating",
+  "blackout_curtains",
+  "bathrobe",
+  "slippers",
+  "extra_pillows",
+  "wardrobe",
+  "clothes_rack",
+  "bathtub",
+  "shower",
+  "hairdryer",
+  "free_toiletries",
+  "towels",
+  "minibar",
+  "refrigerator",
+  "microwave",
+  "electric_kettle",
+  "kitchenware",
+  "work_desk",
+  "laptop_friendly_workspace",
+] as const;
+
+const PMS_ROOM_AMENITY_PUBLIC_PRIORITY_KEY_SET_V1 = new Set<string>(
+  PMS_ROOM_AMENITY_PUBLIC_PRIORITY_V1,
+);
+
+const PMS_ROOM_AMENITY_PUBLIC_ORDER_V1 = Object.freeze([
+  ...PMS_ROOM_AMENITY_PUBLIC_PRIORITY_V1,
+  ...PMS_ROOM_AMENITY_KEY_STRINGS_V1.filter(
+    (key) => !PMS_ROOM_AMENITY_PUBLIC_PRIORITY_KEY_SET_V1.has(key),
+  ),
+]);
+
+const PMS_ROOM_AMENITY_PUBLIC_LABEL_OVERRIDES_V1: Readonly<Record<string, string>> = Object.freeze({
+  flat_screen_tv: "Flat-screen TV",
+  in_room_safe: "In-room safe",
+  laptop_friendly_workspace: "Laptop-friendly workspace",
+  non_smoking: "Non-smoking",
+  smart_tv: "Smart TV",
+  tv: "TV",
+  wifi: "Wi-Fi",
+});
+
+export function toPublicPmsRoomAmenityLabelsV1(amenities: readonly string[]): string[] {
+  const uniqueAmenities = [...new Set(amenities)];
+  const selectedKeys = new Set(
+    uniqueAmenities.filter((key) => PMS_ROOM_AMENITY_KEY_SET_V1.has(key)),
+  );
+  return [
+    ...PMS_ROOM_AMENITY_PUBLIC_ORDER_V1.filter((key) => selectedKeys.has(key)).map(
+      publicRoomAmenityLabel,
+    ),
+    ...uniqueAmenities.filter((amenity) => !PMS_ROOM_AMENITY_KEY_SET_V1.has(amenity)),
+  ];
+}
+
+function publicRoomAmenityLabel(key: string): string {
+  return (
+    PMS_ROOM_AMENITY_PUBLIC_LABEL_OVERRIDES_V1[key] ??
+    `${key.charAt(0).toUpperCase()}${key.slice(1).replaceAll("_", " ")}`
+  );
+}
+
 export function createPmsRoomAmenityVocabularyValidationPort(): RoomAmenityVocabularyValidationPort {
   return Object.freeze({
     async validateRoomAmenities(amenities) {

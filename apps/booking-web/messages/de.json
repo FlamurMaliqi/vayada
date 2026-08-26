@@ -72,6 +72,8 @@
     "priceHighLow": "Preis: Absteigend",
     "upToGuests": "Bis zu {count} Gäste",
     "viewDetails": "Details ansehen",
+    "viewFullAmenities": "Alle Ausstattungen anzeigen ({count} weitere)",
+    "showLess": "Weniger anzeigen",
     "rateOptions": "Tarifoptionen",
     "selectYourRate": "Wähle deinen Tarif",
     "flexibleRate": "Flexibler Tarif",
