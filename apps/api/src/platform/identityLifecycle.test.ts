@@ -13,6 +13,7 @@ describe("identity lifecycle writer", () => {
         },
         membership: {
           roleKey: "hotel_owner",
+          propertyAccessMode: "all",
           permissionKeys: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
         },
       }),

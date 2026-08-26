@@ -11,34 +11,18 @@ This surface is migrated per
 [`frontend-backend-contract-migration.md` § Cutover Model](frontend-backend-contract-migration.md):
 cut over one surface at a time while Python keeps serving everything else.
 
-## What ships behind the flag
+## What is deployed
 
 | Piece              | Location                                                       |
 | ------------------ | -------------------------------------------------------------- |
 | Screen             | `apps/booking-admin/app/(app)/reservations/page.tsx` (VAY-704) |
 | Typed client       | `apps/booking-admin/services/api/bookingReservationsClient.ts` |
-| Sidebar nav link   | `apps/booking-admin/components/layout/Sidebar.tsx`             |
 | TypeScript route   | `apps/api/src/routes/bookingReservations.ts` (VAY-702/705)     |
-| Runtime read model | `createCompatibilityPmsBookingReservationsReadRepository`      |
+| Runtime read model | `createTargetBookingReservationsReadRepository`                |
 
-## Feature flag
-
-| Field   | Value                                                     |
-| ------- | --------------------------------------------------------- |
-| Name    | `NEXT_PUBLIC_BOOKING_RESERVATIONS_ENABLED`                |
-| Read at | booking-admin **build time** (`NEXT_PUBLIC_*` is inlined) |
-| Default | unset / `false` — sidebar link hidden                     |
-
-`NEXT_PUBLIC_*` values are inlined when booking-admin is built, so toggling the
-flag requires a rebuild/redeploy of booking-admin, not just an env change on a
-running container.
-
-The flag is a **manual build-time toggle that is not coupled to runtime
-reachability** — nothing in the code checks that the TypeScript route is actually
-serving the contract before showing the link. "Enable only when reachable" is an
-operator rule enforced by the checklist below, not an automatic invariant. If the
-flag is enabled before the route is reachable, the link appears and the screen
-renders the typed client's error states.
+The reservations screen remains available at `/reservations` for contract
+verification, but it is intentionally unlinked from Booking Admin navigation.
+Hosts manage reservations in PMS.
 
 ## Route mapping
 
@@ -49,23 +33,8 @@ GET {NEXT_PUBLIC_API_URL}/api/booking/hotels/:hotelId/reservations
 ```
 
 For the migrated behavior, `NEXT_PUBLIC_API_URL` (booking-admin) **must** resolve
-that path to the TypeScript backend (`apps/api`), and `apps/api` must have
-`BOOKING_RESERVATIONS_READ_DATABASE_URL` configured so the route serves the
-contract instead of returning a 404 (`app.test.ts`: "does not expose booking
-reservations until a read model is configured").
-
-## Enable conditions (all must hold)
-
-Only set `NEXT_PUBLIC_BOOKING_RESERVATIONS_ENABLED=true` in an environment where:
-
-1. `apps/api` is deployed and reachable.
-2. `apps/api` has `BOOKING_RESERVATIONS_READ_DATABASE_URL` set, so
-   `/api/booking/hotels/:hotelId/reservations` returns the contract (not 404).
-3. booking-admin's `NEXT_PUBLIC_API_URL` routes that path to `apps/api`.
-
-If the flag is enabled while any condition is false, the sidebar link appears but
-the screen surfaces the typed client error states (401/403 or
-`read_model_unavailable`) instead of a reservation list.
+that path to the TypeScript backend (`apps/api`). The API always composes the
+target reservation read model from `TARGET_DATABASE_URL`.
 
 ## Verification
 
@@ -99,14 +68,11 @@ the screen surfaces the typed client error states (401/403 or
 Reservations is additive and read-only; rollback is low-risk and does not touch
 Python booking surfaces.
 
-1. **Fastest** — set `NEXT_PUBLIC_BOOKING_RESERVATIONS_ENABLED=false` (or unset)
-   and rebuild/redeploy booking-admin. The sidebar link disappears; the
-   `/reservations` route remains built but is unlinked.
-2. **Route mapping** — if a router/edge config was changed to send the contract
+1. **Route mapping** — if a router/edge config was changed to send the contract
    path to `apps/api`, revert that mapping so the path is no longer routed to the
    TypeScript backend.
-3. **Backend** — leaving `apps/api` deployed is safe; the route is read-only and
+2. **Backend** — leaving `apps/api` deployed is safe; the route is read-only and
    has no side effects. No data migration to unwind.
 
 Python remains the source of truth for all non-migrated booking surfaces
-throughout, so disabling the flag fully restores the pre-cutover booking-admin.
+throughout.

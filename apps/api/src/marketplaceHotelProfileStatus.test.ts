@@ -12,6 +12,7 @@ import type { QueryResultRow } from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import type {
   HotelProfileStatusResponse,
   MarketplaceHotelProfileStatusRepository,
@@ -272,6 +273,7 @@ function buildMarketplaceHotelProfileStatusApp(options: {
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepository(options.linkedResources),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["marketplace.profile.manage"];

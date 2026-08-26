@@ -32,6 +32,8 @@ describe("moduleActivationClient", () => {
     propertyLinkMock.mockResolvedValue({ propertyId: "pms_property_alpenrose" });
     apiClientMock.get.mockResolvedValue({
       hotelId: "pms_property_alpenrose",
+      canManage: true,
+      supportedModules: ["affiliates"],
       activeModules: ["affiliates"],
       activations: [],
     });
@@ -47,6 +49,7 @@ describe("moduleActivationClient", () => {
 
     await expect(moduleActivationClient.list()).resolves.toMatchObject({
       hotelId: "pms_property_alpenrose",
+      supportedModules: ["affiliates"],
     });
     await expect(moduleActivationClient.update("affiliates", true)).resolves.toMatchObject({
       moduleId: "affiliates",

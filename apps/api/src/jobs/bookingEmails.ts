@@ -2,11 +2,35 @@ import { createHash } from "node:crypto";
 import type { QueryResultRow } from "pg";
 
 export const BOOKING_EMAIL_QUEUE = "platform.email";
-export const BOOKING_RESERVED_PENDING_PAYMENT_EMAIL_JOB_TYPE =
-  "email.booking-reserved-pending-payment";
-export const BOOKING_FINAL_CONFIRMATION_EMAIL_JOB_TYPE = "email.booking-final-confirmation";
+const BOOKING_LIFECYCLE_EMAIL_JOB_TYPE_BY_KIND = {
+  reserved_pending_payment: "email.booking-reserved-pending-payment",
+  final_confirmation: "email.booking-final-confirmation",
+  request_received: "email.booking-request-received",
+  booking_accepted: "email.booking-accepted",
+  booking_rejected: "email.booking-rejected",
+  booking_expired: "email.booking-expired",
+  host_new_booking: "email.booking-host-new-booking",
+  host_review_required: "email.booking-host-review-required",
+} as const;
 
-export type BookingLifecycleEmailKind = "reserved_pending_payment" | "final_confirmation";
+export type BookingLifecycleEmailKind = keyof typeof BOOKING_LIFECYCLE_EMAIL_JOB_TYPE_BY_KIND;
+
+export const BOOKING_RESERVED_PENDING_PAYMENT_EMAIL_JOB_TYPE =
+  BOOKING_LIFECYCLE_EMAIL_JOB_TYPE_BY_KIND.reserved_pending_payment;
+export const BOOKING_FINAL_CONFIRMATION_EMAIL_JOB_TYPE =
+  BOOKING_LIFECYCLE_EMAIL_JOB_TYPE_BY_KIND.final_confirmation;
+export const BOOKING_LIFECYCLE_EMAIL_JOB_TYPES = Object.values(
+  BOOKING_LIFECYCLE_EMAIL_JOB_TYPE_BY_KIND,
+);
+
+export type BookingNotificationRecipientRole = "guest" | "host";
+
+export type BookingLifecycleTransition = {
+  eventType: string;
+  fromStatus?: string | null;
+  toStatus: string;
+  reason?: string | null;
+};
 
 export type BookingLifecycleEmailInput = {
   kind: BookingLifecycleEmailKind;
@@ -17,6 +41,8 @@ export type BookingLifecycleEmailInput = {
   paymentDeadlineAt?: string | null;
   bankTransferDetails?: unknown;
   source?: string;
+  recipient?: { role: BookingNotificationRecipientRole; email: string | null };
+  transition?: BookingLifecycleTransition;
   booking: {
     propertyId: string;
     guestBookingId: string;
@@ -31,6 +57,19 @@ export type BookingLifecycleEmailInput = {
     currency?: string | null;
     paymentMethod?: string | null;
   };
+};
+
+export type BookingTransitionNotificationInput = {
+  propertyId: string;
+  guestBookingId: string;
+  occurredAt: string;
+  transition: BookingLifecycleTransition;
+  correlationId?: string | null;
+  causationId?: string | null;
+  actor?: BookingLifecycleEmailInput["actor"];
+  source?: string;
+  paymentDeadlineAt?: string | null;
+  bankTransferDetails?: unknown;
 };
 
 export type BookingLifecycleEmailEnqueueResult = {
@@ -51,16 +90,19 @@ type Queryable = {
 export async function enqueueBookingLifecycleEmailJob(
   queryable: Queryable,
   input: BookingLifecycleEmailInput,
-): Promise<BookingLifecycleEmailEnqueueResult | null> {
-  const to = normalizeEmail(input.booking.guestEmail);
-  if (!to) return null;
+): Promise<BookingLifecycleEmailEnqueueResult> {
+  const recipientRole = input.recipient?.role ?? "guest";
+  const to = normalizeEmail(input.recipient ? input.recipient.email : input.booking.guestEmail);
 
   const jobType = bookingLifecycleEmailJobType(input.kind);
-  const eventType =
-    input.kind === "reserved_pending_payment"
-      ? "booking.email.reserved_pending_payment_requested"
-      : "booking.email.final_confirmation_requested";
-  const jobKey = bookingLifecycleEmailJobKey(input.kind, input.booking.guestBookingId);
+  const eventType = `booking.notification.${input.kind}_requested`;
+  const transition = input.transition ?? legacyTransition(input.kind);
+  const jobKey = bookingLifecycleEmailJobKey(
+    input.kind,
+    input.booking.guestBookingId,
+    recipientRole,
+    transition,
+  );
   const keyHash = sha256(jobKey);
   const copy = emailCopy(input);
   const payload = {
@@ -70,6 +112,9 @@ export async function enqueueBookingLifecycleEmailJob(
     paymentDeadlineAt: input.paymentDeadlineAt ?? null,
     bankTransferDetails:
       input.kind === "reserved_pending_payment" ? (input.bankTransferDetails ?? null) : null,
+    recipientRole,
+    notificationType: input.kind,
+    transition,
   };
   const actorType = input.actor?.type ?? "system";
 
@@ -150,6 +195,9 @@ export async function enqueueBookingLifecycleEmailJob(
       JSON.stringify({
         template: copy.template,
         source: input.source ?? "apps/api-booking-email-lifecycle",
+        recipientRole,
+        notificationType: input.kind,
+        transition,
       }),
     ],
   );
@@ -188,6 +236,9 @@ export async function enqueueBookingLifecycleEmailJob(
         template: copy.template,
         bookingReference: input.booking.bookingReference,
         paymentMethod: input.booking.paymentMethod ?? null,
+        recipientRole,
+        notificationType: input.kind,
+        transition,
       }),
       JSON.stringify({ to, subject: copy.subject }),
       JSON.stringify({ jobType, jobKey }),
@@ -203,19 +254,119 @@ export async function enqueueBookingLifecycleEmailJob(
   };
 }
 
+type BookingNotificationSnapshot = QueryResultRow & {
+  propertyId: string;
+  guestBookingId: string;
+  bookingReference: string;
+  guestEmail: string | null;
+  guestName: string | null;
+  hostEmail: string | null;
+  propertyName: string;
+  checkIn: string;
+  checkOut: string;
+  totalAmount: string;
+  balanceAmount: string;
+  currency: string;
+  paymentMethod: string | null;
+  bookingMetadata: unknown;
+};
+
+export async function enqueueBookingTransitionNotifications(
+  queryable: Queryable,
+  input: BookingTransitionNotificationInput,
+): Promise<BookingLifecycleEmailEnqueueResult[]> {
+  const result = await queryable.query<BookingNotificationSnapshot>(
+    `SELECT
+       booking.property_id::text AS "propertyId",
+       booking.id::text AS "guestBookingId",
+       booking.public_reference AS "bookingReference",
+       guest.email AS "guestEmail",
+       NULLIF(trim(concat_ws(' ', guest.first_name, guest.last_name)), '') AS "guestName",
+       host_contact.value AS "hostEmail",
+       property.display_name AS "propertyName",
+       booking.check_in::text AS "checkIn",
+       booking.check_out::text AS "checkOut",
+       booking.total_amount::text AS "totalAmount",
+       booking.balance_amount::text AS "balanceAmount",
+       booking.currency,
+       booking.booking_metadata ->> 'paymentMethod' AS "paymentMethod",
+       booking.booking_metadata AS "bookingMetadata"
+     FROM booking.guest_bookings booking
+     JOIN hotel_catalog.properties property ON property.id = booking.property_id
+     LEFT JOIN LATERAL (
+       SELECT booking_guest.first_name, booking_guest.last_name, booking_guest.email
+       FROM booking.booking_guests booking_guest
+       WHERE booking_guest.guest_booking_id = booking.id
+         AND booking_guest.guest_role IN ('booker', 'primary_guest')
+       ORDER BY (booking_guest.guest_role = 'booker') DESC, booking_guest.created_at
+       LIMIT 1
+     ) guest ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT contact.value
+       FROM hotel_catalog.property_contact_channels contact
+       WHERE contact.property_id = booking.property_id
+         AND contact.channel_type = 'email'
+         AND (
+           contact.purpose = 'operations'
+           OR (contact.purpose = 'general' AND contact.source_system = 'booking')
+         )
+       ORDER BY (contact.purpose = 'operations') DESC,
+                contact.updated_at DESC,
+                contact.id
+       LIMIT 1
+     ) host_contact ON TRUE
+     WHERE booking.property_id = $1::uuid
+       AND booking.id = $2::uuid
+     LIMIT 1`,
+    [input.propertyId, input.guestBookingId],
+  );
+  const booking = result.rows[0];
+  if (!booking) throw new Error("Booking notification snapshot was not found.");
+
+  const notifications = notificationsForTransition(input.transition, booking);
+  const enqueued: BookingLifecycleEmailEnqueueResult[] = [];
+  for (const notification of notifications) {
+    const queued = await enqueueBookingLifecycleEmailJob(queryable, {
+      kind: notification.kind,
+      occurredAt: input.occurredAt,
+      correlationId: input.correlationId,
+      causationId: input.causationId,
+      actor: input.actor,
+      paymentDeadlineAt: input.paymentDeadlineAt,
+      bankTransferDetails: input.bankTransferDetails,
+      source: input.source,
+      recipient: {
+        role: notification.role,
+        email: notification.role === "guest" ? booking.guestEmail : booking.hostEmail,
+      },
+      transition: input.transition,
+      booking,
+    });
+    enqueued.push(queued);
+  }
+  return enqueued;
+}
+
 export function bookingLifecycleEmailJobType(kind: BookingLifecycleEmailKind): string {
-  return kind === "reserved_pending_payment"
-    ? BOOKING_RESERVED_PENDING_PAYMENT_EMAIL_JOB_TYPE
-    : BOOKING_FINAL_CONFIRMATION_EMAIL_JOB_TYPE;
+  return BOOKING_LIFECYCLE_EMAIL_JOB_TYPE_BY_KIND[kind];
 }
 
 export function bookingLifecycleEmailJobKey(
   kind: BookingLifecycleEmailKind,
   guestBookingId: string,
+  recipientRole: BookingNotificationRecipientRole = "guest",
+  transition: BookingLifecycleTransition = legacyTransition(kind),
 ): string {
-  const semantic =
-    kind === "reserved_pending_payment" ? "guest-reserved-pending-payment" : "guest-confirmation";
-  return `${bookingLifecycleEmailJobType(kind)}:booking:${guestBookingId}:${semantic}:v1`;
+  const transitionKey = [
+    transition.eventType,
+    transition.fromStatus ?? "none",
+    transition.toStatus,
+    transition.reason ?? "none",
+  ]
+    .join("-")
+    .replace(/[^a-z0-9_.-]/gi, "-")
+    .toLowerCase();
+  return `${bookingLifecycleEmailJobType(kind)}:booking:${guestBookingId}:transition:${transitionKey}:recipient:${recipientRole}:${kind}:v1`;
 }
 
 export function bankTransferDetailsFromPolicy(policy: unknown): unknown | null {
@@ -253,6 +404,69 @@ function emailCopy(input: BookingLifecycleEmailInput) {
       ].join("\n\n"),
     };
   }
+  if (input.kind === "request_received") {
+    return {
+      template: "booking_request_received",
+      subject: `Booking request received - ${booking.bookingReference}`,
+      text: [
+        `Hi ${name},`,
+        `We've received your booking request for ${property}.`,
+        `Stay: ${dateOnly(booking.checkIn)} to ${dateOnly(booking.checkOut)}`,
+        "We'll review it and let you know as soon as possible.",
+        `Booking reference: ${booking.bookingReference}`,
+      ].join("\n\n"),
+    };
+  }
+  if (input.kind === "booking_accepted") {
+    return {
+      template: "booking_accepted",
+      subject: `Booking request accepted - ${booking.bookingReference}`,
+      text: [
+        `Hi ${name},`,
+        `We've accepted your booking request for ${property}.`,
+        `Stay: ${dateOnly(booking.checkIn)} to ${dateOnly(booking.checkOut)}`,
+        `Booking reference: ${booking.bookingReference}`,
+      ].join("\n\n"),
+    };
+  }
+  if (input.kind === "booking_rejected") {
+    return {
+      template: "booking_rejected",
+      subject: `Booking request update - ${booking.bookingReference}`,
+      text: [
+        `Hi ${name},`,
+        `We couldn't accept your booking request for ${property}.`,
+        `Booking reference: ${booking.bookingReference}`,
+      ].join("\n\n"),
+    };
+  }
+  if (input.kind === "booking_expired") {
+    return {
+      template: "booking_expired",
+      subject: `Booking expired - ${booking.bookingReference}`,
+      text: [
+        `Hi ${name},`,
+        `Your booking for ${property} has expired.`,
+        `Booking reference: ${booking.bookingReference}`,
+      ].join("\n\n"),
+    };
+  }
+  if (input.kind === "host_new_booking" || input.kind === "host_review_required") {
+    const reviewRequired = input.kind === "host_review_required";
+    return {
+      template: reviewRequired ? "booking_host_review_required" : "booking_host_new_booking",
+      subject: reviewRequired
+        ? `Booking request requires review - ${booking.bookingReference}`
+        : `New confirmed booking - ${booking.bookingReference}`,
+      text: [
+        reviewRequired ? "A new booking request requires review." : "A new booking is confirmed.",
+        `Guest: ${name}`,
+        `Stay: ${dateOnly(booking.checkIn)} to ${dateOnly(booking.checkOut)}`,
+        `Total: ${money(booking.totalAmount, booking.currency)}`,
+        `Booking reference: ${booking.bookingReference}`,
+      ].join("\n\n"),
+    };
+  }
   return {
     template: "booking_final_confirmation",
     subject: `Booking confirmed - ${booking.bookingReference}`,
@@ -265,6 +479,126 @@ function emailCopy(input: BookingLifecycleEmailInput) {
       "We look forward to welcoming you!",
     ].join("\n\n"),
   };
+}
+
+function notificationsForTransition(
+  transition: BookingLifecycleTransition,
+  booking: BookingNotificationSnapshot,
+): Array<{ kind: BookingLifecycleEmailKind; role: BookingNotificationRecipientRole }> {
+  if (transition.eventType === "guest_booking.created") {
+    if (transition.toStatus === "confirmed") {
+      return [
+        { kind: "final_confirmation", role: "guest" },
+        { kind: "host_new_booking", role: "host" },
+      ];
+    }
+    const metadata = record(booking.bookingMetadata);
+    const acceptanceMode = text(metadata["acceptanceMode"] ?? metadata["bookingAcceptanceMode"]);
+    if (
+      transition.toStatus === "pending_review" ||
+      (transition.toStatus === "pending_payment" &&
+        (acceptanceMode === "request" || booking.paymentMethod === "bank_transfer"))
+    ) {
+      return [
+        { kind: "request_received", role: "guest" },
+        { kind: "host_review_required", role: "host" },
+      ];
+    }
+    return [];
+  }
+  if (transition.eventType === "guest_booking.payment_authorized") {
+    const metadata = record(booking.bookingMetadata);
+    const acceptanceMode = text(metadata["acceptanceMode"] ?? metadata["bookingAcceptanceMode"]);
+    if (
+      transition.toStatus === "pending_review" ||
+      (transition.toStatus === "pending_payment" && acceptanceMode === "request")
+    ) {
+      return [
+        { kind: "request_received", role: "guest" },
+        { kind: "host_review_required", role: "host" },
+      ];
+    }
+    return [];
+  }
+  if (transition.eventType === "guest_booking.payment_received") {
+    if (
+      transition.fromStatus === "confirmed" &&
+      ["pay_at_property", "cash"].includes(booking.paymentMethod ?? "")
+    ) {
+      return [];
+    }
+    return [
+      { kind: "final_confirmation", role: "guest" },
+      { kind: "host_new_booking", role: "host" },
+    ];
+  }
+  if (transition.eventType === "guest_booking.accepted") {
+    return [
+      {
+        kind:
+          booking.paymentMethod === "bank_transfer"
+            ? "reserved_pending_payment"
+            : "booking_accepted",
+        role: "guest",
+      },
+    ];
+  }
+  if (["guest_booking.rejected", "guest_booking.declined"].includes(transition.eventType)) {
+    return [{ kind: "booking_rejected", role: "guest" }];
+  }
+  if (
+    transition.eventType === "guest_booking.expired" ||
+    (transition.eventType === "guest_booking.canceled" &&
+      transition.reason === "accepted_payment_expired")
+  ) {
+    return [{ kind: "booking_expired", role: "guest" }];
+  }
+  return [];
+}
+
+function legacyTransition(kind: BookingLifecycleEmailKind): BookingLifecycleTransition {
+  if (kind === "reserved_pending_payment" || kind === "booking_accepted") {
+    return {
+      eventType: "guest_booking.accepted",
+      fromStatus: "pending_payment",
+      toStatus: "confirmed",
+    };
+  }
+  if (kind === "request_received" || kind === "host_review_required") {
+    return { eventType: "guest_booking.created", fromStatus: null, toStatus: "pending_payment" };
+  }
+  if (kind === "booking_rejected") {
+    return {
+      eventType: "guest_booking.rejected",
+      fromStatus: "pending_payment",
+      toStatus: "declined",
+    };
+  }
+  if (kind === "booking_expired") {
+    return {
+      eventType: "guest_booking.expired",
+      fromStatus: "pending_payment",
+      toStatus: "expired",
+    };
+  }
+  if (kind === "host_new_booking") {
+    return { eventType: "guest_booking.created", fromStatus: null, toStatus: "confirmed" };
+  }
+  return {
+    eventType: "guest_booking.payment_received",
+    fromStatus: "pending_payment",
+    toStatus: "confirmed",
+  };
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function money(

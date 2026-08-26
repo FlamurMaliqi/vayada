@@ -206,6 +206,90 @@ describe("AuthKit session routes", () => {
     ]);
   });
 
+  it("selects the configured platform organization when WorkOS requires a workspace", async () => {
+    let selectionInput:
+      | Parameters<AuthKitClient["authenticateWithOrganizationSelection"]>[0]
+      | undefined;
+    app = buildAuthSessionApp({
+      authKitClient: createAuthKitClient({
+        async authenticateWithPassword() {
+          throw {
+            code: "organization_selection_required",
+            pending_authentication_token: "pending_platform_selection",
+            organizations: [
+              { id: "org_workos_hotel_group", name: "Hotel Group" },
+              { id: "org_workos_platform", name: "Vayada Platform" },
+            ],
+          };
+        },
+        async authenticateWithOrganizationSelection(input) {
+          selectionInput = input;
+          return session;
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/login",
+      headers: {
+        origin: "https://admin.localhost",
+        "user-agent": "vitest",
+      },
+      payload: {
+        email: "f.maliqi@vayada.com",
+        password: "correct-password",
+        surface: "platform-admin",
+        organizationId: "org_workos_platform",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(selectionInput).toEqual({
+      organizationId: "org_workos_platform",
+      pendingAuthenticationToken: "pending_platform_selection",
+      ipAddress: expect.any(String),
+      userAgent: "vitest",
+    });
+    expect(response.json()).toMatchObject({
+      organizationId: "org_platform",
+      workosOrganizationId: "org_workos_platform",
+      organizationKind: "platform",
+    });
+  });
+
+  it("does not select a platform organization that WorkOS did not offer", async () => {
+    const authenticateWithOrganizationSelection = vi.fn();
+    app = buildAuthSessionApp({
+      authKitClient: createAuthKitClient({
+        async authenticateWithPassword() {
+          throw {
+            code: "organization_selection_required",
+            pending_authentication_token: "pending_platform_selection",
+            organizations: [{ id: "org_workos_hotel_group", name: "Hotel Group" }],
+          };
+        },
+        authenticateWithOrganizationSelection,
+      }),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/password/login",
+      headers: { origin: "https://admin.localhost" },
+      payload: {
+        email: "f.maliqi@vayada.com",
+        password: "correct-password",
+        surface: "platform-admin",
+        organizationId: "org_workos_platform",
+      },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ state: "organization_selection_required" });
+    expect(authenticateWithOrganizationSelection).not.toHaveBeenCalled();
+  });
+
   it("starts Google OAuth with a signed callback state", async () => {
     let authorizationInput: Parameters<AuthKitClient["getAuthorizationUrl"]>[0] | undefined;
     app = buildAuthSessionApp({
@@ -945,6 +1029,7 @@ describe("AuthKit session routes", () => {
           }),
           membership: expect.objectContaining({
             roleKey: "hotel_owner",
+            propertyAccessMode: "all",
             permissionKeys: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
           }),
         }),
@@ -2205,6 +2290,7 @@ describe("AuthKit session routes", () => {
           }),
           membership: expect.objectContaining({
             roleKey: "hotel_owner",
+            propertyAccessMode: "all",
             workosMembershipId: "om_onboarding_hotel",
           }),
         }),
@@ -4828,6 +4914,9 @@ function createAuthKitClient(overrides: Partial<AuthKitClient> = {}): AuthKitCli
       return session;
     },
     async authenticateWithPassword() {
+      return session;
+    },
+    async authenticateWithOrganizationSelection() {
       return session;
     },
     async authenticateWithEmailVerification() {

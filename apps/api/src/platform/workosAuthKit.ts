@@ -86,6 +86,21 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
       return toAuthKitSession(response);
     },
 
+    async authenticateWithOrganizationSelection(input) {
+      const response = await workos.userManagement.authenticateWithOrganizationSelection({
+        organizationId: input.organizationId,
+        pendingAuthenticationToken: input.pendingAuthenticationToken,
+        clientId: config.clientId,
+        ipAddress: input.ipAddress,
+        userAgent: input.userAgent,
+        session: {
+          sealSession: true,
+          cookiePassword: config.cookiePassword,
+        },
+      });
+      return toAuthKitSession(response);
+    },
+
     async authenticateWithEmailVerification(input) {
       const response = await workos.userManagement.authenticateWithEmailVerification({
         pendingAuthenticationToken: input.pendingAuthenticationToken,

@@ -10,6 +10,11 @@ import type {
   PmsManualBookingRoom,
   PmsManualBookingTransaction,
 } from "./pmsManualBookingTransactionPorts.js";
+import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
+import {
+  PmsOccupiedInventoryInvariantError,
+  reconcilePmsOccupiedInventory,
+} from "./pmsOccupiedInventory.js";
 
 type RoomRow = { roomId: string; roomTypeId: string };
 
@@ -18,6 +23,16 @@ export async function lockManualBookingRooms(
   command: PmsManualBookingCreateCommand,
 ): Promise<readonly PmsManualBookingRoom[]> {
   const roomIds = [...new Set(command.stays.map(({ roomId }) => roomId))].sort();
+  const scopes = await transaction.query<{ roomTypeId: string }>(
+    `SELECT DISTINCT room_type_id::text AS "roomTypeId"
+     FROM pms.rooms
+     WHERE property_id = $1::uuid AND id = ANY($2::uuid[])
+     ORDER BY "roomTypeId"`,
+    [command.propertyId, roomIds],
+  );
+  for (const { roomTypeId } of scopes.rows) {
+    await lockPmsPhysicalRoomUnitMutationScope(transaction, command.propertyId, roomTypeId);
+  }
   const result = await transaction.query<RoomRow>(
     `SELECT id::text AS "roomId", room_type_id::text AS "roomTypeId"
      FROM pms.rooms
@@ -87,6 +102,15 @@ async function persistBookingFacts(
   const children = command.stays.reduce((sum, stay) => sum + stay.children, 0);
   const total = preview.grandTotal;
 
+  const property = await transaction.query(
+    `SELECT id
+     FROM hotel_catalog.properties
+     WHERE id = $1::uuid AND lifecycle_status <> 'retired'
+     FOR SHARE`,
+    [command.propertyId],
+  );
+  if (property.rowCount !== 1) throw new CommandError("property_not_found");
+
   await transaction.query(
     `INSERT INTO booking.guest_bookings (
        id, property_id, public_reference, source_system, source_booking_id,
@@ -116,6 +140,21 @@ async function persistBookingFacts(
       command.contractVersion,
     ],
   );
+  await transaction.query(
+    `INSERT INTO booking.booking_status_events (
+       guest_booking_id, event_type, from_status, to_status, actor_type,
+       actor_user_id, public_visible, event_payload, occurred_at
+     ) VALUES (
+       $1::uuid, 'guest_booking.accepted', NULL, 'confirmed', 'property_user',
+       $2::uuid, FALSE, jsonb_build_object('contractVersion', $3::text), $4::timestamptz
+     )`,
+    [
+      guestBookingId,
+      command.audit.actor.userId,
+      command.contractVersion,
+      command.audit.requestedAt,
+    ],
+  );
   await insertGuest(transaction, command, guestBookingId);
   await insertAddons(transaction, command, guestBookingId, preview);
   return { guestBookingId, bookingReference, total, checkIn, checkOut };
@@ -127,9 +166,28 @@ async function persistOperationalFacts(
     command: PmsManualBookingCreateCommand;
     rooms: readonly PmsManualBookingRoom[];
     guestBookingId: string;
+    acceptedAt: string;
   },
 ): Promise<void> {
   await insertAssignments(transaction, input.command, input.guestBookingId, input.rooms);
+  const roomTypes = new Map(input.rooms.map((room) => [room.roomId, room.roomTypeId]));
+  try {
+    await reconcilePmsOccupiedInventory(
+      transaction,
+      input.command.propertyId,
+      input.command.stays.map((stay) => ({
+        roomTypeId: roomTypes.get(stay.roomId)!,
+        checkIn: stay.checkIn,
+        checkOut: stay.checkOut,
+      })),
+      input.acceptedAt,
+    );
+  } catch (error) {
+    if (error instanceof PmsOccupiedInventoryInvariantError) {
+      throw new CommandError("room_unavailable");
+    }
+    throw error;
+  }
   if (input.command.privateNote)
     await insertPrivateNote(transaction, input.command, input.guestBookingId);
 }
@@ -228,19 +286,25 @@ async function insertAddons(
     };
   });
   if (snapshots.length === 0) return;
-  await transaction.query(
+  const inserted = await transaction.query(
     `INSERT INTO booking.booking_addon_selections (
        property_id, guest_booking_id, addon_definition_id, addon_snapshot,
-       quantity, total_amount, currency
+       quantity, total_amount, currency,
+       ownership_kind_snapshot, partner_commission_rate_snapshot
      )
      SELECT $1::uuid, $2::uuid, item."addonId"::uuid, item.snapshot,
-       item."packageCount", item."totalAmount"::numeric, item.currency
+       item."packageCount", item."totalAmount"::numeric, item.currency,
+       definition.ownership_kind, definition.partner_commission_rate
      FROM jsonb_to_recordset($3::jsonb) AS item(
        "addonId" text, "packageCount" int, "totalAmount" text,
        currency text, snapshot jsonb
-     )`,
+     )
+     JOIN booking.addon_definitions definition
+       ON definition.id = item."addonId"::uuid
+      AND definition.property_id = $1::uuid`,
     [command.propertyId, guestBookingId, JSON.stringify(snapshots)],
   );
+  if (inserted.rowCount !== snapshots.length) throw new CommandError("addon_not_found", "addonId");
 }
 
 async function insertPrivateNote(

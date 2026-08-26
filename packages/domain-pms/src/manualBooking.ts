@@ -99,6 +99,7 @@ export type PmsManualBookingCreateResult = Readonly<{
   balance: PmsManualBookingMoney;
   paymentStatus: "unpaid" | "paid";
   paymentEvidenceId: string | null;
+  rearrangedBookingCount: number;
   sideEffects: readonly ["calendar_refresh", "ari_changed", "guest_confirmation", "audit_event"];
 }>;
 

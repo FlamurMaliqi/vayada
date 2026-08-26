@@ -11,6 +11,7 @@ import pg from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import {
   createCreatorPlatformAdapterRegistry,
   type CreatorPlatformAccount,
@@ -836,8 +837,8 @@ describe.skipIf(!TEST_DATABASE_URL)("creator platform connection persistence", (
       );
       await client.query(
         `INSERT INTO identity.organization_memberships (
-           organization_id, user_id, role_key
-         ) VALUES ($1, $2, 'creator_owner')`,
+           organization_id, user_id, role_key, access_origin
+         ) VALUES ($1, $2, 'creator_owner', 'agency')`,
         [integrationOrganizationId, integrationUserId],
       );
       await client.query(
@@ -1396,6 +1397,7 @@ function buildCreatorPlatformApp(
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepository(),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return ["marketplace.profile.manage"];

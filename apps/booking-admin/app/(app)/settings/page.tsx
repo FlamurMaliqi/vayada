@@ -4,7 +4,9 @@ import { useEffect, useState, useCallback } from "react";
 import { getBookingHotelPropertyLink } from "@/services/api/bookingPropertyLinkClient";
 import {
   buildFinancePaymentSettingsBody,
+  createFinanceStripeDashboardLink,
   createFinanceStripeProviderAccount,
+  FinancePaymentSettingsClientError,
   getFinancePaymentSettings,
   issueFinanceStripeOnboardingLink,
   updateFinancePaymentSettings,
@@ -20,7 +22,6 @@ import {
 import {
   CalendarDaysIcon,
   BellIcon,
-  UserCircleIcon,
   CreditCardIcon,
   BanknotesIcon,
   GlobeAltIcon,
@@ -32,13 +33,14 @@ import {
   TrashIcon,
   ArrowUpIcon,
   ArrowDownIcon,
+  ArrowTopRightOnSquareIcon,
 } from "@heroicons/react/24/outline";
 import { HotelIcon } from "@vayada/product-onboarding";
 import {
   settingsService,
+  type BookingAcceptanceMode,
   type PropertySettings,
   type PropertySettingsUpdate,
-  type CustomDomainStatus,
 } from "@/services/settings";
 import { ToggleSwitch, FeedbackAlert, SaveButton } from "@/components/ui";
 import { CountrySelect } from "@/components/settings/CountrySelect";
@@ -47,30 +49,29 @@ import {
   SettingsSection,
   SettingsCard,
   type SettingsNavSection,
-} from "@/components/settings/layout";
+} from "@vayada/settings-ui";
 import { LocationMapPreview } from "@/components/settings/LocationMapPreview";
 import { PoiSearchInput } from "@/components/settings/PoiSearchInput";
 import { useTranslation } from "@/lib/i18n";
+import {
+  buildSettingsSectionUrl,
+  readSettingsSection,
+  type SettingsSectionId,
+} from "@/lib/utils/settingsSectionUrl";
 
 // Audit-driven section IDs (VAY-400):
-// - "account" replaces the old "security" tab — those are personal-account
-//   concerns (email/password/2FA), not hotel concerns.
-// - "payments" is new — Stripe Connect + Xendit moved out of billing into
-//   their own section (billing = what hotel pays Vayada; payments = how hotel
-//   collects from guests).
-type Section =
-  | "property"
-  | "booking"
-  | "location"
-  | "notifications"
-  | "account"
-  | "billing"
-  | "payments";
+// - "payments" separates Stripe Connect + Xendit from billing (billing = what
+//   the hotel pays Vayada; payments = how the hotel collects from guests).
+type Section = SettingsSectionId;
 
 const POI_COLORS = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#0d9488", "#db2777"];
 const PROPERTY_MAP_CENTERING_UNAVAILABLE =
   "Automatic property map centering is not available on next-api yet.";
 const BILLING_SETTINGS_UNAVAILABLE = "Billing settings are not available on next-api yet.";
+const STRIPE_DASHBOARD_ERROR =
+  "Couldn't open your Stripe Dashboard right now. Please try again in a moment.";
+const STRIPE_NOT_CONNECTED =
+  "Your Stripe account isn't connected. Connect Stripe in your payment settings to access the dashboard.";
 
 function readBookingHotelId(settings: PropertySettings): string {
   if (settings.id?.trim()) return settings.id.trim();
@@ -234,37 +235,36 @@ function buildTargetSettingsUpdate(
 
 export default function SettingsPage() {
   const { t } = useTranslation();
-  const [activeSection, setActiveSection] = useState<Section>(() => {
-    if (typeof window === "undefined") return "property";
-    const searchParams = new URLSearchParams(window.location.search);
-    const requested = searchParams.get("section");
-    if (
-      requested === "property" ||
-      requested === "booking" ||
-      requested === "location" ||
-      requested === "notifications" ||
-      requested === "account" ||
-      requested === "billing" ||
-      requested === "payments"
-    ) {
-      return requested;
-    }
-    return searchParams.has("billing") ? "billing" : "property";
-  });
+  const [activeSection, setActiveSection] = useState<Section>("property");
+  const selectSection = useCallback((section: Section) => {
+    setActiveSection(section);
+    const nextUrl = buildSettingsSectionUrl(window.location.href, section);
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextUrl !== currentUrl) window.history.pushState(null, "", nextUrl);
+  }, []);
+
+  useEffect(() => {
+    const syncSectionFromUrl = () => setActiveSection(readSettingsSection(window.location.search));
+    syncSectionFromUrl();
+    window.addEventListener("popstate", syncSectionFromUrl);
+    return () => window.removeEventListener("popstate", syncSectionFromUrl);
+  }, []);
   const [settings, setSettings] = useState<PropertySettings>(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [acceptanceMode, setAcceptanceMode] = useState<BookingAcceptanceMode | null>(null);
+  const [acceptanceLoading, setAcceptanceLoading] = useState(true);
+  const [acceptanceSaving, setAcceptanceSaving] = useState(false);
+  const [acceptanceError, setAcceptanceError] = useState("");
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(
     null,
   );
 
-  // Custom domain
-  const [domainInput, setDomainInput] = useState("");
-  const [domainStatus, setDomainStatus] = useState<CustomDomainStatus | null>(null);
-
   // Stripe Connect / Payments
   const [stripeAccountId, setStripeAccountId] = useState<string | null>(null);
   const [stripeOnboarded, setStripeOnboarded] = useState(false);
+  const [openingStripeDashboard, setOpeningStripeDashboard] = useState(false);
+  const [stripeDashboardToast, setStripeDashboardToast] = useState("");
   const [connectEmail] = useState(() =>
     typeof window !== "undefined" ? localStorage.getItem("userEmail") || "" : "",
   );
@@ -303,30 +303,43 @@ export default function SettingsPage() {
     }
   }, [t]);
 
+  const loadBookingAcceptance = useCallback(async (hotelId: string) => {
+    setAcceptanceLoading(true);
+    setAcceptanceMode(null);
+    setAcceptanceError("");
+    try {
+      const result = await settingsService.getBookingAcceptance(hotelId);
+      setAcceptanceMode(result.acceptanceMode);
+    } catch (error) {
+      setAcceptanceError(errorMessage(error, "Booking acceptance settings failed to load."));
+    } finally {
+      setAcceptanceLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     setPaymentSettingsLoaded(false);
     setBillingPlanLoading(true);
+    setAcceptanceLoading(true);
+    setAcceptanceMode(null);
+    setAcceptanceError("");
     const propertyPromise = fetchSettings();
     propertyPromise
       .then(async (property) => {
         if (!property) {
           setBillingPlanLoading(false);
+          setAcceptanceLoading(false);
+          setAcceptanceError("Select a hotel before loading booking acceptance settings.");
           return null;
         }
-        settingsService
-          .getCustomDomainStatus()
-          .then(setDomainStatus)
-          .catch((error) => {
-            setDomainStatus(null);
-            const message =
-              error instanceof Error ? error.message : "Failed to load custom domain status.";
-            setFeedback({ type: "error", message });
-          });
         const hotelId = readBookingHotelId(property);
         if (!hotelId) {
           setBillingPlanLoading(false);
+          setAcceptanceLoading(false);
+          setAcceptanceError("Select a hotel before loading booking acceptance settings.");
           return null;
         }
+        void loadBookingAcceptance(hotelId);
         const propertyLink = await getBookingHotelPropertyLink({ hotelId });
         setBillingPropertyId(propertyLink.propertyId);
         const billingReturn =
@@ -374,7 +387,10 @@ export default function SettingsPage() {
         const ps = res.paymentSettings;
         const providerAccount = ps.providerAccount;
         const stripeAccountId =
-          providerAccount.provider === "stripe" ? providerAccount.providerAccountId : null;
+          providerAccount.provider === "stripe" &&
+          !providerAccount.providerAccountId?.startsWith("settings-choice:")
+            ? providerAccount.providerAccountId
+            : null;
         setStripeAccountId(stripeAccountId);
         setStripeOnboarded(
           providerAccount.provider === "stripe" &&
@@ -415,7 +431,35 @@ export default function SettingsPage() {
         setBillingPlanLoading(false);
         setPaymentError(errorMessage(err, "Payment settings failed to load."));
       });
-  }, [fetchSettings]);
+  }, [fetchSettings, loadBookingAcceptance]);
+
+  const handleAcceptanceToggle = async () => {
+    const hotelId = readBookingHotelId(settings);
+    if (!hotelId || !acceptanceMode) {
+      setAcceptanceError("Load the current booking acceptance setting before changing it.");
+      return;
+    }
+
+    setAcceptanceSaving(true);
+    setAcceptanceError("");
+    try {
+      const saved = await settingsService.updateBookingAcceptance(
+        acceptanceMode === "instant" ? "request" : "instant",
+        hotelId,
+      );
+      setAcceptanceMode(saved.acceptanceMode);
+      setFeedback({ type: "success", message: "Booking acceptance settings saved." });
+    } catch (error) {
+      setAcceptanceError(errorMessage(error, "Booking acceptance settings could not be saved."));
+    } finally {
+      setAcceptanceSaving(false);
+    }
+  };
+
+  const retryBookingAcceptance = () => {
+    const hotelId = readBookingHotelId(settings);
+    if (hotelId) void loadBookingAcceptance(hotelId);
+  };
 
   const handleCreateStripeAccount = async () => {
     if (!connectEmail) return;
@@ -479,6 +523,38 @@ export default function SettingsPage() {
     } catch (err: unknown) {
       stripeTab.close();
       setPaymentError(errorMessage(err, t("settings.billing.errorOnboardingLink")));
+    }
+  };
+
+  const handleStripeDashboard = async () => {
+    setStripeDashboardToast("");
+    if (!billingPropertyId || !stripeAccountId) {
+      setStripeDashboardToast(STRIPE_NOT_CONNECTED);
+      return;
+    }
+
+    const stripeTab = window.open("about:blank", "_blank");
+    if (!stripeTab) {
+      setStripeDashboardToast(STRIPE_DASHBOARD_ERROR);
+      return;
+    }
+    stripeTab.opener = null;
+    setOpeningStripeDashboard(true);
+    try {
+      const { url } = await createFinanceStripeDashboardLink({
+        propertyId: billingPropertyId,
+      });
+      stripeTab.location.assign(url);
+    } catch (error) {
+      stripeTab.close();
+      setStripeDashboardToast(
+        error instanceof FinancePaymentSettingsClientError &&
+          error.code === "provider_account_not_found"
+          ? STRIPE_NOT_CONNECTED
+          : STRIPE_DASHBOARD_ERROR,
+      );
+    } finally {
+      setOpeningStripeDashboard(false);
     }
   };
 
@@ -573,7 +649,7 @@ export default function SettingsPage() {
         type: "error",
         message: "Every point of interest needs a label, travel time, latitude, and longitude.",
       });
-      setActiveSection("location");
+      selectSection("location");
       return;
     }
     try {
@@ -702,53 +778,6 @@ export default function SettingsPage() {
     updatePois(pois);
   };
 
-  const handleConnectDomain = async () => {
-    if (!domainInput.trim()) {
-      setFeedback({ type: "error", message: "Enter a custom domain." });
-      return;
-    }
-
-    try {
-      setSaving(true);
-      setFeedback(null);
-      const status = await settingsService.connectCustomDomain(domainInput);
-      setDomainStatus(status);
-      setDomainInput("");
-      setFeedback({ type: "success", message: t("settings.feedback.domainConnected") });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to connect custom domain.";
-      setFeedback({ type: "error", message });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleDisconnectDomain = async () => {
-    try {
-      setSaving(true);
-      setFeedback(null);
-      await settingsService.disconnectCustomDomain();
-      const status = await settingsService.getCustomDomainStatus();
-      setDomainStatus(status);
-      setFeedback({ type: "success", message: t("settings.feedback.domainRemoved") });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to remove custom domain.";
-      setFeedback({ type: "error", message });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleRefreshDomainStatus = async () => {
-    try {
-      const status = await settingsService.getCustomDomainStatus();
-      setDomainStatus(status);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to refresh custom domain.";
-      setFeedback({ type: "error", message });
-    }
-  };
-
   const sections: SettingsNavSection[] = [
     { id: "property", label: t("settings.tabs.property"), icon: HotelIcon },
     { id: "booking", label: t("settings.tabs.booking"), icon: CalendarDaysIcon },
@@ -758,9 +787,8 @@ export default function SettingsPage() {
       label: t("settings.tabs.notifications"),
       icon: BellIcon,
     },
-    // TODO i18n: add settings.tabs.account + settings.tabs.payments keys to
-    // messages/*.json. Hardcoded English until then.
-    { id: "account", label: "Account", icon: UserCircleIcon },
+    // TODO i18n: add settings.tabs.payments to messages/*.json.
+    // Hardcoded English until then.
     { id: "billing", label: t("settings.tabs.billing"), icon: CreditCardIcon },
     { id: "payments", label: "Payments", icon: BanknotesIcon },
   ];
@@ -771,10 +799,14 @@ export default function SettingsPage() {
       description={t("settings.subtitle")}
       sections={sections}
       activeId={activeSection}
-      onSelect={(id) => {
-        setActiveSection(id as Section);
-      }}
+      onSelect={(id) => selectSection(id as Section)}
     >
+      {stripeDashboardToast && (
+        <div className="fixed right-4 top-4 z-50 w-[min(24rem,calc(100vw-2rem))]" role="alert">
+          <FeedbackAlert type="error" message={stripeDashboardToast} />
+        </div>
+      )}
+
       {/* Feedback banner */}
       {feedback && (
         <FeedbackAlert type={feedback.type} message={feedback.message} className="mb-4" />
@@ -965,6 +997,46 @@ export default function SettingsPage() {
       {/* Booking tab */}
       {activeSection === "booking" && (
         <div className="mt-5 space-y-4">
+          <div
+            className="rounded-lg border border-gray-200 bg-white p-4 md:p-5"
+            aria-busy={acceptanceLoading || acceptanceSaving}
+          >
+            {acceptanceMode ? (
+              <ToggleSwitch
+                enabled={acceptanceMode === "instant"}
+                disabled={acceptanceSaving || Boolean(acceptanceError)}
+                onChange={() => void handleAcceptanceToggle()}
+                label="Accept bookings instantly"
+                description="Confirm card and pay-at-property bookings immediately. Bank transfers always require manual review."
+              />
+            ) : acceptanceLoading ? (
+              <div className="py-3" role="status">
+                <p className="text-[13px] font-semibold text-gray-900">Accept bookings instantly</p>
+                <p className="text-[13px] text-gray-500">Loading current setting…</p>
+              </div>
+            ) : null}
+            <p className="border-t border-gray-100 pt-3 text-[12px] text-gray-500">
+              This setting is shared between PMS and Booking Engine.
+            </p>
+            {acceptanceSaving && (
+              <p className="mt-2 text-[12px] text-gray-500" role="status">
+                Saving…
+              </p>
+            )}
+            {acceptanceError && (
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-3" role="alert">
+                <p className="text-[12px] text-red-700">{acceptanceError}</p>
+                <button
+                  type="button"
+                  onClick={retryBookingAcceptance}
+                  className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-medium text-gray-700 hover:border-gray-400"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+          </div>
+
           {/* Map View */}
           <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5">
             <ToggleSwitch
@@ -1021,112 +1093,6 @@ export default function SettingsPage() {
                 className="w-full px-2.5 py-2 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-y"
               />
             </div>
-          </div>
-
-          {/* Custom Domain */}
-          <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5">
-            <h2 className="text-sm font-semibold text-gray-900">
-              {t("settings.booking.customDomain")}
-            </h2>
-            {domainStatus?.configured ? (
-              <div className="space-y-4 mt-3">
-                <div className="flex items-center gap-3">
-                  <span className="text-[13px] font-medium text-gray-900">
-                    {domainStatus.domain}
-                  </span>
-                  <span
-                    className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-medium ${
-                      domainStatus.sslStatus === "active"
-                        ? "bg-green-100 text-green-700"
-                        : domainStatus.status === "pending"
-                          ? "bg-yellow-100 text-yellow-700"
-                          : "bg-gray-100 text-gray-700"
-                    }`}
-                  >
-                    {domainStatus.sslStatus === "active"
-                      ? t("settings.booking.active")
-                      : domainStatus.status === "pending"
-                        ? t("settings.booking.pendingDns")
-                        : domainStatus.sslStatus || t("settings.booking.checking")}
-                  </span>
-                  <button
-                    onClick={handleRefreshDomainStatus}
-                    className="text-[11px] text-primary-600 hover:text-primary-700"
-                  >
-                    {t("settings.booking.refresh")}
-                  </button>
-                </div>
-
-                {domainStatus.sslStatus !== "active" && domainStatus.dnsRecords.length > 0 && (
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                    <p className="text-[13px] font-medium text-blue-900 mb-2">
-                      {t("settings.booking.dnsSetupRequired")}
-                    </p>
-                    <p className="text-[13px] text-blue-700 mb-2">
-                      {t("settings.booking.dnsInstructions")}
-                    </p>
-                    {domainStatus.dnsRecords.map((record) => (
-                      <div
-                        key={`${record.type}:${record.name}`}
-                        className="bg-white rounded p-3 font-mono text-[11px] text-gray-800 space-y-1"
-                      >
-                        <div>
-                          <span className="text-gray-500">{t("settings.booking.dnsType")}</span>{" "}
-                          {record.type}
-                        </div>
-                        <div>
-                          <span className="text-gray-500">{t("settings.booking.dnsName")}</span>{" "}
-                          {record.name}
-                        </div>
-                        <div>
-                          <span className="text-gray-500">{t("settings.booking.dnsTarget")}</span>{" "}
-                          {record.value}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {domainStatus.verificationErrors.length > 0 && (
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                    <p className="text-[13px] text-red-700">
-                      {domainStatus.verificationErrors.join(", ")}
-                    </p>
-                  </div>
-                )}
-
-                <button
-                  onClick={handleDisconnectDomain}
-                  disabled={saving}
-                  className="px-4 py-2 text-[13px] font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-60"
-                >
-                  {t("settings.booking.removeDomain")}
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-3 mt-1">
-                <p className="text-[13px] text-gray-500">
-                  {t("settings.booking.customDomainDesc")}
-                </p>
-                <div className="flex flex-col gap-3 sm:flex-row">
-                  <input
-                    type="text"
-                    value={domainInput}
-                    onChange={(e) => setDomainInput(e.target.value)}
-                    placeholder={t("settings.booking.customDomainPlaceholder")}
-                    disabled={saving}
-                    className="flex-1 px-2.5 py-1.5 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:bg-gray-50"
-                  />
-                  <button
-                    onClick={handleConnectDomain}
-                    disabled={saving}
-                    className="px-4 py-2 text-[13px] font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-60"
-                  >
-                    {t("settings.booking.connectDomain")}
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Save button */}
@@ -1396,29 +1362,6 @@ export default function SettingsPage() {
             <SaveButton onClick={handleSave} saving={saving}>
               {t("common.save")}
             </SaveButton>
-          </div>
-        </div>
-      )}
-
-      {/* Account tab — personal-account settings (was "Security"). */}
-      {activeSection === "account" && (
-        <div className="mt-5">
-          <div className="rounded-lg border border-gray-200 bg-white p-5">
-            <div className="flex items-start gap-3">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gray-100">
-                <UserCircleIcon className="h-5 w-5 text-gray-500" />
-              </div>
-              <div>
-                <h2 className="text-sm font-semibold text-gray-900">Personal account security</h2>
-                <p className="mt-1 max-w-xl text-[13px] leading-5 text-gray-500">
-                  Email, password, two-factor authentication, and sign-in history are managed by
-                  Vayada sign-in. These controls are not available inside Booking Admin yet.
-                </p>
-                <span className="mt-3 inline-flex rounded-md bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-600">
-                  Not available yet
-                </span>
-              </div>
-            </div>
           </div>
         </div>
       )}
@@ -2245,7 +2188,7 @@ export default function SettingsPage() {
                 Enable <strong>Online card payment</strong> in{" "}
                 <button
                   type="button"
-                  onClick={() => setActiveSection("billing")}
+                  onClick={() => selectSection("billing")}
                   className="text-primary-600 hover:underline"
                 >
                   Billing &rarr; Payment methods
@@ -2471,6 +2414,21 @@ export default function SettingsPage() {
                         </button>
                       </div>
                     )}
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3">
+                      <button
+                        type="button"
+                        onClick={handleStripeDashboard}
+                        disabled={openingStripeDashboard}
+                        className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-[13px] font-medium text-gray-800 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <ArrowTopRightOnSquareIcon className="h-4 w-4" aria-hidden="true" />
+                        {openingStripeDashboard ? "Opening Stripe..." : "View Stripe Dashboard"}
+                      </button>
+                      <p className="mt-2 text-[12px] text-gray-500">
+                        Check your payouts, balance, and payment history, or update your bank
+                        account.
+                      </p>
+                    </div>
                     <div className="flex justify-end pt-2">
                       <SaveButton onClick={savePaymentProviderSettings} saving={savingPayment}>
                         {t("common.save")}

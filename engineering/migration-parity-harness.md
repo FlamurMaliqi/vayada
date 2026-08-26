@@ -164,7 +164,6 @@ Minimum fixture cases:
 | `marketplace-collaboration`       | Marketplace, PMS where needed   | Covers creators, listings, collaborations, deliverables, affiliate links.                                             |
 | `finance-reconciliation`          | Booking, PMS, marketplace       | Reconciles payment settings, payments, payouts, commissions, entitlements.                                            |
 | `public-bookability`              | Booking, PMS, catalog           | Proves public-safe profile, room offer, quote, and deep-link read models.                                             |
-| `ask-intelligence-read-models`    | Booking, PMS, marketplace       | Proves metric/setup snapshots and evidence inputs without raw guest PII.                                              |
 | `jobs-events-audit`               | Auth, booking, PMS, marketplace | Proves event, job, webhook, idempotency, and audit transforms.                                                        |
 | `retired-or-deferred-sources`     | Auth, booking, PMS, marketplace | Confirms retired local auth, Lodgify, Beds24, and dropped tables are retained only as allowed audit/source snapshots. |
 
@@ -194,7 +193,7 @@ Core checks:
   memberships, entitlements, and resource links;
 - financial totals for payments, payouts, commissions, deposits, and balances;
 - public/private exposure checks for distribution and AI-readable read models;
-- tenant-scope checks for Ask Intelligence evidence and finance visibility;
+- tenant-scope checks for finance visibility;
 - idempotency checks proving a local/staging rebuild can be rerun from the same
   source snapshot with the same target output.
 

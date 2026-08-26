@@ -12,6 +12,7 @@ import type {
   PmsManualBookingPlatformOwnerPort,
   PmsManualBookingTransaction,
 } from "./pmsManualBookingTransactionPorts.js";
+import type { ManualBookingPreviewResult } from "../routes/pmsManualBookingPreview.js";
 
 type IdempotencyRow = {
   id: string;
@@ -20,6 +21,10 @@ type IdempotencyRow = {
   responseBodyHash: string | null;
   responseResourceId: string | null;
   metadata: unknown;
+};
+
+type StoredManualBookingResult = Omit<PmsManualBookingCreateResult, "rearrangedBookingCount"> & {
+  rearrangedBookingCount?: number;
 };
 
 export function createPgPmsManualBookingPlatformOwnerPort(): PmsManualBookingPlatformOwnerPort {
@@ -84,7 +89,11 @@ export async function findManualBookingReplay(
   );
   if (row.responseResourceId !== result.guestBookingId || booking.rowCount !== 1)
     throw new Error("Stored manual booking replay is invalid");
-  return { ...result, outcome: "replayed" };
+  return {
+    ...result,
+    rearrangedBookingCount: result.rearrangedBookingCount ?? 0,
+    outcome: "replayed",
+  };
 }
 
 export async function reserveManualBookingCommand(
@@ -138,11 +147,12 @@ export async function writeManualBookingPlatformEvidence(
   transaction: PmsManualBookingTransaction,
   input: {
     command: PmsManualBookingCreateCommand;
+    preview: ManualBookingPreviewResult;
     result: PmsManualBookingCreateResult;
     reservation: PmsManualBookingCommandReservation;
   },
 ): Promise<void> {
-  const { command, result, reservation } = input;
+  const { command, preview, result, reservation } = input;
   const event = await transaction.query<{ id: string }>(
     `INSERT INTO platform.domain_events (
        source_system, event_key, event_type, occurred_at, tenant_scope, property_id,
@@ -172,23 +182,63 @@ export async function writeManualBookingPlatformEvidence(
   );
   const eventId = event.rows[0]?.id;
   if (!eventId) throw new Error("Manual booking event was not created");
-  await insertOutbox(transaction, command, result, reservation.keyHash, eventId);
+  await insertOutbox(transaction, command, preview, result, reservation.keyHash, eventId);
   await insertAudit(transaction, command, result, reservation.id, eventId);
 }
 
 async function insertOutbox(
   transaction: PmsManualBookingTransaction,
   command: PmsManualBookingCreateCommand,
+  preview: ManualBookingPreviewResult,
   result: PmsManualBookingCreateResult,
   keyHash: string,
   eventId: string,
 ): Promise<void> {
+  const bookingPayload = { guestBookingId: result.guestBookingId };
+  const guestConfirmationPayload = {
+    contractVersion: command.contractVersion,
+    guestBookingId: result.guestBookingId,
+    bookingReference: result.bookingReference,
+    guest: command.guest,
+    stays: command.stays
+      .map((stay) => {
+        const priced = preview.stays.find(({ position }) => position === stay.position);
+        if (!priced) throw new Error(`Missing preview for stay ${stay.position}`);
+        return {
+          position: stay.position,
+          roomId: stay.roomId,
+          checkIn: stay.checkIn,
+          checkOut: stay.checkOut,
+          adults: stay.adults,
+          children: stay.children,
+          ratePlanId: stay.ratePlanId,
+          nightly: priced.nightly.map(({ serviceDate, applied }) => ({ serviceDate, applied })),
+        };
+      })
+      .sort((left, right) => left.position - right.position),
+    expectedPaymentMethod: command.payment.expectedMethod,
+    paymentStatus: result.paymentStatus,
+    total: result.total,
+    balance: result.balance,
+  };
   const intents = [
-    ["pms.calendar", "pms.calendar.refresh.requested.v1"],
-    ["pms.ari", "pms.ari.changed.v1"],
-    ["booking.guest-communication", "booking.guest_confirmation.requested.v1"],
-    ["pms.read-model", "pms.manual_booking.refresh.requested.v1"],
-  ].map(([destination, eventType]) => ({ destination, eventType }));
+    {
+      destination: "pms.calendar",
+      eventType: "pms.calendar.refresh.requested.v1",
+      payload: bookingPayload,
+    },
+    { destination: "pms.ari", eventType: "pms.ari.changed.v1", payload: bookingPayload },
+    {
+      destination: "booking.guest-communication",
+      eventType: "booking.guest_confirmation.requested.v1",
+      payload: guestConfirmationPayload,
+    },
+    {
+      destination: "pms.read-model",
+      eventType: "pms.manual_booking.refresh.requested.v1",
+      payload: bookingPayload,
+    },
+  ];
   await transaction.query(
     `INSERT INTO platform.outbox_events (
        domain_event_id, outbox_key, destination, event_type, tenant_scope, property_id,
@@ -196,15 +246,16 @@ async function insertOutbox(
        idempotency_key_hash, payload, outbox_metadata
      ) SELECT $1::uuid, 'pms.manual-booking.' || $2 || '.' || item.destination || '.v1',
        item.destination, item."eventType", 'property', $3::uuid, 'booking',
-       'guest_booking', $2, $4, $5, $6::jsonb, '{}'::jsonb
-     FROM jsonb_to_recordset($7::jsonb) AS item(destination text, "eventType" text)`,
+       'guest_booking', $2, $4, $5, item.payload, '{}'::jsonb
+     FROM jsonb_to_recordset($6::jsonb) AS item(
+       destination text, "eventType" text, payload jsonb
+     )`,
     [
       eventId,
       result.guestBookingId,
       command.propertyId,
       command.audit.correlationId ?? command.audit.requestId,
       keyHash,
-      JSON.stringify({ guestBookingId: result.guestBookingId }),
       JSON.stringify(intents),
     ],
   );
@@ -245,7 +296,7 @@ async function insertAudit(
 function isStoredResult(
   value: unknown,
   command: PmsManualBookingCreateCommand,
-): value is PmsManualBookingCreateResult {
+): value is StoredManualBookingResult {
   const input = record(value);
   const total = record(input?.["total"]);
   const balance = record(input?.["balance"]);
@@ -259,7 +310,7 @@ function isStoredResult(
     command.stays[0]!.checkOut,
   );
   return (
-    exact(input, [
+    exactOneOf(input, [
       "contractVersion",
       "outcome",
       "commandId",
@@ -293,12 +344,19 @@ function isStoredResult(
     total["currency"] === balance["currency"] &&
     input["paymentStatus"] === (paid ? "paid" : "unpaid") &&
     (paid ? uuid(input["paymentEvidenceId"]) : input["paymentEvidenceId"] === null) &&
+    (input["rearrangedBookingCount"] === undefined ||
+      (Number.isSafeInteger(input["rearrangedBookingCount"]) &&
+        Number(input["rearrangedBookingCount"]) >= 0)) &&
     (paid
       ? balance["amountDecimal"] === "0.00"
       : balance["amountDecimal"] === total["amountDecimal"]) &&
     JSON.stringify(input["sideEffects"]) ===
       '["calendar_refresh","ari_changed","guest_confirmation","audit_event"]'
   );
+}
+
+function exactOneOf(value: Record<string, unknown> | null, baseKeys: string[]): boolean {
+  return exact(value, baseKeys) || exact(value, [...baseKeys, "rearrangedBookingCount"]);
 }
 
 function exact(

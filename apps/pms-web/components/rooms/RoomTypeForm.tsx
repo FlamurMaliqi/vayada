@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { XMarkIcon, PlusIcon, CheckIcon, ChevronDownIcon } from "@heroicons/react/24/outline";
+import { paymentMethodLabel } from "@vayada/locale-constants";
 import {
   RoomTypeCreate,
   RoomTypeUpdate,
@@ -532,12 +533,12 @@ const PAYMENT_METHODS: { key: string; label: string; hint: string }[] = [
   },
   {
     key: "pay_at_property",
-    label: "Pay at property",
+    label: paymentMethodLabel("pay_at_property"),
     hint: "Guest pays on arrival — cash or terminal",
   },
   {
     key: "bank_transfer",
-    label: "Bank transfer",
+    label: paymentMethodLabel("bank_transfer"),
     hint: "Guest wires to your account before arrival",
   },
   { key: "xendit", label: "QRIS / e-wallet (Xendit)", hint: "Indonesian local payment rails" },
@@ -1527,7 +1528,7 @@ export default function RoomTypeForm({
             </div>
             <div>
               <div className="flex items-center gap-2 mb-1.5">
-                <label className="text-[12px] font-semibold text-gray-900">Bathrooms</label>
+                <label className="text-[12px] font-semibold text-gray-900">Private bathrooms</label>
               </div>
               <input
                 type="number"

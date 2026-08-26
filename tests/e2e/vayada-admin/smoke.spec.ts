@@ -125,6 +125,189 @@ test.describe("vayada-admin smoke", () => {
     await assertHealthy();
   });
 
+  test("records affiliate payout evidence through target Finance only", async ({
+    page,
+    baseURL,
+  }, testInfo) => {
+    const assertHealthy = watchPageHealth(page, testInfo);
+    const assertNoLegacyCalls = watchNoLegacyCalls(
+      page,
+      testInfo,
+      "vayada-admin-affiliate-payouts",
+    );
+    const adminBaseURL = baseURL?.startsWith("http://127.0.0.1:3001")
+      ? "http://localhost:3001"
+      : (baseURL ?? "https://admin.localhost");
+    const pageOrigin = new URL(adminBaseURL).origin;
+    const affiliateId = "affiliate-target-1281";
+    const organizationId = "30000000-0000-4000-8000-000000000001";
+    const markPaidRequests: Array<Record<string, unknown>> = [];
+    const listOffsets: string[] = [];
+
+    await page.addInitScript(() => {
+      const expiresAt = Date.now() + 60 * 60 * 1000;
+      window.localStorage.setItem("access_token", "e2e-platform-token");
+      window.localStorage.setItem("token_expires_at", String(expiresAt));
+      window.localStorage.setItem("isLoggedIn", "true");
+      window.localStorage.setItem("userId", "user_platform_admin");
+      window.localStorage.setItem("userEmail", "platform-admin@example.test");
+      window.localStorage.setItem("userStatus", "active");
+      window.localStorage.setItem("isSuperAdmin", "true");
+      window.localStorage.setItem(
+        "user",
+        JSON.stringify({
+          id: "user_platform_admin",
+          email: "platform-admin@example.test",
+          status: "active",
+          is_superadmin: true,
+        }),
+      );
+    });
+
+    await page.route(
+      /https:\/\/api\.localhost(?::\d+)?\/api\/finance\/platform\/affiliate-payouts(?:\?|$)/,
+      async (route) => {
+        const offset = new URL(route.request().url()).searchParams.get("offset") ?? "0";
+        listOffsets.push(offset);
+        await fulfillJson(route, pageOrigin, {
+          contractVersion: "finance-platform-affiliate-payouts.v1",
+          summaries:
+            offset === "0"
+              ? [
+                  {
+                    affiliateId,
+                    organizationId,
+                    affiliateLifecycleStatus: "active",
+                    currency: "EUR",
+                    payoutMethod: "bank_transfer",
+                    outstandingAmount: "75.00",
+                    payableAmount: "50.00",
+                    paidAmount: "25.00",
+                    payoutCount: 2,
+                    payableCount: 1,
+                    lastPaidAt: "2026-08-01T09:00:00.000Z",
+                  },
+                ]
+              : [
+                  {
+                    affiliateId: "affiliate-inactive-1281",
+                    organizationId: "30000000-0000-4000-8000-000000000002",
+                    affiliateLifecycleStatus: "inactive",
+                    currency: "EUR",
+                    payoutMethod: "manual",
+                    outstandingAmount: "0.00",
+                    payableAmount: "0.00",
+                    paidAmount: "10.00",
+                    payoutCount: 1,
+                    payableCount: 0,
+                    lastPaidAt: "2026-07-01T09:00:00.000Z",
+                  },
+                ],
+          total: 2,
+          limit: 500,
+          offset: Number(offset),
+        });
+      },
+    );
+    await page.route(
+      new RegExp(
+        `https://api\\.localhost(?::\\d+)?/api/finance/platform/affiliate-payouts/${affiliateId}(?:\\?currency=EUR|/mark-paid)$`,
+      ),
+      async (route) => {
+        if (route.request().method() === "POST") {
+          const body = route.request().postDataJSON() as Record<string, unknown>;
+          markPaidRequests.push(body);
+          await fulfillJson(route, pageOrigin, {
+            contractVersion: "finance-platform-affiliate-payouts.v1",
+            status: "updated",
+            evidence: {
+              evidenceId: "40000000-0000-4000-8000-000000000001",
+              affiliateId,
+              organizationId,
+              payoutIds: ["50000000-0000-4000-8000-000000000001"],
+              amount: "50.00",
+              currency: "EUR",
+              paymentMethod: body.paymentMethod,
+              externalReference: body.externalReference,
+              evidenceReference: body.evidenceReference,
+              note: body.note,
+              paidAt: body.paidAt,
+              recordedAt: "2026-08-13T09:00:00.000Z",
+            },
+          });
+          return;
+        }
+        await fulfillJson(route, pageOrigin, {
+          contractVersion: "finance-platform-affiliate-payouts.v1",
+          summary: {
+            affiliateId,
+            organizationId,
+            affiliateLifecycleStatus: "active",
+            currency: "EUR",
+            payoutMethod: "bank_transfer",
+            outstandingAmount: "75.00",
+            payableAmount: "50.00",
+            paidAmount: "25.00",
+            payoutCount: 2,
+            payableCount: 1,
+            lastPaidAt: "2026-08-01T09:00:00.000Z",
+          },
+          payouts: [
+            {
+              payoutId: "50000000-0000-4000-8000-000000000001",
+              relatedPropertyId: null,
+              guestBookingId: null,
+              payoutStatus: "pending",
+              amount: "50.00",
+              feeAmount: "0.00",
+              netAmount: "50.00",
+              currency: "EUR",
+              payoutMethod: "bank_transfer",
+              providerPayoutId: null,
+              scheduledAt: "2026-08-13T08:00:00.000Z",
+              paidAt: null,
+              failedAt: null,
+              failureCode: null,
+              retryCount: 0,
+              manualMarkPaidEligible: true,
+              paymentEvidenceId: null,
+            },
+          ],
+          history: [],
+        });
+      },
+    );
+
+    await page.goto(new URL("/dashboard/affiliate-payouts", adminBaseURL).toString());
+    await expect(page.getByRole("heading", { name: "Affiliate payouts", level: 1 })).toBeVisible();
+    await expect(page.getByText(affiliateId, { exact: true })).toBeVisible();
+    await expect.poll(() => listOffsets.includes("1")).toBe(true);
+    await page.getByRole("button", { name: "Details" }).click();
+    await expect(page.getByRole("heading", { name: "Affiliate payout detail" })).toBeVisible();
+    await page.getByRole("button", { name: "Record external payment" }).click();
+    await page.getByLabel("External reference").fill("bank-transfer-e2e-1281");
+    await page.getByLabel("Evidence reference").fill("vault://e2e/transfer-1281");
+    await page.getByRole("button", { name: /Confirm .*50\.00 paid/ }).click();
+
+    await expect.poll(() => markPaidRequests.length).toBe(1);
+    expect(markPaidRequests[0]).toMatchObject({
+      currency: "EUR",
+      payoutIds: ["50000000-0000-4000-8000-000000000001"],
+      expectedAmount: "50.00",
+      paymentMethod: "bank_transfer",
+      externalReference: "bank-transfer-e2e-1281",
+      evidenceReference: "vault://e2e/transfer-1281",
+      note: null,
+    });
+    expect(markPaidRequests[0]?.commandId).toMatch(/^platform-affiliate-payout-/);
+    expect(markPaidRequests[0]?.idempotencyKey).toBe(markPaidRequests[0]?.commandId);
+    expect(markPaidRequests[0]?.paidAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(JSON.stringify(markPaidRequests[0])).not.toMatch(/iban|swift|paypal|bankAccount|email/i);
+
+    await assertNoLegacyCalls();
+    await assertHealthy();
+  });
+
   test("creates every hotel invite route without retired onboarding fields", async ({
     page,
     baseURL,

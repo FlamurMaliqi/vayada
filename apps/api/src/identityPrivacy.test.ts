@@ -7,6 +7,7 @@ import { injectJson } from "@vayada/backend-test";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import type {
   CookieConsentResponse,
   GdprDeletionRequestResponse,
@@ -166,6 +167,7 @@ function buildAuthedPrivacyApp(repository: IdentityPrivacyRepository): ReturnTyp
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepository,
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return ["marketplace.profile.manage"];

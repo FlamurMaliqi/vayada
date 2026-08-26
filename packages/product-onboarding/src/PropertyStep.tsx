@@ -2,6 +2,8 @@
 
 import { useState, useRef, useEffect } from "react";
 
+import { LocalizationMultiSelect } from "./LocalizationMultiSelect";
+
 export interface CountryOption {
   code: string;
   name: string;
@@ -182,164 +184,6 @@ function FlagSelect<T extends { code: string; flag: string }>({
             )}
           </div>
         </div>
-      )}
-    </div>
-  );
-}
-
-// ── Searchable Multi-Select ──────────────────────────────────────────
-function SearchableMultiSelect<T extends { code: string; flag: string }>({
-  id,
-  selected,
-  onToggle,
-  options,
-  excludeCode,
-  placeholder,
-  getLabel,
-  getSearchLabel,
-  popularCodes,
-  emptyMessage,
-}: {
-  id: string;
-  selected: string[];
-  onToggle: (code: string) => void;
-  options: T[];
-  excludeCode: string;
-  placeholder: string;
-  getLabel: (opt: T) => string;
-  getSearchLabel: (opt: T) => string;
-  popularCodes: string[];
-  emptyMessage: string;
-}) {
-  const [query, setQuery] = useState("");
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  const available = options.filter((o) => o.code !== excludeCode);
-  const filtered = query.trim()
-    ? available.filter((o) => getSearchLabel(o).toLowerCase().includes(query.toLowerCase()))
-    : available;
-  const popular = available.filter((o) => popularCodes.includes(o.code));
-
-  return (
-    <div ref={ref}>
-      {/* Search input */}
-      <div className="relative">
-        <svg
-          className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-          />
-        </svg>
-        <input
-          id={id}
-          type="text"
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setOpen(true);
-          }}
-          onFocus={() => setOpen(true)}
-          placeholder={placeholder}
-          className="w-full rounded-xl border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm text-gray-900 placeholder:text-gray-400 focus:border-transparent focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary-500"
-        />
-        {/* Dropdown */}
-        {open && query.trim() && (
-          <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg">
-            {filtered.length === 0 ? (
-              <p className="px-3 py-2 text-sm text-gray-400">No results found</p>
-            ) : (
-              filtered.map((opt) => {
-                const isSelected = selected.includes(opt.code);
-                return (
-                  <button
-                    key={opt.code}
-                    type="button"
-                    onClick={() => {
-                      onToggle(opt.code);
-                      setQuery("");
-                      setOpen(false);
-                    }}
-                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${isSelected ? "bg-primary-500 text-white" : "text-gray-900 hover:bg-gray-50"}`}
-                  >
-                    <span>{opt.flag}</span>
-                    <span>{getSearchLabel(opt)}</span>
-                  </button>
-                );
-              })
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Popular choices */}
-      <div className="mt-2.5">
-        <p className="mb-1.5 text-xs font-medium text-gray-400">Popular choices &mdash;</p>
-        <div className="flex flex-wrap gap-1.5">
-          {popular.map((opt) => {
-            const isSelected = selected.includes(opt.code);
-            return (
-              <button
-                key={opt.code}
-                type="button"
-                onClick={() => onToggle(opt.code)}
-                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
-                  isSelected
-                    ? "bg-primary-100 text-primary-700 border border-primary-300"
-                    : "bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100"
-                }`}
-              >
-                {opt.flag} {getLabel(opt)}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Added items */}
-      {selected.length > 0 ? (
-        <div className="mt-2.5">
-          <p className="mb-1.5 text-xs font-medium text-gray-400">Added ({selected.length}):</p>
-          <div className="flex flex-wrap gap-1.5">
-            {selected.map((code) => {
-              const opt = options.find((o) => o.code === code);
-              if (!opt) return null;
-              return (
-                <span
-                  key={code}
-                  className="inline-flex items-center gap-1 rounded-full border border-primary-300 bg-primary-100 px-2.5 py-1 text-xs font-medium text-primary-700"
-                >
-                  {opt.flag} {getLabel(opt)}
-                  <button
-                    type="button"
-                    onClick={() => onToggle(code)}
-                    className="ml-0.5 text-primary-400 hover:text-primary-600"
-                    aria-label={`Remove ${getLabel(opt)}`}
-                  >
-                    &times;
-                  </button>
-                </span>
-              );
-            })}
-          </div>
-        </div>
-      ) : (
-        <p className="mt-2.5 text-xs italic text-gray-400">{emptyMessage}</p>
       )}
     </div>
   );
@@ -868,7 +712,7 @@ export default function PropertyStep({
                     >
                       Additional Currencies
                     </label>
-                    <SearchableMultiSelect<CurrencyOption>
+                    <LocalizationMultiSelect<CurrencyOption>
                       id="property-step-additional-currencies"
                       selected={additionalCurrencies}
                       onToggle={(code) => {
@@ -885,6 +729,7 @@ export default function PropertyStep({
                       getSearchLabel={(o) => `${o.name} \u00b7 ${o.code}`}
                       popularCodes={popularCurrencyCodes}
                       emptyMessage={`No additional currencies added \u2014 your booking page will show only ${currency}`}
+                      comfortable
                     />
                   </div>
 
@@ -895,7 +740,7 @@ export default function PropertyStep({
                     >
                       Additional Languages
                     </label>
-                    <SearchableMultiSelect<LanguageOption>
+                    <LocalizationMultiSelect<LanguageOption>
                       id="property-step-additional-languages"
                       selected={additionalLanguages}
                       onToggle={(code) => {
@@ -912,6 +757,7 @@ export default function PropertyStep({
                       getSearchLabel={(o) => `${o.name} \u00b7 ${o.nativeName}`}
                       popularCodes={popularLanguageCodes}
                       emptyMessage={`No additional languages added \u2014 your booking page will show only ${defaultLanguage.toUpperCase()}`}
+                      comfortable
                     />
                   </div>
                 </div>

@@ -22,6 +22,8 @@ import {
   createPgPmsInventoryMaterializationRepository,
   type PmsInventoryMaterializationRepository,
 } from "./pmsInventoryMaterializationRepository.js";
+import { createTargetPmsInventoryReservationPort } from "./pmsInventoryReservation.js";
+import { lockPmsInventoryMutationScope } from "./pmsInventoryMutationLock.js";
 import {
   createPgPmsInventoryReservationLifecycleRepository,
   type PmsInventoryReservationLifecycleAuthorizationPort,
@@ -161,6 +163,223 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
       outbox: 2,
       receipts: 1,
     });
+  });
+
+  it("advances canonical revisions and consumes each public booking release once", async () => {
+    const fixture = await createFixture(admin, closeables, { capacity: 2, startingLimit: 2 });
+    await admin.query(
+      `INSERT INTO pms.inventory_days (
+         property_id, room_type_id, stay_date, total_count, available_count,
+         calendar_revision, inventory_revision, generated_sellable_limit_count,
+         effective_sellable_limit_count, generated_source_revision,
+         channel_source_revision, manual_source_revision, block_source_revision,
+         booking_source_revision
+       ) SELECT $1::uuid, $2::uuid, stay_date, 2, 2,
+                1, 1, 2, 2, 1, 0, 0, 0, 0
+         FROM unnest(ARRAY[DATE '2026-08-04', DATE '2026-08-05']) AS stay_date`,
+      [fixture.propertyId, fixture.roomTypeId],
+    );
+    await admin.query(
+      `INSERT INTO pms.inventory_days (
+         property_id, room_type_id, stay_date, total_count, available_count
+       ) VALUES ($1::uuid, $2::uuid, DATE '2026-08-06', 2, 2)`,
+      [fixture.propertyId, fixture.roomTypeId],
+    );
+    const publicId = `reservation-${fixture.propertyId}`;
+    const publicOfferKey = `room-${fixture.roomTypeId}:flexible`;
+    await admin.query(
+      `INSERT INTO hotel_catalog.property_public_profile_read_model (
+         property_id, public_id, display_name, canonical_slug,
+         default_locale, supported_locales, profile_status
+       ) VALUES ($1::uuid, $2, 'Reservation Hotel', $2, 'en', ARRAY['en'], 'complete')`,
+      [fixture.propertyId, publicId],
+    );
+    await admin.query(
+      `INSERT INTO distribution.public_hotel_bookability_profiles (
+         property_id, public_id, canonical_slug, canonical_url, booking_base_url,
+         timezone, default_currency, supported_currencies, profile_status,
+         freshness_status, public_setup_completeness
+       ) VALUES (
+         $1::uuid, $2, $2, 'https://booking.example.test/' || $2,
+         'https://booking.example.test', 'Europe/Berlin', 'EUR', ARRAY['EUR'],
+         'public', 'fresh', '{"status":"ready"}'::jsonb
+       )`,
+      [fixture.propertyId, publicId],
+    );
+    await admin.query(
+      `INSERT INTO distribution.public_room_offer_snapshots (
+         property_id, room_type_id, stay_date, public_offer_key,
+         available_rooms, currency, freshness_status
+       ) SELECT $1::uuid, $2::uuid, stay_date, $3, 2, 'EUR', 'fresh'
+         FROM unnest(ARRAY[
+           DATE '2026-08-04', DATE '2026-08-05', DATE '2026-08-06'
+         ]) AS stay_date`,
+      [fixture.propertyId, fixture.roomTypeId, publicOfferKey],
+    );
+    const port = createTargetPmsInventoryReservationPort();
+    const inTransaction = async <T>(operation: (client: pg.Client) => Promise<T>): Promise<T> => {
+      await admin.query("BEGIN");
+      try {
+        const result = await operation(admin);
+        await admin.query("COMMIT");
+        return result;
+      } catch (error) {
+        await admin.query("ROLLBACK");
+        throw error;
+      }
+    };
+    const reserve = (quoteSessionId: string, checkIn: string, checkOut: string) =>
+      inTransaction((transaction) =>
+        port.reserve({
+          transaction,
+          propertyId: fixture.propertyId,
+          quoteSessionId,
+          roomTypeId: fixture.roomTypeId,
+          publicOfferKey,
+          checkIn,
+          checkOut,
+          roomCount: 1,
+          currency: "EUR",
+          occurredAt: ACCEPTED_AT,
+        }),
+      );
+    const first = await reserve(randomUUID(), "2026-08-04", "2026-08-06");
+    const second = await reserve(randomUUID(), "2026-08-04", "2026-08-05");
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+
+    const release = (reservation: NonNullable<typeof first>) =>
+      inTransaction((transaction) =>
+        port.release({
+          transaction,
+          propertyId: fixture.propertyId,
+          reservation,
+          occurredAt: RELEASED_AT,
+        }),
+      );
+    await release(first!);
+    const afterFirstRelease = (await readDays(admin, fixture)).slice(0, 2);
+    expect(afterFirstRelease).toEqual([
+      dayState("2026-08-04", 1, 1, 4, 3),
+      dayState("2026-08-05", 0, 2, 3, 2),
+    ]);
+    await release(first!);
+    expect((await readDays(admin, fixture)).slice(0, 2)).toEqual(afterFirstRelease);
+    await expect(readPublicOfferAvailability(admin, fixture.propertyId)).resolves.toEqual([
+      { stayDate: "2026-08-04", availableRooms: 1 },
+      { stayDate: "2026-08-05", availableRooms: 2 },
+      { stayDate: "2026-08-06", availableRooms: 2 },
+    ]);
+
+    await release(second!);
+    expect((await readDays(admin, fixture)).slice(0, 2)).toEqual([
+      dayState("2026-08-04", 0, 2, 5, 4),
+      dayState("2026-08-05", 0, 2, 3, 2),
+    ]);
+
+    const legacy = await reserve(randomUUID(), "2026-08-06", "2026-08-07");
+    expect(legacy).not.toBeNull();
+    await release(legacy!);
+    const legacyDay = (await readDays(admin, fixture)).at(-1);
+    expect(legacyDay).toEqual({
+      stayDate: "2026-08-06",
+      assignedCount: 0,
+      availableCount: 2,
+      inventoryRevision: null,
+      bookingRevision: null,
+    });
+    const releases = await admin.query<{ count: number }>(
+      `SELECT count(*)::integer AS count
+       FROM platform.idempotency_keys
+       WHERE property_id = $1::uuid
+         AND operation = 'pms.direct_booking_inventory.release'`,
+      [fixture.propertyId],
+    );
+    expect(releases.rows[0]?.count).toBe(3);
+
+    await admin.query(
+      `INSERT INTO pms.inventory_days (
+         property_id, room_type_id, stay_date, total_count, available_count,
+         calendar_revision, inventory_revision, generated_sellable_limit_count,
+         effective_sellable_limit_count, generated_source_revision,
+         channel_source_revision, manual_source_revision, block_source_revision,
+         booking_source_revision
+       ) SELECT $1::uuid, $2::uuid, stay_date, 2, 2,
+                1, 1, 2, 2, 1, 0, 0, 0, 0
+         FROM unnest(ARRAY[DATE '2026-08-07', DATE '2026-08-08']) AS stay_date`,
+      [fixture.propertyId, fixture.roomTypeId],
+    );
+    await admin.query(
+      `INSERT INTO distribution.public_room_offer_snapshots (
+         property_id, room_type_id, stay_date, public_offer_key,
+         available_rooms, currency, freshness_status
+       ) SELECT $1::uuid, $2::uuid, stay_date, $3, 2, 'EUR', 'fresh'
+         FROM unnest(ARRAY[DATE '2026-08-07', DATE '2026-08-08']) AS stay_date`,
+      [fixture.propertyId, fixture.roomTypeId, publicOfferKey],
+    );
+    const contested = await reserve(randomUUID(), "2026-08-07", "2026-08-09");
+    if (!contested) throw new Error("Expected contested reservation marker");
+    const blocker = new pg.Client({ connectionString: TEST_DATABASE_URL! });
+    const waiter = new pg.Client({ connectionString: TEST_DATABASE_URL! });
+    let pendingRelease: Promise<void> | undefined;
+    await Promise.all([blocker.connect(), waiter.connect()]);
+    try {
+      await Promise.all([blocker.query("BEGIN"), waiter.query("BEGIN")]);
+      await lockPmsInventoryMutationScope(blocker, fixture.propertyId);
+      const waiterPid = await waiter.query<{ pid: number }>(
+        "SELECT pg_backend_pid()::integer AS pid",
+      );
+      pendingRelease = port.release({
+        transaction: waiter,
+        propertyId: fixture.propertyId,
+        reservation: contested,
+        occurredAt: RELEASED_AT,
+      });
+      await waitForAdvisoryWaiter(admin, waiterPid.rows[0]!.pid);
+      await blocker.query(
+        `UPDATE pms.inventory_days
+         SET assigned_count = 0, available_count = 2,
+             inventory_revision = inventory_revision + 1,
+             booking_source_revision = booking_source_revision + 1
+         WHERE property_id = $1::uuid AND room_type_id = $2::uuid
+           AND stay_date = DATE '2026-08-08'`,
+        [fixture.propertyId, fixture.roomTypeId],
+      );
+      await blocker.query("COMMIT");
+      await pendingRelease;
+      await waiter.query("COMMIT");
+    } finally {
+      await Promise.allSettled([blocker.query("ROLLBACK"), waiter.query("ROLLBACK")]);
+      if (pendingRelease) await Promise.allSettled([pendingRelease]);
+      await Promise.all([blocker.end(), waiter.end()]);
+    }
+    const contestedDays = await admin.query<{
+      stayDate: string;
+      assignedCount: number;
+      inventoryRevision: number;
+      bookingRevision: number;
+    }>(
+      `SELECT stay_date::text AS "stayDate", assigned_count AS "assignedCount",
+              inventory_revision AS "inventoryRevision",
+              booking_source_revision AS "bookingRevision"
+       FROM pms.inventory_days
+       WHERE property_id = $1::uuid AND room_type_id = $2::uuid
+         AND stay_date >= DATE '2026-08-07'
+       ORDER BY stay_date`,
+      [fixture.propertyId, fixture.roomTypeId],
+    );
+    expect(contestedDays.rows).toEqual([
+      { stayDate: "2026-08-07", assignedCount: 1, inventoryRevision: 2, bookingRevision: 1 },
+      { stayDate: "2026-08-08", assignedCount: 0, inventoryRevision: 3, bookingRevision: 2 },
+    ]);
+    const finalReleases = await admin.query<{ count: number }>(
+      `SELECT count(*)::integer AS count
+       FROM platform.idempotency_keys
+       WHERE property_id = $1::uuid
+         AND operation = 'pms.direct_booking_inventory.release'`,
+      [fixture.propertyId],
+    );
+    expect(finalReleases.rows[0]?.count).toBe(3);
   });
 
   it("rejects a stale full-stay watermark without changing any day", async () => {
@@ -1051,6 +1270,30 @@ async function readDays(admin: pg.Client, fixture: Fixture) {
     [fixture.propertyId, fixture.roomTypeId],
   );
   return result.rows;
+}
+
+async function readPublicOfferAvailability(admin: pg.Client, propertyId: string) {
+  const result = await admin.query<{ stayDate: string; availableRooms: number }>(
+    `SELECT stay_date::text AS "stayDate", available_rooms AS "availableRooms"
+     FROM distribution.public_room_offer_snapshots
+     WHERE property_id = $1::uuid
+     ORDER BY stay_date`,
+    [propertyId],
+  );
+  return result.rows;
+}
+
+async function waitForAdvisoryWaiter(admin: pg.Client, processId: number): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await admin.query<{ waiting: boolean }>(
+      `SELECT wait_event_type = 'Lock' AND wait_event = 'advisory' AS waiting
+       FROM pg_stat_activity WHERE pid = $1`,
+      [processId],
+    );
+    if (result.rows[0]?.waiting === true) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for inventory advisory lock contention");
 }
 
 function dayState(

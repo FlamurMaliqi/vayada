@@ -40,6 +40,23 @@ const surfaceRules = {
     pathPrefixRule("/admin/invite-codes", "legacy Marketplace Admin invite route"),
     pathPrefixRule("/api/invite-codes", "legacy hotel invite lookup and redeem route"),
   ],
+  "vayada-admin-affiliate-payouts": [
+    legacyProductionHostRule(),
+    legacyLocalServiceRule(),
+    pathPrefixRule(
+      "/super-admin/affiliate-payouts",
+      "legacy PMS Platform Admin affiliate payout route",
+    ),
+  ],
+  "vayada-admin-property-lifecycle": [
+    legacyProductionHostRule(),
+    legacyLocalServiceRule(),
+    pathRule("/platform-admin", "legacy platform admin route"),
+    pathPrefixRule("/platform-admin/", "legacy platform admin route"),
+    pathRule("/super-admin", "legacy PMS super-admin route"),
+    pathPrefixRule("/super-admin/", "legacy PMS super-admin route"),
+    pathRule("/admin/hotels", "legacy Booking hotel management route"),
+  ],
   "marketplace-web-hotel-invites": [
     legacyProductionHostRule(),
     legacyLocalServiceRule(),

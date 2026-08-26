@@ -6,14 +6,14 @@ on:
       image_tag:
         description: Immutable production recovery tag
         required: true
-        default: prod-recovery-c879df4-pms-web
+        default: prod-recovery-ff3121a-pms-web
       cutover_justification:
         description: Why this production recovery is required
         required: true
       rollback_image:
         description: Existing canonical PMS image to restore if cutover fails
         required: true
-        default: 269416271598.dkr.ecr.eu-west-1.amazonaws.com/vayada-pms-frontend:5d6248c4963a9dda0ff6e8bccaac4d867499de87
+        default: 269416271598.dkr.ecr.eu-west-1.amazonaws.com/vayada-pms-frontend:prod-recovery-c879df4-pms-web
 
 permissions:
   id-token: write
@@ -28,7 +28,7 @@ env:
   ECR_REPOSITORY: vayada-pms-frontend
   AWS_ACCOUNT_ID: 269416271598
   APP_DIR: apps/pms-web
-  APPROVED_SOURCE_REF: c879df4fb2b207ff69eb87442743aee7e42536ff
+  APPROVED_SOURCE_REF: ff3121aec772403c3ffea374f0aa9931f0e90735
   IMAGE_TAG: ${{ inputs.image_tag }}
   CUTOVER_JUSTIFICATION: ${{ inputs.cutover_justification }}
   ROLLBACK_IMAGE: ${{ inputs.rollback_image }}

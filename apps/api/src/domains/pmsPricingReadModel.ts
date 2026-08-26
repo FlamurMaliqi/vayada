@@ -50,6 +50,10 @@ export type PmsFlexibleRatePlanRow = {
 };
 
 type Queryable = Pick<PmsPricingReadClient, "query">;
+type PmsPricingSourcesRow = {
+  pricingCurrency: PmsPricingCurrencyRow | null;
+  flexibleRatePlans: PmsFlexibleRatePlanRow[];
+};
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -73,6 +77,21 @@ const PLAN_SELECT = `SELECT
   plan.created_at AS "createdAt",
   plan.updated_at AS "updatedAt"
 FROM pms.rate_plans plan`;
+
+const PRICING_SOURCES_SELECT = `WITH pricing_currency AS (
+  ${CURRENCY_SELECT}
+  WHERE settings.property_id = $1::uuid
+), flexible_rate_plans AS (
+  ${PLAN_SELECT}
+  WHERE plan.property_id = $1::uuid
+    AND plan.pricing_contract_version = $2
+)
+SELECT
+  (SELECT row_to_json(currency_row) FROM pricing_currency currency_row) AS "pricingCurrency",
+  COALESCE(
+    (SELECT json_agg(plan ORDER BY plan."roomTypeId") FROM flexible_rate_plans plan),
+    '[]'::json
+  ) AS "flexibleRatePlans"`;
 
 export function createPgPmsPricingReadModel(config: {
   connectionString: string;
@@ -121,21 +140,7 @@ export function createPgPmsPricingReadModel(config: {
       const client = await pool.connect();
       try {
         await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
-        const pricingCurrency = await queryCurrency(client, normalizedPropertyId);
-        if (!pricingCurrency) {
-          await client.query("COMMIT");
-          return null;
-        }
-        const flexibleRatePlans = await queryPlans(client, normalizedPropertyId);
-        const captured = now();
-        const snapshot = parsePmsPricingSourceSnapshot({
-          contractVersion: PMS_PRICING_CONTRACT_VERSION,
-          propertyId: normalizedPropertyId,
-          pricingCurrency,
-          flexibleRatePlans,
-          capturedAt: validDate(captured) ? captured.toISOString() : null,
-        });
-        if (!snapshot) throw new Error("PMS pricing source failed contract validation");
+        const snapshot = await loadPmsPricingSourceSnapshot(client, normalizedPropertyId, now());
         await client.query("COMMIT");
         return snapshot;
       } catch (error) {
@@ -153,6 +158,30 @@ export function createPgPmsPricingReadModel(config: {
       closed = true;
     },
   };
+}
+
+export async function loadPmsPricingSourceSnapshot(
+  queryable: Queryable,
+  propertyId: string,
+  captured: Date,
+) {
+  const normalizedPropertyId = readUuid(propertyId);
+  const result = await queryable.query<PmsPricingSourcesRow>(PRICING_SOURCES_SELECT, [
+    normalizedPropertyId,
+    PMS_PRICING_CONTRACT_VERSION,
+  ]);
+  if (result.rows.length !== 1) throw new Error("PMS pricing sources read is malformed");
+  const row = result.rows[0]!;
+  if (!row.pricingCurrency) return null;
+  const snapshot = parsePmsPricingSourceSnapshot({
+    contractVersion: PMS_PRICING_CONTRACT_VERSION,
+    propertyId: normalizedPropertyId,
+    pricingCurrency: pmsPricingCurrencySnapshotFromRow(row.pricingCurrency),
+    flexibleRatePlans: row.flexibleRatePlans.map(pmsFlexibleRatePlanSnapshotFromRow),
+    capturedAt: validDate(captured) ? captured.toISOString() : null,
+  });
+  if (!snapshot) throw new Error("PMS pricing source failed contract validation");
+  return snapshot;
 }
 
 export function pmsPricingCurrencySnapshotFromRow(
@@ -259,7 +288,8 @@ function databaseInteger(value: number | string): number {
 }
 
 function isoDate(value: Date | string): string | null {
-  return typeof value === "string" ? value : validDate(value) ? value.toISOString() : null;
+  const parsed = typeof value === "string" ? new Date(value) : value;
+  return validDate(parsed) ? parsed.toISOString() : null;
 }
 
 function validDate(value: Date): boolean {

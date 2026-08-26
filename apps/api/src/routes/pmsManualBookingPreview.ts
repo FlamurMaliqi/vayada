@@ -58,6 +58,31 @@ export async function registerPmsManualBookingPreviewRoutes(
   app: FastifyInstance,
   ports: PmsManualBookingPreviewRoutesOptions,
 ): Promise<void> {
+  app.get<{ Params: { propertyId: string }; Querystring: unknown }>(
+    "/properties/:propertyId/manual-bookings/addons",
+    async (request, reply) => {
+      try {
+        const { propertyId } = authorize(request);
+        if (Object.keys(request.query as object).length) fail(400, "unknown_field");
+        const context = await ports.booking.listAddonItemsByHotelId(propertyId);
+        if (!context) fail(404, "property_not_found");
+        // prettier-ignore
+        const addOns = context.addonItems.filter((addon) => addon.status === "active").map(({ addonItemId, name, description, price, currency, category, pricingModel }) => ({ addonItemId, name, description, price, currency, category, pricingModel }));
+        return reply.send({
+          contractVersion: "pms-manual-booking.v1",
+          addOns,
+        });
+      } catch (error) {
+        if (error instanceof UnauthorizedError)
+          return reply.status(401).send({ code: "unauthenticated" });
+        if (error instanceof AuthorizationError)
+          return reply.status(403).send({ code: "forbidden" });
+        if (error instanceof PreviewError) return reply.status(error.status).send(error.body);
+        request.log.error({ err: error }, "manual booking add-ons failed");
+        return reply.status(500).send({ code: "manual_booking_preview_unavailable" });
+      }
+    },
+  );
   app.post<{ Params: { propertyId: string }; Querystring: unknown; Body: unknown }>(
     "/properties/:propertyId/manual-bookings/preview",
     async (request, reply) => {

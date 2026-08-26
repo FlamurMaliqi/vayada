@@ -6,6 +6,7 @@ module.exports = {
     "./app/**/*.{js,ts,jsx,tsx,mdx}",
     "../../packages/feature-hub/src/**/*.{js,ts,jsx,tsx}",
     "../../packages/product-onboarding/src/**/*.{js,ts,jsx,tsx}",
+    "../../packages/settings-ui/src/**/*.{js,ts,jsx,tsx}",
   ],
   theme: {
     extend: {

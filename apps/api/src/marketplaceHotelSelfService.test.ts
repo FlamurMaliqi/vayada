@@ -13,6 +13,7 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import type { MarketplaceAdminCreateOfferRequest } from "./routes/marketplaceAdmin.js";
 import {
   createPgMarketplaceHotelSelfServiceRepository,
@@ -727,6 +728,7 @@ function buildMarketplaceHotelApp(options: {
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepository(options.linkedResources),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["marketplace.profile.manage"];

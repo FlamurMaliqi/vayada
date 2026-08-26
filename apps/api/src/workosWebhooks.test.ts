@@ -289,6 +289,40 @@ describe("WorkOS webhook routes", () => {
     await app.close();
   });
 
+  it("reconciles membership fields deserialized by the WorkOS SDK", async () => {
+    const store = createMemoryStore();
+    store.users.set("user_workos_platform", userPayload());
+    store.organizations.set("org_workos_platform", organizationPayload());
+    const app = buildApp({
+      workosWebhooks: {
+        secret: "whsec_test",
+        verifier: verifierFor(
+          event("evt_membership_created", "organization_membership.created", {
+            id: "om_platform",
+            userId: "user_workos_platform",
+            organizationId: "org_workos_platform",
+            role: { slug: "admin" },
+            roles: [{ slug: "admin" }],
+            status: "active",
+          }),
+        ),
+        store,
+        processInline: true,
+      },
+    });
+
+    const response = await postWebhook(app, "evt_membership_created");
+
+    expect(response.json()).toMatchObject({ status: "accepted" });
+    expect(store.memberships.get("om_platform")).toMatchObject({
+      workosUserId: "user_workos_platform",
+      workosOrgId: "org_workos_platform",
+      roleKey: "admin",
+      status: "active",
+    });
+    await app.close();
+  });
+
   it("deactivates memberships from WorkOS removal events", async () => {
     const store = createMemoryStore();
     store.users.set("user_workos_platform", {
@@ -476,12 +510,32 @@ function userData() {
   };
 }
 
+function userPayload(): WorkosUserPayload {
+  return {
+    workosUserId: "user_workos_platform",
+    email: "admin@example.com",
+    emailVerified: true,
+    status: "active",
+    rawProfile: {},
+  };
+}
+
 function organizationData() {
   return {
     id: "org_workos_platform",
     name: "Platform",
     slug: "platform",
     organization_kind: "platform",
+  };
+}
+
+function organizationPayload(): WorkosOrganizationPayload {
+  return {
+    workosOrgId: "org_workos_platform",
+    name: "Platform",
+    slug: "platform",
+    kind: "platform",
+    status: "active",
   };
 }
 

@@ -12,6 +12,7 @@ import {
 } from "@/services/api/pmsPropertyClient";
 import { isPmsOperationsReadModelEnabled } from "@/services/api/pmsOperationsClient";
 import {
+  formatPropertyDate,
   getArrivalsToday,
   getDeparturesToday,
   getPropertyToday,
@@ -22,6 +23,7 @@ import { CURRENCY_OPTIONS } from "@/lib/constants/options";
 import SearchModal from "./SearchModal";
 
 interface DayStats {
+  today: string;
   arrivals: number;
   remainingArrivals: number;
   departures: number;
@@ -37,13 +39,14 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
   const [currency, setCurrency] = useState("EUR");
   const [savingCurrency, setSavingCurrency] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [hotels, setHotels] = useState<HotelSummary[]>([]);
+  const [hotels, setHotels] = useState<HotelSummary[] | null>(null);
   const [selectedHotel, setSelectedHotel] = useState<HotelSummary | null>(null);
   const currencyEditable = !isPmsOperationsReadModelEnabled();
 
   const [userName, setUserName] = useState("");
   const [userEmail, setUserEmail] = useState("");
   const [stats, setStats] = useState<DayStats>({
+    today: getPropertyToday(),
     arrivals: 0,
     remainingArrivals: 0,
     departures: 0,
@@ -134,6 +137,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
         const arrivalsToday = getArrivalsToday(bookings, today);
         const departuresToday = getDeparturesToday(bookings, today);
         setStats({
+          today,
           arrivals: arrivalsToday.length,
           remainingArrivals: getRemainingArrivals(arrivalsToday),
           departures: departuresToday.length,
@@ -151,8 +155,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
         .slice(0, 2)
     : "?";
 
-  const today = new Date();
-  const dateStr = today.toLocaleDateString("en-US", {
+  const dateStr = formatPropertyDate(stats.today, {
     weekday: "long",
     month: "short",
     day: "numeric",
@@ -185,7 +188,8 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
             title={selectedHotel?.name || undefined}
           >
             <span className="font-medium truncate">
-              {selectedHotel?.name || t("layout.header.noProperties")}
+              {selectedHotel?.name ||
+                (hotels === null ? t("common.loading") : t("layout.header.noProperties"))}
             </span>
             <ChevronDownIcon
               className={`w-3.5 h-3.5 text-gray-400 transition-transform shrink-0 ${propertyOpen ? "rotate-180" : ""}`}
@@ -198,7 +202,7 @@ export default function Header({ onMenuToggle }: { onMenuToggle?: () => void }) 
                 {t("layout.header.switchProperty")}
               </p>
               <div className="px-1.5 max-h-60 overflow-y-auto">
-                {hotels.map((hotel) => {
+                {hotels?.map((hotel) => {
                   const isSelected = selectedHotel?.id === hotel.id;
                   return (
                     <button

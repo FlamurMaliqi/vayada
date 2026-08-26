@@ -68,6 +68,10 @@ const publicHotelProfile = {
     summary: hotel.description,
     images: hotel.images.map((url) => ({ url, alt: hotel.name })),
     amenities: hotel.amenities,
+    publicContacts: [
+      { type: "email", value: hotel.contact.email },
+      { type: "phone", value: hotel.contact.phone },
+    ],
     policies: {
       checkInFrom: hotel.checkInTime,
       checkOutUntil: hotel.checkOutTime,
@@ -319,6 +323,7 @@ type MockBookingApisOptions = {
   supportedQuoteParameters?: Partial<typeof publicHotelProfile.hotel.supportedQuoteParameters>;
   headerLogoUrl?: string;
   gardenAmenities?: string[];
+  publicContacts?: typeof publicHotelProfile.hotel.publicContacts;
 };
 
 export async function mockBookingApis(page: Page, options: MockBookingApisOptions = {}) {
@@ -339,6 +344,7 @@ export async function mockBookingApis(page: Page, options: MockBookingApisOption
             },
           }
         : {}),
+      publicContacts: options.publicContacts ?? publicHotelProfile.hotel.publicContacts,
       supportedQuoteParameters: {
         ...publicHotelProfile.hotel.supportedQuoteParameters,
         ...options.supportedQuoteParameters,

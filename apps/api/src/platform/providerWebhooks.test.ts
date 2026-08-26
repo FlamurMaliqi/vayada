@@ -39,6 +39,37 @@ describe("provider webhook booking settlement", () => {
         };
       }
       if (sql.includes("UPDATE booking.guest_bookings")) return { rows: [{ id: "booking-1" }] };
+      if (sql.includes('from_status AS "fromStatus"')) {
+        return { rows: [{ fromStatus: "draft", toStatus: "confirmed" }] };
+      }
+      if (sql.includes('AS "hostEmail"')) {
+        return {
+          rows: [
+            {
+              propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+              guestBookingId: "b9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+              bookingReference: "B-001",
+              guestEmail: "guest@example.test",
+              guestName: "Ada Guest",
+              hostEmail: "reservations@example.test",
+              propertyName: "Hotel Alpenrose",
+              checkIn: "2026-09-12",
+              checkOut: "2026-09-15",
+              totalAmount: "600.00",
+              balanceAmount: "0.00",
+              currency: "EUR",
+              paymentMethod: "card",
+              bookingMetadata: {},
+            },
+          ],
+        };
+      }
+      if (sql.includes("INSERT INTO platform.domain_events")) {
+        return { rows: [{ eventId: "c9fccec2-eb4c-4c35-bfd3-02a748c2e117" }] };
+      }
+      if (sql.includes('RETURNING id::text AS "jobId"')) {
+        return { rows: [{ jobId: "d9fccec2-eb4c-4c35-bfd3-02a748c2e117", replay: false }] };
+      }
       return { rows: [], rowCount: 0 };
     });
     await settleCapturedStripeBooking(

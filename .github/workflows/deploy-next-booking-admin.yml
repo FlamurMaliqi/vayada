@@ -58,7 +58,6 @@ jobs:
             --build-arg NEXT_PUBLIC_PMS_FRONTEND_URL=https://next-pms.vayada.com \
             --build-arg NEXT_PUBLIC_MARKETPLACE_URL=https://next-marketplace.vayada.com \
             --build-arg 'NEXT_PUBLIC_BOOKING_URL_TEMPLATE=https://{slug}.next-booking.vayada.com' \
-            --build-arg NEXT_PUBLIC_BOOKING_RESERVATIONS_ENABLED=true \
             -t ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-latest \
             -t ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-${{ github.sha }} \
             -f ${{ env.APP_DIR }}/Dockerfile \

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { GlobeAltIcon } from "@heroicons/react/24/outline";
+import { LocalizationMultiSelect } from "@vayada/product-onboarding/LocalizationMultiSelect";
 import { useTranslation } from "@/lib/i18n";
 import { SaveButton } from "@/components/ui";
 import {
@@ -104,13 +105,17 @@ export default function LocalizationTab({
       </div>
 
       <div>
-        <label className="block text-[13px] text-gray-700 mb-1">
+        <label
+          htmlFor="booking-localization-additional-currencies"
+          className="block text-[13px] text-gray-700 mb-1"
+        >
           <span className="font-medium">{t("bookingFlow.localization.additionalCurrencies")}</span>{" "}
           <span className="text-gray-400 font-normal text-[11px]">
             {t("bookingFlow.localization.optional")}
           </span>
         </label>
-        <SearchableMultiSelect<CurrencyOption>
+        <LocalizationMultiSelect<CurrencyOption>
+          id="booking-localization-additional-currencies"
           selected={supportedCurrencies}
           onToggle={toggleCurrency}
           options={CURRENCY_OPTIONS}
@@ -124,13 +129,17 @@ export default function LocalizationTab({
       </div>
 
       <div>
-        <label className="block text-[13px] text-gray-700 mb-1">
+        <label
+          htmlFor="booking-localization-additional-languages"
+          className="block text-[13px] text-gray-700 mb-1"
+        >
           <span className="font-medium">{t("bookingFlow.localization.additionalLanguages")}</span>{" "}
           <span className="text-gray-400 font-normal text-[11px]">
             {t("bookingFlow.localization.optional")}
           </span>
         </label>
-        <SearchableMultiSelect<LanguageOption>
+        <LocalizationMultiSelect<LanguageOption>
+          id="booking-localization-additional-languages"
           selected={supportedLanguages}
           onToggle={toggleLanguage}
           options={LANGUAGE_OPTIONS}
@@ -250,155 +259,6 @@ function FlagSelect<T extends { code: string; flag: string }>({
             )}
           </div>
         </div>
-      )}
-    </div>
-  );
-}
-
-function SearchableMultiSelect<T extends { code: string; flag: string }>({
-  selected,
-  onToggle,
-  options,
-  excludeCode,
-  placeholder,
-  getLabel,
-  getSearchLabel,
-  popularCodes,
-  emptyMessage,
-}: {
-  selected: string[];
-  onToggle: (code: string) => void;
-  options: T[];
-  excludeCode: string;
-  placeholder: string;
-  getLabel: (opt: T) => string;
-  getSearchLabel: (opt: T) => string;
-  popularCodes: string[];
-  emptyMessage: string;
-}) {
-  const [query, setQuery] = useState("");
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  const available = options.filter((o) => o.code !== excludeCode);
-  const filtered = query.trim()
-    ? available.filter((o) => getSearchLabel(o).toLowerCase().includes(query.toLowerCase()))
-    : available;
-  const popular = available.filter((o) => popularCodes.includes(o.code));
-
-  return (
-    <div ref={ref}>
-      <div className="relative">
-        <svg
-          className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-          />
-        </svg>
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setOpen(true);
-          }}
-          onFocus={() => setOpen(true)}
-          placeholder={placeholder}
-          className="w-full pl-9 pr-3 py-1.5 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-gray-900 placeholder:text-gray-400"
-        />
-        {open && query.trim() && (
-          <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-56 overflow-y-auto">
-            {filtered.length === 0 ? (
-              <p className="px-3 py-2 text-[13px] text-gray-400">No results found</p>
-            ) : (
-              filtered.map((opt) => {
-                const isSelected = selected.includes(opt.code);
-                return (
-                  <button
-                    key={opt.code}
-                    type="button"
-                    onClick={() => {
-                      onToggle(opt.code);
-                      setQuery("");
-                      setOpen(false);
-                    }}
-                    className={`w-full flex items-center gap-2 px-3 py-2 text-[13px] text-left transition-colors ${isSelected ? "bg-primary-500 text-white" : "hover:bg-gray-50 text-gray-900"}`}
-                  >
-                    <span>{opt.flag}</span>
-                    <span>{getSearchLabel(opt)}</span>
-                  </button>
-                );
-              })
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="mt-2">
-        <p className="text-[11px] text-gray-400 font-medium mb-1.5">Popular choices &mdash;</p>
-        <div className="flex flex-wrap gap-1.5">
-          {popular.map((opt) => {
-            const isSelected = selected.includes(opt.code);
-            return (
-              <button
-                key={opt.code}
-                type="button"
-                onClick={() => onToggle(opt.code)}
-                className={`inline-flex items-center gap-1 px-2.5 py-0.5 text-[11px] font-medium rounded-full transition-colors ${
-                  isSelected
-                    ? "bg-primary-100 text-primary-700 border border-primary-300"
-                    : "bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100"
-                }`}
-              >
-                {opt.flag} {getLabel(opt)}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {selected.length > 0 ? (
-        <div className="mt-2">
-          <p className="text-[11px] text-gray-400 font-medium mb-1.5">Added ({selected.length}):</p>
-          <div className="flex flex-wrap gap-1.5">
-            {selected.map((code) => {
-              const opt = options.find((o) => o.code === code);
-              if (!opt) return null;
-              return (
-                <span
-                  key={code}
-                  className="inline-flex items-center gap-1 px-2.5 py-0.5 text-[11px] font-medium rounded-full bg-primary-100 text-primary-700 border border-primary-300"
-                >
-                  {opt.flag} {getLabel(opt)}
-                  <button
-                    type="button"
-                    onClick={() => onToggle(code)}
-                    className="ml-0.5 text-primary-400 hover:text-primary-600"
-                  >
-                    &times;
-                  </button>
-                </span>
-              );
-            })}
-          </div>
-        </div>
-      ) : (
-        <p className="mt-2 text-[11px] text-gray-400 italic">{emptyMessage}</p>
       )}
     </div>
   );

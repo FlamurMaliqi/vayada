@@ -1,5 +1,6 @@
 import pg from "pg";
 import { WorkOS } from "@workos-inc/node";
+import { membershipPropertyAccessModeForProvisioning } from "@vayada/backend-auth";
 
 import type {
   WorkosMembershipPayload,
@@ -526,10 +527,12 @@ async function upsertWorkosMembership(
          user_id,
          status,
          role_key,
+         property_access_mode,
+         access_origin,
          workos_membership_id,
          workos_role_slugs
        )
-     VALUES ($1, $2, $3, $4, $5, $6)
+     VALUES ($1, $2, $3, $4, $5, 'agency', $6, $7)
      ON CONFLICT (organization_id, user_id)
      DO UPDATE SET
        status = CASE
@@ -538,7 +541,16 @@ async function upsertWorkosMembership(
          THEN identity.organization_memberships.status
          ELSE EXCLUDED.status
        END,
-       role_key = EXCLUDED.role_key,
+       role_key = CASE
+         WHEN identity.organization_memberships.access_origin = 'external_owner'
+         THEN identity.organization_memberships.role_key
+         ELSE EXCLUDED.role_key
+       END,
+       property_access_mode = CASE
+         WHEN identity.organization_memberships.access_origin = 'external_owner'
+         THEN identity.organization_memberships.property_access_mode
+         ELSE EXCLUDED.property_access_mode
+       END,
        workos_membership_id = EXCLUDED.workos_membership_id,
        workos_role_slugs = EXCLUDED.workos_role_slugs,
        updated_at = now()`,
@@ -547,6 +559,7 @@ async function upsertWorkosMembership(
       userId,
       input.status,
       roleKey,
+      membershipPropertyAccessModeForProvisioning(organization.kind, roleKey),
       input.workosMembershipId,
       input.workosRoleSlugs,
     ],

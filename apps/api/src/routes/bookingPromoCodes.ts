@@ -15,12 +15,15 @@ export type BookingPromoCode = {
   code: string;
   discountType: BookingPromoDiscountType;
   discountValue: string;
-  currency: string | null;
+  minBookingValue: string | null;
+  applicableRoomIds: string[] | null;
   validFrom: string | null;
   validUntil: string | null;
+  stayDateFrom: string | null;
+  stayDateUntil: string | null;
   isActive: boolean;
-  maxUses: number | null;
-  useCount: number;
+  maxUses: number;
+  currentUses: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -29,11 +32,14 @@ export type CreateBookingPromoCodeBody = {
   code: string;
   discountType: BookingPromoDiscountType;
   discountValue: string;
-  currency: string | null;
+  minBookingValue: string | null;
+  applicableRoomIds: string[] | null;
   validFrom: string | null;
   validUntil: string | null;
+  stayDateFrom: string | null;
+  stayDateUntil: string | null;
   isActive: boolean;
-  maxUses: number | null;
+  maxUses: number;
 };
 
 export type UpdateBookingPromoCodeBody = Partial<CreateBookingPromoCodeBody>;
@@ -259,22 +265,28 @@ export function createPgTargetBookingPromoCodesRepository(config: {
       const result = await pool.query<PromoCodeRow>(
         `WITH inserted AS (
            INSERT INTO booking.promo_definitions (
-             property_id, code, discount_type, discount_value, currency,
-             valid_from, valid_until, is_active, max_uses
+             property_id, code, discount_type, discount_value, min_booking_value,
+             applicable_room_ids, valid_from, valid_until, stay_date_from, stay_date_until,
+             is_active, max_uses
            )
-           VALUES ($1, $2, $3, $4::numeric, $5, $6::date, $7::date, $8, $9)
-           RETURNING id
+           VALUES (
+             $1, $2, $3, $4::numeric, $5::numeric, $6::uuid[], $7::date, $8::date,
+             $9::date, $10::date, $11, $12
+           )
+           RETURNING *
          )
-         ${promoCodeSelectSql()}
-         JOIN inserted ON inserted.id = promo_definitions.id`,
+         ${promoCodeSelectSql("inserted")}`,
         [
           propertyId,
           body.code,
           body.discountType,
           body.discountValue,
-          body.currency,
+          body.minBookingValue,
+          body.applicableRoomIds,
           body.validFrom,
           body.validUntil,
+          body.stayDateFrom,
+          body.stayDateUntil,
           body.isActive,
           body.maxUses,
         ],
@@ -290,9 +302,12 @@ export function createPgTargetBookingPromoCodesRepository(config: {
       addSet(sets, values, "code", body.code);
       addSet(sets, values, "discount_type", body.discountType);
       addSet(sets, values, "discount_value", body.discountValue, "::numeric");
-      addSet(sets, values, "currency", body.currency);
+      addSet(sets, values, "min_booking_value", body.minBookingValue, "::numeric");
+      addSet(sets, values, "applicable_room_ids", body.applicableRoomIds, "::uuid[]");
       addSet(sets, values, "valid_from", body.validFrom, "::date");
       addSet(sets, values, "valid_until", body.validUntil, "::date");
+      addSet(sets, values, "stay_date_from", body.stayDateFrom, "::date");
+      addSet(sets, values, "stay_date_until", body.stayDateUntil, "::date");
       addSet(sets, values, "is_active", body.isActive);
       addSet(sets, values, "max_uses", body.maxUses);
       sets.push("updated_at = now()");
@@ -302,10 +317,9 @@ export function createPgTargetBookingPromoCodesRepository(config: {
            UPDATE booking.promo_definitions
            SET ${sets.join(", ")}
            WHERE property_id = $1 AND id::text = $2 AND status <> 'retired'
-           RETURNING id
+           RETURNING *
          )
-         ${promoCodeSelectSql()}
-         JOIN updated ON updated.id = promo_definitions.id`,
+         ${promoCodeSelectSql("updated")}`,
         values,
       );
       const row = result.rows[0];
@@ -335,32 +349,38 @@ type PromoCodeRow = {
   code: string;
   discountType: BookingPromoDiscountType;
   discountValue: string;
-  currency: string | null;
+  minBookingValue: string | null;
+  applicableRoomIds: string[] | null;
   validFrom: Date | string | null;
   validUntil: Date | string | null;
+  stayDateFrom: Date | string | null;
+  stayDateUntil: Date | string | null;
   isActive: boolean;
-  maxUses: number | null;
-  useCount: number;
+  maxUses: number;
+  currentUses: number;
   createdAt: Date | string;
   updatedAt: Date | string;
 };
 
-function promoCodeSelectSql(): string {
+function promoCodeSelectSql(source = "booking.promo_definitions"): string {
   return `SELECT
     promo_definitions.id::text AS "promoCodeId",
     promo_definitions.property_id::text AS "propertyId",
     promo_definitions.code,
     promo_definitions.discount_type AS "discountType",
     promo_definitions.discount_value::text AS "discountValue",
-    promo_definitions.currency,
+    promo_definitions.min_booking_value::text AS "minBookingValue",
+    promo_definitions.applicable_room_ids::text[] AS "applicableRoomIds",
     promo_definitions.valid_from AS "validFrom",
     promo_definitions.valid_until AS "validUntil",
+    promo_definitions.stay_date_from AS "stayDateFrom",
+    promo_definitions.stay_date_until AS "stayDateUntil",
     promo_definitions.is_active AS "isActive",
     promo_definitions.max_uses AS "maxUses",
-    promo_definitions.use_count AS "useCount",
+    promo_definitions.current_uses AS "currentUses",
     promo_definitions.created_at AS "createdAt",
     promo_definitions.updated_at AS "updatedAt"
-   FROM booking.promo_definitions`;
+   FROM ${source} promo_definitions`;
 }
 
 function addSet(
@@ -383,12 +403,15 @@ function toPromoCode(row: PromoCodeRow, hotelId: string): BookingPromoCode {
     code: row.code,
     discountType: row.discountType,
     discountValue: row.discountValue,
-    currency: row.currency,
+    minBookingValue: row.minBookingValue,
+    applicableRoomIds: row.applicableRoomIds,
     validFrom: toDateString(row.validFrom),
     validUntil: toDateString(row.validUntil),
+    stayDateFrom: toDateString(row.stayDateFrom),
+    stayDateUntil: toDateString(row.stayDateUntil),
     isActive: row.isActive,
     maxUses: row.maxUses,
-    useCount: row.useCount,
+    currentUses: row.currentUses,
     createdAt: new Date(row.createdAt).toISOString(),
     updatedAt: new Date(row.updatedAt).toISOString(),
   };
@@ -402,13 +425,17 @@ function parseCreateBody(body: unknown): ValidationResult<CreateBookingPromoCode
   const code = requiredCode(input, details);
   const discountType = requiredEnum(input, "discountType", DISCOUNT_TYPES, details);
   const discountValue = requiredDiscountValue(input, details);
-  const currency = optionalCurrency(input, details);
+  const minBookingValue = optionalMoney(input, "minBookingValue", details);
+  const applicableRoomIds = optionalRoomIds(input, details);
   const validFrom = optionalDate(input, "validFrom", details);
   const validUntil = optionalDate(input, "validUntil", details);
+  const stayDateFrom = optionalDate(input, "stayDateFrom", details);
+  const stayDateUntil = optionalDate(input, "stayDateUntil", details);
   const isActive = optionalBoolean(input, "isActive", details) ?? true;
-  const maxUses = optionalMaxUses(input, details);
-  validateDiscount(discountType, discountValue, currency, details);
+  const maxUses = requiredMaxUses(input, details);
+  validateDiscount(discountType, discountValue, details);
   validateDateOrder(validFrom, validUntil, details);
+  validateStayDateOrder(stayDateFrom, stayDateUntil, details);
   if (details.length > 0) return { ok: false, details };
   return {
     ok: true,
@@ -416,9 +443,12 @@ function parseCreateBody(body: unknown): ValidationResult<CreateBookingPromoCode
       code,
       discountType: discountType as BookingPromoDiscountType,
       discountValue,
-      currency,
+      minBookingValue,
+      applicableRoomIds,
       validFrom,
       validUntil,
+      stayDateFrom,
+      stayDateUntil,
       isActive,
       maxUses,
     },
@@ -443,11 +473,22 @@ function parseUpdateBody(body: unknown): ValidationResult<UpdateBookingPromoCode
     ) as BookingPromoDiscountType;
   }
   if ("discountValue" in input) value.discountValue = requiredDiscountValue(input, details);
-  if ("currency" in input) value.currency = optionalCurrency(input, details);
+  if ("minBookingValue" in input) {
+    value.minBookingValue = optionalMoney(input, "minBookingValue", details);
+  }
+  if ("applicableRoomIds" in input) {
+    value.applicableRoomIds = optionalRoomIds(input, details);
+  }
   if ("validFrom" in input) value.validFrom = optionalDate(input, "validFrom", details);
   if ("validUntil" in input) value.validUntil = optionalDate(input, "validUntil", details);
+  if ("stayDateFrom" in input) {
+    value.stayDateFrom = optionalDate(input, "stayDateFrom", details);
+  }
+  if ("stayDateUntil" in input) {
+    value.stayDateUntil = optionalDate(input, "stayDateUntil", details);
+  }
   if ("isActive" in input) value.isActive = requiredBoolean(input, "isActive", details);
-  if ("maxUses" in input) value.maxUses = optionalMaxUses(input, details);
+  if ("maxUses" in input) value.maxUses = requiredMaxUses(input, details);
   if (details.length > 0) return { ok: false, details };
   return { ok: true, value };
 }
@@ -459,11 +500,13 @@ function validateEffectiveUpdate(
   const details: string[] = [];
   const discountType = body.discountType ?? existing.discountType;
   const discountValue = body.discountValue ?? existing.discountValue;
-  const currency = "currency" in body ? body.currency : existing.currency;
   const validFrom = "validFrom" in body ? body.validFrom : existing.validFrom;
   const validUntil = "validUntil" in body ? body.validUntil : existing.validUntil;
-  validateDiscount(discountType, discountValue, currency, details);
+  const stayDateFrom = "stayDateFrom" in body ? body.stayDateFrom : existing.stayDateFrom;
+  const stayDateUntil = "stayDateUntil" in body ? body.stayDateUntil : existing.stayDateUntil;
+  validateDiscount(discountType, discountValue, details);
   validateDateOrder(validFrom, validUntil, details);
+  validateStayDateOrder(stayDateFrom, stayDateUntil, details);
   return details;
 }
 
@@ -471,9 +514,12 @@ const KNOWN_FIELDS = new Set([
   "code",
   "discountType",
   "discountValue",
-  "currency",
+  "minBookingValue",
+  "applicableRoomIds",
   "validFrom",
   "validUntil",
+  "stayDateFrom",
+  "stayDateUntil",
   "isActive",
   "maxUses",
 ]);
@@ -512,12 +558,8 @@ function requiredDiscountValue(input: Record<string, unknown>, details: string[]
 function validateDiscount(
   discountType: string | undefined,
   discountValue: string | undefined,
-  currency: string | null | undefined,
   details: string[],
 ): void {
-  if (discountType === "fixed" && !currency) {
-    details.push("currency is required for fixed discount codes.");
-  }
   if (discountType === "percentage" && discountValue && Number(discountValue) > 100) {
     details.push("percentage discountValue must be less than or equal to 100.");
   }
@@ -545,18 +587,9 @@ function requiredEnum(
   return value;
 }
 
-function optionalCurrency(input: Record<string, unknown>, details: string[]): string | null {
-  if (!("currency" in input) || input.currency === null || input.currency === "") return null;
-  const value = requiredString(input, "currency", details).toUpperCase();
-  if (value && !/^[A-Z]{3}$/.test(value)) {
-    details.push("currency must be an uppercase ISO-4217 code.");
-  }
-  return value;
-}
-
 function optionalDate(
   input: Record<string, unknown>,
-  key: "validFrom" | "validUntil",
+  key: "validFrom" | "validUntil" | "stayDateFrom" | "stayDateUntil",
   details: string[],
 ): string | null {
   const value = input[key];
@@ -584,6 +617,16 @@ function validateDateOrder(
   }
 }
 
+function validateStayDateOrder(
+  stayDateFrom: string | null | undefined,
+  stayDateUntil: string | null | undefined,
+  details: string[],
+): void {
+  if (stayDateFrom && stayDateUntil && stayDateUntil < stayDateFrom) {
+    details.push("stayDateUntil must be on or after stayDateFrom.");
+  }
+}
+
 function optionalBoolean(
   input: Record<string, unknown>,
   key: string,
@@ -602,18 +645,52 @@ function requiredBoolean(input: Record<string, unknown>, key: string, details: s
   return value;
 }
 
-function optionalMaxUses(input: Record<string, unknown>, details: string[]): number | null {
-  if (!("maxUses" in input) || input.maxUses === null) return null;
+function requiredMaxUses(input: Record<string, unknown>, details: string[]): number {
   const value = input.maxUses;
   if (
     !Number.isSafeInteger(value) ||
     (value as number) <= 0 ||
     (value as number) > MAX_POSTGRES_INTEGER
   ) {
-    details.push(`maxUses must be null or an integer from 1 to ${MAX_POSTGRES_INTEGER}.`);
-    return null;
+    details.push(`maxUses must be an integer from 1 to ${MAX_POSTGRES_INTEGER}.`);
+    return 1;
   }
   return value as number;
+}
+
+function optionalMoney(
+  input: Record<string, unknown>,
+  key: "minBookingValue",
+  details: string[],
+): string | null {
+  if (!(key in input) || input[key] === null || input[key] === "") return null;
+  const value = requiredString(input, key, details);
+  if (value && !/^\d+(?:\.\d{1,2})?$/.test(value)) {
+    details.push(`${key} must be a positive decimal string.`);
+  } else if (Number(value) <= 0) {
+    details.push(`${key} must be greater than zero.`);
+  } else if (!fitsNumericPrecision(value, 15, 2)) {
+    details.push(`${key} must fit NUMERIC(15,2).`);
+  }
+  return value;
+}
+
+function optionalRoomIds(input: Record<string, unknown>, details: string[]): string[] | null {
+  const value = input.applicableRoomIds;
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length === 0) {
+    details.push("applicableRoomIds must be null or a non-empty array of room type IDs.");
+    return null;
+  }
+  const ids = value.filter((item): item is string => typeof item === "string");
+  if (
+    ids.length !== value.length ||
+    ids.some((id) => !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) ||
+    new Set(ids).size !== ids.length
+  ) {
+    details.push("applicableRoomIds must contain unique UUID room type IDs.");
+  }
+  return ids;
 }
 
 function authorize(request: FastifyRequest, hotelId: string): BookingPromoCodesError | null {

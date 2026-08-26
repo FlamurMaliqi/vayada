@@ -33,6 +33,7 @@ const SUPPORTED_IMAGE_PURPOSES = new Set<PlatformMediaPurpose>([
   "marketplace.offer.media",
   "marketplace.collaboration_chat.attachment",
   "pms.room_type.media",
+  "finance.expense.receipt",
 ]);
 const IMAGE_CONTENT_TYPES = new Set([
   "image/jpeg",

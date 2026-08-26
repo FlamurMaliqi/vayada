@@ -26,6 +26,15 @@ export interface PropertySettings {
 
 export type PropertySettingsUpdate = Partial<PropertySettings>;
 
+export type BookingAcceptanceMode = "instant" | "request";
+
+export interface BookingAcceptanceSettings {
+  contractVersion: "booking-acceptance.v1";
+  propertyId: string;
+  acceptanceMode: BookingAcceptanceMode;
+  instantBook: boolean;
+}
+
 export type CheckinStepType = "checkbox" | "text" | "amount";
 export type CheckinChecklistStepType = CheckinStepType;
 
@@ -159,6 +168,23 @@ export const pmsSettingsService = {
 };
 
 export const settingsService = {
+  getBookingAcceptance: async () => {
+    const propertyId = await resolveSelectedPmsPropertyId("loading booking acceptance settings");
+    return pmsOperationsClient.get<BookingAcceptanceSettings>(
+      propertyTemplateEndpoint(propertyId, "booking-acceptance"),
+      pmsOperationsRequestOptions,
+    );
+  },
+
+  updateBookingAcceptance: async (acceptanceMode: BookingAcceptanceMode) => {
+    const propertyId = await resolveSelectedPmsPropertyId("saving booking acceptance settings");
+    return pmsOperationsClient.put<BookingAcceptanceSettings>(
+      propertyTemplateEndpoint(propertyId, "booking-acceptance"),
+      { acceptanceMode },
+      pmsOperationsRequestOptions,
+    );
+  },
+
   getPropertySettings: () =>
     unsupportedPmsNextStackFeature<PropertySettings>("Property currency settings"),
 

@@ -75,6 +75,7 @@ export type ProviderWebhookPromotionResult = {
 };
 
 export type ProviderWebhookStore = {
+  resolveChannexPropertyId?(externalPropertyId: string): Promise<string | null>;
   recordReceipt(input: ProviderWebhookReceiptInput): Promise<ProviderWebhookReceiptResult>;
   promoteReceipt(input: ProviderWebhookPromotionInput): Promise<ProviderWebhookPromotionResult>;
   close?(): Promise<void>;
@@ -83,6 +84,7 @@ export type ProviderWebhookStore = {
 export type ProviderWebhookRoutesOptions = {
   secrets: ProviderWebhookSecrets;
   modes?: ProviderWebhookModeConfig;
+  channexBookingPromotionEnabled?: boolean;
   store: ProviderWebhookStore;
   stripeTimestampToleranceSeconds?: number;
   now?: () => Date;
@@ -196,20 +198,87 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
     const payload = parseJsonPayload(request.body);
     if (!payload.ok) return reply.code(400).send({ error: "invalid_channex_payload" });
 
-    const classification = classifyChannexPayload(payload.value);
+    const classification = await resolveChannexPropertyIdentity(
+      options.store,
+      classifyChannexPayload(payload.value),
+    );
     return handleAuthenticatedProviderWebhook({
       provider: "channex",
       eventType: classification.eventType,
-      mode: modeFor(options, "channex"),
+      mode: channexModeFor(options, classification),
       receiptKey: classification.receiptKey,
       reply,
       request,
       rawPayload: payload.value,
+      payloadHash: channexPayloadHash(payload.value, classification),
       store: options.store,
       normalizedPreview: previewChannexEvent(payload.value, classification),
     });
   });
 };
+
+export async function promotePulledChannexBookingRevision(input: {
+  store: ProviderWebhookStore;
+  propertyId: string;
+  providerPropertyId: string;
+  revision: Record<string, unknown>;
+}): Promise<ProviderWebhookPromotionResult | null> {
+  const attributes = optionalRecord(input.revision, "attributes");
+  const revision = attributes
+    ? { ...attributes, id: optionalString(input.revision, "id") ?? attributes["id"] }
+    : input.revision;
+  const declaredPropertyId = optionalString(revision, "property_id");
+  if (declaredPropertyId && declaredPropertyId !== input.providerPropertyId) {
+    throw new Error("Pulled Channex revision belongs to another provider property");
+  }
+  const rawPayload = {
+    event: "booking",
+    property_id: input.providerPropertyId,
+    payload: revision,
+  };
+  const classified = classifyChannexPayload(rawPayload);
+  const classification = {
+    ...classified,
+    propertyId: input.propertyId,
+    providerPropertyId: input.providerPropertyId,
+    receiptKey: bookingReceiptKey(input.propertyId, classified),
+  };
+  if (classification.family !== "booking" || !classification.channelBookingId) {
+    throw new Error("Pulled Channex revision has no booking identity");
+  }
+  const receiptKeyHash = sha256(classification.receiptKey);
+  const payloadHash = channexPayloadHash(rawPayload, classification);
+  const normalizedPreview = previewChannexEvent(rawPayload, classification, "revision_feed");
+  const receipt = await input.store.recordReceipt({
+    provider: "channex",
+    receiptKey: classification.receiptKey,
+    receiptKeyHash,
+    providerEventId: classification.receiptKey,
+    eventType: classification.eventType,
+    payloadHash,
+    rawHeaders: { source: "channex-booking-revisions-feed" },
+    rawPayload,
+    mode: "mutating",
+    normalizedPreview,
+  });
+  if (receipt.status === "conflict")
+    throw new Error("Pulled Channex revision conflicts with receipt");
+  if (
+    receipt.status === "duplicate" &&
+    !["observed", "received", "validated", "normalized"].includes(receipt.lifecycleStatus)
+  ) {
+    return null;
+  }
+  return input.store.promoteReceipt({
+    provider: "channex",
+    receiptId: receipt.receiptId,
+    receiptKey: classification.receiptKey,
+    receiptKeyHash,
+    payloadHash,
+    rawPayload,
+    normalizedPreview,
+  });
+}
 
 async function handleAuthenticatedProviderWebhook(input: {
   provider: ProviderWebhookProvider;
@@ -219,17 +288,20 @@ async function handleAuthenticatedProviderWebhook(input: {
   reply: FastifyReply;
   request: FastifyRequest<{ Body: string }>;
   rawPayload: Record<string, unknown>;
+  payloadHash?: string;
   store: ProviderWebhookStore;
   normalizedPreview: ProviderWebhookNormalizedPreview;
 }) {
   const receiptKeyHash = sha256(input.receiptKey);
+  const payloadHash =
+    input.payloadHash ?? sha256(stableStringify(canonicalPayload(input.rawPayload)));
   const receipt = await input.store.recordReceipt({
     provider: input.provider,
     receiptKey: input.receiptKey,
     receiptKeyHash,
     providerEventId: input.receiptKey,
     eventType: input.eventType,
-    payloadHash: sha256(stableStringify(canonicalPayload(input.rawPayload))),
+    payloadHash,
     rawHeaders: redactedHeaders(input.request),
     rawPayload: input.rawPayload,
     mode: input.mode,
@@ -290,7 +362,7 @@ async function handleAuthenticatedProviderWebhook(input: {
     receiptId: receipt.receiptId,
     receiptKey: input.receiptKey,
     receiptKeyHash,
-    payloadHash: sha256(stableStringify(canonicalPayload(input.rawPayload))),
+    payloadHash,
     rawPayload: input.rawPayload,
     normalizedPreview: input.normalizedPreview,
   });
@@ -327,6 +399,62 @@ const STRIPE_SECRET_FIELDS = new Set(["client_secret", "secret", "access_token",
 
 function modeFor(options: ProviderWebhookRoutesOptions, provider: ProviderWebhookProvider) {
   return options.modes?.[provider] ?? "observe_only";
+}
+
+function channexModeFor(
+  options: ProviderWebhookRoutesOptions,
+  classification: ChannexClassification,
+): ProviderWebhookMode {
+  const mode = modeFor(options, "channex");
+  return classification.family === "booking" &&
+    mode === "mutating" &&
+    (!options.channexBookingPromotionEnabled || classification.bookingOwnerResolved === false)
+    ? "observe_only"
+    : mode;
+}
+
+function channexPayloadHash(
+  payload: Record<string, unknown>,
+  classification: ChannexClassification,
+): string {
+  if (
+    classification.family !== "booking" ||
+    !classification.channelBookingId ||
+    !classification.revision
+  ) {
+    return sha256(stableStringify(canonicalPayload(payload)));
+  }
+  return sha256(
+    stableStringify({
+      propertyId: classification.propertyId,
+      channelBookingId: classification.channelBookingId,
+      revision: classification.revision,
+    }),
+  );
+}
+
+async function resolveChannexPropertyIdentity(
+  store: ProviderWebhookStore,
+  classification: ChannexClassification,
+): Promise<ChannexClassification> {
+  if (classification.family !== "booking") return classification;
+  const providerPropertyId = classification.propertyId;
+  const propertyId = store.resolveChannexPropertyId
+    ? await store.resolveChannexPropertyId(providerPropertyId)
+    : providerPropertyId;
+  return {
+    ...classification,
+    propertyId: propertyId ?? providerPropertyId,
+    providerPropertyId,
+    bookingOwnerResolved: propertyId !== null,
+    receiptKey: bookingReceiptKey(propertyId ?? providerPropertyId, classification),
+  };
+}
+
+function bookingReceiptKey(propertyId: string, classification: ChannexClassification): string {
+  return classification.channelBookingId && classification.revision
+    ? `webhook:channex:booking:${propertyId}:${classification.channelBookingId}:${classification.revision}`
+    : classification.receiptKey;
 }
 
 function verifyStripeSignature(input: {
@@ -446,6 +574,8 @@ type ChannexClassification = {
   family: ChannexEventFamily;
   receiptKey: string;
   propertyId: string;
+  providerPropertyId?: string;
+  bookingOwnerResolved?: boolean;
   sourceMessageId?: string;
   channelBookingId?: string;
   revision?: string;
@@ -496,23 +626,24 @@ function classifyChannexPayload(payload: Record<string, unknown>): ChannexClassi
       optionalRecord(nestedPayload, "booking") ??
       optionalRecord(nestedPayload, "revision") ??
       optionalRecord(payload, "booking") ??
-      {};
+      nestedPayload;
     const revisionId =
       optionalString(nestedPayload, "booking_revision_id") ??
       optionalString(nestedPayload, "revision_id") ??
       optionalString(booking, "booking_revision_id") ??
-      optionalString(booking, "revision_id");
+      optionalString(booking, "revision_id") ??
+      optionalString(nestedPayload, "id");
     const channelBookingId =
       optionalString(nestedPayload, "channel_booking_id") ??
       optionalString(nestedPayload, "booking_id") ??
       optionalString(booking, "channel_booking_id") ??
       optionalString(booking, "id");
     const revision =
+      revisionId ??
       optionalString(nestedPayload, "revision") ??
       optionalString(nestedPayload, "revision_number") ??
       optionalString(booking, "revision") ??
       optionalString(booking, "revision_number") ??
-      revisionId ??
       "unknown";
 
     if (revisionId || channelBookingId) {
@@ -522,7 +653,7 @@ function classifyChannexPayload(payload: Record<string, unknown>): ChannexClassi
         propertyId,
         channelBookingId: channelBookingId ?? revisionId,
         revision,
-        receiptKey: `webhook:channex:booking:${propertyId}:${revisionId ?? channelBookingId}:${revision}`,
+        receiptKey: `webhook:channex:booking:${propertyId}:${channelBookingId ?? revisionId}:${revision}`,
       };
     }
   }
@@ -563,7 +694,12 @@ function classifyChannexPayload(payload: Record<string, unknown>): ChannexClassi
 
 function channexEventFamily(eventType: string): ChannexEventFamily {
   if (eventType === "message") return "message";
-  if (eventType === "booking" || eventType.startsWith("booking.")) return "booking";
+  if (
+    eventType === "booking" ||
+    eventType.startsWith("booking.") ||
+    ["booking_new", "booking_modification", "booking_cancellation"].includes(eventType)
+  )
+    return "booking";
   if (eventType === "review") return "review";
   if (eventType === "updated_review") return "updated_review";
   return "unsupported";
@@ -575,6 +711,7 @@ function previewStripeEvent(
   eventCreatedFallback: number,
 ): ProviderWebhookNormalizedPreview {
   const eventType = requiredString(payload, "type", "Stripe event");
+  const providerAccountRef = optionalString(payload, "account");
   const dataObject = optionalRecord(optionalRecord(payload, "data"), "object") ?? {};
   const objectId = optionalString(dataObject, "id") ?? receiptKey;
   const eventId = requiredString(payload, "id", "Stripe event");
@@ -623,7 +760,8 @@ function previewStripeEvent(
       semanticAction: `stripe-event-${requiredString(payload, "id", "Stripe event")}`,
       paymentId: objectId,
       amount,
-      domainEventKey: `payment.authorized:stripe:${objectId}:${amount}:v1`,
+      providerAccountRef,
+      domainEventKey: `payment.authorized:stripe:${providerAccountRef ?? "platform"}:${objectId}:${amount}:v2`,
       rawPayload: payload,
     });
   }
@@ -634,7 +772,8 @@ function previewStripeEvent(
       semanticAction: `stripe-event-${requiredString(payload, "id", "Stripe event")}`,
       paymentId: objectId,
       amount,
-      domainEventKey: `payment.captured:stripe:${objectId}:${amount}:v1`,
+      providerAccountRef,
+      domainEventKey: `payment.captured:stripe:${providerAccountRef ?? "platform"}:${objectId}:${amount}:v2`,
       rawPayload: payload,
     });
   }
@@ -646,9 +785,34 @@ function previewStripeEvent(
       semanticAction: `stripe-event-${requiredString(payload, "id", "Stripe event")}`,
       paymentId: objectId,
       amount,
-      domainEventKey: `payment.terminal:stripe:${objectId}:${status}:v1`,
+      providerAccountRef,
+      domainEventKey: `payment.terminal:stripe:${providerAccountRef ?? "platform"}:${objectId}:${status}:v2`,
       rawPayload: payload,
     });
+  }
+  if (eventType === "charge.updated") {
+    const paymentIntent = dataObject["payment_intent"];
+    const paymentIntentId =
+      typeof paymentIntent === "string"
+        ? paymentIntent
+        : optionalString(optionalRecord(dataObject, "payment_intent"), "id");
+    const balanceTransaction = dataObject["balance_transaction"];
+    const balanceTransactionId =
+      typeof balanceTransaction === "string"
+        ? balanceTransaction
+        : optionalString(optionalRecord(dataObject, "balance_transaction"), "id");
+    if (paymentIntentId && balanceTransactionId) {
+      return paymentPreview({
+        provider: "stripe",
+        domainEventType: "payment.fee_updated",
+        semanticAction: `stripe-charge-updated-${requiredString(payload, "id", "Stripe event")}`,
+        paymentId: paymentIntentId,
+        amount,
+        providerAccountRef,
+        domainEventKey: `payment.fee-updated:stripe:${providerAccountRef ?? "platform"}:${paymentIntentId}:${balanceTransactionId}:v1`,
+        rawPayload: payload,
+      });
+    }
   }
   if (eventType === "account.updated") {
     const eventId = requiredString(payload, "id", "Stripe event");
@@ -778,6 +942,7 @@ function previewXenditEvent(
 function previewChannexEvent(
   payload: Record<string, unknown>,
   classification: ChannexClassification,
+  revisionSource: "webhook_hint" | "revision_feed" = "webhook_hint",
 ): ProviderWebhookNormalizedPreview {
   if (classification.family === "message" && classification.sourceMessageId) {
     const threadId =
@@ -817,8 +982,11 @@ function previewChannexEvent(
       payload: {
         provider: "channex",
         propertyId: classification.propertyId,
+        providerPropertyId: classification.providerPropertyId ?? classification.propertyId,
         channelBookingId: classification.channelBookingId,
         revision,
+        revisionSource,
+        pullRequired: revisionSource === "webhook_hint",
         rawPayload: payload,
       },
     };
@@ -854,17 +1022,23 @@ function previewChannexEvent(
 
 function paymentPreview(input: {
   provider: "stripe" | "xendit";
-  domainEventType: "payment.authorized" | "payment.captured" | "payment.terminal";
+  domainEventType:
+    | "payment.authorized"
+    | "payment.captured"
+    | "payment.terminal"
+    | "payment.fee_updated";
   semanticAction: string;
   paymentId: string;
   amount: number;
+  providerAccountRef?: string | null;
   domainEventKey: string;
   rawPayload: Record<string, unknown>;
 }): ProviderWebhookNormalizedPreview {
   const financeStatus =
     input.domainEventType === "payment.authorized"
       ? "authorized"
-      : input.domainEventType === "payment.captured"
+      : input.domainEventType === "payment.captured" ||
+          input.domainEventType === "payment.fee_updated"
         ? "paid"
         : financePaymentTerminalStatus(input.provider, input.rawPayload);
   return {
@@ -878,6 +1052,7 @@ function paymentPreview(input: {
     jobType: "payment.reconcile-status",
     payload: {
       provider: input.provider,
+      providerAccountRef: input.providerAccountRef ?? null,
       paymentId: input.paymentId,
       amount: input.amount,
       currency: optionalString(

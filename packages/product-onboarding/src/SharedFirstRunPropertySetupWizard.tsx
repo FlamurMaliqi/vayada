@@ -47,15 +47,22 @@ import {
   COUNTRY_OPTIONS,
   CURRENCY_OPTIONS,
   LANGUAGE_OPTIONS,
+  POPULAR_CURRENCY_CODES,
   POPULAR_LANGUAGE_CODES,
 } from "@vayada/locale-constants";
+import {
+  getCountries,
+  getCountryCallingCode,
+  parsePhoneNumberFromString,
+  type CountryCode,
+} from "libphonenumber-js/min";
 
 import { HotelIcon } from "./HotelIcon";
+import { LocalizationMultiSelect } from "./LocalizationMultiSelect";
 import GoogleAddressMap from "./GoogleAddressMap";
 import GooglePlacesAddressField from "./GooglePlacesAddressField";
 import TimezoneField from "./TimezoneField";
 import { availableTimezones, defaultTimezoneForCountry, timezoneForCoordinates } from "./timezones";
-import { isValidSharedAccountPhone } from "./sharedAccountDetails";
 import {
   isSetupTaskActionable,
   resolveSharedFirstRunSetupView,
@@ -73,7 +80,6 @@ import {
   type PendingPropertyLogoAssignment,
 } from "./sharedPropertyLogo";
 import {
-  ONBOARDING_POPULAR_CURRENCY_CODES,
   propertyLaunchSettingsDefaults,
   validatePropertyLaunchSettings,
   type PropertyLaunchSettings,
@@ -125,9 +131,9 @@ type ProfileDraft = {
   latitude: number | null;
   longitude: number | null;
   timezone: string;
-  website: string;
   contactEmail: string;
   phone: string;
+  whatsapp: string;
   localityPublic: boolean;
   logoFile: File | null;
   logoMediaObjectId: string | null;
@@ -287,7 +293,7 @@ const BASE_PROFILE_STEP_FIELDS: ReadonlyArray<ReadonlyArray<string>> = [
     "location.countryCode",
     "location.timezone",
   ],
-  ["contactEmail", "phone", "website"],
+  ["phone", "whatsapp", "contactEmail"],
 ];
 const LAUNCH_SETTINGS_STEP_FIELDS = [
   "defaultCurrency",
@@ -297,7 +303,7 @@ const LAUNCH_SETTINGS_STEP_FIELDS = [
   "tiktok",
   "youtube",
 ] as const;
-const BASE_PROFILE_STEP_TITLES = ["About your hotel", "Location", "Hotel contact"] as const;
+const BASE_PROFILE_STEP_TITLES = ["About your hotel", "Location", "Contact information"] as const;
 const PROFILE_STEP_FIELDS_WITH_LAUNCH: ReadonlyArray<ReadonlyArray<string>> = [
   BASE_PROFILE_STEP_FIELDS[0],
   BASE_PROFILE_STEP_FIELDS[1],
@@ -308,7 +314,7 @@ const PROFILE_STEP_TITLES_WITH_LAUNCH = [
   "About your hotel",
   "Location",
   "Guest preferences",
-  "Hotel contact",
+  "Contact information",
 ] as const;
 
 const PROPERTY_TYPE_ICONS = new Map<string, IconComponent>([
@@ -370,6 +376,7 @@ export default function SharedFirstRunPropertySetupWizard({
   const createPropertyCommandKey = useRef<string | null>(null);
   const logoUploadKey = useRef<string | null>(null);
   const logoAssignmentKey = useRef<string | null>(null);
+  const profileSaveInFlight = useRef(false);
 
   const view = useMemo(
     () =>
@@ -412,7 +419,7 @@ export default function SharedFirstRunPropertySetupWizard({
       })
       .catch((err) => {
         if (cancelled) return;
-        setError(errorMessage(err));
+        setError(setupErrorMessage(err));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -483,7 +490,7 @@ export default function SharedFirstRunPropertySetupWizard({
         if (cancelled) return;
         setLoadedProfile(null);
         setProfileLoadFailed(true);
-        setError(errorMessage(err));
+        setError(setupErrorMessage(err));
       });
 
     return () => {
@@ -514,13 +521,14 @@ export default function SharedFirstRunPropertySetupWizard({
       await reloadStatus(propertyId);
       await onPropertySelected?.(propertyId);
     } catch (err) {
-      setError(errorMessage(err));
+      setError(setupErrorMessage(err));
     } finally {
       setLoading(false);
     }
   };
 
   const handleSaveProfile = async () => {
+    if (profileSaveInFlight.current) return;
     setError("");
     setFieldErrors({});
     const nextFieldErrors = validateProfileDraft(draft);
@@ -532,6 +540,7 @@ export default function SharedFirstRunPropertySetupWizard({
       return;
     }
 
+    profileSaveInFlight.current = true;
     setSaving(true);
     try {
       if (view.profileMode === "update" && !loadedProfile) {
@@ -547,12 +556,26 @@ export default function SharedFirstRunPropertySetupWizard({
       } else if (loadedProfile) {
         saved = loadedProfile;
       } else {
-        saved = await api.createPropertyProfile(
-          createProfileFromDraft(draft),
-          (createPropertyCommandKey.current = idempotencyKeyForRetry(
-            createPropertyCommandKey.current,
-          )),
-        );
+        const profile = createProfileFromDraft(draft);
+        const idempotencyKey = (createPropertyCommandKey.current = idempotencyKeyForRetry(
+          createPropertyCommandKey.current,
+        ));
+        try {
+          saved = await api.createPropertyProfile(profile, idempotencyKey);
+        } catch (createError) {
+          const code = setupErrorCode(createError);
+          if (code !== "idempotency_key_conflict" && code !== "command_in_progress") {
+            throw createError;
+          }
+
+          const createdPropertyId = setupErrorPropertyId(createError);
+          if (!createdPropertyId) throw createError;
+          saved = await api.getPropertyProfile(createdPropertyId);
+          const recoveredUpdate = profileUpdateFromDraft(draft, saved);
+          if (recoveredUpdate) {
+            saved = await api.updatePropertyProfile(createdPropertyId, recoveredUpdate);
+          }
+        }
       }
       setLoadedProfile(saved);
       saved = await savePropertyLogo({
@@ -591,13 +614,14 @@ export default function SharedFirstRunPropertySetupWizard({
             "These hotel details changed in another session. We refreshed the latest version—review your entries and save again.",
           );
         } catch (refreshError) {
-          setError(errorMessage(refreshError));
+          setError(setupErrorMessage(refreshError));
         }
       } else {
         setFieldErrors(fieldErrorsFromError(err));
-        setError(errorMessage(err));
+        setError(setupErrorMessage(err));
       }
     } finally {
+      profileSaveInFlight.current = false;
       setSaving(false);
     }
   };
@@ -641,10 +665,10 @@ export default function SharedFirstRunPropertySetupWizard({
             );
           }
         } catch (refreshError) {
-          setError(errorMessage(refreshError));
+          setError(setupErrorMessage(refreshError));
         }
       } else {
-        setError(errorMessage(err));
+        setError(setupErrorMessage(err));
       }
     } finally {
       setSaving(false);
@@ -657,7 +681,7 @@ export default function SharedFirstRunPropertySetupWizard({
       const nextStatus = await reloadStatus(task.propertyId);
       setSelectedPlanTaskId(recommendedInlineSetupTaskId(nextStatus));
     } catch (err) {
-      setError(errorMessage(err));
+      setError(setupErrorMessage(err));
       throw err;
     }
   };
@@ -680,8 +704,8 @@ export default function SharedFirstRunPropertySetupWizard({
       setError(INLINE_SETUP_STALE_SAVE_MESSAGE);
       throw new Error(INLINE_SETUP_STALE_SAVE_MESSAGE);
     } catch (err) {
-      if (errorMessage(err) !== INLINE_SETUP_STALE_SAVE_MESSAGE) {
-        setError(errorMessage(err));
+      if (setupErrorMessage(err) !== INLINE_SETUP_STALE_SAVE_MESSAGE) {
+        setError(setupErrorMessage(err));
       }
       throw err;
     }
@@ -1154,6 +1178,9 @@ function ProfileForm({
   const focusAddressFieldsWhenShown = useRef(false);
   const stepHeading = useRef<HTMLHeadingElement>(null);
   const timezoneWasAutoDetected = useRef(false);
+  const [whatsappFollowsPhone, setWhatsappFollowsPhone] = useState(
+    () => !draft.whatsapp || draft.whatsapp === draft.phone,
+  );
 
   useEffect(() => {
     const errorStep = profileStepFields.findIndex((fields) =>
@@ -1200,6 +1227,17 @@ function ProfileForm({
     setLogoPreviewUrl(previewUrl);
     return () => URL.revokeObjectURL(previewUrl);
   }, [draft.logoFile, draft.logoPublicUrl]);
+
+  useEffect(() => {
+    if (
+      step === contactStep &&
+      whatsappFollowsPhone &&
+      draft.phone &&
+      draft.whatsapp !== draft.phone
+    ) {
+      onChange({ ...draft, whatsapp: draft.phone });
+    }
+  }, [contactStep, draft, onChange, step, whatsappFollowsPhone]);
 
   if (loading) {
     return (
@@ -1426,42 +1464,49 @@ function ProfileForm({
               tabIndex={-1}
               className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
             >
-              How can Vayada reach your hotel?
+              How can guests reach you?
             </h3>
             <p className="mt-2 text-sm text-gray-500">
-              Existing published contacts keep their visibility. Any new details you add here stay
-              private.
+              This information is shown when guests click &apos;Contact&apos; on your booking page.
             </p>
           </div>
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-4">
+            <PhoneField
+              label="Phone number"
+              value={draft.phone}
+              countryCode={draft.countryCode}
+              placeholder="+94 77 123 4567"
+              required
+              error={fieldErrors.phone?.[0]}
+              onChange={(value) =>
+                onChange({
+                  ...draft,
+                  phone: value,
+                  whatsapp: whatsappFollowsPhone ? value : draft.whatsapp,
+                })
+              }
+            />
+            <PhoneField
+              label="WhatsApp number"
+              value={draft.whatsapp}
+              countryCode={draft.countryCode}
+              placeholder="Same as phone or a different number."
+              helper="Leave blank if you don't use WhatsApp."
+              error={fieldErrors.whatsapp?.[0]}
+              onChange={(value) => {
+                setWhatsappFollowsPhone(value === draft.phone && Boolean(value));
+                setField("whatsapp", value);
+              }}
+            />
             <TextField
-              label="Contact email"
+              label="Email"
               value={draft.contactEmail}
-              placeholder="hello@hotel-alpenrose.com"
+              placeholder="hello@yourhotel.com"
               type="email"
               required
               error={fieldErrors.contactEmail?.[0]}
               onChange={(value) => setField("contactEmail", value)}
             />
-            <TextField
-              label="Phone number"
-              value={draft.phone}
-              placeholder="+49 89 123456"
-              type="tel"
-              required
-              error={fieldErrors.phone?.[0]}
-              onChange={(value) => setField("phone", value)}
-            />
-            <div className="md:col-span-2">
-              <TextField
-                label="Website"
-                value={draft.website}
-                placeholder="https://hotel-alpenrose.com"
-                type="url"
-                error={fieldErrors.website?.[0]}
-                onChange={(value) => setField("website", value)}
-              />
-            </div>
           </div>
         </div>
       </section>
@@ -1505,19 +1550,42 @@ function ProfileForm({
                     })
                   }
                 />
-                <MultiChoiceField
-                  label="Additional currencies"
-                  helper="Guests can view prices in these currencies."
-                  values={launchSettings.supportedCurrencies}
-                  options={visibleChoiceCodes(
-                    ONBOARDING_POPULAR_CURRENCY_CODES,
-                    launchSettings.supportedCurrencies,
-                    launchSettings.defaultCurrency,
-                  ).map((code) => ({ value: code, label: code }))}
-                  onChange={(supportedCurrencies) =>
-                    onLaunchSettingsChange({ ...launchSettings, supportedCurrencies })
-                  }
-                />
+                <div>
+                  <label
+                    htmlFor="hotel-setup-additional-currencies"
+                    className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-gray-700"
+                  >
+                    <span>Additional currencies</span>
+                    <span aria-hidden="true" className="text-xs text-gray-400">
+                      Optional
+                    </span>
+                  </label>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Guests can view prices in these currencies.
+                  </p>
+                  <div className="mt-3">
+                    <LocalizationMultiSelect
+                      id="hotel-setup-additional-currencies"
+                      selected={launchSettings.supportedCurrencies}
+                      onToggle={(code) =>
+                        onLaunchSettingsChange({
+                          ...launchSettings,
+                          supportedCurrencies: launchSettings.supportedCurrencies.includes(code)
+                            ? launchSettings.supportedCurrencies.filter((value) => value !== code)
+                            : [...launchSettings.supportedCurrencies, code],
+                        })
+                      }
+                      options={CURRENCY_OPTIONS}
+                      excludeCode={launchSettings.defaultCurrency}
+                      placeholder={`Search currencies, e.g. "Dollar" or "USD"...`}
+                      getLabel={(option) => option.code}
+                      getSearchLabel={(option) => `${option.name} · ${option.code}`}
+                      popularCodes={POPULAR_CURRENCY_CODES}
+                      emptyMessage={`No additional currencies added — your booking page will show only ${launchSettings.defaultCurrency}`}
+                      comfortable
+                    />
+                  </div>
+                </div>
               </div>
 
               <div className="space-y-5 rounded-2xl border border-gray-100 p-4 sm:p-5">
@@ -1541,22 +1609,42 @@ function ProfileForm({
                     })
                   }
                 />
-                <MultiChoiceField
-                  label="Additional languages"
-                  helper="Add languages you can support for international guests."
-                  values={launchSettings.supportedLanguages}
-                  options={visibleChoiceCodes(
-                    POPULAR_LANGUAGE_CODES,
-                    launchSettings.supportedLanguages,
-                    launchSettings.defaultLanguage,
-                  ).map((code) => ({
-                    value: code,
-                    label: LANGUAGE_OPTIONS.find((option) => option.code === code)?.name ?? code,
-                  }))}
-                  onChange={(supportedLanguages) =>
-                    onLaunchSettingsChange({ ...launchSettings, supportedLanguages })
-                  }
-                />
+                <div>
+                  <label
+                    htmlFor="hotel-setup-additional-languages"
+                    className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-gray-700"
+                  >
+                    <span>Additional languages</span>
+                    <span aria-hidden="true" className="text-xs text-gray-400">
+                      Optional
+                    </span>
+                  </label>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Add languages you can support for international guests.
+                  </p>
+                  <div className="mt-3">
+                    <LocalizationMultiSelect
+                      id="hotel-setup-additional-languages"
+                      selected={launchSettings.supportedLanguages}
+                      onToggle={(code) =>
+                        onLaunchSettingsChange({
+                          ...launchSettings,
+                          supportedLanguages: launchSettings.supportedLanguages.includes(code)
+                            ? launchSettings.supportedLanguages.filter((value) => value !== code)
+                            : [...launchSettings.supportedLanguages, code],
+                        })
+                      }
+                      options={LANGUAGE_OPTIONS}
+                      excludeCode={launchSettings.defaultLanguage}
+                      placeholder={`Search languages, e.g. "German" or "Deutsch"...`}
+                      getLabel={(option) => option.nativeName}
+                      getSearchLabel={(option) => `${option.name} · ${option.nativeName}`}
+                      popularCodes={POPULAR_LANGUAGE_CODES}
+                      emptyMessage={`No additional languages added — your booking page will show only ${launchSettings.defaultLanguage.toUpperCase()}`}
+                      comfortable
+                    />
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -2687,7 +2775,7 @@ export function validateProfileDraft(draft: ProfileDraft): Record<string, string
   if (!draft.timezone.trim()) {
     errors["location.timezone"] = ["Time zone is required."];
   }
-  if (!draft.contactEmail.trim()) errors.contactEmail = ["Contact email is required."];
+  if (!draft.contactEmail.trim()) errors.contactEmail = ["Email is required."];
   if (!draft.phone.trim()) errors.phone = ["Phone number is required."];
   if (draft.timezone.trim() && !isValidIanaTimezone(draft.timezone.trim())) {
     errors["location.timezone"] = ["Enter a valid IANA time zone."];
@@ -2695,11 +2783,11 @@ export function validateProfileDraft(draft: ProfileDraft): Record<string, string
   if (draft.contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.contactEmail)) {
     errors.contactEmail = ["Enter a valid email address."];
   }
-  if (!isValidSharedAccountPhone(draft.phone)) {
+  if (draft.phone.trim() && !isValidInternationalPhone(draft.phone)) {
     errors.phone = ["Enter a valid phone number."];
   }
-  if (draft.website && !isHttpUrl(draft.website)) {
-    errors.website = ["Enter a complete website URL, including https://."];
+  if (draft.whatsapp && !isValidInternationalPhone(draft.whatsapp)) {
+    errors.whatsapp = ["Enter a valid WhatsApp number."];
   }
 
   return errors;
@@ -2783,6 +2871,153 @@ function TextField({
       )}
       {error && (
         <p id={errorId} className="mt-1 text-xs text-red-600" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+const SUPPORTED_PHONE_COUNTRIES = new Set(getCountries());
+const PHONE_COUNTRY_OPTIONS = COUNTRY_OPTIONS.filter(({ code }) =>
+  SUPPORTED_PHONE_COUNTRIES.has(code as CountryCode),
+).map((country) => ({
+  ...country,
+  callingCode: `+${getCountryCallingCode(country.code as CountryCode)}`,
+}));
+
+function phoneCountry(value: string, fallback: string): CountryCode {
+  const parsed = parsePhoneNumberFromString(value);
+  if (parsed?.country) return parsed.country;
+  const normalizedFallback = fallback.trim().toUpperCase() as CountryCode;
+  return SUPPORTED_PHONE_COUNTRIES.has(normalizedFallback) ? normalizedFallback : "US";
+}
+
+export function normalizedPhoneNumber(value: string, countryCode?: CountryCode): string {
+  const parsed = parsePhoneNumberFromString(value, countryCode);
+  return parsed?.isValid() ? parsed.formatInternational() : value;
+}
+
+function isValidInternationalPhone(value: string): boolean {
+  return value.trim().startsWith("+") && Boolean(parsePhoneNumberFromString(value)?.isValid());
+}
+
+export function phoneWithCountryCallingCode(
+  value: string,
+  countryCode: CountryCode,
+  previousCountryCode?: CountryCode,
+): string {
+  const callingCode = `+${getCountryCallingCode(countryCode)}`;
+  const parsed = parsePhoneNumberFromString(value);
+  if (parsed?.nationalNumber) return `${callingCode} ${parsed.nationalNumber}`;
+
+  const digits = value.replace(/\D/g, "");
+  const previousCallingCode = previousCountryCode
+    ? getCountryCallingCode(previousCountryCode)
+    : undefined;
+  const nationalNumber =
+    previousCallingCode && digits.startsWith(previousCallingCode)
+      ? digits.slice(previousCallingCode.length)
+      : digits.replace(/^0+/, "");
+  return nationalNumber ? `${callingCode} ${nationalNumber}` : `${callingCode} `;
+}
+
+function PhoneField({
+  label,
+  value,
+  countryCode,
+  onChange,
+  error,
+  helper,
+  placeholder,
+  required = false,
+}: {
+  label: string;
+  value: string;
+  countryCode: string;
+  onChange: (value: string) => void;
+  error?: string;
+  helper?: string;
+  placeholder: string;
+  required?: boolean;
+}) {
+  const generatedId = useId();
+  const inputId = `setup-${generatedId}`;
+  const helperId = helper ? `${inputId}-helper` : undefined;
+  const errorId = error ? `${inputId}-error` : undefined;
+  const describedBy = [helperId, errorId].filter(Boolean).join(" ") || undefined;
+  const [selectedCountry, setSelectedCountry] = useState<CountryCode>(() =>
+    phoneCountry(value, countryCode),
+  );
+
+  useEffect(() => {
+    const parsedCountry = parsePhoneNumberFromString(value)?.country;
+    if (parsedCountry) {
+      setSelectedCountry((current) => (current === parsedCountry ? current : parsedCountry));
+    } else if (!value.trim()) {
+      const fallbackCountry = phoneCountry("", countryCode);
+      setSelectedCountry((current) => (current === fallbackCountry ? current : fallbackCountry));
+    }
+  }, [countryCode, value]);
+
+  return (
+    <div>
+      <label
+        htmlFor={inputId}
+        className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-gray-700"
+      >
+        <span>{label}</span>
+        {!required && (
+          <span aria-hidden="true" className="text-xs text-gray-400">
+            Optional
+          </span>
+        )}
+      </label>
+      {helper && (
+        <p id={helperId} className="mt-1 text-xs text-gray-500">
+          {helper}
+        </p>
+      )}
+      <div
+        className={`mt-2 flex overflow-hidden rounded-xl border transition focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-100 ${
+          error ? "border-red-300 bg-red-50" : "border-gray-200 bg-white"
+        }`}
+      >
+        <select
+          aria-label={`${label} country code`}
+          value={selectedCountry}
+          onChange={(event) => {
+            const nextCountry = event.target.value as CountryCode;
+            const previousCountry = selectedCountry;
+            setSelectedCountry(nextCountry);
+            onChange(phoneWithCountryCallingCode(value, nextCountry, previousCountry));
+          }}
+          className="w-32 shrink-0 border-0 border-r border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none"
+        >
+          {PHONE_COUNTRY_OPTIONS.map((country) => (
+            <option key={country.code} value={country.code}>
+              {country.flag} {country.callingCode}
+            </option>
+          ))}
+        </select>
+        <input
+          id={inputId}
+          type="tel"
+          value={value}
+          placeholder={placeholder}
+          aria-invalid={Boolean(error)}
+          aria-describedby={describedBy}
+          aria-required={required}
+          onChange={(event) => onChange(normalizedPhoneNumber(event.target.value, selectedCountry))}
+          onBlur={() => {
+            const normalized = normalizedPhoneNumber(value, selectedCountry);
+            if (normalized !== value) onChange(normalized);
+          }}
+          className="min-w-0 flex-1 border-0 bg-transparent px-4 py-2.5 text-base outline-none sm:text-sm"
+        />
+      </div>
+      {error && (
+        <p id={errorId} role="alert" className="mt-1.5 text-xs text-red-600">
           {error}
         </p>
       )}
@@ -3009,57 +3244,6 @@ function SelectField({
   );
 }
 
-function MultiChoiceField({
-  label,
-  helper,
-  values,
-  options,
-  onChange,
-}: {
-  label: string;
-  helper: string;
-  values: string[];
-  options: Array<{ value: string; label: string }>;
-  onChange: (values: string[]) => void;
-}) {
-  return (
-    <fieldset>
-      <legend className="text-sm font-medium text-gray-700">
-        {label}
-        <span aria-hidden="true" className="ml-2 text-xs text-gray-400">
-          Optional
-        </span>
-      </legend>
-      <p className="mt-1 text-xs text-gray-500">{helper}</p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {options.map((option) => {
-          const checked = values.includes(option.value);
-          return (
-            <label key={option.value} className="cursor-pointer">
-              <input
-                type="checkbox"
-                checked={checked}
-                onChange={() =>
-                  onChange(
-                    checked
-                      ? values.filter((value) => value !== option.value)
-                      : [...values, option.value],
-                  )
-                }
-                className="peer sr-only"
-              />
-              <span className="inline-flex min-h-9 items-center rounded-full border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:border-primary-300 peer-checked:border-primary-500 peer-checked:bg-primary-50 peer-checked:text-primary-800 peer-focus-visible:ring-2 peer-focus-visible:ring-primary-600 peer-focus-visible:ring-offset-2">
-                {checked && <CheckIcon className="mr-1.5 h-4 w-4" aria-hidden="true" />}
-                {option.label}
-              </span>
-            </label>
-          );
-        })}
-      </div>
-    </fieldset>
-  );
-}
-
 function draftFromProfile(
   response: PropertyProfileResponse,
   publicResponse: PublicPropertyProfileResponse | null,
@@ -3069,6 +3253,12 @@ function draftFromProfile(
   const publicLogo = publicResponse?.publicProfile.media.find(
     ({ mediaType }) => mediaType === "logo",
   );
+  const phone = contactValue(profile.contacts, "phone");
+  const whatsapp = contactValue(profile.contacts, "whatsapp");
+  const profileCountry = profile.location.countryCode.trim().toUpperCase() as CountryCode;
+  const profilePhoneCountry = SUPPORTED_PHONE_COUNTRIES.has(profileCountry)
+    ? profileCountry
+    : undefined;
   return {
     displayName: profile.displayName,
     propertyType: profile.propertyType,
@@ -3079,9 +3269,9 @@ function draftFromProfile(
     latitude: profile.location.latitude,
     longitude: profile.location.longitude,
     timezone: profile.location.timezone,
-    website: contactValue(profile.contacts, "website"),
     contactEmail: contactValue(profile.contacts, "email"),
-    phone: contactValue(profile.contacts, "phone"),
+    phone: normalizedPhoneNumber(phone, profilePhoneCountry),
+    whatsapp: normalizedPhoneNumber(whatsapp, profilePhoneCountry),
     localityPublic: profile.location.localityPublic,
     logoFile: null,
     logoMediaObjectId: pendingLogo?.mediaObjectId ?? publicLogo?.mediaObjectId ?? null,
@@ -3160,9 +3350,9 @@ function newPropertyDraft(timezone = ""): ProfileDraft {
     latitude: null,
     longitude: null,
     timezone,
-    website: "",
     contactEmail: "",
     phone: "",
+    whatsapp: "",
     localityPublic: false,
     logoFile: null,
     logoMediaObjectId: null,
@@ -3189,34 +3379,15 @@ function normalizedPropertyLaunchSettings(
   };
 }
 
-function visibleChoiceCodes(
-  popularCodes: readonly string[],
-  selectedCodes: readonly string[],
-  defaultCode: string,
-): string[] {
-  return Array.from(new Set([...selectedCodes, ...popularCodes])).filter(
-    (code) => code !== defaultCode,
-  );
-}
-
-function isHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
 function contactsFromDraft(
   draft: ProfileDraft,
   existing: PropertyProfileContact[] = [],
 ): PropertyProfileContact[] {
   return (
     [
-      ["email", draft.contactEmail],
       ["phone", draft.phone],
-      ["website", draft.website],
+      ["whatsapp", draft.whatsapp],
+      ["email", draft.contactEmail],
     ] as const
   ).reduce<PropertyProfileContact[]>(
     (contacts, [channelType, value]) => replaceContact(contacts, channelType, value),
@@ -3233,26 +3404,26 @@ function replaceContact(
   const exactIndex = contacts.findIndex(
     (contact) => contact.channelType === channelType && contact.value === trimmed,
   );
-  const index = contacts.findIndex(
-    (contact) =>
-      contact.channelType === channelType && contact.purpose === "general" && !contact.isPublic,
-  );
   if (!trimmed) {
-    return index < 0 ? contacts : contacts.filter((_, contactIndex) => contactIndex !== index);
+    return contacts.filter((contact) => contact.channelType !== channelType || !contact.isPublic);
   }
-  if (exactIndex >= 0) return contacts;
-  if (index >= 0) {
-    return contacts.map((contact, contactIndex) =>
-      contactIndex === index ? { ...contact, value: trimmed } : contact,
-    );
+
+  if (exactIndex >= 0) {
+    return contacts.flatMap((contact, contactIndex) => {
+      if (contactIndex === exactIndex) {
+        return [{ ...contact, purpose: "general" as const, isPublic: true }];
+      }
+      return contact.channelType === channelType && contact.isPublic ? [] : [contact];
+    });
   }
+
   return [
-    ...contacts,
+    ...contacts.filter((contact) => contact.channelType !== channelType || !contact.isPublic),
     {
       channelType,
       value: trimmed,
       purpose: "general",
-      isPublic: false,
+      isPublic: true,
     },
   ];
 }
@@ -3264,11 +3435,11 @@ function contactValue(
   return (
     contacts.find(
       (contact) =>
-        contact.channelType === channelType && contact.purpose === "general" && !contact.isPublic,
+        contact.channelType === channelType && contact.purpose === "general" && contact.isPublic,
     )?.value ??
+    contacts.find((contact) => contact.channelType === channelType && contact.isPublic)?.value ??
     contacts.find((contact) => contact.channelType === channelType && contact.purpose === "general")
       ?.value ??
-    contacts.find((contact) => contact.channelType === channelType && !contact.isPublic)?.value ??
     contacts.find((contact) => contact.channelType === channelType)?.value ??
     ""
   );
@@ -3322,9 +3493,66 @@ function propertyTypeOptionsFromCatalog(options: unknown): SharedPropertyTypeOpt
   return options as SharedPropertyTypeOption[];
 }
 
-function errorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
+export function setupErrorMessage(error: unknown): string {
+  const status = setupErrorStatus(error);
+  if (status !== null && status >= 500) {
+    return "Something went wrong on our end. Please try again.";
+  }
+
+  const code = setupErrorCode(error);
+  if (code === "command_in_progress") {
+    return "We're still finishing your setup. Please try again in a moment.";
+  }
+  if (code === "idempotency_key_conflict") {
+    return "Your setup changed during this save. Review it and try again.";
+  }
+
+  const data =
+    error && typeof error === "object"
+      ? (error as { data?: { detail?: unknown; message?: unknown; error?: unknown } }).data
+      : null;
+  const serverMessage = [data?.detail, data?.message, data?.error].find(
+    (value): value is string => typeof value === "string" && value.trim().length > 0,
+  );
+  if (serverMessage && !isRawApiErrorMessage(serverMessage)) return serverMessage;
+
+  if (status === 409) {
+    return "We couldn't save because your setup changed elsewhere. Refresh and try again.";
+  }
+  if (
+    error instanceof TypeError ||
+    (error instanceof Error && /failed to fetch|network/i.test(error.message))
+  ) {
+    return "Couldn't save. Check your connection and try again.";
+  }
+  if (error instanceof Error && error.message && !isRawApiErrorMessage(error.message)) {
+    return error.message;
+  }
   return "Something went wrong. Please try again.";
+}
+
+function setupErrorStatus(error: unknown): number | null {
+  if (error && typeof error === "object") {
+    const status = (error as { status?: unknown }).status;
+    if (typeof status === "number" && Number.isInteger(status)) return status;
+  }
+  if (error instanceof Error) {
+    const match = /^API Error: (\d{3})$/i.exec(error.message.trim());
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+function setupErrorPropertyId(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const data = (error as { data?: { propertyId?: unknown } }).data;
+  return typeof data?.propertyId === "string" && data.propertyId.length > 0
+    ? data.propertyId
+    : null;
+}
+
+function isRawApiErrorMessage(message: string): boolean {
+  return /^API Error: \d{3}$/i.test(message.trim());
 }
 
 function setupErrorCode(error: unknown): string | null {

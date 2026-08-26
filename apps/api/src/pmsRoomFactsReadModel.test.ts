@@ -120,6 +120,43 @@ describe("PMS room-facts read model", () => {
     );
   });
 
+  it("maps the active PMS form's explicit legacy room facts", () => {
+    const snapshot = pmsRoomFactsSnapshotFromRow(
+      roomFactsRow({
+        roomAttributes: {
+          bedType: "1 King Bed, 2 Single Beds",
+          bedrooms: 1,
+          bathrooms: 1,
+          bathroomType: "private",
+          size: 32.5,
+        },
+      }),
+    );
+
+    expect(snapshot.facts).toMatchObject({
+      beds: [
+        { type: "king_bed", quantity: 1 },
+        { type: "single_beds", quantity: 2 },
+      ],
+      bedrooms: 1,
+      bathrooms: 1,
+      bathroomType: "private",
+      size: { value: 32.5, unit: "sqm" },
+    });
+    expect(() =>
+      pmsRoomFactsSnapshotFromRow(
+        roomFactsRow({
+          roomAttributes: {
+            bedType: "1 King Bed",
+            bedrooms: 1,
+            bathrooms: 1,
+            size: 32.5,
+          },
+        }),
+      ),
+    ).toThrow("row failed contract validation");
+  });
+
   it("lists active and inactive facts in creation order within one property", async () => {
     const target = targetPool([
       [roomFactsRow(), roomFactsRow({ roomTypeId: otherRoomTypeId, active: false })],

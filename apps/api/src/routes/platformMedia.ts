@@ -43,7 +43,8 @@ export type PlatformMediaPurpose =
   | "marketplace.collaboration_chat.attachment"
   | "pms.room_type.media"
   | "pms.messaging.attachment"
-  | "pms.import.source_image";
+  | "pms.import.source_image"
+  | "finance.expense.receipt";
 
 export type PlatformMediaVisibility = "public" | "private";
 
@@ -58,6 +59,7 @@ export type PlatformMediaResourceProduct =
   | "hotel_catalog"
   | "booking"
   | "pms"
+  | "finance"
   | "marketplace"
   | "distribution"
   | "platform"
@@ -719,6 +721,21 @@ const targetPurposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePo
     privateOnly: true,
     targetResourceProduct: "pms",
     targetResourceType: "import_job",
+    requiredVariants: providerOriginalVariant,
+  },
+  "finance.expense.receipt": {
+    purpose: "finance.expense.receipt",
+    permission: "pms.finance.manage",
+    allowedRelationships: ["owner", "finance_manager"],
+    allowedResources: [{ product: "pms", resourceType: "pms_property" }],
+    allowedContentTypes: imageContentTypes,
+    allowedExtensions: imageExtensions,
+    maxFileSizeBytes: 20 * 1024 * 1024,
+    maxFileCount: 1,
+    maxImagePixels: defaultMaxImagePixels,
+    privateOnly: true,
+    targetResourceProduct: "finance",
+    targetResourceType: "expense",
     requiredVariants: providerOriginalVariant,
   },
 };
@@ -1681,7 +1698,8 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
           heightPx: canonicalVariant.heightPx,
           originalFilename: sessionFile.filename,
           retainedUntil:
-            input.session.purpose === "marketplace.collaboration_chat.attachment"
+            input.session.purpose === "marketplace.collaboration_chat.attachment" ||
+            input.session.purpose === "finance.expense.receipt"
               ? new Date(Date.parse(input.now) + 60 * 60 * 1000).toISOString()
               : null,
           variants,
@@ -1843,6 +1861,35 @@ function authorizeMediaResource(
   if (policy.actorOwned) {
     return { ok: true, context: requireAuthContext(request) };
   }
+  if (policy.purpose === "finance.expense.receipt") {
+    const permission = permissionForResource(policy);
+    const requirement = {
+      product: resource.product,
+      resourceType: resource.resourceType,
+      resourceId: resource.resourceId,
+      allowedRelationships: policy.allowedRelationships,
+    };
+    let context = enforceRoutePolicy(request, { permission, resource: requirement });
+    if (context.selectedOrganization.kind !== "hotel_group") {
+      return { ok: false, message: "Selected organization cannot upload Finance receipts." };
+    }
+    for (const key of ["property-management", "module:financials"]) {
+      context = enforceRoutePolicy(request, {
+        permission,
+        resource: requirement,
+        entitlement: {
+          product: "pms",
+          key,
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: resource.resourceId,
+          },
+        },
+      });
+    }
+    return { ok: true, context };
+  }
   if (policy.purpose !== "marketplace.collaboration_chat.attachment") {
     return {
       ok: true,
@@ -1946,6 +1993,17 @@ function validateResourceScope(
       message: `${policy.purpose} cannot be uploaded for ${resource.product}:${resource.resourceType}.`,
     };
   }
+  if (
+    policy.purpose === "finance.expense.receipt" &&
+    (resource.propertyId !== resource.resourceId ||
+      !canonicalUuid(resource.resourceId) ||
+      !canonicalUuid(resource.targetResourceId))
+  ) {
+    return {
+      code: "invalid_resource_scope",
+      message: "Finance receipts require canonical property and expense targets.",
+    };
+  }
   if (isCanonicalHotelMediaPolicy(policy)) {
     if (resource.propertyId !== undefined && resource.propertyId !== resource.resourceId) {
       return {
@@ -1970,6 +2028,14 @@ function validateResourceScope(
     }
   }
   return null;
+}
+
+function canonicalUuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value === value.toLowerCase() &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
+  );
 }
 
 function isCanonicalHotelMediaPolicy(policy: PlatformMediaPurposePolicy): boolean {
@@ -2342,7 +2408,18 @@ function serializeMediaObject(
   session: Pick<PlatformMediaSessionRecord, "purpose" | "resource">,
   mediaObject: PlatformMediaObjectRecord,
   mediaPathPrefix: string,
-): PlatformMediaObjectRecord | PropertyMediaLibraryItem {
+): PlatformMediaObjectRecord | PropertyMediaLibraryItem | FinanceReceiptMediaItem {
+  if (session.purpose === "finance.expense.receipt") {
+    if (mediaObject.purpose !== session.purpose || mediaObject.visibility !== "private") {
+      throw new Error("Finance receipt media cannot expose an invalid object");
+    }
+    return {
+      mediaObjectId: mediaObject.mediaId,
+      purpose: mediaObject.purpose,
+      lifecycleStatus: mediaObject.lifecycleStatus,
+      retainedUntil: mediaObject.retainedUntil ?? null,
+    };
+  }
   if (!isCanonicalHotelMediaSession(session)) return mediaObject;
   if (isAutoApprovedPublicMediaPurpose(session.purpose)) {
     return {
@@ -2372,6 +2449,9 @@ function serializeMediaObject(
     publicVariants: [],
   };
 }
+
+// prettier-ignore
+type FinanceReceiptMediaItem = { mediaObjectId: string; purpose: "finance.expense.receipt"; lifecycleStatus: "staged" | "active"; retainedUntil: string | null };
 
 function reusableCompletedMediaObjects(
   session: PlatformMediaSessionRecord,

@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { buildApp } from "./app.js";
+import { promotePulledChannexBookingRevision } from "./routes/providerWebhooks.js";
 import type {
   ProviderWebhookMode,
   ProviderWebhookPromotionInput,
@@ -272,7 +273,7 @@ describe("target provider webhook routes", () => {
       "webhook:xendit:payout:po_xendit_123:SUCCEEDED",
     ]);
     expect(store.domainEvents.map((event) => event.domainEventKey)).toEqual([
-      "payment.captured:stripe:pi_stripe_123:42000:v1",
+      "payment.captured:stripe:platform:pi_stripe_123:42000:v2",
       "payout.status:stripe:po_stripe_123:paid:v1",
       "payment.captured:xendit:inv_xendit_paid:42000:v1",
       "payout.status:xendit:po_xendit_123:SUCCEEDED:v1",
@@ -295,6 +296,47 @@ describe("target provider webhook routes", () => {
     expect(
       store.receipts.map((receipt) => receipt.normalizedPreview.payload.financeStatus),
     ).toEqual(["paid", "paid", "paid", "paid"]);
+    await app.close();
+  });
+
+  it("normalizes connected-account charge updates for exact Stripe fee reconciliation", async () => {
+    const store = createMemoryProviderWebhookStore();
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { stripe: "whsec_stripe_test" },
+        modes: { stripe: "mutating" },
+        store,
+        now: () => fixedNow,
+      },
+    });
+    const payload = {
+      id: "evt_stripe_charge_updated",
+      type: "charge.updated",
+      account: "acct_property_123",
+      data: {
+        object: {
+          id: "ch_stripe_123",
+          payment_intent: "pi_stripe_123",
+          balance_transaction: "txn_stripe_123",
+          amount: 42_000,
+          currency: "eur",
+        },
+      },
+    };
+
+    const response = await postProviderPayload(app, "stripe", payload);
+
+    expect(response.statusCode).toBe(200);
+    expect(store.domainEvents[0]).toMatchObject({
+      domainEventKey:
+        "payment.fee-updated:stripe:acct_property_123:pi_stripe_123:txn_stripe_123:v1",
+      domainEventType: "payment.fee_updated",
+      resourceId: "pi_stripe_123",
+    });
+    expect(store.domainEvents[0]?.payload).toMatchObject({
+      providerAccountRef: "acct_property_123",
+      financeStatus: "paid",
+    });
     await app.close();
   });
 
@@ -461,6 +503,7 @@ describe("target provider webhook routes", () => {
       providerWebhooks: {
         secrets: { channex: "channex-secret" },
         modes: { channex: "mutating" },
+        channexBookingPromotionEnabled: true,
         store,
         now: () => fixedNow,
       },
@@ -485,20 +528,20 @@ describe("target provider webhook routes", () => {
     expect(first.json()).toMatchObject({ status: "promoted" });
     expect(replay.json()).toMatchObject({
       status: "duplicate",
-      receiptKey: "webhook:channex:booking:prop_alpenrose:rev_shared_7:7",
+      receiptKey: "webhook:channex:booking:prop_alpenrose:chx_booking_123:rev_shared_7",
     });
     expect(sameRevisionOtherProperty.json()).toMatchObject({ status: "promoted" });
     expect(store.receipts.map((receipt) => receipt.receiptKey)).toEqual([
-      "webhook:channex:booking:prop_alpenrose:rev_shared_7:7",
-      "webhook:channex:booking:prop_riviera:rev_shared_7:7",
+      "webhook:channex:booking:prop_alpenrose:chx_booking_123:rev_shared_7",
+      "webhook:channex:booking:prop_riviera:chx_booking_123:rev_shared_7",
     ]);
     expect(store.domainEvents.map((event) => event.domainEventKey)).toEqual([
-      "channex.booking.ingest:prop_alpenrose:chx_booking_123:7:v1",
-      "channex.booking.ingest:prop_riviera:chx_booking_123:7:v1",
+      "channex.booking.ingest:prop_alpenrose:chx_booking_123:rev_shared_7:v1",
+      "channex.booking.ingest:prop_riviera:chx_booking_123:rev_shared_7:v1",
     ]);
     expect(store.jobs.map((job) => job.jobKey)).toEqual([
-      "channex.ingest-booking:channel_booking:prop_alpenrose:chx_booking_123:revision-7:v1",
-      "channex.ingest-booking:channel_booking:prop_riviera:chx_booking_123:revision-7:v1",
+      "channex.ingest-booking:channel_booking:prop_alpenrose:chx_booking_123:revision-rev_shared_7:v1",
+      "channex.ingest-booking:channel_booking:prop_riviera:chx_booking_123:revision-rev_shared_7:v1",
     ]);
     expect(store.receipts[0]?.normalizedPreview).toMatchObject({
       domainEventType: "channex.booking.ingest",
@@ -510,9 +553,104 @@ describe("target provider webhook routes", () => {
         provider: "channex",
         propertyId: "prop_alpenrose",
         channelBookingId: "chx_booking_123",
-        revision: "7",
+        revision: "rev_shared_7",
+        providerPropertyId: "prop_alpenrose",
+        revisionSource: "webhook_hint",
+        pullRequired: true,
       },
     });
+    await app.close();
+  });
+
+  it("keeps booking receipts observe-only until target booking ingestion owns mutation", async () => {
+    const store = createMemoryProviderWebhookStore({});
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { channex: "channex-secret" },
+        modes: { channex: "mutating" },
+        channexBookingPromotionEnabled: true,
+        store,
+      },
+    });
+
+    const response = await postChannexPayload(
+      app,
+      channexBookingRevisionPayload({
+        propertyId: "prop_alpenrose",
+        bookingRevisionId: "rev_7",
+        channelBookingId: "booking_123",
+        revision: "7",
+      }),
+    );
+
+    expect(response.json()).toMatchObject({ status: "observed", mode: "observe_only" });
+    expect(store.receipts).toHaveLength(1);
+    expect(store.jobs).toHaveLength(0);
+    await app.close();
+  });
+
+  it("dedupes booking subtype aliases into one semantic revision job", async () => {
+    const store = createMemoryProviderWebhookStore({ external_property: "prop_alpenrose" });
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { channex: "channex-secret" },
+        modes: { channex: "mutating" },
+        channexBookingPromotionEnabled: true,
+        store,
+      },
+    });
+
+    const responses = [];
+    for (const event of [
+      "booking",
+      "booking_new",
+      "booking_modification",
+      "booking_cancellation",
+    ] as const) {
+      responses.push(
+        await postChannexPayload(
+          app,
+          channexBookingRevisionPayload({
+            event,
+            propertyId: "external_property",
+            bookingRevisionId: "rev_7",
+            channelBookingId: "booking_123",
+            revision: "7",
+          }),
+        ),
+      );
+    }
+
+    expect(responses.map((response) => response.json().status)).toEqual([
+      "promoted",
+      "duplicate",
+      "duplicate",
+      "duplicate",
+    ]);
+    expect(store.receipts).toHaveLength(1);
+    expect(store.domainEvents).toHaveLength(1);
+    expect(store.jobs).toHaveLength(1);
+    expect(store.jobs[0]?.jobKey).toBe(
+      "channex.ingest-booking:channel_booking:prop_alpenrose:booking_123:revision-rev_7:v1",
+    );
+    expect(store.domainEvents[0]?.payload).toMatchObject({
+      propertyId: "prop_alpenrose",
+      providerPropertyId: "external_property",
+    });
+    await expect(
+      promotePulledChannexBookingRevision({
+        store,
+        propertyId: "prop_alpenrose",
+        providerPropertyId: "external_property",
+        revision: {
+          id: "rev_7",
+          type: "booking_revision",
+          attributes: { property_id: "external_property", booking_id: "booking_123", revision: 7 },
+        },
+      }),
+    ).resolves.toBeNull();
+    expect(store.receipts).toHaveLength(1);
+    expect(store.jobs).toHaveLength(1);
     await app.close();
   });
 
@@ -855,7 +993,13 @@ type MemoryProviderWebhookStore = ProviderWebhookStore & {
       lifecycleStatus: ProviderWebhookReceiptLifecycleStatus;
     }
   >;
-  domainEvents: Array<{ domainEventId: string; domainEventKey: string }>;
+  domainEvents: Array<{
+    domainEventId: string;
+    domainEventKey: string;
+    domainEventType: string;
+    resourceId: string;
+    payload: Record<string, unknown>;
+  }>;
   jobs: Array<{ jobId: string; jobKey: string }>;
   auditEvents: Array<{
     auditEventId: string;
@@ -867,7 +1011,9 @@ type MemoryProviderWebhookStore = ProviderWebhookStore & {
   idempotencyKeys: string[];
 };
 
-function createMemoryProviderWebhookStore(): MemoryProviderWebhookStore {
+function createMemoryProviderWebhookStore(
+  propertyIds?: Record<string, string>,
+): MemoryProviderWebhookStore {
   const receipts: MemoryProviderWebhookStore["receipts"] = [];
   const domainEvents: MemoryProviderWebhookStore["domainEvents"] = [];
   const jobs: MemoryProviderWebhookStore["jobs"] = [];
@@ -880,6 +1026,9 @@ function createMemoryProviderWebhookStore(): MemoryProviderWebhookStore {
     jobs,
     auditEvents,
     idempotencyKeys,
+    async resolveChannexPropertyId(externalPropertyId) {
+      return propertyIds ? (propertyIds[externalPropertyId] ?? null) : externalPropertyId;
+    },
     async recordReceipt(input) {
       const existing = receipts.find((receipt) => receipt.receiptKey === input.receiptKey);
       if (existing) {
@@ -914,6 +1063,9 @@ function createMemoryProviderWebhookStore(): MemoryProviderWebhookStore {
         domainEvents.push({
           domainEventId,
           domainEventKey: input.normalizedPreview.domainEventKey,
+          domainEventType: input.normalizedPreview.domainEventType,
+          resourceId: input.normalizedPreview.resourceId,
+          payload: input.normalizedPreview.payload,
         });
       }
       const jobId = existingJob?.jobId ?? `job_${jobs.length + 1}`;
@@ -1032,13 +1184,19 @@ function channexMessagePayload(input: {
 }
 
 function channexBookingRevisionPayload(input: {
+  event?:
+    | "booking"
+    | "booking.modified"
+    | "booking_new"
+    | "booking_modification"
+    | "booking_cancellation";
   propertyId: string;
   bookingRevisionId: string;
   channelBookingId: string;
   revision: string;
 }): Record<string, unknown> {
   return {
-    event: "booking.modified",
+    event: input.event ?? "booking.modified",
     payload: {
       property_id: input.propertyId,
       booking_revision_id: input.bookingRevisionId,

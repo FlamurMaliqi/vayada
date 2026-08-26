@@ -17,12 +17,56 @@ import type {
   PmsOperationsReadRepository,
   PmsPrivateNote,
   PmsPrivateNoteCreateCommand,
+  PmsPrivateNoteUpdateCommand,
   PmsRoomType,
   PmsRoomTypeCreateCommand,
   PmsRoomTypeUpdateCommand,
 } from "./routes/pmsOperations.js";
 
 describe("PMS operations command repository", () => {
+  it("edits a private note without replacing its creation evidence and replays safely", async () => {
+    const target = targetPrivateNotesPool();
+    const repository = createTargetPmsOperationsCommandRepository({
+      connectionString: "postgresql://pms-target",
+      pool: target.pool,
+      readRepository: unusedReadRepository,
+      now: target.now,
+    });
+    const created = await repository.createPrivateNote(privateNoteCreateCommand());
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error("private note create unexpectedly failed");
+    const command: PmsPrivateNoteUpdateCommand = {
+      propertyId: defaultPropertyId,
+      guestBookingId: defaultGuestBookingId,
+      noteId: created.note.noteId,
+      commandId: "cmd-private-note-update",
+      idempotencyKey: "client-private-note-update",
+      body: "Corrected private note",
+      actorUserId: "f6852000-0000-4000-8000-000000000002",
+      editorDisplayName: "Editor Host",
+    };
+
+    const updated = await repository.updatePrivateNote(command);
+    const replay = await repository.updatePrivateNote(command);
+
+    expect(updated).toMatchObject({
+      ok: true,
+      note: {
+        body: "Corrected private note",
+        authorDisplayName: created.note.authorDisplayName,
+        createdAt: created.note.createdAt,
+        auditMetadata: {
+          editedByUserId: command.actorUserId,
+          editedByDisplayName: "Editor Host",
+        },
+      },
+    });
+    expect(replay).toMatchObject({ ok: true, replayed: true, note: updated.ok && updated.note });
+    expect(
+      target.auditEvents.filter((event) => event.action === "pms.private_note.edited"),
+    ).toHaveLength(1);
+  });
+
   it("replays a private-note create from idempotency metadata after the note is hard-deleted", async () => {
     const target = targetPrivateNotesPool();
     const repository = createTargetPmsOperationsCommandRepository({
@@ -38,6 +82,7 @@ describe("PMS operations command repository", () => {
     const created = await repository.createPrivateNote(createCommand);
     expect(created.ok).toBe(true);
     if (!created.ok) throw new Error("private note create unexpectedly failed");
+    target.stripPrivateNoteReplayEditMetadata();
 
     const deleted = await repository.deletePrivateNote({
       propertyId: createCommand.propertyId,
@@ -328,6 +373,13 @@ describe("PMS operations command repository", () => {
     expect(target.calls.filter((call) => call.text.includes("INSERT INTO pms.rooms"))).toHaveLength(
       1,
     );
+    const roomOrderLockIndex = target.calls.findIndex((call) =>
+      call.text.includes("pms.room-order:"),
+    );
+    expect(roomOrderLockIndex).toBeGreaterThan(-1);
+    expect(roomOrderLockIndex).toBeLessThan(
+      target.calls.findIndex((call) => call.text.includes("INSERT INTO pms.rooms")),
+    );
     expect(
       target.calls.filter((call) => call.text.includes("INSERT INTO pms.rate_rules")),
     ).toHaveLength(1);
@@ -582,6 +634,7 @@ function targetPrivateNotesPool(options: { generatedRoomConflicts?: number } = {
   now(): Date;
   pool: PmsOperationsCommandPool;
   roomTypes: RoomTypeRecord[];
+  stripPrivateNoteReplayEditMetadata(): void;
 } {
   const calls: QueryCall[] = [];
   const auditEvents: Array<{ auditKey: string; action: string }> = [];
@@ -651,6 +704,8 @@ function targetPrivateNotesPool(options: { generatedRoomConflicts?: number } = {
       return emptyRows<T>();
     }
 
+    if (text.includes("pms.room-order:")) return emptyRows<T>();
+
     if (text.includes("SELECT EXISTS") && text.includes("FROM pms.room_types room_type")) {
       return rows([
         {
@@ -690,6 +745,9 @@ function targetPrivateNotesPool(options: { generatedRoomConflicts?: number } = {
           createdByUserId: String(values?.[2]),
           createdByDisplayName: String(values?.[3]),
           createdAt: String(values?.[5]),
+          editedByUserId: null,
+          editedByDisplayName: null,
+          editedAt: null,
           privacyScope: "internal",
         },
       };
@@ -706,6 +764,37 @@ function targetPrivateNotesPool(options: { generatedRoomConflicts?: number } = {
           authorDisplayName: note.authorDisplayName,
           source: "pms",
           createdAt: note.createdAt,
+          editedByUserId: null,
+          editedByDisplayName: null,
+          editedAt: null,
+        } as unknown as T,
+      ]);
+    }
+
+    if (text.includes("UPDATE pms.booking_notes_private")) {
+      const record = notes.get(String(values?.[0]));
+      if (
+        !record ||
+        record.propertyId !== String(values?.[1]) ||
+        record.guestBookingId !== String(values?.[2])
+      ) {
+        return emptyRows<T>();
+      }
+      record.note.body = String(values?.[3]);
+      record.note.auditMetadata.editedByUserId = String(values?.[4]);
+      record.note.auditMetadata.editedByDisplayName = String(values?.[5]);
+      record.note.auditMetadata.editedAt = String(values?.[6]);
+      return rows([
+        {
+          noteId: record.note.noteId,
+          body: record.note.body,
+          authorUserId: record.note.authorUserId,
+          authorDisplayName: record.note.authorDisplayName,
+          source: "pms",
+          createdAt: record.note.createdAt,
+          editedByUserId: record.note.auditMetadata.editedByUserId,
+          editedByDisplayName: record.note.auditMetadata.editedByDisplayName,
+          editedAt: record.note.auditMetadata.editedAt,
         } as unknown as T,
       ]);
     }
@@ -988,6 +1077,16 @@ function targetPrivateNotesPool(options: { generatedRoomConflicts?: number } = {
     },
     get roomTypes() {
       return [...roomTypes.values()];
+    },
+    stripPrivateNoteReplayEditMetadata() {
+      for (const record of idempotencyRows.values()) {
+        const note = record.metadata?.["note"] as PmsPrivateNote | undefined;
+        if (!note) continue;
+        const audit = note.auditMetadata as Partial<PmsPrivateNote["auditMetadata"]>;
+        delete audit.editedByUserId;
+        delete audit.editedByDisplayName;
+        delete audit.editedAt;
+      }
     },
   };
 }

@@ -6,8 +6,8 @@
     "identity.organization_memberships": 1,
     "identity.organization_resource_links": 3,
     "identity.product_entitlements": 2,
-    "identity.permission_catalog": 27,
-    "identity.role_permission_grants": 45
+    "identity.permission_catalog": 29,
+    "identity.role_permission_grants": 52
   },
   "idStability": {
     "identity.users": ["a1b2c3d4-0000-0000-0000-000000000001"],
@@ -132,8 +132,9 @@
       "marketplace.collaboration.read",
       "marketplace.collaboration.review",
       "booking.analytics.read",
-      "intelligence.ask.read",
-      "hotel_catalog.setup.read"
+      "hotel_catalog.setup.read",
+      "platform.finance.read",
+      "platform.finance.manage"
     ]
   }
 }

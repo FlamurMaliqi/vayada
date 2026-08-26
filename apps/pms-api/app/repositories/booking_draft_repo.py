@@ -50,6 +50,10 @@ class BookingDraftRepository:
         number_of_rooms: int,
         booking_reference: str,
         stripe_payment_intent_id: str,
+        stripe_account_id: str | None,
+        stripe_application_fee_amount: float,
+        stripe_platform_fee_amount: float,
+        stripe_affiliate_commission_amount: float,
         payload: dict,
         ttl_minutes: int = DRAFT_TTL_MINUTES,
     ) -> dict:
@@ -58,8 +62,10 @@ class BookingDraftRepository:
             """
             INSERT INTO booking_drafts (
                 hotel_id, room_type_id, check_in, check_out, number_of_rooms,
-                booking_reference, stripe_payment_intent_id, payload, expires_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+                booking_reference, stripe_payment_intent_id, stripe_account_id,
+                stripe_application_fee_amount, stripe_platform_fee_amount,
+                stripe_affiliate_commission_amount, payload, expires_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13)
             RETURNING *
             """,
             hotel_id,
@@ -69,6 +75,10 @@ class BookingDraftRepository:
             number_of_rooms,
             booking_reference,
             stripe_payment_intent_id,
+            stripe_account_id,
+            stripe_application_fee_amount,
+            stripe_platform_fee_amount,
+            stripe_affiliate_commission_amount,
             json.dumps(payload),
             expires_at,
         )
@@ -103,6 +113,21 @@ class BookingDraftRepository:
             booking_id,
         )
         return dict(row) if row else None
+
+    @staticmethod
+    async def release_materialization_claim(draft_id: str, booking_id: str) -> None:
+        """Release a failed pre-insert claim so a safe retry can materialize the draft."""
+        await Database.execute(
+            """
+            UPDATE booking_drafts draft
+               SET materialized_booking_id = NULL
+             WHERE draft.id = $1
+               AND draft.materialized_booking_id = $2
+               AND NOT EXISTS (SELECT 1 FROM bookings WHERE id = $2)
+            """,
+            draft_id,
+            booking_id,
+        )
 
     @staticmethod
     async def delete(draft_id: str) -> bool:
@@ -145,6 +170,25 @@ class BookingDraftRepository:
             check_out,
         )
         return int(count or 0)
+
+    @staticmethod
+    async def list_active_by_hotel_in_range(hotel_id: str, start_date, end_date) -> list[dict]:
+        """Active payment soft holds overlapping a calendar range."""
+        rows = await Database.fetch(
+            """
+            SELECT room_type_id, check_in, check_out, number_of_rooms
+            FROM booking_drafts
+            WHERE hotel_id = $1
+              AND check_in < $3
+              AND check_out > $2
+              AND expires_at > NOW()
+              AND materialized_booking_id IS NULL
+            """,
+            hotel_id,
+            start_date,
+            end_date,
+        )
+        return [dict(row) for row in rows]
 
     @staticmethod
     async def delete_expired(grace_minutes: int = 60) -> int:

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { runParityChecks } from "./parity.js";
 import { rebuild } from "./rebuild.js";
-import { DEFAULT_TARGET_SCHEMAS } from "./targetSchemas.js";
+import { DEFAULT_REBUILD_SCHEMAS } from "./targetSchemas.js";
 import { assertSafeTestDatabase } from "./testUtils.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
@@ -76,10 +76,6 @@ describe("runParityChecks fixture config validation", () => {
             properties: {},
             forbiddenPublicOutputValues: [1],
           },
-          intelligenceChecks: {
-            properties: [],
-            forbiddenPrivateBoundaryValues: [1],
-          },
           platformMediaChecks: {
             legacyUrlInventory: [],
             requiredPurposes: [1],
@@ -107,7 +103,7 @@ describe("runParityChecks fixture config validation", () => {
       });
 
       expect(report.status).toBe("failed");
-      expect(report.summary.failures).toBe(24);
+      expect(report.summary.failures).toBe(22);
       expect(report.findings).toEqual([
         expect.objectContaining({
           code: "INVALID_FIXTURE_CONFIG",
@@ -168,14 +164,6 @@ describe("runParityChecks fixture config validation", () => {
         }),
         expect.objectContaining({
           code: "INVALID_FIXTURE_CONFIG",
-          targetObject: "expected-target.json.intelligenceChecks.properties",
-        }),
-        expect.objectContaining({
-          code: "INVALID_FIXTURE_CONFIG",
-          targetObject: "expected-target.json.intelligenceChecks.forbiddenPrivateBoundaryValues",
-        }),
-        expect.objectContaining({
-          code: "INVALID_FIXTURE_CONFIG",
           targetObject: "expected-target.json.platformMediaChecks.legacyUrlInventory",
         }),
         expect.objectContaining({
@@ -223,7 +211,7 @@ async function dropTargetSchemas(): Promise<void> {
   const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
   await client.connect();
   try {
-    for (const schema of DEFAULT_TARGET_SCHEMAS) {
+    for (const schema of DEFAULT_REBUILD_SCHEMAS) {
       await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
     }
     await client.query(`DROP SCHEMA IF EXISTS migration_source_auth CASCADE`);
@@ -240,7 +228,7 @@ describe.skipIf(!TEST_DATABASE_URL)("runParityChecks (integration)", () => {
       connectionString: TEST_DATABASE_URL!,
       migrationsDir: MIGRATIONS_DIR,
       environment: "local",
-      schemas: [...DEFAULT_TARGET_SCHEMAS],
+      schemas: [...DEFAULT_REBUILD_SCHEMAS],
       fixtureCase: "identity-organization-links",
       fixturesDir: FIXTURES_DIR,
     });
@@ -480,7 +468,7 @@ describe.skipIf(!TEST_DATABASE_URL)("rebuild with fixture loading (integration)"
       connectionString: TEST_DATABASE_URL!,
       migrationsDir: MIGRATIONS_DIR,
       environment: "local",
-      schemas: [...DEFAULT_TARGET_SCHEMAS],
+      schemas: [...DEFAULT_REBUILD_SCHEMAS],
       fixtureCase: "identity-organization-links",
       fixturesDir: FIXTURES_DIR,
     });
@@ -536,7 +524,7 @@ describe.skipIf(!TEST_DATABASE_URL)("rebuild with fixture loading (integration)"
            bool_or(key = 'hotel_catalog.products.manage') AS has_products_manage
          FROM identity.permission_catalog`,
       );
-      expect(perms.rows[0].count).toBe(27);
+      expect(perms.rows[0].count).toBe(29);
       expect(perms.rows[0].has_products_manage).toBe(true);
 
       const entitlements = await client.query(
@@ -553,7 +541,7 @@ describe.skipIf(!TEST_DATABASE_URL)("rebuild with fixture loading (integration)"
       connectionString: TEST_DATABASE_URL!,
       migrationsDir: MIGRATIONS_DIR,
       environment: "local",
-      schemas: [...DEFAULT_TARGET_SCHEMAS],
+      schemas: [...DEFAULT_REBUILD_SCHEMAS],
       fixtureCase: "booking-checkout",
       fixturesDir: FIXTURES_DIR,
     });

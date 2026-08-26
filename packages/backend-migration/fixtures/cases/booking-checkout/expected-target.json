@@ -53,7 +53,10 @@
         "guestCount": 2,
         "addonSelectionCount": 1,
         "promoApplicationCount": 1,
-        "statusEventCount": 2
+        "statusEventCount": 2,
+        "bookerCountryCode": "NL",
+        "bookerCountryCodeRaw": null,
+        "bookerCountryCodeReviewRequired": false
       }
     ],
     "settings": [
@@ -86,6 +89,7 @@
         "heroSubtext": null,
         "primaryColor": "#0F766E",
         "fontPairing": "modern-minimalist",
+        "acceptanceMode": "instant",
         "sourceFreshness": {
           "booking_hotels": {
             "status": "fresh",

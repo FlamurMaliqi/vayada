@@ -1,5 +1,7 @@
 import type pg from "pg";
 
+import { importedNationalityMap } from "../../importedNationality.js";
+
 export async function transformBookingCheckout(client: pg.Client): Promise<void> {
   await client.query(`
     INSERT INTO identity.users (id, email, name, status)
@@ -23,13 +25,15 @@ export async function transformBookingCheckout(client: pg.Client): Promise<void>
 
   await client.query(`
     INSERT INTO identity.organization_memberships
-      (id, organization_id, user_id, status, role_key, workos_membership_id, workos_role_slugs)
+      (id, organization_id, user_id, status, role_key, property_access_mode, access_origin, workos_membership_id, workos_role_slugs)
     SELECT
       membership_id,
       organization_id,
       owner_user_id,
       membership_status,
       role_key,
+      'all',
+      'agency',
       workos_membership_id,
       workos_role_slugs
     FROM migration_source_booking.checkout_flow_inputs
@@ -152,7 +156,8 @@ export async function transformBookingCheckout(client: pg.Client): Promise<void>
         filter_rooms,
         source_freshness,
         primary_color,
-        font_pairing
+        font_pairing,
+        acceptance_mode
       )
     SELECT
       property_id,
@@ -213,6 +218,10 @@ export async function transformBookingCheckout(client: pg.Client): Promise<void>
         WHEN 'italiana-serif' THEN 'italiana-serif'
         WHEN 'italiana-source-sans-pro' THEN 'italiana-serif'
         ELSE 'high-end-serif'
+      END,
+      CASE
+        WHEN COALESCE((booking_settings ->> 'instantBook')::boolean, TRUE) THEN 'instant'
+        ELSE 'request'
       END
     FROM migration_source_booking.checkout_flow_inputs
   `);
@@ -347,7 +356,15 @@ export async function transformBookingCheckout(client: pg.Client): Promise<void>
     FROM migration_source_booking.checkout_flow_inputs
   `);
 
-  await client.query(`
+  const nationalityValues = await client.query<{ value: string | null }>(`
+    SELECT DISTINCT guest.country_code AS value
+    FROM migration_source_booking.checkout_flow_inputs flow
+    CROSS JOIN LATERAL jsonb_to_recordset(flow.guests) AS guest(country_code text)
+  `);
+  const nationality = importedNationalityMap(nationalityValues.rows.map((row) => row.value));
+
+  await client.query(
+    `
     INSERT INTO booking.booking_guests
       (
         id,
@@ -358,6 +375,8 @@ export async function transformBookingCheckout(client: pg.Client): Promise<void>
         email,
         phone,
         country_code,
+        country_code_raw,
+        country_code_review_required,
         arrival_time,
         special_requests,
         pii_retention_until
@@ -370,7 +389,9 @@ export async function transformBookingCheckout(client: pg.Client): Promise<void>
       guest.last_name,
       guest.email,
       guest.phone,
-      guest.country_code,
+      nationality.country_code,
+      nationality.country_code_raw,
+      COALESCE(nationality.review_required, FALSE),
       guest.arrival_time,
       guest.special_requests,
       guest.pii_retention_until
@@ -388,7 +409,17 @@ export async function transformBookingCheckout(client: pg.Client): Promise<void>
         special_requests text,
         pii_retention_until date
       )
-  `);
+    LEFT JOIN unnest($1::text[], $2::text[], $3::text[], $4::boolean[])
+      AS nationality(source_value, country_code, country_code_raw, review_required)
+      ON nationality.source_value = guest.country_code
+  `,
+    [
+      nationality.sourceValues,
+      nationality.countryCodes,
+      nationality.rawValues,
+      nationality.reviewRequired,
+    ],
+  );
 
   await client.query(`
     INSERT INTO booking.addon_definitions

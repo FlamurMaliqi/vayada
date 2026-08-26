@@ -18,6 +18,7 @@ import type {
   PmsManualBookingTransactionDependencies,
   PmsManualBookingTransactionPool,
 } from "./pmsManualBookingTransactionPorts.js";
+import { lockPmsInventoryMutationScope } from "./pmsInventoryMutationLock.js";
 
 export function createPgPmsManualBookingCommandRepository(config: {
   connectionString: string;
@@ -71,6 +72,7 @@ export function createPgPmsManualBookingCommandRepository(config: {
           transaction,
           commandId: command.commandId,
         });
+        await lockPmsInventoryMutationScope(transaction, command.propertyId);
         const rooms = await config.dependencies.operations.lockRooms({ transaction, command });
         const preview = await config.dependencies.pricing.calculate({
           transaction,
@@ -93,6 +95,7 @@ export function createPgPmsManualBookingCommandRepository(config: {
           command,
           rooms,
           guestBookingId,
+          acceptedAt: acceptedAt.toISOString(),
         });
         await config.dependencies.nightlyEvidence.appendExactNightlyEvidence({
           transaction,
@@ -113,10 +116,20 @@ export function createPgPmsManualBookingCommandRepository(config: {
         );
         if (paymentEvidenceId)
           await config.dependencies.booking.markPaid({ transaction, guestBookingId });
-        const result = createResult(command, accepted, paymentEvidenceId);
+        const optimization = await config.dependencies.roomAssignmentOptimization.afterCreate({
+          transaction,
+          command,
+          rooms,
+          acceptedAt,
+        });
+        const rearrangedBookingCount = new Set(
+          optimization.flatMap(({ rearrangedGuestBookingIds }) => rearrangedGuestBookingIds),
+        ).size;
+        const result = createResult(command, accepted, paymentEvidenceId, rearrangedBookingCount);
         await config.dependencies.platform.writeEvidence({
           transaction,
           command,
+          preview,
           result,
           reservation,
         });
@@ -192,6 +205,7 @@ function createResult(
   command: PmsManualBookingCreateCommand,
   accepted: PmsManualBookingAcceptedWrite,
   paymentEvidenceId: string | null,
+  rearrangedBookingCount: number,
 ): PmsManualBookingCreateResult {
   const paid = paymentEvidenceId !== null;
   return {
@@ -210,6 +224,7 @@ function createResult(
     balance: paid ? { amountDecimal: "0.00", currency: accepted.total.currency } : accepted.total,
     paymentStatus: paid ? "paid" : "unpaid",
     paymentEvidenceId,
+    rearrangedBookingCount,
     sideEffects: ["calendar_refresh", "ari_changed", "guest_confirmation", "audit_event"],
   };
 }

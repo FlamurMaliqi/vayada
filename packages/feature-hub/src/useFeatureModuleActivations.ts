@@ -7,6 +7,14 @@ import type { FeatureActivationClient, ModuleActivationsResponse } from "./types
 const EVENT_NAME = "vayada-feature-modules-changed";
 const FALLBACK_STORAGE_KEY = "vayada-feature-modules";
 
+type ModuleSynchronizationDetail = {
+  activeModuleIds: string[];
+  hotelId?: string;
+  source: "read" | "write";
+  canManage?: boolean;
+  supportedModuleIds?: string[];
+};
+
 function selectedHotelId(): string {
   if (typeof window === "undefined") return "";
   return window.localStorage.getItem("selectedHotelId") || "";
@@ -28,21 +36,27 @@ function readCached(hotelId?: string): string[] {
   }
 }
 
-function publish(activeModuleIds: string[], hotelId?: string) {
+function publish(detail: ModuleSynchronizationDetail) {
   if (typeof window === "undefined") return;
-  const detail = { activeModuleIds, hotelId: hotelId || selectedHotelId() || "default" };
-  window.localStorage.setItem(storageKey(hotelId), JSON.stringify(activeModuleIds));
-  window.localStorage.setItem(EVENT_NAME, JSON.stringify(detail));
-  window.dispatchEvent(new CustomEvent(EVENT_NAME, { detail }));
+  const scopedDetail = {
+    ...detail,
+    hotelId: detail.hotelId || selectedHotelId() || "default",
+  };
+  window.localStorage.setItem(storageKey(detail.hotelId), JSON.stringify(detail.activeModuleIds));
+  window.localStorage.setItem(EVENT_NAME, JSON.stringify(scopedDetail));
+  window.dispatchEvent(new CustomEvent(EVENT_NAME, { detail: scopedDetail }));
 }
 
 export function useFeatureModuleActivations(client: FeatureActivationClient) {
   const [activeModuleIds, setActiveModuleIds] = useState<string[]>(() => readCached());
+  const [supportedModuleIds, setSupportedModuleIds] = useState<string[]>([]);
   const [hotelId, setHotelId] = useState<string>("");
+  const [canManage, setCanManage] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const clientRef = useRef(client);
   const mounted = useRef(true);
+  const synchronizationRevision = useRef(0);
 
   // Keep refresh stable while still using the latest client implementation.
   useEffect(() => {
@@ -58,20 +72,32 @@ export function useFeatureModuleActivations(client: FeatureActivationClient) {
 
   const applyResponse = useCallback((response: ModuleActivationsResponse) => {
     const next = response.activeModules || [];
+    const supported = response.supportedModules || [];
     setHotelId(response.hotelId);
+    setCanManage(response.canManage);
+    setSupportedModuleIds(supported);
     setActiveModuleIds(next);
-    publish(next, response.hotelId);
+    publish({
+      activeModuleIds: next,
+      hotelId: response.hotelId,
+      source: "read",
+      canManage: response.canManage,
+      supportedModuleIds: supported,
+    });
   }, []);
 
   const refresh = useCallback(async () => {
+    const revision = synchronizationRevision.current;
     setLoading(true);
     setError("");
     try {
       const response = await clientRef.current.list();
       if (!mounted.current) return;
+      if (revision !== synchronizationRevision.current) return;
       applyResponse(response);
     } catch (err) {
       if (!mounted.current) return;
+      if (revision !== synchronizationRevision.current) return;
       setError(err instanceof Error ? err.message : "Could not load feature modules.");
       const cached = readCached();
       if (cached.length > 0) setActiveModuleIds(cached);
@@ -86,23 +112,32 @@ export function useFeatureModuleActivations(client: FeatureActivationClient) {
 
   useEffect(() => {
     const applyDetail = (
-      detail: { activeModuleIds?: unknown; hotelId?: string } | null | undefined,
+      detail: Partial<ModuleSynchronizationDetail> | null | undefined,
+      acceptUnbound: boolean,
     ) => {
       const activeModuleIds = detail?.activeModuleIds;
       if (!Array.isArray(activeModuleIds)) return;
       if (!activeModuleIds.every((id): id is string => typeof id === "string")) return;
       const detailHotelId = detail?.hotelId;
+      if (detailHotelId && !hotelId && !acceptUnbound) return;
       if (detailHotelId && hotelId && detailHotelId !== hotelId) return;
+      if (detail?.source !== "read") synchronizationRevision.current += 1;
+      if (detailHotelId && detailHotelId !== "default" && !hotelId) setHotelId(detailHotelId);
+      if (typeof detail?.canManage === "boolean") setCanManage(detail.canManage);
+      const supported = detail?.supportedModuleIds;
+      if (Array.isArray(supported) && supported.every((id) => typeof id === "string")) {
+        setSupportedModuleIds(supported);
+      }
       setActiveModuleIds(activeModuleIds);
     };
 
     const onChange = (event: Event) => {
-      applyDetail((event as CustomEvent).detail);
+      applyDetail((event as CustomEvent).detail, true);
     };
     const onStorage = (event: StorageEvent) => {
       if (event.key !== EVENT_NAME || !event.newValue) return;
       try {
-        applyDetail(JSON.parse(event.newValue));
+        applyDetail(JSON.parse(event.newValue), false);
       } catch {
         // Ignore malformed cross-tab notifications.
       }
@@ -123,16 +158,22 @@ export function useFeatureModuleActivations(client: FeatureActivationClient) {
         ? Array.from(new Set([...activeModuleIds, moduleId]))
         : activeModuleIds.filter((id) => id !== moduleId);
       setActiveModuleIds(next);
-      publish(next, hotelId);
       try {
         await clientRef.current.update(moduleId, isActive);
+        publish({ activeModuleIds: next, hotelId, source: "write", canManage, supportedModuleIds });
       } catch (err) {
         setActiveModuleIds(previous);
-        publish(previous, hotelId);
+        publish({
+          activeModuleIds: previous,
+          hotelId,
+          source: "write",
+          canManage,
+          supportedModuleIds,
+        });
         throw err;
       }
     },
-    [activeModuleIds, hotelId],
+    [activeModuleIds, canManage, hotelId, supportedModuleIds],
   );
 
   const activeModuleSet = useMemo(() => new Set(activeModuleIds), [activeModuleIds]);
@@ -140,7 +181,9 @@ export function useFeatureModuleActivations(client: FeatureActivationClient) {
   return {
     activeModuleIds,
     activeModuleSet,
+    supportedModuleIds,
     hotelId,
+    canManage,
     loading,
     error,
     refresh,

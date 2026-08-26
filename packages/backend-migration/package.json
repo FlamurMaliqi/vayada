@@ -20,6 +20,7 @@
     "target:rebuild": "tsx src/cli/rebuild.ts",
     "target:parity": "tsx src/cli/parity.ts",
     "target:c1-rehearsal:checks": "tsx src/cli/c1RehearsalChecks.ts",
+    "target:manual-booking:readiness": "tsx src/cli/manualBookingReadiness.ts",
     "target:platform-identity:bootstrap": "tsx src/cli/platformIdentityBootstrap.ts",
     "target:workos:backfill": "tsx src/cli/workosBackfill.ts",
     "target:workos:audit": "tsx src/cli/workosLinkAudit.ts",
@@ -28,6 +29,7 @@
     "target:fixtures:smoke": "tsx src/cli/smoke.ts",
     "target:migrate:dist": "node dist/cli/migrate.js",
     "target:c1-rehearsal:checks:dist": "node dist/cli/c1RehearsalChecks.js",
+    "target:manual-booking:readiness:dist": "node dist/cli/manualBookingReadiness.js",
     "target:platform-identity:bootstrap:dist": "node dist/cli/platformIdentityBootstrap.js",
     "target:workos:backfill:dist": "node dist/cli/workosBackfill.js",
     "target:workos:audit:dist": "node dist/cli/workosLinkAudit.js",
@@ -35,6 +37,7 @@
     "target:booking-public-bookability:backfill:dist": "node dist/cli/bookingPublicBookabilityBackfill.js"
   },
   "dependencies": {
+    "@vayada/locale-constants": "*",
     "@workos-inc/node": "^10.2.0",
     "pg": "^8.16.3"
   },

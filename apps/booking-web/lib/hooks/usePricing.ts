@@ -43,14 +43,22 @@ const promoCache = new Map<
     valid: boolean;
     discountType?: string;
     discountValue?: number;
+    currency?: string;
+    message?: string;
   }>
 >();
 
-function fetchPromo(slug: string, code: string) {
-  const key = `${slug}:${code}`;
+function fetchPromo(
+  slug: string,
+  code: string,
+  context: { checkIn: string; roomTypeId: string; bookingTotal: number },
+) {
+  const key = `${slug}:${code}:${context.checkIn}:${context.roomTypeId}:${context.bookingTotal}`;
   let p = promoCache.get(key);
   if (!p) {
-    p = hotelService.validatePromoCode(slug, code).catch(() => ({ valid: false }));
+    p = hotelService
+      .validatePromoCode(slug, code, context)
+      .catch(() => ({ valid: false, message: "Promo code validation is unavailable." }));
     promoCache.set(key, p);
   }
   return p;
@@ -107,8 +115,9 @@ export function usePricing({
   const selectedKey = selectedAddonIds.join(",");
   const quantitiesKey = JSON.stringify(addonQuantities);
   const datesKey = JSON.stringify(addonDates ?? {});
-  const addonTotal = useMemo(() => {
-    let total = 0;
+  const addonTotals = useMemo(() => {
+    let displayTotal = 0;
+    let propertyTotal = 0;
     for (const addon of addons) {
       if (!selectedAddonIds.includes(addon.id)) continue;
       const count = addonQuantities[addon.id];
@@ -120,32 +129,45 @@ export function usePricing({
         ? Math.max(1, Math.min(dates?.length ?? count ?? nights, nights))
         : 1;
       const items = !addon.perPerson && !addon.perNight ? Math.max(1, count ?? 1) : 1;
-      total += convertAndRound(addon.price * people * days * items, roomCurrency);
+      const lineTotal = addon.price * people * days * items;
+      propertyTotal += lineTotal;
+      displayTotal += convertAndRound(lineTotal, roomCurrency);
     }
-    return total;
+    return { displayTotal, propertyTotal };
     // selectedKey/quantitiesKey/datesKey are stable identity proxies for the inputs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addons, selectedKey, quantitiesKey, datesKey, nights, adults, convertAndRound]);
+  const addonTotal = addonTotals.displayTotal;
+  const propertyBookingTotal =
+    nightlyRatesBase.reduce((sum, rate) => sum + rate, 0) * roomsParam + addonTotals.propertyTotal;
 
   const [promoDiscount, setPromoDiscount] = useState<PromoDiscount | null>(null);
+  const [promoError, setPromoError] = useState<string | null>(null);
   useEffect(() => {
     if (!promoCode || !slug) {
       setPromoDiscount(null);
+      setPromoError(null);
       return;
     }
     let cancelled = false;
-    fetchPromo(slug, promoCode).then((res) => {
+    const subtotal = roomTotal + addonTotal;
+    fetchPromo(slug, promoCode, {
+      checkIn,
+      roomTypeId: roomId,
+      bookingTotal: propertyBookingTotal,
+    }).then((res) => {
       if (cancelled) return;
       if (!res.valid || !res.discountType || res.discountValue == null) {
         setPromoDiscount(null);
+        setPromoError(res.message ?? "Invalid promo code.");
         return;
       }
-      const subtotal = roomTotal + addonTotal;
+      setPromoError(null);
       // Fixed-amount promos are stored in the hotel's base currency; convert to
       // the displayed currency so the discount matches the shown subtotal.
       const value =
         res.discountType === "fixed"
-          ? convertAndRound(res.discountValue, roomCurrency)
+          ? convertAndRound(res.discountValue, res.currency ?? roomCurrency)
           : res.discountValue;
       const amount = calculatePromoDiscount(subtotal, res.discountType, value);
       setPromoDiscount({ type: res.discountType, value: res.discountValue, amount });
@@ -153,7 +175,17 @@ export function usePricing({
     return () => {
       cancelled = true;
     };
-  }, [promoCode, slug, roomTotal, addonTotal, roomCurrency, convertAndRound]);
+  }, [
+    promoCode,
+    slug,
+    roomTotal,
+    addonTotal,
+    propertyBookingTotal,
+    roomCurrency,
+    convertAndRound,
+    checkIn,
+    roomId,
+  ]);
 
   const discountAmount = promoDiscount?.amount ?? 0;
   const grandTotal = roomTotal + addonTotal - discountAmount;
@@ -170,6 +202,7 @@ export function usePricing({
     roomTotal,
     addonTotal,
     promoDiscount,
+    promoError,
     discountAmount,
     grandTotal,
   };

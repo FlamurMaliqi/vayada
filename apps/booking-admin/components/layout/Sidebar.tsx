@@ -5,14 +5,16 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BoltIcon,
-  CalendarDaysIcon,
   ChevronLeftIcon,
   ChevronDownIcon,
   CheckIcon,
   Cog6ToothIcon,
+  TicketIcon,
 } from "@heroicons/react/24/outline";
+import { activeNavModules, useFeatureModuleActivations } from "@vayada/feature-hub";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
+import { moduleActivationClient } from "@/services/api/moduleActivationClient";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
 import { getAuthCsrfToken } from "@/services/auth/sessionStore";
 import {
@@ -25,7 +27,6 @@ type Product = "booking" | "pms" | "marketplace";
 
 const PMS_FRONTEND_URL = process.env.NEXT_PUBLIC_PMS_FRONTEND_URL || "https://pms.vayada.com";
 const MARKETPLACE_URL = process.env.NEXT_PUBLIC_MARKETPLACE_URL || "https://app.vayada.com";
-const RESERVATIONS_NAV_ENABLED = process.env.NEXT_PUBLIC_BOOKING_RESERVATIONS_ENABLED === "true";
 
 interface NavItem {
   labelKey?: string;
@@ -36,13 +37,21 @@ interface NavItem {
 
 const coreNavItems: NavItem[] = [
   { labelKey: "layout.sidebar.dashboard", href: "/", icon: DashboardIcon },
-  ...(RESERVATIONS_NAV_ENABLED
-    ? [{ label: "Reservations", href: "/reservations", icon: CalendarDaysIcon }]
-    : []),
   { labelKey: "layout.sidebar.designStudio", href: "/design-studio", icon: DesignStudioIcon },
   { labelKey: "layout.sidebar.bookingFlow", href: "/booking-flow", icon: BookingFlowIcon },
-  { labelKey: "layout.sidebar.settings", href: "/settings", icon: Cog6ToothIcon },
 ];
+
+const promoCodesNavItem: NavItem = {
+  label: "Promo Codes",
+  href: "/promo-codes",
+  icon: TicketIcon,
+};
+
+const settingsNavItem: NavItem = {
+  labelKey: "layout.sidebar.settings",
+  href: "/settings",
+  icon: Cog6ToothIcon,
+};
 
 export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
@@ -54,7 +63,12 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   );
   const switcherRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
-  const navItems = coreNavItems;
+  const { activeModuleIds, hotelId: activationPropertyId } =
+    useFeatureModuleActivations(moduleActivationClient);
+  const activeFeatureNavItems: NavItem[] = activationPropertyId
+    ? activeNavModules("booking_engine", activeModuleIds).map((module) => module.navItem!)
+    : [];
+  const navItems = [...coreNavItems, ...activeFeatureNavItems, promoCodesNavItem, settingsNavItem];
 
   const switchApp = async (
     baseUrl: string,

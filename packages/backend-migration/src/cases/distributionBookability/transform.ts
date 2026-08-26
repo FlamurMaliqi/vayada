@@ -26,13 +26,15 @@ export async function transformDistributionBookability(client: pg.Client): Promi
 
   await client.query(`
     INSERT INTO identity.organization_memberships
-      (id, organization_id, user_id, status, role_key, workos_membership_id, workos_role_slugs)
+      (id, organization_id, user_id, status, role_key, property_access_mode, access_origin, workos_membership_id, workos_role_slugs)
     SELECT
       membership_id,
       organization_id,
       owner_user_id,
       membership_status,
       role_key,
+      'all',
+      'agency',
       workos_membership_id,
       workos_role_slugs
     FROM migration_source_distribution.bookability_snapshot_inputs

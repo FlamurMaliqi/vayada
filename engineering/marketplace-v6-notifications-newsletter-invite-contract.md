@@ -28,7 +28,7 @@ Rationale:
   Python route itself and `NotificationRepository`.
 - `marketplace_notifications` still migrates and remains marketplace-owned.
   This preserves product notification history, read-state parity, and future
-  Ask Intelligence / marketplace evidence inputs.
+  VAY-1091 hotel employee agent or marketplace evidence inputs.
 - Existing notification creation is a product side effect of admin creator
   approval. That creation behavior belongs with the marketplace admin/user
   lifecycle cutover, not with an unconsumed inbox route.

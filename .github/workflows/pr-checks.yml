@@ -33,6 +33,9 @@ jobs:
       - name: Architecture boundaries
         run: npm run check:architecture-boundaries
 
+      - name: Finance domain contracts
+        run: npm --workspace @vayada/domain-finance run test
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -132,6 +135,11 @@ jobs:
         env:
           TARGET_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
 
+      - name: Verify effective property access
+        run: npm --workspace @vayada/backend-authorization run test -- --no-file-parallelism src/index.test.ts -t createPgPropertyAccessRepository
+        env:
+          TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
+
       - name: Run PMS TypeScript PostgreSQL integration
         run: >-
           npm --workspace vayada-api run test --
@@ -141,8 +149,53 @@ jobs:
           src/domains/pmsRoomPublicationCommandRepository.integration.test.ts
           src/domains/pmsOperatingCalendarCommandRepository.integration.test.ts
           src/domains/pmsOperatingCalendarImpact.integration.test.ts
+          src/domains/pmsManualBookingCommandRepository.integration.test.ts
           src/domains/bookingGuestPolicyRepository.integration.test.ts
+          src/domains/financeOtaCommissionRuleRepository.integration.test.ts
+          src/domains/financeExpenseCategoryRepository.integration.test.ts
+          src/domains/financeManualExpenseRepository.integration.test.ts
+          src/domains/financeRecurringExpenseRuleRepository.integration.test.ts
+          src/domains/financeRecurringExpenseGeneration.integration.test.ts
+          src/domains/financeExpenseReadModel.integration.test.ts
+          src/domains/financeFolioReadRepository.integration.test.ts
+          src/domains/financeProviderFeeEvidence.integration.test.ts
+          src/domains/financeProviderFeeExpenseProjection.integration.test.ts
+          src/domains/financeGeneratedExpenseRepository.integration.test.ts
+          src/domains/financeOtaCommissionExpenseProjection.integration.test.ts
+          src/jobs/financeExpenseGeneration.integration.test.ts
+          src/jobs/pmsChannexBookingRevisionTombstones.integration.test.ts
+          src/jobs/channexBookings.integration.test.ts
+          src/routes/bookingWebPublicAttribution.integration.test.ts
+          src/jobs/financeSubscriptions.integration.test.ts
+          src/platform/postgresRuntime.integration.test.ts
           src/platform/workosWebhooks.integration.test.ts
+        env:
+          TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
+
+      - name: Verify Booking add-on economics migration
+        run: >-
+          npm --workspace @vayada/backend-migration run test --
+          --no-file-parallelism
+          src/bookingAddonEconomics.test.ts
+          src/manualBookingReadiness.integration.test.ts
+          src/workosBackfill.test.ts
+          src/financeFolioRecipientCiphertextMigration.integration.test.ts
+          src/channexBookingRevisionTombstonesMigration.integration.test.ts
+        env:
+          TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
+
+      - name: Verify Finance OTA commission migration
+        run: >-
+          npm --workspace @vayada/backend-migration run test --
+          src/financeOtaCommissionRules.test.ts src/providerFeeEvidenceMigration.integration.test.ts && npm --workspace vayada-api run test -- src/domains/financeOtaCommissionEvidence.integration.test.ts
+        env:
+          TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
+
+      - name: Verify membership property scope migration
+        run: >-
+          npm --workspace @vayada/backend-migration run test --
+          --no-file-parallelism src/membershipPropertyScope.test.ts
+          src/membershipDelegations.test.ts
         env:
           TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
 
@@ -271,6 +324,7 @@ jobs:
 
       - name: Install PostgreSQL client
         run: |
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
           sudo apt-get update
           sudo apt-get install -y postgresql-client
 

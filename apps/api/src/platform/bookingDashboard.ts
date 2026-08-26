@@ -4,6 +4,7 @@ import type {
   BookingDashboardMetricsReadPort,
   BookingDate,
   BookingMoney,
+  BookingPageViewTimelineReadModel,
   BookingSourceMixReadModel,
   BookingSparklineReadModel,
 } from "@vayada/domain-booking";
@@ -46,6 +47,13 @@ type BookingDashboardSparklineRow = {
   currency: string | null;
 };
 
+type BookingPageViewBucketRow = {
+  propertyFound: boolean;
+  timeZone: string | null;
+  bucketDate: string | Date;
+  pageViewCount: string;
+};
+
 export function createTargetBookingDashboardMetricsReadPort(config: {
   connectionString: string;
   max?: number;
@@ -65,27 +73,49 @@ export function createTargetBookingDashboardMetricsReadPort(config: {
 
   return {
     async getDashboardMetrics(input) {
-      const [currentResult, previousResult] = await Promise.all([
-        pool.query<BookingDashboardMetricsRow>(dashboardMetricsSql(), [
-          input.propertyId,
-          input.periodStart,
-          input.periodEnd,
-        ]),
-        pool.query<BookingDashboardMetricsRow>(dashboardMetricsSql(), [
-          input.propertyId,
-          input.previousPeriodStart,
-          input.previousPeriodEnd,
-        ]),
-      ]);
+      const [currentResult, previousResult, currentPageViews, previousPageViews] =
+        await Promise.all([
+          pool.query<BookingDashboardMetricsRow>(dashboardMetricsSql(), [
+            input.propertyId,
+            input.periodStart,
+            input.periodEnd,
+          ]),
+          pool.query<BookingDashboardMetricsRow>(dashboardMetricsSql(), [
+            input.propertyId,
+            input.previousPeriodStart,
+            input.previousPeriodEnd,
+          ]),
+          pool.query<BookingPageViewBucketRow>(pageViewBucketsSql(), [
+            input.propertyId,
+            input.periodStart,
+            input.periodEnd,
+          ]),
+          pool.query<BookingPageViewBucketRow>(pageViewBucketsSql(), [
+            input.propertyId,
+            input.previousPeriodStart,
+            input.previousPeriodEnd,
+          ]),
+        ]);
 
       const current = currentResult.rows[0];
       const previous = previousResult.rows[0];
-      if (!current?.propertyFound || !previous?.propertyFound) return null;
+      const currentViews = currentPageViews.rows[0];
+      const previousViews = previousPageViews.rows[0];
+      if (
+        !current?.propertyFound ||
+        !previous?.propertyFound ||
+        !currentViews?.propertyFound ||
+        !previousViews?.propertyFound
+      ) {
+        return null;
+      }
+      requirePageViewTimeZone(currentViews);
+      requirePageViewTimeZone(previousViews);
 
       return {
         propertyId: input.propertyId,
-        current: toRevenueStats(current),
-        previous: toRevenueStats(previous),
+        current: toRevenueStats(current, totalPageViews(currentPageViews.rows)),
+        previous: toRevenueStats(previous, totalPageViews(previousPageViews.rows)),
         nextArrivalDate: toDateString(current.nextArrivalDate),
         liveSinceDate: toDateString(current.liveSinceDate),
       } satisfies BookingDashboardMetricsReadModel;
@@ -117,12 +147,20 @@ export function createTargetBookingDashboardMetricsReadPort(config: {
       } satisfies BookingSourceMixReadModel;
     },
     async getSparklines(input) {
-      const result = await pool.query<BookingDashboardSparklineRow>(sparklineSql(), [
-        input.propertyId,
-        input.windowStart,
-        input.windowEnd,
+      const [result, pageViews] = await Promise.all([
+        pool.query<BookingDashboardSparklineRow>(sparklineSql(), [
+          input.propertyId,
+          input.windowStart,
+          input.windowEnd,
+        ]),
+        pool.query<BookingPageViewBucketRow>(pageViewBucketsSql(), [
+          input.propertyId,
+          input.windowStart,
+          input.windowEnd,
+        ]),
       ]);
       const currency = result.rows.find((row) => row.currency)?.currency ?? "USD";
+      requirePageViewTimeZone(pageViews.rows[0]);
 
       return {
         propertyId: input.propertyId,
@@ -132,8 +170,46 @@ export function createTargetBookingDashboardMetricsReadPort(config: {
           revenue: money(numeric(row.revenueAmount), row.currency ?? currency),
           bookingCount: Number(row.bookingCount),
           avgNightlyRate: averageNightlyRate(row, row.currency ?? currency),
+          pageViewCount: totalPageViews(
+            pageViews.rows,
+            toDateString(row.bucketStart),
+            toDateString(row.bucketEnd),
+          ),
         })),
       } satisfies BookingSparklineReadModel;
+    },
+    async getPageViewTimeline(input) {
+      const windowDays = inclusiveDays(input.windowStart, input.windowEnd);
+      const previousWindowStart = shiftIsoDate(input.windowStart, -windowDays);
+      const previousWindowEnd = shiftIsoDate(input.windowStart, -1);
+      const result = await pool.query<BookingPageViewBucketRow>(pageViewBucketsSql(), [
+        input.propertyId,
+        previousWindowStart,
+        input.windowEnd,
+      ]);
+      const first = result.rows[0];
+      if (!first?.propertyFound) return null;
+      const timeZone = requirePageViewTimeZone(first);
+      const current = result.rows.filter(
+        (row) => (toDateString(row.bucketDate) ?? "") >= input.windowStart,
+      );
+      const previous = result.rows.filter(
+        (row) => (toDateString(row.bucketDate) ?? "") < input.windowStart,
+      );
+      const buckets = current.map(toPageViewBucket);
+      const previousBuckets = previous.map(toPageViewBucket);
+      return {
+        propertyId: input.propertyId,
+        timeZone,
+        windowStart: input.windowStart,
+        windowEnd: input.windowEnd,
+        previousWindowStart,
+        previousWindowEnd,
+        buckets,
+        previousBuckets,
+        total: buckets.reduce((sum, bucket) => sum + bucket.count, 0),
+        previousTotal: previousBuckets.reduce((sum, bucket) => sum + bucket.count, 0),
+      } satisfies BookingPageViewTimelineReadModel;
     },
     async close() {
       if (ownsPool) await pool.end();
@@ -252,14 +328,109 @@ function sparklineSql(): string {
   ORDER BY bucket.bucket_start`;
 }
 
+function pageViewBucketsSql(): string {
+  return `${bookingScopedPropertyCte()},
+  telemetry_scope AS (
+    SELECT scoped.property_id, location.timezone AS time_zone
+    FROM scoped_property scoped
+    JOIN hotel_catalog.property_locations location ON location.property_id = scoped.property_id
+    JOIN pg_timezone_names timezone ON timezone.name = location.timezone
+  ),
+  known_slugs AS (
+    SELECT DISTINCT slug.slug
+    FROM hotel_catalog.property_slugs slug
+    JOIN scoped_property scoped ON scoped.property_id = slug.property_id
+  ),
+  buckets AS (
+    SELECT day::date AS bucket_date
+    FROM generate_series($2::date, $3::date, INTERVAL '1 day') day
+  )
+  SELECT
+    EXISTS (SELECT 1 FROM scoped_property) AS "propertyFound",
+    (SELECT time_zone FROM telemetry_scope) AS "timeZone",
+    bucket.bucket_date::text AS "bucketDate",
+    COUNT(DISTINCT event.id)::text AS "pageViewCount"
+  FROM buckets bucket
+  LEFT JOIN telemetry_scope scope ON TRUE
+  LEFT JOIN platform.domain_events event
+    ON event.source_system = 'distribution'
+   AND event.event_type = 'booking_web.page_visit'
+   AND event.resource_product = 'distribution'
+   AND event.resource_type = 'booking_web_hotel'
+   AND (
+     (event.tenant_scope = 'property' AND event.property_id = scope.property_id)
+     OR (
+       event.tenant_scope = 'external'
+       AND event.property_id IS NULL
+       AND event.resource_id IN (SELECT slug FROM known_slugs)
+       AND 1 = (
+         SELECT COUNT(DISTINCT slug_owner.property_id)
+         FROM hotel_catalog.property_slugs slug_owner
+         WHERE slug_owner.slug = event.resource_id
+       )
+     )
+   )
+   AND event.event_status IN ('recorded', 'projected')
+   AND COALESCE(event.event_metadata ->> 'trafficClass', 'human') NOT IN ('bot', 'test')
+   AND event.payload -> 'metadata' -> 'isTestData' IS DISTINCT FROM 'true'::jsonb
+   AND event.payload -> 'metadata' -> 'testData' IS DISTINCT FROM 'true'::jsonb
+   AND (event.occurred_at AT TIME ZONE scope.time_zone)::date = bucket.bucket_date
+  GROUP BY bucket.bucket_date
+  ORDER BY bucket.bucket_date`;
+}
+
 function toRevenueStats(
   row: BookingDashboardMetricsRow,
+  pageViewCount: number,
 ): BookingDashboardMetricsReadModel["current"] {
   const currency = row.currency ?? "USD";
   return {
     totalRevenue: money(numeric(row.revenueAmount), currency),
     bookingCount: Number(row.bookingCount),
     avgNightlyRate: averageNightlyRate(row, currency),
+    pageViewCount,
+  };
+}
+
+function requirePageViewTimeZone(row: BookingPageViewBucketRow | undefined): string {
+  if (!row?.propertyFound || !row.timeZone) {
+    throw new Error("Booking dashboard page views require a canonical property timezone");
+  }
+  return row.timeZone;
+}
+
+function totalPageViews(
+  rows: BookingPageViewBucketRow[],
+  start?: BookingDate | null,
+  end?: BookingDate | null,
+): number {
+  return rows.reduce((sum, row) => {
+    const date = toDateString(row.bucketDate);
+    return date && (!start || date >= start) && (!end || date <= end)
+      ? sum + Number(row.pageViewCount)
+      : sum;
+  }, 0);
+}
+
+function inclusiveDays(start: BookingDate, end: BookingDate): number {
+  return (
+    Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000) + 1
+  );
+}
+
+function shiftIsoDate(value: BookingDate, days: number): BookingDate {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function toPageViewBucket(row: BookingPageViewBucketRow): {
+  date: BookingDate;
+  count: number;
+} {
+  return {
+    date: toDateString(row.bucketDate) ?? String(row.bucketDate),
+    count: Number(row.pageViewCount),
   };
 }
 

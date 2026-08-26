@@ -4,22 +4,26 @@ import { useCallback, useState, useEffect } from "react";
 import {
   BoltIcon,
   CalendarDaysIcon,
-  ClockIcon,
   ClipboardDocumentCheckIcon,
   GlobeAltIcon,
+  ReceiptPercentIcon,
 } from "@heroicons/react/24/outline";
 import { HotelIcon } from "@vayada/product-onboarding";
 import { bookingsService } from "@/services/bookings";
-import { getPmsPropertyProfile, updatePmsPropertyProfile } from "@/services/api/pmsPropertyClient";
-import { useTranslation } from "@/lib/i18n";
 import {
-  SettingsCard,
-  SettingsLayout,
-  SettingsSection,
-  type SettingsNavSection,
-} from "@/components/settings/layout";
+  getPmsCalendarSettings,
+  getPmsPropertyProfile,
+  updatePmsCalendarSettings,
+  updatePmsPropertyProfile,
+} from "@/services/api/pmsPropertyClient";
+import { useTranslation } from "@/lib/i18n";
+import { SettingsLayout, type SettingsNavSection } from "@vayada/settings-ui";
 import { PropertySection } from "@/components/settings/PropertySection";
 import { LocalizationSection } from "@/components/settings/LocalizationSection";
+import { BookingEngineSection } from "@/components/settings/BookingEngineSection";
+import { CalendarSection } from "@/components/settings/CalendarSection";
+import { settingsService, type BookingAcceptanceMode } from "@/services/settings";
+import { OtaCommissionSettingsSection } from "@/components/settings/OtaCommissionSettingsSection";
 import { humanizeApiError } from "@/components/settings/constants";
 import {
   pmsPropertyDetailsSaveError,
@@ -31,9 +35,9 @@ import {
 // SearchModal links from VAY-367 still scroll to the right place).
 type SectionId =
   | "property-details"
+  | "ota-commissions"
   | "booking-engine"
   | "calendar"
-  | "check-in-out"
   | "checkin-checklist"
   | "checkout-inspection"
   | "localization";
@@ -42,9 +46,9 @@ type SectionId =
 // that map onto a parent rail section.
 const ANCHOR_TO_SECTION: Record<string, SectionId> = {
   "property-details": "property-details",
+  "ota-commissions": "ota-commissions",
   "booking-engine": "booking-engine",
   calendar: "calendar",
-  "check-in-out": "check-in-out",
   "checkin-checklist": "checkin-checklist",
   "checkout-inspection": "checkout-inspection",
   currency: "localization",
@@ -57,6 +61,14 @@ export default function SettingsPage() {
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
   const [activeId, setActiveId] = useState<SectionId>("property-details");
+  const [acceptanceMode, setAcceptanceMode] = useState<BookingAcceptanceMode>("instant");
+  const [acceptanceLoadError, setAcceptanceLoadError] = useState("");
+  const [loadingAcceptance, setLoadingAcceptance] = useState(true);
+  const [savingAcceptance, setSavingAcceptance] = useState(false);
+  const [autoRearrangeEnabled, setAutoRearrangeEnabled] = useState(false);
+  const [calendarLoading, setCalendarLoading] = useState(true);
+  const [calendarSaving, setCalendarSaving] = useState(false);
+  const [calendarLoadError, setCalendarLoadError] = useState("");
 
   // Currency
   const [currency, setCurrency] = useState("");
@@ -94,6 +106,36 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const loadAcceptanceMode = useCallback(async () => {
+    setLoadingAcceptance(true);
+    setAcceptanceLoadError("");
+    try {
+      const settings = await settingsService.getBookingAcceptance();
+      setAcceptanceMode(settings.acceptanceMode);
+    } catch (loadError) {
+      setAcceptanceLoadError(
+        humanizeApiError(loadError, "We couldn’t load booking acceptance settings."),
+      );
+    } finally {
+      setLoadingAcceptance(false);
+    }
+  }, []);
+
+  const loadCalendarSettings = useCallback(async () => {
+    setCalendarLoading(true);
+    setCalendarLoadError("");
+    try {
+      const settings = await getPmsCalendarSettings();
+      setAutoRearrangeEnabled(settings.autoRearrangeEnabled);
+    } catch (loadError) {
+      setCalendarLoadError(
+        humanizeApiError(loadError, "We couldn’t load automatic room-assignment settings."),
+      );
+    } finally {
+      setCalendarLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     bookingsService
       .getPaymentSettings()
@@ -110,7 +152,41 @@ export default function SettingsPage() {
       .finally(() => setLoading(false));
 
     void loadPropertyProfile();
-  }, [loadPropertyProfile]);
+    void loadAcceptanceMode();
+    void loadCalendarSettings();
+  }, [loadAcceptanceMode, loadCalendarSettings, loadPropertyProfile]);
+
+  const saveAcceptanceMode = async (instantBook: boolean) => {
+    setSavingAcceptance(true);
+    setError("");
+    setSuccess("");
+    try {
+      const saved = await settingsService.updateBookingAcceptance(
+        instantBook ? "instant" : "request",
+      );
+      setAcceptanceMode(saved.acceptanceMode);
+      setSuccess("Booking acceptance settings saved");
+    } catch (saveError) {
+      setError(humanizeApiError(saveError, "Couldn’t save booking acceptance settings."));
+    } finally {
+      setSavingAcceptance(false);
+    }
+  };
+
+  const saveAutoRearrange = async (enabled: boolean) => {
+    setCalendarSaving(true);
+    setError("");
+    setSuccess("");
+    try {
+      const saved = await updatePmsCalendarSettings(enabled);
+      setAutoRearrangeEnabled(saved.autoRearrangeEnabled);
+      setSuccess("Calendar settings saved");
+    } catch (saveError) {
+      setError(humanizeApiError(saveError, "Couldn’t save calendar settings."));
+    } finally {
+      setCalendarSaving(false);
+    }
+  };
 
   // Hash → active rail item + scrollIntoView. Re-runs on hashchange so the
   // global SearchModal navigation (VAY-367) lands on the right section even
@@ -184,13 +260,9 @@ export default function SettingsPage() {
       label: "Property",
       icon: HotelIcon,
     },
-    { id: "booking-engine", label: "Booking Engine", icon: BoltIcon },
     { id: "calendar", label: "Calendar", icon: CalendarDaysIcon },
-    {
-      id: "check-in-out",
-      label: t("settings.checkInCheckOut"),
-      icon: ClockIcon,
-    },
+    { id: "booking-engine", label: "Booking Engine", icon: BoltIcon },
+    { id: "ota-commissions", label: "OTA commissions", icon: ReceiptPercentIcon },
     {
       id: "checkin-checklist",
       label: "Check-in checklist",
@@ -225,12 +297,18 @@ export default function SettingsPage() {
       onSelect={handleSelect}
     >
       {error && (
-        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+        <div
+          role="alert"
+          className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700"
+        >
           {error}
         </div>
       )}
       {success && (
-        <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
+        <div
+          role="status"
+          className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700"
+        >
           {success}
         </div>
       )}
@@ -247,23 +325,24 @@ export default function SettingsPage() {
         onSave={savePropertyDetails}
       />
 
-      <UnavailableSettingsSection
-        id="booking-engine"
-        title="Booking Engine"
-        description="Booking acceptance and same-day cutoff controls are not available in PMS yet."
+      <CalendarSection
+        enabled={autoRearrangeEnabled}
+        loading={calendarLoading}
+        saving={calendarSaving}
+        loadError={calendarLoadError}
+        onToggle={(next) => void saveAutoRearrange(next)}
+        onRetry={() => void loadCalendarSettings()}
       />
 
-      <UnavailableSettingsSection
-        id="calendar"
-        title="Calendar"
-        description="Automatic room rearrangement and future-calendar controls are not available yet."
+      <BookingEngineSection
+        instantBook={acceptanceMode === "instant"}
+        saving={savingAcceptance || loadingAcceptance}
+        loadError={acceptanceLoadError}
+        onToggle={(next) => void saveAcceptanceMode(next)}
+        onRetry={() => void loadAcceptanceMode()}
       />
 
-      <UnavailableSettingsSection
-        id="check-in-out"
-        title={t("settings.checkInCheckOut")}
-        description="Check-in and check-out time controls are not available in PMS yet."
-      />
+      <OtaCommissionSettingsSection />
 
       <LocalizationSection
         currency={currency}
@@ -271,28 +350,5 @@ export default function SettingsPage() {
         currencyLoadStatus={currencyLoadStatus}
       />
     </SettingsLayout>
-  );
-}
-
-function UnavailableSettingsSection({
-  id,
-  title,
-  description,
-}: {
-  id: string;
-  title: string;
-  description: string;
-}) {
-  return (
-    <SettingsSection id={id} title={title} description={description}>
-      <SettingsCard>
-        <div className="flex items-center justify-between gap-4">
-          <p className="text-sm text-gray-500">No settings can be changed here yet.</p>
-          <span className="shrink-0 rounded-md bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-600">
-            Not available yet
-          </span>
-        </div>
-      </SettingsCard>
-    </SettingsSection>
   );
 }

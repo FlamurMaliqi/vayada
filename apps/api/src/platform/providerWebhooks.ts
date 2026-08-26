@@ -2,7 +2,14 @@ import { createHash } from "node:crypto";
 import type { FinanceStripeConnectProvider } from "@vayada/domain-finance";
 import pg from "pg";
 
-import { settleStripeBookingPayment } from "../domains/stripeBookingSettlement.js";
+import type {
+  StripeBookingPaymentIntent,
+  StripeBookingPaymentProvider,
+} from "../domains/stripeBookingPayments.js";
+import {
+  reconcileStripeBookingPaymentProviderDetails,
+  settleStripeBookingPayment,
+} from "../domains/stripeBookingSettlement.js";
 import { PROJECT_PUBLIC_BOOKABILITY_PROFILE } from "./publicBookabilityPublication.js";
 import type {
   ProviderWebhookPromotionInput,
@@ -16,6 +23,7 @@ type PgProviderWebhookStoreConfig = {
   connectionString: string;
   max?: number;
   stripeConnectProvider?: Pick<FinanceStripeConnectProvider, "retrieveAccount">;
+  stripePaymentProvider?: Pick<StripeBookingPaymentProvider, "retrievePaymentIntent">;
 };
 
 export function createPgProviderWebhookStore(
@@ -27,11 +35,26 @@ export function createPgProviderWebhookStore(
   });
 
   return {
+    async resolveChannexPropertyId(externalPropertyId) {
+      const result = await pool.query<{ propertyId: string }>(
+        `SELECT property_id::text AS "propertyId" FROM pms.channel_connections
+         WHERE provider = 'channex' AND external_property_id = $1
+           AND connection_status = 'connected' ORDER BY property_id LIMIT 2`,
+        [externalPropertyId],
+      );
+      if (result.rows.length > 1) throw new Error("Ambiguous Channex property ownership");
+      return result.rows[0]?.propertyId ?? null;
+    },
     async recordReceipt(input) {
       return recordReceipt(pool, input);
     },
     async promoteReceipt(input) {
-      return promoteReceipt(pool, input, config.stripeConnectProvider);
+      return promoteReceipt(
+        pool,
+        input,
+        config.stripeConnectProvider,
+        config.stripePaymentProvider,
+      );
     },
     async close() {
       await pool.end();
@@ -140,7 +163,9 @@ async function promoteReceipt(
   pool: pg.Pool,
   input: ProviderWebhookPromotionInput,
   stripeConnectProvider?: Pick<FinanceStripeConnectProvider, "retrieveAccount">,
+  stripePaymentProvider?: Pick<StripeBookingPaymentProvider, "retrievePaymentIntent">,
 ): Promise<ProviderWebhookPromotionResult> {
+  const stripePaymentIntent = await resolveStripePaymentIntent(input, stripePaymentProvider);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -161,6 +186,9 @@ async function promoteReceipt(
     const eventId = await insertOrFindDomainEvent(client, input);
     const jobId = await insertOrFindJob(client, input, eventId);
     await settleCapturedStripeBooking(client, input, eventId);
+    if (stripePaymentIntent) {
+      await reconcileStripeBookingPaymentProviderDetails(client, stripePaymentIntent, new Date());
+    }
     await reconcileStripeProviderAccount(client, input, stripeConnectProvider);
 
     await insertOrTouchIdempotencyKey(client, {
@@ -227,6 +255,10 @@ export async function settleCapturedStripeBooking(
   if (!Number.isInteger(amountMinor) || amountMinor < 0) return;
   await settleStripeBookingPayment(client, {
     paymentIntentId: input.normalizedPreview.resourceId,
+    providerAccountRef:
+      typeof input.normalizedPreview.payload["providerAccountRef"] === "string"
+        ? input.normalizedPreview.payload["providerAccountRef"]
+        : null,
     amountMinor,
     currency:
       typeof input.normalizedPreview.payload["currency"] === "string"
@@ -236,6 +268,35 @@ export async function settleCapturedStripeBooking(
     correlationId: input.receiptKey,
     sourceDomainEventId,
   });
+}
+
+async function resolveStripePaymentIntent(
+  input: ProviderWebhookPromotionInput,
+  provider?: Pick<StripeBookingPaymentProvider, "retrievePaymentIntent">,
+): Promise<StripeBookingPaymentIntent | null> {
+  if (
+    input.provider !== "stripe" ||
+    !["payment.captured", "payment.fee_updated"].includes(
+      input.normalizedPreview.domainEventType,
+    ) ||
+    !provider
+  ) {
+    return null;
+  }
+  const providerAccountRef = input.normalizedPreview.payload["providerAccountRef"];
+  try {
+    const intent = await provider.retrievePaymentIntent(
+      input.normalizedPreview.resourceId,
+      typeof providerAccountRef === "string" ? providerAccountRef : null,
+    );
+    if (input.normalizedPreview.domainEventType === "payment.fee_updated" && !intent.feeBreakdown) {
+      throw new Error("Stripe fee breakdown is not available yet.");
+    }
+    return intent;
+  } catch (error) {
+    if (input.normalizedPreview.domainEventType === "payment.fee_updated") throw error;
+    return null;
+  }
 }
 
 export async function reconcileStripeProviderAccount(

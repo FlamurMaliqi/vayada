@@ -132,6 +132,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     CORE_NAV_ITEMS[3],
     CORE_NAV_ITEMS[4],
     CORE_NAV_ITEMS[5],
+    CORE_NAV_ITEMS[6],
   ];
 
   const navItems: NavItem[] = baseNavItems;

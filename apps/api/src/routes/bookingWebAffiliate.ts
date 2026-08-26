@@ -148,15 +148,14 @@ type PgBookingWebAffiliateRepositoryConfig = {
   max?: number;
   now?: () => Date;
   stripeConnectProvider?: BookingWebAffiliateStripeConnectProvider;
+  pool?: pg.Pool;
 };
 
 export function createPgBookingWebAffiliateRepository(
   config: PgBookingWebAffiliateRepositoryConfig,
 ): BookingWebAffiliateRepository {
-  const pool = new pg.Pool({
-    connectionString: config.connectionString,
-    max: config.max,
-  });
+  const pool =
+    config.pool ?? new pg.Pool({ connectionString: config.connectionString, max: config.max });
   const now = config.now ?? (() => new Date());
 
   return {
@@ -349,6 +348,49 @@ async function insertRegistrationEvent(
     paymentMethod: input.request.paymentMethod ?? null,
     hasSocialMedia: Boolean(input.request.socialMedia),
   };
+
+  const projection = await client.query<{ id: string }>(
+    `INSERT INTO marketplace.property_affiliates (
+       property_id, affiliate_id, referral_code, display_name, contact_email,
+       contact_email_hash, social_media, affiliate_type, lifecycle_status,
+       application_source, applied_at, updated_at
+     )
+     SELECT property_slug.property_id, $1, $2, $3, $4, $5, $6,
+       CASE WHEN $7 = 'creator' THEN 'creator' ELSE 'guest' END,
+       'pending', 'public_registration', $8::timestamptz, $8::timestamptz
+     FROM hotel_catalog.property_slugs property_slug
+     WHERE property_slug.slug = lower($9)
+       AND property_slug.purpose = 'canonical'
+       AND property_slug.status = 'active'
+     ON CONFLICT (property_id, affiliate_id) DO NOTHING
+     RETURNING id::text AS id`,
+    [
+      input.identity.affiliateId,
+      input.identity.referralCode,
+      input.request.fullName,
+      input.email,
+      sha256(input.email),
+      input.request.socialMedia ?? null,
+      input.request.userType ?? null,
+      input.timestamp,
+      input.slug,
+    ],
+  );
+  if (!projection.rows[0]) {
+    const existing = await client.query(
+      `SELECT affiliate.id
+       FROM marketplace.property_affiliates affiliate
+       JOIN hotel_catalog.property_slugs property_slug
+         ON property_slug.property_id = affiliate.property_id
+        AND property_slug.slug = lower($1)
+        AND property_slug.purpose = 'canonical'
+        AND property_slug.status = 'active'
+       WHERE affiliate.affiliate_id = $2
+       LIMIT 1`,
+      [input.slug, input.identity.affiliateId],
+    );
+    if (!existing.rows[0]) throw createHttpError(404, "Booking Web hotel profile not found.");
+  }
 
   await client.query(
     `INSERT INTO platform.domain_events

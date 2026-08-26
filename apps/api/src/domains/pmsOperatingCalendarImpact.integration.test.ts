@@ -24,6 +24,7 @@ const otherPropertyId = "a7200000-0000-4000-8000-000000000030";
 const actorUserId = "a7200000-0000-4000-8000-000000000003";
 const roomTypeA = "a7200000-0000-4000-8000-000000000004";
 const roomTypeB = "a7200000-0000-4000-8000-000000000005";
+const roomTypeC = "a7200000-0000-4000-8000-000000000006";
 const acceptedAt = "2026-08-04T10:00:00.000Z";
 const roleKey = "vay1117_calendar_impact_integration";
 const secret = "vay1117-test-impact-confirmation-secret-32-bytes";
@@ -125,6 +126,91 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS operating-calendar impact co
     expect(serialized).not.toContain("receiptId");
     expect(serialized).not.toContain("quoteSessionId");
     expect(serialized).not.toContain("guest");
+  });
+
+  it("previews initial setup over pristine onboarding inventory without treating it as canonical", async () => {
+    await admin.query(
+      `INSERT INTO pms.inventory_days (
+         property_id, room_type_id, stay_date, total_count,
+         assigned_count, blocked_count, available_count, status, source_freshness
+       )
+       SELECT $1::uuid, room_type_id, DATE '2026-08-04', total_count,
+              0, 0, total_count, 'open',
+              jsonb_build_object('pms', jsonb_build_object(
+                'status', 'fresh', 'generatedAt', $4::timestamptz, 'horizonDays', 366
+              ))
+       FROM (VALUES ($2::uuid, 2), ($3::uuid, 3)) room(room_type_id, total_count)`,
+      [propertyId, roomTypeA, roomTypeB, acceptedAt],
+    );
+
+    await expect(
+      impact.previewOperatingCalendarImpact(previewCommand("legacy")),
+    ).resolves.toMatchObject({
+      ok: true,
+      preview: {
+        sourceRevisions: { calendarRevision: 0, inventory: { materializedRevision: null } },
+        impact: { summary: { availableRoomNightsAdded: 0 } },
+      },
+    });
+    const stored = await admin.query(
+      `SELECT calendar_revision FROM pms.inventory_days WHERE property_id = $1::uuid`,
+      [propertyId],
+    );
+    expect(stored.rows).toEqual([{ calendar_revision: null }, { calendar_revision: null }]);
+
+    await admin.query(
+      `UPDATE pms.inventory_days SET total_count = 3, available_count = 3
+       WHERE property_id = $1::uuid AND room_type_id = $2::uuid`,
+      [propertyId, roomTypeA],
+    );
+    await expect(
+      impact.previewOperatingCalendarImpact(previewCommand("wrong-legacy-capacity")),
+    ).rejects.toThrow("Canonical inventory exists without coverage");
+    await admin.query(
+      `UPDATE pms.inventory_days SET total_count = 2, available_count = 2
+       WHERE property_id = $1::uuid AND room_type_id = $2::uuid`,
+      [propertyId, roomTypeA],
+    );
+    await admin.query(
+      `INSERT INTO pms.inventory_days (
+         property_id, room_type_id, stay_date, total_count,
+         assigned_count, blocked_count, available_count, status, source_freshness
+       ) VALUES (
+         $1::uuid, $2::uuid, DATE '2026-08-04', 1, 0, 0, 1, 'open',
+         jsonb_build_object('pms', jsonb_build_object(
+           'status', 'fresh', 'generatedAt', $3::timestamptz, 'horizonDays', 366
+         ))
+       )`,
+      [propertyId, roomTypeC, acceptedAt],
+    );
+    await expect(
+      impact.previewOperatingCalendarImpact(previewCommand("unexpected-legacy-room")),
+    ).rejects.toThrow("Canonical inventory exists without coverage");
+    await admin.query(`DELETE FROM pms.inventory_days WHERE room_type_id = $1::uuid`, [roomTypeC]);
+
+    await admin.query(
+      `UPDATE pms.inventory_days SET source_freshness = source_freshness || '{"other":{}}'
+       WHERE property_id = $1::uuid AND room_type_id = $2::uuid`,
+      [propertyId, roomTypeA],
+    );
+    await expect(
+      impact.previewOperatingCalendarImpact(previewCommand("malformed-legacy-freshness")),
+    ).rejects.toThrow("Canonical inventory exists without coverage");
+    await admin.query(
+      `UPDATE pms.inventory_days SET source_freshness = source_freshness - 'other'
+       WHERE property_id = $1::uuid AND room_type_id = $2::uuid`,
+      [propertyId, roomTypeA],
+    );
+
+    await admin.query(
+      `UPDATE pms.inventory_days
+       SET assigned_count = 1, available_count = total_count - 1
+       WHERE property_id = $1::uuid AND room_type_id = $2::uuid`,
+      [propertyId, roomTypeA],
+    );
+    await expect(
+      impact.previewOperatingCalendarImpact(previewCommand("occupied-legacy")),
+    ).rejects.toThrow("Canonical inventory exists without coverage");
   });
 
   it("previews a fresh active-room-set change against the current calendar coverage", async () => {
@@ -659,8 +745,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS operating-calendar impact co
     );
     await admin.query(
       `INSERT INTO identity.organization_memberships
-         (organization_id, user_id, status, role_key)
-       VALUES ($1::uuid, $2::uuid, 'active', $3)`,
+         (organization_id, user_id, status, role_key, access_origin)
+       VALUES ($1::uuid, $2::uuid, 'active', $3, 'agency')`,
       [organizationId, actorUserId, roleKey],
     );
     await admin.query(
@@ -700,8 +786,13 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS operating-calendar impact co
         '{"total":4,"adults":3,"children":1}'::jsonb,
         '{"beds":[{"type":"king","quantity":1}],"bedrooms":1,"bathrooms":1,
           "bathroomType":"private","size":{"value":40,"unit":"sqm"}}'::jsonb,
-        TRUE, 4, 8)`,
-      [roomTypeA, roomTypeB, propertyId],
+        TRUE, 4, 8),
+       ($4::uuid, $3::uuid, 'Inactive Legacy Room', '',
+        '{"total":1,"adults":1,"children":0}'::jsonb,
+        '{"beds":[{"type":"single","quantity":1}],"bedrooms":1,"bathrooms":1,
+          "bathroomType":"private","size":{"value":15,"unit":"sqm"}}'::jsonb,
+        FALSE, 1, 1)`,
+      [roomTypeA, roomTypeB, propertyId, roomTypeC],
     );
     for (const [roomId, roomTypeId, number] of [
       ["a7200000-0000-4000-8000-000000000011", roomTypeA, "A-101"],

@@ -420,6 +420,8 @@ async function findReplay<T>(
      FROM platform.idempotency_keys
      WHERE operation_scope = 'finance'
        AND operation = $1
+       AND tenant_scope = 'property'
+       AND organization_id IS NULL
        AND property_id = $2::uuid
        AND key_hash = $3
        AND status = 'completed'
@@ -449,15 +451,14 @@ async function insertCompletedIdempotency(
          completed_at, expires_at, idempotency_metadata
        )
      VALUES
-       ('finance', $1, $2, $3, 'completed', 'property', $4::uuid, $5::uuid,
-        200, $6, 'finance', 'billing_entitlement', $5, $7, now(), now() + interval '30 days', $8::jsonb)
+       ('finance', $1, $2, $3, 'completed', 'property', NULL, $4::uuid,
+        200, $5, 'finance', 'billing_entitlement', $4, $6, now(), now() + interval '30 days', $7::jsonb)
      ON CONFLICT (operation_scope, operation, key_hash, scope_key) DO NOTHING
      RETURNING id::text`,
     [
       operation,
       keyHash(command),
       fingerprint(command),
-      command.organizationId,
       command.propertyId,
       sha256(JSON.stringify(metadata)),
       command.audit.correlationId ?? command.audit.requestId,
@@ -491,15 +492,14 @@ async function insertAudit(
          retention_class, privacy_scope
        )
      VALUES
-       ($1, 'finance', $2, $3::timestamptz, 'property', $4::uuid, $5::uuid,
-        $6, $7::uuid, 'finance', 'billing_entitlement', $5, $8::uuid, $9,
-        $10::jsonb, 'financial', 'confidential')
+       ($1, 'finance', $2, $3::timestamptz, 'property', NULL, $4::uuid,
+        $5, $6::uuid, 'finance', 'billing_entitlement', $4, $7::uuid, $8,
+        $9::jsonb, 'financial', 'confidential')
      ON CONFLICT (product, audit_key) DO NOTHING`,
     [
       `finance.subscription.${action}:${command.propertyId}:${command.commandId}`,
       `finance.subscription.${action}`,
       command.audit.requestedAt,
-      command.organizationId,
       command.propertyId,
       actor.kind === "user" ? "user" : "system",
       actor.kind === "user" ? actor.userId : null,

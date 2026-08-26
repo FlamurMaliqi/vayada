@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import pg, { type QueryResult, type QueryResultRow } from "pg";
 import type { HttpRouteContract } from "@vayada/backend-http";
 import type {
   BookingAssignedRoom,
@@ -9,10 +8,6 @@ import type {
   BookingReservationsReadRepository,
 } from "@vayada/domain-booking";
 
-import {
-  toBookingReservationReadModel,
-  type BookingReservationReadModelRow,
-} from "../platform/bookingReservationReadModel.js";
 import { enforceRoutePolicy } from "./policy.js";
 
 export const BOOKING_RESERVATION_LIST_CONTRACT = {
@@ -62,139 +57,6 @@ export type {
 };
 
 export type BookingAssignedRoomResponse = BookingAssignedRoom;
-
-export type BookingReservationsReadPool = {
-  query<T extends QueryResultRow = QueryResultRow>(
-    text: string,
-    values?: readonly unknown[],
-  ): Promise<Pick<QueryResult<T>, "rows">>;
-  end(): Promise<void>;
-};
-
-type CompatibilityPmsBookingReservationRow = BookingReservationReadModelRow;
-
-export function createCompatibilityPmsBookingReservationsReadRepository(config: {
-  connectionString: string;
-  max?: number;
-  pool?: BookingReservationsReadPool;
-}): BookingReservationsReadRepository {
-  if (!config.connectionString.trim()) {
-    throw new Error("Booking reservations repository connectionString must not be empty");
-  }
-
-  const pool =
-    config.pool ??
-    new pg.Pool({
-      connectionString: config.connectionString,
-      max: config.max,
-    });
-
-  return {
-    async listReservationsByHotelId(hotelId, filters) {
-      const { whereSql, params } = toCompatibilityPmsReservationWhere(hotelId, filters);
-      const listParams = [...params, filters.limit, filters.offset];
-      const limitParam = params.length + 1;
-      const offsetParam = params.length + 2;
-
-      const [reservationResult, countResult] = await Promise.all([
-        pool.query<CompatibilityPmsBookingReservationRow>(
-          `SELECT
-             b.id::text AS "id",
-             b.booking_reference AS "bookingReference",
-             b.room_type_id::text AS "roomTypeId",
-             rt.name AS "roomName",
-             rt.max_occupancy AS "roomMaxOccupancy",
-             b.guest_first_name AS "guestFirstName",
-             b.guest_last_name AS "guestLastName",
-             b.guest_email AS "guestEmail",
-             b.guest_phone AS "guestPhone",
-             b.guest_country AS "guestCountry",
-             b.guest_gender AS "guestGender",
-             b.guest_date_of_birth AS "guestDateOfBirth",
-             b.guest_passport_number AS "guestPassportNumber",
-             b.special_requests AS "specialRequests",
-             b.estimated_arrival_time AS "estimatedArrivalTime",
-             b.number_of_guests AS "numberOfGuests",
-             b.check_in AS "checkIn",
-             b.check_out AS "checkOut",
-             b.adults,
-             b.children,
-             b.nightly_rate AS "nightlyRate",
-             b.number_of_rooms AS "numberOfRooms",
-             b.total_amount AS "totalAmount",
-             b.currency,
-             b.status,
-             rm.id::text AS "roomId",
-             rm.room_number AS "roomNumber",
-             (
-               SELECT COALESCE(
-                 jsonb_agg(
-                   jsonb_build_object(
-                     'roomId', br.room_id::text,
-                     'roomNumber', brm.room_number,
-                     'position', br.position
-                   )
-                   ORDER BY br.position
-                 ),
-                 '[]'::jsonb
-               )
-               FROM booking_rooms br
-               JOIN rooms brm ON brm.id = br.room_id AND brm.hotel_id = b.hotel_id
-               WHERE br.booking_id = b.id
-             ) AS "assignedRooms",
-             b.channel,
-             b.payment_method AS "paymentMethod",
-             b.payment_status AS "paymentStatus",
-             b.deposit_required AS "depositRequired",
-             b.deposit_percentage AS "depositPercentage",
-             b.deposit_amount AS "depositAmount",
-             b.balance_amount AS "balanceAmount",
-             b.check_in_pending_flags AS "checkInPendingFlags",
-             b.checked_in_at AS "checkedInAt",
-             b.checked_out_at AS "checkedOutAt",
-             b.host_response_deadline AS "hostResponseDeadline",
-             b.platform_fee_amount AS "platformFeeAmount",
-             b.affiliate_commission_amount AS "affiliateCommissionAmount",
-             b.property_payout_amount AS "propertyPayoutAmount",
-             b.addon_ids AS "addonIds",
-             b.addon_names AS "addonNames",
-             b.addon_total AS "addonTotal",
-             b.addon_quantities AS "addonQuantities",
-             b.addon_dates AS "addonDates",
-             b.guest_withdrawn AS "guestWithdrawn",
-             b.promo_code AS "promoCode",
-             b.promo_discount AS "promoDiscount",
-             b.last_minute_discount_percent AS "lastMinuteDiscountPercent",
-             b.last_minute_discount_amount AS "lastMinuteDiscountAmount",
-             b.created_at AS "createdAt",
-             b.updated_at AS "updatedAt"
-           FROM bookings b
-           JOIN room_types rt ON rt.id = b.room_type_id AND rt.hotel_id = b.hotel_id
-           LEFT JOIN rooms rm ON rm.id = b.room_id AND rm.hotel_id = b.hotel_id
-           WHERE ${whereSql}
-           ORDER BY b.created_at DESC
-           LIMIT $${limitParam} OFFSET $${offsetParam}`,
-          listParams,
-        ),
-        pool.query<{ total: string }>(
-          `SELECT COUNT(*)::text AS total
-           FROM bookings b
-           JOIN room_types rt ON rt.id = b.room_type_id AND rt.hotel_id = b.hotel_id
-           WHERE ${whereSql}`,
-          params,
-        ),
-      ]);
-
-      return {
-        reservations: reservationResult.rows.map(toBookingReservationReadModel),
-        total: parseCount(countResult.rows[0]?.total),
-      };
-    },
-    async close() {
-      await pool.end();
-    },
-  };
-}
 
 /**
  * Booking Engine reservation read contract.
@@ -309,42 +171,6 @@ export async function registerBookingReservationRoutes(
       offset: filters.offset,
     } satisfies BookingReservationListResponse;
   });
-}
-
-function toCompatibilityPmsReservationWhere(
-  hotelId: string,
-  filters: BookingReservationListFilters,
-): { whereSql: string; params: unknown[] } {
-  const params: unknown[] = [hotelId];
-  const conditions = ["b.hotel_id = $1"];
-
-  if (filters.status) {
-    params.push(filters.status);
-    conditions.push(`b.status = $${params.length}`);
-  }
-
-  if (filters.search) {
-    params.push(`%${filters.search}%`);
-    conditions.push(
-      `(b.guest_first_name ILIKE $${params.length}
-        OR b.guest_last_name ILIKE $${params.length}
-        OR CONCAT(b.guest_first_name, ' ', b.guest_last_name) ILIKE $${params.length}
-        OR b.booking_reference ILIKE $${params.length}
-        OR b.guest_email ILIKE $${params.length}
-        OR rt.name ILIKE $${params.length})`,
-    );
-  }
-
-  return {
-    whereSql: conditions.join(" AND "),
-    params,
-  };
-}
-
-function parseCount(value: string | undefined): number {
-  if (!value) return 0;
-  const count = Number.parseInt(value, 10);
-  return Number.isFinite(count) ? count : 0;
 }
 
 function sendBookingReservationListError(

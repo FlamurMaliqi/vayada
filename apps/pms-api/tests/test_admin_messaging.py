@@ -13,14 +13,57 @@ from app.models.messaging import SendMessageRequest
 from app.repositories.platform_media_repo import PlatformMediaAttachment
 from app.routers import admin_messaging
 from app.routers.admin_messaging import (
+    _mask_thread_guest_contacts,
     max_attachment_bytes_for_channel,
     send_message,
     upload_thread_attachment,
     validate_attachment,
 )
+from app.services.guest_contact_access import HIDDEN_GUEST_CONTACT
 from fastapi import HTTPException
 
 # ── validate_attachment ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_commission_inbox_masks_pending_but_not_previously_accepted_contact():
+    rows = [
+        {
+            "id": "thread-pending",
+            "booking_id": "00000000-0000-0000-0000-000000000001",
+            "guest_email": "pending@example.test",
+        },
+        {
+            "id": "thread-accepted",
+            "booking_id": "00000000-0000-0000-0000-000000000002",
+            "guest_email": "accepted@example.test",
+        },
+        {"id": "thread-unlinked", "booking_id": None, "guest_email": "unlinked@example.test"},
+    ]
+    with (
+        patch.object(
+            admin_messaging, "fetch_guest_contact_plan", AsyncMock(return_value="commission")
+        ),
+        patch.object(
+            admin_messaging.Database,
+            "fetch",
+            AsyncMock(
+                return_value=[
+                    {"id": "00000000-0000-0000-0000-000000000001", "status": "pending"},
+                    {
+                        "id": "00000000-0000-0000-0000-000000000002",
+                        "status": "cancelled",
+                        "contact_details_revealed_at": datetime.now(UTC),
+                    },
+                ]
+            ),
+        ),
+    ):
+        masked = await _mask_thread_guest_contacts(rows, "hotel-1")
+
+    assert masked[0]["guest_email"] == HIDDEN_GUEST_CONTACT
+    assert masked[1]["guest_email"] == "accepted@example.test"
+    assert masked[2]["guest_email"] == HIDDEN_GUEST_CONTACT
 
 
 def test_validate_attachment_accepts_image_jpeg():

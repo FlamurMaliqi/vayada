@@ -5,6 +5,7 @@ import {
   type PmsPricingCurrency,
   type PmsPricingCurrencyCapabilities,
   type PmsPricingCurrencyCapabilitiesPort,
+  type PmsPricingCurrencyChangeGuardPort,
 } from "@vayada/domain-pms";
 
 const PMS_SUPPORTED_PRICING_CURRENCY_CODE_STRINGS_V1 = [
@@ -72,5 +73,13 @@ export const PMS_PRICING_CURRENCY_CAPABILITIES_PORT: PmsPricingCurrencyCapabilit
     },
     async isSupportedPricingCurrency(currency) {
       return supportedCodeSet.has(currency);
+    },
+  });
+
+/** Initial setup is allowed; later currency changes remain blocked until every dependency participates. */
+export const PMS_PRICING_CURRENCY_CHANGE_FAIL_CLOSED_GUARD: PmsPricingCurrencyChangeGuardPort =
+  Object.freeze({
+    async runWithCurrencyChangeGuard(_input, guarded) {
+      return guarded([{ code: "dependency_check_unavailable" }]);
     },
   });

@@ -515,6 +515,7 @@ async function grantCreatorProfileAccess(
       membership: {
         status: context.membership.status,
         roleKey: context.membership.roleKey,
+        propertyAccessMode: "assigned",
         permissionKeys: context.membership.permissions,
         workosMembershipId: context.membership.workosMembershipId,
         workosRoleSlugs: context.membership.workosRoleSlugs,

@@ -57,11 +57,10 @@ describe("reconcileSetupPromoCodes", () => {
       code: "welcome",
       discountType: "percentage" as const,
       discountValue: "10.00",
-      currency: null,
       validFrom: null,
       validUntil: null,
       isActive: true,
-      maxUses: null,
+      maxUses: 999,
     };
 
     const failures = await reconcileSetupPromoCodes({ hotelId, promoCodes: [promoCode] }, client);
@@ -85,11 +84,10 @@ describe("reconcileSetupPromoCodes", () => {
       code: "WELCOME",
       discountType: "fixed" as const,
       discountValue: "20.00",
-      currency: "EUR",
       validFrom: null,
       validUntil: null,
       isActive: true,
-      maxUses: null,
+      maxUses: 999,
     };
 
     await expect(

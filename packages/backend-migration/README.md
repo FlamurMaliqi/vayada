@@ -4,6 +4,31 @@
 rebuilds, source-to-target transforms, and parity checks for the TypeScript
 backend rewrite.
 
+Deployed `next-api` images run `target:migrate:dist` before starting the HTTP
+server. The image embeds its application commit as `APPLICATION_RELEASE`, and
+the CLI stores that value in `platform.schema_migrations.git_sha`. See
+[`engineering/target-database-deployment-migrations.md`](../../engineering/target-database-deployment-migrations.md)
+for normal deployment, verification, and failure recovery.
+
+## Target Manual-Booking Readiness
+
+Run the read-only VAY-1259 gate with a reviewed rehearsal manifest:
+
+```bash
+TARGET_DATABASE_URL=<staging target database> \
+  npm --workspace @vayada/backend-migration run target:manual-booking:readiness -- \
+  --evidence-manifest <manifest.json> --reviewed-sha256 <approved digest> --pretty
+```
+
+It reconciles bookings, stays/nights, add-ons, Finance, attribution, causal and
+privacy evidence. The fixture matrix covers every payment method in paid/unpaid
+states, every add-on model, rates, Email, heterogeneous dates, cancellation, no-show, refund,
+stay correction, and price correction. The manifest records the
+source snapshot, successful restore rehearsal, cutover review, exact property
+cohort, booking IDs and expected target facts. The local bytes must
+match the separately supplied reviewed SHA-256, and the CLI runs in a read-only
+transaction. Any blocker exits non-zero.
+
 ## Full-Fixture Smoke
 
 Use the full-fixture smoke command after updating `main` and before marking
@@ -70,6 +95,12 @@ TARGET_DATABASE_URL=<target database url> \
     --confirm platform-identity-bootstrap:v1
 ```
 
+`--admin-email` grants an already-linked active target user canonical platform
+access without opening the legacy auth DB. Deleted same-email users are ignored,
+multiple active matches fail closed, and apply confirmation is bound to the
+normalized email. Follow `engineering/next-admin-platform-access-repair.md` for
+the guarded target/WorkOS repair, deployment, verification, and rollback steps.
+
 Audit the migrated target identity/resource links before a backfill:
 
 ```bash
@@ -133,9 +164,8 @@ data. It is intentionally narrow:
 - optionally activates Booking Admin Feature Hub module rows in the PMS DB when
   `PMS_DATABASE_URL` is supplied.
 
-Run reviewed target migrations first so role grants from
-`0018_marketplace_hotel_profile_grants.sql` and
-`0019_seed_ask_intelligence_role_grants.sql` are present:
+Run all reviewed target migrations first so the current role grants and schema
+state are present:
 
 ```bash
 TARGET_DATABASE_URL=<target database url> \

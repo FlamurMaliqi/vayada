@@ -175,6 +175,7 @@ describe("booking lifecycle scheduler jobs", () => {
       retrievePaymentIntent: vi.fn().mockResolvedValue(stripeIntent("requires_action")),
       cancelPaymentIntent: vi.fn().mockResolvedValue(stripeIntent("canceled")),
       createPaymentIntent: vi.fn(),
+      capturePaymentIntent: vi.fn(),
     };
     const store = createPgBookingLifecycleStore({
       connectionString: "postgres://unused",
@@ -190,6 +191,7 @@ describe("booking lifecycle scheduler jobs", () => {
 
     expect(stripePaymentProvider.cancelPaymentIntent).toHaveBeenCalledWith(
       "pi_expiring",
+      "acct_property",
       expect.stringContaining("booking-card-expire"),
     );
     expect(fixture.inventoryReservationPort.release).toHaveBeenCalledOnce();
@@ -204,6 +206,7 @@ describe("booking lifecycle scheduler jobs", () => {
       retrievePaymentIntent: vi.fn().mockResolvedValue(stripeIntent("succeeded")),
       cancelPaymentIntent: vi.fn(),
       createPaymentIntent: vi.fn(),
+      capturePaymentIntent: vi.fn(),
     };
     const store = createPgBookingLifecycleStore({
       connectionString: "postgres://unused",
@@ -224,15 +227,195 @@ describe("booking lifecycle scheduler jobs", () => {
     );
     expect(fixture.calls.some((sql) => sql.includes("'pms-reservation-handoff'"))).toBe(true);
   });
+
+  it("cancels an expired request-card authorization before releasing inventory", async () => {
+    const fixture = pgLifecycleFixture("pending_payment", { paymentStatus: "authorized" });
+    const stripePaymentProvider = {
+      retrievePaymentIntent: vi.fn().mockResolvedValue(stripeIntent("requires_capture")),
+      cancelPaymentIntent: vi.fn().mockResolvedValue(stripeIntent("canceled")),
+      createPaymentIntent: vi.fn(),
+      capturePaymentIntent: vi.fn(),
+    };
+    const store = createPgBookingLifecycleStore({
+      connectionString: "postgres://unused",
+      pool: fixture.pool as never,
+      inventoryReservationPort: fixture.inventoryReservationPort,
+      stripePaymentProvider,
+    });
+
+    const result = await runBookingLifecycleSchedulerJobs(store, {
+      now: new Date("2026-09-01T10:00:00.000Z"),
+      run: ["pendingBookingExpiry"],
+    });
+
+    expect(result.runs[0]?.mutations[0]).toMatchObject({ applied: true, toStatus: "expired" });
+    expect(stripePaymentProvider.cancelPaymentIntent).toHaveBeenCalledWith(
+      "pi_expiring",
+      "acct_property",
+      expect.stringContaining("booking-card-request-expire"),
+    );
+    expect(fixture.calls.some((sql) => sql.includes("FOR UPDATE OF payment, booking"))).toBe(true);
+    expect(fixture.calls.some((sql) => sql.includes("SET status = 'canceled'"))).toBe(true);
+    expect(fixture.calls.find((sql) => sql.includes("WITH updated AS"))).toContain(
+      "payment_status = CASE",
+    );
+    expect(fixture.inventoryReservationPort.release).toHaveBeenCalledOnce();
+  });
+
+  it("terminalizes an already-canceled request authorization idempotently", async () => {
+    const fixture = pgLifecycleFixture("pending_payment", { paymentStatus: "authorized" });
+    const stripePaymentProvider = {
+      retrievePaymentIntent: vi.fn().mockResolvedValue(stripeIntent("canceled")),
+      cancelPaymentIntent: vi.fn(),
+      createPaymentIntent: vi.fn(),
+      capturePaymentIntent: vi.fn(),
+    };
+    const store = createPgBookingLifecycleStore({
+      connectionString: "postgres://unused",
+      pool: fixture.pool as never,
+      inventoryReservationPort: fixture.inventoryReservationPort,
+      stripePaymentProvider,
+    });
+
+    const result = await runBookingLifecycleSchedulerJobs(store, {
+      now: new Date("2026-09-01T10:00:00.000Z"),
+      run: ["pendingBookingExpiry"],
+    });
+
+    expect(result.applied).toBe(1);
+    expect(stripePaymentProvider.cancelPaymentIntent).not.toHaveBeenCalled();
+    expect(fixture.inventoryReservationPort.release).toHaveBeenCalledOnce();
+  });
+
+  it("settles a captured request-card race instead of expiring its inventory", async () => {
+    const fixture = pgLifecycleFixture("pending_payment", { paymentStatus: "authorized" });
+    const stripePaymentProvider = {
+      retrievePaymentIntent: vi.fn().mockResolvedValue(stripeIntent("succeeded")),
+      cancelPaymentIntent: vi.fn(),
+      createPaymentIntent: vi.fn(),
+      capturePaymentIntent: vi.fn(),
+    };
+    const store = createPgBookingLifecycleStore({
+      connectionString: "postgres://unused",
+      pool: fixture.pool as never,
+      inventoryReservationPort: fixture.inventoryReservationPort,
+      stripePaymentProvider,
+    });
+
+    const result = await runBookingLifecycleSchedulerJobs(store, {
+      now: new Date("2026-09-01T10:00:00.000Z"),
+      run: ["pendingBookingExpiry"],
+    });
+
+    expect(result.runs[0]?.mutations[0]).toMatchObject({ applied: true, toStatus: "confirmed" });
+    expect(stripePaymentProvider.cancelPaymentIntent).not.toHaveBeenCalled();
+    expect(fixture.calls.some((sql) => sql.includes("'pms-reservation-handoff'"))).toBe(true);
+    expect(fixture.inventoryReservationPort.release).not.toHaveBeenCalled();
+  });
+
+  it("retains an expired request and inventory when Stripe cannot be reached", async () => {
+    const fixture = pgLifecycleFixture("pending_payment", { paymentStatus: "authorized" });
+    const stripePaymentProvider = {
+      retrievePaymentIntent: vi.fn().mockRejectedValue(new Error("provider timeout")),
+      cancelPaymentIntent: vi.fn(),
+      createPaymentIntent: vi.fn(),
+      capturePaymentIntent: vi.fn(),
+    };
+    const store = createPgBookingLifecycleStore({
+      connectionString: "postgres://unused",
+      pool: fixture.pool as never,
+      inventoryReservationPort: fixture.inventoryReservationPort,
+      stripePaymentProvider,
+    });
+
+    const result = await runBookingLifecycleSchedulerJobs(store, {
+      now: new Date("2026-09-01T10:00:00.000Z"),
+      run: ["pendingBookingExpiry"],
+    });
+
+    expect(result).toMatchObject({ applied: 0, skipped: 0, failed: 1 });
+    expect(result.runs[0]?.failures[0]).toMatchObject({
+      guestBookingId: "b9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+      action: "pending-expiry",
+      errorMessage: "provider timeout",
+    });
+    expect(fixture.calls).toContain("ROLLBACK");
+    expect(fixture.calls.some((sql) => sql.includes("WITH updated AS"))).toBe(false);
+    expect(fixture.inventoryReservationPort.release).not.toHaveBeenCalled();
+  });
+
+  it("continues a later pay-at candidate and lifecycle runs after a provider failure", async () => {
+    const store = createFixtureStore();
+    const deadlineOrWindow = "2026-09-01T09:55:00.000Z";
+    vi.spyOn(store, "findPendingBookingExpiryCandidates").mockResolvedValue([
+      { ...store.booking("book_pending_due")!, deadlineOrWindow },
+      { ...store.booking("book_stale_unpaid")!, deadlineOrWindow },
+    ]);
+    const apply = vi.spyOn(store, "applyLifecycleMutation");
+    apply.mockImplementationOnce(async () => {
+      throw new Error("provider timeout");
+    });
+
+    const result = await runBookingLifecycleSchedulerJobs(store, {
+      now: new Date("2026-09-01T10:00:00.000Z"),
+      workerId: "worker_fixture",
+    });
+
+    expect(result).toMatchObject({ scanned: 3, applied: 2, skipped: 0, failed: 1 });
+    expect(result.runs.map((run) => ({ name: run.name, applied: run.applied }))).toEqual([
+      { name: "pendingBookingExpiry", applied: 1 },
+      { name: "staleUnpaidCancellation", applied: 0 },
+      { name: "expiredDraftCleanup", applied: 1 },
+    ]);
+    expect(store.booking("book_pending_due")?.lifecycleStatus).toBe("pending_payment");
+    expect(store.booking("book_stale_unpaid")?.lifecycleStatus).toBe("expired");
+    expect(store.booking("book_expired_draft")?.deleted).toBe(true);
+  });
+
+  it("reserves a separate expiry batch for manual payments when the provider batch is full", async () => {
+    const now = new Date("2026-09-01T10:00:00.000Z");
+    const row = (guestBookingId: string, paymentStatus: string) => ({
+      guestBookingId,
+      propertyId: "prop_alpenrose",
+      lifecycleStatus: "pending_payment",
+      paymentStatus,
+      createdAt: "2026-09-01T09:00:00.000Z",
+      updatedAt: "2026-09-01T09:00:00.000Z",
+      deadlineOrWindow: "2026-09-01T09:30:00.000Z",
+    });
+    const poisonCards = [1, 2, 3].map((index) => row(`poison-card-${index}`, "authorized"));
+    const query = vi.fn(async (_sql: string, values?: unknown[]) => ({
+      rows:
+        values?.[2] === "provider"
+          ? poisonCards.slice(0, Number(values[1]))
+          : [row("later-pay-at", "unpaid")],
+    }));
+    const store = createPgBookingLifecycleStore({
+      connectionString: "postgres://unused",
+      pool: { query, end: vi.fn() } as never,
+    });
+
+    const candidates = await store.findPendingBookingExpiryCandidates(now, 2);
+
+    expect(candidates.map((candidate) => candidate.guestBookingId)).toEqual([
+      "poison-card-1",
+      "poison-card-2",
+      "later-pay-at",
+    ]);
+    expect(query.mock.calls.map((call) => call[1]?.[2])).toEqual(["provider", "manual"]);
+  });
 });
 
 function pgLifecycleFixture(
   status: "pending_payment" | "confirmed" | "draft",
-  options: { paidBeforeMutation?: boolean } = {},
+  options: { paidBeforeMutation?: boolean; paymentStatus?: "unpaid" | "authorized" } = {},
 ) {
   const propertyId = "a9fccec2-eb4c-4c35-bfd3-02a748c2e117";
   const guestBookingId = "b9fccec2-eb4c-4c35-bfd3-02a748c2e117";
   const bookingMetadata = {
+    acceptanceMode: options.paymentStatus === "authorized" ? "request" : "instant",
+    paymentMethod: options.paymentStatus === "authorized" ? "card" : "bank_transfer",
+    hostResponseDeadlineAt: "2026-09-01T09:30:00.000Z",
     requestFingerprint: "a".repeat(64),
     selectedOffer: {
       roomTypeId: "d9fccec2-eb4c-4c35-bfd3-02a748c2e117",
@@ -255,24 +438,28 @@ function pgLifecycleFixture(
     },
   };
   const calls: string[] = [];
-  const query = vi.fn(async (sql: string) => {
+  const query = vi.fn(async (sql: string, values?: unknown[]) => {
     calls.push(sql);
     if (sql.includes("WITH raw_deadlines") && sql.includes(`lifecycle_status = '${status}'`)) {
+      const lane = values?.[2];
+      const expectedLane = options.paymentStatus === "authorized" ? "provider" : "manual";
+      if (lane && lane !== expectedLane) return { rows: [] };
       return {
         rows: [
           {
             guestBookingId,
             propertyId,
             lifecycleStatus: status,
-            paymentStatus: "unpaid",
+            paymentStatus: options.paymentStatus ?? "unpaid",
             createdAt: "2026-09-01T09:00:00.000Z",
             updatedAt: "2026-09-01T09:00:00.000Z",
             deadlineOrWindow: "2026-09-01T09:30:00.000Z",
             checkoutContextId: "e9fccec2-eb4c-4c35-bfd3-02a748c2e117",
-            ...(status === "draft"
+            ...(status === "draft" || options.paymentStatus === "authorized"
               ? {
                   providerPaymentIntentId: "pi_expiring",
                   providerAccountRef: "acct_property",
+                  chargeType: "direct",
                   publicReference: "B-EXPIRING",
                 }
               : {}),
@@ -288,6 +475,7 @@ function pgLifecycleFixture(
             guestBookingId,
             fromStatus: status,
             toStatus: status === "confirmed" ? "canceled" : "expired",
+            paymentStatus: options.paymentStatus === "authorized" ? "failed" : "unpaid",
             bookingMetadata,
             sourceSystem: "booking",
             checkIn: "2026-09-12",
@@ -298,18 +486,43 @@ function pgLifecycleFixture(
       };
     }
     if (sql.includes("WITH booking_scope AS")) return { rows: [] };
+    if (sql.includes('AS "hostEmail"')) {
+      return {
+        rows: [
+          {
+            propertyId,
+            guestBookingId,
+            bookingReference: "B-EXPIRING",
+            guestEmail: "guest@example.test",
+            guestName: "Ada Guest",
+            hostEmail: "reservations@example.test",
+            propertyName: "Hotel Alpenrose",
+            checkIn: "2026-09-12",
+            checkOut: "2026-09-15",
+            totalAmount: "600.00",
+            balanceAmount: "600.00",
+            currency: "EUR",
+            paymentMethod: status === "confirmed" ? "bank_transfer" : "card",
+            bookingMetadata,
+          },
+        ],
+      };
+    }
+    if (sql.includes('from_status AS "fromStatus"')) {
+      return { rows: [{ fromStatus: "draft", toStatus: "confirmed" }] };
+    }
     if (sql.includes("FOR UPDATE OF payment, booking")) {
       return {
         rows: [
           {
             paymentId: "payment-1",
-            paymentStatus: "requires_action",
+            paymentStatus: options.paymentStatus ?? "requires_action",
             propertyId,
             guestBookingId,
             amount: "600.00",
             currency: "EUR",
-            lifecycleStatus: "draft",
-            bookingPaymentStatus: "unpaid",
+            lifecycleStatus: status,
+            bookingPaymentStatus: options.paymentStatus ?? "unpaid",
             publicReference: "B-EXPIRING",
             checkIn: "2026-09-12",
             checkOut: "2026-09-15",
@@ -322,6 +535,10 @@ function pgLifecycleFixture(
         ],
       };
     }
+    if (sql.includes('SELECT payment.id::text AS "paymentId"')) {
+      return { rows: [{ paymentId: "payment-1" }] };
+    }
+    if (sql.includes("SET status = 'canceled'")) return { rows: [{ id: "payment-1" }] };
     if (sql.startsWith("UPDATE booking.guest_bookings")) return { rows: [{ id: guestBookingId }] };
     if (sql.startsWith("SELECT id FROM booking.guest_bookings"))
       return { rows: [{ id: guestBookingId }] };
@@ -330,7 +547,12 @@ function pgLifecycleFixture(
     }
     if (sql.includes("WITH deleted AS")) return { rows: [{ guestBookingId, fromStatus: "draft" }] };
     if (sql.includes("INSERT INTO platform.idempotency_keys")) return { rows: [{ id: "idem-1" }] };
-    if (sql.includes("INSERT INTO platform.domain_events")) return { rows: [{ id: "event-1" }] };
+    if (sql.includes("INSERT INTO platform.domain_events")) {
+      return { rows: [{ id: "event-1", eventId: "event-1" }] };
+    }
+    if (sql.includes('RETURNING id::text AS "jobId"')) {
+      return { rows: [{ jobId: "notification-job-1", replay: false }] };
+    }
     if (sql.includes("INSERT INTO platform.jobs")) return { rows: [{ id: "job-1" }] };
     return { rows: [] };
   });

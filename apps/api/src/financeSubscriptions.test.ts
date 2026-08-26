@@ -9,6 +9,7 @@ import type { FinanceSubscriptionService } from "@vayada/domain-finance";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 
 const propertyId = "f3000000-0000-0000-0000-000000001120";
 const organizationId = "f2000000-0000-0000-0000-000000001120";
@@ -118,6 +119,7 @@ function createApp(options: {
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepository(options.linked !== false),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["pms.finance.read"];

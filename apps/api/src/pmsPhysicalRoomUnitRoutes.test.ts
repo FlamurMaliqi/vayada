@@ -9,12 +9,17 @@ import {
   PMS_ROOM_FACTS_CONTRACT_VERSION,
   type ReconcilePhysicalRoomUnitsCommand,
   type ReconcilePhysicalRoomUnitsResult,
+  type SetPhysicalRoomOperationalLabelCommand,
+  type SetPhysicalRoomOperationalLabelResult,
 } from "@vayada/domain-pms";
-import Fastify from "fastify";
+import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { buildApp } from "./app.js";
 import {
+  registerPmsPhysicalRoomOperationalLabelRoutes,
   registerPmsPhysicalRoomUnitRoutes,
+  type PmsPhysicalRoomOperationalLabelRoutesOptions,
   type PmsPhysicalRoomUnitRoutesOptions,
 } from "./routes/pmsPhysicalRoomUnits.js";
 
@@ -112,6 +117,16 @@ function link(
 }
 
 async function testApp(port: PmsPhysicalRoomUnitRoutesOptions, auth: AuthOptions = {}) {
+  return scopedApp(
+    async (instance) => instance.register(registerPmsPhysicalRoomUnitRoutes, port),
+    auth,
+  );
+}
+
+async function scopedApp(
+  register: (instance: FastifyInstance) => Promise<unknown>,
+  auth: AuthOptions = {},
+) {
   const instance = Fastify({ logger: false });
   instance.decorateRequest("authContext", null);
   instance.addHook("onRequest", async (request) => {
@@ -132,7 +147,7 @@ async function testApp(port: PmsPhysicalRoomUnitRoutesOptions, auth: AuthOptions
       },
     } as RequestContext;
   });
-  await instance.register(registerPmsPhysicalRoomUnitRoutes, port);
+  await register(instance);
   return instance;
 }
 
@@ -340,5 +355,174 @@ describe("PMS physical room unit reconcile route", () => {
 
     expect(response.statusCode).toBe(500);
     expect(response.body).toEqual({ code: "pms_physical_room_unit_port_contract_violation" });
+  });
+});
+
+function labelSuccess(
+  command: SetPhysicalRoomOperationalLabelCommand,
+): SetPhysicalRoomOperationalLabelResult {
+  return {
+    ok: true,
+    response: {
+      contractVersion: PMS_ROOM_FACTS_CONTRACT_VERSION,
+      outcome: "updated",
+      propertyId: command.propertyId,
+      roomTypeId: command.roomTypeId,
+      roomUnitId: command.roomUnitId,
+      roomUnitsRevision: command.expectedRevision + 1,
+      operationalLabel: command.operationalLabel,
+      operationalLabelStatus: "verified",
+      acceptedAt: now,
+    },
+  };
+}
+
+function labelPort(result?: SetPhysicalRoomOperationalLabelResult) {
+  const calls: SetPhysicalRoomOperationalLabelCommand[] = [];
+  const options: PmsPhysicalRoomOperationalLabelRoutesOptions = {
+    commandPort: {
+      async setPhysicalRoomOperationalLabel(command) {
+        calls.push(command);
+        return result ?? labelSuccess(command);
+      },
+    },
+  };
+  return { calls, options };
+}
+
+function labelUrl(targetPropertyId = propertyId, targetRoomUnitId = roomUnitId) {
+  return `/properties/${targetPropertyId}/room-types/${roomTypeId}/physical-units/${targetRoomUnitId}/operational-label`;
+}
+
+async function labelApp(
+  port: PmsPhysicalRoomOperationalLabelRoutesOptions,
+  auth: AuthOptions = {},
+) {
+  return scopedApp(
+    async (instance) => instance.register(registerPmsPhysicalRoomOperationalLabelRoutes, port),
+    auth,
+  );
+}
+
+async function labelRequest(
+  instance: FastifyInstance,
+  overrides: {
+    authorization?: string | null;
+    targetPropertyId?: string;
+    targetRoomUnitId?: string;
+    query?: string;
+    body?: unknown;
+    idempotencyKey?: string | null;
+  } = {},
+) {
+  const headers: Record<string, string> = {};
+  if (overrides.authorization !== null) {
+    headers.authorization = overrides.authorization ?? "Bearer valid-token";
+  }
+  if (overrides.idempotencyKey !== null) {
+    headers["idempotency-key"] = overrides.idempotencyKey ?? "verify-room-101";
+  }
+  return injectJson<Record<string, unknown>>(instance, {
+    method: "PUT",
+    url: `${labelUrl(overrides.targetPropertyId, overrides.targetRoomUnitId)}${overrides.query ?? ""}`,
+    headers,
+    payload: overrides.body ?? { expectedRevision: 2, operationalLabel: "QA-101" },
+  });
+}
+
+describe("PMS physical room operational label route", () => {
+  it("is absent without the target writer and protected when production mounts it", async () => {
+    app = buildApp({ logger: false });
+    expect((await app.inject({ method: "PUT", url: `/api/pms${labelUrl()}` })).statusCode).toBe(
+      404,
+    );
+    await app.close();
+
+    const port = labelPort();
+    app = buildApp({ logger: false, pmsPhysicalRoomOperationalLabels: port.options });
+    expect((await app.inject({ method: "PUT", url: `/api/pms${labelUrl()}` })).statusCode).toBe(
+      401,
+    );
+    expect(port.calls).toHaveLength(0);
+  });
+
+  it("authorizes the selected property and returns the verified identity", async () => {
+    const port = labelPort();
+    app = await labelApp(port.options);
+    const response = await labelRequest(app);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      outcome: "updated",
+      roomUnitId,
+      roomUnitsRevision: 3,
+      operationalLabel: "QA-101",
+      operationalLabelStatus: "verified",
+    });
+    expect(port.calls).toEqual([
+      expect.objectContaining({
+        organizationId,
+        propertyId,
+        roomTypeId,
+        roomUnitId,
+        expectedRevision: 2,
+        operationalLabel: "QA-101",
+        idempotencyKey: "verify-room-101",
+      }),
+    ]);
+  });
+
+  it("denies before parsing and does not reveal a foreign property", async () => {
+    const port = labelPort();
+    app = await labelApp(port.options);
+    const malformed = await app.inject({
+      method: "PUT",
+      url: labelUrl(),
+      headers: { "content-type": "application/json", "idempotency-key": "key" },
+      payload: '{"expectedRevision":',
+    });
+    expect(malformed.statusCode).toBe(401);
+
+    const foreign = await labelRequest(app, { targetPropertyId: otherPropertyId });
+    expect(foreign.statusCode).toBe(403);
+    expect(port.calls).toHaveLength(0);
+  });
+
+  it.each([
+    ["query alias", { query: "?propertyId=other" }],
+    ["missing key", { idempotencyKey: null }],
+    ["blank label", { body: { expectedRevision: 2, operationalLabel: " " } }],
+    ["unknown body field", { body: { expectedRevision: 2, operationalLabel: "101", extra: 1 } }],
+    ["invalid room unit", { targetRoomUnitId: "room-1" }],
+  ])("rejects invalid input: %s", async (_label, overrides) => {
+    const port = labelPort();
+    app = await labelApp(port.options);
+    expect((await labelRequest(app, overrides)).statusCode).toBe(400);
+    expect(port.calls).toHaveLength(0);
+  });
+
+  it.each([
+    [{ code: "room_unit_not_found" }, 404],
+    [{ code: "operational_label_conflict" }, 409],
+    [{ code: "room_units_revision_conflict", currentRevision: 4 }, 409],
+  ] as const)("maps a typed writer error", async (error, status) => {
+    const port = labelPort({ ok: false, error } as SetPhysicalRoomOperationalLabelResult);
+    app = await labelApp(port.options);
+    const response = await labelRequest(app);
+    expect(response.statusCode).toBe(status);
+    expect(response.body).toEqual(error);
+  });
+
+  it("rejects a response that is not bound to the requested unit", async () => {
+    const port = labelPort();
+    port.options.commandPort.setPhysicalRoomOperationalLabel = async (command) => {
+      const result = labelSuccess(command);
+      if (!result.ok) return result;
+      return { ok: true, response: { ...result.response, roomUnitId: otherPropertyId } };
+    };
+    app = await labelApp(port.options);
+    const response = await labelRequest(app);
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toEqual({ code: "pms_physical_room_label_port_contract_violation" });
   });
 });

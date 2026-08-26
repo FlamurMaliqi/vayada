@@ -3,6 +3,7 @@ import type {
   PmsInventoryPublicOfferProjectionPort,
   PublicBookabilityPublicationCommandPort,
 } from "@vayada/domain-distribution";
+import type { BookingAcceptanceSettingsPort } from "../domains/bookingAcceptanceSettings.js";
 
 import {
   registerBookingAddonItemRoutes,
@@ -46,6 +47,7 @@ export type BookingRoutesOptions = {
   reservationsRepository?: BookingReservationsReadRepository;
   settingsRepository?: BookingSettingsReadRepository;
   settingsWriteRepository?: BookingSettingsWriteRepository;
+  bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
   publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort;
   inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
   customDomainRepository?: BookingCustomDomainRepository;
@@ -71,6 +73,7 @@ export async function registerBookingRoutes(
       options.settingsWriteRepository,
       options.publicBookabilityPublisher,
       options.inventoryPublicOfferProjector,
+      options.bookingAcceptanceSettings,
     );
   }
 

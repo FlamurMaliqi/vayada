@@ -34,7 +34,7 @@ const COMMAND_BODY_KEYS = [
   "expectedPricingSourceRevisions",
 ] as const;
 
-/** Unmounted VAY-1081 owner adapter. PMS API composition remains separately coordinated. */
+/** Target mandatory-charge confirmation owner adapter. */
 export async function registerPmsMandatoryChargeConfirmationRoutes(
   app: FastifyInstance,
   options: PmsMandatoryChargeConfirmationRoutesOptions,

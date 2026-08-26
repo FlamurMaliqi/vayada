@@ -90,11 +90,24 @@ export type OrganizationCommandInput = {
   workosExternalId?: string;
 };
 
+export type MembershipPropertyAccessMode = "all" | "assigned";
+
+export function membershipPropertyAccessModeForProvisioning(
+  organizationKind: OrganizationKind,
+  roleKey: string,
+): MembershipPropertyAccessMode {
+  if (organizationKind !== "hotel_group") return "assigned";
+  return roleKey === "hotel_owner" || roleKey === "owner" || roleKey === "operator"
+    ? "all"
+    : "assigned";
+}
+
 export type MembershipCommandInput = {
   organizationId?: string;
   userId?: string;
   status?: MembershipStatus;
   roleKey: string;
+  propertyAccessMode: MembershipPropertyAccessMode;
   permissionKeys?: readonly PermissionKey[];
   workosMembershipId?: string;
   workosRoleSlugs?: readonly string[];

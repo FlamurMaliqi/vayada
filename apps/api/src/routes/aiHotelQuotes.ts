@@ -130,22 +130,6 @@ export async function registerAiHotelQuoteRoutes(
   );
 }
 
-export function createCompatibilityPublicHotelQuoteRepository(config: {
-  profileRepository: PublicHotelProfileRepository;
-  now?: () => Date;
-}): PublicHotelQuoteRepository {
-  const now = config.now ?? (() => new Date());
-
-  return {
-    async findQuoteBySlug(slug, query) {
-      const profile = await config.profileRepository.findProfileBySlug(slug);
-      if (!profile) return null;
-
-      return toUnavailablePublicHotelQuoteProjection(profile.hotel, query, now());
-    },
-  };
-}
-
 export function createTargetPublicHotelQuoteRepository(config: {
   connectionString: string;
   profileRepository: PublicHotelProfileRepository;

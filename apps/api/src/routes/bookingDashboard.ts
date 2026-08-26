@@ -2,6 +2,7 @@ import type {
   BookingDashboardMetricsPeriodInput,
   BookingDashboardMetricsReadModel,
   BookingDashboardMetricsReadPort,
+  BookingPageViewTimelineReadModel,
   BookingSourceMixReadModel,
   BookingSparklineReadModel,
 } from "@vayada/domain-booking";
@@ -51,6 +52,12 @@ export type BookingDashboardSparklinesResponse = {
   contractVersion: BookingDashboardContractVersion;
   propertyId: string;
   sparklines: BookingSparklineReadModel;
+};
+
+export type BookingDashboardPageViewsResponse = {
+  contractVersion: BookingDashboardContractVersion;
+  propertyId: string;
+  pageViews: BookingPageViewTimelineReadModel;
 };
 
 type BookingDashboardErrorCode =
@@ -169,6 +176,41 @@ export async function registerBookingDashboardRoutes(
       }
     },
   );
+
+  app.get<{ Params: BookingDashboardPropertyParams; Querystring: DashboardWindowQuery }>(
+    "/properties/:propertyId/dashboard/page-views",
+    async (request, reply) => {
+      const { propertyId } = request.params;
+      if (!enforceBookingDashboardReadPolicy(request, reply, propertyId)) return reply;
+
+      const window = parsePageViewWindowQuery(request.query);
+      if (!window.ok) {
+        return sendBookingDashboardError(reply, 400, window.error);
+      }
+
+      try {
+        const pageViews = await metricsReadPort.getPageViewTimeline({
+          propertyId,
+          ...window.value,
+        });
+        if (!pageViews) {
+          return sendBookingDashboardError(reply, 404, {
+            code: "read_model_not_found",
+            category: "not_found",
+            message: "Booking dashboard page views were not found for this property.",
+          });
+        }
+        return {
+          contractVersion: BOOKING_DASHBOARD_CONTRACT_VERSION,
+          propertyId,
+          pageViews,
+        } satisfies BookingDashboardPageViewsResponse;
+      } catch (error) {
+        request.log.error({ err: error }, "Booking dashboard page-view read failed");
+        return sendBookingDashboardError(reply, 500, readModelUnavailableError());
+      }
+    },
+  );
 }
 
 function enforceBookingDashboardReadPolicy(
@@ -242,6 +284,30 @@ function parseSparklineWindowQuery(
   query: DashboardWindowQuery,
 ): Parsed<{ windowStart: string; windowEnd: string }> {
   return parseDateRange(query.windowStart, query.windowEnd, "windowStart", "windowEnd");
+}
+
+function parsePageViewWindowQuery(
+  query: DashboardWindowQuery,
+): Parsed<{ windowStart: string; windowEnd: string }> {
+  const parsed = parseSparklineWindowQuery(query);
+  if (!parsed.ok) return parsed;
+  const days =
+    Math.round(
+      (Date.parse(`${parsed.value.windowEnd}T00:00:00Z`) -
+        Date.parse(`${parsed.value.windowStart}T00:00:00Z`)) /
+        86_400_000,
+    ) + 1;
+  if (days > 31) {
+    return {
+      ok: false,
+      error: {
+        code: "invalid_query",
+        category: "validation",
+        message: "Page-view timelines support requested windows of up to 31 days.",
+      },
+    };
+  }
+  return parsed;
 }
 
 function parseDateRange<TStart extends string, TEnd extends string>(

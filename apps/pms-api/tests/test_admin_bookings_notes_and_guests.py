@@ -96,6 +96,86 @@ class TestBookingNotes:
 
 
 class TestAdditionalGuests:
+    async def test_contact_is_masked_until_booking_acceptance(self, client, hotel_with_booking):
+        token = hotel_with_booking["user"]["token"]
+        booking_id = str(hotel_with_booking["booking"]["id"])
+        await Database.execute(
+            "UPDATE room_types SET max_occupancy = 2 WHERE id = $1",
+            hotel_with_booking["booking"]["room_type_id"],
+        )
+
+        created = await client.post(
+            f"/admin/bookings/{booking_id}/additional-guests",
+            json={
+                "firstName": "Grace",
+                "lastName": "Hopper",
+                "nationality": "US",
+                "email": "grace@example.test",
+                "phone": "+12025550123",
+            },
+            headers=get_auth_headers(token),
+        )
+
+        assert created.status_code == 201
+        assert created.json()["firstName"] == "Grace"
+        assert created.json()["nationality"] == "US"
+        assert created.json()["email"] == "Hidden until you accept"
+        assert created.json()["phone"] == "Hidden until you accept"
+
+        accepted = await client.patch(
+            f"/admin/bookings/{booking_id}/status",
+            json={"status": "confirmed"},
+            headers=get_auth_headers(token),
+        )
+        assert accepted.status_code == 200
+
+        listed = await client.get(
+            f"/admin/bookings/{booking_id}/additional-guests",
+            headers=get_auth_headers(token),
+        )
+        assert listed.json()["guests"][0]["email"] == "grace@example.test"
+        assert listed.json()["guests"][0]["phone"] == "+12025550123"
+
+    async def test_pending_edit_preserves_additional_guest_contact(
+        self, client, hotel_with_booking
+    ):
+        token = hotel_with_booking["user"]["token"]
+        booking_id = str(hotel_with_booking["booking"]["id"])
+        await Database.execute(
+            "UPDATE room_types SET max_occupancy = 2 WHERE id = $1",
+            hotel_with_booking["booking"]["room_type_id"],
+        )
+        created = await client.post(
+            f"/admin/bookings/{booking_id}/additional-guests",
+            json={
+                "firstName": "Grace",
+                "email": "grace@example.test",
+                "phone": "+12025550123",
+            },
+            headers=get_auth_headers(token),
+        )
+        guest_id = created.json()["id"]
+
+        updated = await client.patch(
+            f"/admin/bookings/{booking_id}/additional-guests/{guest_id}",
+            json={
+                "firstName": "Updated",
+                "email": "Hidden until you accept",
+                "phone": "Hidden until you accept",
+            },
+            headers=get_auth_headers(token),
+        )
+
+        assert updated.status_code == 200
+        assert updated.json()["firstName"] == "Updated"
+        assert updated.json()["email"] == "Hidden until you accept"
+        stored = await Database.fetchrow(
+            "SELECT email, phone FROM booking_additional_guests WHERE id = $1",
+            guest_id,
+        )
+        assert stored["email"] == "grace@example.test"
+        assert stored["phone"] == "+12025550123"
+
     async def test_capacity_capped_at_room_capacity_minus_booker(self, client, hotel_with_booking):
         """A room that sleeps 4 allows the booker + 3 additional registered guests."""
         token = hotel_with_booking["user"]["token"]

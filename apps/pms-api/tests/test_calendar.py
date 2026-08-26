@@ -2,6 +2,10 @@
 Tests for GET /admin/calendar endpoint.
 """
 
+from datetime import date, timedelta
+
+from app.database import Database
+
 from tests.conftest import (
     create_test_booking,
     create_test_hotel,
@@ -13,6 +17,20 @@ from tests.conftest import (
 
 
 class TestCalendar:
+    async def test_calendar_rejects_unsupported_ranges(self, client, hotel_with_rooms):
+        headers = get_auth_headers(hotel_with_rooms["user"]["token"])
+        empty = await client.get(
+            "/admin/calendar?start=2026-06-01&end=2026-06-01",
+            headers=headers,
+        )
+        too_large = await client.get(
+            "/admin/calendar?start=2026-01-01&end=2026-07-03",
+            headers=headers,
+        )
+
+        assert empty.status_code == 422
+        assert too_large.status_code == 422
+
     async def test_calendar_empty(self, client, cleanup_database):
         """Calendar with no bookings or blocks returns empty lists."""
         user = await create_test_user()
@@ -28,6 +46,8 @@ class TestCalendar:
         assert len(body["roomTypes"]) == 1
         assert body["bookings"] == []
         assert body["blocks"] == []
+        assert len(body["occupancyDays"]) == 29
+        assert body["occupancyDays"][0]["date"] == "2026-06-01"
 
     async def test_calendar_with_bookings(self, client, hotel_with_booking):
         """Calendar returns bookings within the date range."""
@@ -56,6 +76,84 @@ class TestCalendar:
         )
         assert resp.status_code == 200
         assert resp.json()["bookings"] == []
+
+    async def test_calendar_excludes_stale_unpaid_pending(self, client, hotel_with_rooms):
+        data = hotel_with_rooms
+        booking = await create_test_booking(
+            str(data["hotel"]["id"]),
+            str(data["room"]["id"]),
+            check_in="2026-06-10",
+            check_out="2026-06-12",
+            status="pending",
+            payment_status="unpaid",
+        )
+        await Database.execute(
+            "UPDATE bookings SET created_at = NOW() - INTERVAL '31 minutes' WHERE id = $1",
+            booking["id"],
+        )
+
+        resp = await client.get(
+            "/admin/calendar?start=2026-06-01&end=2026-07-01",
+            headers=get_auth_headers(data["user"]["token"]),
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["bookings"] == []
+
+    async def test_calendar_returns_occupancy_projection(self, client, hotel_with_rooms):
+        data = hotel_with_rooms
+        await Database.execute(
+            """
+            UPDATE hotels
+            SET timezone = 'UTC',
+                same_day_bookings_enabled = TRUE,
+                same_day_booking_cutoff_time = NULL,
+                calendar_auto_open_enabled = FALSE,
+                calendar_auto_open_through = NULL
+            WHERE id = $1
+            """,
+            data["hotel"]["id"],
+        )
+        await Database.execute(
+            """
+            UPDATE room_types
+            SET minimum_advance_days = 0,
+                base_rate = 150,
+                is_active = TRUE
+            WHERE id = $1
+            """,
+            data["room"]["id"],
+        )
+        occupancy_date = date(2099, 6, 10)
+        next_date = occupancy_date + timedelta(days=1)
+        booking = await create_test_booking(
+            str(data["hotel"]["id"]),
+            str(data["room"]["id"]),
+            check_in=occupancy_date.isoformat(),
+            check_out=next_date.isoformat(),
+            status="confirmed",
+        )
+        await Database.execute(
+            "UPDATE bookings SET room_id = $2 WHERE id = $1",
+            booking["id"],
+            data["rooms"][0]["id"],
+        )
+
+        resp = await client.get(
+            f"/admin/calendar?start={occupancy_date}&end={next_date}",
+            headers=get_auth_headers(data["user"]["token"]),
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["occupancyDays"] == [
+            {
+                "date": occupancy_date.isoformat(),
+                "occupiedUnits": 1,
+                "remainingSellableUnits": 4,
+                "denominatorUnits": 5,
+                "percentage": 20,
+            }
+        ]
 
     async def test_calendar_with_room_blocks(self, client, cleanup_database):
         """Calendar returns room blocks within the date range."""

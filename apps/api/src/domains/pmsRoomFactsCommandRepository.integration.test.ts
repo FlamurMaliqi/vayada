@@ -554,8 +554,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS room-facts command repositor
     );
     await admin.query(
       `INSERT INTO identity.organization_memberships
-         (organization_id, user_id, status, role_key)
-       VALUES ($1::uuid, $2::uuid, 'active', $3)`,
+         (organization_id, user_id, status, role_key, access_origin)
+       VALUES ($1::uuid, $2::uuid, 'active', $3, 'agency')`,
       [organizationId, actorUserId, roleKey],
     );
     await admin.query(
@@ -990,12 +990,12 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS room-facts command repositor
       `INSERT INTO booking.booking_publication_attempts (
          id, organization_id, property_id, idempotency_key_id,
          domain_event_id, outbox_event_id, request_fingerprint_hash,
-         expected_active_content_revision_id, source_manifest,
+         expected_active_content_revision_id, expected_property_lifecycle_revision, source_manifest,
          source_manifest_hash, readiness_hash, readiness_product, readiness_status,
          status, failure_code, requested_by_user_id, requested_at, updated_at, completed_at
        ) VALUES (
          $1::uuid, $2::uuid, $3::uuid, $4::uuid,
-         $5::uuid, $6::uuid, $7, NULL, $8::jsonb,
+         $5::uuid, $6::uuid, $7, NULL, 1, $8::jsonb,
          $9, $10, 'booking', 'ready', 'failed', 'projection_failed',
          $11::uuid, $12::timestamptz, $12::timestamptz, $12::timestamptz
        )`,

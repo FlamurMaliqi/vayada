@@ -157,6 +157,8 @@
   "dashboard.pageViewsModal.totalInWindow": "Всего за период",
   "dashboard.pageViewsModal.openLabel": "Открыть детали просмотров",
   "dashboard.pageViewsModal.close": "Закрыть",
+  "dashboard.pageViewsModal.error": "Не удалось загрузить просмотры страниц.",
+  "dashboard.pageViewsModal.retry": "Повторить",
   "dashboard.bookingsBySource.title": "Бронирования по источникам",
   "dashboard.bookingsBySource.totalRevenue": "Общий доход",
   "dashboard.bookingsBySource.noData": "Нет данных о бронированиях за этот период",

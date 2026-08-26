@@ -8,7 +8,7 @@ const propertyId = "22222222-2222-4222-8222-222222222222";
 const mediaObjectId = "33333333-3333-4333-8333-333333333333";
 
 test.describe("hotel account prerequisites", () => {
-  test("saves combined-track property details, private contacts, explicit locality, and one logo", async ({
+  test("saves combined-track property details, public contacts, explicit locality, and one logo", async ({
     page,
     baseURL,
   }) => {
@@ -108,6 +108,13 @@ test.describe("hotel account prerequisites", () => {
         });
       },
     );
+    await page.route(
+      new RegExp(`/api/hotel-setup/properties/${propertyId}/launch-settings$`),
+      async (route) => {
+        writes.push(requestWrite(route));
+        await fulfillJson(route, route.request().postDataJSON());
+      },
+    );
 
     await page.goto(setupUrl(baseURL));
     await page.getByLabel("Hotel Operations").locator("xpath=ancestor::label").click();
@@ -144,9 +151,35 @@ test.describe("hotel account prerequisites", () => {
     ).toBe(true);
     await page.getByRole("button", { name: "Continue" }).click();
 
-    await page.getByLabel("Contact email").fill("hello@alpenrose.example");
-    await page.getByLabel("Phone number").fill("+49 89 123456");
-    await page.getByLabel("Website").fill("https://alpenrose.example");
+    await expect(page.getByText("Step 3 of 4 · Guest preferences")).toBeVisible();
+    await expect(page.getByRole("button", { name: "🇺🇸 USD", exact: true })).toBeVisible();
+    const currencySearch = page.getByPlaceholder('Search currencies, e.g. "Dollar" or "USD"...');
+    await currencySearch.fill("USD");
+    await page.getByRole("option", { name: "🇺🇸 US Dollar · USD" }).click();
+    await currencySearch.fill("LKR");
+    await page.getByRole("option", { name: "🇱🇰 Sri Lankan Rupee · LKR" }).click();
+    await expect(
+      page.getByRole("button", { name: "Remove USD" }).locator("xpath=.."),
+    ).toContainText("🇺🇸 USD");
+    await expect(
+      page.getByRole("button", { name: "Remove LKR" }).locator("xpath=.."),
+    ).toContainText("🇱🇰 LKR");
+
+    const languageSearch = page.getByPlaceholder('Search languages, e.g. "German" or "Deutsch"...');
+    await languageSearch.fill("Nederlands");
+    await page.locator('button[role="option"]').filter({ hasText: "Dutch · Nederlands" }).click();
+    await expect(
+      page.getByRole("button", { name: "Remove Nederlands" }).locator("xpath=.."),
+    ).toContainText("🇳🇱 Nederlands");
+    await page.getByRole("button", { name: "Continue" }).click();
+    await expect(page.getByText("Step 4 of 4 · Contact information")).toBeVisible();
+    await page.getByRole("textbox", { name: "Phone number", exact: true }).fill("+49 89 123456");
+    await expect(page.getByRole("textbox", { name: "WhatsApp number", exact: true })).toHaveValue(
+      "+49 89 123456",
+    );
+    await page.getByRole("textbox", { name: "WhatsApp number", exact: true }).fill("");
+    await page.getByRole("textbox", { name: "Email", exact: true }).fill("hello@alpenrose.example");
+    await expect(page.getByLabel("Website")).toHaveCount(0);
     await page.getByRole("button", { name: "Save and continue" }).click();
 
     await expect(page.getByRole("heading", { name: "Review and next steps" })).toBeVisible();
@@ -161,9 +194,8 @@ test.describe("hotel account prerequisites", () => {
         mapDisplayMode: "hidden",
       },
       contacts: [
-        { channelType: "email", isPublic: false },
-        { channelType: "phone", isPublic: false },
-        { channelType: "website", isPublic: false },
+        { channelType: "phone", isPublic: true },
+        { channelType: "email", isPublic: true },
       ],
     });
     const uploadWrite = writes.find(({ path }) => path.endsWith("/media/upload-sessions"));
@@ -181,6 +213,13 @@ test.describe("hotel account prerequisites", () => {
       },
     });
     expect(assignmentWrite?.idempotencyKey).toBeTruthy();
+    const launchSettingsWrite = writes.find(({ path }) => path.endsWith("/launch-settings"));
+    expect(launchSettingsWrite?.body).toMatchObject({
+      defaultCurrency: "EUR",
+      supportedCurrencies: ["USD", "LKR"],
+      defaultLanguage: "de",
+      supportedLanguages: ["en", "nl"],
+    });
   });
 
   test("resumes a finalized logo assignment after reload and replays the exact command", async ({

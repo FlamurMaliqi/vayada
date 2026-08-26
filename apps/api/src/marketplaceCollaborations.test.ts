@@ -20,6 +20,7 @@ import pg from "pg";
 import { describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import { createPgPlatformMediaRepository } from "./platform/platformMediaRepository.js";
 import type { PlatformMediaPrivateDownloadSigner } from "./platform/platformMediaS3.js";
 import {
@@ -2100,6 +2101,7 @@ function buildMarketplaceCollaborationsApp(
         organizationKind: options.organizationKind,
         resources: options.resources,
       }),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["marketplace.collaboration.read"];

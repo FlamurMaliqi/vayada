@@ -43,6 +43,7 @@ import {
   type FinancePropertyReadRepository,
   type FinanceProviderAccountStatus,
   type FinanceProviderOnboardingStatus,
+  type FinanceStripeDashboardLoginLinkResult,
   type FinanceReconciliationItem,
   type FinanceReconciliationJobStatus,
   type FinanceReconciliationRecommendedAction,
@@ -54,6 +55,7 @@ import {
   type FinanceRoutePaymentProvider,
   type FinanceStripeConnectProvider,
   type IssueStripeOnboardingLinkCommand,
+  StripeConnectAccountNotFoundError,
   type FinanceXenditBankValidationCommand,
   type FinanceXenditBankValidationResponse,
   type FinanceXenditPayoutReconciliationCommand,
@@ -68,6 +70,9 @@ import { createHash } from "node:crypto";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import type { PublicHotelProfileRepository } from "./aiHotels.js";
+import { createFinancePlatformAffiliatePayoutMarkPaidRepository } from "./financePlatformAffiliatePayoutMarkPaid.js";
+import { createFinancePlatformAffiliatePayoutReadRepository } from "./financePlatformAffiliatePayoutRepository.js";
+import { registerFinancePlatformAffiliatePayoutRoutes } from "./financePlatformAffiliatePayoutRoutes.js";
 import { enforceRoutePolicy, type RouteAuthorizationPolicy } from "./policy.js";
 
 const XENDIT_BANK_VALIDATION_SIDE_EFFECTS: FinanceCommandMeta["sideEffects"] = [
@@ -87,6 +92,8 @@ const PROPERTY_PAYOUT_DISPATCH_SIDE_EFFECTS: FinanceCommandMeta["sideEffects"] =
 
 const AFFILIATE_PAYOUT_SETTINGS_SIDE_EFFECTS: FinanceCommandMeta["sideEffects"] = ["audit_event"];
 const PAYMENT_SETTINGS_SIDE_EFFECTS: FinanceCommandMeta["sideEffects"] = ["audit_event"];
+const STRIPE_DASHBOARD_LINK_RATE_LIMIT = 10;
+const STRIPE_DASHBOARD_LINK_RATE_WINDOW_MS = 60_000;
 
 const XENDIT_PAYOUT_RECONCILIATION_LEGACY_DISPOSITION =
   "legacy /admin/xendit/reconcile-payouts disabled or proxied during rehearsal";
@@ -325,7 +332,7 @@ type FinanceValidationError = {
 };
 
 type FinanceCommandError = {
-  statusCode: 400 | 404 | 409 | 500 | 501 | 502;
+  statusCode: 400 | 404 | 409 | 429 | 500 | 501 | 502;
   code:
     | "invalid_command"
     | "affiliate_not_found"
@@ -339,10 +346,11 @@ type FinanceCommandError = {
     | "active_legacy_transfer_window"
     | "payout_already_dispatched"
     | "idempotency_conflict"
+    | "rate_limited"
     | "write_unavailable"
     | "provider_unavailable"
     | "provider_rejected";
-  category: "validation" | "not_found" | "conflict" | "write_model" | "provider";
+  category: "validation" | "not_found" | "conflict" | "rate_limit" | "write_model" | "provider";
   message: string;
 };
 
@@ -401,6 +409,7 @@ export async function registerFinanceRoutes(
   app: FastifyInstance,
   options: FinanceRoutesOptions,
 ): Promise<void> {
+  const stripeDashboardLinkRateLimits = new Map<string, { count: number; resetAt: number }>();
   app.addHook("onClose", async () => {
     await options.repository.close?.();
     await options.publicHotelPropertyResolver?.close?.();
@@ -408,6 +417,8 @@ export async function registerFinanceRoutes(
       await options.publicHotelProfileRepository?.close?.();
     }
   });
+
+  await registerFinancePlatformAffiliatePayoutRoutes(app, { repository: options.repository });
 
   app.get<{ Params: FinancePropertyParams }>(
     "/finance/properties/:propertyId/payment-settings",
@@ -541,6 +552,53 @@ export async function registerFinanceRoutes(
       }
 
       return result.response;
+    },
+  );
+
+  app.post<{ Params: FinancePropertyParams }>(
+    "/finance/properties/:propertyId/provider-accounts/stripe/dashboard-link",
+    async (request, reply) => {
+      const propertyId = request.params.propertyId;
+      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+
+      const actorUserId = requireAuthContext(request).actor.internalUserId;
+      const rateLimit = consumeStripeDashboardLinkRateLimit(
+        stripeDashboardLinkRateLimits,
+        `${actorUserId}:${propertyId}`,
+      );
+      if (!rateLimit.ok) {
+        reply.code(429).header("Retry-After", String(rateLimit.retryAfterSeconds));
+        return {
+          statusCode: 429,
+          code: "rate_limited",
+          category: "rate_limit",
+          message: "Too many Stripe Dashboard requests. Please try again shortly.",
+        } satisfies FinanceCommandError;
+      }
+
+      if (!options.repository.issueStripeDashboardLoginLink) {
+        reply.code(501);
+        return {
+          statusCode: 501,
+          code: "write_unavailable",
+          category: "write_model",
+          message: "Finance Stripe dashboard links are not configured.",
+        } satisfies FinanceCommandError;
+      }
+
+      const result = await options.repository.issueStripeDashboardLoginLink(propertyId);
+      if (!result.ok) {
+        reply.code(result.statusCode);
+        return {
+          statusCode: result.statusCode,
+          code: result.code,
+          category: result.statusCode === 404 ? "not_found" : "provider",
+          message: result.message,
+        } satisfies FinanceCommandError;
+      }
+
+      reply.header("Cache-Control", "no-store");
+      return { url: result.url };
     },
   );
 
@@ -1083,7 +1141,34 @@ export function createTargetFinancePropertySettingsRepository(config: {
       max: config.max ?? 5,
     });
 
+  const platformAffiliatePayoutReads = createFinancePlatformAffiliatePayoutReadRepository({
+    query: pool.query.bind(pool),
+    connect: async () => {
+      if (!pool.connect) throw new Error("Finance read transactions are unavailable.");
+      const client = await pool.connect();
+      if (!client.release) throw new Error("Finance read client cannot release transactions.");
+      return {
+        query: client.query.bind(client),
+        release: client.release.bind(client),
+      };
+    },
+  });
+  const platformAffiliatePayoutWrites = createFinancePlatformAffiliatePayoutMarkPaidRepository({
+    connect: pool.connect
+      ? async () => {
+          const client = await pool.connect!();
+          if (!client.release) throw new Error("Finance write client cannot release transactions.");
+          return {
+            query: client.query.bind(client),
+            release: client.release.bind(client),
+          };
+        }
+      : undefined,
+  });
+
   return {
+    ...platformAffiliatePayoutReads,
+    ...platformAffiliatePayoutWrites,
     async getPaymentSettings(propertyId) {
       const row = await loadPaymentSettingsRow(pool, propertyId);
       return row ? toFinancePaymentSettingsReadModel(row) : null;
@@ -1189,6 +1274,17 @@ export function createTargetFinancePropertySettingsRepository(config: {
       } finally {
         if (ownsTransaction) client.release?.();
       }
+    },
+    async issueStripeDashboardLoginLink(propertyId) {
+      if (!config.stripeConnectProvider) {
+        return {
+          ok: false,
+          statusCode: 502,
+          code: "provider_unavailable",
+          message: "Stripe Dashboard is unavailable.",
+        };
+      }
+      return issueStripeDashboardLoginLink(pool, propertyId, config.stripeConnectProvider);
     },
     async enqueueXenditPayoutReconciliation(command) {
       const client = await checkoutFinanceWriteClient(pool);
@@ -1933,6 +2029,75 @@ async function issueStripeOnboardingLinkInClient(
   };
 }
 
+async function issueStripeDashboardLoginLink(
+  client: FinanceQueryExecutor,
+  propertyId: string,
+  provider: FinanceStripeConnectProvider,
+): Promise<FinanceStripeDashboardLoginLinkResult> {
+  const account = await loadConfiguredStripeProviderAccount(client, propertyId);
+  if (!account) {
+    return {
+      ok: false,
+      statusCode: 404,
+      code: "provider_account_not_found",
+      message: "Finance provider account was not found.",
+    };
+  }
+
+  try {
+    return {
+      ok: true,
+      url: await provider.createLoginLink({ providerAccountRef: account.providerAccountRef }),
+    };
+  } catch (error) {
+    if (
+      error instanceof StripeConnectAccountNotFoundError ||
+      (error !== null &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "stripe_connect_account_not_found")
+    ) {
+      return {
+        ok: false,
+        statusCode: 404,
+        code: "provider_account_not_found",
+        message: "Finance provider account was not found.",
+      };
+    }
+    return {
+      ok: false,
+      statusCode: 502,
+      code: "provider_unavailable",
+      message: "Stripe Dashboard is unavailable.",
+    };
+  }
+}
+
+async function loadConfiguredStripeProviderAccount(
+  client: FinanceQueryExecutor,
+  propertyId: string,
+): Promise<FinanceProviderAccountRow | null> {
+  const result = await client.query<FinanceProviderAccountRow>(
+    `SELECT
+       account.id::text AS "providerAccountId",
+       account.provider_account_id AS "providerAccountRef",
+       account.status,
+       account.onboarding_status AS "onboardingStatus",
+       account.account_metadata ->> 'onboardingUrl' AS "onboardingUrl"
+     FROM finance.payment_provider_accounts account
+     JOIN finance.payment_settings settings
+       ON settings.provider_account_id = account.id
+      AND settings.property_id = account.property_id
+     WHERE settings.property_id = $1::uuid
+       AND account.account_scope = 'property'
+       AND account.provider = 'stripe'
+       AND account.provider_account_id NOT LIKE 'settings-choice:%'
+     LIMIT 1`,
+    [propertyId],
+  );
+  return result.rows[0] ?? null;
+}
+
 function financeProviderAccountOwner(
   command: CreateStripeProviderAccountCommand | IssueStripeOnboardingLinkCommand,
 ): Parameters<FinanceStripeConnectProvider["createAccount"]>[0]["owner"] {
@@ -1952,7 +2117,7 @@ function financeProviderAccountOwner(
 }
 
 async function loadStripeProviderAccountByOwner(
-  client: FinancePropertySettingsWriteClient,
+  client: FinanceQueryExecutor,
   owner: Parameters<FinanceStripeConnectProvider["createAccount"]>[0]["owner"],
 ): Promise<FinanceProviderAccountRow | null> {
   if (owner.ownerScope === "property") {
@@ -4163,7 +4328,10 @@ function toFinancePaymentSettingsReadModel(
     statementDescriptor: row.statementDescriptor,
     requiresManualReview: (row.requiresManualReview ?? false) || providerStatus !== "active",
     providerAccount: {
-      providerAccountId: row.providerAccountId,
+      providerAccountId:
+        row.providerAccountId?.startsWith("settings-choice:") === true
+          ? null
+          : row.providerAccountId,
       provider: row.provider ? paymentProvider(row.provider) : null,
       status: providerStatus,
       onboardingStatus: providerOnboardingStatus(row.providerOnboardingStatus),
@@ -4177,6 +4345,26 @@ function toFinancePaymentSettingsReadModel(
     },
     updatedAt: utcDateTime(row.updatedAt, new Date().toISOString()),
   };
+}
+
+function consumeStripeDashboardLinkRateLimit(
+  windows: Map<string, { count: number; resetAt: number }>,
+  key: string,
+  now: number = Date.now(),
+): { ok: true } | { ok: false; retryAfterSeconds: number } {
+  const current = windows.get(key);
+  if (!current || current.resetAt <= now) {
+    windows.set(key, { count: 1, resetAt: now + STRIPE_DASHBOARD_LINK_RATE_WINDOW_MS });
+    return { ok: true };
+  }
+  if (current.count >= STRIPE_DASHBOARD_LINK_RATE_LIMIT) {
+    return {
+      ok: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((current.resetAt - now) / 1_000)),
+    };
+  }
+  current.count += 1;
+  return { ok: true };
 }
 
 function toAffiliatePayoutSettingsReadModel(

@@ -409,8 +409,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Hotel Catalog Step 1 command", (
     );
     await admin.query(
       `INSERT INTO identity.organization_memberships (
-         organization_id, user_id, status, role_key, workos_role_slugs
-       ) VALUES ($1::uuid, $2::uuid, 'active', 'hotel_owner', ARRAY['hotel_owner'])`,
+         organization_id, user_id, status, role_key, access_origin, workos_role_slugs
+       ) VALUES ($1::uuid, $2::uuid, 'active', 'hotel_owner', 'agency', ARRAY['hotel_owner'])`,
       [organizationId, userId],
     );
     await admin.query(

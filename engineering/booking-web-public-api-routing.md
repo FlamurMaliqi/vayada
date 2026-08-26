@@ -222,48 +222,46 @@ Compatibility rules:
 3. Compatibility adapters may preserve current frontend response field names
    while the frontend is migrated, but the owning contract must name the target
    domain owner and data-source owner separately.
-4. Booking lifecycle writes need a separate compatibility path from read
-   adapters. A target Booking/checkout route may temporarily delegate
-   create/confirm/withdraw/cancel/change commands to legacy FastAPI PMS routes
-   only as a server-side command adapter, with Booking-owned idempotency,
-   guest-visible status mapping, audit visibility, parity tests, and a removal
-   dependency on the PMS reservation sink handoff. The frontend still calls
+4. Booking lifecycle writes use the target Booking command adapter and PMS
+   reservation handoff, with Booking-owned idempotency, guest-visible status
+   mapping, audit visibility, and parity tests. The frontend calls
    Booking/checkout, not PMS.
 5. Manual-payment instructions must be covered by parity before the public
    payment-settings route is retired.
 6. `NEXT_PUBLIC_PMS_URL` in Booking Web is legacy configuration. Target Booking
    Web should need only the public Booking/distribution API origin.
-7. `PMS_PUBLIC_API_URL` in the TypeScript API quote adapter is a transitional
-   Distribution compatibility input, not a target Booking Web dependency. It
-   should disappear once Distribution has canonical room offer and quote read
-   models.
-8. Booking lifecycle compatibility must preserve current guest-visible behavior
+7. TypeScript quote and offer reads use the target Distribution projections.
+   `PMS_PUBLIC_API_URL` is rejected as stale Python integration configuration
+   and is not a target Booking Web dependency.
+8. Target Booking lifecycle routes preserve current guest-visible behavior
    for card soft holds, manual payments, request-to-book states, cancellation
    previews, and change request previews until parity fixtures cover the target
    routes.
 
-## Implementation Slices
+## Recorded Migration Sequence
 
-Recommended follow-up order:
+The migration followed this order. Steps 1–5 are complete; step 6 remains for
+the separately tracked affiliate compatibility surface:
 
-1. Add Booking Web public route adapters in the TypeScript API with no direct
-   frontend changes. Adapters may call existing FastAPI compatibility routes
-   server-side while emitting target response contracts.
-2. Add parity tests for current hotel page bootstrap, rooms/offers,
+1. Added Booking Web public route adapters in the TypeScript API with no direct
+   frontend changes. The active adapters are target-backed; stale Python API
+   URL configuration is rejected.
+2. Added parity tests for current hotel page bootstrap, rooms/offers,
    host/custom-domain resolution, canonical redirects, unavailable dates,
    payment config, manual-payment instructions, booking
    create/confirm/status/lookup, cancel, change request, and affiliate click
    behavior.
-3. Switch `apps/booking-web/services/api` from `pms` to the Booking/distribution
-   API client one surface at a time, starting with read-only page/offer/calendar
-   calls.
-4. Move booking create/confirm/status/lookup/cancel/change calls behind
-   Booking/checkout route adapters and wire PMS handoff through the PMS
+3. Switched `apps/booking-web/services/api` from `pms` to the
+   Booking/distribution API for page, offer, and calendar reads. The remaining
+   affiliate facade is tracked separately.
+4. Moved booking create/confirm/status/lookup/cancel/change calls behind
+   Booking/checkout route adapters and wired PMS handoff through the PMS
    reservation sink.
-5. Replace affiliate click writes with marketplace attribution events and
+5. Replaced affiliate click writes with marketplace attribution events and
    durable telemetry/audit intake.
-6. Remove `NEXT_PUBLIC_PMS_URL` from Booking Web and retire the PMS public
-   compatibility routes after production parity and smoke coverage are accepted.
+6. Remove `NEXT_PUBLIC_PMS_URL` from Booking Web and retire the remaining PMS
+   public compatibility routes after production parity and smoke coverage are
+   accepted.
 
 ## Acceptance for Future PRs
 

@@ -143,6 +143,9 @@ describe("toConfirmationBooking", () => {
         currency: "eur",
         totalAmount: 870,
         balanceAmount: 870,
+        unitNames: ["Suite 204", "Suite 205"],
+        paymentDeadline: "2026-07-23T12:00:00.000Z",
+        bankTransferDetails: "IBAN: DE123",
       },
       {
         hotelName: "Codex QA Hotel",
@@ -174,6 +177,9 @@ describe("toConfirmationBooking", () => {
       status: "confirmed",
       paymentMethod: "pay_at_property",
       paymentStatus: "unpaid",
+      unitNames: ["Suite 204", "Suite 205"],
+      paymentDeadline: "2026-07-23T12:00:00.000Z",
+      bankTransferDetails: "IBAN: DE123",
     });
   });
 
@@ -249,6 +255,17 @@ describe("toConfirmationBooking", () => {
       status: "confirmed",
       paymentStatus: "captured",
     });
+  });
+
+  it("preserves guest-safe manual payment methods", () => {
+    expect(toConfirmationBooking({ paymentMethod: "credit_card" }).paymentMethod).toBe(
+      "credit_card",
+    );
+    expect(toConfirmationBooking({ paymentMethod: "manual_card" }).paymentMethod).toBe(
+      "manual_card",
+    );
+    expect(toConfirmationBooking({ paymentMethod: "other" }).paymentMethod).toBe("other");
+    expect(toConfirmationBooking({ paymentMethod: "future_wallet" }).paymentMethod).toBeNull();
   });
 
   it("normalizes invalid deposit percentages to zero", () => {

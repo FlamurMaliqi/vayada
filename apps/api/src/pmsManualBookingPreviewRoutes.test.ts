@@ -17,6 +17,7 @@ const propertyId = id(1),
   weekendId = id(6),
   extraId = id(7),
   otherRoomTypeId = id(8),
+  legacyPlanId = id(9),
   roomIds = [id(10), id(11), id(12)],
   addonIds = [id(20), id(21), id(22), id(23)],
   now = "2026-08-12T12:00:00.000Z";
@@ -78,6 +79,9 @@ describe("target manual-booking preview", () => {
       "available",
     ]);
   });
+
+  // prettier-ignore
+  it("lists only active add-on fields for front-desk PMS users", async () => { const state: State = { reads: [] }; app = await testApp(state, { relationship: "front_desk" }); const response = await app.inject({ method: "GET", url: `/properties/${propertyId}/manual-bookings/addons`, headers: headers() }); expect(response.statusCode).toBe(200); expect(response.json().addOns.map((addon: any) => addon.addonItemId)).toEqual(addonIds); expect(Object.keys(response.json().addOns[0]).sort()).toEqual(["addonItemId", "category", "currency", "description", "name", "price", "pricingModel"]); expect((await app.inject({ method: "GET", url: `/properties/${propertyId}/manual-bookings/addons?propertyId=other`, headers: headers() })).statusCode).toBe(400); expect(state.reads).toEqual(["addons"]); });
 
   it.each([
     [false, "150.00"],
@@ -210,6 +214,7 @@ describe("target manual-booking preview", () => {
     [422, "occupancy_exceeded", (body) => (body.stays[0].adults = 5), {}],
     [422, "occupancy_exceeded", (body) => (body.stays[0].adults = 0), {}],
     [404, "rate_plan_not_found", (body) => (body.stays[0].ratePlanId = propertyId), {}],
+    [404, "rate_plan_not_found", (body) => (body.stays[0].ratePlanId = legacyPlanId), {}],
     [422, "inactive_rate_plan", () => undefined, { inactivePlan: true }],
     [422, "currency_mismatch", () => undefined, { addonCurrency: "USD" }],
     [404, "addon_not_found", (body) => (body.addOns[0].addonId = propertyId), {}],
@@ -278,7 +283,7 @@ function ports(state: State): PmsManualBookingPreviewRoutesOptions {
   const ports: PmsManualBookingPreviewRoutesOptions = {
     pms: {
       async listRoomsByPropertyId() { read("rooms"); return { items: roomIds.map((roomId) => ({ roomId, roomTypeId })) } as any; },
-      async listRoomTypesByPropertyId() { read("types"); return { items: [{ roomTypeId, active: true, occupancyLimits: { adults: 4, children: 4, total: 4 }, ratePlans: [{ ratePlanId: planId, active: !state.inactivePlan }] }] } as any; },
+      async listRoomTypesByPropertyId() { read("types"); return { items: [{ roomTypeId, active: true, occupancyLimits: { adults: 4, children: 4, total: 4 }, ratePlans: [{ ratePlanId: legacyPlanId, pricingContractVersion: null, active: true }, { ratePlanId: planId, pricingContractVersion: "pms-pricing.v1", active: !state.inactivePlan }] }] } as any; },
       async getPhysicalRoomAvailability(_propertyId, stays) { read("available"); return stays.map((_, index) => state.unavailable || (state.capacityUnavailable && index === 1) ? false : true); },
     },
     pricing: {
@@ -287,7 +292,7 @@ function ports(state: State): PmsManualBookingPreviewRoutesOptions {
     },
     roomPublication: { async getRoomPublicationSnapshot() { read("publication"); return evidence.roomPublication; } },
     booking: {
-      async listAddonItemsByHotelId() { read("addons"); return { addonItems: addonIds.map((addonItemId, index) => ({ addonItemId, propertyId, price: ["10.00", "5.00", "4.00", "2.00"][index], currency: state.addonCurrency ?? "EUR", pricingModel: ["per_stay", "per_guest", "per_night", "per_guest_night"][index], status: "active" })), propertyPlan: {} } as any; },
+      async listAddonItemsByHotelId() { read("addons"); return { addonItems: addonIds.map((addonItemId, index) => ({ addonItemId, propertyId, name: `Add-on ${index + 1}`, description: "", category: "dining", price: ["10.00", "5.00", "4.00", "2.00"][index], currency: state.addonCurrency ?? "EUR", pricingModel: ["per_stay", "per_guest", "per_night", "per_guest_night"][index], status: "active" })), propertyPlan: {} } as any; },
       async getCurrentGuestPolicy() { read("policy"); return { organizationId, propertyId, bundle: { pricingCurrency: "EUR", pricingSourceFingerprint: state.staleFingerprint ? "stale" : fingerprint, rates: [{ roomTypeId, flexible: { source: { entityId: planId, revision: String(state.stalePlan ? 4 : 3) } }, additionalGuest: { source: { source: { entityId: extraId, revision: "3" }, validationRevision: 2, materializationRevision: state.staleExtra ? 2 : 1 }, includedGuestsPerRoom: 1, amountDecimal: "5.00", currency: "EUR", countedGuestTypes: state.childrenEnabled === false ? ["adult"] : ["adult", "child"] } }] } } as any; },
     },
   };

@@ -67,14 +67,20 @@ class BookingRepository:
                 promo_code, promo_discount,
                 last_minute_discount_percent, last_minute_discount_amount,
                 guest_country, number_of_rooms,
-                deposit_required, deposit_percentage, deposit_amount, balance_amount
+                deposit_required, deposit_percentage, deposit_amount, balance_amount,
+                contact_details_revealed_at
             ) VALUES (
                 COALESCE($37::uuid, uuid_generate_v4()),
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                 $11, $12, $13, $14, $15, $16, $17, $18, $19,
                 $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
                 $31, $32, $33, $34, $35, $36, $38,
-                $39, $40, $41, $42
+                $39, $40, $41, $42,
+                CASE
+                    WHEN $22 IN ('confirmed', 'checked_in', 'in_house', 'checked_out', 'no_show')
+                    THEN now()
+                    ELSE NULL
+                END
             ) RETURNING *
             """,
             data["hotel_id"],
@@ -179,6 +185,7 @@ class BookingRepository:
         *,
         status: str | None = None,
         search: str | None = None,
+        hide_unaccepted_guest_contact: bool = False,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict]:
@@ -192,12 +199,23 @@ class BookingRepository:
             idx += 1
 
         if search:
+            email_search = f"b.guest_email ILIKE ${idx}"
+            if hide_unaccepted_guest_contact:
+                email_search = (
+                    f"({email_search} AND ("
+                    "b.contact_details_revealed_at IS NOT NULL"
+                    " OR b.finalization_started_at IS NOT NULL"
+                    " OR b.finalization_completed_at IS NOT NULL"
+                    " OR b.status IN "
+                    "('confirmed', 'checked_in', 'in_house', 'checked_out', 'no_show')"
+                    "))"
+                )
             conditions.append(
                 f"(b.guest_first_name ILIKE ${idx}"
                 f" OR b.guest_last_name ILIKE ${idx}"
                 f" OR CONCAT(b.guest_first_name, ' ', b.guest_last_name) ILIKE ${idx}"
                 f" OR b.booking_reference ILIKE ${idx}"
-                f" OR b.guest_email ILIKE ${idx}"
+                f" OR {email_search}"
                 f" OR rt.name ILIKE ${idx})"
             )
             args.append(f"%{search}%")
@@ -247,6 +265,11 @@ class BookingRepository:
               AND b.status IN ('pending', 'confirmed', 'checked_in', 'in_house')
               AND b.check_in < $3
               AND b.check_out > $2
+              AND NOT (
+                b.status = 'pending'
+                AND b.payment_status = 'unpaid'
+                AND b.created_at < NOW() - INTERVAL '30 minutes'
+              )
             ORDER BY b.check_in
             """,
             hotel_id,
@@ -429,11 +452,78 @@ class BookingRepository:
     async def update_status(booking_id: str, new_status: str) -> dict | None:
         row = await Database.fetchrow(
             """
-            UPDATE bookings SET status = $2, updated_at = now()
-            WHERE id = $1
+            UPDATE bookings
+            SET status = $2,
+                contact_details_revealed_at = CASE
+                    WHEN $2 IN ('confirmed', 'checked_in', 'in_house', 'checked_out', 'no_show')
+                    THEN COALESCE(contact_details_revealed_at, now())
+                    ELSE contact_details_revealed_at
+                END,
+                updated_at = now()
+            WHERE id = $1 AND NOT stripe_refund_processing
             RETURNING *
             """,
             booking_id,
+            new_status,
+        )
+        return dict(row) if row else None
+
+    @staticmethod
+    async def cancel_with_promo_reversal(
+        booking_id: str,
+        *,
+        new_status: str = "cancelled",
+        payment_status: str | None = None,
+        guest_withdrawn: bool = False,
+    ) -> dict | None:
+        """Persist cancellation and its promo reversal intent atomically."""
+        row = await Database.fetchrow(
+            """
+            WITH cancelled AS (
+                UPDATE bookings
+                   SET status = $2,
+                       payment_status = COALESCE($3, payment_status),
+                       guest_withdrawn = CASE WHEN $4 THEN true ELSE guest_withdrawn END,
+                       updated_at = NOW()
+                 WHERE id = $1 AND NOT stripe_refund_processing
+                RETURNING *
+            ), queued AS (
+                INSERT INTO booking_promo_usage_state (
+                    booking_reference, hotel_slug, promo_code, desired_state
+                )
+                SELECT cancelled.booking_reference, hotel.slug,
+                       cancelled.promo_code, 'reversed'
+                  FROM cancelled
+                  JOIN hotels hotel ON hotel.id = cancelled.hotel_id
+                 WHERE cancelled.promo_code IS NOT NULL
+                   AND cancelled.promo_code <> ''
+                ON CONFLICT (booking_reference) DO UPDATE
+                   SET desired_state = 'reversed',
+                       next_attempt_at = NOW(),
+                       updated_at = NOW()
+                RETURNING booking_reference
+            )
+            SELECT cancelled.* FROM cancelled
+            """,
+            booking_id,
+            new_status,
+            payment_status,
+            guest_withdrawn,
+        )
+        return dict(row) if row else None
+
+    @staticmethod
+    async def transition_status(
+        booking_id: str, expected_status: str, new_status: str
+    ) -> dict | None:
+        row = await Database.fetchrow(
+            """
+            UPDATE bookings SET status = $3, updated_at = now()
+            WHERE id = $1 AND status = $2 AND stripe_refund_processing
+            RETURNING *
+            """,
+            booking_id,
+            expected_status,
             new_status,
         )
         return dict(row) if row else None
@@ -447,10 +537,11 @@ class BookingRepository:
             """
             UPDATE bookings
             SET status = 'checked_in',
+                contact_details_revealed_at = COALESCE(contact_details_revealed_at, now()),
                 check_in_pending_flags = $2::jsonb,
                 checked_in_at = COALESCE(checked_in_at, now()),
                 updated_at = now()
-            WHERE id = $1
+            WHERE id = $1 AND NOT stripe_refund_processing
             RETURNING *
             """,
             booking_id,
@@ -465,6 +556,7 @@ class BookingRepository:
             """
             UPDATE bookings
             SET status = 'checked_out',
+                contact_details_revealed_at = COALESCE(contact_details_revealed_at, now()),
                 checked_out_at = COALESCE(checked_out_at, now()),
                 updated_at = now()
             WHERE id = $1
@@ -672,6 +764,7 @@ WHERE id = $1""",
             """
             UPDATE bookings SET
                 status = 'confirmed',
+                contact_details_revealed_at = COALESCE(contact_details_revealed_at, now()),
                 payment_status = $2,
                 platform_fee_amount = $3,
                 affiliate_commission_amount = $4,
@@ -705,6 +798,7 @@ WHERE id = $1""",
                   OR (status = 'confirmed' AND finalization_started_at IS NOT NULL)
               )
               AND finalization_completed_at IS NULL
+              AND NOT stripe_refund_processing
               AND (
                   finalization_token IS NULL
                   OR finalization_started_at < now() - interval '15 minutes'
@@ -715,6 +809,17 @@ WHERE id = $1""",
             finalization_token,
         )
         return row is not None
+
+    @staticmethod
+    async def release_stripe_refund_reservation(booking_id: str) -> None:
+        await Database.execute(
+            """
+            UPDATE bookings
+            SET stripe_refund_processing = false, updated_at = now()
+            WHERE id = $1
+            """,
+            booking_id,
+        )
 
     @staticmethod
     async def release_finalization_claim(booking_id: str, finalization_token: str) -> None:

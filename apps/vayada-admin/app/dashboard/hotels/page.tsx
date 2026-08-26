@@ -5,10 +5,17 @@ import { useRouter } from "next/navigation";
 import {
   MagnifyingGlassIcon,
   ArrowTopRightOnSquareIcon,
-  TrashIcon,
+  ArchiveBoxXMarkIcon,
 } from "@heroicons/react/24/outline";
-import { bookingSettingsService, type SuperAdminHotel } from "@/services/booking";
+import { bookingSettingsService } from "@/services/booking";
 import { usersService } from "@/services/api";
+import {
+  updatePropertyStatus,
+  type PlatformPropertyLifecycleResult,
+  type PlatformPropertyLifecycleStatus,
+} from "@/services/api/growthDashboard";
+import { PropertyProvisionDialog } from "./PropertyProvisionDialog";
+import { PropertyRetirementDialog } from "./PropertyRetirementDialog";
 
 const BOOKING_URL_TEMPLATE =
   process.env.NEXT_PUBLIC_BOOKING_URL_TEMPLATE || "https://{slug}.booking.vayada.com";
@@ -21,10 +28,13 @@ interface HotelRow {
   country: string;
   owner_name: string;
   owner_email: string;
-  /** marketplace user ID — present for uninitialized hotels */
+  /** Account user ID — present when no canonical property is bound yet. */
   marketplace_user_id?: string;
-  /** true when a booking_hotels row already exists */
+  /** True when the canonical property already exists. */
   initialized: boolean;
+  lifecycle_status?: PlatformPropertyLifecycleStatus;
+  lifecycle_revision?: number;
+  owner_account_user_ids?: string[];
 }
 
 export default function HotelsPage() {
@@ -34,8 +44,9 @@ export default function HotelsPage() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [settingUp, setSettingUp] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [provisioningRow, setProvisioningRow] = useState<HotelRow | null>(null);
+  const [retirementRow, setRetirementRow] = useState<HotelRow | null>(null);
+  const [transitioningId, setTransitioningId] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 400);
@@ -61,22 +72,23 @@ export default function HotelsPage() {
 
       // Fetch both sources in parallel
       const [bookingHotels, marketplaceRes] = await Promise.all([
-        bookingSettingsService.listAllHotels().catch(() => [] as SuperAdminHotel[]),
+        bookingSettingsService.listAllHotels(),
         usersService.getAllUsers(marketplaceParams),
       ]);
 
-      // Build a set of marketplace user emails that already have a booking hotel
-      const initializedEmails = new Set(bookingHotels.map((h) => h.owner_email.toLowerCase()));
+      const initializedAccountIds = new Set(
+        bookingHotels.flatMap((hotel) => hotel.owner_account_user_ids),
+      );
 
-      // Start with all booking hotels (already initialized)
+      // Start with every canonical property already provisioned.
       const rows: HotelRow[] = bookingHotels.map((h) => ({
         ...h,
         initialized: true,
       }));
 
-      // Add marketplace hotel users that are NOT yet in booking_hotels
+      // Add hotel accounts that are not yet bound to a canonical property.
       for (const user of marketplaceRes.users || []) {
-        if (!initializedEmails.has(user.email.toLowerCase())) {
+        if (!initializedAccountIds.has(user.id)) {
           rows.push({
             id: user.id,
             name: user.name,
@@ -94,50 +106,53 @@ export default function HotelsPage() {
       setHotels(rows);
     } catch (err) {
       console.error("Failed to load hotels:", err);
-      setError("Failed to load hotels. Please check your connection and try again.");
+      setHotels([]);
+      setError(
+        "Failed to load canonical property bindings. Provisioning is disabled until the read succeeds.",
+      );
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDelete = async (row: HotelRow) => {
-    const label = row.name || row.owner_email || "this hotel";
-    const confirmMsg = row.initialized
-      ? `Delete "${label}" and all its booking engine data (rooms, add-ons, promo codes, translations)? This cannot be undone.`
-      : `Delete marketplace account "${label}"? This cannot be undone.`;
-    if (!window.confirm(confirmMsg)) return;
-
-    try {
-      setDeletingId(row.id);
-      setError("");
-      if (row.initialized) {
-        await bookingSettingsService.deleteHotel(row.id);
-      } else if (row.marketplace_user_id) {
-        await usersService.deleteUser(row.marketplace_user_id);
-      }
-      setHotels((prev) => prev.filter((h) => h.id !== row.id));
-    } catch (err) {
-      console.error("Failed to delete hotel:", err);
-      setError("Failed to delete hotel. Please try again.");
-    } finally {
-      setDeletingId(null);
-    }
+  const applyLifecycleResult = (result: PlatformPropertyLifecycleResult) => {
+    setHotels((current) =>
+      current.map((hotel) =>
+        hotel.id === result.propertyId
+          ? {
+              ...hotel,
+              lifecycle_status: result.lifecycleStatus,
+              lifecycle_revision: result.lifecycleRevision,
+            }
+          : hotel,
+      ),
+    );
   };
 
-  const handleSetup = async (row: HotelRow) => {
-    if (!row.marketplace_user_id) return;
+  const handleTransition = async (row: HotelRow) => {
+    if (!row.lifecycle_status || !row.lifecycle_revision) return;
+    const targetStatus = nextStatus(row.lifecycle_status);
+    const reason = window.prompt(
+      `Reason for moving "${row.name}" to ${targetStatus}:`,
+      targetStatus === "suspended"
+        ? "Platform admin safety hold"
+        : "Platform admin review complete",
+    );
+    if (!reason?.trim()) return;
     try {
-      setSettingUp(row.marketplace_user_id);
-      const created = await bookingSettingsService.createHotelForUser(
-        row.marketplace_user_id,
-        row.name,
+      setTransitioningId(row.id);
+      setError("");
+      applyLifecycleResult(
+        await updatePropertyStatus(row.id, {
+          expectedLifecycleRevision: row.lifecycle_revision,
+          status: targetStatus,
+          reason: reason.trim(),
+        }),
       );
-      router.push(`/dashboard/hotels/${created.id}`);
-    } catch (err) {
-      console.error("Failed to create hotel:", err);
-      setError("Failed to initialize hotel. Please try again.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Property status could not be changed.");
     } finally {
-      setSettingUp(null);
+      setTransitioningId(null);
     }
   };
 
@@ -243,9 +258,11 @@ export default function HotelsPage() {
                           <p className="text-xs text-gray-500">{hotel.owner_email}</p>
                         </td>
                         <td className="px-6 py-4 text-center">
-                          {hotel.initialized ? (
-                            <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">
-                              Active
+                          {hotel.lifecycle_status ? (
+                            <span
+                              className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${statusStyle(hotel.lifecycle_status)}`}
+                            >
+                              {lifecycleLabel(hotel.lifecycle_status)}
                             </span>
                           ) : (
                             <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-600">
@@ -256,7 +273,7 @@ export default function HotelsPage() {
                         <td className="px-6 py-4 text-right whitespace-nowrap space-x-2">
                           {hotel.initialized ? (
                             <>
-                              {hotel.slug && (
+                              {hotel.slug && hotel.lifecycle_status === "active" && (
                                 <a
                                   href={BOOKING_URL_TEMPLATE.replace("{slug}", hotel.slug)}
                                   target="_blank"
@@ -273,25 +290,35 @@ export default function HotelsPage() {
                               >
                                 Configure
                               </button>
+                              {hotel.lifecycle_status && (
+                                <button
+                                  onClick={() => handleTransition(hotel)}
+                                  disabled={transitioningId === hotel.id}
+                                  className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:opacity-50"
+                                >
+                                  {transitioningId === hotel.id
+                                    ? "Updating…"
+                                    : transitionLabel(hotel.lifecycle_status)}
+                                </button>
+                              )}
+                              {hotel.lifecycle_status !== "retired" && (
+                                <button
+                                  onClick={() => setRetirementRow(hotel)}
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 transition-colors"
+                                >
+                                  <ArchiveBoxXMarkIcon className="w-3.5 h-3.5" />
+                                  Retire
+                                </button>
+                              )}
                             </>
                           ) : (
                             <button
-                              onClick={() => handleSetup(hotel)}
-                              disabled={settingUp === hotel.marketplace_user_id}
+                              onClick={() => setProvisioningRow(hotel)}
                               className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-white bg-primary-600 border border-primary-600 rounded-md hover:bg-primary-700 transition-colors disabled:opacity-50"
                             >
-                              {settingUp === hotel.marketplace_user_id ? "Setting up..." : "Set Up"}
+                              Set Up
                             </button>
                           )}
-                          <button
-                            onClick={() => handleDelete(hotel)}
-                            disabled={deletingId === hotel.id}
-                            title="Delete"
-                            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 transition-colors disabled:opacity-50"
-                          >
-                            <TrashIcon className="w-3.5 h-3.5" />
-                            {deletingId === hotel.id ? "Deleting..." : "Delete"}
-                          </button>
                         </td>
                       </tr>
                     ))
@@ -306,6 +333,50 @@ export default function HotelsPage() {
           </>
         )}
       </div>
+      {provisioningRow?.marketplace_user_id && (
+        <PropertyProvisionDialog
+          accountUserId={provisioningRow.marketplace_user_id}
+          accountName={provisioningRow.name}
+          accountEmail={provisioningRow.owner_email}
+          onCancel={() => setProvisioningRow(null)}
+          onProvisioned={(propertyId) => {
+            setProvisioningRow(null);
+            router.push(`/dashboard/hotels/${propertyId}`);
+          }}
+        />
+      )}
+      {retirementRow && (
+        <PropertyRetirementDialog
+          propertyId={retirementRow.id}
+          propertyName={retirementRow.name}
+          onCancel={() => setRetirementRow(null)}
+          onRetired={(result) => {
+            applyLifecycleResult(result);
+            setRetirementRow(null);
+          }}
+        />
+      )}
     </div>
   );
+}
+
+function nextStatus(status: PlatformPropertyLifecycleStatus): "active" | "suspended" {
+  return status === "active" || status === "retired" ? "suspended" : "active";
+}
+
+function transitionLabel(status: PlatformPropertyLifecycleStatus): string {
+  if (status === "active") return "Suspend";
+  if (status === "retired") return "Restore to review";
+  return "Activate";
+}
+
+function lifecycleLabel(status: PlatformPropertyLifecycleStatus): string {
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function statusStyle(status: PlatformPropertyLifecycleStatus): string {
+  if (status === "active") return "bg-green-100 text-green-800";
+  if (status === "retired") return "bg-red-100 text-red-800";
+  if (status === "suspended") return "bg-amber-100 text-amber-800";
+  return "bg-blue-100 text-blue-800";
 }

@@ -427,11 +427,12 @@ async function ensureAffiliateOrg(
   }
   const membership = await client.query<{ id: string; workos_membership_id: string | null }>(
     `INSERT INTO identity.organization_memberships
-       (organization_id, user_id, status, role_key, workos_membership_id, workos_role_slugs)
-     VALUES ($1::uuid, $2::uuid, 'active', 'affiliate_owner', $3, ARRAY['affiliate_owner']::text[])
+       (organization_id, user_id, status, role_key, property_access_mode, access_origin, workos_membership_id, workos_role_slugs)
+     VALUES ($1::uuid, $2::uuid, 'active', 'affiliate_owner', 'assigned', 'agency', $3, ARRAY['affiliate_owner']::text[])
      ON CONFLICT (organization_id, user_id) DO UPDATE SET
        status = 'active',
        role_key = 'affiliate_owner',
+       property_access_mode = 'assigned',
        workos_membership_id = COALESCE(identity.organization_memberships.workos_membership_id, EXCLUDED.workos_membership_id),
        workos_role_slugs = ARRAY['affiliate_owner']::text[],
        updated_at = now()

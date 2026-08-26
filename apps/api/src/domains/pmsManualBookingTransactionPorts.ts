@@ -9,6 +9,7 @@ import type { QueryResult, QueryResultRow } from "pg";
 
 import type { ManualBookingPreviewResult } from "../routes/pmsManualBookingPreview.js";
 import type { PmsManualBookingPreviewRoutesOptions } from "../routes/pmsManualBookingPreviewCalculation.js";
+import type { PmsRoomAssignmentOptimizationTriggerPort } from "./pmsRoomAssignmentOptimizationTriggers.js";
 
 export type PmsManualBookingTransaction = {
   query<Row extends QueryResultRow = QueryResultRow>(
@@ -67,6 +68,7 @@ export interface PmsManualBookingOperationsOwnerPort {
     command: PmsManualBookingCreateCommand;
     rooms: readonly PmsManualBookingRoom[];
     guestBookingId: string;
+    acceptedAt: string;
   }): Promise<void>;
 }
 
@@ -82,6 +84,7 @@ export interface PmsManualBookingPlatformOwnerPort {
   writeEvidence(input: {
     transaction: PmsManualBookingTransaction;
     command: PmsManualBookingCreateCommand;
+    preview: ManualBookingPreviewResult;
     result: PmsManualBookingCreateResult;
     reservation: PmsManualBookingCommandReservation;
   }): Promise<void>;
@@ -138,6 +141,7 @@ export type PmsManualBookingTransactionDependencies = Readonly<{
   attribution: PmsManualBookingAttributionOwnerPort;
   financeSettlement: FinanceManualBookingSettlementPort;
   pricing: PmsManualBookingTransactionalPricingPort;
+  roomAssignmentOptimization: PmsRoomAssignmentOptimizationTriggerPort;
 }>;
 
 export type PmsManualBookingAcceptedWrite = Readonly<{

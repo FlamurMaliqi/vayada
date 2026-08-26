@@ -6,7 +6,7 @@ import { enforceRoutePolicy } from "./policy.js";
 
 const MODULE_ENTITLEMENT_PREFIX = "module:";
 const MODULE_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const PMS_MODULE_IDS = ["financials", "inbox", "affiliates"] as const;
+const PMS_MODULE_IDS = ["affiliates"] as const;
 const PMS_MODULE_ID_SET = new Set<string>(PMS_MODULE_IDS);
 
 export type PmsModuleActivation = {
@@ -19,6 +19,8 @@ export type PmsModuleActivation = {
 
 export type PmsModuleActivationsResponse = {
   hotelId: string;
+  canManage: boolean;
+  supportedModules: string[];
   activeModules: string[];
   activations: PmsModuleActivation[];
 };
@@ -90,7 +92,11 @@ export async function registerPmsModuleActivationRoutes(
       const { propertyId } = request.params;
       const context = enforceModuleActivationReadPolicy(request, propertyId);
       const activations = await repository.list(context, propertyId);
-      return moduleActivationsResponse(propertyId, activations);
+      return moduleActivationsResponse(
+        propertyId,
+        canManageModuleActivations(context, propertyId),
+        activations,
+      );
     },
   );
 
@@ -188,16 +194,34 @@ function invalidBody(message: string) {
   return { code: "invalid_body" as const, message };
 }
 
+function canManageModuleActivations(context: RequestContext, propertyId: string): boolean {
+  if (!context.membership.permissions.includes("pms.operations.manage")) return false;
+  return context.linkedResources.some(
+    (resource) =>
+      resource.product === "pms" &&
+      resource.resourceType === "pms_property" &&
+      resource.resourceId === propertyId &&
+      resource.status === "active" &&
+      (resource.relationship === "owner" || resource.relationship === "operator"),
+  );
+}
+
 function moduleActivationsResponse(
   propertyId: string,
+  canManage: boolean,
   activations: PmsModuleActivation[],
 ): PmsModuleActivationsResponse {
+  const supportedActivations = activations.filter((activation) =>
+    PMS_MODULE_ID_SET.has(activation.moduleId),
+  );
   return {
     hotelId: propertyId,
-    activeModules: activations
+    canManage,
+    supportedModules: [...PMS_MODULE_IDS],
+    activeModules: supportedActivations
       .filter((activation) => activation.isActive)
       .map((activation) => activation.moduleId),
-    activations,
+    activations: supportedActivations,
   };
 }
 

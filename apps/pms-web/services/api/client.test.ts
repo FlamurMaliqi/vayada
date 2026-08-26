@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiSessionRecoveryHandlers } from "@vayada/product-onboarding/apiSessionRecovery";
 import { clearAuthData, setAuthKitSession } from "../auth/sessionStore";
 import { ApiClient } from "./client";
+import { pmsOperationsRequestOptions } from "./pmsOperationsClient";
 
 afterEach(() => {
   clearAuthData();
@@ -10,7 +11,11 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe("PMS API session recovery", () => {
+describe("PMS API client", () => {
+  it("does not reuse stale operational read-model responses", () => {
+    expect(pmsOperationsRequestOptions.cache).toBe("no-store");
+  });
+
   it("refreshes an expired AuthKit session and retries the request once", async () => {
     setAuthKitSession({
       accessToken: "expired-workos-token",

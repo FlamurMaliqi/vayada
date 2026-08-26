@@ -85,6 +85,7 @@ function PaymentPageContent() {
     variableNightlyRates,
     roomTotal,
     promoDiscount,
+    promoError,
     discountAmount,
     grandTotal,
   } = usePricing({
@@ -127,6 +128,7 @@ function PaymentPageContent() {
   // show a recovery CTA back to the room list instead of a dead-end error.
   const [soldOut, setSoldOut] = useState(false);
   const [clientSecret, setClientSecret] = useState<string | null>(null);
+  const [stripeAccountId, setStripeAccountId] = useState<string | null>(null);
   const [pendingBooking, setPendingBooking] = useState<Booking | null>(null);
   // VAY-388: draft id returned for card payments — passed to
   // confirmAuthorization once Stripe authorizes the card.
@@ -138,6 +140,7 @@ function PaymentPageContent() {
     requestBody: BookingCreateRequest;
     createIdempotencyKey: string;
     draftId?: string;
+    confirmationToken?: string;
   } | null>(null);
   const resumedCreateAttempt = useRef<string | null>(null);
 
@@ -417,7 +420,11 @@ function PaymentPageContent() {
       if (selectedPaymentMethod === "card" && result.authorizationComplete) {
         clearPendingBookingCreate();
         saveLastBooking(booking);
-        router.push(`/booking/${booking.bookingReference}`);
+        const confirmationParams = new URLSearchParams({ booking: booking.bookingReference });
+        if (result.confirmationToken) {
+          confirmationParams.set("token", result.confirmationToken);
+        }
+        router.push(`/confirmation?${confirmationParams}`);
       } else if (selectedPaymentMethod === "card" && result.clientSecret) {
         // VAY-388: `booking` is a draft preview here, not a persisted row.
         // We hold the draftId so StripeConfirmStep can materialize the
@@ -431,12 +438,14 @@ function PaymentPageContent() {
             requestBody,
             createIdempotencyKey,
             draftId: result.draftId || recovery?.draftId,
+            confirmationToken: result.confirmationToken || recovery?.confirmationToken,
           };
           savePendingBookingCreate(cardAttempt);
           setPendingCreateRecovery(cardAttempt);
         }
         setPendingBooking(booking);
         setClientSecret(result.clientSecret);
+        setStripeAccountId(result.stripeAccountId || null);
         setDraftId(result.draftId || null);
       } else if (selectedPaymentMethod === "xendit" && result.xenditInvoiceUrl) {
         // Redirect to Xendit payment page (QRIS, e-wallets, VA)
@@ -567,7 +576,7 @@ function PaymentPageContent() {
     const paymentDepositAmount = paymentQuote?.depositAmount ?? quotedDepositAmount;
     const paymentBalance = paymentQuote?.balanceAmount ?? quotedRemainingBalance;
     return (
-      <StripeProvider clientSecret={clientSecret}>
+      <StripeProvider clientSecret={clientSecret} stripeAccountId={stripeAccountId}>
         <StripeConfirmStep
           hotel={hotel}
           roomName={paymentQuote?.roomName ?? room?.name ?? ""}
@@ -584,6 +593,7 @@ function PaymentPageContent() {
           grandTotal={paymentGrandTotal}
           booking={pendingBooking}
           draftId={draftId}
+          confirmationToken={pendingCreateRecovery?.confirmationToken}
           slug={slug}
           formatPrice={formatPrice}
           formatDate={formatDate}
@@ -1288,15 +1298,24 @@ function PaymentPageContent() {
               </div>
 
               {/* Promo Discount */}
+              {promoError && promoCodeParam && (
+                <p role="alert" className="pt-2 text-sm text-red-600">
+                  {promoError}
+                </p>
+              )}
               {promoDiscount && (
                 <div className="flex justify-between text-sm pt-2">
                   <span className="text-primary-600 font-medium">
-                    Promo {promoCodeParam}
-                    {promoDiscount.type === "percentage" ? ` (-${promoDiscount.value}%)` : ""}
+                    Promo {promoCodeParam}:{" "}
+                    {promoDiscount.type === "percentage"
+                      ? `-${promoDiscount.value}%`
+                      : `-${formatPrice(quotedPromoDiscount, quotedCurrency)}`}
                   </span>
-                  <span className="font-semibold text-primary-600">
-                    -{formatPrice(quotedPromoDiscount, quotedCurrency)}
-                  </span>
+                  {promoDiscount.type === "percentage" && (
+                    <span className="font-semibold text-primary-600">
+                      -{formatPrice(quotedPromoDiscount, quotedCurrency)}
+                    </span>
+                  )}
                 </div>
               )}
 

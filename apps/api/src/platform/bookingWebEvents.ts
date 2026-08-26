@@ -63,10 +63,12 @@ export function createPgBookingWebEventSink(
       const normalizedType = event.eventType.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 80);
       const occurrenceKey = event.eventId ?? event.requestId;
       await insertDomainEventWithAudit(pool, {
+        propertyId: event.propertyId,
         sourceSystem: "distribution",
         eventKey: eventKey(
           "booking-web",
           "telemetry",
+          event.propertyId,
           event.hotelSlug,
           normalizedType,
           occurrenceKey,
@@ -77,7 +79,12 @@ export function createPgBookingWebEventSink(
         resourceType: "booking_web_hotel",
         resourceId: event.hotelSlug,
         correlationId: event.sessionId ?? event.requestId,
-        idempotencyKeyHash: hashKey(event.hotelSlug, normalizedType, occurrenceKey),
+        idempotencyKeyHash: hashKey(
+          event.propertyId,
+          event.hotelSlug,
+          normalizedType,
+          occurrenceKey,
+        ),
         payload: {
           hotelSlug: event.hotelSlug,
           eventType: normalizedType,
@@ -97,6 +104,7 @@ export function createPgBookingWebEventSink(
 }
 
 type InsertEventInput = {
+  propertyId?: string;
   sourceSystem: "marketplace" | "distribution";
   eventKey: string;
   eventType: string;
@@ -116,6 +124,7 @@ type InsertEventInput = {
 };
 
 async function insertDomainEventWithAudit(pool: pg.Pool, input: InsertEventInput): Promise<void> {
+  const tenantScope = input.propertyId ? "property" : "external";
   await pool.query(
     `WITH inserted_event AS (
        INSERT INTO platform.domain_events
@@ -125,6 +134,7 @@ async function insertDomainEventWithAudit(pool: pg.Pool, input: InsertEventInput
            event_type,
            occurred_at,
            tenant_scope,
+           property_id,
            resource_product,
            resource_type,
            resource_id,
@@ -136,7 +146,7 @@ async function insertDomainEventWithAudit(pool: pg.Pool, input: InsertEventInput
            privacy_scope
          )
        VALUES
-         ($1, $2, $3, $4, 'external', $5, $6, $7, 'provider', $8, $9, $10, $11, 'internal')
+         ($1, $2, $3, $4, $5, $6::uuid, $7, $8, $9, 'provider', $10, $11, $12, $13, 'internal')
        ON CONFLICT (source_system, event_key) DO NOTHING
        RETURNING id
      ),
@@ -156,6 +166,7 @@ async function insertDomainEventWithAudit(pool: pg.Pool, input: InsertEventInput
          action,
          occurred_at,
          tenant_scope,
+         property_id,
          actor_type,
          target_resource_product,
          target_resource_type,
@@ -170,20 +181,21 @@ async function insertDomainEventWithAudit(pool: pg.Pool, input: InsertEventInput
        )
      VALUES
        (
-         $12,
-         $13,
          $14,
-         $4,
-         'external',
-         'provider',
          $15,
          $16,
+         $4,
+         $5,
+         $6::uuid,
+         'provider',
          $17,
+         $18,
+         $19,
          (SELECT id FROM selected_event),
-         $8,
          $10,
+         $12,
          '{}'::jsonb,
-         $11,
+         $13,
          'standard',
          'internal'
        )
@@ -193,6 +205,8 @@ async function insertDomainEventWithAudit(pool: pg.Pool, input: InsertEventInput
       input.eventKey,
       input.eventType,
       input.occurredAt,
+      tenantScope,
+      input.propertyId ?? null,
       input.resourceProduct,
       input.resourceType,
       input.resourceId,
@@ -226,7 +240,17 @@ function requestMetadata(
   return {
     requestId,
     source: "apps/api-booking-web-public",
+    trafficClass: classifyBookingWebTraffic(userAgent),
     userAgentHash: userAgent ? hashKey(userAgent) : null,
     ipAddressHash: ipAddress ? hashKey(ipAddress) : null,
   };
+}
+
+export function classifyBookingWebTraffic(userAgent: string | undefined): "bot" | "human" {
+  return userAgent &&
+    /(bot(?:\b|\/)|crawler|spider|headlesschrome|lighthouse|pagespeed|pingdom|uptimerobot)/i.test(
+      userAgent,
+    )
+    ? "bot"
+    : "human";
 }

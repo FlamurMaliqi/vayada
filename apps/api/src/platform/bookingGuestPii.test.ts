@@ -31,6 +31,8 @@ function createPool(input: { plan?: "fixed"; guestContactAccepted: boolean }) {
                   email: "ada@example.com",
                   phone: "+4912345",
                   countryCode: "GB",
+                  countryCodeRaw: null,
+                  countryCodeReviewRequired: false,
                   arrivalTime: null,
                   specialRequests: null,
                   guestContactAccepted: input.guestContactAccepted,
@@ -44,6 +46,8 @@ function createPool(input: { plan?: "fixed"; guestContactAccepted: boolean }) {
                   email: "charles@example.com",
                   phone: "+4954321",
                   countryCode: "GB",
+                  countryCodeRaw: null,
+                  countryCodeReviewRequired: false,
                   arrivalTime: null,
                   specialRequests: null,
                   guestContactAccepted: input.guestContactAccepted,
@@ -74,6 +78,8 @@ function createProjectionFailurePool() {
     email: "charles@example.com",
     phone: "+4954321",
     countryCode: "GB",
+    countryCodeRaw: null,
+    countryCodeReviewRequired: false,
     arrivalTime: null,
     specialRequests: null,
   };
@@ -124,6 +130,8 @@ function createUpdatePool() {
     email: "original@example.com",
     phone: "+4911111",
     countryCode: "GB",
+    countryCodeRaw: null,
+    countryCodeReviewRequired: false,
     arrivalTime: null,
     specialRequests: null,
   };
@@ -190,6 +198,102 @@ function createUpdatePool() {
   return { pool, updateValues };
 }
 
+function createNationalityCorrectionPool(idempotency: "new" | "replay" | "conflict" = "new") {
+  const updateValues: unknown[][] = [];
+  const auditCalls: { text: string; values: readonly unknown[] }[] = [];
+  const booker = {
+    guestId: "f6855800-0000-0000-0000-000000000001",
+    guestBookingId: "e3000000-0000-0000-0000-000000000682",
+    role: "booker",
+    firstName: "Ada",
+    lastName: "Lovelace",
+    email: "ada@example.com",
+    phone: "+4912345",
+    countryCode: null,
+    countryCodeRaw: "Holland",
+    countryCodeReviewRequired: true,
+  };
+  const pool: BookingGuestPiiPool = {
+    async connect() {
+      return {
+        async query<T extends QueryResultRow = QueryResultRow>(
+          text: string,
+          values: readonly unknown[] = [],
+        ) {
+          if (["BEGIN", "COMMIT", "ROLLBACK"].includes(text)) {
+            return { rows: [] as T[], rowCount: 0 };
+          }
+          if (text.trimStart().startsWith("SELECT 1")) {
+            return { rows: [{}] as T[], rowCount: 1 };
+          }
+          if (text.includes("INSERT INTO platform.idempotency_keys")) {
+            return {
+              rows: [
+                {
+                  id: "c6855800-0000-0000-0000-000000000001",
+                  requestFingerprintHash: idempotency === "conflict" ? "other" : values[1],
+                  status: idempotency === "new" ? "in_progress" : "completed",
+                  inserted: idempotency === "new",
+                },
+              ] as unknown as T[],
+              rowCount: 1,
+            };
+          }
+          if (text.trimStart().startsWith("UPDATE platform.idempotency_keys")) {
+            return { rows: [] as T[], rowCount: 1 };
+          }
+          if (text.trimStart().startsWith("UPDATE booking.booking_guests")) {
+            updateValues.push([...values]);
+            return { rows: [{ guestId: booker.guestId }] as unknown as T[], rowCount: 1 };
+          }
+          if (text.includes("INSERT INTO platform.product_audit_events")) {
+            auditCalls.push({ text, values });
+            return { rows: [] as T[], rowCount: 1 };
+          }
+          if (text.includes("finance.billing_entitlements")) {
+            return { rows: [] as T[], rowCount: 0 };
+          }
+          if (text.includes("booking_guests guest")) {
+            return {
+              rows: [
+                {
+                  ...booker,
+                  countryCode: "NL",
+                  countryCodeRaw: null,
+                  countryCodeReviewRequired: false,
+                  guestContactAccepted: false,
+                },
+              ] as unknown as T[],
+              rowCount: 1,
+            };
+          }
+          throw new Error(`Unexpected query: ${text}`);
+        },
+        release() {},
+      };
+    },
+    async end() {},
+  };
+  return { pool, updateValues, auditCalls };
+}
+
+function nationalityCommand(countryCode = "Holland") {
+  return {
+    propertyId: "d3000000-0000-0000-0000-000000000682",
+    guestBookingId: "e3000000-0000-0000-0000-000000000682",
+    commandId: "command-nationality-1",
+    idempotencyKey: "idempotency-nationality-1",
+    countryCode,
+    audit: {
+      actorUserId: "a6855800-0000-0000-0000-000000000002",
+      actorOrganizationId: "b6855800-0000-0000-0000-000000000002",
+      requestId: "request-nationality-1",
+      source: "pms_operations" as const,
+      reason: "Correct primary guest nationality",
+    },
+  };
+}
+
 describe("target booking guest PII contact access", () => {
   it("hides primary and additional guest contact for an unaccepted commission booking", async () => {
     const { pool, queries } = createPool({ guestContactAccepted: false });
@@ -215,7 +319,8 @@ describe("target booking guest PII contact access", () => {
       phone: "Hidden until you accept",
       countryCode: "GB",
     });
-    expect(queries.join("\n")).toContain("contact_event.actor_type = 'property_user'");
+    expect(queries.join("\n")).toContain("'guest_booking.accepted'");
+    expect(queries.join("\n")).not.toContain("contact_event.actor_type = 'property_user'");
   });
 
   it.each([
@@ -254,6 +359,7 @@ describe("target booking guest PII contact access", () => {
         firstName: "Updated",
         email: "replacement@example.com",
         phone: "+4922222",
+        countryCode: "Holland",
       },
       audit: {
         actorUserId: "a6855800-0000-0000-0000-000000000002",
@@ -265,12 +371,52 @@ describe("target booking guest PII contact access", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(updateValues[0]?.slice(0, 4)).toEqual([
+    expect(updateValues[0]?.slice(0, 5)).toEqual([
       "Updated",
       "Babbage",
       "original@example.com",
       "+4911111",
+      "NL",
     ]);
+    expect(updateValues[0]?.[10]).toBe(true);
+  });
+});
+
+describe("target Booking-owned primary guest nationality correction", () => {
+  it("normalizes the selected value and atomically clears raw review evidence", async () => {
+    const { pool, updateValues, auditCalls } = createNationalityCorrectionPool();
+    const port = createTargetBookingGuestPiiPort({
+      connectionString: "postgresql://target-db",
+      pool,
+    });
+
+    const result = await port.correctPrimaryGuestNationalityForPmsOperations(nationalityCommand());
+
+    expect(result).toMatchObject({
+      ok: true,
+      primaryGuest: {
+        countryCode: "NL",
+      },
+    });
+    expect(updateValues[0]?.[0]).toBe("NL");
+    expect(result.ok && result.primaryGuest.email).not.toBe("ada@example.com");
+    expect(auditCalls[0]?.text).toMatch(/'property',\s+NULL,\s+\$4::uuid/);
+    expect(auditCalls[0]?.values[9]).toBe("c6855800-0000-0000-0000-000000000001");
+  });
+
+  it.each([
+    ["replay", true],
+    ["conflict", false],
+  ] as const)("does not mutate an idempotency %s", async (state, succeeds) => {
+    const { pool, updateValues } = createNationalityCorrectionPool(state);
+    const result = await createTargetBookingGuestPiiPort({
+      connectionString: "postgresql://target-db",
+      pool,
+    }).correctPrimaryGuestNationalityForPmsOperations(nationalityCommand());
+    expect(result.ok ? result.replayed : result.code).toBe(
+      succeeds ? true : "idempotency_conflict",
+    );
+    expect(updateValues).toEqual([]);
   });
 });
 

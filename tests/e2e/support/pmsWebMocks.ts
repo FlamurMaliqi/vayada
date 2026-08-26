@@ -6,6 +6,42 @@ export const PMS_WEB_ROOM_TYPE_ID = "room_type_alpine_suite";
 export const PMS_WEB_ROOM_ID = "room_101";
 export const PMS_WEB_RESERVATION_ID = "guest_booking_ada";
 
+export const pmsWebChannexSnapshot = {
+  contractVersion: "pms-channex-management.v1",
+  propertyId: PMS_WEB_PROPERTY_ID,
+  connection: {
+    status: "disconnected",
+    externalPropertyId: null,
+    messagingAppInstalled: false,
+  },
+  mappings: { roomTypes: [], ratePlans: [] },
+  channels: [],
+  markups: [],
+  sync: Object.fromEntries(
+    ["booking", "ari", "message", "mapping"].map((domain) => [
+      domain,
+      {
+        status: "idle",
+        lastAttemptAt: null,
+        lastSuccessAt: null,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        retryAfter: null,
+      },
+    ]),
+  ),
+  capabilityModes: {
+    connection: "observe_only",
+    provisioning: "observe_only",
+    ariSync: "observe_only",
+    bookingSync: "observe_only",
+    markups: "observe_only",
+    messaging: "observe_only",
+    iframe: "observe_only",
+  },
+  activeOperation: null,
+};
+
 const propertySummary = {
   id: PMS_WEB_PROPERTY_ID,
   name: PMS_WEB_PROPERTY_ID,
@@ -25,7 +61,7 @@ const propertyProfile = {
   sameDayBookingCutoffTime: "18:00",
 };
 
-const sharedPropertyProfile = {
+export const sharedPropertyProfile = {
   propertyId: PMS_WEB_PROPERTY_ID,
   profileRevision: 1,
   profile: {
@@ -66,7 +102,7 @@ const sharedPropertyProfile = {
   },
 };
 
-const roomType = {
+export const pmsWebRoomType = {
   roomTypeId: PMS_WEB_ROOM_TYPE_ID,
   name: "Alpine Suite",
   description: "Mountain-facing suite",
@@ -109,6 +145,9 @@ export const pmsWebReservation = {
     displayName: "Ada Lovelace",
     email: "ada@example.com",
     phone: "+431234567",
+    countryCode: "AT",
+    countryCodeRaw: null,
+    countryCodeReviewRequired: false,
   },
   assignments: [
     {
@@ -246,19 +285,114 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
       },
     }),
   );
+  await page.route(
+    `**/api/finance/properties/${PMS_WEB_PROPERTY_ID}/financials/ota-commission-settings**`,
+    async (route) => {
+      if (route.request().method() === "PUT") {
+        const request = readJson(route);
+        const channel = new URL(route.request().url()).pathname.split("/").pop();
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return route.fulfill({
+          status: 201,
+          json: {
+            contractVersion: "finance-route-contracts.v1",
+            propertyId: PMS_WEB_PROPERTY_ID,
+            outcome: "created",
+            setting: {
+              channel,
+              status: "configured",
+              ruleId: `rule-${channel}`,
+              percentageRate: Number(request["percentageRate"]).toFixed(4),
+              effectiveFrom: request["effectiveFrom"],
+              effectiveTo: null,
+              revision: 1,
+            },
+          },
+        });
+      }
+      return route.fulfill({
+        json: {
+          contractVersion: "finance-route-contracts.v1",
+          propertyId: PMS_WEB_PROPERTY_ID,
+          settings: [
+            {
+              channel: "booking_com",
+              status: "configured",
+              ruleId: "rule-booking",
+              percentageRate: "15.0000",
+              effectiveFrom: "2026-08-01T10:00:00.000Z",
+              effectiveTo: null,
+              revision: 1,
+            },
+            ...["airbnb", "expedia", "agoda", "other_ota"].map((channel) => ({
+              channel,
+              status: "unconfigured",
+              reason: "not_configured",
+            })),
+          ],
+        },
+      });
+    },
+  );
 
   await page.route("**/api/pms/properties", (route) => route.fulfill({ json: [propertySummary] }));
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/module-activations*`, (route) =>
     route.fulfill({
-      json: { hotelId: PMS_WEB_PROPERTY_ID, activeModules: [], activations: [] },
+      json: {
+        hotelId: PMS_WEB_PROPERTY_ID,
+        canManage: true,
+        supportedModules: ["affiliates"],
+        activeModules: [],
+        activations: [],
+      },
     }),
   );
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/rooms*`, (route) =>
     route.fulfill({ json: targetList([room]) }),
   );
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-types*`, (route) =>
-    route.fulfill({ json: targetList([roomType]) }),
+    route.fulfill({ json: targetList([pmsWebRoomType]) }),
   );
+  await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/plan-limits`, (route) =>
+    route.fulfill({
+      json: {
+        contractVersion: "pms-operations.v1",
+        propertyId: PMS_WEB_PROPERTY_ID,
+        propertyPlan: {
+          propertyId: PMS_WEB_PROPERTY_ID,
+          plan: "commission",
+          limits: {
+            maxRoomPhotosPerType: 10,
+            maxAddons: 3,
+            guestContactAccess: "after_acceptance",
+          },
+        },
+      },
+    }),
+  );
+  await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/calendar?*`, (route) => {
+    const stayDate = new URL(route.request().url()).searchParams.get("from") ?? "2026-08-15";
+    return route.fulfill({
+      json: {
+        contractVersion: "pms-operations.v1",
+        propertyId: PMS_WEB_PROPERTY_ID,
+        days: [
+          {
+            stayDate,
+            roomTypeId: PMS_WEB_ROOM_TYPE_ID,
+            totalCount: 1,
+            assignedCount: 1,
+            occupiedCount: 1,
+            blockedCount: 0,
+            availableCount: 0,
+            assignmentRefs: ["assignment_ada"],
+            status: "open",
+          },
+        ],
+        sourceFreshness: {},
+      },
+    });
+  });
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-blocks*`, (route) =>
     route.fulfill({ json: targetList([]) }),
   );
@@ -303,6 +437,21 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
       },
     }),
   );
+  let bookingAcceptanceMode = "instant";
+  await page.route(
+    `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/booking-acceptance`,
+    async (route) => {
+      if (route.request().method() === "PUT") {
+        bookingAcceptanceMode = String(readJson(route)["acceptanceMode"]);
+      }
+      return route.fulfill({
+        json: {
+          propertyId: PMS_WEB_PROPERTY_ID,
+          acceptanceMode: bookingAcceptanceMode,
+        },
+      });
+    },
+  );
   await page.route(
     `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/calendar-settings`,
     async (route) =>
@@ -319,23 +468,8 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
         },
       }),
   );
-  await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/channex/status`, (route) =>
-    route.fulfill({
-      json: {
-        isConnected: false,
-        channexPropertyId: null,
-        roomTypesProvisioned: 0,
-        ratePlansProvisioned: 0,
-        lastBookingSyncAt: null,
-        lastAriSyncAt: null,
-        lastAriSyncError: null,
-        lastAriSyncFailedAt: null,
-        messagingAppInstalled: false,
-      },
-    }),
-  );
-  await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/channex/channels`, (route) =>
-    route.fulfill({ json: { channels: [] } }),
+  await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/channex`, (route) =>
+    route.fulfill({ json: pmsWebChannexSnapshot }),
   );
   await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/messaging/unread-count`, (route) =>
     route.fulfill({ json: { unreadCount: 0 } }),

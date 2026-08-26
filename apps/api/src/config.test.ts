@@ -34,6 +34,94 @@ const completeAuthSessionEnv = {
 };
 
 describe("api config", () => {
+  it("keeps Channex management fail-closed until each capability is cut over", () => {
+    expect(loadConfig({}).channexManagement).toMatchObject({
+      bookingMutationOwner: "legacy",
+      workerEnabled: false,
+      capabilityModes: {
+        connection: "observe_only",
+        provisioning: "observe_only",
+        ariSync: "observe_only",
+        bookingSync: "observe_only",
+        markups: "observe_only",
+        messaging: "observe_only",
+        iframe: "observe_only",
+      },
+    });
+  });
+
+  it("loads explicitly cut-over Channex capabilities only with target provider config", () => {
+    const config = loadConfig({
+      TARGET_DATABASE_URL: "postgresql://target-db",
+      PMS_OPERATIONS_SOURCE: "target",
+      CHANNEX_API_BASE_URL: "https://staging.channex.io",
+      CHANNEX_API_KEY: "secret",
+      PMS_CHANNEX_CONNECTION_MODE: "mutating",
+      PMS_CHANNEX_WORKER_ENABLED: "true",
+    });
+    expect(config.channexManagement).toMatchObject({
+      apiBaseUrl: "https://staging.channex.io",
+      workerEnabled: true,
+      capabilityModes: { connection: "mutating", provisioning: "observe_only" },
+    });
+  });
+
+  it("rejects Channex mutation without provider config or target ownership", () => {
+    expect(() => loadConfig({ PMS_CHANNEX_ARI_SYNC_MODE: "mutating" })).toThrow(
+      "Mutating PMS Channex capabilities require CHANNEX_API_BASE_URL and CHANNEX_API_KEY",
+    );
+    expect(() =>
+      loadConfig({
+        PMS_CHANNEX_ARI_SYNC_MODE: "mutating",
+        CHANNEX_API_BASE_URL: "https://staging.channex.io",
+        CHANNEX_API_KEY: "secret",
+      }),
+    ).toThrow("Mutating PMS Channex capabilities require PMS_OPERATIONS_SOURCE=target");
+    expect(() =>
+      loadConfig({
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        PMS_OPERATIONS_SOURCE: "target",
+        PMS_CHANNEX_CONNECTION_MODE: "mutating",
+        PMS_CHANNEX_WORKER_ENABLED: "false",
+        CHANNEX_API_BASE_URL: "https://staging.channex.io",
+        CHANNEX_API_KEY: "secret",
+      }),
+    ).toThrow("Mutating PMS Channex capabilities require PMS_CHANNEX_WORKER_ENABLED=true");
+  });
+
+  it("does not require the durable worker for an iframe-only cutover", () => {
+    expect(
+      loadConfig({
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        PMS_OPERATIONS_SOURCE: "target",
+        CHANNEX_API_BASE_URL: "https://staging.channex.io",
+        CHANNEX_API_KEY: "secret",
+        PMS_CHANNEX_IFRAME_MODE: "mutating",
+      }).channexManagement,
+    ).toMatchObject({ workerEnabled: false, capabilityModes: { iframe: "mutating" } });
+  });
+
+  it("requires an explicit legacy-poll freeze before target booking sync mutates", () => {
+    const base = {
+      TARGET_DATABASE_URL: "postgresql://target-db",
+      PMS_OPERATIONS_SOURCE: "target",
+      CHANNEX_API_BASE_URL: "https://staging.channex.io",
+      CHANNEX_API_KEY: "secret",
+      PMS_CHANNEX_BOOKING_SYNC_MODE: "mutating",
+    };
+    expect(() => loadConfig(base)).toThrow(
+      "Mutating PMS Channex booking sync requires CHANNEX_ADMIN_MANUAL_BOOKING_SYNC_MODE=target-owned",
+    );
+    expect(
+      loadConfig({ ...base, CHANNEX_ADMIN_MANUAL_BOOKING_SYNC_MODE: "target-owned" })
+        .channexManagement,
+    ).toMatchObject({
+      bookingMutationOwner: "target",
+      workerEnabled: true,
+      capabilityModes: { bookingSync: "mutating" },
+    });
+  });
+
   it("keeps auth disabled when auth env values are absent", () => {
     expect(loadConfig({}).auth).toBeUndefined();
   });
@@ -64,9 +152,6 @@ describe("api config", () => {
       PLATFORM_MEDIA_BUCKET: "vayada-media-staging",
       PLATFORM_MEDIA_CDN_BASE_URL: "https://cdn.staging.vayada.com",
       PLATFORM_MEDIA_CDN_ORIGIN_HOST: "vayada-media-staging.s3.us-east-1.amazonaws.com",
-      BOOKING_DATABASE_URL: "postgresql://user:pass@booking-db:5432/booking?sslmode=require",
-      BOOKING_RESERVATIONS_READ_DATABASE_URL:
-        "postgresql://user:pass@reservations-db:5432/reservations?sslmode=require",
     });
 
     expect(config.auth?.databaseUrl).toBe(
@@ -74,12 +159,6 @@ describe("api config", () => {
     );
     expect(config.targetDatabaseUrl).toBe(
       "postgresql://user:pass@target-db:5432/target?sslmode=require&uselibpqcompat=true",
-    );
-    expect(config.bookingDatabaseUrl).toBe(
-      "postgresql://user:pass@booking-db:5432/booking?sslmode=require&uselibpqcompat=true",
-    );
-    expect(config.bookingReservationsReadDatabaseUrl).toBe(
-      "postgresql://user:pass@reservations-db:5432/reservations?sslmode=require&uselibpqcompat=true",
     );
   });
 
@@ -222,46 +301,31 @@ describe("api config", () => {
     ).toThrow("CREATOR_PLATFORM_CREDENTIAL_VAULT=memory is not allowed in production");
   });
 
-  it("loads optional booking database config", () => {
-    expect(
-      loadConfig({
-        BOOKING_DATABASE_URL: "postgresql://booking-db",
-      }).bookingDatabaseUrl,
-    ).toBe("postgresql://booking-db");
-  });
-
-  it("loads target public hotel profile and domain resolution config without the legacy booking DB", () => {
+  it("loads target public hotel profile config", () => {
     expect(
       loadConfig({
         TARGET_DATABASE_URL: "postgresql://target-db",
         PUBLIC_HOTEL_PROFILE_SOURCE: "target",
-        BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
       }),
     ).toMatchObject({
-      bookingDatabaseUrl: undefined,
       targetDatabaseUrl: "postgresql://target-db",
       publicHotelProfileSource: "target",
-      bookingDomainResolutionSource: "target",
     });
   });
 
-  it("rejects target public hotel profile config without the target DB", () => {
-    expect(() =>
-      loadConfig({
-        PUBLIC_HOTEL_PROFILE_SOURCE: "target",
-      }),
-    ).toThrow("PUBLIC_HOTEL_PROFILE_SOURCE=target requires TARGET_DATABASE_URL");
+  it("defaults public hotel profiles to the target source", () => {
+    expect(
+      loadConfig({ TARGET_DATABASE_URL: "postgresql://target-db" }).publicHotelProfileSource,
+    ).toBe("target");
   });
 
-  it("rejects target domain resolution without target public profiles", () => {
-    expect(() =>
+  it("loads active immutable publication profiles", () => {
+    expect(
       loadConfig({
         TARGET_DATABASE_URL: "postgresql://target-db",
-        BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
-      }),
-    ).toThrow(
-      "BOOKING_DOMAIN_RESOLUTION_SOURCE=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target",
-    );
+        PUBLIC_HOTEL_PROFILE_SOURCE: "active_publication",
+      }).publicHotelProfileSource,
+    ).toBe("active_publication");
   });
 
   it("rejects unsupported public profile source config", () => {
@@ -269,7 +333,7 @@ describe("api config", () => {
       loadConfig({
         PUBLIC_HOTEL_PROFILE_SOURCE: "booking",
       }),
-    ).toThrow("PUBLIC_HOTEL_PROFILE_SOURCE must be one of: legacy, target");
+    ).toThrow("PUBLIC_HOTEL_PROFILE_SOURCE must be one of: target, active_publication");
   });
 
   it("loads optional target database config", () => {
@@ -280,32 +344,20 @@ describe("api config", () => {
     ).toBe("postgresql://target-db");
   });
 
-  it("loads next API runtime only with target sources and no legacy product envs", () => {
+  it("loads next API runtime only with target sources", () => {
     const config = loadConfig({
       API_RUNTIME: "next",
       TARGET_DATABASE_URL: "postgresql://target-db",
       PUBLIC_HOTEL_PROFILE_SOURCE: "target",
-      BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
-      PUBLIC_BOOKABILITY_SOURCE: "target",
-      BOOKING_SETTINGS_SOURCE: "target",
-      BOOKING_RESERVATIONS_SOURCE: "target",
       PMS_OPERATIONS_SOURCE: "target",
       FINANCE_SOURCE: "target",
-      BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
     });
 
     expect(config).toMatchObject({
       apiRuntime: "next",
-      bookingDatabaseUrl: undefined,
-      bookingReservationsReadDatabaseUrl: undefined,
       publicHotelProfileSource: "target",
-      bookingDomainResolutionSource: "target",
-      publicBookabilitySource: "target",
-      bookingSettingsSource: "target",
-      bookingReservationsSource: "target",
       pmsOperationsSource: "target",
       financeSource: "target",
-      bookingCheckoutCommandSource: "target",
     });
   });
 
@@ -314,34 +366,11 @@ describe("api config", () => {
       API_RUNTIME: "next",
       TARGET_DATABASE_URL: "postgresql://target-db",
       PUBLIC_HOTEL_PROFILE_SOURCE: "target",
-      BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
-      PUBLIC_BOOKABILITY_SOURCE: "target",
-      BOOKING_SETTINGS_SOURCE: "target",
-      BOOKING_RESERVATIONS_SOURCE: "target",
       PMS_OPERATIONS_SOURCE: "disabled",
       FINANCE_SOURCE: "target",
-      BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
     });
 
     expect(config.pmsOperationsSource).toBe("disabled");
-  });
-
-  it("rejects next API runtime when legacy product envs are present", () => {
-    expect(() =>
-      loadConfig({
-        API_RUNTIME: "next",
-        TARGET_DATABASE_URL: "postgresql://target-db",
-        PUBLIC_HOTEL_PROFILE_SOURCE: "target",
-        BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
-        PUBLIC_BOOKABILITY_SOURCE: "target",
-        BOOKING_SETTINGS_SOURCE: "target",
-        BOOKING_RESERVATIONS_SOURCE: "target",
-        PMS_OPERATIONS_SOURCE: "target",
-        FINANCE_SOURCE: "target",
-        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
-        BOOKING_DATABASE_URL: "postgresql://booking-db",
-      }),
-    ).toThrow("API_RUNTIME=next forbids legacy runtime envs: BOOKING_DATABASE_URL");
   });
 
   it("rejects removed legacy Python integration URL envs in every runtime", () => {
@@ -363,24 +392,8 @@ describe("api config", () => {
         TARGET_DATABASE_URL: "postgresql://target-db",
       }),
     ).toThrow(
-      "API_RUNTIME=next requires target runtime sources: PUBLIC_HOTEL_PROFILE_SOURCE=target",
+      "API_RUNTIME=next requires target runtime sources: PMS_OPERATIONS_SOURCE=target or explicit disabled, FINANCE_SOURCE=target",
     );
-  });
-
-  it("requires target Booking settings for the next API runtime", () => {
-    expect(() =>
-      loadConfig({
-        API_RUNTIME: "next",
-        TARGET_DATABASE_URL: "postgresql://target-db",
-        PUBLIC_HOTEL_PROFILE_SOURCE: "target",
-        BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
-        PUBLIC_BOOKABILITY_SOURCE: "target",
-        BOOKING_RESERVATIONS_SOURCE: "target",
-        PMS_OPERATIONS_SOURCE: "target",
-        FINANCE_SOURCE: "target",
-        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
-      }),
-    ).toThrow("API_RUNTIME=next requires target runtime sources: BOOKING_SETTINGS_SOURCE=target");
   });
 
   it("defaults provider webhook intake modes to observe-only shadow intake", () => {
@@ -442,7 +455,6 @@ describe("api config", () => {
     const stripeRuntimeEnv = {
       TARGET_DATABASE_URL: "postgresql://target-db",
       FINANCE_SOURCE: "target",
-      BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
       STRIPE_SECRET_KEY: "sk_test_subscription",
       STRIPE_FIXED_PLAN_PRICE_ID: "price_fixed",
       STRIPE_WEBHOOK_SECRET: "whsec_subscription",
@@ -460,7 +472,6 @@ describe("api config", () => {
       { ...stripeRuntimeEnv, STRIPE_SECRET_KEY: undefined },
       { ...stripeRuntimeEnv, STRIPE_WEBHOOK_SECRET: undefined },
       { ...stripeRuntimeEnv, STRIPE_WEBHOOK_INTAKE_MODE: "observe_only" },
-      { ...stripeRuntimeEnv, BOOKING_CHECKOUT_COMMAND_SOURCE: "legacy_proxy" },
     ]) {
       expect(stripeSubscriptionRuntimeEnabled(loadConfig(env))).toBe(false);
     }
@@ -482,65 +493,6 @@ describe("api config", () => {
     );
   });
 
-  it("keeps booking settings on the legacy source by default", () => {
-    expect(loadConfig({}).bookingSettingsSource).toBe("legacy");
-  });
-
-  it("loads optional booking settings source config", () => {
-    expect(
-      loadConfig({
-        BOOKING_SETTINGS_SOURCE: "target",
-        TARGET_DATABASE_URL: "postgresql://target-db",
-      }).bookingSettingsSource,
-    ).toBe("target");
-  });
-
-  it("requires target database config when booking settings use the target source", () => {
-    expect(() =>
-      loadConfig({
-        BOOKING_SETTINGS_SOURCE: "target",
-      }),
-    ).toThrow("TARGET_DATABASE_URL is required when BOOKING_SETTINGS_SOURCE=target");
-  });
-
-  it("rejects invalid booking settings source config", () => {
-    expect(() =>
-      loadConfig({
-        BOOKING_SETTINGS_SOURCE: "preview",
-      }),
-    ).toThrow("BOOKING_SETTINGS_SOURCE must be one of: legacy, target");
-  });
-
-  it("loads optional booking reservations read database config", () => {
-    expect(
-      loadConfig({
-        BOOKING_RESERVATIONS_READ_DATABASE_URL: "postgresql://booking-reservations-read",
-      }).bookingReservationsReadDatabaseUrl,
-    ).toBe("postgresql://booking-reservations-read");
-  });
-
-  it("defaults booking reservations to the legacy source", () => {
-    expect(loadConfig({}).bookingReservationsSource).toBe("legacy");
-  });
-
-  it("loads target booking reservations config", () => {
-    const config = loadConfig({
-      TARGET_DATABASE_URL: "postgresql://target-db",
-      BOOKING_RESERVATIONS_SOURCE: "target",
-    });
-
-    expect(config.targetDatabaseUrl).toBe("postgresql://target-db");
-    expect(config.bookingReservationsSource).toBe("target");
-  });
-
-  it("rejects unsupported booking reservations source config", () => {
-    expect(() =>
-      loadConfig({
-        BOOKING_RESERVATIONS_SOURCE: "pms",
-      }),
-    ).toThrow("BOOKING_RESERVATIONS_SOURCE must be one of: legacy, target");
-  });
-
   it("defaults Booking Web event sink to disabled until target auth config is explicit", () => {
     expect(loadConfig({}).bookingWebEventSink).toBe("disabled");
   });
@@ -556,10 +508,18 @@ describe("api config", () => {
   it("loads target Booking Web event sink config", () => {
     expect(
       loadConfig({
-        AUTH_DATABASE_URL: "postgresql://auth-db",
-        WORKOS_JWKS_URL: "https://api.workos.com/sso/jwks/client",
-        WORKOS_ISSUER: "https://api.workos.com",
-        WORKOS_AUDIENCE: "client",
+        ...completeCreatorMarketplaceEnv,
+        PUBLIC_HOTEL_PROFILE_SOURCE: "target",
+        BOOKING_WEB_EVENT_SINK: "target",
+      }).bookingWebEventSink,
+    ).toBe("target");
+  });
+
+  it("loads target Booking Web events with active publication profiles", () => {
+    expect(
+      loadConfig({
+        ...completeCreatorMarketplaceEnv,
+        PUBLIC_HOTEL_PROFILE_SOURCE: "active_publication",
         BOOKING_WEB_EVENT_SINK: "target",
       }).bookingWebEventSink,
     ).toBe("target");
@@ -568,6 +528,8 @@ describe("api config", () => {
   it("requires auth config for the target Booking Web event sink", () => {
     expect(() =>
       loadConfig({
+        TARGET_DATABASE_URL: "postgresql://target-db",
+        PUBLIC_HOTEL_PROFILE_SOURCE: "target",
         BOOKING_WEB_EVENT_SINK: "target",
       }),
     ).toThrow("BOOKING_WEB_EVENT_SINK=target requires complete auth config");
@@ -713,66 +675,11 @@ describe("api config", () => {
     ).toEqual(["https://marketplace.localhost", "https://admin.localhost"]);
   });
 
-  it("defaults public bookability to the legacy source", () => {
-    expect(loadConfig({}).publicBookabilitySource).toBe("legacy");
-  });
-
-  it("loads target public bookability config", () => {
-    const config = loadConfig({
-      TARGET_DATABASE_URL: "postgresql://target-db",
-      PUBLIC_HOTEL_PROFILE_SOURCE: "target",
-      PUBLIC_BOOKABILITY_SOURCE: "target",
-    });
-
-    expect(config.targetDatabaseUrl).toBe("postgresql://target-db");
-    expect(config.publicBookabilitySource).toBe("target");
-  });
-
-  it("requires target database config for target public bookability", () => {
-    expect(() =>
-      loadConfig({
-        PUBLIC_BOOKABILITY_SOURCE: "target",
-      }),
-    ).toThrow("PUBLIC_BOOKABILITY_SOURCE=target requires TARGET_DATABASE_URL");
-  });
-
-  it("requires target public profiles for target public bookability", () => {
-    expect(() =>
-      loadConfig({
-        TARGET_DATABASE_URL: "postgresql://target-db",
-        PUBLIC_BOOKABILITY_SOURCE: "target",
-      }),
-    ).toThrow("PUBLIC_BOOKABILITY_SOURCE=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target");
-  });
-
-  it("rejects unsupported public bookability source config", () => {
-    expect(() =>
-      loadConfig({
-        PUBLIC_BOOKABILITY_SOURCE: "preview",
-      }),
-    ).toThrow("PUBLIC_BOOKABILITY_SOURCE must be one of: legacy, target");
-  });
-
-  it("keeps Booking Web checkout commands on the legacy proxy source by default", () => {
-    expect(loadConfig({}).bookingCheckoutCommandSource).toBe("legacy_proxy");
-  });
-
-  it("loads target Booking Web checkout command source config", () => {
-    const config = loadConfig({
-      TARGET_DATABASE_URL: "postgresql://target-db",
-      BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
-    });
-
-    expect(config.bookingCheckoutCommandSource).toBe("target");
-    expect(config.targetDatabaseUrl).toBe("postgresql://target-db");
-  });
-
-  it("requires booking email delivery for target checkout in production", () => {
+  it("requires booking email delivery for checkout in production", () => {
     expect(() =>
       loadConfig({
         NODE_ENV: "production",
         TARGET_DATABASE_URL: "postgresql://target-db",
-        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
       }),
     ).toThrow("requires RESEND_API_KEY and BOOKING_EMAIL_FROM");
 
@@ -780,7 +687,6 @@ describe("api config", () => {
       loadConfig({
         NODE_ENV: "production",
         TARGET_DATABASE_URL: "postgresql://target-db",
-        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
         RESEND_API_KEY: "re_test",
         BOOKING_EMAIL_FROM: "Vayada <bookings@example.test>",
         FINANCE_SOURCE: "target",
@@ -795,11 +701,13 @@ describe("api config", () => {
     });
   });
 
-  it("requires the Stripe mutation and recovery runtime for target checkout in production", () => {
+  it("requires the Stripe mutation and recovery runtime for checkout in production", () => {
     const complete = {
       NODE_ENV: "production",
+      API_RUNTIME: "next",
       TARGET_DATABASE_URL: "postgresql://target-db",
-      BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
+      PUBLIC_HOTEL_PROFILE_SOURCE: "target",
+      PMS_OPERATIONS_SOURCE: "target",
       FINANCE_SOURCE: "target",
       RESEND_API_KEY: "re_test",
       BOOKING_EMAIL_FROM: "Vayada <bookings@example.test>",
@@ -807,31 +715,17 @@ describe("api config", () => {
       STRIPE_WEBHOOK_SECRET: "whsec_test",
       STRIPE_WEBHOOK_INTAKE_MODE: "mutating",
     };
-    expect(loadConfig(complete).bookingCheckoutCommandSource).toBe("target");
+    expect(stripeSubscriptionRuntimeEnabled(loadConfig(complete))).toBe(true);
     for (const env of [
       { ...complete, STRIPE_SECRET_KEY: undefined },
       { ...complete, STRIPE_WEBHOOK_SECRET: undefined },
       { ...complete, STRIPE_WEBHOOK_INTAKE_MODE: "observe_only" },
-      { ...complete, FINANCE_SOURCE: "legacy" },
     ]) {
       expect(() => loadConfig(env)).toThrow("requires STRIPE_SECRET_KEY");
     }
-  });
-
-  it("requires target database config for target Booking Web checkout commands", () => {
-    expect(() =>
-      loadConfig({
-        BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
-      }),
-    ).toThrow("BOOKING_CHECKOUT_COMMAND_SOURCE=target requires TARGET_DATABASE_URL");
-  });
-
-  it("rejects unsupported Booking Web checkout command source config", () => {
-    expect(() =>
-      loadConfig({
-        BOOKING_CHECKOUT_COMMAND_SOURCE: "preview",
-      }),
-    ).toThrow("BOOKING_CHECKOUT_COMMAND_SOURCE must be one of: legacy_proxy, target");
+    expect(() => loadConfig({ ...complete, FINANCE_SOURCE: "legacy" })).toThrow(
+      "API_RUNTIME=next requires target runtime sources: FINANCE_SOURCE=target",
+    );
   });
 
   it("loads optional booking host base config", () => {
@@ -957,5 +851,4 @@ describe("api config", () => {
       }),
     ).toThrow("PLATFORM_MEDIA_CDN_BASE_URL must be an HTTPS origin");
   });
-
 });
