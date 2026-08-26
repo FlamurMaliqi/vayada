@@ -238,7 +238,7 @@ function DashboardContent() {
     } catch (err) {
       console.error("Error loading users:", err);
       if (err instanceof ApiErrorResponse) {
-        if (err.status === 400) {
+        if (err.status === 400 && err.message.toLowerCase().includes("own account")) {
           setDeleteError("Cannot delete your own account.");
         } else if (err.status === 404) {
           setDeleteError("User not found.");
@@ -251,7 +251,7 @@ function DashboardContent() {
               ? detail
               : Array.isArray(detail)
                 ? detail.map((d: any) => d.msg || JSON.stringify(d)).join(", ")
-                : JSON.stringify(detail) || "Failed to delete user.";
+                : err.message || "Failed to delete user.";
           setDeleteError(errorMessage);
         }
       } else {
