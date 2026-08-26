@@ -112,6 +112,8 @@ describe("PMS inventory materialization contract", () => {
       effectiveSellableLimitCount: 6,
       assignedCount: 2,
       blockedCount: 1,
+      linkedStopSell: false,
+      linkedSourceRevision: 0,
       availableCount: 0,
     };
     expect(day.sourceRevisions).toEqual({

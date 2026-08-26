@@ -27,6 +27,11 @@ import {
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import { lockPmsInventoryMutationScope } from "./pmsInventoryMutationLock.js";
+import {
+  reconcilePmsLinkedInventory,
+  type PmsLinkedInventoryDirtyRange,
+} from "./pmsLinkedInventoryReconciler.js";
+import { enqueuePmsLinkedInventorySideEffects } from "./pmsLinkedInventorySideEffects.js";
 import { loadPmsOperatingCalendarConfigurationByRevision } from "./pmsOperatingCalendarReadModel.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import { lockPmsRoomFactsMutationScope } from "./pmsRoomFactsMutationLock.js";
@@ -106,6 +111,8 @@ type InventoryDayRow = {
   effectiveSellableLimitCount: number | string | null;
   assignedCount: number | string;
   blockedCount: number | string;
+  linkedStopSell: boolean;
+  linkedSourceRevision: number | string;
   availableCount: number | string;
   sourceFreshness: unknown;
 };
@@ -398,6 +405,24 @@ async function executeMaterialization(
         }
 
         await persistChangedDays(client, plan.changedDays, acceptedAt);
+        const linkedChanges = await reconcilePmsLinkedInventory(
+          client,
+          command.propertyId,
+          acceptedAt.toISOString(),
+          linkedDirtyRanges(plan.changedDays),
+        );
+        await enqueuePmsLinkedInventorySideEffects(
+          client,
+          {
+            propertyId: command.propertyId,
+            operation: "inventory_materialization",
+            commandId: reservation.id,
+            keyHash,
+            acceptedAt: acceptedAt.toISOString(),
+            audit: command.audit,
+          },
+          linkedChanges,
+        );
         const intent = projectionRefreshIntent(command, plan.coverage, plan.outcome);
         const event = await enqueueProjectionRefresh(
           client,
@@ -575,6 +600,8 @@ async function lockCurrentDays(
             effective_sellable_limit_count AS "effectiveSellableLimitCount",
             assigned_count AS "assignedCount",
             blocked_count AS "blockedCount",
+            linked_stop_sell AS "linkedStopSell",
+            linked_source_revision AS "linkedSourceRevision",
             available_count AS "availableCount",
             source_freshness AS "sourceFreshness"
      FROM pms.inventory_days
@@ -672,6 +699,7 @@ function inventoryDayFromRow(row: InventoryDayRow): PmsInventoryDaySnapshot | nu
   const effectiveLimit = nullableNonNegativeInteger(row.effectiveSellableLimitCount);
   const channelLimit = nullableNonNegativeInteger(row.channelSellableLimitCount);
   const manualLimit = nullableNonNegativeInteger(row.manualSellableLimitCount);
+  const linkedSourceRevision = nullableNonNegativeInteger(row.linkedSourceRevision);
   if (
     !propertyId ||
     !roomTypeId ||
@@ -687,6 +715,8 @@ function inventoryDayFromRow(row: InventoryDayRow): PmsInventoryDaySnapshot | nu
     effectiveLimit === null ||
     (row.channelSellableLimitCount !== null && channelLimit === null) ||
     (row.manualSellableLimitCount !== null && manualLimit === null) ||
+    typeof row.linkedStopSell !== "boolean" ||
+    linkedSourceRevision === null ||
     (row.status !== "open" && row.status !== "closed")
   ) {
     return null;
@@ -706,6 +736,8 @@ function inventoryDayFromRow(row: InventoryDayRow): PmsInventoryDaySnapshot | nu
     effectiveSellableLimitCount: effectiveLimit,
     assignedCount: nonNegativeInteger(row.assignedCount),
     blockedCount: nonNegativeInteger(row.blockedCount),
+    linkedStopSell: row.linkedStopSell,
+    linkedSourceRevision,
     availableCount: nonNegativeInteger(row.availableCount),
   });
 }
@@ -724,7 +756,7 @@ async function persistChangedDays(
        channel_sellable_limit_count, manual_sellable_limit_count,
        effective_sellable_limit_count, generated_source_revision,
        channel_source_revision, manual_source_revision, block_source_revision,
-       booking_source_revision
+       booking_source_revision, linked_stop_sell, linked_source_revision
      )
      SELECT day.property_id, day.room_type_id, day.stay_date, day.total_count,
        day.assigned_count, day.blocked_count, day.available_count, day.status,
@@ -733,7 +765,7 @@ async function persistChangedDays(
        day.manual_sellable_limit_count, day.effective_sellable_limit_count,
        day.generated_source_revision, day.channel_source_revision,
        day.manual_source_revision, day.block_source_revision,
-       day.booking_source_revision
+       day.booking_source_revision, day.linked_stop_sell, day.linked_source_revision
      FROM jsonb_populate_recordset(NULL::pms.inventory_days, $1::jsonb) AS day
      ON CONFLICT (property_id, room_type_id, stay_date)
      DO UPDATE SET
@@ -753,7 +785,9 @@ async function persistChangedDays(
        channel_source_revision = EXCLUDED.channel_source_revision,
        manual_source_revision = EXCLUDED.manual_source_revision,
        block_source_revision = EXCLUDED.block_source_revision,
-       booking_source_revision = EXCLUDED.booking_source_revision`,
+       booking_source_revision = EXCLUDED.booking_source_revision,
+       linked_stop_sell = EXCLUDED.linked_stop_sell,
+       linked_source_revision = EXCLUDED.linked_source_revision`,
     [
       JSON.stringify(
         days.map((day) => ({
@@ -777,11 +811,32 @@ async function persistChangedDays(
           manual_source_revision: day.sourceRevisions.manual,
           block_source_revision: day.sourceRevisions.block,
           booking_source_revision: day.sourceRevisions.booking,
+          linked_stop_sell: day.linkedStopSell,
+          linked_source_revision: day.linkedSourceRevision,
         })),
       ),
     ],
   );
   if (result.rowCount !== days.length) throw new Error("PMS inventory day persistence failed");
+}
+
+function linkedDirtyRanges(
+  days: readonly PmsInventoryDaySnapshot[],
+): PmsLinkedInventoryDirtyRange[] {
+  const ranges: PmsLinkedInventoryDirtyRange[] = [];
+  for (const day of days) {
+    const previous = ranges.at(-1);
+    if (
+      previous?.roomTypeId === day.roomTypeId &&
+      new Date(Date.parse(`${previous.endsOn}T00:00:00Z`) + DAY_MS).toISOString().slice(0, 10) ===
+        day.stayDate
+    ) {
+      previous.endsOn = day.stayDate;
+    } else {
+      ranges.push({ roomTypeId: day.roomTypeId, startsOn: day.stayDate, endsOn: day.stayDate });
+    }
+  }
+  return ranges;
 }
 
 async function persistCoverage(
