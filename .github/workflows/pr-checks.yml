@@ -178,6 +178,7 @@ jobs:
           --no-file-parallelism
           src/bookingAddonEconomics.test.ts
           src/manualBookingReadiness.integration.test.ts
+          src/workosBackfill.test.ts
           src/financeFolioRecipientCiphertextMigration.integration.test.ts
           src/channexBookingRevisionTombstonesMigration.integration.test.ts
         env:
