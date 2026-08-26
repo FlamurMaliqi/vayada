@@ -100,10 +100,14 @@ function TimePeriod({
 }) {
   return (
     <div>
-      <label className="block text-[12px] font-semibold text-gray-700 mb-2">{label}</label>
+      <label className="block text-[12px] font-semibold text-gray-700 mb-2">
+        {label}
+      </label>
       <div className="flex items-center gap-2">
         <div className="flex-1">
-          <label className="block text-[10px] text-gray-400 mb-0.5">{fromLabel}</label>
+          <label className="block text-[10px] text-gray-400 mb-0.5">
+            {fromLabel}
+          </label>
           <input
             type="time"
             value={fromValue}
@@ -113,7 +117,9 @@ function TimePeriod({
         </div>
         <span className="text-gray-400 mt-4">—</span>
         <div className="flex-1">
-          <label className="block text-[10px] text-gray-400 mb-0.5">{untilLabel}</label>
+          <label className="block text-[10px] text-gray-400 mb-0.5">
+            {untilLabel}
+          </label>
           <input
             type="time"
             value={untilValue}

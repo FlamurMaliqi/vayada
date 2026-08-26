@@ -72,8 +72,7 @@ export type PmsManualBookingCreateCommand = Readonly<{
   payment: Readonly<{
     expectedMethod: PmsManualBookingPaymentMethod;
     settlement:
-      | Readonly<{ status: "unpaid" }>
-      | Readonly<{ status: "paid"; reference: string | null }>;
+      Readonly<{ status: "unpaid" }> | Readonly<{ status: "paid"; reference: string | null }>;
   }>;
   audit: Readonly<{
     actor: Readonly<{ kind: "user"; userId: string; organizationId: string }>;

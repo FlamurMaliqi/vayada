@@ -80,7 +80,9 @@ describe("settingsService next-stack bootstrap data", () => {
           });
         }
         if (
-          href.endsWith("/api/booking/hotels/booking_hotel_alpenrose/settings/booking-acceptance")
+          href.endsWith(
+            "/api/booking/hotels/booking_hotel_alpenrose/settings/booking-acceptance",
+          )
         ) {
           if (init?.method === "PUT") {
             acceptanceMode = JSON.parse(String(init.body)).acceptanceMode;

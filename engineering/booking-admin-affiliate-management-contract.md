@@ -47,10 +47,10 @@ affiliate. Cross-property lookup uses the same `404` response.
 
 ## Marketplace routes
 
-| Method | Path                                                                        | Purpose                       |
-| ------ | --------------------------------------------------------------------------- | ----------------------------- |
-| `GET`  | `/api/marketplace/properties/:propertyId/affiliates`                        | Paginated/filterable list.    |
-| `GET`  | `/api/marketplace/properties/:propertyId/affiliates/:affiliateId`           | Property-scoped detail.       |
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/marketplace/properties/:propertyId/affiliates` | Paginated/filterable list. |
+| `GET` | `/api/marketplace/properties/:propertyId/affiliates/:affiliateId` | Property-scoped detail. |
 | `POST` | `/api/marketplace/properties/:propertyId/affiliates/:affiliateId/lifecycle` | Idempotent lifecycle command. |
 
 List query fields are `status`, `affiliateType`, `search`, `limit`, and
@@ -88,9 +88,9 @@ history and a correlated Marketplace product-audit event.
 
 ## Finance routes
 
-| Method      | Path                                                                     | Purpose                        |
-| ----------- | ------------------------------------------------------------------------ | ------------------------------ |
-| `GET/PATCH` | `/api/finance/properties/:propertyId/affiliate-commission`               | Read/update property default.  |
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET/PATCH` | `/api/finance/properties/:propertyId/affiliate-commission` | Read/update property default. |
 | `GET/PATCH` | `/api/finance/properties/:propertyId/affiliates/:affiliateId/commission` | Read/update or clear override. |
 
 PATCH requests contain `commandId`, `idempotencyKey`, and
