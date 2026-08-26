@@ -687,6 +687,7 @@ describe.skipIf(!TEST_DATABASE_URL)("WorkOS identity transfer (PostgreSQL)", () 
   const deletedUserId = "a1334000-0000-4000-8000-000000000001";
   const activeUserId = "a1334000-0000-4000-8000-000000000002";
   const workosUserId = "workos_vay_1334_transfer";
+  const replacementWorkosUserId = "workos_vay_1334_replacement";
   let client: pg.Client;
   let repository: WorkosBackfillRepository;
 
@@ -735,9 +736,10 @@ describe.skipIf(!TEST_DATABASE_URL)("WorkOS identity transfer (PostgreSQL)", () 
     const { rows } = await client.query<{
       user_id: string;
       provider_user_id: string | null;
-      retired_reason: string | null;
+      history_reason: string | null;
     }>(
-      `SELECT user_id::text, provider_user_id, raw_profile ->> 'retired_reason' AS retired_reason
+      `SELECT user_id::text, provider_user_id,
+              raw_profile #>> '{provider_link_history,0,reason}' AS history_reason
        FROM identity.external_identities
        WHERE user_id = ANY($1::uuid[])
        ORDER BY user_id`,
@@ -747,10 +749,28 @@ describe.skipIf(!TEST_DATABASE_URL)("WorkOS identity transfer (PostgreSQL)", () 
       {
         user_id: deletedUserId,
         provider_user_id: null,
-        retired_reason: "duplicate_user_consolidation",
+        history_reason: "duplicate_user_consolidation",
       },
-      { user_id: activeUserId, provider_user_id: workosUserId, retired_reason: null },
+      { user_id: activeUserId, provider_user_id: workosUserId, history_reason: null },
     ]);
+
+    await repository.linkUser({
+      userId: activeUserId,
+      workosUserId: replacementWorkosUserId,
+      email: "admin@example.com",
+      emailVerified: true,
+      rawProfile: { source: "vayada-backfill" },
+      retireWorkosUserIds: [workosUserId],
+    });
+    expect(
+      await client.query(
+        `SELECT provider_user_id, raw_profile #>> '{provider_link_history,0,reason}' AS reason
+         FROM identity.external_identities WHERE user_id = $1`,
+        [activeUserId],
+      ),
+    ).toMatchObject({
+      rows: [{ provider_user_id: replacementWorkosUserId, reason: "workos_user_missing" }],
+    });
 
     await client.query(
       "UPDATE identity.external_identities SET provider_user_id = NULL WHERE user_id = $1",
@@ -758,7 +778,7 @@ describe.skipIf(!TEST_DATABASE_URL)("WorkOS identity transfer (PostgreSQL)", () 
     );
     await client.query(
       "UPDATE identity.external_identities SET provider_user_id = $2 WHERE user_id = $1",
-      [deletedUserId, workosUserId],
+      [deletedUserId, replacementWorkosUserId],
     );
     await client.query("UPDATE identity.users SET status = 'suspended' WHERE id = $1", [
       activeUserId,
@@ -766,12 +786,14 @@ describe.skipIf(!TEST_DATABASE_URL)("WorkOS identity transfer (PostgreSQL)", () 
     await expect(
       repository.linkUser({
         userId: activeUserId,
-        workosUserId,
+        workosUserId: replacementWorkosUserId,
         email: "admin@example.com",
         emailVerified: true,
         rawProfile: { source: "vayada-backfill" },
       }),
-    ).rejects.toThrow(`WorkOS user ${workosUserId} is already linked to user ${deletedUserId}`);
+    ).rejects.toThrow(
+      `WorkOS user ${replacementWorkosUserId} is already linked to user ${deletedUserId}`,
+    );
   });
 });
 
