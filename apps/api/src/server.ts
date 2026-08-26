@@ -1047,7 +1047,10 @@ const app = buildApp({
     : undefined,
   bookingReservationsRepository,
   bookingGuestPolicy: bookingGuestPolicyApplication
-    ? { application: bookingGuestPolicyApplication }
+    ? {
+        application: bookingGuestPolicyApplication,
+        propertyAccessRepository: bookingPropertyAccessRepository,
+      }
     : undefined,
   bookingChangeRequestRepository: bookingWebCheckoutAdapter,
   bookingAddonItemsRepository,
