@@ -997,8 +997,11 @@ const reservation: BookingReservationReadModel = {
 };
 
 const bookingReservationsRepository: BookingReservationsReadRepository = {
-  async listReservationsByHotelId(hotelId, filters) {
-    expect(hotelId).toBe("booking_hotel_alpenrose");
+  async resolveCanonicalPropertyId(hotelId) {
+    return hotelId === "booking_hotel_alpenrose" ? pmsPropertyId : null;
+  },
+  async listReservationsByPropertyId(propertyId, filters) {
+    expect(propertyId).toBe(pmsPropertyId);
     expect(filters).toEqual({
       status: undefined,
       search: undefined,
@@ -6112,6 +6115,134 @@ describe("vayada-api", () => {
     });
   });
 
+  it("allows booking reservations for an explicitly assigned property", async () => {
+    const propertyReads: string[] = [];
+    app = buildAuthenticatedApp({
+      linkedHotelId: null,
+      propertyScope: { mode: "assigned", assignedPropertyIds: [pmsPropertyId] },
+      reservationsRepository: {
+        ...bookingReservationsRepository,
+        async listReservationsByPropertyId(propertyId, filters) {
+          propertyReads.push(propertyId);
+          return bookingReservationsRepository.listReservationsByPropertyId(propertyId, filters);
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/reservations",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(propertyReads).toEqual([pmsPropertyId]);
+  });
+
+  it.each([
+    [
+      "with no assigned properties",
+      { propertyScope: { mode: "assigned", assignedPropertyIds: [] } },
+      403,
+      "missing_resource_access",
+    ],
+    [
+      "with unknown property scope",
+      { propertyScope: { mode: "unknown", assignedPropertyIds: [pmsPropertyId] } },
+      403,
+      "missing_resource_access",
+    ],
+    [
+      "when the Booking property alias is unresolved",
+      {
+        reservationsRepository: {
+          ...bookingReservationsRepository,
+          async resolveCanonicalPropertyId() {
+            return null;
+          },
+        },
+      },
+      403,
+      "missing_resource_access",
+    ],
+    [
+      "when the Booking property belongs to another tenant",
+      {
+        reservationsRepository: {
+          ...bookingReservationsRepository,
+          async resolveCanonicalPropertyId() {
+            return "f6853000-0000-0000-0000-000000000002";
+          },
+        },
+      },
+      403,
+      "missing_resource_access",
+    ],
+    ["with an inactive membership", { membershipStatus: "inactive" }, 401, "unauthenticated"],
+  ] satisfies Array<[string, Parameters<typeof buildAuthenticatedApp>[0], number, string]>)(
+    "rejects booking reservations $name before reading reservation data",
+    async (_name, appOptions, statusCode, code) => {
+      let readCount = 0;
+      const reservationsRepository =
+        "reservationsRepository" in appOptions
+          ? appOptions.reservationsRepository
+          : bookingReservationsRepository;
+      app = buildAuthenticatedApp({
+        ...appOptions,
+        reservationsRepository: {
+          ...reservationsRepository,
+          async listReservationsByPropertyId() {
+            readCount += 1;
+            throw new Error("reservation read must not run");
+          },
+        },
+      });
+
+      const response = await injectJson(app, {
+        method: "GET",
+        url: "/api/booking/hotels/booking_hotel_alpenrose/reservations",
+        headers: { authorization: "Bearer valid-token" },
+      });
+
+      expect(response.statusCode).toBe(statusCode);
+      expect(response.body).toMatchObject({ code });
+      expect(readCount).toBe(0);
+    },
+  );
+
+  it("sanitizes booking reservation property resolver failures", async () => {
+    let readCount = 0;
+    app = buildAuthenticatedApp({
+      reservationsRepository: {
+        ...bookingReservationsRepository,
+        async resolveCanonicalPropertyId() {
+          throw new Error("sensitive database failure");
+        },
+        async listReservationsByPropertyId() {
+          readCount += 1;
+          throw new Error("reservation read must not run");
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/reservations",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response).toMatchObject({
+      statusCode: 500,
+      body: {
+        code: "read_model_unavailable",
+        category: "read_model",
+        message: "Booking reservations are unavailable.",
+      },
+    });
+    expect(JSON.stringify(response.body)).not.toContain("sensitive database failure");
+    expect(readCount).toBe(0);
+  });
+
   it("scopes hotel booking change reads and decisions through Booking authorization", async () => {
     const calls: string[] = [];
     const fingerprints: string[] = [];
@@ -6253,7 +6384,8 @@ describe("vayada-api", () => {
   it("returns an empty booking reservation list for an authorized hotel with no rows", async () => {
     app = buildAuthenticatedApp({
       reservationsRepository: {
-        async listReservationsByHotelId() {
+        ...bookingReservationsRepository,
+        async listReservationsByPropertyId() {
           return {
             reservations: [],
             total: 0,
@@ -6284,8 +6416,9 @@ describe("vayada-api", () => {
 
     app = buildAuthenticatedApp({
       reservationsRepository: {
-        async listReservationsByHotelId(hotelId, filters) {
-          expect(hotelId).toBe("booking_hotel_alpenrose");
+        ...bookingReservationsRepository,
+        async listReservationsByPropertyId(propertyId, filters) {
+          expect(propertyId).toBe(pmsPropertyId);
           observedFilters.push(filters);
 
           return {
@@ -6346,7 +6479,8 @@ describe("vayada-api", () => {
   it("returns the booking reservation read-model error contract when the repository fails", async () => {
     app = buildAuthenticatedApp({
       reservationsRepository: {
-        async listReservationsByHotelId() {
+        ...bookingReservationsRepository,
+        async listReservationsByPropertyId() {
           throw new Error("database unavailable");
         },
       },
@@ -6378,7 +6512,7 @@ describe("vayada-api", () => {
     } = {
       ...reservation,
       id: "d6000000-0000-0000-0000-000000000682",
-      propertyId: "d3000000-0000-0000-0000-000000000682",
+      propertyId: pmsPropertyId,
       guestContactAccepted: false,
       bookingReference: "B-CHK-682",
       roomTypeId: "f6855000-0000-0000-0000-000000000001",
@@ -6512,7 +6646,7 @@ describe("vayada-api", () => {
       offset: 5,
     });
 
-    expect(queries).toHaveLength(3);
+    expect(queries).toHaveLength(4);
     const sql = queries.map((query) => query.text).join("\n");
     expect(sql).toContain("FROM booking.guest_bookings booking");
     expect(sql).toContain("hotel_catalog.property_source_links source");
@@ -6525,20 +6659,11 @@ describe("vayada-api", () => {
     expect(sql).toContain("jsonb_object_agg(grouped.addon_key, grouped.quantity)");
     expect(sql).not.toContain("FROM bookings b");
     expect(sql).not.toContain("booking_rooms");
-    expect(queries[0]?.values).toEqual([
-      "booking_hotel_checkout_alpenrose",
-      "checked_out",
-      "%Mira%",
-      25,
-      5,
-    ]);
-    expect(queries[1]?.values).toEqual([
-      "booking_hotel_checkout_alpenrose",
-      "checked_out",
-      "%Mira%",
-    ]);
-    expect(queries[2]?.text).toContain("FROM finance.billing_entitlements");
-    expect(queries[2]?.values).toEqual(["d3000000-0000-0000-0000-000000000682"]);
+    expect(queries[0]?.values).toEqual(["booking_hotel_checkout_alpenrose"]);
+    expect(queries[1]?.values).toEqual([pmsPropertyId, "checked_out", "%Mira%", 25, 5]);
+    expect(queries[2]?.values).toEqual([pmsPropertyId, "checked_out", "%Mira%"]);
+    expect(queries[3]?.text).toContain("FROM finance.billing_entitlements");
+    expect(queries[3]?.values).toEqual([pmsPropertyId]);
 
     await app.close();
     app = null;

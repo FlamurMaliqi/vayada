@@ -16,7 +16,7 @@ const defaultFilters = {
   offset: 0,
 };
 
-function createHarness(total = "0") {
+function createHarness(total = "0", resolvedPropertyId?: string) {
   const queries: CapturedQuery[] = [];
   let closed = false;
   const pool: BookingReservationsReadPool = {
@@ -26,9 +26,13 @@ function createHarness(total = "0") {
     ): Promise<Pick<QueryResult<T>, "rows">> {
       queries.push({ text, values });
       return {
-        rows: (text.includes("SELECT COUNT(*)::text AS total")
-          ? [{ total }]
-          : []) as unknown as T[],
+        rows: (text.includes('SELECT property_id::text AS "propertyId" FROM scoped_property')
+          ? resolvedPropertyId
+            ? [{ propertyId: resolvedPropertyId }]
+            : []
+          : text.includes("SELECT COUNT(*)::text AS total")
+            ? [{ total }]
+            : []) as unknown as T[],
       };
     },
     async end() {
@@ -57,35 +61,61 @@ function expectCanonicalFirstScope(text: string) {
   expect(text).not.toContain("$1::uuid");
 }
 
+function expectExactCanonicalScope(text: string) {
+  expect(text).toContain("SELECT property.id AS property_id");
+  expect(text).toContain("WHERE property.id = $1::uuid");
+  expect(text).not.toContain("property_source_links");
+}
+
 describe("target Booking reservations property scope", () => {
   it("prefers an exact canonical property UUID in both list and count reads", async () => {
     const propertyId = "7a9333c2-f275-4571-8078-6a334e0fc28d";
     const harness = createHarness("0");
 
     await expect(
-      harness.repository.listReservationsByHotelId(propertyId, defaultFilters),
+      harness.repository.listReservationsByPropertyId(propertyId, defaultFilters),
     ).resolves.toEqual({ reservations: [], total: 0 });
 
     expect(harness.queries).toHaveLength(2);
     for (const query of harness.queries) {
-      expectCanonicalFirstScope(query.text);
+      expectExactCanonicalScope(query.text);
       expect(query.values?.[0]).toBe(propertyId);
     }
   });
 
-  it("falls back to an active legacy booking hotel source link", async () => {
+  it("resolves an active legacy booking hotel source link", async () => {
     const legacyHotelId = "booking_hotel_alpenrose";
-    const harness = createHarness("0");
+    const propertyId = "7a9333c2-f275-4571-8078-6a334e0fc28d";
+    const harness = createHarness("0", propertyId);
 
-    await harness.repository.listReservationsByHotelId(legacyHotelId, defaultFilters);
+    await expect(harness.repository.resolveCanonicalPropertyId(legacyHotelId)).resolves.toBe(
+      propertyId,
+    );
 
-    expect(harness.queries).toHaveLength(2);
-    for (const query of harness.queries) {
-      expectCanonicalFirstScope(query.text);
-      expect(query.text).toContain("source.source_system = 'booking'");
-      expect(query.text).toContain("source.relationship = 'canonical_input'");
-      expect(query.text).toContain("source.status = 'active'");
-      expect(query.values?.[0]).toBe(legacyHotelId);
+    expect(harness.queries).toHaveLength(1);
+    expectCanonicalFirstScope(harness.queries[0]!.text);
+    expect(harness.queries[0]!.text).toContain("source.source_system = 'booking'");
+    expect(harness.queries[0]!.text).toContain("source.relationship = 'canonical_input'");
+    expect(harness.queries[0]!.text).toContain("source.status = 'active'");
+    expect(harness.queries[0]!.values?.[0]).toBe(legacyHotelId);
+  });
+
+  it("resolves a legacy alias once before reading the authorized canonical property", async () => {
+    const legacyHotelId = "booking_hotel_alpenrose";
+    const propertyId = "7a9333c2-f275-4571-8078-6a334e0fc28d";
+    const harness = createHarness("0", propertyId);
+
+    await expect(harness.repository.resolveCanonicalPropertyId(legacyHotelId)).resolves.toBe(
+      propertyId,
+    );
+    await harness.repository.listReservationsByPropertyId(propertyId, defaultFilters);
+
+    expect(harness.queries).toHaveLength(3);
+    expect(harness.queries[0]!.values).toEqual([legacyHotelId]);
+    expectCanonicalFirstScope(harness.queries[0]!.text);
+    for (const query of harness.queries.slice(1)) {
+      expect(query.values?.[0]).toBe(propertyId);
+      expectExactCanonicalScope(query.text);
     }
   });
 
@@ -93,7 +123,7 @@ describe("target Booking reservations property scope", () => {
     const harness = createHarness("9");
 
     await expect(
-      harness.repository.listReservationsByHotelId("   ", defaultFilters),
+      harness.repository.listReservationsByPropertyId("   ", defaultFilters),
     ).resolves.toEqual({ reservations: [], total: 0 });
     expect(harness.queries).toEqual([]);
   });
@@ -101,11 +131,9 @@ describe("target Booking reservations property scope", () => {
   it("keeps non-UUID legacy identifiers safe from UUID casts", async () => {
     const harness = createHarness("0");
 
-    await expect(
-      harness.repository.listReservationsByHotelId("not-a-uuid", defaultFilters),
-    ).resolves.toEqual({ reservations: [], total: 0 });
+    await expect(harness.repository.resolveCanonicalPropertyId("not-a-uuid")).resolves.toBeNull();
 
-    expect(harness.queries).toHaveLength(2);
+    expect(harness.queries).toHaveLength(1);
     for (const query of harness.queries) {
       expect(query.text).toContain("property.id::text = $1");
       expect(query.text).not.toContain("$1::uuid");
@@ -117,7 +145,7 @@ describe("target Booking reservations property scope", () => {
     const propertyId = "7a9333c2-f275-4571-8078-6a334e0fc28d";
     const harness = createHarness("12");
 
-    const result = await harness.repository.listReservationsByHotelId(propertyId, {
+    const result = await harness.repository.listReservationsByPropertyId(propertyId, {
       status: "confirmed",
       search: "Ada",
       limit: 25,
@@ -148,7 +176,7 @@ describe("target Booking reservations property scope", () => {
   it("reads stay dates as date-only text so local time zones cannot shift them", async () => {
     const harness = createHarness("0");
 
-    await harness.repository.listReservationsByHotelId(
+    await harness.repository.listReservationsByPropertyId(
       "7a9333c2-f275-4571-8078-6a334e0fc28d",
       defaultFilters,
     );

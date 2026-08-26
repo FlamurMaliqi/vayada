@@ -79,7 +79,14 @@ export async function registerBookingRoutes(
   }
 
   if (options.reservationsRepository) {
-    await registerBookingReservationRoutes(app, options.reservationsRepository);
+    if (!options.propertyAccessRepository) {
+      throw new Error("Booking property access repository is required with reservations");
+    }
+    await registerBookingReservationRoutes(
+      app,
+      options.reservationsRepository,
+      options.propertyAccessRepository,
+    );
   }
 
   if (options.dashboardMetricsReadPort) {

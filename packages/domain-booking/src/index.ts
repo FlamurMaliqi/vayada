@@ -238,8 +238,9 @@ export type BookingReservationListFilters = {
 };
 
 export type BookingReservationsReadRepository = {
-  listReservationsByHotelId(
-    hotelId: string,
+  resolveCanonicalPropertyId(hotelId: string): Promise<string | null>;
+  listReservationsByPropertyId(
+    propertyId: string,
     filters: BookingReservationListFilters,
   ): Promise<BookingReservationListResult>;
   close?(): Promise<void>;

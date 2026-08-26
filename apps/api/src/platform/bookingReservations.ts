@@ -29,6 +29,12 @@ type TargetBookingReservationRow = BookingReservationReadModelRow & {
   guestContactAccepted: boolean;
 };
 
+const TARGET_BOOKING_RESERVATION_PROPERTY_CTE = `WITH scoped_property AS (
+  SELECT property.id AS property_id
+  FROM hotel_catalog.properties property
+  WHERE property.id = $1::uuid
+)`;
+
 const TARGET_RESERVATION_STATUS_SQL = `CASE
   WHEN primary_assignment.assignment_status IN ('checked_in', 'in_house', 'checked_out')
     THEN primary_assignment.assignment_status
@@ -56,19 +62,28 @@ export function createTargetBookingReservationsReadRepository(config: {
     });
 
   return {
-    async listReservationsByHotelId(hotelId, filters) {
-      if (!hotelId.trim()) {
+    async resolveCanonicalPropertyId(hotelId) {
+      if (!hotelId.trim()) return null;
+      const result = await pool.query<{ propertyId: string }>(
+        `${bookingScopedPropertyCte()}
+         SELECT property_id::text AS "propertyId" FROM scoped_property`,
+        [hotelId],
+      );
+      return result.rows[0]?.propertyId ?? null;
+    },
+    async listReservationsByPropertyId(propertyId, filters) {
+      if (!propertyId.trim()) {
         return { reservations: [], total: 0 };
       }
 
-      const { whereSql, params } = toTargetReservationWhere(hotelId, filters);
+      const { whereSql, params } = toTargetReservationWhere(propertyId, filters);
       const listParams = [...params, filters.limit, filters.offset];
       const limitParam = params.length + 1;
       const offsetParam = params.length + 2;
 
       const [reservationResult, countResult] = await Promise.all([
         pool.query<TargetBookingReservationRow>(
-          `${bookingScopedPropertyCte()}
+          `${TARGET_BOOKING_RESERVATION_PROPERTY_CTE}
            SELECT
              booking.id::text AS "id",
              booking.property_id::text AS "propertyId",
@@ -310,7 +325,7 @@ export function createTargetBookingReservationsReadRepository(config: {
           listParams,
         ),
         pool.query<{ total: string }>(
-          `${bookingScopedPropertyCte()}
+          `${TARGET_BOOKING_RESERVATION_PROPERTY_CTE}
            SELECT COUNT(*)::text AS total
            FROM booking.guest_bookings booking
            JOIN scoped_property scoped ON scoped.property_id = booking.property_id
