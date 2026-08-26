@@ -5,6 +5,7 @@ import { createWorkOSAuthKitClient } from "./workosAuthKit.js";
 const workosMocks = vi.hoisted(() => ({
   WorkOS: vi.fn(),
   authenticate: vi.fn(),
+  authenticateWithOrganizationSelection: vi.fn(),
   loadSealedSession: vi.fn(),
   listSessions: vi.fn(),
   refresh: vi.fn(),
@@ -19,10 +20,61 @@ describe("createWorkOSAuthKitClient", () => {
   beforeEach(() => {
     workosMocks.WorkOS.mockReset();
     workosMocks.authenticate.mockReset();
+    workosMocks.authenticateWithOrganizationSelection.mockReset();
     workosMocks.loadSealedSession.mockReset();
     workosMocks.listSessions.mockReset();
     workosMocks.refresh.mockReset();
     workosMocks.updateUser.mockReset();
+  });
+
+  it("seals the session after selecting a WorkOS organization", async () => {
+    workosMocks.WorkOS.mockImplementation(function WorkOS() {
+      return {
+        userManagement: {
+          authenticateWithOrganizationSelection: workosMocks.authenticateWithOrganizationSelection,
+        },
+      };
+    });
+    workosMocks.authenticateWithOrganizationSelection.mockResolvedValue({
+      accessToken: "platform-access-token",
+      organizationId: "org_workos_platform",
+      sealedSession: "platform-sealed-session",
+      sessionId: "session_platform",
+      user: {
+        id: "user_workos_platform",
+        email: "admin@example.com",
+        emailVerified: true,
+      },
+    });
+
+    const client = createWorkOSAuthKitClient({
+      apiKey: "sk_test",
+      clientId: "client_test",
+      cookiePassword: "a".repeat(32),
+    });
+
+    await expect(
+      client.authenticateWithOrganizationSelection({
+        organizationId: "org_workos_platform",
+        pendingAuthenticationToken: "pending_platform_selection",
+        ipAddress: "127.0.0.1",
+        userAgent: "vitest",
+      }),
+    ).resolves.toMatchObject({
+      organizationId: "org_workos_platform",
+      sealedSession: "platform-sealed-session",
+    });
+    expect(workosMocks.authenticateWithOrganizationSelection).toHaveBeenCalledWith({
+      organizationId: "org_workos_platform",
+      pendingAuthenticationToken: "pending_platform_selection",
+      clientId: "client_test",
+      ipAddress: "127.0.0.1",
+      userAgent: "vitest",
+      session: {
+        sealSession: true,
+        cookiePassword: "a".repeat(32),
+      },
+    });
   });
 
   it("preserves the selected organization returned by WorkOS refresh", async () => {

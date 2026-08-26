@@ -127,9 +127,14 @@ export const authService = {
   },
 
   login: async (data: LoginRequest): Promise<LoginResponse> => {
+    const organizationId = process.env.NEXT_PUBLIC_PLATFORM_WORKOS_ORG_ID?.trim();
     const response = await authFetch<AuthKitSessionResponse>("/password/login", {
       method: "POST",
-      body: JSON.stringify({ ...data, surface: PLATFORM_AUTH_SURFACE }),
+      body: JSON.stringify({
+        ...data,
+        surface: PLATFORM_AUTH_SURFACE,
+        ...(organizationId ? { organizationId } : {}),
+      }),
     });
     const committedGeneration = setAuthKitSession(response);
     if (committedGeneration !== null && isCompatibilityTokenEnabled()) {
