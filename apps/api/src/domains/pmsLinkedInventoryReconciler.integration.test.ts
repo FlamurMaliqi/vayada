@@ -20,7 +20,8 @@ const OTHER_ROOM_TYPES = [
   "13380000-0000-4000-8000-000000000014",
   "13380000-0000-4000-8000-000000000015",
 ];
-const ALL_ROOM_TYPES = [...ROOM_TYPES, ...OTHER_ROOM_TYPES];
+const UNLINKED_ROOM_TYPE = "13380000-0000-4000-8000-000000000016";
+const ALL_ROOM_TYPES = [...ROOM_TYPES, ...OTHER_ROOM_TYPES, UNLINKED_ROOM_TYPE];
 const RECEIPT = "13380000-0000-4000-8000-000000000021";
 const ASSIGNMENT = "13380000-0000-4000-8000-000000000022";
 const MANUAL_BLOCK = "13380000-0000-4000-8000-000000000023";
@@ -141,6 +142,22 @@ describe.skipIf(!URL)("PostgreSQL linked inventory reconciliation", () => {
         [PROPERTY, OTHER_ROOM_TYPES],
       ),
     ).resolves.toMatchObject({ rows: [{ changed: 0 }] });
+    await expect(
+      reconcilePmsLinkedInventory(client, PROPERTY, CHANGED_AT, [
+        {
+          roomTypeId: UNLINKED_ROOM_TYPE,
+          startsOn: "2026-09-01",
+          endsOn: "2026-09-05",
+        },
+      ]),
+    ).resolves.toEqual([]);
+    await expect(
+      client.query<{ revision: number }>(
+        `SELECT max(linked_source_revision)::int AS revision
+         FROM pms.inventory_days WHERE property_id=$1 AND room_type_id=$2`,
+        [PROPERTY, UNLINKED_ROOM_TYPE],
+      ),
+    ).resolves.toMatchObject({ rows: [{ revision: 0 }] });
 
     await client.query(
       `INSERT INTO pms.room_blocks
@@ -195,7 +212,8 @@ async function seed(client: pg.Client): Promise<void> {
        ('${ROOM_TYPES[1]}', '${PROPERTY}', 'Twin', 0, 'EUR', '${GROUP}'),
        ('${ROOM_TYPES[2]}', '${PROPERTY}', 'Family', 0, 'EUR', '${GROUP}'),
        ('${OTHER_ROOM_TYPES[0]}', '${PROPERTY}', 'Suite', 0, 'EUR', '${OTHER_GROUP}'),
-       ('${OTHER_ROOM_TYPES[1]}', '${PROPERTY}', 'Loft', 0, 'EUR', '${OTHER_GROUP}');
+       ('${OTHER_ROOM_TYPES[1]}', '${PROPERTY}', 'Loft', 0, 'EUR', '${OTHER_GROUP}'),
+       ('${UNLINKED_ROOM_TYPE}', '${PROPERTY}', 'Cabin', 0, 'EUR', NULL);
      INSERT INTO pms.operating_calendar_revisions
        (organization_id, property_id, calendar_revision, contract_version,
         property_profile_revision, property_time_zone, schedule_mode,
@@ -203,7 +221,7 @@ async function seed(client: pg.Client): Promise<void> {
         idempotency_key_id, domain_event_id, outbox_event_id, created_by_user_id,
         created_at, updated_at)
        VALUES ('${ORGANIZATION}', '${PROPERTY}', 1, 'pms-operating-calendar.v1',
-        1, 'Europe/Berlin', 'year_round', 0, 5, 1, gen_random_uuid(),
+        1, 'Europe/Berlin', 'year_round', 0, 6, 1, gen_random_uuid(),
         gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), '${CHANGED_AT}', '${CHANGED_AT}');
      INSERT INTO pms.operating_calendar_room_bindings
        (property_id, calendar_revision, room_type_id, source_room_facts_revision,

@@ -132,6 +132,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory materialization re
       manualLimit: 1,
       manualRevision: 1,
       inventoryRevision: 3,
+      linkedStopSell: false,
+      linkedSourceRevision: 0,
       availableCount: 0,
     });
 
@@ -154,6 +156,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory materialization re
       bookingRevision: 1,
       manualLimit: 1,
       manualRevision: 1,
+      linkedStopSell: false,
+      linkedSourceRevision: 0,
       availableCount: 0,
     });
     await expect(
@@ -176,6 +180,63 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory materialization re
       events: 3,
       outbox: 3,
     });
+  });
+
+  it("stop-sells newly extended dates for an existing linked cause", async () => {
+    const fixture = await createFixture(admin, repositories, [2]);
+    const groupId = randomUUID();
+    const sourceRoomTypeId = randomUUID();
+    await admin.query(
+      `INSERT INTO pms.linked_inventory_groups (id, property_id, name)
+       VALUES ($1::uuid, $2::uuid, 'Convertible rooms')`,
+      [groupId, fixture.propertyId],
+    );
+    await admin.query(
+      "UPDATE pms.room_types SET linked_inventory_group_id=$1::uuid WHERE id=$2::uuid",
+      [groupId, fixture.roomTypeId],
+    );
+    await admin.query(
+      `INSERT INTO pms.room_types (id, property_id, name, active, linked_inventory_group_id)
+       VALUES ($1::uuid, $2::uuid, 'Linked source', false, $3::uuid)`,
+      [sourceRoomTypeId, fixture.propertyId, groupId],
+    );
+    await admin.query(
+      `INSERT INTO pms.room_blocks
+         (property_id, room_type_id, starts_on, ends_on, reason)
+       VALUES ($1::uuid, $2::uuid, DATE '2026-08-04', DATE '2026-08-07', 'Maintenance')`,
+      [fixture.propertyId, sourceRoomTypeId],
+    );
+
+    const initial = await fixture.repository.materializeInventory(
+      materializationCommand(fixture, "linked-initial", 1, "2026-08-04", "2026-08-05"),
+    );
+    if (!initial.ok) throw new Error(initial.error.code);
+    expect(initial).toMatchObject({ ok: true, outcome: "applied", changedDayCount: 2 });
+    const extension = await fixture.repository.materializeInventory(
+      materializationCommand(fixture, "linked-extend", 1, "2026-08-04", "2026-08-07"),
+    );
+    if (!extension.ok) throw new Error(extension.error.code);
+    expect(extension).toMatchObject({ ok: true, outcome: "extended", changedDayCount: 2 });
+
+    await expect(
+      admin.query(
+        `SELECT linked_stop_sell AS stopped, linked_source_revision AS revision,
+                available_count AS available
+         FROM pms.inventory_days
+         WHERE property_id=$1::uuid AND room_type_id=$2::uuid
+         ORDER BY stay_date`,
+        [fixture.propertyId, fixture.roomTypeId],
+      ),
+    ).resolves.toMatchObject({
+      rows: Array.from({ length: 4 }, () => ({ stopped: true, revision: 1, available: 0 })),
+    });
+    await expect(
+      admin.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM platform.outbox_events
+         WHERE property_id=$1::uuid AND resource_type='linked_inventory'`,
+        [fixture.propertyId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: 6 }] });
   });
 
   it("persists the complete 366-day launch horizon", async () => {
@@ -812,6 +873,8 @@ async function readFirstDay(admin: pg.Client, fixture: Fixture) {
     bookingRevision: number;
     manualLimit: number | null;
     manualRevision: number;
+    linkedStopSell: boolean;
+    linkedSourceRevision: number;
     availableCount: number;
   }>(
     `SELECT calendar_revision AS "calendarRevision",
@@ -822,6 +885,8 @@ async function readFirstDay(admin: pg.Client, fixture: Fixture) {
             booking_source_revision AS "bookingRevision",
             manual_sellable_limit_count AS "manualLimit",
             manual_source_revision AS "manualRevision",
+            linked_stop_sell AS "linkedStopSell",
+            linked_source_revision AS "linkedSourceRevision",
             available_count AS "availableCount"
      FROM pms.inventory_days
      WHERE property_id = $1::uuid AND room_type_id = $2::uuid
