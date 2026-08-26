@@ -47,8 +47,7 @@ export class ApiClient {
     clearAuthData();
 
     if (typeof window !== "undefined") {
-      const errorMessage = (error.data.detail as string) || "";
-      const isExpired = errorMessage.includes("expired") || errorMessage.includes("Expired");
+      const isExpired = error.message.toLowerCase().includes("expired");
 
       if (isExpired) {
         window.location.href = "/login?expired=true";

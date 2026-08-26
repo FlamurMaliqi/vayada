@@ -78,4 +78,26 @@ describe("ApiClient request headers", () => {
       message: "Body cannot be empty when content-type is set to 'application/json'",
     });
   });
+
+  it("recognizes an expired token from the API message field", async () => {
+    const windowStub = { location: { href: "" } };
+    vi.stubGlobal("window", windowStub);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ message: "Token expired" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(new ApiClient("https://api.example.test").get("/api/users")).rejects.toMatchObject(
+      {
+        status: 401,
+        message: "Token expired",
+      },
+    );
+    expect(windowStub.location.href).toBe("/login?expired=true");
+  });
 });
