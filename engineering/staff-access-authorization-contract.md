@@ -118,6 +118,16 @@ name, inviter, role, overrides, property scope, provider ID/expiry, state,
 configuration revision, idempotency key, and accepted user/membership IDs—never
 provider tokens or acceptance URLs.
 
+WorkOS does not deduplicate invitation writes by `Idempotency-Key`. Delivery is
+therefore at-most-once: claim only `status = pending AND delivery_state = ready`,
+commit `ready -> sending` before the provider call, disable SDK retries, and
+atomically bind provider ID/expiry as `delivered`. A `sending` intent remains
+pending and cannot be superseded until delivery finishes. An ambiguous provider
+failure becomes `unknown` and is never sent again automatically; reconciliation
+or an explicit replacement is required. This favors preventing duplicate or
+canceled invitation emails over automatic recovery from an uncertain external
+side effect.
+
 State is `pending -> accepted | expired | revoked`; one pending intent exists
 per organization/email. Idempotent resends make one provider call; replacements
 revoke the old intent. Acceptance locks the current, pending, unexpired provider
