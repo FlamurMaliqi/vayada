@@ -21,7 +21,8 @@ describe("target PMS inventory reservation adapter", () => {
     const transaction = {
       async query(text: string, values?: readonly unknown[]) {
         calls.push({ text, values });
-        return { rows: [{ reserved: true }] };
+        // prettier-ignore
+        return { rows: text.includes("UPDATE pms.inventory_days") ? [{ reserved: true }] : [] };
       },
     };
 
@@ -42,7 +43,7 @@ describe("target PMS inventory reservation adapter", () => {
       checkOut: reservationInput.checkOut,
       roomCount: 1,
     });
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(4);
     expect(calls[0]?.text).toContain("pg_advisory_xact_lock");
     expect(calls[1]?.text).toContain("UPDATE pms.inventory_days");
     expect(calls[1]?.text).toContain("booking_source_revision + 1");
@@ -63,6 +64,7 @@ describe("target PMS inventory reservation adapter", () => {
       reservationInput.currency,
       reservationInput.occurredAt.toISOString(),
     ]);
+    expect(calls[2]?.text).toContain("pms.direct_booking_linked_inventory.reserve");
   });
 
   it("returns null when the guarded reservation does not cover the full stay", async () => {
@@ -82,9 +84,12 @@ describe("target PMS inventory reservation adapter", () => {
 
   it("releases only a valid marker for the same property through the caller transaction", async () => {
     const calls: Array<{ text: string; values?: readonly unknown[] }> = [];
+    let handedOff = false;
     const transaction = {
       async query(text: string, values?: readonly unknown[]) {
         calls.push({ text, values });
+        if (handedOff && text.includes("SELECT room_type.linked_inventory_group_id"))
+          return { rows: [{ linked: false, state: "handed_off" }] };
         return { rows: [] };
       },
     };
@@ -122,12 +127,12 @@ describe("target PMS inventory reservation adapter", () => {
       occurredAt: reservationInput.occurredAt,
     });
 
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(4);
     expect(calls[0]?.text).toContain("pg_advisory_xact_lock");
-    expect(calls[1]?.text).toContain("assigned_count = GREATEST");
-    expect(calls[1]?.text).toContain("booking_source_revision + 1");
-    expect(calls[1]?.text).toContain("pms.direct_booking_inventory.release");
-    expect(calls[1]?.values).toEqual([
+    expect(calls[2]?.text).toContain("assigned_count = GREATEST");
+    expect(calls[2]?.text).toContain("booking_source_revision + 1");
+    expect(calls[2]?.text).toContain("pms.direct_booking_inventory.release");
+    expect(calls[2]?.values).toEqual([
       reservationInput.propertyId,
       reservationInput.roomTypeId,
       reservationInput.checkIn,
@@ -136,5 +141,12 @@ describe("target PMS inventory reservation adapter", () => {
       reservationInput.occurredAt.toISOString(),
       expect.stringMatching(/^[a-f0-9]{64}$/),
     ]);
+    expect(calls[3]?.text).toContain("pms.inventory_reservation_statuses");
+    handedOff = true;
+    calls.length = 0;
+    // prettier-ignore
+    await adapter.release({ transaction: transaction as never, propertyId: reservationInput.propertyId, reservation: reservation!, occurredAt: reservationInput.occurredAt });
+    expect(calls).toHaveLength(2);
+    expect(calls.some(({ text }) => text.includes("assigned_count = GREATEST"))).toBe(false);
   });
 });

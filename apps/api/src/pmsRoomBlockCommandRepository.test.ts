@@ -172,6 +172,7 @@ function roomBlockPool(
       if (text.includes("pg_advisory_xact_lock") || text.startsWith("SELECT id FROM pms.rooms")) {
         return rows<T>([]);
       }
+      if (text.includes("WITH locked_groups AS MATERIALIZED")) return rows<T>([]);
       if (text.includes('SELECT room.id::text AS "roomId"')) {
         const requestedRoomIds = values?.[2] as string[];
         return rows<T>(
@@ -306,7 +307,7 @@ function updateCommand(): PmsRoomBlockUpdateCommand {
 
 function calendarDays(from: string, to: string): string[] {
   const days: string[] = [];
-  for (let day = new Date(`${from}T00:00:00Z`); day <= new Date(`${to}T00:00:00Z`); ) {
+  for (let day = new Date(`${from}T00:00:00Z`); day <= new Date(`${to}T00:00:00Z`);) {
     days.push(day.toISOString().slice(0, 10));
     day = new Date(day.getTime() + 86_400_000);
   }
