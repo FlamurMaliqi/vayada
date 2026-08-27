@@ -31,8 +31,10 @@ from app.routers.super_admin_payouts import router as super_admin_payouts_router
 from app.routers.upload import router as upload_router
 from app.routers.webhooks import router as webhooks_router
 from app.services.scheduler import (
+    fixed_plan_billing_scheduler,
     get_scheduler_health_status,
     get_scheduler_status,
+    setup_fixed_plan_billing_scheduler,
     setup_scheduler,
 )
 
@@ -40,6 +42,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 scheduler = setup_scheduler()
+billing_scheduler = setup_fixed_plan_billing_scheduler(fixed_plan_billing_scheduler)
 
 
 async def run_migrations():
@@ -106,6 +109,8 @@ async def lifespan(app: FastAPI):
             "Scheduler not started because all legacy PMS jobs are frozen: frozen_jobs=%s",
             [job["id"] for job in scheduler_status["frozen_jobs"]],
         )
+    billing_scheduler.start()
+    logger.info("Fixed-plan billing scheduler started")
     yield
     logger.info("Shutting down vayada PMS...")
     promo_usage_task.cancel()
@@ -113,6 +118,8 @@ async def lifespan(app: FastAPI):
         await promo_usage_task
     if scheduler.running:
         scheduler.shutdown()
+    if billing_scheduler.running:
+        billing_scheduler.shutdown()
     await Database.close_pool()
     await AuthDatabase.close_pool()
     await BookingEngineDatabase.close_pool()

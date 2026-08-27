@@ -212,12 +212,10 @@ class PropertySettingsUpdate(BaseModel):
     facebook: str | None = None
     tiktok: str | None = None
     youtube: str | None = None
-    # billing_active_plan is intentionally not exposed here: the active plan
-    # only flips via the pending-switch flow (see _apply_pending_plan_switch_if_due).
-    # Direct PATCH would bypass the scheduled effective date.
+    # Paid plan changes are handled by the legacy Stripe Billing flow in PMS.
+    # Neither the active plan nor the retired pending switch is writable here.
     billing_commission_rate: float | None = None
     billing_fixed_fee: float | None = None
-    billing_pending_switch: str | None = None
     payout_account_holder: str | None = None
     payout_account_type: str | None = None
     payout_iban: str | None = None

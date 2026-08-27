@@ -33,10 +33,6 @@ KNOWN_DIRECT_CHANNELS = {"direct"}
 async def fetch_billing_config(hotel_id: str) -> dict:
     """Read per-hotel platform-fee config from booking_db.
 
-    Applies a pending plan switch inline if its effective date has passed — so
-    bookings on/after the switch date see the new plan even if nothing else has
-    touched this hotel's row yet.
-
     Falls back to ``DEFAULT_BILLING_CONFIG`` (zero fees) when booking_db is
     unconfigured (test path), unreachable, or has no row for ``hotel_id``. In
     production any miss here is a data-integrity issue — we log an ``error``
@@ -47,17 +43,6 @@ async def fetch_billing_config(hotel_id: str) -> dict:
     try:
         row = await BookingEngineDatabase.fetchrow(
             """
-            WITH flipped AS (
-                UPDATE booking_hotels
-                   SET billing_active_plan = billing_pending_switch,
-                       billing_pending_switch = NULL,
-                       billing_switch_effective_date = NULL
-                 WHERE id = $1
-                   AND billing_pending_switch IS NOT NULL
-                   AND billing_switch_effective_date IS NOT NULL
-                   AND billing_switch_effective_date <= CURRENT_DATE
-                RETURNING id
-            )
             SELECT billing_active_plan,
                    booking_engine_fee_pct,
                    channel_manager_fee_pct,
@@ -87,6 +72,39 @@ async def fetch_billing_config(hotel_id: str) -> dict:
         "booking_engine_fee_pct": float(row["booking_engine_fee_pct"]),
         "channel_manager_fee_pct": float(row["channel_manager_fee_pct"]),
         "affiliate_platform_fee_pct": float(row["affiliate_platform_fee_pct"]),
+    }
+
+
+def billing_snapshot_fields(config: dict) -> dict:
+    return {
+        "billing_plan_at_creation": config["active_plan"],
+        "booking_engine_fee_pct_at_creation": config["booking_engine_fee_pct"],
+        "channel_manager_fee_pct_at_creation": config["channel_manager_fee_pct"],
+        "affiliate_platform_fee_pct_at_creation": config["affiliate_platform_fee_pct"],
+    }
+
+
+def billing_config_for_booking(booking: dict, current_config: dict) -> dict:
+    plan = booking.get("billing_plan_at_creation")
+    if plan not in {"commission", "fixed"}:
+        return current_config
+    return {
+        "active_plan": plan,
+        "booking_engine_fee_pct": float(
+            booking.get("booking_engine_fee_pct_at_creation")
+            if booking.get("booking_engine_fee_pct_at_creation") is not None
+            else current_config["booking_engine_fee_pct"]
+        ),
+        "channel_manager_fee_pct": float(
+            booking.get("channel_manager_fee_pct_at_creation")
+            if booking.get("channel_manager_fee_pct_at_creation") is not None
+            else current_config["channel_manager_fee_pct"]
+        ),
+        "affiliate_platform_fee_pct": float(
+            booking.get("affiliate_platform_fee_pct_at_creation")
+            if booking.get("affiliate_platform_fee_pct_at_creation") is not None
+            else current_config["affiliate_platform_fee_pct"]
+        ),
     }
 
 

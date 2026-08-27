@@ -17,7 +17,7 @@ from app.repositories.cancellation_policy_repo import CancellationPolicyReposito
 from app.repositories.hotel_payment_settings_repo import HotelPaymentSettingsRepository
 from app.repositories.payment_repo import PaymentRepository
 from app.repositories.room_type_repo import RoomTypeRepository
-from app.services import hotel_identity_service, stripe_service, xendit_service
+from app.services import fixed_plan_billing, hotel_identity_service, stripe_service, xendit_service
 from app.services.currency_service import (
     convert_amount,
     convert_room_type_rates,
@@ -406,6 +406,67 @@ async def get_stripe_onboarding_link(
         refresh_url="https://pms.vayada.com/settings?stripe=refresh",
     )
     return {"url": url}
+
+
+# ── Vayada Fixed-plan subscription ───────────────────────────────
+
+
+@router.get("/billing/subscription")
+async def get_fixed_plan_subscription(
+    user_id: str = Depends(require_hotel_admin),
+):
+    hotel_id = await get_hotel_id(user_id)
+    try:
+        return await fixed_plan_billing.billing_status(hotel_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/billing/fixed-checkout")
+async def create_fixed_plan_checkout(
+    user_id: str = Depends(require_hotel_admin),
+):
+    hotel_id = await get_hotel_id(user_id)
+    try:
+        url = await fixed_plan_billing.create_checkout(hotel_id, user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Fixed-plan Checkout creation failed for hotel %s", hotel_id)
+        raise HTTPException(status_code=502, detail="Stripe Checkout is unavailable") from exc
+    return {"url": url}
+
+
+@router.post("/billing/portal")
+async def create_fixed_plan_portal(
+    user_id: str = Depends(require_hotel_admin),
+):
+    hotel_id = await get_hotel_id(user_id)
+    try:
+        url = await fixed_plan_billing.create_portal(hotel_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Stripe Billing Portal creation failed for hotel %s", hotel_id)
+        raise HTTPException(status_code=502, detail="Stripe Billing Portal is unavailable") from exc
+    return {"url": url}
+
+
+@router.post("/billing/cancel")
+async def cancel_fixed_plan_subscription(
+    user_id: str = Depends(require_hotel_admin),
+):
+    hotel_id = await get_hotel_id(user_id)
+    try:
+        period_end = await fixed_plan_billing.cancel_at_period_end(hotel_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Fixed-plan cancellation failed for hotel %s", hotel_id)
+        raise HTTPException(status_code=502, detail="Stripe cancellation is unavailable") from exc
+    return {"currentPeriodEnd": period_end.isoformat() if period_end else None}
 
 
 # ── Xendit ────────────────────────────────────────────────────────
