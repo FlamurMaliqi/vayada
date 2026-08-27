@@ -34,6 +34,51 @@ describe("target PMS room order", () => {
   });
 });
 
+describe("target PMS linked inventory groups", () => {
+  it("lists named groups with stable member order", async () => {
+    let query = "";
+    const pool: PmsOperationsReadPool = {
+      async query<T extends QueryResultRow = QueryResultRow>(
+        text: string,
+      ): Promise<QueryResult<T>> {
+        query = text;
+        return {
+          command: "SELECT",
+          rowCount: 1,
+          oid: 0,
+          fields: [],
+          rows: [
+            {
+              groupId: "group-1",
+              name: "Family flex",
+              revision: "2",
+              memberRoomTypeIds: ["type-1", "type-2"],
+            },
+          ] as unknown as T[],
+        };
+      },
+    };
+    const repository = createTargetPmsOperationsReadRepository({
+      connectionString: "postgresql://pms-operations-read",
+      pool,
+    });
+
+    await expect(repository.listLinkedInventoryGroupsByPropertyId!("property-1")).resolves.toEqual({
+      items: [
+        {
+          groupId: "group-1",
+          name: "Family flex",
+          revision: 2,
+          memberRoomTypeIds: ["type-1", "type-2"],
+        },
+      ],
+      sourceFreshness: {},
+    });
+    expect(query).toContain("linked_inventory_group_id=group_row.id");
+    expect(query).toContain("ORDER BY room_type.sort_order, room_type.id");
+  });
+});
+
 describe("target PMS reservation stay dates", () => {
   it("reads DATE columns as text so the calendar date is preserved", async () => {
     const queries: string[] = [];
