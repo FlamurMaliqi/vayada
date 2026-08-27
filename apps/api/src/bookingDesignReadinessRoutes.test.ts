@@ -1,4 +1,5 @@
 import type { LinkedResource, ProductEntitlement, RequestContext } from "@vayada/backend-auth";
+import type { MembershipPropertyScope } from "@vayada/backend-authorization";
 import { injectJson } from "@vayada/backend-test";
 import type {
   BookingDesignReadinessPort,
@@ -10,6 +11,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerBookingDesignReadinessRoutes } from "./routes/bookingDesignReadiness.js";
 
 const propertyId = "123e4567-e89b-42d3-a456-426614174000";
+const otherPropertyId = "523e4567-e89b-42d3-a456-426614174000";
+const foreignPropertyId = "623e4567-e89b-42d3-a456-426614174000";
 const organizationId = "323e4567-e89b-42d3-a456-426614174000";
 const actorUserId = "423e4567-e89b-42d3-a456-426614174000";
 const receivedAt = "2026-08-04T12:00:00.000Z";
@@ -67,24 +70,24 @@ function fallbackReady(): BookingDesignReadinessResult {
   };
 }
 
-async function testApp(value: unknown, authenticated = true) {
+type HarnessOptions = {
+  authenticated?: boolean;
+  context?: RequestContext;
+  scope?: MembershipPropertyScope | null;
+};
+
+async function testApp(value: unknown, options: HarnessOptions = {}) {
+  const { authenticated = true, context = requestContext(), scope = propertyScope() } = options;
   const app = Fastify({ logger: false });
   const read = vi.fn().mockResolvedValue(value);
+  const findMembershipPropertyScope = vi.fn().mockResolvedValue(scope);
   app.decorateRequest("authContext", null);
   app.addHook("onRequest", async (request) => {
     if (!authenticated || request.headers.authorization !== "Bearer valid-token") return;
-    request.authContext = {
-      actor: { internalUserId: actorUserId },
-      selectedOrganization: { organizationId, kind: "hotel_group" },
-      membership: { permissions: ["booking.settings.manage"] },
-      linkedResources: [link()],
-      entitlements: [entitlement()],
-      locale: "en",
-      currency: "EUR",
-      audit: { requestId: "request-1", source: "api", receivedAt },
-    } as RequestContext;
+    request.authContext = context;
   });
   await app.register(registerBookingDesignReadinessRoutes, {
+    propertyAccessRepository: { findMembershipPropertyScope },
     readinessPort: { getBookingDesignReadiness: read } as BookingDesignReadinessPort,
   });
   return { app, read };
@@ -130,15 +133,90 @@ describe("Booking design readiness route", () => {
     expect(harness.read).toHaveBeenCalledWith({ organizationId, propertyId });
   });
 
-  it("fails closed before or after the protected port boundary", async () => {
-    let harness = await testApp(fallbackReady(), false);
+  it("allows an explicitly assigned property", async () => {
+    const harness = await testApp(fallbackReady(), {
+      scope: propertyScope({ mode: "assigned", assignedPropertyIds: [propertyId] }),
+    });
     app = harness.app;
-    expect(await get(app)).toMatchObject({ statusCode: 401, body: { code: "unauthenticated" } });
+
+    expect(await get(app)).toMatchObject({ statusCode: 200 });
+    expect(harness.read).toHaveBeenCalledWith({ organizationId, propertyId });
+  });
+
+  it.each([
+    ["missing authentication", { authenticated: false }, 401, "unauthenticated"],
+    [
+      "missing permission",
+      {
+        context: requestContext({
+          membership: { ...requestContext().membership, permissions: [] },
+        }),
+      },
+      403,
+      "forbidden",
+    ],
+    [
+      "inactive membership",
+      {
+        context: requestContext({
+          membership: { ...requestContext().membership, status: "inactive" },
+        }),
+      },
+      403,
+      "forbidden",
+    ],
+    [
+      "no property assignment",
+      { scope: propertyScope({ mode: "assigned", assignedPropertyIds: [] }) },
+      403,
+      "forbidden",
+    ],
+    [
+      "missing target resource",
+      { context: requestContext({ linkedResources: [canonicalLink()] }) },
+      403,
+      "forbidden",
+    ],
+    ["missing entitlement", { context: requestContext({ entitlements: [] }) }, 403, "forbidden"],
+    [
+      "suspended entitlement",
+      { context: requestContext({ entitlements: [entitlement("suspended")] }) },
+      403,
+      "forbidden",
+    ],
+  ] as const)("denies %s before reading readiness", async (_name, options, statusCode, code) => {
+    const harness = await testApp(fallbackReady(), options);
+    app = harness.app;
+
+    expect(await get(app)).toMatchObject({ statusCode, body: { code } });
+    expect(harness.read).not.toHaveBeenCalled();
+  });
+
+  it("returns the same denial for an unassigned and foreign property", async () => {
+    let harness = await testApp(fallbackReady(), {
+      context: requestContext({ linkedResources: [...links(), ...links(otherPropertyId)] }),
+      scope: propertyScope({ mode: "assigned", assignedPropertyIds: [propertyId] }),
+    });
+    app = harness.app;
+    const unassigned = await get(app, otherPropertyId);
     expect(harness.read).not.toHaveBeenCalled();
     await app.close();
 
-    harness = await testApp({ ...fallbackReady(), propertyId: actorUserId });
+    harness = await testApp(fallbackReady(), {
+      scope: propertyScope({ mode: "assigned", assignedPropertyIds: [foreignPropertyId] }),
+    });
     app = harness.app;
+    const foreign = await get(app, foreignPropertyId);
+    expect(harness.read).not.toHaveBeenCalled();
+
+    expect(unassigned).toMatchObject({ statusCode: 403, body: { code: "forbidden" } });
+    expect(foreign).toEqual(unassigned);
+  });
+
+  it("fails closed after the protected port boundary", async () => {
+    const harness = await testApp({ ...fallbackReady(), propertyId: actorUserId });
+    app = harness.app;
+
     expect(await get(app)).toMatchObject({
       statusCode: 500,
       body: { code: "booking_design_readiness_port_contract_violation" },
@@ -146,29 +224,78 @@ describe("Booking design readiness route", () => {
   });
 });
 
-function entitlement(): ProductEntitlement {
+function propertyScope(overrides: Partial<MembershipPropertyScope> = {}): MembershipPropertyScope {
+  return {
+    mode: "all",
+    roleKey: "hotel_owner",
+    accessOrigin: "agency",
+    assignedPropertyIds: [],
+    ...overrides,
+  };
+}
+
+function requestContext(overrides: Partial<RequestContext> = {}): RequestContext {
+  return {
+    actor: {
+      internalUserId: actorUserId,
+      providerIdentity: { provider: "workos", providerUserId: "user_1" },
+      email: "owner@example.com",
+      status: "active",
+    },
+    selectedOrganization: { organizationId, kind: "hotel_group", status: "active" },
+    membership: {
+      membershipId: "723e4567-e89b-42d3-a456-426614174000",
+      status: "active",
+      roleKey: "hotel_owner",
+      workosRoleSlugs: ["hotel_owner"],
+      permissions: ["booking.settings.manage"],
+    },
+    linkedResources: links(),
+    entitlements: [entitlement()],
+    locale: "en",
+    currency: "EUR",
+    audit: { requestId: "request-1", source: "api", receivedAt },
+    ...overrides,
+  };
+}
+
+function entitlement(status: ProductEntitlement["status"] = "active"): ProductEntitlement {
   return {
     product: "booking",
     key: "booking-engine",
-    status: "active",
+    status,
     resource: { product: "booking", resourceType: "booking_hotel", resourceId: propertyId },
   };
 }
 
-function link(): LinkedResource {
+function canonicalLink(resourceId = propertyId): LinkedResource {
   return {
-    product: "booking",
-    resourceType: "booking_hotel",
-    resourceId: propertyId,
+    product: "hotel_catalog",
+    resourceType: "property",
+    resourceId,
     relationship: "owner",
     status: "active",
   };
 }
 
-function get(server: ReturnType<typeof Fastify>) {
+function bookingLink(resourceId = propertyId): LinkedResource {
+  return {
+    product: "booking",
+    resourceType: "booking_hotel",
+    resourceId,
+    relationship: "owner",
+    status: "active",
+  };
+}
+
+function links(resourceId = propertyId): LinkedResource[] {
+  return [canonicalLink(resourceId), bookingLink(resourceId)];
+}
+
+function get(server: ReturnType<typeof Fastify>, requestedPropertyId = propertyId) {
   return injectJson(server, {
     method: "GET",
-    url: `/properties/${propertyId}/booking-design/readiness`,
+    url: `/properties/${requestedPropertyId}/booking-design/readiness`,
     headers: { authorization: "Bearer valid-token" },
   });
 }
