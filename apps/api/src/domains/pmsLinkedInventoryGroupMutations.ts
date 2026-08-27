@@ -209,15 +209,15 @@ async function findLinkedInventoryOverlap(
   const result = await client.query<ConflictRow>(
     `WITH causes AS (
        SELECT room_type_id,check_in AS starts_on,check_out AS ends_on
-       FROM pms.inventory_reservation_receipts WHERE property_id=$1::uuid
-        AND room_type_id=ANY($2::uuid[]) AND lifecycle_state='reserved'
+       FROM pms.inventory_reservation_receipts receipt
+       JOIN pms.inventory_reservation_statuses status USING (receipt_id)
+       WHERE receipt.property_id=$1::uuid AND receipt.room_type_id=ANY($2::uuid[])
+        AND status.lifecycle_state='reserved'
        UNION ALL
-       SELECT assignment.room_type_id,COALESCE(assignment.check_in,booking.check_in),
-              COALESCE(assignment.check_out,booking.check_out)
+       SELECT assignment.room_type_id,assignment.check_in,assignment.check_out
        FROM pms.operational_booking_assignments assignment
-       JOIN booking.guest_bookings booking ON booking.id=assignment.guest_booking_id
-        AND booking.property_id=assignment.property_id
        WHERE assignment.property_id=$1::uuid AND assignment.room_type_id=ANY($2::uuid[])
+        AND assignment.stay_evidence_kind='exact'
         AND assignment.assignment_status NOT IN ('canceled','released','checked_out')
        UNION ALL
        SELECT room_type_id,starts_on,ends_on+1 FROM pms.room_blocks
