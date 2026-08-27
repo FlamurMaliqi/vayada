@@ -233,7 +233,7 @@ async function reserveIdempotency(
        property_id,correlation_id,first_seen_at,last_seen_at,expires_at,idempotency_metadata)
      VALUES ('pms',$1,$2,$3,'in_progress','property',$4::uuid,$5,
              $6::timestamptz,$6::timestamptz,$6::timestamptz+interval '24 hours',
-             jsonb_build_object('commandId',$7,'attempt',1))
+             jsonb_build_object('commandId',$7::text,'attempt',1))
      ON CONFLICT (operation_scope,operation,key_hash,scope_key)
      DO UPDATE SET request_fingerprint_hash=EXCLUDED.request_fingerprint_hash,
        status='in_progress',response_status_code=NULL,response_body_hash=NULL,
@@ -241,7 +241,7 @@ async function reserveIdempotency(
        correlation_id=EXCLUDED.correlation_id,first_seen_at=EXCLUDED.first_seen_at,
        last_seen_at=EXCLUDED.last_seen_at,completed_at=NULL,expires_at=EXCLUDED.expires_at,
        idempotency_metadata=jsonb_build_object(
-         'commandId',$7,
+         'commandId',$7::text,
          'attempt',COALESCE((idempotency_keys.idempotency_metadata->>'attempt')::integer,1)+1)
      WHERE idempotency_keys.expires_at<=EXCLUDED.first_seen_at
      RETURNING id::text AS id,(idempotency_metadata->>'attempt')::integer AS attempt`,
