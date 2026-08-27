@@ -336,22 +336,57 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
     SELECT
       profile.*,
       settings.default_language AS booking_default_language,
+      settings.default_currency AS booking_default_currency,
       settings.supported_languages AS booking_supported_languages,
       settings.special_requests_enabled,
       settings.arrival_time_enabled,
       settings.guest_count_enabled,
+      settings.hero_subtext,
       settings.adult_age_threshold,
       settings.children_enabled,
       settings.updated_at AS booking_updated_at,
+      settings.acceptance_mode,
       finance.payments_enabled,
       finance.accepted_methods,
-      finance.default_currency AS finance_default_currency,
+      finance.deposit_policy AS finance_deposit_policy,
       finance.refund_policy AS finance_refund_policy,
       finance.updated_at AS finance_updated_at,
       payment_provider.provider AS payment_provider,
       payment_provider.status AS payment_provider_status,
       payment_provider.onboarding_status AS payment_provider_onboarding_status,
       payment_provider.charges_enabled AS payment_provider_charges_enabled,
+      EXISTS (
+        SELECT 1
+        FROM finance.billing_entitlements entitlement
+        WHERE entitlement.property_id = profile.property_id
+          AND entitlement.product = 'booking'
+          AND entitlement.entitlement_key = 'direct-booking-finance'
+          AND entitlement.billing_status IN ('trialing', 'active')
+          AND (
+            (
+              entitlement.plan_key = 'commission'
+              AND NULLIF(entitlement.entitlement_metadata ->> 'planSelectedAt', '') IS NOT NULL
+            )
+            OR (
+              entitlement.plan_key = 'fixed'
+              AND entitlement.provider_subscription_status IN ('trialing', 'active')
+            )
+          )
+          AND (entitlement.starts_at IS NULL OR entitlement.starts_at <= now())
+          AND (entitlement.expires_at IS NULL OR entitlement.expires_at > now())
+      ) AND EXISTS (
+        SELECT 1
+        FROM finance.commission_rules commission
+        WHERE commission.property_id = profile.property_id
+          AND commission.product = 'booking'
+          AND commission.source_system = 'finance'
+          AND commission.source_rule_id = 'onboarding-booking:' || profile.property_id::text
+          AND commission.commission_type = 'percentage'
+          AND commission.percentage_rate = 5
+          AND commission.status = 'active'
+          AND commission.starts_at <= now()
+          AND (commission.ends_at IS NULL OR commission.ends_at > now())
+      ) AS billing_config_ready,
       location.timezone AS catalog_timezone,
       location.address_public AS catalog_locality_public,
       location.geo_public AS catalog_geo_public,
@@ -403,6 +438,7 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
         max(offer.generated_at) AS latest_generated_at
       FROM distribution.public_room_offer_snapshots offer
       WHERE offer.property_id = profile.property_id
+        AND offer.currency = NULLIF(upper(trim(settings.default_currency)), '')
         AND offer.public_visibility = 'public_safe'
         AND offer.stay_date >= (
           now() AT TIME ZONE CASE
@@ -440,31 +476,63 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
           WHERE timezone_name.name = input.catalog_timezone
         ) AS timezone_is_valid,
       COALESCE(NULLIF(input.booking_default_language, ''), input.default_locale, 'en') AS locale,
-      NULLIF(upper(trim(input.finance_default_currency)), '') AS currency,
+      NULLIF(upper(trim(input.booking_default_currency)), '') AS currency,
+      (
+        input.profile_status = 'complete'
+        OR (
+          input.profile_status = 'incomplete'
+          AND cardinality(input.completeness_reasons) = 1
+          AND 'description' = ANY(input.completeness_reasons)
+          AND NULLIF(BTRIM(input.hero_subtext), '') IS NOT NULL
+        )
+      ) AS booking_profile_ready,
       COALESCE(
-        COALESCE(input.payments_enabled, FALSE)
+        input.payments_enabled
+          AND input.payment_provider = 'stripe'
           AND input.payment_provider_status = 'active'
           AND input.payment_provider_onboarding_status = 'completed'
           AND input.payment_provider_charges_enabled = TRUE
-          AND (
-            COALESCE(input.accepted_methods, ARRAY[]::text[])
-              && ARRAY['card', 'wallet']::text[]
-            OR (
-              input.payment_provider = 'xendit'
-              AND 'xendit' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))
-            )
-          ),
+          AND upper(trim(input.booking_default_currency)) NOT IN ('BHD', 'JOD', 'KWD', 'OMR', 'TND')
+          AND 'card' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[])),
         FALSE
       ) AS online_payment_ready,
       COALESCE(input.payments_enabled, FALSE)
+        AND 'pay_at_property' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))
         AND COALESCE(input.accepted_methods, ARRAY[]::text[])
-          && ARRAY[
-            'pay_at_property',
-            'cash',
-            'bank_transfer',
-            'manual_card',
-            'other'
-          ]::text[] AS pay_at_property_ready,
+          && ARRAY['cash', 'manual_card']::text[] AS pay_at_property_ready,
+      ARRAY_REMOVE(ARRAY[
+        CASE
+          WHEN COALESCE(input.payments_enabled, FALSE)
+            AND input.payment_provider = 'stripe'
+            AND input.payment_provider_status = 'active'
+            AND input.payment_provider_onboarding_status = 'completed'
+            AND input.payment_provider_charges_enabled = TRUE
+            AND upper(trim(input.booking_default_currency)) NOT IN ('BHD', 'JOD', 'KWD', 'OMR', 'TND')
+            AND 'card' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))
+            THEN 'card'
+        END,
+        CASE
+          WHEN COALESCE(input.payments_enabled, FALSE)
+            AND 'pay_at_property' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))
+            AND COALESCE(input.accepted_methods, ARRAY[]::text[])
+              && ARRAY['cash', 'manual_card']::text[]
+            THEN 'pay_at_property'
+        END,
+        CASE
+          WHEN COALESCE(input.payments_enabled, FALSE)
+            AND 'bank_transfer' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))
+            AND NULLIF(BTRIM(input.finance_deposit_policy ->> 'bankTransferInstructions'), '')
+              IS NOT NULL
+            THEN 'bank_transfer'
+        END,
+        CASE
+          WHEN COALESCE(input.payments_enabled, FALSE)
+            AND 'paypal' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))
+            AND BTRIM(input.finance_deposit_policy ->> 'paypalEmail')
+              ~* '^[^[:space:]@]+@[^[:space:]@]+[.][^[:space:]@]+$'
+            THEN 'paypal'
+        END
+      ], NULL)::text[] AS public_payment_methods,
       CASE
         WHEN NOT COALESCE(input.has_coverage, FALSE) THEN 'unavailable'
         WHEN input.has_unavailable_source THEN 'unavailable'
@@ -487,14 +555,15 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
     SELECT
       input.*,
       ARRAY_REMOVE(ARRAY[
-        CASE WHEN input.profile_status <> 'complete' THEN 'profile' END,
+        CASE WHEN input.booking_profile_ready IS NOT TRUE THEN 'profile' END,
         CASE WHEN input.timezone_is_valid IS NOT TRUE THEN 'timezone' END,
         CASE WHEN input.booking_updated_at IS NULL THEN 'booking_settings' END,
         CASE WHEN input.currency IS NULL THEN 'default_currency' END,
+        CASE WHEN input.billing_config_ready IS NOT TRUE THEN 'billing_plan' END,
         CASE WHEN NOT COALESCE(input.has_coverage, FALSE) THEN 'availability_source' END,
         CASE WHEN NOT COALESCE(input.has_sellable_offers, FALSE) THEN 'sellable_availability' END,
         CASE
-          WHEN NOT COALESCE(input.online_payment_ready OR input.pay_at_property_ready, FALSE)
+          WHEN cardinality(input.public_payment_methods) = 0
             THEN 'payment_method'
         END,
         CASE WHEN input.computed_freshness <> 'fresh' THEN 'freshness' END
@@ -561,7 +630,7 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
       END,
       CASE
         WHEN input.profile_status IN ('disabled', 'private') THEN 'unpublished'
-        WHEN input.profile_status <> 'complete' THEN 'incomplete'
+        WHEN input.booking_profile_ready IS NOT TRUE THEN 'incomplete'
         ELSE 'public'
       END,
       jsonb_strip_nulls(jsonb_build_object(
@@ -570,7 +639,8 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
         'name', input.display_name,
         'summary', COALESCE(
           input.descriptions -> input.locale ->> 'short',
-          input.descriptions -> input.default_locale ->> 'short'
+          input.descriptions -> input.default_locale ->> 'short',
+          NULLIF(BTRIM(input.hero_subtext), '')
         )
       )),
       jsonb_strip_nulls(jsonb_build_object(
@@ -606,7 +676,10 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
         FROM (
           SELECT item, ordinality
           FROM jsonb_array_elements(input.media) WITH ORDINALITY media(item, ordinality)
-          WHERE media.item ->> 'type' = 'gallery_image'
+          WHERE lower(COALESCE(
+            NULLIF(BTRIM(media.item ->> 'type'), ''),
+            NULLIF(BTRIM(media.item ->> 'mediaType'), '')
+          )) = 'gallery_image'
             AND NULLIF(media.item ->> 'url', '') IS NOT NULL
           ORDER BY ordinality
           LIMIT 10
@@ -623,9 +696,10 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
         'termsUrl', input.public_policy ->> 'termsUrl'
       )),
       jsonb_build_object(
-        'instantBook', COALESCE(input.has_sellable_offers, FALSE),
+        'instantBook', COALESCE(input.acceptance_mode = 'instant', FALSE),
         'onlinePayment', input.online_payment_ready,
         'payAtProperty', input.pay_at_property_ready,
+        'paymentMethods', input.public_payment_methods,
         'promoCodes', input.has_active_promos,
         'referralCodes', FALSE,
         'bookingDeepLinks', TRUE
@@ -739,6 +813,18 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
       ARRAY(
         SELECT jsonb_array_elements_text(public_setup_completeness -> 'missing')
       ) AS "missingReadiness"
+  ),
+  refreshed_offers AS (
+    UPDATE distribution.public_room_offer_snapshots offer
+    SET payment_options = CASE
+          WHEN cardinality(readiness.missing_readiness) = 0
+            THEN readiness.public_payment_methods
+          ELSE ARRAY[]::text[]
+        END,
+        updated_at = now()
+    FROM readiness
+    WHERE offer.property_id = readiness.property_id
+    RETURNING offer.id
   )
   SELECT * FROM upserted
 `;

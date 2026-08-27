@@ -56,6 +56,12 @@ from app.services.email_service import (
     send_guest_cancellation,
     send_guest_confirmation,
 )
+from app.services.guest_contact_access import (
+    HIDDEN_GUEST_CONTACT,
+    fetch_guest_contact_plan,
+    guest_contacts_are_visible,
+    mask_booking_guest_contacts,
+)
 from app.services.room_assignment import try_place_unassigned_after_cancellation
 from app.utils import get_hotel_id
 
@@ -267,7 +273,8 @@ async def _admin_response(b: dict) -> BookingAdminResponse:
     multi-room booking (VAY-403). Single-room bookings have no extras, so
     this is one cheap indexed lookup that returns nothing extra."""
     extras = await BookingRoomRepository.list_extra_rooms(str(b["id"]))
-    return _booking_to_admin(b, extras)
+    plan = await fetch_guest_contact_plan(str(b["hotel_id"]))
+    return _booking_to_admin(mask_booking_guest_contacts(b, plan), extras)
 
 
 # ── Bookings ────────────────────────────────────────────────────────
@@ -382,8 +389,14 @@ async def list_bookings(
     user_id: str = Depends(require_hotel_admin),
 ):
     hotel_id = await get_hotel_id(user_id)
+    plan = await fetch_guest_contact_plan(hotel_id)
     bookings = await BookingRepository.list_by_hotel_id(
-        hotel_id, status=status, search=search, limit=limit, offset=offset
+        hotel_id,
+        status=status,
+        search=search,
+        hide_unaccepted_guest_contact=plan == "commission",
+        limit=limit,
+        offset=offset,
     )
     total = await BookingRepository.count_by_hotel_id(hotel_id, status=status)
 
@@ -398,7 +411,13 @@ async def list_bookings(
         extras_by_booking.setdefault(str(er["booking_id"]), []).append(er)
 
     return {
-        "bookings": [_booking_to_admin(b, extras_by_booking.get(str(b["id"]))) for b in bookings],
+        "bookings": [
+            _booking_to_admin(
+                mask_booking_guest_contacts(b, plan),
+                extras_by_booking.get(str(b["id"])),
+            )
+            for b in bookings
+        ],
         "total": total,
         "limit": limit,
         "offset": offset,
@@ -429,6 +448,10 @@ async def update_booking_details(
         raise HTTPException(status_code=404, detail="Booking not found")
 
     updates = data.model_dump(exclude_none=True)
+    plan = await fetch_guest_contact_plan(hotel_id)
+    if not guest_contacts_are_visible(booking, plan):
+        updates.pop("guest_email", None)
+        updates.pop("guest_phone", None)
     if _addons_changed(booking, updates):
         if not _is_direct_channel(booking.get("channel")):
             raise HTTPException(status_code=400, detail="OTA bookings cannot edit add-ons in PMS")
@@ -570,8 +593,16 @@ async def update_booking_status(
     booking = await BookingRepository.get_by_id(booking_id)
     if not booking or str(booking["hotel_id"]) != hotel_id:
         raise HTTPException(status_code=404, detail="Booking not found")
+    if await PaymentRepository.has_active_stripe_refund(booking_id):
+        raise HTTPException(status_code=409, detail="A refund is still processing")
 
-    await BookingRepository.update_status(booking_id, data.status)
+    updated_status = (
+        await BookingRepository.cancel_with_promo_reversal(booking_id)
+        if data.status == "cancelled"
+        else await BookingRepository.update_status(booking_id, data.status)
+    )
+    if not updated_status:
+        raise HTTPException(status_code=409, detail="Booking status is currently locked")
     updated = await BookingRepository.get_by_id(booking_id)
 
     # Push availability to Channex (only affected dates)
@@ -614,6 +645,8 @@ async def complete_booking_check_in(
     booking = await BookingRepository.get_by_id(booking_id)
     if not booking or str(booking["hotel_id"]) != hotel_id:
         raise HTTPException(status_code=404, detail="Booking not found")
+    if await PaymentRepository.has_active_stripe_refund(booking_id):
+        raise HTTPException(status_code=409, detail="A refund is still processing")
 
     if booking["status"] not in ("confirmed", "checked_in"):
         raise HTTPException(status_code=400, detail="Only confirmed bookings can be checked in")
@@ -638,7 +671,7 @@ async def complete_booking_check_in(
                 booking_id, data.pending_flags, conn=conn
             )
             if not updated:
-                raise HTTPException(status_code=404, detail="Booking not found")
+                raise HTTPException(status_code=409, detail="Booking check-in is currently locked")
 
             await CheckinChecklistRepository.create_record(
                 booking_id=booking_id,
@@ -1225,7 +1258,9 @@ def _note_to_response(n: dict) -> BookingNoteResponse:
     )
 
 
-def _guest_to_response(g: dict) -> BookingAdditionalGuestResponse:
+def _guest_to_response(
+    g: dict, *, guest_contact_visible: bool = True
+) -> BookingAdditionalGuestResponse:
     dob = g.get("date_of_birth")
     return BookingAdditionalGuestResponse(
         id=str(g["id"]),
@@ -1236,8 +1271,8 @@ def _guest_to_response(g: dict) -> BookingAdditionalGuestResponse:
         gender=g.get("gender") or "",
         nationality=g.get("nationality") or "",
         date_of_birth=str(dob) if dob else None,
-        email=g.get("email") or "",
-        phone=g.get("phone") or "",
+        email=(g.get("email") or "") if guest_contact_visible else HIDDEN_GUEST_CONTACT,
+        phone=(g.get("phone") or "") if guest_contact_visible else HIDDEN_GUEST_CONTACT,
         passport_number=g.get("passport_number") or "",
         room_position=g.get("room_position"),
         created_at=g["created_at"].isoformat(),
@@ -1318,9 +1353,16 @@ async def list_additional_guests(
     booking_id: str,
     user_id: str = Depends(require_hotel_admin),
 ):
-    await _booking_owned_by_hotel(booking_id, user_id)
+    booking, hotel_id = await _booking_owned_by_hotel(booking_id, user_id)
+    plan = await fetch_guest_contact_plan(hotel_id)
+    contact_visible = guest_contacts_are_visible(booking, plan)
     guests = await BookingAdditionalGuestRepository.list_for_booking(booking_id)
-    return {"guests": [_guest_to_response(g).model_dump(by_alias=True) for g in guests]}
+    return {
+        "guests": [
+            _guest_to_response(g, guest_contact_visible=contact_visible).model_dump(by_alias=True)
+            for g in guests
+        ]
+    }
 
 
 @router.post(
@@ -1352,7 +1394,11 @@ async def create_additional_guest(
         position=position,
         data=payload,
     )
-    return _guest_to_response(guest)
+    plan = await fetch_guest_contact_plan(hotel_id)
+    return _guest_to_response(
+        guest,
+        guest_contact_visible=guest_contacts_are_visible(booking, plan),
+    )
 
 
 @router.patch(
@@ -1376,8 +1422,15 @@ async def update_additional_guest(
     payload = data.model_dump(exclude_unset=True)
     if "room_position" in payload:
         _validate_room_position(booking, payload["room_position"])
+    plan = await fetch_guest_contact_plan(hotel_id)
+    if not guest_contacts_are_visible(booking, plan):
+        payload.pop("email", None)
+        payload.pop("phone", None)
     updated = await BookingAdditionalGuestRepository.update(guest_id, payload)
-    return _guest_to_response(updated)
+    return _guest_to_response(
+        updated,
+        guest_contact_visible=guest_contacts_are_visible(booking, plan),
+    )
 
 
 @router.delete("/bookings/{booking_id}/additional-guests/{guest_id}", status_code=204)
@@ -1425,7 +1478,7 @@ async def cancel_booking_with_reason(
         source="booking-detail",
     )
 
-    await BookingRepository.update_status(booking_id, "cancelled")
+    await BookingRepository.cancel_with_promo_reversal(booking_id)
     updated = await BookingRepository.get_by_id(booking_id)
 
     asyncio.create_task(

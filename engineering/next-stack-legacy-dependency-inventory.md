@@ -9,6 +9,14 @@ This complements:
 - [marketplace route migration inventory](marketplace-route-migration-inventory.md)
 - [RequestContext contract](request-context-contract.md)
 
+> **Retirement update:** The legacy public-profile repository and the public
+> profile and Booking settings source selectors are removed from `apps/api`.
+> The legacy Booking settings repository and `BOOKING_DATABASE_URL` are also
+> removed. Public bookability now directly composes the target quote/calendar
+> repositories with no compatibility selector. Booking Web checkout commands
+> and lifecycle jobs likewise compose only target adapters.
+> Historical entries below describe the earlier VAY-880 state.
+
 ## Scope
 
 Audited next-stack surfaces:
@@ -47,9 +55,8 @@ The next-stack debt falls into four groups:
      `PUBLIC_HOTEL_PROFILE_SOURCE=legacy`, `BOOKING_*_SOURCE=legacy`,
      `PMS_OPERATIONS_SOURCE=disabled`, `FINANCE_SOURCE=legacy`,
      `BOOKING_PUBLIC_API_URL`, `PMS_PUBLIC_API_URL`, `PMS_API_URL`, and the
-     legacy checkout proxy flag (lines 306-468). The concrete legacy product
-     runtime envs are `BOOKING_DATABASE_URL`,
-     `BOOKING_RESERVATIONS_READ_DATABASE_URL`, `BOOKING_PUBLIC_API_URL`,
+     now-retired legacy checkout proxy flag (lines 306-468). The concrete legacy product
+     runtime envs are `BOOKING_DATABASE_URL`, `BOOKING_PUBLIC_API_URL`,
      `PMS_API_URL`, and `PMS_PUBLIC_API_URL` (lines 424-457).
    - **Current consumer:** all next frontends using target API routes.
    - **Target replacement:** target-schema repositories and source flags set to
@@ -85,8 +92,8 @@ The next-stack debt falls into four groups:
      `apps/pms-web/services/api/client.ts` lines 81-85;
      `apps/vayada-admin/services/api/bookingClient.ts` lines 7-8;
      `apps/api/src/routes/pmsOperations.ts` lines 2100-2119).
-   - **Current consumer:** Booking Admin, PMS Web, Platform Admin booking
-     settings calls, Ask Intelligence calls.
+   - **Current consumer:** Booking Admin, PMS Web, and Platform Admin booking
+     settings calls. The former Ask Intelligence consumer is retired.
    - **Target replacement:** explicit resource ids in typed route paths or
      request bodies, authorized through `RequestContext.linkedResources` and
      route policy.
@@ -199,17 +206,19 @@ The next-stack debt falls into four groups:
      for PMS/finance contracts, and VAY-886/A1 affiliate follow-ups for
      affiliate-owned target routes.
 
-9. **`next-booking-admin`: Ask Intelligence scope header**
+9. **Retired: `next-booking-admin` Ask Intelligence scope header**
    - **Old thing:** Ask client sends `X-Hotel-Id` while also sending
      organization scope (`apps/booking-admin/services/api/askIntelligenceClient.ts`
      lines 71-85).
-   - **Current consumer:** Booking Admin Ask Intelligence panel.
-   - **Target replacement:** Ask request scope derived from AuthKit organization
-     plus authorized booking/PMS resource context.
-   - **Owner domain:** Ask Intelligence / auth.
-   - **Deletion blocker / proof needed:** Ask route tests reject mismatched
-     resource scope and frontend no longer treats a client header as authority.
-   - **Follow-up:** VAY-887; include in VAY-881 banlist when migrated.
+   - **Current state:** Removed with the Booking Admin panel, Ask client, and Ask
+     API runtime. There is no current consumer.
+   - **Target replacement:** None. The future hotel employee agent requires a
+     new architecture from VAY-1091.
+   - **Owner domain:** None; the former Ask Intelligence domain is retired.
+   - **Deletion proof:** The frontend client and route are deleted, and the
+     legacy-call surface no longer registers Booking Admin Ask.
+   - **Follow-up:** VAY-887 is superseded by retirement; use VAY-1091 for future
+     agent scope and authorization design.
 
 10. **`next-booking`: public API base fallback**
 
@@ -347,7 +356,8 @@ The next-stack debt falls into four groups:
 - VAY-884: delete Booking Admin helper shims after VAY-883.
 - VAY-885: migrate Platform Admin off direct legacy service clients.
 - VAY-886: move Affiliate Dashboard to target affiliate/finance routes.
-- VAY-887: remove `X-Hotel-Id` as authority from Ask Intelligence requests.
+- VAY-887 is superseded by Ask Intelligence retirement; VAY-1091 owns future
+  hotel employee agent scope and authorization design.
 - VAY-770, VAY-795, VAY-806, and VAY-772: owner tracks for PMS operations,
   finance, platform media/import, and Channex/webhook route families surfaced by
   PMS Web.
@@ -376,14 +386,13 @@ covered routes try to call a legacy service client.
 
 Remaining legacy-runtime env requirements outside the covered route groups:
 
-| Env requirement                          | Remaining surface / retirement condition                           | Owner ticket             | Forbidden by `test:legacy-free` |
-| ---------------------------------------- | ------------------------------------------------------------------ | ------------------------ | ------------------------------- |
-| `BOOKING_DATABASE_URL`                   | Legacy Booking settings/profile fallback removed                   | VAY-760, VAY-883         | Yes                             |
-| `BOOKING_RESERVATIONS_READ_DATABASE_URL` | Booking/PMS reservation reads use target read models only          | VAY-878, VAY-883         | Yes                             |
-| `BOOKING_PUBLIC_API_URL`                 | Public domain/promo and Booking Admin helper fallbacks removed     | VAY-760, VAY-883         | Yes                             |
-| `PMS_API_URL`                            | PMS guest-form sync and Booking Admin/PMS helper fallbacks removed | VAY-878, VAY-883         | Yes                             |
-| `PMS_PUBLIC_API_URL`                     | Public checkout/status/lookup proxy fallbacks removed              | VAY-760 follow-up tracks | Yes                             |
-| `AUTH_LEGACY_MARKETPLACE_JWT_SECRET`     | Platform Admin no longer needs the marketplace-admin JWT handoff   | VAY-885                  | No                              |
-| `AUTH_LEGACY_BOOKING_JWT_SECRET`         | Booking Admin no longer needs legacy Booking JWT handoff           | VAY-883, then VAY-884    | No                              |
-| `AUTH_LEGACY_PMS_JWT_SECRET`             | PMS Web no longer needs legacy PMS JWT handoff                     | VAY-878, then VAY-879    | No                              |
-| `AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET`   | Affiliate Dashboard moves to target affiliate/finance routes       | VAY-886                  | No                              |
+| Env requirement                        | Remaining surface / retirement condition                           | Owner ticket             | Forbidden by `test:legacy-free` |
+| -------------------------------------- | ------------------------------------------------------------------ | ------------------------ | ------------------------------- |
+| Removed: `BOOKING_DATABASE_URL`        | Legacy profile/settings adapters removed                           | VAY-760, VAY-883         | Yes                             |
+| `BOOKING_PUBLIC_API_URL`               | Public domain/promo and Booking Admin helper fallbacks removed     | VAY-760, VAY-883         | Yes                             |
+| `PMS_API_URL`                          | PMS guest-form sync and Booking Admin/PMS helper fallbacks removed | VAY-878, VAY-883         | Yes                             |
+| `PMS_PUBLIC_API_URL`                   | Public checkout/status/lookup proxy fallbacks removed              | VAY-760 follow-up tracks | Yes                             |
+| `AUTH_LEGACY_MARKETPLACE_JWT_SECRET`   | Platform Admin no longer needs the marketplace-admin JWT handoff   | VAY-885                  | No                              |
+| `AUTH_LEGACY_BOOKING_JWT_SECRET`       | Booking Admin no longer needs legacy Booking JWT handoff           | VAY-883, then VAY-884    | No                              |
+| `AUTH_LEGACY_PMS_JWT_SECRET`           | PMS Web no longer needs legacy PMS JWT handoff                     | VAY-878, then VAY-879    | No                              |
+| `AUTH_LEGACY_AFFILIATE_PMS_JWT_SECRET` | Affiliate Dashboard moves to target affiliate/finance routes       | VAY-886                  | No                              |

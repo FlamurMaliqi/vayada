@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import type {
   BookingActiveContentPointer,
@@ -8,6 +9,7 @@ import type {
   OnboardingLifecycleJsonObject,
   ReadyProductReadinessEvidence,
 } from "@vayada/domain-hotels";
+import type { BookingPublicContent } from "@vayada/domain-distribution/booking-publication";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 export type DistributionBookingPublicationTransaction = {
@@ -32,6 +34,7 @@ export type DistributionBookingPublicationInput = {
   outboxLeaseToken: string;
   propertyId: string;
   expectedActiveRevisionId: string | null;
+  expectedPropertyLifecycleRevision: number;
   requestedByUserId: string;
   readiness: {
     contractVersion: "onboarding-product-readiness.v1";
@@ -41,6 +44,7 @@ export type DistributionBookingPublicationInput = {
     sourceManifestHash: string;
     readinessHash: string;
   };
+  publicContent: BookingPublicContent;
   projectedAt: Date;
 };
 
@@ -67,17 +71,17 @@ export class BookingPublicationActiveRevisionConflictError extends Error {
   }
 }
 
-export class BookingPublicationPublicContentUnavailableError extends Error {
-  constructor() {
-    super("A fresh public Booking projection is not available");
-    this.name = "BookingPublicationPublicContentUnavailableError";
-  }
-}
-
 export class BookingPublicationLeaseLostError extends Error {
   constructor() {
     super("The Booking publication outbox lease is no longer current");
     this.name = "BookingPublicationLeaseLostError";
+  }
+}
+
+export class BookingPublicationPropertyUnavailableError extends Error {
+  constructor() {
+    super("The property is not active for public Booking publication");
+    this.name = "BookingPublicationPropertyUnavailableError";
   }
 }
 
@@ -99,8 +103,6 @@ type RevisionRow = {
   builtByUserId: string;
   builtAt: Date | string;
 };
-
-type PublicContentRow = { publicContent: OnboardingLifecycleJsonObject };
 
 /**
  * Distribution-owned implementation of the Booking lifecycle boundary.
@@ -155,6 +157,7 @@ export function createPgDistributionBookingPublicationProjection(config: {
       try {
         await client.query("BEGIN");
         await lockPublicationScope(client, input.propertyId);
+        await assertActiveProperty(client, input.propertyId);
         const current = await selectActive(client, input.propertyId, true);
         if ((current?.revisionId ?? null) !== input.expectedActiveRevisionId) {
           throw new BookingPublicationActiveRevisionConflictError(current?.revisionId ?? null);
@@ -194,6 +197,11 @@ export function createPgDistributionBookingPublicationProjection(config: {
       try {
         await client.query("BEGIN");
         await lockPublicationScope(client, input.propertyId);
+        await assertActiveProperty(
+          client,
+          input.propertyId,
+          input.expectedPropertyLifecycleRevision,
+        );
         await assertCurrentOutboxLease(client, input);
         const current = await selectActive(client, input.propertyId, true);
         const existing = await selectRevision(client, input.operationId);
@@ -219,13 +227,11 @@ export function createPgDistributionBookingPublicationProjection(config: {
         if ((current?.revisionId ?? null) !== input.expectedActiveRevisionId) {
           throw new BookingPublicationActiveRevisionConflictError(current?.revisionId ?? null);
         }
-        const publicContent = await loadPublicContent(client, input.propertyId);
-        if (!publicContent) throw new BookingPublicationPublicContentUnavailableError();
         const revision = await insertRevision(client, {
           revisionId: input.operationId,
           propertyId: input.propertyId,
           readiness: input.readiness as ReadyProductReadinessEvidence<"booking">,
-          publicContent,
+          publicContent: input.publicContent,
           builtByUserId: input.requestedByUserId,
           builtAt: input.projectedAt.toISOString(),
         });
@@ -287,6 +293,22 @@ async function lockPublicationScope(
   );
 }
 
+async function assertActiveProperty(
+  client: DistributionBookingPublicationTransaction,
+  propertyId: string,
+  expectedLifecycleRevision?: number,
+): Promise<void> {
+  const result = await client.query(
+    `SELECT id
+     FROM hotel_catalog.properties
+     WHERE id = $1::uuid AND lifecycle_status = 'active'
+       AND ($2::bigint IS NULL OR lifecycle_revision = $2::bigint)
+     FOR SHARE`,
+    [propertyId, expectedLifecycleRevision ?? null],
+  );
+  if (result.rowCount !== 1) throw new BookingPublicationPropertyUnavailableError();
+}
+
 async function selectActive(
   client: DistributionBookingPublicationTransaction,
   propertyId: string,
@@ -326,72 +348,13 @@ async function selectRevision(
   return result.rows[0] ?? null;
 }
 
-async function loadPublicContent(
-  client: ProjectionClient,
-  propertyId: string,
-): Promise<OnboardingLifecycleJsonObject | null> {
-  const result = await client.query<PublicContentRow>(
-    `SELECT jsonb_build_object(
-       'contractVersion', 'booking-public-content.v1',
-       'profile', jsonb_build_object(
-         'publicId', profile.public_id,
-         'canonicalSlug', profile.canonical_slug,
-         'canonicalUrl', profile.canonical_url,
-         'bookingBaseUrl', profile.booking_base_url,
-         'customDomainUrl', profile.custom_domain_url,
-         'timezone', profile.timezone,
-         'defaultLocale', profile.default_locale,
-         'supportedLocales', to_jsonb(profile.supported_locales),
-         'defaultCurrency', profile.default_currency,
-         'supportedCurrencies', to_jsonb(profile.supported_currencies),
-         'publicIdentity', profile.public_identity,
-         'location', profile.location,
-         'media', profile.media,
-         'amenities', profile.amenities,
-         'policies', profile.policies,
-         'capabilities', profile.capabilities,
-         'supportedQuoteParameters', profile.supported_quote_parameters
-       ),
-       'roomOffers', COALESCE((
-         SELECT jsonb_agg(
-           jsonb_build_object(
-             'publicOfferKey', offer.public_offer_key,
-             'stayDate', offer.stay_date,
-             'availabilityStatus', offer.availability_status,
-             'sellablePublicly', offer.sellable_publicly,
-             'availableRooms', offer.available_rooms,
-             'basePriceAmount', offer.base_price_amount,
-             'taxesAndFeesAmount', offer.taxes_and_fees_amount,
-             'discountsAmount', offer.discounts_amount,
-             'currency', offer.currency,
-             'occupancy', offer.occupancy,
-             'roomSummary', offer.room_summary,
-             'rateSummary', offer.rate_summary,
-             'paymentOptions', to_jsonb(offer.payment_options),
-             'publicPolicy', offer.public_policy,
-             'unavailableReasons', to_jsonb(offer.unavailable_reasons)
-           ) ORDER BY offer.stay_date, offer.public_offer_key
-         )
-         FROM distribution.public_room_offer_snapshots offer
-         WHERE offer.property_id = profile.property_id
-       ), '[]'::jsonb)
-     ) AS "publicContent"
-     FROM distribution.public_hotel_bookability_profiles profile
-     WHERE profile.property_id = $1::uuid
-       AND profile.profile_status = 'public'
-       AND profile.freshness_status = 'fresh'`,
-    [propertyId],
-  );
-  return result.rows[0]?.publicContent ?? null;
-}
-
 async function insertRevision(
   client: ProjectionClient,
   input: {
     revisionId: string;
     propertyId: string;
     readiness: ReadyProductReadinessEvidence<"booking">;
-    publicContent: OnboardingLifecycleJsonObject;
+    publicContent: BookingPublicContent | OnboardingLifecycleJsonObject;
     builtByUserId: string;
     builtAt: string;
   },
@@ -467,10 +430,15 @@ function assertMatchingRetry(
     existing.propertyId !== input.propertyId ||
     existing.sourceManifestHash !== input.readiness.sourceManifestHash ||
     existing.readinessHash !== input.readiness.readinessHash ||
-    existing.builtByUserId !== input.requestedByUserId
+    existing.builtByUserId !== input.requestedByUserId ||
+    !isDeepStrictEqual(existing.publicContent, normalizedJson(input.publicContent))
   ) {
     throw new Error("Stored Booking publication revision does not match its operation");
   }
+}
+
+function normalizedJson(value: BookingPublicContent): unknown {
+  return JSON.parse(JSON.stringify(value)) as unknown;
 }
 
 function revisionProjection(row: RevisionRow): BookingContentRevision {

@@ -109,6 +109,7 @@ type InventoryDayRow = {
   assignedCount: number | string;
   blockedCount: number | string;
   availableCount: number | string;
+  sourceFreshness: unknown;
 };
 
 type InventoryDay = Readonly<{
@@ -382,11 +383,12 @@ async function readLockedSources(
     throw new ImpactSourceNotCurrentError("Inventory materialization is not current");
   }
   const currentBindings = input.currentConfiguration?.sourceInputs.roomBindings ?? [];
+  const inventoryBindings = coverage ? currentBindings : input.roomBindings;
   const days = await readInventoryDays(
     input.client,
     input.proposal.propertyId,
     coverage,
-    currentBindings.map(({ roomTypeId }) => roomTypeId),
+    inventoryBindings,
   );
   const currentCapacityByRoom = new Map(
     currentBindings.map(({ roomTypeId, physicalCapacityCount }) => [
@@ -742,7 +744,7 @@ async function readInventoryDays(
   client: PmsOperatingCalendarImpactClient,
   propertyId: string,
   coverage: CoverageRow | null,
-  expectedRoomTypeIds: readonly string[],
+  expectedRoomBindings: readonly PmsOperatingCalendarRoomBinding[],
 ): Promise<readonly InventoryDay[]> {
   const result = await client.query<InventoryDayRow>(
     `SELECT room_type_id::text AS "roomTypeId", stay_date::text AS "stayDate",
@@ -759,7 +761,7 @@ async function readInventoryDays(
             manual_sellable_limit_count AS "manualSellableLimitCount",
             effective_sellable_limit_count AS "effectiveSellableLimitCount",
             assigned_count AS "assignedCount", blocked_count AS "blockedCount",
-            available_count AS "availableCount"
+            available_count AS "availableCount", source_freshness AS "sourceFreshness"
      FROM pms.inventory_days
      WHERE property_id = $1::uuid
        AND ($2::date IS NULL OR stay_date BETWEEN $2::date AND $3::date)
@@ -772,7 +774,22 @@ async function readInventoryDays(
     ],
   );
   if (!coverage && result.rows.length > 0) {
-    throw new ImpactSourceInvariantError("Canonical inventory exists without coverage");
+    const capacities = new Map(
+      expectedRoomBindings.map(({ roomTypeId, physicalCapacityCount }) => [
+        roomTypeId,
+        physicalCapacityCount,
+      ]),
+    );
+    if (
+      !result.rows.every((row) => {
+        const roomTypeId = normalizeUuid(row.roomTypeId);
+        const capacity = roomTypeId ? capacities.get(roomTypeId) : undefined;
+        return capacity !== undefined && pristineOnboardingLegacyDay(row, capacity);
+      })
+    ) {
+      throw new ImpactSourceInvariantError("Canonical inventory exists without coverage");
+    }
+    return Object.freeze([]);
   }
   const days = result.rows.map(parseInventoryDay);
   if (days.some((day) => !day)) throw new ImpactSourceInvariantError("Inventory day is malformed");
@@ -785,7 +802,7 @@ async function readInventoryDays(
     const roomTypeCount = positiveInteger(coverage.roomTypeCount);
     const expected = nonNegativeInteger(coverage.expectedDayCount);
     const materialized = nonNegativeInteger(coverage.materializedDayCount);
-    const expectedRooms = new Set(expectedRoomTypeIds);
+    const expectedRooms = new Set(expectedRoomBindings.map(({ roomTypeId }) => roomTypeId));
     const coverageDayCount =
       coverageFrom && coverageThrough
         ? Math.floor(
@@ -819,6 +836,55 @@ async function readInventoryDays(
     }
   }
   return Object.freeze(parsedDays);
+}
+
+function pristineOnboardingLegacyDay(row: InventoryDayRow, physicalCapacityCount: number): boolean {
+  const freshness = exactRecord(row.sourceFreshness, ["pms"]) ? row.sourceFreshness["pms"] : null;
+  const total = nullableNonNegativeInteger(row.totalCount);
+  const assigned = nullableNonNegativeInteger(row.assignedCount);
+  const blocked = nullableNonNegativeInteger(row.blockedCount);
+  const available = nullableNonNegativeInteger(row.availableCount);
+  return (
+    row.calendarRevision === null &&
+    row.inventoryRevision === null &&
+    row.generatedSellableLimitCount === null &&
+    row.channelSellableLimitCount === null &&
+    row.manualSellableLimitCount === null &&
+    row.effectiveSellableLimitCount === null &&
+    row.generatedSourceRevision === null &&
+    row.channelSourceRevision === null &&
+    row.manualSourceRevision === null &&
+    row.blockSourceRevision === null &&
+    row.bookingSourceRevision === null &&
+    exactRecord(freshness, ["status", "generatedAt", "horizonDays"]) &&
+    freshness["status"] === "fresh" &&
+    freshness["horizonDays"] === 366 &&
+    databaseTimestampValue(freshness["generatedAt"]) &&
+    total === physicalCapacityCount &&
+    assigned === 0 &&
+    blocked === 0 &&
+    ((row.status === "open" && available === total) || (row.status === "closed" && available === 0))
+  );
+}
+
+function databaseTimestampValue(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/,
+  );
+  if (!match) return false;
+  const calendarDate = `${match[1]}-${match[2]}-${match[3]}`;
+  const midnight = new Date(`${calendarDate}T00:00:00.000Z`);
+  const offset = match[7]!;
+  return (
+    validDate(midnight) &&
+    midnight.toISOString().slice(0, 10) === calendarDate &&
+    Number(match[4]) <= 23 &&
+    Number(match[5]) <= 59 &&
+    Number(match[6]) <= 59 &&
+    (offset === "Z" || (Number(offset.slice(1, 3)) <= 23 && Number(offset.slice(4)) <= 59)) &&
+    validDate(new Date(value))
+  );
 }
 
 async function readActiveReservations(

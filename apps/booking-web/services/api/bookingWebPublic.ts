@@ -82,6 +82,7 @@ export type BookingWebPublicOffer = {
   availableRooms: number;
   refundable: boolean;
   mealPlan: string | null;
+  amenities?: string[];
   paymentOptions: string[];
   totals: {
     currency: string;
@@ -409,11 +410,14 @@ export function toLegacyRooms(
           ? undefined
           : Array.from({ length: nights }, () => nonRefundableRate),
       currency: flexible.totals.currency,
-      amenities: displayRoom?.amenities?.length
-        ? displayRoom.amenities
-        : flexible.mealPlan
-          ? [flexible.mealPlan]
-          : [],
+      amenities:
+        flexible.amenities !== undefined
+          ? flexible.amenities
+          : displayRoom?.amenities?.length
+            ? displayRoom.amenities
+            : flexible.mealPlan
+              ? [flexible.mealPlan]
+              : [],
       images: displayRoom?.images?.length ? displayRoom.images : [FALLBACK_IMAGE],
       bedType: displayRoom?.bedType || "",
       remainingRooms: Math.max(0, flexible.availableRooms),

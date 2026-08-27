@@ -7,7 +7,7 @@
     "name": "api"
   },
   "scripts": {
-    "build:backend-packages": "npm --workspace @vayada/backend-config run build && npm --workspace @vayada/backend-http run build && npm --workspace @vayada/backend-db run build && npm --workspace @vayada/backend-auth run build && npm --workspace @vayada/backend-authorization run build && npm --workspace @vayada/backend-test run build && npm --workspace @vayada/domain-hotels run build && npm --workspace @vayada/domain-pms run build && npm --workspace @vayada/domain-booking run build && npm --workspace @vayada/domain-distribution run build && npm --workspace @vayada/domain-finance run build && npm --workspace @vayada/domain-intelligence run build && npm --workspace @vayada/domain-marketplace run build",
+    "build:backend-packages": "npm --workspace @vayada/backend-config run build && npm --workspace @vayada/backend-http run build && npm --workspace @vayada/backend-db run build && npm --workspace @vayada/backend-auth run build && npm --workspace @vayada/backend-authorization run build && npm --workspace @vayada/backend-test run build && npm --workspace @vayada/domain-hotels run build && npm --workspace @vayada/domain-pms run build && npm --workspace @vayada/domain-pms-channex run build && npm --workspace @vayada/domain-booking run build && npm --workspace @vayada/domain-distribution run build && npm --workspace @vayada/domain-finance run build && npm --workspace @vayada/domain-marketplace run build",
     "prebuild": "npm run build:backend-packages",
     "predev": "npm run build:backend-packages",
     "dev": "tsx watch src/server.ts",
@@ -24,7 +24,6 @@
     "@aws-sdk/client-s3": "^3.1088.0",
     "@aws-sdk/client-secrets-manager": "^3.1090.0",
     "@aws-sdk/s3-request-presigner": "^3.1088.0",
-    "@openai/agents": "^0.11.6",
     "@smithy/node-http-handler": "4.9.13",
     "@vayada/backend-auth": "0.0.0",
     "@vayada/backend-authorization": "0.0.0",
@@ -35,14 +34,16 @@
     "@vayada/domain-distribution": "0.0.0",
     "@vayada/domain-finance": "0.0.0",
     "@vayada/domain-hotels": "0.0.0",
-    "@vayada/domain-intelligence": "0.0.0",
     "@vayada/domain-marketplace": "0.0.0",
     "@vayada/domain-pms": "0.0.0",
+    "@vayada/domain-pms-channex": "0.0.0",
+    "@vayada/locale-constants": "*",
     "@workos-inc/node": "^10.2.0",
     "countries-and-timezones": "3.9.0",
     "fastify": "^5.7.0",
     "pg": "^8.21.0",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^20",

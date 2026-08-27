@@ -17,6 +17,7 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import type { AffiliateDashboardReadRepository } from "./routes/affiliateDashboard.js";
 
 const affiliateId = "affiliate_target_886";
@@ -182,6 +183,7 @@ function buildAffiliateApp(
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: affiliateIdentityRepository(),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["affiliate.payout.manage"];

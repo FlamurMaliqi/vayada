@@ -95,7 +95,7 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(page.getByRole("button", { name: "Add External Creator" })).toHaveCount(0);
   });
 
-  test("creates the first hotel with the complete shared minimum", async ({ page, baseURL }) => {
+  test("recovers the first hotel after a correlated create conflict", async ({ page, baseURL }) => {
     await mockGooglePlaces(page);
     await primeBrowserState(page, true);
     await mockAuthSession(page);
@@ -110,11 +110,14 @@ test.describe("marketplace-web shared setup activation", () => {
 
     const logoMediaObjectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     let propertyCreated = false;
+    let propertyCreateRequests = 0;
+    let createdPropertyPayload: Record<string, unknown> | null = null;
     let logoUploadFinalized = false;
     let logoAssigned = false;
     let personalMediaRequests = 0;
     let accountProfileWrites = 0;
     let creatorTrackSelected = false;
+    const launchSettingsWrites: unknown[] = [];
     await page.route(/\/api\/hotel-setup\/status/, async (route) => {
       if (route.request().method() === "OPTIONS") {
         await fulfillCorsPreflight(route);
@@ -170,6 +173,7 @@ test.describe("marketplace-web shared setup activation", () => {
         return;
       }
       const payload = route.request().postDataJSON();
+      propertyCreateRequests += 1;
       expect(payload).toMatchObject({
         displayName: "Hotel Alpenrose",
         propertyType: "hotel",
@@ -184,34 +188,54 @@ test.describe("marketplace-web shared setup activation", () => {
         },
         contacts: [
           {
+            channelType: "phone",
+            value: "+94 77 123 4567",
+            purpose: "general",
+            isPublic: true,
+          },
+          {
+            channelType: "whatsapp",
+            value: "+49 170 1234567",
+            purpose: "general",
+            isPublic: true,
+          },
+          {
             channelType: "email",
             value: "owner@alpenrose.example",
             purpose: "general",
-            isPublic: false,
-          },
-          {
-            channelType: "phone",
-            value: "+49 89 123456",
-            purpose: "general",
-            isPublic: false,
-          },
-          {
-            channelType: "website",
-            value: "https://alpenrose.example",
-            purpose: "general",
-            isPublic: false,
+            isPublic: true,
           },
         ],
       });
       expect(payload.location.timezone).toMatch(/\//);
       expect(route.request().headers()["idempotency-key"]).toBeTruthy();
       propertyCreated = true;
+      createdPropertyPayload = payload;
       await route.fulfill({
-        status: 201,
+        status: 409,
         headers: corsHeaders(route),
-        json: sharedPropertyProfile(payload),
+        json: {
+          code: "idempotency_key_conflict",
+          detail: "These hotel details changed during the save. Review them and try again.",
+          propertyId,
+        },
       });
     });
+    await page.route(
+      new RegExp(`/api/hotel-setup/properties/${propertyId}/profile$`),
+      async (route) => {
+        if (route.request().method() === "OPTIONS") {
+          await fulfillCorsPreflight(route);
+          return;
+        }
+        expect(createdPropertyPayload).not.toBeNull();
+        await route.fulfill({
+          status: 200,
+          headers: corsHeaders(route),
+          json: sharedPropertyProfile(createdPropertyPayload ?? {}),
+        });
+      },
+    );
     await page.route(/\/auth\/profile$/, async (route) => {
       if (route.request().method() === "OPTIONS") {
         await fulfillCorsPreflight(route);
@@ -308,6 +332,18 @@ test.describe("marketplace-web shared setup activation", () => {
             presentationAssignments: [],
           },
         });
+      },
+    );
+    await page.route(
+      new RegExp(`/api/hotel-setup/properties/${propertyId}/launch-settings$`),
+      async (route) => {
+        if (route.request().method() === "OPTIONS") {
+          await fulfillCorsPreflight(route);
+          return;
+        }
+        const payload = route.request().postDataJSON();
+        launchSettingsWrites.push(payload);
+        await route.fulfill({ status: 200, headers: corsHeaders(route), json: payload });
       },
     );
 
@@ -426,9 +462,37 @@ test.describe("marketplace-web shared setup activation", () => {
 
     await page.getByRole("button", { name: "Continue" }).click();
 
-    await page.getByRole("textbox", { name: /Contact email/ }).fill("owner@alpenrose.example");
-    await page.getByRole("textbox", { name: /Phone number/ }).fill("+49 89 123456");
-    await page.getByRole("textbox", { name: /Website/ }).fill("https://alpenrose.example");
+    await expect(page.getByRole("heading", { name: "Set up guest preferences" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: /Default currency/ })).toHaveValue("EUR");
+    await expect(page.getByRole("combobox", { name: /Default language/ })).toHaveValue("de");
+    await expect(page.getByRole("checkbox", { name: "English" })).toBeChecked();
+    await expect(page.getByRole("button", { name: "Skip for now, configure later" })).toBeVisible();
+    await page.getByRole("checkbox", { name: "CHF" }).check({ force: true });
+    await page.getByRole("textbox", { name: /Instagram/ }).fill("https://instagram.com/alpenrose");
+    await page.getByRole("textbox", { name: /Facebook/ }).fill("https://facebook.com/alpenrose");
+    await page.getByRole("textbox", { name: /TikTok/ }).fill("https://tiktok.com/@alpenrose");
+    await page.getByRole("textbox", { name: /YouTube/ }).fill("https://youtube.com/@alpenrose");
+    await page.getByRole("button", { name: "Continue" }).click();
+
+    await expect(page.getByText("Step 4 of 4 · Contact information")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "How can guests reach you?" })).toBeVisible();
+    await expect(
+      page.getByText("This information is shown when guests click 'Contact' on your booking page."),
+    ).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Phone number country code" })).toHaveValue(
+      "DE",
+    );
+    await page.getByRole("combobox", { name: "Phone number country code" }).selectOption("LK");
+    await page.getByRole("textbox", { name: /^Phone number/ }).fill("0771234567");
+    await expect(page.getByRole("textbox", { name: /^Phone number/ })).toHaveValue(
+      "+94 77 123 4567",
+    );
+    await expect(page.getByRole("textbox", { name: /^WhatsApp number/ })).toHaveValue(
+      "+94 77 123 4567",
+    );
+    await page.getByRole("textbox", { name: /^WhatsApp number/ }).fill("+49 170 1234567");
+    await page.getByRole("textbox", { name: /^Email/ }).fill("owner@alpenrose.example");
+    await expect(page.getByRole("textbox", { name: /Website/ })).toHaveCount(0);
     await page.getByRole("button", { name: "Save and continue" }).click();
 
     await expect(page.getByRole("img", { name: "vayada" })).toBeVisible();
@@ -449,11 +513,24 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(marketplaceProgress.locator('[data-state="upcoming"]')).toHaveCount(0);
     await expect(page.getByText("Step 4 of 4", { exact: true })).toBeVisible();
     expect(propertyCreated).toBe(true);
+    expect(propertyCreateRequests).toBe(1);
     expect(logoUploadFinalized).toBe(true);
     expect(logoAssigned).toBe(true);
     expect(accountProfileWrites).toBe(0);
     expect(personalMediaRequests).toBe(0);
     expect(publicProfileWrites).toEqual([]);
+    expect(launchSettingsWrites).toEqual([
+      {
+        defaultCurrency: "EUR",
+        supportedCurrencies: ["CHF"],
+        defaultLanguage: "de",
+        supportedLanguages: ["en"],
+        instagram: "https://instagram.com/alpenrose",
+        facebook: "https://facebook.com/alpenrose",
+        tiktok: "https://tiktok.com/@alpenrose",
+        youtube: "https://youtube.com/@alpenrose",
+      },
+    ]);
     const review = page.locator('section[aria-labelledby="setup-review-title"]');
     await expect(review).toBeVisible();
     await expect(
@@ -498,22 +575,22 @@ test.describe("marketplace-web shared setup activation", () => {
     await expect(page.getByText("Hotel Operations", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Creator Marketplace", { exact: true })).toHaveCount(0);
     const setupProgress = page.getByRole("progressbar", { name: "Hotel setup progress" });
-    await expect(setupProgress).toHaveAttribute("aria-valuemax", "8");
+    await expect(setupProgress).toHaveAttribute("aria-valuemax", "9");
     await expect(setupProgress).toHaveAttribute("aria-valuenow", "2");
     await expect(setupProgress).toHaveAttribute(
       "aria-valuetext",
-      "Step 2 of 8: Describe your hotel",
+      "Step 2 of 9: Describe your hotel",
     );
     await expect(setupProgress.locator('[data-state="reached"]')).toHaveCount(2);
     await expect(setupProgress.locator('[data-state="upcoming"]')).toHaveCount(6);
-    await expect(page.getByText("Step 2 of 8", { exact: true })).toBeVisible();
+    await expect(page.getByText("Step 2 of 9", { exact: true })).toBeVisible();
     await expect(page.locator("aside")).toHaveCount(0);
     const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
     const formCard = page.getByTestId("hotel-setup-form-card");
     await expect(currentStep.getByRole("textbox", { name: "Hotel description" })).toBeVisible();
     await expect(formCard.getByRole("textbox", { name: "Hotel description" })).toBeVisible();
     await expect(formCard.getByRole("heading", { name: "Describe your hotel" })).toHaveCount(0);
-    await expect(formCard.getByText("Step 2 of 8", { exact: true })).toHaveCount(0);
+    await expect(formCard.getByText("Step 2 of 9", { exact: true })).toHaveCount(0);
     await expect(formCard.locator("form")).toHaveCount(1);
     await expect(currentStep.getByRole("button", { name: "Save hotel profile" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Continue setup" })).toHaveCount(0);
@@ -562,11 +639,9 @@ test.describe("marketplace-web shared setup activation", () => {
     const setupProgress = page.getByRole("progressbar", {
       name: "Hotel setup progress",
     });
-    await expect(setupProgress).toHaveAttribute("aria-valuemax", "8");
+    await expect(setupProgress).toHaveAttribute("aria-valuemax", "9");
     await expect(setupProgress).toHaveAttribute("aria-valuenow", "2");
-    await expect(
-      page.getByRole("heading", { name: "Set up rooms, rates, and availability" }),
-    ).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Add your first room type" })).toHaveCount(0);
     expect(page.url()).toBe(inlineSetupUrl);
     expect(handoffRequests).toBe(0);
   });
@@ -594,14 +669,314 @@ test.describe("marketplace-web shared setup activation", () => {
     const inlineSetupUrl = page.url();
     const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
     await expect(
-      currentStep.getByRole("heading", { name: "Set up rooms, rates, and availability" }),
+      currentStep.getByRole("heading", { name: "Add your first room type" }),
+    ).toBeVisible();
+    await expect(
+      currentStep.getByText(
+        "Just the basics to get started. You can add more rooms and fine-tune pricing anytime.",
+      ),
     ).toBeVisible();
     await expect(currentStep.getByLabel("Room type name")).toBeVisible();
-    await expect(currentStep.getByLabel("Number of rooms")).toBeVisible();
+    await expect(currentStep.getByLabel("Room type name")).toHaveAttribute(
+      "placeholder",
+      "e.g. Deluxe Double, Pool Villa, Studio",
+    );
+    await expect(currentStep.getByLabel("Number of rooms/units")).toHaveValue("1");
+    await expect(currentStep.getByText("How many of this room type do you have?")).toBeVisible();
     await expect(currentStep.getByLabel("Nightly rate")).toBeVisible();
-    await expect(currentStep.getByRole("button", { name: "Save rooms and rates" })).toBeVisible();
+    await expect(currentStep.getByLabel("Max guests")).toHaveValue("2");
+    await expect(currentStep.getByTestId("room-rate-currency")).toHaveText("EUR");
+    await expect(currentStep.getByLabel("Currency")).toHaveCount(0);
+    await expect(currentStep.getByLabel("Minimum stay")).toHaveCount(0);
+    await expect(currentStep.getByRole("button", { name: "Save and continue" })).toBeVisible();
     expect(page.url()).toBe(inlineSetupUrl);
     expect(handoffRequests).toBe(0);
+  });
+
+  test("persists an explicit Commission choice before payment methods", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedRoadmapStatus("billing_plan"));
+    let commissionSelection: Record<string, unknown> | null = null;
+    await page.route(
+      new RegExp(`/api/finance/properties/${propertyId}/(?:plan-status|select-commission)$`),
+      async (route) => {
+        if (route.request().method() === "OPTIONS") {
+          await fulfillCorsPreflight(route);
+          return;
+        }
+        if (route.request().method() === "POST") {
+          commissionSelection = route.request().postDataJSON() as Record<string, unknown>;
+        }
+        await route.fulfill({
+          status: route.request().method() === "POST" ? 201 : 200,
+          headers: corsHeaders(route),
+          json: {
+            planStatus: {
+              plan: "commission",
+              status: "commission",
+              currency: "EUR",
+              activeRoomCount: 2,
+              amountMinor: 3_500,
+              checkoutPending: false,
+              updatedAt: "2026-08-11T12:00:00.000Z",
+            },
+          },
+        });
+      },
+    );
+
+    await page.goto(setupUrl(baseURL));
+    const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
+    await expect(currentStep.getByRole("heading", { name: "Choose your plan" })).toBeVisible();
+    await expect(currentStep.getByText("5% per direct booking")).toBeVisible();
+    await expect(currentStep.getByText("€35 / 30 days")).toBeVisible();
+    const commissionRequest = page.waitForRequest(
+      (request) => request.method() === "POST" && request.url().endsWith(`/select-commission`),
+    );
+    await currentStep.getByRole("button", { name: "Continue to payment methods" }).click();
+    await commissionRequest;
+
+    expect(commissionSelection).toMatchObject({
+      commandId: expect.stringContaining("finance-plan-commission"),
+      idempotencyKey: expect.any(String),
+    });
+  });
+
+  test("saves multi-select guest payment methods with inherited currency and bank details", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedRoadmapStatus("payment"));
+    let paymentWrite: Record<string, unknown> | null = null;
+    await page.route(
+      new RegExp(`/api/finance/properties/${propertyId}/payment-settings$`),
+      async (route) => {
+        if (route.request().method() === "OPTIONS") {
+          await fulfillCorsPreflight(route);
+          return;
+        }
+        if (route.request().method() === "PATCH") {
+          paymentWrite = route.request().postDataJSON() as Record<string, unknown>;
+        }
+        const paymentSettings =
+          route.request().method() === "PATCH"
+            ? (paymentWrite?.paymentSettings as Record<string, unknown>)
+            : {
+                paymentsEnabled: false,
+                paymentProvider: "manual",
+                acceptedMethods: [],
+                depositPolicy: {},
+                requiresManualReview: false,
+              };
+        await route.fulfill({
+          status: 200,
+          headers: corsHeaders(route),
+          json: {
+            paymentSettings: {
+              ...paymentSettings,
+              defaultCurrency: "IDR",
+              supportedCurrencies: ["IDR"],
+              providerAccount: {
+                providerAccountId: null,
+                provider: "bank_transfer",
+                status: "active",
+                onboardingStatus: "completed",
+                chargesEnabled: false,
+                payoutsEnabled: false,
+              },
+            },
+          },
+        });
+      },
+    );
+
+    await page.goto(setupUrl(baseURL));
+    const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
+    await expect(currentStep.getByRole("heading", { name: "How guests can pay" })).toBeVisible();
+    await expect(currentStep.getByLabel("Currency")).toHaveCount(0);
+    await expect(currentStep.getByText("Payments use your property currency: IDR.")).toBeVisible();
+    await currentStep.getByRole("button", { name: /Bank Transfer/ }).click();
+    await currentStep.getByLabel("Bank name").fill("Bank Central Asia");
+    await currentStep.getByLabel("Account holder").fill("Hotel Alpenrose");
+    await currentStep.getByLabel("Account number / IBAN").fill("1234567890");
+    await currentStep.getByRole("button", { name: /PayPal/ }).click();
+    await currentStep.getByLabel("PayPal email").fill("payments@alpenrose.test");
+    const paymentSettingsRequest = page.waitForRequest(
+      (request) => request.method() === "PATCH" && request.url().endsWith(`/payment-settings`),
+    );
+    await currentStep.getByRole("button", { name: "Save and continue" }).click();
+    await paymentSettingsRequest;
+
+    expect(paymentWrite).toMatchObject({
+      paymentSettings: {
+        acceptedMethods: ["pay_at_property", "cash", "manual_card", "bank_transfer", "paypal"],
+        depositPolicy: {
+          bankName: "Bank Central Asia",
+          accountHolder: "Hotel Alpenrose",
+          accountNumber: "1234567890",
+          paypalEmail: "payments@alpenrose.test",
+        },
+      },
+    });
+    expect(paymentWrite?.paymentSettings).not.toHaveProperty("defaultCurrency");
+    expect(paymentWrite?.paymentSettings).not.toHaveProperty("supportedCurrencies");
+  });
+
+  test("inherits currency and can add another room type before continuing", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    const roomWrites: Record<string, unknown>[] = [];
+    await page.route(/\/api\/hotel-setup\/status/, async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: sharedRoadmapStatus(
+          roomWrites.length === 2 ? "guest_settings_policies" : "rooms_rates_availability",
+        ),
+      });
+    });
+    await mockOperationsApis(page, "IDR", roomWrites);
+    await routeJson(
+      page,
+      new RegExp(`/api/booking/hotels/${propertyId}/settings/property(?:\\?|$)`),
+      {
+        property_name: "Hotel Alpenrose",
+        check_in_time: "15:00",
+        check_out_time: "11:00",
+        terms_text: "",
+        cancellation_policy_text: "Free cancellation until 7 days before arrival.",
+      },
+    );
+
+    await page.goto(setupUrl(baseURL));
+    const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
+    await expect(currentStep.getByTestId("room-rate-currency")).toHaveText("IDR");
+    await currentStep.getByLabel("Room type name").fill("Deluxe Double");
+    await currentStep.getByRole("button", { name: "Save and continue" }).click();
+
+    await expect(currentStep.getByText("Room type saved.")).toBeVisible();
+    await expect(currentStep.getByRole("button", { name: "Add another room type" })).toBeVisible();
+    await expect(currentStep.getByRole("button", { name: "Continue setup" })).toBeVisible();
+    expect(roomWrites).toHaveLength(1);
+    expect(roomWrites[0]).toMatchObject({
+      initialSetupOnly: true,
+      currency: "IDR",
+      seasons: [expect.objectContaining({ minStay: 1 })],
+    });
+
+    await currentStep.getByRole("button", { name: "Add another room type" }).click();
+    await expect(currentStep.getByLabel("Room type name")).toHaveValue("");
+    await expect(currentStep.getByLabel("Number of rooms/units")).toHaveValue("1");
+    await expect(currentStep.getByLabel("Max guests")).toHaveValue("2");
+    await expect(currentStep.getByTestId("room-rate-currency")).toHaveText("IDR");
+    await currentStep.getByLabel("Room type name").fill("Pool Villa");
+    await currentStep.getByRole("button", { name: "Save and continue" }).click();
+
+    await expect(currentStep.getByText("Room type saved.")).toBeVisible();
+    expect(roomWrites).toHaveLength(2);
+    expect(roomWrites[1]).toMatchObject({
+      initialSetupOnly: false,
+      name: "Pool Villa",
+      currency: "IDR",
+      seasons: [expect.objectContaining({ minStay: 1 })],
+    });
+
+    await currentStep.getByRole("button", { name: "Continue setup" }).click();
+    await expect(
+      currentStep.getByRole("heading", { name: "Review guest settings and policies" }),
+    ).toBeVisible();
+    const terms = currentStep.getByRole("textbox", { name: "Terms & Conditions", exact: true });
+    await expect(terms).toHaveValue(/direct agreement with us for our accommodation services/);
+    await expect(terms).toHaveAttribute(
+      "placeholder",
+      "Enter your Terms & Conditions. These are shown to guests before they confirm a booking.",
+    );
+    await terms.fill("");
+    await expect(
+      currentStep.getByText(
+        "Without Terms & Conditions, guests won't see a T&C link on the payment page. We recommend keeping at least the default.",
+      ),
+    ).toBeVisible();
+    await expect(
+      currentStep.getByText(
+        "Guests see these policies before they confirm a booking. They must agree to your Terms & Conditions and Cancellation Policy on the payment page.",
+      ),
+    ).toBeVisible();
+  });
+
+  test("requires the nightly rate to be re-entered when property currency changes", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedRoadmapStatus("rooms_rates_availability"));
+    const roomWrites: Record<string, unknown>[] = [];
+    await mockOperationsApis(page, "USD", roomWrites, { conflictCurrency: "IDR" });
+
+    await page.goto(setupUrl(baseURL));
+    const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
+    await currentStep.getByLabel("Room type name").fill("Deluxe Double");
+    await currentStep.getByLabel("Nightly rate").fill("280");
+    await currentStep.getByRole("button", { name: "Save and continue" }).click();
+
+    await expect(currentStep.getByTestId("room-rate-currency")).toHaveText("IDR");
+    await expect(currentStep.getByLabel("Nightly rate")).toHaveValue("");
+    await expect(
+      currentStep.getByText(
+        "Property currency changed to IDR. Review and re-enter the nightly rate.",
+      ),
+    ).toBeVisible();
+    await expect(currentStep.getByText("Room type saved.")).toHaveCount(0);
+    expect(roomWrites).toHaveLength(1);
+    expect(roomWrites[0]).toMatchObject({ currency: "USD" });
+
+    await currentStep.getByLabel("Nightly rate").fill("280");
+    await currentStep.getByRole("button", { name: "Save and continue" }).click();
+    await expect(currentStep.getByText("Room type saved.")).toBeVisible();
+    expect(roomWrites).toHaveLength(2);
+    expect(roomWrites[1]).toMatchObject({ currency: "IDR" });
+  });
+
+  test("retries an ambiguous additional-room write with the exact same command", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedRoadmapStatus("rooms_rates_availability"));
+    const roomWrites: Record<string, unknown>[] = [];
+    await mockOperationsApis(page, "EUR", roomWrites, { failFirstAdditional: true });
+
+    await page.goto(setupUrl(baseURL));
+    const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
+    await currentStep.getByLabel("Room type name").fill("Deluxe Double");
+    await currentStep.getByRole("button", { name: "Save and continue" }).click();
+    await currentStep.getByRole("button", { name: "Add another room type" }).click();
+    await currentStep.getByLabel("Room type name").fill("Pool Villa");
+    await currentStep.getByRole("button", { name: "Save and continue" }).click();
+
+    await expect(currentStep.getByRole("button", { name: "Retry save" })).toBeVisible();
+    await expect(currentStep.getByLabel("Room type name")).toBeDisabled();
+    expect(roomWrites).toHaveLength(2);
+
+    await currentStep.getByRole("button", { name: "Retry save" }).click();
+    await expect(currentStep.getByText("Room type saved.")).toBeVisible();
+    expect(roomWrites).toHaveLength(3);
+    expect(roomWrites[2]).toEqual(roomWrites[1]);
   });
 
   test("does not submit room setup twice when progress refresh fails", async ({
@@ -667,19 +1042,24 @@ test.describe("marketplace-web shared setup activation", () => {
         });
       },
     );
+    await mockPropertyLaunchSettings(page);
 
     await page.goto(setupUrl(baseURL));
     const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
     await currentStep.getByLabel("Room type name").fill("Alpine Suite");
-    await currentStep.getByRole("button", { name: "Save rooms and rates" }).click();
+    await currentStep.getByRole("button", { name: "Save and continue" }).click();
 
-    await expect(currentStep.getByText("Rooms and rates were saved.")).toBeVisible();
-    const refresh = currentStep.getByRole("button", { name: "Refresh setup progress" });
-    await expect(refresh).toBeVisible();
+    await expect(currentStep.getByText("Room type saved.")).toBeVisible();
+    const continueSetup = currentStep.getByRole("button", { name: "Continue setup" });
+    await expect(continueSetup).toBeVisible();
     expect(roomPostCount).toBe(1);
 
-    await refresh.click();
-    await expect(currentStep.getByText("Rooms and rates were saved.")).toBeVisible();
+    await continueSetup.click();
+    await expect(currentStep.getByText("Room type saved.")).toBeVisible();
+    await expect(currentStep.getByText(/setup progress could not be refreshed/i)).toBeVisible();
+    expect(roomPostCount).toBe(1);
+
+    await continueSetup.click();
     expect(roomPostCount).toBe(1);
   });
 
@@ -695,12 +1075,10 @@ test.describe("marketplace-web shared setup activation", () => {
     await page.goto(setupUrl(baseURL));
 
     const setupProgress = page.getByRole("progressbar", { name: "Hotel setup progress" });
-    await expect(setupProgress).toHaveAttribute("aria-valuemax", "6");
+    await expect(setupProgress).toHaveAttribute("aria-valuemax", "7");
     await expect(setupProgress.locator('[data-state="reached"]')).toHaveCount(2);
     await expect(setupProgress.locator('[data-state="upcoming"]')).toHaveCount(4);
-    await expect(
-      page.getByRole("heading", { name: "Set up rooms, rates, and availability" }),
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Add your first room type" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Describe your hotel" })).toHaveCount(0);
     await expect(
       page.getByRole("heading", { name: "Prepare your collaboration offer" }),
@@ -1611,7 +1989,16 @@ async function mockSharedSetupStatus(page: Page, status: AdaptiveHotelSetupStatu
   });
 }
 
-async function mockOperationsApis(page: Page) {
+async function mockOperationsApis(
+  page: Page,
+  currency = "EUR",
+  roomWrites?: Record<string, unknown>[],
+  options?: { conflictCurrency?: string; failFirstAdditional?: boolean },
+) {
+  let additionalAttempts = 0;
+  let currentCurrency = currency;
+  let writeAttempts = 0;
+  await mockPropertyLaunchSettings(page, () => currentCurrency);
   await page.route(
     new RegExp(`/api/pms/properties/${propertyId}/room-types(?:\\?|$)`),
     async (route) => {
@@ -1632,6 +2019,29 @@ async function mockOperationsApis(page: Page) {
         });
         return;
       }
+      const payload = route.request().postDataJSON() as Record<string, unknown>;
+      roomWrites?.push(payload);
+      if (options?.conflictCurrency && writeAttempts++ === 0) {
+        currentCurrency = options.conflictCurrency;
+        await route.fulfill({
+          status: 409,
+          headers: corsHeaders(route),
+          json: {
+            code: "property_currency_conflict",
+            category: "conflict",
+            message: "Property currency changed. Review the nightly rate and try again.",
+          },
+        });
+        return;
+      }
+      if (
+        payload.initialSetupOnly === false &&
+        options?.failFirstAdditional &&
+        additionalAttempts++ === 0
+      ) {
+        await route.abort("failed");
+        return;
+      }
       await route.fulfill({
         status: 201,
         headers: corsHeaders(route),
@@ -1640,6 +2050,32 @@ async function mockOperationsApis(page: Page) {
           propertyId,
           item: {},
           commandMeta: {},
+        },
+      });
+    },
+  );
+}
+
+async function mockPropertyLaunchSettings(page: Page, currency: string | (() => string) = "EUR") {
+  await page.route(
+    new RegExp(`/api/hotel-setup/properties/${propertyId}/launch-settings(?:\\?|$)`),
+    async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json: {
+          defaultCurrency: typeof currency === "function" ? currency() : currency,
+          supportedCurrencies: [],
+          defaultLanguage: "en",
+          supportedLanguages: [],
+          instagram: "",
+          facebook: "",
+          tiktok: "",
+          youtube: "",
         },
       });
     },
@@ -1656,6 +2092,32 @@ async function mockMarketplaceProfileApis(
     propertyPresentation?: unknown[];
   },
 ) {
+  await page.route(
+    new RegExp(`/api/hotel-setup/properties/${propertyId}/launch-settings$`),
+    async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await fulfillCorsPreflight(route);
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        headers: corsHeaders(route),
+        json:
+          route.request().method() === "PUT"
+            ? route.request().postDataJSON()
+            : {
+                defaultCurrency: "EUR",
+                supportedCurrencies: ["CHF"],
+                defaultLanguage: "de",
+                supportedLanguages: ["en"],
+                instagram: "https://instagram.com/alpenrose",
+                facebook: "https://facebook.com/alpenrose",
+                tiktok: "https://tiktok.com/@alpenrose",
+                youtube: "https://youtube.com/@alpenrose",
+              },
+      });
+    },
+  );
   await routeJson(page, new RegExp(`/api/marketplace/properties/${propertyId}/profile-status`), {
     profile_complete: false,
     missing_fields: ["profile"],
@@ -2058,6 +2520,7 @@ function sharedRoadmapStatus(
     "creator_offer",
     "rooms_rates_availability",
     "guest_settings_policies",
+    "billing_plan",
     "payment",
     "direct_booking_publication",
   ];

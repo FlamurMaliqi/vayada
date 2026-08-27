@@ -36,11 +36,12 @@ AUTH_PUBLIC_ORIGIN=https://<that-frontend-origin>
 AUTH_GATEWAY_UPSTREAM_ORIGIN=http://127.0.0.1:8003
 ```
 
-Browser auth remains the literal relative `/auth` path once that frontend's
-gateway ticket lands. `NEXT_PUBLIC_AUTH_API_URL` continues to point at
+Browser auth uses the literal relative `/auth` path on all five migrated
+frontends. `NEXT_PUBLIC_AUTH_API_URL` continues to point at
 `api.localhost` for existing non-auth TypeScript API consumers; do not repoint
-it to a frontend. `AUTH_FIRST_PARTY_SURFACES` is empty by default so the direct
-API-host transport remains available until each surface migration is enabled.
+it to a frontend. The launcher enables all five values in
+`AUTH_FIRST_PARTY_SURFACES` by default; override the variable only when testing
+a deliberate compatibility scenario.
 
 To stop the Docker backend services and portless proxy started by the script:
 

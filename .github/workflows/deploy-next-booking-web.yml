@@ -7,6 +7,9 @@ on:
       - main
     paths:
       - "apps/booking-web/**"
+      - "packages/**"
+      - "package.json"
+      - "package-lock.json"
       - ".github/workflows/deploy-next-booking-web.yml"
 
 permissions:
@@ -31,10 +34,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::269416271598:role/vayada-github-actions-deploy
           aws-region: ${{ env.AWS_REGION }}
@@ -43,18 +46,20 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
-          context: ./${{ env.APP_DIR }}
+          context: .
+          file: ./${{ env.APP_DIR }}/Dockerfile
           platforms: linux/amd64
           push: true
           build-args: |
             NEXT_PUBLIC_BOOKING_WEB_API_URL=${{ env.NEXT_API_URL }}
             NEXT_PUBLIC_API_URL=${{ env.NEXT_API_URL }}
             NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_live_51T4q9THtaQeEOmq25xCQRtxOCZ7WKDN8Bpmo2jMuQCKGLPxjoU7cApWRR0fysdKgxjLsEs7zoL00qaAB6boaNMC600tH1jDPWD
+            BOOKING_WEB_BUILD_SHA=${{ github.sha }}
           tags: |
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-latest
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:next-${{ github.sha }}
@@ -62,7 +67,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Dispatch deploy to platform
-        uses: peter-evans/repository-dispatch@v3
+        uses: peter-evans/repository-dispatch@v4
         with:
           token: ${{ secrets.PLATFORM_DEPLOY_TOKEN }}
           repository: vayada-marketplace/vayada-platform
@@ -72,5 +77,6 @@ jobs:
               "service": "next-booking-frontend",
               "ecr_repo": "${{ env.ECR_REPOSITORY }}",
               "image_sha": "next-${{ github.sha }}",
+              "source_sha": "${{ github.sha }}",
               "environment": "next"
             }

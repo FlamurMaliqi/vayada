@@ -1,18 +1,23 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import { useStripe, useElements, PaymentElement } from "@stripe/react-stripe-js";
 import BookingFooter from "@/components/layout/BookingFooter";
 import HeroSection from "@/components/booking/HeroSection";
-import { Hotel, RoomType, Addon, Booking } from "@/lib/types";
+import { Hotel, Addon, Booking } from "@/lib/types";
 import { bookingService } from "@/services/api/booking";
-import { saveLastBooking, toConfirmationBooking } from "@/lib/storage/bookingDraft";
+import {
+  clearPendingBookingCreate,
+  getCheckoutIdempotencyKey,
+  saveLastBooking,
+  toConfirmationBooking,
+} from "@/lib/storage/bookingDraft";
 
 interface StripeConfirmStepProps {
   hotel: Hotel;
-  room: RoomType;
+  roomName: string;
   checkIn: string;
   checkOut: string;
   nights: number;
@@ -31,6 +36,7 @@ interface StripeConfirmStepProps {
   // Soft-hold draft id from POST /bookings; pass it to
   // confirmAuthorization to materialize the real booking row.
   draftId: string | null;
+  confirmationToken?: string;
   slug: string;
   formatPrice: (amount: number, fromCurrency: string) => string;
   formatDate: (date: string | Date, locale?: string) => string;
@@ -46,7 +52,7 @@ interface StripeConfirmStepProps {
 
 export default function StripeConfirmStep({
   hotel,
-  room,
+  roomName,
   checkIn,
   checkOut,
   nights,
@@ -60,6 +66,7 @@ export default function StripeConfirmStep({
   grandTotal,
   booking,
   draftId,
+  confirmationToken,
   slug,
   formatPrice,
   formatDate,
@@ -79,21 +86,29 @@ export default function StripeConfirmStep({
   const tc = useTranslations("common");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const confirmationStarted = useRef(false);
 
   const handleConfirmPayment = async () => {
-    if (!stripe || !elements) return;
+    if (!stripe || !elements || confirmationStarted.current) return;
 
+    confirmationStarted.current = true;
     setSubmitting(true);
     setError("");
 
     try {
+      const localePrefix = locale === "en" ? "" : `/${locale}`;
+      const confirmationUrl = new URL(`${localePrefix}/confirmation`, window.location.origin);
+      confirmationUrl.searchParams.set("booking", booking.bookingReference);
+      if (confirmationToken) confirmationUrl.searchParams.set("token", confirmationToken);
       const { error: stripeError } = await stripe.confirmPayment({
         elements,
+        confirmParams: { return_url: confirmationUrl.toString() },
         redirect: "if_required",
       });
 
       if (stripeError) {
         setError(stripeError.message || "Payment failed");
+        confirmationStarted.current = false;
         setSubmitting(false);
         return;
       }
@@ -103,17 +118,27 @@ export default function StripeConfirmStep({
       // hit if a non-card flow ever lands on this component, which it
       // shouldn't).
       const handle = draftId || booking.id;
-      const materialized = await bookingService.confirmAuthorization(slug, handle);
+      const materialized = await bookingService.confirmAuthorization(
+        slug,
+        handle,
+        getCheckoutIdempotencyKey("confirm", handle),
+      );
       saveLastBooking(
         toConfirmationBooking(materialized, {
           ...booking,
           paymentMethod: "card",
-          paymentStatus: depositRequired ? "captured" : "authorized",
+          paymentStatus: "paid",
         }),
       );
-      router.push(`/booking/${materialized.bookingReference}`);
-    } catch (err: any) {
-      setError(err.message || "Payment confirmation failed");
+      clearPendingBookingCreate();
+      const confirmationParams = new URLSearchParams({
+        booking: materialized.bookingReference,
+      });
+      if (confirmationToken) confirmationParams.set("token", confirmationToken);
+      router.push(`/confirmation?${confirmationParams}`);
+    } catch (err: unknown) {
+      setError(err instanceof Error && err.message ? err.message : "Payment confirmation failed");
+      confirmationStarted.current = false;
       setSubmitting(false);
     }
   };
@@ -128,18 +153,15 @@ export default function StripeConfirmStep({
             {t("confirmPayment") || "Confirm Payment"}
           </h2>
           <p className="text-gray-600 mb-6">
-            {hotel.instantBook
-              ? t("confirmPaymentDescInstant") ||
-                "Complete your payment to confirm the booking. Your card will be charged now."
-              : t("confirmPaymentDesc") ||
-                "Complete your payment to submit the booking request. Your card will be authorized but not charged until we accept."}
+            {t("confirmPaymentDescInstant") ||
+              "Complete your payment to confirm the booking. Your card will be charged now."}
           </p>
 
           <div className="mb-6 p-4 bg-accent rounded-xl space-y-2">
             <div className="flex justify-between text-sm">
               <span className="text-gray-500">
                 {roomsParam > 1 ? `${roomsParam}× ` : ""}
-                {room.name}
+                {roomName}
               </span>
               <span className="font-semibold text-gray-900">
                 {formatPrice(roomTotal, selectedCurrency)}
@@ -234,14 +256,14 @@ export default function StripeConfirmStep({
               ? t("processing") || "Processing..."
               : depositRequired
                 ? `Pay deposit ${formatPrice(depositAmount, selectedCurrency)}`
-                : t("authorizePayment") || `Authorize ${formatPrice(grandTotal, selectedCurrency)}`}
+                : t("authorizePayment") || `Pay ${formatPrice(grandTotal, selectedCurrency)}`}
           </button>
 
           <p className="text-xs text-gray-500 text-center mt-3">
             {depositRequired
               ? `Your card is charged ${formatPrice(depositAmount, selectedCurrency)} now. The remaining balance is paid at the property.`
               : t("authorizationNote") ||
-                "Your card will only be charged if we accept your booking within 24 hours."}
+                `Your card is charged ${formatPrice(grandTotal, selectedCurrency)} now.`}
           </p>
         </div>
       </div>

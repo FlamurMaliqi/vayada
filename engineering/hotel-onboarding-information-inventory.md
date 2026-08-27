@@ -34,10 +34,10 @@ The initial flow keeps its existing three-part structure:
 
 1. product selection;
 2. hotel identity and location;
-3. hotel contact.
+3. contact information.
 
 The hotel logo belongs in the initial “About your hotel” part of that flow. It
-is collected there once and is not requested again after hotel contact.
+is collected there once and is not requested again after contact information.
 
 ### Account and hotel image decision
 
@@ -52,7 +52,7 @@ is collected there once and is not requested again after hotel contact.
   attached to the hotel so multiple managers and multi-hotel groups share the
   correct property identity.
 
-The replacement onboarding will begin after the owner saves the hotel contact
+The replacement onboarding will begin after the owner saves the contact information
 page.
 
 The retired nine-step onboarding implementation is being replaced rather than
@@ -61,7 +61,7 @@ not constraints for the redesign.
 
 The discarded post-contact form renderer and its task-specific frontend
 adapters have been removed. Until the replacement is designed, the preserved
-initial flow ends after the hotel contact information is saved.
+initial flow ends after the contact information is saved.
 
 The available product selections remain:
 
@@ -176,14 +176,15 @@ These fields must not be requested again in the redesigned flow.
 | `hotel.latitude`              | Map latitude                              | Captured         | Stored                                    | Location/map consumers                  | Required                    |
 | `hotel.longitude`             | Map longitude                             | Captured         | Stored                                    | Location/map consumers                  | Required                    |
 | `hotel.timezone`              | IANA timezone                             | Asked now        | Stored                                    | PMS settings                            | Required                    |
-| `hotel.contact_email`         | General hotel/reception email             | Asked now        | Stored                                    | Marketplace and Booking settings        | Required                    |
-| `hotel.contact_phone`         | General hotel/reception phone             | Asked now        | Stored                                    | Marketplace and Booking settings        | Required                    |
-| `hotel.website`               | Hotel website                             | Asked now        | Stored                                    | Marketplace profile                     | Optional                    |
+| `hotel.contact_email`         | Guest-facing hotel/reception email        | Asked now        | Stored                                    | Booking Contact menu and settings       | Required                    |
+| `hotel.contact_phone`         | Guest-facing hotel/reception phone        | Asked now        | Stored                                    | Booking Contact menu and settings       | Required                    |
+| `contact.whatsapp`            | Guest-facing WhatsApp number              | Asked now        | Stored                                    | Booking Contact menu and settings       | Optional                    |
 | `organization.selected_track` | Marketplace, Operations, or both          | Asked now        | Setup intent                              | Drives adaptive onboarding              | Required                    |
 
-Canonical contact storage additionally supports WhatsApp, Instagram, Facebook,
+Canonical contact storage additionally supports website, Instagram, Facebook,
 and X, plus contact purpose and public/private visibility. The initial form
-does not ask for these values.
+publishes phone, optional WhatsApp, and email after explaining that guests can
+see them.
 
 ### Language ownership decision
 
@@ -284,7 +285,6 @@ Marketplace upload.
 
 | Field ID                | Information               | Prior evidence | Target storage | Later surfaces    | Product status      |
 | ----------------------- | ------------------------- | -------------- | -------------- | ----------------- | ------------------- |
-| `contact.whatsapp`      | WhatsApp number           | Not asked      | Stored         | Booking settings  | Optional later      |
 | `contact.instagram`     | Instagram profile         | Not asked      | Stored         | Booking settings  | Optional later      |
 | `contact.facebook`      | Facebook profile          | Not asked      | Stored         | Booking settings  | Optional later      |
 | `contact.x`             | X profile                 | Not asked      | Stored         | No current editor | Optional later      |
@@ -943,13 +943,13 @@ perform no canonical write when they differ.
 These hotel fields must be complete before the adaptive flow and must never be
 requested again.
 
-| Field IDs                                                                                                                              | Treatment                                  | Target owner and current contract                                                                   |
-| -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| `hotel.display_name`, `hotel.property_type`                                                                                            | Required                                   | `hotel_catalog.properties`; existing canonical write                                                |
-| `hotel.street_address`, `hotel.postal_code`, `hotel.city`, `hotel.country_code`, `hotel.latitude`, `hotel.longitude`, `hotel.timezone` | Required                                   | `hotel_catalog.property_locations`; existing canonical write                                        |
-| `hotel.contact_email`, `hotel.contact_phone`, `hotel.website`                                                                          | Email and phone required; website optional | `hotel_catalog.property_contact_channels`; existing canonical write                                 |
-| `profile.logo`                                                                                                                         | Required once                              | Platform Media purpose/schema exist, but usable finalize/promote/project routing and UI are missing |
-| `organization.selected_track`                                                                                                          | Required                                   | Hotel setup tracks; selects the active adaptive route                                               |
+| Field IDs                                                                                                                              | Treatment                                   | Target owner and current contract                                                                   |
+| -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `hotel.display_name`, `hotel.property_type`                                                                                            | Required                                    | `hotel_catalog.properties`; existing canonical write                                                |
+| `hotel.street_address`, `hotel.postal_code`, `hotel.city`, `hotel.country_code`, `hotel.latitude`, `hotel.longitude`, `hotel.timezone` | Required                                    | `hotel_catalog.property_locations`; existing canonical write                                        |
+| `hotel.contact_phone`, `contact.whatsapp`, `hotel.contact_email`                                                                       | Phone and email required; WhatsApp optional | `hotel_catalog.property_contact_channels`; existing canonical write                                 |
+| `profile.logo`                                                                                                                         | Required once                               | Platform Media purpose/schema exist, but usable finalize/promote/project routing and UI are missing |
+| `organization.selected_track`                                                                                                          | Required                                    | Hotel setup tracks; selects the active adaptive route                                               |
 
 The existing account-details UI still treats a hotel manager's personal photo
 as required. The replacement must remove that requirement for hotel accounts;
@@ -3974,8 +3974,8 @@ Do not pull these back into the critical path:
   bank details;
 - Vayada Payment, Xendit, or another provider beyond the approved V1 methods;
 - direct bank transfer before VAY-1041;
-- Ask Intelligence and external AI bookability enhancements beyond consuming
-  the final approved setup/readiness read models.
+- future hotel employee agent work from VAY-1091 and external AI bookability
+  enhancements beyond consuming the final approved setup/readiness read models.
 
 Create only the remaining Linear child issues in dependency order as their
 prerequisite contracts are approved. Start implementation with the scheduled

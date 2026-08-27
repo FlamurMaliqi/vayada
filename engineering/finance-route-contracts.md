@@ -1,5 +1,12 @@
 # Finance route contracts
 
+> **PMS Financials reset:** VAY-1121 supersedes this document's financial
+> summary, synthetic invoice, invoice CSV, invoice-scoped manual payment and PMS
+> payment-ledger presentation contracts. See
+> [`pms-financials-contracts.md`](pms-financials-contracts.md). Payment settings,
+> provider onboarding, payment facts, payouts and reconciliation remain active;
+> superseded route rows below are historical compatibility references only.
+
 _VAY-795 contract record. Covers F1 from
 [`booking-pms-route-migration-inventory.md`](booking-pms-route-migration-inventory.md)
 against the finance target schema from VAY-673
@@ -65,6 +72,7 @@ All protected routes must use `enforceRoutePolicy` at the route boundary.
 | Property onboarding           | `pms.finance.manage`       | active finance-capable property entitlement                                   | `pms_property` or canonical `property` with `resourceId = propertyId` | `owner`, `finance_manager`             |
 | Affiliate payout reads/writes | `affiliate.payout.manage`  | active affiliate entitlement                                                  | `affiliate` with `resourceId = affiliateId`                           | `owner`, `finance_manager`             |
 | Platform finance reads        | `platform.finance.read`    | active platform entitlement                                                   | platform organization scope                                           | `platform_admin`, `finance_manager`    |
+| Platform finance writes       | `platform.finance.manage`  | active `platform:finance-admin` entitlement                                   | `platform:platform:vayada`                                            | `platform_admin`, `finance_manager`    |
 | Marketplace finance reads     | `marketplace.finance.read` | active marketplace entitlement                                                | marketplace organization scope                                        | `owner`, `finance_manager`             |
 
 Public Booking Web payment capability routes are not admin finance routes. They
@@ -110,6 +118,9 @@ facades must call the Finance-owned route/service contract.
 | Payment ledger                    | `GET`       | `/api/finance/properties/:propertyId/payments`                                              | `/api/pms/properties/:propertyId/financials/payments`                                              |
 | Payouts                           | `GET`       | `/api/finance/properties/:propertyId/payouts`                                               | legacy `/admin/payouts` facade                                                                     |
 | Affiliate payouts                 | `GET`       | `/api/finance/affiliates/:affiliateId/payouts`                                              | affiliate-dashboard payout ledger                                                                  |
+| Platform affiliate payout list    | `GET`       | `/api/finance/platform/affiliate-payouts`                                                   | Platform Admin only; no legacy client                                                              |
+| Platform affiliate payout detail  | `GET`       | `/api/finance/platform/affiliate-payouts/:affiliateId`                                      | Platform Admin only; requires `currency`                                                           |
+| Platform affiliate mark paid      | `POST`      | `/api/finance/platform/affiliate-payouts/:affiliateId/mark-paid`                            | Platform Admin only; target Finance command                                                        |
 | Stripe Connect property account   | `POST`      | `/api/finance/properties/:propertyId/provider-accounts/stripe`                              | legacy `/admin/stripe/connect-account` facade                                                      |
 | Stripe Connect onboarding link    | `POST`      | `/api/finance/properties/:propertyId/provider-accounts/:providerAccountId/onboarding-link`  | legacy GET facade may call this command                                                            |
 | Xendit bank validation            | `POST`      | `/api/finance/properties/:propertyId/provider-accounts/xendit/bank-validation`              | legacy `/admin/xendit/validate-bank-account` facade                                                |
@@ -206,6 +217,7 @@ Invoice list query rules:
 
 Representative read models:
 
+<!-- prettier-ignore -->
 ```ts
 type FinanceInvoiceListResponse = {
   contractVersion: "finance-route-contracts.v1";
@@ -346,6 +358,7 @@ Property and affiliate payouts are finance-owned. Payout reads must expose
 provider status and retry/disposition state without returning destination
 account numbers or provider secrets.
 
+<!-- prettier-ignore -->
 ```ts
 type FinancePayout = {
   payoutId: string;
@@ -432,6 +445,63 @@ type AffiliatePayoutLedgerResponse = {
 
 Affiliate payout settings responses must not include referral-code ownership
 fields, raw bank account numbers, provider secrets, or marketplace profile PII.
+
+### Platform Admin affiliate payout evidence
+
+The Platform Admin list and detail routes expose Finance-owned payout facts
+grouped by affiliate and currency. They may include the affiliate resource ID,
+linked organization ID, effective payout method, ledger totals, payout state,
+retry state, affiliate lifecycle status, and immutable payment-evidence history.
+Lifecycle changes do not hide Finance liabilities or history. Affiliate names, contact
+details, referral codes, commission management, and raw payout destinations
+remain outside this contract.
+
+`POST /api/finance/platform/affiliate-payouts/:affiliateId/mark-paid` records an
+already-completed external manual or bank-transfer payment. The request has the
+following exact shape:
+
+```ts
+type PlatformAffiliatePayoutMarkPaidRequest = {
+  commandId: string;
+  idempotencyKey: string;
+  currency: FinanceCurrencyCode;
+  payoutIds: string[];
+  expectedAmount: FinanceDecimalAmount;
+  paymentMethod: "manual" | "bank_transfer";
+  externalReference: string;
+  evidenceReference: string;
+  paidAt: FinanceUtcDateTime;
+  note?: string | null;
+};
+```
+
+The command applies only to the exact payout IDs and aggregate amount reviewed
+in the detail response. Every row must still be `pending` or `scheduled` in the
+requested currency with no provider payout ID, and its effective payout method
+must be `manual` or `bank_transfer`. A changed row set or amount returns
+`409 stale_payout_snapshot`; `processing`, `failed`,
+provider-dispatched, paid, canceled, and reversed payouts are never overridden
+by this route. A single command cannot span currencies.
+
+The Finance transaction must lock the eligible payout rows, reserve the
+idempotency key, insert append-only evidence and payout-item snapshots, update
+the payout ledger, cancel any still-pending dispatcher jobs for the affected
+payouts, append a product audit event, and complete the idempotency record as
+one atomic unit. External references are unique within the affiliate
+organization. Evidence rows and their item snapshots are immutable; a
+correction is a new compensating Finance outcome, not an update or delete.
+
+An identical retry returns the original evidence and payout IDs without
+additional ledger, evidence, job, or audit writes. Reusing the idempotency key
+with different command evidence returns `409 idempotency_conflict`; reusing an
+external reference returns `409 duplicate_reference`. Missing evidence,
+unsupported methods, cross-affiliate/cross-currency rows, or invalid state
+transitions are rejected before mutation. The route does not initiate a
+provider payout and does not call a legacy service.
+
+Detail summary, payout rows, and history are read in one repeatable PostgreSQL
+snapshot. List consumers must page through `total`; the Platform Admin client
+loads every server page so outstanding scopes are not silently omitted.
 
 ## Stripe And Xendit Onboarding
 
@@ -625,6 +695,33 @@ The fixture set must cover:
 - F1a checkout-charge settlement bridge and freeze fallback;
 - authorization denial matrix;
 - scheduler freeze and no dual provider transfer/polling.
+
+## Fixed Plan subscription routes
+
+Booking Admin uses the target Finance source of truth for plan switching:
+
+| Method | Route                                                      | Behavior                                                                                                           |
+| ------ | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `GET`  | `/api/finance/properties/:propertyId/plan-status`          | Current Commission/Fixed state, active-room price, exact 30-day period, next billing date, and cancellation state. |
+| `POST` | `/api/finance/properties/:propertyId/fixed-plan/checkout`  | Creates an idempotent hosted Stripe subscription Checkout. It does not activate Fixed.                             |
+| `POST` | `/api/finance/properties/:propertyId/customer-portal`      | Creates a short-lived Stripe Customer Portal URL.                                                                  |
+| `POST` | `/api/finance/properties/:propertyId/switch-to-commission` | Schedules Stripe cancellation at the current period end without proration.                                         |
+
+Stripe `invoice.paid` is the activation boundary. Webhook receipts are durable
+and idempotent; a delayed event cannot overwrite a newer provider event.
+`invoice.payment_failed` keeps the Fixed entitlement, leaves retries to Stripe,
+and enqueues one internal Finance notification. `invoice.upcoming` snapshots the
+current active-room count and updates subscription quantity with no proration so
+the change appears on the next invoice. A terminal subscription deletion moves
+the property back to Commission.
+
+Every new booking stores its Finance plan and commission terms at creation.
+Later plan or rate changes never rewrite that booking snapshot.
+
+Checkout is exposed only when target Finance, target Booking checkout, the
+Stripe API secret, a verified webhook secret, and mutating Stripe intake are all
+configured. The API derives Checkout email from the authenticated actor rather
+than accepting a browser-supplied address.
 
 ## Reads-Before-Writes Slice Order
 

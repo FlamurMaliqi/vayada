@@ -10,13 +10,14 @@ export const API_BASE_URL =
   "https://api.localhost";
 
 export interface ApiError {
-  detail:
+  detail?:
     | string
     | Array<{
         loc: (string | number)[];
         msg: string;
         type: string;
       }>;
+  message?: string;
 }
 
 export class ApiErrorResponse extends Error {
@@ -24,7 +25,8 @@ export class ApiErrorResponse extends Error {
   data: ApiError;
 
   constructor(status: number, data: ApiError) {
-    super((data.detail as string) || `API Error: ${status}`);
+    const detail = typeof data.detail === "string" ? data.detail : data.message;
+    super(detail || `API Error: ${status}`);
     this.name = "ApiErrorResponse";
     this.status = status;
     this.data = data;
@@ -45,8 +47,7 @@ export class ApiClient {
     clearAuthData();
 
     if (typeof window !== "undefined") {
-      const errorMessage = (error.data.detail as string) || "";
-      const isExpired = errorMessage.includes("expired") || errorMessage.includes("Expired");
+      const isExpired = error.message.toLowerCase().includes("expired");
 
       if (isExpired) {
         window.location.href = "/login?expired=true";
@@ -71,14 +72,14 @@ export class ApiClient {
     const isPublic = PUBLIC_ENDPOINTS.includes(normalizedEndpoint);
     const token = isPublic ? null : getAuthBearerToken();
 
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      ...(options.headers as Record<string, string>),
-    };
+    const headers = new Headers(options.headers);
+    if (options.body !== undefined && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
 
     // Add Authorization header if token exists
     if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
+      headers.set("Authorization", `Bearer ${token}`);
     }
 
     const config: RequestInit = {

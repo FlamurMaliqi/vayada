@@ -37,6 +37,32 @@ export type AuthorizationRepositoryConfig = {
   max?: number;
 };
 
+export type MembershipPropertyScope = {
+  mode: string;
+  roleKey: string;
+  accessOrigin: string;
+  assignedPropertyIds: readonly string[];
+};
+
+export type PropertyAccessRepository = {
+  findMembershipPropertyScope(context: RequestContext): Promise<MembershipPropertyScope | null>;
+  close?(): Promise<void>;
+};
+
+export type EffectivePropertyAccess = {
+  mode: "all" | "assigned";
+  propertyIds: readonly string[];
+};
+
+export type TargetPropertyResource =
+  | { product: "booking"; resourceType: "booking_hotel" }
+  | { product: "pms"; resourceType: "pms_property" };
+
+export type PropertyAccessRequirement = {
+  propertyId: string;
+  targetResource: TargetPropertyResource;
+};
+
 export type ResourceRequirement = {
   product: Product;
   resourceType: ResourceType;
@@ -62,6 +88,13 @@ type ProductEntitlementRow = {
   resource_product: Product | null;
   resource_type: ResourceType | null;
   resource_id: string | null;
+};
+
+type MembershipPropertyScopeRow = {
+  property_access_mode: string;
+  role_key: string;
+  access_origin: string;
+  assigned_property_ids: string[];
 };
 
 function resourceScopeKey(
@@ -200,11 +233,73 @@ export function createPgEntitlementRepository(
   };
 }
 
+export function createPgPropertyAccessRepository(
+  config: AuthorizationRepositoryConfig,
+): PropertyAccessRepository {
+  if (!config.connectionString.trim()) {
+    throw new Error("AuthorizationRepositoryConfig.connectionString must not be empty");
+  }
+
+  const pool = new pg.Pool({ connectionString: config.connectionString, max: config.max });
+
+  return {
+    async findMembershipPropertyScope(context) {
+      const result = await pool.query<MembershipPropertyScopeRow>(
+        `SELECT
+           membership.property_access_mode,
+           membership.role_key,
+           membership.access_origin,
+           ARRAY(
+             SELECT assignment.property_id::text
+             FROM identity.membership_property_assignments assignment
+             WHERE assignment.membership_id = membership.id
+             ORDER BY assignment.property_id
+           ) AS assigned_property_ids
+         FROM identity.organization_memberships membership
+         JOIN identity.organizations organization
+           ON organization.id = membership.organization_id
+         WHERE membership.id = $1
+           AND membership.user_id = $2
+           AND membership.organization_id = $3
+           AND membership.status = 'active'
+           AND organization.status = 'active'
+           AND organization.kind = 'hotel_group'
+         LIMIT 1`,
+        [
+          context.membership.membershipId,
+          context.actor.internalUserId,
+          context.selectedOrganization.organizationId,
+        ],
+      );
+      const row = result.rows[0];
+      return row
+        ? {
+            mode: row.property_access_mode,
+            roleKey: row.role_key,
+            accessOrigin: row.access_origin,
+            assignedPropertyIds: row.assigned_property_ids,
+          }
+        : null;
+    },
+    async close() {
+      await pool.end();
+    },
+  };
+}
+
 export function createAuthorizationResolver(
   rolePermissionRepository: RolePermissionRepository,
-  entitlementRepository?: EntitlementRepository,
+  entitlementRepository: EntitlementRepository | undefined,
+  propertyAccessRepository: PropertyAccessRepository | undefined,
 ): AuthorizationResolver {
   return async (context) => {
+    if (context.selectedOrganization.kind === "hotel_group") {
+      const scope = await propertyAccessRepository?.findMembershipPropertyScope(context);
+      if (!isAgencyMembershipScope(context, scope)) {
+        return { permissions: [], entitlements: [] };
+      }
+    }
+
     const [permissions, entitlements] = await Promise.all([
       rolePermissionRepository.findPermissionsForRole(
         context.selectedOrganization.kind,
@@ -218,6 +313,19 @@ export function createAuthorizationResolver(
       entitlements,
     };
   };
+}
+
+function isAgencyMembershipScope(
+  context: RequestContext,
+  scope: MembershipPropertyScope | null | undefined,
+): scope is MembershipPropertyScope & { mode: "all" | "assigned" } {
+  return (
+    scope != null &&
+    scope.roleKey === context.membership.roleKey &&
+    scope.accessOrigin === "agency" &&
+    (scope.mode === "all" || scope.mode === "assigned") &&
+    (scope.roleKey !== "external_owner" || scope.mode === "assigned")
+  );
 }
 
 export function hasPermission(context: RequestContext, permission: PermissionKey): boolean {
@@ -236,6 +344,48 @@ export function hasActiveLinkedResource(
       resource.resourceId === requirement.resourceId &&
       requirement.allowedRelationships.includes(resource.relationship),
   );
+}
+
+export async function resolveEffectivePropertyAccess(
+  context: RequestContext,
+  repository: PropertyAccessRepository,
+): Promise<EffectivePropertyAccess | null> {
+  if (
+    context.actor.status !== "active" ||
+    context.selectedOrganization.status !== "active" ||
+    context.selectedOrganization.kind !== "hotel_group" ||
+    context.membership.status !== "active"
+  ) {
+    return null;
+  }
+
+  const scope = await repository.findMembershipPropertyScope(context);
+  if (!isAgencyMembershipScope(context, scope)) return null;
+  if (
+    !Array.isArray(scope.assignedPropertyIds) ||
+    scope.assignedPropertyIds.some((propertyId) => typeof propertyId !== "string")
+  ) {
+    return null;
+  }
+
+  const canonicalPropertyIds = new Set(
+    context.linkedResources
+      .filter(
+        (resource) =>
+          resource.status === "active" &&
+          resource.product === "hotel_catalog" &&
+          resource.resourceType === "property" &&
+          (resource.relationship === "owner" || resource.relationship === "operator"),
+      )
+      .map((resource) => resource.resourceId),
+  );
+
+  const propertyIds =
+    scope.mode === "all"
+      ? [...canonicalPropertyIds]
+      : scope.assignedPropertyIds.filter((propertyId) => canonicalPropertyIds.has(propertyId));
+
+  return { mode: scope.mode, propertyIds: [...new Set(propertyIds)].sort() };
 }
 
 export function canAccessResource(
@@ -324,6 +474,23 @@ export function requireResourceAccess(
     throw new AuthorizationError(
       `Missing ${requirement.permission} access to ${requirement.resource.product}:${requirement.resource.resourceType}:${requirement.resource.resourceId}`,
     );
+  }
+  return context;
+}
+
+export async function requirePropertyAccess(
+  context: RequestContext,
+  repository: PropertyAccessRepository,
+  requirement: PropertyAccessRequirement,
+): Promise<RequestContext> {
+  const access = await resolveEffectivePropertyAccess(context, repository);
+  const hasTargetResource = hasActiveLinkedResource(context, {
+    ...requirement.targetResource,
+    resourceId: requirement.propertyId,
+    allowedRelationships: ["owner", "operator"],
+  });
+  if (!access?.propertyIds.includes(requirement.propertyId) || !hasTargetResource) {
+    throw new AuthorizationError();
   }
   return context;
 }

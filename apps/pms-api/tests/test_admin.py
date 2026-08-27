@@ -1189,7 +1189,89 @@ class TestAdminBookings:
         body = resp.json()
         assert body["total"] == 1
         assert len(body["bookings"]) == 1
-        assert body["bookings"][0]["guestEmail"] == "guest@example.com"
+        assert body["bookings"][0]["guestEmail"] == "Hidden until you accept"
+        assert body["bookings"][0]["guestPhone"] == "Hidden until you accept"
+
+    async def test_fixed_plan_sees_pending_booking_contact(self, client, hotel_with_booking):
+        user = hotel_with_booking["user"]
+
+        with patch(
+            "app.routers.admin_bookings.fetch_guest_contact_plan",
+            AsyncMock(return_value="fixed"),
+        ):
+            resp = await client.get(
+                "/admin/bookings",
+                headers=get_auth_headers(user["token"]),
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["bookings"][0]["guestEmail"] == "guest@example.com"
+
+    async def test_payment_alone_does_not_reveal_pending_contact(self, client, hotel_with_booking):
+        from app.database import Database
+
+        user = hotel_with_booking["user"]
+        booking = hotel_with_booking["booking"]
+        await Database.execute(
+            "UPDATE bookings SET payment_status = 'captured' WHERE id = $1",
+            booking["id"],
+        )
+
+        resp = await client.get(
+            f"/admin/bookings/{booking['id']}",
+            headers=get_auth_headers(user["token"]),
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["guestEmail"] == "Hidden until you accept"
+
+    async def test_pending_commission_edit_preserves_hidden_contact(
+        self, client, hotel_with_booking
+    ):
+        from app.database import Database
+
+        user = hotel_with_booking["user"]
+        booking = hotel_with_booking["booking"]
+
+        resp = await client.patch(
+            f"/admin/bookings/{booking['id']}",
+            headers=get_auth_headers(user["token"]),
+            json={
+                "guestFirstName": "Updated",
+                "guestEmail": "Hidden until you accept",
+                "guestPhone": "Hidden until you accept",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["guestFirstName"] == "Updated"
+        assert resp.json()["guestEmail"] == "Hidden until you accept"
+        stored = await Database.fetchrow(
+            "SELECT guest_email, guest_phone FROM bookings WHERE id = $1",
+            booking["id"],
+        )
+        assert stored["guest_email"] == "guest@example.com"
+        assert stored["guest_phone"] == "+1234567890"
+
+    async def test_accepted_commission_edit_can_update_contact(self, client, hotel_with_booking):
+        from app.database import Database
+
+        user = hotel_with_booking["user"]
+        booking = hotel_with_booking["booking"]
+        await Database.execute(
+            "UPDATE bookings SET status = 'confirmed' WHERE id = $1",
+            booking["id"],
+        )
+
+        resp = await client.patch(
+            f"/admin/bookings/{booking['id']}",
+            headers=get_auth_headers(user["token"]),
+            json={"guestEmail": "updated@example.test", "guestPhone": "+4987654321"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["guestEmail"] == "updated@example.test"
+        assert resp.json()["guestPhone"] == "+4987654321"
 
     async def test_list_bookings_filter_status(self, client, hotel_with_booking):
         user = hotel_with_booking["user"]
@@ -1242,6 +1324,15 @@ class TestAdminBookings:
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "confirmed"
+        assert resp.json()["guestEmail"] == "guest@example.com"
+
+        cancelled = await client.patch(
+            f"/admin/bookings/{booking['id']}/status",
+            json={"status": "cancelled"},
+            headers=get_auth_headers(user["token"]),
+        )
+        assert cancelled.status_code == 200
+        assert cancelled.json()["guestEmail"] == "guest@example.com"
 
     async def test_cancel_booking(self, client, hotel_with_booking):
         user = hotel_with_booking["user"]

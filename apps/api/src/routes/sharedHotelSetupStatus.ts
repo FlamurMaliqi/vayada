@@ -33,6 +33,12 @@ import {
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { HotelSetupTrackCommandRepository } from "../domains/hotelSetupTrackCommandRepository.js";
+import {
+  BookingContactPublicationConflictError,
+  toLocalizationSettingsResponse,
+  type BookingPropertySettingsReadModel,
+  type UpdateBookingPropertySettingsBody,
+} from "./bookingSettings.js";
 import { enforceRoutePolicy } from "./policy.js";
 
 export type SharedHotelSetupEntryProduct = ProductEntryDecision["requestedProduct"];
@@ -43,6 +49,27 @@ export type SharedPropertyTypeCatalog = {
 export type SharedPropertyProfileInput = CreatePropertyProfileRequest;
 export type SharedPropertyProfile = PropertyProfileResponse;
 export type SharedPublicPropertyProfile = PublicPropertyProfileResponse;
+export type SharedPropertyLaunchSettings = {
+  defaultCurrency: string;
+  supportedCurrencies: string[];
+  defaultLanguage: string;
+  supportedLanguages: string[];
+  instagram: string;
+  facebook: string;
+  tiktok: string;
+  youtube: string;
+};
+
+export type SharedPropertyLaunchSettingsRepository = {
+  findPropertySettingsByHotelId(
+    propertyId: string,
+  ): Promise<BookingPropertySettingsReadModel | null>;
+  updatePropertySettingsByHotelId(
+    propertyId: string,
+    settings: UpdateBookingPropertySettingsBody,
+    organizationId: string,
+  ): Promise<BookingPropertySettingsReadModel | null>;
+};
 
 export type UpdatePublicPropertyProfileResult =
   | { status: "updated"; profile: SharedPublicPropertyProfile }
@@ -79,6 +106,9 @@ export type SharedHotelSetupStatusRepository = {
     idempotencyKey: string;
     correlationId: string;
     profile: SharedPropertyProfileInput;
+    audit?: { actorUserId: string; requestId: string; receivedAt: string; reason?: string };
+    targetAccountUserId?: string;
+    provisioningReference?: string;
   }): Promise<SharedPropertyProfile>;
   updatePropertyProfile(input: {
     organizationId: string;
@@ -102,6 +132,7 @@ export type SharedHotelSetupStatusRepository = {
 type SharedHotelSetupStatusRoutesOptions = {
   repository: SharedHotelSetupStatusRepository;
   trackCommandRepository: HotelSetupTrackCommandRepository;
+  launchSettingsRepository?: SharedPropertyLaunchSettingsRepository;
   now?: () => Date;
 };
 
@@ -136,7 +167,12 @@ export async function registerSharedHotelSetupStatusRoutes(
   app: FastifyInstance,
   options: SharedHotelSetupStatusRoutesOptions,
 ): Promise<void> {
-  const { repository, trackCommandRepository, now = () => new Date() } = options;
+  const {
+    repository,
+    trackCommandRepository,
+    launchSettingsRepository,
+    now = () => new Date(),
+  } = options;
   const trackUpdateAccess = new WeakMap<FastifyRequest, ReturnType<typeof enforceRoutePolicy>>();
 
   app.addHook("onClose", async () => {
@@ -285,14 +321,33 @@ export async function registerSharedHotelSetupStatusRoutes(
         idempotencyKey,
         correlationId: access.context.audit.correlationId ?? access.context.audit.requestId,
         profile: profileInput,
+        audit: {
+          actorUserId: access.context.actor.internalUserId,
+          requestId: access.context.audit.requestId,
+          receivedAt: access.context.audit.receivedAt,
+        },
       });
 
       return reply.status(201).send(profile);
     } catch (error) {
       const code =
         isObjectRecord(error) && typeof error["code"] === "string" ? error["code"] : null;
-      if (code === "idempotency_key_conflict" || code === "command_in_progress") {
-        return reply.status(409).send({ code });
+      const propertyId =
+        isObjectRecord(error) && typeof error["propertyId"] === "string"
+          ? error["propertyId"]
+          : null;
+      if (code === "idempotency_key_conflict") {
+        return reply.status(409).send({
+          code,
+          detail: "These hotel details changed during the save. Review them and try again.",
+          ...(propertyId ? { propertyId } : {}),
+        });
+      }
+      if (code === "command_in_progress") {
+        return reply.status(409).send({
+          code,
+          detail: "Your hotel setup is still being saved. Please try again in a moment.",
+        });
       }
       throw error;
     }
@@ -361,6 +416,82 @@ export async function registerSharedHotelSetupStatusRoutes(
 
     return profile;
   });
+
+  if (launchSettingsRepository) {
+    app.get("/properties/:propertyId/launch-settings", async (request, reply) => {
+      const params = request.params as SharedPropertyProfileParams;
+      const propertyId = parsePropertyId(params.propertyId, reply);
+      if (propertyId === false || propertyId === null) return reply;
+
+      const access = resolveSharedSetupAccess(request, reply, propertyId);
+      if (!access) return reply;
+
+      let settings: BookingPropertySettingsReadModel | null;
+      try {
+        settings = await launchSettingsRepository.findPropertySettingsByHotelId(propertyId);
+      } catch (error) {
+        request.log.error({ err: error, propertyId }, "Property launch settings read failed");
+        return reply.status(500).send({
+          code: "launch_settings_unavailable",
+          detail: "Property launch settings are unavailable.",
+        });
+      }
+      if (!settings) {
+        return reply.status(404).send({
+          code: "property_launch_settings_not_found",
+          detail: "Property launch settings were not found for the selected property.",
+        });
+      }
+
+      return toSharedPropertyLaunchSettings(settings);
+    });
+
+    app.put("/properties/:propertyId/launch-settings", async (request, reply) => {
+      const params = request.params as SharedPropertyProfileParams;
+      const propertyId = parsePropertyId(params.propertyId, reply);
+      if (propertyId === false || propertyId === null) return reply;
+
+      const access = resolveSharedSetupAccess(
+        request,
+        reply,
+        propertyId,
+        "hotel_catalog.setup.manage",
+      );
+      if (!access) return reply;
+
+      const settings = parsePropertyLaunchSettings(request.body, reply);
+      if (settings === false) return reply;
+
+      let stored: BookingPropertySettingsReadModel | null;
+      try {
+        stored = await launchSettingsRepository.updatePropertySettingsByHotelId(
+          propertyId,
+          settings,
+          access.organizationId,
+        );
+      } catch (error) {
+        if (error instanceof BookingContactPublicationConflictError) {
+          return reply.status(409).send({
+            code: "private_contact_conflict",
+            detail: error.message,
+          });
+        }
+        request.log.error({ err: error, propertyId }, "Property launch settings write failed");
+        return reply.status(500).send({
+          code: "launch_settings_unavailable",
+          detail: "Property launch settings could not be saved.",
+        });
+      }
+      if (!stored) {
+        return reply.status(404).send({
+          code: "property_launch_settings_not_found",
+          detail: "Property launch settings were not found for the selected property.",
+        });
+      }
+
+      return toSharedPropertyLaunchSettings(stored);
+    });
+  }
 
   app.get("/properties/:propertyId/public-profile", async (request, reply) => {
     const params = request.params as SharedPropertyProfileParams;
@@ -474,6 +605,166 @@ export async function registerSharedHotelSetupStatusRoutes(
       return result.response;
     },
   );
+}
+
+function toSharedPropertyLaunchSettings(
+  settings: BookingPropertySettingsReadModel,
+): SharedPropertyLaunchSettings {
+  const localization = toLocalizationSettingsResponse(settings);
+  return {
+    defaultCurrency: localization.defaultCurrency,
+    supportedCurrencies: localization.supportedCurrencies,
+    defaultLanguage: localization.defaultLanguage,
+    supportedLanguages: localization.supportedLanguages,
+    instagram: settings.instagram ?? "",
+    facebook: settings.facebook ?? "",
+    tiktok: settings.tiktok ?? "",
+    youtube: settings.youtube ?? "",
+  };
+}
+
+function parsePropertyLaunchSettings(
+  body: unknown,
+  reply: FastifyReply,
+): UpdateBookingPropertySettingsBody | false {
+  const fields: Record<string, string[]> = {};
+  if (!isObjectRecord(body)) {
+    addFieldError(fields, "body", "body must be an object.");
+    return sendInvalidLaunchSettings(reply, fields);
+  }
+
+  const expectedKeys = [
+    "defaultCurrency",
+    "supportedCurrencies",
+    "defaultLanguage",
+    "supportedLanguages",
+    "instagram",
+    "facebook",
+    "tiktok",
+    "youtube",
+  ] as const;
+  validateKnownKeys(body, expectedKeys, "body", fields);
+  for (const key of expectedKeys) {
+    if (!Object.hasOwn(body, key)) addFieldError(fields, key, `${key} is required.`);
+  }
+
+  const defaultCurrency = launchCurrencyCode(body.defaultCurrency, "defaultCurrency", fields);
+  const defaultLanguage = launchLanguageCode(body.defaultLanguage, "defaultLanguage", fields);
+  const supportedCurrencies = launchCodeList(
+    body.supportedCurrencies,
+    "supportedCurrencies",
+    defaultCurrency,
+    fields,
+    launchCurrencyCode,
+  );
+  const supportedLanguages = launchCodeList(
+    body.supportedLanguages,
+    "supportedLanguages",
+    defaultLanguage,
+    fields,
+    launchLanguageCode,
+  );
+  const instagram = launchSocialUrl(body.instagram, "instagram", fields);
+  const facebook = launchSocialUrl(body.facebook, "facebook", fields);
+  const tiktok = launchSocialUrl(body.tiktok, "tiktok", fields);
+  const youtube = launchSocialUrl(body.youtube, "youtube", fields);
+
+  if (Object.keys(fields).length > 0) return sendInvalidLaunchSettings(reply, fields);
+  return {
+    defaultCurrency,
+    supportedCurrencies,
+    defaultLanguage,
+    supportedLanguages,
+    instagram,
+    facebook,
+    tiktok,
+    youtube,
+  };
+}
+
+function launchCurrencyCode(
+  value: unknown,
+  field: string,
+  errors: Record<string, string[]>,
+): string {
+  const normalized = typeof value === "string" ? value.trim().toUpperCase() : "";
+  if (!/^[A-Z]{3}$/.test(normalized)) {
+    addFieldError(errors, field, `${field} must be a three-letter currency code.`);
+  }
+  return normalized;
+}
+
+function launchLanguageCode(
+  value: unknown,
+  field: string,
+  errors: Record<string, string[]>,
+): string {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!/^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(normalized)) {
+    addFieldError(errors, field, `${field} must be a non-empty language code.`);
+  }
+  return normalized;
+}
+
+function launchCodeList(
+  value: unknown,
+  field: string,
+  defaultValue: string,
+  errors: Record<string, string[]>,
+  normalize: (value: unknown, field: string, errors: Record<string, string[]>) => string,
+): string[] {
+  if (!Array.isArray(value)) {
+    addFieldError(errors, field, `${field} must be an array.`);
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+  value.forEach((entry, index) => {
+    const entryField = `${field}.${index}`;
+    const normalized = normalize(entry, entryField, errors);
+    if (!normalized || normalized === defaultValue) return;
+    if (seen.has(normalized)) {
+      addFieldError(errors, entryField, `${entryField} duplicates another code.`);
+      return;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+  });
+  return result;
+}
+
+function launchSocialUrl(value: unknown, field: string, errors: Record<string, string[]>): string {
+  if (typeof value !== "string") {
+    addFieldError(errors, field, `${field} must be a string.`);
+    return "";
+  }
+  const normalized = value.trim();
+  if (!normalized) return "";
+  try {
+    const url = new URL(normalized);
+    if (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      Boolean(url.hostname) &&
+      !url.username &&
+      !url.password
+    ) {
+      return normalized;
+    }
+  } catch {
+    // Report the common validation error below.
+  }
+  addFieldError(errors, field, `${field} must be an http or https URL.`);
+  return normalized;
+}
+
+function sendInvalidLaunchSettings(reply: FastifyReply, fields: Record<string, string[]>): false {
+  reply.status(422).send({
+    code: "invalid_setup_request",
+    detail: "Property launch settings contain invalid fields.",
+    fields,
+  });
+  return false;
 }
 
 function ensurePublicPropertyPublicationPermission(
@@ -1328,12 +1619,20 @@ const SETUP_TASK_REGISTRY: readonly SetupTaskDefinition[] = [
     dependencies: ["shared_identity", "rooms_rates_availability"],
   },
   {
+    taskId: "billing_plan",
+    track: "hotel_operations",
+    requirementOwnerDomain: "finance",
+    permissions: ["booking.settings.manage"],
+    actionableBy: "owner",
+    dependencies: ["shared_identity", "rooms_rates_availability"],
+  },
+  {
     taskId: "payment",
     track: "hotel_operations",
     requirementOwnerDomain: "finance",
     permissions: ["booking.settings.manage"],
     actionableBy: "owner",
-    dependencies: ["shared_identity"],
+    dependencies: ["shared_identity", "billing_plan"],
   },
   {
     taskId: "direct_booking_publication",
@@ -1345,6 +1644,7 @@ const SETUP_TASK_REGISTRY: readonly SetupTaskDefinition[] = [
       "shared_identity",
       "rooms_rates_availability",
       "guest_settings_policies",
+      "billing_plan",
       "payment",
     ],
   },
@@ -1529,6 +1829,7 @@ export function buildPropertySetupPlan(input: {
       "shared_identity",
       "rooms_rates_availability",
       "guest_settings_policies",
+      "billing_plan",
       "payment",
       "direct_booking_publication",
     ]),
@@ -1741,6 +2042,7 @@ function setupTaskProduct(taskId: SetupTaskId): SharedHotelSetupEntryProduct | n
   if (taskId === "rooms_rates_availability") return "pms";
   if (
     taskId === "guest_settings_policies" ||
+    taskId === "billing_plan" ||
     taskId === "payment" ||
     taskId === "direct_booking_publication"
   ) {

@@ -151,6 +151,8 @@ async def schedule_payouts(
     affiliate_commission: float,
     property_payout: float,
     check_out,
+    *,
+    schedule_hotel: bool = True,
 ) -> None:
     """Schedule hotel payout (after cancellation window) and affiliate payout (monthly batch)."""
     policy = await CancellationPolicyRepository.get_by_hotel_id(hotel_id)
@@ -160,14 +162,15 @@ async def schedule_payouts(
         days=free_days
     )
 
-    await PayoutRepository.create(
-        booking_id=booking_id,
-        recipient_type="hotel",
-        recipient_id=hotel_id,
-        amount=property_payout,
-        currency=currency,
-        scheduled_for=hotel_payout_date,
-    )
+    if schedule_hotel:
+        await PayoutRepository.create(
+            booking_id=booking_id,
+            recipient_type="hotel",
+            recipient_id=hotel_id,
+            amount=property_payout,
+            currency=currency,
+            scheduled_for=hotel_payout_date,
+        )
 
     if affiliate_id and affiliate_commission > 0:
         checkout_dt = datetime.combine(check_out, datetime.min.time(), tzinfo=UTC)

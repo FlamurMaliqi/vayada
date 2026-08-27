@@ -149,6 +149,28 @@ describe("target public hotel profile security", () => {
     });
   });
 
+  it("keeps a fresh request-mode hotel bookable when sellable availability exists", async () => {
+    const { repository } = targetRepository(
+      targetProfileRow({
+        capabilities: {
+          instantBook: false,
+          onlinePayment: true,
+          payAtProperty: false,
+          promoCodes: false,
+          referralCodes: false,
+          bookingDeepLinks: true,
+        },
+      }),
+    );
+
+    await expect(repository.findProfileBySlug("hotel-alpenrose")).resolves.toMatchObject({
+      hotel: {
+        capabilities: { instantBook: false },
+        trust: { bookabilityStatus: "bookable", reasonCodes: [] },
+      },
+    });
+  });
+
   it("does not report stale or source-incomplete profiles as bookable", async () => {
     const stale = targetRepository(targetProfileRow({ freshnessStatus: "stale" })).repository;
     const missingSource = targetRepository(

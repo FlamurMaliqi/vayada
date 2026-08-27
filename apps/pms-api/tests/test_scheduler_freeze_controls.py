@@ -55,6 +55,20 @@ def test_scheduler_blocklist_freezes_listed_jobs_and_wins_over_allowlist():
     assert frozen["expire_pending_bookings"] == "not_in_allowlist"
 
 
+def test_target_booking_owner_freezes_legacy_poller_only():
+    status = build_scheduler_status(
+        scheduler_enabled=True,
+        allowlist_raw="",
+        blocklist_raw="",
+        manual_booking_sync_mode="target-owned",
+    )
+
+    assert "poll_channex_bookings" not in status["active_jobs"]
+    assert {job["id"]: job["reason"] for job in status["frozen_jobs"]} == {
+        "poll_channex_bookings": "target_owned"
+    }
+
+
 def test_scheduler_status_fails_closed_for_unknown_job_ids():
     status = build_scheduler_status(
         scheduler_enabled=True,

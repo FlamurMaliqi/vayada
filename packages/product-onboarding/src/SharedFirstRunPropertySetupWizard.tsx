@@ -43,14 +43,26 @@ import type {
   SetupTrack,
   UpdatePropertyProfileRequest,
 } from "@vayada/domain-hotels";
-import { COUNTRY_OPTIONS } from "@vayada/locale-constants";
+import {
+  COUNTRY_OPTIONS,
+  CURRENCY_OPTIONS,
+  LANGUAGE_OPTIONS,
+  POPULAR_CURRENCY_CODES,
+  POPULAR_LANGUAGE_CODES,
+} from "@vayada/locale-constants";
+import {
+  getCountries,
+  getCountryCallingCode,
+  parsePhoneNumberFromString,
+  type CountryCode,
+} from "libphonenumber-js/min";
 
 import { HotelIcon } from "./HotelIcon";
+import { LocalizationMultiSelect } from "./LocalizationMultiSelect";
 import GoogleAddressMap from "./GoogleAddressMap";
 import GooglePlacesAddressField from "./GooglePlacesAddressField";
 import TimezoneField from "./TimezoneField";
 import { availableTimezones, defaultTimezoneForCountry, timezoneForCoordinates } from "./timezones";
-import { isValidSharedAccountPhone } from "./sharedAccountDetails";
 import {
   isSetupTaskActionable,
   resolveSharedFirstRunSetupView,
@@ -67,6 +79,12 @@ import {
   writePendingPropertyLogo,
   type PendingPropertyLogoAssignment,
 } from "./sharedPropertyLogo";
+import {
+  propertyLaunchSettingsDefaults,
+  validatePropertyLaunchSettings,
+  type PropertyLaunchSettings,
+  type PropertyLaunchSettingsApi,
+} from "./propertyLaunchSettings";
 
 type ProductLabels = Record<SetupComponentProduct, string>;
 type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
@@ -88,8 +106,9 @@ export type SharedFirstRunPropertySetupWizardProps = {
   productLabels?: Partial<ProductLabels>;
   onContinue: (input: SharedFirstRunContinueInput) => void | Promise<void>;
   renderTaskForm: (context: SharedSetupTaskFormContext) => ReactNode;
+  propertyLaunchSettingsApi?: PropertyLaunchSettingsApi;
   onPropertySelected?: (propertyId: string) => void | Promise<void>;
-  onExit?: () => void;
+  onExit?: (propertyId: string | null) => void;
 };
 
 export type SharedSetupTaskFormContext = {
@@ -112,9 +131,9 @@ type ProfileDraft = {
   latitude: number | null;
   longitude: number | null;
   timezone: string;
-  website: string;
   contactEmail: string;
   phone: string;
+  whatsapp: string;
   localityPublic: boolean;
   logoFile: File | null;
   logoMediaObjectId: string | null;
@@ -218,20 +237,25 @@ const TASK_CONTENT: Record<
     description: "Choose deliverables, compensation, and creator requirements.",
   },
   rooms_rates_availability: {
-    title: "Set up rooms, rates, and availability",
-    description: "Add what guests can book and when it is available.",
+    title: "Add your first room type",
+    description:
+      "Just the basics to get started. You can add more rooms and fine-tune pricing anytime.",
   },
   guest_settings_policies: {
     title: "Review guest settings and policies",
     description: "Set check-in details, booking preferences, and cancellation terms.",
   },
+  billing_plan: {
+    title: "Choose your plan",
+    description: "How you pay for vayada.",
+  },
   payment: {
-    title: "Configure payment",
-    description: "Choose how guests can pay for direct bookings.",
+    title: "How guests can pay",
+    description: "Choose which payment options to offer. You can enable multiple.",
   },
   direct_booking_publication: {
-    title: "Publish direct booking",
-    description: "Review bookability and make your direct booking page available.",
+    title: "Design your booking page",
+    description: "Set up the look and feel of your direct booking site.",
   },
 };
 
@@ -260,7 +284,7 @@ export function blockInlineSetupUnload(
   event.returnValue = "";
 }
 
-const PROFILE_STEP_FIELDS: ReadonlyArray<ReadonlyArray<string>> = [
+const BASE_PROFILE_STEP_FIELDS: ReadonlyArray<ReadonlyArray<string>> = [
   ["displayName", "propertyType", "logo"],
   [
     "location.streetAddress",
@@ -269,9 +293,29 @@ const PROFILE_STEP_FIELDS: ReadonlyArray<ReadonlyArray<string>> = [
     "location.countryCode",
     "location.timezone",
   ],
-  ["contactEmail", "phone", "website"],
+  ["phone", "whatsapp", "contactEmail"],
 ];
-const PROFILE_STEP_TITLES = ["About your hotel", "Location", "Hotel contact"] as const;
+const LAUNCH_SETTINGS_STEP_FIELDS = [
+  "defaultCurrency",
+  "defaultLanguage",
+  "instagram",
+  "facebook",
+  "tiktok",
+  "youtube",
+] as const;
+const BASE_PROFILE_STEP_TITLES = ["About your hotel", "Location", "Contact information"] as const;
+const PROFILE_STEP_FIELDS_WITH_LAUNCH: ReadonlyArray<ReadonlyArray<string>> = [
+  BASE_PROFILE_STEP_FIELDS[0],
+  BASE_PROFILE_STEP_FIELDS[1],
+  LAUNCH_SETTINGS_STEP_FIELDS,
+  BASE_PROFILE_STEP_FIELDS[2],
+];
+const PROFILE_STEP_TITLES_WITH_LAUNCH = [
+  "About your hotel",
+  "Location",
+  "Guest preferences",
+  "Contact information",
+] as const;
 
 const PROPERTY_TYPE_ICONS = new Map<string, IconComponent>([
   ["hotel", HotelIcon],
@@ -299,6 +343,7 @@ export default function SharedFirstRunPropertySetupWizard({
   productLabels,
   onContinue,
   renderTaskForm,
+  propertyLaunchSettingsApi,
   onPropertySelected,
   onExit,
 }: SharedFirstRunPropertySetupWizardProps) {
@@ -315,6 +360,11 @@ export default function SharedFirstRunPropertySetupWizard({
     null,
   );
   const [draft, setDraft] = useState<ProfileDraft>(() => newPropertyDraft());
+  const [launchSettings, setLaunchSettings] = useState<PropertyLaunchSettings>(() =>
+    propertyLaunchSettingsDefaults(""),
+  );
+  const [launchSettingsTouched, setLaunchSettingsTouched] = useState(false);
+  const [skipLaunchSettings, setSkipLaunchSettings] = useState(false);
   const [selectedTracks, setSelectedTracks] = useState<SetupTrack[]>([]);
   const [saving, setSaving] = useState(false);
   const [selectedPlanTaskId, setSelectedPlanTaskId] = useState<SetupTaskId | null>(null);
@@ -326,6 +376,7 @@ export default function SharedFirstRunPropertySetupWizard({
   const createPropertyCommandKey = useRef<string | null>(null);
   const logoUploadKey = useRef<string | null>(null);
   const logoAssignmentKey = useRef<string | null>(null);
+  const profileSaveInFlight = useRef(false);
 
   const view = useMemo(
     () =>
@@ -368,7 +419,7 @@ export default function SharedFirstRunPropertySetupWizard({
       })
       .catch((err) => {
         if (cancelled) return;
-        setError(errorMessage(err));
+        setError(setupErrorMessage(err));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -396,8 +447,11 @@ export default function SharedFirstRunPropertySetupWizard({
       propertyId
         ? api.getPublicPropertyProfile(propertyId)
         : Promise.resolve<PublicPropertyProfileResponse | null>(null),
+      propertyId && propertyLaunchSettingsApi
+        ? propertyLaunchSettingsApi.get(propertyId)
+        : Promise.resolve<PropertyLaunchSettings | null>(null),
     ])
-      .then(([catalog, nextProfile, publicProfile]) => {
+      .then(([catalog, nextProfile, publicProfile, existingLaunchSettings]) => {
         if (cancelled) return;
         setPropertyTypeOptions(propertyTypeOptionsFromCatalog(catalog.propertyTypes));
         setLoadedProfile(nextProfile);
@@ -425,18 +479,31 @@ export default function SharedFirstRunPropertySetupWizard({
             ? draftFromProfile(nextProfile, publicProfile, unconfirmedPendingLogo)
             : newPropertyDraft(),
         );
+        setLaunchSettings(
+          existingLaunchSettings ??
+            propertyLaunchSettingsDefaults(nextProfile?.profile.location.countryCode ?? ""),
+        );
+        setLaunchSettingsTouched(Boolean(existingLaunchSettings));
+        setSkipLaunchSettings(false);
       })
       .catch((err) => {
         if (cancelled) return;
         setLoadedProfile(null);
         setProfileLoadFailed(true);
-        setError(errorMessage(err));
+        setError(setupErrorMessage(err));
       });
 
     return () => {
       cancelled = true;
     };
-  }, [api, profileReloadToken, view.profileMode, view.screen, view.selectedPropertyId]);
+  }, [
+    api,
+    profileReloadToken,
+    propertyLaunchSettingsApi,
+    view.profileMode,
+    view.screen,
+    view.selectedPropertyId,
+  ]);
 
   const reloadStatus = async (propertyId?: string | null) => {
     const nextStatus = await api.getStatus({ entryProduct, propertyId });
@@ -454,21 +521,26 @@ export default function SharedFirstRunPropertySetupWizard({
       await reloadStatus(propertyId);
       await onPropertySelected?.(propertyId);
     } catch (err) {
-      setError(errorMessage(err));
+      setError(setupErrorMessage(err));
     } finally {
       setLoading(false);
     }
   };
 
   const handleSaveProfile = async () => {
+    if (profileSaveInFlight.current) return;
     setError("");
     setFieldErrors({});
     const nextFieldErrors = validateProfileDraft(draft);
+    if (propertyLaunchSettingsApi && !skipLaunchSettings) {
+      Object.assign(nextFieldErrors, validatePropertyLaunchSettings(launchSettings));
+    }
     if (Object.keys(nextFieldErrors).length > 0) {
       setFieldErrors(nextFieldErrors);
       return;
     }
 
+    profileSaveInFlight.current = true;
     setSaving(true);
     try {
       if (view.profileMode === "update" && !loadedProfile) {
@@ -484,12 +556,26 @@ export default function SharedFirstRunPropertySetupWizard({
       } else if (loadedProfile) {
         saved = loadedProfile;
       } else {
-        saved = await api.createPropertyProfile(
-          createProfileFromDraft(draft),
-          (createPropertyCommandKey.current = idempotencyKeyForRetry(
-            createPropertyCommandKey.current,
-          )),
-        );
+        const profile = createProfileFromDraft(draft);
+        const idempotencyKey = (createPropertyCommandKey.current = idempotencyKeyForRetry(
+          createPropertyCommandKey.current,
+        ));
+        try {
+          saved = await api.createPropertyProfile(profile, idempotencyKey);
+        } catch (createError) {
+          const code = setupErrorCode(createError);
+          if (code !== "idempotency_key_conflict" && code !== "command_in_progress") {
+            throw createError;
+          }
+
+          const createdPropertyId = setupErrorPropertyId(createError);
+          if (!createdPropertyId) throw createError;
+          saved = await api.getPropertyProfile(createdPropertyId);
+          const recoveredUpdate = profileUpdateFromDraft(draft, saved);
+          if (recoveredUpdate) {
+            saved = await api.updatePropertyProfile(createdPropertyId, recoveredUpdate);
+          }
+        }
       }
       setLoadedProfile(saved);
       saved = await savePropertyLogo({
@@ -500,6 +586,12 @@ export default function SharedFirstRunPropertySetupWizard({
         assignmentKey: logoAssignmentKey,
       });
       setLoadedProfile(saved);
+      if (propertyLaunchSettingsApi && !skipLaunchSettings) {
+        await propertyLaunchSettingsApi.update(
+          saved.propertyId,
+          normalizedPropertyLaunchSettings(launchSettings),
+        );
+      }
       setForceCreateProperty(false);
       setEditPropertyProfile(false);
       await reloadStatus(saved.propertyId);
@@ -522,13 +614,14 @@ export default function SharedFirstRunPropertySetupWizard({
             "These hotel details changed in another session. We refreshed the latest version—review your entries and save again.",
           );
         } catch (refreshError) {
-          setError(errorMessage(refreshError));
+          setError(setupErrorMessage(refreshError));
         }
       } else {
         setFieldErrors(fieldErrorsFromError(err));
-        setError(errorMessage(err));
+        setError(setupErrorMessage(err));
       }
     } finally {
+      profileSaveInFlight.current = false;
       setSaving(false);
     }
   };
@@ -572,10 +665,10 @@ export default function SharedFirstRunPropertySetupWizard({
             );
           }
         } catch (refreshError) {
-          setError(errorMessage(refreshError));
+          setError(setupErrorMessage(refreshError));
         }
       } else {
-        setError(errorMessage(err));
+        setError(setupErrorMessage(err));
       }
     } finally {
       setSaving(false);
@@ -588,7 +681,7 @@ export default function SharedFirstRunPropertySetupWizard({
       const nextStatus = await reloadStatus(task.propertyId);
       setSelectedPlanTaskId(recommendedInlineSetupTaskId(nextStatus));
     } catch (err) {
-      setError(errorMessage(err));
+      setError(setupErrorMessage(err));
       throw err;
     }
   };
@@ -611,8 +704,8 @@ export default function SharedFirstRunPropertySetupWizard({
       setError(INLINE_SETUP_STALE_SAVE_MESSAGE);
       throw new Error(INLINE_SETUP_STALE_SAVE_MESSAGE);
     } catch (err) {
-      if (errorMessage(err) !== INLINE_SETUP_STALE_SAVE_MESSAGE) {
-        setError(errorMessage(err));
+      if (setupErrorMessage(err) !== INLINE_SETUP_STALE_SAVE_MESSAGE) {
+        setError(setupErrorMessage(err));
       }
       throw err;
     }
@@ -658,6 +751,9 @@ export default function SharedFirstRunPropertySetupWizard({
           onSelect={handleSelectProperty}
           onAdd={() => {
             setDraft(newPropertyDraft());
+            setLaunchSettings(propertyLaunchSettingsDefaults(""));
+            setLaunchSettingsTouched(false);
+            setSkipLaunchSettings(false);
             setLoadedProfile(null);
             setForceCreateProperty(true);
           }}
@@ -680,6 +776,9 @@ export default function SharedFirstRunPropertySetupWizard({
           loading={!propertyTypeOptions}
           saving={saving}
           fieldErrors={fieldErrors}
+          launchSettings={propertyLaunchSettingsApi ? launchSettings : null}
+          skipLaunchSettings={skipLaunchSettings}
+          launchSettingsTouched={launchSettingsTouched}
           propertyTypeOptions={propertyTypeOptions ?? []}
           pageHeadingRef={profileHeading}
           onChange={(nextDraft) => {
@@ -691,6 +790,18 @@ export default function SharedFirstRunPropertySetupWizard({
             setDraft(nextDraft);
           }}
           onFieldErrors={setFieldErrors}
+          onLaunchSettingsChange={(nextSettings) => {
+            setLaunchSettings(nextSettings);
+            setLaunchSettingsTouched(true);
+            setSkipLaunchSettings(false);
+          }}
+          onPrepareLaunchSettings={(countryCode) => {
+            if (!launchSettingsTouched) {
+              setLaunchSettings(propertyLaunchSettingsDefaults(countryCode));
+            }
+          }}
+          onConfirmLaunchSettings={() => setSkipLaunchSettings(false)}
+          onSkipLaunchSettings={() => setSkipLaunchSettings(true)}
           onStepChange={setProfileStep}
           onCancel={
             editPropertyProfile
@@ -739,7 +850,7 @@ export default function SharedFirstRunPropertySetupWizard({
           selectedTaskId={selectedPlanTaskId}
           onSelectTask={setSelectedPlanTaskId}
           onEditHotelBasics={() => setEditPropertyProfile(true)}
-          onExit={onExit}
+          onExit={onExit ? () => onExit(view.selectedPropertyId) : undefined}
           onEnterProduct={entryContinueInput ? () => onContinue(entryContinueInput) : undefined}
           onAddTrack={
             status.organization.selectedTracks.length < 2 && status.organization.canManageTracks
@@ -997,6 +1108,9 @@ function HotelFacadeIllustration() {
 
 function ProfileForm({
   draft,
+  launchSettings,
+  skipLaunchSettings,
+  launchSettingsTouched,
   step,
   mode,
   embedded,
@@ -1006,6 +1120,10 @@ function ProfileForm({
   propertyTypeOptions,
   pageHeadingRef,
   onChange,
+  onLaunchSettingsChange,
+  onPrepareLaunchSettings,
+  onConfirmLaunchSettings,
+  onSkipLaunchSettings,
   onFieldErrors,
   onStepChange,
   onCancel,
@@ -1013,6 +1131,9 @@ function ProfileForm({
   onSave,
 }: {
   draft: ProfileDraft;
+  launchSettings: PropertyLaunchSettings | null;
+  skipLaunchSettings: boolean;
+  launchSettingsTouched: boolean;
   step: number;
   mode: "create" | "update";
   embedded: boolean;
@@ -1022,12 +1143,24 @@ function ProfileForm({
   propertyTypeOptions: SharedPropertyTypeOption[];
   pageHeadingRef: RefObject<HTMLHeadingElement>;
   onChange: (draft: ProfileDraft) => void;
+  onLaunchSettingsChange: (settings: PropertyLaunchSettings) => void;
+  onPrepareLaunchSettings: (countryCode: string) => void;
+  onConfirmLaunchSettings: () => void;
+  onSkipLaunchSettings: () => void;
   onFieldErrors: (errors: Record<string, string[]>) => void;
   onStepChange: (step: number) => void;
   onCancel?: () => void;
   cancelLabel?: string;
   onSave: () => void;
 }) {
+  const profileStepFields = launchSettings
+    ? PROFILE_STEP_FIELDS_WITH_LAUNCH
+    : BASE_PROFILE_STEP_FIELDS;
+  const profileStepTitles = launchSettings
+    ? PROFILE_STEP_TITLES_WITH_LAUNCH
+    : BASE_PROFILE_STEP_TITLES;
+  const contactStep = launchSettings ? 3 : 2;
+  const finalStep = profileStepFields.length - 1;
   const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim();
   const LocationHeading = embedded ? "h2" : "h1";
   const [showAddressFields, setShowAddressFields] = useState(
@@ -1045,9 +1178,12 @@ function ProfileForm({
   const focusAddressFieldsWhenShown = useRef(false);
   const stepHeading = useRef<HTMLHeadingElement>(null);
   const timezoneWasAutoDetected = useRef(false);
+  const [whatsappFollowsPhone, setWhatsappFollowsPhone] = useState(
+    () => !draft.whatsapp || draft.whatsapp === draft.phone,
+  );
 
   useEffect(() => {
-    const errorStep = PROFILE_STEP_FIELDS.findIndex((fields) =>
+    const errorStep = profileStepFields.findIndex((fields) =>
       fields.some((field) => fieldErrors[field]),
     );
     if (errorStep >= 0 && errorStep !== step) {
@@ -1056,10 +1192,10 @@ function ProfileForm({
         (errorStep === 1 ? pageHeadingRef.current : stepHeading.current)?.focus(),
       );
     }
-  }, [fieldErrors, onStepChange, pageHeadingRef, step]);
+  }, [fieldErrors, onStepChange, pageHeadingRef, profileStepFields, step]);
 
   useEffect(() => {
-    if (PROFILE_STEP_FIELDS[1].some((field) => fieldErrors[field])) {
+    if (BASE_PROFILE_STEP_FIELDS[1].some((field) => fieldErrors[field])) {
       setShowAddressFields(true);
       requestAnimationFrame(() =>
         addressFields.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(),
@@ -1092,6 +1228,17 @@ function ProfileForm({
     return () => URL.revokeObjectURL(previewUrl);
   }, [draft.logoFile, draft.logoPublicUrl]);
 
+  useEffect(() => {
+    if (
+      step === contactStep &&
+      whatsappFollowsPhone &&
+      draft.phone &&
+      draft.whatsapp !== draft.phone
+    ) {
+      onChange({ ...draft, whatsapp: draft.phone });
+    }
+  }, [contactStep, draft, onChange, step, whatsappFollowsPhone]);
+
   if (loading) {
     return (
       <div className="flex min-h-80 items-center justify-center">
@@ -1121,12 +1268,24 @@ function ProfileForm({
     );
   };
   const continueToNextStep = () => {
-    const currentFields = new Set(PROFILE_STEP_FIELDS[step]);
+    const currentFields = new Set(profileStepFields[step]);
+    const allErrors = {
+      ...validateProfileDraft(draft),
+      ...(launchSettings && (step === 2 || !skipLaunchSettings)
+        ? validatePropertyLaunchSettings(launchSettings)
+        : {}),
+    };
     const currentErrors = Object.fromEntries(
-      Object.entries(validateProfileDraft(draft)).filter(([field]) => currentFields.has(field)),
+      Object.entries(allErrors).filter(([field]) => currentFields.has(field)),
     );
     onFieldErrors(currentErrors);
-    if (Object.keys(currentErrors).length === 0) changeStep(step + 1);
+    if (Object.keys(currentErrors).length === 0) {
+      if (step === 1 && launchSettings && mode === "create" && !launchSettingsTouched) {
+        onPrepareLaunchSettings(draft.countryCode);
+      }
+      if (step === 2 && launchSettings) onConfirmLaunchSettings();
+      changeStep(step + 1);
+    }
   };
   const visiblePropertyTypeOptions =
     draft.propertyType && !propertyTypeOptions.some(({ value }) => value === draft.propertyType)
@@ -1151,16 +1310,15 @@ function ProfileForm({
         className={`shrink-0 font-semibold text-gray-500 ${step === 1 ? "text-xs" : "text-sm"}`}
         aria-live="polite"
       >
-        Step {step + 1} of {PROFILE_STEP_FIELDS.length}
-        {step !== 1 && ` · ${PROFILE_STEP_TITLES[step]}`}
+        Step {step + 1} of {profileStepFields.length}
+        {step !== 1 && ` · ${profileStepTitles[step]}`}
       </p>
       <ol
-        className={`grid w-full grid-cols-3 ${
-          step === 1 ? "max-w-10 gap-1" : "max-w-[12rem] gap-2"
-        }`}
+        className={`grid w-full ${step === 1 ? "max-w-10 gap-1" : "max-w-[12rem] gap-2"}`}
+        style={{ gridTemplateColumns: `repeat(${profileStepTitles.length}, minmax(0, 1fr))` }}
         aria-label="Hotel setup progress"
       >
-        {PROFILE_STEP_TITLES.map((title, index) => {
+        {profileStepTitles.map((title, index) => {
           const isCurrent = index === step;
           const isComplete = index < step;
 
@@ -1202,25 +1360,21 @@ function ProfileForm({
       )}
       <button
         type="submit"
-        disabled={step === PROFILE_STEP_FIELDS.length - 1 && saving}
+        disabled={step === finalStep && saving}
         className={`inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto ${
           step === 1 ? "sm:min-w-32" : ""
         }`}
       >
-        {step === PROFILE_STEP_FIELDS.length - 1 && saving && (
+        {step === finalStep && saving && (
           <span
             className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
             aria-hidden="true"
           />
         )}
         <span>
-          {step === PROFILE_STEP_FIELDS.length - 1
-            ? saving
-              ? "Saving..."
-              : "Save and continue"
-            : "Continue"}
+          {step === finalStep ? (saving ? "Saving..." : "Save and continue") : "Continue"}
         </span>
-        {!(step === PROFILE_STEP_FIELDS.length - 1 && saving) && (
+        {!(step === finalStep && saving) && (
           <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
         )}
       </button>
@@ -1233,7 +1387,7 @@ function ProfileForm({
       aria-busy={saving}
       onSubmit={(event) => {
         event.preventDefault();
-        if (step === PROFILE_STEP_FIELDS.length - 1) onSave();
+        if (step === finalStep) onSave();
         else continueToNextStep();
       }}
       className={`mx-auto ${step === 1 ? "max-w-none" : "max-w-7xl space-y-8"}`}
@@ -1302,53 +1456,246 @@ function ProfileForm({
         </aside>
       </section>
 
-      <section aria-busy={saving} className={step === 2 ? "block" : "hidden"}>
+      <section aria-busy={saving} className={step === contactStep ? "block" : "hidden"}>
         <div className="mx-auto max-w-3xl rounded-[2rem] bg-white p-5 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] sm:p-8">
           <div className="mb-4">
             <h3
-              ref={step === 2 ? stepHeading : undefined}
+              ref={step === contactStep ? stepHeading : undefined}
               tabIndex={-1}
               className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
             >
-              How can Vayada reach your hotel?
+              How can guests reach you?
             </h3>
             <p className="mt-2 text-sm text-gray-500">
-              Existing published contacts keep their visibility. Any new details you add here stay
-              private.
+              This information is shown when guests click &apos;Contact&apos; on your booking page.
             </p>
           </div>
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-4">
+            <PhoneField
+              label="Phone number"
+              value={draft.phone}
+              countryCode={draft.countryCode}
+              placeholder="+94 77 123 4567"
+              required
+              error={fieldErrors.phone?.[0]}
+              onChange={(value) =>
+                onChange({
+                  ...draft,
+                  phone: value,
+                  whatsapp: whatsappFollowsPhone ? value : draft.whatsapp,
+                })
+              }
+            />
+            <PhoneField
+              label="WhatsApp number"
+              value={draft.whatsapp}
+              countryCode={draft.countryCode}
+              placeholder="Same as phone or a different number."
+              helper="Leave blank if you don't use WhatsApp."
+              error={fieldErrors.whatsapp?.[0]}
+              onChange={(value) => {
+                setWhatsappFollowsPhone(value === draft.phone && Boolean(value));
+                setField("whatsapp", value);
+              }}
+            />
             <TextField
-              label="Contact email"
+              label="Email"
               value={draft.contactEmail}
-              placeholder="hello@hotel-alpenrose.com"
+              placeholder="hello@yourhotel.com"
               type="email"
               required
               error={fieldErrors.contactEmail?.[0]}
               onChange={(value) => setField("contactEmail", value)}
             />
-            <TextField
-              label="Phone number"
-              value={draft.phone}
-              placeholder="+49 89 123456"
-              type="tel"
-              required
-              error={fieldErrors.phone?.[0]}
-              onChange={(value) => setField("phone", value)}
-            />
-            <div className="md:col-span-2">
-              <TextField
-                label="Website"
-                value={draft.website}
-                placeholder="https://hotel-alpenrose.com"
-                type="url"
-                error={fieldErrors.website?.[0]}
-                onChange={(value) => setField("website", value)}
-              />
-            </div>
           </div>
         </div>
       </section>
+
+      {launchSettings && (
+        <section aria-busy={saving} className={step === 2 ? "block" : "hidden"}>
+          <div className="mx-auto max-w-4xl rounded-[2rem] bg-white p-5 text-left shadow-[0_30px_90px_-50px_rgba(15,23,42,0.45)] sm:p-8">
+            <div className="mb-6">
+              <h3
+                ref={step === 2 ? stepHeading : undefined}
+                tabIndex={-1}
+                className="text-2xl font-semibold tracking-tight text-gray-950 outline-none"
+              >
+                Set up guest preferences
+              </h3>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-gray-500">
+                We suggested a currency and language from your location. You can change these now or
+                later in Booking settings.
+              </p>
+            </div>
+
+            <div className="grid gap-6 lg:grid-cols-2">
+              <div className="space-y-5 rounded-2xl border border-gray-100 p-4 sm:p-5">
+                <SelectField
+                  label="Default currency"
+                  value={launchSettings.defaultCurrency}
+                  placeholder="Select a currency"
+                  required
+                  error={fieldErrors.defaultCurrency?.[0]}
+                  options={CURRENCY_OPTIONS.map((option) => ({
+                    value: option.code,
+                    label: `${option.flag} ${option.code} · ${option.name}`,
+                  }))}
+                  onChange={(defaultCurrency) =>
+                    onLaunchSettingsChange({
+                      ...launchSettings,
+                      defaultCurrency,
+                      supportedCurrencies: launchSettings.supportedCurrencies.filter(
+                        (code) => code !== defaultCurrency,
+                      ),
+                    })
+                  }
+                />
+                <div>
+                  <label
+                    htmlFor="hotel-setup-additional-currencies"
+                    className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-gray-700"
+                  >
+                    <span>Additional currencies</span>
+                    <span aria-hidden="true" className="text-xs text-gray-400">
+                      Optional
+                    </span>
+                  </label>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Guests can view prices in these currencies.
+                  </p>
+                  <div className="mt-3">
+                    <LocalizationMultiSelect
+                      id="hotel-setup-additional-currencies"
+                      selected={launchSettings.supportedCurrencies}
+                      onToggle={(code) =>
+                        onLaunchSettingsChange({
+                          ...launchSettings,
+                          supportedCurrencies: launchSettings.supportedCurrencies.includes(code)
+                            ? launchSettings.supportedCurrencies.filter((value) => value !== code)
+                            : [...launchSettings.supportedCurrencies, code],
+                        })
+                      }
+                      options={CURRENCY_OPTIONS}
+                      excludeCode={launchSettings.defaultCurrency}
+                      placeholder={`Search currencies, e.g. "Dollar" or "USD"...`}
+                      getLabel={(option) => option.code}
+                      getSearchLabel={(option) => `${option.name} · ${option.code}`}
+                      popularCodes={POPULAR_CURRENCY_CODES}
+                      emptyMessage={`No additional currencies added — your booking page will show only ${launchSettings.defaultCurrency}`}
+                      comfortable
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-5 rounded-2xl border border-gray-100 p-4 sm:p-5">
+                <SelectField
+                  label="Default language"
+                  value={launchSettings.defaultLanguage}
+                  placeholder="Select a language"
+                  required
+                  error={fieldErrors.defaultLanguage?.[0]}
+                  options={LANGUAGE_OPTIONS.map((option) => ({
+                    value: option.code,
+                    label: `${option.flag} ${option.name} · ${option.nativeName}`,
+                  }))}
+                  onChange={(defaultLanguage) =>
+                    onLaunchSettingsChange({
+                      ...launchSettings,
+                      defaultLanguage,
+                      supportedLanguages: launchSettings.supportedLanguages.filter(
+                        (code) => code !== defaultLanguage,
+                      ),
+                    })
+                  }
+                />
+                <div>
+                  <label
+                    htmlFor="hotel-setup-additional-languages"
+                    className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-gray-700"
+                  >
+                    <span>Additional languages</span>
+                    <span aria-hidden="true" className="text-xs text-gray-400">
+                      Optional
+                    </span>
+                  </label>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Add languages you can support for international guests.
+                  </p>
+                  <div className="mt-3">
+                    <LocalizationMultiSelect
+                      id="hotel-setup-additional-languages"
+                      selected={launchSettings.supportedLanguages}
+                      onToggle={(code) =>
+                        onLaunchSettingsChange({
+                          ...launchSettings,
+                          supportedLanguages: launchSettings.supportedLanguages.includes(code)
+                            ? launchSettings.supportedLanguages.filter((value) => value !== code)
+                            : [...launchSettings.supportedLanguages, code],
+                        })
+                      }
+                      options={LANGUAGE_OPTIONS}
+                      excludeCode={launchSettings.defaultLanguage}
+                      placeholder={`Search languages, e.g. "German" or "Deutsch"...`}
+                      getLabel={(option) => option.nativeName}
+                      getSearchLabel={(option) => `${option.name} · ${option.nativeName}`}
+                      popularCodes={POPULAR_LANGUAGE_CODES}
+                      emptyMessage={`No additional languages added — your booking page will show only ${launchSettings.defaultLanguage.toUpperCase()}`}
+                      comfortable
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 rounded-2xl border border-gray-100 p-4 sm:p-5">
+              <h4 className="text-base font-semibold text-gray-950">Social media</h4>
+              <p className="mt-1 text-sm text-gray-500">
+                Optional links help guests and creators discover your hotel.
+              </p>
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                {(
+                  [
+                    ["instagram", "Instagram", "https://instagram.com/yourhotel"],
+                    ["facebook", "Facebook", "https://facebook.com/yourhotel"],
+                    ["tiktok", "TikTok", "https://tiktok.com/@yourhotel"],
+                    ["youtube", "YouTube", "https://youtube.com/@yourhotel"],
+                  ] as const
+                ).map(([field, label, placeholder]) => (
+                  <TextField
+                    key={field}
+                    label={label}
+                    value={launchSettings[field]}
+                    placeholder={placeholder}
+                    type="url"
+                    error={fieldErrors[field]?.[0]}
+                    onChange={(value) =>
+                      onLaunchSettingsChange({ ...launchSettings, [field]: value })
+                    }
+                  />
+                ))}
+              </div>
+              <p className="mt-4 text-xs leading-5 text-gray-500">
+                You can add, remove, or update these links later in Booking settings.
+              </p>
+            </div>
+
+            <div className="mt-6 text-center">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => {
+                  onSkipLaunchSettings();
+                  changeStep(3);
+                }}
+                className="text-sm font-semibold text-gray-600 underline decoration-gray-300 underline-offset-4 transition hover:text-gray-950 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Skip for now, configure later
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
 
       <section aria-busy={saving} className={step === 1 ? "block" : "hidden"}>
         <div className="relative isolate min-h-[100dvh] overflow-hidden bg-slate-100 text-left">
@@ -1976,7 +2323,11 @@ function SetupPlan({
       )}
 
       <div className="min-w-0" onChangeCapture={() => setHasUnsavedChanges(true)}>
-        <div className="mx-auto max-w-3xl">
+        <div
+          className={`mx-auto ${
+            currentTask?.taskId === "direct_booking_publication" ? "max-w-5xl" : "max-w-3xl"
+          }`}
+        >
           {currentTask ? (
             <InlineSetupTaskStep
               key={currentTask.taskId}
@@ -2424,7 +2775,7 @@ export function validateProfileDraft(draft: ProfileDraft): Record<string, string
   if (!draft.timezone.trim()) {
     errors["location.timezone"] = ["Time zone is required."];
   }
-  if (!draft.contactEmail.trim()) errors.contactEmail = ["Contact email is required."];
+  if (!draft.contactEmail.trim()) errors.contactEmail = ["Email is required."];
   if (!draft.phone.trim()) errors.phone = ["Phone number is required."];
   if (draft.timezone.trim() && !isValidIanaTimezone(draft.timezone.trim())) {
     errors["location.timezone"] = ["Enter a valid IANA time zone."];
@@ -2432,11 +2783,11 @@ export function validateProfileDraft(draft: ProfileDraft): Record<string, string
   if (draft.contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.contactEmail)) {
     errors.contactEmail = ["Enter a valid email address."];
   }
-  if (!isValidSharedAccountPhone(draft.phone)) {
+  if (draft.phone.trim() && !isValidInternationalPhone(draft.phone)) {
     errors.phone = ["Enter a valid phone number."];
   }
-  if (draft.website && !isHttpUrl(draft.website)) {
-    errors.website = ["Enter a complete website URL, including https://."];
+  if (draft.whatsapp && !isValidInternationalPhone(draft.whatsapp)) {
+    errors.whatsapp = ["Enter a valid WhatsApp number."];
   }
 
   return errors;
@@ -2520,6 +2871,153 @@ function TextField({
       )}
       {error && (
         <p id={errorId} className="mt-1 text-xs text-red-600" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+const SUPPORTED_PHONE_COUNTRIES = new Set(getCountries());
+const PHONE_COUNTRY_OPTIONS = COUNTRY_OPTIONS.filter(({ code }) =>
+  SUPPORTED_PHONE_COUNTRIES.has(code as CountryCode),
+).map((country) => ({
+  ...country,
+  callingCode: `+${getCountryCallingCode(country.code as CountryCode)}`,
+}));
+
+function phoneCountry(value: string, fallback: string): CountryCode {
+  const parsed = parsePhoneNumberFromString(value);
+  if (parsed?.country) return parsed.country;
+  const normalizedFallback = fallback.trim().toUpperCase() as CountryCode;
+  return SUPPORTED_PHONE_COUNTRIES.has(normalizedFallback) ? normalizedFallback : "US";
+}
+
+export function normalizedPhoneNumber(value: string, countryCode?: CountryCode): string {
+  const parsed = parsePhoneNumberFromString(value, countryCode);
+  return parsed?.isValid() ? parsed.formatInternational() : value;
+}
+
+function isValidInternationalPhone(value: string): boolean {
+  return value.trim().startsWith("+") && Boolean(parsePhoneNumberFromString(value)?.isValid());
+}
+
+export function phoneWithCountryCallingCode(
+  value: string,
+  countryCode: CountryCode,
+  previousCountryCode?: CountryCode,
+): string {
+  const callingCode = `+${getCountryCallingCode(countryCode)}`;
+  const parsed = parsePhoneNumberFromString(value);
+  if (parsed?.nationalNumber) return `${callingCode} ${parsed.nationalNumber}`;
+
+  const digits = value.replace(/\D/g, "");
+  const previousCallingCode = previousCountryCode
+    ? getCountryCallingCode(previousCountryCode)
+    : undefined;
+  const nationalNumber =
+    previousCallingCode && digits.startsWith(previousCallingCode)
+      ? digits.slice(previousCallingCode.length)
+      : digits.replace(/^0+/, "");
+  return nationalNumber ? `${callingCode} ${nationalNumber}` : `${callingCode} `;
+}
+
+function PhoneField({
+  label,
+  value,
+  countryCode,
+  onChange,
+  error,
+  helper,
+  placeholder,
+  required = false,
+}: {
+  label: string;
+  value: string;
+  countryCode: string;
+  onChange: (value: string) => void;
+  error?: string;
+  helper?: string;
+  placeholder: string;
+  required?: boolean;
+}) {
+  const generatedId = useId();
+  const inputId = `setup-${generatedId}`;
+  const helperId = helper ? `${inputId}-helper` : undefined;
+  const errorId = error ? `${inputId}-error` : undefined;
+  const describedBy = [helperId, errorId].filter(Boolean).join(" ") || undefined;
+  const [selectedCountry, setSelectedCountry] = useState<CountryCode>(() =>
+    phoneCountry(value, countryCode),
+  );
+
+  useEffect(() => {
+    const parsedCountry = parsePhoneNumberFromString(value)?.country;
+    if (parsedCountry) {
+      setSelectedCountry((current) => (current === parsedCountry ? current : parsedCountry));
+    } else if (!value.trim()) {
+      const fallbackCountry = phoneCountry("", countryCode);
+      setSelectedCountry((current) => (current === fallbackCountry ? current : fallbackCountry));
+    }
+  }, [countryCode, value]);
+
+  return (
+    <div>
+      <label
+        htmlFor={inputId}
+        className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-gray-700"
+      >
+        <span>{label}</span>
+        {!required && (
+          <span aria-hidden="true" className="text-xs text-gray-400">
+            Optional
+          </span>
+        )}
+      </label>
+      {helper && (
+        <p id={helperId} className="mt-1 text-xs text-gray-500">
+          {helper}
+        </p>
+      )}
+      <div
+        className={`mt-2 flex overflow-hidden rounded-xl border transition focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-100 ${
+          error ? "border-red-300 bg-red-50" : "border-gray-200 bg-white"
+        }`}
+      >
+        <select
+          aria-label={`${label} country code`}
+          value={selectedCountry}
+          onChange={(event) => {
+            const nextCountry = event.target.value as CountryCode;
+            const previousCountry = selectedCountry;
+            setSelectedCountry(nextCountry);
+            onChange(phoneWithCountryCallingCode(value, nextCountry, previousCountry));
+          }}
+          className="w-32 shrink-0 border-0 border-r border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none"
+        >
+          {PHONE_COUNTRY_OPTIONS.map((country) => (
+            <option key={country.code} value={country.code}>
+              {country.flag} {country.callingCode}
+            </option>
+          ))}
+        </select>
+        <input
+          id={inputId}
+          type="tel"
+          value={value}
+          placeholder={placeholder}
+          aria-invalid={Boolean(error)}
+          aria-describedby={describedBy}
+          aria-required={required}
+          onChange={(event) => onChange(normalizedPhoneNumber(event.target.value, selectedCountry))}
+          onBlur={() => {
+            const normalized = normalizedPhoneNumber(value, selectedCountry);
+            if (normalized !== value) onChange(normalized);
+          }}
+          className="min-w-0 flex-1 border-0 bg-transparent px-4 py-2.5 text-base outline-none sm:text-sm"
+        />
+      </div>
+      {error && (
+        <p id={errorId} role="alert" className="mt-1.5 text-xs text-red-600">
           {error}
         </p>
       )}
@@ -2755,6 +3253,12 @@ function draftFromProfile(
   const publicLogo = publicResponse?.publicProfile.media.find(
     ({ mediaType }) => mediaType === "logo",
   );
+  const phone = contactValue(profile.contacts, "phone");
+  const whatsapp = contactValue(profile.contacts, "whatsapp");
+  const profileCountry = profile.location.countryCode.trim().toUpperCase() as CountryCode;
+  const profilePhoneCountry = SUPPORTED_PHONE_COUNTRIES.has(profileCountry)
+    ? profileCountry
+    : undefined;
   return {
     displayName: profile.displayName,
     propertyType: profile.propertyType,
@@ -2765,9 +3269,9 @@ function draftFromProfile(
     latitude: profile.location.latitude,
     longitude: profile.location.longitude,
     timezone: profile.location.timezone,
-    website: contactValue(profile.contacts, "website"),
     contactEmail: contactValue(profile.contacts, "email"),
-    phone: contactValue(profile.contacts, "phone"),
+    phone: normalizedPhoneNumber(phone, profilePhoneCountry),
+    whatsapp: normalizedPhoneNumber(whatsapp, profilePhoneCountry),
     localityPublic: profile.location.localityPublic,
     logoFile: null,
     logoMediaObjectId: pendingLogo?.mediaObjectId ?? publicLogo?.mediaObjectId ?? null,
@@ -2846,9 +3350,9 @@ function newPropertyDraft(timezone = ""): ProfileDraft {
     latitude: null,
     longitude: null,
     timezone,
-    website: "",
     contactEmail: "",
     phone: "",
+    whatsapp: "",
     localityPublic: false,
     logoFile: null,
     logoMediaObjectId: null,
@@ -2856,13 +3360,23 @@ function newPropertyDraft(timezone = ""): ProfileDraft {
   };
 }
 
-function isHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
+function normalizedPropertyLaunchSettings(
+  settings: PropertyLaunchSettings,
+): PropertyLaunchSettings {
+  return {
+    defaultCurrency: settings.defaultCurrency,
+    supportedCurrencies: Array.from(new Set(settings.supportedCurrencies)).filter(
+      (code) => code !== settings.defaultCurrency,
+    ),
+    defaultLanguage: settings.defaultLanguage,
+    supportedLanguages: Array.from(new Set(settings.supportedLanguages)).filter(
+      (code) => code !== settings.defaultLanguage,
+    ),
+    instagram: settings.instagram.trim(),
+    facebook: settings.facebook.trim(),
+    tiktok: settings.tiktok.trim(),
+    youtube: settings.youtube.trim(),
+  };
 }
 
 function contactsFromDraft(
@@ -2871,9 +3385,9 @@ function contactsFromDraft(
 ): PropertyProfileContact[] {
   return (
     [
-      ["email", draft.contactEmail],
       ["phone", draft.phone],
-      ["website", draft.website],
+      ["whatsapp", draft.whatsapp],
+      ["email", draft.contactEmail],
     ] as const
   ).reduce<PropertyProfileContact[]>(
     (contacts, [channelType, value]) => replaceContact(contacts, channelType, value),
@@ -2890,26 +3404,26 @@ function replaceContact(
   const exactIndex = contacts.findIndex(
     (contact) => contact.channelType === channelType && contact.value === trimmed,
   );
-  const index = contacts.findIndex(
-    (contact) =>
-      contact.channelType === channelType && contact.purpose === "general" && !contact.isPublic,
-  );
   if (!trimmed) {
-    return index < 0 ? contacts : contacts.filter((_, contactIndex) => contactIndex !== index);
+    return contacts.filter((contact) => contact.channelType !== channelType || !contact.isPublic);
   }
-  if (exactIndex >= 0) return contacts;
-  if (index >= 0) {
-    return contacts.map((contact, contactIndex) =>
-      contactIndex === index ? { ...contact, value: trimmed } : contact,
-    );
+
+  if (exactIndex >= 0) {
+    return contacts.flatMap((contact, contactIndex) => {
+      if (contactIndex === exactIndex) {
+        return [{ ...contact, purpose: "general" as const, isPublic: true }];
+      }
+      return contact.channelType === channelType && contact.isPublic ? [] : [contact];
+    });
   }
+
   return [
-    ...contacts,
+    ...contacts.filter((contact) => contact.channelType !== channelType || !contact.isPublic),
     {
       channelType,
       value: trimmed,
       purpose: "general",
-      isPublic: false,
+      isPublic: true,
     },
   ];
 }
@@ -2921,11 +3435,11 @@ function contactValue(
   return (
     contacts.find(
       (contact) =>
-        contact.channelType === channelType && contact.purpose === "general" && !contact.isPublic,
+        contact.channelType === channelType && contact.purpose === "general" && contact.isPublic,
     )?.value ??
+    contacts.find((contact) => contact.channelType === channelType && contact.isPublic)?.value ??
     contacts.find((contact) => contact.channelType === channelType && contact.purpose === "general")
       ?.value ??
-    contacts.find((contact) => contact.channelType === channelType && !contact.isPublic)?.value ??
     contacts.find((contact) => contact.channelType === channelType)?.value ??
     ""
   );
@@ -2979,9 +3493,66 @@ function propertyTypeOptionsFromCatalog(options: unknown): SharedPropertyTypeOpt
   return options as SharedPropertyTypeOption[];
 }
 
-function errorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
+export function setupErrorMessage(error: unknown): string {
+  const status = setupErrorStatus(error);
+  if (status !== null && status >= 500) {
+    return "Something went wrong on our end. Please try again.";
+  }
+
+  const code = setupErrorCode(error);
+  if (code === "command_in_progress") {
+    return "We're still finishing your setup. Please try again in a moment.";
+  }
+  if (code === "idempotency_key_conflict") {
+    return "Your setup changed during this save. Review it and try again.";
+  }
+
+  const data =
+    error && typeof error === "object"
+      ? (error as { data?: { detail?: unknown; message?: unknown; error?: unknown } }).data
+      : null;
+  const serverMessage = [data?.detail, data?.message, data?.error].find(
+    (value): value is string => typeof value === "string" && value.trim().length > 0,
+  );
+  if (serverMessage && !isRawApiErrorMessage(serverMessage)) return serverMessage;
+
+  if (status === 409) {
+    return "We couldn't save because your setup changed elsewhere. Refresh and try again.";
+  }
+  if (
+    error instanceof TypeError ||
+    (error instanceof Error && /failed to fetch|network/i.test(error.message))
+  ) {
+    return "Couldn't save. Check your connection and try again.";
+  }
+  if (error instanceof Error && error.message && !isRawApiErrorMessage(error.message)) {
+    return error.message;
+  }
   return "Something went wrong. Please try again.";
+}
+
+function setupErrorStatus(error: unknown): number | null {
+  if (error && typeof error === "object") {
+    const status = (error as { status?: unknown }).status;
+    if (typeof status === "number" && Number.isInteger(status)) return status;
+  }
+  if (error instanceof Error) {
+    const match = /^API Error: (\d{3})$/i.exec(error.message.trim());
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+function setupErrorPropertyId(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const data = (error as { data?: { propertyId?: unknown } }).data;
+  return typeof data?.propertyId === "string" && data.propertyId.length > 0
+    ? data.propertyId
+    : null;
+}
+
+function isRawApiErrorMessage(message: string): boolean {
+  return /^API Error: \d{3}$/i.test(message.trim());
 }
 
 function setupErrorCode(error: unknown): string | null {

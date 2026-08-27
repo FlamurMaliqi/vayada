@@ -50,8 +50,25 @@ describe("PMS inventory public offer projection", () => {
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain("AS effective_rate");
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain("rate_plan.currency");
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain("'rateType', input.rate_type");
+    expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
+      "input.capabilities -> 'paymentMethods'",
+    );
+    expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).not.toContain(
+      "input.capabilities ->> 'payAtProperty'",
+    );
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain("profile.policies");
-    expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain("input.policies,\n    CASE");
+    expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
+      "rate_plan.cancellation_policy_snapshot",
+    );
+    expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
+      "THEN input.cancellation_policy_snapshot\n        ELSE input.policies || input.cancellation_policy_snapshot",
+    );
+    expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
+      "rate_plan.cancellation_policy_snapshot ->> 'freeCancellationDeadlineDays'",
+    );
+    expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
+      "'cancellation', input.cancellation_summary",
+    );
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
       "input.stay_date >= ($2::timestamptz AT TIME ZONE input.timezone)::date",
     );

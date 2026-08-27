@@ -31,12 +31,15 @@ test.describe("booking-admin promo-code settings cutover", () => {
         code: "SUMMER20",
         discountType: "percentage",
         discountValue: "20.00",
-        currency: null,
+        minBookingValue: "500.00",
+        applicableRoomIds: ["f6853000-0000-4000-8000-000000000010"],
         validFrom: "2026-07-01",
         validUntil: "2026-08-31",
+        stayDateFrom: "2026-08-01",
+        stayDateUntil: "2026-09-30",
         isActive: true,
         maxUses: 50,
-        useCount: 3,
+        currentUses: 3,
         createdAt: "2026-06-01T10:00:00.000Z",
         updatedAt: "2026-06-01T10:00:00.000Z",
       },
@@ -55,12 +58,15 @@ test.describe("booking-admin promo-code settings cutover", () => {
           code: body.code,
           discountType: body.discountType,
           discountValue: body.discountValue,
-          currency: body.currency,
+          minBookingValue: body.minBookingValue,
+          applicableRoomIds: body.applicableRoomIds,
           validFrom: body.validFrom,
           validUntil: body.validUntil,
+          stayDateFrom: body.stayDateFrom,
+          stayDateUntil: body.stayDateUntil,
           isActive: body.isActive,
           maxUses: body.maxUses,
-          useCount: 0,
+          currentUses: 0,
           createdAt: "2026-06-01T10:05:00.000Z",
           updatedAt: "2026-06-01T10:05:00.000Z",
         };
@@ -97,24 +103,38 @@ test.describe("booking-admin promo-code settings cutover", () => {
       await route.fulfill({ json: { promoCodes } });
     });
 
-    await page.goto("/booking-flow");
-    await page.getByRole("button", { name: /^Promos$/ }).click();
+    await page.goto("/promo-codes");
 
     await expect(page.getByText("SUMMER20")).toBeVisible();
-    await page.getByRole("button", { name: "Add Promo Code" }).click();
-    await page.getByLabel("Code").fill("spring25");
-    await page.getByLabel("Discount Value").fill("25");
-    await page.getByLabel("Valid From").fill("2026-07-01");
-    await page.getByLabel("Valid Until").fill("2026-08-31");
-    await page.getByLabel("Max Uses").fill("25");
-    await page.getByRole("button", { name: "Create Promo Code" }).click();
+    await expect(page.getByText("Active", { exact: true })).toBeVisible();
+    await expect(page.getByText("3/50 used")).toBeVisible();
+    await expect(page.getByText("Sea View Suite", { exact: true })).toBeVisible();
+    await page.getByPlaceholder("Search codes...").fill("summer");
+    await expect(page.getByText("SUMMER20")).toBeVisible();
+    await page.getByPlaceholder("Search codes...").fill("");
+
+    await page.getByRole("button", { name: "New promo code" }).click();
+    await page.getByRole("textbox", { name: /^Code/ }).fill("spring25");
+    await page.getByRole("spinbutton", { name: /^Discount value/ }).fill("25");
+    await page.getByRole("spinbutton", { name: /^Minimum booking value/ }).fill("300");
+    await page.getByRole("spinbutton", { name: /^Max uses/ }).fill("25");
+    await page.getByText("All rooms", { exact: true }).click();
+    await page.getByRole("checkbox", { name: "Pool Villa" }).check();
+    await page.getByLabel(/^Valid from/).fill("2026-07-01");
+    await page.getByLabel(/^Valid until/).fill("2026-08-31");
+    await page.getByLabel("Stays from").fill("2026-08-01");
+    await page.getByLabel("Stays until").fill("2026-09-30");
+    await page.getByRole("button", { name: "Create promo code" }).click();
     await expect(page.getByText("SPRING25")).toBeVisible();
 
     await page.getByRole("button", { name: "Edit SPRING25" }).click();
-    await page.getByLabel("Code").fill("spring30");
-    await page.getByLabel("Discount Value").fill("30");
-    await page.getByRole("button", { name: "Save Changes" }).click();
+    await page.getByRole("textbox", { name: /^Code/ }).fill("spring30");
+    await page.getByRole("spinbutton", { name: /^Discount value/ }).fill("30");
+    await page.getByRole("button", { name: "Save changes" }).click();
     await expect(page.getByText("SPRING30")).toBeVisible();
+
+    await page.getByRole("switch", { name: "Deactivate SPRING30" }).click();
+    await expect(page.getByText("Inactive", { exact: true })).toBeVisible();
 
     page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("button", { name: "Delete SPRING30" }).click();
@@ -132,9 +152,12 @@ test.describe("booking-admin promo-code settings cutover", () => {
           code: "SPRING25",
           discountType: "percentage",
           discountValue: "25.00",
-          currency: null,
+          minBookingValue: "300.00",
+          applicableRoomIds: ["f6853000-0000-4000-8000-000000000011"],
           validFrom: "2026-07-01",
           validUntil: "2026-08-31",
+          stayDateFrom: "2026-08-01",
+          stayDateUntil: "2026-09-30",
           isActive: true,
           maxUses: 25,
         },
@@ -146,12 +169,20 @@ test.describe("booking-admin promo-code settings cutover", () => {
           code: "SPRING30",
           discountType: "percentage",
           discountValue: "30.00",
-          currency: null,
+          minBookingValue: "300.00",
+          applicableRoomIds: ["f6853000-0000-4000-8000-000000000011"],
           validFrom: "2026-07-01",
           validUntil: "2026-08-31",
+          stayDateFrom: "2026-08-01",
+          stayDateUntil: "2026-09-30",
           isActive: true,
           maxUses: 25,
         },
+      },
+      {
+        method: "PATCH",
+        pathname: `${BOOKING_ADMIN_PROMO_CODES_PATH}/promo_spring25`,
+        body: { isActive: false },
       },
       {
         method: "DELETE",

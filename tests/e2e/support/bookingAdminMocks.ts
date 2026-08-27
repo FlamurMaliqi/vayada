@@ -6,11 +6,13 @@ export const BOOKING_ADMIN_PROPERTY_ID = "f6853000-0000-4000-8000-000000000001";
 export const BOOKING_ADMIN_ORGANIZATION_ID = "org_hotel_group";
 export const BOOKING_ADMIN_HOTEL_SLUG = "hotel-alpenrose";
 export const BOOKING_ADMIN_ROOMS_PATH = `/api/pms/properties/${BOOKING_ADMIN_HOTEL_ID}/rooms`;
+export const BOOKING_ADMIN_ROOM_TYPES_PATH = `/api/pms/properties/${BOOKING_ADMIN_PROPERTY_ID}/room-types`;
 export const BOOKING_ADMIN_ADDON_ITEMS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/addon-items`;
 export const BOOKING_ADMIN_PROMO_CODES_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/promo-codes`;
 export const BOOKING_ADMIN_PROPERTY_LINK_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/property-link`;
 export const BOOKING_ADMIN_PROPERTY_PROFILE_PATH = `/api/hotel-setup/properties/${BOOKING_ADMIN_PROPERTY_ID}/profile`;
 export const BOOKING_ADMIN_PROPERTY_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/property`;
+const BOOKING_ADMIN_BOOKING_ACCEPTANCE_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/booking-acceptance`;
 export const BOOKING_ADMIN_PUBLIC_BOOKABILITY_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/public-bookability`;
 export const BOOKING_ADMIN_ADDON_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/addons`;
 export const BOOKING_ADMIN_BENEFITS_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/benefits`;
@@ -21,11 +23,18 @@ export const BOOKING_ADMIN_ROOM_FILTER_SETTINGS_PATH = `/api/booking/hotels/${BO
 export const BOOKING_ADMIN_DESIGN_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/design`;
 export const BOOKING_ADMIN_CUSTOM_DOMAIN_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/custom-domain`;
 export const BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH = `/api/finance/properties/${BOOKING_ADMIN_PROPERTY_ID}/payment-settings`;
+export const BOOKING_ADMIN_FINANCE_PLAN_STATUS_PATH = `/api/finance/properties/${BOOKING_ADMIN_PROPERTY_ID}/plan-status`;
 
 export interface BookingAdminPropertySettingsFixture {
   id: string;
   slug: string;
+  property_name?: string;
+  instagram?: string;
+  facebook?: string;
+  tiktok?: string;
+  youtube?: string;
   default_currency: string;
+  time_zone?: string;
   default_language: string;
   supported_currencies: string[];
   supported_languages: string[];
@@ -69,12 +78,15 @@ export interface BookingAdminPromoCodesFixture {
     code: string;
     discountType: string;
     discountValue: string;
-    currency: string | null;
+    minBookingValue: string | null;
+    applicableRoomIds: string[] | null;
     validFrom: string | null;
     validUntil: string | null;
+    stayDateFrom: string | null;
+    stayDateUntil: string | null;
     isActive: boolean;
-    maxUses: number | null;
-    useCount: number;
+    maxUses: number;
+    currentUses: number;
     createdAt: string;
     updatedAt: string;
   }>;
@@ -170,6 +182,7 @@ export const defaultBookingAdminPropertySettings: BookingAdminPropertySettingsFi
   id: BOOKING_ADMIN_HOTEL_ID,
   slug: BOOKING_ADMIN_HOTEL_SLUG,
   default_currency: "EUR",
+  time_zone: "Europe/Berlin",
   default_language: "en",
   supported_currencies: [],
   supported_languages: [],
@@ -245,12 +258,15 @@ const defaultPromoCodes: BookingAdminPromoCodesFixture = {
       code: "SUMMER20",
       discountType: "percentage",
       discountValue: "20.00",
-      currency: null,
+      minBookingValue: "500.00",
+      applicableRoomIds: ["f6853000-0000-4000-8000-000000000010"],
       validFrom: "2026-07-01",
       validUntil: "2026-08-31",
+      stayDateFrom: "2026-08-01",
+      stayDateUntil: "2026-09-30",
       isActive: true,
       maxUses: 50,
-      useCount: 3,
+      currentUses: 3,
       createdAt: "2026-06-01T10:00:00.000Z",
       updatedAt: "2026-06-01T10:00:00.000Z",
     },
@@ -349,8 +365,17 @@ export async function mockBookingAdminShellRoutes(
   options: BookingAdminShellMocksOptions = {},
 ): Promise<void> {
   const propertySettings = options.propertySettings ?? defaultBookingAdminPropertySettings;
+  let bookingAcceptanceMode: "instant" | "request" = "instant";
   await page.route("**/api/pms/properties/*/module-activations", (route) =>
-    route.fulfill({ json: { activations: [] } }),
+    route.fulfill({
+      json: {
+        hotelId: BOOKING_ADMIN_PROPERTY_ID,
+        canManage: true,
+        supportedModules: ["affiliates"],
+        activeModules: [],
+        activations: [],
+      },
+    }),
   );
   await page.route("**/admin/hotels", (route) =>
     route.fulfill({
@@ -367,6 +392,22 @@ export async function mockBookingAdminShellRoutes(
   await page.route(`**${BOOKING_ADMIN_PROPERTY_SETTINGS_PATH}*`, (route) =>
     route.fulfill({ json: propertySettings }),
   );
+  await page.route(`**${BOOKING_ADMIN_BOOKING_ACCEPTANCE_PATH}*`, async (route) => {
+    if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON() as { acceptanceMode?: unknown };
+      if (body.acceptanceMode === "instant" || body.acceptanceMode === "request") {
+        bookingAcceptanceMode = body.acceptanceMode;
+      }
+    }
+    await route.fulfill({
+      json: {
+        contractVersion: "booking-acceptance.v1",
+        propertyId: BOOKING_ADMIN_PROPERTY_ID,
+        acceptanceMode: bookingAcceptanceMode,
+        instantBook: bookingAcceptanceMode === "instant",
+      },
+    });
+  });
   await page.route("**/api/booking/hotels/*/settings/design", (route) =>
     route.fulfill({ json: defaultBookingAdminDesignSettings }),
   );
@@ -399,6 +440,29 @@ export async function mockBookingAdminShellRoutes(
           bookingHotel: true,
           pmsProperty: true,
           financeProperty: true,
+        },
+      },
+    }),
+  );
+  await page.route(`**${BOOKING_ADMIN_FINANCE_PLAN_STATUS_PATH}*`, (route) =>
+    route.fulfill({
+      json: {
+        contractVersion: "finance-subscriptions.v1",
+        propertyId: BOOKING_ADMIN_PROPERTY_ID,
+        planStatus: {
+          plan: "commission",
+          status: "commission",
+          currency: "EUR",
+          activeRoomCount: 3,
+          amountMinor: 4_000,
+          currentPeriodStart: null,
+          currentPeriodEnd: null,
+          nextBillingDate: null,
+          cancelAtPeriodEnd: false,
+          checkoutPending: false,
+          customerPortalAvailable: false,
+          activatedAt: null,
+          updatedAt: "2026-08-11T12:00:00.000Z",
         },
       },
     }),
@@ -442,11 +506,13 @@ export async function mockBookingAdminShellRoutes(
             totalRevenue: { amountDecimal: "0.00", currency: "EUR" },
             bookingCount: 0,
             avgNightlyRate: { amountDecimal: "0.00", currency: "EUR" },
+            pageViewCount: 0,
           },
           previous: {
             totalRevenue: { amountDecimal: "0.00", currency: "EUR" },
             bookingCount: 0,
             avgNightlyRate: { amountDecimal: "0.00", currency: "EUR" },
+            pageViewCount: 0,
           },
           nextArrivalDate: null,
           liveSinceDate: null,
@@ -466,6 +532,26 @@ export async function mockBookingAdminShellRoutes(
   );
   await page.route("**/api/booking/properties/*/dashboard/sparklines**", (route) =>
     route.fulfill({ json: { sparklines: { points: [] } } }),
+  );
+  await page.route("**/api/booking/properties/*/dashboard/page-views**", (route) =>
+    route.fulfill({
+      json: {
+        pageViews: {
+          timeZone: "Europe/Berlin",
+          windowStart: "2026-08-07",
+          windowEnd: "2026-08-13",
+          previousWindowStart: "2026-07-31",
+          previousWindowEnd: "2026-08-06",
+          buckets: Array.from({ length: 7 }, (_, index) => ({
+            date: `2026-08-${String(index + 7).padStart(2, "0")}`,
+            count: 0,
+          })),
+          previousBuckets: [],
+          total: 0,
+          previousTotal: 0,
+        },
+      },
+    }),
   );
 }
 
@@ -514,6 +600,24 @@ export async function mockBookingAdminBookingFlow(
   );
   await page.route(`**${BOOKING_ADMIN_PROMO_CODES_PATH}**`, (route) =>
     route.fulfill({ json: options.promoCodes ?? defaultPromoCodes }),
+  );
+  await page.route(`**${BOOKING_ADMIN_ROOM_TYPES_PATH}**`, (route) =>
+    route.fulfill({
+      json: {
+        contractVersion: "pms-operations.v1",
+        propertyId: BOOKING_ADMIN_PROPERTY_ID,
+        items: [
+          {
+            roomTypeId: "f6853000-0000-4000-8000-000000000010",
+            name: "Sea View Suite",
+          },
+          {
+            roomTypeId: "f6853000-0000-4000-8000-000000000011",
+            name: "Pool Villa",
+          },
+        ],
+      },
+    }),
   );
   await page.route(`**${BOOKING_ADMIN_ADDON_SETTINGS_PATH}*`, (route) =>
     route.fulfill({ json: options.addonSettings ?? defaultAddonSettings }),

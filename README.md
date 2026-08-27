@@ -319,9 +319,10 @@ Migration ownership is split across three paths:
 | TypeScript target schema | `packages/backend-migration/migrations/` | `dev:workos-local` applies migrations to `TARGET_DATABASE_URL` | Follow the reviewed target migration and cutover runbook; `apps/api` does not auto-migrate on startup |
 
 The target database is organized into domain schemas for platform, identity,
-hotel catalog, booking, PMS, finance, marketplace, distribution, and
-intelligence. The local launcher uses `AUTH_DATABASE_URL` as the target URL
-when `TARGET_DATABASE_URL` is not set.
+hotel catalog, booking, PMS, finance, marketplace, and distribution. The local
+launcher uses `AUTH_DATABASE_URL` as the target URL when `TARGET_DATABASE_URL`
+is not set. The retired `intelligence` schema is removed by migration `0090`;
+future hotel employee agent design starts from VAY-1091.
 
 To apply target migrations manually to a configured local database:
 

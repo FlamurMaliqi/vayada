@@ -817,8 +817,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS recurring pricing repositori
     );
     await admin.query(
       `INSERT INTO identity.organization_memberships
-         (organization_id, user_id, status, role_key)
-       VALUES ($1::uuid, $2::uuid, 'active', $3)`,
+         (organization_id, user_id, status, role_key, access_origin)
+       VALUES ($1::uuid, $2::uuid, 'active', $3, 'agency')`,
       [organizationId, actorUserId, roleKey],
     );
     await admin.query(

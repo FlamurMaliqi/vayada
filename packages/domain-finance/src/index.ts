@@ -22,11 +22,19 @@
  *   through permissioned finance services.
  */
 
-import { createHash } from "node:crypto";
+import type { FinancePlatformAffiliatePayoutRepository } from "./platformAffiliatePayouts.js";
 
 export * from "./paymentReadiness.js";
 export * from "./paymentReadinessParsing.js";
 export * from "./paymentReadinessSnapshot.js";
+export * from "./manualBookingSettlement.js";
+export * from "./subscriptions.js";
+export * from "./platformAffiliatePayouts.js";
+export * from "./affiliateCommission.js";
+export * from "./otaCommissionRules.js";
+export * from "./financialExpenses.js";
+export * from "./financialFolios.js";
+export * from "./generatedExpenses.js";
 
 // ---------------------------------------------------------------------------
 // Scalar aliases
@@ -37,7 +45,6 @@ export type FinanceAffiliateId = string;
 export type FinanceUtcDateTime = string;
 export type FinanceCurrencyCode = string;
 export type FinanceContractVersion = "finance-route-contracts.v1";
-export type FinanceDate = string;
 
 /** Decimal representation of a monetary amount, e.g. "150.00". */
 export type FinanceDecimalAmount = string;
@@ -52,6 +59,35 @@ export const FINANCE_ROUTE_CONTRACT_VERSION =
 export const FINANCE_BILLING_PLANS = ["fixed", "commission"] as const;
 
 export type FinanceBillingPlan = (typeof FINANCE_BILLING_PLANS)[number];
+
+export type PropertyFeatureLimits = {
+  maxRoomPhotosPerType: number;
+  maxAddons: number;
+  guestContactAccess: "after_acceptance" | "always";
+};
+
+export const PROPERTY_FEATURE_LIMITS = {
+  commission: {
+    maxRoomPhotosPerType: 10,
+    maxAddons: 3,
+    guestContactAccess: "after_acceptance",
+  },
+  fixed: {
+    maxRoomPhotosPerType: 15,
+    maxAddons: 9,
+    guestContactAccess: "always",
+  },
+} as const satisfies Record<FinanceBillingPlan, PropertyFeatureLimits>;
+
+export type PropertyPlanReadModel = {
+  propertyId: FinancePropertyId;
+  plan: FinanceBillingPlan;
+  limits: PropertyFeatureLimits;
+};
+
+export function propertyFeatureLimitsFor(plan: FinanceBillingPlan): PropertyFeatureLimits {
+  return PROPERTY_FEATURE_LIMITS[plan];
+}
 
 // ---------------------------------------------------------------------------
 // Payment method tokens
@@ -96,6 +132,7 @@ export const FINANCE_ROUTE_PAYMENT_METHODS = [
   "xendit",
   "cash",
   "bank_transfer",
+  "paypal",
   "manual_card",
   "wallet",
   "other",
@@ -255,7 +292,12 @@ export type FinancePaymentSettingsPatchResult =
   | {
       ok: false;
       statusCode: 400 | 404 | 409 | 500;
-      code: "invalid_command" | "property_not_found" | "idempotency_conflict" | "write_unavailable";
+      code:
+        | "invalid_command"
+        | "property_not_found"
+        | "property_currency_conflict"
+        | "idempotency_conflict"
+        | "write_unavailable";
       message: string;
     };
 
@@ -284,40 +326,6 @@ export type PublicPaymentCapabilityProjection = {
   depositPolicy: FinanceJsonPolicy;
   cancellationPolicy: Omit<CancellationPolicy, "updatedAt">;
 };
-
-export const FINANCE_INVOICE_STATUSES = [
-  "draft",
-  "sent",
-  "paid",
-  "partial",
-  "overdue",
-  "voided",
-] as const;
-
-export type FinanceInvoiceStatus = (typeof FINANCE_INVOICE_STATUSES)[number];
-
-export const FINANCE_PAYMENT_STATUSES = [
-  "requires_action",
-  "authorized",
-  "pending",
-  "paid",
-  "partially_refunded",
-  "refunded",
-  "failed",
-  "canceled",
-  "disputed",
-] as const;
-
-export type FinancePaymentStatus = (typeof FINANCE_PAYMENT_STATUSES)[number];
-
-export const FINANCE_RECONCILIATION_STATUSES = [
-  "matched",
-  "pending",
-  "needs_review",
-  "dead_lettered",
-] as const;
-
-export type FinanceReconciliationStatus = (typeof FINANCE_RECONCILIATION_STATUSES)[number];
 
 export const FINANCE_PAYOUT_STATUSES = [
   "pending",
@@ -370,117 +378,6 @@ export const FINANCE_RECONCILIATION_SUBJECT_TYPES = [
 
 export type FinanceReconciliationSubjectType =
   (typeof FINANCE_RECONCILIATION_SUBJECT_TYPES)[number];
-
-export type FinanceInvoiceStatusCounts = Record<FinanceInvoiceStatus, number>;
-export type FinancePaymentStatusCounts = Record<FinancePaymentStatus, number>;
-
-export type FinanceInvoiceGuest = {
-  displayName: string;
-  email: string | null;
-};
-
-export type FinanceInvoiceListItem = {
-  invoiceId: string;
-  invoiceNumber: string;
-  guestBookingId: string;
-  bookingReference: string;
-  guest: FinanceInvoiceGuest;
-  stay: {
-    checkIn: FinanceDate;
-    checkOut: FinanceDate;
-    roomName: string | null;
-    roomNumber: string | null;
-  };
-  currency: FinanceCurrencyCode;
-  totalAmount: FinanceDecimalAmount;
-  amountPaid: FinanceDecimalAmount;
-  balanceDue: FinanceDecimalAmount;
-  status: FinanceInvoiceStatus;
-  issuedAt: FinanceUtcDateTime;
-};
-
-export type FinanceInvoicePayment = {
-  paymentId: string;
-  method: Exclude<FinanceRoutePaymentMethod, "wallet">;
-  methodLabel: string;
-  amount: FinanceDecimalAmount;
-  currency: FinanceCurrencyCode;
-  reference: string | null;
-  status: FinancePaymentStatus;
-  recordedAt: FinanceUtcDateTime;
-};
-
-export type FinanceInvoiceDetail = Omit<FinanceInvoiceListItem, "guest"> & {
-  guest: FinanceInvoiceGuest & { phone: string | null };
-  nights: number;
-  charges: Array<{ description: string; detail: string; amount: FinanceDecimalAmount }>;
-  payments: FinanceInvoicePayment[];
-  subtotal: FinanceDecimalAmount;
-};
-
-export type FinancePaymentLedgerItem = FinanceInvoicePayment & {
-  invoiceId: string | null;
-  invoiceNumber: string | null;
-  guestBookingId: string | null;
-  bookingReference: string | null;
-  checkoutChargeId: string | null;
-  provider: FinanceRoutePaymentProvider;
-  providerStatus: string | null;
-  reconciliationStatus: FinanceReconciliationStatus;
-};
-
-export type FinanceFinancialSummary = {
-  currency: FinanceCurrencyCode;
-  periodStart: FinanceDate | null;
-  periodEnd: FinanceDate | null;
-  grossPaymentAmount: FinanceDecimalAmount;
-  netPaymentAmount: FinanceDecimalAmount;
-  payoutAmount: FinanceDecimalAmount;
-  commissionAmount: FinanceDecimalAmount;
-  outstandingBalanceAmount: FinanceDecimalAmount;
-  paymentCount: number;
-  payoutCount: number;
-  failedPaymentCount: number;
-  invoiceCounts: FinanceInvoiceStatusCounts;
-  paymentCounts: FinancePaymentStatusCounts;
-  projectedAt: FinanceUtcDateTime | null;
-};
-
-export type FinanceFinancialSummaryResponse = {
-  contractVersion: FinanceContractVersion;
-  propertyId: FinancePropertyId;
-  summary: FinanceFinancialSummary;
-  sourceFreshness: FinanceJsonObject;
-};
-
-export type FinanceInvoiceListResponse = {
-  contractVersion: FinanceContractVersion;
-  propertyId: FinancePropertyId;
-  invoices: FinanceInvoiceListItem[];
-  total: number;
-  counts: FinanceInvoiceStatusCounts;
-  limit: number;
-  offset: number;
-  sourceFreshness: FinanceJsonObject;
-};
-
-export type FinanceInvoiceDetailResponse = {
-  contractVersion: FinanceContractVersion;
-  propertyId: FinancePropertyId;
-  invoice: FinanceInvoiceDetail;
-  sourceFreshness: FinanceJsonObject;
-};
-
-export type FinancePaymentLedgerResponse = {
-  contractVersion: FinanceContractVersion;
-  propertyId: FinancePropertyId;
-  payments: FinancePaymentLedgerItem[];
-  total: number;
-  counts: FinancePaymentStatusCounts;
-  limit: number;
-  offset: number;
-  sourceFreshness: FinanceJsonObject;
-};
 
 export type FinancePayout = {
   payoutId: string;
@@ -563,16 +460,8 @@ export type FinanceReconciliationViewResponse = {
   sourceFreshness: FinanceJsonObject;
 };
 
-export const FINANCE_MANUAL_PAYMENT_SIDE_EFFECTS = [
-  "audit_event",
-  "booking_projection_refresh",
-  "pms_projection_refresh",
-] as const;
-
-export type FinanceManualPaymentSideEffect = (typeof FINANCE_MANUAL_PAYMENT_SIDE_EFFECTS)[number];
-
 export const FINANCE_COMMAND_SIDE_EFFECTS = [
-  ...FINANCE_MANUAL_PAYMENT_SIDE_EFFECTS,
+  "audit_event",
   "provider_validation",
   "reconciliation_job",
   "payout_job",
@@ -580,8 +469,8 @@ export const FINANCE_COMMAND_SIDE_EFFECTS = [
 
 export type FinanceCommandSideEffect = (typeof FINANCE_COMMAND_SIDE_EFFECTS)[number];
 
-export type FinanceProjectionRefreshJob = {
-  jobType: "booking.projection-refresh" | "pms.projection-refresh";
+export type FinanceProviderAccountRefreshJob = {
+  jobType: "pms.projection-refresh";
   idempotencyKey: string;
   status: "queued" | "idempotent_replay";
 };
@@ -610,7 +499,7 @@ export type FinanceDispatchAffiliatePayoutJob = {
 };
 
 export type FinanceCommandJob =
-  | FinanceProjectionRefreshJob
+  | FinanceProviderAccountRefreshJob
   | FinanceReconcilePayoutJob
   | FinanceDispatchPropertyPayoutJob
   | FinanceDispatchAffiliatePayoutJob;
@@ -625,13 +514,6 @@ export type FinanceCommandMeta = {
 
 export type FinanceProviderAccountCommandMeta = Omit<FinanceCommandMeta, "sideEffects"> & {
   sideEffects: FinanceProviderAccountCommandSideEffect[];
-};
-
-export type FinanceManualPaymentRecordResponse = {
-  contractVersion: FinanceContractVersion;
-  propertyId: FinancePropertyId;
-  invoice: FinanceInvoiceDetail;
-  commandMeta: FinanceCommandMeta;
 };
 
 export type FinanceProviderAccountOwnerScope = "property" | "affiliate";
@@ -651,6 +533,7 @@ export type FinanceProviderAccountOwner =
 export type CreateStripeProviderAccountPayload = {
   email: string;
   country: string;
+  returnSurface?: "marketplace" | "booking_admin";
 };
 
 export type CreateStripePropertyAccountCommand = FinanceCommandBase<
@@ -672,6 +555,7 @@ export type CreateStripeProviderAccountCommand =
 
 export type IssueStripeOnboardingLinkPayload = {
   providerAccountId: string;
+  returnSurface?: "marketplace" | "booking_admin";
 };
 
 export type IssueStripePropertyOnboardingLinkCommand = FinanceCommandBase<
@@ -729,12 +613,14 @@ export type StripeConnectAccountCreateRequest = {
   email: string;
   country: string;
   idempotencyKey: string;
+  returnSurface?: "marketplace" | "booking_admin";
 };
 
 export type StripeConnectOnboardingLinkRequest = {
   owner: FinanceProviderAccountOwner;
   providerAccountRef: string;
   idempotencyKey: string;
+  returnSurface?: "marketplace" | "booking_admin";
 };
 
 export type StripeConnectCompensationRequest = {
@@ -749,9 +635,35 @@ export type StripeConnectProviderAccount = {
   onboardingUrl: string;
 };
 
+export type StripeConnectProviderAccountSnapshot = {
+  providerAccountRef: string;
+  chargesEnabled: boolean;
+  payoutsEnabled: boolean;
+  detailsSubmitted: boolean;
+  cardPaymentsStatus: string | null;
+  defaultCurrency: string | null;
+};
+
+export class StripeConnectAccountNotFoundError extends Error {
+  readonly code = "stripe_connect_account_not_found";
+}
+
+export type FinanceStripeDashboardLoginLinkResult =
+  | { ok: true; url: string }
+  | {
+      ok: false;
+      statusCode: 404 | 502;
+      code: "provider_account_not_found" | "provider_unavailable";
+      message: string;
+    };
+
 export type FinanceStripeConnectProvider = {
   createAccount(request: StripeConnectAccountCreateRequest): Promise<StripeConnectProviderAccount>;
   createOnboardingLink(request: StripeConnectOnboardingLinkRequest): Promise<string>;
+  createLoginLink(request: { providerAccountRef: string }): Promise<string>;
+  retrieveAccount(request: {
+    providerAccountRef: string;
+  }): Promise<StripeConnectProviderAccountSnapshot>;
   compensateAccountCreation?(request: StripeConnectCompensationRequest): Promise<void>;
 };
 
@@ -902,23 +814,6 @@ export type FinanceAffiliatePayoutSettingsPatchResult =
       message: string;
     };
 
-export type FinanceInvoiceCsvExportDisposition = {
-  status: "ready" | "queued" | "unsupported";
-  disposition: "stream_existing_read_model" | "durable_export_job" | "not_available";
-  filename: string;
-  contentType: "text/csv";
-  downloadUrl: string | null;
-  jobId: string | null;
-  message: string;
-};
-
-export type FinanceInvoiceCsvExportResponse = {
-  contractVersion: FinanceContractVersion;
-  propertyId: FinancePropertyId;
-  export: FinanceInvoiceCsvExportDisposition;
-  sourceFreshness: FinanceJsonObject;
-};
-
 // ---------------------------------------------------------------------------
 // Billing config read model
 //
@@ -975,6 +870,7 @@ export type ManualCheckoutChargePaymentMethod =
   | "card"
   | "pay_at_property"
   | "bank_transfer"
+  | "paypal"
   | "manual_card"
   | "xendit"
   | "other";
@@ -989,14 +885,6 @@ export type SettleManualCheckoutChargePayload = {
   markedPaidAt: FinanceUtcDateTime;
   operatorUserId: string;
   pmsCommandId: string;
-};
-
-export type RecordManualInvoicePaymentPayload = {
-  invoiceId: string;
-  amount: FinanceDecimalAmount;
-  currency: FinanceCurrencyCode;
-  paymentMethod: Exclude<FinanceRoutePaymentMethod, "wallet" | "xendit">;
-  reference?: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -1099,45 +987,7 @@ export type FinancePropertySettingsReadRepository = {
   close?(): Promise<void>;
 };
 
-export type FinanceInvoiceListQuery = {
-  status?: FinanceInvoiceStatus;
-  search?: string;
-  sort: "issuedAt" | "guest" | "amount";
-  limit: number;
-  offset: number;
-};
-
-export type FinancePaymentLedgerQuery = {
-  status?: FinancePaymentStatus;
-  provider?: FinanceRoutePaymentProvider;
-  method?: FinanceInvoicePayment["method"];
-  from?: FinanceUtcDateTime;
-  to?: FinanceUtcDateTime;
-  search?: string;
-  limit: number;
-  offset: number;
-};
-
-export type FinancePropertyLedgerReadRepository = {
-  getFinancialSummary(
-    propertyId: FinancePropertyId,
-  ): Promise<Omit<FinanceFinancialSummaryResponse, "contractVersion" | "propertyId"> | null>;
-
-  listInvoices(
-    propertyId: FinancePropertyId,
-    query: FinanceInvoiceListQuery,
-  ): Promise<Omit<FinanceInvoiceListResponse, "contractVersion" | "propertyId">>;
-
-  getInvoice(
-    propertyId: FinancePropertyId,
-    invoiceId: string,
-  ): Promise<Omit<FinanceInvoiceDetailResponse, "contractVersion" | "propertyId"> | null>;
-
-  listPayments(
-    propertyId: FinancePropertyId,
-    query: FinancePaymentLedgerQuery,
-  ): Promise<Omit<FinancePaymentLedgerResponse, "contractVersion" | "propertyId">>;
-
+export type FinancePropertyOperationsReadRepository = {
   listPayouts(
     propertyId: FinancePropertyId,
     query: FinancePayoutListQuery,
@@ -1148,40 +998,12 @@ export type FinancePropertyLedgerReadRepository = {
     view: FinanceReconciliationViewKind,
     query: FinanceReconciliationViewQuery,
   ): Promise<Omit<FinanceReconciliationViewResponse, "contractVersion" | "propertyId">>;
-
-  getInvoiceCsvExportDisposition(
-    propertyId: FinancePropertyId,
-    query: FinanceInvoiceListQuery,
-  ): Promise<Omit<FinanceInvoiceCsvExportResponse, "contractVersion" | "propertyId">>;
 };
-
-export type FinanceManualPaymentRecordCommand = FinanceCommandBase<
-  "finance.manual_payment.record",
-  RecordManualInvoicePaymentPayload
->;
-
-export type FinanceManualPaymentRecordResult =
-  | {
-      ok: true;
-      status: "created" | "idempotent_replay";
-      invoice: FinanceInvoiceDetail;
-      commandMeta: FinanceCommandMeta;
-    }
-  | {
-      ok: false;
-      statusCode: 400 | 404 | 409 | 500;
-      code: "invalid_command" | "invoice_not_found" | "idempotency_conflict" | "write_unavailable";
-      message: string;
-    };
 
 export type FinancePropertyCommandRepository = {
   updatePaymentSettings(
     command: FinancePaymentSettingsPatchCommand,
   ): Promise<FinancePaymentSettingsPatchResult>;
-
-  recordManualPayment(
-    command: FinanceManualPaymentRecordCommand,
-  ): Promise<FinanceManualPaymentRecordResult>;
 
   createStripeProviderAccount(
     command: CreateStripeProviderAccountCommand,
@@ -1190,6 +1012,9 @@ export type FinancePropertyCommandRepository = {
   issueStripeOnboardingLink(
     command: IssueStripeOnboardingLinkCommand,
   ): Promise<FinanceProviderAccountCommandResult>;
+  issueStripeDashboardLoginLink(
+    propertyId: FinancePropertyId,
+  ): Promise<FinanceStripeDashboardLoginLinkResult>;
   enqueueXenditPayoutReconciliation(
     command: FinanceXenditPayoutReconciliationCommand,
   ): Promise<FinanceXenditPayoutReconciliationResult>;
@@ -1215,8 +1040,9 @@ export type FinanceAffiliateRepository = {
 };
 
 export type FinancePropertyReadRepository = FinancePropertySettingsReadRepository &
-  Partial<FinancePropertyLedgerReadRepository> &
+  Partial<FinancePropertyOperationsReadRepository> &
   Partial<FinanceAffiliateRepository> &
+  Partial<FinancePlatformAffiliatePayoutRepository> &
   Partial<FinancePropertyCommandRepository>;
 
 export function toFinancePaymentSettingsResponse(
@@ -1339,8 +1165,22 @@ function publicPaymentMethods(
   return settings.acceptedMethods.filter((method) => {
     if (method === "card" || method === "wallet") return canChargeOnline;
     if (method === "xendit") return canChargeOnline && settings.paymentProvider === "xendit";
+    if (method === "bank_transfer") {
+      return hasPublicPaymentInstruction(settings.depositPolicy["bankTransferInstructions"]);
+    }
+    if (method === "paypal") {
+      return validPublicPaymentEmail(settings.depositPolicy["paypalEmail"]);
+    }
     return true;
   });
+}
+
+function hasPublicPaymentInstruction(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function validPublicPaymentEmail(value: unknown): boolean {
+  return typeof value === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
 function financeProviderCanCharge(settings: FinancePaymentSettingsReadModel): boolean {
@@ -1505,7 +1345,6 @@ export type FinanceCommand =
   | UpdateInstantBookCommand
   | UpdateBillingPlanCommand
   | UpdateAddOnPriceCommand
-  | FinanceManualPaymentRecordCommand
   | CreateStripeProviderAccountCommand
   | IssueStripeOnboardingLinkCommand
   | FinancePropertyPayoutDispatchCommand
@@ -1517,7 +1356,6 @@ export const financeCommandTypes = [
   "finance.payment.instant_book.update",
   "finance.billing.plan.update",
   "finance.add_on.price.update",
-  "finance.manual_payment.record",
   "finance.provider_account.stripe.create",
   "finance.provider_account.stripe.onboarding_link.issue",
   "finance.property_payout.dispatch",
@@ -1641,16 +1479,6 @@ export function buildCheckoutChargeSettlementIdempotencyKey(input: {
   return `finance.checkout-charge-settlement:checkout_charge:${input.checkoutChargeId}:mark-paid:${input.pmsCommandId}:v1`;
 }
 
-export function buildManualPaymentProjectionJobIdempotencyKey(input: {
-  propertyId: FinancePropertyId;
-  jobType: FinanceProjectionRefreshJob["jobType"];
-  guestBookingId: string;
-  /** Raw client idempotency key; callers must not pass a precomputed hash. */
-  rawPaymentIdempotencyKey: string;
-}): string {
-  return `${input.jobType}:property:${input.propertyId}:booking:${input.guestBookingId}:finance-payment:${financeSha256(input.rawPaymentIdempotencyKey)}:v1`;
-}
-
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -1667,10 +1495,6 @@ function parseDecimalAmount(value: FinanceDecimalAmount): number {
     throw new Error(`Invalid decimal amount: negative value: ${value}`);
   }
   return parsed;
-}
-
-function financeSha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
 }
 
 function round2(value: number): number {

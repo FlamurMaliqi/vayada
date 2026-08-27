@@ -1,4 +1,11 @@
+import type { PropertyPlanReadModel } from "@vayada/domain-finance";
 import pg from "pg";
+
+import {
+  BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL,
+  guestContactForPropertyPlan,
+} from "./bookingGuestContactAccess.js";
+import { readPropertyPlan } from "./propertyPlanReadModel.js";
 
 export type PmsDecimalAmount = string;
 export type PmsCurrencyCode = string;
@@ -27,6 +34,7 @@ export type PmsRoom = {
 
 export type PmsRatePlan = {
   ratePlanId: string;
+  pricingContractVersion?: string | null;
   code: string;
   name: string;
   rateType: "flexible" | "non_refundable" | "package" | "manual";
@@ -44,6 +52,7 @@ export type PmsRateRulesSummary = {
 };
 
 export type PmsRoomTypeMedia = {
+  mediaObjectId?: string;
   url: string;
   altText?: string | null;
 };
@@ -57,6 +66,7 @@ export type PmsRoomType = {
   attributes: PmsJsonRecord;
   amenities: string[];
   media: PmsRoomTypeMedia[];
+  roomMediaRevision?: number;
   baseRate: PmsMoney;
   active: boolean;
   sortOrder: number;
@@ -71,6 +81,7 @@ export type PmsRoomBlockStatus = "active" | "released" | "expired";
 
 export type PmsRoomBlockSummary = {
   blockId: string;
+  version: string;
   roomTypeId: string;
   roomId: string | null;
   startsOn: PmsDate;
@@ -87,6 +98,7 @@ export type PmsCalendarDay = {
   roomTypeId: string;
   totalCount: number;
   assignedCount: number;
+  occupiedCount: number;
   blockedCount: number;
   availableCount: number;
   status: PmsCalendarStatus;
@@ -106,6 +118,20 @@ export type PmsOperationalAssignmentStatus =
   | "canceled"
   | "released";
 
+export type PmsExpectedPaymentMethod =
+  | "unknown"
+  | "pay_at_property"
+  | "bank_transfer"
+  | "manual_card"
+  | "cash"
+  | "other";
+
+export type PmsOperationalNight = {
+  serviceDate: PmsDate;
+  applied: PmsMoney | null;
+  evidenceQuality: "exact" | "inferred" | "missing";
+};
+
 export type PmsOperationalAssignment = {
   assignmentId: string;
   roomTypeId: string;
@@ -116,6 +142,8 @@ export type PmsOperationalAssignment = {
   assignmentStatus: PmsOperationalAssignmentStatus;
   channel: string;
   assignedAt: PmsUtcDateTime | null;
+  stay?: { checkIn: PmsDate; checkOut: PmsDate; adults: number; children: number };
+  nightly?: PmsOperationalNight[];
 };
 
 export type PmsOperationalReservation = {
@@ -124,7 +152,14 @@ export type PmsOperationalReservation = {
   status: string;
   source: PmsReservationSource;
   stay: { checkIn: PmsDate; checkOut: PmsDate; adults: number; children: number };
-  primaryGuest: { displayName: string; email: string | null; phone: string | null };
+  primaryGuest: {
+    displayName: string;
+    email: string | null;
+    phone: string | null;
+    countryCode: string | null;
+    specialRequests: string | null;
+  };
+  addOns: Array<{ addonId: string; name: string; quantity: number }>;
   assignments: PmsOperationalAssignment[];
   checkin: { completedAt: PmsUtcDateTime | null; pendingFlags: string[] };
   checkout: { completedAt: PmsUtcDateTime | null; pendingFlags: string[] };
@@ -133,6 +168,18 @@ export type PmsOperationalReservation = {
   bookedOffer?: { roomTypeId: string; roomName: string };
   roomCount?: number;
   pricing?: { totalAmount: PmsMoney; balanceAmount: PmsMoney };
+  payment?: {
+    method: string | null;
+    expectedMethod?: PmsExpectedPaymentMethod;
+    status: string;
+    breakdown?: {
+      grossAmount: PmsMoney;
+      stripeFee: PmsMoney;
+      vayadaCommission: PmsMoney;
+      netPayout: PmsMoney;
+    };
+  };
+  hostResponseDeadlineAt?: PmsUtcDateTime | null;
 };
 
 export type PmsReservationListFilters = {
@@ -180,11 +227,18 @@ export type PmsOperationsReadRepository = {
   close?(): Promise<void>;
 };
 
+export type PmsManualBookingAvailabilityReadPort = {
+  getPhysicalRoomAvailability(
+    propertyId: string,
+    stays: readonly { roomId: string; checkIn: PmsDate; checkOut: PmsDate }[],
+  ): Promise<readonly (boolean | null)[]>;
+};
+
 export type PmsOperationsReadPool = {
   query<T extends pg.QueryResultRow = pg.QueryResultRow>(
     text: string,
-    values?: unknown[],
-  ): Promise<pg.QueryResult<T>>;
+    values?: readonly unknown[],
+  ): Promise<Pick<pg.QueryResult<T>, "rows" | "rowCount">>;
   end?(): Promise<void>;
 };
 
@@ -192,7 +246,7 @@ export function createTargetPmsOperationsReadRepository(config: {
   connectionString: string;
   max?: number;
   pool?: PmsOperationsReadPool;
-}): PmsOperationsReadRepository {
+}): PmsOperationsReadRepository & PmsManualBookingAvailabilityReadPort {
   if (!config.connectionString.trim()) {
     throw new Error("PMS operations repository connectionString must not be empty");
   }
@@ -220,7 +274,7 @@ export function createTargetPmsOperationsReadRepository(config: {
            ON room_type.id = room.room_type_id
           AND room_type.property_id = room.property_id
          WHERE room.property_id = $1
-         ORDER BY room.sort_order ASC, room.room_number ASC`,
+         ORDER BY room.sort_order ASC, room.room_number ASC, room.id ASC`,
         [propertyId],
       );
 
@@ -234,6 +288,74 @@ export function createTargetPmsOperationsReadRepository(config: {
       return listRoomTypes(pool, propertyId);
     },
 
+    async getPhysicalRoomAvailability(propertyId, stays) {
+      const result = await pool.query<{ available: boolean | null }>(
+        `WITH requested AS (
+           SELECT position::integer,
+                  (value->>'roomId')::uuid AS room_id,
+                  (value->>'checkIn')::date AS check_in,
+                  (value->>'checkOut')::date AS check_out
+           FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY AS input(value, position)
+         )
+         SELECT CASE WHEN room.id IS NULL THEN NULL ELSE
+         room.status = 'available'
+         AND room.operational_label_status = 'verified'
+         AND room.room_number IS NOT NULL
+         AND requested.check_in < requested.check_out
+         AND NOT EXISTS (
+           SELECT 1 FROM requested sibling
+           WHERE sibling.position <> requested.position
+             AND sibling.room_id = requested.room_id
+             AND sibling.check_in < requested.check_out
+             AND sibling.check_out > requested.check_in
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM pms.room_blocks block
+           WHERE block.property_id = room.property_id AND block.room_id = room.id
+             AND block.status = 'active'
+             AND block.starts_on < requested.check_out AND block.ends_on >= requested.check_in
+         ) AND NOT EXISTS (
+           SELECT 1 FROM pms.operational_booking_assignments assignment
+           JOIN booking.guest_bookings booking
+             ON booking.id = assignment.guest_booking_id
+            AND booking.property_id = assignment.property_id
+           WHERE assignment.property_id = room.property_id AND assignment.room_id = room.id
+             AND assignment.assignment_status NOT IN ('canceled', 'released')
+             AND COALESCE(assignment.check_in, booking.check_in) < requested.check_out
+             AND COALESCE(assignment.check_out, booking.check_out) > requested.check_in
+         ) AND NOT EXISTS (
+           SELECT 1
+           FROM generate_series(
+             requested.check_in, requested.check_out - 1, interval '1 day'
+           ) AS dates(stay_date)
+           WHERE NOT EXISTS (
+             SELECT 1
+             FROM pms.inventory_days inventory
+             WHERE inventory.property_id = room.property_id
+               AND inventory.room_type_id = room.room_type_id
+               AND inventory.stay_date = dates.stay_date
+               AND inventory.status <> 'closed'
+               AND inventory.effective_sellable_limit_count IS NOT NULL
+               AND inventory.available_count >= (
+                 SELECT COUNT(*)
+                 FROM requested sibling
+                 JOIN pms.rooms sibling_room
+                   ON sibling_room.property_id = room.property_id
+                  AND sibling_room.id = sibling.room_id
+                  AND sibling_room.room_type_id = room.room_type_id
+                 WHERE sibling.check_in <= dates.stay_date AND sibling.check_out > dates.stay_date
+               )
+           )
+         ) END AS available
+         FROM requested
+         LEFT JOIN pms.rooms room
+           ON room.property_id = $1::uuid AND room.id = requested.room_id
+         ORDER BY requested.position`,
+        [propertyId, JSON.stringify(stays)],
+      );
+      return result.rows.map((row) => row.available);
+    },
+
     async findRoomTypeById(propertyId, roomTypeId) {
       const result = await listRoomTypes(pool, propertyId, roomTypeId);
       return result.items[0] ?? null;
@@ -242,10 +364,12 @@ export function createTargetPmsOperationsReadRepository(config: {
     async listCalendarDaysByPropertyId(propertyId, range) {
       const result = await pool.query<TargetPmsCalendarDayRow>(
         `SELECT
-           inventory.stay_date AS "stayDate",
+           inventory.stay_date::text AS "stayDate",
            inventory.room_type_id::text AS "roomTypeId",
            inventory.total_count AS "totalCount",
            inventory.assigned_count AS "assignedCount",
+           (inventory.assigned_count - COALESCE(ineligible_holds.count, 0))::int
+             AS "occupiedCount",
            inventory.blocked_count AS "blockedCount",
            inventory.available_count AS "availableCount",
            inventory.status,
@@ -260,6 +384,7 @@ export function createTargetPmsOperationsReadRepository(config: {
            SELECT jsonb_agg(
                     jsonb_build_object(
                       'blockId', block.id::text,
+                      'version', concat('room-block-v', block.revision),
                       'roomTypeId', block.room_type_id::text,
                       'roomId', block.room_id::text,
                       'startsOn', block.starts_on::text,
@@ -278,6 +403,83 @@ export function createTargetPmsOperationsReadRepository(config: {
              AND block.ends_on >= inventory.stay_date
          ) blocks ON TRUE
          LEFT JOIN LATERAL (
+           SELECT SUM(hold.units)::int AS count
+           FROM (
+             SELECT GREATEST(0, receipt.room_count - COALESCE((
+               SELECT COUNT(DISTINCT adopted.id)::int
+               FROM booking.guest_bookings booking
+               JOIN pms.operational_booking_assignments adopted
+                 ON adopted.guest_booking_id = booking.id
+                AND adopted.property_id = booking.property_id
+                AND adopted.source = 'direct_booking'
+                AND adopted.room_type_id = receipt.room_type_id
+               WHERE booking.property_id = receipt.property_id
+                 AND (
+                   booking.booking_metadata #>> '{inventoryReservation,receiptId}' =
+                     receipt.receipt_id::text
+                   OR booking.quote_session_id::text = receipt.quote_session_id
+                   OR booking.booking_metadata #>> '{inventoryReservation,quoteSessionId}' =
+                     receipt.quote_session_id
+                 )
+             ), 0)) AS units
+             FROM pms.inventory_reservation_receipts receipt
+             JOIN pms.inventory_reservation_statuses reservation_status
+               ON reservation_status.receipt_id = receipt.receipt_id
+              AND reservation_status.organization_id = receipt.organization_id
+              AND reservation_status.property_id = receipt.property_id
+             WHERE receipt.property_id = inventory.property_id
+               AND receipt.room_type_id = inventory.room_type_id
+               AND receipt.check_in <= inventory.stay_date
+               AND receipt.check_out > inventory.stay_date
+               AND reservation_status.lifecycle_state IN ('reserved', 'handed_off')
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM booking.guest_bookings booking
+                 WHERE booking.property_id = receipt.property_id
+                   AND booking.lifecycle_status IN ('confirmed', 'completed')
+                   AND (
+                     booking.booking_metadata #>> '{inventoryReservation,receiptId}' =
+                       receipt.receipt_id::text
+                     OR booking.quote_session_id::text = receipt.quote_session_id
+                     OR booking.booking_metadata #>> '{inventoryReservation,quoteSessionId}' =
+                       receipt.quote_session_id
+                   )
+               )
+             UNION ALL
+             SELECT GREATEST(0, booking.room_count - COALESCE((
+               SELECT COUNT(DISTINCT adopted.id)::int
+               FROM pms.operational_booking_assignments adopted
+               WHERE adopted.property_id = booking.property_id
+                 AND adopted.guest_booking_id = booking.id
+                 AND adopted.source = 'direct_booking'
+                 AND adopted.room_type_id = inventory.room_type_id
+                 AND COALESCE(adopted.check_in, booking.check_in) = booking.check_in
+                 AND COALESCE(adopted.check_out, booking.check_out) = booking.check_out
+             ), 0)) AS units
+             FROM booking.guest_bookings booking
+             WHERE booking.property_id = inventory.property_id
+               AND booking.source_system = 'booking'
+               AND booking.lifecycle_status IN ('draft', 'pending_payment')
+               AND booking.booking_metadata #>> '{inventoryReservation,contractVersion}' =
+                 'pms.inventory-reservation.v1'
+               AND booking.booking_metadata #>> '{inventoryReservation,owner}' = 'pms'
+               AND booking.booking_metadata #>> '{inventoryReservation,source}' = 'booking_engine'
+               AND booking.booking_metadata #>> '{inventoryReservation,propertyId}' =
+                 inventory.property_id::text
+               AND booking.booking_metadata #>> '{inventoryReservation,roomTypeId}' =
+                 inventory.room_type_id::text
+               AND booking.check_in <= inventory.stay_date
+               AND booking.check_out > inventory.stay_date
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM pms.inventory_reservation_receipts receipt
+                 WHERE receipt.property_id = booking.property_id
+                   AND receipt.quote_session_id =
+                     booking.booking_metadata #>> '{inventoryReservation,quoteSessionId}'
+               )
+           ) hold
+         ) ineligible_holds ON TRUE
+         LEFT JOIN LATERAL (
            SELECT jsonb_agg(assignment.id::text ORDER BY assignment.position, assignment.id) AS refs
            FROM pms.operational_booking_assignments assignment
            JOIN booking.guest_bookings booking
@@ -286,8 +488,34 @@ export function createTargetPmsOperationsReadRepository(config: {
            WHERE assignment.property_id = inventory.property_id
              AND assignment.room_type_id = inventory.room_type_id
              AND assignment.assignment_status NOT IN ('canceled', 'released')
-             AND booking.check_in <= inventory.stay_date
-             AND booking.check_out > inventory.stay_date
+             AND booking.lifecycle_status IN ('confirmed', 'completed')
+             AND COALESCE(assignment.check_in, booking.check_in) <= inventory.stay_date
+             AND COALESCE(assignment.check_out, booking.check_out) > inventory.stay_date
+             AND (
+               assignment.source <> 'direct_booking'
+               OR EXISTS (
+                 SELECT 1
+                 FROM pms.inventory_reservation_receipts receipt
+                 WHERE receipt.property_id = booking.property_id
+                   AND (
+                     booking.booking_metadata #>> '{inventoryReservation,receiptId}' =
+                       receipt.receipt_id::text
+                     OR booking.quote_session_id::text = receipt.quote_session_id
+                     OR booking.booking_metadata #>> '{inventoryReservation,quoteSessionId}' =
+                       receipt.quote_session_id
+                   )
+               )
+               OR (
+                 COALESCE(assignment.check_in, booking.check_in) = booking.check_in
+                 AND COALESCE(assignment.check_out, booking.check_out) = booking.check_out
+                 AND (
+                   booking.booking_metadata #>> '{inventoryReservation,contractVersion}'
+                     IS DISTINCT FROM 'pms.inventory-reservation.v1'
+                   OR booking.booking_metadata #>> '{inventoryReservation,roomTypeId}' =
+                     assignment.room_type_id::text
+                 )
+               )
+             )
          ) assignments ON TRUE
          WHERE inventory.property_id = $1
            AND inventory.stay_date >= $2::date
@@ -307,6 +535,7 @@ export function createTargetPmsOperationsReadRepository(config: {
       const result = await pool.query<TargetPmsRoomBlockRow>(
         `SELECT
            block.id::text AS "blockId",
+           block.revision,
            block.room_type_id::text AS "roomTypeId",
            block.room_id::text AS "roomId",
            block.starts_on AS "startsOn",
@@ -330,7 +559,8 @@ export function createTargetPmsOperationsReadRepository(config: {
     },
 
     async listReservationsByPropertyId(propertyId, filters) {
-      const { whereSql, params } = toReservationWhere(propertyId, filters);
+      const propertyPlan = await readPropertyPlan(pool, propertyId);
+      const { whereSql, params } = toReservationWhere(propertyId, filters, propertyPlan);
       const listParams = [...params, filters.limit, filters.offset];
       const limitParam = params.length + 1;
       const offsetParam = params.length + 2;
@@ -374,7 +604,7 @@ export function createTargetPmsOperationsReadRepository(config: {
       ]);
 
       return {
-        items: reservationResult.rows.map(toPmsOperationalReservation),
+        items: reservationResult.rows.map((row) => toPmsOperationalReservation(row, propertyPlan)),
         total: toInteger(countResult.rows[0]?.total ?? 0),
         sourceFreshness: {},
       };
@@ -390,8 +620,11 @@ export function createTargetPmsOperationsReadRepository(config: {
         [propertyId, range.to, range.from],
       );
 
+      const propertyPlan = result.rows.length ? await readPropertyPlan(pool, propertyId) : null;
       return {
-        items: result.rows.map(toPmsOperationalReservation),
+        items: propertyPlan
+          ? result.rows.map((row) => toPmsOperationalReservation(row, propertyPlan))
+          : [],
         total: result.rows.length,
         sourceFreshness: {},
       };
@@ -405,7 +638,9 @@ export function createTargetPmsOperationsReadRepository(config: {
         [propertyId, guestBookingId],
       );
 
-      return result.rows[0] ? toPmsOperationalReservation(result.rows[0]) : null;
+      if (!result.rows[0]) return null;
+      const propertyPlan = await readPropertyPlan(pool, propertyId);
+      return toPmsOperationalReservation(result.rows[0], propertyPlan);
     },
 
     async close() {
@@ -433,6 +668,7 @@ type TargetPmsRoomTypeRow = {
   attributes: unknown;
   amenities: unknown;
   media: unknown;
+  roomMediaRevision: string | number;
   baseRateAmount: string | number;
   currency: string;
   active: boolean;
@@ -448,6 +684,7 @@ type TargetPmsRoomTypeRow = {
 
 type TargetPmsRoomBlockRow = {
   blockId: string;
+  revision: number;
   roomTypeId: string;
   roomId: string | null;
   startsOn: Date | string;
@@ -462,6 +699,7 @@ type TargetPmsCalendarDayRow = {
   roomTypeId: string;
   totalCount: number;
   assignedCount: number;
+  occupiedCount: number;
   blockedCount: number;
   availableCount: number;
   status: PmsCalendarStatus;
@@ -482,6 +720,10 @@ type TargetPmsOperationalReservationRow = {
   primaryGuestDisplayName: string | null;
   primaryGuestEmail: string | null;
   primaryGuestPhone: string | null;
+  primaryGuestCountryCode: string | null;
+  primaryGuestSpecialRequests: string | null;
+  guestContactAccepted: boolean;
+  addOns: unknown;
   assignments: unknown;
   checkinCompletedAt: Date | string | null;
   checkinPendingFlags: unknown;
@@ -495,6 +737,11 @@ type TargetPmsOperationalReservationRow = {
   totalAmount: string | number;
   balanceAmount: string | number;
   currency: string;
+  paymentMethod: string | null;
+  expectedPaymentMethod: PmsExpectedPaymentMethod;
+  paymentStatus: string;
+  paymentBreakdown: unknown;
+  hostResponseDeadlineAt: string | null;
 };
 
 const PMS_OPERATIONAL_RESERVATION_STATUS_SQL = `CASE
@@ -535,6 +782,9 @@ const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
   ) AS "primaryGuestDisplayName",
   primary_guest.email AS "primaryGuestEmail",
   primary_guest.phone AS "primaryGuestPhone",
+  primary_guest.country_code AS "primaryGuestCountryCode",
+  primary_guest.special_requests AS "primaryGuestSpecialRequests",
+  ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
   COALESCE(
     NULLIF(quote.selected_offer_snapshot ->> 'roomTypeId', ''),
     NULLIF(booking.booking_metadata #>> '{selectedOffer,roomTypeId}', ''),
@@ -549,7 +799,17 @@ const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
   booking.total_amount AS "totalAmount",
   booking.balance_amount AS "balanceAmount",
   booking.currency,
+  booking.booking_metadata ->> 'paymentMethod' AS "paymentMethod",
+  booking.expected_payment_method AS "expectedPaymentMethod",
+  booking.payment_status AS "paymentStatus",
+  card_payment.breakdown AS "paymentBreakdown",
+  COALESCE(
+    booking.booking_metadata ->> 'acceptedPaymentDeadlineAt',
+    booking.booking_metadata ->> 'hostResponseDeadlineAt',
+    booking.booking_metadata ->> 'pendingExpiresAt'
+  ) AS "hostResponseDeadlineAt",
   COALESCE(assignments.items, '[]'::jsonb) AS "assignments",
+  COALESCE(addons.items, '[]'::jsonb) AS "addOns",
   checkin.completed_at AS "checkinCompletedAt",
   COALESCE(checkin.pending_flags, '[]'::jsonb) AS "checkinPendingFlags",
   checkout.completed_at AS "checkoutCompletedAt",
@@ -561,6 +821,34 @@ LEFT JOIN booking.quote_sessions quote
   ON quote.id = booking.quote_session_id
  AND quote.property_id = booking.property_id
 LEFT JOIN LATERAL (
+  SELECT jsonb_build_object(
+           'grossAmount', jsonb_build_object(
+             'amountDecimal', payment.processor_fee_breakdown ->> 'grossAmount',
+             'currency', payment.processor_fee_breakdown ->> 'currency'
+           ),
+           'stripeFee', jsonb_build_object(
+             'amountDecimal', payment.processor_fee_breakdown ->> 'stripeFeeAmount',
+             'currency', payment.processor_fee_breakdown ->> 'currency'
+           ),
+           'vayadaCommission', jsonb_build_object(
+             'amountDecimal', payment.processor_fee_breakdown ->> 'applicationFeeAmount',
+             'currency', payment.processor_fee_breakdown ->> 'currency'
+           ),
+           'netPayout', jsonb_build_object(
+             'amountDecimal', payment.processor_fee_breakdown ->> 'netPayoutAmount',
+             'currency', payment.processor_fee_breakdown ->> 'currency'
+           )
+         ) AS breakdown
+  FROM finance.payments payment
+  WHERE payment.property_id = booking.property_id
+    AND payment.guest_booking_id = booking.id
+    AND payment.payment_method = 'card'
+    AND payment.payment_metadata ->> 'chargeType' = 'direct'
+    AND payment.processor_fee_breakdown ->> 'status' = 'available'
+  ORDER BY payment.created_at DESC, payment.id DESC
+  LIMIT 1
+) card_payment ON TRUE
+LEFT JOIN LATERAL (
   SELECT assignment.*
   FROM pms.operational_booking_assignments assignment
   WHERE assignment.guest_booking_id = booking.id
@@ -569,7 +857,8 @@ LEFT JOIN LATERAL (
   LIMIT 1
 ) primary_assignment ON TRUE
 LEFT JOIN LATERAL (
-  SELECT guest.first_name, guest.last_name, guest.email, guest.phone
+  SELECT guest.first_name, guest.last_name, guest.email, guest.phone, guest.country_code,
+    guest.special_requests
   FROM booking.booking_guests guest
   WHERE guest.guest_booking_id = booking.id
   ORDER BY
@@ -593,7 +882,16 @@ LEFT JOIN LATERAL (
              'position', assignment.position,
              'assignmentStatus', assignment.assignment_status,
              'channel', assignment.channel,
-             'assignedAt', to_jsonb(assignment.assigned_at)
+             'assignedAt', to_jsonb(assignment.assigned_at),
+             'stay', CASE WHEN assignment.stay_evidence_kind = 'exact' THEN
+               jsonb_build_object(
+                 'checkIn', assignment.check_in::text,
+                 'checkOut', assignment.check_out::text,
+                 'adults', assignment.adults,
+                 'children', assignment.children
+               )
+             END,
+             'nightly', COALESCE(nightly.items, '[]'::jsonb)
            )
            ORDER BY assignment.position, assignment.created_at, assignment.id
          ) AS items
@@ -601,9 +899,58 @@ LEFT JOIN LATERAL (
   LEFT JOIN pms.rooms room
     ON room.id = assignment.room_id
    AND room.property_id = assignment.property_id
+  LEFT JOIN LATERAL (
+    SELECT jsonb_agg(
+             jsonb_build_object(
+               'serviceDate', applied.stay_date::text,
+               'applied', CASE WHEN applied.amount IS NULL THEN NULL ELSE
+                 jsonb_build_object(
+                   'amountDecimal', applied.amount::text,
+                   'currency', applied.currency
+                 )
+               END,
+               'evidenceQuality', applied.evidence_quality
+             ) ORDER BY applied.stay_date
+           ) AS items
+    FROM (
+      SELECT evidence.stay_date, evidence.currency,
+        CASE WHEN COUNT(evidence.gross_room_amount) = 0 THEN NULL
+          ELSE SUM(evidence.gross_room_amount) END AS amount,
+        (array_agg(evidence.evidence_quality ORDER BY evidence.source_revision DESC,
+          evidence.created_at DESC,evidence.id DESC))[1] AS evidence_quality
+      FROM booking.nightly_revenue_evidence evidence
+      WHERE evidence.property_id = assignment.property_id
+        AND evidence.guest_booking_id = assignment.guest_booking_id
+        AND evidence.room_type_id = assignment.room_type_id
+        AND evidence.line_position = assignment.position
+        AND evidence.economic_event NOT IN ('refund','retained_charge')
+        AND (assignment.stay_evidence_kind <> 'exact' OR
+          (evidence.stay_date >= assignment.check_in AND evidence.stay_date < assignment.check_out))
+      GROUP BY evidence.stay_date, evidence.currency
+    ) applied
+  ) nightly ON TRUE
   WHERE assignment.guest_booking_id = booking.id
     AND assignment.property_id = booking.property_id
 ) assignments ON TRUE
+LEFT JOIN LATERAL (
+  SELECT jsonb_agg(
+           jsonb_build_object(
+             'addonId', COALESCE(selection.addon_definition_id, selection.id)::text,
+             'name', COALESCE(
+               NULLIF(selection.addon_snapshot ->> 'name', ''),
+               definition.name,
+               'Unavailable add-on'
+             ),
+             'quantity', selection.quantity
+           ) ORDER BY selection.created_at, selection.id
+         ) AS items
+  FROM booking.booking_addon_selections selection
+  LEFT JOIN booking.addon_definitions definition
+    ON definition.id = selection.addon_definition_id
+   AND definition.property_id = selection.property_id
+  WHERE selection.guest_booking_id = booking.id
+    AND selection.property_id = booking.property_id
+) addons ON TRUE
 LEFT JOIN LATERAL (
   SELECT record.completed_at, record.pending_flags
   FROM pms.booking_checkin_records record
@@ -651,7 +998,18 @@ async function listRoomTypes(
        room_type.occupancy_limits AS "occupancyLimits",
        room_type.room_attributes AS "attributes",
        room_type.amenities_snapshot AS "amenities",
-       room_type.media_snapshot AS "media",
+       CASE
+         WHEN jsonb_typeof(room_type.media_snapshot) = 'array'
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(room_type.media_snapshot) legacy_media(item)
+            WHERE jsonb_typeof(legacy_media.item) <> 'object'
+               OR jsonb_typeof(legacy_media.item -> 'mediaObjectId') IS DISTINCT FROM 'string'
+          )
+           THEN room_type.media_snapshot
+         ELSE COALESCE(room_media.items, room_type.media_snapshot)
+       END AS "media",
+       room_type.room_media_revision AS "roomMediaRevision",
        room_type.base_rate_amount AS "baseRateAmount",
        room_type.currency,
        room_type.active,
@@ -667,7 +1025,43 @@ async function listRoomTypes(
      LEFT JOIN LATERAL (
        SELECT jsonb_agg(
                 jsonb_build_object(
+                  'mediaObjectId', assignment.platform_media_object_id::text,
+                  'url', variant.public_cdn_url,
+                  'altText', assignment.alt_text
+                )
+                ORDER BY assignment.sort_order, assignment.platform_media_object_id
+              ) AS items
+       FROM pms.room_type_media assignment
+       JOIN platform.media_objects media_object
+         ON media_object.id = assignment.platform_media_object_id
+        AND media_object.property_id = assignment.property_id
+        AND media_object.visibility = 'public'
+        AND media_object.lifecycle_status = 'active'
+        AND media_object.public_approved = TRUE
+       JOIN LATERAL (
+         SELECT media_variant.public_cdn_url
+         FROM platform.media_variants media_variant
+         WHERE media_variant.media_object_id = media_object.id
+           AND media_variant.visibility = 'public'
+           AND media_variant.public_cdn_url IS NOT NULL
+         ORDER BY
+           CASE media_variant.variant_name
+             WHEN 'thumbnail' THEN 0
+             WHEN 'large' THEN 1
+             WHEN 'original_safe' THEN 2
+             ELSE 3
+           END,
+           media_variant.id
+         LIMIT 1
+       ) variant ON TRUE
+       WHERE assignment.property_id = room_type.property_id
+         AND assignment.room_type_id = room_type.id
+     ) room_media ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT jsonb_agg(
+                jsonb_build_object(
                   'ratePlanId', rate_plan.id::text,
+                  'pricingContractVersion', rate_plan.pricing_contract_version,
                   'code', rate_plan.code,
                   'name', rate_plan.name,
                   'rateType', rate_plan.rate_type,
@@ -738,6 +1132,7 @@ function toPmsRoomType(row: TargetPmsRoomTypeRow): PmsRoomType {
     attributes: toJsonRecord(row.attributes),
     amenities: toStringArray(row.amenities),
     media: toMediaArray(row.media),
+    roomMediaRevision: toInteger(row.roomMediaRevision),
     baseRate: {
       amountDecimal: toDecimalString(row.baseRateAmount),
       currency: row.currency,
@@ -759,6 +1154,7 @@ function toPmsRoomType(row: TargetPmsRoomTypeRow): PmsRoomType {
 function toPmsRoomBlockSummary(row: TargetPmsRoomBlockRow): PmsRoomBlockSummary {
   return {
     blockId: row.blockId,
+    version: `room-block-v${row.revision}`,
     roomTypeId: row.roomTypeId,
     roomId: row.roomId,
     startsOn: toDateOnly(row.startsOn),
@@ -775,6 +1171,7 @@ function toPmsCalendarDay(row: TargetPmsCalendarDayRow): PmsCalendarDay {
     roomTypeId: row.roomTypeId,
     totalCount: toInteger(row.totalCount),
     assignedCount: toInteger(row.assignedCount),
+    occupiedCount: toInteger(row.occupiedCount),
     blockedCount: toInteger(row.blockedCount),
     availableCount: toInteger(row.availableCount),
     status: row.status,
@@ -786,9 +1183,14 @@ function toPmsCalendarDay(row: TargetPmsCalendarDayRow): PmsCalendarDay {
 
 function toPmsOperationalReservation(
   row: TargetPmsOperationalReservationRow,
+  propertyPlan: PropertyPlanReadModel,
 ): PmsOperationalReservation {
   const bookedRoomTypeId = row.bookedRoomTypeId.trim();
   const bookedRoomName = row.bookedRoomName.trim();
+  const contact = guestContactForPropertyPlan(propertyPlan, row.guestContactAccepted, {
+    email: row.primaryGuestEmail,
+    phone: row.primaryGuestPhone,
+  });
 
   return {
     guestBookingId: row.guestBookingId,
@@ -803,9 +1205,12 @@ function toPmsOperationalReservation(
     },
     primaryGuest: {
       displayName: row.primaryGuestDisplayName ?? "",
-      email: row.primaryGuestEmail,
-      phone: row.primaryGuestPhone,
+      email: contact.email,
+      phone: contact.phone,
+      countryCode: row.primaryGuestCountryCode,
+      specialRequests: row.primaryGuestSpecialRequests,
     },
+    addOns: toBookingAddOns(row.addOns),
     assignments: toOperationalAssignments(row.assignments),
     checkin: {
       completedAt: toIsoDateTimeOrNull(row.checkinCompletedAt),
@@ -831,13 +1236,40 @@ function toPmsOperationalReservation(
         currency: row.currency,
       },
     },
+    payment: {
+      method: row.paymentMethod,
+      expectedMethod: row.expectedPaymentMethod,
+      status: row.paymentStatus,
+      ...paymentBreakdown(row.paymentBreakdown),
+    },
+    hostResponseDeadlineAt: toIsoDateTimeOrNull(row.hostResponseDeadlineAt),
   };
+}
+
+function paymentBreakdown(value: unknown): {
+  breakdown?: NonNullable<PmsOperationalReservation["payment"]>["breakdown"];
+} {
+  const breakdown = toJsonRecord(value);
+  const money = (key: string): PmsMoney | null => {
+    const item = toJsonRecord(breakdown[key]);
+    const amountDecimal = typeof item["amountDecimal"] === "string" ? item["amountDecimal"] : "";
+    const currency = typeof item["currency"] === "string" ? item["currency"] : "";
+    return amountDecimal && currency ? { amountDecimal, currency } : null;
+  };
+  const grossAmount = money("grossAmount");
+  const stripeFee = money("stripeFee");
+  const vayadaCommission = money("vayadaCommission");
+  const netPayout = money("netPayout");
+  return grossAmount && stripeFee && vayadaCommission && netPayout
+    ? { breakdown: { grossAmount, stripeFee, vayadaCommission, netPayout } }
+    : {};
 }
 
 function toRoomBlockSummaries(value: unknown): PmsRoomBlockSummary[] {
   return toRecordArray(value)
     .map((item) => ({
       blockId: String(item.blockId ?? ""),
+      version: String(item.version ?? ""),
       roomTypeId: String(item.roomTypeId ?? ""),
       roomId: typeof item.roomId === "string" ? item.roomId : null,
       startsOn: toDateOnly(String(item.startsOn ?? "")),
@@ -846,27 +1278,78 @@ function toRoomBlockSummaries(value: unknown): PmsRoomBlockSummary[] {
       reason: String(item.reason ?? ""),
       status: toRoomBlockStatus(item.status),
     }))
-    .filter((item) => item.blockId.length > 0 && item.roomTypeId.length > 0);
+    .filter(
+      (item) => item.blockId.length > 0 && item.version.length > 0 && item.roomTypeId.length > 0,
+    );
 }
 
 function toOperationalAssignments(value: unknown): PmsOperationalAssignment[] {
   return toRecordArray(value)
-    .map((item) => ({
-      assignmentId: String(item.assignmentId ?? ""),
-      roomTypeId: String(item.roomTypeId ?? ""),
-      ratePlanId: typeof item.ratePlanId === "string" ? item.ratePlanId : null,
-      roomId: typeof item.roomId === "string" ? item.roomId : null,
-      roomNumber: typeof item.roomNumber === "string" ? item.roomNumber : null,
-      position: toInteger(Number(item.position ?? 0)),
-      assignmentStatus: toAssignmentStatus(item.assignmentStatus),
-      channel: String(item.channel ?? "direct"),
-      assignedAt: toIsoDateTimeOrNull(
-        typeof item.assignedAt === "string" || item.assignedAt instanceof Date
-          ? item.assignedAt
-          : null,
-      ),
-    }))
+    .map((item) => {
+      const stay = record(item.stay);
+      return {
+        assignmentId: String(item.assignmentId ?? ""),
+        roomTypeId: String(item.roomTypeId ?? ""),
+        ratePlanId: typeof item.ratePlanId === "string" ? item.ratePlanId : null,
+        roomId: typeof item.roomId === "string" ? item.roomId : null,
+        roomNumber: typeof item.roomNumber === "string" ? item.roomNumber : null,
+        position: toInteger(Number(item.position ?? 0)),
+        assignmentStatus: toAssignmentStatus(item.assignmentStatus),
+        channel: String(item.channel ?? "direct"),
+        assignedAt: toIsoDateTimeOrNull(
+          typeof item.assignedAt === "string" || item.assignedAt instanceof Date
+            ? item.assignedAt
+            : null,
+        ),
+        ...(stay
+          ? {
+              stay: {
+                checkIn: toDateOnly(String(stay.checkIn ?? "")),
+                checkOut: toDateOnly(String(stay.checkOut ?? "")),
+                adults: toInteger(Number(stay.adults ?? 0)),
+                children: toInteger(Number(stay.children ?? 0)),
+              },
+            }
+          : {}),
+        nightly: toOperationalNights(item.nightly),
+      };
+    })
     .filter((item) => item.assignmentId.length > 0 && item.roomTypeId.length > 0);
+}
+
+function toBookingAddOns(value: unknown): PmsOperationalReservation["addOns"] {
+  return toRecordArray(value)
+    .map((item) => ({
+      addonId: String(item.addonId ?? ""),
+      name: String(item.name ?? ""),
+      quantity: toInteger(Number(item.quantity ?? 0)),
+    }))
+    .filter((item) => item.addonId.length > 0 && item.name.length > 0 && item.quantity > 0);
+}
+
+function toOperationalNights(value: unknown): PmsOperationalNight[] {
+  return toRecordArray(value).map((item) => {
+    const applied = record(item.applied);
+    return {
+      serviceDate: toDateOnly(String(item.serviceDate ?? "")),
+      applied: applied
+        ? {
+            amountDecimal: toDecimalString(String(applied.amountDecimal ?? "0")),
+            currency: String(applied.currency ?? ""),
+          }
+        : null,
+      evidenceQuality:
+        item.evidenceQuality === "exact" || item.evidenceQuality === "inferred"
+          ? item.evidenceQuality
+          : "missing",
+    };
+  });
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function toRecordArray(value: unknown): Record<string, unknown>[] {
@@ -914,6 +1397,7 @@ function toRoomBlockWhere(
 function toReservationWhere(
   propertyId: string,
   filters: PmsReservationListFilters,
+  propertyPlan: PropertyPlanReadModel,
 ): { whereSql: string; params: unknown[] } {
   const params: unknown[] = [propertyId];
   const conditions = ["booking.property_id = $1"];
@@ -940,8 +1424,14 @@ function toReservationWhere(
         OR primary_guest.first_name ILIKE $${params.length}
         OR primary_guest.last_name ILIKE $${params.length}
         OR CONCAT(primary_guest.first_name, ' ', primary_guest.last_name) ILIKE $${params.length}
-        OR primary_guest.email ILIKE $${params.length}
-        OR primary_guest.phone ILIKE $${params.length}
+        OR (
+          (${propertyPlan.limits.guestContactAccess === "always"}
+            OR ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL})
+          AND (
+            primary_guest.email ILIKE $${params.length}
+            OR primary_guest.phone ILIKE $${params.length}
+          )
+        )
         OR EXISTS (
           SELECT 1
           FROM pms.operational_booking_assignments assignment_search
@@ -995,19 +1485,23 @@ function toStringArray(value: unknown): string[] {
 
 function toMediaArray(value: unknown): PmsRoomTypeMedia[] {
   if (!Array.isArray(value)) return [];
-  return value
-    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
-    .map((item) => {
-      const url = typeof item.url === "string" ? item.url : "";
-      const altText =
-        typeof item.altText === "string"
-          ? item.altText
-          : typeof item.alt === "string"
-            ? item.alt
-            : null;
-      return { url, altText };
-    })
-    .filter((item) => item.url.length > 0);
+  return value.flatMap((item) => {
+    if (typeof item === "string") return item.length > 0 ? [{ url: item, altText: null }] : [];
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const raw = item as Record<string, unknown>;
+    const url = typeof raw.url === "string" ? raw.url : "";
+    if (!url) return [];
+    const mediaObjectId = typeof raw.mediaObjectId === "string" ? raw.mediaObjectId : undefined;
+    const altText =
+      typeof raw.altText === "string" ? raw.altText : typeof raw.alt === "string" ? raw.alt : null;
+    return [
+      {
+        ...(mediaObjectId ? { mediaObjectId } : {}),
+        url,
+        altText,
+      },
+    ];
+  });
 }
 
 function toRatePlans(value: unknown): PmsRatePlan[] {
@@ -1016,6 +1510,8 @@ function toRatePlans(value: unknown): PmsRatePlan[] {
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
     .map((item) => ({
       ratePlanId: String(item.ratePlanId ?? ""),
+      pricingContractVersion:
+        typeof item.pricingContractVersion === "string" ? item.pricingContractVersion : null,
       code: String(item.code ?? ""),
       name: String(item.name ?? ""),
       rateType: toRateType(item.rateType),
@@ -1066,7 +1562,11 @@ function toInteger(value: string | number): number {
 
 function toDateOnly(value: Date | string): string {
   if (value instanceof Date) {
-    return Number.isFinite(value.getTime()) ? value.toISOString().slice(0, 10) : "";
+    if (!Number.isFinite(value.getTime())) return "";
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, "0");
+    const day = String(value.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
   }
 
   return value.slice(0, 10);

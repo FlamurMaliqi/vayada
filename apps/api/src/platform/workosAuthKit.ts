@@ -86,6 +86,21 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
       return toAuthKitSession(response);
     },
 
+    async authenticateWithOrganizationSelection(input) {
+      const response = await workos.userManagement.authenticateWithOrganizationSelection({
+        organizationId: input.organizationId,
+        pendingAuthenticationToken: input.pendingAuthenticationToken,
+        clientId: config.clientId,
+        ipAddress: input.ipAddress,
+        userAgent: input.userAgent,
+        session: {
+          sealSession: true,
+          cookiePassword: config.cookiePassword,
+        },
+      });
+      return toAuthKitSession(response);
+    },
+
     async authenticateWithEmailVerification(input) {
       const response = await workos.userManagement.authenticateWithEmailVerification({
         pendingAuthenticationToken: input.pendingAuthenticationToken,
@@ -158,6 +173,25 @@ export function createWorkOSAuthKitClient(config: WorkOSAuthKitClientConfig): Au
         ...response,
         sealedSession: input.sealedSession,
       });
+    },
+
+    async isSessionActive(input) {
+      let after: string | undefined;
+      do {
+        const sessions = await workos.userManagement.listSessions(input.workosUserId, {
+          limit: 100,
+          ...(after ? { after } : {}),
+        });
+        if (
+          sessions.data.some(
+            (session) => session.id === input.sessionId && session.status === "active",
+          )
+        ) {
+          return true;
+        }
+        after = sessions.listMetadata.after ?? undefined;
+      } while (after);
+      return false;
     },
 
     refreshSession: refreshSealedSession,

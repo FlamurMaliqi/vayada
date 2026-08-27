@@ -48,6 +48,17 @@ function fakePool(overrides: { amountDecimal?: string } = {}) {
     if (sql.startsWith("BEGIN") || sql === "COMMIT" || sql === "ROLLBACK") {
       return { rows: [], rowCount: 0 };
     }
+    if (sql.startsWith("WITH pricing_currency")) {
+      return {
+        rows: [
+          {
+            pricingCurrency: currencyRow(),
+            flexibleRatePlans: [planRow({ amountDecimal: overrides.amountDecimal })],
+          },
+        ],
+        rowCount: 1,
+      };
+    }
     if (sql.includes("FROM pms.property_pricing_settings")) {
       return { rows: [currencyRow()], rowCount: 1 };
     }
@@ -103,6 +114,7 @@ describe("PMS pricing read model", () => {
       capturedAt: now,
     });
     expect(calls[0]?.sql).toBe("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    expect(calls.filter(({ sql }) => sql.includes("WITH pricing_currency"))).toHaveLength(1);
     expect(calls.at(-1)?.sql).toBe("COMMIT");
   });
 

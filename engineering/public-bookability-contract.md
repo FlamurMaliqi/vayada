@@ -8,8 +8,8 @@ parity harness._
 
 Public bookability is the stable external distribution contract for agents,
 partner consumers, search systems, and future MCP/tools. It is not a wrapper
-around today's split booking/PMS endpoints and it is not the same surface as
-authenticated Ask Intelligence.
+around today's split booking/PMS endpoints. Any future hotel employee agent is
+separately designed through VAY-1091.
 
 The first implementation should answer two public questions:
 
@@ -49,9 +49,8 @@ Consumers:
 
 Non-consumers:
 
-- authenticated Ask Intelligence. Ask Intelligence may use setup or public
-  readiness signals, but it answers from scoped private evidence tools and
-  `RequestContext`, not from this public API as its source of truth.
+- any future authenticated hotel employee agent. VAY-1091 must define its
+  private evidence and `RequestContext` boundaries separately.
 
 ## Versioning
 
@@ -81,13 +80,10 @@ Implementation owner: TypeScript `apps/api` route backed by a
 Booking, PMS, Marketplace, Finance, or Channex-shaped payloads directly. Legacy
 product systems may feed the read model through compatibility adapters during
 the rewrite, but the HTTP response is the distribution projection.
-Until VAY-666 adds the canonical distribution table/backfill, `apps/api` uses a
-Booking DB compatibility adapter that maps legacy public hotel fields into the
-distribution projection and treats PMS availability freshness as unknown.
-The compatibility route is registered only when `BOOKING_DATABASE_URL` is
-configured. Without that repository config, `/api/ai/hotels/{slug}` is not
-mounted and consumers should treat the response as route-not-found/404 rather
-than an empty distribution projection.
+`apps/api` now always serves this contract from `TARGET_DATABASE_URL`, using
+either the target public profile projection or the active immutable Booking
+publication. The legacy `booking_hotels` database reader and profile source
+were retired after the next deployment lane made them unreachable.
 
 Intended consumers:
 
@@ -196,7 +192,7 @@ Response shape:
 `hotel.images` is the ordered property-gallery projection used by Booking Web. It contains at
 most 10 `gallery_image` items and excludes the separate Booking hero image and property logo.
 The hero remains available through `hotel.branding.heroImage`.
-Migration `0062_public_bookability_gallery_media` rewrites existing untyped Distribution media
+Migration `0108_public_bookability_gallery_media` rewrites existing untyped Distribution media
 from the canonical Catalog profile so already-published properties adopt this contract at rollout.
 
 ## Quote Endpoint
@@ -212,19 +208,16 @@ Implementation owner: TypeScript `apps/api` route backed by a
 canonical checkout deep link only. It does not create reservations, hold
 inventory, authorize payment, or let an external agent complete a booking.
 
-Until VAY-666 adds the canonical distribution quote table/backfill, `apps/api`
-wires a temporary compatibility quote repository from the public profile
-projection plus the PMS public room-search API configured by
-`PMS_PUBLIC_API_URL`. That compatibility path validates public request shape,
-hotel quote limits, locale/currency support, and same-property-day requests
-using the hotel timezone, then maps the existing public PMS room search response
-into the distribution quote projection. If `PMS_PUBLIC_API_URL` is not
-configured or the PMS public API is unavailable, it returns `unavailable_data`.
-It must not expose Booking, PMS, Finance, Channex, or promo/provider internals
-in the HTTP response.
+`apps/api` composes `createTargetPublicHotelQuoteRepository`, which reads the
+canonical Distribution quote projection through `TARGET_DATABASE_URL`. It
+validates public request shape, hotel quote limits, locale/currency support,
+and same-property-day requests using the hotel timezone. Missing or failed
+target projection reads return contract-valid unavailable reasons without
+exposing Booking, PMS, Finance, Channex, promo, or provider internals.
 
-`PMS_PUBLIC_API_URL` is a server-side Distribution compatibility input, not a
-target Booking Web dependency. VAY-655 defines the Booking Web public API split:
+`PMS_PUBLIC_API_URL` is a rejected stale Python integration variable, not a
+quote input or target Booking Web dependency. VAY-655 defines the Booking Web
+public API split:
 Booking Web should call Booking/checkout and Distribution/bookability contracts,
 while any PMS route access remains hidden behind temporary adapters and is
 removed after canonical offer and quote read models exist.
@@ -295,6 +288,7 @@ Response shape:
         "availableRooms": 3,
         "refundable": true,
         "mealPlan": "breakfast",
+        "amenities": ["Wi-Fi", "Air conditioning", "Balcony"],
         "paymentOptions": ["card", "pay_at_property"],
         "totals": {
           "currency": "EUR",
@@ -349,6 +343,9 @@ Response shape:
   "dataSources": ["booking", "pms", "finance", "distribution"]
 }
 ```
+
+Offer `amenities` are public display labels in the versioned PMS guest-facing order. An explicit
+empty array means the room has no reviewed amenities and must not be replaced with meal-plan data.
 
 ## Status and Unavailable Reasons
 
@@ -408,7 +405,7 @@ Forbidden:
   room assignment details, maintenance blockers with private notes, and channel
   manager credentials;
 - unpublished room/rate inventory, internal overbooking buffers, private setup
-  diagnostics, and tenant-only Ask Intelligence evidence;
+  diagnostics, and tenant-only internal evidence;
 - raw source table names, legacy IDs that are not public resource IDs, SQL
   snippets, and internal error traces.
 

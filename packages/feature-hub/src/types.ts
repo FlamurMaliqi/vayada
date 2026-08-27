@@ -14,6 +14,7 @@ export type FeatureModuleType = "internal" | "external";
 export interface FeatureNavItem {
   label: string;
   href: string;
+  icon: ComponentType<{ className?: string }>;
 }
 
 export interface FeatureModule {
@@ -53,6 +54,8 @@ export interface ModuleActivation {
 
 export interface ModuleActivationsResponse {
   hotelId: string;
+  canManage: boolean;
+  supportedModules: string[];
   activeModules: string[];
   activations: ModuleActivation[];
 }

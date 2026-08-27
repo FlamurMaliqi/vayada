@@ -4,6 +4,79 @@ export interface CurrencyOption {
   flag: string;
 }
 
+export interface LanguageOption {
+  code: string;
+  name: string;
+  nativeName: string;
+  flag: string;
+}
+
+export type PaymentMethodLabelKey =
+  | "card"
+  | "creditCard"
+  | "payAtProperty"
+  | "bankTransfer"
+  | "cash"
+  | "manualCard"
+  | "paypal"
+  | "xendit"
+  | "other";
+
+const PAYMENT_METHOD_LABELS: Record<PaymentMethodLabelKey, string> = {
+  card: "Card",
+  creditCard: "Credit Card",
+  payAtProperty: "Pay at Property",
+  bankTransfer: "Bank Transfer",
+  cash: "Cash",
+  manualCard: "Manual Card",
+  paypal: "PayPal",
+  xendit: "Xendit",
+  other: "Other",
+};
+
+export function paymentMethodLabelKey(value: string | null | undefined): PaymentMethodLabelKey {
+  switch (value) {
+    case "card":
+      return "card";
+    case "credit_card":
+      return "creditCard";
+    case "pay_at_property":
+      return "payAtProperty";
+    case "bank_transfer":
+      return "bankTransfer";
+    case "cash":
+      return "cash";
+    case "manual_card":
+      return "manualCard";
+    case "paypal":
+      return "paypal";
+    case "xendit":
+      return "xendit";
+    default:
+      return "other";
+  }
+}
+
+export function paymentMethodLabel(value: string | null | undefined): string {
+  return PAYMENT_METHOD_LABELS[paymentMethodLabelKey(value)];
+}
+
+export const LANGUAGE_OPTIONS: LanguageOption[] = [
+  { code: "en", name: "English", nativeName: "English", flag: "🇬🇧" },
+  { code: "de", name: "German", nativeName: "Deutsch", flag: "🇩🇪" },
+  { code: "fr", name: "French", nativeName: "Français", flag: "🇫🇷" },
+  { code: "es", name: "Spanish", nativeName: "Español", flag: "🇪🇸" },
+  { code: "id", name: "Indonesian", nativeName: "Bahasa Indonesia", flag: "🇮🇩" },
+  { code: "ja", name: "Japanese", nativeName: "日本語", flag: "🇯🇵" },
+  { code: "zh", name: "Chinese", nativeName: "中文", flag: "🇨🇳" },
+  { code: "ru", name: "Russian", nativeName: "Русский", flag: "🇷🇺" },
+  { code: "it", name: "Italian", nativeName: "Italiano", flag: "🇮🇹" },
+  { code: "nl", name: "Dutch", nativeName: "Nederlands", flag: "🇳🇱" },
+  { code: "ko", name: "Korean", nativeName: "한국어", flag: "🇰🇷" },
+];
+
+export const POPULAR_LANGUAGE_CODES = ["id", "de", "fr", "es", "ja", "ru"];
+
 export const CURRENCY_OPTIONS: CurrencyOption[] = [
   { code: "AED", name: "UAE Dirham", flag: "🇦🇪" },
   { code: "AUD", name: "Australian Dollar", flag: "🇦🇺" },
@@ -347,3 +420,66 @@ export const COUNTRY_OPTIONS: CountryOption[] = [
 ].sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
 
 export const POPULAR_COUNTRY_CODES = ["ID", "US", "GB", "DE", "FR", "AU", "SG", "TH", "JP"];
+
+const SPECIAL_NATIONALITIES: readonly CountryOption[] = [
+  { code: "XS", name: "Stateless", flag: "🏳️" },
+  { code: "XX", name: "Unknown", flag: "❔" },
+];
+
+export const NATIONALITY_OPTIONS: readonly CountryOption[] = [
+  ...COUNTRY_OPTIONS,
+  ...SPECIAL_NATIONALITIES,
+].sort((left, right) => left.name.localeCompare(right.name));
+
+const NATIONALITY_BY_CODE = new Map(NATIONALITY_OPTIONS.map((option) => [option.code, option]));
+const NATIONALITY_BY_NAME = new Map(
+  NATIONALITY_OPTIONS.map((option) => [normalizedNationalityName(option.name), option.code]),
+);
+const NATIONALITY_ALIASES = new Map([
+  ["america", "US"],
+  ["dutch", "NL"],
+  ["great britain", "GB"],
+  ["holland", "NL"],
+  ["the netherlands", "NL"],
+  ["uk", "GB"],
+  ["unknown nationality", "XX"],
+  ["us", "US"],
+  ["usa", "US"],
+]);
+
+export function normalizeNationalityCode(value: string | null | undefined): string | null {
+  const input = value?.trim();
+  if (!input) return null;
+  const code = input.toUpperCase();
+  if (NATIONALITY_BY_CODE.has(code)) return code;
+  const name = normalizedNationalityName(input);
+  return NATIONALITY_ALIASES.get(name) ?? NATIONALITY_BY_NAME.get(name) ?? null;
+}
+
+export function nationalityOption(value: string | null | undefined): CountryOption | null {
+  const code = normalizeNationalityCode(value);
+  return code ? (NATIONALITY_BY_CODE.get(code) ?? null) : null;
+}
+
+export function nationalityLabel(value: string | null | undefined): string | null {
+  return nationalityOption(value)?.name ?? null;
+}
+
+export function nationalityInputLabel(value: string | null | undefined): string {
+  return nationalityLabel(value) ?? value?.trim() ?? "";
+}
+
+export function nationalityDisplayLabel(value: string | null | undefined): string | null {
+  const input = value?.trim();
+  if (!input) return null;
+  return nationalityLabel(input) ?? `${input} · Needs review`;
+}
+
+function normalizedNationalityName(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}

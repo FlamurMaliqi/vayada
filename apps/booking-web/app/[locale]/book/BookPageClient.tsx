@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
+import { NationalitySelect } from "@vayada/locale-ui/NationalitySelect";
 import { useRouter } from "@/i18n/navigation";
 import Image from "next/image";
 import BookingFooter from "@/components/layout/BookingFooter";
@@ -14,7 +15,6 @@ import { useHotel, useRooms, useAddons, useSlug } from "@/contexts/HotelContext"
 import { bookingService } from "@/services/api/booking";
 import { formatDate, ensureMinOneNight } from "@/lib/utils";
 import { useCurrency } from "@/contexts/CurrencyContext";
-import { COUNTRIES } from "@/lib/constants/countries";
 import { COUNTRY_DIAL_CODES, findDialCodeByCountryName } from "@/lib/constants/countryDialCodes";
 import { trackEvent } from "@/services/api/tracking";
 import { usePricing } from "@/lib/hooks/usePricing";
@@ -109,6 +109,7 @@ function BookPageContent() {
     variableNightlyRates,
     roomTotal,
     promoDiscount,
+    promoError,
     discountAmount,
     grandTotal,
   } = usePricing({
@@ -394,15 +395,24 @@ function BookPageContent() {
               )}
 
               {/* Promo Discount */}
+              {promoError && promoCodeParam && (
+                <p role="alert" className="border-b border-red-100 py-3 text-sm text-red-600">
+                  {promoError}
+                </p>
+              )}
               {promoDiscount && (
                 <div className="flex items-center justify-between pt-3 pb-3 border-b border-gray-100">
                   <p className="text-sm text-primary-600 font-medium">
-                    Promo {promoCodeParam}
-                    {promoDiscount.type === "percentage" ? ` (-${promoDiscount.value}%)` : ""}
+                    Promo {promoCodeParam}:{" "}
+                    {promoDiscount.type === "percentage"
+                      ? `-${promoDiscount.value}%`
+                      : `-${formatPrice(discountAmount, selectedCurrency)}`}
                   </p>
-                  <p className="text-sm font-semibold text-primary-600">
-                    -{formatPrice(discountAmount, selectedCurrency)}
-                  </p>
+                  {promoDiscount.type === "percentage" && (
+                    <p className="text-sm font-semibold text-primary-600">
+                      -{formatPrice(discountAmount, selectedCurrency)}
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -555,23 +565,14 @@ function BookPageContent() {
                       <FieldError id="phone-error" message={fieldErrors.phone} />
                     )}
                   </div>
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-900 mb-1.5">
-                      {t("country")}
-                    </label>
-                    <select
-                      value={country}
-                      onChange={(e) => setCountry(e.target.value)}
-                      className="w-full px-4 py-3 rounded-lg border border-gray-300 text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 appearance-none bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20fill%3D%22none%22%20viewBox%3D%220%200%2020%2020%22%3E%3Cpath%20stroke%3D%22%236b7280%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20stroke-width%3D%221.5%22%20d%3D%22m6%208%204%204%204-4%22%2F%3E%3C%2Fsvg%3E')] bg-[length:1.25rem] bg-[right_0.75rem_center] bg-no-repeat"
-                    >
-                      <option value="">{t("selectCountry")}</option>
-                      {COUNTRIES.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  <NationalitySelect
+                    label={t("country")}
+                    value={country}
+                    onChange={setCountry}
+                    placeholder={t("selectCountry")}
+                    labelClassName="mb-1.5 block text-sm font-semibold text-gray-900"
+                    inputClassName="w-full rounded-lg border border-gray-300 px-4 py-3 text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  />
                 </div>
 
                 {/* Estimated Arrival Time */}
@@ -764,15 +765,24 @@ function BookPageContent() {
               </div>
 
               {/* Promo Discount */}
+              {promoError && promoCodeParam && (
+                <p role="alert" className="pt-2 text-sm text-red-600">
+                  {promoError}
+                </p>
+              )}
               {promoDiscount && (
                 <div className="flex justify-between text-sm pt-2">
                   <span className="text-primary-600 font-medium">
-                    Promo {promoCodeParam}
-                    {promoDiscount.type === "percentage" ? ` (-${promoDiscount.value}%)` : ""}
+                    Promo {promoCodeParam}:{" "}
+                    {promoDiscount.type === "percentage"
+                      ? `-${promoDiscount.value}%`
+                      : `-${formatPrice(discountAmount, selectedCurrency)}`}
                   </span>
-                  <span className="font-semibold text-primary-600">
-                    -{formatPrice(discountAmount, selectedCurrency)}
-                  </span>
+                  {promoDiscount.type === "percentage" && (
+                    <span className="font-semibold text-primary-600">
+                      -{formatPrice(discountAmount, selectedCurrency)}
+                    </span>
+                  )}
                 </div>
               )}
 

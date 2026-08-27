@@ -9,9 +9,11 @@ const originalApiUrl = process.env.NEXT_PUBLIC_API_URL;
 
 describe("settingsService next-stack bootstrap data", () => {
   let propertySettingsFailure: number | Error | null;
+  let acceptanceMode: "instant" | "request";
 
   beforeEach(() => {
     propertySettingsFailure = null;
+    acceptanceMode = "request";
     const storage = createMemoryStorage();
     let designSettings = {
       headerLogo: "https://cdn.vayada.test/hotels/alpenrose/logo.webp",
@@ -76,6 +78,24 @@ describe("settingsService next-stack bootstrap data", () => {
             status: 404,
             headers: { "content-type": "application/json" },
           });
+        }
+        if (
+          href.endsWith(
+            "/api/booking/hotels/booking_hotel_alpenrose/settings/booking-acceptance",
+          )
+        ) {
+          if (init?.method === "PUT") {
+            acceptanceMode = JSON.parse(String(init.body)).acceptanceMode;
+          }
+          return new Response(
+            JSON.stringify({
+              contractVersion: "booking-acceptance.v1",
+              propertyId: "property_alpenrose",
+              acceptanceMode,
+              instantBook: acceptanceMode === "instant",
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
         }
         if (href.endsWith("/api/booking/hotels/booking_hotel_alpenrose/settings/property")) {
           if (propertySettingsFailure instanceof Error) throw propertySettingsFailure;
@@ -220,6 +240,15 @@ describe("settingsService next-stack bootstrap data", () => {
       expect.stringMatching(/\/api\/booking\/hotels\/booking_hotel_alpenrose\/settings\/property$/),
       expect.objectContaining({ method: "PATCH" }),
     );
+
+    await expect(settingsService.getBookingAcceptance()).resolves.toMatchObject({
+      acceptanceMode: "request",
+      instantBook: false,
+    });
+    await expect(settingsService.updateBookingAcceptance("instant")).resolves.toMatchObject({
+      acceptanceMode: "instant",
+      instantBook: true,
+    });
   });
 
   it("loads and saves the design model for an explicit Booking hotel", async () => {
@@ -466,7 +495,7 @@ function adaptiveSetupStatus(
           planRevision: "plan-1",
           tasks: hotelOperationsTasks(selectedPropertyId),
           recommendedTaskId: null,
-          ownerProgress: { complete: 5, total: 5 },
+          ownerProgress: { complete: 6, total: 6 },
           launchReadiness: {
             operationsUse: "ready",
             directBookingPublish: "ready",
@@ -501,6 +530,7 @@ function hotelOperationsTasks(propertyId: string) {
       "booking.guest_settings_policies",
       propertyId,
     ),
+    setupTask("billing_plan", "hotel_operations", "finance", "finance.billing_plan", propertyId),
     setupTask("payment", "hotel_operations", "finance", "finance.payment", propertyId),
     setupTask(
       "direct_booking_publication",

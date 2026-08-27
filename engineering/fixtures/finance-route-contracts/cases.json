@@ -122,377 +122,6 @@
       }
     },
     {
-      "caseId": "invoice-list-read",
-      "description": "Invoice list is a finance read model over booking, PMS operation, and finance payment facts with stable pagination and counts.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices",
-        "query": {
-          "status": "partial",
-          "limit": 50,
-          "offset": 0,
-          "sort": "issuedAt"
-        }
-      },
-      "expected": {
-        "status": 200,
-        "itemCount": 2,
-        "mustInclude": [
-          "invoices[0].invoiceId",
-          "invoices[0].invoiceNumber",
-          "invoices[0].guestBookingId",
-          "invoices[0].bookingReference",
-          "invoices[0].guest.displayName",
-          "invoices[0].totalAmount",
-          "invoices[0].amountPaid",
-          "invoices[0].balanceDue",
-          "counts.partial",
-          "sourceFreshness"
-        ],
-        "stableOrdering": "issuedAt DESC, invoiceNumber ASC",
-        "mustExclude": ["guestBirthDate", "privatePmsNotes", "providerPaymentIntentId"]
-      }
-    },
-    {
-      "caseId": "invoice-detail-read",
-      "description": "Invoice detail includes charge lines and settled payments while preserving Booking guest PII ownership.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices/inv_2026_abcd",
-        "query": {}
-      },
-      "expected": {
-        "status": 200,
-        "mustInclude": [
-          "invoice.invoiceId",
-          "invoice.charges[0].description",
-          "invoice.charges[0].amount",
-          "invoice.payments[0].paymentId",
-          "invoice.payments[0].method",
-          "invoice.payments[0].status",
-          "invoice.balanceDue"
-        ],
-        "mustExclude": [
-          "payment.providerTransactionId",
-          "payment.providerPaymentIntentId",
-          "payment.processorFeeBreakdown",
-          "booking_guests"
-        ]
-      }
-    },
-    {
-      "caseId": "manual-payment-record-command",
-      "description": "Manual payment records write finance payment facts idempotently and enqueue projection refresh jobs without provider calls.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices/inv_2026_abcd/payments",
-        "method": "POST",
-        "body": {
-          "commandId": "cmd-manual-payment-001",
-          "idempotencyKey": "finance-manual-payment-inv-2026-abcd-001",
-          "amount": "250.00",
-          "currency": "EUR",
-          "paymentMethod": "cash",
-          "reference": "front desk receipt 8812"
-        }
-      },
-      "expected": {
-        "status": 201,
-        "mustInclude": [
-          "invoice.payments[0].paymentId",
-          "invoice.amountPaid",
-          "invoice.balanceDue",
-          "commandMeta.idempotencyKey"
-        ],
-        "commandMeta": {
-          "sideEffects": ["audit_event", "booking_projection_refresh", "pms_projection_refresh"]
-        },
-        "mustNotCall": ["Stripe API", "Xendit API", "Channex API"]
-      }
-    },
-    {
-      "caseId": "manual-payment-record-command-idempotency-replay",
-      "description": "Replaying the manual payment idempotency key returns the original payment and does not enqueue duplicate projection jobs.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices/inv_2026_abcd/payments",
-        "method": "POST",
-        "body": {
-          "commandId": "cmd-manual-payment-001",
-          "idempotencyKey": "finance-manual-payment-inv-2026-abcd-001",
-          "amount": "250.00",
-          "currency": "EUR",
-          "paymentMethod": "cash",
-          "reference": "front desk receipt 8812"
-        }
-      },
-      "expected": {
-        "status": 200,
-        "mustInclude": [
-          "invoice.payments[0].paymentId",
-          "commandMeta.idempotencyKey",
-          "commandMeta.jobs[0].status"
-        ],
-        "commandMeta": {
-          "sideEffects": ["audit_event", "booking_projection_refresh", "pms_projection_refresh"]
-        },
-        "outboxEnqueueCount": 2
-      }
-    },
-    {
-      "caseId": "manual-payment-record-command-currency-mismatch",
-      "description": "Manual payment commands reject payments whose currency does not match the invoice before writing payment facts.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices/inv_2026_abcd/payments",
-        "method": "POST",
-        "body": {
-          "commandId": "cmd-manual-payment-currency-mismatch",
-          "idempotencyKey": "finance-manual-payment-inv-2026-abcd-currency-mismatch",
-          "amount": "250.00",
-          "currency": "USD",
-          "paymentMethod": "cash",
-          "reference": "front desk receipt 8812"
-        }
-      },
-      "expected": {
-        "status": 400,
-        "errorCode": "invalid_command"
-      }
-    },
-    {
-      "caseId": "manual-payment-record-command-overpayment",
-      "description": "Manual payment commands reject amounts above the invoice balance before writing payment facts.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices/inv_2026_abcd/payments",
-        "method": "POST",
-        "body": {
-          "commandId": "cmd-manual-payment-overpayment",
-          "idempotencyKey": "finance-manual-payment-inv-2026-abcd-overpayment",
-          "amount": "9999999999999.99",
-          "currency": "EUR",
-          "paymentMethod": "cash",
-          "reference": "front desk receipt 8812"
-        }
-      },
-      "expected": {
-        "status": 400,
-        "errorCode": "invalid_command"
-      }
-    },
-    {
-      "caseId": "manual-payment-record-command-no-balance",
-      "description": "Manual payment commands reject invoices that have no outstanding balance before writing payment facts.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices/inv_2026_paid_zero/payments",
-        "method": "POST",
-        "body": {
-          "commandId": "cmd-manual-payment-no-balance",
-          "idempotencyKey": "finance-manual-payment-inv-2026-paid-zero",
-          "amount": "1.00",
-          "currency": "EUR",
-          "paymentMethod": "cash",
-          "reference": "front desk receipt 8812"
-        }
-      },
-      "expected": {
-        "status": 400,
-        "errorCode": "invalid_command"
-      }
-    },
-    {
-      "caseId": "manual-payment-record-command-paid-invoice",
-      "description": "Manual payment commands reject paid invoices before writing payment facts.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices/inv_2026_paid/payments",
-        "method": "POST",
-        "body": {
-          "commandId": "cmd-manual-payment-paid",
-          "idempotencyKey": "finance-manual-payment-inv-2026-paid",
-          "amount": "1.00",
-          "currency": "EUR",
-          "paymentMethod": "cash",
-          "reference": "front desk receipt 8812"
-        }
-      },
-      "expected": {
-        "status": 400,
-        "errorCode": "invalid_command"
-      }
-    },
-    {
-      "caseId": "manual-payment-record-command-voided-invoice",
-      "description": "Manual payment commands reject voided invoices before writing payment facts.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices/inv_2026_voided/payments",
-        "method": "POST",
-        "body": {
-          "commandId": "cmd-manual-payment-voided",
-          "idempotencyKey": "finance-manual-payment-inv-2026-voided",
-          "amount": "1.00",
-          "currency": "EUR",
-          "paymentMethod": "cash",
-          "reference": "front desk receipt 8812"
-        }
-      },
-      "expected": {
-        "status": 400,
-        "errorCode": "invalid_command"
-      }
-    },
-    {
-      "caseId": "manual-payment-record-command-amount-out-of-range",
-      "description": "Manual payment commands reject values outside NUMERIC(15,2) before reaching the write model.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices/inv_2026_abcd/payments",
-        "method": "POST",
-        "body": {
-          "commandId": "cmd-manual-payment-out-of-range",
-          "idempotencyKey": "finance-manual-payment-inv-2026-abcd-out-of-range",
-          "amount": "10000000000000.00",
-          "currency": "EUR",
-          "paymentMethod": "cash",
-          "reference": "front desk receipt 8812"
-        }
-      },
-      "expected": {
-        "status": 400,
-        "errorCode": "invalid_body"
-      }
-    },
-    {
-      "caseId": "payment-ledger-read",
-      "description": "The property payment ledger is a stable paginated finance read model and does not collapse into invoice-detail rows.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/payments",
-        "query": {
-          "status": "paid",
-          "provider": "manual",
-          "limit": 50,
-          "offset": 0,
-          "sort": "recordedAt"
-        }
-      },
-      "expected": {
-        "status": 200,
-        "itemCount": 2,
-        "stableOrdering": "recordedAt DESC, paymentId ASC",
-        "mustInclude": [
-          "payments[0].paymentId",
-          "payments[0].invoiceId",
-          "payments[0].guestBookingId",
-          "payments[0].bookingReference",
-          "payments[0].amount",
-          "payments[0].currency",
-          "payments[0].provider",
-          "payments[0].reconciliationStatus",
-          "counts.paid",
-          "sourceFreshness"
-        ],
-        "mustExclude": [
-          "providerPayloadRaw",
-          "providerPaymentIntentSecret",
-          "cardFingerprint",
-          "guestBirthDate",
-          "processorFeeBreakdown"
-        ]
-      }
-    },
-    {
-      "caseId": "financial-summary-read",
-      "description": "Financial summary reads from the Finance visibility read model and reports source freshness without legacy financials coupling.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/summary",
-        "query": {}
-      },
-      "expected": {
-        "status": 200,
-        "mustInclude": [
-          "summary.currency",
-          "summary.grossPaymentAmount",
-          "summary.netPaymentAmount",
-          "summary.outstandingBalanceAmount",
-          "summary.invoiceCounts.partial",
-          "summary.paymentCounts.paid",
-          "sourceFreshness.finance.status"
-        ],
-        "mustExclude": [
-          "legacyPmsTable",
-          "providerPayloadRaw",
-          "processorFeeBreakdown",
-          "guestBirthDate"
-        ]
-      }
-    },
-    {
-      "caseId": "invoice-export-disposition",
-      "description": "Invoice CSV export returns target export disposition rather than executing a legacy PMS synchronous export.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices/export.csv",
-        "query": {}
-      },
-      "expected": {
-        "status": 202,
-        "mustInclude": [
-          "export.status",
-          "export.disposition",
-          "export.filename",
-          "export.contentType",
-          "sourceFreshness"
-        ],
-        "mustNotCall": ["legacy PMS financials export", "legacy BookingEngineDatabase"]
-      }
-    },
-    {
-      "caseId": "invoice-empty-state",
-      "description": "Invoice reads return a successful empty state for a property with finance access but no invoice read model rows.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices",
-        "query": {
-          "status": "paid",
-          "limit": 25,
-          "offset": 0
-        }
-      },
-      "expected": {
-        "status": 200,
-        "itemCount": 0,
-        "mustInclude": ["invoices", "total", "counts.paid", "limit", "offset", "sourceFreshness"]
-      }
-    },
-    {
-      "caseId": "invoice-search-sort-pagination",
-      "description": "Invoice search, sort, and pagination use stable target read-model semantics.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices",
-        "query": {
-          "search": "ledger",
-          "sort": "guest",
-          "limit": 1,
-          "offset": 0
-        }
-      },
-      "expected": {
-        "status": 200,
-        "itemCount": 1,
-        "stableOrdering": "guest ASC, issuedAt DESC, invoiceNumber ASC",
-        "mustInclude": ["invoices[0].invoiceId", "invoices[0].guest.displayName", "total"]
-      }
-    },
-    {
-      "caseId": "payment-ledger-empty-state",
-      "description": "Payment ledger reads return a successful empty state for a property with finance access but no payment rows.",
-      "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/payments",
-        "query": {
-          "status": "paid",
-          "provider": "manual",
-          "limit": 25,
-          "offset": 0
-        }
-      },
-      "expected": {
-        "status": 200,
-        "itemCount": 0,
-        "mustInclude": ["payments", "total", "counts.paid", "limit", "offset", "sourceFreshness"]
-      }
-    },
-    {
       "caseId": "payout-list-read",
       "description": "Property payout reads expose lifecycle and retry state without destination account secrets.",
       "request": {
@@ -884,10 +513,33 @@
       }
     },
     {
+      "caseId": "ota-commission-settings-list",
+      "request": {
+        "path": "/api/finance/properties/f3000000-0000-4000-8000-000000000686/financials/ota-commission-settings",
+        "method": "GET"
+      },
+      "expected": { "status": 200, "mustExclude": ["providerSecret", "guestEmail"] }
+    },
+    {
+      "caseId": "ota-commission-settings-update",
+      "request": {
+        "path": "/api/finance/properties/f3000000-0000-4000-8000-000000000686/financials/ota-commission-settings/booking_com",
+        "method": "PUT",
+        "body": {
+          "commandId": "command-1",
+          "idempotencyKey": "key-1",
+          "expectedRevision": 0,
+          "percentageRate": "15",
+          "effectiveFrom": "2026-08-08T00:00:00.000Z"
+        }
+      },
+      "expected": { "status": 201, "mustExclude": ["providerSecret", "guestEmail"] }
+    },
+    {
       "caseId": "authorization-denial-matrix-missing-permission",
       "description": "Finance property reads deny authenticated users without pms.finance.read.",
       "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices",
+        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/payment-settings",
         "query": {},
         "auth": {
           "permissions": ["pms.operations.read"],
@@ -904,7 +556,7 @@
       "caseId": "authorization-denial-matrix-missing-resource",
       "description": "Finance property reads deny users with finance permission but no linked property resource.",
       "request": {
-        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/invoices",
+        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/payment-settings",
         "query": {},
         "auth": {
           "permissions": ["pms.finance.read"],

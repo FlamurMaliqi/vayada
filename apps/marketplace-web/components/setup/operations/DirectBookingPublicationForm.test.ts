@@ -1,15 +1,28 @@
 import { describe, expect, it } from "vitest";
 
-import { shouldCollectDirectBookingDescription } from "./DirectBookingPublicationForm";
+import {
+  DIRECT_BOOKING_SUBTEXT_MAX_LENGTH,
+  defaultDirectBookingSubtext,
+  directBookingSubtextError,
+} from "@/services/api/hotelOperationsSetupClient";
 
-describe("direct-booking public description", () => {
-  it("reuses the canonical description when both onboarding tracks are selected", () => {
-    expect(shouldCollectDirectBookingDescription(["hotel_operations", "creator_marketplace"])).toBe(
-      false,
+describe("direct-booking design defaults", () => {
+  it("uses the property name for the resettable default subtext", () => {
+    expect(defaultDirectBookingSubtext("Hotel One")).toBe(
+      "Book direct for a memorable stay at Hotel One.",
+    );
+    expect(defaultDirectBookingSubtext("  ")).toBe(
+      "Book direct for a memorable stay at your property.",
+    );
+    expect(defaultDirectBookingSubtext("H".repeat(300))).toHaveLength(
+      DIRECT_BOOKING_SUBTEXT_MAX_LENGTH,
     );
   });
 
-  it("collects the minimum canonical description for Operations-only onboarding", () => {
-    expect(shouldCollectDirectBookingDescription(["hotel_operations"])).toBe(true);
+  it("blocks hydrated subtext that exceeds the editor limit", () => {
+    expect(directBookingSubtextError("H".repeat(DIRECT_BOOKING_SUBTEXT_MAX_LENGTH))).toBeNull();
+    expect(directBookingSubtextError("H".repeat(DIRECT_BOOKING_SUBTEXT_MAX_LENGTH + 1))).toBe(
+      "Keep the booking page subtext within 200 characters.",
+    );
   });
 });

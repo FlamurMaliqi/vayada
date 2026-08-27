@@ -318,6 +318,9 @@ describe("@vayada/domain-booking dashboard metrics read model contract", () => {
       async getSparklines(input) {
         return fakeSparklines(input.propertyId);
       },
+      async getPageViewTimeline(input) {
+        return fakePageViews(input.propertyId);
+      },
     };
 
     const metrics = await stub.getDashboardMetrics({
@@ -340,6 +343,7 @@ describe("@vayada/domain-booking dashboard metrics read model contract", () => {
       getSourceMix: async (input) =>
         fakeSourceMix(input.propertyId, input.periodStart, input.periodEnd),
       getSparklines: async (input) => fakeSparklines(input.propertyId),
+      getPageViewTimeline: async (input) => fakePageViews(input.propertyId),
     };
 
     const mix = await stub.getSourceMix({
@@ -360,6 +364,7 @@ describe("@vayada/domain-booking dashboard metrics read model contract", () => {
       getSourceMix: async (input) =>
         fakeSourceMix(input.propertyId, input.periodStart, input.periodEnd),
       getSparklines: async (input) => fakeSparklines(input.propertyId),
+      getPageViewTimeline: async (input) => fakePageViews(input.propertyId),
     };
 
     const sparklines = await stub.getSparklines({
@@ -374,7 +379,15 @@ describe("@vayada/domain-booking dashboard metrics read model contract", () => {
       expect(point.bucketStart).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       expect(point.bucketEnd).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       expect(point.bookingCount).toBeGreaterThanOrEqual(0);
+      expect(point.pageViewCount).toBeGreaterThanOrEqual(0);
     }
+  });
+
+  it("models property-local page-view buckets and their preceding comparison window", async () => {
+    const timeline = fakePageViews("prop_alpenrose");
+    expect(timeline.timeZone).toBe("Europe/Vienna");
+    expect(timeline.buckets).toHaveLength(7);
+    expect(timeline.total).toBe(timeline.buckets.reduce((sum, bucket) => sum + bucket.count, 0));
   });
 });
 
@@ -393,6 +406,8 @@ describe("@vayada/domain-booking guest PII port contract", () => {
         email: "nora@example.test",
         phone: null,
         countryCode: "CH",
+        countryCodeRaw: null,
+        countryCodeReviewRequired: false,
         arrivalTime: null,
         specialRequests: null,
       },
@@ -401,6 +416,14 @@ describe("@vayada/domain-booking guest PII port contract", () => {
     const stub: import("./index.js").BookingGuestPiiPort = {
       async listGuestPiiForPmsOperations() {
         return projection;
+      },
+      async correctPrimaryGuestNationalityForPmsOperations() {
+        return {
+          ok: false,
+          statusCode: 404,
+          code: "primary_guest_not_found",
+          message: "Primary guest not found.",
+        };
       },
       async createAdditionalGuestForPmsOperations(command) {
         const additionalGuest = {
@@ -413,6 +436,8 @@ describe("@vayada/domain-booking guest PII port contract", () => {
           email: command.guest.email ?? null,
           phone: command.guest.phone ?? null,
           countryCode: command.guest.countryCode ?? null,
+          countryCodeRaw: null,
+          countryCodeReviewRequired: false,
           arrivalTime: command.guest.arrivalTime ?? null,
           specialRequests: command.guest.specialRequests ?? null,
         };
@@ -483,11 +508,13 @@ function fakeMetrics(): BookingDashboardMetricsReadModel {
       totalRevenue: { amountDecimal: "3600.00", currency: "EUR" },
       bookingCount: 10,
       avgNightlyRate: { amountDecimal: "120.00", currency: "EUR" },
+      pageViewCount: 120,
     },
     previous: {
       totalRevenue: { amountDecimal: "2880.00", currency: "EUR" },
       bookingCount: 8,
       avgNightlyRate: { amountDecimal: "120.00", currency: "EUR" },
+      pageViewCount: 90,
     },
     nextArrivalDate: "2026-07-04",
     liveSinceDate: "2025-01-15",
@@ -528,6 +555,30 @@ function fakeSparklines(propertyId: string): BookingSparklineReadModel {
     revenue: { amountDecimal: `${(i + 1) * 100}.00`, currency: "EUR" },
     bookingCount: i + 1,
     avgNightlyRate: { amountDecimal: "120.00", currency: "EUR" },
+    pageViewCount: i + 10,
   }));
   return { propertyId, points };
+}
+
+function fakePageViews(propertyId: string) {
+  const buckets = Array.from({ length: 7 }, (_, index) => ({
+    date: `2026-06-${String(index + 8).padStart(2, "0")}`,
+    count: index + 1,
+  }));
+  const previousBuckets = Array.from({ length: 7 }, (_, index) => ({
+    date: `2026-06-${String(index + 1).padStart(2, "0")}`,
+    count: index,
+  }));
+  return {
+    propertyId,
+    timeZone: "Europe/Vienna",
+    windowStart: "2026-06-08",
+    windowEnd: "2026-06-14",
+    previousWindowStart: "2026-06-01",
+    previousWindowEnd: "2026-06-07",
+    buckets,
+    previousBuckets,
+    total: buckets.reduce((sum, bucket) => sum + bucket.count, 0),
+    previousTotal: previousBuckets.reduce((sum, bucket) => sum + bucket.count, 0),
+  };
 }

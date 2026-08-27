@@ -13,6 +13,7 @@ export type FinanceRoutePaymentMethod =
   | "xendit"
   | "cash"
   | "bank_transfer"
+  | "paypal"
   | "manual_card"
   | "wallet"
   | "other";
@@ -52,6 +53,9 @@ export interface BookingAdminPaymentSettingsDraft {
   payAtHotelMethods?: string[];
   onlineCardPayment: boolean;
   bankTransfer: boolean;
+  paypalEnabled?: boolean;
+  paypalEmail?: string;
+  paypalPaymentWindowHours?: number;
   payoutAccountHolder?: string;
   payoutAccountType?: "iban" | "account_number";
   payoutIban?: string;
@@ -86,6 +90,7 @@ export interface FinancePaymentSettingsResponse {
     acceptedMethods: FinanceRoutePaymentMethod[];
     defaultCurrency: string;
     supportedCurrencies: string[];
+    depositPolicy: FinanceJsonPolicy;
     requiresManualReview: boolean;
     providerAccount: {
       providerAccountId: string | null;
@@ -99,6 +104,15 @@ export interface FinancePaymentSettingsResponse {
   };
 }
 
+export function payAtHotelMethodsFromFinance(
+  acceptedMethods: readonly FinanceRoutePaymentMethod[],
+): string[] {
+  return [
+    ...(acceptedMethods.includes("cash") ? ["cash"] : []),
+    ...(acceptedMethods.includes("manual_card") ? ["card"] : []),
+  ];
+}
+
 export interface FinanceStripeProviderAccountResponse {
   contractVersion: string;
   providerAccountId: string;
@@ -107,6 +121,10 @@ export interface FinanceStripeProviderAccountResponse {
   status: string;
   onboardingStatus: string;
   onboardingUrl: string;
+}
+
+export interface FinanceStripeDashboardLinkResponse {
+  url: string;
 }
 
 export class FinancePaymentSettingsClientError extends Error {
@@ -180,6 +198,7 @@ export async function createFinanceStripeProviderAccount(
         idempotencyKey: commandId,
         email: input.email,
         country: input.country,
+        returnSurface: "booking_admin",
       },
       omitHotelContext,
     );
@@ -213,7 +232,23 @@ export async function issueFinanceStripeOnboardingLink(
       {
         commandId,
         idempotencyKey: commandId,
+        returnSurface: "booking_admin",
       },
+      omitHotelContext,
+    );
+  } catch (error) {
+    throw toFinancePaymentSettingsClientError(error);
+  }
+}
+
+export async function createFinanceStripeDashboardLink(
+  input: { propertyId: string },
+  client: FinanceProviderAccountApiClient = apiClient,
+): Promise<FinanceStripeDashboardLinkResponse> {
+  try {
+    return await client.post<FinanceStripeDashboardLinkResponse>(
+      `${buildFinancePaymentSettingsBaseEndpoint(input)}/provider-accounts/stripe/dashboard-link`,
+      undefined,
       omitHotelContext,
     );
   } catch (error) {
@@ -224,9 +259,27 @@ export async function issueFinanceStripeOnboardingLink(
 export function buildFinancePaymentSettingsBody(
   draft: BookingAdminPaymentSettingsDraft,
 ): UpdateFinancePaymentSettingsBody {
+  if (draft.payAtPropertyEnabled && !draft.payAtHotelMethods?.length) {
+    throw new Error("Choose cash, card, or both for Pay at Hotel.");
+  }
+  if (draft.bankTransfer) {
+    const account =
+      draft.payoutAccountType === "account_number"
+        ? trimmed(draft.payoutAccountNumber)
+        : trimmed(draft.payoutIban);
+    if (!trimmed(draft.payoutBankName)) throw new Error("Bank name is required.");
+    if (!trimmed(draft.payoutAccountHolder)) throw new Error("Account holder is required.");
+    if (!account) throw new Error("Account number or IBAN is required.");
+  }
+  if (draft.paypalEnabled && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed(draft.paypalEmail) ?? "")) {
+    throw new Error("PayPal email must be a valid email address.");
+  }
   const commandId = newFinanceCommandId(draft.commandPrefix ?? "finance-payment-settings");
   const defaultCurrency = normalizeCurrencyCode(draft.defaultCurrency);
   const acceptedMethods = buildAcceptedPaymentMethods(draft);
+  if (acceptedMethods.length === 0) {
+    throw new Error("Choose at least one payment method.");
+  }
   const paymentSettings: FinancePaymentSettingsPatchPayload = {
     paymentsEnabled: acceptedMethods.length > 0,
     paymentProvider: draft.paymentProvider,
@@ -235,10 +288,23 @@ export function buildFinancePaymentSettingsBody(
     supportedCurrencies: [defaultCurrency],
     requiresManualReview: draft.requiresManualReview ?? false,
   };
-  const bankTransferInstructions = buildBankTransferInstructions(draft);
-  if (bankTransferInstructions) {
-    paymentSettings.depositPolicy = { bankTransferInstructions };
-  }
+  paymentSettings.depositPolicy = {
+    bankName: draft.bankTransfer ? (trimmed(draft.payoutBankName) ?? "") : "",
+    accountHolder: draft.bankTransfer ? (trimmed(draft.payoutAccountHolder) ?? "") : "",
+    accountNumber: draft.bankTransfer
+      ? (trimmed(
+          draft.payoutAccountType === "account_number"
+            ? draft.payoutAccountNumber
+            : draft.payoutIban,
+        ) ?? "")
+      : "",
+    bicSwift: draft.bankTransfer ? (trimmed(draft.payoutSwift) ?? "") : "",
+    bankTransferInstructions: buildBankTransferInstructions(draft) ?? "",
+    paypalEmail: draft.paypalEnabled ? (trimmed(draft.paypalEmail) ?? "") : "",
+    paypalPaymentWindowHours: draft.paypalEnabled
+      ? Math.max(1, Math.min(168, draft.paypalPaymentWindowHours ?? 24))
+      : 24,
+  };
 
   return {
     commandId,
@@ -278,6 +344,7 @@ function buildAcceptedPaymentMethods(
     methods.add(draft.paymentProvider === "xendit" ? "xendit" : "card");
   }
   if (draft.bankTransfer) methods.add("bank_transfer");
+  if (draft.paypalEnabled) methods.add("paypal");
   return Array.from(methods);
 }
 

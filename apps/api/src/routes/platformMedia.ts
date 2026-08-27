@@ -13,6 +13,7 @@ import {
 } from "@vayada/domain-marketplace";
 import {
   PROPERTY_MEDIA_AUTHORIZATION,
+  PROPERTY_MEDIA_PUBLIC_VARIANTS,
   PROPERTY_MEDIA_UPLOAD_PURPOSES,
   type PropertyMediaLibraryItem,
 } from "@vayada/domain-hotels";
@@ -42,7 +43,8 @@ export type PlatformMediaPurpose =
   | "marketplace.collaboration_chat.attachment"
   | "pms.room_type.media"
   | "pms.messaging.attachment"
-  | "pms.import.source_image";
+  | "pms.import.source_image"
+  | "finance.expense.receipt";
 
 export type PlatformMediaVisibility = "public" | "private";
 
@@ -57,6 +59,7 @@ export type PlatformMediaResourceProduct =
   | "hotel_catalog"
   | "booking"
   | "pms"
+  | "finance"
   | "marketplace"
   | "distribution"
   | "platform"
@@ -258,6 +261,25 @@ export class PlatformMediaTargetInvalidError extends Error {
   constructor() {
     super("The platform media target no longer matches the signed session.");
     this.name = "PlatformMediaTargetInvalidError";
+  }
+}
+
+export class PlatformMediaPlanLimitError extends Error {
+  readonly code = "media_plan_limit_reached";
+
+  constructor(
+    readonly plan: "commission" | "fixed",
+    readonly currentCount: number,
+    readonly maxAllowed: number,
+  ) {
+    super(
+      plan === "commission"
+        ? currentCount > maxAllowed
+          ? "You have more photos than your plan allows. Remove photos to add new ones, or upgrade for up to 15."
+          : "You've reached the 10-photo limit. Upgrade to the paid plan for up to 15 photos per room."
+        : "You've reached the 15-photo limit for the paid plan.",
+    );
+    this.name = "PlatformMediaPlanLimitError";
   }
 }
 
@@ -486,7 +508,8 @@ export function isAutoApprovedPublicMediaPurpose(purpose: PlatformMediaPurpose):
   return (
     purpose === "identity.user.profile_image" ||
     purpose === "booking.header_logo" ||
-    purpose === "marketplace.creator.profile_image"
+    purpose === "marketplace.creator.profile_image" ||
+    purpose === "pms.room_type.media"
   );
 }
 
@@ -650,7 +673,8 @@ const targetPurposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePo
     maxFileCount: 20,
     maxImagePixels: defaultMaxImagePixels,
     resizeOversizedPublicImages: true,
-    privateOnly: true,
+    autoApprovePublicOnFinalize: isAutoApprovedPublicMediaPurpose("pms.room_type.media"),
+    privateOnly: false,
     targetResourceProduct: "pms",
     targetResourceType: "room_type",
     requiredVariants: publicImageVariants,
@@ -697,6 +721,21 @@ const targetPurposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePo
     privateOnly: true,
     targetResourceProduct: "pms",
     targetResourceType: "import_job",
+    requiredVariants: providerOriginalVariant,
+  },
+  "finance.expense.receipt": {
+    purpose: "finance.expense.receipt",
+    permission: "pms.finance.manage",
+    allowedRelationships: ["owner", "finance_manager"],
+    allowedResources: [{ product: "pms", resourceType: "pms_property" }],
+    allowedContentTypes: imageContentTypes,
+    allowedExtensions: imageExtensions,
+    maxFileSizeBytes: 20 * 1024 * 1024,
+    maxFileCount: 1,
+    maxImagePixels: defaultMaxImagePixels,
+    privateOnly: true,
+    targetResourceProduct: "finance",
+    targetResourceType: "expense",
     requiredVariants: providerOriginalVariant,
   },
 };
@@ -893,34 +932,42 @@ export async function registerPlatformMediaRoutes(
         }),
       );
 
-      const session = await options.repository.createUploadSession({
-        context,
-        sessionId,
-        uploadSessionKey,
-        stagingPrefix,
-        request: normalizedRequest,
-        policy,
-        target: resolvedTarget.target,
-        uploadTargets,
-        now: createdAt,
-        expiresAt,
-        auditEvent: {
-          action: "platform_media.upload_session.created",
-          auditKey: uploadSessionKey,
-          actorUserId: context.actor.internalUserId,
-          organizationId: context.selectedOrganization.organizationId,
-          targetType: "media_upload_session",
-          targetId: sessionId,
-          requestId: context.audit.requestId,
-          metadata: {
-            purpose: request.body.purpose,
-            requestedVisibility,
-            resource: request.body.resource,
-            target: resolvedTarget.target,
-            fileCount: files.length,
+      let session: PlatformMediaSessionRecord;
+      try {
+        session = await options.repository.createUploadSession({
+          context,
+          sessionId,
+          uploadSessionKey,
+          stagingPrefix,
+          request: normalizedRequest,
+          policy,
+          target: resolvedTarget.target,
+          uploadTargets,
+          now: createdAt,
+          expiresAt,
+          auditEvent: {
+            action: "platform_media.upload_session.created",
+            auditKey: uploadSessionKey,
+            actorUserId: context.actor.internalUserId,
+            organizationId: context.selectedOrganization.organizationId,
+            targetType: "media_upload_session",
+            targetId: sessionId,
+            requestId: context.audit.requestId,
+            metadata: {
+              purpose: request.body.purpose,
+              requestedVisibility,
+              resource: request.body.resource,
+              target: resolvedTarget.target,
+              fileCount: files.length,
+            },
           },
-        },
-      });
+        });
+      } catch (error) {
+        if (error instanceof PlatformMediaPlanLimitError) {
+          return sendMediaError(reply, 409, error.code, error.message);
+        }
+        throw error;
+      }
 
       if (
         !uploadSessionMatchesRequest(session, {
@@ -1651,7 +1698,8 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
           heightPx: canonicalVariant.heightPx,
           originalFilename: sessionFile.filename,
           retainedUntil:
-            input.session.purpose === "marketplace.collaboration_chat.attachment"
+            input.session.purpose === "marketplace.collaboration_chat.attachment" ||
+            input.session.purpose === "finance.expense.receipt"
               ? new Date(Date.parse(input.now) + 60 * 60 * 1000).toISOString()
               : null,
           variants,
@@ -1813,6 +1861,35 @@ function authorizeMediaResource(
   if (policy.actorOwned) {
     return { ok: true, context: requireAuthContext(request) };
   }
+  if (policy.purpose === "finance.expense.receipt") {
+    const permission = permissionForResource(policy);
+    const requirement = {
+      product: resource.product,
+      resourceType: resource.resourceType,
+      resourceId: resource.resourceId,
+      allowedRelationships: policy.allowedRelationships,
+    };
+    let context = enforceRoutePolicy(request, { permission, resource: requirement });
+    if (context.selectedOrganization.kind !== "hotel_group") {
+      return { ok: false, message: "Selected organization cannot upload Finance receipts." };
+    }
+    for (const key of ["property-management", "module:financials"]) {
+      context = enforceRoutePolicy(request, {
+        permission,
+        resource: requirement,
+        entitlement: {
+          product: "pms",
+          key,
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: resource.resourceId,
+          },
+        },
+      });
+    }
+    return { ok: true, context };
+  }
   if (policy.purpose !== "marketplace.collaboration_chat.attachment") {
     return {
       ok: true,
@@ -1916,6 +1993,17 @@ function validateResourceScope(
       message: `${policy.purpose} cannot be uploaded for ${resource.product}:${resource.resourceType}.`,
     };
   }
+  if (
+    policy.purpose === "finance.expense.receipt" &&
+    (resource.propertyId !== resource.resourceId ||
+      !canonicalUuid(resource.resourceId) ||
+      !canonicalUuid(resource.targetResourceId))
+  ) {
+    return {
+      code: "invalid_resource_scope",
+      message: "Finance receipts require canonical property and expense targets.",
+    };
+  }
   if (isCanonicalHotelMediaPolicy(policy)) {
     if (resource.propertyId !== undefined && resource.propertyId !== resource.resourceId) {
       return {
@@ -1940,6 +2028,14 @@ function validateResourceScope(
     }
   }
   return null;
+}
+
+function canonicalUuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value === value.toLowerCase() &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
+  );
 }
 
 function isCanonicalHotelMediaPolicy(policy: PlatformMediaPurposePolicy): boolean {
@@ -2312,8 +2408,37 @@ function serializeMediaObject(
   session: Pick<PlatformMediaSessionRecord, "purpose" | "resource">,
   mediaObject: PlatformMediaObjectRecord,
   mediaPathPrefix: string,
-): PlatformMediaObjectRecord | PropertyMediaLibraryItem {
+): PlatformMediaObjectRecord | PropertyMediaLibraryItem | FinanceReceiptMediaItem {
+  if (session.purpose === "finance.expense.receipt") {
+    if (mediaObject.purpose !== session.purpose || mediaObject.visibility !== "private") {
+      throw new Error("Finance receipt media cannot expose an invalid object");
+    }
+    return {
+      mediaObjectId: mediaObject.mediaId,
+      purpose: mediaObject.purpose,
+      lifecycleStatus: mediaObject.lifecycleStatus,
+      retainedUntil: mediaObject.retainedUntil ?? null,
+    };
+  }
   if (!isCanonicalHotelMediaSession(session)) return mediaObject;
+  if (isAutoApprovedPublicMediaPurpose(session.purpose)) {
+    return {
+      mediaObjectId: mediaObject.mediaId,
+      purpose: mediaObject.purpose as PropertyMediaLibraryItem["purpose"],
+      status: "public_ready",
+      publicVariants: mediaObject.variants
+        .filter(
+          (variant) =>
+            PROPERTY_MEDIA_PUBLIC_VARIANTS.includes(variant.variantName as never) &&
+            variant.publicCdnUrl,
+        )
+        .map((variant) => ({
+          variantName:
+            variant.variantName as PropertyMediaLibraryItem["publicVariants"][number]["variantName"],
+          publicUrl: variant.publicCdnUrl!,
+        })),
+    };
+  }
   if (!isCanonicalPrivatePropertyMediaObject({ mediaObject, mediaPathPrefix })) {
     throw new Error("Property media cannot be exposed before safe variants are persisted");
   }
@@ -2324,6 +2449,9 @@ function serializeMediaObject(
     publicVariants: [],
   };
 }
+
+// prettier-ignore
+type FinanceReceiptMediaItem = { mediaObjectId: string; purpose: "finance.expense.receipt"; lifecycleStatus: "staged" | "active"; retainedUntil: string | null };
 
 function reusableCompletedMediaObjects(
   session: PlatformMediaSessionRecord,
@@ -2340,7 +2468,11 @@ function reusableCompletedMediaObjects(
     if (
       !expectedMediaIds.delete(mediaObject.mediaId) ||
       mediaObject.purpose !== session.purpose ||
-      !isCanonicalPrivatePropertyMediaObject({ mediaObject, mediaPathPrefix })
+      !(isAutoApprovedPublicMediaPurpose(session.purpose)
+        ? mediaObject.visibility === "public" &&
+          mediaObject.approvalStatus === "approved" &&
+          mediaObject.lifecycleStatus === "active"
+        : isCanonicalPrivatePropertyMediaObject({ mediaObject, mediaPathPrefix }))
     ) {
       return null;
     }

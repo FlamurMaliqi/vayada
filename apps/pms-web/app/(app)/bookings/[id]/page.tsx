@@ -28,13 +28,18 @@ import {
 import { individualRoomsService, Room } from "@/services/rooms";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import Modal from "@/components/Modal";
+import { NationalitySelect } from "@/components/NationalitySelect";
 import { formatCurrency } from "@/lib/formatCurrency";
+import { nationalityDisplayLabel, paymentMethodLabel } from "@vayada/locale-constants";
 import {
   AddOnListPicker,
   SelectedAddOnSummary,
   calculateAddOnsTotal,
   clampAddOnQuantity,
 } from "@/components/bookings/AddOnListPicker";
+import BookingStaySummary, {
+  expectedPaymentMethodLabel,
+} from "@/components/bookings/BookingStaySummary";
 import {
   BOOKING_STATUS_STYLES,
   PAYMENT_STATUS_STYLES,
@@ -66,6 +71,10 @@ function roomTypeColor(roomTypeId: string | null | undefined): string {
     hash = (hash * 31 + roomTypeId.charCodeAt(i)) >>> 0;
   }
   return ROOM_TYPE_PALETTE[hash % ROOM_TYPE_PALETTE.length];
+}
+
+function formatPaymentCurrency(amount: number, currency: string): string {
+  return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(amount);
 }
 
 function formatDateLong(iso: string): string {
@@ -350,8 +359,7 @@ function AdditionalGuestRow({
         firstName: form.firstName,
         lastName: form.lastName,
         nationality: form.nationality,
-        email: form.email,
-        phone: form.phone,
+        ...(guest.guestContactHidden ? {} : { email: form.email, phone: form.phone }),
       });
     } finally {
       setSaving(false);
@@ -404,8 +412,7 @@ function AdditionalGuestRow({
               value={form.lastName}
               onChange={(v) => setForm({ ...form, lastName: v })}
             />
-            <Field
-              label="Nationality"
+            <NationalitySelect
               value={form.nationality}
               onChange={(v) => setForm({ ...form, nationality: v })}
             />
@@ -414,14 +421,21 @@ function AdditionalGuestRow({
               type="email"
               value={form.email}
               onChange={(v) => setForm({ ...form, email: v })}
+              disabled={guest.guestContactHidden}
             />
             <Field
               label="Phone (optional)"
               type="tel"
               value={form.phone}
               onChange={(v) => setForm({ ...form, phone: v })}
+              disabled={guest.guestContactHidden}
             />
           </div>
+          {guest.guestContactHidden && (
+            <p className="mt-3 text-xs text-amber-700">
+              Guest email and phone become available after you accept the booking.
+            </p>
+          )}
           {roomOptions.length > 1 && (
             <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
               Additional guest room assignment is not available on PMS next-stack yet.
@@ -462,11 +476,13 @@ function Field({
   value,
   onChange,
   type = "text",
+  disabled = false,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   type?: string;
+  disabled?: boolean;
 }) {
   return (
     <label className="block">
@@ -475,8 +491,9 @@ function Field({
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
         // 16px text size prevents iOS Safari from auto-zooming on focus.
-        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
       />
     </label>
   );
@@ -1102,6 +1119,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState("");
+  const [paymentDeadlineExpired, setPaymentDeadlineExpired] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<{
     message: string;
     variant?: "danger" | "default";
@@ -1116,6 +1134,12 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   const [rejectReason, setRejectReason] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
   const [noteDraftOpen, setNoteDraftOpen] = useState(false);
+  const [noteSaving, setNoteSaving] = useState(false);
+  const noteSavePending = useRef(false);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteDraft, setEditingNoteDraft] = useState("");
+  const [noteEditSaving, setNoteEditSaving] = useState(false);
+  const noteEditPending = useRef(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   const [cancelling, setCancelling] = useState(false);
@@ -1131,6 +1155,11 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   } | null>(null);
   const [bookerEditing, setBookerEditing] = useState(false);
   const [bookerSaving, setBookerSaving] = useState(false);
+  const [nationalityEditing, setNationalityEditing] = useState(false);
+  const [nationalityDraft, setNationalityDraft] = useState("");
+  const [nationalitySaving, setNationalitySaving] = useState(false);
+  const [nationalityError, setNationalityError] = useState("");
+  const nationalitySavePending = useRef(false);
   const [bookerForm, setBookerForm] = useState({
     guestFirstName: "",
     guestLastName: "",
@@ -1142,6 +1171,18 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     guestPassportNumber: "",
     specialRequests: "",
   });
+
+  useEffect(() => {
+    const deadline = booking?.hostResponseDeadline;
+    if (!deadline) {
+      setPaymentDeadlineExpired(false);
+      return;
+    }
+    const update = () => setPaymentDeadlineExpired(Date.now() >= new Date(deadline).getTime());
+    update();
+    const interval = setInterval(update, 1000);
+    return () => clearInterval(interval);
+  }, [booking?.hostResponseDeadline]);
   const [modifyOpen, setModifyOpen] = useState(false);
   const [addonEditOpen, setAddonEditOpen] = useState(false);
 
@@ -1190,8 +1231,15 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   }, []);
 
   const handleAccept = () => {
+    if (paymentDeadlineExpired) return;
+    const message =
+      booking?.paymentMethod === "card"
+        ? "Accept this booking request and capture the guest’s authorized card payment?"
+        : booking?.paymentMethod === "pay_at_property"
+          ? "Accept this booking request? Payment will remain due at the property."
+          : "Accept this booking and send the guest the bank transfer instructions? No payment is recorded until you mark it as received.";
     setConfirmDialog({
-      message: "Are you sure you want to accept this booking? Payment will be captured.",
+      message,
       confirmLabel: "Accept",
       onConfirm: () => {
         setConfirmDialog(null);
@@ -1249,20 +1297,16 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     }
   };
 
-  const handleConfirmFromPending = () => {
-    setConfirmDialog({
-      message: "Are you sure you want to confirm this booking?",
-      confirmLabel: "Confirm",
-      onConfirm: () => {
-        setConfirmDialog(null);
-        doAction(() => bookingsService.updateStatus(id, "confirmed"), "Failed to confirm booking");
-      },
-    });
-  };
-
   const handleMarkPaid = () => {
+    if (paymentDeadlineExpired) return;
+    const methodLabel =
+      booking?.paymentMethod === "bank_transfer"
+        ? "bank transfer"
+        : booking?.paymentMethod === "pay_at_property"
+          ? "pay-at-hotel payment"
+          : "PayPal payment";
     setConfirmDialog({
-      message: "Confirm that the PayPal payment has been received?",
+      message: `Confirm that the ${methodLabel} has been received?`,
       confirmLabel: "Mark as paid",
       onConfirm: () => {
         setConfirmDialog(null);
@@ -1273,7 +1317,10 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
 
   const handleSaveNote = async () => {
     const body = noteDraft.trim();
-    if (!body) return;
+    if (!body || noteSavePending.current) return;
+    noteSavePending.current = true;
+    setError("");
+    setNoteSaving(true);
     try {
       const note = await bookingsService.createNote(id, body);
       setNotes((prev) => [note, ...prev]);
@@ -1281,6 +1328,28 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       setNoteDraftOpen(false);
     } catch (err) {
       setError(errMessage(err, "Failed to save note"));
+    } finally {
+      noteSavePending.current = false;
+      setNoteSaving(false);
+    }
+  };
+
+  const handleSaveNoteEdit = async () => {
+    const body = editingNoteDraft.trim();
+    if (!editingNoteId || !body || noteEditPending.current) return;
+    noteEditPending.current = true;
+    setError("");
+    setNoteEditSaving(true);
+    try {
+      const note = await bookingsService.updateNote(id, editingNoteId, body);
+      setNotes((prev) => prev.map((candidate) => (candidate.id === note.id ? note : candidate)));
+      setEditingNoteId(null);
+      setEditingNoteDraft("");
+    } catch (err) {
+      setError(errMessage(err, "Failed to update note"));
+    } finally {
+      noteEditPending.current = false;
+      setNoteEditSaving(false);
     }
   };
 
@@ -1291,6 +1360,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       confirmLabel: "Delete",
       onConfirm: async () => {
         setConfirmDialog(null);
+        setError("");
         try {
           await bookingsService.deleteNote(id, noteId);
           setNotes((prev) => prev.filter((n) => n.id !== noteId));
@@ -1316,6 +1386,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         dateOfBirth: null,
         email: "",
         phone: "",
+        guestContactHidden: false,
         passportNumber: "",
         roomPosition: null,
         createdAt: now,
@@ -1392,6 +1463,31 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       setError(errMessage(err, "Failed to save booker information"));
     } finally {
       setBookerSaving(false);
+    }
+  };
+
+  const handleEditNationality = () => {
+    if (!booking) return;
+    setNationalityError("");
+    setNationalityDraft(booking.guestCountry);
+    setNationalityEditing(true);
+  };
+
+  const handleSaveNationality = async () => {
+    if (!nationalityDraft || nationalitySavePending.current) return;
+    nationalitySavePending.current = true;
+    setNationalitySaving(true);
+    setNationalityError("");
+    try {
+      const correction = await bookingsService.correctPrimaryGuestNationality(id, nationalityDraft);
+      setBooking((current) => (current ? { ...current, ...correction } : current));
+      setNationalityError("");
+      setNationalityEditing(false);
+    } catch (err) {
+      setNationalityError(errMessage(err, "Failed to save nationality"));
+    } finally {
+      nationalitySavePending.current = false;
+      setNationalitySaving(false);
     }
   };
 
@@ -1502,6 +1598,11 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
     booking.status === "expired" ||
     booking.status === "no_show";
   const hasDeadline = isPending && booking.hostResponseDeadline;
+  const hasAcceptedBankDeadline =
+    booking.status === "confirmed" &&
+    booking.paymentMethod === "bank_transfer" &&
+    booking.paymentStatus === "unpaid" &&
+    booking.hostResponseDeadline;
   const totalParty = booking.adults + booking.children;
   const additionalCapacity = Math.max(0, totalParty - 1);
 
@@ -1518,6 +1619,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
       roomNumber: assigned?.roomNumber ?? null,
     };
   });
+  const hasHeterogeneousStays = booking.numberOfRooms > 1;
 
   // Per-room guest count: explicit additional-guest assignments only, plus
   // the booker who lives implicitly in the primary room (position 0).
@@ -1719,8 +1821,17 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             </button>
           </div>
 
+          {hasHeterogeneousStays && (
+            <div className="mb-6">
+              <BookingStaySummary stays={booking.stays} expectedCount={booking.numberOfRooms} />
+            </div>
+          )}
+
           {/* Summary row */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mb-6">
+          <div
+            hidden={hasHeterogeneousStays}
+            className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mb-6"
+          >
             <div>
               <p className="text-xs text-gray-500 uppercase tracking-wide">Check-in</p>
               <p className="font-semibold text-gray-900">{formatDateLong(booking.checkIn)}</p>
@@ -1746,7 +1857,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
           </div>
 
           {/* ROOMS sub-section */}
-          <div className="mb-6">
+          <div hidden={hasHeterogeneousStays} className="mb-6">
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
               Rooms ({roomRows.length})
             </p>
@@ -1840,16 +1951,19 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               Pricing
             </p>
             <div className="space-y-1.5 text-sm">
-              <div className="flex justify-between text-gray-700">
-                <span>
-                  {roomRows.length} room{roomRows.length !== 1 ? "s" : ""} × {booking.nights} night
-                  {booking.nights !== 1 ? "s" : ""} ×{" "}
-                  {formatCurrency(booking.nightlyRate, booking.currency)}
-                </span>
-                <span className="font-medium text-gray-900">
-                  {formatCurrency(pricingBreakdown?.roomsCost ?? 0, booking.currency)}
-                </span>
-              </div>
+              {!hasHeterogeneousStays && (
+                <div className="flex justify-between text-gray-700">
+                  <span>
+                    {roomRows.length} room{roomRows.length !== 1 ? "s" : ""} × {booking.nights}{" "}
+                    night
+                    {booking.nights !== 1 ? "s" : ""} ×{" "}
+                    {formatCurrency(booking.nightlyRate, booking.currency)}
+                  </span>
+                  <span className="font-medium text-gray-900">
+                    {formatCurrency(pricingBreakdown?.roomsCost ?? 0, booking.currency)}
+                  </span>
+                </div>
+              )}
               {(pricingBreakdown?.addonsCost ?? 0) > 0 && (
                 <div className="flex justify-between text-gray-700">
                   <span>Add-ons</span>
@@ -1864,7 +1978,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   {formatCurrency(booking.totalAmount, booking.currency)}
                 </span>
               </div>
-              {pricingBreakdown?.mismatch && (
+              {!hasHeterogeneousStays && pricingBreakdown?.mismatch && (
                 <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
                   Charged total {formatCurrency(booking.totalAmount, booking.currency)} doesn&apos;t
                   match the line-item math (
@@ -1897,17 +2011,15 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
               <div>
+                <p className="text-xs text-gray-500">Expected method</p>
+                <p className="font-medium text-gray-900">
+                  {expectedPaymentMethodLabel(booking.expectedPaymentMethod)}
+                </p>
+              </div>
+              <div>
                 <p className="text-xs text-gray-500">Method</p>
                 <p className="font-medium text-gray-900">
-                  {booking.paymentMethod === "card"
-                    ? "Card"
-                    : booking.paymentMethod === "paypal"
-                      ? "PayPal"
-                      : booking.paymentMethod === "bank_transfer"
-                        ? "Bank transfer"
-                        : booking.paymentMethod === "pay_at_property"
-                          ? "Pay at property"
-                          : booking.paymentMethod || "—"}
+                  {booking.paymentMethod ? paymentMethodLabel(booking.paymentMethod) : "—"}
                 </p>
               </div>
               <div>
@@ -1922,10 +2034,12 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   <p className="text-gray-400">—</p>
                 )}
               </div>
-              <div>
-                <p className="text-xs text-gray-500">Rate plan</p>
-                <p className="font-medium text-gray-900">{rateType}</p>
-              </div>
+              {!hasHeterogeneousStays && (
+                <div>
+                  <p className="text-xs text-gray-500">Rate plan</p>
+                  <p className="font-medium text-gray-900">{rateType}</p>
+                </div>
+              )}
               <div>
                 <p className="text-xs text-gray-500">Source</p>
                 <p className="font-medium text-gray-900">{channelLabel}</p>
@@ -1934,6 +2048,54 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                 )}
               </div>
             </div>
+            {booking.paymentBreakdown && (
+              <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm">
+                <div className="flex justify-between gap-4 py-1">
+                  <span className="text-gray-600">Gross amount</span>
+                  <span className="font-medium text-gray-900">
+                    {formatPaymentCurrency(
+                      booking.paymentBreakdown.grossAmount,
+                      booking.paymentBreakdown.currency,
+                    )}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-4 py-1">
+                  <span className="text-gray-600">Stripe fee</span>
+                  <span className="font-medium text-gray-900">
+                    -
+                    {formatPaymentCurrency(
+                      booking.paymentBreakdown.stripeFee,
+                      booking.paymentBreakdown.currency,
+                    )}
+                  </span>
+                </div>
+                {booking.paymentBreakdown.vayadaCommission > 0 && (
+                  <div className="flex justify-between gap-4 py-1">
+                    <span className="text-gray-600">Vayada commission</span>
+                    <span className="font-medium text-gray-900">
+                      -
+                      {formatPaymentCurrency(
+                        booking.paymentBreakdown.vayadaCommission,
+                        booking.paymentBreakdown.currency,
+                      )}
+                    </span>
+                  </div>
+                )}
+                <div className="mt-2 flex justify-between gap-4 border-t border-gray-200 pt-3">
+                  <span className="font-semibold text-gray-900">Net payout</span>
+                  <span className="font-bold text-green-700">
+                    {formatPaymentCurrency(
+                      booking.paymentBreakdown.netPayout,
+                      booking.paymentBreakdown.currency,
+                    )}
+                  </span>
+                </div>
+                <p className="mt-3 border-t border-gray-200 pt-3 text-xs text-gray-500">
+                  Stripe processing fees may not be returned when a payment is refunded. Account for
+                  them in your cancellation policy.
+                </p>
+              </div>
+            )}
             {booking.depositRequired && (
               <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-3 text-sm">
                 <div className="flex items-center justify-between gap-4">
@@ -1944,10 +2106,10 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                     <p className="text-xs text-gray-500">
                       {booking.depositPercentage}% of booking total ·{" "}
                       {booking.paymentStatus === "captured"
-                        ? `Paid via ${booking.paymentMethod === "card" ? "Stripe" : booking.paymentMethod || "manual method"}`
+                        ? `Paid via ${booking.paymentMethod === "card" ? "Stripe" : booking.paymentMethod ? paymentMethodLabel(booking.paymentMethod) : "manual method"}`
                         : booking.paymentStatus === "refunded"
                           ? "Deposit was refunded"
-                          : `Pending (${booking.paymentMethod || "manual method"})`}
+                          : `Pending (${booking.paymentMethod ? paymentMethodLabel(booking.paymentMethod) : "manual method"})`}
                     </p>
                   </div>
                   <span
@@ -1980,6 +2142,31 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                 )}
               </div>
             )}
+            {booking.status === "confirmed" &&
+              (booking.paymentMethod === "bank_transfer" ||
+                booking.paymentMethod === "pay_at_property") &&
+              booking.paymentStatus === "unpaid" && (
+                <div className="mt-4 space-y-3">
+                  {hasAcceptedBankDeadline ? (
+                    <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                      <p className="text-xs text-amber-800">
+                        Payment must be recorded before this reservation is released.
+                      </p>
+                      <CountdownTimer deadline={booking.hostResponseDeadline!} />
+                    </div>
+                  ) : null}
+                  <button
+                    onClick={handleMarkPaid}
+                    disabled={updating || paymentDeadlineExpired}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    <CheckCircleIcon className="h-4 w-4" />
+                    {booking.paymentMethod === "bank_transfer"
+                      ? "Mark bank transfer received"
+                      : "Mark pay-at-hotel payment received"}
+                  </button>
+                </div>
+              )}
           </div>
         </div>
 
@@ -2025,8 +2212,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                     { value: "prefer_not_to_say", label: "Prefer not to say" },
                   ]}
                 />
-                <Field
-                  label="Nationality"
+                <NationalitySelect
                   value={bookerForm.guestCountry}
                   onChange={(v) => setBookerForm({ ...bookerForm, guestCountry: v })}
                 />
@@ -2079,7 +2265,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                 <button
                   onClick={handleSaveBooker}
                   disabled={bookerSaving}
-                  className="px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-black disabled:opacity-50"
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                 >
                   {bookerSaving ? "Saving…" : "Save"}
                 </button>
@@ -2102,9 +2288,74 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                   <p className="text-xs text-gray-500">Phone</p>
                   <p className="font-medium text-gray-900">{booking.guestPhone || "—"}</p>
                 </div>
-                <div>
-                  <p className="text-xs text-gray-500">Nationality</p>
-                  <p className="font-medium text-gray-900">{booking.guestCountry || "—"}</p>
+                <div className="space-y-2">
+                  {nationalityEditing ? (
+                    <>
+                      <NationalitySelect
+                        value={nationalityDraft}
+                        onChange={setNationalityDraft}
+                        disabled={nationalitySaving}
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNationalityError("");
+                            setNationalityEditing(false);
+                          }}
+                          disabled={nationalitySaving}
+                          className="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSaveNationality}
+                          disabled={!nationalityDraft || nationalitySaving}
+                          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          {nationalitySaving ? "Saving…" : "Save nationality"}
+                        </button>
+                      </div>
+                      {nationalityError && (
+                        <p role="alert" className="text-xs font-medium text-red-700">
+                          {nationalityError}
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs text-gray-500">Nationality</p>
+                          <p className="font-medium text-gray-900">
+                            {nationalityDisplayLabel(booking.guestCountry) || "—"}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleEditNationality}
+                          aria-label={
+                            booking.guestCountryReviewRequired
+                              ? "Correct nationality"
+                              : "Edit nationality"
+                          }
+                          className="inline-flex items-center gap-1 rounded bg-gray-50 px-2 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-100"
+                        >
+                          <PencilSquareIcon className="h-3.5 w-3.5" />
+                          {booking.guestCountryReviewRequired ? "Correct" : "Edit"}
+                        </button>
+                      </div>
+                      {booking.guestCountryReviewRequired && (
+                        <p role="status" className="text-xs font-medium text-amber-700">
+                          Needs review
+                          {booking.guestCountryRaw
+                            ? ` · Imported value: ${booking.guestCountryRaw}`
+                            : ""}
+                        </p>
+                      )}
+                    </>
+                  )}
                 </div>
                 {booking.guestGender && (
                   <div>
@@ -2205,6 +2456,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             <h2 className="text-sm font-semibold text-gray-900">Internal notes</h2>
             <button
               onClick={() => setNoteDraftOpen((v) => !v)}
+              disabled={noteEditSaving}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-900 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
             >
               <PlusIcon className="w-4 h-4" />
@@ -2216,6 +2468,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               <textarea
                 value={noteDraft}
                 onChange={(e) => setNoteDraft(e.target.value)}
+                disabled={noteSaving}
                 placeholder="Notes are only visible to your team — never shown to the guest."
                 rows={3}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent resize-none"
@@ -2226,16 +2479,17 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                     setNoteDraft("");
                     setNoteDraftOpen(false);
                   }}
+                  disabled={noteSaving}
                   className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleSaveNote}
-                  disabled={!noteDraft.trim()}
+                  disabled={!noteDraft.trim() || noteSaving}
                   className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
                 >
-                  Save note
+                  {noteSaving ? "Saving…" : "Save note"}
                 </button>
               </div>
             </div>
@@ -2261,15 +2515,63 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                         </span>
                       )}
                     </div>
-                    <button
-                      onClick={() => handleDeleteNote(n.id)}
-                      className="p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50"
-                      aria-label="Delete note"
-                    >
-                      <TrashIcon className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => {
+                          setEditingNoteId(n.id);
+                          setEditingNoteDraft(n.body);
+                        }}
+                        disabled={noteEditSaving}
+                        className="rounded p-1 text-gray-400 hover:bg-blue-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+                        aria-label="Edit note"
+                      >
+                        <PencilSquareIcon className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteNote(n.id)}
+                        disabled={noteEditSaving}
+                        className="p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        aria-label="Delete note"
+                      >
+                        <TrashIcon className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
-                  <p className="mt-1.5 text-sm text-gray-900 whitespace-pre-wrap">{n.body}</p>
+                  {editingNoteId === n.id ? (
+                    <div className="mt-2">
+                      <textarea
+                        aria-label="Edit note text"
+                        value={editingNoteDraft}
+                        onChange={(event) => setEditingNoteDraft(event.target.value)}
+                        disabled={noteEditSaving}
+                        rows={3}
+                        className="w-full resize-y rounded-lg border border-gray-300 px-3 py-2 text-base text-gray-900 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-gray-900"
+                      />
+                      <div className="mt-2 flex justify-end gap-2">
+                        <button
+                          onClick={() => setEditingNoteId(null)}
+                          disabled={noteEditSaving}
+                          className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-200 disabled:opacity-50"
+                        >
+                          Cancel edit
+                        </button>
+                        <button
+                          onClick={handleSaveNoteEdit}
+                          disabled={!editingNoteDraft.trim() || noteEditSaving}
+                          className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          {noteEditSaving ? "Saving…" : "Save edit"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mt-1.5 text-sm text-gray-900 whitespace-pre-wrap">{n.body}</p>
+                  )}
+                  {n.editedAt && (
+                    <p className="mt-1.5 text-xs text-gray-500">
+                      Edited by {n.editedByName || "Unknown"} · {formatDateTime(n.editedAt)}
+                    </p>
+                  )}
                 </div>
               ))}
             </div>
@@ -2292,16 +2594,13 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
             most urgent action stays visible without scrolling further. */}
         {isPending && booking.hostResponseDeadline && (
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-            <p className="mb-2 text-xs text-gray-500">
-              Booking approval and payment status actions are not available yet.
-            </p>
+            <p className="mb-2 text-xs text-gray-500">Review this manual-payment booking.</p>
             <div className="flex flex-wrap gap-3">
               {booking.paymentMethod === "paypal" ? (
                 <button
                   onClick={handleMarkPaid}
-                  disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || updating}
-                  title="Payment status changes are not available yet"
-                  className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-5 py-2.5 text-sm font-medium text-gray-400"
+                  disabled={updating || paymentDeadlineExpired}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
                 >
                   <CheckCircleIcon className="w-4 h-4" />
                   Mark as paid
@@ -2309,9 +2608,8 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
               ) : (
                 <button
                   onClick={handleAccept}
-                  disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || updating}
-                  title="Booking acceptance is not available yet"
-                  className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-5 py-2.5 text-sm font-medium text-gray-400"
+                  disabled={updating || paymentDeadlineExpired}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
                 >
                   <CheckCircleIcon className="w-4 h-4" />
                   Accept booking
@@ -2331,15 +2629,22 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         )}
         {isPending && !booking.hostResponseDeadline && (
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-            <p className="mb-2 text-xs text-gray-500">Booking confirmation is not available yet.</p>
+            <p className="mb-2 text-xs text-gray-500">
+              {booking.paymentMethod === "paypal"
+                ? "Confirm the PayPal payment after it reaches your account."
+                : booking.paymentMethod === "card"
+                  ? "Accept the request to capture the authorized card and confirm the booking."
+                  : booking.paymentMethod === "pay_at_property"
+                    ? "Accept the request to confirm the booking with payment due at the property."
+                    : "Accept the booking to send bank transfer instructions to the guest."}
+            </p>
             <button
-              onClick={handleConfirmFromPending}
-              disabled={!LEGACY_BOOKING_WRITES_AVAILABLE || updating}
-              title="Booking confirmation is not available yet"
-              className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-400"
+              onClick={booking.paymentMethod === "paypal" ? handleMarkPaid : handleAccept}
+              disabled={updating}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
             >
               <CheckCircleIcon className="w-4 h-4" />
-              Confirm booking
+              {booking.paymentMethod === "paypal" ? "Mark as paid" : "Accept booking"}
             </button>
           </div>
         )}

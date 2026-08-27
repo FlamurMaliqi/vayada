@@ -15,6 +15,7 @@
     "./BrandMediaStep": "./src/BrandMediaStep.tsx",
     "./LastMinuteStep": "./src/LastMinuteStep.tsx",
     "./localApiOrigin": "./src/localApiOrigin.ts",
+    "./LocalizationMultiSelect": "./src/LocalizationMultiSelect.tsx",
     "./PoliciesStep": "./src/PoliciesStep.tsx",
     "./PropertyStep": "./src/PropertyStep.tsx",
     "./apiSessionRecovery": "./src/apiSessionRecovery.ts",
@@ -27,6 +28,7 @@
     "@vayada/domain-hotels": "*",
     "@vayada/locale-constants": "*",
     "countries-and-timezones": "^3.9.0",
+    "libphonenumber-js": "^1.13.11",
     "tz-lookup": "^6.1.25"
   },
   "peerDependencies": {
@@ -34,7 +36,9 @@
     "react": "^18.2.0"
   },
   "devDependencies": {
+    "@types/react-test-renderer": "^18.3.1",
     "@types/tz-lookup": "^6.1.2",
+    "react-test-renderer": "^18.3.1",
     "vitest": "^4.1.8"
   }
 }

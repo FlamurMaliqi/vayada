@@ -4,12 +4,16 @@ _VAY-605 decision record. Inputs: VAY-600 WorkOS identity architecture,
 VAY-601 Ask Intelligence architecture, VAY-602 target TypeScript backend
 structure, VAY-604 AI-agent bookability, and the VAY-605 schema audit._
 
+> **Retirement update:** VAY-601 is a historical input only. Migration `0090`
+> removes the retired Ask Intelligence schema and data. Any future hotel
+> employee agent starts from VAY-1091 with a new design and storage model.
+
 ## Recommendation
 
 Proceed with a **planned big-bang database rewrite**, but do not confuse that
 with editing production tables in place.
 
-The target should be a new schema designed from the VAY-600, VAY-601, VAY-602,
+The target should be a new schema designed from the active VAY-600, VAY-602,
 and VAY-604 decisions, built and validated in parallel, then cut over in one
 coordinated production migration. The current auth, marketplace, booking, and
 PMS databases remain the source of truth until the cutover window. Before that
@@ -24,7 +28,8 @@ The target should be:
 - domain-owned writes, where each table has one authoritative owner;
 - typed read models for cross-domain consumers instead of product services
   directly opening each other's database pools;
-- public bookability data separated from authenticated hotel-owner intelligence;
+- public bookability data treated as a distribution concern, with no current
+  owner-agent schema;
 - Booking Engine and PMS operations separated per
   `engineering/booking-pms-domain-boundaries.md`, so direct booking/checkout
   does not become dependent on Vayada PMS tables and Vayada PMS remains one
@@ -74,8 +79,8 @@ The main database problems are structural:
 - Public bookability data is split across booking profile/config tables, PMS
   room/rate/availability/booking tables, and booking-web URL behavior. There is
   no stable external quote/read model.
-- Ask Intelligence does not yet have curated metric views, evidence catalogs,
-  answer audit, tool-call traces, or repeatable setup-completeness snapshots.
+- The retired Ask Intelligence schema is not part of the current target state;
+  VAY-1091 owns any future hotel employee agent design.
 - Operational facts, public distribution facts, finance facts, and owner-facing
   setup facts often live in the same tables or same service contracts.
 
@@ -93,7 +98,6 @@ should consume typed services, read models, or events.
 | Marketplace                     | Creators, creator platforms, hotel listings for collaborations, collaboration offers, deliverables, ratings, negotiation/chat.                              | Migrate creator, listing, collaboration, deliverable, and chat records into marketplace-owned target tables linked through organizations/resources.          |
 | Finance                         | Payment settings, payments, payouts, commissions, affiliate payout settings, billing/pricing configuration, audit of rate/commission changes.               | Define finance-owned target tables before cutover; migrate payments/payouts/commissions without changing external provider identifiers.                      |
 | Distribution and AI bookability | Public hotel bookability profile, quote read model, freshness metadata, typed unavailable reasons, deep-link context, external API clients and rate limits. | Build as first-class target tables/read models, not as later patches on old booking/PMS shapes. Public and read-only for external agents.                    |
-| Ask Intelligence                | Metric catalog, setup-completeness snapshots, evidence catalog, answer records, conversations, agent runs, tool-call traces, unavailable-data states.       | Include intelligence tables in the target schema so the MVP has audit/evidence infrastructure from launch. Keep tools read-only in MVP.                      |
 | Jobs/events/audit               | Durable side-effect jobs, idempotency keys, retries, dead-letter visibility, product audit correlation.                                                     | Include job/event/audit tables in the target schema so cutover does not carry forward untracked fire-and-forget side effects as the default operating model. |
 
 ## Identity and authorization tables
@@ -137,9 +141,9 @@ provider identity
 
 ## Distribution and AI bookability tables
 
-VAY-604 separates public bookability from authenticated owner intelligence.
-The bookability layer should serve external agents/search systems without
-exposing private tenant data.
+VAY-604 defines public bookability as a distribution concern. The bookability
+layer should serve external agents/search systems without exposing private
+tenant data.
 
 Recommended structures:
 
@@ -165,33 +169,13 @@ Rules:
   redirect until explicit guest confirmation, payment/fraud controls,
   idempotency, and audit are implemented.
 
-## Ask Intelligence tables
+## Retired Ask Intelligence schema
 
-VAY-601 defines Ask Intelligence as an authenticated, read-only hotel-owner
-agent. It needs repeatable evidence, not arbitrary model SQL.
-
-Recommended structures:
-
-| Table or view                  | Purpose                                                                                                                                         |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `metric_definitions`           | Canonical metric keys, descriptions, units, filters, visibility, and permission requirements.                                                   |
-| `metric_snapshot_runs`         | Records when curated metric snapshots were generated, by source, resource, date range, freshness, and status.                                   |
-| `setup_completeness_snapshots` | Owner/admin-facing setup gaps for profile, policy, payment, rates, inventory, images, location, direct-booking URL health, and agent-readiness. |
-| `ai_evidence_catalog`          | Registry of allowed evidence tools/views, products, resource types, permissions, freshness expectations, and unavailable-data behavior.         |
-| `ask_conversations`            | Conversation metadata, user, organization, resource scope, language, state, and retention policy.                                               |
-| `ask_runs`                     | One answer attempt, model/prompt/schema version, status, question, scope, confidence, caveats, and output metadata.                             |
-| `ask_tool_calls`               | Tool name, input scope, result status, evidence IDs, latency, errors, and authorization/unavailable outcomes.                                   |
-| `ask_answer_audits`            | Material claims, evidence references, generated answer envelope, suggested actions, and review/debug metadata.                                  |
-
-Rules:
-
-- Ask Intelligence tools must enforce authorization server-side.
-- Store evidence references and aggregate metadata by default, not full guest PII
-  or raw cross-tenant data.
-- Financial/payout metrics require stricter permission keys than general
-  booking or setup metrics.
-- Suggested actions stay non-destructive in the MVP. Executable actions need a
-  separate approval/idempotency/audit workflow.
+The earlier VAY-601 tables and rules are retired. Migration `0090` removes the
+complete `intelligence` schema, its persisted data, and Ask-only permissions.
+Do not add those structures back through this database-rewrite plan. VAY-1091
+must define new ownership, authorization, retention, and storage before any
+future hotel employee agent implementation begins.
 
 ## Carry forward, redesign, retire, transform
 
@@ -261,9 +245,6 @@ Rules:
 - Public bookability snapshots from `booking_hotels`, booking translations,
   booking add-ons/policies/payment config, PMS room types, PMS availability,
   PMS payment settings, and booking-web canonical URL rules.
-- Ask Intelligence setup snapshots and metrics from booking events, PMS
-  bookings/payments/room inventory, marketplace collaborations, and platform
-  status.
 
 ## Migration sequence
 
@@ -273,16 +254,15 @@ Rules:
   readers, PII classification, retention sensitivity, external provider IDs,
   and migration risk.
 - Confirm the target domain ownership map and the new schema boundaries.
-- Define RequestContext, resource-link, bookability quote, Ask Intelligence
-  evidence, jobs/events, audit, and finance contracts before writing migration
-  scripts that depend on them.
+- Define RequestContext, resource-link, bookability quote, jobs/events, audit,
+  and finance contracts before writing migration scripts that depend on them.
 
 ### Phase 1: Target schema design
 
 - Design the full target schema as DDL in a new database/schema namespace.
 - Include identity/resource links, canonical property tables, booking/PMS
   operational tables, marketplace tables, finance tables, bookability tables,
-  Ask Intelligence tables, and jobs/audit tables.
+  and jobs/audit tables.
 - Define stable IDs, foreign keys, uniqueness, status enums, nullable
   migration fields, PII classifications, indexes, retention rules, and audit
   requirements.
@@ -316,7 +296,7 @@ Rules:
 - Run full migration rehearsals on production-like snapshots in staging.
 - Compare source and target row counts, totals, status distributions, public
   booking quote outputs, authorization decisions, payment/payout totals,
-  marketplace collaboration states, and Ask Intelligence metric fixtures.
+  and marketplace collaboration states.
 - Run application smoke tests against the target schema only.
 - Record every mismatch with an owner and block cutover until critical
   mismatches are resolved or explicitly accepted.
@@ -338,8 +318,7 @@ Rules:
   agreed retention window.
 - Monitor parity-sensitive flows: login/session resolution, hotel selection,
   booking creation, payment capture/refund, Channex sync, affiliate attribution,
-  marketplace collaboration changes, AI quote output, and Ask Intelligence
-  evidence calls.
+  marketplace collaboration changes, and AI quote output.
 - Fix target-schema data issues with forward migrations or targeted data repair
   scripts, not by reviving legacy writes.
 
@@ -410,14 +389,13 @@ For every big-bang rewrite implementation ticket:
 
 Suggested validation checks by domain:
 
-| Domain           | Required validation                                                                                                                                                      |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Identity/auth    | WorkOS ID uniqueness, internal user mapping, active membership, permission resolution, source/target ownership parity.                                                   |
-| Resource links   | One organization can link to many resources, one resource can reject ambiguous ownership unless explicitly allowed, deleted/suspended resources do not authorize access. |
-| Bookability      | Quote parity with existing booking flow, no private fields, correct cache/freshness metadata, typed unavailable reasons, deep-link round trip.                           |
-| Ask Intelligence | Evidence tools cannot cross tenant scope, unavailable states are explicit, answer audits reference evidence, PII is minimized.                                           |
-| Finance          | Payment/payout visibility gated by finance permissions, totals reconcile with existing payment/payout rows, commission changes are audited.                              |
-| Jobs/events      | Idempotency keys, retry behavior, dead-letter visibility, audit correlation, no duplicate customer-facing side effects.                                                  |
+| Domain         | Required validation                                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Identity/auth  | WorkOS ID uniqueness, internal user mapping, active membership, permission resolution, source/target ownership parity.                                                   |
+| Resource links | One organization can link to many resources, one resource can reject ambiguous ownership unless explicitly allowed, deleted/suspended resources do not authorize access. |
+| Bookability    | Quote parity with existing booking flow, no private fields, correct cache/freshness metadata, typed unavailable reasons, deep-link round trip.                           |
+| Finance        | Payment/payout visibility gated by finance permissions, totals reconcile with existing payment/payout rows, commission changes are audited.                              |
+| Jobs/events    | Idempotency keys, retry behavior, dead-letter visibility, audit correlation, no duplicate customer-facing side effects.                                                  |
 
 ## First schema implementation tickets
 
@@ -435,7 +413,7 @@ production table ownership changes.
 2. **Design the target database schema**
    - Scope: create the full target schema ERD/DDL for identity, hotel catalog,
      booking, PMS operations, marketplace, finance, distribution/bookability,
-     Ask Intelligence, and jobs/audit.
+     and jobs/audit.
    - Validation: schema review covers ownership, FKs, indexes, status enums,
      PII classification, retention, and source-table mappings.
 
@@ -469,12 +447,11 @@ production table ownership changes.
    - Validation: contract fixtures for bookable, sold-out, payment-disabled,
      min-stay, max-stay, same-day cutoff, promo/referral, and stale data cases.
 
-7. **Define Ask Intelligence metric and evidence schema**
-   - Scope: define target metric catalog, setup-completeness snapshots,
-     evidence catalog, conversations, runs, tool calls, and answer audit tables
-     for the read-only MVP.
-   - Validation: evidence fixture tests, tenant-scope authorization tests, no
-     raw guest PII in answer audit fixtures by default.
+7. **Design the future hotel employee agent in VAY-1091**
+   - Scope: start from current hotel employee workflows and authorization needs;
+     do not reuse the retired Ask runtime, contracts, fixtures, or schema.
+   - Validation: reviewed design and explicit ownership/storage decisions before
+     any implementation ticket.
 
 8. **Create big-bang cutover validation harness**
    - Scope: add shared scripts/tests for staging rehearsals, row-count checks,
@@ -504,8 +481,6 @@ VAY-603 should decide these in the integrated roadmap:
 - Whether bookability profile/quote read models are implemented as tables,
   materialized views, or generated responses with cache metadata in the target
   schema.
-- Which metric definitions are necessary for the Ask Intelligence MVP and which
-  should wait for later enrichment.
 - Which side effects must be converted to jobs/events before cutover and which
   can remain synchronous temporarily.
 
@@ -521,6 +496,6 @@ This plan is ready to feed VAY-603 when:
 - organization/resource links become the replacement for `users.type`,
   `is_superadmin`, direct product `user_id` checks, and hidden `X-Hotel-Id`
   authorization state;
-- public AI bookability and authenticated Ask Intelligence remain separate data
-  domains;
+- public AI bookability remains a distribution domain, while any future hotel
+  employee agent is separately designed through VAY-1091;
 - the first implementation tickets above are sequenced into the roadmap.

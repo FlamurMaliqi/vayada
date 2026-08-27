@@ -2,6 +2,7 @@ import {
   createFakeVerifier,
   type IdentityRepository,
   type PermissionKey,
+  type ProductEntitlement,
   type Product,
   type ResourceRelationship,
   type ResourceType,
@@ -12,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import {
   createDeterministicPlatformMediaFinalizer,
   createDeterministicPlatformMediaUploadSigner,
@@ -26,6 +28,7 @@ import {
 } from "./routes/platformMedia.js";
 
 const futureExpiry = Math.floor(Date.now() / 1000) + 3600;
+const financePropertyId = "00000000-0000-4000-8000-000000000040";
 
 const session: VerifiedSession = {
   workosUserId: "workos_media_user",
@@ -86,6 +89,7 @@ const allMediaPurposes: readonly PlatformMediaPurpose[] = [
   "marketplace.offer.media",
   "marketplace.creator.profile_image",
   "marketplace.collaboration_chat.attachment",
+  "finance.expense.receipt",
   "pms.room_type.media",
   "pms.messaging.attachment",
   "pms.import.source_image",
@@ -108,7 +112,9 @@ type MediaCreateResponse = {
     headers: Record<string, string>;
     expiresAt: string;
   }>;
-  mediaObjects?: Array<PlatformMediaObjectRecord | PrivateHotelMediaResponse>;
+  mediaObjects?: Array<
+    PlatformMediaObjectRecord | PrivateHotelMediaResponse | PublicRoomMediaResponse
+  >;
   sideEffects?: string[];
 };
 
@@ -132,6 +138,19 @@ type PrivateHotelMediaResponse = {
 type PrivateHotelMediaFinalizeResponse = {
   mediaObject: PrivateHotelMediaResponse;
   mediaObjects: PrivateHotelMediaResponse[];
+  sideEffects: string[];
+};
+
+type PublicRoomMediaResponse = {
+  mediaObjectId: string;
+  purpose: "pms.room_type.media";
+  status: "public_ready";
+  publicVariants: Array<{ variantName: string; publicUrl: string }>;
+};
+
+type PublicRoomMediaFinalizeResponse = {
+  mediaObject: PublicRoomMediaResponse;
+  mediaObjects: PublicRoomMediaResponse[];
   sideEffects: string[];
 };
 
@@ -1544,6 +1563,12 @@ describe("platform media upload routes", () => {
     });
   });
 
+  // prettier-ignore
+  it("keeps Finance receipt upload private, retained, and property/entitlement bound", async () => { const payload = { purpose: "finance.expense.receipt", visibility: "private", resource: { product: "pms", resourceType: "pms_property", resourceId: financePropertyId, propertyId: financePropertyId, targetResourceId: "00000000-0000-4000-8000-000000000060" }, files: [{ filename: "receipt.webp", contentType: "image/webp", sizeBytes: 1024 }] }; const access = { permissions: ["pms.finance.manage" as const], resources: [{ product: "pms" as const, resourceType: "pms_property" as const, resourceId: financePropertyId, relationship: "finance_manager" as const }] }; const app = buildMediaApp({ ...access, entitlements: [financeEntitlement("property-management"), financeEntitlement("module:financials")], enabledPurposes: ["finance.expense.receipt"] }); const allowed = await injectJson(app, { method: "POST", url: "/api/media/upload-sessions", headers: { authorization: "Bearer valid-token" }, payload }); expect(allowed.statusCode).toBe(201); const upload = allowed.body as MediaCreateResponse; expect(upload).toMatchObject({ uploadSession: { purpose: "finance.expense.receipt", effectiveVisibility: "private" } }); const finalized = await injectJson(app, { method: "POST", url: `/api/media/upload-sessions/${upload.uploadSession.sessionId}/finalize`, headers: { authorization: "Bearer valid-token" }, payload: { files: [{ uploadTargetId: upload.uploadTargets[0]!.uploadTargetId, contentType: "image/webp", sizeBytes: 1024 }] } }); expect(finalized.statusCode).toBe(200); expect(finalized.body).toMatchObject({ mediaObject: { lifecycleStatus: "staged", retainedUntil: "2026-06-12T13:00:00.000Z" } }); const denied = await injectJson(buildMediaApp({ ...access, entitlements: [financeEntitlement("property-management")], enabledPurposes: ["finance.expense.receipt"] }), { method: "POST", url: "/api/media/upload-sessions", headers: { authorization: "Bearer valid-token" }, payload }); expect(denied.statusCode).toBe(403); const malformed = await injectJson(buildMediaApp({ ...access, entitlements: [financeEntitlement("property-management"), financeEntitlement("module:financials")], enabledPurposes: ["finance.expense.receipt"] }), { method: "POST", url: "/api/media/upload-sessions", headers: { authorization: "Bearer valid-token" }, payload: { ...payload, resource: { ...payload.resource, propertyId: "00000000-0000-4000-8000-000000000061" } } }); expect(malformed.statusCode).toBe(400); });
+
+  // prettier-ignore
+  it("never exposes Finance receipt storage metadata on finalize or replay", async () => { const app = buildMediaApp({ permissions: ["pms.finance.manage"], resources: [{ product: "pms", resourceType: "pms_property", resourceId: financePropertyId, relationship: "owner" }], entitlements: [financeEntitlement("property-management"), financeEntitlement("module:financials")], enabledPurposes: ["finance.expense.receipt"] }); const created = await injectJson(app, { method: "POST", url: "/api/media/upload-sessions", headers: { authorization: "Bearer valid-token" }, payload: { purpose: "finance.expense.receipt", visibility: "private", resource: { product: "pms", resourceType: "pms_property", resourceId: financePropertyId, propertyId: financePropertyId, targetResourceId: "00000000-0000-4000-8000-000000000060" }, files: [{ filename: "receipt.webp", contentType: "image/webp", sizeBytes: 1024 }] } }); const upload = created.body as MediaCreateResponse, request = { method: "POST" as const, url: `/api/media/upload-sessions/${upload.uploadSession.sessionId}/finalize`, headers: { authorization: "Bearer valid-token" }, payload: { files: [{ uploadTargetId: upload.uploadTargets[0]!.uploadTargetId, contentType: "image/webp", sizeBytes: 1024 }] } }; for (const response of [await injectJson(app, request), await injectJson(app, request)]) { expect(response.statusCode).toBe(200); expect(response.body).toMatchObject({ mediaObject: { mediaObjectId: expect.any(String), purpose: "finance.expense.receipt" } }); expect(JSON.stringify(response.body)).not.toMatch(/bucket|storageKey|checksumSha256|variants/); } });
+
   it("publishes Booking-scoped SVG header logos within the 500 KB limit", async () => {
     const app = buildMediaApp({
       permissions: ["booking.settings.manage"],
@@ -1894,9 +1919,9 @@ describe("platform media upload routes", () => {
     });
 
     expect(finalize.statusCode).toBe(pmsRoomTypeMediaCase.expected.finalizeStatus);
-    const finalizeBody = finalize.body as PrivateHotelMediaFinalizeResponse;
+    const finalizeBody = finalize.body as PublicRoomMediaFinalizeResponse;
     expect(finalizeBody.mediaObject).toMatchObject(pmsRoomTypeMediaCase.expected.mediaObject!);
-    expectPrivateHotelMediaResponse(finalizeBody.mediaObject, "pms.room_type.media");
+    expectPublicRoomMediaResponse(finalizeBody.mediaObject);
     expect(
       repository.sessions
         .get(createBody.uploadSession.sessionId)
@@ -1959,8 +1984,8 @@ describe("platform media upload routes", () => {
     });
 
     expect(finalize.statusCode).toBe(200);
-    const safeMediaObject = (finalize.body as PrivateHotelMediaFinalizeResponse).mediaObject;
-    expectPrivateHotelMediaResponse(safeMediaObject, "pms.room_type.media");
+    const safeMediaObject = (finalize.body as PublicRoomMediaFinalizeResponse).mediaObject;
+    expectPublicRoomMediaResponse(safeMediaObject);
     const mediaObject = repository.sessions.get(
       createBody.uploadSession.sessionId,
     )?.completedMediaObject;
@@ -2435,6 +2460,7 @@ function buildMediaApp(
   options: {
     repository?: PlatformMediaRepository;
     permissions?: PermissionKey[];
+    entitlements?: ProductEntitlement[];
     resources?: Array<{
       product: Product;
       resourceType: ResourceType;
@@ -2477,14 +2503,27 @@ function buildMediaApp(
         },
         options.userId,
       ),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["hotel_catalog.setup.manage"];
         },
       },
+      entitlementRepository: {
+        async findEntitlementsForContext() {
+          return options.entitlements ?? [];
+        },
+      },
     },
   });
 }
+
+const financeEntitlement = (key: string): ProductEntitlement => ({
+  product: "pms",
+  key,
+  status: "active",
+  resource: { product: "pms", resourceType: "pms_property", resourceId: financePropertyId },
+});
 
 const propertyMediaTargetResolver: PlatformMediaTargetResolver = {
   async resolveTarget({ request, policy }) {
@@ -2598,6 +2637,18 @@ function expectPrivateHotelMediaResponse(
     status: "private_ready",
     publicVariants: [],
   });
+}
+
+function expectPublicRoomMediaResponse(mediaObject: PublicRoomMediaResponse): void {
+  expect(mediaObject).toMatchObject({
+    mediaObjectId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+    purpose: "pms.room_type.media",
+    status: "public_ready",
+  });
+  expect(mediaObject.publicVariants).toHaveLength(4);
+  expect(
+    mediaObject.publicVariants.every(({ publicUrl }) => publicUrl.startsWith("https://")),
+  ).toBe(true);
 }
 
 function contractCase(caseId: string): (typeof uploadContractCases.cases)[number] {

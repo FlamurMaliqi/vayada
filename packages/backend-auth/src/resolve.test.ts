@@ -60,6 +60,7 @@ const OPTIONS = {
 const USER: IdentityUser = {
   userId: "user_hotel_owner",
   email: "owner@example.com",
+  name: "Harper Owner",
   status: "active",
 };
 
@@ -106,6 +107,7 @@ describe("resolveRequestContext", () => {
 
     expect(ctx.actor.internalUserId).toBe("user_hotel_owner");
     expect(ctx.actor.email).toBe("owner@example.com");
+    expect(ctx.actor.name).toBe("Harper Owner");
     expect(ctx.actor.status).toBe("active");
     expect(ctx.actor.providerIdentity.provider).toBe("workos");
     expect(ctx.actor.providerIdentity.providerUserId).toBe("user_workos_hotel_owner");

@@ -42,16 +42,18 @@ describe("target PMS inventory reservation adapter", () => {
       checkOut: reservationInput.checkOut,
       roomCount: 1,
     });
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.text).toContain("UPDATE pms.inventory_days");
+    expect(calls).toHaveLength(2);
     expect(calls[0]?.text).toContain("pg_advisory_xact_lock");
-    expect(calls[0]?.text).toContain(
+    expect(calls[1]?.text).toContain("UPDATE pms.inventory_days");
+    expect(calls[1]?.text).toContain("booking_source_revision + 1");
+    expect(calls[1]?.text).not.toContain("payAtProperty");
+    expect(calls[1]?.text).toContain(
       "WHEN offer.availability_status IN ('closed', 'stale', 'unavailable')",
     );
-    expect(calls[0]?.text).toContain(
+    expect(calls[1]?.text).toContain(
       "WHEN offer.availability_status IN ('closed', 'stale', 'unavailable') THEN FALSE",
     );
-    expect(calls[0]?.values).toEqual([
+    expect(calls[1]?.values).toEqual([
       reservationInput.propertyId,
       reservationInput.roomTypeId,
       reservationInput.publicOfferKey,
@@ -120,15 +122,19 @@ describe("target PMS inventory reservation adapter", () => {
       occurredAt: reservationInput.occurredAt,
     });
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.text).toContain("assigned_count = GREATEST");
-    expect(calls[0]?.values).toEqual([
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.text).toContain("pg_advisory_xact_lock");
+    expect(calls[1]?.text).toContain("assigned_count = GREATEST");
+    expect(calls[1]?.text).toContain("booking_source_revision + 1");
+    expect(calls[1]?.text).toContain("pms.direct_booking_inventory.release");
+    expect(calls[1]?.values).toEqual([
       reservationInput.propertyId,
       reservationInput.roomTypeId,
       reservationInput.checkIn,
       reservationInput.checkOut,
       reservationInput.roomCount,
       reservationInput.occurredAt.toISOString(),
+      expect.stringMatching(/^[a-f0-9]{64}$/),
     ]);
   });
 });

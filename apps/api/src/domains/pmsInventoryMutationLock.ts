@@ -6,7 +6,7 @@ export type PmsInventoryMutationLockClient = {
   query<T extends QueryResultRow = QueryResultRow>(
     text: string,
     values?: readonly unknown[],
-  ): Promise<Pick<QueryResult<T>, "rows" | "rowCount">>;
+  ): Promise<Pick<QueryResult<T>, "rows">>;
 };
 
 /** Serializes every capacity-changing inventory mutation for one property. */

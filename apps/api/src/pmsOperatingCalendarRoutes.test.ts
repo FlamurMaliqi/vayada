@@ -6,6 +6,8 @@ import type {
 } from "@vayada/backend-auth";
 import { injectJson } from "@vayada/backend-test";
 import {
+  PMS_INVENTORY_MATERIALIZATION_CONTRACT_VERSION,
+  PMS_INVENTORY_PROJECTION_REFRESH_DESTINATION,
   PMS_OPERATING_CALENDAR_CONTRACT_VERSION,
   createPmsOperatingCalendarSourceRevision,
   parsePmsCanonicalIanaTimeZone,
@@ -15,6 +17,8 @@ import {
   type PmsOperatingCalendarCurrentReadResult,
   type PmsOperatingCalendarImpactPreviewResult,
   type PmsOperatingCalendarSourceRevision,
+  type PmsInventoryMaterializationCommand,
+  type PmsInventoryMaterializationResult,
   type PreviewPmsOperatingCalendarImpactCommand,
   type UpsertPmsOperatingCalendarCommand,
 } from "@vayada/domain-pms";
@@ -54,6 +58,7 @@ type FakePorts = PmsOperatingCalendarRoutesOptions & {
   previewCalls: PreviewPmsOperatingCalendarImpactCommand[];
   currentCalls: string[];
   sourceCalls: PmsOperatingCalendarSourceRevision[];
+  materializationCalls: PmsInventoryMaterializationCommand[];
 };
 
 describe("PMS operating-calendar routes", () => {
@@ -208,6 +213,95 @@ describe("PMS operating-calendar routes", () => {
     expect(ports.commandCalls).toHaveLength(0);
   });
 
+  it("materializes a strict server-scoped calendar source", async () => {
+    const ports = fakePorts();
+    app = await testApp(ports);
+    const response = await postMaterialization(app);
+
+    expect(response.statusCode).toBe(200);
+    expect(ports.materializationCalls).toEqual([
+      {
+        organizationId,
+        propertyId,
+        configurationSource: createPmsOperatingCalendarSourceRevision(propertyId, 1),
+        expectedMaterializedRevision: 1,
+        horizon: { from: "2026-08-04", through: "2026-08-05" },
+        idempotencyKey: "materialize-key",
+        audit: {
+          actor: { kind: "user", userId: actorUserId },
+          requestId: "request-1",
+          correlationId: "correlation-1",
+          requestedAt: now,
+        },
+      },
+    ]);
+    expect(response.body).toMatchObject({ ok: true, outcome: "applied" });
+  });
+
+  it("authorizes materialization before strict query, body, and idempotency parsing", async () => {
+    const ports = fakePorts();
+    app = await testApp(ports);
+    expect(
+      (
+        await postMaterialization(app, {
+          token: null,
+          body: { unexpected: true },
+          urlSuffix: "?propertyId=other",
+          key: null,
+        })
+      ).statusCode,
+    ).toBe(401);
+    expect((await postMaterialization(app, { urlSuffix: "?unexpected=1" })).statusCode).toBe(400);
+    expect(
+      (
+        await postMaterialization(app, {
+          body: { ...materializationBody(), organizationId },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await postMaterialization(app, {
+          body: {
+            ...materializationBody(),
+            horizon: { from: "2026-02-31", through: "2026-08-05" },
+          },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect((await postMaterialization(app, { key: null })).statusCode).toBe(400);
+    expect(ports.materializationCalls).toHaveLength(0);
+  });
+
+  it("maps materialization failures and rejects cross-property success evidence", async () => {
+    app = await testApp(
+      fakePorts({
+        materializationResult: { ok: false, error: { code: "configuration_not_found" } },
+      }),
+    );
+    expect((await postMaterialization(app)).statusCode).toBe(404);
+    await app.close();
+
+    const result = materializationSuccess(commandForMaterialization());
+    app = await testApp(
+      fakePorts({
+        materializationResult: {
+          ...result,
+          coverage: {
+            ...result.coverage,
+            configurationSource: createPmsOperatingCalendarSourceRevision(otherPropertyId, 1),
+          },
+          projectionRefreshIntent: {
+            ...result.projectionRefreshIntent!,
+            propertyId: otherPropertyId,
+            configurationSource: createPmsOperatingCalendarSourceRevision(otherPropertyId, 1),
+          },
+        },
+      }),
+    );
+    expect((await postMaterialization(app)).statusCode).toBe(500);
+  });
+
   it.each([
     ["missing authentication", {}, null],
     ["non-hotel organization", { kind: "creator_workspace" }, "valid-token"],
@@ -336,17 +430,20 @@ function fakePorts(
     previewResult?: PmsOperatingCalendarImpactPreviewResult;
     currentResult?: PmsOperatingCalendarCurrentReadResult | null;
     sourceResult?: PmsOperatingCalendarConfigurationSnapshot | null;
+    materializationResult?: PmsInventoryMaterializationResult;
   } = {},
 ): FakePorts {
   const commandCalls: UpsertPmsOperatingCalendarCommand[] = [];
   const previewCalls: PreviewPmsOperatingCalendarImpactCommand[] = [];
   const currentCalls: string[] = [];
   const sourceCalls: PmsOperatingCalendarSourceRevision[] = [];
+  const materializationCalls: PmsInventoryMaterializationCommand[] = [];
   return {
     commandCalls,
     previewCalls,
     currentCalls,
     sourceCalls,
+    materializationCalls,
     timeZoneRegistry: registry,
     commandPort: {
       async upsertOperatingCalendar(command) {
@@ -358,6 +455,12 @@ function fakePorts(
       async previewOperatingCalendarImpact(command) {
         previewCalls.push(command);
         return options.previewResult ?? previewSuccess(command);
+      },
+    },
+    materializationPort: {
+      async materializeInventory(command) {
+        materializationCalls.push(command);
+        return options.materializationResult ?? materializationSuccess(command);
       },
     },
     readPort: {
@@ -566,6 +669,55 @@ function previewSuccess(command: PreviewPmsOperatingCalendarImpactCommand) {
   };
 }
 
+function commandForMaterialization(): PmsInventoryMaterializationCommand {
+  return {
+    organizationId,
+    propertyId,
+    configurationSource: createPmsOperatingCalendarSourceRevision(propertyId, 1),
+    expectedMaterializedRevision: 1,
+    horizon: { from: "2026-08-04", through: "2026-08-05" },
+    idempotencyKey: "materialize-key",
+    audit: {
+      actor: { kind: "user", userId: actorUserId },
+      requestId: "request-1",
+      correlationId: "correlation-1",
+      requestedAt: now,
+    },
+  };
+}
+
+function materializationSuccess(command: PmsInventoryMaterializationCommand) {
+  const coverage = {
+    configurationSource: command.configurationSource,
+    materializedRevision: command.expectedMaterializedRevision,
+    coverageFrom: command.horizon.from,
+    coverageThrough: command.horizon.through,
+    roomTypeIds: [roomTypeA],
+    expectedDayCount: 2,
+    materializedDayCount: 2,
+    gaps: [],
+  } as const;
+  return {
+    ok: true,
+    outcome: "applied",
+    coverage,
+    changedDayCount: 2,
+    projectionRefreshIntent: {
+      contractVersion: PMS_INVENTORY_MATERIALIZATION_CONTRACT_VERSION,
+      destination: PMS_INVENTORY_PROJECTION_REFRESH_DESTINATION,
+      eventType: "pms.inventory.projection_refresh_requested",
+      organizationId: command.organizationId,
+      propertyId: command.propertyId,
+      configurationSource: command.configurationSource,
+      materializedRevision: command.expectedMaterializedRevision,
+      coverageFrom: command.horizon.from,
+      coverageThrough: command.horizon.through,
+      roomTypeIds: [roomTypeA],
+      reason: "full_horizon_apply",
+    },
+  } as const;
+}
+
 function roomLimit(roomTypeId: string, facts: number, units: number, limit: number) {
   return {
     roomTypeId,
@@ -618,6 +770,33 @@ function postPreview(
     headers:
       options.token === null ? {} : { authorization: `Bearer ${options.token ?? "valid-token"}` },
     payload: options.body ?? previewBody(),
+  });
+}
+
+function materializationBody() {
+  return {
+    expectedCalendarRevision: 1,
+    horizon: { from: "2026-08-04", through: "2026-08-05" },
+  };
+}
+
+function postMaterialization(
+  app: Awaited<ReturnType<typeof testApp>>,
+  options: {
+    body?: unknown;
+    key?: string | null;
+    token?: string | null;
+    urlSuffix?: string;
+  } = {},
+) {
+  const headers: Record<string, string> = {};
+  if (options.token !== null) headers.authorization = `Bearer ${options.token ?? "valid-token"}`;
+  if (options.key !== null) headers["idempotency-key"] = options.key ?? "materialize-key";
+  return injectJson<Record<string, any>>(app, {
+    method: "POST",
+    url: `/properties/${propertyId}/inventory-materialization${options.urlSuffix ?? ""}`,
+    headers,
+    payload: options.body ?? materializationBody(),
   });
 }
 

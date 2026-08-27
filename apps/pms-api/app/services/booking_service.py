@@ -28,6 +28,7 @@ from app.services.channex.orchestrator import push_ari_for_booking
 from app.services.channex.outbound import handle_vayada_cancellation as channex_handle_cancellation
 from app.services.currency_service import get_exchange_rate
 from app.services.email_service import (
+    booking_host_notification_recipients,
     send_booking_request_notification,
     send_guest_booking_accepted,
     send_guest_booking_expired,
@@ -35,7 +36,7 @@ from app.services.email_service import (
     send_guest_booking_requested,
     send_guest_booking_withdrawn,
     send_guest_cancellation_refund,
-    send_host_booking_accepted,
+    send_host_booking_accepted_to,
     send_host_booking_expired,
     send_host_booking_rejected,
     send_host_booking_withdrawn,
@@ -43,6 +44,7 @@ from app.services.email_service import (
 )
 from app.services.occupancy import room_allows_guest_mix
 from app.services.payout_service import calculate_split, fetch_billing_config, schedule_payouts
+from app.services.promo_usage_reconciliation import claim_promo_use, reverse_promo_use
 from app.services.room_assignment import (
     apply_moves_atomic,
     record_auto_rearrange,
@@ -194,6 +196,16 @@ class PaymentOutcome:
 
 
 @dataclass
+class StripeIntentSnapshot:
+    payment_intent_id: str
+    client_secret: str
+    account_id: str | None
+    application_fee_amount: float = 0
+    platform_fee_amount: float = 0
+    affiliate_commission_amount: float = 0
+
+
+@dataclass
 class BookingContext:
     hotel: dict
     hotel_id: str
@@ -331,32 +343,32 @@ async def _fetch_hotel_addons(slug: str) -> list[dict]:
         return []
 
 
-async def _validate_promo_code(slug: str, code: str) -> dict:
+async def _validate_promo_code(
+    slug: str,
+    code: str,
+    *,
+    check_in: date,
+    room_type_id: str,
+    booking_total: float,
+) -> dict:
     """Validate a promo code against the booking-engine API.
     Returns the API response, or ``{"valid": False}`` on failure."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
                 f"{settings.BOOKING_ENGINE_API_URL}/api/hotels/{slug}/validate-promo",
-                params={"code": code},
+                params={
+                    "code": code,
+                    "check_in": check_in.isoformat(),
+                    "room_type_id": room_type_id,
+                    "booking_total": booking_total,
+                },
             )
             resp.raise_for_status()
             return resp.json()
     except Exception as e:
         logger.warning("Failed to validate promo for %s: %s", slug, e)
         return {"valid": False}
-
-
-async def _increment_promo_use(slug: str, code: str) -> None:
-    """Best-effort: bump the promo's use count after a successful booking."""
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(
-                f"{settings.BOOKING_ENGINE_API_URL}/api/hotels/{slug}/increment-promo",
-                params={"code": code},
-            )
-    except Exception as e:
-        logger.warning("Failed to increment promo use count: %s", e)
 
 
 async def _prepare_booking_context(slug: str, data: BookingCreate) -> BookingContext:
@@ -590,7 +602,13 @@ async def _compute_booking_pricing(
     promo_code_str: str | None = None
     promo_discount = 0.0
     if data.promo_code:
-        promo_result = await _validate_promo_code(slug, data.promo_code)
+        promo_result = await _validate_promo_code(
+            slug,
+            data.promo_code,
+            check_in=data.check_in,
+            room_type_id=data.room_type_id,
+            booking_total=subtotal,
+        )
         if promo_result.get("valid"):
             promo_code_str = promo_result["code"]
             discount_type = promo_result["discountType"]
@@ -599,6 +617,8 @@ async def _compute_booking_pricing(
                 promo_discount = round(subtotal * (discount_value / 100), 2)
             else:
                 promo_discount = min(discount_value, subtotal)
+        else:
+            raise ValueError(promo_result.get("message") or "Invalid promo code.")
 
     # Promo vs last-minute stacking — keep only the larger discount unless
     # the hotel opted in via stackWithPromo.
@@ -665,11 +685,16 @@ async def _create_card_payment_intent_for_draft(
     hotel_settings: dict | None,
     currency: str,
     charge_amount: float,
+    booking_total_amount: float,
+    affiliate_id: str | None,
     capture_method: str,
     booking_reference: str,
-) -> tuple[str, str]:
+) -> StripeIntentSnapshot:
     """Create a Stripe PaymentIntent for a booking that hasn't been
-    persisted yet (VAY-388). Returns (payment_intent_id, client_secret).
+    persisted yet (VAY-388).
+
+    Freezes the complete direct-charge fee split so later plan or affiliate
+    changes cannot make PMS accounting diverge from the Stripe charge.
 
     Metadata carries ``booking_reference`` instead of ``booking_id``;
     the webhook + confirm-authorization paths use the PI id to look up
@@ -677,6 +702,30 @@ async def _create_card_payment_intent_for_draft(
     """
     provider, stripe_account = await _resolve_card_provider(hotel_settings)
     amount_cents = int(math.ceil(charge_amount * 100))
+    application_fee_cents = 0
+    split = {"platform_fee": 0.0, "affiliate_commission": 0.0}
+    if stripe_account:
+        # Keep applying due plan switches for other legacy billing consumers.
+        await fetch_billing_config(hotel_id)
+        affiliate_commission_pct = 0.0
+        if affiliate_id:
+            affiliate_commission_pct = (
+                await AffiliateRepository.get_effective_commission_pct(affiliate_id) or 0.0
+            )
+        # Legacy Stripe Connect properties are fixed-fee only for now.
+        split = calculate_split(
+            booking_total_amount,
+            plan="fixed",
+            channel="direct",
+            booking_engine_fee_pct=0,
+            channel_manager_fee_pct=0,
+            affiliate_platform_fee_pct=0,
+            has_affiliate=affiliate_id is not None,
+            effective_affiliate_commission_pct=affiliate_commission_pct,
+        )
+        application_fee_cents = round((split["platform_fee"] + split["affiliate_commission"]) * 100)
+        if application_fee_cents >= amount_cents:
+            raise ValueError("The booking deposit is too small for the configured fees")
     metadata = {
         "booking_reference": booking_reference,
         "hotel_id": hotel_id,
@@ -696,9 +745,17 @@ async def _create_card_payment_intent_for_draft(
             currency=currency,
             metadata=metadata,
             stripe_account=stripe_account,
+            application_fee_amount=application_fee_cents,
             capture_method=capture_method,
         )
-    return pi["id"], pi["client_secret"]
+    return StripeIntentSnapshot(
+        payment_intent_id=pi["id"],
+        client_secret=pi["client_secret"],
+        account_id=stripe_account,
+        application_fee_amount=application_fee_cents / 100,
+        platform_fee_amount=split["platform_fee"],
+        affiliate_commission_amount=split["affiliate_commission"],
+    )
 
 
 def _booking_draft_payload(
@@ -710,6 +767,8 @@ def _booking_draft_payload(
     affiliate_id: str | None,
     payment_method: str,
     deadline: datetime | None,
+    use_request_flow: bool,
+    capture_method: str,
     deposit: DepositSnapshot,
 ) -> dict:
     """Snapshot every field needed to materialize the booking later. Stored
@@ -738,6 +797,11 @@ def _booking_draft_payload(
         "affiliate_id": affiliate_id,
         "payment_method": payment_method,
         "host_response_deadline": deadline.isoformat() if deadline else None,
+        # Freeze the checkout decision. Hotel settings can change while the
+        # guest is entering card details, but this booking must keep the
+        # request/instant semantics and Stripe capture mode it was offered.
+        "use_request_flow": use_request_flow,
+        "capture_method": capture_method,
         "rate_type": data.rate_type,
         "addon_ids": data.addon_ids or [],
         "addon_names": pricing.addon_names,
@@ -827,11 +891,13 @@ async def _create_booking_draft(
     materialization can refer to a stable code.
     """
     booking_reference = await BookingDraftRepository.generate_reference()
-    pi_id, client_secret = await _create_card_payment_intent_for_draft(
+    stripe_intent = await _create_card_payment_intent_for_draft(
         hotel_id=hotel_id,
         hotel_settings=hotel_settings,
         currency=room["currency"],
         charge_amount=_payment_amount_for_booking(pricing.total_amount, deposit),
+        booking_total_amount=pricing.total_amount,
+        affiliate_id=affiliate_id,
         capture_method=capture_method,
         booking_reference=booking_reference,
     )
@@ -844,6 +910,8 @@ async def _create_booking_draft(
         affiliate_id=affiliate_id,
         payment_method="card",
         deadline=deadline,
+        use_request_flow=not instant_book,
+        capture_method=capture_method,
         deposit=deposit,
     )
 
@@ -854,12 +922,13 @@ async def _create_booking_draft(
         check_out=data.check_out,
         number_of_rooms=data.number_of_rooms,
         booking_reference=booking_reference,
-        stripe_payment_intent_id=pi_id,
+        stripe_payment_intent_id=stripe_intent.payment_intent_id,
+        stripe_account_id=stripe_intent.account_id,
+        stripe_application_fee_amount=stripe_intent.application_fee_amount,
+        stripe_platform_fee_amount=stripe_intent.platform_fee_amount,
+        stripe_affiliate_commission_amount=stripe_intent.affiliate_commission_amount,
         payload=payload,
     )
-
-    if pricing.promo_code:
-        await _increment_promo_use(slug, pricing.promo_code)
 
     preview = _draft_preview_response(
         draft_id=str(draft["id"]),
@@ -873,11 +942,12 @@ async def _create_booking_draft(
     )
     return {
         "booking": preview,
-        "clientSecret": client_secret,
+        "clientSecret": stripe_intent.client_secret,
         "xenditInvoiceUrl": None,
         "paymentMethod": "card",
         "draftId": str(draft["id"]),
         "bookingReference": booking_reference,
+        "stripeAccountId": stripe_intent.account_id,
         "instantBook": instant_book,
     }
 
@@ -898,6 +968,101 @@ async def quote_booking_request(slug: str, data: BookingCreate) -> BookingQuoteR
     )
     deposit = _resolve_deposit_snapshot(context.room, data.rate_type, pricing.total_amount)
     return _quote_to_response(data=data, room=context.room, pricing=pricing, deposit=deposit)
+
+
+def _draft_payload_data(draft: dict) -> dict:
+    payload = draft.get("payload") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, ValueError):
+            return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _draft_uses_request_flow(payload: dict) -> bool:
+    if "use_request_flow" in payload:
+        return bool(payload["use_request_flow"])
+    # Backwards compatibility for drafts created before VAY-1266. The
+    # deadline was already frozen at checkout and is safer than rereading the
+    # hotel's mutable instant_book setting.
+    return bool(payload.get("host_response_deadline"))
+
+
+def _draft_capture_method(payload: dict) -> str:
+    capture_method = payload.get("capture_method")
+    if capture_method in ("automatic", "manual"):
+        return capture_method
+    return (
+        "manual"
+        if _draft_uses_request_flow(payload) and not payload.get("deposit_required")
+        else "automatic"
+    )
+
+
+def _payment_outcome_from_intent(draft: dict, payment_intent: dict) -> str:
+    """Validate Stripe's state against the checkout snapshot."""
+    if payment_intent.get("id") != draft.get("stripe_payment_intent_id"):
+        raise ValueError("Stripe payment does not match this booking")
+
+    payload = _draft_payload_data(draft)
+    expected_capture_method = _draft_capture_method(payload)
+    actual_capture_method = payment_intent.get("capture_method")
+    if actual_capture_method != expected_capture_method:
+        raise ValueError("Stripe payment capture mode does not match this booking")
+
+    status = payment_intent.get("status")
+    if status == "requires_capture" and actual_capture_method == "manual":
+        return "authorized"
+    if status == "succeeded":
+        return "captured"
+    raise ValueError("Stripe payment has not completed")
+
+
+def _should_advance_card_payment(current_status: str | None, target_status: str) -> bool:
+    if target_status == "captured":
+        return current_status not in ("captured", "refunded", "partially_refunded")
+    return current_status in (None, "unpaid", "pending")
+
+
+async def _complete_materialized_draft(
+    draft: dict,
+    booking: dict,
+    *,
+    payment_status: str,
+    newly_materialized: bool,
+) -> dict:
+    """Apply the frozen request/instant outcome to a materialized draft.
+
+    This runs from both the browser confirmation and Stripe webhook paths.
+    Re-entry repairs a captured instant booking left pending by a prior
+    finalization failure without replaying request-flow notifications.
+    """
+    booking_id = str(booking["id"])
+    payment = await PaymentRepository.get_by_stripe_pi(draft["stripe_payment_intent_id"])
+    if payment and _should_advance_card_payment(payment.get("status"), payment_status):
+        await PaymentRepository.update_status(str(payment["id"]), payment_status)
+    if _should_advance_card_payment(booking.get("payment_status"), payment_status):
+        await BookingRepository.update_payment_status(booking_id, payment_status)
+        booking = await BookingRepository.get_by_id(booking_id)
+
+    payload = _draft_payload_data(draft)
+    if _draft_uses_request_flow(payload):
+        if newly_materialized:
+            _create_task(send_guest_booking_requested(booking["guest_email"], booking))
+            hotel = await Database.fetchrow(
+                "SELECT contact_email FROM hotels WHERE id = $1", booking["hotel_id"]
+            )
+            if hotel:
+                _create_task(send_booking_request_notification(hotel["contact_email"], booking))
+            _create_task(
+                push_availability_for_room_type(booking["hotel_id"], booking["room_type_id"])
+            )
+        return booking
+
+    if payment_status != "captured":
+        raise ValueError("Instant booking payment has not been captured")
+    return await _finalize_accepted_booking(booking_id, capture_card=False)
 
 
 async def materialize_draft(
@@ -930,9 +1095,7 @@ async def materialize_draft(
     if not claimed:
         return None
 
-    payload = claimed["payload"]
-    if isinstance(payload, str):
-        payload = json.loads(payload)
+    payload = _draft_payload_data(claimed)
 
     booking_data = dict(payload)
     booking_data["id"] = new_booking_id
@@ -942,14 +1105,11 @@ async def materialize_draft(
     booking_data["host_response_deadline"] = (
         datetime.fromisoformat(deadline_str) if deadline_str else None
     )
-    booking_data["payment_status"] = (
-        "authorized" if payment_status == "authorized" else payment_status
-    )
-    booking_data["status"] = (
-        "confirmed"
-        if booking_data.get("deposit_required") and payment_status == "captured"
-        else "pending"
-    )
+    booking_data["payment_status"] = payment_status
+    # Materialize first, then let the frozen checkout decision drive the
+    # shared finalizer. This keeps request-flow deposits pending and makes an
+    # automatically captured instant booking take the full accepted path.
+    booking_data["status"] = "pending"
 
     # The draft already pre-allocated a reference; reuse it so the
     # PaymentIntent metadata + any guest-side links stay consistent.
@@ -980,7 +1140,41 @@ async def materialize_draft(
     if extra_room_ids:
         booking_data["extra_room_ids"] = extra_room_ids
 
-    booking_row = await BookingRepository.create(booking_data)
+    promo_slug = None
+    promo_claimed = False
+    try:
+        if booking_data.get("promo_code"):
+            promo_hotel = await Database.fetchrow(
+                "SELECT slug FROM hotels WHERE id = $1", booking_data["hotel_id"]
+            )
+            if not promo_hotel:
+                raise ValueError("Promo hotel not found")
+            promo_slug = str(promo_hotel["slug"])
+            await claim_promo_use(
+                hotel_slug=promo_slug,
+                promo_code=str(booking_data["promo_code"]),
+                booking_reference=str(booking_data["booking_reference"]),
+                check_in=booking_data["check_in"],
+                room_type_id=str(booking_data["room_type_id"]),
+                booking_total=float(booking_data["total_amount"])
+                + float(booking_data.get("promo_discount") or 0),
+            )
+            promo_claimed = True
+        booking_row = await BookingRepository.create(booking_data)
+    except Exception:
+        if promo_claimed and promo_slug:
+            try:
+                await reverse_promo_use(
+                    hotel_slug=promo_slug,
+                    promo_code=str(booking_data["promo_code"]),
+                    booking_reference=str(booking_data["booking_reference"]),
+                )
+            except Exception:
+                logger.exception("Failed to compensate promo claim after booking insert failure")
+        await BookingDraftRepository.release_materialization_claim(
+            str(claimed["id"]), new_booking_id
+        )
+        raise
     booking_id = str(booking_row["id"])
 
     if rearrange_moves:
@@ -1009,40 +1203,26 @@ async def materialize_draft(
         currency=booking_data["currency"],
         payment_method="card",
         stripe_pi_id=claimed["stripe_payment_intent_id"],
+        stripe_account_id=claimed.get("stripe_account_id"),
+        stripe_application_fee_amount=float(claimed.get("stripe_application_fee_amount") or 0),
+        stripe_platform_fee_amount=float(claimed.get("stripe_platform_fee_amount") or 0),
+        stripe_affiliate_commission_amount=float(
+            claimed.get("stripe_affiliate_commission_amount") or 0
+        ),
         payment_purpose="deposit" if booking_data.get("deposit_required") else "booking",
     )
-    if payment_status == "authorized":
-        payment = await PaymentRepository.get_by_stripe_pi(claimed["stripe_payment_intent_id"])
-        if payment:
-            await PaymentRepository.update_status(str(payment["id"]), "authorized")
-    elif payment_status == "captured":
-        payment = await PaymentRepository.get_by_stripe_pi(claimed["stripe_payment_intent_id"])
-        if payment:
-            await PaymentRepository.update_status(str(payment["id"]), "captured")
+    payment = await PaymentRepository.get_by_stripe_pi(claimed["stripe_payment_intent_id"])
+    if payment:
+        status_fields = {"captured_at": datetime.now(UTC)} if payment_status == "captured" else {}
+        await PaymentRepository.update_status(str(payment["id"]), payment_status, **status_fields)
 
     booking = await BookingRepository.get_by_id(booking_id)
-
-    # Side effects equivalent to what create_booking_request used to do
-    # at row-insert time, but now correctly delayed until Stripe
-    # confirms there's a real commitment behind the booking.
-    if booking_data.get("deposit_required") and payment_status == "captured":
-        _create_task(send_guest_booking_accepted(booking_data["guest_email"], booking))
-    else:
-        _create_task(send_guest_booking_requested(booking_data["guest_email"], booking))
-    _create_task(
-        push_availability_for_room_type(booking_data["hotel_id"], booking_data["room_type_id"])
+    return await _complete_materialized_draft(
+        claimed,
+        booking,
+        payment_status=payment_status,
+        newly_materialized=True,
     )
-    if booking_data.get("host_response_deadline") and booking_data.get("status") != "confirmed":
-        # Request flow — host needs to accept/reject. Instant-book skips
-        # this; the caller will run _finalize_accepted_booking instead.
-        hotel = await Database.fetchrow(
-            "SELECT contact_email FROM hotels WHERE id = $1",
-            booking_data["hotel_id"],
-        )
-        if hotel:
-            _create_task(send_booking_request_notification(hotel["contact_email"], booking))
-
-    return booking
 
 
 async def _create_xendit_payment(
@@ -1335,7 +1515,32 @@ async def create_booking_request(slug: str, data: BookingCreate) -> dict:
     if extra_room_ids:
         booking_data["extra_room_ids"] = extra_room_ids
 
-    booking_row = await BookingRepository.create(booking_data)
+    promo_claimed = False
+    if pricing.promo_code:
+        booking_data["booking_reference"] = await BookingDraftRepository.generate_reference()
+    try:
+        if pricing.promo_code:
+            await claim_promo_use(
+                hotel_slug=slug,
+                promo_code=pricing.promo_code,
+                booking_reference=str(booking_data["booking_reference"]),
+                check_in=data.check_in,
+                room_type_id=data.room_type_id,
+                booking_total=pricing.total_amount + pricing.promo_discount,
+            )
+            promo_claimed = True
+        booking_row = await BookingRepository.create(booking_data)
+    except Exception:
+        if promo_claimed:
+            try:
+                await reverse_promo_use(
+                    hotel_slug=slug,
+                    promo_code=pricing.promo_code,
+                    booking_reference=str(booking_data["booking_reference"]),
+                )
+            except Exception:
+                logger.exception("Failed to compensate promo claim after booking insert failure")
+        raise
     booking_id = str(booking_row["id"])
 
     if rearrange_moves:
@@ -1348,24 +1553,36 @@ async def create_booking_request(slug: str, data: BookingCreate) -> dict:
             ),
         )
 
-    if pricing.promo_code:
-        await _increment_promo_use(slug, pricing.promo_code)
-
     # ── Dispatch the chosen payment method ─────────────────────────
-    outcome = await _process_payment_method(
-        payment_method=payment_method,
-        booking_id=booking_id,
-        booking_row=booking_row,
-        hotel=hotel,
-        hotel_id=hotel_id,
-        hotel_settings=hotel_settings,
-        currency=room["currency"],
-        total_amount=pricing.total_amount,
-        guest_email=data.guest_email,
-        use_request_flow=use_request_flow,
-        capture_method=capture_method,
-        deposit=deposit,
-    )
+    try:
+        outcome = await _process_payment_method(
+            payment_method=payment_method,
+            booking_id=booking_id,
+            booking_row=booking_row,
+            hotel=hotel,
+            hotel_id=hotel_id,
+            hotel_settings=hotel_settings,
+            currency=room["currency"],
+            total_amount=pricing.total_amount,
+            guest_email=data.guest_email,
+            use_request_flow=use_request_flow,
+            capture_method=capture_method,
+            deposit=deposit,
+        )
+    except Exception:
+        # Xendit removes the booking when invoice creation fails. Release the
+        # promo claim only when no discounted booking remains persisted.
+        persisted_booking = await BookingRepository.get_by_id(booking_id)
+        if promo_claimed and not persisted_booking:
+            try:
+                await reverse_promo_use(
+                    hotel_slug=slug,
+                    promo_code=str(pricing.promo_code),
+                    booking_reference=str(booking_data["booking_reference"]),
+                )
+            except Exception:
+                logger.exception("Failed to compensate promo claim after payment setup failure")
+        raise
 
     # ── Build response + side effects ──────────────────────────────
     booking = await BookingRepository.get_by_id(booking_id)
@@ -1408,43 +1625,21 @@ async def confirm_payment_authorized(handle: str) -> dict:
     """
     draft = await BookingDraftRepository.get_by_id(handle)
     if draft:
-        # Already materialized (sequential retry, or webhook beat us
-        # and we're the second caller) — return the linked booking.
-        if draft.get("materialized_booking_id"):
-            booking = await BookingRepository.get_by_id(str(draft["materialized_booking_id"]))
-            if booking is None:
-                raise ValueError("Booking not found")
-            return _booking_to_response(booking).model_dump(by_alias=True)
-
-        payload = draft.get("payload")
-        if isinstance(payload, str):
-            try:
-                payload = json.loads(payload)
-            except (TypeError, ValueError):
-                payload = {}
-        draft_requires_deposit = (
-            bool(payload.get("deposit_required")) if isinstance(payload, dict) else False
-        )
-        booking = await materialize_draft(
-            draft,
-            payment_status="captured" if draft_requires_deposit else "authorized",
-        )
-        if booking is None:
-            # Lost the claim to a concurrent caller — load the booking
-            # that the winner just created (link is now set on the draft).
-            refetched = await BookingDraftRepository.get_by_id(handle)
-            if refetched and refetched.get("materialized_booking_id"):
-                booking = await BookingRepository.get_by_id(
-                    str(refetched["materialized_booking_id"])
+        try:
+            return await _confirm_draft_payment(draft, handle)
+        except Exception:
+            # The payment and booking are authoritative. Email or ARI delivery
+            # may still need a webhook retry, but that must not send a paid
+            # guest back to checkout with a payment error.
+            booking = await _wait_for_confirmed_draft_booking(handle)
+            if booking:
+                logger.exception(
+                    "Booking %s confirmed with incomplete post-payment effects; "
+                    "returning confirmation while Stripe retries delivery",
+                    booking["id"],
                 )
-            if booking is None:
-                payment = await PaymentRepository.get_by_stripe_pi(
-                    draft["stripe_payment_intent_id"]
-                )
-                if not payment:
-                    raise ValueError("Booking materialization failed")
-                booking = await BookingRepository.get_by_id(str(payment["booking_id"]))
-        return _booking_to_response(booking).model_dump(by_alias=True)
+                return _booking_to_response(booking).model_dump(by_alias=True)
+            raise
 
     booking = await BookingRepository.get_by_id(handle)
     if not booking:
@@ -1471,6 +1666,144 @@ async def confirm_payment_authorized(handle: str) -> dict:
     return _booking_to_response(booking).model_dump(by_alias=True)
 
 
+async def _wait_for_confirmed_draft_booking(
+    handle: str, timeout_seconds: float = 3.0
+) -> dict | None:
+    """Let a concurrent webhook finish a paid booking before returning an error."""
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while True:
+        draft = await BookingDraftRepository.get_by_id(handle)
+        booking_id = draft.get("materialized_booking_id") if draft else None
+        if not booking_id:
+            return None
+        booking = await BookingRepository.get_by_id(str(booking_id))
+        if booking and booking["status"] == "confirmed":
+            return booking
+        if booking and booking["status"] != "pending":
+            return None
+        if asyncio.get_running_loop().time() >= deadline:
+            return None
+        await asyncio.sleep(0.05)
+
+
+async def _confirm_draft_payment(draft: dict, handle: str) -> dict:
+    payment_intent = await stripe_service.retrieve_payment_intent(
+        draft["stripe_payment_intent_id"],
+        **(
+            {"stripe_account": draft["stripe_account_id"]} if draft.get("stripe_account_id") else {}
+        ),
+    )
+    payment_status = _payment_outcome_from_intent(draft, payment_intent)
+
+    # Already materialized (sequential retry, or webhook beat us
+    # and we're the second caller) — return the linked booking.
+    if draft.get("materialized_booking_id"):
+        booking = await BookingRepository.get_by_id(str(draft["materialized_booking_id"]))
+        if booking is None:
+            raise ValueError("Booking not found")
+        booking = await _complete_materialized_draft(
+            draft,
+            booking,
+            payment_status=payment_status,
+            newly_materialized=False,
+        )
+        return _booking_to_response(booking).model_dump(by_alias=True)
+
+    booking = await materialize_draft(
+        draft,
+        payment_status=payment_status,
+    )
+    if booking is None:
+        # Lost the claim to a concurrent caller — load the booking
+        # that the winner just created (link is now set on the draft).
+        refetched = await BookingDraftRepository.get_by_id(handle)
+        if refetched and refetched.get("materialized_booking_id"):
+            booking = await BookingRepository.get_by_id(str(refetched["materialized_booking_id"]))
+        if booking is None:
+            payment = await PaymentRepository.get_by_stripe_pi(draft["stripe_payment_intent_id"])
+            if not payment:
+                raise ValueError("Booking materialization failed")
+            booking = await BookingRepository.get_by_id(str(payment["booking_id"]))
+        booking = await _complete_materialized_draft(
+            draft,
+            booking,
+            payment_status=payment_status,
+            newly_materialized=False,
+        )
+    return _booking_to_response(booking).model_dump(by_alias=True)
+
+
+async def _deliver_booking_notification_once(
+    booking_id: str,
+    notification_type: str,
+    recipient_email: str,
+    sender,
+) -> None:
+    if await BookingRepository.notification_was_delivered(
+        booking_id, notification_type, recipient_email
+    ):
+        return
+    delivered = await sender()
+    if delivered is False:
+        raise RuntimeError(f"Booking notification failed for {recipient_email}")
+    await BookingRepository.mark_notification_delivered(
+        booking_id, notification_type, recipient_email
+    )
+
+
+async def _deliver_accepted_booking_effects(booking: dict, finalization_token: str) -> dict:
+    """Deliver and checkpoint each accepted-booking side effect."""
+    booking_id = str(booking["id"])
+    if not booking.get("guest_confirmation_sent_at"):
+        await _deliver_booking_notification_once(
+            booking_id,
+            "accepted_guest",
+            booking["guest_email"],
+            lambda: send_guest_booking_accepted(booking["guest_email"], booking),
+        )
+        marked = await BookingRepository.mark_finalization_effect(
+            booking_id, finalization_token, "guest"
+        )
+        if not marked:
+            raise RuntimeError("Booking finalization claim was lost")
+        booking = {**booking, **marked}
+
+    if not booking.get("host_confirmation_sent_at"):
+        hotel = await Database.fetchrow(
+            "SELECT contact_email FROM hotels WHERE id = $1", booking["hotel_id"]
+        )
+        hotel_email = hotel["contact_email"] if hotel else None
+        for recipient in booking_host_notification_recipients(hotel_email):
+            await _deliver_booking_notification_once(
+                booking_id,
+                "accepted_host",
+                recipient,
+                lambda recipient=recipient: send_host_booking_accepted_to(recipient, booking),
+            )
+        marked = await BookingRepository.mark_finalization_effect(
+            booking_id, finalization_token, "host"
+        )
+        if not marked:
+            raise RuntimeError("Booking finalization claim was lost")
+        booking = {**booking, **marked}
+
+    if not booking.get("ari_handoff_completed_at"):
+        pushed = await push_ari_for_booking(booking_id)
+        if pushed is False:
+            raise RuntimeError("Booking availability handoff failed")
+        marked = await BookingRepository.mark_finalization_effect(
+            booking_id, finalization_token, "ari"
+        )
+        if not marked:
+            raise RuntimeError("Booking finalization claim was lost")
+        booking = {**booking, **marked}
+
+    completed = await BookingRepository.complete_finalization(booking_id, finalization_token)
+    if not completed:
+        raise RuntimeError("Booking finalization could not be completed")
+    return {**booking, **completed}
+
+
 async def _finalize_accepted_booking(booking_id: str, *, capture_card: bool = True) -> dict:
     """Shared accept path: capture payment if needed, compute split, schedule
     payouts, mark booking confirmed, send accepted-emails, push Channex.
@@ -1483,90 +1816,138 @@ async def _finalize_accepted_booking(booking_id: str, *, capture_card: bool = Tr
     booking = await BookingRepository.get_by_id(booking_id)
     if not booking:
         raise ValueError("Booking not found")
+    if booking["status"] == "confirmed" and (
+        booking.get("finalization_completed_at") or not booking.get("finalization_started_at")
+    ):
+        return booking
 
-    hotel_id = str(booking["hotel_id"])
-    payment_method = booking.get("payment_method", "card")
+    finalization_token = str(uuid.uuid4())
+    if not await BookingRepository.claim_finalization(booking_id, finalization_token):
+        current = await BookingRepository.get_by_id(booking_id)
+        if current and current.get("finalization_completed_at"):
+            return current
+        if await PaymentRepository.has_active_stripe_refund(booking_id):
+            raise ValueError("A refund is still processing for this booking")
+        raise RuntimeError("Booking finalization is already in progress")
 
-    if payment_method == "card" and capture_card:
-        payment = await PaymentRepository.get_by_booking_id(booking_id)
-        if payment and payment.get("stripe_payment_intent_id"):
-            await stripe_service.capture_payment_intent(payment["stripe_payment_intent_id"])
-            await PaymentRepository.update_status(
-                str(payment["id"]), "captured", captured_at=datetime.now(UTC)
+    try:
+        if booking["status"] == "confirmed":
+            return await _deliver_accepted_booking_effects(booking, finalization_token)
+
+        # A previous attempt may have stopped after scheduling one payout. A
+        # pending booking cannot have a valid payout yet, so rebuild the set.
+        await PayoutRepository.delete_scheduled_by_booking(booking_id)
+
+        hotel_id = str(booking["hotel_id"])
+        payment_method = booking.get("payment_method", "card")
+
+        payment = (
+            await PaymentRepository.get_by_booking_id(booking_id)
+            if payment_method == "card"
+            else None
+        )
+        if payment_method == "card" and capture_card:
+            if (
+                payment
+                and payment.get("stripe_payment_intent_id")
+                and payment.get("status") not in ("captured", "refunded", "partially_refunded")
+            ):
+                await stripe_service.capture_payment_intent(
+                    payment["stripe_payment_intent_id"],
+                    idempotency_key=f"booking-capture-{booking_id}",
+                    **(
+                        {"stripe_account": payment["stripe_account_id"]}
+                        if payment.get("stripe_account_id")
+                        else {}
+                    ),
+                )
+                await PaymentRepository.update_status(
+                    str(payment["id"]), "captured", captured_at=datetime.now(UTC)
+                )
+        elif payment_method == "xendit":
+            # Xendit Invoice payments are already captured when guest pays —
+            # just make sure the row reflects that.
+            payment = await PaymentRepository.get_by_booking_id(booking_id)
+            if payment and payment["status"] != "captured":
+                await PaymentRepository.update_status(
+                    str(payment["id"]), "captured", captured_at=datetime.now(UTC)
+                )
+        elif payment_method == "paypal":
+            payment = await PaymentRepository.get_by_booking_id(booking_id)
+            if payment and payment["status"] != "captured":
+                await PaymentRepository.update_status(
+                    str(payment["id"]), "captured", captured_at=datetime.now(UTC)
+                )
+
+        has_affiliate = booking.get("affiliate_id") is not None
+        affiliate_id = str(booking["affiliate_id"]) if has_affiliate else None
+
+        total_amount = float(booking["total_amount"])
+        if payment_method == "card" and payment and payment.get("stripe_account_id"):
+            platform_fee = float(payment.get("stripe_platform_fee_amount") or 0)
+            affiliate_commission = float(payment.get("stripe_affiliate_commission_amount") or 0)
+            split = {
+                "platform_fee": platform_fee,
+                "affiliate_commission": affiliate_commission,
+                "property_payout": round(total_amount - platform_fee - affiliate_commission, 2),
+            }
+        else:
+            billing = await fetch_billing_config(hotel_id)
+            affiliate_commission_pct = 0.0
+            if affiliate_id:
+                effective = await AffiliateRepository.get_effective_commission_pct(affiliate_id)
+                if effective is not None:
+                    affiliate_commission_pct = effective
+            split = calculate_split(
+                total_amount,
+                plan=billing["active_plan"],
+                channel=booking.get("channel", "direct"),
+                booking_engine_fee_pct=billing["booking_engine_fee_pct"],
+                channel_manager_fee_pct=billing["channel_manager_fee_pct"],
+                affiliate_platform_fee_pct=billing["affiliate_platform_fee_pct"],
+                has_affiliate=has_affiliate,
+                effective_affiliate_commission_pct=affiliate_commission_pct,
             )
-    elif payment_method == "xendit":
-        # Xendit Invoice payments are already captured when guest pays —
-        # just make sure the row reflects that.
-        payment = await PaymentRepository.get_by_booking_id(booking_id)
-        if payment and payment["status"] != "captured":
-            await PaymentRepository.update_status(
-                str(payment["id"]), "captured", captured_at=datetime.now(UTC)
+
+        if payment_method in ("card", "xendit", "paypal"):
+            new_payment_status = "captured"
+        else:
+            new_payment_status = "pay_at_property"
+
+        if payment_method in ("card", "xendit"):
+            await schedule_payouts(
+                booking_id=booking_id,
+                hotel_id=hotel_id,
+                total_amount=total_amount,
+                currency=booking["currency"],
+                affiliate_id=affiliate_id,
+                affiliate_commission=split["affiliate_commission"],
+                property_payout=split["property_payout"],
+                check_out=booking["check_out"],
+                schedule_hotel=not (
+                    payment_method == "card" and payment and payment.get("stripe_account_id")
+                ),
             )
-    elif payment_method == "paypal":
-        payment = await PaymentRepository.get_by_booking_id(booking_id)
-        if payment and payment["status"] != "captured":
-            await PaymentRepository.update_status(
-                str(payment["id"]), "captured", captured_at=datetime.now(UTC)
-            )
 
-    billing = await fetch_billing_config(hotel_id)
-
-    has_affiliate = booking.get("affiliate_id") is not None
-    affiliate_commission_pct = 0.0
-    affiliate_id = None
-    if has_affiliate:
-        affiliate_id = str(booking["affiliate_id"])
-        effective = await AffiliateRepository.get_effective_commission_pct(affiliate_id)
-        if effective is not None:
-            affiliate_commission_pct = effective
-
-    total_amount = float(booking["total_amount"])
-    split = calculate_split(
-        total_amount,
-        plan=billing["active_plan"],
-        channel=booking.get("channel", "direct"),
-        booking_engine_fee_pct=billing["booking_engine_fee_pct"],
-        channel_manager_fee_pct=billing["channel_manager_fee_pct"],
-        affiliate_platform_fee_pct=billing["affiliate_platform_fee_pct"],
-        has_affiliate=has_affiliate,
-        effective_affiliate_commission_pct=affiliate_commission_pct,
-    )
-
-    if payment_method in ("card", "xendit", "paypal"):
-        new_payment_status = "captured"
-    else:
-        new_payment_status = "pay_at_property"
-    await BookingRepository.update_booking_accepted(
-        booking_id,
-        platform_fee=split["platform_fee"],
-        affiliate_commission=split["affiliate_commission"],
-        property_payout=split["property_payout"],
-        payment_status=new_payment_status,
-    )
-
-    if payment_method in ("card", "xendit"):
-        await schedule_payouts(
-            booking_id=booking_id,
-            hotel_id=hotel_id,
-            total_amount=total_amount,
-            currency=booking["currency"],
-            affiliate_id=affiliate_id,
+        accepted = await BookingRepository.update_booking_accepted(
+            booking_id,
+            finalization_token=finalization_token,
+            platform_fee=split["platform_fee"],
             affiliate_commission=split["affiliate_commission"],
             property_payout=split["property_payout"],
-            check_out=booking["check_out"],
+            payment_status=new_payment_status,
         )
+        if not accepted:
+            raise RuntimeError("Booking finalization claim was lost")
 
-    updated = await BookingRepository.get_by_id(booking_id)
-    _create_task(send_guest_booking_accepted(updated["guest_email"], updated))
-    hotel = await Database.fetchrow(
-        "SELECT contact_email FROM hotels WHERE id = $1", booking["hotel_id"]
-    )
-    if hotel:
-        _create_task(send_host_booking_accepted(hotel["contact_email"], updated))
-
-    _create_task(push_ari_for_booking(booking_id))
-
-    return updated
+        updated = {**booking, **accepted}
+        return await _deliver_accepted_booking_effects(updated, finalization_token)
+    except Exception:
+        current = await BookingRepository.get_by_id(booking_id)
+        if current and current["status"] == "pending":
+            await PayoutRepository.delete_scheduled_by_booking(booking_id)
+        await BookingRepository.release_finalization_claim(booking_id, finalization_token)
+        raise
 
 
 def _schedule_unassigned_sweep(booking: dict) -> None:
@@ -1594,13 +1975,325 @@ async def host_accept_booking(booking_id: str, user_id: str) -> dict:
     booking = await BookingRepository.get_by_id(booking_id)
     if not booking or str(booking["hotel_id"]) != hotel_id:
         raise ValueError("Booking not found")
-    if booking["status"] != "pending":
+    if await PaymentRepository.has_active_stripe_refund(booking_id):
+        raise ValueError("A refund is still processing for this booking")
+    if booking["status"] != "pending" and not (
+        booking["status"] == "confirmed"
+        and booking.get("finalization_started_at")
+        and not booking.get("finalization_completed_at")
+    ):
         raise ValueError("Booking is not in pending state")
     return await _finalize_accepted_booking(booking_id, capture_card=True)
 
 
+def _stripe_refund_options(payment: dict) -> dict:
+    account_id = payment.get("stripe_account_id")
+    if not account_id:
+        return {}
+    options = {"stripe_account": account_id}
+    if float(payment.get("stripe_application_fee_amount") or 0) > 0:
+        options["refund_application_fee"] = True
+    return options
+
+
+def _stripe_refund_idempotency_key(base: str, payment: dict) -> str:
+    if payment.get("stripe_refund_status") in ("failed", "canceled") and payment.get(
+        "stripe_refund_id"
+    ):
+        return f"{base}-after-{payment['stripe_refund_id']}"
+    return base
+
+
+async def _create_recorded_stripe_refund(
+    payment: dict,
+    *,
+    amount: int | None,
+    refund_amount: float,
+    refund_percentage: float,
+    target_payment_status: str,
+    target_booking_status: str,
+    idempotency_key: str,
+) -> str:
+    booking = await BookingRepository.get_by_id(str(payment["booking_id"]))
+    if not booking:
+        raise ValueError("Booking not found")
+    command_id = _stripe_refund_idempotency_key(idempotency_key, payment)
+    refund_amount_minor = amount if amount is not None else int(math.ceil(refund_amount * 100))
+    refund_currency = str(payment["currency"]).lower()
+    prepared = await PaymentRepository.prepare_stripe_refund(
+        str(payment["id"]),
+        command_id=command_id,
+        target_status=target_payment_status,
+        target_booking_status=target_booking_status,
+        expected_booking_status=booking["status"],
+        refund_amount=refund_amount,
+        refund_percentage=refund_percentage,
+        refund_amount_minor=refund_amount_minor,
+        refund_currency=refund_currency,
+    )
+    if not prepared:
+        raise RuntimeError("Another Stripe refund is already active for this booking")
+    refund = await stripe_service.create_refund(
+        payment["stripe_payment_intent_id"],
+        amount=amount,
+        idempotency_key=command_id,
+        metadata={
+            "booking_id": str(payment["booking_id"]),
+            "payment_id": str(payment["id"]),
+            "refund_command_id": command_id,
+            "refund_amount_minor": str(refund_amount_minor),
+            "refund_currency": refund_currency,
+        },
+        **_stripe_refund_options(payment),
+    )
+    refund_id = refund.get("id")
+    provider_status = refund.get("status")
+    if not refund_id or not provider_status:
+        raise RuntimeError("Stripe returned an incomplete refund response")
+    attached = await PaymentRepository.attach_stripe_refund(
+        str(payment["id"]), command_id, refund_id, provider_status
+    )
+    if not attached:
+        raise RuntimeError(f"Stripe refund {refund_id} no longer matches its command")
+    await reconcile_stripe_refund(refund_id, provider_status)
+    latest = await PaymentRepository.get_by_stripe_refund(refund_id)
+    actual_status = latest.get("stripe_refund_status") if latest else None
+    if actual_status != "succeeded":
+        raise RuntimeError(f"Stripe refund {refund_id} is {actual_status or provider_status}")
+    return target_payment_status
+
+
+async def reconcile_stripe_refund(refund_id: str, provider_status: str) -> dict | None:
+    """Resume a known refund from its persisted provider state."""
+    payment = await PaymentRepository.update_stripe_refund_status(refund_id, provider_status)
+    actual_status = payment.get("stripe_refund_status") if payment else None
+    if payment and actual_status in ("failed", "canceled"):
+        await BookingRepository.release_stripe_refund_reservation(str(payment["booking_id"]))
+    if not payment or actual_status != "succeeded":
+        return payment
+    return await _finish_succeeded_stripe_refund(payment)
+
+
+async def reconcile_stripe_refund_event(refund: dict) -> dict | None:
+    """Attach Stripe refund events to their pre-recorded command and resume it."""
+    refund_id = refund.get("id")
+    provider_status = refund.get("status")
+    if not refund_id or not provider_status:
+        raise RuntimeError("Stripe refund webhook is missing id or status")
+    payment = await PaymentRepository.get_by_stripe_refund(refund_id)
+    if not payment:
+        metadata = refund.get("metadata") or {}
+        payment_id = metadata.get("payment_id")
+        command_id = metadata.get("refund_command_id")
+        payment = await PaymentRepository.get_by_id(str(payment_id)) if payment_id else None
+        if not payment or not payment.get("stripe_refund_command_id"):
+            raise RuntimeError(f"Stripe refund {refund_id} has no prepared payment command")
+        if command_id != payment["stripe_refund_command_id"]:
+            logger.info("Ignoring stale Stripe refund event %s for superseded command", refund_id)
+            return payment
+        if str(refund.get("payment_intent")) != str(payment.get("stripe_payment_intent_id")):
+            raise RuntimeError(f"Stripe refund {refund_id} does not match its payment")
+        if int(refund.get("amount") or -1) != int(payment["stripe_refund_amount_minor"]):
+            raise RuntimeError(f"Stripe refund {refund_id} has an unexpected amount")
+        if (
+            str(refund.get("currency") or "").lower()
+            != str(payment["stripe_refund_currency"]).lower()
+        ):
+            raise RuntimeError(f"Stripe refund {refund_id} has an unexpected currency")
+        if metadata.get("refund_amount_minor") != str(payment["stripe_refund_amount_minor"]):
+            raise RuntimeError(f"Stripe refund {refund_id} metadata amount does not match")
+        if (
+            str(metadata.get("refund_currency") or "").lower()
+            != str(payment["stripe_refund_currency"]).lower()
+        ):
+            raise RuntimeError(f"Stripe refund {refund_id} metadata currency does not match")
+        payment = await PaymentRepository.attach_stripe_refund(
+            str(payment["id"]), command_id, refund_id, provider_status
+        )
+        if not payment:
+            raise RuntimeError(f"Stripe refund {refund_id} lost its prepared command")
+    else:
+        payment = await PaymentRepository.update_stripe_refund_status(refund_id, provider_status)
+    actual_status = payment.get("stripe_refund_status") if payment else None
+    if payment and actual_status in ("failed", "canceled"):
+        await BookingRepository.release_stripe_refund_reservation(str(payment["booking_id"]))
+    if not payment or actual_status != "succeeded":
+        return payment
+    return await _finish_succeeded_stripe_refund(payment)
+
+
+async def _finish_succeeded_stripe_refund(payment: dict) -> dict:
+    """Resume every mandatory post-refund effect from persisted checkpoints."""
+    refund_id = payment["stripe_refund_id"]
+
+    target_payment_status = payment.get("stripe_refund_target_status")
+    target_booking_status = payment.get("stripe_refund_target_booking_status")
+    expected_booking_status = payment.get("stripe_refund_expected_booking_status")
+    if target_payment_status not in ("refunded", "partially_refunded"):
+        raise RuntimeError(f"Refund {refund_id} has no valid payment target")
+    if target_booking_status not in ("cancelled", "declined", "expired"):
+        raise RuntimeError(f"Refund {refund_id} has no valid booking target")
+    if expected_booking_status not in ("pending", "confirmed"):
+        raise RuntimeError(f"Refund {refund_id} has no valid booking source")
+
+    booking_id = str(payment["booking_id"])
+    booking = await BookingRepository.get_by_id(booking_id)
+    if not booking:
+        raise RuntimeError(f"Refund {refund_id} booking was not found")
+    if booking["status"] not in (expected_booking_status, target_booking_status):
+        raise RuntimeError(f"Refund {refund_id} cannot transition booking from {booking['status']}")
+
+    if not payment.get("stripe_refund_payouts_cancelled_at"):
+        await PayoutRepository.cancel_by_booking(booking_id)
+        payment = await PaymentRepository.mark_stripe_refund_effect(str(payment["id"]), "payouts")
+
+    await PaymentRepository.update_status(
+        str(payment["id"]),
+        target_payment_status,
+        refunded_at=datetime.now(UTC),
+        refund_amount=float(payment.get("refund_amount") or 0),
+    )
+    await BookingRepository.update_payment_status(booking_id, target_payment_status)
+    if booking["status"] == expected_booking_status:
+        transitioned = await BookingRepository.transition_status(
+            booking_id, expected_booking_status, target_booking_status
+        )
+        if not transitioned:
+            booking = await BookingRepository.get_by_id(booking_id)
+            if not booking or booking["status"] != target_booking_status:
+                raise RuntimeError(f"Refund {refund_id} lost its booking transition")
+
+    updated = await BookingRepository.get_by_id(booking_id)
+    hotel = await Database.fetchrow(
+        "SELECT contact_email FROM hotels WHERE id = $1", booking["hotel_id"]
+    )
+    notification_prefix = f"refund_{target_booking_status}"
+    if target_booking_status == "cancelled" and expected_booking_status == "confirmed":
+        await _deliver_booking_notification_once(
+            booking_id,
+            f"{notification_prefix}_guest",
+            updated["guest_email"],
+            lambda: send_guest_cancellation_refund(
+                updated["guest_email"],
+                updated,
+                float(payment.get("refund_amount") or 0),
+                float(payment.get("stripe_refund_percentage") or 0),
+            ),
+        )
+        if hotel:
+            await _deliver_booking_notification_once(
+                booking_id,
+                f"{notification_prefix}_host",
+                hotel["contact_email"],
+                lambda: send_host_guest_cancelled(hotel["contact_email"], updated),
+            )
+    elif target_booking_status == "cancelled":
+        await Database.execute(
+            "UPDATE bookings SET guest_withdrawn = true WHERE id = $1", booking_id
+        )
+        if hotel:
+            await _deliver_booking_notification_once(
+                booking_id,
+                f"{notification_prefix}_host",
+                hotel["contact_email"],
+                lambda: send_host_booking_withdrawn(hotel["contact_email"], updated),
+            )
+        await _deliver_booking_notification_once(
+            booking_id,
+            f"{notification_prefix}_guest",
+            updated["guest_email"],
+            lambda: send_guest_booking_withdrawn(updated["guest_email"], updated),
+        )
+    elif target_booking_status == "declined":
+        await _deliver_booking_notification_once(
+            booking_id,
+            f"{notification_prefix}_guest",
+            updated["guest_email"],
+            lambda: send_guest_booking_rejected(updated["guest_email"], updated),
+        )
+        if hotel:
+            await _deliver_booking_notification_once(
+                booking_id,
+                f"{notification_prefix}_host",
+                hotel["contact_email"],
+                lambda: send_host_booking_rejected(hotel["contact_email"], updated),
+            )
+    else:
+        await _deliver_booking_notification_once(
+            booking_id,
+            f"{notification_prefix}_guest",
+            updated["guest_email"],
+            lambda: send_guest_booking_expired(updated["guest_email"], updated),
+        )
+        if hotel:
+            await _deliver_booking_notification_once(
+                booking_id,
+                f"{notification_prefix}_host",
+                hotel["contact_email"],
+                lambda: send_host_booking_expired(hotel["contact_email"], updated),
+            )
+
+    if not payment.get("stripe_refund_channex_cancelled_at"):
+        await channex_handle_cancellation(booking_id)
+        payment = await PaymentRepository.mark_stripe_refund_effect(str(payment["id"]), "channex")
+    if not payment.get("stripe_refund_ari_handoff_completed_at"):
+        pushed = await push_ari_for_booking(booking_id)
+        if pushed is False:
+            raise RuntimeError(f"Refund {refund_id} availability handoff failed")
+        payment = await PaymentRepository.mark_stripe_refund_effect(str(payment["id"]), "ari")
+    _schedule_unassigned_sweep(booking)
+    completed = await PaymentRepository.complete_stripe_refund(str(payment["id"]))
+    if not completed:
+        raise RuntimeError(f"Refund {refund_id} effects are incomplete")
+    await BookingRepository.release_stripe_refund_reservation(booking_id)
+    return updated
+
+
+async def _release_or_refund_card_payment(
+    booking_id: str,
+    payment: dict | None,
+    *,
+    target_booking_status: str,
+) -> str:
+    """Release an authorization or refund an already-captured request payment."""
+    if not payment:
+        return "cancelled"
+
+    payment_status = payment.get("status")
+    if payment_status in ("refunded", "partially_refunded"):
+        if payment.get("stripe_refund_id"):
+            await reconcile_stripe_refund(payment["stripe_refund_id"], "succeeded")
+        return payment_status
+    if payment_status == "cancelled":
+        return "cancelled"
+
+    payment_intent_id = payment.get("stripe_payment_intent_id")
+    if payment_intent_id:
+        if payment_status == "captured":
+            return await _create_recorded_stripe_refund(
+                payment,
+                amount=None,
+                refund_amount=float(payment["amount"]),
+                refund_percentage=100,
+                target_payment_status="refunded",
+                target_booking_status=target_booking_status,
+                idempotency_key=f"booking-request-refund-{booking_id}",
+            )
+        await stripe_service.cancel_payment_intent(
+            payment_intent_id,
+            **(
+                {"stripe_account": payment["stripe_account_id"]}
+                if payment.get("stripe_account_id")
+                else {}
+            ),
+        )
+
+    await PaymentRepository.update_status(str(payment["id"]), "cancelled")
+    return "cancelled"
+
+
 async def host_reject_booking(booking_id: str, user_id: str, reason: str | None = None) -> dict:
-    """Host rejects a pending booking — releases hold if card, expires invoice if xendit."""
+    """Host rejects a pending booking and reverses its pending payment."""
     hotel_id = await _get_hotel_id_for_user(user_id)
     booking = await BookingRepository.get_by_id(booking_id)
     if not booking or str(booking["hotel_id"]) != hotel_id:
@@ -1608,15 +2301,13 @@ async def host_reject_booking(booking_id: str, user_id: str, reason: str | None 
     if booking["status"] != "pending":
         raise ValueError("Booking is not in pending state")
 
-    # Release payment hold / expire invoice
+    # Release payment hold, refund a captured deposit, or expire the invoice.
     payment = await PaymentRepository.get_by_booking_id(booking_id)
+    terminal_payment_status = "cancelled"
     if booking.get("payment_method") == "card":
-        if payment and payment.get("stripe_payment_intent_id"):
-            try:
-                await stripe_service.cancel_payment_intent(payment["stripe_payment_intent_id"])
-            except Exception as e:
-                logger.warning("Failed to cancel PI for booking %s: %s", booking_id, e)
-            await PaymentRepository.update_status(str(payment["id"]), "cancelled")
+        terminal_payment_status = await _release_or_refund_card_payment(
+            booking_id, payment, target_booking_status="declined"
+        )
     elif booking.get("payment_method") == "xendit":
         if payment and payment.get("xendit_invoice_id"):
             try:
@@ -1628,11 +2319,24 @@ async def host_reject_booking(booking_id: str, user_id: str, reason: str | None 
         if payment:
             await PaymentRepository.update_status(str(payment["id"]), "cancelled")
 
+    if terminal_payment_status == "refunded":
+        updated = await BookingRepository.get_by_id(booking_id)
+        if updated and updated["status"] == "declined":
+            await BookingRepository.cancel_with_promo_reversal(
+                booking_id,
+                new_status="declined",
+                payment_status=terminal_payment_status,
+            )
+            return await BookingRepository.get_by_id(booking_id)
+
     # VAY-404: host-rejected requests are stored as 'declined' so the UI can
     # distinguish them from guest-driven cancellations ('cancelled' covers
     # guest withdraw + guest-initiated cancellation of a confirmed booking).
-    await BookingRepository.update_status(booking_id, "declined")
-    await BookingRepository.update_payment_status(booking_id, "cancelled")
+    await BookingRepository.cancel_with_promo_reversal(
+        booking_id,
+        new_status="declined",
+        payment_status=terminal_payment_status,
+    )
     await PayoutRepository.cancel_by_booking(booking_id)
 
     # Notify guest, host, and ops
@@ -1662,19 +2366,30 @@ async def guest_withdraw_booking(booking_id: str, guest_email: str) -> dict:
     if booking["guest_email"].lower() != guest_email.lower():
         raise ValueError("Email does not match booking")
 
-    # Release payment hold if card
+    # Release an authorization or refund an already-captured deposit.
     if booking.get("payment_method") == "card":
         payment = await PaymentRepository.get_by_booking_id(booking_id)
-        if payment and payment.get("stripe_payment_intent_id"):
-            try:
-                await stripe_service.cancel_payment_intent(payment["stripe_payment_intent_id"])
-            except Exception as e:
-                logger.warning("Failed to cancel PI for booking %s: %s", booking_id, e)
-            await PaymentRepository.update_status(str(payment["id"]), "cancelled")
+        terminal_payment_status = await _release_or_refund_card_payment(
+            booking_id, payment, target_booking_status="cancelled"
+        )
+    else:
+        terminal_payment_status = "cancelled"
 
-    await BookingRepository.update_status(booking_id, "cancelled")
-    await BookingRepository.update_payment_status(booking_id, "cancelled")
-    await Database.execute("UPDATE bookings SET guest_withdrawn = true WHERE id = $1", booking_id)
+    if terminal_payment_status == "refunded":
+        updated = await BookingRepository.get_by_id(booking_id)
+        if updated and updated["status"] == "cancelled":
+            await BookingRepository.cancel_with_promo_reversal(
+                booking_id,
+                payment_status=terminal_payment_status,
+                guest_withdrawn=True,
+            )
+            return await BookingRepository.get_by_id(booking_id)
+
+    await BookingRepository.cancel_with_promo_reversal(
+        booking_id,
+        payment_status=terminal_payment_status,
+        guest_withdrawn=True,
+    )
 
     # Notify host and guest
     hotel = await Database.fetchrow(
@@ -1905,27 +2620,27 @@ async def handle_guest_cancellation(booking_id: str, guest_email: str) -> dict:
             else await PaymentRepository.get_by_booking_id(booking_id)
         )
         if payment and payment.get("stripe_payment_intent_id"):
-            try:
-                refund_cents = (
-                    int(math.ceil(outcome.refund_amount * 100))
-                    if outcome.refund_pct < 100
-                    else None
-                )
-                await stripe_service.create_refund(
-                    payment["stripe_payment_intent_id"],
-                    amount=refund_cents,
-                )
-                new_status = "refunded" if outcome.refund_pct >= 100 else "partially_refunded"
-                await PaymentRepository.update_status(
-                    str(payment["id"]),
-                    new_status,
-                    refunded_at=datetime.now(UTC),
-                    refund_amount=outcome.refund_amount,
-                )
-            except Exception as e:
-                logger.error("Failed to refund booking %s: %s", booking_id, e)
+            refund_cents = (
+                int(math.ceil(outcome.refund_amount * 100)) if outcome.refund_pct < 100 else None
+            )
+            target_payment_status = (
+                "refunded" if outcome.refund_pct >= 100 else "partially_refunded"
+            )
+            await _create_recorded_stripe_refund(
+                payment,
+                amount=refund_cents,
+                refund_amount=outcome.refund_amount,
+                refund_percentage=outcome.refund_pct,
+                target_payment_status=target_payment_status,
+                target_booking_status="cancelled",
+                idempotency_key=f"guest-cancellation-refund-{booking_id}-{refund_cents or 'full'}",
+            )
+            await BookingRepository.cancel_with_promo_reversal(
+                booking_id,
+                payment_status=target_payment_status,
+            )
+            return await BookingRepository.get_by_id(booking_id)
 
-    await BookingRepository.update_status(booking_id, "cancelled")
     new_payment_status = (
         "refunded"
         if outcome.refund_pct >= 100 and outcome.refund_amount > 0
@@ -1943,7 +2658,10 @@ async def handle_guest_cancellation(booking_id: str, guest_email: str) -> dict:
             )
         )
     )
-    await BookingRepository.update_payment_status(booking_id, new_payment_status)
+    await BookingRepository.cancel_with_promo_reversal(
+        booking_id,
+        payment_status=new_payment_status,
+    )
     await PayoutRepository.cancel_by_booking(booking_id)
 
     updated = await BookingRepository.get_by_id(booking_id)
@@ -1975,15 +2693,13 @@ async def expire_booking(booking_id: str) -> None:
     if not booking or booking["status"] != "pending":
         return
 
-    # Release payment hold / expire invoice
+    # Release payment hold, refund a captured deposit, or expire the invoice.
     payment = await PaymentRepository.get_by_booking_id(booking_id)
+    terminal_payment_status = "cancelled"
     if booking.get("payment_method") == "card":
-        if payment and payment.get("stripe_payment_intent_id"):
-            try:
-                await stripe_service.cancel_payment_intent(payment["stripe_payment_intent_id"])
-            except Exception as e:
-                logger.warning("Failed to cancel PI for expired booking %s: %s", booking_id, e)
-            await PaymentRepository.update_status(str(payment["id"]), "cancelled")
+        terminal_payment_status = await _release_or_refund_card_payment(
+            booking_id, payment, target_booking_status="expired"
+        )
     elif booking.get("payment_method") == "xendit":
         if payment and payment.get("xendit_invoice_id"):
             try:
@@ -1997,8 +2713,13 @@ async def expire_booking(booking_id: str) -> None:
         if payment:
             await PaymentRepository.update_status(str(payment["id"]), "cancelled")
 
+    if terminal_payment_status == "refunded":
+        updated = await BookingRepository.get_by_id(booking_id)
+        if updated and updated["status"] == "expired":
+            return
+
     await BookingRepository.update_status(booking_id, "expired")
-    await BookingRepository.update_payment_status(booking_id, "cancelled")
+    await BookingRepository.update_payment_status(booking_id, terminal_payment_status)
 
     # Notify both parties
     hotel = await Database.fetchrow(
@@ -2008,6 +2729,8 @@ async def expire_booking(booking_id: str) -> None:
     _create_task(send_guest_booking_expired(updated["guest_email"], updated))
     if hotel:
         _create_task(send_host_booking_expired(hotel["contact_email"], updated))
+    _create_task(channex_handle_cancellation(booking_id))
+    _create_task(push_ari_for_booking(booking_id))
     _schedule_unassigned_sweep(booking)
 
 

@@ -6,8 +6,6 @@ import { checkFinanceParity } from "./finance/parity.js";
 import { transformFinance } from "./finance/transform.js";
 import { checkIdentityOrganizationLinksParity } from "./identityOrganizationLinks/parity.js";
 import { transformIdentityOrganizationLinks } from "./identityOrganizationLinks/transform.js";
-import { checkIntelligenceParity } from "./intelligence/parity.js";
-import { transformIntelligence } from "./intelligence/transform.js";
 import { checkMarketplaceParity } from "./marketplace/parity.js";
 import { transformMarketplace } from "./marketplace/transform.js";
 import { checkMediaUrlMigrationParity } from "./mediaUrlMigration/parity.js";
@@ -57,11 +55,6 @@ const fixtureCases: FixtureCaseRegistration[] = [
     fixtureCase: "distribution-bookability",
     transform: transformDistributionBookability,
     parityHandlers: [checkDistributionBookabilityParity],
-  },
-  {
-    fixtureCase: "intelligence",
-    transform: transformIntelligence,
-    parityHandlers: [checkIntelligenceParity],
   },
   {
     fixtureCase: "platform-jobs-events-audit",

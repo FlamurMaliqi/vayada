@@ -3,11 +3,31 @@ import { propertyEndpoint, resolveSelectedPmsPropertyId } from "../api/pmsProper
 import { unsupportedPmsNextStackFeature } from "../api/unsupported";
 import type { CheckinStepType } from "@/services/settings";
 
+export const HIDDEN_GUEST_CONTACT = "Hidden until you accept";
+
 export interface AssignedRoom {
   assignmentId: string | null;
   roomId: string | null;
   roomNumber: string | null;
   position: number;
+}
+
+// prettier-ignore
+export type BookingExpectedPaymentMethod = "unknown" | "pay_at_property" | "bank_transfer" | "manual_card" | "cash" | "other";
+
+export interface BookingStay {
+  position: number;
+  roomName: string;
+  ratePlanName: string | null;
+  roomNumber: string | null;
+  checkIn: string | null;
+  checkOut: string | null;
+  adults: number | null;
+  children: number | null;
+  nightly: Array<{
+    appliedAmount: number | null;
+    currency: string | null;
+  }>;
 }
 
 export interface Booking {
@@ -22,6 +42,8 @@ export interface Booking {
   guestEmail: string;
   guestPhone: string;
   guestCountry: string;
+  guestCountryRaw: string | null;
+  guestCountryReviewRequired: boolean;
   guestGender: string;
   guestDateOfBirth: string | null;
   guestPassportNumber: string;
@@ -54,9 +76,18 @@ export interface Booking {
   // VAY-403: every physical room the booking occupies — the primary
   // (position 0) plus any extra rooms of a multi-room reservation.
   assignedRooms: AssignedRoom[];
+  stays: BookingStay[];
   channel: string;
   paymentMethod: string | null;
+  expectedPaymentMethod: BookingExpectedPaymentMethod;
   paymentStatus: string | null;
+  paymentBreakdown?: {
+    grossAmount: number;
+    stripeFee: number;
+    vayadaCommission: number;
+    netPayout: number;
+    currency: string;
+  } | null;
   checkInPendingFlags: string[];
   checkedInAt: string | null;
   checkedOutAt: string | null;
@@ -107,6 +138,14 @@ function commandMetadata(prefix: string): { commandId: string; idempotencyKey: s
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const commandId = `${prefix}:${random}`;
+  return { commandId, idempotencyKey: commandId };
+}
+
+function bookingLifecycleCommand(
+  action: "accept" | "mark-paid",
+  guestBookingId: string,
+): { commandId: string; idempotencyKey: string } {
+  const commandId = `pms.booking.${action}:${encodeURIComponent(guestBookingId)}:v1`;
   return { commandId, idempotencyKey: commandId };
 }
 
@@ -189,6 +228,9 @@ function toBookingNote(note: PmsPrivateNote, bookingId: string): BookingNote {
     body: note.body,
     source: "booking-detail",
     createdAt: note.createdAt,
+    editedByUserId: note.auditMetadata.editedByUserId,
+    editedByName: note.auditMetadata.editedByDisplayName,
+    editedAt: note.auditMetadata.editedAt,
   };
 }
 
@@ -204,6 +246,8 @@ function toAdditionalGuest(guest: PmsBookingGuestPii, position: number): Booking
     dateOfBirth: null,
     email: guest.email ?? "",
     phone: guest.phone ?? "",
+    guestContactHidden:
+      guest.email === HIDDEN_GUEST_CONTACT && guest.phone === HIDDEN_GUEST_CONTACT,
     passportNumber: "",
     roomPosition: null,
     createdAt: "",
@@ -221,6 +265,7 @@ type PmsOperationsRoomType = {
   name: string;
   occupancyLimits: Record<string, number>;
   baseRate: PmsOperationsMoney;
+  ratePlans?: Array<{ ratePlanId: string; name: string }>;
 };
 
 type PmsOperationalReservation = {
@@ -229,7 +274,16 @@ type PmsOperationalReservation = {
   status: string;
   source: "direct_booking" | "channel" | "manual" | "migration";
   stay: { checkIn: string; checkOut: string; adults: number; children: number };
-  primaryGuest: { displayName: string; email: string | null; phone: string | null };
+  primaryGuest: {
+    displayName: string;
+    email: string | null;
+    phone: string | null;
+    countryCode: string | null;
+    specialRequests?: string | null;
+    countryCodeRaw?: string | null;
+    countryCodeReviewRequired?: boolean;
+  };
+  addOns?: Array<{ addonId: string; name: string; quantity: number }>;
   assignments: Array<{
     assignmentId?: string | null;
     roomTypeId: string;
@@ -237,12 +291,31 @@ type PmsOperationalReservation = {
     roomNumber: string | null;
     position: number;
     channel: string;
+    ratePlanId: string | null;
+    stay?: { checkIn: string; checkOut: string; adults: number; children: number };
+    nightly?: Array<{
+      serviceDate: string;
+      applied: PmsOperationsMoney | null;
+      evidenceQuality: "exact" | "inferred" | "missing";
+    }>;
   }>;
   checkin: { completedAt: string | null; pendingFlags: string[] };
   checkout: { completedAt: string | null; pendingFlags: string[] };
   bookedOffer?: { roomTypeId: string; roomName: string };
   roomCount?: number;
   pricing?: { totalAmount: PmsOperationsMoney; balanceAmount: PmsOperationsMoney };
+  payment?: {
+    method: string | null;
+    expectedMethod?: BookingExpectedPaymentMethod;
+    status: string;
+    breakdown?: {
+      grossAmount: PmsOperationsMoney;
+      stripeFee: PmsOperationsMoney;
+      vayadaCommission: PmsOperationsMoney;
+      netPayout: PmsOperationsMoney;
+    };
+  };
+  hostResponseDeadlineAt?: string | null;
 };
 
 type PmsOperationsListResponse<T> = {
@@ -273,12 +346,21 @@ type PmsOperationsCommandResponse = {
   reservation: PmsOperationalReservation;
 };
 
+type PmsPrimaryGuestNationalityCommandResponse = {
+  primaryGuest: PmsBookingGuestPii;
+};
+
 type PmsPrivateNote = {
   noteId: string;
   body: string;
   authorUserId: string | null;
   authorDisplayName: string;
   createdAt: string;
+  auditMetadata: {
+    editedByUserId: string | null;
+    editedByDisplayName: string | null;
+    editedAt: string | null;
+  };
 };
 
 type PmsPrivateNotesResponse = {
@@ -313,6 +395,8 @@ type PmsBookingGuestPii = {
   email: string | null;
   phone: string | null;
   countryCode: string | null;
+  countryCodeRaw: string | null;
+  countryCodeReviewRequired: boolean;
 };
 
 type PmsAdditionalGuestsResponse = {
@@ -354,6 +438,9 @@ export interface BookingNote {
   body: string;
   source: "check-in" | "check-out" | "booking-detail" | null;
   createdAt: string;
+  editedByUserId: string | null;
+  editedByName: string | null;
+  editedAt: string | null;
 }
 
 export interface BookingAdditionalGuest {
@@ -367,6 +454,7 @@ export interface BookingAdditionalGuest {
   dateOfBirth: string | null;
   email: string;
   phone: string;
+  guestContactHidden: boolean;
   passportNumber: string;
   /** Which of the booking's rooms this guest is assigned to.
    * 0 = primary room, 1..N-1 = extras, null = unassigned. */
@@ -376,7 +464,10 @@ export interface BookingAdditionalGuest {
 }
 
 export type BookingAdditionalGuestPayload = Partial<
-  Omit<BookingAdditionalGuest, "id" | "bookingId" | "position" | "createdAt" | "updatedAt">
+  Omit<
+    BookingAdditionalGuest,
+    "id" | "bookingId" | "position" | "createdAt" | "updatedAt" | "guestContactHidden"
+  >
 >;
 
 export interface BookingChangeRequest {
@@ -475,6 +566,19 @@ export const bookingsService = {
     return pmsOperationsBookingsReadService.get(id);
   },
 
+  correctPrimaryGuestNationality: async (id: string, countryCode: string) => {
+    const response = await pmsOperationsClient.patch<PmsPrimaryGuestNationalityCommandResponse>(
+      await reservationEndpoint(id, "/primary-guest/nationality"),
+      { ...commandMetadata("pms.primary-guest.nationality.correct"), countryCode },
+      pmsOperationsRequestOptions,
+    );
+    return {
+      guestCountry: response.primaryGuest.countryCode ?? "",
+      guestCountryRaw: response.primaryGuest.countryCodeRaw,
+      guestCountryReviewRequired: response.primaryGuest.countryCodeReviewRequired,
+    };
+  },
+
   update: (
     _id: string,
     _data: Partial<{
@@ -498,8 +602,10 @@ export const bookingsService = {
     }>,
   ) => unsupportedPmsNextStackFeature<Booking>("Booking detail updates"),
 
-  updateStatus: (_id: string, _status: "confirmed" | "cancelled") =>
-    unsupportedPmsNextStackFeature<Booking>("Booking confirmation or cancellation"),
+  updateStatus: (id: string, status: "confirmed" | "cancelled") =>
+    status === "confirmed"
+      ? bookingsService.acceptBooking(id)
+      : unsupportedPmsNextStackFeature<Booking>("Booking cancellation"),
 
   completeCheckIn: async (
     id: string,
@@ -583,12 +689,26 @@ export const bookingsService = {
     return refreshBooking(id);
   },
 
-  markPaid: (_id: string) => unsupportedPmsNextStackFeature<Booking>("Booking payment marking"),
+  markPaid: async (id: string) => {
+    await pmsOperationsClient.post<PmsOperationsCommandResponse>(
+      await reservationEndpoint(id, "/mark-paid"),
+      bookingLifecycleCommand("mark-paid", id),
+      pmsOperationsRequestOptions,
+    );
+    return refreshBooking(id);
+  },
 
   addArrivalCharge: (_id: string, _amount: number, _description?: string) =>
     unsupportedPmsNextStackFeature<Booking>("Arrival charges"),
 
-  acceptBooking: (_id: string) => unsupportedPmsNextStackFeature<Booking>("Booking acceptance"),
+  acceptBooking: async (id: string) => {
+    await pmsOperationsClient.post<PmsOperationsCommandResponse>(
+      await reservationEndpoint(id, "/accept"),
+      bookingLifecycleCommand("accept", id),
+      pmsOperationsRequestOptions,
+    );
+    return refreshBooking(id);
+  },
 
   rejectBooking: (_id: string, _reason?: string) =>
     unsupportedPmsNextStackFeature<Booking>("Booking rejection"),
@@ -718,6 +838,15 @@ export const bookingsService = {
     const response = await pmsOperationsClient.post<{ note: PmsPrivateNote }>(
       await reservationEndpoint(id, "/notes"),
       { ...commandMetadata("pms.note.create"), body },
+      pmsOperationsRequestOptions,
+    );
+    return toBookingNote(response.note, id);
+  },
+
+  updateNote: async (id: string, noteId: string, body: string) => {
+    const response = await pmsOperationsClient.patch<{ note: PmsPrivateNote }>(
+      await reservationEndpoint(id, `/notes/${encodeURIComponent(noteId)}`),
+      { ...commandMetadata("pms.note.update"), body },
       pmsOperationsRequestOptions,
     );
     return toBookingNote(response.note, id);
@@ -870,6 +999,13 @@ function toBooking(
     : baseRate * Math.max(nights, 1) * numberOfRooms;
   const nightlyRate = roomType ? baseRate : totalAmount / Math.max(nights, 1) / numberOfRooms;
   const [guestFirstName, guestLastName] = splitGuestName(reservation.primaryGuest.displayName);
+  const addOns = reservation.addOns ?? [];
+  // prettier-ignore
+  const capacities = reservation.assignments.map((assignment) => maxOccupancy(roomTypesById.get(assignment.roomTypeId)));
+  const knownCapacity = capacities.reduce((sum, capacity) => sum + capacity, 0);
+  const roomTypeCapacity = maxOccupancy(roomType);
+  // prettier-ignore
+  const totalRoomCapacity = (numberOfRooms === 1 && roomTypeCapacity > 0) || (capacities.length === numberOfRooms && capacities.every(Boolean)) ? knownCapacity || roomTypeCapacity : Math.max(knownCapacity || roomTypeCapacity, reservation.stay.adults + reservation.stay.children);
 
   return {
     id: reservation.guestBookingId,
@@ -877,16 +1013,18 @@ function toBooking(
     roomTypeId,
     roomName: roomType?.name || reservation.bookedOffer?.roomName || "",
     roomMaxOccupancy: maxOccupancy(roomType),
-    totalRoomCapacity: maxOccupancy(roomType),
+    totalRoomCapacity,
     guestFirstName,
     guestLastName,
     guestEmail: reservation.primaryGuest.email ?? "",
     guestPhone: reservation.primaryGuest.phone ?? "",
-    guestCountry: "",
+    guestCountry: reservation.primaryGuest.countryCode ?? "",
+    guestCountryRaw: reservation.primaryGuest.countryCodeRaw ?? null,
+    guestCountryReviewRequired: reservation.primaryGuest.countryCodeReviewRequired === true,
     guestGender: "",
     guestDateOfBirth: null,
     guestPassportNumber: "",
-    specialRequests: "",
+    specialRequests: reservation.primaryGuest.specialRequests ?? "",
     checkIn: reservation.stay.checkIn,
     checkOut: reservation.stay.checkOut,
     nights,
@@ -909,28 +1047,72 @@ function toBooking(
       assignmentId: assignment.assignmentId ?? null,
       roomId: assignment.roomId,
       roomNumber: assignment.roomNumber,
-      position: assignment.position,
+      position: Math.max(assignment.position - 1, 0),
     })),
+    stays: reservation.assignments.map((assignment) => {
+      const assignmentRoomType = roomTypesById.get(assignment.roomTypeId);
+      const ratePlan = assignmentRoomType?.ratePlans?.find(
+        (plan) => plan.ratePlanId === assignment.ratePlanId,
+      );
+      return {
+        position: Math.max(assignment.position - 1, 0),
+        roomName: assignmentRoomType?.name ?? "",
+        ratePlanName: ratePlan?.name ?? null,
+        roomNumber: assignment.roomNumber,
+        checkIn: assignment.stay?.checkIn ?? null,
+        checkOut: assignment.stay?.checkOut ?? null,
+        adults: assignment.stay?.adults ?? null,
+        children: assignment.stay?.children ?? null,
+        nightly: (assignment.nightly ?? []).map((night) => ({
+          appliedAmount: night.applied ? moneyAmount(night.applied) : null,
+          currency: night.applied?.currency ?? null,
+        })),
+      };
+    }),
     channel: primaryAssignment?.channel ?? reservationSource(reservation.source),
-    paymentMethod: null,
-    paymentStatus: null,
+    paymentMethod: reservation.payment?.method ?? null,
+    expectedPaymentMethod: reservation.payment?.expectedMethod ?? "unknown",
+    paymentStatus: reservation.payment?.status ?? null,
+    paymentBreakdown: toPaymentBreakdown(reservation.payment?.breakdown),
     checkInPendingFlags: reservation.checkin.pendingFlags,
     checkedInAt: reservation.checkin.completedAt,
     checkedOutAt: reservation.checkout.completedAt,
-    hostResponseDeadline: null,
+    hostResponseDeadline: reservation.hostResponseDeadlineAt ?? null,
     platformFeeAmount: null,
     affiliateCommissionAmount: null,
     propertyPayoutAmount: null,
-    addonIds: [],
-    addonNames: [],
+    addonIds: addOns.map(({ addonId }) => addonId),
+    addonNames: addOns.map(({ name }) => name),
     addonTotal: 0,
-    addonQuantities: {},
+    addonQuantities: Object.fromEntries(addOns.map(({ addonId, quantity }) => [addonId, quantity])),
     addonDates: {},
     estimatedArrivalTime: null,
     numberOfGuests: reservation.stay.adults + reservation.stay.children,
     guestWithdrawn: false,
     createdAt: `${reservation.stay.checkIn}T00:00:00.000Z`,
     updatedAt: `${reservation.stay.checkIn}T00:00:00.000Z`,
+  };
+}
+
+function toPaymentBreakdown(
+  breakdown: NonNullable<PmsOperationalReservation["payment"]>["breakdown"],
+): Booking["paymentBreakdown"] {
+  if (!breakdown) return null;
+  const currency = breakdown.grossAmount.currency;
+  if (
+    !currency ||
+    [breakdown.stripeFee, breakdown.vayadaCommission, breakdown.netPayout].some(
+      (amount) => amount.currency !== currency,
+    )
+  ) {
+    return null;
+  }
+  return {
+    grossAmount: moneyAmount(breakdown.grossAmount),
+    stripeFee: moneyAmount(breakdown.stripeFee),
+    vayadaCommission: moneyAmount(breakdown.vayadaCommission),
+    netPayout: moneyAmount(breakdown.netPayout),
+    currency,
   };
 }
 
@@ -991,6 +1173,8 @@ function reservationSource(source: PmsOperationalReservation["source"]): string 
 function toBookingStatus(status: string): Booking["status"] {
   switch (status) {
     case "pending":
+    case "pending_payment":
+      return "pending";
     case "confirmed":
     case "checked_in":
     case "in_house":

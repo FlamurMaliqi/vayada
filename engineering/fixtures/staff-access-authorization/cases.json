@@ -1,0 +1,255 @@
+{
+  "contractVersion": "staff-access-authorization.v1",
+  "tupleFields": {
+    "membership": "organizationId,status,roleKey,propertyAccessMode,assignedPropertyIds",
+    "permissionOverride": "grants,denies",
+    "principal": "membershipRef,overrideRef",
+    "entitlement": "product,key,scope,status",
+    "resource": "organizationId,product,resourceType,resourceId,relationship,status",
+    "expected": "status,decision,reason",
+    "routeRequest": "resourceRef,permission,entitlementRef",
+    "routeCase": "principalRef,requestRef,outcomeRef",
+    "guestContactContext": "propertyId,bookingId,plan,bookingAccepted",
+    "guestContactRequest": "requestedPropertyId,requestedBookingId,contactContextRef,entitlementRef",
+    "guestContactCase": "principalRef,requestRef,outcomeRef",
+    "staffTarget": "membershipId,userId,organizationId",
+    "propertyScope": "propertyAccessMode,assignedPropertyIds",
+    "staffMutation": "targetRef,targetRoleKey,overrideRef,propertyScopeRef",
+    "staffMutationCase": "actorPrincipalRef,mutationRef,outcomeRef",
+    "membershipRemoval": "targetRef,preservedRef",
+    "membershipRemovalCase": "removalRef,targetStatus,targetProviderOrgAccess,preservedStatus,preservedProviderOrgAccess,preservedUserStatus",
+    "staffConfiguration": "roleKey,overrideRef,propertyScopeRef",
+    "invitation": "state,providerInvitationId,configurationRevision,providerExpiresAt,configurationRef",
+    "acceptanceExpected": "membershipsActivated,finalState,membershipStatus,configurationRevision,decision,appliedConfigurationRef"
+  },
+  "organizations": {
+    "org-a": ["property-a", "property-b"],
+    "org-b": ["property-other-tenant"]
+  },
+  "memberships": {
+    "owner-all": ["org-a", "active", "hotel_owner", "all", []],
+    "manager-a": ["org-a", "active", "hotel_manager", "assigned", ["property-a"]],
+    "manager-all": ["org-a", "active", "hotel_manager", "all", []],
+    "front-a": ["org-a", "active", "front_desk", "assigned", ["property-a"]],
+    "front-empty": ["org-a", "active", "front_desk", "assigned", []],
+    "custom-a": ["org-a", "active", "hotel_custom", "assigned", ["property-a"]],
+    "housekeeping-a": ["org-a", "active", "housekeeping", "assigned", ["property-a"]],
+    "inactive-front-a": ["org-a", "inactive", "front_desk", "assigned", ["property-a"]],
+    "pending-front-a": ["org-a", "pending", "front_desk", "assigned", ["property-a"]],
+    "invalid-mode-front-a": ["org-a", "active", "front_desk", "unknown", ["property-a"]]
+  },
+  "permissionOverrides": {
+    "deny-finance": [[], ["pms.finance.read"]],
+    "grant-calendar": [["pms.calendar.read"], []],
+    "grant-contact": [["pms.guest_contact.read"], []],
+    "grant-cancel-only": [["pms.reservation.cancel"], []],
+    "grant-staff": [["identity.staff.manage"], []],
+    "overlap-calendar": [["pms.calendar.read"], ["pms.calendar.read"]]
+  },
+  "principals": {
+    "owner": ["owner-all", null],
+    "manager-a": ["manager-a", null],
+    "manager-all": ["manager-all", null],
+    "manager-deny-finance": ["manager-a", "deny-finance"],
+    "front-a": ["front-a", null],
+    "front-empty": ["front-empty", null],
+    "custom-calendar": ["custom-a", "grant-calendar"],
+    "custom-cancel-only": ["custom-a", "grant-cancel-only"],
+    "housekeeping-contact": ["housekeeping-a", "grant-contact"],
+    "inactive-front": ["inactive-front-a", null],
+    "pending-front": ["pending-front-a", null],
+    "invalid-mode-front": ["invalid-mode-front-a", null]
+  },
+  "entitlements": {
+    "pms-active": ["pms", "property-management", "organization", "active"],
+    "pms-suspended": ["pms", "property-management", "organization", "suspended"],
+    "booking-active": ["booking", "booking-engine", "organization", "active"]
+  },
+  "resources": {
+    "catalog-a": ["org-a", "hotel_catalog", "property", "property-a", "owner", "active"],
+    "booking-a": ["org-a", "booking", "booking_hotel", "property-a", "owner", "active"],
+    "booking-b": ["org-a", "booking", "booking_hotel", "property-b", "owner", "active"],
+    "pms-a": ["org-a", "pms", "pms_property", "property-a", "operator", "active"],
+    "pms-b": ["org-a", "pms", "pms_property", "property-b", "operator", "active"],
+    "pms-a-inactive": ["org-a", "pms", "pms_property", "property-a", "operator", "suspended"],
+    "pms-other": ["org-b", "pms", "pms_property", "property-other-tenant", "operator", "active"],
+    "legacy-pms": ["org-a", "pms", "pms_hotel", "legacy-pms-hotel-7", "operator", "active"]
+  },
+  "routeRequests": {
+    "finance-b": ["pms-b", "pms.finance.read", "pms-active"],
+    "booking-settings-a": ["booking-a", "booking.settings.manage", "booking-active"],
+    "reservation-b": ["pms-b", "pms.reservation.read", "pms-active"],
+    "reservation-other": ["pms-other", "pms.reservation.read", "pms-active"],
+    "calendar": [null, "pms.calendar.read", null],
+    "finance": [null, "pms.finance.read", null],
+    "cancel": [null, "pms.reservation.cancel", null],
+    "reservation-a-no-plan": ["pms-a", "pms.reservation.read", null],
+    "reservation-a-suspended": ["pms-a", "pms.reservation.read", "pms-suspended"],
+    "reservation-a": ["pms-a", "pms.reservation.read", "pms-active"]
+  },
+  "guestContactContexts": {
+    "fixed-a": ["property-a", "ba-fixed", "fixed", false],
+    "commission-hidden-a": ["property-a", "ba-pending", "commission", false],
+    "commission-visible-a": ["property-a", "ba-accepted", "commission", true],
+    "fixed-b": ["property-b", "bb-fixed", "fixed", false]
+  },
+  "guestContactRequests": {
+    "fixed-a": ["property-a", "ba-fixed", "fixed-a", "pms-active"],
+    "commission-hidden-a": ["property-a", "ba-pending", "commission-hidden-a", "pms-active"],
+    "commission-visible-a": ["property-a", "ba-accepted", "commission-visible-a", "pms-active"],
+    "wrong-property": ["property-a", "ba-fixed", "fixed-b", "pms-active"],
+    "wrong-booking": ["property-a", "ba-pending", "commission-visible-a", "pms-active"]
+  },
+  "staffTargets": {
+    "member-a": ["membership-target-a", "user-target-a", "org-a"],
+    "member-b": ["membership-target-b", "user-target-b", "org-b"],
+    "shared-member-a": ["membership-shared-a", "user-shared", "org-a"],
+    "shared-member-b": ["membership-shared-b", "user-shared", "org-b"]
+  },
+  "propertyScopes": {
+    "all": ["all", []],
+    "assigned-a": ["assigned", ["property-a"]],
+    "assigned-other": ["assigned", ["property-other-tenant"]]
+  },
+  "staffConfigurations": {
+    "front-a": ["front_desk", null, "assigned-a"],
+    "manager-all": ["hotel_manager", null, "all"]
+  },
+  "staffMutations": {
+    "protected": ["member-a", "hotel_manager", "grant-staff", "assigned-a"],
+    "owner-role": ["member-a", "hotel_owner", null, "assigned-a"],
+    "cross-tenant": ["member-b", "front_desk", null, "assigned-other"],
+    "ordinary": ["member-a", "front_desk", null, "assigned-a"],
+    "foreign-property": ["member-a", "front_desk", null, "assigned-other"],
+    "overlapping-override": ["member-a", "hotel_custom", "overlap-calendar", "assigned-a"]
+  },
+  "membershipRemovals": {
+    "shared-from-a": ["shared-member-a", "shared-member-b"]
+  },
+  "outcomes": {
+    "allow": [200, "allow", null],
+    "missing-property": [403, "deny", "missing_property_assignment"],
+    "missing-resource": [403, "deny", "missing_resource_access"],
+    "inactive-member": [401, "deny", "inactive_membership"],
+    "missing-permission": [403, "deny", "missing_permission"],
+    "missing-entitlement": [403, "deny", "missing_entitlement"],
+    "inactive-entitlement": [403, "deny", "inactive_entitlement"],
+    "redact-housekeeping": [200, "redact", "housekeeping_contact_denied"],
+    "redact-plan": [200, "redact", "property_plan_contact_hidden"],
+    "redact-property": [200, "redact", "property_context_mismatch"],
+    "redact-booking": [200, "redact", "booking_context_mismatch"],
+    "protected": [400, "deny", "protected_permission"],
+    "invalid-role": [400, "deny", "invalid_staff_role"],
+    "target-not-found": [404, "deny", "target_not_found"],
+    "invalid-override": [403, "deny", "invalid_permission_override"],
+    "invalid-override-write": [400, "deny", "invalid_permission_override"],
+    "invalid-property-assignment": [400, "deny", "invalid_property_assignment"],
+    "invalid-property-mode": [403, "deny", "invalid_property_access_mode"]
+  },
+  "cases": {
+    "route": {
+      "owner-all-properties": ["owner", "finance-b", "allow"],
+      "manager-assigned-booking-property": ["manager-a", "booking-settings-a", "allow"],
+      "same-tenant-unassigned-property": ["manager-a", "reservation-b", "missing-property"],
+      "cross-tenant-property": ["manager-all", "reservation-other", "missing-resource"],
+      "inactive-membership": ["inactive-front", "calendar", "inactive-member"],
+      "explicit-deny-overrides-manager-default": [
+        "manager-deny-finance",
+        "finance",
+        "missing-permission"
+      ],
+      "custom-explicit-grant": ["custom-calendar", "calendar", "allow"],
+      "missing-entitlement": ["front-a", "reservation-a-no-plan", "missing-entitlement"],
+      "inactive-entitlement": ["front-a", "reservation-a-suspended", "inactive-entitlement"],
+      "pending-invitation-never-authorizes": ["pending-front", "calendar", "inactive-member"],
+      "assignment-removal-next-request": ["front-empty", "reservation-a", "missing-property"],
+      "malformed-stored-override-fails-closed": [
+        "custom-cancel-only",
+        "cancel",
+        "invalid-override"
+      ],
+      "unknown-property-mode-fails-closed": [
+        "invalid-mode-front",
+        "reservation-a",
+        "invalid-property-mode"
+      ]
+    },
+    "resourceProjection": {
+      "caseId": "property-link-projection-fails-closed",
+      "principalRef": "manager-a",
+      "inputResourceRefs": [
+        "catalog-a",
+        "booking-a",
+        "pms-a",
+        "pms-a-inactive",
+        "booking-b",
+        "pms-b",
+        "legacy-pms"
+      ],
+      "expectedAllowedRefs": ["catalog-a", "booking-a", "pms-a"]
+    },
+    "guestContact": {
+      "housekeeping-contact-ceiling": ["housekeeping-contact", "fixed-a", "redact-housekeeping"],
+      "guest-contact-plan-hidden": ["front-a", "commission-hidden-a", "redact-plan"],
+      "guest-contact-allowed": ["front-a", "commission-visible-a", "allow"],
+      "guest-contact-other-property-evidence": ["front-a", "wrong-property", "redact-property"],
+      "guest-contact-other-booking-evidence": ["front-a", "wrong-booking", "redact-booking"]
+    },
+    "staffMutation": {
+      "staff-editor-protected-permission": ["owner", "protected", "protected"],
+      "staff-editor-owner-role-denied": ["owner", "owner-role", "invalid-role"],
+      "cross-tenant-staff-target-hidden": ["owner", "cross-tenant", "target-not-found"],
+      "actor-without-staff-manage": ["manager-a", "ordinary", "missing-permission"],
+      "authorized-same-tenant-edit": ["owner", "ordinary", "allow"],
+      "foreign-property-assignment": ["owner", "foreign-property", "invalid-property-assignment"],
+      "overlapping-override-write": ["owner", "overlapping-override", "invalid-override-write"]
+    },
+    "membershipRemoval": {
+      "tenant-other-org": ["shared-from-a", "inactive", "revoked", "active", "active", "active"]
+    },
+    "invitation": {
+      "invitation-resend-idempotent": {
+        "invitation": ["pending", "invitation-current", 2, "2026-08-28T00:00:00Z", "front-a"],
+        "idempotencyKeys": ["staff-invite-a-resend-2", "staff-invite-a-resend-2"],
+        "expected": { "providerCalls": 1, "expiresAtSource": "provider_response" }
+      },
+      "stale-invitation-acceptance": {
+        "invitation": ["revoked", "invitation-superseded", 1, "2026-08-28T00:00:00Z", "front-a"],
+        "acceptedProviderInvitationId": "invitation-superseded",
+        "expected": [0, "revoked", null, null, "record_only", null]
+      },
+      "expired-invitation-acceptance": {
+        "invitation": ["expired", "invitation-expired", 1, "2026-08-20T00:00:00Z", "front-a"],
+        "acceptedProviderInvitationId": "invitation-expired",
+        "expected": [0, "expired", null, null, "record_only", null]
+      },
+      "pending-but-past-expiry-acceptance": {
+        "invitation": ["pending", "invitation-time-expired", 1, "2026-08-20T00:00:00Z", "front-a"],
+        "acceptanceEventAt": "2026-08-21T00:00:00Z",
+        "expected": [0, "expired", null, null, "record_only", null]
+      },
+      "current-invitation-acceptance": {
+        "invitation": ["pending", "invitation-current", 2, "2026-08-28T00:00:00Z", "front-a"],
+        "acceptedProviderInvitationId": "invitation-current",
+        "acceptanceEventAt": "2026-08-21T00:00:00Z",
+        "expected": [1, "accepted", "active", 2, "activate", "front-a"]
+      },
+      "stale-broader-membership-acceptance": {
+        "existingMembershipConfigurationRef": "manager-all",
+        "invitation": ["pending", "invitation-reinvite", 3, "2026-08-28T00:00:00Z", "front-a"],
+        "acceptedProviderInvitationId": "invitation-reinvite",
+        "acceptanceEventAt": "2026-08-21T00:00:00Z",
+        "expected": [1, "accepted", "active", 3, "activate", "front-a"]
+      }
+    },
+    "audit": {
+      "caseId": "staff-lifecycle-audit-shape",
+      "commonRequiredFields": "actorUserId,actorDisplayName,targetResourceType,targetResourceId,organizationId,action,outcome,changes,requestId,correlationId",
+      "actionTargetFields": {
+        "invite": ["targetInvitationId"],
+        "deactivate": ["targetMembershipId", "targetUserId"],
+        "remove": ["targetMembershipId", "targetUserId"]
+      }
+    }
+  }
+}

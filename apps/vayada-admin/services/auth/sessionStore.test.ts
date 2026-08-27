@@ -62,7 +62,7 @@ describe("admin Vayada API authentication", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "https://api.localhost/auth/session",
+      "/auth/session?surface=platform-admin",
       expect.objectContaining({ credentials: "include" }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -304,6 +304,112 @@ describe("admin Vayada API authentication", () => {
     await expect(ensureSession).resolves.toBe(true);
     expect(getAuthKitAccessToken()).toBe("new-workos-token");
     expect(localStorage.getItem("userEmail")).toBe("new-admin@example.com");
+  });
+
+  it("routes login and the admin compatibility bridge through same-origin auth", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "true");
+    vi.stubEnv("NEXT_PUBLIC_PLATFORM_WORKOS_ORG_ID", "org_workos_platform");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          accessToken: "workos-access-token",
+          csrfToken: "csrf-token",
+          user: { id: "admin-user", email: "admin@example.com", status: "active" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          accessToken: "compatibility-token",
+          expiresIn: 900,
+          tokenType: "Bearer",
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await authService.login({ email: "admin@example.com", password: "secret" });
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/auth/password/login",
+      "/auth/compat/marketplace-admin-token",
+    ]);
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        body: JSON.stringify({
+          email: "admin@example.com",
+          password: "secret",
+          surface: "platform-admin",
+          organizationId: "org_workos_platform",
+        }),
+      }),
+    );
+    expect(getAuthBearerToken()).toBe("compatibility-token");
+  });
+
+  it("includes the platform surface on CSRF-protected session switches", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      csrfToken: "csrf-token",
+      user: { id: "admin-user", email: "admin@example.com", status: "active" },
+    });
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        accessToken: "switched-workos-token",
+        csrfToken: "csrf-token",
+        organizationId: "org_platform",
+        user: { id: "admin-user", email: "admin@example.com", status: "active" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await authService.refreshSession("org_platform");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/auth/session/refresh",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        headers: expect.objectContaining({ "x-vayada-csrf": "csrf-token" }),
+        body: JSON.stringify({ organizationId: "org_platform", surface: "platform-admin" }),
+      }),
+    );
+  });
+
+  it("routes recovery and logout through same-origin auth", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_TOKEN_ENABLED", "false");
+    const location = { href: "https://admin.localhost/dashboard" };
+    Object.assign(window, { location });
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      csrfToken: "csrf-token",
+      user: { id: "admin-user", email: "admin@example.com", status: "active" },
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ message: "Recovery email sent." }))
+      .mockResolvedValueOnce(jsonResponse({ message: "Password reset." }))
+      .mockResolvedValueOnce(jsonResponse({ logoutUrl: "/login" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await authService.forgotPassword("admin@example.com");
+    await authService.resetPassword("reset-token", "new-password");
+    await authService.logout();
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/auth/password/reset/request",
+      "/auth/password/reset/confirm",
+      "/auth/logout",
+    ]);
+    expect(fetchMock.mock.calls[2]?.[1]).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        headers: expect.objectContaining({ "x-vayada-csrf": "csrf-token" }),
+        body: JSON.stringify({ surface: "platform-admin" }),
+      }),
+    );
+    expect(location.href).toBe("/login");
   });
 
   it("drops a compatibility token when a different AuthKit session is committed", () => {

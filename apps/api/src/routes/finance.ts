@@ -1,10 +1,7 @@
 import {
-  FINANCE_INVOICE_STATUSES,
-  FINANCE_PAYMENT_STATUSES,
   FINANCE_PAYOUT_STATUSES,
   FINANCE_RECONCILIATION_JOB_STATUSES,
   FINANCE_RECONCILIATION_RECEIPT_STATUSES,
-  FINANCE_RECONCILIATION_STATUSES,
   FINANCE_RECONCILIATION_SUBJECT_TYPES,
   FINANCE_ROUTE_CONTRACT_VERSION,
   FINANCE_ROUTE_PAYMENT_METHODS,
@@ -26,24 +23,8 @@ import {
   type CreateStripeProviderAccountCommand,
   type FinanceCommandAudit,
   type FinanceCommandMeta,
-  type FinanceFinancialSummaryResponse,
-  type FinanceInvoiceCsvExportResponse,
-  type FinanceInvoiceDetail,
-  type FinanceInvoiceDetailResponse,
-  type FinanceInvoiceListItem,
-  type FinanceInvoiceListQuery,
-  type FinanceInvoiceListResponse,
-  type FinanceInvoicePayment,
-  type FinanceInvoiceStatus,
-  type FinanceInvoiceStatusCounts,
   type FinanceJsonObject,
   type FinanceJsonPolicy,
-  type FinanceManualPaymentRecordCommand,
-  type FinanceManualPaymentRecordResponse,
-  type FinanceManualPaymentRecordResult,
-  type FinancePaymentLedgerItem,
-  type FinancePaymentLedgerQuery,
-  type FinancePaymentLedgerResponse,
   type FinancePaymentSettingsPatchCommand,
   type FinancePaymentSettingsPatchResponse,
   type FinancePaymentSettingsPatchResult,
@@ -55,7 +36,6 @@ import {
   type FinanceProviderAccountCommandMeta,
   type FinanceProviderAccountCommandResponse,
   type FinanceProviderAccountCommandResult,
-  type FinancePaymentStatusCounts,
   type FinancePropertyPayoutDispatchCommand,
   type FinancePropertyPayoutDispatchReadiness,
   type FinancePropertyPayoutDispatchResponse,
@@ -63,11 +43,11 @@ import {
   type FinancePropertyReadRepository,
   type FinanceProviderAccountStatus,
   type FinanceProviderOnboardingStatus,
+  type FinanceStripeDashboardLoginLinkResult,
   type FinanceReconciliationItem,
   type FinanceReconciliationJobStatus,
   type FinanceReconciliationRecommendedAction,
   type FinanceReconciliationReceiptStatus,
-  type FinanceReconciliationStatus,
   type FinanceReconciliationViewKind,
   type FinanceReconciliationViewQuery,
   type FinanceReconciliationViewResponse,
@@ -75,6 +55,7 @@ import {
   type FinanceRoutePaymentProvider,
   type FinanceStripeConnectProvider,
   type IssueStripeOnboardingLinkCommand,
+  StripeConnectAccountNotFoundError,
   type FinanceXenditBankValidationCommand,
   type FinanceXenditBankValidationResponse,
   type FinanceXenditPayoutReconciliationCommand,
@@ -82,20 +63,17 @@ import {
   type FinanceXenditPayoutReconciliationResponse,
 } from "@vayada/domain-finance";
 import { requireAuthContext, type RequestContext } from "@vayada/backend-auth";
+import type { PublicBookabilityPublicationCommandPort } from "@vayada/domain-distribution";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
-import { enqueueBookingLifecycleEmailJob } from "../jobs/bookingEmails.js";
 import type { PublicHotelProfileRepository } from "./aiHotels.js";
+import { createFinancePlatformAffiliatePayoutMarkPaidRepository } from "./financePlatformAffiliatePayoutMarkPaid.js";
+import { createFinancePlatformAffiliatePayoutReadRepository } from "./financePlatformAffiliatePayoutRepository.js";
+import { registerFinancePlatformAffiliatePayoutRoutes } from "./financePlatformAffiliatePayoutRoutes.js";
 import { enforceRoutePolicy, type RouteAuthorizationPolicy } from "./policy.js";
-
-const MANUAL_PAYMENT_SIDE_EFFECTS: FinanceCommandMeta["sideEffects"] = [
-  "audit_event",
-  "booking_projection_refresh",
-  "pms_projection_refresh",
-];
 
 const XENDIT_BANK_VALIDATION_SIDE_EFFECTS: FinanceCommandMeta["sideEffects"] = [
   "provider_validation",
@@ -114,6 +92,8 @@ const PROPERTY_PAYOUT_DISPATCH_SIDE_EFFECTS: FinanceCommandMeta["sideEffects"] =
 
 const AFFILIATE_PAYOUT_SETTINGS_SIDE_EFFECTS: FinanceCommandMeta["sideEffects"] = ["audit_event"];
 const PAYMENT_SETTINGS_SIDE_EFFECTS: FinanceCommandMeta["sideEffects"] = ["audit_event"];
+const STRIPE_DASHBOARD_LINK_RATE_LIMIT = 10;
+const STRIPE_DASHBOARD_LINK_RATE_WINDOW_MS = 60_000;
 
 const XENDIT_PAYOUT_RECONCILIATION_LEGACY_DISPOSITION =
   "legacy /admin/xendit/reconcile-payouts disabled or proxied during rehearsal";
@@ -136,7 +116,7 @@ export type FinancePropertySettingsReadPool = FinanceQueryExecutor & {
   end(): Promise<void>;
 };
 
-type FinancePropertySettingsWriteClient = {
+export type FinancePropertySettingsWriteClient = {
   query<T extends QueryResultRow = QueryResultRow>(
     text: string,
     values?: readonly unknown[],
@@ -146,6 +126,7 @@ type FinancePropertySettingsWriteClient = {
 
 export type FinanceRoutesOptions = {
   repository: FinancePropertyReadRepository;
+  publicBookabilityPublisher?: Pick<PublicBookabilityPublicationCommandPort, "publish">;
   xenditBankValidator?: FinanceXenditBankValidator;
   publicHotelPropertyResolver?: FinancePublicHotelPropertyResolver;
   publicHotelProfileRepository?: PublicHotelProfileRepository;
@@ -199,10 +180,6 @@ type FinancePropertyParams = {
 
 type FinanceAffiliateParams = {
   affiliateId: string;
-};
-
-type FinanceInvoiceParams = FinancePropertyParams & {
-  invoiceId: string;
 };
 
 type FinanceProviderAccountParams = FinancePropertyParams & {
@@ -263,79 +240,6 @@ type FinanceAffiliatePayoutSettingsRow = {
   sourceFreshness: unknown;
 };
 
-type FinanceVisibilitySummaryRow = {
-  propertyId: string;
-  periodStart: Date | string | null;
-  periodEnd: Date | string | null;
-  currency: string;
-  grossPaymentAmount: string;
-  netPaymentAmount: string;
-  payoutAmount: string;
-  commissionAmount: string;
-  outstandingBalanceAmount: string;
-  paymentCount: number;
-  payoutCount: number;
-  failedPaymentCount: number;
-  statusCounts: unknown;
-  sourceFreshness: unknown;
-  projectedAt: Date | string | null;
-};
-
-type FinanceInvoiceRow = {
-  invoiceId: string;
-  invoiceNumber: string;
-  guestBookingId: string;
-  bookingReference: string;
-  propertyName: string | null;
-  guestDisplayName: string | null;
-  guestEmail: string | null;
-  guestPhone: string | null;
-  checkIn: Date | string;
-  checkOut: Date | string;
-  roomName: string | null;
-  roomNumber: string | null;
-  currency: string;
-  totalAmount: string;
-  amountPaid: string;
-  balanceDue: string;
-  status: string;
-  issuedAt: Date | string;
-  total: string | number;
-  counts: unknown;
-  sourceFreshness: unknown;
-};
-
-type FinanceInvoicePaymentRow = {
-  paymentId: string;
-  method: string;
-  amount: string;
-  currency: string;
-  reference: string | null;
-  status: string;
-  recordedAt: Date | string;
-};
-
-type FinancePaymentLedgerRow = {
-  paymentId: string;
-  method: string;
-  amount: string;
-  currency: string;
-  reference: string | null;
-  status: string;
-  recordedAt: Date | string;
-  invoiceId: string | null;
-  invoiceNumber: string | null;
-  guestBookingId: string | null;
-  bookingReference: string | null;
-  checkoutChargeId: string | null;
-  provider: string | null;
-  providerStatus: string | null;
-  reconciliationStatus: string | null;
-  total: string | number;
-  counts: unknown;
-  sourceFreshness: unknown;
-};
-
 type FinancePayoutRow = {
   payoutId: string;
   ownerScope: string;
@@ -388,12 +292,7 @@ type FinanceRowsWithTotal<T extends { total: string | number }> = {
   total: number;
 };
 
-type FinanceManualPaymentWriteRow = {
-  paymentId: string;
-  replay: boolean;
-};
-
-type FinanceManualPaymentIdempotencyRow = {
+type FinanceIdempotencyRow = {
   status: string;
   requestFingerprintHash: string;
 };
@@ -433,11 +332,12 @@ type FinanceValidationError = {
 };
 
 type FinanceCommandError = {
-  statusCode: 400 | 404 | 409 | 500 | 501 | 502;
+  statusCode: 400 | 404 | 409 | 429 | 500 | 501 | 502;
   code:
     | "invalid_command"
     | "affiliate_not_found"
     | "property_not_found"
+    | "property_currency_conflict"
     | "invoice_not_found"
     | "provider_account_not_found"
     | "payout_not_found"
@@ -446,20 +346,12 @@ type FinanceCommandError = {
     | "active_legacy_transfer_window"
     | "payout_already_dispatched"
     | "idempotency_conflict"
+    | "rate_limited"
     | "write_unavailable"
     | "provider_unavailable"
     | "provider_rejected";
-  category: "validation" | "not_found" | "conflict" | "write_model" | "provider";
+  category: "validation" | "not_found" | "conflict" | "rate_limit" | "write_model" | "provider";
   message: string;
-};
-
-type ManualPaymentBody = {
-  commandId?: unknown;
-  idempotencyKey?: unknown;
-  amount?: unknown;
-  currency?: unknown;
-  paymentMethod?: unknown;
-  reference?: unknown;
 };
 
 type StripeProviderAccountBody = {
@@ -467,11 +359,13 @@ type StripeProviderAccountBody = {
   idempotencyKey?: unknown;
   email?: unknown;
   country?: unknown;
+  returnSurface?: unknown;
 };
 
 type OnboardingLinkBody = {
   commandId?: unknown;
   idempotencyKey?: unknown;
+  returnSurface?: unknown;
 };
 
 type XenditBankValidationBody = {
@@ -515,6 +409,7 @@ export async function registerFinanceRoutes(
   app: FastifyInstance,
   options: FinanceRoutesOptions,
 ): Promise<void> {
+  const stripeDashboardLinkRateLimits = new Map<string, { count: number; resetAt: number }>();
   app.addHook("onClose", async () => {
     await options.repository.close?.();
     await options.publicHotelPropertyResolver?.close?.();
@@ -522,6 +417,8 @@ export async function registerFinanceRoutes(
       await options.publicHotelProfileRepository?.close?.();
     }
   });
+
+  await registerFinancePlatformAffiliatePayoutRoutes(app, { repository: options.repository });
 
   app.get<{ Params: FinancePropertyParams }>(
     "/finance/properties/:propertyId/payment-settings",
@@ -565,6 +462,8 @@ export async function registerFinanceRoutes(
         return error;
       }
 
+      await options.publicBookabilityPublisher?.publish({ propertyId });
+
       return {
         ...toFinancePaymentSettingsResponse(result.settings),
         commandMeta: result.commandMeta,
@@ -582,130 +481,6 @@ export async function registerFinanceRoutes(
         (await options.repository.getCancellationPolicy(propertyId)) ??
         cancellationPolicyFromRefundPolicy({}, new Date().toISOString());
       return toFinanceCancellationPolicyResponse(propertyId, policy);
-    },
-  );
-
-  app.get<{ Params: FinancePropertyParams }>(
-    "/finance/properties/:propertyId/summary",
-    async (request, reply) => {
-      const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
-
-      const summary =
-        (await options.repository.getFinancialSummary?.(propertyId)) ??
-        emptyFinancialSummary(propertyId);
-      return {
-        contractVersion: FINANCE_ROUTE_CONTRACT_VERSION,
-        propertyId,
-        ...summary,
-      } satisfies FinanceFinancialSummaryResponse;
-    },
-  );
-
-  app.get<{ Params: FinancePropertyParams }>(
-    "/finance/properties/:propertyId/invoices",
-    async (request, reply) => {
-      const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
-      const query = parseInvoiceListQuery(request.query);
-      if ("statusCode" in query) {
-        reply.code(query.statusCode);
-        return query;
-      }
-
-      const result =
-        (await options.repository.listInvoices?.(propertyId, query)) ?? emptyInvoiceList(query);
-      return {
-        contractVersion: FINANCE_ROUTE_CONTRACT_VERSION,
-        propertyId,
-        ...result,
-      } satisfies FinanceInvoiceListResponse;
-    },
-  );
-
-  app.get<{ Params: FinancePropertyParams }>(
-    "/finance/properties/:propertyId/invoices/export.csv",
-    async (request, reply) => {
-      const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
-      const query = parseInvoiceListQuery(request.query);
-      if ("statusCode" in query) {
-        reply.code(query.statusCode);
-        return query;
-      }
-
-      const result =
-        (await options.repository.getInvoiceCsvExportDisposition?.(propertyId, query)) ??
-        emptyInvoiceCsvExportDisposition(propertyId);
-      if (result.export.status === "queued") reply.code(202);
-      return {
-        contractVersion: FINANCE_ROUTE_CONTRACT_VERSION,
-        propertyId,
-        ...result,
-      } satisfies FinanceInvoiceCsvExportResponse;
-    },
-  );
-
-  app.get<{ Params: FinanceInvoiceParams }>(
-    "/finance/properties/:propertyId/invoices/:invoiceId",
-    async (request, reply) => {
-      const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
-
-      const result = await options.repository.getInvoice?.(propertyId, request.params.invoiceId);
-      if (!result) {
-        reply.code(404);
-        return {
-          code: "invoice_not_found",
-          category: "not_found",
-          message: "Finance invoice was not found.",
-        };
-      }
-
-      return {
-        contractVersion: FINANCE_ROUTE_CONTRACT_VERSION,
-        propertyId,
-        ...result,
-      } satisfies FinanceInvoiceDetailResponse;
-    },
-  );
-
-  app.post<{ Params: FinanceInvoiceParams; Body: ManualPaymentBody }>(
-    "/finance/properties/:propertyId/invoices/:invoiceId/payments",
-    async (request, reply) => {
-      const { propertyId, invoiceId } = request.params;
-      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
-
-      if (!options.repository.recordManualPayment) {
-        reply.code(501);
-        return {
-          statusCode: 501,
-          code: "write_unavailable",
-          category: "write_model",
-          message: "Finance manual payment writes are not configured.",
-        } satisfies FinanceCommandError;
-      }
-
-      const parsed = toManualPaymentCommand(request, propertyId, invoiceId);
-      if ("statusCode" in parsed) {
-        reply.code(parsed.statusCode);
-        return parsed;
-      }
-
-      const result = await options.repository.recordManualPayment(parsed);
-      if (!result.ok) {
-        const error = toFinanceCommandError(result);
-        reply.code(error.statusCode);
-        return error;
-      }
-
-      reply.code(result.status === "created" ? 201 : 200);
-      return {
-        contractVersion: FINANCE_ROUTE_CONTRACT_VERSION,
-        propertyId,
-        invoice: result.invoice,
-        commandMeta: result.commandMeta,
-      } satisfies FinanceManualPaymentRecordResponse;
     },
   );
 
@@ -780,6 +555,53 @@ export async function registerFinanceRoutes(
     },
   );
 
+  app.post<{ Params: FinancePropertyParams }>(
+    "/finance/properties/:propertyId/provider-accounts/stripe/dashboard-link",
+    async (request, reply) => {
+      const propertyId = request.params.propertyId;
+      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+
+      const actorUserId = requireAuthContext(request).actor.internalUserId;
+      const rateLimit = consumeStripeDashboardLinkRateLimit(
+        stripeDashboardLinkRateLimits,
+        `${actorUserId}:${propertyId}`,
+      );
+      if (!rateLimit.ok) {
+        reply.code(429).header("Retry-After", String(rateLimit.retryAfterSeconds));
+        return {
+          statusCode: 429,
+          code: "rate_limited",
+          category: "rate_limit",
+          message: "Too many Stripe Dashboard requests. Please try again shortly.",
+        } satisfies FinanceCommandError;
+      }
+
+      if (!options.repository.issueStripeDashboardLoginLink) {
+        reply.code(501);
+        return {
+          statusCode: 501,
+          code: "write_unavailable",
+          category: "write_model",
+          message: "Finance Stripe dashboard links are not configured.",
+        } satisfies FinanceCommandError;
+      }
+
+      const result = await options.repository.issueStripeDashboardLoginLink(propertyId);
+      if (!result.ok) {
+        reply.code(result.statusCode);
+        return {
+          statusCode: result.statusCode,
+          code: result.code,
+          category: result.statusCode === 404 ? "not_found" : "provider",
+          message: result.message,
+        } satisfies FinanceCommandError;
+      }
+
+      reply.header("Cache-Control", "no-store");
+      return { url: result.url };
+    },
+  );
+
   app.post<{ Params: FinanceAffiliateParams; Body: StripeProviderAccountBody }>(
     "/finance/affiliates/:affiliateId/provider-accounts/stripe",
     async (request, reply) => {
@@ -851,27 +673,6 @@ export async function registerFinanceRoutes(
       }
 
       return { onboardingUrl: result.response.onboardingUrl };
-    },
-  );
-
-  app.get<{ Params: FinancePropertyParams }>(
-    "/finance/properties/:propertyId/payments",
-    async (request, reply) => {
-      const propertyId = request.params.propertyId;
-      if (!enforceFinancePropertyReadPolicy(request, reply, propertyId)) return reply;
-      const query = parsePaymentLedgerQuery(request.query);
-      if ("statusCode" in query) {
-        reply.code(query.statusCode);
-        return query;
-      }
-
-      const result =
-        (await options.repository.listPayments?.(propertyId, query)) ?? emptyPaymentLedger(query);
-      return {
-        contractVersion: FINANCE_ROUTE_CONTRACT_VERSION,
-        propertyId,
-        ...result,
-      } satisfies FinancePaymentLedgerResponse;
     },
   );
 
@@ -1340,7 +1141,34 @@ export function createTargetFinancePropertySettingsRepository(config: {
       max: config.max ?? 5,
     });
 
+  const platformAffiliatePayoutReads = createFinancePlatformAffiliatePayoutReadRepository({
+    query: pool.query.bind(pool),
+    connect: async () => {
+      if (!pool.connect) throw new Error("Finance read transactions are unavailable.");
+      const client = await pool.connect();
+      if (!client.release) throw new Error("Finance read client cannot release transactions.");
+      return {
+        query: client.query.bind(client),
+        release: client.release.bind(client),
+      };
+    },
+  });
+  const platformAffiliatePayoutWrites = createFinancePlatformAffiliatePayoutMarkPaidRepository({
+    connect: pool.connect
+      ? async () => {
+          const client = await pool.connect!();
+          if (!client.release) throw new Error("Finance write client cannot release transactions.");
+          return {
+            query: client.query.bind(client),
+            release: client.release.bind(client),
+          };
+        }
+      : undefined,
+  });
+
   return {
+    ...platformAffiliatePayoutReads,
+    ...platformAffiliatePayoutWrites,
     async getPaymentSettings(propertyId) {
       const row = await loadPaymentSettingsRow(pool, propertyId);
       return row ? toFinancePaymentSettingsReadModel(row) : null;
@@ -1368,51 +1196,6 @@ export function createTargetFinancePropertySettingsRepository(config: {
       } finally {
         if (ownsTransaction) client.release?.();
       }
-    },
-    async getFinancialSummary(propertyId) {
-      const row = await loadFinancialSummaryRow(pool, propertyId);
-      return row ? toFinancialSummaryResponseBody(row) : null;
-    },
-    async listInvoices(propertyId, query) {
-      const rows = await loadInvoiceRows(pool, propertyId, query);
-      return toInvoiceListResponseBody(rows, query);
-    },
-    async getInvoice(propertyId, invoiceId) {
-      const rows = await loadInvoiceRows(pool, propertyId, {
-        sort: "issuedAt",
-        limit: 500,
-        offset: 0,
-        search: invoiceId,
-      });
-      const invoice = rows.find((row) => row.invoiceId === invoiceId);
-      if (!invoice) return null;
-
-      const payments = await loadInvoicePaymentRows(pool, propertyId, invoice.guestBookingId);
-      return {
-        invoice: {
-          ...toInvoiceListItem(invoice),
-          guest: {
-            displayName: invoice.guestDisplayName ?? "Guest",
-            email: invoice.guestEmail,
-            phone: invoice.guestPhone,
-          },
-          nights: nightsBetween(invoice.checkIn, invoice.checkOut),
-          charges: [
-            {
-              description: "Stay",
-              detail: `${dateOnly(invoice.checkIn)} to ${dateOnly(invoice.checkOut)}`,
-              amount: decimalString(invoice.totalAmount),
-            },
-          ],
-          payments: payments.map(toInvoicePayment),
-          subtotal: decimalString(invoice.totalAmount),
-        },
-        sourceFreshness: financeJsonObject(invoice.sourceFreshness),
-      };
-    },
-    async listPayments(propertyId, query) {
-      const rows = await loadPaymentLedgerRows(pool, propertyId, query);
-      return toPaymentLedgerResponseBody(rows, query);
     },
     async listPayouts(propertyId, query) {
       const result = await loadPayoutRows(pool, propertyId, query);
@@ -1445,39 +1228,6 @@ export function createTargetFinancePropertySettingsRepository(config: {
     async listReconciliationItems(propertyId, view, query) {
       const result = await loadReconciliationRows(pool, propertyId, view, query);
       return toReconciliationViewResponseBody(result, query);
-    },
-    async getInvoiceCsvExportDisposition(propertyId) {
-      return {
-        export: {
-          status: "queued",
-          disposition: "durable_export_job",
-          filename: `finance-invoices-${propertyId}.csv`,
-          contentType: "text/csv",
-          downloadUrl: null,
-          jobId: null,
-          message: "Invoice CSV export runs through the Finance read-model export job.",
-        },
-        sourceFreshness: {
-          finance: {
-            status: "fresh",
-          },
-        },
-      };
-    },
-    async recordManualPayment(command) {
-      const client = await checkoutFinanceWriteClient(pool);
-      const ownsTransaction = typeof client.release === "function";
-      try {
-        if (ownsTransaction) await client.query("BEGIN");
-        const result = await recordManualPaymentInClient(client, command);
-        if (ownsTransaction) await client.query("COMMIT");
-        return result;
-      } catch (error) {
-        if (ownsTransaction) await client.query("ROLLBACK");
-        throw error;
-      } finally {
-        if (ownsTransaction) client.release?.();
-      }
     },
     async createStripeProviderAccount(command) {
       if (!config.stripeConnectProvider) {
@@ -1524,6 +1274,17 @@ export function createTargetFinancePropertySettingsRepository(config: {
       } finally {
         if (ownsTransaction) client.release?.();
       }
+    },
+    async issueStripeDashboardLoginLink(propertyId) {
+      if (!config.stripeConnectProvider) {
+        return {
+          ok: false,
+          statusCode: 502,
+          code: "provider_unavailable",
+          message: "Stripe Dashboard is unavailable.",
+        };
+      }
+      return issueStripeDashboardLoginLink(pool, propertyId, config.stripeConnectProvider);
     },
     async enqueueXenditPayoutReconciliation(command) {
       const client = await checkoutFinanceWriteClient(pool);
@@ -1595,14 +1356,61 @@ async function updatePaymentSettingsInClient(
   client: FinancePropertySettingsWriteClient,
   command: FinancePaymentSettingsPatchCommand,
 ): Promise<FinancePaymentSettingsPatchResult> {
+  const currencyResult = await client.query<{ currency: string | null }>(
+    `SELECT COALESCE(settings.default_currency, 'EUR') AS currency
+       FROM hotel_catalog.properties property
+       LEFT JOIN booking.booking_settings settings ON settings.property_id = property.id
+      WHERE property.id = $1::uuid
+      LIMIT 1`,
+    [command.propertyId],
+  );
+  const canonicalCurrency = currencyCode(currencyResult.rows[0]?.currency);
+  if (!currencyResult.rows[0]) {
+    return {
+      ok: false,
+      statusCode: 404,
+      code: "property_not_found",
+      message: "The property currency could not be resolved.",
+    };
+  }
+  if (
+    (command.payload.defaultCurrency && command.payload.defaultCurrency !== canonicalCurrency) ||
+    (command.payload.supportedCurrencies &&
+      (command.payload.supportedCurrencies.length !== 1 ||
+        command.payload.supportedCurrencies[0] !== canonicalCurrency))
+  ) {
+    return {
+      ok: false,
+      statusCode: 409,
+      code: "property_currency_conflict",
+      message: `Payment currency changed to ${canonicalCurrency}. Reload before saving.`,
+    };
+  }
   const existing = await loadPaymentSettingsRow(client, command.propertyId);
   const current = existing
     ? toFinancePaymentSettingsReadModel(existing)
     : setupIncompletePaymentSettings(command.propertyId, new Date().toISOString());
-  const next = mergePaymentSettings(current, command.payload);
+  const next = mergePaymentSettings(current, {
+    ...command.payload,
+    defaultCurrency: canonicalCurrency,
+    supportedCurrencies: [canonicalCurrency],
+  });
+  const completenessError = paymentSettingsCompletenessError(next);
+  if (completenessError) {
+    return {
+      ok: false,
+      statusCode: 400,
+      code: "invalid_command",
+      message: completenessError,
+    };
+  }
   const keyHash = sha256(command.idempotencyKey);
   const fingerprint = sha256(
-    stableJson({ propertyId: command.propertyId, payload: command.payload }),
+    stableJson({
+      propertyId: command.propertyId,
+      canonicalCurrency,
+      payload: command.payload,
+    }),
   );
   const commandMeta = buildPaymentSettingsCommandMeta(command);
 
@@ -1710,6 +1518,48 @@ function mergePaymentSettings(
       : current.depositPolicy,
     updatedAt: new Date().toISOString(),
   };
+}
+
+function paymentSettingsCompletenessError(
+  settings: FinancePaymentSettingsReadModel,
+): string | null {
+  if (!settings.paymentsEnabled || settings.acceptedMethods.length === 0) {
+    return "Choose at least one payment method.";
+  }
+  if (
+    settings.acceptedMethods.includes("pay_at_property") &&
+    !settings.acceptedMethods.some((method) => method === "cash" || method === "manual_card")
+  ) {
+    return "Pay at Hotel requires cash, card, or both.";
+  }
+  if (settings.acceptedMethods.includes("bank_transfer")) {
+    const requiredFields = [
+      ["bankName", "bank name"],
+      ["accountHolder", "account holder"],
+      ["accountNumber", "account number or IBAN"],
+      ["bankTransferInstructions", "bank transfer instructions"],
+    ] as const;
+    for (const [field, label] of requiredFields) {
+      if (!policyText(settings.depositPolicy[field])) {
+        return `Bank Transfer requires ${label}.`;
+      }
+    }
+  }
+  if (
+    settings.acceptedMethods.includes("paypal") &&
+    !validPaymentEmail(settings.depositPolicy["paypalEmail"])
+  ) {
+    return "PayPal requires a valid email address.";
+  }
+  return null;
+}
+
+function policyText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function validPaymentEmail(value: unknown): boolean {
+  return typeof value === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
 async function upsertPaymentSettings(
@@ -2005,12 +1855,21 @@ async function createStripeProviderAccountInClient(
       owner,
       providerAccountRef: existingAccount.providerAccountRef,
       idempotencyKey: stripeProviderIdempotencyKey(owner, keyHash, "onboarding-link"),
+      returnSurface: command.payload.returnSurface,
     });
     await updateStripeProviderAccountOnboardingUrl(
       client,
       existingAccount.providerAccountId,
       onboardingUrl,
     );
+    if (owner.ownerScope === "property") {
+      await relinkPaymentSettingsProviderAccount(
+        client,
+        owner.propertyId,
+        "stripe",
+        existingAccount.providerAccountId,
+      );
+    }
     await reserveProviderAccountIdempotency(
       client,
       command,
@@ -2048,6 +1907,7 @@ async function createStripeProviderAccountInClient(
     email: command.payload.email,
     country: command.payload.country,
     idempotencyKey: stripeProviderIdempotencyKey(owner, keyHash, "account"),
+    returnSurface: command.payload.returnSurface,
   });
 
   let insertedAccount: FinanceProviderAccountRow;
@@ -2146,6 +2006,7 @@ async function issueStripeOnboardingLinkInClient(
     owner,
     providerAccountRef: account.providerAccountRef,
     idempotencyKey: stripeProviderIdempotencyKey(owner, keyHash, "onboarding-link"),
+    returnSurface: command.payload.returnSurface,
   });
   await updateStripeProviderAccountOnboardingUrl(client, account.providerAccountId, onboardingUrl);
   const response = providerAccountCommandResponse(
@@ -2168,6 +2029,75 @@ async function issueStripeOnboardingLinkInClient(
   };
 }
 
+async function issueStripeDashboardLoginLink(
+  client: FinanceQueryExecutor,
+  propertyId: string,
+  provider: FinanceStripeConnectProvider,
+): Promise<FinanceStripeDashboardLoginLinkResult> {
+  const account = await loadConfiguredStripeProviderAccount(client, propertyId);
+  if (!account) {
+    return {
+      ok: false,
+      statusCode: 404,
+      code: "provider_account_not_found",
+      message: "Finance provider account was not found.",
+    };
+  }
+
+  try {
+    return {
+      ok: true,
+      url: await provider.createLoginLink({ providerAccountRef: account.providerAccountRef }),
+    };
+  } catch (error) {
+    if (
+      error instanceof StripeConnectAccountNotFoundError ||
+      (error !== null &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "stripe_connect_account_not_found")
+    ) {
+      return {
+        ok: false,
+        statusCode: 404,
+        code: "provider_account_not_found",
+        message: "Finance provider account was not found.",
+      };
+    }
+    return {
+      ok: false,
+      statusCode: 502,
+      code: "provider_unavailable",
+      message: "Stripe Dashboard is unavailable.",
+    };
+  }
+}
+
+async function loadConfiguredStripeProviderAccount(
+  client: FinanceQueryExecutor,
+  propertyId: string,
+): Promise<FinanceProviderAccountRow | null> {
+  const result = await client.query<FinanceProviderAccountRow>(
+    `SELECT
+       account.id::text AS "providerAccountId",
+       account.provider_account_id AS "providerAccountRef",
+       account.status,
+       account.onboarding_status AS "onboardingStatus",
+       account.account_metadata ->> 'onboardingUrl' AS "onboardingUrl"
+     FROM finance.payment_provider_accounts account
+     JOIN finance.payment_settings settings
+       ON settings.provider_account_id = account.id
+      AND settings.property_id = account.property_id
+     WHERE settings.property_id = $1::uuid
+       AND account.account_scope = 'property'
+       AND account.provider = 'stripe'
+       AND account.provider_account_id NOT LIKE 'settings-choice:%'
+     LIMIT 1`,
+    [propertyId],
+  );
+  return result.rows[0] ?? null;
+}
+
 function financeProviderAccountOwner(
   command: CreateStripeProviderAccountCommand | IssueStripeOnboardingLinkCommand,
 ): Parameters<FinanceStripeConnectProvider["createAccount"]>[0]["owner"] {
@@ -2187,7 +2117,7 @@ function financeProviderAccountOwner(
 }
 
 async function loadStripeProviderAccountByOwner(
-  client: FinancePropertySettingsWriteClient,
+  client: FinanceQueryExecutor,
   owner: Parameters<FinanceStripeConnectProvider["createAccount"]>[0]["owner"],
 ): Promise<FinanceProviderAccountRow | null> {
   if (owner.ownerScope === "property") {
@@ -2359,9 +2289,9 @@ async function loadProviderAccountIdempotency(
   command: CreateStripeProviderAccountCommand | IssueStripeOnboardingLinkCommand,
   operation: "stripe_provider_account_create" | "stripe_onboarding_link_issue",
   keyHash: string,
-): Promise<FinanceManualPaymentIdempotencyRow | null> {
+): Promise<FinanceIdempotencyRow | null> {
   const owner = financeProviderAccountOwner(command);
-  const result = await client.query<FinanceManualPaymentIdempotencyRow>(
+  const result = await client.query<FinanceIdempotencyRow>(
     `SELECT
        status,
        request_fingerprint_hash AS "requestFingerprintHash"
@@ -2586,144 +2516,6 @@ function stripeProviderIdempotencyKey(
       ? `property:${owner.propertyId}`
       : `affiliate:${owner.affiliateId}:organization:${owner.organizationId}`;
   return `finance.stripe-connect.${purpose}:${ownerKey}:key:${keyHash}:v1`;
-}
-
-async function recordManualPaymentInClient(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-): Promise<FinanceManualPaymentRecordResult> {
-  const invoiceRows = await loadInvoiceRows(client, command.propertyId, {
-    sort: "issuedAt",
-    limit: 500,
-    offset: 0,
-    search: command.payload.invoiceId,
-  });
-  const invoiceRow = invoiceRows.find((row) => row.invoiceId === command.payload.invoiceId);
-  if (!invoiceRow) {
-    return {
-      ok: false,
-      statusCode: 404,
-      code: "invoice_not_found",
-      message: "Finance invoice was not found.",
-    };
-  }
-
-  const recordedAt = command.audit.requestedAt;
-  const keyHash = sha256(command.idempotencyKey);
-  const fingerprint = sha256(stableJson(command.payload));
-  const scopedPaymentIdempotencyKey = manualPaymentScopedPersistenceKey(
-    command.propertyId,
-    keyHash,
-    "payment",
-  );
-  const existingIdempotency = await loadManualPaymentIdempotency(client, command, keyHash);
-  if (existingIdempotency && existingIdempotency.requestFingerprintHash !== fingerprint) {
-    return {
-      ok: false,
-      statusCode: 409,
-      code: "idempotency_conflict",
-      message: "Idempotency key was already used with a different manual payment payload.",
-    };
-  }
-
-  const existingPayment = await loadManualPaymentByIdempotencyKey(
-    client,
-    command.propertyId,
-    scopedPaymentIdempotencyKey,
-  );
-  if (!existingPayment) {
-    const validationError = validateManualPaymentInvoice(command, invoiceRow);
-    if (validationError) return validationError;
-  }
-
-  const idempotencyError = await reserveManualPaymentIdempotency(
-    client,
-    command,
-    keyHash,
-    fingerprint,
-    recordedAt,
-  );
-  if (idempotencyError) return idempotencyError;
-  const payment =
-    existingPayment ??
-    (await insertManualPayment(
-      client,
-      command,
-      invoiceRow.guestBookingId,
-      scopedPaymentIdempotencyKey,
-      recordedAt,
-    ));
-  const commandMeta = buildManualPaymentCommandMeta(
-    command,
-    invoiceRow.guestBookingId,
-    keyHash,
-    payment.replay,
-  );
-  const domainEventId = await recordManualPaymentDomainEvent(
-    client,
-    command,
-    invoiceRow.guestBookingId,
-    payment.paymentId,
-    keyHash,
-    recordedAt,
-  );
-  const outboxEventIds = await enqueueManualPaymentOutboxEvents(
-    client,
-    command,
-    invoiceRow.guestBookingId,
-    payment.paymentId,
-    domainEventId,
-    keyHash,
-  );
-  await enqueueManualPaymentJobs(
-    client,
-    command,
-    invoiceRow.guestBookingId,
-    payment.paymentId,
-    domainEventId,
-    outboxEventIds,
-    keyHash,
-  );
-  await recordManualPaymentAuditEvent(
-    client,
-    command,
-    invoiceRow.guestBookingId,
-    payment.paymentId,
-    domainEventId,
-    keyHash,
-    recordedAt,
-  );
-  await enqueueBankTransferFinalConfirmationEmail(client, command, invoiceRow, recordedAt);
-  await completeManualPaymentIdempotency(
-    client,
-    command,
-    keyHash,
-    fingerprint,
-    payment.paymentId,
-    commandMeta,
-    recordedAt,
-  );
-
-  const updatedInvoice = await loadFinanceInvoiceDetail(
-    client,
-    command.propertyId,
-    command.payload.invoiceId,
-  );
-  if (!updatedInvoice) {
-    return {
-      ok: false,
-      statusCode: 500,
-      code: "write_unavailable",
-      message: "Finance invoice read model was unavailable after recording payment.",
-    };
-  }
-
-  return {
-    ok: true,
-    status: payment.replay ? "idempotent_replay" : "created",
-    invoice: updatedInvoice,
-    commandMeta,
-  };
 }
 
 async function enqueueXenditPayoutReconciliationInClient(
@@ -3092,9 +2884,7 @@ async function updateAffiliatePayoutSettingsInClient(
   const keyHash = sha256(command.idempotencyKey);
   const fingerprint = sha256(stableJson(command.payload));
   const requestedAt = command.audit.requestedAt;
-  const idempotency = await client.query<
-    FinanceManualPaymentIdempotencyRow & { inserted: boolean }
-  >(
+  const idempotency = await client.query<FinanceIdempotencyRow & { inserted: boolean }>(
     `INSERT INTO platform.idempotency_keys (
        operation_scope,
        operation,
@@ -3585,268 +3375,6 @@ async function recordPropertyPayoutDispatchAuditEvent(
   );
 }
 
-async function reserveManualPaymentIdempotency(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  keyHash: string,
-  fingerprint: string,
-  recordedAt: string,
-): Promise<Extract<FinanceManualPaymentRecordResult, { ok: false }> | null> {
-  const result = await client.query<{
-    status: string;
-    requestFingerprintHash: string;
-  }>(
-    `INSERT INTO platform.idempotency_keys (
-       operation_scope,
-       operation,
-       key_hash,
-       request_fingerprint_hash,
-       status,
-       tenant_scope,
-       organization_id,
-       property_id,
-       correlation_id,
-       first_seen_at,
-       last_seen_at,
-       expires_at,
-       idempotency_metadata
-     )
-     VALUES (
-       'finance',
-       'manual_payment_record',
-       $1,
-       $2,
-       'in_progress',
-       'property',
-       NULL,
-       $3::uuid,
-       $4,
-       $5::timestamptz,
-       $5::timestamptz,
-       $5::timestamptz + interval '24 hours',
-       $6::jsonb
-     )
-     ON CONFLICT (operation_scope, operation, key_hash, scope_key)
-     DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at
-     RETURNING
-       status,
-       request_fingerprint_hash AS "requestFingerprintHash"`,
-    [
-      keyHash,
-      fingerprint,
-      command.propertyId,
-      command.audit.correlationId ?? command.audit.requestId,
-      recordedAt,
-      JSON.stringify({
-        commandId: command.commandId,
-        idempotencyKey: command.idempotencyKey,
-        actorOrganizationId:
-          command.audit.actor.kind === "user" ? command.audit.actor.organizationId : null,
-      }),
-    ],
-  );
-  const row = result.rows[0];
-  if (row && row.requestFingerprintHash !== fingerprint) {
-    return {
-      ok: false,
-      statusCode: 409,
-      code: "idempotency_conflict",
-      message: "Idempotency key was already used with a different manual payment payload.",
-    };
-  }
-  return null;
-}
-
-async function loadManualPaymentIdempotency(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  keyHash: string,
-): Promise<FinanceManualPaymentIdempotencyRow | null> {
-  const result = await client.query<FinanceManualPaymentIdempotencyRow>(
-    `SELECT
-       status,
-       request_fingerprint_hash AS "requestFingerprintHash"
-     FROM platform.idempotency_keys
-     WHERE operation_scope = 'finance'
-       AND operation = 'manual_payment_record'
-       AND key_hash = $1
-       AND tenant_scope = 'property'
-       AND property_id = $2::uuid
-     LIMIT 1`,
-    [keyHash, command.propertyId],
-  );
-  return result.rows[0] ?? null;
-}
-
-async function loadManualPaymentByIdempotencyKey(
-  client: FinancePropertySettingsWriteClient,
-  propertyId: string,
-  idempotencyKey: string,
-): Promise<FinanceManualPaymentWriteRow | null> {
-  const result = await client.query<FinanceManualPaymentWriteRow>(
-    `SELECT id::text AS "paymentId", true AS replay
-     FROM finance.payments
-     WHERE property_id = $1::uuid
-       AND idempotency_key = $2
-     LIMIT 1`,
-    [propertyId, idempotencyKey],
-  );
-  return result.rows[0] ?? null;
-}
-
-function validateManualPaymentInvoice(
-  command: FinanceManualPaymentRecordCommand,
-  invoice: FinanceInvoiceRow,
-): Extract<FinanceManualPaymentRecordResult, { ok: false }> | null {
-  const status = invoiceStatus(invoice.status);
-  if (status === "paid") {
-    return invalidManualPaymentCommand("Paid invoices cannot accept manual payments.");
-  }
-  if (status === "voided") {
-    return invalidManualPaymentCommand("Voided invoices cannot accept manual payments.");
-  }
-
-  const invoiceCurrency = currencyCode(invoice.currency);
-  if (command.payload.currency !== invoiceCurrency) {
-    return invalidManualPaymentCommand("Manual payment currency must match the invoice currency.");
-  }
-
-  const amountCents = numeric15Scale2Cents(command.payload.amount);
-  const balanceCents = numeric15Scale2Cents(invoice.balanceDue, { allowZero: true });
-  if (amountCents === null) {
-    return invalidManualPaymentCommand("Manual payment amount is outside the supported range.");
-  }
-  if (balanceCents === null) {
-    return invalidManualPaymentCommand("Finance invoice balance is unavailable.");
-  }
-  if (balanceCents <= 0n) {
-    return invalidManualPaymentCommand("Finance invoice has no outstanding balance.");
-  }
-  if (amountCents > balanceCents) {
-    return invalidManualPaymentCommand("Manual payment amount exceeds the invoice balance.");
-  }
-
-  return null;
-}
-
-function invalidManualPaymentCommand(
-  message: string,
-): Extract<FinanceManualPaymentRecordResult, { ok: false }> {
-  return {
-    ok: false,
-    statusCode: 400,
-    code: "invalid_command",
-    message,
-  };
-}
-
-async function insertManualPayment(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  guestBookingId: string,
-  scopedPaymentIdempotencyKey: string,
-  recordedAt: string,
-): Promise<FinanceManualPaymentWriteRow> {
-  const result = await client.query<FinanceManualPaymentWriteRow>(
-    `WITH inserted AS (
-       INSERT INTO finance.payments (
-         property_id,
-         organization_id,
-         guest_booking_id,
-         source_system,
-         idempotency_key,
-         payment_kind,
-         payment_method,
-         status,
-         amount,
-         fee_amount,
-         net_amount,
-         refunded_amount,
-         currency,
-         payment_metadata,
-         visibility_class,
-         paid_at,
-         created_at,
-         updated_at
-       )
-       VALUES (
-         $1::uuid,
-         $2::uuid,
-         $3::uuid,
-         'finance',
-         $4,
-         'manual',
-         $5,
-         'paid',
-         $6::numeric,
-         0,
-         $6::numeric,
-         0,
-         $7,
-         $8::jsonb,
-         'pms_finance',
-         $9::timestamptz,
-         $9::timestamptz,
-         $9::timestamptz
-       )
-       ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
-       RETURNING id::text AS "paymentId", false AS replay
-     )
-     SELECT "paymentId", replay FROM inserted
-     UNION ALL
-     SELECT id::text AS "paymentId", true AS replay
-     FROM finance.payments
-     WHERE property_id = $1::uuid
-       AND idempotency_key = $4
-     LIMIT 1`,
-    [
-      command.propertyId,
-      command.audit.actor.kind === "user" ? command.audit.actor.organizationId : null,
-      guestBookingId,
-      scopedPaymentIdempotencyKey,
-      command.payload.paymentMethod,
-      command.payload.amount,
-      command.payload.currency,
-      JSON.stringify({
-        invoiceId: command.payload.invoiceId,
-        reference: command.payload.reference ?? null,
-        commandId: command.commandId,
-        reconciliationStatus: "matched",
-        providerStatus: "paid",
-      }),
-      recordedAt,
-    ],
-  );
-  return result.rows[0]!;
-}
-
-function buildManualPaymentCommandMeta(
-  command: FinanceManualPaymentRecordCommand,
-  guestBookingId: string,
-  keyHash: string,
-  replay: boolean,
-): FinanceCommandMeta {
-  return {
-    commandId: command.commandId,
-    idempotencyKey: command.idempotencyKey,
-    sideEffects: [...MANUAL_PAYMENT_SIDE_EFFECTS],
-    outboxEvents: [
-      manualPaymentScopedPersistenceKey(command.propertyId, keyHash, "booking-projection"),
-      manualPaymentScopedPersistenceKey(command.propertyId, keyHash, "pms-projection"),
-    ],
-    jobs: (["booking.projection-refresh", "pms.projection-refresh"] as const).map((jobType) => ({
-      jobType,
-      idempotencyKey: buildManualPaymentProjectionJobIdempotencyKey({
-        propertyId: command.propertyId,
-        jobType,
-        guestBookingId,
-        paymentIdempotencyKeyHash: keyHash,
-      }),
-      status: replay ? "idempotent_replay" : "queued",
-    })),
-  };
-}
-
 function buildXenditPayoutReconciliationCommandMeta(
   command: FinanceXenditPayoutReconciliationCommand,
   replay: boolean,
@@ -3916,208 +3444,6 @@ function xenditPayoutReconciliationWindow(
   const dateMatch = /\b\d{4}-\d{2}-\d{2}\b/.exec(command.idempotencyKey);
   if (dateMatch) return dateMatch[0];
   return `key-${sha256(command.idempotencyKey).slice(0, 12)}`;
-}
-
-function manualPaymentScopedPersistenceKey(
-  propertyId: string,
-  keyHash: string,
-  purpose: "payment" | "domain-event" | "booking-projection" | "pms-projection" | "audit",
-): string {
-  return `finance.manual-payment.${purpose}.property.${propertyId}.key.${keyHash}.v1`;
-}
-
-function buildManualPaymentProjectionJobIdempotencyKey(input: {
-  propertyId: string;
-  jobType: "booking.projection-refresh" | "pms.projection-refresh";
-  guestBookingId: string;
-  paymentIdempotencyKeyHash: string;
-}): string {
-  return `${input.jobType}:property:${input.propertyId}:booking:${input.guestBookingId}:finance-payment:${input.paymentIdempotencyKeyHash}:v1`;
-}
-
-async function recordManualPaymentDomainEvent(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  guestBookingId: string,
-  paymentId: string,
-  keyHash: string,
-  recordedAt: string,
-): Promise<string> {
-  const result = await client.query<{ eventId: string }>(
-    `WITH inserted AS (
-       INSERT INTO platform.domain_events (
-         source_system,
-         event_key,
-         event_type,
-         event_version,
-         occurred_at,
-         tenant_scope,
-         organization_id,
-         property_id,
-         resource_product,
-         resource_type,
-         resource_id,
-         actor_type,
-         actor_user_id,
-         correlation_id,
-         causation_id,
-         idempotency_key_hash,
-         payload,
-         event_metadata,
-         privacy_scope
-       )
-       VALUES (
-         'finance',
-         $1,
-         'finance.manual_payment.recorded',
-         1,
-         $2::timestamptz,
-         'property',
-         NULL,
-         $3::uuid,
-         'finance',
-         'payment',
-         $4,
-         $5,
-         $6::uuid,
-         $7,
-         $8,
-         $9,
-         $10::jsonb,
-         $11::jsonb,
-         'confidential'
-       )
-       ON CONFLICT (source_system, event_key) DO NOTHING
-       RETURNING id::text AS "eventId"
-     )
-     SELECT "eventId" FROM inserted
-     UNION ALL
-     SELECT id::text AS "eventId"
-     FROM platform.domain_events
-     WHERE source_system = 'finance'
-       AND event_key = $1
-       AND tenant_scope = 'property'
-       AND property_id = $3::uuid
-     LIMIT 1`,
-    [
-      manualPaymentScopedPersistenceKey(command.propertyId, keyHash, "domain-event"),
-      recordedAt,
-      command.propertyId,
-      paymentId,
-      command.audit.actor.kind,
-      command.audit.actor.kind === "user" ? command.audit.actor.userId : null,
-      command.audit.correlationId ?? command.audit.requestId,
-      command.commandId,
-      keyHash,
-      JSON.stringify({
-        propertyId: command.propertyId,
-        invoiceId: command.payload.invoiceId,
-        guestBookingId,
-        paymentId,
-        amount: command.payload.amount,
-        currency: command.payload.currency,
-        paymentMethod: command.payload.paymentMethod,
-      }),
-      JSON.stringify({ contractVersion: FINANCE_ROUTE_CONTRACT_VERSION }),
-    ],
-  );
-  return result.rows[0]!.eventId;
-}
-
-async function enqueueManualPaymentOutboxEvents(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  guestBookingId: string,
-  paymentId: string,
-  domainEventId: string,
-  keyHash: string,
-): Promise<{ booking: string; pms: string }> {
-  const result = await client.query<{ destination: string; outboxEventId: string }>(
-    `WITH outbox AS (
-       INSERT INTO platform.outbox_events (
-         domain_event_id,
-         outbox_key,
-         destination,
-         event_type,
-         tenant_scope,
-         organization_id,
-         property_id,
-         resource_product,
-         resource_type,
-         resource_id,
-         correlation_id,
-         idempotency_key_hash,
-         payload,
-         outbox_metadata
-       )
-       VALUES
-         (
-           $1::uuid,
-           $2,
-           'booking.projection-refresh',
-           'booking.finance_payment_projection.refresh_requested',
-           'property',
-           NULL,
-           $3::uuid,
-           'booking',
-           'guest_booking',
-           $4,
-           $5,
-           $6,
-           $7::jsonb,
-           $8::jsonb
-         ),
-         (
-           $1::uuid,
-           $9,
-           'pms.projection-refresh',
-           'pms.finance_payment_projection.refresh_requested',
-           'property',
-           NULL,
-           $3::uuid,
-           'pms',
-           'operational_booking',
-           $4,
-           $5,
-           $6,
-           $7::jsonb,
-           $8::jsonb
-         )
-       ON CONFLICT (destination, outbox_key) DO NOTHING
-       RETURNING destination, id::text AS "outboxEventId"
-     )
-     SELECT destination, "outboxEventId" FROM outbox
-     UNION ALL
-     SELECT destination, id::text AS "outboxEventId"
-     FROM platform.outbox_events
-     WHERE (destination, outbox_key) IN (
-       ('booking.projection-refresh', $2),
-       ('pms.projection-refresh', $9)
-     )
-       AND tenant_scope = 'property'
-       AND property_id = $3::uuid`,
-    [
-      domainEventId,
-      manualPaymentScopedPersistenceKey(command.propertyId, keyHash, "booking-projection"),
-      command.propertyId,
-      guestBookingId,
-      command.audit.correlationId ?? command.audit.requestId,
-      keyHash,
-      JSON.stringify({
-        propertyId: command.propertyId,
-        guestBookingId,
-        invoiceId: command.payload.invoiceId,
-        paymentId,
-      }),
-      JSON.stringify({ commandId: command.commandId }),
-      manualPaymentScopedPersistenceKey(command.propertyId, keyHash, "pms-projection"),
-    ],
-  );
-  return {
-    booking: result.rows.find((row) => row.destination === "booking.projection-refresh")!
-      .outboxEventId,
-    pms: result.rows.find((row) => row.destination === "pms.projection-refresh")!.outboxEventId,
-  };
 }
 
 async function recordXenditPayoutReconciliationAuditEvent(
@@ -4191,329 +3517,22 @@ async function recordXenditPayoutReconciliationAuditEvent(
   );
 }
 
-async function enqueueManualPaymentJobs(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  guestBookingId: string,
-  paymentId: string,
-  domainEventId: string,
-  outboxEventIds: { booking: string; pms: string },
-  keyHash: string,
-): Promise<void> {
-  const bookingJobKey = buildManualPaymentProjectionJobIdempotencyKey({
-    propertyId: command.propertyId,
-    jobType: "booking.projection-refresh",
-    guestBookingId,
-    paymentIdempotencyKeyHash: keyHash,
-  });
-  const pmsJobKey = buildManualPaymentProjectionJobIdempotencyKey({
-    propertyId: command.propertyId,
-    jobType: "pms.projection-refresh",
-    guestBookingId,
-    paymentIdempotencyKeyHash: keyHash,
-  });
-  await client.query(
-    `INSERT INTO platform.jobs (
-       job_key,
-       queue_name,
-       job_type,
-       source_domain_event_id,
-       source_outbox_event_id,
-       tenant_scope,
-       organization_id,
-       property_id,
-       resource_product,
-       resource_type,
-       resource_id,
-       correlation_id,
-       idempotency_key_hash,
-       payload,
-       job_metadata
-     )
-     VALUES
-       (
-         $1,
-         'booking-projections',
-         'booking.projection-refresh',
-         $2::uuid,
-         $3::uuid,
-         'property',
-         NULL,
-         $4::uuid,
-         'booking',
-         'guest_booking',
-         $5,
-         $6,
-         $7,
-         $8::jsonb,
-         $9::jsonb
-       ),
-       (
-         $10,
-         'pms-projections',
-         'pms.projection-refresh',
-         $2::uuid,
-         $11::uuid,
-         'property',
-         NULL,
-         $4::uuid,
-         'pms',
-         'operational_booking',
-         $5,
-         $6,
-         $7,
-         $8::jsonb,
-         $9::jsonb
-       )
-     ON CONFLICT (queue_name, job_key) DO NOTHING`,
-    [
-      bookingJobKey,
-      domainEventId,
-      outboxEventIds.booking,
-      command.propertyId,
-      guestBookingId,
-      command.audit.correlationId ?? command.audit.requestId,
-      keyHash,
-      JSON.stringify({
-        propertyId: command.propertyId,
-        guestBookingId,
-        invoiceId: command.payload.invoiceId,
-        paymentId,
-      }),
-      JSON.stringify({ commandId: command.commandId }),
-      pmsJobKey,
-      outboxEventIds.pms,
-    ],
-  );
-}
-
-async function enqueueBankTransferFinalConfirmationEmail(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  invoice: FinanceInvoiceRow,
-  recordedAt: string,
-): Promise<void> {
-  if (command.payload.paymentMethod !== "bank_transfer") return;
-  if (!manualPaymentSettlesInvoice(command, invoice)) return;
-
-  await enqueueBookingLifecycleEmailJob(client, {
-    kind: "final_confirmation",
-    occurredAt: recordedAt,
-    correlationId: command.audit.correlationId ?? command.audit.requestId,
-    causationId: `finance.manual_payment.record:${command.commandId}`,
-    actor:
-      command.audit.actor.kind === "user"
-        ? { type: "user", userId: command.audit.actor.userId }
-        : { type: command.audit.actor.kind },
-    source: "apps/api-finance-manual-payment",
-    booking: {
-      propertyId: command.propertyId,
-      guestBookingId: invoice.guestBookingId,
-      bookingReference: invoice.bookingReference,
-      guestEmail: invoice.guestEmail,
-      guestName: invoice.guestDisplayName,
-      propertyName: invoice.propertyName,
-      checkIn: invoice.checkIn,
-      checkOut: invoice.checkOut,
-      totalAmount: invoice.totalAmount,
-      balanceAmount: invoice.balanceDue,
-      currency: invoice.currency,
-      paymentMethod: "bank_transfer",
-    },
-  });
-}
-
-function manualPaymentSettlesInvoice(
-  command: FinanceManualPaymentRecordCommand,
-  invoice: FinanceInvoiceRow,
-): boolean {
-  const amountCents = numeric15Scale2Cents(command.payload.amount);
-  const balanceCents = numeric15Scale2Cents(invoice.balanceDue, { allowZero: true });
-  return (
-    amountCents !== null &&
-    balanceCents !== null &&
-    balanceCents > 0n &&
-    amountCents === balanceCents
-  );
-}
-
-async function recordManualPaymentAuditEvent(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  guestBookingId: string,
-  paymentId: string,
-  domainEventId: string,
-  keyHash: string,
-  recordedAt: string,
-): Promise<void> {
-  await client.query(
-    `INSERT INTO platform.product_audit_events (
-       audit_key,
-       product,
-       action,
-       action_version,
-       occurred_at,
-       tenant_scope,
-       organization_id,
-       property_id,
-       actor_type,
-       actor_user_id,
-       target_resource_product,
-       target_resource_type,
-       target_resource_id,
-       secondary_resource_product,
-       secondary_resource_type,
-       secondary_resource_id,
-       domain_event_id,
-       correlation_id,
-       causation_id,
-       redacted_payload,
-       private_payload,
-       audit_metadata,
-       retention_class,
-       privacy_scope
-     )
-     VALUES (
-       $1,
-       'finance',
-       'manual_payment.recorded',
-       1,
-       $2::timestamptz,
-       'property',
-       NULL,
-       $3::uuid,
-       $4,
-       $5::uuid,
-       'finance',
-       'payment',
-       $6,
-       'booking',
-       'guest_booking',
-       $7,
-       $8::uuid,
-       $9,
-       $10,
-       $11::jsonb,
-       $12::jsonb,
-       $13::jsonb,
-       'financial',
-       'confidential'
-     )
-     ON CONFLICT (product, audit_key) DO NOTHING`,
-    [
-      manualPaymentScopedPersistenceKey(command.propertyId, keyHash, "audit"),
-      recordedAt,
-      command.propertyId,
-      command.audit.actor.kind,
-      command.audit.actor.kind === "user" ? command.audit.actor.userId : null,
-      paymentId,
-      guestBookingId,
-      domainEventId,
-      command.audit.correlationId ?? command.audit.requestId,
-      command.commandId,
-      JSON.stringify({
-        amount: command.payload.amount,
-        currency: command.payload.currency,
-        paymentMethod: command.payload.paymentMethod,
-        invoiceId: command.payload.invoiceId,
-      }),
-      JSON.stringify({ reference: command.payload.reference ?? null }),
-      JSON.stringify({
-        requestId: command.audit.requestId,
-        idempotencyKeyHash: keyHash,
-      }),
-    ],
-  );
-}
-
-async function completeManualPaymentIdempotency(
-  client: FinancePropertySettingsWriteClient,
-  command: FinanceManualPaymentRecordCommand,
-  keyHash: string,
-  fingerprint: string,
-  paymentId: string,
-  commandMeta: ReturnType<typeof buildManualPaymentCommandMeta>,
-  recordedAt: string,
-): Promise<void> {
-  await client.query(
-    `UPDATE platform.idempotency_keys
-     SET status = 'completed',
-         request_fingerprint_hash = $1,
-         response_status_code = 201,
-         response_resource_product = 'finance',
-         response_resource_type = 'payment',
-         response_resource_id = $2,
-         response_body_hash = $3,
-         completed_at = $4::timestamptz,
-         last_seen_at = $4::timestamptz,
-         idempotency_metadata = $5::jsonb
-     WHERE operation_scope = 'finance'
-       AND operation = 'manual_payment_record'
-       AND key_hash = $6
-       AND tenant_scope = 'property'
-       AND property_id = $7::uuid`,
-    [
-      fingerprint,
-      paymentId,
-      sha256(stableJson(commandMeta)),
-      recordedAt,
-      JSON.stringify({ commandMeta, commandId: command.commandId }),
-      keyHash,
-      command.propertyId,
-    ],
-  );
-}
-
-async function loadFinanceInvoiceDetail(
-  pool: FinanceQueryExecutor,
-  propertyId: string,
-  invoiceId: string,
-): Promise<FinanceInvoiceDetail | null> {
-  const rows = await loadInvoiceRows(pool, propertyId, {
-    sort: "issuedAt",
-    limit: 500,
-    offset: 0,
-    search: invoiceId,
-  });
-  const invoice = rows.find((row) => row.invoiceId === invoiceId);
-  if (!invoice) return null;
-  const payments = await loadInvoicePaymentRows(pool, propertyId, invoice.guestBookingId);
-  return {
-    ...toInvoiceListItem(invoice),
-    guest: {
-      displayName: invoice.guestDisplayName ?? "Guest",
-      email: invoice.guestEmail,
-      phone: invoice.guestPhone,
-    },
-    nights: nightsBetween(invoice.checkIn, invoice.checkOut),
-    charges: [
-      {
-        description: "Stay",
-        detail: `${dateOnly(invoice.checkIn)} to ${dateOnly(invoice.checkOut)}`,
-        amount: decimalString(invoice.totalAmount),
-      },
-    ],
-    payments: payments.map(toInvoicePayment),
-    subtotal: decimalString(invoice.totalAmount),
-  };
-}
-
 async function loadPaymentSettingsRow(
   pool: FinanceQueryExecutor,
   propertyId: string,
 ): Promise<FinancePaymentSettingsRow | null> {
   const result = await pool.query<FinancePaymentSettingsRow>(
     `SELECT
-       settings.property_id::text AS "propertyId",
-       settings.payments_enabled AS "paymentsEnabled",
-       settings.accepted_methods AS "acceptedMethods",
-       settings.default_currency AS "defaultCurrency",
+       property.id::text AS "propertyId",
+       COALESCE(settings.payments_enabled, FALSE) AS "paymentsEnabled",
+       COALESCE(settings.accepted_methods, ARRAY[]::text[]) AS "acceptedMethods",
+       COALESCE(booking_settings.default_currency, settings.default_currency, 'EUR') AS "defaultCurrency",
        COALESCE(settings.deposit_policy, '{}'::jsonb) AS "depositPolicy",
        COALESCE(settings.refund_policy, '{}'::jsonb) AS "refundPolicy",
        COALESCE(settings.tax_policy, '{}'::jsonb) AS "taxPolicy",
        settings.statement_descriptor AS "statementDescriptor",
-       settings.requires_manual_review AS "requiresManualReview",
-       settings.updated_at AS "updatedAt",
+       COALESCE(settings.requires_manual_review, TRUE) AS "requiresManualReview",
+       COALESCE(settings.updated_at, booking_settings.updated_at, property.updated_at) AS "updatedAt",
        account.provider_account_id AS "providerAccountId",
        account.provider,
        account.status AS "providerStatus",
@@ -4521,12 +3540,16 @@ async function loadPaymentSettingsRow(
        account.charges_enabled AS "chargesEnabled",
        account.payouts_enabled AS "payoutsEnabled",
        account.capabilities AS "providerCapabilities"
-     FROM finance.payment_settings settings
+     FROM hotel_catalog.properties property
+     LEFT JOIN finance.payment_settings settings
+       ON settings.property_id = property.id
+     LEFT JOIN booking.booking_settings booking_settings
+       ON booking_settings.property_id = property.id
      LEFT JOIN finance.payment_provider_accounts account
        ON account.id = settings.provider_account_id
       AND account.property_id = settings.property_id
       AND account.account_scope = 'property'
-     WHERE settings.property_id = $1::uuid
+     WHERE property.id = $1::uuid
      LIMIT 1`,
     [propertyId],
   );
@@ -4611,281 +3634,6 @@ async function loadAffiliatePayoutSettingsRow(
     [affiliateId, organizationId ?? null],
   );
   return result.rows[0] ?? null;
-}
-
-async function loadFinancialSummaryRow(
-  pool: FinanceQueryExecutor,
-  propertyId: string,
-): Promise<FinanceVisibilitySummaryRow | null> {
-  const result = await pool.query<FinanceVisibilitySummaryRow>(
-    `SELECT
-       visibility.property_id::text AS "propertyId",
-       visibility.period_start AS "periodStart",
-       visibility.period_end AS "periodEnd",
-       visibility.currency,
-       visibility.gross_payment_amount::text AS "grossPaymentAmount",
-       visibility.net_payment_amount::text AS "netPaymentAmount",
-       visibility.payout_amount::text AS "payoutAmount",
-       visibility.commission_amount::text AS "commissionAmount",
-       visibility.outstanding_balance_amount::text AS "outstandingBalanceAmount",
-       visibility.payment_count AS "paymentCount",
-       visibility.payout_count AS "payoutCount",
-       visibility.failed_payment_count AS "failedPaymentCount",
-       visibility.status_counts AS "statusCounts",
-       visibility.source_freshness AS "sourceFreshness",
-       visibility.projected_at AS "projectedAt"
-     FROM finance.finance_visibility_read_model visibility
-     WHERE visibility.property_id = $1::uuid
-       AND visibility.visibility_scope = 'property_finance'
-       AND visibility.required_permission_key = 'pms.finance.read'
-     ORDER BY visibility.projected_at DESC
-     LIMIT 1`,
-    [propertyId],
-  );
-  return result.rows[0] ?? null;
-}
-
-async function loadInvoiceRows(
-  pool: FinanceQueryExecutor,
-  propertyId: string,
-  query: FinanceInvoiceListQuery,
-): Promise<FinanceInvoiceRow[]> {
-  const result = await pool.query<FinanceInvoiceRow>(
-    `WITH invoice_base AS (
-       SELECT
-         COALESCE(booking.booking_metadata ->> 'invoiceId', booking.id::text) AS "invoiceId",
-         COALESCE(booking.booking_metadata ->> 'invoiceNumber', booking.public_reference) AS "invoiceNumber",
-         booking.id::text AS "guestBookingId",
-         booking.public_reference AS "bookingReference",
-         property.display_name AS "propertyName",
-         NULLIF(concat_ws(' ', guest.first_name, guest.last_name), '') AS "guestDisplayName",
-         guest.email AS "guestEmail",
-         guest.phone AS "guestPhone",
-         booking.check_in AS "checkIn",
-         booking.check_out AS "checkOut",
-         COALESCE(assignment.assignment_payload ->> 'roomName', room_type.name) AS "roomName",
-         room.room_number AS "roomNumber",
-         booking.currency,
-         booking.total_amount::text AS "totalAmount",
-         COALESCE(payment_totals.amount_paid, 0)::text AS "amountPaid",
-         booking.balance_amount::text AS "balanceDue",
-         CASE
-           WHEN booking.lifecycle_status IN ('draft') THEN 'draft'
-           WHEN booking.lifecycle_status IN ('declined', 'canceled', 'expired') THEN 'voided'
-           WHEN booking.balance_amount = 0 OR booking.payment_status = 'paid' THEN 'paid'
-           WHEN COALESCE(payment_totals.amount_paid, 0) > 0 THEN 'partial'
-           WHEN booking.check_in < current_date THEN 'overdue'
-           ELSE 'sent'
-         END AS status,
-         booking.created_at AS "issuedAt",
-         COALESCE(visibility.source_freshness, '{}'::jsonb) AS "sourceFreshness"
-       FROM booking.guest_bookings booking
-      LEFT JOIN booking.booking_guests guest
-        ON guest.guest_booking_id = booking.id
-       AND guest.guest_role = 'booker'
-      LEFT JOIN hotel_catalog.properties property
-        ON property.id = booking.property_id
-      LEFT JOIN pms.operational_booking_assignments assignment
-         ON assignment.property_id = booking.property_id
-        AND assignment.guest_booking_id = booking.id
-        AND assignment.position = 1
-       LEFT JOIN pms.rooms room
-         ON room.id = assignment.room_id
-        AND room.property_id = assignment.property_id
-       LEFT JOIN pms.room_types room_type
-         ON room_type.id = assignment.room_type_id
-        AND room_type.property_id = assignment.property_id
-       LEFT JOIN LATERAL (
-         SELECT COALESCE(sum(payment.amount - payment.refunded_amount), 0) AS amount_paid
-         FROM finance.payments payment
-         WHERE payment.property_id = booking.property_id
-           AND payment.guest_booking_id = booking.id
-           AND payment.status IN ('authorized', 'pending', 'paid', 'partially_refunded')
-           AND payment.visibility_class IN ('pms_finance', 'migration')
-       ) payment_totals ON TRUE
-       LEFT JOIN LATERAL (
-         SELECT source_freshness
-         FROM finance.finance_visibility_read_model visibility
-         WHERE visibility.property_id = booking.property_id
-           AND visibility.visibility_scope = 'property_finance'
-           AND visibility.required_permission_key = 'pms.finance.read'
-         ORDER BY visibility.projected_at DESC
-         LIMIT 1
-       ) visibility ON TRUE
-       WHERE booking.property_id = $1::uuid
-     ),
-     filtered AS (
-       SELECT *
-       FROM invoice_base
-       WHERE ($2::text IS NULL OR status = $2::text)
-         AND (
-           $3::text IS NULL
-           OR lower("invoiceId") LIKE lower($3::text)
-           OR lower("invoiceNumber") LIKE lower($3::text)
-           OR lower("bookingReference") LIKE lower($3::text)
-           OR lower(COALESCE("guestDisplayName", '')) LIKE lower($3::text)
-           OR lower(COALESCE("guestEmail", '')) LIKE lower($3::text)
-         )
-     ),
-     counts AS (
-       SELECT jsonb_object_agg(status, count) AS counts
-       FROM (
-         SELECT status, count(*) AS count
-         FROM invoice_base
-         GROUP BY status
-       ) status_counts
-     )
-     SELECT
-       filtered.*,
-       count(*) OVER () AS total,
-       COALESCE(counts.counts, '{}'::jsonb) AS counts
-     FROM filtered
-     CROSS JOIN counts
-     ORDER BY
-       CASE WHEN $4::text = 'guest' THEN lower(COALESCE("guestDisplayName", '')) END ASC,
-       CASE WHEN $4::text = 'amount' THEN "totalAmount"::numeric END DESC,
-       CASE WHEN $4::text IN ('issuedAt', 'guest', 'amount') THEN "issuedAt" END DESC,
-       "invoiceNumber" ASC
-     LIMIT $5::integer OFFSET $6::integer`,
-    [
-      propertyId,
-      query.status ?? null,
-      likeSearch(query.search),
-      query.sort,
-      query.limit,
-      query.offset,
-    ],
-  );
-  return result.rows;
-}
-
-async function loadInvoicePaymentRows(
-  pool: FinanceQueryExecutor,
-  propertyId: string,
-  guestBookingId: string,
-): Promise<FinanceInvoicePaymentRow[]> {
-  const result = await pool.query<FinanceInvoicePaymentRow>(
-    `SELECT
-       payment.id::text AS "paymentId",
-       payment.payment_method AS method,
-       payment.amount::text AS amount,
-       payment.currency,
-       COALESCE(payment.payment_metadata ->> 'reference', payment.source_payment_id) AS reference,
-       payment.status,
-       COALESCE(payment.paid_at, payment.authorized_at, payment.created_at) AS "recordedAt"
-     FROM finance.payments payment
-     WHERE payment.property_id = $1::uuid
-       AND payment.guest_booking_id = $2::uuid
-       AND payment.visibility_class IN ('pms_finance', 'migration')
-     ORDER BY COALESCE(payment.paid_at, payment.authorized_at, payment.created_at) DESC,
-       payment.id ASC`,
-    [propertyId, guestBookingId],
-  );
-  return result.rows;
-}
-
-async function loadPaymentLedgerRows(
-  pool: FinanceQueryExecutor,
-  propertyId: string,
-  query: FinancePaymentLedgerQuery,
-): Promise<FinancePaymentLedgerRow[]> {
-  const result = await pool.query<FinancePaymentLedgerRow>(
-    `WITH payment_base AS (
-       SELECT
-         payment.id::text AS "paymentId",
-         payment.payment_method AS method,
-         payment.amount::text AS amount,
-         payment.currency,
-         COALESCE(payment.payment_metadata ->> 'reference', payment.source_payment_id) AS reference,
-         payment.status,
-         COALESCE(payment.paid_at, payment.authorized_at, payment.failed_at, payment.created_at) AS "recordedAt",
-         COALESCE(booking.booking_metadata ->> 'invoiceId', booking.id::text) AS "invoiceId",
-         COALESCE(booking.booking_metadata ->> 'invoiceNumber', booking.public_reference) AS "invoiceNumber",
-         booking.id::text AS "guestBookingId",
-         booking.public_reference AS "bookingReference",
-         payment.payment_metadata ->> 'checkoutChargeId' AS "checkoutChargeId",
-         COALESCE(
-           account.provider,
-           CASE
-             WHEN payment.payment_method = 'bank_transfer' THEN 'bank_transfer'
-             WHEN payment.payment_method IN ('cash', 'manual_card', 'other', 'unknown') THEN 'manual'
-             ELSE 'vayada'
-           END
-         ) AS provider,
-         COALESCE(payment.payment_metadata ->> 'providerStatus', payment.status) AS "providerStatus",
-         COALESCE(payment.payment_metadata ->> 'reconciliationStatus', 'pending') AS "reconciliationStatus",
-         NULLIF(concat_ws(' ', guest.first_name, guest.last_name), '') AS "guestDisplayName",
-         guest.email AS "guestEmail",
-         COALESCE(visibility.source_freshness, '{}'::jsonb) AS "sourceFreshness"
-       FROM finance.payments payment
-       LEFT JOIN finance.payment_provider_accounts account
-         ON account.id = payment.provider_account_id
-        AND account.property_id = payment.property_id
-       LEFT JOIN booking.guest_bookings booking
-         ON booking.id = payment.guest_booking_id
-        AND booking.property_id = payment.property_id
-       LEFT JOIN booking.booking_guests guest
-         ON guest.guest_booking_id = booking.id
-        AND guest.guest_role = 'booker'
-       LEFT JOIN LATERAL (
-         SELECT source_freshness
-         FROM finance.finance_visibility_read_model visibility
-         WHERE visibility.property_id = payment.property_id
-           AND visibility.visibility_scope = 'property_finance'
-           AND visibility.required_permission_key = 'pms.finance.read'
-         ORDER BY visibility.projected_at DESC
-         LIMIT 1
-       ) visibility ON TRUE
-       WHERE payment.property_id = $1::uuid
-         AND payment.visibility_class IN ('pms_finance', 'migration')
-     ),
-     filtered AS (
-       SELECT *
-       FROM payment_base
-       WHERE ($2::text IS NULL OR status = $2::text)
-         AND ($3::text IS NULL OR provider = $3::text)
-         AND ($4::text IS NULL OR method = $4::text)
-         AND ($5::timestamptz IS NULL OR "recordedAt" >= $5::timestamptz)
-         AND ($6::timestamptz IS NULL OR "recordedAt" <= $6::timestamptz)
-         AND (
-           $7::text IS NULL
-           OR lower(COALESCE("invoiceId", '')) LIKE lower($7::text)
-           OR lower(COALESCE("invoiceNumber", '')) LIKE lower($7::text)
-           OR lower(COALESCE("bookingReference", '')) LIKE lower($7::text)
-           OR lower(COALESCE(reference, '')) LIKE lower($7::text)
-           OR lower(COALESCE("guestDisplayName", '')) LIKE lower($7::text)
-           OR lower(COALESCE("guestEmail", '')) LIKE lower($7::text)
-         )
-     ),
-     counts AS (
-       SELECT jsonb_object_agg(status, count) AS counts
-       FROM (
-         SELECT status, count(*) AS count
-         FROM payment_base
-         GROUP BY status
-       ) status_counts
-     )
-     SELECT
-       filtered.*,
-       count(*) OVER () AS total,
-       COALESCE(counts.counts, '{}'::jsonb) AS counts
-     FROM filtered
-     CROSS JOIN counts
-     ORDER BY "recordedAt" DESC, "paymentId" ASC
-     LIMIT $8::integer OFFSET $9::integer`,
-    [
-      propertyId,
-      query.status ?? null,
-      query.provider ?? null,
-      query.method ?? null,
-      query.from ?? null,
-      query.to ?? null,
-      likeSearch(query.search),
-      query.limit,
-      query.offset,
-    ],
-  );
-  return result.rows;
 }
 
 async function loadPayoutRows(
@@ -5580,7 +4328,10 @@ function toFinancePaymentSettingsReadModel(
     statementDescriptor: row.statementDescriptor,
     requiresManualReview: (row.requiresManualReview ?? false) || providerStatus !== "active",
     providerAccount: {
-      providerAccountId: row.providerAccountId,
+      providerAccountId:
+        row.providerAccountId?.startsWith("settings-choice:") === true
+          ? null
+          : row.providerAccountId,
       provider: row.provider ? paymentProvider(row.provider) : null,
       status: providerStatus,
       onboardingStatus: providerOnboardingStatus(row.providerOnboardingStatus),
@@ -5594,6 +4345,26 @@ function toFinancePaymentSettingsReadModel(
     },
     updatedAt: utcDateTime(row.updatedAt, new Date().toISOString()),
   };
+}
+
+function consumeStripeDashboardLinkRateLimit(
+  windows: Map<string, { count: number; resetAt: number }>,
+  key: string,
+  now: number = Date.now(),
+): { ok: true } | { ok: false; retryAfterSeconds: number } {
+  const current = windows.get(key);
+  if (!current || current.resetAt <= now) {
+    windows.set(key, { count: 1, resetAt: now + STRIPE_DASHBOARD_LINK_RATE_WINDOW_MS });
+    return { ok: true };
+  }
+  if (current.count >= STRIPE_DASHBOARD_LINK_RATE_LIMIT) {
+    return {
+      ok: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((current.resetAt - now) / 1_000)),
+    };
+  }
+  current.count += 1;
+  return { ok: true };
 }
 
 function toAffiliatePayoutSettingsReadModel(
@@ -5637,113 +4408,6 @@ function toAffiliatePayoutSettingsResponse(
     affiliateId,
     marketplaceOrganizationId,
     payoutSettings,
-  };
-}
-
-function toFinancialSummaryResponseBody(
-  row: FinanceVisibilitySummaryRow,
-): Omit<FinanceFinancialSummaryResponse, "contractVersion" | "propertyId"> {
-  const statusCounts = financeJsonObject(row.statusCounts);
-  return {
-    summary: {
-      currency: currencyCode(row.currency),
-      periodStart: row.periodStart ? dateOnly(row.periodStart) : null,
-      periodEnd: row.periodEnd ? dateOnly(row.periodEnd) : null,
-      grossPaymentAmount: decimalString(row.grossPaymentAmount),
-      netPaymentAmount: decimalString(row.netPaymentAmount),
-      payoutAmount: decimalString(row.payoutAmount),
-      commissionAmount: decimalString(row.commissionAmount),
-      outstandingBalanceAmount: decimalString(row.outstandingBalanceAmount),
-      paymentCount: row.paymentCount,
-      payoutCount: row.payoutCount,
-      failedPaymentCount: row.failedPaymentCount,
-      invoiceCounts: invoiceStatusCounts(statusCounts["invoices"] ?? statusCounts),
-      paymentCounts: paymentStatusCounts(statusCounts["payments"] ?? statusCounts),
-      projectedAt: row.projectedAt ? utcDateTime(row.projectedAt, "") : null,
-    },
-    sourceFreshness: financeJsonObject(row.sourceFreshness),
-  };
-}
-
-function toInvoiceListResponseBody(
-  rows: FinanceInvoiceRow[],
-  query: FinanceInvoiceListQuery,
-): Omit<FinanceInvoiceListResponse, "contractVersion" | "propertyId"> {
-  return {
-    invoices: rows.map(toInvoiceListItem),
-    total: totalFromRows(rows),
-    counts: invoiceStatusCounts(rows[0]?.counts),
-    limit: query.limit,
-    offset: query.offset,
-    sourceFreshness: financeJsonObject(rows[0]?.sourceFreshness),
-  };
-}
-
-function toInvoiceListItem(row: FinanceInvoiceRow): FinanceInvoiceListItem {
-  return {
-    invoiceId: row.invoiceId,
-    invoiceNumber: row.invoiceNumber,
-    guestBookingId: row.guestBookingId,
-    bookingReference: row.bookingReference,
-    guest: {
-      displayName: row.guestDisplayName ?? "Guest",
-      email: row.guestEmail,
-    },
-    stay: {
-      checkIn: dateOnly(row.checkIn),
-      checkOut: dateOnly(row.checkOut),
-      roomName: row.roomName,
-      roomNumber: row.roomNumber,
-    },
-    currency: currencyCode(row.currency),
-    totalAmount: decimalString(row.totalAmount),
-    amountPaid: decimalString(row.amountPaid),
-    balanceDue: decimalString(row.balanceDue),
-    status: invoiceStatus(row.status),
-    issuedAt: utcDateTime(row.issuedAt, new Date().toISOString()),
-  };
-}
-
-function toInvoicePayment(row: FinanceInvoicePaymentRow): FinanceInvoicePayment {
-  const method = invoicePaymentMethod(row.method);
-  return {
-    paymentId: row.paymentId,
-    method,
-    methodLabel: paymentMethodLabel(method),
-    amount: decimalString(row.amount),
-    currency: currencyCode(row.currency),
-    reference: row.reference,
-    status: paymentStatus(row.status),
-    recordedAt: utcDateTime(row.recordedAt, new Date().toISOString()),
-  };
-}
-
-function toPaymentLedgerResponseBody(
-  rows: FinancePaymentLedgerRow[],
-  query: FinancePaymentLedgerQuery,
-): Omit<FinancePaymentLedgerResponse, "contractVersion" | "propertyId"> {
-  return {
-    payments: rows.map(toPaymentLedgerItem),
-    total: totalFromRows(rows),
-    counts: paymentStatusCounts(rows[0]?.counts),
-    limit: query.limit,
-    offset: query.offset,
-    sourceFreshness: financeJsonObject(rows[0]?.sourceFreshness),
-  };
-}
-
-function toPaymentLedgerItem(row: FinancePaymentLedgerRow): FinancePaymentLedgerItem {
-  const invoicePayment = toInvoicePayment(row);
-  return {
-    ...invoicePayment,
-    invoiceId: row.invoiceId,
-    invoiceNumber: row.invoiceNumber,
-    guestBookingId: row.guestBookingId,
-    bookingReference: row.bookingReference,
-    checkoutChargeId: row.checkoutChargeId,
-    provider: paymentProvider(row.provider),
-    providerStatus: row.providerStatus,
-    reconciliationStatus: reconciliationStatus(row.reconciliationStatus),
   };
 }
 
@@ -5828,61 +4492,6 @@ function toReconciliationItem(row: FinanceReconciliationRow): FinanceReconciliat
   };
 }
 
-function emptyFinancialSummary(
-  propertyId: string,
-): Omit<FinanceFinancialSummaryResponse, "contractVersion" | "propertyId"> {
-  return {
-    summary: {
-      currency: "EUR",
-      periodStart: null,
-      periodEnd: null,
-      grossPaymentAmount: "0.00",
-      netPaymentAmount: "0.00",
-      payoutAmount: "0.00",
-      commissionAmount: "0.00",
-      outstandingBalanceAmount: "0.00",
-      paymentCount: 0,
-      payoutCount: 0,
-      failedPaymentCount: 0,
-      invoiceCounts: invoiceStatusCounts(),
-      paymentCounts: paymentStatusCounts(),
-      projectedAt: null,
-    },
-    sourceFreshness: {
-      finance: {
-        status: "empty",
-        propertyId,
-      },
-    },
-  };
-}
-
-function emptyInvoiceList(
-  query: FinanceInvoiceListQuery,
-): Omit<FinanceInvoiceListResponse, "contractVersion" | "propertyId"> {
-  return {
-    invoices: [],
-    total: 0,
-    counts: invoiceStatusCounts(),
-    limit: query.limit,
-    offset: query.offset,
-    sourceFreshness: { finance: { status: "empty" } },
-  };
-}
-
-function emptyPaymentLedger(
-  query: FinancePaymentLedgerQuery,
-): Omit<FinancePaymentLedgerResponse, "contractVersion" | "propertyId"> {
-  return {
-    payments: [],
-    total: 0,
-    counts: paymentStatusCounts(),
-    limit: query.limit,
-    offset: query.offset,
-    sourceFreshness: { finance: { status: "empty" } },
-  };
-}
-
 function emptyPayoutList(
   query: FinancePayoutListQuery,
 ): Omit<FinancePayoutListResponse, "contractVersion" | "propertyId"> {
@@ -5908,74 +4517,6 @@ function emptyReconciliationView(
       jobsFreshAt: null,
       deadLettersFreshAt: null,
     },
-  };
-}
-
-function emptyInvoiceCsvExportDisposition(
-  propertyId: string,
-): Omit<FinanceInvoiceCsvExportResponse, "contractVersion" | "propertyId"> {
-  return {
-    export: {
-      status: "unsupported",
-      disposition: "not_available",
-      filename: `finance-invoices-${propertyId}.csv`,
-      contentType: "text/csv",
-      downloadUrl: null,
-      jobId: null,
-      message: "No Finance invoice read model is available to export yet.",
-    },
-    sourceFreshness: { finance: { status: "empty" } },
-  };
-}
-
-function parseInvoiceListQuery(query: unknown): FinanceInvoiceListQuery | FinanceValidationError {
-  const params = queryRecord(query);
-  const status = optionalEnum(params.status, FINANCE_INVOICE_STATUSES);
-  if (params.status && !status) {
-    return invalidQuery("invalid_query", "Invalid invoice status filter.");
-  }
-  const sort = optionalEnum(params.sort, ["issuedAt", "guest", "amount"] as const) ?? "issuedAt";
-  return {
-    status,
-    search: cleanSearch(params.search),
-    sort,
-    limit: clampLimit(params.limit),
-    offset: parseOffset(params.offset),
-  };
-}
-
-function parsePaymentLedgerQuery(
-  query: unknown,
-): FinancePaymentLedgerQuery | FinanceValidationError {
-  const params = queryRecord(query);
-  const status = optionalEnum(params.status, FINANCE_PAYMENT_STATUSES);
-  if (params.status && !status) {
-    return invalidQuery("invalid_query", "Invalid payment status filter.");
-  }
-  const provider = optionalEnum(params.provider, FINANCE_ROUTE_PAYMENT_PROVIDERS);
-  if (params.provider && !provider) {
-    return invalidQuery("invalid_provider", "Invalid payment provider filter.");
-  }
-  const rawMethod = optionalEnum(params.method, FINANCE_ROUTE_PAYMENT_METHODS);
-  if (params.method && (!rawMethod || rawMethod === "wallet")) {
-    return invalidQuery("invalid_payment_method", "Invalid payment method filter.");
-  }
-  const method: FinancePaymentLedgerQuery["method"] =
-    rawMethod && rawMethod !== "wallet" ? rawMethod : undefined;
-  const from = parseUtcBound(params.from);
-  const to = parseUtcBound(params.to);
-  if ((params.from && !from) || (params.to && !to) || (from && to && from > to)) {
-    return invalidQuery("invalid_date_range", "Invalid payment ledger date range.");
-  }
-  return {
-    status,
-    provider,
-    method,
-    from,
-    to,
-    search: cleanSearch(params.search),
-    limit: clampLimit(params.limit),
-    offset: parseOffset(params.offset),
   };
 }
 
@@ -6018,67 +4559,6 @@ function parseReconciliationViewQuery(
   };
 }
 
-function toManualPaymentCommand(
-  request: FastifyRequest<{ Body: ManualPaymentBody }>,
-  propertyId: string,
-  invoiceId: string,
-): FinanceManualPaymentRecordCommand | FinanceValidationError {
-  const body = request.body ?? {};
-  const commandId = nonEmptyString(body.commandId);
-  const idempotencyKey = nonEmptyString(body.idempotencyKey);
-  const amount = decimalBodyString(body.amount);
-  const currency = currencyBodyString(body.currency);
-  const paymentMethod = optionalEnum(body.paymentMethod, FINANCE_ROUTE_PAYMENT_METHODS);
-  const reference = nullableTrimmedString(body.reference);
-
-  if (!commandId || !idempotencyKey || !currency) {
-    return invalidQuery(
-      "invalid_body",
-      "Manual payment command requires commandId, idempotencyKey, amount, currency, and paymentMethod.",
-    );
-  }
-
-  if (!amount) {
-    return invalidQuery(
-      "invalid_body",
-      "Manual payment amount must be a positive NUMERIC(15,2) value.",
-    );
-  }
-
-  if (!paymentMethod || paymentMethod === "wallet" || paymentMethod === "xendit") {
-    return invalidQuery("invalid_payment_method", "Invalid manual payment method.");
-  }
-
-  const now = new Date().toISOString();
-  const authContext = request.authContext;
-  return {
-    commandType: "finance.manual_payment.record",
-    commandId,
-    idempotencyKey,
-    propertyId,
-    audit: {
-      actor: authContext
-        ? {
-            kind: "user",
-            userId: authContext.actor.internalUserId,
-            organizationId: authContext.selectedOrganization.organizationId,
-          }
-        : { kind: "system", service: "apps/api" },
-      requestId: authContext?.audit.requestId ?? commandId,
-      correlationId: authContext?.audit.correlationId,
-      reason: "Manual property-side invoice payment recorded",
-      requestedAt: authContext?.audit.receivedAt ?? now,
-    },
-    payload: {
-      invoiceId,
-      amount,
-      currency,
-      paymentMethod,
-      reference,
-    },
-  };
-}
-
 function toStripePropertyAccountCommand(
   request: FastifyRequest<{ Body: StripeProviderAccountBody }>,
   propertyId: string,
@@ -6095,6 +4575,7 @@ function toStripePropertyAccountCommand(
     payload: {
       email: base.email,
       country: base.country,
+      returnSurface: base.returnSurface,
     },
   };
 }
@@ -6117,6 +4598,7 @@ function toStripeAffiliateAccountCommand(
     payload: {
       email: base.email,
       country: base.country,
+      returnSurface: base.returnSurface,
     },
   };
 }
@@ -6141,7 +4623,7 @@ function toStripePropertyOnboardingLinkCommand(
     idempotencyKey,
     propertyId,
     audit: financeCommandAudit(request, "Issue property Stripe Connect onboarding link"),
-    payload: { providerAccountId },
+    payload: { providerAccountId, returnSurface: parseStripeReturnSurface(body.returnSurface) },
   };
 }
 
@@ -6167,7 +4649,7 @@ function toStripeAffiliateOnboardingLinkCommand(
     affiliateId,
     organizationId: context.selectedOrganization.organizationId,
     audit: financeCommandAudit(request, "Issue affiliate Stripe Connect onboarding link"),
-    payload: { providerAccountId },
+    payload: { providerAccountId, returnSurface: parseStripeReturnSurface(body.returnSurface) },
   };
 }
 
@@ -6177,6 +4659,7 @@ function parseStripeProviderAccountBody(body: StripeProviderAccountBody):
       idempotencyKey: string;
       email: string;
       country: string;
+      returnSurface?: "marketplace" | "booking_admin";
     }
   | FinanceValidationError {
   const commandId = nonEmptyString(body.commandId);
@@ -6189,7 +4672,17 @@ function parseStripeProviderAccountBody(body: StripeProviderAccountBody):
       "Stripe provider-account command requires commandId, idempotencyKey, email, and country.",
     );
   }
-  return { commandId, idempotencyKey, email, country };
+  return {
+    commandId,
+    idempotencyKey,
+    email,
+    country,
+    returnSurface: parseStripeReturnSurface(body.returnSurface),
+  };
+}
+
+function parseStripeReturnSurface(value: unknown): "marketplace" | "booking_admin" | undefined {
+  return value === "marketplace" || value === "booking_admin" ? value : undefined;
 }
 
 function financeCommandAudit(request: FastifyRequest, reason: string): FinanceCommandAudit {
@@ -6662,13 +5155,6 @@ function currencyBodyString(value: unknown): string | undefined {
   return /^[A-Z]{3}$/.test(currency) ? currency : undefined;
 }
 
-function nullableTrimmedString(value: unknown): string | null | undefined {
-  if (value === undefined || value === null) return null;
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
 function maskAccountNumber(accountNumber: string): string {
   const visibleTail = accountNumber.slice(-4);
   return `${"*".repeat(Math.max(0, accountNumber.length - 4))}${visibleTail}`;
@@ -6676,7 +5162,6 @@ function maskAccountNumber(accountNumber: string): string {
 
 function toFinanceCommandError(
   result:
-    | Extract<FinanceManualPaymentRecordResult, { ok: false }>
     | Extract<FinanceProviderAccountCommandResult, { ok: false }>
     | Extract<FinanceXenditPayoutReconciliationResult, { ok: false }>
     | Extract<FinancePropertyPayoutDispatchResult, { ok: false }>
@@ -6700,7 +5185,7 @@ function toFinanceCommandError(
   } satisfies FinanceCommandError;
 }
 
-function enforceFinancePropertyReadPolicy(
+export function enforceFinancePropertyReadPolicy(
   request: FastifyRequest,
   reply: FastifyReply,
   propertyId: string,
@@ -6717,7 +5202,7 @@ function enforceFinancePropertyReadPolicy(
   }
 }
 
-function enforceFinancePropertyWritePolicy(
+export function enforceFinancePropertyWritePolicy(
   request: FastifyRequest,
   reply: FastifyReply,
   propertyId: string,
@@ -7227,11 +5712,10 @@ function paymentMethods(value: unknown): FinanceRoutePaymentMethod[] {
       case "xendit":
       case "cash":
       case "bank_transfer":
+      case "paypal":
       case "manual_card":
       case "wallet":
         return method;
-      case "paypal":
-        return "wallet";
       default:
         return "other";
     }
@@ -7357,11 +5841,6 @@ function nullableUtcDateTime(value: unknown): string | null {
   return timestamp || null;
 }
 
-function dateOnly(value: Date | string): string {
-  if (value instanceof Date) return value.toISOString().slice(0, 10);
-  return value.slice(0, 10);
-}
-
 function decimalString(value: unknown): string {
   if (typeof value === "number" && Number.isFinite(value)) return value.toFixed(2);
   if (typeof value === "string" && value.trim()) return value;
@@ -7384,24 +5863,6 @@ function sortJson(value: unknown): unknown {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, entry]) => [key, sortJson(entry)]),
   );
-}
-
-function invoiceStatus(value: unknown): FinanceInvoiceStatus {
-  return optionalEnum(value, FINANCE_INVOICE_STATUSES) ?? "sent";
-}
-
-function paymentStatus(value: unknown): FinanceInvoicePayment["status"] {
-  return optionalEnum(value, FINANCE_PAYMENT_STATUSES) ?? "pending";
-}
-
-function invoicePaymentMethod(value: unknown): FinanceInvoicePayment["method"] {
-  const method = optionalEnum(value, FINANCE_ROUTE_PAYMENT_METHODS);
-  if (method && method !== "wallet") return method;
-  return "other";
-}
-
-function reconciliationStatus(value: unknown): FinanceReconciliationStatus {
-  return optionalEnum(value, FINANCE_RECONCILIATION_STATUSES) ?? "pending";
 }
 
 function payoutStatus(value: unknown): FinancePayout["payoutStatus"] {
@@ -7436,30 +5897,6 @@ function reconciliationRecommendedAction(value: unknown): FinanceReconciliationR
   return "none";
 }
 
-function invoiceStatusCounts(value: unknown = {}): FinanceInvoiceStatusCounts {
-  const counts = countRecord(value);
-  return Object.fromEntries(
-    FINANCE_INVOICE_STATUSES.map((status) => [status, counts[status] ?? 0]),
-  ) as FinanceInvoiceStatusCounts;
-}
-
-function paymentStatusCounts(value: unknown = {}): FinancePaymentStatusCounts {
-  const counts = countRecord(value);
-  return Object.fromEntries(
-    FINANCE_PAYMENT_STATUSES.map((status) => [status, counts[status] ?? 0]),
-  ) as FinancePaymentStatusCounts;
-}
-
-function countRecord(value: unknown): Record<string, number> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).flatMap(([key, entry]) => {
-      const numberValue = typeof entry === "number" ? entry : Number(entry);
-      return Number.isFinite(numberValue) ? [[key, numberValue]] : [];
-    }),
-  );
-}
-
 function totalFromRows(rows: Array<{ total: string | number }>): number {
   if (rows.length === 0) return 0;
   const total = Number(rows[0]?.total ?? 0);
@@ -7477,32 +5914,6 @@ async function totalForPossiblyEmptyPage<T extends { total: string | number }>(
   const result = await pool.query<{ total: string }>(fallback.sql, fallback.values);
   const total = Number(result.rows[0]?.total ?? 0);
   return Number.isFinite(total) ? total : 0;
-}
-
-function nightsBetween(checkIn: Date | string, checkOut: Date | string): number {
-  const start = new Date(dateOnly(checkIn));
-  const end = new Date(dateOnly(checkOut));
-  const nights = Math.round((end.getTime() - start.getTime()) / 86_400_000);
-  return Math.max(0, nights);
-}
-
-function paymentMethodLabel(method: FinanceInvoicePayment["method"]): string {
-  switch (method) {
-    case "pay_at_property":
-      return "Pay at property";
-    case "bank_transfer":
-      return "Bank transfer";
-    case "manual_card":
-      return "Manual card";
-    case "xendit":
-      return "Xendit";
-    case "card":
-      return "Card";
-    case "cash":
-      return "Cash";
-    case "other":
-      return "Other";
-  }
 }
 
 function queryRecord(query: unknown): Record<string, string | undefined> {
@@ -7524,10 +5935,6 @@ function optionalEnum<const T extends readonly string[]>(
   return (allowed as readonly string[]).includes(value) ? (value as T[number]) : undefined;
 }
 
-function cleanSearch(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim().slice(0, 120) : undefined;
-}
-
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -7546,12 +5953,6 @@ function parseOffset(value: unknown): number {
   const parsed = typeof value === "string" ? Number(value) : NaN;
   if (!Number.isInteger(parsed) || parsed < 0) return 0;
   return parsed;
-}
-
-function parseUtcBound(value: unknown): string | undefined {
-  if (typeof value !== "string" || !value.trim()) return undefined;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
 }
 
 function invalidQuery(

@@ -23,12 +23,15 @@ export interface BookingPromoCode {
   code: string;
   discountType: BookingPromoDiscountType;
   discountValue: string;
-  currency: string | null;
+  minBookingValue: string | null;
+  applicableRoomIds: string[] | null;
   validFrom: string | null;
   validUntil: string | null;
+  stayDateFrom: string | null;
+  stayDateUntil: string | null;
   isActive: boolean;
-  maxUses: number | null;
-  useCount: number;
+  maxUses: number;
+  currentUses: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -41,11 +44,14 @@ export type CreateBookingPromoCodeBody = {
   code: string;
   discountType: BookingPromoDiscountType;
   discountValue: string;
-  currency?: string | null;
+  minBookingValue?: string | null;
+  applicableRoomIds?: string[] | null;
   validFrom?: string | null;
   validUntil?: string | null;
+  stayDateFrom?: string | null;
+  stayDateUntil?: string | null;
   isActive?: boolean;
-  maxUses?: number | null;
+  maxUses: number;
 };
 
 export type UpdateBookingPromoCodeBody = Partial<CreateBookingPromoCodeBody>;

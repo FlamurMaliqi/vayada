@@ -14,6 +14,7 @@ import {
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
+import { lockPmsRoomOrder } from "./pmsRoomOrder.js";
 
 const OPERATION = "pms.physical_room_units.reconcile";
 
@@ -85,10 +86,11 @@ async function executeReconcile(
   const fingerprint = sha256(serializeReconcilePhysicalRoomUnitsFingerprint(command));
   try {
     await client.query("BEGIN");
-    if (!(await lockAuthorizedPropertyScope(client, command, occurredAt))) {
+    if (!(await lockAuthorizedPmsPhysicalRoomScope(client, command, occurredAt))) {
       await client.query("ROLLBACK");
       return failure({ code: "setup_scope_unavailable" });
     }
+    await lockPmsRoomOrder(client, command.propertyId);
     await lockPmsPhysicalRoomUnitMutationScope(client, command.propertyId, command.roomTypeId);
     const roomType = await lockActiveRoomType(client, command);
     if (!roomType) {
@@ -133,9 +135,9 @@ async function executeReconcile(
   }
 }
 
-async function lockAuthorizedPropertyScope(
+export async function lockAuthorizedPmsPhysicalRoomScope(
   client: PmsPhysicalRoomUnitReconcileClient,
-  command: ReconcilePhysicalRoomUnitsCommand,
+  command: Pick<ReconcilePhysicalRoomUnitsCommand, "organizationId" | "propertyId" | "audit">,
   occurredAt: Date,
 ): Promise<boolean> {
   if (command.audit.actor.kind !== "user") return false;
@@ -365,13 +367,19 @@ async function insertUnits(
   count: number,
 ): Promise<PhysicalRoomUnitIdentity[]> {
   const result = await client.query<{ roomUnitId: string }>(
-    `WITH inserted AS (
+    `WITH room_order_seed AS (
+       SELECT COALESCE(MAX(sort_order), 0) AS max_sort_order
+       FROM pms.rooms
+       WHERE property_id = $1::uuid AND status <> 'retired'
+     ), inserted AS (
        INSERT INTO pms.rooms (
          property_id, room_type_id, source_system, room_number,
-         operational_label_status, status
+         operational_label_status, status, sort_order
        )
-       SELECT $1::uuid, $2::uuid, 'pms', NULL, 'unverified', 'available'
-       FROM generate_series(1, $3::integer)
+       SELECT $1::uuid, $2::uuid, 'pms', NULL, 'unverified', 'available',
+              room_order_seed.max_sort_order + source.n
+       FROM room_order_seed
+       CROSS JOIN generate_series(1, $3::integer) AS source(n)
        RETURNING id
      )
      SELECT id::text AS "roomUnitId" FROM inserted ORDER BY id`,

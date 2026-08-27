@@ -21,6 +21,7 @@ function parseArgs(argv: string[]): {
   workosApiKey: string;
   cohortManifestPath?: string;
   email?: string;
+  organizationId?: string;
   organizationKind?: string;
   confirm: string;
 } {
@@ -31,6 +32,7 @@ function parseArgs(argv: string[]): {
   let workosApiKey = process.env["WORKOS_API_KEY"] ?? "";
   let cohortManifestPath = "";
   let email = "";
+  let organizationId = "";
   let organizationKind = "";
   let confirm = "";
 
@@ -48,6 +50,8 @@ function parseArgs(argv: string[]): {
       cohortManifestPath = args[++i];
     } else if (arg === "--email" && args[i + 1]) {
       email = args[++i];
+    } else if (arg === "--organization-id" && args[i + 1]) {
+      organizationId = args[++i];
     } else if (arg === "--organization-kind" && args[i + 1]) {
       organizationKind = args[++i];
     } else if (arg === "--confirm" && args[i + 1]) {
@@ -62,6 +66,7 @@ function parseArgs(argv: string[]): {
     workosApiKey,
     cohortManifestPath: cohortManifestPath || undefined,
     email: email || undefined,
+    organizationId: organizationId || undefined,
     organizationKind: organizationKind || undefined,
     confirm,
   };
@@ -74,6 +79,7 @@ const {
   workosApiKey,
   cohortManifestPath,
   email,
+  organizationId,
   organizationKind,
   confirm,
 } = parseArgs(process.argv);
@@ -91,6 +97,10 @@ if (cohortSourceCount > 1) {
   console.error("Error: pass only one of --cohort-manifest, --email, or --organization-kind.");
   process.exit(1);
 }
+if (organizationId && !email) {
+  console.error("Error: --organization-id requires --email.");
+  process.exit(1);
+}
 if (mode === "apply" && !workosApiKey) {
   console.error("Error: WORKOS_API_KEY is required with --apply.");
   process.exit(1);
@@ -100,34 +110,36 @@ const repository = createPgWorkosBackfillRepository({
   connectionString,
   legacyAuthConnectionString,
 });
-const source = cohortManifestPath ? null : await repository.loadSource();
-const cohort = cohortManifestPath
-  ? await loadCohortManifest(cohortManifestPath)
-  : email
-    ? createWorkosBackfillCohortForEmail(source!, email)
-    : createWorkosBackfillCohortForOrganizationKind(source!, organizationKind!);
-if (mode === "apply" && confirm !== cohort.key) {
-  console.error(`Error: --apply requires --confirm ${cohort.key}.`);
-  process.exit(1);
-}
+try {
+  const source = cohortManifestPath ? null : await repository.loadSource();
+  const cohort = cohortManifestPath
+    ? await loadCohortManifest(cohortManifestPath)
+    : email
+      ? createWorkosBackfillCohortForEmail(source!, email, organizationId)
+      : createWorkosBackfillCohortForOrganizationKind(source!, organizationKind!);
+  if (mode === "apply" && confirm !== cohort.key) {
+    console.error(`Error: --apply requires --confirm ${cohort.key}.`);
+    process.exitCode = 1;
+  } else {
+    console.log(`WorkOS backfill target cohort: ${cohort.key}`);
+    console.log(`Database URL host: ${safeDatabaseTarget(connectionString)}`);
+    if (legacyAuthConnectionString) {
+      console.log(`Legacy auth DB host: ${safeDatabaseTarget(legacyAuthConnectionString)}`);
+    }
 
-console.log(`WorkOS backfill target cohort: ${cohort.key}`);
-console.log(`Database URL host: ${safeDatabaseTarget(connectionString)}`);
-if (legacyAuthConnectionString) {
-  console.log(`Legacy auth DB host: ${safeDatabaseTarget(legacyAuthConnectionString)}`);
-}
-
-const summary = await runWorkosBackfill({
-  mode,
-  cohort,
-  repository,
-  workos: workosApiKey ? createSdkBackfillClient(workosApiKey) : undefined,
-});
-
-printSummary(summary);
-
-if (summary.warnings.length > 0 || (mode === "apply" && hasParityGaps(summary))) {
-  process.exitCode = 2;
+    const summary = await runWorkosBackfill({
+      mode,
+      cohort,
+      repository,
+      workos: workosApiKey ? createSdkBackfillClient(workosApiKey) : undefined,
+    });
+    printSummary(summary);
+    if (summary.warnings.length > 0 || (mode === "apply" && hasParityGaps(summary))) {
+      process.exitCode = 2;
+    }
+  }
+} finally {
+  await repository.close?.();
 }
 
 function createSdkBackfillClient(apiKey: string): WorkosBackfillClient {

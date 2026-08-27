@@ -246,7 +246,7 @@ VALUES
     'Ops',
     'nora.ops@example.test',
     '+43111222333',
-    'AT',
+    'Atlantis',
     '2027-08-18',
     '{"adults": 2, "children": 0, "roomCount": 1}',
     '{"roomType": "Alpine Suite", "roomNumber": "301", "nights": 3}',

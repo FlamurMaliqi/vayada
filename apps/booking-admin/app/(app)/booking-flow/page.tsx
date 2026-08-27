@@ -6,40 +6,28 @@ import {
   GlobeAltIcon,
   HomeIcon,
   SparklesIcon,
-  TicketIcon,
   CheckBadgeIcon,
   ClipboardDocumentListIcon,
   ClockIcon,
   PlusIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
-import {
-  settingsService,
-  type AddonItem,
-  type AddonSettings,
-  type PromoCodeItem,
-} from "@/services/settings";
+import { settingsService, type AddonItem, type AddonSettings } from "@/services/settings";
 import {
   getBookingAddonSettings,
   updateBookingAddonSettings,
 } from "@/services/api/bookingAddonSettingsClient";
 import {
+  BookingAddonItemsClientError,
   createBookingAddonItem,
   deleteBookingAddonItem,
-  listBookingAddonItems,
+  getBookingAddonItemsContext,
   updateBookingAddonItem,
   type BookingAddonItem,
   type BookingAddonPricingModel,
+  type BookingPropertyPlan,
   type CreateBookingAddonItemBody,
 } from "@/services/api/bookingAddonItemsClient";
-import {
-  createBookingPromoCode,
-  deleteBookingPromoCode,
-  listBookingPromoCodes,
-  updateBookingPromoCode,
-  type BookingPromoCode,
-  type CreateBookingPromoCodeBody,
-} from "@/services/api/bookingPromoCodesClient";
 import {
   getBookingBenefitsSettings,
   type BookingBenefitsSettings,
@@ -71,13 +59,12 @@ import {
 } from "@/services/api/bookingFlowSettingsLoader";
 import { apiClient } from "@/services/api/client";
 import { FeedbackAlert } from "@/components/ui";
-import { SettingsLayout, type SettingsNavSection } from "@/components/settings/layout";
+import { SettingsLayout, type SettingsNavSection } from "@vayada/settings-ui";
 import { DEFAULT_LAST_MINUTE_TIERS } from "@vayada/product-onboarding";
 
 import RoomsTab from "@/components/booking-flow/RoomsTab";
 import AddonsTab, { type AddonItemFormValues } from "@/components/booking-flow/AddonsTab";
 import BenefitsTab from "@/components/booking-flow/BenefitsTab";
-import PromoCodesTab, { type PromoCodeFormValues } from "@/components/booking-flow/PromoCodesTab";
 import LocalizationTab from "@/components/booking-flow/LocalizationTab";
 import GuestFormTab from "@/components/booking-flow/GuestFormTab";
 import {
@@ -86,14 +73,7 @@ import {
   useLocalizationSettingsTab,
 } from "@/components/booking-flow/useBookingFlowSettingsTabs";
 
-type Tab =
-  | "rooms"
-  | "addons"
-  | "benefits"
-  | "promo-codes"
-  | "localization"
-  | "guest-form"
-  | "last-minute";
+type Tab = "rooms" | "addons" | "benefits" | "localization" | "guest-form" | "last-minute";
 
 type PmsRoomsResponse = {
   items?: {
@@ -105,6 +85,16 @@ type PmsRoomsResponse = {
 const DEFAULT_ADDON_SETTINGS: AddonSettings = {
   showAddonsStep: true,
   groupAddonsByCategory: true,
+};
+
+const DEFAULT_PROPERTY_PLAN: BookingPropertyPlan = {
+  propertyId: "",
+  plan: "commission",
+  limits: {
+    maxRoomPhotosPerType: 10,
+    maxAddons: 3,
+    guestContactAccess: "after_acceptance",
+  },
 };
 
 const DEFAULT_GUEST_FORM_SETTINGS: BookingGuestFormSettings = {
@@ -163,6 +153,8 @@ function toSettingsAddonItem(item: BookingAddonItem): AddonItem {
     perPerson: item.pricingModel === "per_guest" || item.pricingModel === "per_guest_night",
     perNight: item.pricingModel === "per_night" || item.pricingModel === "per_guest_night",
     sortOrder: item.sortOrder,
+    ownershipKind: item.ownershipKind,
+    partnerCommissionRate: item.partnerCommissionRate,
   };
 }
 
@@ -174,7 +166,7 @@ function toAddonPricingModel(addon: { perPerson?: boolean; perNight?: boolean })
 }
 
 function toAddonWritableFields(values: AddonItemFormValues) {
-  return {
+  const fields = {
     name: values.name,
     description: values.description,
     price: values.price,
@@ -184,6 +176,17 @@ function toAddonWritableFields(values: AddonItemFormValues) {
     duration: values.duration || null,
     pricingModel: toAddonPricingModel(values) as BookingAddonPricingModel,
   };
+  return values.ownershipKind === "partner"
+    ? {
+        ...fields,
+        ownershipKind: "partner" as const,
+        partnerCommissionRate: values.partnerCommissionRate,
+      }
+    : {
+        ...fields,
+        ownershipKind: "property" as const,
+        partnerCommissionRate: null,
+      };
 }
 
 function toAddonCreateBody(
@@ -225,36 +228,6 @@ function moveAddon(addons: AddonItem[], sourceAddonId: string, targetAddonId: st
   return ordered.map((addon, index) => ({ ...addon, sortOrder: index }));
 }
 
-function toSettingsPromoCode(item: BookingPromoCode): PromoCodeItem {
-  return {
-    id: item.promoCodeId,
-    code: item.code,
-    discountType: item.discountType,
-    discountValue: Number(item.discountValue) || 0,
-    currency: item.currency,
-    validFrom: item.validFrom,
-    validUntil: item.validUntil,
-    isActive: item.isActive,
-    maxUses: item.maxUses,
-    useCount: item.useCount,
-    createdAt: item.createdAt,
-    updatedAt: item.updatedAt,
-  };
-}
-
-function toPromoCodeBody(values: PromoCodeFormValues): CreateBookingPromoCodeBody {
-  return {
-    code: values.code,
-    discountType: values.discountType,
-    discountValue: values.discountValue,
-    currency: values.discountType === "fixed" ? values.currency : null,
-    validFrom: values.validFrom || null,
-    validUntil: values.validUntil || null,
-    isActive: values.isActive,
-    maxUses: values.maxUses ? Number(values.maxUses) : null,
-  };
-}
-
 export default function BookingFlowPage() {
   const [activeTab, setActiveTab] = useState<Tab>("rooms");
   const [loading, setLoading] = useState(true);
@@ -263,12 +236,11 @@ export default function BookingFlowPage() {
   );
 
   const [addons, setAddons] = useState<AddonItem[]>([]);
+  const [propertyPlan, setPropertyPlan] = useState<BookingPropertyPlan>(DEFAULT_PROPERTY_PLAN);
   const [addonSettings, setAddonSettings] = useState<AddonSettings>(DEFAULT_ADDON_SETTINGS);
   const addonSettingsRef = useRef<AddonSettings>(DEFAULT_ADDON_SETTINGS);
   const addonSettingsWriteSeqRef = useRef(0);
   const addonSettingsSaveChainRef = useRef<Promise<unknown>>(Promise.resolve());
-
-  const [promoCodes, setPromoCodes] = useState<PromoCodeItem[]>([]);
 
   // Rooms state (filters)
   const [bookingHotelId, setBookingHotelId] = useState<string | null>(null);
@@ -357,13 +329,11 @@ export default function BookingFlowPage() {
     );
     const addonItemsPromise = loadTypedSetting(
       (hotelId) =>
-        listBookingAddonItems({ hotelId }).then((items) => items.map(toSettingsAddonItem)),
-      [] as AddonItem[],
-    );
-    const promoCodesPromise = loadTypedSetting(
-      (hotelId) =>
-        listBookingPromoCodes({ hotelId }).then((items) => items.map(toSettingsPromoCode)),
-      [] as PromoCodeItem[],
+        getBookingAddonItemsContext({ hotelId }).then((context) => ({
+          addonItems: context.addonItems.map(toSettingsAddonItem),
+          propertyPlan: context.propertyPlan,
+        })),
+      { addonItems: [] as AddonItem[], propertyPlan: DEFAULT_PROPERTY_PLAN },
     );
     const guestFormSettingsPromise = loadTypedSetting(
       (hotelId) => getBookingGuestFormSettings({ hotelId }),
@@ -389,7 +359,6 @@ export default function BookingFlowPage() {
     Promise.all([
       addonSettingsPromise,
       addonItemsPromise,
-      promoCodesPromise,
       benefitsSettingsPromise,
       guestFormSettingsPromise,
       localizationSettingsPromise,
@@ -400,8 +369,7 @@ export default function BookingFlowPage() {
       .then(
         ([
           settings,
-          addonItems,
-          promoItems,
+          addonContext,
           benefitsRes,
           guestFormSettings,
           localizationSettings,
@@ -412,8 +380,8 @@ export default function BookingFlowPage() {
           setBookingHotelId(selectedHotelId || property?.id || null);
           addonSettingsRef.current = settings;
           setAddonSettings(settings);
-          setAddons(orderAddons(addonItems));
-          setPromoCodes(promoItems);
+          setAddons(orderAddons(addonContext.addonItems));
+          setPropertyPlan(addonContext.propertyPlan);
           setBenefits(
             normalizeBookingBenefitsSettings(benefitsRes, DEFAULT_BENEFITS_SETTINGS).benefits,
           );
@@ -487,9 +455,24 @@ export default function BookingFlowPage() {
       });
       setAddons((current) => orderAddons([...current, toSettingsAddonItem(saved)]));
       showFeedback("success", t("bookingFlow.addons.feedback.createSuccess"));
-    } catch {
-      showFeedback("error", t("bookingFlow.addons.feedback.saveError"));
-      throw new Error("Failed to save add-on.");
+    } catch (error) {
+      const message =
+        error instanceof BookingAddonItemsClientError
+          ? error.detail
+          : t("bookingFlow.addons.feedback.saveError");
+      showFeedback("error", message);
+      if (error instanceof BookingAddonItemsClientError && error.statusCode === 409) {
+        try {
+          const context = await getBookingAddonItemsContext({
+            hotelId: getBookingHotelIdForSave(),
+          });
+          setAddons(orderAddons(context.addonItems.map(toSettingsAddonItem)));
+          setPropertyPlan(context.propertyPlan);
+        } catch {
+          // Preserve the authoritative create error when a best-effort refresh also fails.
+        }
+      }
+      throw error;
     }
   };
 
@@ -506,9 +489,13 @@ export default function BookingFlowPage() {
         ),
       );
       showFeedback("success", t("bookingFlow.addons.feedback.updateSuccess"));
-    } catch {
-      showFeedback("error", t("bookingFlow.addons.feedback.saveError"));
-      throw new Error("Failed to save add-on.");
+    } catch (error) {
+      const message =
+        error instanceof BookingAddonItemsClientError
+          ? error.detail
+          : t("bookingFlow.addons.feedback.saveError");
+      showFeedback("error", message);
+      throw error;
     }
   };
 
@@ -551,62 +538,6 @@ export default function BookingFlowPage() {
     } catch {
       showFeedback("error", t("bookingFlow.addons.feedback.deleteError"));
       throw new Error("Failed to delete add-on.");
-    }
-  };
-
-  const handleCreatePromoCode = async (values: PromoCodeFormValues) => {
-    try {
-      const saved = await createBookingPromoCode({
-        hotelId: getBookingHotelIdForSave(),
-        body: toPromoCodeBody(values),
-      });
-      setPromoCodes((current) => [...current, toSettingsPromoCode(saved)]);
-      showFeedback("success", "Promo code created.");
-    } catch (error) {
-      showFeedback(
-        "error",
-        error instanceof Error ? error.message : "Promo code could not be saved.",
-      );
-      throw error;
-    }
-  };
-
-  const handleUpdatePromoCode = async (promoCodeId: string, values: PromoCodeFormValues) => {
-    try {
-      const saved = await updateBookingPromoCode({
-        hotelId: getBookingHotelIdForSave(),
-        promoCodeId,
-        body: toPromoCodeBody(values),
-      });
-      setPromoCodes((current) =>
-        current.map((promoCode) =>
-          promoCode.id === promoCodeId ? toSettingsPromoCode(saved) : promoCode,
-        ),
-      );
-      showFeedback("success", "Promo code updated.");
-    } catch (error) {
-      showFeedback(
-        "error",
-        error instanceof Error ? error.message : "Promo code could not be saved.",
-      );
-      throw error;
-    }
-  };
-
-  const handleDeletePromoCode = async (promoCodeId: string) => {
-    try {
-      await deleteBookingPromoCode({
-        hotelId: getBookingHotelIdForSave(),
-        promoCodeId,
-      });
-      setPromoCodes((current) => current.filter((promoCode) => promoCode.id !== promoCodeId));
-      showFeedback("success", "Promo code deleted.");
-    } catch (error) {
-      showFeedback(
-        "error",
-        error instanceof Error ? error.message : "Promo code could not be deleted.",
-      );
-      throw error;
     }
   };
 
@@ -703,7 +634,6 @@ export default function BookingFlowPage() {
   const sections: SettingsNavSection[] = [
     { id: "rooms", label: t("bookingFlow.tabs.filters"), icon: HomeIcon },
     { id: "addons", label: t("bookingFlow.tabs.addons"), icon: SparklesIcon },
-    { id: "promo-codes", label: t("bookingFlow.tabs.promos"), icon: TicketIcon },
     { id: "benefits", label: t("bookingFlow.tabs.benefits"), icon: CheckBadgeIcon },
     {
       id: "localization",
@@ -762,21 +692,12 @@ export default function BookingFlowPage() {
             addons={addons}
             addonSettings={addonSettings}
             propertyCurrency={defaultCurrency}
+            propertyPlan={propertyPlan}
             handleToggleAddonSetting={handleToggleAddonSetting}
             onCreateAddon={handleCreateAddon}
             onUpdateAddon={handleUpdateAddon}
             onDeleteAddon={handleDeleteAddon}
             onReorderAddon={handleReorderAddon}
-          />
-        )}
-
-        {activeTab === "promo-codes" && (
-          <PromoCodesTab
-            promoCodes={promoCodes}
-            propertyCurrency={defaultCurrency}
-            onCreatePromoCode={handleCreatePromoCode}
-            onUpdatePromoCode={handleUpdatePromoCode}
-            onDeletePromoCode={handleDeletePromoCode}
           />
         )}
 

@@ -25,6 +25,7 @@ import type { QueryResultRow } from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import type {
   HotelSetupTrackCommand,
   HotelSetupTrackCommandRepository,
@@ -34,6 +35,7 @@ import {
   type AdaptivePropertySetupFacts,
   type SharedPropertyTypeCatalog,
   type SharedHotelSetupStatusRepository,
+  type SharedPropertyLaunchSettingsRepository,
   type SharedPropertyProfile,
   type SharedPropertyProfileInput,
   buildPropertySetupPlan,
@@ -258,6 +260,7 @@ describe("shared hotel setup status route", () => {
         "shared_identity",
         "rooms_rates_availability",
         "guest_settings_policies",
+        "billing_plan",
         "payment",
         "direct_booking_publication",
       ],
@@ -276,6 +279,7 @@ describe("shared hotel setup status route", () => {
         "creator_offer",
         "rooms_rates_availability",
         "guest_settings_policies",
+        "billing_plan",
         "payment",
         "direct_booking_publication",
       ],
@@ -388,6 +392,7 @@ describe("shared hotel setup status route", () => {
       shared_identity: completedTaskFact("shared_identity"),
       rooms_rates_availability: completedTaskFact("rooms_rates_availability"),
       guest_settings_policies: completedTaskFact("guest_settings_policies"),
+      billing_plan: completedTaskFact("billing_plan"),
       payment: completedTaskFact("payment"),
       direct_booking_publication: taskFact("direct_booking_publication", {
         ownerProgress: "in_progress",
@@ -459,6 +464,7 @@ describe("shared hotel setup status route", () => {
         shared_identity: completedTaskFact("shared_identity"),
         rooms_rates_availability: completedTaskFact("rooms_rates_availability"),
         guest_settings_policies: completedTaskFact("guest_settings_policies"),
+        billing_plan: completedTaskFact("billing_plan"),
         payment: completedTaskFact("payment"),
         direct_booking_publication: completedTaskFact("direct_booking_publication"),
       }),
@@ -1315,6 +1321,52 @@ describe("shared hotel setup status route", () => {
     expect(createPropertyProfile).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      code: "idempotency_key_conflict",
+      detail: "These hotel details changed during the save. Review them and try again.",
+      propertyId,
+    },
+    {
+      code: "command_in_progress",
+      detail: "Your hotel setup is still being saved. Please try again in a moment.",
+      propertyId: null,
+    },
+  ] as const)("returns a useful message for property create conflict $code", async (conflict) => {
+    const createPropertyProfile = vi.fn(async () => {
+      throw Object.assign(new Error(conflict.code), {
+        code: conflict.code,
+        ...(conflict.propertyId ? { propertyId: conflict.propertyId } : {}),
+      });
+    });
+    app = buildSharedSetupApp({
+      linkedResources: [],
+      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+      repository: {
+        ...unusedStatusMethods(),
+        ...unusedPropertyProfileMethods(),
+        createPropertyProfile,
+      },
+    });
+
+    const response = await injectJson<{ code: string; detail: string; propertyId?: string }>(app, {
+      method: "POST",
+      url: "/api/hotel-setup/properties",
+      headers: {
+        authorization: "Bearer valid-token",
+        "idempotency-key": "create-alpenrose-munich",
+      },
+      payload: minimalHotelInput(),
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toEqual({
+      code: conflict.code,
+      detail: conflict.detail,
+      ...(conflict.propertyId ? { propertyId: conflict.propertyId } : {}),
+    });
+  });
+
   it("requires owner permission when property creation exposes map or contact data", async () => {
     const createPropertyProfile = vi.fn();
     const input = minimalHotelInput();
@@ -1949,6 +2001,126 @@ describe("shared hotel setup status route", () => {
     expect(publicUpdateResponse.body.code).toBe("missing_property_resource_link");
   });
 
+  it("reads and writes launch settings for a creator-only property without Booking access", async () => {
+    const stored = {
+      id: propertyId,
+      propertyId,
+      defaultCurrency: "EUR",
+      supportedCurrencies: ["CHF"],
+      defaultLanguage: "de",
+      supportedLanguages: ["en"],
+      instagram: "https://instagram.com/alpenrose",
+      facebook: null,
+      tiktok: "https://tiktok.com/@alpenrose",
+      youtube: null,
+    };
+    const findPropertySettingsByHotelId = vi.fn(async () => stored);
+    const updatePropertySettingsByHotelId = vi.fn(async () => stored);
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+      linkedResources: [
+        propertyLink(propertyId),
+        productLink("marketplace", "hotel_profile", propertyId),
+      ],
+      repository: repositoryWith([]),
+      launchSettingsRepository: {
+        findPropertySettingsByHotelId,
+        updatePropertySettingsByHotelId,
+      },
+    });
+
+    const readResponse = await injectJson(app, {
+      method: "GET",
+      url: `/api/hotel-setup/properties/${propertyId}/launch-settings`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(readResponse.statusCode).toBe(200);
+    expect(readResponse.body).toEqual({
+      defaultCurrency: "EUR",
+      supportedCurrencies: ["CHF"],
+      defaultLanguage: "de",
+      supportedLanguages: ["en"],
+      instagram: "https://instagram.com/alpenrose",
+      facebook: "",
+      tiktok: "https://tiktok.com/@alpenrose",
+      youtube: "",
+    });
+
+    const payload = {
+      defaultCurrency: "EUR",
+      supportedCurrencies: ["CHF"],
+      defaultLanguage: "de",
+      supportedLanguages: ["en"],
+      instagram: "https://instagram.com/alpenrose",
+      facebook: "",
+      tiktok: "https://tiktok.com/@alpenrose",
+      youtube: "",
+    };
+    const writeResponse = await injectJson(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${propertyId}/launch-settings`,
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+    expect(writeResponse.statusCode).toBe(200);
+    expect(updatePropertySettingsByHotelId).toHaveBeenCalledWith(
+      propertyId,
+      payload,
+      organizationId,
+    );
+
+    const invalidResponse = await injectJson(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${propertyId}/launch-settings`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { ...payload, instagram: "https://user:secret@instagram.com/alpenrose" },
+    });
+    expect(invalidResponse.statusCode).toBe(422);
+    expect(updatePropertySettingsByHotelId).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects launch settings access outside the selected hotel group", async () => {
+    const launchSettingsRepository: SharedPropertyLaunchSettingsRepository = {
+      async findPropertySettingsByHotelId() {
+        throw new Error("unauthorized launch settings read must not hit the repository");
+      },
+      async updatePropertySettingsByHotelId() {
+        throw new Error("unauthorized launch settings write must not hit the repository");
+      },
+    };
+    app = buildSharedSetupApp({
+      permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+      repository: repositoryWith([]),
+      launchSettingsRepository,
+    });
+
+    const readResponse = await injectJson<{ code: string }>(app, {
+      method: "GET",
+      url: `/api/hotel-setup/properties/${secondPropertyId}/launch-settings`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(readResponse.statusCode).toBe(403);
+    expect(readResponse.body.code).toBe("missing_property_resource_link");
+
+    const writeResponse = await injectJson<{ code: string }>(app, {
+      method: "PUT",
+      url: `/api/hotel-setup/properties/${secondPropertyId}/launch-settings`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        defaultCurrency: "EUR",
+        supportedCurrencies: [],
+        defaultLanguage: "en",
+        supportedLanguages: [],
+        instagram: "",
+        facebook: "",
+        tiktok: "",
+        youtube: "",
+      },
+    });
+    expect(writeResponse.statusCode).toBe(403);
+    expect(writeResponse.body.code).toBe("missing_property_resource_link");
+  });
+
   it("returns field-level validation errors for canonical property profile writes", async () => {
     app = buildSharedSetupApp({
       permissions: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
@@ -2182,6 +2354,11 @@ describe("shared hotel setup status route", () => {
       readiness: "actionable",
       reasonCodes: ["no_supported_checkout_payment_method"],
     });
+    const factsSql = query.mock.calls.find(([text]) =>
+      text.includes("hasEffectivePaymentMethod"),
+    )?.[0];
+    expect(factsSql).toContain("payment.deposit_policy ->> 'bankTransferInstructions'");
+    expect(factsSql).toContain("payment.deposit_policy ->> 'paypalEmail'");
     expect(facts.direct_booking_publication).toMatchObject({
       readiness: "actionable",
       ownerProgress: "in_progress",
@@ -2336,7 +2513,7 @@ describe("shared hotel setup status route", () => {
     expect(sql).toContain("finance.payment_provider_accounts");
     expect(sql).toContain("payment_provider.onboarding_status = 'completed'");
     expect(sql).toContain("payment_provider.charges_enabled = TRUE");
-    expect(sql).toContain("'card', 'wallet'");
+    expect(sql).toContain("'card' = ANY(payment.accepted_methods)");
     expect(sql).toContain("'bank_transfer'");
     expect(sql).toContain("JOIN platform.media_objects media_object");
     expect(sql).toContain("JOIN platform.media_variants media_variant");
@@ -2466,6 +2643,8 @@ describe("shared hotel setup status route", () => {
     expect(sql).toContain("'purpose', contact.purpose");
     expect(sql).toContain("'isPublic', contact.is_public");
     expect(sql).toContain("contact.source_system = 'platform'");
+    expect(sql).toContain("contact.is_public = TRUE");
+    expect(sql).toContain("contact.channel_type IN ('phone', 'whatsapp', 'email')");
     expect(sql).not.toContain("property_public_profile_read_model");
     expect(sql).not.toContain("property_profiles profile");
     expect(sql).not.toContain("property_media media");
@@ -2703,6 +2882,8 @@ describe("shared hotel setup status route", () => {
     expect(createSql).toContain("contact_input.is_public");
     expect(createSql).toContain("SET purpose = EXCLUDED.purpose");
     expect(createSql).toContain("is_public = EXCLUDED.is_public");
+    expect(createSql).toContain("deleted_external_guest_contacts");
+    expect(createSql).toContain("contact.source_system <> 'platform'");
     expect(createSql).not.toContain("INSERT INTO hotel_catalog.property_profiles");
     expect(createSql).not.toContain("INSERT INTO hotel_catalog.property_media");
     expect(createSql).not.toContain("INSERT INTO identity.organizations");
@@ -2745,6 +2926,7 @@ describe("shared hotel setup status route", () => {
 
 function buildSharedSetupApp(options: {
   repository: SharedHotelSetupStatusRepository;
+  launchSettingsRepository?: SharedPropertyLaunchSettingsRepository;
   trackCommandRepository?: HotelSetupTrackCommandRepository;
   permissions?: PermissionKey[];
   linkedResources?: LinkedResource[];
@@ -2753,11 +2935,13 @@ function buildSharedSetupApp(options: {
   return buildApp({
     logger: false,
     sharedHotelSetupStatusRepository: options.repository,
+    propertyLaunchSettingsRepository: options.launchSettingsRepository,
     hotelSetupTrackCommandRepository:
       options.trackCommandRepository ?? unusedTrackCommandRepository(),
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepository(options),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["hotel_catalog.setup.read"];
@@ -3083,6 +3267,8 @@ function adaptiveStatusRow(overrides: Record<string, unknown> = {}): Record<stri
     hasCheckOutPolicy: true,
     hasCancellationPolicy: true,
     policyUpdatedAt: "2026-07-26T12:00:00.000Z",
+    billingPlanSelected: true,
+    billingPlanUpdatedAt: "2026-07-26T12:00:00.000Z",
     paymentsEnabled: true,
     paymentSettingsUpdatedAt: "2026-07-26T12:00:00.000Z",
     hasAcceptedPaymentMethod: true,
@@ -3177,9 +3363,15 @@ function taskFacts(
       "creator_offer",
       "rooms_rates_availability",
       "guest_settings_policies",
+      "billing_plan",
       "payment",
       "direct_booking_publication",
-    ].map((taskId) => [taskId, taskFact(taskId as SetupTaskId)]),
+    ].map((taskId) => [
+      taskId,
+      taskId === "billing_plan"
+        ? completedTaskFact("billing_plan")
+        : taskFact(taskId as SetupTaskId),
+    ]),
   ) as AdaptivePropertySetupFacts["taskFacts"];
   return { ...defaults, ...overrides };
 }

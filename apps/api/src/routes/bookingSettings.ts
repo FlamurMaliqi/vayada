@@ -6,6 +6,10 @@ import type {
 import pg from "pg";
 import type { QueryResult, QueryResultRow } from "pg";
 
+import {
+  isBookingAcceptanceMode,
+  type BookingAcceptanceSettingsPort,
+} from "../domains/bookingAcceptanceSettings.js";
 import { syncPropertyOfferReadModels } from "./marketplaceAdmin.js";
 import { enforceRoutePolicy } from "./policy.js";
 
@@ -254,8 +258,11 @@ export type BookingPropertySettingsReadModel = {
   address?: string | null;
   city?: string | null;
   country?: string | null;
+  timeZone?: string | null;
   instagram?: string | null;
   facebook?: string | null;
+  tiktok?: string | null;
+  youtube?: string | null;
   defaultCurrency?: string | null;
   defaultLanguage?: string | null;
   supportedCurrencies?: unknown;
@@ -265,6 +272,7 @@ export type BookingPropertySettingsReadModel = {
   specialRequestsEnabled?: boolean | null;
   arrivalTimeEnabled?: boolean | null;
   guestCountEnabled?: boolean | null;
+  termsAndConditions?: string | null;
   cancellationPolicyText?: string | null;
   acceptedPaymentMethods?: unknown;
 };
@@ -327,6 +335,13 @@ export type BookingHotelPropertyLinkResponse = {
   };
 };
 
+export type BookingAcceptanceSettingsResponse = {
+  contractVersion: "booking-acceptance.v1";
+  propertyId: string;
+  acceptanceMode: "instant" | "request";
+  instantBook: boolean;
+};
+
 export type BookingPropertySettingsResponse = Record<string, unknown>;
 
 export type BookingAddonSettings = BookingAddonSettingsResponse;
@@ -386,6 +401,8 @@ export type UpdateBookingPropertySettingsBody = {
   country?: string | null;
   instagram?: string | null;
   facebook?: string | null;
+  tiktok?: string | null;
+  youtube?: string | null;
   defaultCurrency?: string;
   defaultLanguage?: string;
   supportedCurrencies?: string[];
@@ -395,6 +412,7 @@ export type UpdateBookingPropertySettingsBody = {
   specialRequestsEnabled?: boolean;
   arrivalTimeEnabled?: boolean;
   guestCountEnabled?: boolean;
+  termsAndConditions?: string | null;
   cancellationPolicyText?: string | null;
   acceptedPaymentMethods?: string[];
 };
@@ -801,41 +819,6 @@ type BookingHotelParams = {
   hotelId: string;
 };
 
-type BookingAddonSettingsRow = {
-  show_addons_step: boolean | null;
-  group_addons_by_category: boolean | null;
-};
-
-type BookingGuestFormSettingsRow = {
-  special_requests_enabled: boolean | null;
-  arrival_time_enabled: boolean | null;
-  guest_count_enabled: boolean | null;
-  phone_required?: boolean | null;
-  adult_age_threshold?: number | null;
-  children_enabled?: boolean | null;
-};
-
-type BookingBenefitsSettingsRow = {
-  benefits: unknown;
-};
-
-type BookingLocalizationSettingsRow = {
-  currency: string | null;
-  default_language: string | null;
-  supported_currencies: unknown;
-  supported_languages: unknown;
-};
-
-type BookingRoomFilterSettingsRow = {
-  booking_filters: unknown;
-  custom_filters: unknown;
-  filter_rooms: unknown;
-};
-
-type BookingLastMinuteSettingsRow = {
-  updated_at: string | Date | null;
-};
-
 type TargetBookingSettingsRow = {
   show_addons_step: boolean | null;
   group_addons_by_category: boolean | null;
@@ -886,10 +869,14 @@ type TargetBookingPropertySettingsRow = TargetBookingSettingsRow & {
   address: string | null;
   city: string | null;
   country: string | null;
+  timezone: string | null;
   instagram: string | null;
   facebook: string | null;
+  tiktok: string | null;
+  youtube: string | null;
   check_in_time: string | null;
   check_out_time: string | null;
+  terms_and_conditions: string | null;
   cancellation_policy_text: string | null;
   accepted_payment_methods: unknown;
 };
@@ -1020,6 +1007,8 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
     contact.whatsapp_number,
     contact.instagram,
     contact.facebook,
+    contact.tiktok,
+    contact.youtube,
     COALESCE(
       NULLIF(location.raw_marketplace_location, ''),
       NULLIF(
@@ -1036,8 +1025,10 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
     ) AS address,
     location.city,
     location.country_code AS country,
+    location.timezone,
     to_char(policy.check_in_time, 'HH24:MI') AS check_in_time,
     to_char(policy.check_out_time, 'HH24:MI') AS check_out_time,
+    policy.terms_and_conditions,
     policy.cancellation_summary AS cancellation_policy_text,
     settings.show_addons_step,
     settings.group_addons_by_category,
@@ -1114,7 +1105,15 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
       COALESCE(
         max(value) FILTER (WHERE channel_type = 'facebook' AND source_system = 'booking'),
         max(value) FILTER (WHERE channel_type = 'facebook')
-      ) AS facebook
+      ) AS facebook,
+      COALESCE(
+        max(value) FILTER (WHERE channel_type = 'tiktok' AND source_system = 'booking'),
+        max(value) FILTER (WHERE channel_type = 'tiktok')
+      ) AS tiktok,
+      COALESCE(
+        max(value) FILTER (WHERE channel_type = 'youtube' AND source_system = 'booking'),
+        max(value) FILTER (WHERE channel_type = 'youtube')
+      ) AS youtube
     FROM hotel_catalog.property_contact_channels
     WHERE property_id = property.id
       AND is_public = TRUE
@@ -1362,18 +1361,17 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
     DELETE FROM hotel_catalog.property_contact_channels contact
     USING writable_target
     WHERE contact.property_id = writable_target.property_id
-      AND contact.source_system = 'booking'
+      AND (
+        contact.source_system = 'booking'
+        OR (
+          contact.is_public = TRUE
+          AND contact.channel_type IN ('email', 'phone', 'whatsapp')
+        )
+      )
       AND EXISTS (
         SELECT 1
         FROM jsonb_to_recordset($2::jsonb) AS input(channel_type text, value text)
         WHERE input.channel_type = contact.channel_type
-      )
-      AND NOT EXISTS (
-        SELECT 1
-        FROM jsonb_to_recordset($2::jsonb) AS input(channel_type text, value text)
-        WHERE input.channel_type = contact.channel_type
-          AND input.value = contact.value
-          AND NULLIF(input.value, '') IS NOT NULL
       )
     RETURNING contact.property_id
   ),
@@ -1399,6 +1397,7 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
       'booking',
       now()
     FROM writable_contact_input
+    CROSS JOIN (SELECT count(*) FROM deleted_contacts) deleted_contact_status
     WHERE NULLIF(writable_contact_input.value, '') IS NOT NULL
     ON CONFLICT (property_id, channel_type, value) DO UPDATE
     SET is_public = TRUE,
@@ -1411,6 +1410,7 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
       property_id,
       check_in_time,
       check_out_time,
+      terms_and_conditions,
       cancellation_summary,
       policy_source_owner,
       updated_at
@@ -1420,12 +1420,14 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
       NULLIF($3::text, '')::time,
       NULLIF($4::text, '')::time,
       $5,
+      $6,
       'booking',
       now()
     FROM writable_target
     ON CONFLICT (property_id) DO UPDATE
     SET check_in_time = EXCLUDED.check_in_time,
         check_out_time = EXCLUDED.check_out_time,
+        terms_and_conditions = EXCLUDED.terms_and_conditions,
         cancellation_summary = EXCLUDED.cancellation_summary,
         policy_source_owner = EXCLUDED.policy_source_owner,
         updated_at = now()
@@ -1445,13 +1447,13 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_UPDATE = `
     )
     SELECT
       writable_target.property_id,
+      $8,
       $7,
-      $6,
-      $8::text[],
       $9::text[],
-      $10,
+      $10::text[],
       $11,
       $12,
+      $13,
       now()
     FROM writable_target
     ON CONFLICT (property_id) DO UPDATE
@@ -1578,8 +1580,11 @@ function toTargetPropertySettings(
     address: row.address,
     city: row.city,
     country: row.country,
+    timeZone: row.timezone,
     instagram: row.instagram,
     facebook: row.facebook,
+    tiktok: row.tiktok,
+    youtube: row.youtube,
     defaultCurrency: row.default_currency,
     defaultLanguage: row.default_language,
     supportedCurrencies: row.supported_currencies,
@@ -1589,6 +1594,7 @@ function toTargetPropertySettings(
     specialRequestsEnabled: row.special_requests_enabled,
     arrivalTimeEnabled: row.arrival_time_enabled,
     guestCountEnabled: row.guest_count_enabled,
+    termsAndConditions: row.terms_and_conditions,
     cancellationPolicyText: row.cancellation_policy_text,
     acceptedPaymentMethods: row.accepted_payment_methods,
   };
@@ -1615,6 +1621,11 @@ function targetPropertySettingsWriteValues(
     nullableText(update.checkInTime !== undefined ? update.checkInTime : current.checkInTime),
     nullableText(update.checkOutTime !== undefined ? update.checkOutTime : current.checkOutTime),
     nullableText(
+      update.termsAndConditions !== undefined
+        ? update.termsAndConditions
+        : current.termsAndConditions,
+    ),
+    nullableText(
       update.cancellationPolicyText !== undefined
         ? update.cancellationPolicyText
         : current.cancellationPolicyText,
@@ -1635,6 +1646,8 @@ function targetPropertyContactInputs(input: {
   whatsappNumber?: string | null;
   instagram?: string | null;
   facebook?: string | null;
+  tiktok?: string | null;
+  youtube?: string | null;
 }): { channel_type: string; value: string }[] {
   const contacts: [keyof typeof input, string][] = [
     ["reservationEmail", "email"],
@@ -1642,6 +1655,8 @@ function targetPropertyContactInputs(input: {
     ["whatsappNumber", "whatsapp"],
     ["instagram", "instagram"],
     ["facebook", "facebook"],
+    ["tiktok", "tiktok"],
+    ["youtube", "youtube"],
   ];
 
   return contacts.flatMap(([field, channelType]) => {
@@ -1659,245 +1674,6 @@ function withoutDefaultCode(codes: readonly string[], defaultCode: string): stri
   return [...new Set(codes.map((code) => code.trim()).filter(Boolean))].filter(
     (code) => code !== defaultCode,
   );
-}
-
-export function createPgBookingSettingsReadRepository(config: {
-  connectionString: string;
-  max?: number;
-  pool?: BookingSettingsPool;
-}): BookingSettingsRepository {
-  if (!config.connectionString.trim()) {
-    throw new Error("Booking settings repository connectionString must not be empty");
-  }
-
-  const pool = (config.pool ??
-    new pg.Pool({
-      connectionString: config.connectionString,
-      max: config.max,
-    })) as BookingSettingsPool;
-
-  return {
-    async findAddonSettingsByHotelId(hotelId) {
-      const result = await pool.query<BookingAddonSettingsRow>(
-        `SELECT show_addons_step, group_addons_by_category
-         FROM booking_hotels
-         WHERE id = $1`,
-        [hotelId],
-      );
-      const row = result.rows[0];
-      if (!row) return null;
-
-      return {
-        showAddonsStep: row.show_addons_step,
-        groupAddonsByCategory: row.group_addons_by_category,
-      };
-    },
-    async findGuestFormSettingsByHotelId(hotelId) {
-      const result = await pool.query<BookingGuestFormSettingsRow>(
-        `SELECT special_requests_enabled,
-                arrival_time_enabled,
-                guest_count_enabled,
-                phone_required
-         FROM booking_hotels
-         WHERE id = $1`,
-        [hotelId],
-      );
-      const row = result.rows[0];
-      if (!row) return null;
-
-      return {
-        specialRequestsEnabled: row.special_requests_enabled,
-        arrivalTimeEnabled: row.arrival_time_enabled,
-        guestCountEnabled: row.guest_count_enabled,
-        phoneRequired: row.phone_required,
-        adultAgeThreshold: 18,
-        childrenEnabled: true,
-      };
-    },
-    async findBenefitsSettingsByHotelId(hotelId) {
-      const result = await pool.query<BookingBenefitsSettingsRow>(
-        `SELECT benefits
-         FROM booking_hotels
-         WHERE id = $1`,
-        [hotelId],
-      );
-      const row = result.rows[0];
-      if (!row) return null;
-
-      return {
-        benefits: row.benefits,
-      };
-    },
-    async findLocalizationSettingsByHotelId(hotelId) {
-      const result = await pool.query<BookingLocalizationSettingsRow>(
-        `SELECT currency, default_language, supported_currencies, supported_languages
-         FROM booking_hotels
-         WHERE id = $1`,
-        [hotelId],
-      );
-      const row = result.rows[0];
-      if (!row) return null;
-
-      return {
-        defaultCurrency: row.currency,
-        defaultLanguage: row.default_language,
-        supportedCurrencies: row.supported_currencies,
-        supportedLanguages: row.supported_languages,
-      };
-    },
-    async findRoomFilterSettingsByHotelId(hotelId) {
-      const result = await pool.query<BookingRoomFilterSettingsRow>(
-        `SELECT booking_filters, custom_filters, filter_rooms
-         FROM booking_hotels
-         WHERE id = $1`,
-        [hotelId],
-      );
-      const row = result.rows[0];
-      if (!row) return null;
-
-      return {
-        bookingFilters: row.booking_filters,
-        customFilters: row.custom_filters,
-        filterRooms: row.filter_rooms,
-      };
-    },
-    async findLastMinuteSettingsByHotelId(hotelId) {
-      const result = await pool.query<BookingLastMinuteSettingsRow>(
-        `SELECT updated_at
-         FROM booking_hotels
-         WHERE id = $1`,
-        [hotelId],
-      );
-      const row = result.rows[0];
-      if (!row) return null;
-
-      return {
-        lastMinuteDiscount: DEFAULT_LAST_MINUTE_SETTINGS,
-        updatedAt: row.updated_at,
-      };
-    },
-    async updateAddonSettingsByHotelId(hotelId, settings) {
-      const result = await pool.query<BookingAddonSettingsRow>(
-        `UPDATE booking_hotels
-         SET show_addons_step = $2,
-             group_addons_by_category = $3
-         WHERE id = $1
-         RETURNING show_addons_step, group_addons_by_category`,
-        [hotelId, settings.showAddonsStep, settings.groupAddonsByCategory],
-      );
-      const row = result.rows[0];
-      if (!row) return null;
-
-      return {
-        showAddonsStep: row.show_addons_step,
-        groupAddonsByCategory: row.group_addons_by_category,
-      };
-    },
-    async updateGuestFormSettingsByHotelId(hotelId, settings) {
-      const result = await pool.query<BookingGuestFormSettingsRow>(
-        `UPDATE booking_hotels
-         SET special_requests_enabled = $2,
-             arrival_time_enabled = $3,
-             guest_count_enabled = $4,
-             phone_required = COALESCE($5, phone_required)
-         WHERE id = $1
-         RETURNING special_requests_enabled,
-                   arrival_time_enabled,
-                   guest_count_enabled,
-                   phone_required`,
-        [
-          hotelId,
-          settings.specialRequestsEnabled,
-          settings.arrivalTimeEnabled,
-          settings.guestCountEnabled,
-          settings.phoneRequired ?? null,
-        ],
-      );
-      const row = result.rows[0];
-      if (!row) return null;
-
-      return {
-        specialRequestsEnabled: row.special_requests_enabled,
-        arrivalTimeEnabled: row.arrival_time_enabled,
-        guestCountEnabled: row.guest_count_enabled,
-        phoneRequired: row.phone_required,
-        adultAgeThreshold: 18,
-        childrenEnabled: true,
-      };
-    },
-    async updateBenefitsSettingsByHotelId(hotelId, settings) {
-      const result = await pool.query<BookingBenefitsSettingsRow>(
-        `UPDATE booking_hotels
-         SET benefits = $2::jsonb
-         WHERE id = $1
-         RETURNING benefits`,
-        [hotelId, JSON.stringify(settings.benefits)],
-      );
-      const row = result.rows[0];
-      if (!row) return null;
-
-      return {
-        benefits: row.benefits,
-      };
-    },
-    async updateLocalizationSettingsByHotelId(hotelId, settings) {
-      const result = await pool.query<BookingLocalizationSettingsRow>(
-        `UPDATE booking_hotels
-         SET currency = $2,
-             default_language = $3,
-             supported_currencies = $4::jsonb,
-             supported_languages = $5::jsonb
-         WHERE id = $1
-         RETURNING currency, default_language, supported_currencies, supported_languages`,
-        [
-          hotelId,
-          settings.defaultCurrency,
-          settings.defaultLanguage,
-          JSON.stringify(settings.supportedCurrencies),
-          JSON.stringify(settings.supportedLanguages),
-        ],
-      );
-      const row = result.rows[0];
-      if (!row) return null;
-
-      return {
-        defaultCurrency: row.currency,
-        defaultLanguage: row.default_language,
-        supportedCurrencies: row.supported_currencies,
-        supportedLanguages: row.supported_languages,
-      };
-    },
-    async updateRoomFilterSettingsByHotelId(hotelId, settings) {
-      const result = await pool.query<BookingRoomFilterSettingsRow>(
-        `UPDATE booking_hotels
-         SET booking_filters = $2::jsonb,
-             custom_filters = $3::jsonb,
-             filter_rooms = $4::jsonb
-         WHERE id = $1
-         RETURNING booking_filters, custom_filters, filter_rooms`,
-        [
-          hotelId,
-          JSON.stringify(settings.bookingFilters),
-          JSON.stringify(settings.customFilters),
-          JSON.stringify(settings.filterRooms),
-        ],
-      );
-      const row = result.rows[0];
-      if (!row) return null;
-
-      return {
-        bookingFilters: row.booking_filters,
-        customFilters: row.custom_filters,
-        filterRooms: row.filter_rooms,
-      };
-    },
-    async updateLastMinuteSettingsByHotelId() {
-      return null;
-    },
-    async close() {
-      await pool.end();
-    },
-  };
 }
 
 export function createPgTargetBookingSettingsRepository(config: {
@@ -2287,11 +2063,16 @@ export async function registerBookingSettingsRoutes(
   writeRepository?: BookingSettingsWriteRepository,
   publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort,
   inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort,
+  bookingAcceptanceSettings?: BookingAcceptanceSettingsPort,
 ): Promise<void> {
   const closeables = new Set(
-    [repository, writeRepository, publicBookabilityPublisher, inventoryPublicOfferProjector].filter(
-      Boolean,
-    ),
+    [
+      repository,
+      writeRepository,
+      publicBookabilityPublisher,
+      inventoryPublicOfferProjector,
+      bookingAcceptanceSettings,
+    ].filter(Boolean),
   );
   app.addHook("onClose", async () => {
     await Promise.all([...closeables].map((closeable) => closeable?.close?.()));
@@ -2343,6 +2124,50 @@ export async function registerBookingSettingsRoutes(
       }
 
       return toPropertyLinkResponse(hotelId, propertyLink);
+    },
+  );
+
+  app.get<{ Params: BookingHotelParams }>(
+    "/hotels/:hotelId/settings/booking-acceptance",
+    async (request, reply) => {
+      const { hotelId } = request.params;
+
+      try {
+        enforceBookingSettingsPolicy(request, hotelId);
+      } catch (error) {
+        const contractError = toBookingSettingsAccessError(error, request, hotelId);
+        if (contractError) return sendBookingPropertySettingsError(reply, contractError);
+        throw error;
+      }
+
+      if (!bookingAcceptanceSettings) {
+        return sendBookingPropertySettingsError(reply, bookingAcceptanceReadUnavailable());
+      }
+
+      try {
+        const propertyId = await findBookingAcceptancePropertyId(repository, hotelId);
+        if (!propertyId) {
+          return sendBookingPropertySettingsError(reply, {
+            statusCode: 404,
+            code: "not_found",
+            category: "read_model",
+            message: "Booking acceptance settings were not found.",
+          });
+        }
+        const acceptanceMode = await bookingAcceptanceSettings.findAcceptanceMode(propertyId);
+        if (!acceptanceMode) {
+          return sendBookingPropertySettingsError(reply, {
+            statusCode: 404,
+            code: "not_found",
+            category: "read_model",
+            message: "Booking acceptance settings were not found.",
+          });
+        }
+        return toBookingAcceptanceSettingsResponse(propertyId, acceptanceMode);
+      } catch (error) {
+        request.log.error({ err: error, hotelId }, "Booking acceptance settings read failed");
+        return sendBookingPropertySettingsError(reply, bookingAcceptanceReadUnavailable());
+      }
     },
   );
 
@@ -2757,6 +2582,64 @@ export async function registerBookingSettingsRoutes(
     );
   }
 
+  app.put<{ Params: BookingHotelParams; Body: unknown }>(
+    "/hotels/:hotelId/settings/booking-acceptance",
+    async (request, reply) => {
+      const { hotelId } = request.params;
+
+      try {
+        enforceBookingSettingsPolicy(request, hotelId);
+      } catch (error) {
+        const contractError = toBookingSettingsAccessError(error, request, hotelId);
+        if (contractError) return sendBookingSettingsWriteError(reply, contractError);
+        throw error;
+      }
+
+      const parsed = parseBookingAcceptanceSettingsWriteBody(request.body);
+      if (!parsed.ok) {
+        return sendBookingSettingsWriteError(reply, {
+          statusCode: 422,
+          code: "invalid_payload",
+          category: "validation",
+          message: "Booking acceptance settings payload is invalid.",
+          details: parsed.details,
+        });
+      }
+      if (!bookingAcceptanceSettings) {
+        return sendBookingSettingsWriteError(reply, bookingAcceptanceWriteUnavailable());
+      }
+
+      try {
+        const propertyId = await findBookingAcceptancePropertyId(repository, hotelId);
+        if (!propertyId) {
+          return sendBookingSettingsWriteError(reply, {
+            statusCode: 404,
+            code: "not_found",
+            category: "write_model",
+            message: "Booking acceptance settings were not found.",
+          });
+        }
+        const acceptanceMode = await bookingAcceptanceSettings.updateAcceptanceMode(
+          propertyId,
+          parsed.value.acceptanceMode,
+        );
+        if (!acceptanceMode) {
+          return sendBookingSettingsWriteError(reply, {
+            statusCode: 404,
+            code: "not_found",
+            category: "write_model",
+            message: "Booking acceptance settings were not found.",
+          });
+        }
+        await publicBookabilityPublisher?.publish({ propertyId });
+        return toBookingAcceptanceSettingsResponse(propertyId, acceptanceMode);
+      } catch (error) {
+        request.log.error({ err: error, hotelId }, "Booking acceptance settings update failed");
+        return sendBookingSettingsWriteError(reply, bookingAcceptanceWriteUnavailable());
+      }
+    },
+  );
+
   if (!writeRepository) return;
 
   app.patch<{ Params: BookingHotelParams; Body: unknown }>(
@@ -2828,6 +2711,20 @@ export async function registerBookingSettingsRoutes(
         parseBody: parseLocalizationSettingsWriteBody,
         write: (hotelId, settings) =>
           writeRepository.updateLocalizationSettingsByHotelId(hotelId, settings),
+        afterWrite: publicBookabilityPublisher
+          ? async (hotelId) => {
+              const propertyLink = await repository.findPropertyLinkByHotelId?.(hotelId);
+              if (!propertyLink) {
+                throw new Error("Booking hotel canonical property link is unavailable.");
+              }
+              const publication = await publicBookabilityPublisher.publish({
+                propertyId: propertyLink.propertyId,
+              });
+              if (!publication) {
+                throw new Error("Canonical property was not found for publication.");
+              }
+            }
+          : undefined,
         toResponse: toLocalizationSettingsResponse,
       }),
   );
@@ -2883,6 +2780,57 @@ export async function registerBookingSettingsRoutes(
 }
 
 type ValidationResult<T> = { ok: true; value: T } | { ok: false; details: string[] };
+
+function parseBookingAcceptanceSettingsWriteBody(
+  body: unknown,
+): ValidationResult<{ acceptanceMode: "instant" | "request" }> {
+  const parsed = expectStrictObject(body, ["acceptanceMode"]);
+  if (!parsed.ok) return parsed;
+  if (!isBookingAcceptanceMode(parsed.value.acceptanceMode)) {
+    return { ok: false, details: ["acceptanceMode must be either instant or request."] };
+  }
+  return { ok: true, value: { acceptanceMode: parsed.value.acceptanceMode } };
+}
+
+async function findBookingAcceptancePropertyId(
+  repository: BookingSettingsReadRepository,
+  hotelId: string,
+): Promise<string | null> {
+  if (!repository.findPropertyLinkByHotelId) {
+    throw new Error("Booking hotel property link is unavailable.");
+  }
+  return (await repository.findPropertyLinkByHotelId(hotelId))?.propertyId ?? null;
+}
+
+export function toBookingAcceptanceSettingsResponse(
+  propertyId: string,
+  acceptanceMode: "instant" | "request",
+): BookingAcceptanceSettingsResponse {
+  return {
+    contractVersion: "booking-acceptance.v1",
+    propertyId,
+    acceptanceMode,
+    instantBook: acceptanceMode === "instant",
+  };
+}
+
+function bookingAcceptanceReadUnavailable(): BookingHotelPropertyLinkError {
+  return {
+    statusCode: 500,
+    code: "read_model_unavailable",
+    category: "read_model",
+    message: "Booking acceptance settings are unavailable.",
+  };
+}
+
+function bookingAcceptanceWriteUnavailable(): BookingSettingsWriteError {
+  return {
+    statusCode: 500,
+    code: "write_model_unavailable",
+    category: "write_model",
+    message: "Booking acceptance settings could not be saved.",
+  };
+}
 
 async function handleBookingSettingsWrite<TBody, TStored>(input: {
   request: FastifyRequest<{ Params: BookingHotelParams; Body: unknown }>;
@@ -2963,7 +2911,17 @@ async function handleBookingSettingsWrite<TBody, TStored>(input: {
     });
   }
 
-  await input.afterWrite?.(hotelId, parsed.value, stored, input.request);
+  try {
+    await input.afterWrite?.(hotelId, parsed.value, stored, input.request);
+  } catch (error) {
+    input.request.log.error({ err: error, hotelId }, "Booking settings projection failed");
+    return sendBookingSettingsWriteError(input.reply, {
+      statusCode: 500,
+      code: "write_model_unavailable",
+      category: "write_model",
+      message: "Booking settings were saved, but the public projection could not be refreshed.",
+    });
+  }
 
   return input.toResponse(stored);
 }
@@ -2986,6 +2944,19 @@ function parsePropertySettingsWriteBody(
   assignOptionalNullableString(value, "city", body, "city", details);
   assignOptionalNullableString(value, "instagram", body, "instagram", details);
   assignOptionalNullableString(value, "facebook", body, "facebook", details);
+  assignOptionalNullableString(value, "tiktok", body, "tiktok", details);
+  assignOptionalNullableString(value, "youtube", body, "youtube", details);
+  for (const [field, bodyField] of [
+    ["instagram", "instagram"],
+    ["facebook", "facebook"],
+    ["tiktok", "tiktok"],
+    ["youtube", "youtube"],
+  ] as const) {
+    const socialUrl = value[field];
+    if (socialUrl && !isHttpUrl(socialUrl)) {
+      details.push(`${bodyField} must be an http or https URL.`);
+    }
+  }
 
   const country = expectOptionalNullableString(body, "country", details);
   if (country !== undefined) {
@@ -3022,6 +2993,7 @@ function parsePropertySettingsWriteBody(
   assignOptionalBoolean(value, "specialRequestsEnabled", body, "special_requests_enabled", details);
   assignOptionalBoolean(value, "arrivalTimeEnabled", body, "arrival_time_enabled", details);
   assignOptionalBoolean(value, "guestCountEnabled", body, "guest_count_enabled", details);
+  assignOptionalNullableString(value, "termsAndConditions", body, "terms_text", details);
   assignOptionalNullableString(
     value,
     "cancellationPolicyText",
@@ -3466,10 +3438,11 @@ export function toPropertySettingsResponse(
     address: settings.address ?? "",
     city: settings.city ?? "",
     country: settings.country ?? "",
+    time_zone: settings.timeZone ?? "",
     instagram: settings.instagram ?? "",
     facebook: settings.facebook ?? "",
-    tiktok: "",
-    youtube: "",
+    tiktok: settings.tiktok ?? "",
+    youtube: settings.youtube ?? "",
     default_currency: localization.defaultCurrency,
     default_language: localization.defaultLanguage,
     supported_currencies: localization.supportedCurrencies,
@@ -3508,7 +3481,7 @@ export function toPropertySettingsResponse(
     payout_account_number: "",
     payout_bank_name: "",
     payout_swift: "",
-    terms_text: "",
+    terms_text: settings.termsAndConditions ?? "",
     cancellation_policy_text: settings.cancellationPolicyText ?? "",
     show_room_detail_map: false,
     points_of_interest: [],
@@ -3669,6 +3642,9 @@ type NullablePropertySettingsStringKey =
   | "city"
   | "instagram"
   | "facebook"
+  | "tiktok"
+  | "youtube"
+  | "termsAndConditions"
   | "cancellationPolicyText";
 
 type BooleanPropertySettingsKey =

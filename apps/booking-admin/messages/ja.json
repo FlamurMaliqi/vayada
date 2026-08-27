@@ -157,6 +157,8 @@
   "dashboard.pageViewsModal.totalInWindow": "期間内合計",
   "dashboard.pageViewsModal.openLabel": "ページビュー詳細を開く",
   "dashboard.pageViewsModal.close": "閉じる",
+  "dashboard.pageViewsModal.error": "ページビューを読み込めませんでした。",
+  "dashboard.pageViewsModal.retry": "再試行",
   "dashboard.bookingsBySource.title": "ソース別予約",
   "dashboard.bookingsBySource.totalRevenue": "総収益",
   "dashboard.bookingsBySource.noData": "この期間の予約データはありません",

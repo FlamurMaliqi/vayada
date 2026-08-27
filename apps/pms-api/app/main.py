@@ -1,5 +1,6 @@
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +28,7 @@ from app.routers.platform_admin import router as platform_admin_router
 from app.routers.rooms import router as rooms_router
 from app.routers.super_admin_bookings import router as super_admin_bookings_router
 from app.routers.super_admin_payouts import router as super_admin_payouts_router
+from app.routers.upload import router as upload_router
 from app.routers.webhooks import router as webhooks_router
 from app.services.scheduler import (
     get_scheduler_health_status,
@@ -88,6 +90,9 @@ async def lifespan(app: FastAPI):
     )
     await run_migrations()
     logger.info("Migrations complete")
+    from app.services.promo_usage_reconciliation import run_promo_usage_reconciler
+
+    promo_usage_task = asyncio.create_task(run_promo_usage_reconciler())
     scheduler_status = get_scheduler_status()
     if scheduler_status["active_jobs"]:
         scheduler.start()
@@ -103,6 +108,9 @@ async def lifespan(app: FastAPI):
         )
     yield
     logger.info("Shutting down vayada PMS...")
+    promo_usage_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await promo_usage_task
     if scheduler.running:
         scheduler.shutdown()
     await Database.close_pool()
@@ -150,6 +158,7 @@ app.include_router(admin_affiliates_router, dependencies=_admin_deps)
 app.include_router(admin_channex_router, dependencies=_admin_deps)
 app.include_router(admin_messaging_router, dependencies=_admin_deps)
 app.include_router(admin_module_activations_router, dependencies=_admin_deps)
+app.include_router(upload_router)
 app.include_router(affiliates_router)
 app.include_router(webhooks_router)
 app.include_router(affiliate_dashboard_router)

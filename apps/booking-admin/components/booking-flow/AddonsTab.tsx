@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type DragEvent, type FormEvent } from "react";
+import Link from "next/link";
 import { PlusIcon, PencilSquareIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { ToggleSwitch } from "@/components/ui";
 import type { AddonItem, AddonSettings } from "@/services/settings";
@@ -14,6 +15,7 @@ const CATEGORY_COLORS: Record<string, string> = {
 };
 
 const CATEGORY_OPTIONS = ["dining", "experience", "transport", "wellness", "other"] as const;
+const PARTNER_COMMISSION_RATE = /^(?:100(?:\.0{1,4})?|(?:0|[1-9]\d?)(?:\.\d{1,4})?)$/;
 
 export type AddonItemCategory = (typeof CATEGORY_OPTIONS)[number];
 
@@ -27,6 +29,8 @@ export interface AddonItemFormValues {
   duration: string;
   perPerson: boolean;
   perNight: boolean;
+  ownershipKind: "property" | "partner";
+  partnerCommissionRate: string;
 }
 
 function AddonsIcon({ className }: { className?: string }) {
@@ -56,6 +60,8 @@ function emptyDraft(currency: string): AddonItemFormValues {
     duration: "",
     perPerson: false,
     perNight: false,
+    ownershipKind: "property",
+    partnerCommissionRate: "",
   };
 }
 
@@ -76,6 +82,8 @@ function toDraft(addon: AddonItem, fallbackCurrency: string): AddonItemFormValue
     duration: addon.duration ?? "",
     perPerson: addon.perPerson === true,
     perNight: addon.perNight === true,
+    ownershipKind: addon.ownershipKind,
+    partnerCommissionRate: addon.partnerCommissionRate ?? "",
   };
 }
 
@@ -94,6 +102,10 @@ interface AddonsTabProps {
   addons: AddonItem[];
   addonSettings: AddonSettings;
   propertyCurrency: string;
+  propertyPlan: {
+    plan: "commission" | "fixed";
+    limits: { maxAddons: number };
+  };
   handleToggleAddonSetting: (key: keyof AddonSettings) => void;
   onCreateAddon: (values: AddonItemFormValues) => Promise<void>;
   onUpdateAddon: (addonId: string, values: AddonItemFormValues) => Promise<void>;
@@ -105,6 +117,7 @@ export default function AddonsTab({
   addons,
   addonSettings,
   propertyCurrency,
+  propertyPlan,
   handleToggleAddonSetting,
   onCreateAddon,
   onUpdateAddon,
@@ -126,6 +139,14 @@ export default function AddonsTab({
       ? orderedAddons
       : orderedAddons.filter((a) => a.category === filterCategory);
   const canReorder = filterCategory === "all" && orderedAddons.length > 1;
+  const maxAddons = propertyPlan.limits.maxAddons;
+  const addonLimitReached = addons.length >= maxAddons;
+  const addonLimitMessage =
+    propertyPlan.plan === "commission"
+      ? addons.length > maxAddons
+        ? "You have more add-ons than your plan allows. Remove add-ons to add new ones, or upgrade for up to 9."
+        : "You've reached the 3 add-on limit. Upgrade to the paid plan for up to 9 add-ons."
+      : "You've reached the 9 add-on limit for the paid plan.";
 
   const openCreateEditor = () => {
     setEditingAddon(null);
@@ -160,6 +181,11 @@ export default function AddonsTab({
       setItemError("Price must be a non-negative amount.");
       return;
     }
+    const partnerCommissionRate = draft.partnerCommissionRate.trim();
+    if (draft.ownershipKind === "partner" && !PARTNER_COMMISSION_RATE.test(partnerCommissionRate)) {
+      setItemError("Partner commission must be between 0 and 100 with up to 4 decimals.");
+      return;
+    }
 
     setSavingItem(true);
     setItemError(null);
@@ -171,6 +197,7 @@ export default function AddonsTab({
       currency: draft.currency.trim().toUpperCase(),
       image: draft.image.trim(),
       duration: draft.duration.trim(),
+      partnerCommissionRate: draft.ownershipKind === "partner" ? partnerCommissionRate : "",
     };
 
     try {
@@ -180,8 +207,8 @@ export default function AddonsTab({
         await onCreateAddon(normalized);
       }
       closeEditor();
-    } catch {
-      setItemError("Failed to save add-on.");
+    } catch (error) {
+      setItemError(error instanceof Error ? error.message : "Failed to save add-on.");
     } finally {
       setSavingItem(false);
     }
@@ -245,12 +272,33 @@ export default function AddonsTab({
           </div>
           <button
             onClick={openCreateEditor}
-            className="inline-flex items-center gap-1 px-3 py-1.5 bg-gray-900 text-white text-[12px] font-medium rounded-lg hover:bg-gray-800"
+            disabled={addonLimitReached}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-gray-900 text-white text-[12px] font-medium rounded-lg hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <PlusIcon className="w-3.5 h-3.5" />
             Add Experience
           </button>
         </div>
+
+        <div className="mb-4 flex items-center justify-between gap-3 text-[12px]">
+          <span className="text-gray-500">
+            {addons.length}/{maxAddons} add-ons
+          </span>
+        </div>
+
+        {addonLimitReached && (
+          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+            <p>{addonLimitMessage}</p>
+            {propertyPlan.plan === "commission" && (
+              <Link
+                href="/settings?section=billing"
+                className="mt-1 inline-block font-semibold underline underline-offset-2"
+              >
+                Upgrade to offer up to 9 add-ons and increase your upsell revenue.
+              </Link>
+            )}
+          </div>
+        )}
 
         {itemError && (
           <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700">
@@ -358,6 +406,11 @@ export default function AddonsTab({
                     {addon.duration && (
                       <span className="text-[11px] text-gray-400">{addon.duration}</span>
                     )}
+                    <span className="text-[11px] text-gray-400">
+                      {addon.ownershipKind === "partner"
+                        ? `Partner · ${addon.partnerCommissionRate}%`
+                        : "Own"}
+                    </span>
                   </div>
                 </div>
 
@@ -523,6 +576,44 @@ export default function AddonsTab({
                   placeholder="45 min"
                 />
               </label>
+              <label className="text-[12px] font-medium text-gray-700">
+                Ownership
+                <select
+                  value={draft.ownershipKind}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      ownershipKind: event.target.value as "property" | "partner",
+                      partnerCommissionRate:
+                        event.target.value === "property" ? "" : current.partnerCommissionRate,
+                    }))
+                  }
+                  className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-[13px] text-gray-900 outline-none focus:border-gray-900"
+                >
+                  <option value="property">Own</option>
+                  <option value="partner">Partner</option>
+                </select>
+              </label>
+              {draft.ownershipKind === "partner" && (
+                <label className="text-[12px] font-medium text-gray-700">
+                  Partner commission (%)
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.0001"
+                    required
+                    value={draft.partnerCommissionRate}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        partnerCommissionRate: event.target.value,
+                      }))
+                    }
+                    className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-[13px] text-gray-900 outline-none focus:border-gray-900"
+                  />
+                </label>
+              )}
               <label className="sm:col-span-2 text-[12px] font-medium text-gray-700">
                 Image URL
                 <input

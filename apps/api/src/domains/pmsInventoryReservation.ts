@@ -1,9 +1,12 @@
+import { createHash } from "node:crypto";
+
 import {
   PMS_INVENTORY_RESERVATION_MARKER_VERSION,
   type PmsInventoryReservationMarker,
 } from "@vayada/domain-pms";
 
 import type { DirectBookingInventoryReservationPort } from "../platform/inventoryReservation.js";
+import { lockPmsInventoryMutationScope } from "./pmsInventoryMutationLock.js";
 
 type ReservationResultRow = {
   reserved: boolean;
@@ -12,16 +15,11 @@ type ReservationResultRow = {
 export function createTargetPmsInventoryReservationPort(): DirectBookingInventoryReservationPort {
   return {
     async reserve(input) {
+      await lockPmsInventoryMutationScope(input.transaction, input.propertyId);
       const result = await input.transaction.query<ReservationResultRow>(
-        `WITH inventory_lock AS (
-           SELECT pg_advisory_xact_lock(
-             hashtextextended(concat('pms-inventory:', $1::text), 0)
-           )
-         ),
-         reservation_guard AS (
+        `WITH reservation_guard AS (
            SELECT offer.room_type_id
            FROM distribution.public_room_offer_snapshots offer
-           CROSS JOIN inventory_lock
            JOIN distribution.public_hotel_bookability_profiles profile
              ON profile.property_id = offer.property_id
            JOIN pms.inventory_days inventory
@@ -39,7 +37,6 @@ export function createTargetPmsInventoryReservationPort(): DirectBookingInventor
              AND profile.freshness_status = 'fresh'
              AND profile.public_setup_completeness ->> 'status' = 'ready'
              AND (profile.expires_at IS NULL OR profile.expires_at > $8::timestamptz)
-             AND COALESCE((profile.capabilities ->> 'payAtProperty')::boolean, FALSE)
              AND offer.public_visibility = 'public_safe'
              AND offer.currency = $7
              AND offer.sellable_publicly = TRUE
@@ -67,6 +64,14 @@ export function createTargetPmsInventoryReservationPort(): DirectBookingInventor
            UPDATE pms.inventory_days inventory
               SET assigned_count = inventory.assigned_count + $6::integer,
                   available_count = inventory.available_count - $6::integer,
+                  inventory_revision = CASE
+                    WHEN inventory.inventory_revision IS NULL THEN NULL
+                    ELSE inventory.inventory_revision + 1
+                  END,
+                  booking_source_revision = CASE
+                    WHEN inventory.booking_source_revision IS NULL THEN NULL
+                    ELSE inventory.booking_source_revision + 1
+                  END,
                   updated_at = $8::timestamptz
            FROM reservation_guard
            WHERE inventory.property_id = $1::uuid
@@ -149,26 +154,79 @@ export function createTargetPmsInventoryReservationPort(): DirectBookingInventor
       ) {
         return;
       }
+      const releaseKeyHash = createHash("sha256")
+        .update(
+          JSON.stringify([
+            reservation.contractVersion,
+            reservation.owner,
+            reservation.source,
+            reservation.quoteSessionId,
+            reservation.propertyId,
+            reservation.roomTypeId,
+            reservation.publicOfferKey,
+            reservation.checkIn,
+            reservation.checkOut,
+            reservation.roomCount,
+          ]),
+        )
+        .digest("hex");
+      await lockPmsInventoryMutationScope(input.transaction, input.propertyId);
 
       await input.transaction.query(
-        `WITH inventory_lock AS (
-           SELECT pg_advisory_xact_lock(
-             hashtextextended(concat('pms-inventory:', $1::text), 0)
+        `WITH release_guard AS (
+           SELECT TRUE AS releasable
+           FROM pms.inventory_days inventory
+           WHERE inventory.property_id = $1::uuid
+             AND inventory.room_type_id = $2::uuid
+             AND inventory.stay_date >= $3::date
+             AND inventory.stay_date < $4::date
+           HAVING COUNT(*) = ($4::date - $3::date)
+              AND BOOL_AND(inventory.assigned_count >= $5::integer)
+         ),
+         release_claim AS (
+           INSERT INTO platform.idempotency_keys (
+             operation_scope, operation, key_hash, request_fingerprint_hash,
+             status, tenant_scope, property_id, response_status_code,
+             response_body_hash, first_seen_at, last_seen_at, completed_at, expires_at
            )
+           SELECT 'pms', 'pms.direct_booking_inventory.release', $7, $7,
+                  'completed', 'property', $1::uuid, 200, $7,
+                  $6::timestamptz, $6::timestamptz, $6::timestamptz, 'infinity'::timestamptz
+           FROM release_guard
+           ON CONFLICT (operation_scope, operation, key_hash, scope_key) DO NOTHING
+           RETURNING TRUE AS claimed
          ),
          restored AS (
            UPDATE pms.inventory_days inventory
               SET assigned_count = GREATEST(0, inventory.assigned_count - $5::integer),
-                  available_count = LEAST(
-                    inventory.total_count - inventory.blocked_count,
-                    inventory.available_count + $5::integer
-                  ),
+                  available_count = CASE
+                    WHEN inventory.inventory_revision IS NULL THEN LEAST(
+                      inventory.total_count - inventory.blocked_count,
+                      inventory.available_count + $5::integer
+                    )
+                    WHEN inventory.status = 'closed' THEN 0
+                    ELSE GREATEST(
+                      0,
+                      inventory.effective_sellable_limit_count
+                        - GREATEST(0, inventory.assigned_count - $5::integer)
+                        - inventory.blocked_count
+                    )
+                  END,
+                  inventory_revision = CASE
+                    WHEN inventory.inventory_revision IS NULL THEN NULL
+                    ELSE inventory.inventory_revision + 1
+                  END,
+                  booking_source_revision = CASE
+                    WHEN inventory.booking_source_revision IS NULL THEN NULL
+                    ELSE inventory.booking_source_revision + 1
+                  END,
                   updated_at = $6::timestamptz
-            FROM inventory_lock
+            FROM release_claim
             WHERE inventory.property_id = $1::uuid
               AND inventory.room_type_id = $2::uuid
               AND inventory.stay_date >= $3::date
               AND inventory.stay_date < $4::date
+              AND inventory.assigned_count >= $5::integer
             RETURNING inventory.stay_date, inventory.available_count, inventory.total_count
          )
          UPDATE distribution.public_room_offer_snapshots offer
@@ -202,6 +260,7 @@ export function createTargetPmsInventoryReservationPort(): DirectBookingInventor
           reservation.checkOut,
           reservation.roomCount,
           input.occurredAt.toISOString(),
+          releaseKeyHash,
         ],
       );
     },

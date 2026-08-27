@@ -15,6 +15,7 @@ type UpdateClient = Pick<ApiClient, "patch">;
 type DeleteClient = Pick<ApiClient, "delete">;
 
 export type BookingAddonPricingModel = "per_stay" | "per_night" | "per_guest" | "per_guest_night";
+export type BookingAddonOwnershipKind = "property" | "partner";
 
 export interface BookingAddonItem {
   addonItemId: string;
@@ -31,15 +32,28 @@ export interface BookingAddonItem {
   publicVisible: boolean;
   status: "active" | "disabled" | "retired";
   sortOrder: number;
+  ownershipKind: BookingAddonOwnershipKind;
+  partnerCommissionRate: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface ListBookingAddonItemsResponse {
   addonItems: BookingAddonItem[];
+  propertyPlan: BookingPropertyPlan;
 }
 
-export type CreateBookingAddonItemBody = {
+export interface BookingPropertyPlan {
+  propertyId: string;
+  plan: "commission" | "fixed";
+  limits: {
+    maxRoomPhotosPerType: number;
+    maxAddons: number;
+    guestContactAccess: "after_acceptance" | "always";
+  };
+}
+
+type BookingAddonItemWriteFields = {
   name: string;
   description?: string;
   price: string;
@@ -53,7 +67,15 @@ export type CreateBookingAddonItemBody = {
   sortOrder?: number;
 };
 
-export type UpdateBookingAddonItemBody = Partial<CreateBookingAddonItemBody>;
+type BookingAddonEconomicTerms =
+  | { ownershipKind?: never; partnerCommissionRate?: never }
+  | { ownershipKind: "property"; partnerCommissionRate?: null }
+  | { ownershipKind: "partner"; partnerCommissionRate: string };
+
+export type CreateBookingAddonItemBody = BookingAddonItemWriteFields & BookingAddonEconomicTerms;
+
+export type UpdateBookingAddonItemBody = Partial<BookingAddonItemWriteFields> &
+  BookingAddonEconomicTerms;
 
 export class BookingAddonItemsClientError extends Error {
   statusCode: BookingSettingsClientErrorStatusCode;
@@ -77,12 +99,18 @@ export async function listBookingAddonItems(
   input: { hotelId: string },
   client: ReadClient = apiClient,
 ): Promise<BookingAddonItem[]> {
+  return (await getBookingAddonItemsContext(input, client)).addonItems;
+}
+
+export async function getBookingAddonItemsContext(
+  input: { hotelId: string },
+  client: ReadClient = apiClient,
+): Promise<ListBookingAddonItemsResponse> {
   try {
-    const response = await client.get<ListBookingAddonItemsResponse>(
+    return await client.get<ListBookingAddonItemsResponse>(
       buildBookingAddonItemsEndpoint(input.hotelId),
       omitHotelContext,
     );
-    return response.addonItems;
   } catch (error) {
     throw toBookingAddonItemsClientError(error, "read");
   }

@@ -15,6 +15,7 @@ import type {
   BookingGuestPiiCommandMeta,
   BookingGuestPiiPort,
   BookingGuestPiiProjection,
+  BookingPrimaryGuestNationalityCorrectionCommand,
   BookingReservationReadModel,
 } from "@vayada/domain-booking";
 import {
@@ -34,7 +35,6 @@ import type { QueryResult, QueryResultRow } from "pg";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  createCompatibilityPublicHotelQuoteRepository,
   createTargetPublicHotelQuoteRepository,
   serializePublicHotelQuoteProjection,
   toUnavailablePublicHotelQuoteProjection,
@@ -42,9 +42,11 @@ import {
   type PublicHotelQuoteRepository,
 } from "./routes/aiHotelQuotes.js";
 import { buildApp } from "./app.js";
+import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import { loadConfig } from "./config.js";
+import type { PropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
+import { pmsRoomOrderVersion } from "./domains/pmsRoomOrder.js";
 import {
-  createPgPublicHotelProfileRepository,
   createTargetPublicHotelProfileRepository,
   serializePublicHotelProfileProjection,
   toPublicHotelProfileProjection,
@@ -53,7 +55,6 @@ import {
 } from "./routes/aiHotels.js";
 import {
   BookingContactPublicationConflictError,
-  createPgBookingSettingsReadRepository,
   createPgTargetBookingSettingsRepository,
   type BookingSettingsPool,
   type BookingSettingsReadRepository,
@@ -85,6 +86,7 @@ import {
   type BookingWebCalendarReadPool,
   type BookingHotelChangeRequestRepository,
 } from "./routes/bookingWebPublic.js";
+import { unusedBookingWebCheckoutAdapter } from "./routes/bookingWebPublic.fixtures.js";
 import type {
   PlatformAdminDashboardRepository,
   PlatformAdminGrowthDashboard,
@@ -93,9 +95,10 @@ import {
   createTargetPmsOperationsReadRepository,
   type PmsOperationsReadPool,
 } from "./domains/pmsOperationsReadModel.js";
+import type { BookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
+import type { PmsRoomAssignmentSettingsPort } from "./domains/pmsRoomAssignmentSettings.js";
+import type { PmsRoomAssignmentOptimizationHistoryPort } from "./domains/pmsRoomAssignmentOptimizationHistory.js";
 import {
-  createCompatibilityPmsBookingReservationsReadRepository,
-  type BookingReservationsReadPool,
   type BookingReservationListFilters,
   type BookingReservationsReadRepository,
 } from "./routes/bookingReservations.js";
@@ -106,6 +109,7 @@ import {
 import type {
   PmsAssignmentCommand,
   PmsAssignmentCommandResult,
+  PmsBookingLifecycleCommand,
   PmsCheckInCommand,
   PmsNoShowCommand,
   PmsOperationalCommandResult,
@@ -119,6 +123,7 @@ import type {
   PmsCheckoutChargeCreateCommand,
   PmsCheckoutChargeMarkPaidCommand,
   PmsCheckoutChargeWaiveCommand,
+  PmsCommandMeta,
   PmsOperationalTemplate,
   PmsOperationalTemplateCommandResponse,
   PmsOperationalTemplateKind,
@@ -133,9 +138,12 @@ import type {
   PmsPrivateNoteCreateCommand,
   PmsPrivateNoteDeleteCommand,
   PmsPrivateNoteDeleteResponse,
+  PmsPrivateNoteUpdateCommand,
   PmsOperationsReadRepository,
   PmsRoom,
+  PmsRoomBlockCreateCommand,
   PmsRoomBlockSummary,
+  PmsRoomOrderCommand,
   PmsRoomType,
   PmsRoomTypeCommandResponse,
   PmsRoomTypeCreateCommand,
@@ -143,10 +151,15 @@ import type {
 } from "./routes/pmsOperations.js";
 import { createTargetBookingReservationsReadRepository } from "./platform/bookingReservations.js";
 
+type BookingReservationsReadPool = NonNullable<
+  Parameters<typeof createTargetBookingReservationsReadRepository>[0]["pool"]
+>;
+
 type PmsOperationsTestListResponse<T> = {
   contractVersion: "pms-operations.v1";
   propertyId: string;
   items: T[];
+  orderVersion?: string;
 };
 
 type PmsOperationsTestPrivateNotesResponse = PmsOperationsTestListResponse<PmsPrivateNote> & {
@@ -396,6 +409,7 @@ const identityRepository: IdentityRepository = {
     return {
       userId: "user_hotel_owner",
       email: "owner@example.com",
+      name: "Harper Owner",
       status: "active",
     };
   },
@@ -495,6 +509,7 @@ function buildPlatformAdminApp(
               },
             }
           : platformIdentityRepository,
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["platform.admin.read"];
@@ -538,6 +553,8 @@ const bookingSettingsRepository: BookingSettingsReadRepository = {
       country: "AT",
       instagram: "https://instagram.com/alpenrose",
       facebook: "https://facebook.com/alpenrose",
+      tiktok: "https://tiktok.com/@alpenrose",
+      youtube: "https://youtube.com/@alpenrose",
       defaultCurrency: "CHF",
       defaultLanguage: "de",
       supportedCurrencies: ["CHF", "EUR"],
@@ -547,6 +564,7 @@ const bookingSettingsRepository: BookingSettingsReadRepository = {
       specialRequestsEnabled: false,
       arrivalTimeEnabled: true,
       guestCountEnabled: true,
+      termsAndConditions: "Alpenrose booking terms.",
       cancellationPolicyText: "Free cancellation until seven days before arrival.",
       acceptedPaymentMethods: ["pay_at_property", "cash", "card", "bank_transfer"],
     };
@@ -655,6 +673,8 @@ const bookingSettingsWriteRepository: BookingSettingsWriteRepository = {
       country: settings.country ?? "AT",
       instagram: settings.instagram ?? "https://instagram.com/alpenrose",
       facebook: settings.facebook ?? "https://facebook.com/alpenrose",
+      tiktok: settings.tiktok ?? "https://tiktok.com/@alpenrose",
+      youtube: settings.youtube ?? "https://youtube.com/@alpenrose",
       defaultCurrency: settings.defaultCurrency ?? "CHF",
       defaultLanguage: settings.defaultLanguage ?? "de",
       supportedCurrencies: settings.supportedCurrencies ?? ["CHF", "EUR"],
@@ -664,6 +684,7 @@ const bookingSettingsWriteRepository: BookingSettingsWriteRepository = {
       specialRequestsEnabled: settings.specialRequestsEnabled ?? false,
       arrivalTimeEnabled: settings.arrivalTimeEnabled ?? true,
       guestCountEnabled: settings.guestCountEnabled ?? true,
+      termsAndConditions: settings.termsAndConditions ?? "Alpenrose booking terms.",
       cancellationPolicyText:
         settings.cancellationPolicyText ?? "Free cancellation until seven days before arrival.",
       acceptedPaymentMethods: settings.acceptedPaymentMethods ?? [
@@ -767,13 +788,34 @@ const bookingAddonItem: BookingAddonItem = {
   publicVisible: true,
   status: "active",
   sortOrder: 0,
+  ownershipKind: "property",
+  partnerCommissionRate: null,
   createdAt: "2026-06-01T10:00:00.000Z",
   updatedAt: "2026-06-01T10:00:00.000Z",
+};
+
+const commissionPropertyPlan = {
+  propertyId: "property_alpenrose",
+  plan: "commission" as const,
+  limits: {
+    maxRoomPhotosPerType: 10,
+    maxAddons: 3,
+    guestContactAccess: "after_acceptance" as const,
+  },
 };
 
 function addonItemFromBody(
   body: CreateBookingAddonItemBody | UpdateBookingAddonItemBody,
 ): BookingAddonItem {
+  const ownershipKind = body.ownershipKind ?? bookingAddonItem.ownershipKind;
+  const economicTerms =
+    ownershipKind === "partner"
+      ? {
+          ownershipKind: "partner" as const,
+          partnerCommissionRate:
+            body.partnerCommissionRate ?? bookingAddonItem.partnerCommissionRate ?? "0",
+        }
+      : { ownershipKind: "property" as const, partnerCommissionRate: null };
   return {
     ...bookingAddonItem,
     addonItemId: "0f840001-0000-4000-8000-000000000002",
@@ -788,6 +830,7 @@ function addonItemFromBody(
     publicVisible: body.publicVisible ?? bookingAddonItem.publicVisible,
     status: body.status ?? bookingAddonItem.status,
     sortOrder: body.sortOrder ?? bookingAddonItem.sortOrder,
+    ...economicTerms,
     updatedAt: "2026-06-01T11:00:00.000Z",
   };
 }
@@ -795,11 +838,11 @@ function addonItemFromBody(
 const bookingAddonItemsRepository: BookingAddonItemsRepository = {
   async listAddonItemsByHotelId(hotelId) {
     if (hotelId !== "booking_hotel_alpenrose") return null;
-    return [bookingAddonItem];
+    return { addonItems: [bookingAddonItem], propertyPlan: commissionPropertyPlan };
   },
   async createAddonItemByHotelId(hotelId, body) {
     expect(hotelId).toBe("booking_hotel_alpenrose");
-    return addonItemFromBody(body);
+    return { outcome: "created", addonItem: addonItemFromBody(body) };
   },
   async updateAddonItemByHotelId(hotelId, addonItemId, body) {
     expect(hotelId).toBe("booking_hotel_alpenrose");
@@ -822,12 +865,15 @@ const bookingPromoCode: BookingPromoCode = {
   code: "SUMMER20",
   discountType: "percentage",
   discountValue: "20.00",
-  currency: null,
+  minBookingValue: "500.00",
+  applicableRoomIds: ["0f850001-0000-4000-8000-000000000010"],
   validFrom: "2026-07-01",
   validUntil: "2026-08-31",
+  stayDateFrom: "2026-08-01",
+  stayDateUntil: "2026-09-30",
   isActive: true,
   maxUses: 50,
-  useCount: 3,
+  currentUses: 3,
   createdAt: "2026-06-01T10:00:00.000Z",
   updatedAt: "2026-06-01T10:00:00.000Z",
 };
@@ -841,9 +887,12 @@ function promoCodeFromBody(
     code: body.code ?? bookingPromoCode.code,
     discountType: body.discountType ?? bookingPromoCode.discountType,
     discountValue: body.discountValue ?? bookingPromoCode.discountValue,
-    currency: body.currency ?? bookingPromoCode.currency,
+    minBookingValue: body.minBookingValue ?? bookingPromoCode.minBookingValue,
+    applicableRoomIds: body.applicableRoomIds ?? bookingPromoCode.applicableRoomIds,
     validFrom: body.validFrom ?? bookingPromoCode.validFrom,
     validUntil: body.validUntil ?? bookingPromoCode.validUntil,
+    stayDateFrom: body.stayDateFrom ?? bookingPromoCode.stayDateFrom,
+    stayDateUntil: body.stayDateUntil ?? bookingPromoCode.stayDateUntil,
     isActive: body.isActive ?? bookingPromoCode.isActive,
     maxUses: body.maxUses ?? bookingPromoCode.maxUses,
     updatedAt: "2026-06-01T11:00:00.000Z",
@@ -1063,6 +1112,7 @@ const pmsRooms: PmsRoom[] = [
 const pmsRoomBlocks: PmsRoomBlockSummary[] = [
   {
     blockId: "f6855400-0000-0000-0000-000000000001",
+    version: "room-block-v1",
     roomTypeId: pmsRoomTypes[0].roomTypeId,
     roomId: pmsRooms[1].roomId,
     startsOn: "2026-08-15",
@@ -1073,6 +1123,7 @@ const pmsRoomBlocks: PmsRoomBlockSummary[] = [
   },
   {
     blockId: "f6855400-0000-0000-0000-000000000002",
+    version: "room-block-v1",
     roomTypeId: pmsRoomTypes[0].roomTypeId,
     roomId: null,
     startsOn: "2026-08-16",
@@ -1089,6 +1140,7 @@ const pmsCalendarDays: PmsCalendarDay[] = [
     roomTypeId: pmsRoomTypes[0].roomTypeId,
     totalCount: 2,
     assignedCount: 1,
+    occupiedCount: 1,
     blockedCount: 1,
     availableCount: 0,
     status: "limited",
@@ -1101,6 +1153,7 @@ const pmsCalendarDays: PmsCalendarDay[] = [
     roomTypeId: pmsRoomTypes[0].roomTypeId,
     totalCount: 2,
     assignedCount: 1,
+    occupiedCount: 1,
     blockedCount: 1,
     availableCount: 0,
     status: "limited",
@@ -1113,6 +1166,7 @@ const pmsCalendarDays: PmsCalendarDay[] = [
     roomTypeId: pmsRoomTypes[1].roomTypeId,
     totalCount: 1,
     assignedCount: 0,
+    occupiedCount: 0,
     blockedCount: 0,
     availableCount: 1,
     status: "open",
@@ -1133,7 +1187,10 @@ const pmsReservations: PmsOperationalReservation[] = [
       displayName: "Nora Ops",
       email: "nora.ops@example.test",
       phone: "+43111222333",
+      countryCode: "AT",
+      specialRequests: null,
     },
+    addOns: [],
     assignments: [
       {
         assignmentId: "f6855500-0000-0000-0000-000000000001",
@@ -1162,7 +1219,10 @@ const pmsReservations: PmsOperationalReservation[] = [
       displayName: "Una Assigned",
       email: "una@example.test",
       phone: null,
+      countryCode: null,
+      specialRequests: null,
     },
+    addOns: [],
     assignments: [
       {
         assignmentId: "f6855500-0000-0000-0000-000000000002",
@@ -1195,6 +1255,9 @@ const pmsPrivateNotes: PmsPrivateNote[] = [
       createdByUserId: "user_hotel_owner",
       createdByDisplayName: "owner@example.com",
       createdAt: "2026-08-14T16:00:00.000Z",
+      editedByUserId: null,
+      editedByDisplayName: null,
+      editedAt: null,
       privacyScope: "internal",
     },
   },
@@ -1210,6 +1273,8 @@ const bookingPrimaryGuestPii: BookingGuestPii = {
   email: "nora.ops@example.test",
   phone: "+43111222333",
   countryCode: "AT",
+  countryCodeRaw: null,
+  countryCodeReviewRequired: false,
   arrivalTime: "15:30",
   specialRequests: null,
 };
@@ -1218,6 +1283,7 @@ function createBookingGuestPiiPort(): BookingGuestPiiPort & {
   creates: BookingAdditionalGuestCreateCommand[];
   updates: BookingAdditionalGuestUpdateCommand[];
   deletes: BookingAdditionalGuestDeleteCommand[];
+  corrections: BookingPrimaryGuestNationalityCorrectionCommand[];
 } {
   const guestsByReservation = new Map<string, BookingGuestPii[]>([
     [pmsReservations[0].guestBookingId, [bookingPrimaryGuestPii]],
@@ -1226,6 +1292,7 @@ function createBookingGuestPiiPort(): BookingGuestPiiPort & {
   const creates: BookingAdditionalGuestCreateCommand[] = [];
   const updates: BookingAdditionalGuestUpdateCommand[] = [];
   const deletes: BookingAdditionalGuestDeleteCommand[] = [];
+  const corrections: BookingPrimaryGuestNationalityCorrectionCommand[] = [];
   const projection = (
     propertyId: string,
     guestBookingId: string,
@@ -1243,7 +1310,8 @@ function createBookingGuestPiiPort(): BookingGuestPiiPort & {
     command:
       | BookingAdditionalGuestCreateCommand
       | BookingAdditionalGuestUpdateCommand
-      | BookingAdditionalGuestDeleteCommand,
+      | BookingAdditionalGuestDeleteCommand
+      | BookingPrimaryGuestNationalityCorrectionCommand,
   ): BookingGuestPiiCommandMeta => ({
     contractVersion: "booking-guest-pii.v1",
     commandId: command.commandId,
@@ -1256,9 +1324,43 @@ function createBookingGuestPiiPort(): BookingGuestPiiPort & {
     creates,
     updates,
     deletes,
+    corrections,
     async listGuestPiiForPmsOperations(input) {
       expect(input.propertyId).toBe(pmsPropertyId);
       return projection(input.propertyId, input.guestBookingId);
+    },
+    async correctPrimaryGuestNationalityForPmsOperations(command) {
+      corrections.push(command);
+      const guests = guestsByReservation.get(command.guestBookingId);
+      const primaryGuest = guests?.find((guest) => guest.role !== "additional_guest");
+      if (guests && primaryGuest) {
+        const corrected = {
+          ...primaryGuest,
+          countryCode: command.countryCode,
+          countryCodeRaw: null,
+          countryCodeReviewRequired: false,
+        };
+        guests.splice(guests.indexOf(primaryGuest), 1, corrected);
+        return {
+          ok: true,
+          primaryGuest: corrected,
+          projection: {
+            ...projection(command.propertyId, command.guestBookingId)!,
+            primaryGuest: {
+              ...corrected,
+              email: "Hidden until you accept",
+              phone: "Hidden until you accept",
+            },
+          },
+          commandMeta: commandMeta(command),
+        };
+      }
+      return {
+        ok: false,
+        statusCode: 404,
+        code: "primary_guest_not_found",
+        message: "Primary guest not found.",
+      };
     },
     async createAdditionalGuestForPmsOperations(command) {
       creates.push(command);
@@ -1281,6 +1383,8 @@ function createBookingGuestPiiPort(): BookingGuestPiiPort & {
         email: command.guest.email ?? null,
         phone: command.guest.phone ?? null,
         countryCode: command.guest.countryCode ?? null,
+        countryCodeRaw: null,
+        countryCodeReviewRequired: false,
         arrivalTime: command.guest.arrivalTime ?? null,
         specialRequests: command.guest.specialRequests ?? null,
       };
@@ -1356,6 +1460,19 @@ const pmsOperationsRepository: PmsOperationsReadRepository = {
   },
 };
 
+function roomBlockCommandMeta(
+  command: { commandId: string; idempotencyKey: string },
+  acceptedAt: string,
+): PmsCommandMeta {
+  return {
+    contractVersion: "pms-operations.v1" as const,
+    commandId: command.commandId,
+    idempotencyKey: command.idempotencyKey,
+    acceptedAt,
+    sideEffects: ["calendar_refresh", "ari_changed", "audit_event"],
+  };
+}
+
 function createPmsOperationsCommandRepository(
   roomTypes: PmsRoomType[] = structuredClone(pmsRoomTypes),
 ): PmsOperationsCommandRepository & {
@@ -1364,6 +1481,7 @@ function createPmsOperationsCommandRepository(
     | PmsOperationalStatusCommand
     | PmsCheckInCommand
     | PmsNoShowCommand
+    | PmsBookingLifecycleCommand
     | PmsCheckOutCommand
   >;
   checkOutCommands: PmsCheckOutCommand[];
@@ -1372,8 +1490,11 @@ function createPmsOperationsCommandRepository(
   checkoutChargeWaives: PmsCheckoutChargeWaiveCommand[];
   noteCreates: PmsPrivateNoteCreateCommand[];
   noteDeletes: PmsPrivateNoteDeleteCommand[];
+  noteUpdates: PmsPrivateNoteUpdateCommand[];
   roomTypeCreates: PmsRoomTypeCreateCommand[];
   roomTypeUpdates: PmsRoomTypeUpdateCommand[];
+  roomBlockCreates: PmsRoomBlockCreateCommand[];
+  roomOrderCommands: PmsRoomOrderCommand[];
   templateUpdates: PmsOperationalTemplateUpdateCommand[];
   outboxEnqueues: string[];
   auditEvents: string[];
@@ -1383,6 +1504,7 @@ function createPmsOperationsCommandRepository(
     | PmsOperationalStatusCommand
     | PmsCheckInCommand
     | PmsNoShowCommand
+    | PmsBookingLifecycleCommand
     | PmsCheckOutCommand
   > = [];
   const checkOutCommands: PmsCheckOutCommand[] = [];
@@ -1391,8 +1513,12 @@ function createPmsOperationsCommandRepository(
   const checkoutChargeWaives: PmsCheckoutChargeWaiveCommand[] = [];
   const noteCreates: PmsPrivateNoteCreateCommand[] = [];
   const noteDeletes: PmsPrivateNoteDeleteCommand[] = [];
+  const noteUpdates: PmsPrivateNoteUpdateCommand[] = [];
   const roomTypeCreates: PmsRoomTypeCreateCommand[] = [];
   const roomTypeUpdates: PmsRoomTypeUpdateCommand[] = [];
+  const roomBlockCreates: PmsRoomBlockCreateCommand[] = [];
+  const roomOrderCommands: PmsRoomOrderCommand[] = [];
+  const roomBlocks = structuredClone(pmsRoomBlocks);
   const templateUpdates: PmsOperationalTemplateUpdateCommand[] = [];
   const outboxEnqueues: string[] = [];
   const auditEvents: string[] = [];
@@ -1465,11 +1591,105 @@ function createPmsOperationsCommandRepository(
     checkoutChargeWaives,
     noteCreates,
     noteDeletes,
+    noteUpdates,
     roomTypeCreates,
     roomTypeUpdates,
+    roomBlockCreates,
+    roomOrderCommands,
     templateUpdates,
     outboxEnqueues,
     auditEvents,
+    async reorderRooms(command) {
+      roomOrderCommands.push(command);
+      return {
+        ok: true as const,
+        orderedRoomIds: command.orderedRoomIds,
+        orderVersion: pmsRoomOrderVersion(command.orderedRoomIds),
+        commandMeta: {
+          contractVersion: "pms-operations.v1" as const,
+          commandId: command.commandId,
+          idempotencyKey: command.idempotencyKey,
+          acceptedAt: "2026-08-14T17:55:00.000Z",
+          sideEffects: ["audit_event" as const],
+        },
+      };
+    },
+    async createRoomBlocks(command) {
+      roomBlockCreates.push(command);
+      const items = command.roomIds.map((roomId, index) => ({
+        blockId: `f6855400-0000-0000-0000-${String(index + 10).padStart(12, "0")}`,
+        version: "room-block-v1",
+        roomTypeId: command.roomTypeId,
+        roomId,
+        startsOn: command.startsOn,
+        endsOn: command.endsOn,
+        blockedCount: 1,
+        reason: command.reason,
+        status: "active" as const,
+      }));
+      roomBlocks.push(...items);
+      return {
+        ok: true as const,
+        items,
+        commandMeta: roomBlockCommandMeta(command, "2026-08-14T18:00:00.000Z"),
+      };
+    },
+    async updateRoomBlock(command) {
+      const item = roomBlocks.find((block) => block.blockId === command.blockId);
+      if (!item) {
+        return {
+          ok: false as const,
+          statusCode: 404 as const,
+          code: "room_block_not_found" as const,
+          message: "Room block not found.",
+        };
+      }
+      if (item.version !== command.expectedVersion) {
+        return {
+          ok: false as const,
+          statusCode: 409 as const,
+          code: "version_conflict" as const,
+          message: "Room block changed. Refresh and try again.",
+        };
+      }
+      Object.assign(item, {
+        startsOn: command.startsOn ?? item.startsOn,
+        endsOn: command.endsOn ?? item.endsOn,
+        reason: command.reason ?? item.reason,
+        version: "room-block-v2",
+      });
+      return {
+        ok: true as const,
+        items: [structuredClone(item)],
+        commandMeta: roomBlockCommandMeta(command, "2026-08-14T18:01:00.000Z"),
+      };
+    },
+    async releaseRoomBlock(command) {
+      const item = roomBlocks.find((block) => block.blockId === command.blockId);
+      if (!item || item.status !== "active") {
+        return {
+          ok: false as const,
+          statusCode: 404 as const,
+          code: "room_block_not_found" as const,
+          message: "Room block not found.",
+        };
+      }
+      if (item.version !== command.expectedVersion) {
+        return {
+          ok: false as const,
+          statusCode: 409 as const,
+          code: "version_conflict" as const,
+          message: "Room block changed. Refresh and try again.",
+        };
+      }
+      item.status = "released";
+      item.version = "room-block-v2";
+      return {
+        ok: true as const,
+        items: [structuredClone(item)],
+        commandMeta: roomBlockCommandMeta(command, "2026-08-14T18:02:00.000Z"),
+      };
+    },
     async createRoomType(command) {
       roomTypeCreates.push(command);
       if (command.idempotencyKey === "room-type-create-conflict") {
@@ -1821,6 +2041,9 @@ function createPmsOperationsCommandRepository(
           createdByUserId: command.actorUserId,
           createdByDisplayName: command.authorDisplayName,
           createdAt: "2026-08-14T17:00:00.000Z",
+          editedByUserId: null,
+          editedByDisplayName: null,
+          editedAt: null,
           privacyScope: "internal",
         },
       };
@@ -1868,6 +2091,35 @@ function createPmsOperationsCommandRepository(
           commandId: command.commandId,
           idempotencyKey: command.idempotencyKey,
           acceptedAt: "2026-08-14T17:05:00.000Z",
+          sideEffects: ["audit_event"],
+        },
+      };
+    },
+    async updatePrivateNote(command) {
+      noteUpdates.push(command);
+      const notes = notesByReservation.get(command.guestBookingId);
+      const note = notes?.find((candidate) => candidate.noteId === command.noteId);
+      if (!note) {
+        return {
+          ok: false,
+          statusCode: 404,
+          code: notes ? "note_not_found" : "reservation_not_found",
+          message: notes ? "PMS private note not found." : "PMS reservation not found.",
+        };
+      }
+      note.body = command.body;
+      note.auditMetadata.editedByUserId = command.actorUserId;
+      note.auditMetadata.editedByDisplayName = command.editorDisplayName;
+      note.auditMetadata.editedAt = "2026-08-14T17:03:00.000Z";
+      auditEvents.push(`private_note_edited:${note.noteId}`);
+      return {
+        ok: true,
+        note: structuredClone(note),
+        commandMeta: {
+          contractVersion: "pms-operations.v1",
+          commandId: command.commandId,
+          idempotencyKey: command.idempotencyKey,
+          acceptedAt: note.auditMetadata.editedAt,
           sideEffects: ["audit_event"],
         },
       };
@@ -1923,6 +2175,47 @@ function createPmsOperationsCommandRepository(
         auditEvents,
         reservationForNoShowCommand,
       );
+    },
+    async acceptBooking(command) {
+      commands.push(command);
+      return bookingLifecycleTestResult(command, "confirmed", "unpaid");
+    },
+    async markBookingPaid(command) {
+      commands.push(command);
+      return bookingLifecycleTestResult(command, "confirmed", "paid");
+    },
+  };
+}
+
+function bookingLifecycleTestResult(
+  command: PmsBookingLifecycleCommand,
+  status: string,
+  paymentStatus: string,
+): PmsOperationalCommandResult {
+  const reservation = pmsReservations.find(
+    (candidate) => candidate.guestBookingId === command.guestBookingId,
+  );
+  if (!reservation) {
+    return {
+      ok: false,
+      statusCode: 404,
+      code: "reservation_not_found",
+      message: "PMS reservation not found.",
+    };
+  }
+  return {
+    ok: true,
+    reservation: {
+      ...structuredClone(reservation),
+      status,
+      payment: { method: "bank_transfer", status: paymentStatus },
+    },
+    commandMeta: {
+      contractVersion: "pms-operations.v1",
+      commandId: command.commandId,
+      idempotencyKey: command.idempotencyKey,
+      acceptedAt: "2026-08-14T17:10:00.000Z",
+      sideEffects: ["guest_notification", "audit_event"],
     },
   };
 }
@@ -2223,6 +2516,7 @@ const publicHotelQuoteRepository: PublicHotelQuoteRepository = {
 function identityRepositoryWithResources(
   hotelId: string | null = "booking_hotel_alpenrose",
   linkedPmsPropertyId: string | null = pmsPropertyId,
+  linkedPmsRelationship: "owner" | "operator" | "front_desk" = "operator",
 ): IdentityRepository {
   return {
     ...identityRepository,
@@ -2242,7 +2536,7 @@ function identityRepositoryWithResources(
           product: "pms",
           resourceType: "pms_property",
           resourceId: linkedPmsPropertyId,
-          relationship: "operator",
+          relationship: linkedPmsRelationship,
           status: "active",
         });
       }
@@ -2268,12 +2562,17 @@ function buildAuthenticatedApp(
     pmsOperationsRepository?: PmsOperationsReadRepository;
     pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
     pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
+    bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
+    pmsRoomAssignmentSettings?: PmsRoomAssignmentSettingsPort;
+    pmsRoomAssignmentHistory?: PmsRoomAssignmentOptimizationHistoryPort;
     bookingGuestPiiPort?: BookingGuestPiiPort;
     pmsOperationsAllowedOrigins?: string[];
+    propertyPlanReadRepository?: PropertyPlanReadRepository;
     financeRepository?: FinancePropertyReadRepository;
     pmsFinanceCompatibilityRepository?: FinancePropertyReadRepository;
     browserAllowedOrigins?: string[];
     linkedPmsPropertyId?: string | null;
+    linkedPmsRelationship?: "owner" | "operator" | "front_desk";
   } = {},
 ): ReturnType<typeof buildApp> {
   return buildApp({
@@ -2284,8 +2583,12 @@ function buildAuthenticatedApp(
     pmsOperationsRepository: options.pmsOperationsRepository ?? pmsOperationsRepository,
     pmsCheckoutChargeMarkPaidFreezeEnabled: options.pmsCheckoutChargeMarkPaidFreezeEnabled,
     pmsOperationsCommandRepository: options.pmsOperationsCommandRepository,
+    bookingAcceptanceSettings: options.bookingAcceptanceSettings,
+    pmsRoomAssignmentSettings: options.pmsRoomAssignmentSettings,
+    pmsRoomAssignmentHistory: options.pmsRoomAssignmentHistory,
     bookingGuestPiiPort: options.bookingGuestPiiPort,
     pmsOperationsAllowedOrigins: options.pmsOperationsAllowedOrigins,
+    propertyPlanReadRepository: options.propertyPlanReadRepository,
     financeRepository: options.financeRepository,
     pmsFinanceCompatibilityRepository: options.pmsFinanceCompatibilityRepository,
     bookingAddonItemsRepository: options.bookingAddonItemsRepository ?? bookingAddonItemsRepository,
@@ -2301,7 +2604,9 @@ function buildAuthenticatedApp(
       repository: identityRepositoryWithResources(
         options.linkedHotelId,
         options.linkedPmsPropertyId,
+        options.linkedPmsRelationship,
       ),
+      propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["booking.settings.manage", "booking.reservation.read"];
@@ -2480,6 +2785,9 @@ describe("vayada-api", () => {
               name: "Hotel Alpenrose",
               slug: "hotel-alpenrose",
               status: "live",
+              lifecycleStatus: "active",
+              lifecycleRevision: 1,
+              ownerAccountUserIds: [],
               createdAt: "2026-06-01T12:00:00.000Z",
             },
           ];
@@ -2524,6 +2832,9 @@ describe("vayada-api", () => {
               name: "Hotel Alpenrose",
               slug: "hotel-alpenrose",
               status: "live",
+              lifecycleStatus: "active",
+              lifecycleRevision: 1,
+              ownerAccountUserIds: [],
               createdAt: "2026-06-01T12:00:00.000Z",
             },
             {
@@ -2531,6 +2842,9 @@ describe("vayada-api", () => {
               name: "Demo Lodge",
               slug: "demo-lodge",
               status: "demo",
+              lifecycleStatus: "provisioning",
+              lifecycleRevision: 1,
+              ownerAccountUserIds: [],
               createdAt: "2026-06-02T12:00:00.000Z",
             },
           ];
@@ -2664,6 +2978,7 @@ describe("vayada-api", () => {
     app = buildApp({
       logger: false,
       publicHotelProfileRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await app.inject({
@@ -2747,6 +3062,15 @@ describe("vayada-api", () => {
     expect(findForbiddenPublicBookabilityKeys(body)).toEqual([]);
   });
 
+  it("requires the target checkout adapter when Booking Web public routes are mounted", () => {
+    expect(() =>
+      buildApp({
+        logger: false,
+        publicHotelProfileRepository,
+      }),
+    ).toThrow("Booking Web checkout adapter is required when public routes are mounted");
+  });
+
   it("returns stable unavailable reason codes for public AI hotel quotes", async () => {
     app = buildApp({
       logger: false,
@@ -2774,6 +3098,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await app.inject({
@@ -2811,6 +3136,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await app.inject({
@@ -2851,6 +3177,7 @@ describe("vayada-api", () => {
         },
       },
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await injectJson(app, {
@@ -2890,7 +3217,7 @@ describe("vayada-api", () => {
         },
       },
       publicHotelQuoteRepository,
-      bookingDomainResolutionSource: "target",
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await injectJson(app, {
@@ -2911,14 +3238,11 @@ describe("vayada-api", () => {
     expect(findForbiddenPublicBookabilityKeys(response.body)).toEqual([]);
   });
 
-  it("mounts public profile and known-host routes in target mode without the legacy booking DB", async () => {
+  it("mounts public profile and known-host routes in target mode", async () => {
     const config = loadConfig({
       TARGET_DATABASE_URL: "postgresql://target-db",
       PUBLIC_HOTEL_PROFILE_SOURCE: "target",
-      BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
     });
-    expect(config.bookingDatabaseUrl).toBeUndefined();
-
     const pool: PublicHotelProfileReadPool = {
       async query<T extends QueryResultRow>() {
         return { rows: [targetPublicHotelProfileRow()] as T[] };
@@ -2932,7 +3256,7 @@ describe("vayada-api", () => {
     app = buildApp({
       logger: false,
       publicHotelProfileRepository: targetRepository,
-      bookingDomainResolutionSource: config.bookingDomainResolutionSource,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const aiProfile = await injectJson(app, {
@@ -2976,6 +3300,7 @@ describe("vayada-api", () => {
         },
       },
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await injectJson(app, {
@@ -2991,6 +3316,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await app.inject({
@@ -3022,6 +3348,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const preflight = await app.inject({
@@ -3065,6 +3392,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const preflight = await app.inject({
@@ -3098,6 +3426,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await app.inject({
@@ -3139,6 +3468,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
       bookingWebPublicNow: () => new Date("2026-06-06T11:00:00.000Z"),
     });
 
@@ -3199,6 +3529,7 @@ describe("vayada-api", () => {
       logger: false,
       publicHotelProfileRepository,
       publicHotelQuoteRepository,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
       bookingWebCalendarRepository: {
         async findCalendarByHotel(hotel, query) {
           return {
@@ -3261,76 +3592,6 @@ describe("vayada-api", () => {
     });
   });
 
-  it("returns unavailable public AI quotes when no target quote read model is configured", async () => {
-    const repository = createCompatibilityPublicHotelQuoteRepository({
-      profileRepository: publicHotelProfileRepository,
-      now: () => new Date("2026-06-06T11:00:00.000Z"),
-    });
-
-    const quote = await repository.findQuoteBySlug("hotel-alpenrose", {
-      check_in: "2026-09-12",
-      check_out: "2026-09-15",
-      adults: "2",
-      children: "0",
-      rooms: "1",
-      currency: "EUR",
-      locale: "en",
-    });
-
-    expect(quote).toMatchObject({
-      status: "unavailable",
-      unavailableReasons: [
-        { code: "unavailable_data", detail: "Public quote read model is not ready yet." },
-      ],
-    });
-    expect(quote!.quote).toBeUndefined();
-  });
-
-  it("returns quote request validation reasons before target quote data is available", async () => {
-    const repository = createCompatibilityPublicHotelQuoteRepository({
-      profileRepository: publicHotelProfileRepository,
-      now: () => new Date("2026-06-06T11:00:00.000Z"),
-    });
-
-    const quote = await repository.findQuoteBySlug("hotel-alpenrose", {
-      check_in: "2026-09-12",
-      check_out: "2026-09-15",
-      adults: "20",
-      children: "0",
-      rooms: "1",
-      currency: "EUR",
-      locale: "en",
-    });
-
-    expect(quote).toMatchObject({
-      status: "unavailable",
-      unavailableReasons: [{ code: "unsupported_occupancy" }],
-    });
-    expect(quote!.quote).toBeUndefined();
-  });
-
-  it("does not return bookable public AI quote totals for promo codes before promo pricing is wired", async () => {
-    const repository = createCompatibilityPublicHotelQuoteRepository({
-      profileRepository: publicHotelProfileRepository,
-      now: () => new Date("2026-06-06T11:00:00.000Z"),
-    });
-
-    const quote = await repository.findQuoteBySlug("hotel-alpenrose", {
-      check_in: "2026-09-12",
-      check_out: "2026-09-15",
-      adults: "2",
-      currency: "EUR",
-      locale: "en",
-      promo_code: "SUMMER10",
-    });
-
-    expect(quote).toMatchObject({
-      status: "unavailable",
-      request: { promoCode: "SUMMER10" },
-      unavailableReasons: [{ code: "promo_not_applicable" }],
-    });
-  });
-
   it("strips non-contract fields before returning public AI hotel quotes", async () => {
     const pollutedQuote = {
       ...seededPublicQuote,
@@ -3390,6 +3651,7 @@ describe("vayada-api", () => {
           return pollutedProfile;
         },
       },
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
 
     const response = await app.inject({
@@ -3546,6 +3808,7 @@ describe("vayada-api", () => {
       auth: {
         verifier: createFakeVerifier(new Map([["valid-token", session]])),
         repository: identityRepository,
+        propertyAccessRepository: agencyPropertyAccessRepository,
         rolePermissionRepository: {
           async findPermissionsForRole(kind, roleKey) {
             expect(kind).toBe("hotel_group");
@@ -3661,6 +3924,54 @@ describe("vayada-api", () => {
     });
   });
 
+  it("reads and updates canonical booking acceptance through Booking Admin", async () => {
+    let acceptanceMode: "instant" | "request" = "request";
+    const published: string[] = [];
+    app = buildAuthenticatedApp({
+      linkedPmsPropertyId: null,
+      bookingAcceptanceSettings: {
+        async findAcceptanceMode(propertyId) {
+          expect(propertyId).toBe(pmsPropertyId);
+          return acceptanceMode;
+        },
+        async updateAcceptanceMode(propertyId, nextMode) {
+          expect(propertyId).toBe(pmsPropertyId);
+          acceptanceMode = nextMode;
+          return acceptanceMode;
+        },
+      },
+      publicBookabilityPublisher: {
+        async publish({ propertyId }) {
+          published.push(propertyId);
+          return null;
+        },
+      },
+    });
+
+    const read = await injectJson(app, {
+      method: "GET",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/settings/booking-acceptance",
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const update = await injectJson(app, {
+      method: "PUT",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/settings/booking-acceptance",
+      payload: { acceptanceMode: "instant" },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(read.statusCode).toBe(200);
+    expect(read.body).toEqual({
+      contractVersion: "booking-acceptance.v1",
+      propertyId: pmsPropertyId,
+      acceptanceMode: "request",
+      instantBook: false,
+    });
+    expect(update.statusCode).toBe(200);
+    expect(update.body).toMatchObject({ acceptanceMode: "instant", instantBook: true });
+    expect(published).toEqual([pmsPropertyId]);
+  });
+
   it("publishes Booking setup through the canonical Distribution command boundary", async () => {
     const publishedPropertyIds: string[] = [];
     const projectedPropertyIds: string[] = [];
@@ -3746,6 +4057,7 @@ describe("vayada-api", () => {
       special_requests_enabled: false,
       arrival_time_enabled: true,
       guest_count_enabled: true,
+      terms_text: "Alpenrose booking terms.",
       cancellation_policy_text: "Free cancellation until seven days before arrival.",
     });
   });
@@ -3769,6 +4081,8 @@ describe("vayada-api", () => {
         country: "AT",
         instagram: "https://instagram.com/updated-alpenrose",
         facebook: "https://facebook.com/updated-alpenrose",
+        tiktok: "https://tiktok.com/@updated-alpenrose",
+        youtube: "https://youtube.com/@updated-alpenrose",
         default_currency: " eur ",
         default_language: "en-US",
         supported_currencies: ["CHF", "EUR"],
@@ -3778,6 +4092,7 @@ describe("vayada-api", () => {
         special_requests_enabled: true,
         arrival_time_enabled: false,
         guest_count_enabled: false,
+        terms_text: "Updated Alpenrose booking terms.",
         cancellation_policy_text: "Free cancellation until one day before arrival.",
         pay_at_property_enabled: true,
         pay_at_hotel_methods: ["cash", "card"],
@@ -3799,6 +4114,10 @@ describe("vayada-api", () => {
       address: "Updated street 1",
       city: "Innsbruck",
       country: "AT",
+      instagram: "https://instagram.com/updated-alpenrose",
+      facebook: "https://facebook.com/updated-alpenrose",
+      tiktok: "https://tiktok.com/@updated-alpenrose",
+      youtube: "https://youtube.com/@updated-alpenrose",
       default_currency: "EUR",
       default_language: "en-US",
       supported_currencies: ["CHF"],
@@ -3812,6 +4131,7 @@ describe("vayada-api", () => {
       special_requests_enabled: true,
       arrival_time_enabled: false,
       guest_count_enabled: false,
+      terms_text: "Updated Alpenrose booking terms.",
       cancellation_policy_text: "Free cancellation until one day before arrival.",
     });
   });
@@ -3829,6 +4149,7 @@ describe("vayada-api", () => {
         property_name: " ",
         default_currency: "euro",
         check_in_time: "25:00",
+        instagram: "@alpenrose",
       },
     });
 
@@ -4155,6 +4476,41 @@ describe("vayada-api", () => {
       expect(response.body).toEqual(writeCase.expected);
     });
   }
+
+  it("refreshes public Distribution after the canonical booking currency changes", async () => {
+    const published: string[] = [];
+    app = buildAuthenticatedApp({
+      publicBookabilityPublisher: {
+        async publish({ propertyId }) {
+          published.push(propertyId);
+          return {
+            propertyId,
+            canonicalSlug: "hotel-alpenrose",
+            canonicalUrl: "https://hotel-alpenrose.booking.localhost/en",
+            bookingBaseUrl: "https://hotel-alpenrose.booking.localhost",
+            profileStatus: "public",
+            freshnessStatus: "fresh",
+            missingReadiness: [],
+          };
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "PUT",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/settings/localization",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        defaultCurrency: "USD",
+        defaultLanguage: "en",
+        supportedCurrencies: ["USD"],
+        supportedLanguages: ["en"],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(published).toEqual([pmsPropertyId]);
+  });
 
   it("preserves guest-form phoneRequired when older clients save five-field payloads", async () => {
     let written: unknown;
@@ -4838,6 +5194,7 @@ describe("vayada-api", () => {
     expect(response.statusCode).toBe(200);
     expect(response.body).toEqual({
       addonItems: [bookingAddonItem],
+      propertyPlan: commissionPropertyPlan,
     });
   });
 
@@ -4916,6 +5273,8 @@ describe("vayada-api", () => {
         publicVisible: false,
         status: "disabled",
         sortOrder: 3,
+        ownershipKind: "partner",
+        partnerCommissionRate: "18.7500",
       },
     });
 
@@ -4935,6 +5294,49 @@ describe("vayada-api", () => {
       publicVisible: false,
       status: "disabled",
       sortOrder: 3,
+      ownershipKind: "partner",
+      partnerCommissionRate: "18.7500",
+    });
+  });
+
+  it("rejects add-on creation when the property plan limit is reached", async () => {
+    app = buildAuthenticatedApp({
+      bookingAddonItemsRepository: {
+        ...bookingAddonItemsRepository,
+        async createAddonItemByHotelId() {
+          return {
+            outcome: "plan_limit_reached",
+            currentCount: 3,
+            propertyPlan: commissionPropertyPlan,
+          };
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/addon-items",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        name: "Spa ritual",
+        price: "125.50",
+        currency: "EUR",
+        category: "wellness",
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toEqual({
+      statusCode: 409,
+      code: "plan_limit_reached",
+      category: "validation",
+      message: "You've reached the 3 add-on limit. Upgrade to the paid plan for up to 9 add-ons.",
+      details: {
+        feature: "addons",
+        plan: "commission",
+        currentCount: 3,
+        maxAllowed: 3,
+      },
     });
   });
 
@@ -4952,6 +5354,8 @@ describe("vayada-api", () => {
         price: "55.00",
         pricingModel: "per_guest",
         publicVisible: false,
+        ownershipKind: "property",
+        partnerCommissionRate: null,
       },
     });
 
@@ -4963,6 +5367,8 @@ describe("vayada-api", () => {
       price: "55.00",
       pricingModel: "per_guest",
       publicVisible: false,
+      ownershipKind: "property",
+      partnerCommissionRate: null,
     });
   });
 
@@ -5074,6 +5480,7 @@ describe("vayada-api", () => {
         category: "legacy",
         status: "retired",
         legacyField: true,
+        ownershipKind: "partner",
       },
     });
 
@@ -5085,6 +5492,9 @@ describe("vayada-api", () => {
       message: "Booking add-on item payload is invalid.",
     });
     expect(response.body.details).toEqual(expect.any(Array));
+    expect(response.body.details).toContain(
+      "ownershipKind and partnerCommissionRate must be property/null or partner/a 0..100 decimal with at most four decimal places.",
+    );
   });
 
   it("lists booking promo codes with the typed target route", async () => {
@@ -5132,7 +5542,6 @@ describe("vayada-api", () => {
       code: "SUMMER25",
       discountType: "percentage",
       discountValue: "25.00",
-      currency: null,
       validFrom: "2026-07-01",
       validUntil: "2026-08-31",
       isActive: true,
@@ -5153,7 +5562,7 @@ describe("vayada-api", () => {
         code: "EARLY30",
         discountType: "fixed",
         discountValue: "30.00",
-        currency: "EUR",
+        minBookingValue: "250.00",
       },
     });
 
@@ -5164,7 +5573,7 @@ describe("vayada-api", () => {
       code: "EARLY30",
       discountType: "fixed",
       discountValue: "30.00",
-      currency: "EUR",
+      minBookingValue: "250.00",
     });
   });
 
@@ -5172,7 +5581,6 @@ describe("vayada-api", () => {
     const fixedPromoCode: BookingPromoCode = {
       ...bookingPromoCode,
       discountType: "fixed",
-      currency: "EUR",
     };
     app = buildAuthenticatedApp({
       bookingPromoCodesRepository: {
@@ -5208,7 +5616,6 @@ describe("vayada-api", () => {
     expect(response.body).toMatchObject({
       promoCodeId: bookingPromoCode.promoCodeId,
       discountType: "fixed",
-      currency: "EUR",
     });
   });
 
@@ -5300,6 +5707,7 @@ describe("vayada-api", () => {
         validFrom: "2026-08-31",
         validUntil: "2026-07-01",
         maxUses: 0,
+        currency: "EUR",
         legacyField: true,
       },
     });
@@ -5311,7 +5719,9 @@ describe("vayada-api", () => {
       category: "validation",
       message: "Booking promo-code payload is invalid.",
     });
-    expect(response.body.details).toEqual(expect.any(Array));
+    expect(response.body.details).toEqual(
+      expect.arrayContaining(["currency is not allowed.", "legacyField is not allowed."]),
+    );
   });
 
   it("rejects oversized booking promo-code numeric fields before target persistence", async () => {
@@ -5327,7 +5737,6 @@ describe("vayada-api", () => {
         code: "FIXEDBIG",
         discountType: "fixed",
         discountValue: "10000000000000.00",
-        currency: "EUR",
         maxUses: 2147483648,
       },
     });
@@ -5342,7 +5751,7 @@ describe("vayada-api", () => {
     expect(response.body.details).toEqual(
       expect.arrayContaining([
         "discountValue must fit NUMERIC(15,2).",
-        "maxUses must be null or an integer from 1 to 2147483647.",
+        "maxUses must be an integer from 1 to 2147483647.",
       ]),
     );
   });
@@ -5367,6 +5776,7 @@ describe("vayada-api", () => {
         code: "SUMMER20",
         discountType: "percentage",
         discountValue: "20.00",
+        maxUses: 1,
       },
     });
 
@@ -5726,89 +6136,17 @@ describe("vayada-api", () => {
     });
   });
 
-  it("serves booking reservations from the configured compatibility read model", async () => {
-    const queries: { text: string; values?: readonly unknown[] }[] = [];
-    let poolClosed = false;
-    const pool: BookingReservationsReadPool = {
-      async query<T extends QueryResultRow = QueryResultRow>(
-        text: string,
-        values?: readonly unknown[],
-      ): Promise<Pick<QueryResult<T>, "rows">> {
-        queries.push({ text, values });
-        if (text.includes("COUNT(*)")) {
-          return {
-            rows: [{ total: "1" }] as unknown as T[],
-          };
-        }
-
-        return {
-          rows: [reservation] as unknown as T[],
-        };
-      },
-      async end() {
-        poolClosed = true;
-      },
-    };
-
-    app = buildAuthenticatedApp({
-      reservationsRepository: createCompatibilityPmsBookingReservationsReadRepository({
-        connectionString: "postgresql://booking-reservations-read",
-        pool,
-      }),
-    });
-
-    const response = await injectJson(app, {
-      method: "GET",
-      url: "/api/booking/hotels/booking_hotel_alpenrose/reservations?status=confirmed&search=Ada&limit=25&offset=5",
-      headers: {
-        authorization: "Bearer valid-token",
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toMatchObject({
-      bookings: [
-        {
-          id: "reservation_1",
-          bookingReference: "VAY-2026-0001",
-          roomName: "Suite",
-          guestFirstName: "Ada",
-          status: "confirmed",
-        },
-      ],
-      total: 1,
-      limit: 25,
-      offset: 5,
-    });
-    expect(queries).toHaveLength(2);
-    expect(queries[0]?.text).toContain("FROM bookings b");
-    expect(queries[0]?.text).toContain(
-      "JOIN room_types rt ON rt.id = b.room_type_id AND rt.hotel_id = b.hotel_id",
-    );
-    expect(queries[0]?.text).toContain(
-      "LEFT JOIN rooms rm ON rm.id = b.room_id AND rm.hotel_id = b.hotel_id",
-    );
-    expect(queries[0]?.text).toContain(
-      "JOIN rooms brm ON brm.id = br.room_id AND brm.hotel_id = b.hotel_id",
-    );
-    expect(queries[0]?.values).toEqual(["booking_hotel_alpenrose", "confirmed", "%Ada%", 25, 5]);
-    expect(queries[1]?.text).toContain("COUNT(*)");
-    expect(queries[1]?.text).toContain(
-      "JOIN room_types rt ON rt.id = b.room_type_id AND rt.hotel_id = b.hotel_id",
-    );
-    expect(queries[1]?.values).toEqual(["booking_hotel_alpenrose", "confirmed", "%Ada%"]);
-
-    await app.close();
-    app = null;
-    expect(poolClosed).toBe(true);
-  });
-
   it("serves booking reservations from the target read model without the legacy PMS URL", async () => {
     const queries: { text: string; values?: readonly unknown[] }[] = [];
     let poolClosed = false;
-    const targetReservation: BookingReservationReadModelRow = {
+    const targetReservation: BookingReservationReadModelRow & {
+      propertyId: string;
+      guestContactAccepted: boolean;
+    } = {
       ...reservation,
       id: "d6000000-0000-0000-0000-000000000682",
+      propertyId: "d3000000-0000-0000-0000-000000000682",
+      guestContactAccepted: false,
       bookingReference: "B-CHK-682",
       roomTypeId: "f6855000-0000-0000-0000-000000000001",
       roomName: "Alpine Suite",
@@ -5854,7 +6192,10 @@ describe("vayada-api", () => {
         values?: readonly unknown[],
       ): Promise<Pick<QueryResult<T>, "rows">> {
         queries.push({ text, values });
-        if (text.includes("COUNT(*)")) {
+        if (text.includes("SELECT plan_key AS plan")) {
+          return { rows: [{ plan: "fixed" }] as unknown as T[] };
+        }
+        if (text.includes("SELECT COUNT(*)::text AS total")) {
           return { rows: [{ total: "1" }] as unknown as T[] };
         }
 
@@ -5938,7 +6279,7 @@ describe("vayada-api", () => {
       offset: 5,
     });
 
-    expect(queries).toHaveLength(2);
+    expect(queries).toHaveLength(3);
     const sql = queries.map((query) => query.text).join("\n");
     expect(sql).toContain("FROM booking.guest_bookings booking");
     expect(sql).toContain("hotel_catalog.property_source_links source");
@@ -5963,16 +6304,12 @@ describe("vayada-api", () => {
       "checked_out",
       "%Mira%",
     ]);
+    expect(queries[2]?.text).toContain("FROM finance.billing_entitlements");
+    expect(queries[2]?.values).toEqual(["d3000000-0000-0000-0000-000000000682"]);
 
     await app.close();
     app = null;
     expect(poolClosed).toBe(true);
-  });
-
-  it("rejects empty booking reservations repository connection strings", async () => {
-    expect(() =>
-      createCompatibilityPmsBookingReservationsReadRepository({ connectionString: " " }),
-    ).toThrow("Booking reservations repository connectionString must not be empty");
   });
 
   it("rejects empty target booking reservations repository connection strings", async () => {
@@ -5981,96 +6318,8 @@ describe("vayada-api", () => {
     );
   });
 
-  it("rejects empty booking settings repository connection strings", async () => {
-    expect(() => createPgBookingSettingsReadRepository({ connectionString: " " })).toThrow(
-      "Booking settings repository connectionString must not be empty",
-    );
-  });
-
-  it("round-trips phoneRequired in the legacy booking settings repository", async () => {
-    const queries: { text: string; values?: readonly unknown[] }[] = [];
-    let poolClosed = false;
-    const state = {
-      special_requests_enabled: false,
-      arrival_time_enabled: true,
-      guest_count_enabled: true,
-      phone_required: false,
-    };
-    const pool: BookingSettingsPool = {
-      async query<T extends QueryResultRow = QueryResultRow>(
-        text: string,
-        values?: readonly unknown[],
-      ): Promise<Pick<QueryResult<T>, "rows">> {
-        queries.push({ text, values });
-        if (text.includes("UPDATE booking_hotels")) {
-          state.special_requests_enabled = values?.[1] as boolean;
-          state.arrival_time_enabled = values?.[2] as boolean;
-          state.guest_count_enabled = values?.[3] as boolean;
-          if (values?.[4] !== null) state.phone_required = values?.[4] as boolean;
-        }
-
-        return { rows: [{ ...state }] as unknown as T[] };
-      },
-      async end() {
-        poolClosed = true;
-      },
-    };
-    const repository = createPgBookingSettingsReadRepository({
-      connectionString: "postgresql://booking-db",
-      pool,
-    });
-
-    await expect(
-      repository.findGuestFormSettingsByHotelId("booking_hotel_alpenrose"),
-    ).resolves.toEqual({
-      specialRequestsEnabled: false,
-      arrivalTimeEnabled: true,
-      guestCountEnabled: true,
-      phoneRequired: false,
-      adultAgeThreshold: 18,
-      childrenEnabled: true,
-    });
-    await expect(
-      repository.updateGuestFormSettingsByHotelId("booking_hotel_alpenrose", {
-        specialRequestsEnabled: true,
-        arrivalTimeEnabled: false,
-        guestCountEnabled: true,
-        phoneRequired: true,
-        adultAgeThreshold: 18,
-        childrenEnabled: true,
-      }),
-    ).resolves.toMatchObject({ phoneRequired: true });
-    await expect(
-      repository.updateGuestFormSettingsByHotelId("booking_hotel_alpenrose", {
-        specialRequestsEnabled: false,
-        arrivalTimeEnabled: true,
-        guestCountEnabled: false,
-        adultAgeThreshold: 18,
-        childrenEnabled: true,
-      }),
-    ).resolves.toMatchObject({ phoneRequired: true });
-
-    expect(queries[0]?.text).toContain("phone_required");
-    expect(queries[1]?.text).toContain("phone_required = COALESCE($5, phone_required)");
-    expect(queries[1]?.text).toContain("RETURNING special_requests_enabled");
-    expect(queries[1]?.values).toEqual(["booking_hotel_alpenrose", true, false, true, true]);
-    expect(queries[2]?.values).toEqual(["booking_hotel_alpenrose", false, true, false, null]);
-
-    await repository.close?.();
-    expect(poolClosed).toBe(true);
-  });
-
   it("does not close injected public hotel profile pools", async () => {
-    let legacyPoolClosed = false;
     let targetPoolClosed = false;
-    const legacyPool: PublicHotelProfileReadPool = {
-      async query<T extends QueryResultRow>() {
-        return { rows: [] as T[] };
-      },
-      async end() {
-        legacyPoolClosed = true;
-      },
-    };
     const targetPool: PublicHotelProfileReadPool = {
       async query<T extends QueryResultRow>() {
         return { rows: [] as T[] };
@@ -6080,19 +6329,13 @@ describe("vayada-api", () => {
       },
     };
 
-    const legacyRepository = createPgPublicHotelProfileRepository({
-      connectionString: "postgresql://booking-db",
-      pool: legacyPool,
-    });
     const targetRepository = createTargetPublicHotelProfileRepository({
       connectionString: "postgresql://target-db",
       pool: targetPool,
     });
 
-    await legacyRepository.close?.();
     await targetRepository.close?.();
 
-    expect(legacyPoolClosed).toBe(false);
     expect(targetPoolClosed).toBe(false);
   });
 
@@ -7149,8 +7392,11 @@ describe("vayada-api", () => {
       country: string | null;
       instagram: string | null;
       facebook: string | null;
+      tiktok: string | null;
+      youtube: string | null;
       check_in_time: string | null;
       check_out_time: string | null;
+      terms_and_conditions: string | null;
       cancellation_policy_text: string | null;
       accepted_payment_methods: string[];
     } = {
@@ -7167,8 +7413,11 @@ describe("vayada-api", () => {
       country: "AT",
       instagram: null as string | null,
       facebook: null as string | null,
+      tiktok: null as string | null,
+      youtube: null as string | null,
       check_in_time: "15:00",
       check_out_time: "11:00",
+      terms_and_conditions: "Hotel Alpenrose booking terms.",
       cancellation_policy_text: "Free cancellation until seven days before arrival.",
       accepted_payment_methods: ["pay_at_property", "manual_card"],
     };
@@ -7242,17 +7491,20 @@ describe("vayada-api", () => {
             if (contact.channel_type === "whatsapp") propertyState.whatsapp_number = value;
             if (contact.channel_type === "instagram") propertyState.instagram = value;
             if (contact.channel_type === "facebook") propertyState.facebook = value;
+            if (contact.channel_type === "tiktok") propertyState.tiktok = value;
+            if (contact.channel_type === "youtube") propertyState.youtube = value;
           }
           propertyState.check_in_time = values?.[2] as string;
           propertyState.check_out_time = values?.[3] as string;
-          propertyState.cancellation_policy_text = values?.[4] as string;
-          state.default_language = values?.[5] as string;
-          state.default_currency = values?.[6] as string;
-          state.supported_currencies = values?.[7] as string[];
-          state.supported_languages = values?.[8] as string[];
-          state.special_requests_enabled = values?.[9] as boolean;
-          state.arrival_time_enabled = values?.[10] as boolean;
-          state.guest_count_enabled = values?.[11] as boolean;
+          propertyState.terms_and_conditions = values?.[4] as string;
+          propertyState.cancellation_policy_text = values?.[5] as string;
+          state.default_language = values?.[6] as string;
+          state.default_currency = values?.[7] as string;
+          state.supported_currencies = values?.[8] as string[];
+          state.supported_languages = values?.[9] as string[];
+          state.special_requests_enabled = values?.[10] as boolean;
+          state.arrival_time_enabled = values?.[11] as boolean;
+          state.guest_count_enabled = values?.[12] as boolean;
           return {
             rows: [
               {
@@ -7467,8 +7719,11 @@ describe("vayada-api", () => {
         country: "AT",
         instagram: "https://instagram.com/target-alpenrose",
         facebook: "https://facebook.com/target-alpenrose",
+        tiktok: "https://tiktok.com/@target-alpenrose",
+        youtube: "https://youtube.com/@target-alpenrose",
         check_in_time: "14:00",
         check_out_time: "10:00",
+        terms_text: "Target booking terms.",
         cancellation_policy_text: "Target cancellation policy.",
         default_currency: "EUR",
         default_language: "en-US",
@@ -7485,6 +7740,10 @@ describe("vayada-api", () => {
       reservation_email: "target@alpenrose.example",
       address: "Alpenweg 1, Innsbruck, AT",
       city: "Innsbruck",
+      instagram: "https://instagram.com/target-alpenrose",
+      facebook: "https://facebook.com/target-alpenrose",
+      tiktok: "https://tiktok.com/@target-alpenrose",
+      youtube: "https://youtube.com/@target-alpenrose",
       default_currency: "EUR",
       default_language: "en-US",
       supported_currencies: ["CHF"],
@@ -7493,6 +7752,7 @@ describe("vayada-api", () => {
       pay_at_hotel_methods: ["card"],
       online_card_payment: false,
       bank_transfer: false,
+      terms_text: "Target booking terms.",
       cancellation_policy_text: "Target cancellation policy.",
     });
     const propertyUpdateQuery = queries.find(
@@ -7509,7 +7769,13 @@ describe("vayada-api", () => {
       "guest_count_enabled = EXCLUDED.guest_count_enabled",
     );
     expect(propertyUpdateQuery?.text).toContain("contact.source_system = 'booking'");
+    expect(propertyUpdateQuery?.text).toContain(
+      "contact.channel_type IN ('email', 'phone', 'whatsapp')",
+    );
     expect(propertyUpdateQuery?.text).toContain("WHERE input.channel_type = contact.channel_type");
+    expect(propertyUpdateQuery?.text).toContain(
+      "CROSS JOIN (SELECT count(*) FROM deleted_contacts) deleted_contact_status",
+    );
     expect(propertyUpdateQuery?.text).toContain(
       "hotel_catalog.property_contact_channels.source_system = 'booking'",
     );
@@ -7844,10 +8110,14 @@ describe("vayada-api", () => {
               address: null,
               city: null,
               country: null,
+              timezone: "Europe/Vienna",
               instagram: null,
               facebook: null,
+              tiktok: null,
+              youtube: null,
               check_in_time: null,
               check_out_time: null,
+              terms_and_conditions: null,
               cancellation_policy_text: null,
               accepted_payment_methods: [],
               show_addons_step: true,
@@ -7895,6 +8165,7 @@ describe("vayada-api", () => {
     expect(response.body).toMatchObject({
       id: propertyId,
       property_id: propertyId,
+      time_zone: "Europe/Vienna",
       booking_hotel_id: null,
       slug: "hotel-alpenrose",
       property_name: "Hotel Alpenrose",
@@ -7910,36 +8181,45 @@ describe("vayada-api", () => {
   ])("serves and updates target booking add-on items by %s", async (_label, hotelId) => {
     const queries: { text: string; values?: unknown[] }[] = [];
     const canonicalPropertyId = "d3000000-0000-0000-0000-000000000682";
-    const pool: BookingAddonItemsPool = {
-      async query<T extends QueryResultRow = QueryResultRow>(
-        text: string,
-        values?: unknown[],
-      ): Promise<Pick<QueryResult<T>, "rows">> {
-        queries.push({ text, values });
-        if (text.includes("WITH direct_property AS")) {
-          return {
-            rows: [{ propertyId: canonicalPropertyId }] as unknown as T[],
-          };
-        }
+    async function query<T extends QueryResultRow = QueryResultRow>(
+      text: string,
+      values?: unknown[],
+    ): Promise<Pick<QueryResult<T>, "rows">> {
+      queries.push({ text, values });
+      if (text.includes("WITH direct_property AS")) {
         return {
-          rows: [
-            {
-              addonItemId: "0f840001-0000-4000-8000-000000000001",
-              propertyId: "d3000000-0000-0000-0000-000000000682",
-              name: "Migrated add-on",
-              description: null,
-              category: "food",
-              pricingModel: "per_stay",
-              price: "45.00",
-              currency: "EUR",
-              publicVisible: true,
-              status: "active",
-              metadata: {},
-              createdAt: "2026-06-01T10:00:00.000Z",
-              updatedAt: "2026-06-01T10:00:00.000Z",
-            },
-          ] as unknown as T[],
+          rows: [{ propertyId: canonicalPropertyId }] as unknown as T[],
         };
+      }
+      if (text.includes("SELECT plan_key AS plan")) {
+        return { rows: [] as T[] };
+      }
+      return {
+        rows: [
+          {
+            addonItemId: "0f840001-0000-4000-8000-000000000001",
+            propertyId: "d3000000-0000-0000-0000-000000000682",
+            name: "Migrated add-on",
+            description: null,
+            category: "food",
+            pricingModel: "per_stay",
+            price: "45.00",
+            currency: "EUR",
+            publicVisible: true,
+            status: "active",
+            ownershipKind: "property",
+            partnerCommissionRate: null,
+            metadata: {},
+            createdAt: "2026-06-01T10:00:00.000Z",
+            updatedAt: "2026-06-01T10:00:00.000Z",
+          },
+        ] as unknown as T[],
+      };
+    }
+    const pool: BookingAddonItemsPool = {
+      query,
+      async connect() {
+        return { query, release() {} };
       },
       async end() {},
     };
@@ -7950,38 +8230,81 @@ describe("vayada-api", () => {
 
     const items = await repository.listAddonItemsByHotelId(hotelId);
 
-    expect(items).toEqual([
-      {
-        addonItemId: "0f840001-0000-4000-8000-000000000001",
-        hotelId,
-        propertyId: "d3000000-0000-0000-0000-000000000682",
-        name: "Migrated add-on",
-        description: "",
-        price: "45.00",
-        currency: "EUR",
-        category: "dining",
-        imageUrl: null,
-        duration: null,
-        pricingModel: "per_stay",
-        publicVisible: true,
-        status: "active",
-        sortOrder: 0,
-        createdAt: "2026-06-01T10:00:00.000Z",
-        updatedAt: "2026-06-01T10:00:00.000Z",
+    expect(items).toEqual({
+      addonItems: [
+        {
+          addonItemId: "0f840001-0000-4000-8000-000000000001",
+          hotelId,
+          propertyId: "d3000000-0000-0000-0000-000000000682",
+          name: "Migrated add-on",
+          description: "",
+          price: "45.00",
+          currency: "EUR",
+          category: "dining",
+          imageUrl: null,
+          duration: null,
+          pricingModel: "per_stay",
+          publicVisible: true,
+          status: "active",
+          sortOrder: 0,
+          ownershipKind: "property",
+          partnerCommissionRate: null,
+          createdAt: "2026-06-01T10:00:00.000Z",
+          updatedAt: "2026-06-01T10:00:00.000Z",
+        },
+      ],
+      propertyPlan: {
+        ...commissionPropertyPlan,
+        propertyId: canonicalPropertyId,
       },
-    ]);
+    });
+    await expect(
+      repository.updateAddonItemByHotelId(hotelId, "not-a-uuid", {
+        partnerCommissionRate: "15.5000",
+      } as unknown as UpdateBookingAddonItemBody),
+    ).rejects.toThrow("Add-on economic updates require a complete valid ownership pair");
     const updated = await repository.updateAddonItemByHotelId(hotelId, "not-a-uuid", {
       name: "Updated",
+      ownershipKind: "partner",
+      partnerCommissionRate: "15.5000",
+    });
+    await repository.createAddonItemByHotelId(hotelId, {
+      name: "Partner transfer",
+      description: "Private transfer",
+      price: "50.00",
+      currency: "EUR",
+      category: "transport",
+      imageUrl: null,
+      duration: null,
+      pricingModel: "per_stay",
+      publicVisible: true,
+      status: "active",
+      sortOrder: 1,
+      ownershipKind: "partner",
+      partnerCommissionRate: "12.5000",
     });
 
     expect(updated?.hotelId).toBe(hotelId);
-    expect(queries[1]?.text).toContain("COALESCE(addon_definitions.category, 'other') AS category");
-    expect(queries[1]?.text).toContain("addon_definitions.status <> 'retired'");
+    const listQuery = queries.find((query) =>
+      query.text.includes("addon_definitions.status <> 'retired'"),
+    );
+    expect(listQuery?.text).toContain("COALESCE(addon_definitions.category, 'other') AS category");
+    expect(listQuery?.text).toContain('addon_definitions.ownership_kind AS "ownershipKind"');
+    const updateQuery = queries.find((query) => query.text.includes("WITH updated AS ("));
+    expect(updateQuery?.text).toContain("partner_commission_rate");
+    expect(updateQuery?.values).toContain("15.5000");
+    const insertQuery = queries.find((query) =>
+      query.text.includes("INSERT INTO booking.addon_definitions ("),
+    );
+    expect(insertQuery?.text).toContain("ownership_kind, partner_commission_rate");
+    expect(insertQuery?.values).toContain("12.5000");
     expect(queries[0]?.text).toContain("property.id::text = $1");
     expect(queries[0]?.text).toContain("UNION ALL");
     expect(queries[0]?.text).toContain("NOT EXISTS (SELECT 1 FROM direct_property)");
     expect(queries[0]?.values).toEqual([hotelId]);
-    expect(queries[2]?.values).toEqual([hotelId]);
+    expect(queries.filter((query) => query.text.includes("WITH direct_property AS"))).toHaveLength(
+      3,
+    );
     expect(queries.map((query) => query.text).join("\n")).not.toContain("$2::uuid");
   });
 
@@ -8013,12 +8336,15 @@ describe("vayada-api", () => {
               code: "SUMMER20",
               discountType: "percentage",
               discountValue: "20.00",
-              currency: null,
+              minBookingValue: "500.00",
+              applicableRoomIds: ["0f850001-0000-4000-8000-000000000010"],
               validFrom: "2026-07-01",
               validUntil: "2026-08-31",
+              stayDateFrom: "2026-08-01",
+              stayDateUntil: "2026-09-30",
               isActive: true,
               maxUses: 50,
-              useCount: 3,
+              currentUses: 3,
               createdAt: "2026-06-01T10:00:00.000Z",
               updatedAt: "2026-06-01T10:00:00.000Z",
             },
@@ -8037,12 +8363,20 @@ describe("vayada-api", () => {
       code: "SUMMER20",
       discountType: "percentage",
       discountValue: "20.00",
-      currency: null,
+      minBookingValue: "500.00",
+      applicableRoomIds: ["0f850001-0000-4000-8000-000000000010"],
       validFrom: "2026-07-01",
       validUntil: "2026-08-31",
+      stayDateFrom: "2026-08-01",
+      stayDateUntil: "2026-09-30",
       isActive: true,
       maxUses: 50,
     });
+    const updated = await repository.updatePromoCodeByHotelId(
+      hotelId,
+      "0f850001-0000-4000-8000-000000000001",
+      { discountValue: "25.00" },
+    );
     const retired = await repository.retirePromoCodeByHotelId(
       hotelId,
       "0f850001-0000-4000-8000-000000000001",
@@ -8056,21 +8390,35 @@ describe("vayada-api", () => {
         code: "SUMMER20",
         discountType: "percentage",
         discountValue: "20.00",
-        currency: null,
+        minBookingValue: "500.00",
+        applicableRoomIds: ["0f850001-0000-4000-8000-000000000010"],
         validFrom: "2026-07-01",
         validUntil: "2026-08-31",
+        stayDateFrom: "2026-08-01",
+        stayDateUntil: "2026-09-30",
         isActive: true,
         maxUses: 50,
-        useCount: 3,
+        currentUses: 3,
         createdAt: "2026-06-01T10:00:00.000Z",
         updatedAt: "2026-06-01T10:00:00.000Z",
       },
     ]);
     expect(created?.promoCodeId).toBe("0f850001-0000-4000-8000-000000000001");
+    expect(updated?.promoCodeId).toBe("0f850001-0000-4000-8000-000000000001");
     expect(retired).toBe(true);
     const sql = queries.map((query) => query.text).join("\n");
     expect(sql).toContain("booking.promo_definitions");
     expect(sql).toContain("promo_definitions.status <> 'retired'");
+    const createQuery = queries.find((query) =>
+      query.text.includes("INSERT INTO booking.promo_definitions ("),
+    );
+    expect(createQuery?.text).toContain("RETURNING *");
+    expect(createQuery?.text).toContain("FROM inserted promo_definitions");
+    expect(createQuery?.text).not.toContain("JOIN inserted");
+    const updateQuery = queries.find((query) => query.text.includes("WITH updated AS ("));
+    expect(updateQuery?.text).toContain("RETURNING *");
+    expect(updateQuery?.text).toContain("FROM updated promo_definitions");
+    expect(updateQuery?.text).not.toContain("JOIN updated");
     expect(sql).toContain("property.id::text = $1");
     expect(sql).toContain("UNION ALL");
     expect(sql).toContain("NOT EXISTS (SELECT 1 FROM direct_property)");
@@ -8079,7 +8427,7 @@ describe("vayada-api", () => {
       queries
         .filter((query) => query.text.includes("WITH direct_property AS"))
         .map((query) => query.values),
-    ).toEqual([[hotelId], [hotelId], [hotelId]]);
+    ).toEqual([[hotelId], [hotelId], [hotelId], [hotelId]]);
   });
 
   it("defaults missing booking addon settings fields to the legacy response defaults", async () => {
@@ -9548,6 +9896,175 @@ describe("vayada-api", () => {
     expect(body.items.map((item) => item.name)).toEqual(["Alpine Suite", "Garden Room"]);
   });
 
+  it("returns centralized property plan limits to PMS clients", async () => {
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.read"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      propertyPlanReadRepository: {
+        async getPropertyPlan(propertyId) {
+          return {
+            propertyId,
+            plan: "commission",
+            limits: {
+              maxRoomPhotosPerType: 10,
+              maxAddons: 3,
+              guestContactAccess: "after_acceptance",
+            },
+          };
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/plan-limits`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toEqual({
+      contractVersion: "pms-operations.v1",
+      propertyId: pmsPropertyId,
+      propertyPlan: {
+        propertyId: pmsPropertyId,
+        plan: "commission",
+        limits: {
+          maxRoomPhotosPerType: 10,
+          maxAddons: 3,
+          guestContactAccess: "after_acceptance",
+        },
+      },
+    });
+  });
+
+  it("reads and updates the Booking-owned acceptance mode through PMS", async () => {
+    let acceptanceMode: "instant" | "request" = "request";
+    const published: string[] = [];
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.read", "pms.operations.manage"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      bookingAcceptanceSettings: {
+        async findAcceptanceMode(propertyId) {
+          expect(propertyId).toBe(pmsPropertyId);
+          return acceptanceMode;
+        },
+        async updateAcceptanceMode(propertyId, nextMode) {
+          expect(propertyId).toBe(pmsPropertyId);
+          acceptanceMode = nextMode;
+          return acceptanceMode;
+        },
+      },
+      publicBookabilityPublisher: {
+        async publish({ propertyId }) {
+          published.push(propertyId);
+          return null;
+        },
+      },
+    });
+
+    const read = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/booking-acceptance`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const update = await injectJson(app, {
+      method: "PUT",
+      url: `/api/pms/properties/${pmsPropertyId}/booking-acceptance`,
+      payload: { acceptanceMode: "instant" },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(read.statusCode).toBe(200);
+    expect(read.body).toMatchObject({ acceptanceMode: "request", instantBook: false });
+    expect(update.statusCode).toBe(200);
+    expect(update.body).toMatchObject({ acceptanceMode: "instant", instantBook: true });
+    expect(published).toEqual([pmsPropertyId]);
+  });
+
+  it("uses centralized property plan limits in PMS room photo errors", async () => {
+    const commandRepository = createPmsOperationsCommandRepository();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      pmsOperationsCommandRepository: commandRepository,
+      propertyPlanReadRepository: {
+        async getPropertyPlan(propertyId) {
+          return {
+            propertyId,
+            plan: "commission",
+            limits: {
+              maxRoomPhotosPerType: 1,
+              maxAddons: 3,
+              guestContactAccess: "after_acceptance",
+            },
+          };
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: `/api/pms/properties/${pmsPropertyId}/room-types`,
+      payload: {
+        commandId: "cmd-room-type-photo-limit",
+        idempotencyKey: "room-type-photo-limit",
+        name: "Loft Suite",
+        bathroomType: "private",
+        bathrooms: 1,
+        baseRate: 240,
+        currency: "EUR",
+        operatingPeriods: [{ from: "01-01", to: "12-31" }],
+        seasons: [{ name: "Default", rate: "240", from: "01-01", to: "12-31", minStay: 1 }],
+        images: [
+          "https://cdn.vayada.example/loft.jpg",
+          "https://cdn.vayada.example/loft-balcony.jpg",
+        ],
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toMatchObject({
+      code: "room_photo_plan_limit_reached",
+      message:
+        "You've reached the 1-photo limit. Upgrade to the paid plan for up to 15 photos per room.",
+    });
+    expect(commandRepository.roomTypeCreates).toHaveLength(0);
+  });
+
   it("returns PMS rooms using the P1a route contract fixture", async () => {
     app = buildAuthenticatedApp({
       permissions: ["pms.operations.read"],
@@ -9578,6 +10095,7 @@ describe("vayada-api", () => {
       "out_of_order",
     ]);
     expect(body.items.map((item) => item.roomNumber)).toEqual(["101", "102", "201"]);
+    expect(body.orderVersion).toBe(pmsRoomOrderVersion(pmsRooms.map(({ roomId }) => roomId)));
   });
 
   it("allows PMS Web browser preflight and read requests from configured origins", async () => {
@@ -9774,6 +10292,106 @@ describe("vayada-api", () => {
     });
   });
 
+  it("manages room-packing settings and paginates its audit log", async () => {
+    let enabled = true;
+    const historyPages: unknown[] = [];
+    const nextCursor = {
+      occurredAt: "2026-08-18T10:00:00.123456Z",
+      shuffleId: "10000000-0000-4000-8000-000000000001",
+    };
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsOperationsAllowedOrigins: ["https://pms.localhost"],
+      pmsRoomAssignmentSettings: {
+        async find(propertyId) {
+          return { propertyId, autoRearrangeEnabled: enabled, updatedAt: null };
+        },
+        async update(propertyId, value) {
+          enabled = value;
+          return {
+            propertyId,
+            autoRearrangeEnabled: enabled,
+            updatedAt: "2026-08-18T10:01:00.000Z",
+          };
+        },
+      },
+      pmsRoomAssignmentHistory: {
+        async list(_propertyId, page) {
+          historyPages.push(page);
+          return {
+            items: [],
+            nextCursor: historyPages.length === 1 ? nextCursor : null,
+          };
+        },
+      },
+    });
+    const headers = { authorization: "Bearer valid-token", origin: "https://pms.localhost" };
+
+    const initial = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-settings`,
+      headers,
+    });
+    const updated = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-settings`,
+      headers,
+      payload: { autoRearrangeEnabled: false },
+    });
+    const firstPage = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-shuffles?limit=25`,
+      headers,
+    });
+    const opaqueCursor = (firstPage.body as { nextCursor: string }).nextCursor;
+    const secondPage = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-shuffles?limit=25&cursor=${opaqueCursor}`,
+      headers,
+    });
+
+    expect(initial.body).toMatchObject({ autoRearrangeEnabled: true, updatedAt: null });
+    expect(updated.body).toMatchObject({ autoRearrangeEnabled: false });
+    expect(opaqueCursor).toEqual(expect.any(String));
+    expect((secondPage.body as { nextCursor: null }).nextCursor).toBeNull();
+    expect(historyPages).toEqual([{ limit: 25 }, { limit: 25, before: nextCursor }]);
+
+    const invalid = await app.inject({
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-shuffles?cursor=invalid`,
+      headers,
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json()).toMatchObject({ code: "invalid_query" });
+    expect(historyPages).toHaveLength(2);
+  });
+
+  it("reserves room-packing settings and history for owners and operators", async () => {
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      linkedPmsRelationship: "front_desk",
+      pmsRoomAssignmentSettings: {
+        async find(propertyId) {
+          return { propertyId, autoRearrangeEnabled: true, updatedAt: null };
+        },
+        async update() {
+          throw new Error("unreachable");
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-settings`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: "missing_resource_access" });
+  });
+
   it("returns explicit unavailable errors for retired PMS Web placeholder facades", async () => {
     app = buildAuthenticatedApp({
       permissions: ["pms.operations.read", "pms.operations.manage"],
@@ -9839,16 +10457,6 @@ describe("vayada-api", () => {
         autoOpenMonths: 24,
       },
     });
-    const channexStatus = await app.inject({
-      method: "GET",
-      url: `/api/pms/properties/${pmsPropertyId}/channex/status`,
-      headers: targetHeaders,
-    });
-    const channexChannels = await app.inject({
-      method: "GET",
-      url: `/api/pms/properties/${pmsPropertyId}/channex/channels`,
-      headers: targetHeaders,
-    });
     const unread = await app.inject({
       method: "GET",
       url: `/api/pms/properties/${pmsPropertyId}/messaging/unread-count`,
@@ -9861,8 +10469,6 @@ describe("vayada-api", () => {
       profilePatch,
       calendarSettingsRead,
       calendarSettings,
-      channexStatus,
-      channexChannels,
       unread,
     ]) {
       expect(response.statusCode).toBe(500);
@@ -9889,12 +10495,6 @@ describe("vayada-api", () => {
     expect(calendarSettings.json()).toMatchObject({
       message: "PMS calendar settings write model is unavailable.",
     });
-    expect(channexStatus.json()).toMatchObject({
-      message: "PMS Channex status read model is unavailable.",
-    });
-    expect(channexChannels.json()).toMatchObject({
-      message: "PMS Channex channels read model is unavailable.",
-    });
     expect(unread.json()).toMatchObject({
       message: "PMS messaging unread count read model is unavailable.",
     });
@@ -9916,7 +10516,7 @@ describe("vayada-api", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: `/api/pms/properties/${pmsPropertyId}/channex/status`,
+      url: `/api/pms/properties/${pmsPropertyId}/messaging/unread-count`,
       headers: {
         authorization: "Bearer valid-token",
         origin: "https://pms.localhost",
@@ -9929,6 +10529,26 @@ describe("vayada-api", () => {
       code: "missing_resource_access",
       category: "authorization",
     });
+  });
+
+  it("does not expose retired Channex placeholder routes", async () => {
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.read"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsOperationsAllowedOrigins: ["https://pms.localhost"],
+    });
+
+    for (const suffix of ["status", "channels"]) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/pms/properties/${pmsPropertyId}/channex/${suffix}`,
+        headers: {
+          authorization: "Bearer valid-token",
+          origin: "https://pms.localhost",
+        },
+      });
+      expect(response.statusCode).toBe(404);
+    }
   });
 
   it("returns PMS room-type detail through the P1a route contract", async () => {
@@ -9981,6 +10601,25 @@ describe("vayada-api", () => {
       pmsOperationsCommandRepository: commandRepository,
     });
 
+    for (const bathroomType of [null, "", "ensuite"]) {
+      const invalid = await injectJson(app, {
+        method: "POST",
+        url: `/api/pms/properties/${pmsPropertyId}/room-types`,
+        payload: {
+          commandId: "cmd-room-type-invalid-bathroom",
+          idempotencyKey: "room-type-invalid-bathroom",
+          name: "Invalid Bathroom Suite",
+          bathroomType,
+          baseRate: "240.00",
+          operatingPeriods: [{ from: "01-01", to: "12-31" }],
+          seasons: [{ name: "Default", rate: "240", from: "01-01", to: "12-31" }],
+        },
+        headers: { authorization: "Bearer valid-token" },
+      });
+      expect(invalid.statusCode).toBe(400);
+    }
+    expect(commandRepository.roomTypeCreates).toHaveLength(0);
+
     const response = await injectJson(app, {
       method: "POST",
       url: `/api/pms/properties/${pmsPropertyId}/room-types`,
@@ -9994,6 +10633,11 @@ describe("vayada-api", () => {
         maxAdults: 2,
         maxChildren: 2,
         maxOccupancy: 4,
+        bedType: "1 King Bed",
+        bedrooms: 1,
+        bathrooms: 1,
+        bathroomType: "private",
+        size: 32,
         baseRate: 0,
         currency: "eur",
         operatingPeriods: [{ from: "01-01", to: "12-31" }],
@@ -10046,6 +10690,13 @@ describe("vayada-api", () => {
       name: "Loft Suite",
       baseRate: { amountDecimal: "240.00", currency: "EUR" },
       nonRefundableRate: { amountDecimal: "216.00", currency: "EUR" },
+      attributes: {
+        bedType: "1 King Bed",
+        bedrooms: 1,
+        bathrooms: 1,
+        bathroomType: "private",
+        size: 32,
+      },
       roomCount: 3,
       operatingPeriods: [{ from: "01-01", to: "12-31" }],
       seasons: [
@@ -10069,6 +10720,350 @@ describe("vayada-api", () => {
     expect(commandRepository.auditEvents).toEqual([
       "room_type_created:f6855000-0000-0000-0000-000000000003",
     ]);
+  });
+
+  it("defaults omitted bathroom facts for room-type create clients", async () => {
+    const commandRepository = createPmsOperationsCommandRepository();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      pmsOperationsCommandRepository: commandRepository,
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: `/api/pms/properties/${pmsPropertyId}/room-types`,
+      payload: {
+        commandId: "cmd-room-type-default-bathroom",
+        idempotencyKey: "room-type-default-bathroom",
+        name: "Simple Room",
+        baseRate: "120.00",
+        operatingPeriods: [{ from: "01-01", to: "12-31" }],
+        seasons: [{ name: "Default", rate: "120", from: "01-01", to: "12-31" }],
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(commandRepository.roomTypeCreates).toHaveLength(1);
+    expect(commandRepository.roomTypeCreates[0]?.attributes).toMatchObject({
+      bathroomType: "private",
+      bathrooms: 1,
+    });
+  });
+
+  it("creates, updates, and releases target room blocks with refresh and ARI metadata", async () => {
+    const commandRepository = createPmsOperationsCommandRepository();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      pmsOperationsCommandRepository: commandRepository,
+    });
+    const headers = { authorization: "Bearer valid-token" };
+    const create = await injectJson(app, {
+      method: "POST",
+      url: `/api/pms/properties/${pmsPropertyId}/room-blocks`,
+      headers,
+      payload: {
+        commandId: "cmd-room-block-create",
+        idempotencyKey: "room-block-create",
+        roomTypeId: pmsRoomTypes[0].roomTypeId,
+        roomIds: [pmsRooms[0].roomId, pmsRooms[1].roomId],
+        startsOn: "2026-08-20",
+        endsOn: "2026-08-22",
+        reason: "Renovation",
+      },
+    });
+    expect(create.statusCode).toBe(200);
+    expect(create.body).toMatchObject({
+      items: [
+        { version: "room-block-v1", startsOn: "2026-08-20", endsOn: "2026-08-22" },
+        { version: "room-block-v1", startsOn: "2026-08-20", endsOn: "2026-08-22" },
+      ],
+      commandMeta: { sideEffects: ["calendar_refresh", "ari_changed", "audit_event"] },
+    });
+    expect(commandRepository.roomBlockCreates[0]).toMatchObject({
+      propertyId: pmsPropertyId,
+      roomIds: [pmsRooms[0].roomId, pmsRooms[1].roomId],
+      audit: { actor: { kind: "user", userId: "user_hotel_owner" } },
+    });
+
+    const block = (create.body as { items: PmsRoomBlockSummary[] }).items[0]!;
+    const update = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/room-blocks/${block.blockId}`,
+      headers,
+      payload: {
+        commandId: "cmd-room-block-update",
+        idempotencyKey: "room-block-update",
+        expectedVersion: block.version,
+        endsOn: "2026-08-23",
+        reason: "Extended renovation",
+      },
+    });
+    expect(update.statusCode).toBe(200);
+    expect(update.body).toMatchObject({
+      items: [{ version: "room-block-v2", endsOn: "2026-08-23" }],
+    });
+
+    const release = await injectJson(app, {
+      method: "DELETE",
+      url: `/api/pms/properties/${pmsPropertyId}/room-blocks/${block.blockId}`,
+      headers,
+      payload: {
+        commandId: "cmd-room-block-release",
+        idempotencyKey: "room-block-release",
+        expectedVersion: "room-block-v2",
+      },
+    });
+    expect(release.statusCode).toBe(200);
+    expect(release.body).toMatchObject({ items: [{ status: "released" }] });
+  });
+
+  it("validates and routes a property-scoped room reorder command", async () => {
+    const commandRepository = createPmsOperationsCommandRepository();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      pmsOperationsCommandRepository: commandRepository,
+    });
+    const orderedRoomIds = pmsRooms.map(({ roomId }) => roomId).reverse();
+    const expectedVersion = pmsRoomOrderVersion(pmsRooms.map(({ roomId }) => roomId));
+    const response = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/rooms/reorder`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        commandId: "cmd-room-reorder",
+        idempotencyKey: "room-reorder",
+        expectedVersion,
+        orderedRoomIds: orderedRoomIds.map((roomId) => roomId.toUpperCase()),
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      propertyId: pmsPropertyId,
+      orderedRoomIds,
+      orderVersion: pmsRoomOrderVersion(orderedRoomIds),
+      commandMeta: { sideEffects: ["audit_event"] },
+    });
+    expect(commandRepository.roomOrderCommands).toMatchObject([
+      {
+        propertyId: pmsPropertyId,
+        expectedVersion,
+        orderedRoomIds,
+        audit: { actor: { kind: "user", userId: "user_hotel_owner" } },
+      },
+    ]);
+
+    const duplicate = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/rooms/reorder`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        commandId: "cmd-room-reorder-duplicate",
+        idempotencyKey: "room-reorder-duplicate",
+        expectedVersion,
+        orderedRoomIds: [pmsRooms[0].roomId, pmsRooms[0].roomId],
+      },
+    });
+    expect(duplicate.statusCode).toBe(400);
+
+    const mixed = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/rooms/reorder`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        commandId: "cmd-room-reorder-mixed",
+        idempotencyKey: "room-reorder-mixed",
+        expectedVersion,
+        orderedRoomIds: [pmsRooms[0].roomId, 42],
+      },
+    });
+    expect(mixed.statusCode).toBe(400);
+    expect(commandRepository.roomOrderCommands).toHaveLength(1);
+  });
+
+  it("rejects stale and unauthorized room-block writes before mutation", async () => {
+    const commandRepository = createPmsOperationsCommandRepository();
+    const entitlement: ProductEntitlement = {
+      product: "pms",
+      key: "property-management",
+      status: "active",
+      resource: {
+        product: "pms",
+        resourceType: "pms_property",
+        resourceId: pmsPropertyId,
+      },
+    };
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [entitlement],
+      pmsOperationsCommandRepository: commandRepository,
+    });
+    const stale = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/room-blocks/${pmsRoomBlocks[0].blockId}`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        commandId: "cmd-room-block-stale",
+        idempotencyKey: "room-block-stale",
+        expectedVersion: "room-block-v0",
+        reason: "Stale edit",
+      },
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.body).toMatchObject({ code: "version_conflict", category: "conflict" });
+
+    const malformedDate = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/room-blocks/${pmsRoomBlocks[0].blockId}`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        commandId: "cmd-room-block-malformed-date",
+        idempotencyKey: "room-block-malformed-date",
+        expectedVersion: pmsRoomBlocks[0].version,
+        startsOn: 123,
+        reason: "Must not silently drop the date",
+      },
+    });
+    expect(malformedDate.statusCode).toBe(400);
+    expect(malformedDate.body).toMatchObject({ code: "invalid_body", category: "validation" });
+    await app.close();
+
+    app = buildAuthenticatedApp({
+      permissions: [] as PermissionKey[],
+      entitlements: [entitlement],
+      pmsOperationsCommandRepository: commandRepository,
+    });
+    const forbidden = await injectJson(app, {
+      method: "POST",
+      url: `/api/pms/properties/${pmsPropertyId}/room-blocks`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        commandId: "cmd-room-block-forbidden",
+        idempotencyKey: "room-block-forbidden",
+        roomTypeId: pmsRoomTypes[0].roomTypeId,
+        roomIds: [pmsRooms[0].roomId],
+        startsOn: "2026-08-20",
+        endsOn: "2026-08-20",
+      },
+    });
+    expect(forbidden.statusCode).toBe(403);
+    expect(forbidden.body).toMatchObject({ code: "missing_permission" });
+    expect(commandRepository.roomBlockCreates).toHaveLength(0);
+  });
+
+  it("rejects stale currency before creating an onboarding room", async () => {
+    const commandRepository = createPmsOperationsCommandRepository();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      settingsRepository: {
+        ...bookingSettingsRepository,
+        async findPropertySettingsByHotelId(propertyId) {
+          expect(propertyId).toBe(pmsPropertyId);
+          return { id: propertyId, defaultCurrency: "IDR" };
+        },
+      },
+      pmsOperationsCommandRepository: commandRepository,
+    });
+
+    const payload = {
+      commandId: "cmd-onboarding-room-type-create",
+      idempotencyKey: "onboarding-room-type-create",
+      onboardingSetup: true,
+      initialSetupOnly: false,
+      name: "Pool Villa",
+      bathroomType: "private",
+      bathrooms: 1,
+      maxOccupancy: 4,
+      baseRate: "280.00",
+      currency: "USD",
+      operatingPeriods: [{ from: "01-01", to: "12-31" }],
+      seasons: [{ name: "Year-round", rate: "280.00", from: "01-01", to: "12-31", minStay: 1 }],
+      totalRooms: 2,
+    };
+    const staleResponse = await injectJson(app, {
+      method: "POST",
+      url: `/api/pms/properties/${pmsPropertyId}/room-types`,
+      payload,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(staleResponse.statusCode).toBe(409);
+    expect(staleResponse.body).toMatchObject({ code: "property_currency_conflict" });
+    expect(commandRepository.roomTypeCreates).toHaveLength(0);
+
+    const currentResponse = await injectJson(app, {
+      method: "POST",
+      url: `/api/pms/properties/${pmsPropertyId}/room-types`,
+      payload: {
+        ...payload,
+        commandId: "cmd-onboarding-room-type-create-idr",
+        idempotencyKey: "onboarding-room-type-create-idr",
+        currency: "IDR",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(currentResponse.statusCode).toBe(200);
+    expect(commandRepository.roomTypeCreates).toHaveLength(1);
+    expect(commandRepository.roomTypeCreates[0]).toMatchObject({
+      initialSetupOnly: false,
+      baseRate: { amountDecimal: "280.00", currency: "IDR" },
+      seasons: [
+        expect.objectContaining({
+          rate: { amountDecimal: "280.00", currency: "IDR" },
+          minStayNights: 1,
+        }),
+      ],
+    });
   });
 
   it("updates and reads back PMS room-type location through the target route", async () => {
@@ -10323,6 +11318,8 @@ describe("vayada-api", () => {
         commandId: "cmd-room-type-create-conflict",
         idempotencyKey: "room-type-create-conflict",
         name: "Loft Suite",
+        bathroomType: "private",
+        bathrooms: 1,
         baseRate: 240,
         currency: "EUR",
         operatingPeriods: [{ from: "01-01", to: "12-31" }],
@@ -10471,6 +11468,7 @@ describe("vayada-api", () => {
       expect.arrayContaining([pmsRoomBlocks[0], pmsRoomBlocks[1]]),
     );
     expect(body.days[0].assignmentRefs).toEqual(["f6855500-0000-0000-0000-000000000001"]);
+    expect(body.days[0].occupiedCount).toBe(1);
     expect(body.days[1].sourceFreshness).toEqual({ pms: { status: "fresh" } });
   });
 
@@ -10493,6 +11491,7 @@ describe("vayada-api", () => {
               roomTypeId: pmsRoomTypes[0].roomTypeId,
               totalCount: 2,
               assignedCount: 1,
+              occupiedCount: 1,
               blockedCount: 1,
               availableCount: 0,
               status: "limited",
@@ -10526,6 +11525,16 @@ describe("vayada-api", () => {
         values?: unknown[],
       ): Promise<QueryResult<T>> {
         queries.push({ text, values });
+        if (text.includes("FROM finance.billing_entitlements")) {
+          expect(values).toEqual([pmsPropertyId]);
+          return {
+            command: "SELECT",
+            rowCount: 1,
+            oid: 0,
+            fields: [],
+            rows: [{ plan: "fixed" }] as unknown as T[],
+          };
+        }
         const isCountQuery = text.includes("COUNT(*)::text AS total");
         if (isCountQuery) {
           expect(values).toEqual([pmsPropertyId, "no_show"]);
@@ -10563,7 +11572,57 @@ describe("vayada-api", () => {
     });
 
     expect(result).toMatchObject({ items: [], total: 0 });
-    expect(queries).toHaveLength(2);
+    expect(queries).toHaveLength(3);
+  });
+
+  it("checks command-wide physical-room availability against exact stay windows", async () => {
+    const pool: PmsOperationsReadPool = {
+      async query<T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: unknown[],
+      ): Promise<QueryResult<T>> {
+        expect(text).toContain(
+          "COALESCE(assignment.check_in, booking.check_in) < requested.check_out",
+        );
+        expect(text).toContain(
+          "COALESCE(assignment.check_out, booking.check_out) > requested.check_in",
+        );
+        expect(text).toContain("assignment.assignment_status NOT IN ('canceled', 'released')");
+        expect(text).toContain("room.operational_label_status = 'verified'");
+        expect(text).toContain("room.room_number IS NOT NULL");
+        expect(text).toContain("sibling.room_id = requested.room_id");
+        expect(text).toContain("FROM pms.inventory_days inventory");
+        expect(text).toContain("inventory.status <> 'closed'");
+        expect(text).toContain("inventory.effective_sellable_limit_count IS NOT NULL");
+        expect(text).toContain("inventory.available_count >= (");
+        expect(text).toContain("FROM requested sibling");
+        expect(values).toEqual([
+          pmsPropertyId,
+          JSON.stringify([
+            { roomId: pmsRooms[0].roomId, checkIn: "2027-07-01", checkOut: "2027-07-03" },
+            { roomId: pmsRooms[1].roomId, checkIn: "2027-07-02", checkOut: "2027-07-04" },
+          ]),
+        ]);
+        return {
+          command: "SELECT",
+          rowCount: 1,
+          oid: 0,
+          fields: [],
+          rows: [{ available: true }, { available: false }] as unknown as T[],
+        };
+      },
+    };
+    const repository = createTargetPmsOperationsReadRepository({
+      connectionString: "postgresql://pms-operations-read",
+      pool,
+    });
+
+    await expect(
+      repository.getPhysicalRoomAvailability(pmsPropertyId, [
+        { roomId: pmsRooms[0].roomId, checkIn: "2027-07-01", checkOut: "2027-07-03" },
+        { roomId: pmsRooms[1].roomId, checkIn: "2027-07-02", checkOut: "2027-07-04" },
+      ]),
+    ).resolves.toEqual([true, false]);
   });
 
   it("builds PMS calendar reservation overlap queries without arrival pagination", async () => {
@@ -10663,7 +11722,13 @@ describe("vayada-api", () => {
     });
   });
 
-  it("rejects PMS calendar rows that violate the inventory count invariant", async () => {
+  it.each([
+    { name: "over-capacity", override: { availableCount: 1 } },
+    {
+      name: "closed with availability",
+      override: { totalCount: 3, status: "closed" as const, availableCount: 1 },
+    },
+  ])("rejects $name PMS calendar rows", async ({ override }) => {
     app = buildAuthenticatedApp({
       permissions: ["pms.operations.read"],
       entitlements: [
@@ -10677,7 +11742,7 @@ describe("vayada-api", () => {
         ...pmsOperationsRepository,
         async listCalendarDaysByPropertyId() {
           return {
-            items: [{ ...pmsCalendarDays[0], availableCount: 1 }],
+            items: [{ ...pmsCalendarDays[0], ...override }],
           };
         },
       },
@@ -10697,6 +11762,57 @@ describe("vayada-api", () => {
       category: "read_model",
       message: "PMS calendar read model is unavailable.",
     });
+  });
+
+  it("rejects PMS calendar rows whose occupied count exceeds reserved inventory", async () => {
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.read"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsOperationsRepository: {
+        ...pmsOperationsRepository,
+        async listCalendarDaysByPropertyId() {
+          return { items: [{ ...pmsCalendarDays[0], occupiedCount: 2 }] };
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      ...pmsOperationsRequestOptions(pmsCalendarBlocksReadCase.request),
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toMatchObject({
+      code: "read_model_unavailable",
+      category: "read_model",
+    });
+  });
+
+  it.each([
+    { name: "reduced sellable inventory", status: "open" as const, availableCount: 0 },
+    { name: "closed inventory", status: "closed" as const, availableCount: 0 },
+  ])("accepts valid $name calendar rows", async ({ status, availableCount }) => {
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.read"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsOperationsRepository: {
+        ...pmsOperationsRepository,
+        async listCalendarDaysByPropertyId() {
+          return {
+            items: [{ ...pmsCalendarDays[0], totalCount: 3, status, availableCount }],
+          };
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      ...pmsOperationsRequestOptions(pmsCalendarBlocksReadCase.request),
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
   });
 
   it("returns PMS room blocks using the P1b route contract fixture", async () => {
@@ -10943,6 +12059,11 @@ describe("vayada-api", () => {
         item: {
           guestBookingId: pmsReservations[0].guestBookingId,
           assignments: [{ assignmentStatus: "assigned", roomNumber: "101" }],
+          primaryGuest: {
+            countryCode: "AT",
+            countryCodeRaw: null,
+            countryCodeReviewRequired: false,
+          },
         },
       },
     );
@@ -11007,7 +12128,7 @@ describe("vayada-api", () => {
     expect(findForbiddenPublicBookabilityKeys(seededPublicQuote)).toEqual([]);
   });
 
-  it("creates and deletes PMS private notes with audit-only command side effects", async () => {
+  it("creates, edits, and deletes PMS private notes with audit-only command side effects", async () => {
     const createCase = pmsPrivateNoteCases["private-note-create"]!;
     const deleteCase = pmsPrivateNoteCases["private-note-delete"]!;
     const commandRepository = createPmsOperationsCommandRepository();
@@ -11032,6 +12153,17 @@ describe("vayada-api", () => {
       },
     });
     const createBody = created.body as PmsPrivateNoteCommandResponse;
+    const updated = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/reservations/${pmsReservations[0].guestBookingId}/notes/${createBody.note.noteId}`,
+      payload: {
+        commandId: "f6855d00-0000-4000-8000-000000000010",
+        idempotencyKey: "pms-note-update-1",
+        body: "Updated note body",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const updateBody = updated.body as PmsPrivateNoteCommandResponse;
     const deleted = await injectJson(app, {
       method: deleteCase.request.method ?? "DELETE",
       url: deleteCase.request.path,
@@ -11046,8 +12178,10 @@ describe("vayada-api", () => {
     expect(createBody.note).toMatchObject({
       body: createCase.request.body?.body,
       authorUserId: "user_hotel_owner",
+      authorDisplayName: "Harper Owner",
       auditMetadata: {
         createdByUserId: "user_hotel_owner",
+        createdByDisplayName: "Harper Owner",
         privacyScope: "internal",
       },
     });
@@ -11055,6 +12189,17 @@ describe("vayada-api", () => {
       contractVersion: "pms-operations.v1",
       idempotencyKey: createCase.request.body?.idempotencyKey,
       sideEffects: createCase.expected.commandMeta?.sideEffects,
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updateBody.note).toMatchObject({
+      body: "Updated note body",
+      authorUserId: createBody.note.authorUserId,
+      createdAt: createBody.note.createdAt,
+      auditMetadata: {
+        editedByUserId: "user_hotel_owner",
+        editedByDisplayName: "Harper Owner",
+        editedAt: "2026-08-14T17:03:00.000Z",
+      },
     });
     expect(deleted.statusCode).toBe(deleteCase.expected.status);
     expect(deleteBody).toMatchObject({
@@ -11066,9 +12211,11 @@ describe("vayada-api", () => {
       },
     });
     expect(commandRepository.noteCreates).toHaveLength(1);
+    expect(commandRepository.noteUpdates).toHaveLength(1);
     expect(commandRepository.noteDeletes).toHaveLength(1);
     expect(commandRepository.auditEvents).toEqual([
       "private_note_created:f6855900-0000-0000-0000-000000000002",
+      "private_note_edited:f6855900-0000-0000-0000-000000000002",
       "private_note_deleted:f6855900-0000-0000-0000-000000000001",
     ]);
     expect(commandRepository.outboxEnqueues).toEqual([]);
@@ -11188,6 +12335,76 @@ describe("vayada-api", () => {
     for (const forbiddenWrite of boundaryCase.expected.mustNotWrite ?? []) {
       expect(forbiddenWrite).not.toBe("pms.booking_guests");
     }
+  });
+
+  it("routes authorized primary guest nationality correction through Booking ownership", async () => {
+    const bookingGuestPiiPort = createBookingGuestPiiPort();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      bookingGuestPiiPort,
+      pmsOperationsRepository: {
+        ...pmsOperationsRepository,
+        async findReservationByGuestBookingId() {
+          throw new Error("post-commit PMS read must not be required");
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/reservations/${pmsReservations[0].guestBookingId}/primary-guest/nationality`,
+      payload: {
+        commandId: "command-primary-nationality",
+        idempotencyKey: "idempotency-primary-nationality",
+        countryCode: "NL",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(bookingGuestPiiPort.corrections).toHaveLength(1);
+    expect(bookingGuestPiiPort.corrections[0]).toMatchObject({
+      propertyId: pmsPropertyId,
+      countryCode: "NL",
+      audit: {
+        actorUserId: "user_hotel_owner",
+        actorOrganizationId: "org_hotel_group",
+        source: "pms_operations",
+      },
+    });
+    expect(response.body).toMatchObject({
+      primaryGuest: {
+        countryCode: "NL",
+        countryCodeRaw: null,
+        countryCodeReviewRequired: false,
+        email: "Hidden until you accept",
+        phone: "Hidden until you accept",
+      },
+      commandMeta: { contractVersion: "booking-guest-pii.v1" },
+    });
+  });
+
+  it("rejects primary guest nationality correction without PMS manage permission", async () => {
+    const bookingGuestPiiPort = createBookingGuestPiiPort();
+    app = buildAuthenticatedApp({
+      permissions: [],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      bookingGuestPiiPort,
+    });
+    const response = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/reservations/${pmsReservations[0].guestBookingId}/primary-guest/nationality`,
+      payload: {
+        commandId: "command-primary-nationality-denied",
+        idempotencyKey: "idempotency-primary-nationality-denied",
+        countryCode: "NL",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.body).toMatchObject({ code: "missing_permission" });
+    expect(bookingGuestPiiPort.corrections).toEqual([]);
   });
 
   it("freezes PMS checkout-charge mark-paid when the F1a finance bridge is disabled", async () => {
@@ -11690,6 +12907,39 @@ describe("vayada-api", () => {
       reason: "guest did not arrive",
     });
     expect(commandRepository.auditEvents).toHaveLength(3);
+  });
+
+  it("accepts manual-payment bookings and marks received payments through target PMS commands", async () => {
+    const commandRepository = createPmsOperationsCommandRepository();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsOperationsCommandRepository: commandRepository,
+    });
+    const baseUrl = `/api/pms/properties/${pmsPropertyId}/reservations/${pmsReservations[0].guestBookingId}`;
+
+    for (const action of ["accept", "mark-paid"] as const) {
+      const response = await injectJson(app, {
+        method: "POST",
+        url: `${baseUrl}/${action}`,
+        headers: { authorization: "Bearer valid-token" },
+        payload: {
+          commandId: `cmd-${action}-001`,
+          idempotencyKey: `idem-${action}-001`,
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toMatchObject({
+        contractVersion: "pms-operations.v1",
+        propertyId: pmsPropertyId,
+        commandMeta: { sideEffects: ["guest_notification", "audit_event"] },
+      });
+    }
+
+    expect(commandRepository.commands.slice(-2)).toMatchObject([
+      { commandId: "cmd-accept-001", audit: { actor: { kind: "user" } } },
+      { commandId: "cmd-mark-paid-001", audit: { actor: { kind: "user" } } },
+    ]);
   });
 
   it("rejects assignment-scoped PMS no-show commands", async () => {

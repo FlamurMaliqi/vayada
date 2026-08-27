@@ -2,6 +2,7 @@ import { backendAuthPlugin, type BackendAuthPluginOptions } from "@vayada/backen
 import type { IdentityLifecycleCommandBus } from "@vayada/backend-auth";
 import type { BookingGuestPiiPort } from "@vayada/domain-booking";
 import type { BookingPublicationCommandPort } from "@vayada/domain-booking";
+import type { FinanceSubscriptionService } from "@vayada/domain-finance";
 import type {
   PmsInventoryPublicOfferProjectionPort,
   PublicBookabilityPublicationCommandPort,
@@ -9,17 +10,22 @@ import type {
 import {
   createAuthorizationResolver,
   type EntitlementRepository,
+  type PropertyAccessRepository,
   type RolePermissionRepository,
 } from "@vayada/backend-authorization";
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
 
+import { isPostgresUnavailableError } from "./platform/postgresRuntime.js";
 import type { HotelSetupTrackCommandRepository } from "./domains/hotelSetupTrackCommandRepository.js";
 import type { HotelCatalogStep1Repository } from "./domains/hotelCatalogStep1Repository.js";
 import type { PropertyMediaCommandRepository } from "./domains/propertyMediaCommandRepository.js";
 import type { PropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
+import type { PropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
+import type { BookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
+import type { PmsRoomAssignmentSettingsPort } from "./domains/pmsRoomAssignmentSettings.js";
+import type { PmsRoomAssignmentOptimizationHistoryPort } from "./domains/pmsRoomAssignmentOptimizationHistory.js";
 import type { PublicHotelProfileRepository } from "./routes/aiHotels.js";
 import type { PublicHotelQuoteRepository } from "./routes/aiHotelQuotes.js";
-import type { AskAuditRepository, AskRoutesOptions } from "./routes/ask.js";
 import type { BookingReservationsReadRepository } from "./routes/bookingReservations.js";
 import type {
   PmsOperationsCommandRepository,
@@ -32,7 +38,6 @@ import type {
 } from "./routes/bookingSettings.js";
 import { registerAiHotelQuoteRoutes } from "./routes/aiHotelQuotes.js";
 import { registerAiHotelRoutes } from "./routes/aiHotels.js";
-import { registerAskRoutes } from "./routes/ask.js";
 import { registerAuthSessionRoutes } from "./routes/authSession.js";
 import type { BookingCustomDomainRepository } from "./routes/bookingCustomDomain.js";
 import { registerBookingRoutes, type BookingRoutesOptions } from "./routes/booking.js";
@@ -77,6 +82,12 @@ import {
   registerMarketplaceHotelSelfServiceRoutes,
   type MarketplaceHotelSelfServiceRepository,
 } from "./routes/marketplaceHotelSelfService.js";
+import { registerMarketplaceAffiliateAdminRoutes } from "./routes/marketplaceAffiliateAdmin.js";
+import type { MarketplaceAffiliateAdminRepository } from "@vayada/domain-marketplace";
+import {
+  registerFinanceAffiliateCommissionRoutes,
+  type FinanceAffiliateCommissionRoutesOptions,
+} from "./routes/financeAffiliateCommissions.js";
 import {
   registerMarketplaceCreatorSelfServiceRoutes,
   type MarketplaceCreatorProfileMediaRepository,
@@ -89,6 +100,7 @@ import {
 import {
   registerSharedHotelSetupStatusRoutes,
   type SharedHotelSetupStatusRepository,
+  type SharedPropertyLaunchSettingsRepository,
 } from "./routes/sharedHotelSetupStatus.js";
 import { registerPropertyMediaRoutes } from "./routes/propertyMedia.js";
 import { registerHotelCatalogStep1Routes } from "./routes/hotelCatalogStep1.js";
@@ -123,7 +135,6 @@ import {
   type BookingWebCalendarRepository,
   type BookingWebCheckoutAdapter,
   type BookingWebPublicRoutesOptions,
-  type BookingDomainResolutionSource,
 } from "./routes/bookingWebPublic.js";
 import type { BookingHotelChangeRequestRepository } from "./routes/bookingChangeRequests.js";
 import {
@@ -139,6 +150,9 @@ import {
   type FinanceXenditBankValidator,
   type PmsFinanceCompatibilityRoutesOptions,
 } from "./routes/finance.js";
+import { registerFinanceSubscriptionRoutes } from "./routes/financeSubscriptions.js";
+import { registerFinanceExpenseRoutes } from "./routes/financeExpenses.js";
+import { registerFinanceFolioRoutes } from "./routes/financeFolios.js";
 import {
   registerAffiliateDashboardRoutes,
   type AffiliateDashboardReadRepository,
@@ -155,37 +169,95 @@ import {
   registerPlatformAdminDashboardRoutes,
   type PlatformAdminDashboardRepository,
 } from "./routes/platform/admin/dashboard/bookingCompatible.js";
+import {
+  registerPlatformPropertyLifecycleRoutes,
+  type PlatformPropertyLifecycleRoutesOptions,
+} from "./routes/platform/admin/propertyLifecycle.js";
 import { registerPmsOperationsRoutes } from "./routes/pmsOperations.js";
+import {
+  registerPmsManualBookingPreviewRoutes,
+  type PmsManualBookingPreviewRoutesOptions,
+} from "./routes/pmsManualBookingPreview.js";
+import {
+  registerPmsManualBookingCapabilityRoutes,
+  registerPmsManualBookingCreateRoutes,
+  type PmsManualBookingCreateRoutesOptions,
+} from "./routes/pmsManualBookingCreate.js";
+import {
+  registerPmsPhysicalRoomOperationalLabelRoutes,
+  type PmsPhysicalRoomOperationalLabelRoutesOptions,
+} from "./routes/pmsPhysicalRoomUnits.js";
+import {
+  registerPmsRoomPublicationRoutes,
+  type PmsRoomPublicationRoutesOptions,
+} from "./routes/pmsRoomPublication.js";
+import { registerPmsPricingRoutes, type PmsPricingRoutesOptions } from "./routes/pmsPricing.js";
+import {
+  registerPmsRecurringPricingRoutes,
+  type PmsRecurringPricingRoutesOptions,
+} from "./routes/pmsRecurringPricing.js";
+import {
+  registerPmsMandatoryChargeConfirmationRoutes,
+  type PmsMandatoryChargeConfirmationRoutesOptions,
+} from "./routes/pmsMandatoryChargeConfirmation.js";
+import {
+  registerPmsOperatingCalendarRoutes,
+  type PmsOperatingCalendarRoutesOptions,
+} from "./routes/pmsOperatingCalendar.js";
 import {
   registerPmsModuleActivationRoutes,
   type PmsModuleActivationRepository,
 } from "./routes/pmsModuleActivations.js";
 import { registerPmsReviewRoutes, type PmsReviewRepository } from "./routes/pmsReviews.js";
+import {
+  registerPmsChannexManagementRoutes,
+  type PmsChannexManagementRoutesOptions,
+} from "./routes/pmsChannexManagement.js";
 import { registerPropertySetupDraftRoutes } from "./routes/propertySetupDrafts.js";
 import { registerBookingPublicationRoutes } from "./routes/bookingPublication.js";
 import type { BookingPublicationRoutesOptions } from "./routes/bookingPublication.js";
+import {
+  registerBookingGuestPolicyRoutes,
+  type BookingGuestPolicyRoutesOptions,
+} from "./routes/bookingGuestPolicy.js";
+import { registerFinanceOtaCommissionSettingsRoutes as registerOtaSettings } from "./routes/financeOtaCommissionSettings.js";
 
 export type ApiAuthOptions = Omit<BackendAuthPluginOptions, "authorizationResolver"> & {
   rolePermissionRepository: RolePermissionRepository;
   entitlementRepository?: EntitlementRepository;
+  propertyAccessRepository: PropertyAccessRepository;
 };
 
-type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
+type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   auth?: ApiAuthOptions;
   authSession?: AuthSessionRouteOptions;
   browserAllowedOrigins?: string[];
   workosWebhooks?: WorkosWebhookRoutesOptions;
   providerWebhooks?: ProviderWebhookRoutesOptions;
   bookingReservationsRepository?: BookingReservationsReadRepository;
+  bookingGuestPolicy?: BookingGuestPolicyRoutesOptions;
   bookingChangeRequestRepository?: BookingHotelChangeRequestRepository;
   pmsOperationsRepository?: PmsOperationsReadRepository;
+  pmsManualBookingPreview?: PmsManualBookingPreviewRoutesOptions;
+  pmsManualBookingCreate?: PmsManualBookingCreateRoutesOptions;
   pmsModuleActivationRepository?: PmsModuleActivationRepository;
   pmsReviewRepository?: PmsReviewRepository;
+  pmsChannexManagement?: PmsChannexManagementRoutesOptions;
   pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
   pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
   pmsInventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
   bookingGuestPiiPort?: BookingGuestPiiPort;
   pmsOperationsAllowedOrigins?: string[];
+  propertyPlanReadRepository?: PropertyPlanReadRepository;
+  bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
+  pmsRoomAssignmentSettings?: PmsRoomAssignmentSettingsPort;
+  pmsRoomAssignmentHistory?: PmsRoomAssignmentOptimizationHistoryPort;
+  pmsRoomPublication?: PmsRoomPublicationRoutesOptions;
+  pmsPricing?: PmsPricingRoutesOptions;
+  pmsRecurringPricing?: PmsRecurringPricingRoutesOptions;
+  pmsMandatoryChargeConfirmation?: PmsMandatoryChargeConfirmationRoutesOptions;
+  pmsOperatingCalendar?: PmsOperatingCalendarRoutesOptions;
+  pmsPhysicalRoomOperationalLabels?: PmsPhysicalRoomOperationalLabelRoutesOptions;
   bookingDashboardMetricsReadPort?: BookingRoutesOptions["dashboardMetricsReadPort"];
   bookingAddonItemsRepository?: BookingAddonItemsRepository;
   bookingPromoCodesRepository?: BookingPromoCodesRepository;
@@ -203,6 +275,8 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   hotelAccountInvites?: Omit<HotelAccountInviteRoutesOptions, "trackCommandRepository">;
   marketplaceHotelProfileStatusRepository?: MarketplaceHotelProfileStatusRepository;
   marketplaceHotelSelfServiceRepository?: MarketplaceHotelSelfServiceRepository;
+  marketplaceAffiliateAdminRepository?: MarketplaceAffiliateAdminRepository;
+  financeAffiliateCommissions?: FinanceAffiliateCommissionRoutesOptions;
   marketplaceCreatorSelfServiceRepository?: MarketplaceCreatorSelfServiceRepository;
   marketplaceCreatorPlatformConnections?: Omit<
     MarketplaceCreatorPlatformConnectionRoutesOptions,
@@ -210,6 +284,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   >;
   marketplaceCreatorProfileMediaRepository?: MarketplaceCreatorProfileMediaRepository;
   sharedHotelSetupStatusRepository?: SharedHotelSetupStatusRepository;
+  propertyLaunchSettingsRepository?: SharedPropertyLaunchSettingsRepository;
   hotelSetupTrackCommandRepository?: HotelSetupTrackCommandRepository;
   propertyMediaCommandRepository?: PropertyMediaCommandRepository;
   hotelCatalogStep1?: {
@@ -232,18 +307,11 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
     IdentityAdminUserRoutesOptions,
     "lifecycleCommandBus" | "readRepository"
   >;
-  askAuditRepository?: AskAuditRepository;
-  askRuntime?: AskRoutesOptions["runtime"];
-  askEvidenceRepository?: AskRoutesOptions["evidenceRepository"];
-  askModel?: AskRoutesOptions["model"];
-  askModelMetadata?: AskRoutesOptions["modelMetadata"];
-  askBudgets?: AskRoutesOptions["budgets"];
-  askNow?: AskRoutesOptions["now"];
   platformContactIntake?: PlatformContactIntakeRoutesOptions;
   platformAdminDashboardRepository?: PlatformAdminDashboardRepository;
+  platformPropertyLifecycle?: PlatformPropertyLifecycleRoutesOptions;
   marketplaceDiscoveryAllowedOrigins?: string[];
   identityPrivacyAllowedOrigins?: string[];
-  bookingDomainResolutionSource?: BookingDomainResolutionSource;
   bookingWebCalendarRepository?: BookingWebCalendarRepository;
   bookingWebCheckoutAdapter?: BookingWebCheckoutAdapter;
   bookingWebAffiliateHotelResolver?: BookingWebAffiliateHotelResolver;
@@ -252,6 +320,10 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger"> & {
   bookingWebPublicNow?: BookingWebPublicRoutesOptions["now"];
   affiliateDashboardRepository?: Partial<AffiliateDashboardReadRepository>;
   financeRepository?: FinanceRoutesOptions["repository"];
+  financeSubscriptionService?: FinanceSubscriptionService;
+  financeOtaCommissionSettingsRepository?: Parameters<typeof registerOtaSettings>[1]["repository"];
+  financeExpenses?: Parameters<typeof registerFinanceExpenseRoutes>[1];
+  financeFolios?: Parameters<typeof registerFinanceFolioRoutes>[1];
   pmsFinanceCompatibilityRepository?: PmsFinanceCompatibilityRoutesOptions["repository"];
   financeXenditBankValidator?: FinanceXenditBankValidator;
   financePublicHotelProfileRepository?: PublicHotelProfileRepository;
@@ -264,19 +336,37 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     logger: options.logger ?? {
       level: process.env.LOG_LEVEL ?? "info",
     },
+    trustProxy: options.trustProxy ?? false,
     disableRequestLogging: (request) =>
       request.url.startsWith("/api/marketplace/creator-platform-oauth/"),
+  });
+
+  app.setErrorHandler((error, request, reply) => {
+    if (!isPostgresUnavailableError(error)) return reply.send(error);
+    request.log.warn({ err: error }, "PostgreSQL connection unavailable");
+    return reply.status(503).send({
+      statusCode: 503,
+      error: "Service Unavailable",
+      message: "Database is temporarily unavailable",
+      code: "database_unavailable",
+    });
   });
 
   registerBrowserCors(app, options.browserAllowedOrigins ?? []);
 
   if (options.auth) {
-    const { rolePermissionRepository, entitlementRepository, ...authOptions } = options.auth;
+    const {
+      rolePermissionRepository,
+      entitlementRepository,
+      propertyAccessRepository,
+      ...authOptions
+    } = options.auth;
     app.register(backendAuthPlugin, {
       ...authOptions,
       authorizationResolver: createAuthorizationResolver(
         rolePermissionRepository,
         entitlementRepository,
+        propertyAccessRepository,
       ),
     });
   }
@@ -303,16 +393,6 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerProviderWebhookRoutes, options.providerWebhooks);
   }
   app.register(registerRouteGroups, { prefix: "/api" });
-  app.register(registerAskRoutes, {
-    prefix: "/api/ai",
-    auditRepository: options.askAuditRepository,
-    runtime: options.askRuntime,
-    evidenceRepository: options.askEvidenceRepository,
-    model: options.askModel,
-    modelMetadata: options.askModelMetadata,
-    budgets: options.askBudgets,
-    now: options.askNow,
-  });
   if (options.publicHotelProfileRepository) {
     app.register(registerAiHotelRoutes, {
       prefix: "/api/ai",
@@ -326,13 +406,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   }
   if (options.publicHotelProfileRepository) {
+    const bookingWebCheckoutAdapter = options.bookingWebCheckoutAdapter;
+    if (!bookingWebCheckoutAdapter) {
+      throw new Error("Booking Web checkout adapter is required when public routes are mounted");
+    }
     app.register(registerBookingWebPublicRoutes, {
       prefix: "/api/booking-web",
       profileRepository: options.publicHotelProfileRepository,
       quoteRepository: options.publicHotelQuoteRepository,
-      bookingDomainResolutionSource: options.bookingDomainResolutionSource,
       calendarRepository: options.bookingWebCalendarRepository,
-      checkoutAdapter: options.bookingWebCheckoutAdapter,
+      checkoutAdapter: bookingWebCheckoutAdapter,
       affiliateHotelResolver:
         options.bookingWebAffiliateHotelResolver ?? options.publicHotelProfileRepository,
       affiliateRepository: options.bookingWebAffiliateRepository,
@@ -395,6 +478,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       lifecycleCommandBus: options.identityLifecycleCommandBus,
     });
   }
+  if (options.marketplaceAffiliateAdminRepository) {
+    app.register(registerMarketplaceAffiliateAdminRoutes, {
+      prefix: "/api/marketplace",
+      repository: options.marketplaceAffiliateAdminRepository,
+    });
+  }
+  if (options.financeAffiliateCommissions) {
+    app.register(registerFinanceAffiliateCommissionRoutes, {
+      prefix: "/api/finance",
+      ...options.financeAffiliateCommissions,
+    });
+  }
   if (options.marketplaceCreatorSelfServiceRepository && options.identityLifecycleCommandBus) {
     app.register(registerMarketplaceCreatorSelfServiceRoutes, {
       prefix: "/api/marketplace",
@@ -425,6 +520,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       prefix: "/api/hotel-setup",
       repository: options.sharedHotelSetupStatusRepository,
       trackCommandRepository: options.hotelSetupTrackCommandRepository,
+      launchSettingsRepository: options.propertyLaunchSettingsRepository,
     });
   }
   if (options.propertySetupRouteStateReadPort) {
@@ -504,11 +600,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     reservationsRepository: options.bookingReservationsRepository,
     settingsRepository: options.bookingSettingsRepository,
     settingsWriteRepository: options.bookingSettingsWriteRepository,
+    bookingAcceptanceSettings: options.bookingAcceptanceSettings,
     publicBookabilityPublisher: options.publicBookabilityPublisher,
     inventoryPublicOfferProjector: options.pmsInventoryPublicOfferProjector,
     customDomainRepository: options.bookingCustomDomainRepository,
     changeRequestRepository: options.bookingChangeRequestRepository,
   });
+  if (options.bookingGuestPolicy) {
+    app.register(registerBookingGuestPolicyRoutes, {
+      prefix: "/api/booking",
+      ...options.bookingGuestPolicy,
+    });
+  }
   app.register(registerAffiliateDashboardRoutes, {
     prefix: "/api",
     repository: options.affiliateDashboardRepository,
@@ -520,9 +623,63 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       repository: options.pmsOperationsRepository,
       checkoutChargeMarkPaidFreezeEnabled: options.pmsCheckoutChargeMarkPaidFreezeEnabled,
       commandRepository: options.pmsOperationsCommandRepository,
+      resolveOnboardingRoomCurrency: async (propertyId) =>
+        (await options.bookingSettingsRepository?.findPropertySettingsByHotelId?.(propertyId))
+          ?.defaultCurrency ?? null,
       inventoryPublicOfferProjector: options.pmsInventoryPublicOfferProjector,
       bookingGuestPiiPort: options.bookingGuestPiiPort,
       allowedOrigins: options.pmsOperationsAllowedOrigins,
+      propertyPlanReadRepository: options.propertyPlanReadRepository,
+      bookingAcceptanceSettings: options.bookingAcceptanceSettings,
+      roomAssignmentSettings: options.pmsRoomAssignmentSettings,
+      roomAssignmentHistory: options.pmsRoomAssignmentHistory,
+      publicBookabilityPublisher: options.publicBookabilityPublisher,
+    });
+  }
+  if (options.pmsRoomPublication) {
+    app.register(registerPmsRoomPublicationRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsRoomPublication,
+    });
+  }
+  if (options.pmsPricing) {
+    app.register(registerPmsPricingRoutes, { prefix: "/api/pms", ...options.pmsPricing });
+  }
+  if (options.pmsRecurringPricing) {
+    app.register(registerPmsRecurringPricingRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsRecurringPricing,
+    });
+  }
+  if (options.pmsMandatoryChargeConfirmation) {
+    app.register(registerPmsMandatoryChargeConfirmationRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsMandatoryChargeConfirmation,
+    });
+  }
+  if (options.pmsOperatingCalendar) {
+    app.register(registerPmsOperatingCalendarRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsOperatingCalendar,
+    });
+  }
+  if (options.pmsPhysicalRoomOperationalLabels) {
+    app.register(registerPmsPhysicalRoomOperationalLabelRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsPhysicalRoomOperationalLabels,
+    });
+  }
+  app.register(registerPmsManualBookingCapabilityRoutes, { prefix: "/api/pms" });
+  if (options.pmsManualBookingPreview) {
+    app.register(registerPmsManualBookingPreviewRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsManualBookingPreview,
+    });
+  }
+  if (options.pmsManualBookingCreate) {
+    app.register(registerPmsManualBookingCreateRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsManualBookingCreate,
     });
   }
   if (options.pmsModuleActivationRepository) {
@@ -538,12 +695,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       repository: options.pmsReviewRepository,
     });
   }
+  if (options.pmsChannexManagement) {
+    app.register(registerPmsChannexManagementRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsChannexManagement,
+    });
+  }
   if (options.financeRepository) {
     const financePublicHotelProfileRepository =
       options.financePublicHotelProfileRepository ?? options.publicHotelProfileRepository;
     app.register(registerFinanceRoutes, {
       prefix: "/api",
       repository: options.financeRepository,
+      publicBookabilityPublisher: options.publicBookabilityPublisher,
       xenditBankValidator: options.financeXenditBankValidator,
       publicHotelPropertyResolver: options.financePublicHotelPropertyResolver,
       publicHotelProfileRepository: financePublicHotelProfileRepository,
@@ -557,6 +721,24 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       repository: options.pmsFinanceCompatibilityRepository,
     });
   }
+  if (options.financeSubscriptionService) {
+    app.register(registerFinanceSubscriptionRoutes, {
+      prefix: "/api",
+      service: options.financeSubscriptionService,
+    });
+  }
+  if (options.financeOtaCommissionSettingsRepository) {
+    app.register(registerOtaSettings, {
+      prefix: "/api",
+      repository: options.financeOtaCommissionSettingsRepository,
+    });
+  }
+  if (options.financeExpenses) {
+    app.register(registerFinanceExpenseRoutes, { prefix: "/api", ...options.financeExpenses });
+  }
+  if (options.financeFolios) {
+    app.register(registerFinanceFolioRoutes, { prefix: "/api", ...options.financeFolios });
+  }
   if (options.platformContactIntake) {
     app.register(registerPlatformContactIntakeRoutes, {
       prefix: "/api",
@@ -567,6 +749,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     prefix: "/api/platform/admin",
     repository: options.platformAdminDashboardRepository,
   });
+  if (options.platformPropertyLifecycle) {
+    app.register(registerPlatformPropertyLifecycleRoutes, {
+      prefix: "/api/platform/admin",
+      ...options.platformPropertyLifecycle,
+    });
+  }
   if (options.platformMedia) {
     app.register(registerPlatformMediaRoutes, {
       prefix: "/api/media",

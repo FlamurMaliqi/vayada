@@ -400,6 +400,7 @@ export async function registerIdentityAdminUserRoutes(
               membership: {
                 roleKey: "platform_admin",
                 status: "active",
+                propertyAccessMode: "assigned",
                 permissionKeys: ["platform.user.suspend"],
               },
               resourceLinks: [

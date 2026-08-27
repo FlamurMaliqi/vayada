@@ -1,4 +1,5 @@
 import { apiClient } from "../api/client";
+import type { PlatformPropertyLifecycleStatus } from "@vayada/domain-hotels";
 
 export interface PropertySettings {
   slug: string;
@@ -51,6 +52,9 @@ export interface AddonItem {
 }
 
 export interface SuperAdminHotel extends HotelSummary {
+  lifecycle_status: PlatformPropertyLifecycleStatus;
+  lifecycle_revision: number;
+  owner_account_user_ids: string[];
   owner_name: string;
   owner_email: string;
   billing_active_plan: string;
@@ -117,6 +121,9 @@ export const bookingSettingsService = {
         name: string;
         slug: string;
         status: string;
+        lifecycleStatus: PlatformPropertyLifecycleStatus;
+        lifecycleRevision: number;
+        ownerAccountUserIds: string[];
         createdAt: string;
       }>;
     }>("/api/platform/admin/growth?granularity=weekly&exclude_test_data=false");
@@ -134,14 +141,6 @@ export const bookingSettingsService = {
     unavailableTargetRoute<CommissionRateChange[]>(
       `Booking commission history target route is not available for ${hotelId}.`,
     ),
-
-  createHotelForUser: (userId: string, name: string) =>
-    unavailableTargetRoute<{ id: string; name: string; slug: string }>(
-      `Booking hotel provisioning target route is not available for ${name || userId}.`,
-    ),
-
-  deleteHotel: (hotelId: string) =>
-    unavailableTargetRoute(`Booking hotel delete target route is not available for ${hotelId}.`),
 
   getPropertySettings: (hotelId: string) =>
     platformBookingUnavailable<PropertySettings>(hotelId, "property settings"),
@@ -219,11 +218,21 @@ export const bookingSettingsService = {
   },
 };
 
-function toSuperAdminHotel(property: { id: string; name: string; slug: string }): SuperAdminHotel {
+function toSuperAdminHotel(property: {
+  id: string;
+  name: string;
+  slug: string;
+  lifecycleStatus: PlatformPropertyLifecycleStatus;
+  lifecycleRevision: number;
+  ownerAccountUserIds: string[];
+}): SuperAdminHotel {
   return {
     id: property.id,
     name: property.name,
     slug: property.slug,
+    lifecycle_status: property.lifecycleStatus,
+    lifecycle_revision: property.lifecycleRevision,
+    owner_account_user_ids: property.ownerAccountUserIds,
     location: "",
     country: "",
     owner_name: "",

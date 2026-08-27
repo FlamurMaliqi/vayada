@@ -6,6 +6,7 @@ import {
 import { resolveSelectedPmsPropertyId } from "../api/pmsPropertyClient";
 import { unsupportedPmsNextStackFeature } from "../api/unsupported";
 import type { RoomImageReference } from "../upload";
+import { imageReferenceUrl, pmsRoomMediaResource, uploadService } from "../upload";
 
 export interface MonthlyRate {
   baseRate?: number | null;
@@ -57,6 +58,7 @@ export interface RoomType {
   longitude: number | null;
   amenities: string[];
   images: RoomImageReference[];
+  roomMediaRevision: number;
   bedType: string;
   features: string[];
   benefits: string[];
@@ -104,6 +106,7 @@ export interface RoomTypeCreate {
   maxChildren?: number | null;
   bedrooms?: number;
   bathrooms?: number;
+  bathroomType: "private" | "shared";
   size?: number;
   baseRate?: number;
   nonRefundableRate?: number | null;
@@ -165,6 +168,22 @@ export interface Room {
 
 export type PmsOperationsContractVersion = "pms-operations.v1";
 
+export interface PropertyPlan {
+  propertyId: string;
+  plan: "commission" | "fixed";
+  limits: {
+    maxRoomPhotosPerType: number;
+    maxAddons: number;
+    guestContactAccess: "after_acceptance" | "always";
+  };
+}
+
+export interface PmsPropertyPlanResponse {
+  contractVersion: PmsOperationsContractVersion;
+  propertyId: string;
+  propertyPlan: PropertyPlan;
+}
+
 export interface PmsOperationsMoney {
   amountDecimal: string;
   currency: string;
@@ -196,7 +215,8 @@ export interface PmsOperationsRoomType {
   occupancyLimits: Record<string, number>;
   attributes: Record<string, string | number | boolean | null>;
   amenities: string[];
-  media: { url: string; altText?: string | null }[];
+  media: { mediaObjectId?: string; url: string; altText?: string | null }[];
+  roomMediaRevision: number;
   baseRate: PmsOperationsMoney;
   active: boolean;
   sortOrder: number;
@@ -321,8 +341,15 @@ function toRoomType(propertyId: string, roomType: PmsOperationsRoomType): RoomTy
     longitude: asNullableNumber(roomType.attributes.longitude),
     amenities: roomType.amenities,
     images: roomType.media.map((image) =>
-      image.altText === undefined ? { url: image.url } : { url: image.url, altText: image.altText },
+      image.altText === undefined
+        ? { url: image.url, platformMediaObjectId: image.mediaObjectId }
+        : {
+            url: image.url,
+            platformMediaObjectId: image.mediaObjectId,
+            altText: image.altText,
+          },
     ),
+    roomMediaRevision: roomType.roomMediaRevision ?? 1,
     bedType: asString(roomType.attributes.bedType),
     features: [],
     benefits: [],
@@ -393,6 +420,12 @@ export const benefitsService = {
 };
 
 export const roomsService = {
+  getPropertyPlan: async () => {
+    const propertyId = await resolveSelectedPmsPropertyId("loading property plan");
+    const response = await pmsOperationsRoomsReadService.getPropertyPlan(propertyId);
+    return response.propertyPlan;
+  },
+
   list: async () => {
     const propertyId = await resolveSelectedPmsPropertyId("loading room types");
     const response = await pmsOperationsRoomsReadService.listRoomTypes(propertyId);
@@ -407,14 +440,46 @@ export const roomsService = {
 
   create: async (data: RoomTypeCreate) => {
     const propertyId = await resolveSelectedPmsPropertyId("creating room type");
-    const response = await pmsOperationsRoomsReadService.createRoomType(propertyId, data);
-    return toRoomType(response.propertyId, response.item);
+    const stagedImages = (data.images ?? []).filter(
+      (image): image is Exclude<RoomImageReference, string> & { pendingFile: File } =>
+        typeof File !== "undefined" &&
+        typeof image !== "string" &&
+        image.pendingFile instanceof File,
+    );
+    const response = await pmsOperationsRoomsReadService.createRoomType(propertyId, {
+      ...data,
+      images: [],
+    });
+    let created = toRoomType(response.propertyId, response.item);
+    if (stagedImages.length > 0) {
+      const uploaded = await uploadService.uploadImages(
+        stagedImages.map(({ pendingFile }) => pendingFile),
+        pmsRoomMediaResource(propertyId, created.id),
+      );
+      const images = uploaded.images.map(({ platformMediaObjectId, url }) => ({
+        url,
+        platformMediaObjectId,
+      }));
+      await replaceRoomTypeMedia(propertyId, created, images);
+      stagedImages.forEach(({ url }) => {
+        if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
+      });
+      const refreshed = await pmsOperationsRoomsReadService.getRoomType(propertyId, created.id);
+      created = toRoomType(refreshed.propertyId, refreshed.item);
+    }
+    return created;
   },
 
   update: async (id: string, data: RoomTypeUpdate) => {
     const propertyId = await resolveSelectedPmsPropertyId("updating room type");
     const response = await pmsOperationsRoomsReadService.updateRoomType(propertyId, id, data);
-    return toRoomType(response.propertyId, response.item);
+    let updated = toRoomType(response.propertyId, response.item);
+    if (data.images && !sameRoomImageOrder(data.images, updated.images)) {
+      await replaceRoomTypeMedia(propertyId, updated, data.images);
+      const refreshed = await pmsOperationsRoomsReadService.getRoomType(propertyId, id);
+      updated = toRoomType(refreshed.propertyId, refreshed.item);
+    }
+    return updated;
   },
 
   delete: (_id: string) => unsupportedPmsNextStackFeature<void>("Room type deletion"),
@@ -423,6 +488,14 @@ export const roomsService = {
 };
 
 export const pmsOperationsRoomsReadService = {
+  getPropertyPlan: (propertyId: string) => {
+    assertPmsOperationsReadModelEnabled();
+    return pmsOperationsClient.get<PmsPropertyPlanResponse>(
+      `/api/pms/properties/${encodeURIComponent(propertyId)}/plan-limits`,
+      pmsOperationsRequestOptions,
+    );
+  },
+
   listRooms: (propertyId: string) => {
     assertPmsOperationsReadModelEnabled();
     return pmsOperationsClient.get<PmsOperationsListResponse<PmsOperationsRoom>>(
@@ -478,7 +551,95 @@ export const pmsOperationsRoomsReadService = {
       pmsOperationsRequestOptions,
     );
   },
+
+  replaceRoomTypeMedia: (
+    propertyId: string,
+    roomTypeId: string,
+    expectedRoomMediaRevision: number,
+    assignments: { mediaObjectId: string; altText: string | null; sortOrder: number }[],
+    legacyMediaSnapshot?: {
+      mediaObjectId: string | null;
+      url: string;
+      altText: string | null;
+      sortOrder: number;
+    }[],
+  ) => {
+    assertPmsOperationsReadModelEnabled();
+    const commandId = randomCommandId("pms-room-media");
+    return pmsOperationsClient.put<{
+      propertyId: string;
+      roomTypeId: string;
+      roomMediaRevision: number;
+    }>(
+      `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(
+        roomTypeId,
+      )}/media`,
+      {
+        expectedRoomMediaRevision,
+        assignments,
+        ...(legacyMediaSnapshot ? { legacyMediaSnapshot } : {}),
+      },
+      {
+        ...pmsOperationsRequestOptions,
+        headers: {
+          ...(pmsOperationsRequestOptions.headers as Record<string, string>),
+          "Idempotency-Key": commandId,
+        },
+      },
+    );
+  },
 };
+
+async function replaceRoomTypeMedia(
+  propertyId: string,
+  roomType: RoomType,
+  images: RoomImageReference[],
+): Promise<void> {
+  const assignments = images
+    .filter(
+      (image): image is Exclude<RoomImageReference, string> & { platformMediaObjectId: string } =>
+        typeof image !== "string" && Boolean(image.platformMediaObjectId),
+    )
+    .map((image, sortOrder) => ({
+      mediaObjectId: image.platformMediaObjectId,
+      altText: image.altText?.trim() || null,
+      sortOrder,
+    }));
+  const hasLegacyMedia = assignments.length !== images.length;
+  const legacyMediaSnapshot = hasLegacyMedia
+    ? images.map((image, sortOrder) => ({
+        mediaObjectId: typeof image === "string" ? null : (image.platformMediaObjectId ?? null),
+        url: imageReferenceUrl(image),
+        altText: typeof image === "string" ? null : image.altText?.trim() || null,
+        sortOrder,
+      }))
+    : undefined;
+  if (
+    legacyMediaSnapshot?.some(({ url }) => {
+      const resolvedUrl = url.trim();
+      return !resolvedUrl || resolvedUrl.startsWith("blob:");
+    })
+  ) {
+    throw new Error("Every saved room photo must finish uploading before the room can be saved.");
+  }
+  await pmsOperationsRoomsReadService.replaceRoomTypeMedia(
+    propertyId,
+    roomType.id,
+    roomType.roomMediaRevision,
+    assignments,
+    legacyMediaSnapshot,
+  );
+}
+
+function sameRoomImageOrder(left: RoomImageReference[], right: RoomImageReference[]): boolean {
+  const keys = (images: RoomImageReference[]) =>
+    images.map((image) =>
+      typeof image !== "string" && image.platformMediaObjectId
+        ? `media:${image.platformMediaObjectId}`
+        : `url:${imageReferenceUrl(image)}`,
+    );
+  return JSON.stringify(keys(left)) === JSON.stringify(keys(right));
+}
 
 function roomTypeLocationPayload(data: RoomTypeUpdate) {
   const payload: Pick<RoomTypeCreate, "locationAddress" | "latitude" | "longitude"> = {};

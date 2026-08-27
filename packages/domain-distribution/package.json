@@ -18,12 +18,34 @@
     "./geo": {
       "types": "./dist/geo.d.ts",
       "default": "./dist/geo.js"
+    },
+    "./booking-publication": {
+      "types": "./dist/bookingPublication.d.ts",
+      "default": "./dist/bookingPublication.js"
+    },
+    "./booking-publication-owner-snapshots": {
+      "types": "./dist/bookingPublicationOwnerSnapshots.d.ts",
+      "default": "./dist/bookingPublicationOwnerSnapshots.js"
+    },
+    "./booking-publication-builder": {
+      "types": "./dist/bookingPublicationBuilder.d.ts",
+      "default": "./dist/bookingPublicationBuilder.js"
+    },
+    "./public-bookability-profile-parser": {
+      "types": "./dist/publicBookabilityProfileParser.d.ts",
+      "default": "./dist/publicBookabilityProfileParser.js"
     }
   },
   "scripts": {
+    "prebuild": "npm --workspace @vayada/domain-hotels run build",
+    "pretypecheck": "npm --workspace @vayada/domain-hotels run build",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vayada/domain-hotels": "0.0.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^20",

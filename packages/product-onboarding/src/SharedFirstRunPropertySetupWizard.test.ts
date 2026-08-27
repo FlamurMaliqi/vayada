@@ -13,9 +13,12 @@ import {
   isInlineSetupTaskSelectable,
   locationResetForManualAddressEdit,
   mergeTrackSelectionAfterConflict,
+  normalizedPhoneNumber,
+  phoneWithCountryCallingCode,
   previousEditableSetupTaskId,
   profileUpdateFromDraft,
   recommendedInlineSetupTaskId,
+  setupErrorMessage,
   validateProfileDraft,
 } from "./SharedFirstRunPropertySetupWizard";
 
@@ -30,6 +33,42 @@ describe("idempotencyKeyForRetry", () => {
   });
 });
 
+describe("property create conflict recovery", () => {
+  it("translates conflicts, server failures, and network failures into useful messages", () => {
+    expect(
+      setupErrorMessage({
+        status: 409,
+        data: { code: "command_in_progress" },
+      }),
+    ).toContain("still finishing");
+    expect(
+      setupErrorMessage({
+        status: 409,
+        data: { code: "idempotency_key_conflict" },
+      }),
+    ).toContain("setup changed during this save");
+    expect(
+      setupErrorMessage({
+        status: 409,
+        data: { code: "private_contact_conflict", detail: "Publish this contact first." },
+      }),
+    ).toBe("Publish this contact first.");
+    expect(setupErrorMessage(Object.assign(new Error("API Error: 500"), { status: 500 }))).toBe(
+      "Something went wrong on our end. Please try again.",
+    );
+    expect(
+      setupErrorMessage({
+        status: 500,
+        data: { message: "database unavailable" },
+      }),
+    ).toBe("Something went wrong on our end. Please try again.");
+    expect(setupErrorMessage(new TypeError("Failed to fetch"))).toBe(
+      "Couldn't save. Check your connection and try again.",
+    );
+    expect(setupErrorMessage(new Error("API Error: 409"))).not.toContain("API Error");
+  });
+});
+
 describe("property profile requests", () => {
   const draft = {
     displayName: "Hotel Alpenrose",
@@ -41,16 +80,16 @@ describe("property profile requests", () => {
     latitude: 48.137,
     longitude: 11.575,
     timezone: "Europe/Berlin",
-    website: "https://alpenrose.example",
     contactEmail: "hello@alpenrose.example",
     phone: "+49 89 123456",
+    whatsapp: "+49 170 1234567",
     localityPublic: false,
     logoFile: null,
     logoMediaObjectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     logoPublicUrl: "https://cdn.example.com/alpenrose-logo.webp",
   } as Parameters<typeof createProfileFromDraft>[0];
 
-  it("creates private general contacts and private location defaults", () => {
+  it("creates public guest contacts and private location defaults", () => {
     const request = createProfileFromDraft(draft);
 
     expect(request.location).toMatchObject({
@@ -60,27 +99,27 @@ describe("property profile requests", () => {
     });
     expect(request.contacts).toEqual([
       {
-        channelType: "email",
-        value: "hello@alpenrose.example",
-        purpose: "general",
-        isPublic: false,
-      },
-      {
         channelType: "phone",
         value: "+49 89 123456",
         purpose: "general",
-        isPublic: false,
+        isPublic: true,
       },
       {
-        channelType: "website",
-        value: "https://alpenrose.example",
+        channelType: "whatsapp",
+        value: "+49 170 1234567",
         purpose: "general",
-        isPublic: false,
+        isPublic: true,
+      },
+      {
+        channelType: "email",
+        value: "hello@alpenrose.example",
+        purpose: "general",
+        isPublic: true,
       },
     ]);
   });
 
-  it("adds changed setup contacts privately without overwriting published contacts", () => {
+  it("updates guest-facing contacts without deleting unrelated contacts", () => {
     const request = profileUpdateFromDraft(draft, {
       propertyId: "property-1",
       profileRevision: 7,
@@ -117,16 +156,13 @@ describe("property profile requests", () => {
     expect(request.patch.location).toBeUndefined();
     expect(request.patch.contacts).toContainEqual({
       channelType: "email",
-      value: "old@alpenrose.example",
+      value: "hello@alpenrose.example",
       purpose: "general",
       isPublic: true,
     });
-    expect(request.patch.contacts).toContainEqual({
-      channelType: "email",
-      value: "hello@alpenrose.example",
-      purpose: "general",
-      isPublic: false,
-    });
+    expect(request.patch.contacts).not.toContainEqual(
+      expect.objectContaining({ value: "old@alpenrose.example" }),
+    );
     expect(request.patch.contacts).toContainEqual({
       channelType: "instagram",
       value: "@alpenrose",
@@ -146,6 +182,68 @@ describe("property profile requests", () => {
         profile,
       }),
     ).toBeNull();
+  });
+
+  it("promotes matching legacy contacts and preserves the existing website", () => {
+    const profile = createProfileFromDraft(draft);
+    profile.contacts = [
+      ...profile.contacts.map((contact) => ({ ...contact, isPublic: false })),
+      {
+        channelType: "website",
+        value: "https://alpenrose.example",
+        purpose: "general",
+        isPublic: true,
+      },
+    ];
+
+    const request = profileUpdateFromDraft(draft, {
+      propertyId: "property-1",
+      profileRevision: 9,
+      profile,
+    });
+
+    expect(request?.patch.contacts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ channelType: "phone", isPublic: true }),
+        expect.objectContaining({ channelType: "whatsapp", isPublic: true }),
+        expect.objectContaining({ channelType: "email", isPublic: true }),
+        expect.objectContaining({ channelType: "website", isPublic: true }),
+      ]),
+    );
+  });
+
+  it("removes every published WhatsApp contact when WhatsApp is left blank", () => {
+    const profile = createProfileFromDraft(draft);
+    profile.contacts.push(
+      {
+        channelType: "whatsapp",
+        value: "+49 170 0000000",
+        purpose: "guest",
+        isPublic: true,
+      },
+      {
+        channelType: "whatsapp",
+        value: "+49 170 9999999",
+        purpose: "operations",
+        isPublic: false,
+      },
+    );
+
+    const request = profileUpdateFromDraft(
+      { ...draft, whatsapp: "" },
+      {
+        propertyId: "property-1",
+        profileRevision: 10,
+        profile,
+      },
+    );
+
+    const whatsappContacts = request?.patch.contacts?.filter(
+      (contact) => contact.channelType === "whatsapp",
+    );
+    expect(whatsappContacts).toEqual([
+      expect.objectContaining({ purpose: "operations", isPublic: false }),
+    ]);
   });
 
   it("skips an update when no shared identity field changed", () => {
@@ -448,9 +546,9 @@ describe("validateProfileDraft", () => {
       streetAddress: "Marienplatz 1",
       postalCode: "80331",
       timezone: "Europe/Berlin",
-      website: "",
       contactEmail: "owner@alpenrose.example",
       phone: "+49 89 123456",
+      whatsapp: "",
       localityPublic: false,
       logoFile: null,
       logoMediaObjectId: null,
@@ -475,9 +573,9 @@ describe("validateProfileDraft", () => {
       streetAddress: "Marienplatz 1",
       postalCode: "80331",
       timezone: "Europe/Not_A_Real_Place",
-      website: "",
       contactEmail: "owner@alpenrose.example",
       phone: "+49 89 123456",
+      whatsapp: "",
     } as Parameters<typeof validateProfileDraft>[0];
 
     expect(validateProfileDraft(draft)["location.timezone"]).toEqual([
@@ -494,9 +592,9 @@ describe("validateProfileDraft", () => {
       streetAddress: "Marienplatz 1",
       postalCode: "80331",
       timezone: "Europe/Berlin",
-      website: "",
       contactEmail: "owner@alpenrose.example",
       phone: "not a phone",
+      whatsapp: "",
     } as Parameters<typeof validateProfileDraft>[0];
 
     expect(validateProfileDraft(draft).phone).toEqual(["Enter a valid phone number."]);
@@ -504,6 +602,30 @@ describe("validateProfileDraft", () => {
       "Enter a valid phone number.",
     ]);
     expect(validateProfileDraft({ ...draft, phone: "+49 89 123456" }).phone).toBe(undefined);
+    expect(validateProfileDraft({ ...draft, phone: "089 123456" }).phone).toEqual([
+      "Enter a valid phone number.",
+    ]);
+    expect(validateProfileDraft({ ...draft, whatsapp: "not a phone" }).whatsapp).toEqual([
+      "Enter a valid WhatsApp number.",
+    ]);
+  });
+});
+
+describe("phoneWithCountryCallingCode", () => {
+  it("keeps the national number when changing country prefixes", () => {
+    expect(phoneWithCountryCallingCode("+49 89 123456", "LK")).toBe("+94 89123456");
+  });
+
+  it("starts an empty phone with the selected prefix", () => {
+    expect(phoneWithCountryCallingCode("", "DE")).toBe("+49 ");
+  });
+
+  it("does not keep an incomplete previous prefix when the country changes", () => {
+    expect(phoneWithCountryCallingCode("+49 ", "LK", "DE")).toBe("+94 ");
+  });
+
+  it("normalizes a national number with the selected country", () => {
+    expect(normalizedPhoneNumber("0771234567", "LK")).toBe("+94 77 123 4567");
   });
 });
 

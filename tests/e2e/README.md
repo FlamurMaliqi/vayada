@@ -10,11 +10,13 @@ Run from the repo root:
 npm run e2e                       # all specs
 npm run e2e:landing
 npm run e2e:booking-web
+npm run e2e:booking-public-canary
 npm run e2e:affiliate-dashboard
 npm run e2e:booking-admin
 npm run e2e:marketplace-web
 npm run e2e:pms-web
 npm run e2e:vayada-admin
+npm run e2e:next-stack-smoke
 npm run e2e:headed
 npm run e2e:ui
 npm run e2e:report
@@ -34,6 +36,79 @@ To have Playwright start plain-port Next.js dev servers for all apps:
 
 ```bash
 E2E_START_SERVERS=1 npm run e2e
+```
+
+## Deployed Next-stack Smoke
+
+`npm run e2e:next-stack-smoke` is the production-safe browser and API smoke for
+the deployed TypeScript stack. It creates unique synthetic WorkOS identities,
+completes fresh hotel and creator onboarding, verifies Marketplace-to-PMS and
+Marketplace-to-Booking-Admin handoffs, publishes a direct-booking property, and
+exercises both instant and request acceptance with a pay-at-property quote.
+
+The command is guarded: it accepts only the fixed `next-*.vayada.com` origins
+and requires `NEXT_STACK_SMOKE_ENV=next`. The deployed next API shares the live
+WorkOS tenant, so live-key use additionally requires
+`NEXT_STACK_SMOKE_ALLOW_LIVE_WORKOS=1`; the manual workflow uses the exact
+deployed key from its protected `next-smoke` environment secret. The smoke never
+configures card, wallet, Stripe, or Xendit checkout. Run it through the manual
+`Next-stack onboarding and checkout smoke` workflow, whose `next-smoke` GitHub
+environment isolates the password and email-domain settings, or locally with
+the same variables:
+
+```bash
+E2E_NEXT_STACK_SMOKE=1 \
+NEXT_STACK_SMOKE_ENV=next \
+NEXT_STACK_SMOKE_ALLOW_LIVE_WORKOS=1 \
+NEXT_STACK_SMOKE_EMAIL_DOMAIN=smoke.example.test \
+NEXT_STACK_SMOKE_PASSWORD='<staging-password>' \
+WORKOS_API_KEY='<key used by deployed next-api>' \
+npm run e2e:next-stack-smoke
+```
+
+The `next-smoke` environment accepts reviewed `main` runs only, releases its secrets only after
+FlamurMaliqi approves the deployment, and does not let administrators bypass that approval. Each run
+creates a temporary Platform Admin for the production lifecycle command. Cleanup restores inventory
+and disables public offers, reauthenticates the temporary admin to retire the synthetic property,
+then deletes its membership and user. If retirement fails, cleanup reports `recovery_run_id`,
+`recovery_property_id`, and a signed `recovery_receipt` while still deleting the temporary admin.
+Supply all three values to a later protected workflow run; the receipt binds recovery to that exact
+synthetic property. Recovery creates a fresh temporary admin, retires the property, and deletes the
+recovery admin. It reuses the signed run identity, so rerunning the same recovery also cleans up an
+admin left by an interrupted recovery.
+
+Cleanup runs even after a failed assertion. It cancels or withdraws every
+synthetic booking, changes the synthetic property to the non-checkout `other`
+payment method and waits until public quotes disappear, then deletes the
+WorkOS staging organizations and users. Target database rows and product audit
+events are deliberately retained for traceability, but the property is left
+unbookable and inventory is restored. A cleanup failure fails the workflow.
+
+Real card payments are intentionally outside this command. Stripe coverage must
+use a separate test-mode-only environment and test payment methods; do not add a
+live Stripe key or card-capable payment method to this workflow.
+
+## Deployed Booking Public Canary
+
+`npm run e2e:booking-public-canary` is the unmocked public Booking verification.
+It checks public host resolution, the public-bookability profile, and the
+rendered tenant page, plus the deployed build SHA when one is supplied. The
+`Next Booking public canary` workflow runs every 15 minutes and on manual
+dispatch. The platform deployment workflow performs the build-specific
+post-deploy check after ECS finishes its cutover; the scheduled workflow
+deliberately does not trigger from the earlier image publish step. Repository
+variables supply `NEXT_BOOKING_CANARY_URL` and
+`NEXT_BOOKING_CANARY_NAME`; the URL must identify a dedicated published tenant
+on `*.next-booking.vayada.com`. They are non-secret so scheduled checks can run
+without an environment approval gate.
+
+Run it locally against the same canary with:
+
+```bash
+E2E_BOOKING_PUBLIC_CANARY=1 \
+BOOKING_PUBLIC_CANARY_URL=https://<slug>.next-booking.vayada.com \
+BOOKING_PUBLIC_CANARY_NAME='<expected hotel name>' \
+npm run e2e:booking-public-canary
 ```
 
 Server mode starts only the Next.js frontends on ports 3000-3006. It does not
@@ -120,6 +195,69 @@ unexposed and covers the custom password login/signup/session contracts:
 ```bash
 npm --workspace vayada-api run test -- src/authSession.test.ts
 ```
+
+## First-Party Auth Regressions
+
+`tests/e2e/first-party-auth` is the focused regression suite for the five
+migrated browser surfaces. It covers password login, signup and recovery where
+available, session refresh, CSRF, logout, app-local Google callback state,
+Marketplace signup-to-onboarding, cross-app handoff, stale-cookie cleanup, and
+production routing guards. Chromium runs with third-party-cookie phaseout
+enabled, and the browser flows assert that auth requests and cookies stay on
+the current frontend origin.
+
+Run against the full portless stack:
+
+```bash
+npm run dev:workos-local
+npm run e2e:first-party-auth
+```
+
+Run with isolated plain-port frontend servers and mocked auth responses:
+
+```bash
+E2E_FIRST_PARTY_AUTH_ONLY=1 E2E_START_SERVERS=1 npm run e2e:first-party-auth
+```
+
+The PR workflow runs the isolated browser suite plus every frontend gateway
+unit test. Those unit tests lock down multiple `Set-Cookie` values,
+`Cache-Control: private, no-store`, `Vary: Cookie`, redirect status and
+`Location`, and the request/response header allowlists. Real WorkOS and Google
+credentials are never stored in the repository or Playwright artifacts.
+
+The deterministic Google cases simulate the external redirect while exercising
+the real frontend login/signup code and exact app-local callback shape. For a
+live WorkOS sandbox check, first start `npm run dev:workos-local` with staging
+WorkOS credentials in `apps/api/.env`. In a second terminal, resolve the same
+worktree-qualified Marketplace origin and pass it to Playwright:
+
+```bash
+E2E_MARKETPLACE_BASE_URL="$(portless get marketplace)" \
+  E2E_WORKOS_SANDBOX_GOOGLE=1 npm run e2e:first-party-auth:live -- --headed
+```
+
+Complete Google sign-in in the headed browser with a sandbox-only account. The
+test waits for the callback and verifies `/auth/session` returns 200 instead of
+`missing_session`. The dedicated live project disables traces, screenshots, and
+video so provider credentials and session material are not retained in test
+artifacts.
+
+WorkOS must register `<origin returned by portless get>/auth/oauth/google/callback`
+for the active worktree. For a canonical root checkout, the five exact callback
+URIs are:
+
+```text
+https://marketplace.localhost/auth/oauth/google/callback
+https://admin.booking.localhost/auth/oauth/google/callback
+https://pms.localhost/auth/oauth/google/callback
+https://affiliate.localhost/auth/oauth/google/callback
+https://admin.localhost/auth/oauth/google/callback
+```
+
+Google account interaction remains intentionally manual because provider login
+challenges are not stable or appropriate for unattended CI. The callback,
+cookie, state, session, and `missing_session` regression assertions remain
+automated.
 
 ## Shared Hotel Setup Smoke
 

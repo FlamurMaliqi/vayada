@@ -56,12 +56,13 @@
           "days[0].roomTypeId",
           "days[0].totalCount",
           "days[0].assignedCount",
+          "days[0].occupiedCount",
           "days[0].blockedCount",
           "days[0].availableCount",
           "days[0].blocks",
           "days[0].sourceFreshness"
         ],
-        "countInvariant": "availableCount + assignedCount + blockedCount equals totalCount",
+        "countInvariant": "availableCount + assignedCount + blockedCount is no greater than totalCount; occupiedCount is no greater than assignedCount",
         "fixtureNotes": "Seed one room-type block and one room-level maintenance block."
       }
     },
@@ -104,6 +105,7 @@
         "itemCount": 2,
         "mustInclude": [
           "items[0].blockId",
+          "items[0].version",
           "items[0].roomTypeId",
           "items[0].roomId",
           "items[0].startsOn",
@@ -329,9 +331,9 @@
           "commandId": "cmd-room-block-create",
           "idempotencyKey": "pms-room-block-create-001",
           "roomTypeId": "f6855000-0000-0000-0000-000000000001",
+          "roomIds": ["f6855100-0000-0000-0000-000000000001"],
           "startsOn": "2026-08-15",
           "endsOn": "2026-08-16",
-          "blockedCount": 1,
           "reason": "maintenance"
         }
       },

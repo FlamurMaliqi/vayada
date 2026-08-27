@@ -1,0 +1,76 @@
+name: Next-stack onboarding and checkout smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      recovery_run_id:
+        description: Failed synthetic smoke run ID (requires recovery_property_id)
+        required: false
+        type: string
+      recovery_property_id:
+        description: Synthetic property UUID to retire (requires recovery_run_id)
+        required: false
+        type: string
+      recovery_receipt:
+        description: Signed receipt reported by the failed cleanup
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: next-stack-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Verify deployed next stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: next-smoke
+    env:
+      CI: "true"
+      E2E_NEXT_STACK_SMOKE: "1"
+      NEXT_STACK_SMOKE_ENV: next
+      NEXT_STACK_SMOKE_ALLOW_LIVE_WORKOS: "1"
+      NEXT_STACK_SMOKE_EMAIL_DOMAIN: ${{ vars.NEXT_STACK_SMOKE_EMAIL_DOMAIN }}
+      NEXT_STACK_SMOKE_PASSWORD: ${{ secrets.NEXT_STACK_SMOKE_PASSWORD }}
+      NEXT_STACK_SMOKE_RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
+      NEXT_STACK_SMOKE_RECOVERY_PROPERTY_ID: ${{ inputs.recovery_property_id }}
+      NEXT_STACK_SMOKE_RECOVERY_RECEIPT: ${{ inputs.recovery_receipt }}
+      WORKOS_API_KEY: ${{ secrets.NEXT_STACK_SMOKE_WORKOS_API_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build PMS domain contracts
+        run: npm --workspace @vayada/domain-pms run build
+
+      - name: Verify PMS optimizer safety tests
+        run: npm --workspace vayada-api test -- src/domains/pmsRoomAssignmentOptimizer.test.ts
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run next-stack smoke
+        run: npm run e2e:next-stack-smoke
+
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: next-stack-smoke-evidence
+          path: |
+            test-results/
+            playwright-report/

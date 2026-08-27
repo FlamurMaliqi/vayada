@@ -36,6 +36,19 @@ export interface BookingConfirmationContext extends Partial<Booking> {
 
 const GUEST_KEY = "guestDetails";
 const LAST_BOOKING_KEY = "lastBooking";
+const CHECKOUT_ATTEMPT_KEY = "bookingCheckoutAttempt";
+const PENDING_CREATE_RECOVERY_KEY = "pendingBookingCreateRecovery";
+
+export type PendingBookingCreateRecovery<TQuote = unknown, TRequest = unknown> = {
+  slug: string;
+  quote: TQuote;
+  quoteId: string;
+  paymentMethod: string;
+  requestBody: TRequest;
+  createIdempotencyKey: string;
+  draftId?: string;
+  confirmationToken?: string;
+};
 
 function safeGet(key: string): string | null {
   if (typeof window === "undefined") return null;
@@ -53,8 +66,104 @@ function safeSet(key: string, value: string): void {
   } catch {}
 }
 
+function safeRemove(key: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.removeItem(key);
+  } catch {}
+}
+
 export function saveGuestDetails(draft: GuestDetailsDraft): void {
   safeSet(GUEST_KEY, JSON.stringify(draft));
+  safeSet(CHECKOUT_ATTEMPT_KEY, JSON.stringify({ keys: {} }));
+}
+
+export function savePendingBookingCreate<TQuote, TRequest>(
+  recovery: PendingBookingCreateRecovery<TQuote, TRequest>,
+): void {
+  safeSet(PENDING_CREATE_RECOVERY_KEY, JSON.stringify(recovery));
+}
+
+export function readPendingBookingCreate<TQuote, TRequest = unknown>(
+  slug: string,
+): PendingBookingCreateRecovery<TQuote, TRequest> | null {
+  const raw = safeGet(PENDING_CREATE_RECOVERY_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<PendingBookingCreateRecovery<TQuote, TRequest>>;
+    if (
+      parsed.slug !== slug ||
+      typeof parsed.quote !== "object" ||
+      parsed.quote === null ||
+      typeof parsed.quoteId !== "string" ||
+      !parsed.quoteId ||
+      typeof parsed.paymentMethod !== "string" ||
+      !parsed.paymentMethod ||
+      typeof parsed.requestBody !== "object" ||
+      parsed.requestBody === null ||
+      typeof parsed.createIdempotencyKey !== "string" ||
+      !parsed.createIdempotencyKey ||
+      (parsed.draftId !== undefined && typeof parsed.draftId !== "string") ||
+      (parsed.confirmationToken !== undefined && typeof parsed.confirmationToken !== "string")
+    ) {
+      return null;
+    }
+    return parsed as PendingBookingCreateRecovery<TQuote, TRequest>;
+  } catch {
+    return null;
+  }
+}
+
+export function clearPendingBookingCreate(): void {
+  safeRemove(PENDING_CREATE_RECOVERY_KEY);
+}
+
+export function getCheckoutIdempotencyKey(operation: string, identity: string): string {
+  const state = checkoutAttemptState();
+  const binding = `${operation}:${identity}`;
+  const existing = state.keys[binding];
+  if (existing && (!existing.expiresAt || existing.expiresAt > Date.now())) return existing.key;
+  const key = `booking-web:${operation}:${randomToken()}`;
+  state.keys[binding] = { key };
+  safeSet(CHECKOUT_ATTEMPT_KEY, JSON.stringify(state));
+  return key;
+}
+
+export function expireCheckoutIdempotencyKeyAt(
+  operation: string,
+  identity: string,
+  expiresAt: string | undefined,
+): void {
+  if (!expiresAt) return;
+  const timestamp = new Date(expiresAt).getTime();
+  if (!Number.isFinite(timestamp)) return;
+  const state = checkoutAttemptState();
+  const binding = `${operation}:${identity}`;
+  const existing = state.keys[binding];
+  if (!existing) return;
+  state.keys[binding] = { ...existing, expiresAt: timestamp };
+  safeSet(CHECKOUT_ATTEMPT_KEY, JSON.stringify(state));
+}
+
+type CheckoutAttemptState = {
+  keys: Record<string, { key: string; expiresAt?: number }>;
+};
+
+function checkoutAttemptState(): CheckoutAttemptState {
+  const raw = safeGet(CHECKOUT_ATTEMPT_KEY);
+  if (!raw) return { keys: {} };
+  try {
+    const parsed = JSON.parse(raw) as Partial<CheckoutAttemptState>;
+    return parsed.keys && typeof parsed.keys === "object" ? { keys: parsed.keys } : { keys: {} };
+  } catch {
+    return { keys: {} };
+  }
+}
+
+function randomToken(): string {
+  return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 export function readGuestDetails(): GuestDetailsDraft | null {
@@ -74,15 +183,20 @@ const BOOKING_STATUSES: Booking["status"][] = [
   "declined",
   "expired",
   "draft",
+  "checked_in",
+  "checked_out",
 ];
 
 const PAYMENT_METHODS = [
   "card",
+  "credit_card",
   "pay_at_property",
   "cash",
   "xendit",
   "bank_transfer",
   "paypal",
+  "manual_card",
+  "other",
 ] as const;
 
 const PAYMENT_STATUSES = [
@@ -98,6 +212,11 @@ const PAYMENT_STATUSES = [
 
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function cardLast4(value: unknown): string | null {
+  const digits = nonEmptyString(value);
+  return digits && /^\d{4}$/.test(digits) ? digits : null;
 }
 
 function nonNegativeNumber(value: unknown, fallback = 0): number {
@@ -143,6 +262,12 @@ function paymentStatus(value: unknown): string | null {
   return PAYMENT_STATUSES.includes(value as (typeof PAYMENT_STATUSES)[number])
     ? (value as string)
     : null;
+}
+
+function nonEmptyStrings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => Boolean(nonEmptyString(item)))
+    : [];
 }
 
 /**
@@ -221,6 +346,17 @@ export function toConfirmationBooking(
     paymentStatus: hasSourcePaymentStatus
       ? paymentStatus(source.paymentStatus)
       : paymentStatus(context.paymentStatus),
+    paymentDeadline:
+      nonEmptyString(source.paymentDeadline) ?? nonEmptyString(context.paymentDeadline),
+    bankTransferDetails:
+      nonEmptyString(source.bankTransferDetails) ?? nonEmptyString(context.bankTransferDetails),
+    unitNames:
+      nonEmptyStrings(source.unitNames).length > 0
+        ? nonEmptyStrings(source.unitNames)
+        : nonEmptyStrings(context.unitNames),
+    cancelledAt: nonEmptyString(source.cancelledAt) ?? nonEmptyString(context.cancelledAt),
+    cardBrand: nonEmptyString(source.cardBrand) ?? nonEmptyString(context.cardBrand),
+    cardLast4: cardLast4(source.cardLast4) ?? cardLast4(context.cardLast4),
     hostResponseDeadline:
       nonEmptyString(source.hostResponseDeadline) ?? nonEmptyString(context.hostResponseDeadline),
     createdAt: nonEmptyString(source.createdAt) ?? nonEmptyString(context.createdAt) ?? "",

@@ -71,6 +71,26 @@ async def test_stripe_cutover_modes_skip_legacy_mutation(monkeypatch, mode):
         proxy.assert_not_called()
 
 
+async def test_connect_webhook_uses_its_own_signing_secret(monkeypatch):
+    _set_mode(monkeypatch, "stripe", "ack_only_with_receipt")
+    monkeypatch.setattr(settings, "STRIPE_WEBHOOK_SECRET", "whsec_platform")
+    monkeypatch.setattr(settings, "STRIPE_CONNECT_WEBHOOK_SECRET", "whsec_connect")
+    request = _request("/webhooks/stripe/connect", b"{}", {"stripe-signature": "sig-test"})
+
+    with patch.object(
+        webhooks.stripe_service,
+        "construct_webhook_event",
+        return_value={
+            "type": "payment_intent.succeeded",
+            "data": {"object": {"id": "pi_connect"}},
+        },
+    ) as construct:
+        response = await webhooks.stripe_connect_webhook(request)
+
+    assert response["mode"] == "ack_only_with_receipt"
+    construct.assert_called_once_with(b"{}", "sig-test", "whsec_connect")
+
+
 @pytest.mark.parametrize("mode", ["ack_only_with_receipt", "proxy_to_target"])
 async def test_xendit_cutover_modes_skip_legacy_mutation(monkeypatch, mode):
     _set_mode(monkeypatch, "xendit", mode)

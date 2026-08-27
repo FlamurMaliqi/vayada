@@ -68,6 +68,10 @@ const publicHotelProfile = {
     summary: hotel.description,
     images: hotel.images.map((url) => ({ url, alt: hotel.name })),
     amenities: hotel.amenities,
+    publicContacts: [
+      { type: "email", value: hotel.contact.email },
+      { type: "phone", value: hotel.contact.phone },
+    ],
     policies: {
       checkInFrom: hotel.checkInTime,
       checkOutUntil: hotel.checkOutTime,
@@ -122,7 +126,16 @@ const rooms = [
     baseRate: 240,
     nonRefundableRate: 210,
     currency: "EUR",
-    amenities: ["Free WiFi", "Breakfast", "Balcony"],
+    amenities: [
+      "Wi-Fi",
+      "Air conditioning",
+      "Flat-screen TV",
+      "Balcony",
+      "Kitchen",
+      "Non-smoking",
+      "Minibar",
+      "Laptop-friendly workspace",
+    ],
     images: ["/vayada-logo.png"],
     bedType: "King bed",
     remainingRooms: 2,
@@ -150,7 +163,7 @@ const rooms = [
     baseRate: 160,
     nonRefundableRate: null,
     currency: "EUR",
-    amenities: ["Free WiFi"],
+    amenities: ["Wi-Fi"],
     images: ["/vayada-logo.png"],
     bedType: "Queen bed",
     remainingRooms: 0,
@@ -224,6 +237,7 @@ const publicOffers = {
         availableRooms: 2,
         refundable: true,
         mealPlan: "Breakfast",
+        amenities: rooms[0].amenities,
         paymentOptions: ["card", "pay_at_property"],
         totals: {
           currency: "EUR",
@@ -251,6 +265,7 @@ const publicOffers = {
         availableRooms: 2,
         refundable: false,
         mealPlan: "Breakfast",
+        amenities: rooms[0].amenities,
         paymentOptions: ["card"],
         totals: {
           currency: "EUR",
@@ -278,6 +293,7 @@ const publicOffers = {
         availableRooms: 0,
         refundable: true,
         mealPlan: null,
+        amenities: rooms[1].amenities,
         paymentOptions: ["card", "pay_at_property"],
         totals: {
           currency: "EUR",
@@ -306,9 +322,12 @@ const publicOffers = {
 type MockBookingApisOptions = {
   supportedQuoteParameters?: Partial<typeof publicHotelProfile.hotel.supportedQuoteParameters>;
   headerLogoUrl?: string;
+  gardenAmenities?: string[];
+  publicContacts?: typeof publicHotelProfile.hotel.publicContacts;
 };
 
 export async function mockBookingApis(page: Page, options: MockBookingApisOptions = {}) {
+  const gardenAmenities = options.gardenAmenities;
   const profile = {
     ...publicHotelProfile,
     hotel: {
@@ -325,12 +344,25 @@ export async function mockBookingApis(page: Page, options: MockBookingApisOption
             },
           }
         : {}),
+      publicContacts: options.publicContacts ?? publicHotelProfile.hotel.publicContacts,
       supportedQuoteParameters: {
         ...publicHotelProfile.hotel.supportedQuoteParameters,
         ...options.supportedQuoteParameters,
       },
     },
   };
+  const offersResponse =
+    gardenAmenities === undefined
+      ? publicOffers
+      : {
+          ...publicOffers,
+          quote: {
+            ...publicOffers.quote,
+            offers: publicOffers.quote.offers.map((offer) =>
+              offer.roomTypeId === "garden-room" ? { ...offer, amenities: gardenAmenities } : offer,
+            ),
+          },
+        };
 
   await page.route("**/api/events", async (route) => {
     await route.fulfill({ status: 204, body: "" });
@@ -355,7 +387,7 @@ export async function mockBookingApis(page: Page, options: MockBookingApisOption
   );
 
   await page.route(`**/api/booking-web/hotels/${SEEDED_BOOKING_SLUG}/offers**`, async (route) => {
-    await route.fulfill({ json: publicOffers });
+    await route.fulfill({ json: offersResponse });
   });
 
   await page.route(`**/api/booking-web/hotels/${SEEDED_BOOKING_SLUG}/calendar**`, async (route) => {

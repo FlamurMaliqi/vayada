@@ -14,6 +14,7 @@ import {
   type BookingReservation,
   type BookingReservationList,
 } from "@/services/api/bookingReservationsClient";
+import { paymentMethodLabel } from "@vayada/locale-constants";
 
 const PAGE_SIZE = 20;
 
@@ -320,7 +321,8 @@ function ReservationRow({ booking }: { booking: BookingReservation }) {
           {formatCurrency(booking.totalAmount, booking.currency)}
         </div>
         <div className="mt-1 text-[12px] text-gray-500">
-          {booking.paymentStatus || booking.paymentMethod || "Payment pending"}
+          {booking.paymentStatus ||
+            (booking.paymentMethod ? paymentMethodLabel(booking.paymentMethod) : "Payment pending")}
         </div>
       </TableCell>
       <TableCell>

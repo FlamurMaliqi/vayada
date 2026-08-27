@@ -164,7 +164,7 @@ export function compositionFixture() {
   return composition;
 }
 
-function pricingEvidence(): BookingPricingOwnerEvidenceInput {
+export function pricingEvidence(): BookingPricingOwnerEvidenceInput {
   return structuredClone({
     roomPublication: {
       contractVersion: "pms-room-publication.v1",

@@ -1,4 +1,5 @@
 import { injectJson } from "@vayada/backend-test";
+import { buildBookingPublicContent } from "@vayada/domain-distribution/booking-publication";
 import { PUBLIC_BOOKABILITY_FIXTURES } from "@vayada/domain-distribution/fixtures";
 import type { FastifyInstance } from "fastify";
 import type { QueryResultRow } from "pg";
@@ -10,11 +11,10 @@ import { createPublicRuntimeRepositories } from "./publicRuntime.js";
 import type { PublicHotelQuoteReadPool } from "./routes/aiHotelQuotes.js";
 import type { PublicHotelProfileReadPool } from "./routes/aiHotels.js";
 import type { BookingWebCalendarReadPool } from "./routes/bookingWebPublic.js";
+import { unusedBookingWebCheckoutAdapter } from "./routes/bookingWebPublic.fixtures.js";
 import type { MarketplaceDiscoveryReadPool } from "./routes/marketplaceDiscovery.js";
 
 const legacyRuntimeEnvKeys = [
-  "BOOKING_DATABASE_URL",
-  "BOOKING_RESERVATIONS_READ_DATABASE_URL",
   "BOOKING_PUBLIC_API_URL",
   "PMS_API_URL",
   "PMS_PUBLIC_API_URL",
@@ -24,14 +24,9 @@ const legacyRuntimeEnvKeys = [
 const nextApiLegacyFreeEnv: NodeJS.ProcessEnv = {
   API_RUNTIME: "next",
   TARGET_DATABASE_URL: "postgresql://target-db",
-  PUBLIC_HOTEL_PROFILE_SOURCE: "target",
-  BOOKING_DOMAIN_RESOLUTION_SOURCE: "target",
-  PUBLIC_BOOKABILITY_SOURCE: "target",
-  BOOKING_SETTINGS_SOURCE: "target",
-  BOOKING_RESERVATIONS_SOURCE: "target",
+  PUBLIC_HOTEL_PROFILE_SOURCE: "active_publication",
   PMS_OPERATIONS_SOURCE: "target",
   FINANCE_SOURCE: "target",
-  BOOKING_CHECKOUT_COMMAND_SOURCE: "target",
 };
 
 const publicBookabilityFixture = PUBLIC_BOOKABILITY_FIXTURES.find(
@@ -40,15 +35,27 @@ const publicBookabilityFixture = PUBLIC_BOOKABILITY_FIXTURES.find(
 
 const publicHotelProfilePool: PublicHotelProfileReadPool = {
   async query<T extends QueryResultRow>(text: string, values?: readonly unknown[]) {
-    expect(text).toContain("distribution.public_hotel_bookability_profiles");
+    expect(text).toContain("distribution.active_public_booking_revision");
+    expect(text).toContain("distribution.public_booking_content_revisions");
+    expect(text).not.toContain("distribution.public_hotel_bookability_profiles");
     expect(text).not.toContain("booking_hotels");
 
-    const customDomainUrl = text.includes("property_domains")
-      ? `https://${String(values?.[0])}`
-      : publicBookabilityFixture.profile.hotel.customDomainUrl;
+    const fixtureProfile = structuredClone(publicBookabilityFixture.profile);
+    if (text.includes("hotel_catalog.property_domains")) {
+      const origin = `https://${String(values?.[0])}`;
+      fixtureProfile.hotel.canonicalUrl = `${origin}/en`;
+      fixtureProfile.hotel.bookingBaseUrl = origin;
+      fixtureProfile.hotel.customDomainUrl = origin;
+      fixtureProfile.hotel.trust.domainVerified = true;
+    }
 
     return {
-      rows: [targetPublicHotelProfileRow(customDomainUrl)] as T[],
+      rows: [
+        {
+          propertyId: fixtureProfile.hotel.propertyId,
+          publicContent: activeContent(fixtureProfile),
+        },
+      ] as unknown as T[],
     };
   },
   async end() {},
@@ -108,16 +115,9 @@ describe("next-api legacy-free runtime check", () => {
     const config = loadConfig(nextApiLegacyFreeEnv);
     expect(config).toMatchObject({
       apiRuntime: "next",
-      bookingDatabaseUrl: undefined,
-      bookingReservationsReadDatabaseUrl: undefined,
-      publicHotelProfileSource: "target",
-      bookingDomainResolutionSource: "target",
-      publicBookabilitySource: "target",
-      bookingSettingsSource: "target",
-      bookingReservationsSource: "target",
+      publicHotelProfileSource: "active_publication",
       pmsOperationsSource: "target",
       financeSource: "target",
-      bookingCheckoutCommandSource: "target",
     });
 
     const publicRuntime = createPublicRuntimeRepositories(config, {
@@ -130,7 +130,7 @@ describe("next-api legacy-free runtime check", () => {
     app = buildApp({
       logger: false,
       ...publicRuntime,
-      bookingDomainResolutionSource: config.bookingDomainResolutionSource,
+      bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     });
     await app.ready();
 
@@ -158,52 +158,59 @@ describe("next-api legacy-free runtime check", () => {
   });
 });
 
-function targetPublicHotelProfileRow(customDomainUrl: string | null): QueryResultRow {
-  const profile = publicBookabilityFixture.profile;
-  const hotel = profile.hotel;
-
-  return {
-    propertyId: hotel.propertyId,
-    contractVersion: profile.contractVersion,
-    publicVisibility: profile.publicVisibility,
-    publicId: hotel.propertyId,
-    canonicalSlug: hotel.slug,
-    canonicalUrl: hotel.canonicalUrl,
-    bookingBaseUrl: hotel.bookingBaseUrl,
-    customDomainUrl,
-    timezone: hotel.timezone,
-    defaultLocale: hotel.defaultLocale,
-    supportedLocales: hotel.supportedLocales,
-    defaultCurrency: hotel.defaultCurrency,
-    supportedCurrencies: hotel.supportedCurrencies,
-    profileStatus: "public",
-    publicIdentity: {
-      propertyId: hotel.propertyId,
-      slug: hotel.slug,
-      name: hotel.name,
-      summary: hotel.summary,
+function activeContent(profile: typeof publicBookabilityFixture.profile) {
+  const result = buildBookingPublicContent({
+    sourceManifestHash: `sha256:${"1".repeat(64)}`,
+    readinessHash: `sha256:${"2".repeat(64)}`,
+    profile,
+    rooms: [
+      {
+        roomTypeId: "room-1",
+        name: "Room",
+        description: "A room.",
+        category: null,
+        occupancy: { maxGuests: 2, maxAdults: 2, maxChildren: 0 },
+        beds: [{ type: "double", quantity: 1 }],
+        bedrooms: 1,
+        bathrooms: 1,
+        bathroomType: "private",
+        size: null,
+        images: [{ url: "https://cdn.example/room.jpg" }],
+        amenities: ["wifi"],
+        rates: [
+          {
+            ratePlanId: "rate-1",
+            currency: "EUR",
+            baseNightlyAmount: "100.00",
+            refundable: true,
+            paymentTiming: "pay_at_property",
+          },
+        ],
+      },
+    ],
+    calendar: {
+      sourceRevision: "calendar-1",
+      materializedRevision: "calendar-1",
+      currentLocalDate: "2026-06-06",
+      coverageFrom: "2026-06-06",
+      coverageThrough: "2027-06-06",
+      materializedThrough: "2027-06-06",
+      expectedDayCount: 366,
+      materializedDayCount: 366,
+      gapCount: 0,
+      roomTypeIds: ["room-1"],
+      observedAt: profile.generatedAt,
     },
-    location: hotel.location,
-    media: hotel.images,
-    amenities: hotel.amenities,
-    policies: hotel.policies,
-    capabilities: hotel.capabilities,
-    supportedQuoteParameters: hotel.supportedQuoteParameters,
-    publicSetupCompleteness: { status: "ready", missing: [] },
-    sourceFreshness: Object.fromEntries(
-      profile.freshness.sources.map((source) => [
-        source.owner,
-        {
-          status: source.status,
-          generatedAt: source.lastUpdatedAt,
-          reasonCode: source.reasonCode,
-        },
-      ]),
-    ),
-    freshnessStatus: profile.freshness.status,
-    dataSources: profile.dataSources,
-    generatedAt: profile.generatedAt,
-  };
+    finance: {
+      defaultCurrency: "EUR",
+      supportedCurrencies: ["EUR"],
+      onlinePayment: true,
+      payAtProperty: true,
+      readyPaymentMethods: ["card", "pay_at_property"],
+    },
+  });
+  if (!result) throw new Error("Expected valid active-publication fixture");
+  return result.publicContent;
 }
 
 function targetPublicHotelQuoteRow(): QueryResultRow {

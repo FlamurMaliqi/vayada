@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 import type {
   BookingAdditionalGuestCreateCommand,
@@ -11,7 +13,17 @@ import type {
   BookingGuestPiiPort,
   BookingGuestPiiProjection,
   BookingGuestPiiRole,
+  BookingPrimaryGuestNationalityCorrectionCommand,
 } from "@vayada/domain-booking";
+import { normalizeNationalityCode } from "@vayada/locale-constants";
+
+import {
+  BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL,
+  guestContactForPropertyPlan,
+  HIDDEN_GUEST_CONTACT,
+  propertyCanAccessGuestContact,
+} from "../domains/bookingGuestContactAccess.js";
+import { readPropertyPlan } from "../domains/propertyPlanReadModel.js";
 
 export type BookingGuestPiiClient = {
   query<T extends QueryResultRow = QueryResultRow>(
@@ -42,14 +54,21 @@ type BookingGuestPiiRow = {
   email: string | null;
   phone: string | null;
   countryCode: string | null;
+  countryCodeRaw: string | null;
+  countryCodeReviewRequired: boolean;
   arrivalTime: string | null;
   specialRequests: string | null;
+};
+
+type BookingGuestPiiProjectionRow = BookingGuestPiiRow & {
+  guestContactAccepted: boolean;
 };
 
 type BookingGuestPiiCommand =
   | BookingAdditionalGuestCreateCommand
   | BookingAdditionalGuestUpdateCommand
-  | BookingAdditionalGuestDeleteCommand;
+  | BookingAdditionalGuestDeleteCommand
+  | BookingPrimaryGuestNationalityCorrectionCommand;
 
 export function createTargetBookingGuestPiiPort(
   config: TargetBookingGuestPiiPortConfig,
@@ -75,6 +94,80 @@ export function createTargetBookingGuestPiiPort(
           return null;
         }
         return listGuestPiiProjection(client, input.propertyId, input.guestBookingId);
+      } finally {
+        client.release();
+      }
+    },
+
+    async correctPrimaryGuestNationalityForPmsOperations(command) {
+      const countryCode = normalizeNationalityCode(command.countryCode);
+      if (!countryCode) return invalidGuestPii("Primary guest nationality is not supported.");
+
+      const client = await pool.connect();
+      const acceptedAt = now().toISOString();
+      try {
+        await client.query("BEGIN");
+        if (!(await reservationExists(client, command.propertyId, command.guestBookingId))) {
+          await client.query("ROLLBACK");
+          return reservationNotFound(command.guestBookingId);
+        }
+        const reservation = await reserveNationalityCorrection(
+          client,
+          command,
+          countryCode,
+          acceptedAt,
+        );
+        if ("error" in reservation) {
+          await client.query("ROLLBACK");
+          return reservation.error;
+        }
+        if (!reservation.replayed) {
+          const result = await client.query<{ guestId: string }>(
+            `UPDATE booking.booking_guests
+             SET country_code = $1, country_code_raw = NULL,
+                 country_code_review_required = FALSE, updated_at = $2::timestamptz
+             WHERE id = (
+               SELECT id FROM booking.booking_guests
+               WHERE guest_booking_id = $3::uuid
+                 AND guest_role IN ('booker', 'primary_guest')
+               ORDER BY CASE guest_role WHEN 'booker' THEN 0 ELSE 1 END, created_at, id
+               LIMIT 1 FOR UPDATE
+             ) RETURNING id::text AS "guestId"`,
+            [countryCode, acceptedAt, command.guestBookingId],
+          );
+          const guestId = result.rows[0]?.guestId;
+          if (!guestId) {
+            await client.query("ROLLBACK");
+            return primaryGuestNotFound(command.guestBookingId);
+          }
+          await insertGuestPiiAuditEvent(client, command, {
+            action: "booking.guest_pii.primary_guest.nationality_corrected",
+            auditKey: `booking.guest_pii.${reservation.id}.v1`,
+            idempotencyId: reservation.id,
+            guestId,
+            acceptedAt,
+            privatePayload: { countryCode },
+          });
+          await completeNationalityCorrection(client, reservation.id, guestId, acceptedAt);
+        }
+        const projection = await listGuestPiiProjection(
+          client,
+          command.propertyId,
+          command.guestBookingId,
+        );
+        const primaryGuest = projection.primaryGuest;
+        if (!primaryGuest) throw new Error("Corrected primary guest was not projected");
+        await client.query("COMMIT");
+        return {
+          ok: true,
+          primaryGuest,
+          projection,
+          commandMeta: guestPiiCommandMeta(command, acceptedAt),
+          replayed: reservation.replayed || undefined,
+        };
+      } catch (error) {
+        await rollbackQuietly(client);
+        throw error;
       } finally {
         client.release();
       }
@@ -126,7 +219,9 @@ export function createTargetBookingGuestPiiPort(
              last_name AS "lastName",
              email,
              phone,
-             country_code AS "countryCode",
+             NULLIF(BTRIM(country_code), '') AS "countryCode",
+             country_code_raw AS "countryCodeRaw",
+             country_code_review_required AS "countryCodeReviewRequired",
              arrival_time AS "arrivalTime",
              special_requests AS "specialRequests"`,
           [
@@ -153,8 +248,17 @@ export function createTargetBookingGuestPiiPort(
           command.propertyId,
           command.guestBookingId,
         );
+        const visibleAdditionalGuest = projection.additionalGuests.find(
+          (guest) => guest.guestId === additionalGuest.guestId,
+        );
+        if (!visibleAdditionalGuest) throw new Error("Created additional guest was not projected");
         await client.query("COMMIT");
-        return { ok: true, additionalGuest, projection, commandMeta };
+        return {
+          ok: true,
+          additionalGuest: visibleAdditionalGuest,
+          projection,
+          commandMeta,
+        };
       } catch (error) {
         await rollbackQuietly(client);
         if (isPgUniqueViolation(error)) {
@@ -186,7 +290,15 @@ export function createTargetBookingGuestPiiPort(
           await client.query("ROLLBACK");
           return additionalGuestNotFound(command.guestId);
         }
-        const merged = { ...existing, ...definedGuestFields(command.guest) };
+        const canWriteContact = await canPropertyAccessGuestContact(
+          client,
+          command.propertyId,
+          command.guestBookingId,
+        );
+        const merged = {
+          ...existing,
+          ...definedGuestFields(command.guest, canWriteContact),
+        };
         const result = await client.query<BookingGuestPiiRow>(
           `UPDATE booking.booking_guests
            SET first_name = $1,
@@ -194,6 +306,10 @@ export function createTargetBookingGuestPiiPort(
                email = $3,
                phone = $4,
                country_code = $5,
+               country_code_raw = CASE WHEN $11::boolean THEN NULL ELSE country_code_raw END,
+               country_code_review_required = CASE
+                 WHEN $11::boolean THEN FALSE ELSE country_code_review_required
+               END,
                arrival_time = $6,
                special_requests = $7,
                updated_at = $8::timestamptz
@@ -208,7 +324,9 @@ export function createTargetBookingGuestPiiPort(
              last_name AS "lastName",
              email,
              phone,
-             country_code AS "countryCode",
+             NULLIF(BTRIM(country_code), '') AS "countryCode",
+             country_code_raw AS "countryCodeRaw",
+             country_code_review_required AS "countryCodeReviewRequired",
              arrival_time AS "arrivalTime",
              special_requests AS "specialRequests"`,
           [
@@ -222,6 +340,7 @@ export function createTargetBookingGuestPiiPort(
             acceptedAt,
             command.guestId,
             command.guestBookingId,
+            command.guest.countryCode !== undefined,
           ],
         );
         const additionalGuest = toBookingGuestPii(result.rows[0]!);
@@ -236,8 +355,20 @@ export function createTargetBookingGuestPiiPort(
           command.propertyId,
           command.guestBookingId,
         );
+        const visibleAdditionalGuest = projection.additionalGuests.find(
+          (guest) => guest.guestId === additionalGuest.guestId,
+        );
+        if (!visibleAdditionalGuest) throw new Error("Updated additional guest was not projected");
         await client.query("COMMIT");
-        return { ok: true, additionalGuest, projection, commandMeta };
+        return {
+          ok: true,
+          additionalGuest: visibleAdditionalGuest,
+          projection,
+          commandMeta,
+        };
+      } catch (error) {
+        await rollbackQuietly(client);
+        throw error;
       } finally {
         client.release();
       }
@@ -279,6 +410,9 @@ export function createTargetBookingGuestPiiPort(
         );
         await client.query("COMMIT");
         return { ok: true, guestId, projection, commandMeta };
+      } catch (error) {
+        await rollbackQuietly(client);
+        throw error;
       } finally {
         client.release();
       }
@@ -310,7 +444,8 @@ async function listGuestPiiProjection(
   propertyId: string,
   guestBookingId: string,
 ): Promise<BookingGuestPiiProjection> {
-  const result = await client.query<BookingGuestPiiRow>(
+  const propertyPlan = await readPropertyPlan(client, propertyId);
+  const result = await client.query<BookingGuestPiiProjectionRow>(
     `SELECT
        guest.id::text AS "guestId",
        guest.guest_booking_id::text AS "guestBookingId",
@@ -319,7 +454,10 @@ async function listGuestPiiProjection(
        guest.last_name AS "lastName",
        guest.email,
        guest.phone,
-       guest.country_code AS "countryCode",
+       ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
+       NULLIF(BTRIM(guest.country_code), '') AS "countryCode",
+       guest.country_code_raw AS "countryCodeRaw",
+       guest.country_code_review_required AS "countryCodeReviewRequired",
        guest.arrival_time AS "arrivalTime",
        guest.special_requests AS "specialRequests"
      FROM booking.booking_guests guest
@@ -337,7 +475,11 @@ async function listGuestPiiProjection(
        guest.id`,
     [propertyId, guestBookingId],
   );
-  const guests = result.rows.map(toBookingGuestPii);
+  const guests = result.rows.map((row) => {
+    const guest = toBookingGuestPii(row);
+    const contact = guestContactForPropertyPlan(propertyPlan, row.guestContactAccepted, guest);
+    return { ...guest, ...contact };
+  });
   return {
     propertyId,
     guestBookingId,
@@ -359,7 +501,9 @@ async function findAdditionalGuest(
        last_name AS "lastName",
        email,
        phone,
-       country_code AS "countryCode",
+       NULLIF(BTRIM(country_code), '') AS "countryCode",
+       country_code_raw AS "countryCodeRaw",
+       country_code_review_required AS "countryCodeReviewRequired",
        arrival_time AS "arrivalTime",
        special_requests AS "specialRequests"
      FROM booking.booking_guests
@@ -373,11 +517,90 @@ async function findAdditionalGuest(
   return result.rows[0] ? toBookingGuestPii(result.rows[0]) : null;
 }
 
+async function canPropertyAccessGuestContact(
+  client: BookingGuestPiiClient,
+  propertyId: string,
+  guestBookingId: string,
+): Promise<boolean> {
+  const propertyPlan = await readPropertyPlan(client, propertyId);
+  if (propertyPlan.limits.guestContactAccess === "always") return true;
+  const result = await client.query<{ guestContactAccepted: boolean }>(
+    `SELECT ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted"
+     FROM booking.guest_bookings booking
+     WHERE booking.property_id = $1::uuid
+       AND booking.id = $2::uuid`,
+    [propertyId, guestBookingId],
+  );
+  return propertyCanAccessGuestContact(propertyPlan, result.rows[0]?.guestContactAccepted === true);
+}
+
+async function reserveNationalityCorrection(
+  client: BookingGuestPiiClient,
+  command: BookingPrimaryGuestNationalityCorrectionCommand,
+  countryCode: string,
+  acceptedAt: string,
+): Promise<
+  { id: string; replayed: boolean } | { error: Exclude<BookingGuestPiiCommandResult, { ok: true }> }
+> {
+  const fingerprint = sha256(
+    JSON.stringify([command.propertyId, command.guestBookingId, countryCode]),
+  );
+  const result = await client.query<{
+    id: string;
+    requestFingerprintHash: string;
+    status: string;
+    inserted: boolean;
+  }>(
+    `INSERT INTO platform.idempotency_keys (
+       operation_scope, operation, key_hash, request_fingerprint_hash, status,
+       tenant_scope, property_id, correlation_id, first_seen_at, last_seen_at, expires_at
+     ) VALUES (
+       'booking', 'primary_guest_nationality.correct.v1', $1, $2, 'in_progress',
+       'property', $3::uuid, $4, $5::timestamptz, $5::timestamptz,
+       $5::timestamptz + interval '24 hours'
+     ) ON CONFLICT (operation_scope, operation, key_hash, scope_key)
+       DO UPDATE SET last_seen_at = platform.idempotency_keys.last_seen_at
+     RETURNING id::text, request_fingerprint_hash AS "requestFingerprintHash", status,
+       (xmax = 0) AS inserted`,
+    [
+      sha256(command.idempotencyKey),
+      fingerprint,
+      command.propertyId,
+      command.audit.correlationId ?? command.audit.requestId,
+      acceptedAt,
+    ],
+  );
+  const row = result.rows[0]!;
+  if (row.requestFingerprintHash !== fingerprint || (!row.inserted && row.status !== "completed")) {
+    return { error: idempotencyConflict("Nationality correction idempotency key conflicts.") };
+  }
+  return { id: row.id, replayed: !row.inserted };
+}
+
+async function completeNationalityCorrection(
+  client: BookingGuestPiiClient,
+  idempotencyId: string,
+  guestId: string,
+  acceptedAt: string,
+): Promise<void> {
+  const result = await client.query(
+    `UPDATE platform.idempotency_keys
+     SET status = 'completed', response_status_code = 200, completed_at = $2::timestamptz,
+         last_seen_at = $2::timestamptz, response_resource_product = 'booking',
+         response_resource_type = 'booking_guest', response_resource_id = $3
+     WHERE id = $1::uuid AND status = 'in_progress'`,
+    [idempotencyId, acceptedAt, guestId],
+  );
+  if (result.rowCount !== 1) throw new Error("Nationality correction completion failed");
+}
+
 async function insertGuestPiiAuditEvent(
   client: BookingGuestPiiClient,
   command: BookingGuestPiiCommand,
   input: {
     action: string;
+    auditKey?: string;
+    idempotencyId?: string;
     guestId: string;
     acceptedAt: string;
     privatePayload: Record<string, unknown>;
@@ -403,6 +626,7 @@ async function insertGuestPiiAuditEvent(
        secondary_resource_id,
        correlation_id,
        causation_id,
+       idempotency_key_id,
        redacted_payload,
        private_payload,
        audit_metadata,
@@ -416,18 +640,19 @@ async function insertGuestPiiAuditEvent(
        1,
        $3::timestamptz,
        'property',
+       NULL,
        $4::uuid,
-       $5::uuid,
        'user',
-       $6::uuid,
+       $5::uuid,
        'booking',
        'booking_guest',
-       $7,
+       $6,
        'booking',
        'guest_booking',
+       $7,
        $8,
        $9,
-       $10,
+       $10::uuid,
        $11::jsonb,
        $12::jsonb,
        $13::jsonb,
@@ -436,16 +661,16 @@ async function insertGuestPiiAuditEvent(
      )
      ON CONFLICT (product, audit_key) DO NOTHING`,
     [
-      `booking.guest_pii.${command.commandId}.${input.guestId}.v1`,
+      input.auditKey ?? `booking.guest_pii.${command.commandId}.${input.guestId}.v1`,
       input.action,
       input.acceptedAt,
-      command.audit.actorOrganizationId,
       command.propertyId,
       command.audit.actorUserId,
       input.guestId,
       command.guestBookingId,
       command.audit.correlationId ?? command.audit.requestId,
       command.commandId,
+      input.idempotencyId ?? null,
       JSON.stringify({
         propertyId: command.propertyId,
         guestBookingId: command.guestBookingId,
@@ -458,6 +683,7 @@ async function insertGuestPiiAuditEvent(
         reason: command.audit.reason,
         requestId: command.audit.requestId,
         idempotencyKey: command.idempotencyKey,
+        authorizedOrganizationId: command.audit.actorOrganizationId,
       }),
     ],
   );
@@ -475,6 +701,8 @@ function toBookingGuestPii(row: BookingGuestPiiRow): BookingGuestPii {
     email: row.email,
     phone: row.phone,
     countryCode: row.countryCode,
+    countryCodeRaw: row.countryCodeRaw,
+    countryCodeReviewRequired: row.countryCodeReviewRequired,
     arrivalTime: row.arrivalTime,
     specialRequests: row.specialRequests,
   };
@@ -510,8 +738,8 @@ function validateAdditionalGuestInput(
   }
   if (guest.countryCode !== undefined && guest.countryCode !== null) {
     const countryCode = guest.countryCode.trim();
-    if (countryCode && !/^[A-Za-z]{2}$/.test(countryCode)) {
-      return invalidGuestPii("Additional guest countryCode must be an ISO-3166 alpha-2 code.");
+    if (countryCode && !normalizeNationalityCode(countryCode)) {
+      return invalidGuestPii("Additional guest nationality is not supported.");
     }
   }
   return null;
@@ -519,10 +747,16 @@ function validateAdditionalGuestInput(
 
 function definedGuestFields(
   guest: Partial<BookingAdditionalGuestInput>,
+  includeGuestContact = true,
 ): BookingAdditionalGuestInput {
   return Object.fromEntries(
     Object.entries(guest)
-      .filter(([, value]) => value !== undefined)
+      .filter(
+        ([key, value]) =>
+          value !== undefined &&
+          (includeGuestContact || (key !== "email" && key !== "phone")) &&
+          !((key === "email" || key === "phone") && value === HIDDEN_GUEST_CONTACT),
+      )
       .map(([key, value]) => [
         key,
         key === "countryCode"
@@ -538,7 +772,7 @@ function nullableTrimmed(value: unknown): string | null {
 
 function nullableCountryCode(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
-  return trimmed ? trimmed.toUpperCase() : null;
+  return trimmed ? normalizeNationalityCode(trimmed) : null;
 }
 
 function invalidGuestPii(message: string): Exclude<BookingGuestPiiCommandResult, { ok: true }> {
@@ -567,6 +801,17 @@ function additionalGuestNotFound(
   };
 }
 
+function primaryGuestNotFound(
+  guestBookingId: string,
+): Exclude<BookingGuestPiiCommandResult, { ok: true }> {
+  return {
+    ok: false,
+    statusCode: 404,
+    code: "primary_guest_not_found",
+    message: `Primary guest for booking ${guestBookingId} was not found.`,
+  };
+}
+
 function idempotencyConflict(message: string): Exclude<BookingGuestPiiCommandResult, { ok: true }> {
   return { ok: false, statusCode: 409, code: "idempotency_conflict", message };
 }
@@ -581,4 +826,8 @@ async function rollbackQuietly(client: BookingGuestPiiClient): Promise<void> {
 
 function isPgUniqueViolation(error: unknown): boolean {
   return !!error && typeof error === "object" && (error as { code?: string }).code === "23505";
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }

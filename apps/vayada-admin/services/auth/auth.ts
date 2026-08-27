@@ -19,8 +19,8 @@ import {
   type AuthKitSessionResponse,
 } from "./sessionStore";
 
-const AUTH_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL || "https://api.localhost";
 const PLATFORM_AUTH_SURFACE = "platform-admin";
+const AUTH_BROWSER_BASE_PATH = "/auth";
 
 type CompatibilityTokenResponse = {
   accessToken: string;
@@ -29,7 +29,7 @@ type CompatibilityTokenResponse = {
 };
 
 async function authFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${AUTH_API_BASE_URL}${endpoint}`, {
+  const response = await fetch(`${AUTH_BROWSER_BASE_PATH}${endpoint}`, {
     ...options,
     credentials: "include",
     headers: {
@@ -61,7 +61,7 @@ async function attachMarketplaceCompatibilityToken(
 
   try {
     const response = await authFetch<CompatibilityTokenResponse>(
-      "/auth/compat/marketplace-admin-token",
+      "/compat/marketplace-admin-token",
       {
         method: "POST",
         headers: { "x-vayada-csrf": csrfToken },
@@ -92,13 +92,15 @@ export const authService = {
     const csrfToken = getAuthCsrfToken();
     const response =
       organizationId && csrfToken
-        ? await authFetch<AuthKitSessionResponse>("/auth/session/refresh", {
+        ? await authFetch<AuthKitSessionResponse>("/session/refresh", {
             method: "POST",
             signal,
             headers: { "x-vayada-csrf": csrfToken },
-            body: JSON.stringify({ organizationId }),
+            body: JSON.stringify({ organizationId, surface: PLATFORM_AUTH_SURFACE }),
           })
-        : await authFetch<AuthKitSessionResponse>("/auth/session", { signal });
+        : await authFetch<AuthKitSessionResponse>(`/session?surface=${PLATFORM_AUTH_SURFACE}`, {
+            signal,
+          });
 
     const committedGeneration = setAuthKitSession(response, expectedGeneration);
     if (committedGeneration === null) return null;
@@ -125,9 +127,14 @@ export const authService = {
   },
 
   login: async (data: LoginRequest): Promise<LoginResponse> => {
-    const response = await authFetch<AuthKitSessionResponse>("/auth/password/login", {
+    const organizationId = process.env.NEXT_PUBLIC_PLATFORM_WORKOS_ORG_ID?.trim();
+    const response = await authFetch<AuthKitSessionResponse>("/password/login", {
       method: "POST",
-      body: JSON.stringify({ ...data, surface: PLATFORM_AUTH_SURFACE }),
+      body: JSON.stringify({
+        ...data,
+        surface: PLATFORM_AUTH_SURFACE,
+        ...(organizationId ? { organizationId } : {}),
+      }),
     });
     const committedGeneration = setAuthKitSession(response);
     if (committedGeneration !== null && isCompatibilityTokenEnabled()) {
@@ -156,9 +163,10 @@ export const authService = {
 
     if (isAuthKitLoginEnabled() && csrfToken) {
       try {
-        const response = await authFetch<{ logoutUrl: string }>("/auth/logout", {
+        const response = await authFetch<{ logoutUrl: string }>("/logout", {
           method: "POST",
           headers: { "x-vayada-csrf": csrfToken },
+          body: JSON.stringify({ surface: PLATFORM_AUTH_SURFACE }),
         });
         logoutUrl = response.logoutUrl;
       } catch {
@@ -201,8 +209,9 @@ export const authService = {
 
   forgotPassword: async (email: string): Promise<{ message: string }> => {
     try {
-      const response = await apiClient.post<{ message: string }>("/auth/forgot-password", {
-        email,
+      const response = await authFetch<{ message: string }>("/password/reset/request", {
+        method: "POST",
+        body: JSON.stringify({ email }),
       });
       return { message: response.message };
     } catch {
@@ -213,9 +222,9 @@ export const authService = {
   },
 
   resetPassword: async (token: string, newPassword: string): Promise<{ message: string }> => {
-    const response = await apiClient.post<{ message: string }>("/auth/reset-password", {
-      token,
-      new_password: newPassword,
+    const response = await authFetch<{ message: string }>("/password/reset/confirm", {
+      method: "POST",
+      body: JSON.stringify({ token, newPassword }),
     });
     return response;
   },

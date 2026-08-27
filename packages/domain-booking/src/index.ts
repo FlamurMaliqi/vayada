@@ -11,6 +11,11 @@ import {
   type PmsReservationSink,
 } from "@vayada/domain-pms";
 
+export {
+  parseFlexibleCancellationTerms as parseBookingFlexibleCancellationTerms,
+  type FlexibleCancellationTerms as BookingFlexibleCancellationTerms,
+} from "@vayada/domain-pms";
+
 export * from "./onboardingPublication.js";
 export * from "./bookingLaunchEvidence.js";
 export * from "./bookingLaunchReadiness.js";
@@ -27,6 +32,9 @@ export * from "./bookingGuestPolicyAggregate.js";
 export * from "./bookingGuestPolicyCurrentOwnerEvidence.js";
 export * from "./bookingGuestPolicyReadiness.js";
 export * from "./bookingGuestPolicyProjection.js";
+export * from "./manualBookingPaymentIntent.js";
+export * from "./bookingAttribution.js";
+export * from "./bookingAddonEconomics.js";
 
 export type BookingUtcDateTime = string;
 export type BookingDate = string;
@@ -42,6 +50,7 @@ export type BookingRevenueStats = {
   totalRevenue: BookingMoney;
   bookingCount: number;
   avgNightlyRate: BookingMoney;
+  pageViewCount: number;
 };
 
 export type BookingSourceMixItem = {
@@ -69,12 +78,32 @@ export type BookingSparklinePoint = {
   revenue: BookingMoney;
   bookingCount: number;
   avgNightlyRate: BookingMoney;
+  pageViewCount: number;
 };
 
 export type BookingSparklineReadModel = {
   propertyId: string;
   /** 7 contiguous non-overlapping date buckets */
   points: readonly BookingSparklinePoint[];
+};
+
+export type BookingPageViewBucket = {
+  /** Property-local calendar date. */
+  date: BookingDate;
+  count: number;
+};
+
+export type BookingPageViewTimelineReadModel = {
+  propertyId: string;
+  timeZone: string;
+  windowStart: BookingDate;
+  windowEnd: BookingDate;
+  previousWindowStart: BookingDate;
+  previousWindowEnd: BookingDate;
+  buckets: readonly BookingPageViewBucket[];
+  previousBuckets: readonly BookingPageViewBucket[];
+  total: number;
+  previousTotal: number;
 };
 
 export type BookingDashboardMetricsReadModel = {
@@ -119,6 +148,11 @@ export type BookingDashboardMetricsReadPort = {
     windowStart: BookingDate;
     windowEnd: BookingDate;
   }): Promise<BookingSparklineReadModel>;
+  getPageViewTimeline(input: {
+    propertyId: string;
+    windowStart: BookingDate;
+    windowEnd: BookingDate;
+  }): Promise<BookingPageViewTimelineReadModel | null>;
 };
 
 // ─── Booking reservations read model ────────────────────────────────────────
@@ -224,6 +258,8 @@ export type BookingGuestPii = {
   email: string | null;
   phone: string | null;
   countryCode: string | null;
+  countryCodeRaw: string | null;
+  countryCodeReviewRequired: boolean;
   arrivalTime: string | null;
   specialRequests: string | null;
 };
@@ -286,6 +322,13 @@ export type BookingAdditionalGuestDeleteCommand = Omit<
   guestId: string;
 };
 
+export type BookingPrimaryGuestNationalityCorrectionCommand = Omit<
+  BookingAdditionalGuestCreateCommand,
+  "guest"
+> & {
+  countryCode: string;
+};
+
 export type BookingGuestPiiCommandResult =
   | {
       ok: true;
@@ -300,6 +343,7 @@ export type BookingGuestPiiCommandResult =
       code:
         | "invalid_guest_pii"
         | "reservation_not_found"
+        | "primary_guest_not_found"
         | "additional_guest_not_found"
         | "idempotency_conflict";
       message: string;
@@ -309,6 +353,16 @@ export type BookingGuestPiiDeleteResult =
   | {
       ok: true;
       guestId: string;
+      projection: BookingGuestPiiProjection;
+      commandMeta: BookingGuestPiiCommandMeta;
+      replayed?: boolean;
+    }
+  | Exclude<BookingGuestPiiCommandResult, { ok: true }>;
+
+export type BookingPrimaryGuestNationalityCorrectionResult =
+  | {
+      ok: true;
+      primaryGuest: BookingGuestPii;
       projection: BookingGuestPiiProjection;
       commandMeta: BookingGuestPiiCommandMeta;
       replayed?: boolean;
@@ -326,6 +380,9 @@ export type BookingGuestPiiPort = {
     propertyId: string;
     guestBookingId: string;
   }): Promise<BookingGuestPiiProjection | null>;
+  correctPrimaryGuestNationalityForPmsOperations(
+    command: BookingPrimaryGuestNationalityCorrectionCommand,
+  ): Promise<BookingPrimaryGuestNationalityCorrectionResult>;
   createAdditionalGuestForPmsOperations(
     command: BookingAdditionalGuestCreateCommand,
   ): Promise<BookingGuestPiiCommandResult>;

@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
+import type { PlatformPropertyLifecycleStatus } from "@vayada/domain-hotels";
 
 import { enforceRoutePolicy } from "../../../policy.js";
 
@@ -32,6 +33,9 @@ export type PlatformAdminProperty = {
   name: string;
   slug: string;
   status: PlatformAdminPropertyStatus;
+  lifecycleStatus: PlatformPropertyLifecycleStatus;
+  lifecycleRevision: number;
+  ownerAccountUserIds: string[];
   createdAt: string;
 };
 
@@ -98,8 +102,9 @@ type PlatformAdminBookingDbRow = Omit<
   respondedAt: Date | string | null;
 };
 
-type PlatformAdminPropertyDbRow = Omit<PlatformAdminProperty, "createdAt"> & {
+type PlatformAdminPropertyDbRow = Omit<PlatformAdminProperty, "createdAt" | "lifecycleRevision"> & {
   createdAt: Date | string;
+  lifecycleRevision: number | string;
 };
 
 const PLATFORM_ADMIN_RESOURCE = {
@@ -170,6 +175,7 @@ export function createTargetPlatformAdminDashboardRepository(config: {
       ]);
       return result.rows.map((row) => ({
         ...row,
+        lifecycleRevision: Number(row.lifecycleRevision),
         createdAt: toIsoString(row.createdAt),
       }));
     },
@@ -381,6 +387,23 @@ const TARGET_PLATFORM_PROPERTIES_SQL = `SELECT
     WHEN property.profile_status = 'disabled' THEN 'test'
     ELSE 'demo'
   END AS status,
+  property.lifecycle_status AS "lifecycleStatus",
+  property.lifecycle_revision AS "lifecycleRevision",
+  ARRAY(
+    SELECT DISTINCT membership.user_id::text
+    FROM identity.organization_resource_links owner_link
+    JOIN identity.organization_memberships membership
+      ON membership.organization_id = owner_link.organization_id
+     AND membership.status = 'active'
+    JOIN identity.users account
+      ON account.id = membership.user_id AND account.status = 'active'
+    WHERE owner_link.product = 'hotel_catalog'
+      AND owner_link.resource_type = 'property'
+      AND owner_link.resource_id = property.id::text
+      AND owner_link.relationship = 'owner'
+      AND owner_link.status = 'active'
+    ORDER BY membership.user_id::text
+  ) AS "ownerAccountUserIds",
   property.created_at AS "createdAt"
 FROM hotel_catalog.properties property
 LEFT JOIN LATERAL (

@@ -5,22 +5,28 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BoltIcon,
-  CalendarDaysIcon,
   ChevronLeftIcon,
   ChevronDownIcon,
   CheckIcon,
   Cog6ToothIcon,
-  SparklesIcon,
+  TicketIcon,
 } from "@heroicons/react/24/outline";
+import { activeNavModules, useFeatureModuleActivations } from "@vayada/feature-hub";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n";
+import { moduleActivationClient } from "@/services/api/moduleActivationClient";
 import { sharedHotelSetupApi } from "@/services/api/sharedHotelSetupClient";
+import { getAuthCsrfToken } from "@/services/auth/sessionStore";
+import {
+  createBrowserAuthHandoff,
+  crossAppReauthenticationUrl,
+  type BrowserAuthSurface,
+} from "@vayada/product-onboarding";
 
 type Product = "booking" | "pms" | "marketplace";
 
 const PMS_FRONTEND_URL = process.env.NEXT_PUBLIC_PMS_FRONTEND_URL || "https://pms.vayada.com";
 const MARKETPLACE_URL = process.env.NEXT_PUBLIC_MARKETPLACE_URL || "https://app.vayada.com";
-const RESERVATIONS_NAV_ENABLED = process.env.NEXT_PUBLIC_BOOKING_RESERVATIONS_ENABLED === "true";
 
 interface NavItem {
   labelKey?: string;
@@ -31,25 +37,71 @@ interface NavItem {
 
 const coreNavItems: NavItem[] = [
   { labelKey: "layout.sidebar.dashboard", href: "/", icon: DashboardIcon },
-  { label: "Ask Intelligence", href: "/ask", icon: SparklesIcon },
-  ...(RESERVATIONS_NAV_ENABLED
-    ? [{ label: "Reservations", href: "/reservations", icon: CalendarDaysIcon }]
-    : []),
   { labelKey: "layout.sidebar.designStudio", href: "/design-studio", icon: DesignStudioIcon },
   { labelKey: "layout.sidebar.bookingFlow", href: "/booking-flow", icon: BookingFlowIcon },
-  { labelKey: "layout.sidebar.settings", href: "/settings", icon: Cog6ToothIcon },
 ];
+
+const promoCodesNavItem: NavItem = {
+  label: "Promo Codes",
+  href: "/promo-codes",
+  icon: TicketIcon,
+};
+
+const settingsNavItem: NavItem = {
+  labelKey: "layout.sidebar.settings",
+  href: "/settings",
+  icon: Cog6ToothIcon,
+};
 
 export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [showSwitcher, setShowSwitcher] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
   const [enabledProducts, setEnabledProducts] = useState<Set<Product>>(
     () => new Set<Product>(["booking"]),
   );
   const switcherRef = useRef<HTMLDivElement>(null);
   const { t } = useTranslation();
-  const navItems = coreNavItems;
+  const { activeModuleIds, hotelId: activationPropertyId } =
+    useFeatureModuleActivations(moduleActivationClient);
+  const activeFeatureNavItems: NavItem[] = activationPropertyId
+    ? activeNavModules("booking_engine", activeModuleIds).map((module) => module.navItem!)
+    : [];
+  const navItems = [
+    ...coreNavItems,
+    ...activeFeatureNavItems,
+    promoCodesNavItem,
+    settingsNavItem,
+  ];
+
+  const switchApp = async (
+    baseUrl: string,
+    targetSurface: BrowserAuthSurface,
+    targetPath: string,
+  ) => {
+    setSwitchError(null);
+    setShowSwitcher(false);
+    const csrfToken = getAuthCsrfToken();
+    if (csrfToken) {
+      try {
+        window.location.href = await createBrowserAuthHandoff({
+          csrfToken,
+          sourceSurface: "booking-admin",
+          targetPath,
+          targetSurface,
+        });
+        return;
+      } catch {
+        // Require target-app authentication when the one-time exchange is unavailable.
+      }
+    }
+    try {
+      window.location.href = crossAppReauthenticationUrl(baseUrl, targetPath);
+    } catch {
+      setSwitchError("We couldn't open that app. Please try again later.");
+    }
+  };
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -137,6 +189,12 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           )}
         </button>
 
+        {switchError && (
+          <p className="px-3 py-2 text-xs text-red-600" role="alert">
+            {switchError}
+          </p>
+        )}
+
         {showSwitcher && !collapsed && (
           <div className="absolute top-full left-2 right-2 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1.5">
             <p className="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -197,7 +255,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 href="#"
                 onClick={(e) => {
                   e.preventDefault();
-                  window.location.href = PMS_FRONTEND_URL;
+                  void switchApp(PMS_FRONTEND_URL, "pms-web", "/dashboard");
                 }}
                 className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
               >
@@ -233,7 +291,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 href="#"
                 onClick={(e) => {
                   e.preventDefault();
-                  window.location.href = MARKETPLACE_URL;
+                  void switchApp(MARKETPLACE_URL, "marketplace-web", "/marketplace");
                 }}
                 className="flex items-center gap-2.5 px-3 py-2 hover:bg-gray-50 transition-colors"
               >

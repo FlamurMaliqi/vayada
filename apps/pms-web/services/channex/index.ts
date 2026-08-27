@@ -1,51 +1,69 @@
+import {
+  pmsOperationsClient,
+  pmsOperationsRequestOptions,
+} from "@/services/api/pmsOperationsClient";
 import { resolveSelectedPmsPropertyId } from "@/services/api/pmsPropertyClient";
-import { unsupportedPmsNextStackFeature } from "@/services/api/unsupported";
 
-export interface ChannexSyncStatus {
-  isConnected: boolean;
-  channexPropertyId: string | null;
-  roomTypesProvisioned: number;
-  ratePlansProvisioned: number;
-  lastBookingSyncAt: string | null;
-  lastAriSyncAt: string | null;
-  lastAriSyncError: string | null;
-  lastAriSyncFailedAt: string | null;
-  messagingAppInstalled: boolean;
+export type ChannexCapabilityMode = "observe_only" | "mutating";
+export type ChannexOperationType =
+  | "enable"
+  | "disable"
+  | "provision"
+  | "sync_ari"
+  | "sync_bookings"
+  | "update_markups"
+  | "install_messaging";
+export type ChannexOperationStatus =
+  | "queued"
+  | "running"
+  | "retry_scheduled"
+  | "succeeded"
+  | "failed"
+  | "dead_lettered";
+
+export interface ChannexOperation {
+  contractVersion: "pms-channex-management.v1";
+  operationId: string;
+  propertyId: string;
+  operationType: ChannexOperationType;
+  status: ChannexOperationStatus;
+  commandId: string;
+  idempotencyKey: string;
+  acceptedAt: string;
+  attemptsMade: number;
+  maxAttempts: number;
+  retryAfter: string | null;
+  lastError: { code: string; message: string } | null;
+}
+
+export interface ChannexSyncDomainState {
+  status: "pending" | "ok" | "degraded" | "failed" | "idle";
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  retryAfter: string | null;
 }
 
 export interface ChannexRoomTypeMapping {
-  id: string;
-  hotelId: string;
+  mappingId: string;
   roomTypeId: string;
-  roomTypeName: string | null;
-  channexRoomTypeId: string;
-  createdAt: string;
+  roomTypeName: string;
+  externalRoomTypeId: string;
+  status: "active" | "disabled" | "stale";
 }
 
 export interface ChannexRatePlanMapping {
-  id: string;
-  hotelId: string;
+  mappingId: string;
   roomTypeId: string;
-  channexRatePlanId: string;
-  channexRoomTypeId: string;
-  sellMode: string;
-  createdAt: string;
-}
-
-export interface ChannexEnableResult {
-  status: string;
-  channexPropertyId: string;
-  roomsCreated: number;
-  ratesCreated: number;
-}
-
-export interface ChannelMarkup {
+  ratePlanId: string;
+  ratePlanName: string;
   channel: string;
-  markupPct: number;
-}
-
-export interface ChannelMarkupsResponse {
-  markups: ChannelMarkup[];
+  externalRoomTypeId: string;
+  externalRatePlanId: string;
+  sellMode: "per_room" | "per_person";
+  markupPercent: number;
+  status: "active" | "disabled" | "stale";
 }
 
 export interface ConnectedChannel {
@@ -55,58 +73,107 @@ export interface ConnectedChannel {
   isActive: boolean;
 }
 
-export interface ConnectedChannelsResponse {
+export interface ChannexSnapshot {
+  contractVersion: "pms-channex-management.v1";
+  propertyId: string;
+  connection: {
+    status: "connected" | "disconnected" | "suspended" | "degraded" | "setup_incomplete";
+    externalPropertyId: string | null;
+    messagingAppInstalled: boolean;
+  };
+  mappings: {
+    roomTypes: ChannexRoomTypeMapping[];
+    ratePlans: ChannexRatePlanMapping[];
+  };
   channels: ConnectedChannel[];
+  markups: Array<{ channel: string; markupPercent: number }>;
+  sync: Record<"booking" | "ari" | "message" | "mapping", ChannexSyncDomainState>;
+  capabilityModes: {
+    connection: ChannexCapabilityMode;
+    provisioning: ChannexCapabilityMode;
+    ariSync: ChannexCapabilityMode;
+    bookingSync: ChannexCapabilityMode;
+    markups: ChannexCapabilityMode;
+    messaging: ChannexCapabilityMode;
+    iframe: ChannexCapabilityMode;
+  };
+  activeOperation: ChannexOperation | null;
+}
+
+export interface ChannelMarkup {
+  channel: string;
+  markupPct: number;
+}
+
+async function endpoint(action: string, suffix = "channex") {
+  const propertyId = await resolveSelectedPmsPropertyId(action);
+  return `/api/pms/properties/${encodeURIComponent(propertyId)}/${suffix}`;
+}
+
+async function command(operationType: Exclude<ChannexOperationType, "update_markups">) {
+  return pmsOperationsClient.post<ChannexOperation>(
+    await endpoint(`starting Channex ${operationType}`, "channex/commands"),
+    identity(operationType),
+    pmsOperationsRequestOptions,
+  );
+}
+
+function identity(operationType: ChannexOperationType) {
+  const commandId = crypto.randomUUID();
+  return { commandId, idempotencyKey: `${operationType}:${commandId}`, operationType };
 }
 
 export const channexService = {
-  // Enable / disable
-  enable: () => unsupportedPmsNextStackFeature<ChannexEnableResult>("Channex enablement"),
-
-  disable: () => unsupportedPmsNextStackFeature("Channex disablement"),
-
-  // Status
-  getStatus: async () => {
-    await resolveSelectedPmsPropertyId("loading channel manager status");
-    return unsupportedPmsNextStackFeature<ChannexSyncStatus>("Channex status");
+  async getSnapshot() {
+    return pmsOperationsClient.get<ChannexSnapshot>(
+      await endpoint("loading channel management"),
+      pmsOperationsRequestOptions,
+    );
   },
 
-  // Re-provision (after adding new room types)
-  provision: () =>
-    unsupportedPmsNextStackFeature<{
-      channexPropertyId: string;
-      roomsCreated: number;
-      ratesCreated: number;
-    }>("Channex provisioning"),
+  async getOperation(operationId: string) {
+    return pmsOperationsClient.get<ChannexOperation>(
+      await endpoint(
+        "loading a Channex operation",
+        `channex/operations/${encodeURIComponent(operationId)}`,
+      ),
+      pmsOperationsRequestOptions,
+    );
+  },
 
-  // Mappings
-  listRoomTypeMappings: () =>
-    unsupportedPmsNextStackFeature<ChannexRoomTypeMapping[]>("Channex room type mappings"),
+  enable: () => command("enable"),
+  disable: () => command("disable"),
+  provision: () => command("provision"),
+  syncAri: () => command("sync_ari"),
+  syncBookings: () => command("sync_bookings"),
+  installMessagingApp: () => command("install_messaging"),
 
-  listRatePlanMappings: () =>
-    unsupportedPmsNextStackFeature<ChannexRatePlanMapping[]>("Channex rate plan mappings"),
+  async getIframeUrl() {
+    const session = await pmsOperationsClient.post<{ iframeUrl: string; expiresAt: string }>(
+      await endpoint("opening Channex channel settings", "channex/iframe-session"),
+      undefined,
+      pmsOperationsRequestOptions,
+    );
+    return { iframe_url: session.iframeUrl, expiresAt: session.expiresAt };
+  },
 
-  // Sync
-  syncAri: () => unsupportedPmsNextStackFeature<{ status: string }>("Channex ARI sync"),
+  async updateMarkups(markups: ChannelMarkup[]) {
+    const request = identity("update_markups");
+    return pmsOperationsClient.put<ChannexOperation>(
+      await endpoint("updating channel markups", "channex/markups"),
+      {
+        commandId: request.commandId,
+        idempotencyKey: request.idempotencyKey,
+        markups: markups.map(({ channel, markupPct }) => ({
+          channel,
+          markupPercent: markupPct,
+        })),
+      },
+      pmsOperationsRequestOptions,
+    );
+  },
 
-  syncBookings: () => unsupportedPmsNextStackFeature<{ status: string }>("Channex booking sync"),
-
-  // Messaging app install (idempotent retry for the requesting hotel)
-  installMessagingApp: () =>
-    unsupportedPmsNextStackFeature<{ status: string }>("Channex messaging app install"),
-
-  // Channel iframe
-  getIframeUrl: () => unsupportedPmsNextStackFeature<{ iframe_url: string }>("Channex iframe"),
-
-  // Channel pricing markups
-  getMarkups: () => unsupportedPmsNextStackFeature<ChannelMarkupsResponse>("Channel markups"),
-
-  updateMarkups: (_markups: ChannelMarkup[]) =>
-    unsupportedPmsNextStackFeature<ChannelMarkupsResponse>("Channel markups"),
-
-  // Connected OTA channels
-  listChannels: async () => {
-    await resolveSelectedPmsPropertyId("loading connected channels");
-    return unsupportedPmsNextStackFeature<ConnectedChannelsResponse>("Connected OTA channels");
+  async listChannels() {
+    return { channels: (await this.getSnapshot()).channels };
   },
 };

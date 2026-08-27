@@ -43,23 +43,8 @@ export type ApiAuthSessionConfig = {
   authMarketplaceWebLogoutUrl?: string;
 };
 
-export type ApiAskIntelligenceConfig =
-  | { provider: "fixture" }
-  | {
-      provider: "openai";
-      apiKey: string;
-      model: string;
-      baseUrl?: string;
-      organization?: string;
-      project?: string;
-    };
-
-export type AskIntelligenceEvidenceSource = "fixture" | "target";
-export type PublicHotelProfileSource = "legacy" | "target";
-export type BookingDomainResolutionSource = "legacy" | "target";
-export type PublicBookabilitySource = "legacy" | "target";
+export type PublicHotelProfileSource = "target" | "active_publication";
 export type MarketplaceAdminSource = "disabled" | "target";
-export type BookingCheckoutCommandSource = "legacy_proxy" | "target";
 export type PmsOperationsSource = "disabled" | "target";
 export type FinanceSource = "legacy" | "target";
 export type BookingWebEventSink = "disabled" | "target";
@@ -74,6 +59,46 @@ export type ProviderWebhookConfig = {
   xenditMode: ProviderWebhookIntakeMode;
   channexMode: ProviderWebhookIntakeMode;
 };
+
+export type ChannexManagementMode = "observe_only" | "mutating";
+export type ChannexManagementConfig = {
+  apiBaseUrl?: string;
+  apiKey?: string;
+  bookingMutationOwner: "legacy" | "target" | "frozen";
+  workerEnabled: boolean;
+  capabilityModes: {
+    connection: ChannexManagementMode;
+    provisioning: ChannexManagementMode;
+    ariSync: ChannexManagementMode;
+    bookingSync: ChannexManagementMode;
+    markups: ChannexManagementMode;
+    messaging: ChannexManagementMode;
+    iframe: ChannexManagementMode;
+  };
+};
+
+export type StripeSubscriptionConfig = {
+  secretKey?: string;
+  fixedPlanPriceId?: string;
+  bookingAdminBaseUrl: string;
+};
+
+export type BookingEmailDeliveryConfig = {
+  provider: "resend";
+  apiKey: string;
+  from: string;
+};
+
+export function stripeSubscriptionRuntimeEnabled(
+  config: Pick<ApiConfig, "financeSource" | "providerWebhooks" | "stripeSubscriptions">,
+): boolean {
+  return (
+    config.financeSource === "target" &&
+    Boolean(config.stripeSubscriptions.secretKey) &&
+    Boolean(config.providerWebhooks.stripeSecret) &&
+    config.providerWebhooks.stripeMode === "mutating"
+  );
+}
 
 export type CreatorPlatformConnectionsConfig = {
   callbackBaseUrl: string;
@@ -107,16 +132,8 @@ export type ApiConfig = {
   apiRuntime: ApiRuntime;
   auth?: ApiAuthConfig;
   authSession?: ApiAuthSessionConfig;
-  askIntelligence: ApiAskIntelligenceConfig;
-  askIntelligenceEvidenceSource: AskIntelligenceEvidenceSource;
   targetDatabaseUrl?: string;
-  bookingDatabaseUrl?: string;
-  bookingReservationsSource: "legacy" | "target";
   publicHotelProfileSource: PublicHotelProfileSource;
-  bookingDomainResolutionSource: BookingDomainResolutionSource;
-  publicBookabilitySource: PublicBookabilitySource;
-  bookingSettingsSource: "legacy" | "target";
-  bookingReservationsReadDatabaseUrl?: string;
   marketplaceAdminSource: MarketplaceAdminSource;
   marketplaceAdminLegacySuperadminFallbackEnabled: boolean;
   pmsOperationsSource: PmsOperationsSource;
@@ -124,7 +141,6 @@ export type ApiConfig = {
   marketplaceDiscoveryAllowedOrigins: string[];
   affiliatePublicSource?: "target";
   pmsOperationsAllowedOrigins: string[];
-  bookingCheckoutCommandSource: BookingCheckoutCommandSource;
   bookingWebEventSink: BookingWebEventSink;
   bookingHostBase?: string;
   platformMediaServing?: PlatformMediaServingConfig;
@@ -137,13 +153,11 @@ export type ApiConfig = {
   pmsInventoryPublicOfferRetryIntervalMs: number;
   creatorPlatformConnections?: CreatorPlatformConnectionsConfig;
   providerWebhooks: ProviderWebhookConfig;
+  channexManagement: ChannexManagementConfig;
+  stripeSubscriptions: StripeSubscriptionConfig;
+  bookingEmailDelivery?: BookingEmailDeliveryConfig;
   xenditSecretKey?: string;
 };
-
-const NEXT_API_FORBIDDEN_LEGACY_ENV_KEYS = [
-  "BOOKING_DATABASE_URL",
-  "BOOKING_RESERVATIONS_READ_DATABASE_URL",
-] as const;
 
 const REMOVED_LEGACY_PYTHON_INTEGRATION_ENV_KEYS = [
   "BOOKING_PUBLIC_API_URL",
@@ -154,6 +168,7 @@ const REMOVED_LEGACY_PYTHON_INTEGRATION_ENV_KEYS = [
 type NextRuntimeSourceRequirement = {
   key: string;
   value: string;
+  allowedValues?: readonly string[];
   allowExplicitDisabled?: boolean;
 };
 
@@ -407,30 +422,6 @@ function loadAuthSessionConfig(env: NodeJS.ProcessEnv): ApiAuthSessionConfig | u
   };
 }
 
-function loadAskIntelligenceConfig(env: NodeJS.ProcessEnv): ApiAskIntelligenceConfig {
-  const provider = readOptionalEnv(env, "ASK_INTELLIGENCE_PROVIDER") ?? "fixture";
-  if (provider === "fixture") return { provider };
-  if (provider !== "openai") {
-    throw new Error("Unsupported Ask Intelligence provider; expected fixture or openai");
-  }
-
-  const requiredKeys = ["OPENAI_API_KEY", "ASK_INTELLIGENCE_MODEL"] as const;
-  const values = Object.fromEntries(requiredKeys.map((key) => [key, readOptionalEnv(env, key)]));
-  const missing = requiredKeys.filter((key) => !values[key]);
-  if (missing.length > 0) {
-    throw new Error(`Incomplete Ask Intelligence OpenAI config; missing ${missing.join(", ")}`);
-  }
-
-  return {
-    provider,
-    apiKey: values["OPENAI_API_KEY"]!,
-    model: values["ASK_INTELLIGENCE_MODEL"]!,
-    baseUrl: readOptionalEnv(env, "OPENAI_BASE_URL"),
-    organization: readOptionalEnv(env, "OPENAI_ORGANIZATION"),
-    project: readOptionalEnv(env, "OPENAI_PROJECT"),
-  };
-}
-
 function loadProviderWebhookConfig(env: NodeJS.ProcessEnv): ProviderWebhookConfig {
   return {
     stripeSecret: readOptionalEnv(env, "STRIPE_WEBHOOK_SECRET"),
@@ -454,6 +445,87 @@ function loadProviderWebhookConfig(env: NodeJS.ProcessEnv): ProviderWebhookConfi
       ["observe_only", "mutating", "ack_only_with_receipt"],
       "observe_only",
     ),
+  };
+}
+
+function loadChannexManagementConfig(env: NodeJS.ProcessEnv): ChannexManagementConfig {
+  const mode = (key: string) =>
+    readSourceEnv(env, key, ["observe_only", "mutating"] as const, "observe_only");
+  const capabilityModes = {
+    connection: mode("PMS_CHANNEX_CONNECTION_MODE"),
+    provisioning: mode("PMS_CHANNEX_PROVISIONING_MODE"),
+    ariSync: mode("PMS_CHANNEX_ARI_SYNC_MODE"),
+    bookingSync: mode("PMS_CHANNEX_BOOKING_SYNC_MODE"),
+    markups: mode("PMS_CHANNEX_MARKUPS_MODE"),
+    messaging: mode("PMS_CHANNEX_MESSAGING_MODE"),
+    iframe: mode("PMS_CHANNEX_IFRAME_MODE"),
+  };
+  const apiBaseUrl = readOptionalEnv(env, "CHANNEX_API_BASE_URL");
+  const apiKey = readOptionalEnv(env, "CHANNEX_API_KEY");
+  const legacyBookingMode = (
+    readOptionalEnv(env, "CHANNEX_ADMIN_MANUAL_BOOKING_SYNC_MODE") ?? "legacy-owned"
+  )
+    .toLowerCase()
+    .replaceAll("_", "-");
+  const bookingMutationOwner = ["legacy", "legacy-owned", "legacy-owned-mode"].includes(
+    legacyBookingMode,
+  )
+    ? "legacy"
+    : ["target", "target-owned"].includes(legacyBookingMode)
+      ? "target"
+      : "frozen";
+  const mutating = Object.values(capabilityModes).includes("mutating");
+  const durableCommandsMutating = Object.entries(capabilityModes).some(
+    ([capability, value]) => capability !== "iframe" && value === "mutating",
+  );
+  if (mutating && (!apiBaseUrl || !apiKey)) {
+    throw new Error(
+      "Mutating PMS Channex capabilities require CHANNEX_API_BASE_URL and CHANNEX_API_KEY",
+    );
+  }
+  const workerEnabled = readBooleanEnv(env, "PMS_CHANNEX_WORKER_ENABLED", durableCommandsMutating);
+  if (durableCommandsMutating && !workerEnabled) {
+    throw new Error("Mutating PMS Channex capabilities require PMS_CHANNEX_WORKER_ENABLED=true");
+  }
+  if (capabilityModes.bookingSync === "mutating" && bookingMutationOwner !== "target") {
+    throw new Error(
+      "Mutating PMS Channex booking sync requires CHANNEX_ADMIN_MANUAL_BOOKING_SYNC_MODE=target-owned",
+    );
+  }
+  return {
+    apiBaseUrl,
+    apiKey,
+    bookingMutationOwner,
+    workerEnabled,
+    capabilityModes,
+  };
+}
+
+function loadStripeSubscriptionConfig(env: NodeJS.ProcessEnv): StripeSubscriptionConfig {
+  const bookingAdminBaseUrl =
+    readOptionalEnv(env, "BOOKING_ADMIN_BASE_URL") ??
+    readOptionalEnv(env, "AUTH_BOOKING_ADMIN_ORIGIN") ??
+    "https://admin.booking.localhost";
+  let bookingAdminUrl: URL;
+  try {
+    bookingAdminUrl = new URL(bookingAdminBaseUrl);
+  } catch {
+    throw new Error("BOOKING_ADMIN_BASE_URL must be an absolute HTTP(S) origin");
+  }
+  if (
+    !["http:", "https:"].includes(bookingAdminUrl.protocol) ||
+    bookingAdminUrl.username ||
+    bookingAdminUrl.password ||
+    bookingAdminUrl.pathname !== "/" ||
+    bookingAdminUrl.search ||
+    bookingAdminUrl.hash
+  ) {
+    throw new Error("BOOKING_ADMIN_BASE_URL must be an absolute HTTP(S) origin");
+  }
+  return {
+    secretKey: readOptionalEnv(env, "STRIPE_SECRET_KEY"),
+    fixedPlanPriceId: readOptionalEnv(env, "STRIPE_FIXED_PLAN_PRICE_ID"),
+    bookingAdminBaseUrl: bookingAdminUrl.origin,
   };
 }
 
@@ -521,6 +593,16 @@ function loadCreatorPlatformConnectionsConfig(
   };
 }
 
+function loadBookingEmailDeliveryConfig(
+  env: NodeJS.ProcessEnv,
+): BookingEmailDeliveryConfig | undefined {
+  const config = readCompleteConfigGroup(env, "booking email delivery", {
+    apiKey: "RESEND_API_KEY",
+    from: "BOOKING_EMAIL_FROM",
+  });
+  return config ? { provider: "resend", ...config } : undefined;
+}
+
 function readCompleteConfigGroup<T extends Record<string, string>>(
   env: NodeJS.ProcessEnv,
   label: string,
@@ -566,38 +648,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const publicHotelProfileSource = readSourceEnv(
     env,
     "PUBLIC_HOTEL_PROFILE_SOURCE",
-    ["legacy", "target"],
-    "legacy",
-  );
-  const bookingDomainResolutionSource = readSourceEnv(
-    env,
-    "BOOKING_DOMAIN_RESOLUTION_SOURCE",
-    ["legacy", "target"],
-    "legacy",
-  );
-  const publicBookabilitySource = readSourceEnv(
-    env,
-    "PUBLIC_BOOKABILITY_SOURCE",
-    ["legacy", "target"],
-    "legacy",
-  );
-  const bookingSettingsSource = readSourceEnv(
-    env,
-    "BOOKING_SETTINGS_SOURCE",
-    ["legacy", "target"],
-    "legacy",
+    ["target", "active_publication"],
+    "target",
   );
   const marketplaceAdminSource = readSourceEnv(
     env,
     "MARKETPLACE_ADMIN_SOURCE",
     ["disabled", "target"],
     "disabled",
-  );
-  const bookingCheckoutCommandSource = readSourceEnv(
-    env,
-    "BOOKING_CHECKOUT_COMMAND_SOURCE",
-    ["legacy_proxy", "target"],
-    "legacy_proxy",
   );
   const pmsOperationsSource = readSourceEnv(
     env,
@@ -606,49 +664,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     "disabled",
   );
   const financeSource = readSourceEnv(env, "FINANCE_SOURCE", ["legacy", "target"], "legacy");
-  const askIntelligenceEvidenceSource = readSourceEnv(
-    env,
-    "ASK_INTELLIGENCE_EVIDENCE_SOURCE",
-    ["fixture", "target"],
-    "fixture",
-  );
   const bookingWebEventSink = readSourceEnv(
     env,
     "BOOKING_WEB_EVENT_SINK",
     ["disabled", "target"],
     "disabled",
   );
-  const bookingReservationsSource = readSourceEnv(
-    env,
-    "BOOKING_RESERVATIONS_SOURCE",
-    ["legacy", "target"] as const,
-    "legacy",
-  );
-  const bookingDatabaseUrl = readOptionalPgConnectionEnv(env, "BOOKING_DATABASE_URL");
-  const bookingReservationsReadDatabaseUrl = readOptionalPgConnectionEnv(
-    env,
-    "BOOKING_RESERVATIONS_READ_DATABASE_URL",
-  );
   const auth = loadAuthConfig(env);
   const authSession = loadAuthSessionConfig(env);
   const creatorPlatformConnections = loadCreatorPlatformConnectionsConfig(env);
+  const bookingEmailDelivery = loadBookingEmailDeliveryConfig(env);
   const platformMediaServing = loadPlatformMediaServingConfig(env, {
     incomplete: targetDatabaseUrl && auth ? "error" : "disabled",
   });
   assertNextApiRuntimeConfig(env, {
     apiRuntime,
     publicHotelProfileSource,
-    bookingDomainResolutionSource,
-    publicBookabilitySource,
-    bookingSettingsSource,
-    bookingReservationsSource,
     pmsOperationsSource,
     financeSource,
-    bookingCheckoutCommandSource,
   });
-  if (bookingSettingsSource === "target" && !targetDatabaseUrl) {
-    throw new Error("TARGET_DATABASE_URL is required when BOOKING_SETTINGS_SOURCE=target");
-  }
   if (marketplaceAdminSource === "target" && !targetDatabaseUrl) {
     throw new Error("TARGET_DATABASE_URL is required when MARKETPLACE_ADMIN_SOURCE=target");
   }
@@ -661,28 +695,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   if (financeSource === "target" && !targetDatabaseUrl) {
     throw new Error("FINANCE_SOURCE=target requires TARGET_DATABASE_URL");
   }
-  if (askIntelligenceEvidenceSource === "target" && !targetDatabaseUrl) {
-    throw new Error("ASK_INTELLIGENCE_EVIDENCE_SOURCE=target requires TARGET_DATABASE_URL");
-  }
-  if (publicHotelProfileSource === "target" && !targetDatabaseUrl) {
-    throw new Error("PUBLIC_HOTEL_PROFILE_SOURCE=target requires TARGET_DATABASE_URL");
-  }
-  if (bookingDomainResolutionSource === "target" && publicHotelProfileSource !== "target") {
-    throw new Error(
-      "BOOKING_DOMAIN_RESOLUTION_SOURCE=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target",
-    );
-  }
-  if (publicBookabilitySource === "target" && !targetDatabaseUrl) {
-    throw new Error("PUBLIC_BOOKABILITY_SOURCE=target requires TARGET_DATABASE_URL");
-  }
-  if (publicBookabilitySource === "target" && publicHotelProfileSource !== "target") {
-    throw new Error("PUBLIC_BOOKABILITY_SOURCE=target requires PUBLIC_HOTEL_PROFILE_SOURCE=target");
-  }
   if (bookingWebEventSink === "target" && !auth) {
     throw new Error("BOOKING_WEB_EVENT_SINK=target requires complete auth config");
-  }
-  if (bookingCheckoutCommandSource === "target" && !targetDatabaseUrl) {
-    throw new Error("BOOKING_CHECKOUT_COMMAND_SOURCE=target requires TARGET_DATABASE_URL");
   }
   if (targetDatabaseUrl && auth && !platformMediaServing) {
     throw new Error(
@@ -694,22 +708,36 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       "Creator platform connections require TARGET_DATABASE_URL and complete auth config",
     );
   }
+  if (env.NODE_ENV === "production" && !bookingEmailDelivery) {
+    throw new Error(
+      "Target booking checkout requires RESEND_API_KEY and BOOKING_EMAIL_FROM in production",
+    );
+  }
+  const prospectiveConfig = {
+    financeSource,
+    stripeSubscriptions: loadStripeSubscriptionConfig(env),
+    providerWebhooks: loadProviderWebhookConfig(env),
+  };
+  const channexManagement = loadChannexManagementConfig(env);
+  if (
+    Object.values(channexManagement.capabilityModes).includes("mutating") &&
+    pmsOperationsSource !== "target"
+  ) {
+    throw new Error("Mutating PMS Channex capabilities require PMS_OPERATIONS_SOURCE=target");
+  }
+  if (env.NODE_ENV === "production" && !stripeSubscriptionRuntimeEnabled(prospectiveConfig)) {
+    throw new Error(
+      "Target booking checkout requires STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_WEBHOOK_INTAKE_MODE=mutating, and FINANCE_SOURCE=target in production",
+    );
+  }
 
   return {
     ...server,
     apiRuntime,
     auth,
     authSession,
-    askIntelligence: loadAskIntelligenceConfig(env),
-    askIntelligenceEvidenceSource,
     targetDatabaseUrl,
-    bookingDatabaseUrl,
-    bookingReservationsSource,
     publicHotelProfileSource,
-    bookingDomainResolutionSource,
-    publicBookabilitySource,
-    bookingSettingsSource,
-    bookingReservationsReadDatabaseUrl,
     marketplaceAdminSource,
     marketplaceAdminLegacySuperadminFallbackEnabled: readBooleanEnv(
       env,
@@ -727,7 +755,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       "https://admin.booking.localhost",
       "https://marketplace.localhost",
     ]),
-    bookingCheckoutCommandSource,
     bookingWebEventSink,
     bookingHostBase: readOptionalEnv(env, "BOOKING_HOST_BASE"),
     platformMediaServing,
@@ -763,7 +790,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       30_000,
     ),
     creatorPlatformConnections,
-    providerWebhooks: loadProviderWebhookConfig(env),
+    providerWebhooks: prospectiveConfig.providerWebhooks,
+    channexManagement,
+    stripeSubscriptions: prospectiveConfig.stripeSubscriptions,
+    bookingEmailDelivery,
     xenditSecretKey: readOptionalEnv(env, "XENDIT_SECRET_KEY"),
   };
 }
@@ -783,39 +813,23 @@ function assertNextApiRuntimeConfig(
   env: NodeJS.ProcessEnv,
   config: Pick<
     ApiConfig,
-    | "apiRuntime"
-    | "publicHotelProfileSource"
-    | "bookingDomainResolutionSource"
-    | "publicBookabilitySource"
-    | "bookingSettingsSource"
-    | "bookingReservationsSource"
-    | "pmsOperationsSource"
-    | "financeSource"
-    | "bookingCheckoutCommandSource"
+    "apiRuntime" | "publicHotelProfileSource" | "pmsOperationsSource" | "financeSource"
   >,
 ): void {
   if (config.apiRuntime !== "next") return;
 
-  const forbiddenEnvKeys = NEXT_API_FORBIDDEN_LEGACY_ENV_KEYS.filter((key) =>
-    Boolean(readOptionalEnv(env, key)),
-  );
-  if (forbiddenEnvKeys.length > 0) {
-    throw new Error(`API_RUNTIME=next forbids legacy runtime envs: ${forbiddenEnvKeys.join(", ")}`);
-  }
-
   const requiredTargetSources = [
-    { key: "PUBLIC_HOTEL_PROFILE_SOURCE", value: config.publicHotelProfileSource },
-    { key: "BOOKING_DOMAIN_RESOLUTION_SOURCE", value: config.bookingDomainResolutionSource },
-    { key: "PUBLIC_BOOKABILITY_SOURCE", value: config.publicBookabilitySource },
-    { key: "BOOKING_SETTINGS_SOURCE", value: config.bookingSettingsSource },
-    { key: "BOOKING_RESERVATIONS_SOURCE", value: config.bookingReservationsSource },
+    {
+      key: "PUBLIC_HOTEL_PROFILE_SOURCE",
+      value: config.publicHotelProfileSource,
+      allowedValues: ["target", "active_publication"],
+    },
     {
       key: "PMS_OPERATIONS_SOURCE",
       value: config.pmsOperationsSource,
       allowExplicitDisabled: true,
     },
     { key: "FINANCE_SOURCE", value: config.financeSource },
-    { key: "BOOKING_CHECKOUT_COMMAND_SOURCE", value: config.bookingCheckoutCommandSource },
   ].flatMap((source) => nextRuntimeSourceRequirements(env, source));
 
   if (requiredTargetSources.length > 0) {
@@ -829,7 +843,7 @@ function nextRuntimeSourceRequirements(
   env: NodeJS.ProcessEnv,
   source: NextRuntimeSourceRequirement,
 ): string[] {
-  if (source.value === "target") return [];
+  if ((source.allowedValues ?? ["target"]).includes(source.value)) return [];
   if (
     source.allowExplicitDisabled &&
     source.value === "disabled" &&
@@ -837,6 +851,8 @@ function nextRuntimeSourceRequirements(
   ) {
     return [];
   }
-  const suffix = source.allowExplicitDisabled ? "target or explicit disabled" : "target";
+  const suffix = source.allowExplicitDisabled
+    ? "target or explicit disabled"
+    : (source.allowedValues?.join(" or ") ?? "target");
   return [`${source.key}=${suffix}`];
 }

@@ -13,7 +13,7 @@ import {
   runMigrations,
   splitNonTransactionalMigration,
 } from "./runner.js";
-import { DEFAULT_TARGET_SCHEMAS } from "./targetSchemas.js";
+import { DEFAULT_REBUILD_SCHEMAS } from "./targetSchemas.js";
 import { assertSafeTestDatabase } from "./testUtils.js";
 
 // ---------------------------------------------------------------------------
@@ -152,6 +152,7 @@ describe.skipIf(!TEST_DATABASE_URL)("runMigrations (integration)", () => {
       migrationsDir: tmpDir,
       environment: "local",
       appliedBy: "test",
+      gitSha: "0123456789abcdef0123456789abcdef01234567",
     });
 
     expect(result.applied).toEqual(["0001"]);
@@ -167,9 +168,10 @@ describe.skipIf(!TEST_DATABASE_URL)("runMigrations (integration)", () => {
         status: string;
         checksum_sha256: string;
         applied_by: string;
+        git_sha: string | null;
         failure_reason: string | null;
       }>(
-        `SELECT version, name, status, checksum_sha256, applied_by, failure_reason
+        `SELECT version, name, status, checksum_sha256, applied_by, git_sha, failure_reason
          FROM platform.schema_migrations WHERE version = '0001'`,
       );
       expect(rows).toHaveLength(1);
@@ -177,6 +179,7 @@ describe.skipIf(!TEST_DATABASE_URL)("runMigrations (integration)", () => {
       expect(rows[0].name).toBe("test");
       expect(rows[0].status).toBe("applied");
       expect(rows[0].applied_by).toBe("test");
+      expect(rows[0].git_sha).toBe("0123456789abcdef0123456789abcdef01234567");
       expect(rows[0].failure_reason).toBeNull();
       expect(rows[0].checksum_sha256).toBe(
         computeChecksum(`CREATE SCHEMA IF NOT EXISTS migration_runner_test;`),
@@ -286,7 +289,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await client.connect();
     try {
-      for (const schema of DEFAULT_TARGET_SCHEMAS) {
+      for (const schema of DEFAULT_REBUILD_SCHEMAS) {
         await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       }
     } finally {
@@ -300,7 +303,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await client.connect();
     try {
-      for (const schema of DEFAULT_TARGET_SCHEMAS) {
+      for (const schema of DEFAULT_REBUILD_SCHEMAS) {
         await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       }
 
@@ -378,7 +381,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await client.connect();
     try {
-      for (const schema of DEFAULT_TARGET_SCHEMAS) {
+      for (const schema of DEFAULT_REBUILD_SCHEMAS) {
         await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       }
 
@@ -485,7 +488,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await client.connect();
     try {
-      for (const schema of DEFAULT_TARGET_SCHEMAS) {
+      for (const schema of DEFAULT_REBUILD_SCHEMAS) {
         await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       }
 
@@ -724,13 +727,13 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     }
   });
 
-  it("applies booking, PMS, finance, marketplace, distribution, platform, and intelligence DDL with private data boundaries", async () => {
+  it("applies the active target DDL and retires the Ask Intelligence schema", async () => {
     assertSafeTestDatabase(TEST_DATABASE_URL!);
 
     const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await client.connect();
     try {
-      for (const schema of DEFAULT_TARGET_SCHEMAS) {
+      for (const schema of DEFAULT_REBUILD_SCHEMAS) {
         await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       }
     } finally {
@@ -761,6 +764,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     expect(result.applied).toContain("0045");
     expect(result.applied).toContain("0046");
     expect(result.applied).toContain("0047");
+    expect(result.applied).toContain("0090");
 
     const verifyClient = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await verifyClient.connect();
@@ -776,14 +780,24 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "addon_definitions",
         "booking_addon_selections",
         "booking_change_requests",
+        "booking_design_revisions",
         "booking_guests",
         "booking_notes_public",
+        "booking_policy_confirmations",
         "booking_publication_attempts",
         "booking_settings",
         "booking_status_events",
         "checkout_contexts",
+        "current_working_design_revisions",
+        "current_working_guest_policy_revisions",
         "direct_booking_summary_read_model",
+        "finance_booking_attribution",
+        "finance_nightly_revenue_evidence",
         "guest_bookings",
+        "guest_policy_projection_receipts",
+        "guest_policy_revisions",
+        "nightly_revenue_evidence",
+        "nightly_revenue_room_scopes",
         "promo_applications",
         "promo_definitions",
         "quote_sessions",
@@ -877,13 +891,29 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "channel_sync_status",
         "checkin_checklist_templates",
         "checkout_inspection_templates",
+        "inventory_coverage_validation_queue",
         "inventory_days",
+        "inventory_materialization_coverage",
+        "inventory_reservation_day_watermarks",
+        "inventory_reservation_receipts",
+        "inventory_reservation_statuses",
+        "mandatory_charge_confirmation_revisions",
         "message_attachments",
         "message_threads",
         "messages",
+        "non_refundable_rate_plan_source_rooms",
+        "operating_calendar_recurring_periods",
+        "operating_calendar_revisions",
+        "operating_calendar_room_bindings",
         "operational_booking_assignments",
+        "property_pricing_settings",
         "rate_plans",
         "rate_rules",
+        "recurring_pricing_materialization_receipts",
+        "recurring_pricing_materialization_source_receipts",
+        "recurring_pricing_materialized_rows",
+        "recurring_pricing_source_room_values",
+        "recurring_pricing_sources",
         "room_blocks",
         "room_type_media",
         "room_types",
@@ -1211,15 +1241,24 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       );
 
       expect(financeTableRows.map((row) => row.table_name)).toEqual([
+        "affiliate_payout_payment_evidence",
+        "affiliate_payout_payment_evidence_items",
         "billing_entitlements",
         "commission_rate_changes",
         "commission_rules",
+        "expense_categories",
+        "expenses",
         "finance_visibility_read_model",
+        "folio_lines",
+        "folio_payment_references",
+        "folio_revisions",
+        "folios",
         "payment_provider_accounts",
         "payment_settings",
         "payments",
         "payout_settings",
         "payouts",
+        "recurring_expense_rules",
       ]);
 
       const { rows: financeIntegrityConstraints } = await verifyClient.query<{
@@ -1521,7 +1560,9 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
           AND ccu.constraint_name = tc.constraint_name
          WHERE tc.table_schema = 'finance'
            AND tc.constraint_type = 'FOREIGN KEY'
-           AND ccu.table_schema NOT IN ('booking', 'finance', 'hotel_catalog', 'identity')
+           AND ccu.table_schema NOT IN (
+             'booking', 'finance', 'hotel_catalog', 'identity', 'platform', 'pms'
+           )
          ORDER BY tc.constraint_name`,
       );
 
@@ -1701,6 +1742,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
 
       expect(marketplaceTableRows.map((row) => row.table_name)).toEqual([
         "active_hotel_submission_revisions",
+        "affiliate_lifecycle_changes",
         "collaboration_deliverables",
         "collaborations",
         "creator_platform_authorizations",
@@ -1711,6 +1753,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "creator_profiles",
         "creator_ratings",
         "external_collaborations",
+        "hotel_collaboration_preferences",
         "hotel_submission_moderation",
         "hotel_submission_revisions",
         "invite_codes",
@@ -1723,6 +1766,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "offer_compensation_options",
         "offer_creator_requirements",
         "offer_deliverables",
+        "property_affiliates",
         "trips",
       ]);
 
@@ -2154,7 +2198,9 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
           AND ccu.constraint_name = tc.constraint_name
          WHERE tc.table_schema = 'marketplace'
            AND tc.constraint_type = 'FOREIGN KEY'
-           AND ccu.table_schema NOT IN ('finance', 'hotel_catalog', 'identity', 'marketplace')
+           AND ccu.table_schema NOT IN (
+             'finance', 'hotel_catalog', 'identity', 'marketplace', 'platform'
+           )
          ORDER BY tc.constraint_name`,
       );
 
@@ -4891,1246 +4937,52 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         ],
       );
 
-      const { rows: intelligenceTableRows } = await verifyClient.query<{ table_name: string }>(
-        `SELECT table_name
-         FROM information_schema.tables
-         WHERE table_schema = 'intelligence'
-         ORDER BY table_name`,
-      );
-
-      expect(intelligenceTableRows.map((row) => row.table_name)).toEqual([
-        "ai_evidence_catalog",
-        "ask_answer_audits",
-        "ask_conversations",
-        "ask_runs",
-        "ask_tool_calls",
-        "metric_definitions",
-        "metric_snapshot_runs",
-        "setup_completeness_snapshots",
-      ]);
-
-      const { rows: intelligenceIntegrityConstraints } = await verifyClient.query<{
-        constraint_name: string;
+      const { rows: retiredIntelligenceSchemas } = await verifyClient.query<{
+        schema_name: string;
       }>(
-        `SELECT constraint_name
-         FROM information_schema.table_constraints
-         WHERE table_schema = 'intelligence'
-           AND constraint_name IN (
-             'chk_intelligence_ai_evidence_catalog_private_json',
-             'chk_intelligence_ai_evidence_catalog_read_only',
-             'chk_intelligence_ai_evidence_catalog_source_view',
-             'chk_intelligence_ask_answer_audits_claim_support',
-             'chk_intelligence_ask_answer_audits_private_json',
-             'chk_intelligence_ask_answer_audits_retention',
-             'chk_intelligence_ask_answer_audits_revision',
-             'chk_intelligence_ask_answer_audits_visibility',
-             'chk_intelligence_ask_conversations_expiry',
-             'chk_intelligence_ask_conversations_resource_link_scope',
-             'chk_intelligence_ask_conversations_retention',
-             'chk_intelligence_ask_conversations_scope',
-             'chk_intelligence_ask_conversations_visibility',
-             'chk_intelligence_ask_runs_private_json',
-             'chk_intelligence_ask_runs_question_redacted',
-             'chk_intelligence_ask_runs_terminal_time',
-             'chk_intelligence_ask_tool_calls_authorization',
-             'chk_intelligence_ask_tool_calls_available_evidence',
-             'chk_intelligence_metric_definitions_finance_visibility',
-             'chk_intelligence_metric_snapshot_runs_private_json',
-             'chk_intelligence_metric_snapshot_runs_scope',
-             'chk_intelligence_metric_snapshot_runs_source_view',
-             'chk_intelligence_setup_snapshots_complete',
-             'chk_intelligence_setup_snapshots_private_json',
-             'chk_intelligence_setup_snapshots_resource_link_scope',
-             'fk_intelligence_ai_evidence_catalog_permission',
-             'fk_intelligence_ask_answer_audits_platform_audit',
-             'fk_intelligence_ask_answer_audits_run_conversation_scope',
-             'fk_intelligence_ask_answer_audits_run_scope',
-             'fk_intelligence_ask_runs_conversation_actor_scope',
-             'fk_intelligence_ask_runs_conversation_scope',
-             'fk_intelligence_ask_tool_calls_run_scope',
-             'fk_intelligence_ask_tool_calls_tool',
-             'fk_intelligence_ask_tool_calls_tool_permission',
-             'fk_intelligence_metric_definitions_permission',
-             'fk_intelligence_metric_snapshot_runs_metric_key',
-             'fk_intelligence_metric_snapshot_runs_metric_permission',
-             'fk_intelligence_setup_snapshots_bookability_profile',
-             'uq_intelligence_ai_evidence_catalog_tool',
-             'uq_intelligence_ai_evidence_catalog_tool_permission',
-             'uq_intelligence_ask_answer_audits_run_revision',
-             'uq_intelligence_ask_conversations_id_actor_scope',
-             'uq_intelligence_ask_conversations_id_scope',
-             'uq_intelligence_ask_runs_id_conversation_scope',
-             'uq_intelligence_metric_definitions_id_key',
-             'uq_intelligence_metric_definitions_key',
-             'uq_intelligence_metric_snapshot_runs_id_scope'
-           )
-         ORDER BY constraint_name`,
+        `SELECT schema_name
+         FROM information_schema.schemata
+         WHERE schema_name = 'intelligence'`,
       );
 
-      expect(intelligenceIntegrityConstraints.map((row) => row.constraint_name)).toEqual([
-        "chk_intelligence_ai_evidence_catalog_private_json",
-        "chk_intelligence_ai_evidence_catalog_read_only",
-        "chk_intelligence_ai_evidence_catalog_source_view",
-        "chk_intelligence_ask_answer_audits_claim_support",
-        "chk_intelligence_ask_answer_audits_private_json",
-        "chk_intelligence_ask_answer_audits_retention",
-        "chk_intelligence_ask_answer_audits_revision",
-        "chk_intelligence_ask_answer_audits_visibility",
-        "chk_intelligence_ask_conversations_expiry",
-        "chk_intelligence_ask_conversations_resource_link_scope",
-        "chk_intelligence_ask_conversations_retention",
-        "chk_intelligence_ask_conversations_scope",
-        "chk_intelligence_ask_conversations_visibility",
-        "chk_intelligence_ask_runs_private_json",
-        "chk_intelligence_ask_runs_question_redacted",
-        "chk_intelligence_ask_runs_terminal_time",
-        "chk_intelligence_ask_tool_calls_authorization",
-        "chk_intelligence_ask_tool_calls_available_evidence",
-        "chk_intelligence_metric_definitions_finance_visibility",
-        "chk_intelligence_metric_snapshot_runs_private_json",
-        "chk_intelligence_metric_snapshot_runs_scope",
-        "chk_intelligence_metric_snapshot_runs_source_view",
-        "chk_intelligence_setup_snapshots_complete",
-        "chk_intelligence_setup_snapshots_private_json",
-        "chk_intelligence_setup_snapshots_resource_link_scope",
-        "fk_intelligence_ai_evidence_catalog_permission",
-        "fk_intelligence_ask_answer_audits_platform_audit",
-        "fk_intelligence_ask_answer_audits_run_conversation_scope",
-        "fk_intelligence_ask_answer_audits_run_scope",
-        "fk_intelligence_ask_runs_conversation_actor_scope",
-        "fk_intelligence_ask_runs_conversation_scope",
-        "fk_intelligence_ask_tool_calls_run_scope",
-        "fk_intelligence_ask_tool_calls_tool",
-        "fk_intelligence_ask_tool_calls_tool_permission",
-        "fk_intelligence_metric_definitions_permission",
-        "fk_intelligence_metric_snapshot_runs_metric_key",
-        "fk_intelligence_metric_snapshot_runs_metric_permission",
-        "fk_intelligence_setup_snapshots_bookability_profile",
-        "uq_intelligence_ai_evidence_catalog_tool",
-        "uq_intelligence_ai_evidence_catalog_tool_permission",
-        "uq_intelligence_ask_answer_audits_run_revision",
-        "uq_intelligence_ask_conversations_id_actor_scope",
-        "uq_intelligence_ask_conversations_id_scope",
-        "uq_intelligence_ask_runs_id_conversation_scope",
-        "uq_intelligence_metric_definitions_id_key",
-        "uq_intelligence_metric_definitions_key",
-        "uq_intelligence_metric_snapshot_runs_id_scope",
-      ]);
+      expect(retiredIntelligenceSchemas).toHaveLength(0);
 
-      const { rows: intelligenceForeignKeyShapes } = await verifyClient.query<{
-        constraint_name: string;
-        table_name: string;
-        columns: string;
-        referenced_schema: string;
-        referenced_table: string;
-        referenced_columns: string;
-      }>(
-        `SELECT
-           con.conname AS constraint_name,
-           src.relname AS table_name,
-           array_to_string(ARRAY(
-             SELECT att.attname
-             FROM unnest(con.conkey) WITH ORDINALITY AS cols(attnum, ord)
-             JOIN pg_attribute att
-               ON att.attrelid = con.conrelid
-              AND att.attnum = cols.attnum
-             ORDER BY cols.ord
-           ), ',') AS columns,
-           ref_ns.nspname AS referenced_schema,
-           ref.relname AS referenced_table,
-           array_to_string(ARRAY(
-             SELECT att.attname
-             FROM unnest(con.confkey) WITH ORDINALITY AS cols(attnum, ord)
-             JOIN pg_attribute att
-               ON att.attrelid = con.confrelid
-              AND att.attnum = cols.attnum
-             ORDER BY cols.ord
-           ), ',') AS referenced_columns
-         FROM pg_constraint con
-         JOIN pg_class src ON src.oid = con.conrelid
-         JOIN pg_namespace src_ns ON src_ns.oid = src.relnamespace
-         JOIN pg_class ref ON ref.oid = con.confrelid
-         JOIN pg_namespace ref_ns ON ref_ns.oid = ref.relnamespace
-         WHERE src_ns.nspname = 'intelligence'
-           AND con.contype = 'f'
-           AND con.conname IN (
-             'fk_intelligence_metric_snapshot_runs_metric_key',
-             'fk_intelligence_metric_snapshot_runs_metric_permission',
-             'fk_intelligence_setup_snapshots_bookability_profile',
-             'fk_intelligence_ask_runs_conversation_actor_scope',
-             'fk_intelligence_ask_runs_conversation_scope',
-             'fk_intelligence_ask_tool_calls_tool',
-             'fk_intelligence_ask_tool_calls_tool_permission',
-             'fk_intelligence_ask_tool_calls_run_scope',
-             'fk_intelligence_ask_answer_audits_run_conversation_scope',
-             'fk_intelligence_ask_answer_audits_run_scope',
-             'fk_intelligence_ask_answer_audits_platform_audit'
-           )
-         ORDER BY con.conname`,
-      );
-
-      expect(intelligenceForeignKeyShapes).toEqual([
-        {
-          columns: "platform_audit_event_id",
-          constraint_name: "fk_intelligence_ask_answer_audits_platform_audit",
-          referenced_columns: "id",
-          referenced_schema: "platform",
-          referenced_table: "product_audit_events",
-          table_name: "ask_answer_audits",
-        },
-        {
-          columns: "run_id,conversation_id,scope_key",
-          constraint_name: "fk_intelligence_ask_answer_audits_run_conversation_scope",
-          referenced_columns: "id,conversation_id,scope_key",
-          referenced_schema: "intelligence",
-          referenced_table: "ask_runs",
-          table_name: "ask_answer_audits",
-        },
-        {
-          columns: "run_id,scope_key",
-          constraint_name: "fk_intelligence_ask_answer_audits_run_scope",
-          referenced_columns: "id,scope_key",
-          referenced_schema: "intelligence",
-          referenced_table: "ask_runs",
-          table_name: "ask_answer_audits",
-        },
-        {
-          columns: "conversation_id,actor_user_id,scope_key",
-          constraint_name: "fk_intelligence_ask_runs_conversation_actor_scope",
-          referenced_columns: "id,actor_user_id,scope_key",
-          referenced_schema: "intelligence",
-          referenced_table: "ask_conversations",
-          table_name: "ask_runs",
-        },
-        {
-          columns: "conversation_id,scope_key",
-          constraint_name: "fk_intelligence_ask_runs_conversation_scope",
-          referenced_columns: "id,scope_key",
-          referenced_schema: "intelligence",
-          referenced_table: "ask_conversations",
-          table_name: "ask_runs",
-        },
-        {
-          columns: "run_id,scope_key",
-          constraint_name: "fk_intelligence_ask_tool_calls_run_scope",
-          referenced_columns: "id,scope_key",
-          referenced_schema: "intelligence",
-          referenced_table: "ask_runs",
-          table_name: "ask_tool_calls",
-        },
-        {
-          columns: "tool_id,tool_version",
-          constraint_name: "fk_intelligence_ask_tool_calls_tool",
-          referenced_columns: "tool_id,tool_version",
-          referenced_schema: "intelligence",
-          referenced_table: "ai_evidence_catalog",
-          table_name: "ask_tool_calls",
-        },
-        {
-          columns: "tool_id,tool_version,required_permission_key",
-          constraint_name: "fk_intelligence_ask_tool_calls_tool_permission",
-          referenced_columns: "tool_id,tool_version,primary_required_permission_key",
-          referenced_schema: "intelligence",
-          referenced_table: "ai_evidence_catalog",
-          table_name: "ask_tool_calls",
-        },
-        {
-          columns: "metric_definition_id,metric_key",
-          constraint_name: "fk_intelligence_metric_snapshot_runs_metric_key",
-          referenced_columns: "id,metric_key",
-          referenced_schema: "intelligence",
-          referenced_table: "metric_definitions",
-          table_name: "metric_snapshot_runs",
-        },
-        {
-          columns: "metric_definition_id,required_permission_key",
-          constraint_name: "fk_intelligence_metric_snapshot_runs_metric_permission",
-          referenced_columns: "id,required_permission_key",
-          referenced_schema: "intelligence",
-          referenced_table: "metric_definitions",
-          table_name: "metric_snapshot_runs",
-        },
-        {
-          columns: "bookability_profile_property_id",
-          constraint_name: "fk_intelligence_setup_snapshots_bookability_profile",
-          referenced_columns: "property_id",
-          referenced_schema: "distribution",
-          referenced_table: "public_hotel_bookability_profiles",
-          table_name: "setup_completeness_snapshots",
-        },
-      ]);
-
-      const { rows: intelligenceForeignKeySchemas } = await verifyClient.query<{
-        constraint_name: string;
-        referenced_schema: string;
-      }>(
-        `SELECT DISTINCT
-           tc.constraint_name,
-           ccu.table_schema AS referenced_schema
-         FROM information_schema.table_constraints tc
-         JOIN information_schema.constraint_column_usage ccu
-           ON ccu.constraint_schema = tc.constraint_schema
-          AND ccu.constraint_name = tc.constraint_name
-         WHERE tc.table_schema = 'intelligence'
-           AND tc.constraint_type = 'FOREIGN KEY'
-           AND ccu.table_schema NOT IN (
-             'distribution', 'hotel_catalog', 'identity',
-             'intelligence', 'platform'
-           )
-         ORDER BY tc.constraint_name`,
-      );
-
-      expect(intelligenceForeignKeySchemas).toHaveLength(0);
-
-      const { rows: intelligencePermissionKeys } = await verifyClient.query<{ key: string }>(
+      const { rows: retiredIntelligencePermissions } = await verifyClient.query<{ key: string }>(
         `SELECT key
          FROM identity.permission_catalog
-         WHERE key IN (
-           'booking.analytics.read',
-           'booking.settings.read',
-           'finance.summary.read',
-           'intelligence.ask.read',
-           'marketplace.collaboration.read',
-           'pms.analytics.read',
-           'pms.booking.read',
-           'pms.read'
-         )
+         WHERE key IN ('finance.summary.read', 'intelligence.ask.read')
          ORDER BY key`,
       );
 
-      expect(intelligencePermissionKeys.map((row) => row.key)).toEqual([
-        "booking.analytics.read",
-        "booking.settings.read",
-        "finance.summary.read",
-        "intelligence.ask.read",
-        "marketplace.collaboration.read",
-        "pms.analytics.read",
-        "pms.booking.read",
-        "pms.read",
-      ]);
+      expect(retiredIntelligencePermissions).toHaveLength(0);
 
-      const { rows: intelligenceSecretColumns } = await verifyClient.query<{
-        table_name: string;
-        column_name: string;
+      const { rows: retiredIntelligenceGrants } = await verifyClient.query<{
+        permission_key: string;
       }>(
-        `SELECT table_name, column_name
-         FROM information_schema.columns
-         WHERE table_schema = 'intelligence'
-           AND column_name IN (
-             'api_key', 'secret', 'client_secret', 'raw_secret',
-             'token', 'access_token', 'raw_sql', 'sql',
-             'guest_email', 'provider_account_id', 'payout_account',
-             'raw_payload', 'raw_headers'
-           )`,
+        `SELECT permission_key
+         FROM identity.role_permission_grants
+         WHERE permission_key IN ('finance.summary.read', 'intelligence.ask.read')
+         ORDER BY permission_key`,
       );
 
-      expect(intelligenceSecretColumns).toHaveLength(0);
+      expect(retiredIntelligenceGrants).toHaveLength(0);
 
-      const { rows: intelligenceAppendOnlyTriggers } = await verifyClient.query<{
-        trigger_name: string;
-        event_object_table: string;
+      const { rows: retiredIntelligenceResourceLinkConstraints } = await verifyClient.query<{
+        constraint_name: string;
       }>(
-        `SELECT trigger_name, event_object_table
-         FROM information_schema.triggers
-         WHERE trigger_schema = 'intelligence'
-           AND trigger_name = 'trg_intelligence_ask_answer_audits_append_only'
-         GROUP BY trigger_name, event_object_table`,
+        `SELECT con.conname AS constraint_name
+           FROM pg_constraint con
+           JOIN pg_class rel ON rel.oid = con.conrelid
+           JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+           WHERE ns.nspname = 'identity'
+             AND rel.relname = 'organization_resource_links'
+             AND con.conname IN (
+               'uq_identity_resource_links_id_organization',
+               'uq_identity_resource_links_id_organization_resource'
+             )`,
       );
 
-      expect(intelligenceAppendOnlyTriggers).toEqual([
-        {
-          event_object_table: "ask_answer_audits",
-          trigger_name: "trg_intelligence_ask_answer_audits_append_only",
-        },
-      ]);
-
-      const intelligenceResourceLinkId = "cccccccc-1111-4111-8111-ccccccccccc1";
-      const intelligenceOtherResourceLinkId = "cccccccc-1111-4111-8111-ccccccccccc2";
-      const intelligenceBookingMetricId = "cccccccc-2222-4222-8222-ccccccccccc1";
-      const intelligenceFinanceMetricId = "cccccccc-2222-4222-8222-ccccccccccc2";
-      const intelligenceSnapshotId = "cccccccc-3333-4333-8333-ccccccccccc1";
-      const intelligenceSetupSnapshotId = "cccccccc-4444-4444-8444-ccccccccccc1";
-      const intelligenceConversationId = "cccccccc-5555-4555-8555-ccccccccccc1";
-      const intelligenceOtherConversationId = "cccccccc-5555-4555-8555-ccccccccccc2";
-      const intelligenceRunId = "cccccccc-6666-4666-8666-ccccccccccc1";
-      const intelligenceInvalidAuditRunId = "cccccccc-6666-4666-8666-ccccccccccc2";
-      const intelligenceToolCallId = "cccccccc-7777-4777-8777-ccccccccccc1";
-      const intelligenceAnswerAuditId = "cccccccc-8888-4888-8888-ccccccccccc1";
-
-      const { rows: platformAuditEventRows } = await verifyClient.query<{ id: string }>(
-        `SELECT id
-         FROM platform.product_audit_events
-         WHERE product = 'booking'
-           AND audit_key = 'booking-confirmed-platform-test'`,
-      );
-
-      expect(platformAuditEventRows).toHaveLength(1);
-      const platformAuditEventId = platformAuditEventRows[0].id;
-
-      await verifyClient.query(
-        `INSERT INTO identity.organization_resource_links
-           (id, organization_id, product, resource_type, resource_id, relationship)
-         VALUES ($1, $2, 'booking', 'booking_hotel', $3, 'owner')`,
-        [intelligenceResourceLinkId, hotelOrganizationId, distributionPropertyId],
-      );
-      await verifyClient.query(
-        `INSERT INTO identity.organization_resource_links
-           (id, organization_id, product, resource_type, resource_id, relationship)
-         VALUES ($1, $2, 'booking', 'booking_hotel', $3, 'owner')`,
-        [intelligenceOtherResourceLinkId, hotelOrganizationId, platformOtherPropertyId],
-      );
-
-      await verifyClient.query(
-        `INSERT INTO intelligence.metric_definitions
-           (
-             id, metric_key, display_name, product, metric_category,
-             unit, required_permission_key, allowed_filters,
-             definition_metadata
-           )
-         VALUES (
-             $1, 'booking.direct_share', 'Direct booking share',
-             'booking', 'performance', 'percentage',
-             'booking.analytics.read',
-             '{"dateRange":true,"source":true}'::jsonb,
-             '{"sourceOwner":"booking","contract":"ask-evidence.v1"}'::jsonb
-           )`,
-        [intelligenceBookingMetricId],
-      );
-      await verifyClient.query(
-        `INSERT INTO intelligence.metric_definitions
-           (
-             id, metric_key, display_name, product, metric_category,
-             unit, required_permission_key, visibility, pii_policy
-           )
-         VALUES (
-             $1, 'finance.net_revenue', 'Net revenue',
-             'finance', 'finance', 'currency',
-             'finance.summary.read', 'finance_restricted',
-             'finance_restricted'
-           )`,
-        [intelligenceFinanceMetricId],
-      );
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.metric_definitions
-             (
-               metric_key, display_name, product, metric_category,
-               unit, required_permission_key
-             )
-           VALUES (
-               'finance.bad_visibility', 'Bad finance metric',
-               'finance', 'finance', 'currency',
-               'finance.summary.read'
-           )`,
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.metric_definitions
-             (
-               metric_key, display_name, product, metric_category,
-               required_permission_key, definition_metadata
-             )
-           VALUES (
-               'booking.bad_sql', 'Bad SQL metric',
-               'booking', 'performance', 'booking.analytics.read',
-               '{"rawSql":"select * from guests"}'::jsonb
-           )`,
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.metric_definitions
-             (
-               metric_key, display_name, product, metric_category,
-               required_permission_key, definition_metadata
-             )
-           VALUES (
-               'booking.bad_sql_value', 'Bad SQL value metric',
-               'booking', 'performance', 'booking.analytics.read',
-               '{"note":"select * from booking_guests"}'::jsonb
-           )`,
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-
-      await verifyClient.query(
-        `INSERT INTO intelligence.metric_snapshot_runs
-           (
-             id, metric_definition_id, metric_key, snapshot_key,
-             run_status, resource_scope, organization_id, property_id,
-             source_owner, source_view, required_permission_key,
-             snapshot_period, period_start, period_end, source_fresh_at,
-             freshness_status, quality, sample_size, aggregate_id,
-             value_summary, filters, source_freshness
-           )
-         VALUES (
-             $1, $2, 'booking.direct_share',
-             'booking.direct_share.2026-03.property-one',
-             'succeeded', 'property', $3, $4,
-             'booking', 'direct_booking_summary_read_model',
-             'booking.analytics.read', 'month',
-             DATE '2026-03-01', DATE '2026-03-31', now(),
-             'fresh', 'complete', 42, 'booking-direct-share-2026-03',
-             '{"value":0.64,"unit":"percentage"}'::jsonb,
-             '{"dateRange":{"from":"2026-03-01","to":"2026-03-31"}}'::jsonb,
-             '{"sources":[{"owner":"booking","status":"fresh"}]}'::jsonb
-           )`,
-        [
-          intelligenceSnapshotId,
-          intelligenceBookingMetricId,
-          hotelOrganizationId,
-          distributionPropertyId,
-        ],
-      );
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.metric_snapshot_runs
-             (
-               metric_definition_id, metric_key, snapshot_key,
-               resource_scope, organization_id, property_id,
-               source_owner, source_view, required_permission_key,
-               source_fresh_at
-             )
-           VALUES (
-               $1, 'booking.direct_share',
-               'booking.direct_share.bad-permission',
-               'property', $2, $3, 'booking',
-               'direct_booking_summary_read_model',
-               'pms.booking.read', now()
-           )`,
-          [intelligenceBookingMetricId, hotelOrganizationId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23503" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.metric_snapshot_runs
-             (
-               metric_definition_id, metric_key, snapshot_key,
-               resource_scope, organization_id, property_id,
-               source_owner, source_view, required_permission_key,
-               source_fresh_at
-             )
-           VALUES (
-               $1, 'finance.net_revenue',
-               'booking.direct_share.mismatched-metric-key',
-               'property', $2, $3, 'booking',
-               'direct_booking_summary_read_model',
-               'booking.analytics.read', now()
-           )`,
-          [intelligenceBookingMetricId, hotelOrganizationId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23503" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.metric_snapshot_runs
-             (
-               metric_definition_id, metric_key, snapshot_key,
-               resource_scope, organization_id, property_id,
-               source_owner, source_view, required_permission_key,
-               source_fresh_at
-             )
-           VALUES (
-               $1, 'booking.direct_share',
-               'booking.direct_share.invalid-source-view',
-               'property', $2, $3, 'booking',
-               'booking_guests',
-               'booking.analytics.read', now()
-           )`,
-          [intelligenceBookingMetricId, hotelOrganizationId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-      await expect(
-        verifyClient.query(
-          `UPDATE intelligence.metric_snapshot_runs
-           SET value_summary = '{"guestEmail":"guest@example.com"}'::jsonb
-           WHERE id = $1`,
-          [intelligenceSnapshotId],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.metric_snapshot_runs
-             (
-               metric_definition_id, metric_key, snapshot_key,
-               resource_scope, property_id, source_owner,
-               source_view, required_permission_key, source_fresh_at
-             )
-           VALUES (
-               $1, 'booking.direct_share',
-               'booking.direct_share.invalid-scope',
-               'property', $2, 'booking',
-               'direct_booking_summary_read_model',
-               'booking.analytics.read', now()
-           )`,
-          [intelligenceBookingMetricId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-
-      await verifyClient.query(
-        `INSERT INTO intelligence.setup_completeness_snapshots
-           (
-             id, snapshot_key, organization_id, property_id,
-             resource_link_id, setup_area, completion_status,
-             completeness_score, required_permission_key,
-             bookability_profile_property_id, source_fresh_at,
-             freshness_status, missing_items, blocking_items,
-             source_freshness
-           )
-         VALUES (
-             $1, 'setup.agent-readiness.property-one.2026-03',
-             $2, $3, $4, 'agent_readiness', 'incomplete',
-             80, 'booking.settings.read', $3, now(),
-             'fresh',
-             '[{"field":"policy.payment_summary","severity":"warning"}]'::jsonb,
-             '[]'::jsonb,
-             '{"sources":[{"owner":"hotel_catalog","status":"fresh"},{"owner":"distribution","status":"fresh"}]}'::jsonb
-           )`,
-        [
-          intelligenceSetupSnapshotId,
-          hotelOrganizationId,
-          distributionPropertyId,
-          intelligenceResourceLinkId,
-        ],
-      );
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.setup_completeness_snapshots
-             (
-               snapshot_key, organization_id, property_id, setup_area,
-               completion_status, completeness_score, missing_items
-             )
-           VALUES (
-               'setup.complete-with-missing', $1, $2,
-               'overall', 'complete', 100,
-               '[{"field":"images"}]'::jsonb
-           )`,
-          [hotelOrganizationId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-      await expect(
-        verifyClient.query(
-          `UPDATE intelligence.setup_completeness_snapshots
-           SET missing_items = '[{"guestPhone":"private"}]'::jsonb
-           WHERE id = $1`,
-          [intelligenceSetupSnapshotId],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-
-      await verifyClient.query(
-        `INSERT INTO intelligence.ai_evidence_catalog
-           (
-             tool_id, tool_version, display_name, product,
-             source_owner, source_view, primary_metric_definition_id,
-             primary_required_permission_key, required_permission_keys,
-             supported_intents, allowed_filters, evidence_contract
-           )
-         VALUES (
-             'get_booking_performance', 'v1',
-             'Get booking performance', 'booking',
-             'booking', 'direct_booking_summary_read_model', $1,
-             'booking.analytics.read',
-             ARRAY['booking.analytics.read']::TEXT[],
-             ARRAY['booking_performance', 'direct_share']::TEXT[],
-             '{"dateRange":true,"currency":true}'::jsonb,
-             '{"result":"EvidenceToolResult","readOnly":true}'::jsonb
-           )`,
-        [intelligenceBookingMetricId],
-      );
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ai_evidence_catalog
-             (
-               tool_id, display_name, product, source_owner, source_view,
-               read_only, primary_required_permission_key,
-               required_permission_keys
-             )
-           VALUES (
-               'apply_rate_change', 'Apply rate change', 'pms',
-               'pms', 'pms_operations_summary_read_model', FALSE,
-               'pms.analytics.read',
-               ARRAY['pms.analytics.read']::TEXT[]
-           )`,
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ai_evidence_catalog
-             (
-               tool_id, display_name, product, source_owner, source_view,
-               primary_required_permission_key, required_permission_keys
-             )
-           VALUES (
-               'bad_source_tool', 'Bad Source Tool', 'booking',
-               'booking', 'booking_guests',
-               'booking.analytics.read',
-               ARRAY['booking.analytics.read']::TEXT[]
-           )`,
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ai_evidence_catalog
-             (
-               tool_id, display_name, product, source_owner, source_view,
-               primary_required_permission_key, required_permission_keys,
-               evidence_contract
-             )
-           VALUES (
-               'bad_sql_tool', 'Bad SQL Tool', 'booking',
-               'booking', 'direct_booking_summary_read_model',
-               'booking.analytics.read',
-               ARRAY['booking.analytics.read']::TEXT[],
-               '{"sql":"select * from guests"}'::jsonb
-           )`,
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-
-      await verifyClient.query(
-        `INSERT INTO intelligence.ask_conversations
-           (
-             id, conversation_key, actor_user_id, organization_id,
-             property_id, resource_link_id, resource_scope,
-             locale, title, conversation_metadata
-           )
-         VALUES (
-             $1, 'ask-conversation-property-one',
-             $2, $3, $4, $5, 'property',
-             'en', 'March booking performance',
-             '{"surface":"pms_dashboard"}'::jsonb
-           )`,
-        [
-          intelligenceConversationId,
-          hotelUserId,
-          hotelOrganizationId,
-          distributionPropertyId,
-          intelligenceResourceLinkId,
-        ],
-      );
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_conversations
-             (
-               conversation_key, actor_user_id, property_id,
-               resource_scope
-             )
-           VALUES (
-               'ask-conversation-invalid-scope',
-               $1, $2, 'property'
-           )`,
-          [hotelUserId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_conversations
-             (
-               conversation_key, actor_user_id, organization_id,
-               property_id, resource_link_id, resource_scope
-             )
-           VALUES (
-               'ask-conversation-cross-org-link',
-               $1, $2, $3, $4, 'property'
-           )`,
-          [hotelUserId, wrongOrganizationId, distributionPropertyId, intelligenceResourceLinkId],
-        ),
-      ).rejects.toMatchObject({ code: "23503" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_conversations
-             (
-               conversation_key, actor_user_id, organization_id,
-               property_id, resource_link_id, resource_scope
-             )
-           VALUES (
-               'ask-conversation-same-org-wrong-resource-link',
-               $1, $2, $3, $4, 'property'
-           )`,
-          [
-            hotelUserId,
-            hotelOrganizationId,
-            distributionPropertyId,
-            intelligenceOtherResourceLinkId,
-          ],
-        ),
-      ).rejects.toMatchObject({ code: "23503" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_conversations
-             (
-               conversation_key, actor_user_id, organization_id,
-               property_id, resource_scope, retention_policy
-             )
-           VALUES (
-               'ask-conversation-short-lived-without-expiry',
-               $1, $2, $3, 'property', 'short_lived'
-           )`,
-          [hotelUserId, hotelOrganizationId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-
-      await verifyClient.query(
-        `INSERT INTO intelligence.ask_conversations
-           (
-             id, conversation_key, actor_user_id, organization_id,
-             property_id, resource_scope, locale, title
-           )
-         VALUES (
-             $1, 'ask-conversation-property-one-follow-up',
-             $2, $3, $4, 'property',
-             'en', 'Follow-up booking performance'
-           )`,
-        [intelligenceOtherConversationId, hotelUserId, hotelOrganizationId, distributionPropertyId],
-      );
-
-      await verifyClient.query(
-        `INSERT INTO intelligence.ask_runs
-           (
-             id, run_key, conversation_id, actor_user_id,
-             organization_id, property_id, resource_scope,
-             request_id, correlation_id,
-             idempotency_key_id, question_redacted_text, question_hash,
-             detected_intent, required_permission_key, run_status,
-             confidence_level, model_provider, model_name,
-             prompt_version, schema_version, tool_plan,
-             unavailable_data, caveats, token_usage,
-             cost_metadata, finished_at, latency_ms
-           )
-         VALUES (
-             $1, 'ask-run-property-one-march',
-             $2, $3, $4, $5, 'property',
-             'req-intelligence-test', 'corr-platform-test',
-             $6, 'Why did my direct booking share improve in March?',
-             'sha256:ask-question-march',
-             'booking_performance', 'intelligence.ask.read',
-             'answered', 'high', 'openai', 'gpt-4.1',
-             'ask-mvp-v1', 'ask-answer.v1',
-             '[{"toolId":"get_booking_performance","version":"v1"}]'::jsonb,
-             '[]'::jsonb, '[]'::jsonb,
-             '{"inputTokens":120,"outputTokens":80}'::jsonb,
-             '{"costUsd":0.02}'::jsonb,
-             now(), 1200
-           )`,
-        [
-          intelligenceRunId,
-          intelligenceConversationId,
-          hotelUserId,
-          hotelOrganizationId,
-          distributionPropertyId,
-          platformIdempotencyKeyId,
-        ],
-      );
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_runs
-             (
-               run_key, conversation_id, actor_user_id,
-               organization_id, property_id, resource_scope,
-               request_id, question_redacted_text, question_hash,
-               prompt_version, run_status, tool_plan, finished_at
-             )
-           VALUES (
-               'ask-run-cross-scope', $1, $2, $3, $4,
-               'property', 'req-cross-scope',
-               'Can I see this other scope?', 'sha256:cross-scope',
-               'ask-mvp-v1', 'answered',
-               '[{"toolId":"get_booking_performance"}]'::jsonb,
-               now()
-           )`,
-          [intelligenceConversationId, hotelUserId, wrongOrganizationId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23503" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_runs
-             (
-               run_key, conversation_id, actor_user_id,
-               organization_id, property_id, resource_scope,
-               request_id, question_redacted_text, question_hash,
-               prompt_version, run_status
-             )
-           VALUES (
-               'ask-run-answered-without-time', $1, $2, $3, $4,
-               'property', 'req-no-time',
-               'What happened?', 'sha256:no-time',
-               'ask-mvp-v1', 'answered'
-           )`,
-          [intelligenceConversationId, hotelUserId, hotelOrganizationId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_runs
-             (
-               run_key, conversation_id, actor_user_id,
-               organization_id, property_id, resource_scope,
-               request_id, question_redacted_text, question_hash,
-               prompt_version, run_status
-             )
-           VALUES (
-               'ask-run-actor-mismatch', $1, $2, $3, $4,
-               'property', 'req-actor-mismatch',
-               'Can another actor reuse this conversation?',
-               'sha256:actor-mismatch',
-               'ask-mvp-v1', 'planned'
-           )`,
-          [intelligenceConversationId, creatorUserId, hotelOrganizationId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23503" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_runs
-             (
-               run_key, conversation_id, actor_user_id,
-               organization_id, property_id, resource_scope,
-               request_id, question_redacted_text, question_hash,
-               prompt_version, run_status
-             )
-           VALUES (
-               'ask-run-unredacted-question', $1, $2, $3, $4,
-               'property', 'req-unredacted-question',
-               'Can you email guest@example.com about this?',
-               'sha256:unredacted-question',
-               'ask-mvp-v1', 'planned'
-           )`,
-          [intelligenceConversationId, hotelUserId, hotelOrganizationId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-
-      await verifyClient.query(
-        `INSERT INTO intelligence.ask_runs
-           (
-             id, run_key, conversation_id, actor_user_id,
-             organization_id, property_id, resource_scope,
-             request_id, question_redacted_text,
-             question_hash, detected_intent, required_permission_key,
-             run_status, confidence_level, prompt_version,
-             unavailable_data, finished_at
-           )
-         VALUES (
-             $1, 'ask-run-invalid-audit-probe',
-             $2, $3, $4, $5, 'property',
-             'req-invalid-audit-probe',
-             'Can this unsupported answer be audited?',
-             'sha256:invalid-audit-probe',
-             'booking_performance', 'intelligence.ask.read',
-             'unavailable', 'unknown', 'ask-mvp-v1',
-             '[{"reason":"empty_result"}]'::jsonb,
-             now()
-           )`,
-        [
-          intelligenceInvalidAuditRunId,
-          intelligenceConversationId,
-          hotelUserId,
-          hotelOrganizationId,
-          distributionPropertyId,
-        ],
-      );
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_runs
-             (
-               run_key, conversation_id, actor_user_id,
-               organization_id, property_id, resource_scope,
-               request_id, question_redacted_text, question_hash,
-               prompt_version, run_status, tool_plan, finished_at
-             )
-           VALUES (
-               'ask-run-raw-sql-plan', $1, $2, $3, $4,
-               'property', 'req-raw-sql',
-               'Run this SQL', 'sha256:raw-sql',
-               'ask-mvp-v1', 'answered',
-               '[{"rawSql":"select * from booking_guests"}]'::jsonb,
-               now()
-           )`,
-          [intelligenceConversationId, hotelUserId, hotelOrganizationId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-
-      await verifyClient.query(
-        `INSERT INTO intelligence.ask_tool_calls
-           (
-             id, run_id, tool_id, tool_version, call_sequence,
-             resource_scope, organization_id, property_id,
-             required_permission_key, authorization_status,
-             result_status, input_scope, filters,
-             evidence_references, result_summary,
-             finished_at, latency_ms
-           )
-         VALUES (
-             $1, $2, 'get_booking_performance', 'v1', 1,
-             'property', $3, $4, 'booking.analytics.read',
-             'allowed', 'available',
-             '{"organizationId":"hotel-org","propertyId":"property-one"}'::jsonb,
-             '{"dateRange":{"from":"2026-03-01","to":"2026-03-31"}}'::jsonb,
-             '[{
-               "evidenceId":"booking-direct-share-2026-03",
-               "metricKey":"booking.direct_share",
-               "sourceOwner":"booking",
-               "sourceView":"direct_booking_summary_read_model",
-               "freshness":"fresh"
-             }]'::jsonb,
-             '{"value":0.64,"unit":"percentage"}'::jsonb,
-             now(), 80
-           )`,
-        [intelligenceToolCallId, intelligenceRunId, hotelOrganizationId, distributionPropertyId],
-      );
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_tool_calls
-             (
-               run_id, tool_id, call_sequence, resource_scope,
-               organization_id, property_id, required_permission_key,
-               result_status, authorization_status
-             )
-           VALUES (
-               $1, 'get_booking_performance', 2, 'property',
-               $2, $3, 'booking.analytics.read',
-               'available', 'allowed'
-           )`,
-          [intelligenceRunId, hotelOrganizationId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_tool_calls
-             (
-               run_id, tool_id, call_sequence, resource_scope,
-               organization_id, property_id, required_permission_key,
-               result_status, authorization_status,
-               evidence_references
-             )
-           VALUES (
-               $1, 'get_booking_performance', 2, 'property',
-               $2, $3, 'pms.booking.read',
-               'available', 'allowed',
-               '[{"evidenceId":"booking-direct-share-2026-03"}]'::jsonb
-           )`,
-          [intelligenceRunId, hotelOrganizationId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23503" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_tool_calls
-             (
-               run_id, tool_id, call_sequence, resource_scope,
-               organization_id, property_id, required_permission_key,
-               result_status, authorization_status,
-               evidence_references
-             )
-           VALUES (
-               $1, 'get_booking_performance', 2, 'property',
-               $2, $3, 'booking.analytics.read',
-               'not_authorized', 'allowed',
-               '[{"evidenceId":"blocked"}]'::jsonb
-           )`,
-          [intelligenceRunId, hotelOrganizationId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_tool_calls
-             (
-               run_id, tool_id, call_sequence, resource_scope,
-               organization_id, property_id, required_permission_key,
-               result_status, authorization_status,
-               evidence_references
-             )
-           VALUES (
-               $1, 'get_booking_performance', 2, 'property',
-               $2, $3, 'booking.analytics.read',
-               'available', 'allowed',
-               '[{"sourceTable":"booking_guests"}]'::jsonb
-           )`,
-          [intelligenceRunId, hotelOrganizationId, distributionPropertyId],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-
-      await verifyClient.query(
-        `INSERT INTO intelligence.ask_answer_audits
-           (
-             id, answer_id, run_id, conversation_id,
-             platform_audit_event_id, organization_id, property_id,
-             resource_scope, contract_version, answer_status,
-             confidence_level, question_hash, summary,
-             generated_answer, evidence_references,
-             material_claims, suggested_actions,
-             unavailable_data, caveats, retention_class,
-             audit_metadata
-           )
-         VALUES (
-             $1, 'ask-answer-property-one-march', $2, $3, $4,
-             $5, $6, 'property', 'ask-answer.v1',
-             'answered', 'high', 'sha256:ask-question-march',
-             'Direct booking share improved with fresh booking evidence.',
-             '{"blocks":[{"type":"metric","metricKey":"booking.direct_share"}]}'::jsonb,
-             '[{"evidenceId":"booking-direct-share-2026-03","toolCallId":"cccccccc-7777-4777-8777-ccccccccccc1"}]'::jsonb,
-             '[{"claim":"Direct share improved in March","evidenceId":"booking-direct-share-2026-03"}]'::jsonb,
-             '[{"type":"view_report","target":"booking_dashboard"}]'::jsonb,
-             '[]'::jsonb,
-             '[]'::jsonb,
-             'guest_pii_excluded',
-             '{"requestId":"req-intelligence-test","correlationId":"corr-platform-test"}'::jsonb
-           )`,
-        [
-          intelligenceAnswerAuditId,
-          intelligenceRunId,
-          intelligenceConversationId,
-          platformAuditEventId,
-          hotelOrganizationId,
-          distributionPropertyId,
-        ],
-      );
-      await verifyClient.query(
-        `INSERT INTO intelligence.ask_answer_audits
-           (
-             answer_id, run_id, conversation_id,
-             organization_id, property_id, resource_scope,
-             answer_status, confidence_level, question_hash,
-             audit_revision, generated_answer, evidence_references,
-             material_claims, review_status, reviewed_by_user_id,
-             reviewed_at, retention_class
-           )
-         VALUES (
-             'ask-answer-property-one-march-reviewed', $1, $2,
-             $3, $4, 'property', 'answered', 'high',
-             'sha256:ask-question-march', 2,
-             '{"blocks":[{"type":"metric","metricKey":"booking.direct_share"}]}'::jsonb,
-             '[{"evidenceId":"booking-direct-share-2026-03","toolCallId":"cccccccc-7777-4777-8777-ccccccccccc1"}]'::jsonb,
-             '[{"claim":"Direct share improved in March","evidenceId":"booking-direct-share-2026-03"}]'::jsonb,
-             'approved', $5, now(), 'guest_pii_excluded'
-         )`,
-        [
-          intelligenceRunId,
-          intelligenceConversationId,
-          hotelOrganizationId,
-          distributionPropertyId,
-          hotelUserId,
-        ],
-      );
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_answer_audits
-             (
-               answer_id, run_id, conversation_id,
-               organization_id, property_id, resource_scope,
-               answer_status, confidence_level, question_hash,
-               audit_revision, unavailable_data
-             )
-           VALUES (
-               'ask-answer-property-one-march-duplicate-revision',
-               $1, $2, $3, $4, 'property',
-               'unavailable', 'unknown', 'sha256:duplicate-revision',
-               2, '[{"reason":"empty_result"}]'::jsonb
-           )`,
-          [
-            intelligenceRunId,
-            intelligenceConversationId,
-            hotelOrganizationId,
-            distributionPropertyId,
-          ],
-        ),
-      ).rejects.toMatchObject({ code: "23505" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_answer_audits
-             (
-               answer_id, run_id, conversation_id,
-               organization_id, property_id, resource_scope,
-               answer_status, confidence_level, question_hash,
-               retention_class, privacy_scope
-             )
-           VALUES (
-               'ask-answer-finance-retention-not-restricted',
-               $1, $2, $3, $4, 'property',
-               'unavailable', 'unknown', 'sha256:finance-retention',
-               'finance_restricted', 'confidential'
-           )`,
-          [
-            intelligenceInvalidAuditRunId,
-            intelligenceConversationId,
-            hotelOrganizationId,
-            distributionPropertyId,
-          ],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_answer_audits
-             (
-               answer_id, run_id, conversation_id,
-               organization_id, property_id, resource_scope,
-               answer_status, confidence_level, question_hash,
-               unavailable_data
-             )
-           VALUES (
-               'ask-answer-run-conversation-mismatch',
-               $1, $2, $3, $4, 'property',
-               'unavailable', 'unknown', 'sha256:conversation-mismatch',
-               '[{"reason":"empty_result"}]'::jsonb
-           )`,
-          [
-            intelligenceInvalidAuditRunId,
-            intelligenceOtherConversationId,
-            hotelOrganizationId,
-            distributionPropertyId,
-          ],
-        ),
-      ).rejects.toMatchObject({ code: "23503" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_answer_audits
-             (
-               answer_id, run_id, conversation_id,
-               organization_id, property_id, resource_scope,
-               answer_status, confidence_level, question_hash,
-               material_claims
-             )
-           VALUES (
-               'ask-answer-unsupported-claim', $1, $2,
-               $3, $4, 'property', 'answered', 'medium',
-               'sha256:unsupported',
-               '[{"claim":"Unsupported"}]'::jsonb
-           )`,
-          [
-            intelligenceInvalidAuditRunId,
-            intelligenceConversationId,
-            hotelOrganizationId,
-            distributionPropertyId,
-          ],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-      await expect(
-        verifyClient.query(
-          `INSERT INTO intelligence.ask_answer_audits
-             (
-               answer_id, run_id, conversation_id,
-               organization_id, property_id, resource_scope,
-               answer_status, confidence_level, question_hash,
-               generated_answer, evidence_references
-             )
-           VALUES (
-               'ask-answer-raw-sql', $1, $2,
-               $3, $4, 'property', 'answered', 'medium',
-               'sha256:raw-sql-answer',
-               '{"rawSql":"select * from guests"}'::jsonb,
-               '[{"evidenceId":"booking-direct-share-2026-03"}]'::jsonb
-           )`,
-          [
-            intelligenceInvalidAuditRunId,
-            intelligenceConversationId,
-            hotelOrganizationId,
-            distributionPropertyId,
-          ],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-      await expect(
-        verifyClient.query(
-          `UPDATE intelligence.ask_answer_audits
-           SET review_status = 'needs_review'
-           WHERE id = $1`,
-          [intelligenceAnswerAuditId],
-        ),
-      ).rejects.toMatchObject({ code: "55000" });
+      expect(retiredIntelligenceResourceLinkConstraints).toHaveLength(0);
     } finally {
       await verifyClient.end();
     }

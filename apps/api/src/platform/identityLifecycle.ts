@@ -387,7 +387,7 @@ async function grantIdentityAccess(
   }
 }
 
-async function grantIdentityAccessWithClient(
+export async function grantIdentityAccessWithClient(
   client: pg.PoolClient,
   payload: GrantIdentityAccessCommand["payload"],
 ): Promise<string> {
@@ -402,12 +402,21 @@ async function grantIdentityAccessWithClient(
   }
   await client.query(
     `INSERT INTO identity.organization_memberships
-       (organization_id, user_id, status, role_key, workos_membership_id, workos_role_slugs, invited_at)
-     VALUES ($1, $2, COALESCE($3, 'active'), $4, $5, COALESCE($6::text[], '{}'::text[]), $7)
+       (organization_id, user_id, status, role_key, property_access_mode, access_origin, workos_membership_id, workos_role_slugs, invited_at)
+     VALUES ($1, $2, COALESCE($3, 'active'), $4, $5, 'agency', $6, COALESCE($7::text[], '{}'::text[]), $8)
      ON CONFLICT (organization_id, user_id)
      DO UPDATE SET
        status = EXCLUDED.status,
-       role_key = EXCLUDED.role_key,
+       role_key = CASE
+         WHEN identity.organization_memberships.access_origin = 'external_owner'
+         THEN identity.organization_memberships.role_key
+         ELSE EXCLUDED.role_key
+       END,
+       property_access_mode = CASE
+         WHEN identity.organization_memberships.access_origin = 'external_owner'
+         THEN identity.organization_memberships.property_access_mode
+         ELSE EXCLUDED.property_access_mode
+       END,
        workos_membership_id = COALESCE(EXCLUDED.workos_membership_id, identity.organization_memberships.workos_membership_id),
        workos_role_slugs = EXCLUDED.workos_role_slugs,
        updated_at = now()`,
@@ -416,6 +425,7 @@ async function grantIdentityAccessWithClient(
       payload.userId,
       payload.membership.status ?? "active",
       payload.membership.roleKey,
+      payload.membership.propertyAccessMode,
       payload.membership.workosMembershipId ?? null,
       payload.membership.workosRoleSlugs ?? [],
       payload.membership.invitedAt ?? null,

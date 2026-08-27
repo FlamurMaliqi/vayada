@@ -16,6 +16,7 @@ import {
   activeNavModules,
   CORE_NAV_ITEMS,
   FEATURE_CATEGORIES,
+  FEATURE_MODULE_NAV_INDEX,
   modulesForProduct,
 } from "./registry";
 import type {
@@ -34,8 +35,6 @@ interface FeatureHubPageProps {
   activationClient: FeatureActivationClient;
   initialProduct?: FeatureProduct;
   products?: FeatureProduct[];
-  /** Modules that are intentionally unavailable on the current API target. */
-  hiddenModuleIds?: string[];
 }
 
 function cx(...classes: Array<string | false | null | undefined>): string {
@@ -58,7 +57,6 @@ export function FeatureHubPage({
   activationClient,
   initialProduct = "pms",
   products,
-  hiddenModuleIds = [],
 }: FeatureHubPageProps) {
   const [product, setProduct] = useState<FeatureProduct>(initialProduct);
   const [query, setQuery] = useState("");
@@ -66,21 +64,27 @@ export function FeatureHubPage({
   const [selectedModule, setSelectedModule] = useState<FeatureModule | null>(null);
   const [notice, setNotice] = useState("");
   const [savingModuleId, setSavingModuleId] = useState<string | null>(null);
-  const { activeModuleIds, activeModuleSet, loading, error, setModuleActive } =
-    useFeatureModuleActivations(activationClient);
-  const hiddenModuleSet = useMemo(() => new Set(hiddenModuleIds), [hiddenModuleIds]);
-  const visibleActiveModuleIds = useMemo(
-    () => activeModuleIds.filter((moduleId) => !hiddenModuleSet.has(moduleId)),
-    [activeModuleIds, hiddenModuleSet],
-  );
+  const {
+    activeModuleIds,
+    activeModuleSet,
+    supportedModuleIds,
+    canManage,
+    loading,
+    error,
+    setModuleActive,
+  } = useFeatureModuleActivations(activationClient);
+  const supportedModuleSet = useMemo(() => new Set(supportedModuleIds), [supportedModuleIds]);
 
   const availableProducts = useMemo(() => {
     const requested = products?.length ? products : ALL_PRODUCTS;
-    return requested.includes(initialProduct) ? requested : [initialProduct, ...requested];
-  }, [initialProduct, products]);
+    const ordered = requested.includes(initialProduct) ? requested : [initialProduct, ...requested];
+    return ordered.filter((key) =>
+      modulesForProduct(key).some((module) => supportedModuleSet.has(module.id)),
+    );
+  }, [initialProduct, products, supportedModuleSet]);
 
   useEffect(() => {
-    if (!availableProducts.includes(product)) {
+    if (availableProducts.length > 0 && !availableProducts.includes(product)) {
       setProduct(availableProducts[0]);
     }
   }, [availableProducts, product]);
@@ -92,14 +96,14 @@ export function FeatureHubPage({
   }, [notice]);
 
   const productActiveCount = useMemo(
-    () => activeModuleCount(product, visibleActiveModuleIds),
-    [product, visibleActiveModuleIds],
+    () => activeModuleCount(product, activeModuleIds),
+    [product, activeModuleIds],
   );
 
   const filteredModules = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return modulesForProduct(product).filter((module) => {
-      if (hiddenModuleSet.has(module.id)) return false;
+      if (!supportedModuleSet.has(module.id)) return false;
       const matchesCategory = category === "All" || module.category === category;
       const matchesSearch =
         !normalized ||
@@ -109,7 +113,7 @@ export function FeatureHubPage({
           .includes(normalized);
       return matchesCategory && matchesSearch;
     });
-  }, [category, hiddenModuleSet, product, query]);
+  }, [category, product, query, supportedModuleSet]);
 
   const toggleModule = async (module: FeatureModule, isActive: boolean) => {
     if (!isActive) {
@@ -164,7 +168,7 @@ export function FeatureHubPage({
           {availableProducts.length > 1 && (
             <div className="flex flex-col gap-2 sm:flex-row">
               {availableProducts.map((key) => {
-                const count = activeModuleCount(key, visibleActiveModuleIds);
+                const count = activeModuleCount(key, activeModuleIds);
                 return (
                   <button
                     key={key}
@@ -269,6 +273,7 @@ export function FeatureHubPage({
                         key={module.id}
                         module={module}
                         isActive={activeModuleSet.has(module.id)}
+                        disabled={loading || !canManage}
                         saving={savingModuleId === module.id}
                         onOpen={() => setSelectedModule(module)}
                         onToggle={(isActive) => toggleModule(module, isActive)}
@@ -280,7 +285,7 @@ export function FeatureHubPage({
             </main>
 
             <aside className="lg:sticky lg:top-4 lg:self-start">
-              <NavigationPreview product={product} activeModuleIds={visibleActiveModuleIds} />
+              <NavigationPreview product={product} activeModuleIds={activeModuleIds} />
             </aside>
           </div>
         </div>
@@ -290,6 +295,7 @@ export function FeatureHubPage({
         <DetailModal
           module={selectedModule}
           isActive={activeModuleSet.has(selectedModule.id)}
+          disabled={loading || !canManage}
           saving={savingModuleId === selectedModule.id}
           onClose={() => setSelectedModule(null)}
           onToggle={(isActive) => toggleModule(selectedModule, isActive)}
@@ -302,12 +308,14 @@ export function FeatureHubPage({
 function ModuleCard({
   module,
   isActive,
+  disabled,
   saving,
   onOpen,
   onToggle,
 }: {
   module: FeatureModule;
   isActive: boolean;
+  disabled: boolean;
   saving: boolean;
   onOpen: () => void;
   onToggle: (isActive: boolean) => void;
@@ -361,7 +369,7 @@ function ModuleCard({
         </button>
         <ToggleSwitch
           checked={isActive}
-          disabled={saving}
+          disabled={disabled || saving}
           ariaLabel={`${isActive ? "Deactivate" : "Activate"} ${module.name}`}
           onChange={(checked) => onToggle(checked)}
         />
@@ -390,7 +398,7 @@ function ToggleSwitch({
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cx(
-        "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:cursor-wait disabled:opacity-50",
+        "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50",
         checked ? "bg-primary-600" : "bg-gray-300",
       )}
     >
@@ -459,7 +467,25 @@ function NavigationPreview({
   const nonNavActive = modulesForProduct(product).filter(
     (module) => active.has(module.id) && !module.navItem && module.settingsNote,
   );
-  const totalItems = CORE_NAV_ITEMS[product].length + navModules.length;
+  const coreNavItems = CORE_NAV_ITEMS[product];
+  const moduleNavIndex = FEATURE_MODULE_NAV_INDEX[product];
+  const previewItems = [
+    ...coreNavItems.slice(0, moduleNavIndex).map((item) => ({
+      key: `core:${item.href}`,
+      label: item.label,
+      isModule: false,
+    })),
+    ...navModules.map((module) => ({
+      key: `module:${module.id}`,
+      label: module.navItem!.label,
+      isModule: true,
+    })),
+    ...coreNavItems.slice(moduleNavIndex).map((item) => ({
+      key: `core:${item.href}`,
+      label: item.label,
+      isModule: false,
+    })),
+  ];
 
   return (
     <section className="rounded-lg border border-gray-200 bg-white">
@@ -476,26 +502,25 @@ function NavigationPreview({
         <ChevronDownIcon className="h-4 w-4 text-gray-400 lg:hidden" />
       </button>
       <div className="p-3">
-        <div className="space-y-1.5">
-          {CORE_NAV_ITEMS[product].map((item) => (
-            <div
-              key={item.href}
-              className="flex h-9 items-center gap-2 rounded-md px-2 text-[13px] text-gray-500"
+        <ol className="space-y-1.5">
+          {previewItems.map((item) => (
+            <li
+              key={item.key}
+              className={cx(
+                "flex h-9 items-center gap-2 rounded-md px-2 text-[13px]",
+                item.isModule ? "bg-primary-50 font-semibold text-primary-700" : "text-gray-500",
+              )}
             >
-              <span className="h-1.5 w-1.5 rounded-full bg-gray-300" />
+              <span
+                className={cx(
+                  "rounded-full",
+                  item.isModule ? "h-2 w-2 bg-primary-500" : "h-1.5 w-1.5 bg-gray-300",
+                )}
+              />
               <span className="truncate">{item.label}</span>
-            </div>
+            </li>
           ))}
-          {navModules.map((module) => (
-            <div
-              key={module.id}
-              className="flex h-9 items-center gap-2 rounded-md bg-primary-50 px-2 text-[13px] font-semibold text-primary-700"
-            >
-              <span className="h-2 w-2 rounded-full bg-primary-500" />
-              <span className="truncate">{module.navItem?.label}</span>
-            </div>
-          ))}
-        </div>
+        </ol>
         {nonNavActive.length > 0 && (
           <div className="mt-4 space-y-2 border-t border-gray-100 pt-3">
             {nonNavActive.map((module) => (
@@ -509,7 +534,7 @@ function NavigationPreview({
           </div>
         )}
         <div className="mt-4 flex items-center justify-between border-t border-gray-100 pt-3 text-xs font-medium text-gray-500">
-          <span>{totalItems} items</span>
+          <span>{previewItems.length} items</span>
           <span>{navModules.length} module items</span>
         </div>
       </div>
@@ -520,12 +545,14 @@ function NavigationPreview({
 function DetailModal({
   module,
   isActive,
+  disabled,
   saving,
   onClose,
   onToggle,
 }: {
   module: FeatureModule;
   isActive: boolean;
+  disabled: boolean;
   saving: boolean;
   onClose: () => void;
   onToggle: (isActive: boolean) => void;
@@ -654,7 +681,7 @@ function DetailModal({
           <div className="flex items-center gap-3">
             <ToggleSwitch
               checked={isActive}
-              disabled={saving}
+              disabled={disabled || saving}
               ariaLabel={`${isActive ? "Deactivate" : "Activate"} ${module.name}`}
               onChange={onToggle}
             />
@@ -664,10 +691,10 @@ function DetailModal({
           </div>
           <button
             type="button"
-            disabled={saving}
+            disabled={disabled || saving}
             onClick={() => onToggle(!isActive)}
             className={cx(
-              "inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-semibold transition disabled:cursor-wait disabled:opacity-60",
+              "inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60",
               isActive
                 ? "border border-gray-200 bg-white text-gray-700 hover:border-gray-400"
                 : "bg-primary-600 text-white hover:bg-primary-700",

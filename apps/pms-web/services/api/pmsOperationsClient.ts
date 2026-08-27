@@ -10,6 +10,9 @@ const PMS_OPERATIONS_API_URL =
   "https://api.localhost";
 
 export const pmsOperationsClient = new ApiClient(PMS_OPERATIONS_API_URL);
-export const pmsOperationsRequestOptions = omitHotelContext;
+export const pmsOperationsRequestOptions: RequestInit = {
+  ...omitHotelContext,
+  cache: "no-store",
+};
 
 export function assertPmsOperationsReadModelEnabled(): void {}

@@ -8,7 +8,7 @@ import {
 import { watchPageHealth } from "../support/pageHealth";
 
 test.describe("booking-admin unsupported surfaces", () => {
-  test("shows honest unavailable states without exposing legacy controls", async ({
+  test("hides unsupported settings without exposing legacy controls", async ({
     page,
   }, testInfo) => {
     const assertHealthy = watchPageHealth(page, testInfo);
@@ -41,18 +41,10 @@ test.describe("booking-admin unsupported surfaces", () => {
       }),
     );
 
-    await page.goto("/affiliates");
-    await expect(page.getByRole("heading", { level: 1, name: "Affiliates" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Not available yet" })).toBeVisible();
-
-    await page.goto("/settings/feature-hub");
-    await expect(page.getByText("Affiliates", { exact: true })).toHaveCount(0);
-
     await page.goto("/settings");
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
-    await page.getByRole("button", { name: "Account", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Personal account security" })).toBeVisible();
-    await expect(page.getByText(/managed by Vayada sign-in/i)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Account", exact: true })).toHaveCount(0);
+    await expect(page.getByText("Personal account security")).toHaveCount(0);
     await expect(page.getByRole("button", { name: /change password/i })).toHaveCount(0);
     await expect(page.getByRole("button", { name: /enable two-factor/i })).toHaveCount(0);
 

@@ -1,7 +1,7 @@
 # Booking settings write contracts
 
-This document defines the typed write contracts for the Booking Flow settings
-surfaces whose reads have already moved to typed contracts:
+This document records the typed write contracts used by the Booking Flow
+settings surfaces:
 
 - [`BookingAddonSettings`](booking-addon-settings-contract.md)
 - [`BookingGuestFormSettings`](booking-guest-form-settings-contract.md)
@@ -9,10 +9,10 @@ surfaces whose reads have already moved to typed contracts:
 - [`BookingLocalizationSettings`](booking-localization-settings-contract.md)
 - [`BookingRoomFilterSettings`](booking-room-filter-settings-contract.md)
 
-The current booking-admin save paths still write through legacy admin endpoints
-from `settingsService`. These contracts define the target TypeScript backend
-write surface so follow-up tickets can implement routes, frontend clients, and
-Booking Flow save migration without inventing payloads in code.
+The target TypeScript routes, PostgreSQL repository, and Booking Admin clients
+implement these contracts. The production server now composes the target
+repository directly; there is no runtime source selector for these reads or
+writes.
 
 ## Contract Shape
 
@@ -39,27 +39,15 @@ All write bodies are strict: unknown fields are rejected, required fields may
 not be omitted, and `null` is invalid unless a future surface explicitly
 documents a nullable field.
 
-## Target Repository Activation
+## Target Repository Runtime
 
-`BOOKING_SETTINGS_SOURCE=legacy` remains the production default until the
-cutover write-freeze because legacy Booking and PMS services still read
-`booking_hotels`. The target repository is merged dark behind
-`BOOKING_SETTINGS_SOURCE=target` and reads/writes `booking.booking_settings`
-through `TARGET_DATABASE_URL`.
-
-The write flip happens during audit activation steps 7-8:
-
-1. Run the final legacy-to-target settings snapshot during the cutover window.
-2. Freeze or queue legacy Booking settings writes.
-3. Start `apps/api` with `BOOKING_SETTINGS_SOURCE=target` and no
-   `BOOKING_DATABASE_URL` or `PMS_API_URL`.
-4. Prove all `/api/booking/hotels/:hotelId/settings/*` GET/PUT contract tests
-   against the target snapshot.
-5. Point PMS/check-in consumers at the target settings projection instead of the
-   legacy PMS admin sync.
-
-In target mode, guest-form settings writes do not call the PMS admin API. PMS
-guest-form/check-in behavior consumes the target projection after the cutover.
+`apps/api` always reads and writes `booking.booking_settings` through
+`TARGET_DATABASE_URL`; `BOOKING_SETTINGS_SOURCE` is retired. The legacy
+`booking_hotels` reader/writer and `BOOKING_DATABASE_URL` are deleted.
+Guest-form settings writes do not call the PMS admin API. The next
+TypeScript/public Booking paths consume the target projection; separately
+deployed legacy Python PMS behavior remains a rollback/retirement concern
+outside this cleanup.
 
 ## Authorization
 
@@ -345,37 +333,38 @@ Validation and behavior:
 }
 ```
 
-Hero image, heading, subtext, colors, and font pairing remain on the legacy
-design settings endpoint until a separate design-settings contract exists.
+Hero image, heading, subtext, colors, and font pairing use the target-backed
+`PATCH /api/booking/hotels/:hotelId/settings/design` route. The separate
+Booking design revision contract continues to own publication-ready design
+revisions.
 
-## Deferred Legacy Surfaces
+## Adjacent Target Surfaces
 
-The following writes intentionally remain legacy after this contract:
+These neighboring Booking Admin writes are target-backed but remain separate
+from the five full-replacement contracts above:
 
-| Surface                                   | Reason                                                                 |
-| ----------------------------------------- | ---------------------------------------------------------------------- |
-| Add-on CRUD                               | Product item management, not add-on display settings.                  |
-| Promo-code CRUD                           | Separate Booking Flow tab with a different domain contract.            |
-| Last-minute configuration                 | Not part of the migrated read contract batch.                          |
-| Header default-currency switcher          | Shares localization fields but is not the Booking Flow tab workflow.   |
-| Setup-wizard localization/property writes | Setup owns hotel creation and broader property initialization.         |
-| Hero/branding design settings             | Broad design surface, distinct from room-filter settings.              |
-| Backend legacy endpoint removal           | Removal waits until booking-admin and any other consumers are audited. |
+| Surface                          | Target path/ownership                                                        |
+| -------------------------------- | ---------------------------------------------------------------------------- |
+| Add-on catalog CRUD              | Typed Booking add-on item routes and Booking Admin client                    |
+| Promo-code CRUD                  | Typed Booking promo-code routes and Booking Admin client                     |
+| Last-minute configuration        | `GET`/`PUT /api/booking/hotels/:hotelId/settings/last-minute`                |
+| Header default-currency switcher | Target property-settings patch route                                         |
+| Shared setup wizard              | Shared marketplace setup flow, outside this Booking settings route family    |
+| Hero/branding design settings    | Target Booking settings design route; canonical revisions use Booking design |
 
-These deferred writes need their own Linear tickets and contracts before they
-move off legacy admin endpoints.
+Retiring old Python endpoints still requires an audit of consumers outside this
+TypeScript repository; it is not a reason to keep a runtime adapter in
+`apps/api`.
 
 ## Implementation Notes
 
-- Backend implementation should add a `BookingSettingsWriteRepository`
-  interface next to the existing read repository instead of writing SQL from
-  React-facing route handlers.
-- Route tests should cover success, validation failure, missing/invalid auth,
+- `BookingSettingsWriteRepository` sits next to the read repository, and route
+  handlers delegate persistence instead of containing SQL.
+- Route tests cover success, validation failure, missing/invalid auth,
   missing permission, missing entitlement, inactive entitlement, missing linked
   resource, not found, and write-model failure.
-- Frontend clients should live under `apps/booking-admin/services/api/` and
-  mirror the existing typed read-client error mapping style.
-- Booking-admin save migration should replace legacy writes one surface at a
-  time and keep production-mode e2e assertions for the affected tab.
-- Legacy `settingsService` methods should only be removed after all migrated
-  Booking Flow read and write consumers are gone.
+- Booking Admin clients live under `apps/booking-admin/services/api/` and share
+  the typed settings error mapping. The remaining `settingsService` property
+  and design helpers also call target routes.
+- The PostgreSQL legacy settings reader and source selector are removed. The
+  target repository is the only Booking settings persistence adapter.

@@ -378,14 +378,21 @@ function UserDetailContent() {
       router.push("/dashboard");
     } catch (err) {
       if (err instanceof ApiErrorResponse) {
-        if (err.status === 400) {
+        if (err.status === 400 && err.message.toLowerCase().includes("own account")) {
           setDeleteError("Cannot delete your own account.");
         } else if (err.status === 404) {
           setDeleteError("User not found.");
         } else if (err.status === 403) {
           setDeleteError("Access denied. Admin privileges required.");
         } else {
-          setDeleteError((err.data.detail as string) || "Failed to delete user.");
+          const detail = err.data.detail;
+          const errorMessage =
+            typeof detail === "string"
+              ? detail
+              : Array.isArray(detail)
+                ? detail.map((item) => item.msg).join(", ")
+                : err.message || "Failed to delete user.";
+          setDeleteError(errorMessage);
         }
       } else {
         setDeleteError("Failed to delete user. Please try again.");

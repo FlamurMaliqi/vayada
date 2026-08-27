@@ -135,7 +135,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory materialization re
       availableCount: 0,
     });
 
-    fixture.calendarState.currentRevision = 2;
+    await activateCalendarRevision(admin, fixture, 2);
     const rematerialized = await fixture.repository.materializeInventory(
       materializationCommand(fixture, "revision-two", 2, "2026-08-04", "2026-08-07"),
     );
@@ -176,6 +176,27 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory materialization re
       events: 3,
       outbox: 3,
     });
+  });
+
+  it("persists the complete 366-day launch horizon", async () => {
+    const fixture = await createFixture(admin, repositories, [2]);
+    const result = await fixture.repository.materializeInventory(
+      materializationCommand(fixture, "full-horizon", 1, "2026-08-04", "2027-08-04"),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      outcome: "applied",
+      changedDayCount: 366,
+      coverage: { expectedDayCount: 366, materializedDayCount: 366, gaps: [] },
+    });
+    expect(fixture.calendarState.readCount).toBe(0);
+    const count = await admin.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM pms.inventory_days
+       WHERE property_id = $1::uuid`,
+      [fixture.propertyId],
+    );
+    expect(count.rows[0]?.count).toBe("366");
   });
 
   it("serializes concurrent exact commands to one durable mutation and one receipt-free replay", async () => {
@@ -274,9 +295,9 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory materialization re
     });
   });
 
-  it("rejects stale capacity and legacy rows atomically without a refresh intent", async () => {
+  it("rejects stale evidence and adopts only pristine onboarding inventory", async () => {
     const newerCalendar = await createFixture(admin, repositories, [2, 1]);
-    newerCalendar.calendarState.currentRevision = 2;
+    await activateCalendarRevision(admin, newerCalendar, 2);
     await expect(
       newerCalendar.repository.materializeInventory(
         materializationCommand(newerCalendar, "newer-calendar", 1, "2026-08-04", "2026-08-04"),
@@ -324,27 +345,107 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory materialization re
     await admin.query(
       `INSERT INTO pms.inventory_days (
          property_id, room_type_id, stay_date, total_count,
-         assigned_count, blocked_count, available_count, status
-       ) VALUES ($1::uuid, $2::uuid, DATE '2026-08-04', 2, 0, 0, 2, 'open')`,
-      [legacy.propertyId, legacy.roomTypeId],
+         assigned_count, blocked_count, available_count, status, source_freshness
+       ) VALUES (
+         $1::uuid, $2::uuid, DATE '2026-08-04', 2, 0, 0, 2, 'open',
+         jsonb_build_object('pms', jsonb_build_object(
+           'status', 'fresh', 'generatedAt', $3::timestamptz, 'horizonDays', 366
+         ))
+       )`,
+      [legacy.propertyId, legacy.roomTypeId, ACCEPTED_AT.toISOString()],
     );
     await expect(
       legacy.repository.materializeInventory(
         materializationCommand(legacy, "legacy", 1, "2026-08-04", "2026-08-04"),
       ),
-    ).resolves.toEqual({ ok: false, error: { code: "inventory_invariant_violation" } });
-    const stored = await admin.query<{ calendarRevision: number | null }>(
-      `SELECT calendar_revision AS "calendarRevision"
+    ).resolves.toMatchObject({ ok: true, outcome: "applied", changedDayCount: 1 });
+    const stored = await admin.query<{ calendarRevision: number | null; sourceFreshness: unknown }>(
+      `SELECT calendar_revision AS "calendarRevision", source_freshness AS "sourceFreshness"
        FROM pms.inventory_days WHERE property_id = $1::uuid`,
       [legacy.propertyId],
     );
-    expect(stored.rows).toEqual([{ calendarRevision: null }]);
+    expect(stored.rows).toEqual([
+      {
+        calendarRevision: 1,
+        sourceFreshness: {
+          pms: { status: "fresh", generatedAt: expect.any(String), horizonDays: 366 },
+        },
+      },
+    ]);
     await expect(sideEffectCounts(admin, legacy.propertyId)).resolves.toEqual({
+      audits: 1,
+      idempotency: 1,
+      events: 1,
+      outbox: 1,
+    });
+
+    const occupiedLegacy = await createFixture(admin, repositories, [2]);
+    await admin.query(
+      `INSERT INTO pms.inventory_days (
+         property_id, room_type_id, stay_date, total_count,
+         assigned_count, blocked_count, available_count, status, source_freshness
+       ) VALUES (
+         $1::uuid, $2::uuid, DATE '2026-08-04', 2, 1, 0, 1, 'open',
+         jsonb_build_object('pms', jsonb_build_object(
+           'status', 'fresh', 'generatedAt', $3::timestamptz, 'horizonDays', 366
+         ))
+       )`,
+      [occupiedLegacy.propertyId, occupiedLegacy.roomTypeId, ACCEPTED_AT.toISOString()],
+    );
+    await expect(
+      occupiedLegacy.repository.materializeInventory(
+        materializationCommand(occupiedLegacy, "occupied-legacy", 1, "2026-08-04", "2026-08-04"),
+      ),
+    ).resolves.toEqual({ ok: false, error: { code: "inventory_invariant_violation" } });
+    await expect(sideEffectCounts(admin, occupiedLegacy.propertyId)).resolves.toEqual({
       audits: 1,
       idempotency: 1,
       events: 0,
       outbox: 0,
     });
+
+    for (const [suffix, freshness] of [
+      [
+        "extra-source-key",
+        {
+          pms: { status: "fresh", generatedAt: ACCEPTED_AT.toISOString(), horizonDays: 366 },
+          other: {},
+        },
+      ],
+      [
+        "extra-pms-key",
+        {
+          pms: {
+            status: "fresh",
+            generatedAt: ACCEPTED_AT.toISOString(),
+            horizonDays: 366,
+            other: true,
+          },
+        },
+      ],
+      [
+        "noncanonical-timestamp",
+        { pms: { status: "fresh", generatedAt: "Aug 4 2026 10:00 UTC", horizonDays: 366 } },
+      ],
+      [
+        "overflow-timestamp",
+        { pms: { status: "fresh", generatedAt: "2026-02-31T24:00:00Z", horizonDays: 366 } },
+      ],
+    ] as const) {
+      const malformed = await createFixture(admin, repositories, [2]);
+      await admin.query(
+        `INSERT INTO pms.inventory_days (
+           property_id, room_type_id, stay_date, total_count,
+           assigned_count, blocked_count, available_count, status, source_freshness
+         ) VALUES ($1::uuid, $2::uuid, DATE '2026-08-04', 2, 0, 0, 2, 'open', $3::jsonb)`,
+        [malformed.propertyId, malformed.roomTypeId, JSON.stringify(freshness)],
+      );
+      await expect(
+        malformed.repository.materializeInventory(
+          materializationCommand(malformed, suffix, 1, "2026-08-04", "2026-08-04"),
+        ),
+      ).resolves.toEqual({ ok: false, error: { code: "inventory_invariant_violation" } });
+    }
   });
 });
 
@@ -388,14 +489,16 @@ async function createFixture(
       startingLimit: startingLimits[index]!,
     });
     configurations.set(revision, configuration);
-    await seedCalendarRevision(admin, {
-      organizationId,
-      propertyId,
-      roomTypeId,
-      actorUserId,
-      revision,
-      startingLimit: startingLimits[index]!,
-    });
+    if (revision === 1) {
+      await seedCalendarRevision(admin, {
+        organizationId,
+        propertyId,
+        roomTypeId,
+        actorUserId,
+        revision,
+        startingLimit: startingLimits[index]!,
+      });
+    }
   }
 
   const calendarState = {
@@ -499,6 +602,25 @@ async function createFixture(
   };
 }
 
+async function activateCalendarRevision(
+  admin: pg.Client,
+  fixture: Fixture,
+  revision: number,
+): Promise<void> {
+  const configuration = fixture.configurations.get(revision);
+  const binding = configuration?.sourceInputs.roomBindings[0];
+  if (!configuration || !binding) throw new Error("Missing calendar revision fixture");
+  await seedCalendarRevision(admin, {
+    organizationId: fixture.organizationId,
+    propertyId: fixture.propertyId,
+    roomTypeId: fixture.roomTypeId,
+    actorUserId: fixture.actorUserId,
+    revision,
+    startingLimit: binding.startingSellableLimitCount,
+  });
+  fixture.calendarState.currentRevision = revision;
+}
+
 function configurationSnapshot(input: {
   propertyId: string;
   roomTypeId: string;
@@ -531,8 +653,8 @@ function configurationSnapshot(input: {
       },
       schedule: { mode: "year_round", periods: [] },
       defaultMinimumStayNights: 1,
-      createdAt: "2026-08-04T08:00:00.000Z",
-      updatedAt: "2026-08-04T08:00:00.000Z",
+      createdAt: ACCEPTED_AT.toISOString(),
+      updatedAt: ACCEPTED_AT.toISOString(),
     },
     {
       ownerDomain: "hotel_catalog",

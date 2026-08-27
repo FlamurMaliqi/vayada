@@ -23,12 +23,12 @@
       "eventType": "booking",
       "endpointPath": "/webhooks/channex",
       "payloadPath": "channex/booking-revision.json",
-      "expectedReceiptKey": "webhook:channex:booking:prop_c1_rehearsal:chan_book_c1_rehearsal_001:7",
+      "expectedReceiptKey": "webhook:channex:booking:prop_c1_rehearsal:chan_book_c1_rehearsal_001:rev_c1_rehearsal_007",
       "expectedDomainEventKeys": [
-        "channex.booking.ingest:prop_c1_rehearsal:chan_book_c1_rehearsal_001:7:v1"
+        "channex.booking.ingest:prop_c1_rehearsal:chan_book_c1_rehearsal_001:rev_c1_rehearsal_007:v1"
       ],
       "expectedJobKeys": [
-        "channex.ingest-booking:channel_booking:chan_book_c1_rehearsal_001:revision-7:v1"
+        "channex.ingest-booking:channel_booking:prop_c1_rehearsal:chan_book_c1_rehearsal_001:revision-rev_c1_rehearsal_007:v1"
       ]
     },
     {

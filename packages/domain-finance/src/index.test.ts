@@ -4,13 +4,14 @@ import {
   FINANCE_BILLING_PLANS,
   FINANCE_PAYMENT_METHODS,
   FINANCE_ROUTE_CONTRACT_VERSION,
-  buildManualPaymentProjectionJobIdempotencyKey,
+  PROPERTY_FEATURE_LIMITS,
   buildCheckoutChargeSettlementIdempotencyKey,
   buildUpdateAddOnPriceIdempotencyKey,
   calculatePayoutSplit,
   cancellationPolicyFromRefundPolicy,
   financeCommandIdempotencyKey,
   financeCommandTypes,
+  propertyFeatureLimitsFor,
   toFinancePaymentSettingsResponse,
   toPublicPaymentCapabilityProjection,
   type AddOnPricingReadPort,
@@ -18,7 +19,6 @@ import {
   type BillingConfigReadPort,
   type FinanceCommandBus,
   type FinanceCommandResult,
-  type FinanceManualPaymentRecordCommand,
   type FinancePaymentSettingsReadModel,
   type PaymentSettingsReadModel,
   type PaymentSettingsReadPort,
@@ -59,6 +59,20 @@ describe("@vayada/domain-finance constants", () => {
     expect(FINANCE_BILLING_PLANS).toContain("commission");
   });
 
+  it("keeps property feature limits centralized by billing plan", () => {
+    expect(propertyFeatureLimitsFor("commission")).toEqual({
+      maxRoomPhotosPerType: 10,
+      maxAddons: 3,
+      guestContactAccess: "after_acceptance",
+    });
+    expect(propertyFeatureLimitsFor("fixed")).toEqual({
+      maxRoomPhotosPerType: 15,
+      maxAddons: 9,
+      guestContactAccess: "always",
+    });
+    expect(PROPERTY_FEATURE_LIMITS.commission.maxAddons).toBe(3);
+  });
+
   it("exports payment methods that replace the booking_hotels flag columns", () => {
     expect(FINANCE_PAYMENT_METHODS).toContain("card");
     expect(FINANCE_PAYMENT_METHODS).toContain("pay_at_property");
@@ -72,56 +86,7 @@ describe("@vayada/domain-finance constants", () => {
     expect(financeCommandTypes).not.toContain("finance.currency.update");
     expect(financeCommandTypes).toContain("finance.billing.plan.update");
     expect(financeCommandTypes).toContain("finance.add_on.price.update");
-    expect(financeCommandTypes).toContain("finance.manual_payment.record");
     expect(financeCommandTypes).toContain("finance.checkout_charge.settle_manual");
-  });
-});
-
-describe("manual payment record command", () => {
-  it("models F1d as an idempotent finance payment write with projection jobs", () => {
-    const command: FinanceManualPaymentRecordCommand = {
-      commandType: "finance.manual_payment.record",
-      commandId: "cmd-manual-payment-001",
-      idempotencyKey: "finance-manual-payment-inv-2026-abcd-001",
-      propertyId: "property_001",
-      audit: {
-        actor: { kind: "user", userId: "user_front_desk", organizationId: "org_hotel" },
-        requestId: "req_manual_payment_001",
-        correlationId: "corr_manual_payment_001",
-        reason: "Manual payment recorded by property finance user",
-        requestedAt: "2026-06-12T12:00:00.000Z",
-      },
-      payload: {
-        invoiceId: "inv_2026_abcd",
-        amount: "250.00",
-        currency: "EUR",
-        paymentMethod: "cash",
-        reference: "front desk receipt 8812",
-      },
-    };
-
-    expect(command.commandType).toBe("finance.manual_payment.record");
-    expect(command.payload.paymentMethod).toBe("cash");
-    expect(
-      buildManualPaymentProjectionJobIdempotencyKey({
-        propertyId: command.propertyId,
-        jobType: "booking.projection-refresh",
-        guestBookingId: "guest_booking_001",
-        rawPaymentIdempotencyKey: command.idempotencyKey,
-      }),
-    ).toBe(
-      "booking.projection-refresh:property:property_001:booking:guest_booking_001:finance-payment:ff7cd8009765f0465a06be7e32957ecbd1e6dc9a27402f1584372e94f7acb1f4:v1",
-    );
-    expect(
-      buildManualPaymentProjectionJobIdempotencyKey({
-        propertyId: command.propertyId,
-        jobType: "pms.projection-refresh",
-        guestBookingId: "guest_booking_001",
-        rawPaymentIdempotencyKey: command.idempotencyKey,
-      }),
-    ).toBe(
-      "pms.projection-refresh:property:property_001:booking:guest_booking_001:finance-payment:ff7cd8009765f0465a06be7e32957ecbd1e6dc9a27402f1584372e94f7acb1f4:v1",
-    );
   });
 });
 
@@ -540,6 +505,23 @@ describe("finance route projections", () => {
     );
 
     expect(projection.paymentMethods).toEqual(["pay_at_property", "bank_transfer"]);
+  });
+
+  it("does not advertise manual methods without guest payment instructions", () => {
+    const policy = cancellationPolicyFromRefundPolicy(settings.refundPolicy, settings.updatedAt);
+    const projection = toPublicPaymentCapabilityProjection(
+      {
+        ...settings,
+        acceptedMethods: ["pay_at_property", "bank_transfer", "paypal"],
+        depositPolicy: {
+          bankTransferInstructions: " ",
+          paypalEmail: "",
+        },
+      },
+      policy,
+    );
+
+    expect(projection.paymentMethods).toEqual(["pay_at_property"]);
   });
 });
 

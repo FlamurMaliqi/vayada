@@ -22,6 +22,11 @@ test.describe("booking-web tenant smoke", () => {
     await expect(page.getByText("Alpine Suite")).toBeVisible();
     await expect(page.getByRole("button", { name: /Select This Rate/i }).first()).toBeVisible();
     const nav = page.locator("nav");
+    await nav.getByRole("button", { name: "Contact", exact: true }).click();
+    await expect(nav.getByText("Phone", { exact: true })).toBeVisible();
+    await expect(nav.getByText("Email", { exact: true })).toBeVisible();
+    await expect(nav.getByText("WhatsApp", { exact: true })).toHaveCount(0);
+    await nav.getByRole("button", { name: "Contact", exact: true }).click();
     await nav.getByRole("button", { name: "EN", exact: true }).click();
     await expect(nav.getByRole("button", { name: "Nederlands", exact: true })).toBeVisible();
 
@@ -67,6 +72,75 @@ test.describe("booking-web tenant smoke", () => {
     await assertHealthy();
   });
 
+  test("shows WhatsApp only when the hotel publishes a WhatsApp number", async ({ page }) => {
+    await mockBookingApis(page, {
+      publicContacts: [
+        { type: "phone", value: "+41 44 000 00 00" },
+        { type: "whatsapp", value: "+41 79 123 45 67" },
+        { type: "email", value: "stay@alpenrose.test" },
+      ],
+    });
+
+    await page.goto("/");
+    const nav = page.locator("nav");
+    await nav.getByRole("button", { name: "Contact", exact: true }).click();
+
+    await expect(nav.getByText("WhatsApp", { exact: true })).toBeVisible();
+    await expect(nav.getByText("+41 79 123 45 67", { exact: true })).toBeVisible();
+    await expect(nav.getByRole("link", { name: /WhatsApp/ })).toHaveAttribute(
+      "href",
+      "https://wa.me/41791234567",
+    );
+  });
+
+  test.describe("mobile room detail modal", () => {
+    test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+
+    test("keeps internal controls open for touch input", async ({ page }, testInfo) => {
+      const assertHealthy = watchPageHealth(page, testInfo);
+      await mockBookingApis(page);
+
+      await page.goto("/");
+      await page.getByRole("button", { name: "View Details", exact: true }).first().tap();
+
+      const modal = page.getByRole("dialog", { name: "Alpine Suite" });
+      await expect(modal).toBeVisible();
+
+      const roomImage = modal.getByAltText("Alpine Suite");
+      await roomImage.evaluate((image) => {
+        const start = new Touch({ identifier: 0, target: image, clientX: 300, clientY: 200 });
+        const end = new Touch({ identifier: 0, target: image, clientX: 100, clientY: 200 });
+        image.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, touches: [start] }));
+        image.dispatchEvent(new TouchEvent("touchend", { bubbles: true, changedTouches: [end] }));
+      });
+      await expect(modal).toBeVisible();
+
+      await modal.getByRole("button", { name: /View Full Amenities/i }).tap();
+      await expect(modal.getByText("Minibar", { exact: true })).toBeVisible();
+      await expect(modal).toBeVisible();
+
+      await modal.getByRole("button", { name: /Non-Refundable Rate/i }).tap();
+      await expect(modal).toBeVisible();
+
+      await modal.getByRole("button", { name: "Close room details" }).tap();
+      await expect(modal).toBeHidden();
+
+      await page.setViewportSize({ width: 1024, height: 900 });
+      await page.getByRole("button", { name: "View Details", exact: true }).first().tap();
+      await expect(modal).toBeVisible();
+      await page.touchscreen.tap(10, 10);
+      await expect(modal).toBeHidden();
+
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.getByRole("button", { name: "View Details", exact: true }).first().tap();
+      await modal.getByRole("button", { name: /Non-Refundable Rate/i }).tap();
+      await modal.getByRole("button", { name: /Select This Rate/i }).tap();
+      await expect(page).toHaveURL(/\/(addons|book)\?.*rateType=nonrefundable/);
+
+      await assertHealthy();
+    });
+  });
+
   test("uses a constrained header logo without displacing mobile actions", async ({ page }) => {
     await mockBookingApis(page, { headerLogoUrl: "/vayada-logo.png" });
 
@@ -84,6 +158,71 @@ test.describe("booking-web tenant smoke", () => {
     await expect(nav.getByRole("button", { name: "EN", exact: true })).toBeVisible();
     await expect(nav.getByRole("button", { name: "EUR", exact: true })).toBeVisible();
     expect((await nav.boundingBox())?.height).toBe(64);
+  });
+
+  test("previews six room amenities before expanding the full list", async ({ page }) => {
+    await mockBookingApis(page);
+    await page.setViewportSize({ width: 800, height: 900 });
+    await page.goto("/");
+    await page.getByRole("button", { name: "View Details", exact: true }).first().click();
+
+    const dialog = page.getByRole("dialog", { name: "Alpine Suite" });
+    const amenityGrid = dialog.locator('[id^="room-amenities-"]');
+    await expect(amenityGrid.locator(":scope > span")).toHaveText([
+      "Wi-Fi",
+      "Air conditioning",
+      "Flat-screen TV",
+      "Balcony",
+      "Kitchen",
+      "Non-smoking",
+    ]);
+    expect(
+      (
+        await amenityGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns)
+      ).split(" "),
+    ).toHaveLength(2);
+    await expect(dialog.getByText("Minibar", { exact: true })).toHaveCount(0);
+
+    const expand = dialog.getByRole("button", { name: "View Full Amenities (2 more)" });
+    await expect(expand).toHaveAttribute("aria-expanded", "false");
+    await expand.click();
+    await expect(dialog.getByText("Minibar", { exact: true })).toBeVisible();
+    const longAmenity = dialog.getByTitle("Laptop-friendly workspace");
+    expect(await longAmenity.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(
+      true,
+    );
+    await expect(dialog.getByRole("button", { name: "Show less" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await dialog.getByRole("button", { name: "Show less" }).click();
+    await expect(dialog.getByText("Minibar", { exact: true })).toHaveCount(0);
+
+    await page.setViewportSize({ width: 375, height: 812 });
+    expect(
+      (
+        await amenityGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns)
+      ).split(" "),
+    ).toHaveLength(1);
+  });
+
+  test("shows a short amenity list without an expand control", async ({ page }) => {
+    await mockBookingApis(page);
+    await page.goto("/");
+    await page.getByRole("button", { name: "View Details", exact: true }).nth(1).click();
+
+    const dialog = page.getByRole("dialog", { name: "Garden Room" });
+    await expect(dialog.locator('[id^="room-amenities-"] > span')).toHaveText(["Wi-Fi"]);
+    await expect(dialog.getByRole("button", { name: /Amenities|Show less/i })).toHaveCount(0);
+  });
+
+  test("hides reviewed-empty room amenities", async ({ page }) => {
+    await mockBookingApis(page, { gardenAmenities: [] });
+    await page.goto("/");
+    await page.getByRole("button", { name: "View Details", exact: true }).nth(1).click();
+
+    const dialog = page.getByRole("dialog", { name: "Garden Room" });
+    await expect(dialog.locator('[id^="room-amenities-"]')).toHaveCount(0);
   });
 
   test("hides children in the guest selector when the target profile disables them", async ({
@@ -149,6 +288,25 @@ test.describe("booking-web tenant smoke", () => {
       page.locator('script[type="application/ld+json"]#booking-web-public-structured-data'),
     ).toHaveCount(0);
     await expect(page.locator('script[type="application/ld+json"]')).toHaveCount(0);
+
+    const nationality = page.getByRole("combobox", { name: "Country", exact: true });
+    await nationality.fill("Netherlands");
+    await expect(nationality).toHaveValue("Netherlands");
+    await expect(page.locator('datalist option[value="Netherlands"]')).toHaveCount(1);
+    await page.getByLabel("First Name").fill("Ada");
+    await page.getByLabel("Last Name").fill("Lovelace");
+    await page
+      .getByRole("textbox", { name: "Email Address *", exact: true })
+      .fill("ada@example.test");
+    await page.getByLabel("Phone Number").fill("1234567");
+    await page.getByRole("button", { name: "Continue to Payment" }).click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => JSON.parse(sessionStorage.getItem("guestDetails") ?? "{}").guestCountry,
+        ),
+      )
+      .toBe("NL");
 
     await assertHealthy();
   });

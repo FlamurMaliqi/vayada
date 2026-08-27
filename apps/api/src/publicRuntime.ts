@@ -1,14 +1,13 @@
 import type { ApiConfig } from "./config.js";
 import {
-  createCompatibilityPublicHotelQuoteRepository,
   createTargetPublicHotelQuoteRepository,
   type PublicHotelQuoteReadPool,
 } from "./routes/aiHotelQuotes.js";
 import {
-  createPgPublicHotelProfileRepository,
   createTargetPublicHotelProfileRepository,
   type PublicHotelProfileReadPool,
 } from "./routes/aiHotels.js";
+import { createActiveBookingPublicationProfileRepository } from "./routes/activeBookingPublicationProfile.js";
 import {
   createTargetBookingWebCalendarRepository,
   type BookingWebCalendarReadPool,
@@ -27,38 +26,26 @@ export type PublicRuntimePools = {
 
 export function createPublicRuntimeRepositories(config: ApiConfig, pools: PublicRuntimePools = {}) {
   const publicHotelProfileRepository =
-    config.publicHotelProfileSource === "target"
-      ? createTargetPublicHotelProfileRepository({
+    config.publicHotelProfileSource === "active_publication"
+      ? createActiveBookingPublicationProfileRepository({
           connectionString: requireTargetDatabaseUrl(config),
           pool: pools.publicHotelProfilePool,
         })
-      : config.bookingDatabaseUrl
-        ? createPgPublicHotelProfileRepository({
-            connectionString: config.bookingDatabaseUrl,
-            bookingHostBase: config.bookingHostBase,
-          })
-        : undefined;
-
-  const publicHotelQuoteRepository =
-    publicHotelProfileRepository && config.publicBookabilitySource === "target"
-      ? createTargetPublicHotelQuoteRepository({
+      : createTargetPublicHotelProfileRepository({
           connectionString: requireTargetDatabaseUrl(config),
-          profileRepository: publicHotelProfileRepository,
-          pool: pools.publicHotelQuotePool,
-        })
-      : publicHotelProfileRepository
-        ? createCompatibilityPublicHotelQuoteRepository({
-            profileRepository: publicHotelProfileRepository,
-          })
-        : undefined;
+          pool: pools.publicHotelProfilePool,
+        });
 
-  const bookingWebCalendarRepository =
-    config.publicBookabilitySource === "target"
-      ? createTargetBookingWebCalendarRepository({
-          connectionString: requireTargetDatabaseUrl(config),
-          pool: pools.bookingWebCalendarPool,
-        })
-      : undefined;
+  const publicHotelQuoteRepository = createTargetPublicHotelQuoteRepository({
+    connectionString: requireTargetDatabaseUrl(config),
+    profileRepository: publicHotelProfileRepository,
+    pool: pools.publicHotelQuotePool,
+  });
+
+  const bookingWebCalendarRepository = createTargetBookingWebCalendarRepository({
+    connectionString: requireTargetDatabaseUrl(config),
+    pool: pools.bookingWebCalendarPool,
+  });
 
   const marketplaceDiscoveryRepository = createPgMarketplaceDiscoveryReadRepository({
     connectionString: requireTargetDatabaseUrl(config),

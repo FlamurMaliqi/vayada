@@ -2,6 +2,7 @@ import { parsePmsPricingCurrency, parsePmsPricingCurrencyCapabilities } from "@v
 import { describe, expect, it } from "vitest";
 
 import {
+  PMS_PRICING_CURRENCY_CHANGE_FAIL_CLOSED_GUARD,
   PMS_PRICING_CURRENCY_CAPABILITIES_PORT,
   PMS_PRICING_CURRENCY_CAPABILITIES_V1,
   PMS_SUPPORTED_PRICING_CURRENCY_CODES_V1,
@@ -65,5 +66,17 @@ describe("PMS pricing currency capabilities", () => {
         PMS_PRICING_CURRENCY_CAPABILITIES_PORT.isSupportedPricingCurrency(code),
       ).resolves.toBe(false);
     }
+  });
+
+  it("fails closed when a later currency change cannot check every dependency", async () => {
+    const blockers = await PMS_PRICING_CURRENCY_CHANGE_FAIL_CLOSED_GUARD.runWithCurrencyChangeGuard(
+      {
+        propertyId: "61000000-0000-4000-8000-000000000001",
+        currentCurrency: parsePmsPricingCurrency("EUR")!,
+        requestedCurrency: parsePmsPricingCurrency("USD")!,
+      },
+      async (value) => value,
+    );
+    expect(blockers).toEqual([{ code: "dependency_check_unavailable" }]);
   });
 });

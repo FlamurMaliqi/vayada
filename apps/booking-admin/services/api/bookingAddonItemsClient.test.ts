@@ -4,6 +4,7 @@ import {
   BookingAddonItemsClientError,
   createBookingAddonItem,
   deleteBookingAddonItem,
+  getBookingAddonItemsContext,
   listBookingAddonItems,
   updateBookingAddonItem,
   type BookingAddonItem,
@@ -36,9 +37,25 @@ const addonItem: BookingAddonItem = {
   publicVisible: true,
   status: "active",
   sortOrder: 0,
+  ownershipKind: "property",
+  partnerCommissionRate: null,
   createdAt: "2026-06-01T10:00:00.000Z",
   updatedAt: "2026-06-01T10:00:00.000Z",
 };
+
+const propertyPlan = {
+  propertyId: "property_alpenrose",
+  plan: "commission" as const,
+  limits: {
+    maxRoomPhotosPerType: 10,
+    maxAddons: 3,
+    guestContactAccess: "after_acceptance" as const,
+  },
+};
+
+// @ts-expect-error Commission updates require an ownership kind.
+const invalidEconomicUpdate: UpdateBookingAddonItemBody = { partnerCommissionRate: null };
+void invalidEconomicUpdate;
 
 describe("booking add-on item clients", () => {
   it("lists add-on items through the typed target endpoint", async () => {
@@ -46,7 +63,7 @@ describe("booking add-on item clients", () => {
     const client: ReadClient = {
       get: async <T>(endpoint: string, options?: RequestInit) => {
         calls.push({ endpoint, options });
-        return { addonItems: [addonItem] } as T;
+        return { addonItems: [addonItem], propertyPlan } as T;
       },
     };
 
@@ -61,6 +78,16 @@ describe("booking add-on item clients", () => {
     ]);
   });
 
+  it("returns the plan context used by add-on limit controls", async () => {
+    const client: ReadClient = {
+      get: async <T>() => ({ addonItems: [addonItem], propertyPlan }) as T,
+    };
+
+    await expect(
+      getBookingAddonItemsContext({ hotelId: "booking_hotel_alpenrose" }, client),
+    ).resolves.toEqual({ addonItems: [addonItem], propertyPlan });
+  });
+
   it("creates add-on items through the typed target endpoint", async () => {
     const body: CreateBookingAddonItemBody = {
       name: "Spa ritual",
@@ -71,6 +98,8 @@ describe("booking add-on item clients", () => {
       pricingModel: "per_guest",
       publicVisible: false,
       status: "disabled",
+      ownershipKind: "partner",
+      partnerCommissionRate: "20.1250",
     };
     const calls: Array<{ endpoint: string; body: unknown; options?: RequestInit }> = [];
     const client: CreateClient = {
@@ -99,6 +128,8 @@ describe("booking add-on item clients", () => {
     const body: UpdateBookingAddonItemBody = {
       name: "Private airport transfer",
       price: "55.00",
+      ownershipKind: "property",
+      partnerCommissionRate: null,
     };
     const calls: Array<{ endpoint: string; body: unknown; options?: RequestInit }> = [];
     const client: UpdateClient = {

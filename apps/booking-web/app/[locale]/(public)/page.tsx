@@ -599,7 +599,9 @@ function HomePageContent() {
                       setPromoLoading(true);
                       setPromoError("");
                       try {
-                        const result = await hotelService.validatePromoCode(slug, promoCode);
+                        const result = await hotelService.validatePromoCode(slug, promoCode, {
+                          checkIn: checkIn || undefined,
+                        });
                         if (result.valid) {
                           setAppliedPromo({
                             code: result.code,

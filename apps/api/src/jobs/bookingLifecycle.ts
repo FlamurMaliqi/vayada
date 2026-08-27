@@ -1,12 +1,25 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
 
+import type { StripeBookingPaymentProvider } from "../domains/stripeBookingPayments.js";
+import {
+  captureDirectNightlyRevenueEvidence,
+  reconcileStripeBookingPaymentProviderDetails,
+  settleStripeBookingPayment,
+} from "../domains/stripeBookingSettlement.js";
+import {
+  inventoryReservationReceiptFromBookingMetadata,
+  type DirectBookingInventoryReservationPort,
+} from "../platform/inventoryReservation.js";
+import { enqueueBookingTransitionNotifications } from "./bookingEmails.js";
+
 export const BOOKING_LIFECYCLE_QUEUE = "booking-lifecycle";
 export const DEFAULT_STALE_UNPAID_MINUTES = 30;
 export const DEFAULT_BOOKING_LIFECYCLE_LIMIT = 100;
 
 export type BookingLifecycleAction =
   | "pending-expiry"
+  | "accepted-payment-expiry"
   | "stale-unpaid-cancellation"
   | "expired-draft-cleanup";
 
@@ -24,6 +37,10 @@ export type BookingLifecycleCandidate = {
   updatedAt: string;
   deadlineOrWindow: string;
   checkoutContextId?: string | null;
+  providerPaymentIntentId?: string | null;
+  publicReference?: string | null;
+  providerAccountRef?: string | null;
+  chargeType?: string | null;
 };
 
 export type BookingLifecycleJobContext = {
@@ -60,7 +77,14 @@ export type BookingLifecycleRunResult = {
   scanned: number;
   applied: number;
   skipped: number;
+  failed: number;
   mutations: BookingLifecycleMutationResult[];
+  failures: Array<{
+    guestBookingId: string;
+    propertyId: string;
+    action: BookingLifecycleAction;
+    errorMessage: string;
+  }>;
 };
 
 export type BookingLifecycleSchedulerResult = {
@@ -68,6 +92,7 @@ export type BookingLifecycleSchedulerResult = {
   scanned: number;
   applied: number;
   skipped: number;
+  failed: number;
 };
 
 export type BookingLifecycleStore = {
@@ -99,6 +124,9 @@ export type BookingLifecycleSchedulerOptions = {
 type PgBookingLifecycleStoreConfig = {
   connectionString: string;
   max?: number;
+  inventoryReservationPort?: DirectBookingInventoryReservationPort;
+  stripePaymentProvider?: StripeBookingPaymentProvider;
+  pool?: pg.Pool;
 };
 
 type Queryable = Pick<pg.Pool | pg.PoolClient, "query">;
@@ -112,6 +140,10 @@ type CandidateRow = {
   updatedAt: Date | string;
   deadlineOrWindow: Date | string;
   checkoutContextId?: string | null;
+  providerPaymentIntentId?: string | null;
+  publicReference?: string | null;
+  providerAccountRef?: string | null;
+  chargeType?: string | null;
 };
 
 const LIFECYCLE_RUNS: readonly BookingLifecycleRunName[] = [
@@ -132,6 +164,16 @@ const MUTATIONS: Record<
     statusEventType: "guest_booking.expired",
     auditAction: "booking.lifecycle.expire_pending",
     jobType: "booking.lifecycle-sweep.expire-pending",
+    deleteDraft: false,
+  },
+  "accepted-payment-expiry": {
+    action: "accepted-payment-expiry",
+    fromStatus: "confirmed",
+    toStatus: "canceled",
+    cancellationReason: "accepted_payment_expired",
+    statusEventType: "guest_booking.canceled",
+    auditAction: "booking.lifecycle.cancel_accepted_unpaid",
+    jobType: "booking.lifecycle-sweep.cancel-accepted-unpaid",
     deleteDraft: false,
   },
   "stale-unpaid-cancellation": {
@@ -157,10 +199,13 @@ const MUTATIONS: Record<
 export function createPgBookingLifecycleStore(
   config: PgBookingLifecycleStoreConfig,
 ): BookingLifecycleStore & { close(): Promise<void> } {
-  const pool = new pg.Pool({
-    connectionString: config.connectionString,
-    max: config.max,
-  });
+  const ownsPool = !config.pool;
+  const pool =
+    config.pool ??
+    new pg.Pool({
+      connectionString: config.connectionString,
+      max: config.max,
+    });
 
   return {
     async findPendingBookingExpiryCandidates(now, limit) {
@@ -173,10 +218,10 @@ export function createPgBookingLifecycleStore(
       return selectExpiredDraftCandidates(pool, now, limit);
     },
     async applyLifecycleMutation(candidate, mutation, context) {
-      return applyPgLifecycleMutation(pool, candidate, mutation, context);
+      return applyPgLifecycleMutation(pool, candidate, mutation, context, config);
     },
     async close() {
-      await pool.end();
+      if (ownsPool) await pool.end();
     },
   };
 }
@@ -213,6 +258,7 @@ export async function runBookingLifecycleSchedulerJobs(
     scanned: sumBy(runs, "scanned"),
     applied: sumBy(runs, "applied"),
     skipped: sumBy(runs, "skipped"),
+    failed: sumBy(runs, "failed"),
   };
 }
 
@@ -243,16 +289,26 @@ async function runBookingLifecycleJob(
   },
 ): Promise<BookingLifecycleRunResult> {
   const candidates = await selectCandidatesForRun(store, runName, input);
-  const mutationTemplate = mutationForRun(runName);
   const mutations: BookingLifecycleMutationResult[] = [];
+  const failures: BookingLifecycleRunResult["failures"] = [];
 
   for (const candidate of candidates) {
-    const result = await store.applyLifecycleMutation(
-      candidate,
-      { ...mutationTemplate, deadlineOrWindow: candidate.deadlineOrWindow },
-      input.context,
-    );
-    mutations.push(result);
+    const mutationTemplate = mutationForRun(runName, candidate);
+    try {
+      const result = await store.applyLifecycleMutation(
+        candidate,
+        { ...mutationTemplate, deadlineOrWindow: candidate.deadlineOrWindow },
+        input.context,
+      );
+      mutations.push(result);
+    } catch (error) {
+      failures.push({
+        guestBookingId: candidate.guestBookingId,
+        propertyId: candidate.propertyId,
+        action: mutationTemplate.action,
+        errorMessage: error instanceof Error ? error.message : "Booking lifecycle mutation failed.",
+      });
+    }
   }
 
   const applied = mutations.filter((mutation) => mutation.applied).length;
@@ -260,8 +316,10 @@ async function runBookingLifecycleJob(
     name: runName,
     scanned: candidates.length,
     applied,
-    skipped: candidates.length - applied,
+    skipped: mutations.length - applied,
+    failed: failures.length,
     mutations,
+    failures,
   };
 }
 
@@ -282,10 +340,13 @@ function selectCandidatesForRun(
 
 function mutationForRun(
   runName: BookingLifecycleRunName,
+  candidate: BookingLifecycleCandidate,
 ): Omit<BookingLifecycleMutation, "deadlineOrWindow"> {
   switch (runName) {
     case "pendingBookingExpiry":
-      return MUTATIONS["pending-expiry"];
+      return candidate.lifecycleStatus === "confirmed"
+        ? MUTATIONS["accepted-payment-expiry"]
+        : MUTATIONS["pending-expiry"];
     case "staleUnpaidCancellation":
       return MUTATIONS["stale-unpaid-cancellation"];
     case "expiredDraftCleanup":
@@ -298,17 +359,44 @@ async function selectPendingBookingExpiryCandidates(
   now: Date,
   limit: number,
 ): Promise<BookingLifecycleCandidate[]> {
+  const rows: CandidateRow[] = [];
+  for (const lane of ["provider", "manual"] as const) {
+    const result = await selectPendingBookingExpiryCandidateLane(queryable, now, limit, lane);
+    rows.push(...result);
+  }
+  return rows
+    .map(candidateFromRow)
+    .sort(
+      (left, right) =>
+        Date.parse(left.deadlineOrWindow) - Date.parse(right.deadlineOrWindow) ||
+        Date.parse(left.createdAt) - Date.parse(right.createdAt),
+    );
+}
+
+async function selectPendingBookingExpiryCandidateLane(
+  queryable: Queryable,
+  now: Date,
+  limit: number,
+  lane: "provider" | "manual",
+): Promise<CandidateRow[]> {
   const result = await queryable.query<CandidateRow>(
     `WITH raw_deadlines AS (
        SELECT
          b.id,
          COALESCE(
+           b.booking_metadata ->> 'acceptedPaymentDeadlineAt',
            b.booking_metadata ->> 'hostResponseDeadlineAt',
            b.booking_metadata ->> 'pendingExpiresAt',
            b.booking_metadata ->> 'expiresAt'
          ) AS deadline_text
        FROM booking.guest_bookings b
        WHERE b.lifecycle_status = 'pending_payment'
+          OR (
+            b.lifecycle_status = 'confirmed'
+            AND b.payment_status = 'unpaid'
+            AND b.booking_metadata ->> 'paymentMethod' = 'bank_transfer'
+            AND NULLIF(b.booking_metadata ->> 'acceptedPaymentDeadlineAt', '') IS NOT NULL
+          )
      ),
      candidate_deadlines AS (
        SELECT
@@ -328,16 +416,37 @@ async function selectPendingBookingExpiryCandidates(
        b.created_at AS "createdAt",
        b.updated_at AS "updatedAt",
        d.deadline_at AS "deadlineOrWindow",
-       b.checkout_context_id::text AS "checkoutContextId"
+       b.checkout_context_id::text AS "checkoutContextId",
+       b.public_reference AS "publicReference",
+       card_payment.provider_payment_intent_id AS "providerPaymentIntentId",
+       provider_account.provider_account_id AS "providerAccountRef",
+       card_payment.charge_type AS "chargeType"
      FROM booking.guest_bookings b
      JOIN candidate_deadlines d ON d.id = b.id
+     LEFT JOIN LATERAL (
+       SELECT payment.provider_payment_intent_id, payment.provider_account_id,
+              payment.payment_metadata ->> 'chargeType' AS charge_type
+       FROM finance.payments payment
+       WHERE payment.guest_booking_id = b.id
+         AND payment.property_id = b.property_id
+         AND payment.payment_method = 'card'
+         AND payment.provider_payment_intent_id IS NOT NULL
+       ORDER BY payment.created_at DESC
+       LIMIT 1
+     ) card_payment ON TRUE
+     LEFT JOIN finance.payment_provider_accounts provider_account
+       ON provider_account.id = card_payment.provider_account_id
      WHERE d.deadline_at IS NOT NULL
        AND d.deadline_at <= $1::timestamptz
+       AND (
+         ($3::text = 'provider' AND b.payment_status = 'authorized')
+         OR ($3::text = 'manual' AND b.payment_status <> 'authorized')
+       )
      ORDER BY d.deadline_at ASC, b.created_at ASC
      LIMIT $2`,
-    [now.toISOString(), limit],
+    [now.toISOString(), limit, lane],
   );
-  return result.rows.map(candidateFromRow);
+  return result.rows;
 }
 
 async function selectStaleUnpaidBookingCandidates(
@@ -359,6 +468,11 @@ async function selectStaleUnpaidBookingCandidates(
      FROM booking.guest_bookings b
      WHERE b.lifecycle_status = 'pending_payment'
        AND b.payment_status = 'unpaid'
+       AND COALESCE(
+         b.booking_metadata ->> 'hostResponseDeadlineAt',
+         b.booking_metadata ->> 'pendingExpiresAt',
+         b.booking_metadata ->> 'expiresAt'
+       ) IS NULL
        AND b.created_at <= $1::timestamptz
      ORDER BY b.created_at ASC
      LIMIT $3`,
@@ -407,9 +521,26 @@ async function selectExpiredDraftCandidates(
        b.created_at AS "createdAt",
        b.updated_at AS "updatedAt",
        d.deadline_at AS "deadlineOrWindow",
-       b.checkout_context_id::text AS "checkoutContextId"
+       b.checkout_context_id::text AS "checkoutContextId",
+       b.public_reference AS "publicReference",
+       card_payment.provider_payment_intent_id AS "providerPaymentIntentId",
+       provider_account.provider_account_id AS "providerAccountRef",
+       card_payment.charge_type AS "chargeType"
      FROM booking.guest_bookings b
      JOIN draft_deadlines d ON d.id = b.id
+     LEFT JOIN LATERAL (
+       SELECT payment.provider_payment_intent_id, payment.provider_account_id,
+              payment.payment_metadata ->> 'chargeType' AS charge_type
+       FROM finance.payments payment
+       WHERE payment.guest_booking_id = b.id
+         AND payment.property_id = b.property_id
+         AND payment.payment_method = 'card'
+         AND payment.provider_payment_intent_id IS NOT NULL
+       ORDER BY payment.created_at DESC
+       LIMIT 1
+     ) card_payment ON TRUE
+     LEFT JOIN finance.payment_provider_accounts provider_account
+       ON provider_account.id = card_payment.provider_account_id
      WHERE d.deadline_at IS NOT NULL
        AND d.deadline_at <= $1::timestamptz
      ORDER BY d.deadline_at ASC, b.created_at ASC
@@ -424,13 +555,52 @@ async function applyPgLifecycleMutation(
   candidate: BookingLifecycleCandidate,
   mutation: BookingLifecycleMutation,
   context: BookingLifecycleJobContext,
+  config: Pick<PgBookingLifecycleStoreConfig, "inventoryReservationPort" | "stripePaymentProvider">,
 ): Promise<BookingLifecycleMutationResult> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    if (mutation.action === "pending-expiry" && candidate.paymentStatus === "authorized") {
+      const cardResult = await resolveExpiredStripeAuthorization(
+        client,
+        candidate,
+        mutation,
+        context,
+        config,
+      );
+      if (cardResult) {
+        await client.query("COMMIT");
+        return cardResult;
+      }
+    }
+    if (mutation.deleteDraft && candidate.providerPaymentIntentId) {
+      const cardResult = await resolveExpiredStripeDraft(
+        client,
+        candidate,
+        mutation,
+        context,
+        config,
+      );
+      if (cardResult) {
+        await client.query("COMMIT");
+        return cardResult;
+      }
+    }
     const result = mutation.deleteDraft
-      ? await deleteExpiredDraft(client, candidate, mutation, context)
-      : await updateBookingLifecycleStatus(client, candidate, mutation, context);
+      ? await deleteExpiredDraft(
+          client,
+          candidate,
+          mutation,
+          context,
+          config.inventoryReservationPort,
+        )
+      : await updateBookingLifecycleStatus(
+          client,
+          candidate,
+          mutation,
+          context,
+          config.inventoryReservationPort,
+        );
     await client.query("COMMIT");
     return result;
   } catch (error) {
@@ -441,26 +611,242 @@ async function applyPgLifecycleMutation(
   }
 }
 
+async function resolveExpiredStripeAuthorization(
+  client: pg.PoolClient,
+  candidate: BookingLifecycleCandidate,
+  mutation: BookingLifecycleMutation,
+  context: BookingLifecycleJobContext,
+  config: Pick<PgBookingLifecycleStoreConfig, "stripePaymentProvider">,
+): Promise<BookingLifecycleMutationResult | null> {
+  const paymentIntentId = candidate.providerPaymentIntentId;
+  const provider = config.stripePaymentProvider;
+  if (!provider || !paymentIntentId) return lifecycleNoopResult(candidate, mutation);
+  const locked = await client.query<{ paymentId: string }>(
+    `SELECT payment.id::text AS "paymentId"
+       FROM finance.payments payment
+       JOIN booking.guest_bookings booking
+         ON booking.id = payment.guest_booking_id
+        AND booking.property_id = payment.property_id
+      WHERE booking.id = $1::uuid
+        AND booking.property_id = $2::uuid
+        AND booking.lifecycle_status = 'pending_payment'
+        AND booking.payment_status = 'authorized'
+        AND booking.booking_metadata ->> 'acceptanceMode' = 'request'
+        AND booking.booking_metadata ->> 'paymentMethod' = 'card'
+        AND NULLIF(booking.booking_metadata ->> 'hostResponseDeadlineAt', '')::timestamptz
+              = $3::timestamptz
+        AND payment.provider_payment_intent_id = $4
+        AND payment.payment_method = 'card'
+        AND payment.status = 'authorized'
+      FOR UPDATE OF payment, booking`,
+    [candidate.guestBookingId, candidate.propertyId, candidate.deadlineOrWindow, paymentIntentId],
+  );
+  const payment = locked.rows[0];
+  if (!payment) return lifecycleNoopResult(candidate, mutation);
+
+  let intent = await provider.retrievePaymentIntent(paymentIntentId, stripeAccountRef(candidate));
+  assertLifecycleStripeBinding(candidate, intent);
+  if (intent.status === "succeeded") {
+    return settleExpiredStripeAuthorization(client, candidate, mutation, context, intent);
+  }
+  if (intent.status !== "requires_capture" && intent.status !== "canceled") {
+    return lifecycleNoopResult(candidate, mutation);
+  }
+  if (intent.status === "requires_capture") {
+    try {
+      intent = await provider.cancelPaymentIntent(
+        paymentIntentId,
+        stripeAccountRef(candidate),
+        `booking-card-request-expire:${candidate.propertyId}:${candidate.guestBookingId}:v1`,
+      );
+    } catch {
+      intent = await provider.retrievePaymentIntent(paymentIntentId, stripeAccountRef(candidate));
+    }
+    assertLifecycleStripeBinding(candidate, intent);
+    if (intent.status === "succeeded") {
+      return settleExpiredStripeAuthorization(client, candidate, mutation, context, intent);
+    }
+    if (intent.status !== "canceled") return lifecycleNoopResult(candidate, mutation);
+  }
+  const terminalized = await client.query(
+    `UPDATE finance.payments
+        SET status = 'canceled',
+            updated_at = $2::timestamptz,
+            payment_metadata = payment_metadata ||
+              '{"providerStatus":"canceled","reconciliationStatus":"canceled"}'::jsonb
+      WHERE id = $1::uuid AND status = 'authorized'
+      RETURNING id`,
+    [payment.paymentId, context.now.toISOString()],
+  );
+  return terminalized.rows.length > 0 ? null : lifecycleNoopResult(candidate, mutation);
+}
+
+async function settleExpiredStripeAuthorization(
+  client: pg.PoolClient,
+  candidate: BookingLifecycleCandidate,
+  mutation: BookingLifecycleMutation,
+  context: BookingLifecycleJobContext,
+  intent: Awaited<ReturnType<StripeBookingPaymentProvider["retrievePaymentIntent"]>>,
+): Promise<BookingLifecycleMutationResult> {
+  await settleStripeBookingPayment(client, {
+    paymentIntentId: intent.paymentIntentId,
+    providerAccountRef: intent.providerAccountRef,
+    amountMinor: intent.amountMinor,
+    currency: intent.currency,
+    occurredAt: context.now,
+    correlationId: context.correlationId,
+  });
+  await reconcileStripeBookingPaymentProviderDetails(client, intent, context.now);
+  return {
+    ...lifecycleNoopResult(candidate, mutation),
+    applied: true,
+    toStatus: "confirmed",
+  };
+}
+
+async function resolveExpiredStripeDraft(
+  client: pg.PoolClient,
+  candidate: BookingLifecycleCandidate,
+  mutation: BookingLifecycleMutation,
+  context: BookingLifecycleJobContext,
+  config: Pick<PgBookingLifecycleStoreConfig, "stripePaymentProvider">,
+): Promise<BookingLifecycleMutationResult | null> {
+  const locked = await client.query(
+    `SELECT id FROM booking.guest_bookings
+     WHERE id = $1::uuid AND property_id = $2::uuid AND lifecycle_status = 'draft'
+     FOR UPDATE`,
+    [candidate.guestBookingId, candidate.propertyId],
+  );
+  if (locked.rows.length === 0) return lifecycleNoopResult(candidate, mutation);
+  const provider = config.stripePaymentProvider;
+  const paymentIntentId = candidate.providerPaymentIntentId;
+  if (!provider || !paymentIntentId) return lifecycleNoopResult(candidate, mutation);
+
+  let intent = await provider.retrievePaymentIntent(paymentIntentId, stripeAccountRef(candidate));
+  assertLifecycleStripeBinding(candidate, intent);
+  if (intent.status === "succeeded") {
+    await settleStripeBookingPayment(client, {
+      paymentIntentId,
+      providerAccountRef: intent.providerAccountRef,
+      amountMinor: intent.amountMinor,
+      currency: intent.currency,
+      occurredAt: context.now,
+      correlationId: context.correlationId,
+    });
+    await reconcileStripeBookingPaymentProviderDetails(client, intent, context.now);
+    return {
+      ...lifecycleNoopResult(candidate, mutation),
+      applied: true,
+      toStatus: "confirmed",
+    };
+  }
+  if (intent.status === "processing") return lifecycleNoopResult(candidate, mutation);
+  if (
+    !["requires_payment_method", "requires_confirmation", "requires_action", "canceled"].includes(
+      intent.status,
+    )
+  ) {
+    return lifecycleNoopResult(candidate, mutation);
+  }
+  if (intent.status !== "canceled") {
+    try {
+      intent = await provider.cancelPaymentIntent(
+        paymentIntentId,
+        stripeAccountRef(candidate),
+        `booking-card-expire:${candidate.propertyId}:${candidate.guestBookingId}:v1`,
+      );
+    } catch {
+      intent = await provider.retrievePaymentIntent(paymentIntentId, stripeAccountRef(candidate));
+    }
+    assertLifecycleStripeBinding(candidate, intent);
+    if (intent.status === "succeeded") {
+      await settleStripeBookingPayment(client, {
+        paymentIntentId,
+        providerAccountRef: intent.providerAccountRef,
+        amountMinor: intent.amountMinor,
+        currency: intent.currency,
+        occurredAt: context.now,
+        correlationId: context.correlationId,
+      });
+      await reconcileStripeBookingPaymentProviderDetails(client, intent, context.now);
+      return {
+        ...lifecycleNoopResult(candidate, mutation),
+        applied: true,
+        toStatus: "confirmed",
+      };
+    }
+    if (intent.status !== "canceled") return lifecycleNoopResult(candidate, mutation);
+  }
+  return null;
+}
+
+function assertLifecycleStripeBinding(
+  candidate: BookingLifecycleCandidate,
+  intent: Awaited<ReturnType<StripeBookingPaymentProvider["retrievePaymentIntent"]>>,
+): void {
+  if (
+    intent.propertyId !== candidate.propertyId ||
+    intent.bookingReference !== candidate.publicReference ||
+    intent.providerAccountRef !== candidate.providerAccountRef
+  ) {
+    throw new Error("Stripe PaymentIntent did not match the expiring booking.");
+  }
+}
+
+function stripeAccountRef(candidate: BookingLifecycleCandidate): string | null {
+  return candidate.chargeType === "direct" ? (candidate.providerAccountRef ?? null) : null;
+}
+
 async function updateBookingLifecycleStatus(
   client: pg.PoolClient,
   candidate: BookingLifecycleCandidate,
   mutation: BookingLifecycleMutation,
   context: BookingLifecycleJobContext,
+  inventoryReservationPort?: DirectBookingInventoryReservationPort,
 ): Promise<BookingLifecycleMutationResult> {
   const updated = await client.query<{
     guestBookingId: string;
     fromStatus: string;
     toStatus: string;
+    bookingMetadata: unknown;
+    sourceSystem: string;
+    checkIn: string;
+    checkOut: string;
+    recognizedOn: string | null;
   }>(
     `WITH updated AS (
        UPDATE booking.guest_bookings
           SET lifecycle_status = $3,
+              payment_status = CASE
+                WHEN $10 = 'pending-expiry' AND payment_status = 'authorized' THEN 'failed'
+                ELSE payment_status
+              END,
               cancellation_reason = COALESCE(cancellation_reason, $4),
               updated_at = $5::timestamptz
         WHERE id = $1::uuid
           AND property_id = $2::uuid
           AND lifecycle_status = $6
-        RETURNING id::text AS "guestBookingId", $6::text AS "fromStatus", lifecycle_status AS "toStatus"
+          AND (
+            $10 <> 'pending-expiry'
+            OR NULLIF(COALESCE(
+              booking_metadata ->> 'hostResponseDeadlineAt',
+              booking_metadata ->> 'pendingExpiresAt',
+              booking_metadata ->> 'expiresAt'
+            ), '')::timestamptz = $11::timestamptz
+          )
+          AND (
+            $10 <> 'accepted-payment-expiry'
+            OR (
+              payment_status = 'unpaid'
+              AND booking_metadata ->> 'paymentMethod' = 'bank_transfer'
+              AND NULLIF(booking_metadata ->> 'acceptedPaymentDeadlineAt', '')::timestamptz
+                    = $11::timestamptz
+            )
+          )
+        RETURNING id::text AS "guestBookingId", $6::text AS "fromStatus",
+          lifecycle_status AS "toStatus", booking_metadata AS "bookingMetadata",
+          payment_status AS "paymentStatus", source_system AS "sourceSystem",
+          check_in::text AS "checkIn", check_out::text AS "checkOut"
      ),
      status_event AS (
        INSERT INTO booking.booking_status_events
@@ -490,10 +876,13 @@ async function updateBookingLifecycleStatus(
      summary AS (
        UPDATE booking.direct_booking_summary_read_model summary
           SET lifecycle_status = (SELECT "toStatus" FROM updated),
+              payment_status = (SELECT "paymentStatus" FROM updated),
               projected_at = $5::timestamptz
         WHERE summary.guest_booking_id = (SELECT "guestBookingId"::uuid FROM updated)
      )
-     SELECT * FROM updated`,
+     SELECT updated.*, (SELECT ($5::timestamptz AT TIME ZONE location.timezone)::date::text
+       FROM hotel_catalog.property_locations location WHERE location.property_id = $2::uuid
+     ) AS "recognizedOn" FROM updated`,
     [
       candidate.guestBookingId,
       candidate.propertyId,
@@ -504,12 +893,61 @@ async function updateBookingLifecycleStatus(
       mutation.statusEventType,
       publicMessageForMutation(mutation),
       JSON.stringify(statusEventPayload(candidate, mutation, context)),
+      mutation.action,
+      candidate.deadlineOrWindow,
     ],
   );
 
   const row = updated.rows[0];
   if (!row) {
     return lifecycleNoopResult(candidate, mutation);
+  }
+  if (row.sourceSystem === "booking") {
+    if (!row.recognizedOn) throw new Error("Booking cancellation requires property timezone.");
+    await captureDirectNightlyRevenueEvidence(
+      client,
+      {
+        ...row,
+        propertyId: candidate.propertyId,
+      },
+      {
+        clear: true,
+        fingerprint: `${mutation.action}:${mutation.deadlineOrWindow}`,
+        recognizedOn: row.recognizedOn,
+        required: true,
+      },
+    );
+  }
+  await releaseLifecycleInventory(
+    client,
+    inventoryReservationPort,
+    candidate.propertyId,
+    row.bookingMetadata,
+    context.now,
+  );
+  if (
+    mutation.statusEventType === "guest_booking.expired" ||
+    mutation.cancellationReason === "accepted_payment_expired"
+  ) {
+    await enqueueBookingTransitionNotifications(client, {
+      propertyId: candidate.propertyId,
+      guestBookingId: candidate.guestBookingId,
+      occurredAt: context.now.toISOString(),
+      correlationId: context.correlationId,
+      causationId: buildBookingLifecycleSweepKey({
+        guestBookingId: candidate.guestBookingId,
+        action: mutation.action,
+        deadlineOrWindow: mutation.deadlineOrWindow,
+      }),
+      actor: { type: "system" },
+      source: "apps/api-booking-lifecycle-scheduler",
+      transition: {
+        eventType: mutation.statusEventType,
+        fromStatus: row.fromStatus,
+        toStatus: row.toStatus,
+        reason: mutation.cancellationReason ?? null,
+      },
+    });
   }
 
   return insertLifecycleSideEffects(client, candidate, mutation, context, {
@@ -523,7 +961,23 @@ async function deleteExpiredDraft(
   candidate: BookingLifecycleCandidate,
   mutation: BookingLifecycleMutation,
   context: BookingLifecycleJobContext,
+  inventoryReservationPort?: DirectBookingInventoryReservationPort,
 ): Promise<BookingLifecycleMutationResult> {
+  const locked = await client.query<{ bookingMetadata: unknown }>(
+    `SELECT booking_metadata AS "bookingMetadata"
+     FROM booking.guest_bookings
+     WHERE id = $1::uuid AND property_id = $2::uuid AND lifecycle_status = 'draft'
+     FOR UPDATE`,
+    [candidate.guestBookingId, candidate.propertyId],
+  );
+  if (!locked.rows[0]) return lifecycleNoopResult(candidate, mutation);
+  await releaseLifecycleInventory(
+    client,
+    inventoryReservationPort,
+    candidate.propertyId,
+    locked.rows[0].bookingMetadata,
+    context.now,
+  );
   const deleted = await client.query<{ guestBookingId: string; fromStatus: string }>(
     `WITH deleted AS (
        DELETE FROM booking.guest_bookings
@@ -550,6 +1004,24 @@ async function deleteExpiredDraft(
 
   return insertLifecycleSideEffects(client, candidate, mutation, context, {
     fromStatus: row.fromStatus,
+  });
+}
+
+async function releaseLifecycleInventory(
+  client: pg.PoolClient,
+  inventoryReservationPort: DirectBookingInventoryReservationPort | undefined,
+  propertyId: string,
+  bookingMetadata: unknown,
+  occurredAt: Date,
+): Promise<void> {
+  if (!inventoryReservationPort) return;
+  const reservation = inventoryReservationReceiptFromBookingMetadata(bookingMetadata, propertyId);
+  if (!reservation) return;
+  await inventoryReservationPort.release({
+    transaction: client,
+    propertyId,
+    reservation,
+    occurredAt,
   });
 }
 
@@ -970,6 +1442,10 @@ function candidateFromRow(row: CandidateRow): BookingLifecycleCandidate {
     updatedAt: dateValue(row.updatedAt),
     deadlineOrWindow: dateValue(row.deadlineOrWindow),
     checkoutContextId: row.checkoutContextId,
+    providerPaymentIntentId: row.providerPaymentIntentId,
+    publicReference: row.publicReference,
+    providerAccountRef: row.providerAccountRef,
+    chargeType: row.chargeType,
   };
 }
 
@@ -1032,6 +1508,8 @@ function publicMessageForMutation(mutation: BookingLifecycleMutation): string {
   switch (mutation.action) {
     case "pending-expiry":
       return "Booking expired.";
+    case "accepted-payment-expiry":
+      return "Booking canceled because payment was not received by the deadline.";
     case "stale-unpaid-cancellation":
       return "Booking canceled.";
     case "expired-draft-cleanup":

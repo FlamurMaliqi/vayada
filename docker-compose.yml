@@ -236,6 +236,7 @@ services:
       DATABASE_URL: postgresql://vayada_booking_user:vayada_booking_password@booking-postgres:5432/vayada_booking_db
       AUTH_DATABASE_URL: postgresql://vayada_auth_user:vayada_auth_password@auth-postgres:5432/vayada_auth_db
       MARKETPLACE_DATABASE_URL: postgresql://vayada_user:vayada_password@marketplace-postgres:5432/vayada_db
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
       JWT_SECRET_KEY: your-secret-key-change-in-production
       JWT_ALGORITHM: HS256
       CORS_ORIGINS: http://localhost:3002,http://localhost:3003,http://localhost:3004
@@ -273,6 +274,7 @@ services:
       AUTH_DATABASE_URL: postgresql://vayada_auth_user:vayada_auth_password@auth-postgres:5432/vayada_auth_db
       BOOKING_ENGINE_DATABASE_URL: postgresql://vayada_booking_user:vayada_booking_password@booking-postgres:5432/vayada_booking_db
       BOOKING_ENGINE_API_URL: http://booking-backend:8001
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
       JWT_SECRET_KEY: your-secret-key-change-in-production
       JWT_ALGORITHM: HS256
       CORS_ORIGINS: http://localhost:3002,http://localhost:3003,http://localhost:3004
