@@ -77,11 +77,7 @@ type HarnessOptions = {
 };
 
 async function testApp(value: unknown, options: HarnessOptions = {}) {
-  const {
-    authenticated = true,
-    context = requestContext(),
-    scope = { mode: "all", assignedPropertyIds: [] },
-  } = options;
+  const { authenticated = true, context = requestContext(), scope = propertyScope() } = options;
   const app = Fastify({ logger: false });
   const read = vi.fn().mockResolvedValue(value);
   const findMembershipPropertyScope = vi.fn().mockResolvedValue(scope);
@@ -139,7 +135,7 @@ describe("Booking design readiness route", () => {
 
   it("allows an explicitly assigned property", async () => {
     const harness = await testApp(fallbackReady(), {
-      scope: { mode: "assigned", assignedPropertyIds: [propertyId] },
+      scope: propertyScope({ mode: "assigned", assignedPropertyIds: [propertyId] }),
     });
     app = harness.app;
 
@@ -171,7 +167,7 @@ describe("Booking design readiness route", () => {
     ],
     [
       "no property assignment",
-      { scope: { mode: "assigned", assignedPropertyIds: [] } },
+      { scope: propertyScope({ mode: "assigned", assignedPropertyIds: [] }) },
       403,
       "forbidden",
     ],
@@ -199,7 +195,7 @@ describe("Booking design readiness route", () => {
   it("returns the same denial for an unassigned and foreign property", async () => {
     let harness = await testApp(fallbackReady(), {
       context: requestContext({ linkedResources: [...links(), ...links(otherPropertyId)] }),
-      scope: { mode: "assigned", assignedPropertyIds: [propertyId] },
+      scope: propertyScope({ mode: "assigned", assignedPropertyIds: [propertyId] }),
     });
     app = harness.app;
     const unassigned = await get(app, otherPropertyId);
@@ -207,7 +203,7 @@ describe("Booking design readiness route", () => {
     await app.close();
 
     harness = await testApp(fallbackReady(), {
-      scope: { mode: "assigned", assignedPropertyIds: [foreignPropertyId] },
+      scope: propertyScope({ mode: "assigned", assignedPropertyIds: [foreignPropertyId] }),
     });
     app = harness.app;
     const foreign = await get(app, foreignPropertyId);
@@ -227,6 +223,16 @@ describe("Booking design readiness route", () => {
     });
   });
 });
+
+function propertyScope(overrides: Partial<MembershipPropertyScope> = {}): MembershipPropertyScope {
+  return {
+    mode: "all",
+    roleKey: "hotel_owner",
+    accessOrigin: "agency",
+    assignedPropertyIds: [],
+    ...overrides,
+  };
+}
 
 function requestContext(overrides: Partial<RequestContext> = {}): RequestContext {
   return {
