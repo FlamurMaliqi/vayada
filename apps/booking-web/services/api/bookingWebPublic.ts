@@ -252,7 +252,7 @@ export const bookingWebAffiliateApi = {
 export function toLegacyHotel(data: BookingWebPublicHotelResponse): Hotel {
   const hotel = data.hotel;
   const images = hotel.images.map((image) => image.url).filter(Boolean);
-  const heroImage = hotel.branding?.heroImage || images[0] || FALLBACK_IMAGE;
+  const heroImage = hotel.branding?.heroImage || FALLBACK_IMAGE;
   const contacts = publicContactValues(hotel.publicContacts);
   const address = uniqueNonEmpty([
     hotel.location.city,
@@ -274,7 +274,7 @@ export function toLegacyHotel(data: BookingWebPublicHotelResponse): Hotel {
     currency: hotel.defaultCurrency,
     supportedCurrencies: hotel.supportedCurrencies,
     heroImage,
-    images: images.length > 0 ? images : [heroImage],
+    images,
     amenities: hotel.amenities,
     checkInTime: hotel.policies.checkInFrom || "",
     checkOutTime: hotel.policies.checkOutUntil || "",

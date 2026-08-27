@@ -295,6 +295,7 @@ describe("target public hotel profile security", () => {
 
   it("keeps Catalog media and projects only the explicit public Booking branding fields", async () => {
     const approvedImage = {
+      type: "gallery_image",
       url: "https://cdn.vayada.example/approved.jpg",
       alt: "Approved exterior",
     };
@@ -307,7 +308,7 @@ describe("target public hotel profile security", () => {
             alt: "Brand logo",
           },
           {
-            type: "hero_image",
+            type: "gallery_image",
             url: approvedImage.url,
             altText: approvedImage.alt,
           },
@@ -323,7 +324,7 @@ describe("target public hotel profile security", () => {
 
     const profile = await repository.findProfileBySlug("hotel-alpenrose");
 
-    expect(profile?.hotel.images).toEqual([approvedImage]);
+    expect(profile?.hotel.images).toEqual([{ url: approvedImage.url, alt: approvedImage.alt }]);
     expect(profile?.hotel.branding).toEqual({
       logoUrl: "https://cdn.vayada.example/logo.webp",
       heroImage: "https://cdn.vayada.example/draft.jpg",
@@ -340,6 +341,29 @@ describe("target public hotel profile security", () => {
     expect(queries[0]?.text).not.toContain("booking_branding.benefits");
     expect(queries[0]?.text).not.toContain("booking_branding.custom_filters");
     expect(findForbiddenPublicBookabilityKeys(profile)).toEqual([]);
+  });
+
+  it("exposes only the first ten ordered property gallery images", async () => {
+    const gallery = Array.from({ length: 12 }, (_, index) => ({
+      type: "gallery_image",
+      url: `https://cdn.vayada.example/gallery-${index + 1}.jpg`,
+      alt: null,
+    }));
+    const { repository } = targetRepository(
+      targetProfileRow({
+        media: [
+          { type: "logo", url: "https://cdn.vayada.example/logo.png", alt: null },
+          { type: "hero_image", url: "https://cdn.vayada.example/hero.jpg", alt: null },
+          ...gallery,
+        ],
+      }),
+    );
+
+    const profile = await repository.findProfileBySlug("hotel-alpenrose");
+
+    expect(profile?.hotel.images).toEqual(
+      gallery.slice(0, 10).map(({ url, alt }) => ({ url, alt })),
+    );
   });
 
   it("returns persisted public Booking branding from the AI hotel endpoint", async () => {

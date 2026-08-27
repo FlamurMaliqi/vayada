@@ -92,6 +92,14 @@
     "selectThisRate": "Seleccionar Esta Tarifa",
     "selectingRate": "Preparando el pago...",
     "soldOut": "Agotado",
+    "gallery": {
+      "viewPhotos": "Ver fotos ({count})",
+      "dialogLabel": "Nuestra galería de {hotelName}",
+      "close": "Cerrar nuestra galería",
+      "photoAlt": "Nuestra foto {index} de {hotelName}",
+      "previous": "Foto anterior de nuestro alojamiento",
+      "next": "Siguiente foto de nuestro alojamiento"
+    },
     "calendar": {
       "checkingAvailability": "Comprobando disponibilidad",
       "availabilityUnavailable": "No podemos consultar temporalmente la disponibilidad para estas fechas.",

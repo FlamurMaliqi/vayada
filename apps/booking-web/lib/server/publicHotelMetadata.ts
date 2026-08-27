@@ -28,7 +28,7 @@ export type PublicHotelMetadata = {
   supportedLanguages?: string[];
 };
 
-type PublicHotelProfileResponse = {
+export type PublicHotelProfileResponse = {
   hotel: {
     slug: string;
     name: string;
@@ -44,6 +44,9 @@ type PublicHotelProfileResponse = {
     canonicalUrl: string;
     bookingBaseUrl: string;
     customDomainUrl: string | null;
+    branding?: {
+      heroImage: string | null;
+    } | null;
     images: Array<{ url: string; alt?: string | null }>;
     policies: {
       checkInFrom: string | null;
@@ -166,7 +169,7 @@ function supportedRoutingLocales(locales: string[] | undefined, fallbackLocale: 
     : [routing.defaultLocale];
 }
 
-function toPublicHotelMetadata(data: PublicHotelProfileResponse): PublicHotelMetadata {
+export function toPublicHotelMetadata(data: PublicHotelProfileResponse): PublicHotelMetadata {
   const hotel = data.hotel;
   const images = hotel.images.map((image) => image.url).filter(Boolean);
   return {
@@ -176,7 +179,7 @@ function toPublicHotelMetadata(data: PublicHotelProfileResponse): PublicHotelMet
     country: hotel.location.country || hotel.country,
     location: [hotel.location.city, hotel.location.region].filter(Boolean).join(", "),
     starRating: hotel.starRating || 0,
-    heroImage: images[0],
+    heroImage: hotel.branding?.heroImage || undefined,
     images,
     checkInTime: hotel.policies.checkInFrom || undefined,
     checkOutTime: hotel.policies.checkOutUntil || undefined,

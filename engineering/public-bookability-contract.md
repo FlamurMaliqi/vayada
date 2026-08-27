@@ -130,6 +130,13 @@ Response shape:
       "longitude": 11.4041
     },
     "summary": "Independent alpine hotel near the old town.",
+    "branding": {
+      "heroImage": "https://cdn.vayada.example/hotels/alpenrose/booking-hero.jpg",
+      "heroHeading": "Stay above the clouds",
+      "heroSubtext": "Book direct for our best available rates.",
+      "primaryColor": "#3157D5",
+      "fontPairing": "grand-classic"
+    },
     "images": [
       {
         "url": "https://cdn.vayada.example/hotels/alpenrose/front.jpg",
@@ -181,6 +188,12 @@ Response shape:
   "dataSources": ["hotel_catalog", "booking", "pms", "finance", "distribution"]
 }
 ```
+
+`hotel.images` is the ordered property-gallery projection used by Booking Web. It contains at
+most 10 `gallery_image` items and excludes the separate Booking hero image and property logo.
+The hero remains available through `hotel.branding.heroImage`.
+Migration `0108_public_bookability_gallery_media` rewrites existing untyped Distribution media
+from the canonical Catalog profile so already-published properties adopt this contract at rollout.
 
 ## Quote Endpoint
 

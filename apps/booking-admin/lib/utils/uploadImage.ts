@@ -8,6 +8,8 @@ const PLATFORM_MEDIA_API_BASE_URL =
   process.env.NEXT_PUBLIC_PLATFORM_MEDIA_API_URL ||
   process.env.NEXT_PUBLIC_AUTH_API_URL ||
   "https://api.localhost";
+export const MAX_PROPERTY_GALLERY_PHOTOS = 10;
+const GALLERY_UPLOAD_TIMEOUT_MS = 30_000;
 
 type BookingMediaPurpose = "property.hero_image" | "property.gallery_image" | "booking.header_logo";
 
@@ -30,6 +32,141 @@ type FinalizeResponse = {
     variants: Array<{ publicCdnUrl: string | null; storageKey: string }>;
   }>;
 };
+
+type CanonicalGalleryUploadResponse = {
+  contractVersion: "platform-media-upload.v2";
+  uploadSession: { sessionId: string; status: "signed" | "completed" };
+  uploadTargets: UploadTarget[];
+  mediaObjects?: Array<{
+    clientFileId?: string;
+    mediaObjectId: string;
+    purpose: "property.gallery_image";
+    status: "private_ready";
+  }>;
+};
+
+export async function uploadPropertyGalleryImages(
+  files: File[],
+  propertyId: string,
+): Promise<string[]> {
+  if (files.length === 0) return [];
+  if (files.length > MAX_PROPERTY_GALLERY_PHOTOS) {
+    throw new Error(`A property gallery accepts at most ${MAX_PROPERTY_GALLERY_PHOTOS} photos.`);
+  }
+
+  try {
+    return await performPropertyGalleryUpload(files, propertyId);
+  } catch (error) {
+    if (isTimeoutError(error)) throw new Error("Gallery upload timed out. Try again.");
+    throw error;
+  }
+}
+
+async function performPropertyGalleryUpload(files: File[], propertyId: string): Promise<string[]> {
+  const token = getAuthKitAccessToken() ?? getAuthBearerToken();
+  const headers = {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+  const requestFiles = files.map((file, index) => ({
+    clientFileId: `file_${index + 1}`,
+    filename: file.name || `property-gallery-${index + 1}.jpg`,
+    contentType: file.type || "image/jpeg",
+    sizeBytes: file.size,
+  }));
+  const create = await fetch(`${PLATFORM_MEDIA_API_BASE_URL}/api/media/upload-sessions`, {
+    method: "POST",
+    headers,
+    signal: AbortSignal.timeout(GALLERY_UPLOAD_TIMEOUT_MS),
+    body: JSON.stringify({
+      idempotencyKey: `booking.property-gallery.upload:${propertyId}:${crypto.randomUUID()}`,
+      purpose: "property.gallery_image",
+      visibility: "private",
+      resource: {
+        product: "hotel_catalog",
+        resourceType: "property",
+        resourceId: propertyId,
+      },
+      files: requestFiles,
+    }),
+  });
+  if (!create.ok) throw new Error(await readMediaError(create, "Upload session failed"));
+  const created = (await create.json()) as CanonicalGalleryUploadResponse;
+  if (created.uploadSession.status === "completed") {
+    return galleryMediaObjectIds(
+      created,
+      requestFiles.map(({ clientFileId }) => clientFileId),
+    );
+  }
+
+  const uploadByClientFileId = new Map(
+    requestFiles.map((requestFile, index) => [
+      requestFile.clientFileId,
+      { file: files[index]!, requestFile },
+    ]),
+  );
+  const orderedTargets = requestFiles.map((requestFile) =>
+    created.uploadTargets.find((target) => target.clientFileId === requestFile.clientFileId),
+  );
+  if (
+    created.uploadTargets.length !== requestFiles.length ||
+    orderedTargets.some((target) => !target) ||
+    new Set(created.uploadTargets.map(({ clientFileId }) => clientFileId)).size !==
+      created.uploadTargets.length ||
+    new Set(created.uploadTargets.map(({ uploadTargetId }) => uploadTargetId)).size !==
+      created.uploadTargets.length
+  ) {
+    throw new Error("Platform media returned invalid upload targets.");
+  }
+  const validTargets = orderedTargets as UploadTarget[];
+
+  await Promise.all(
+    validTargets.map(async (target) => {
+      const upload = uploadByClientFileId.get(target.clientFileId);
+      if (!upload) throw new Error("Platform media returned an invalid upload target.");
+      if (isDeterministicLocalUploadTarget(target.uploadUrl)) return;
+      const response = await fetch(target.uploadUrl, {
+        method: target.method,
+        headers: target.headers,
+        body: upload.file,
+        signal: AbortSignal.timeout(GALLERY_UPLOAD_TIMEOUT_MS),
+      });
+      if (!response.ok) throw new Error("Upload failed");
+    }),
+  );
+
+  const finalized = await fetch(
+    `${PLATFORM_MEDIA_API_BASE_URL}/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+    {
+      method: "POST",
+      headers,
+      signal: AbortSignal.timeout(GALLERY_UPLOAD_TIMEOUT_MS),
+      body: JSON.stringify({
+        files: validTargets.map((target) => {
+          const requestFile = uploadByClientFileId.get(target.clientFileId)?.requestFile;
+          if (!requestFile) throw new Error("Platform media returned an invalid upload target.");
+          return {
+            uploadTargetId: target.uploadTargetId,
+            contentType: requestFile.contentType,
+            sizeBytes: requestFile.sizeBytes,
+          };
+        }),
+      }),
+    },
+  );
+  if (!finalized.ok) throw new Error(await readMediaError(finalized, "Upload finalize failed"));
+  return galleryMediaObjectIds(
+    (await finalized.json()) as CanonicalGalleryUploadResponse,
+    requestFiles.map(({ clientFileId }) => clientFileId),
+  );
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === "TimeoutError") ||
+    (error instanceof Error && error.name === "TimeoutError")
+  );
+}
 
 export type UploadedImage = {
   mediaObjectId: string;
@@ -215,4 +352,42 @@ async function readMediaError(response: Response, fallback: string): Promise<str
     /* ignore */
   }
   return fallback;
+}
+
+function galleryMediaObjectIds(
+  response: CanonicalGalleryUploadResponse,
+  clientFileIds: readonly string[],
+): string[] {
+  if (
+    response.contractVersion !== "platform-media-upload.v2" ||
+    response.mediaObjects?.length !== clientFileIds.length ||
+    response.mediaObjects.some(
+      (item) =>
+        item.purpose !== "property.gallery_image" ||
+        item.status !== "private_ready" ||
+        !item.mediaObjectId,
+    )
+  ) {
+    throw new Error("Platform media did not return the uploaded property photos.");
+  }
+  const returnedClientFileIds = response.mediaObjects.map(({ clientFileId }) => clientFileId);
+  if (returnedClientFileIds.some(Boolean)) {
+    if (
+      returnedClientFileIds.some((clientFileId) => !clientFileId) ||
+      new Set(returnedClientFileIds).size !== clientFileIds.length
+    ) {
+      throw new Error("Platform media did not return the uploaded property photos.");
+    }
+    return clientFileIds.map((clientFileId) => {
+      const mediaObject = response.mediaObjects!.find(
+        (candidate) => candidate.clientFileId === clientFileId,
+      );
+      if (!mediaObject) {
+        throw new Error("Platform media did not return the uploaded property photos.");
+      }
+      return mediaObject.mediaObjectId;
+    });
+  }
+  // The v2 API serializes completed media in the original session-file order.
+  return response.mediaObjects.map(({ mediaObjectId }) => mediaObjectId);
 }

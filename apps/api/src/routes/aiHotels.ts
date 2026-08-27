@@ -215,7 +215,7 @@ export function toPublicHotelProfileProjection(
   const customDomainUrl = toCustomDomainUrl(row.custom_domain);
   const bookingBaseUrl =
     customDomainUrl ?? fallbackBookingBaseUrl(row.slug, options.bookingHostBase);
-  const images = nonEmptyStrings(row.images, []);
+  const images = nonEmptyStrings(row.images, []).slice(0, 10);
   const heroImage = row.hero_image?.trim();
   const lastUpdatedAt = toIsoDateTime(row.updated_at) ?? generatedAt;
   const cancellationSummary =
@@ -237,9 +237,7 @@ export function toPublicHotelProfileProjection(
         city: row.location || "",
       },
       summary: row.description || null,
-      images: [heroImage, ...images]
-        .filter((url): url is string => Boolean(url))
-        .map((url) => ({ url, alt: row.name })),
+      images: images.map((url) => ({ url, alt: row.name })),
       amenities: nonEmptyStrings(row.amenities, []),
       publicContacts: [],
       profileComplete: Boolean(row.name && row.slug && row.country && row.location),
@@ -247,6 +245,13 @@ export function toPublicHotelProfileProjection(
       lastUpdatedAt,
     },
     booking: {
+      branding: {
+        heroImage: heroImage || null,
+        heroHeading: row.name || null,
+        heroSubtext: row.description || null,
+        primaryColor: null,
+        fontPairing: null,
+      },
       policies: {
         checkInFrom: row.check_in_time ?? null,
         checkOutUntil: row.check_out_time ?? null,
@@ -595,7 +600,7 @@ function toTargetPublicHotelProfileProjection(
       },
       summary: stringValue(identity["summary"]),
       ...publicBookingBranding(row),
-      images: imageArray(row.media),
+      images: galleryImageArray(row.media),
       amenities: amenityArray(row.amenities),
       publicContacts: publicContactArray(row.publicContacts),
       policies: {
@@ -741,6 +746,15 @@ function imageArray(value: unknown): PublicBookabilityHotelProfile["images"] {
     }
   }
   return images;
+}
+
+function galleryImageArray(value: unknown): PublicBookabilityHotelProfile["images"] {
+  if (!Array.isArray(value)) return [];
+  return imageArray(
+    value
+      .filter((entry) => stringValue(objectValue(entry)["type"]) === "gallery_image")
+      .slice(0, 10),
+  );
 }
 
 function amenityArray(value: unknown): string[] {

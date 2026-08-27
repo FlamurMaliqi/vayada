@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   frontend:
-    name: Frontend Typecheck, Lint, Build
+    name: Frontend Test, Typecheck, Lint, Build
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -41,6 +41,12 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Booking Admin tests
+        run: npm --workspace vayada-booking-engine-frontend-admin run test
+
+      - name: Booking Web tests
+        run: npm --workspace vayada-booking-engine-frontend run test
 
       - name: Build
         run: npm run build
@@ -196,6 +202,13 @@ jobs:
           npm --workspace @vayada/backend-migration run test --
           --no-file-parallelism src/membershipPropertyScope.test.ts
           src/membershipDelegations.test.ts
+        env:
+          TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
+
+      - name: Run public gallery migration integration
+        run: >-
+          npm --workspace @vayada/backend-migration run test --
+          src/publicBookabilityGalleryMedia.test.ts
         env:
           TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
 

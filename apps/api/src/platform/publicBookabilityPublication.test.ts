@@ -175,6 +175,9 @@ describe("target public bookability publication", () => {
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
       "ELSE 'https://' || input.verified_hostname || '/' || input.locale",
     );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(")) = 'gallery_image'");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("LIMIT 10");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'type', 'gallery_image'");
 
     expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).toContain("candidate.public_approved = TRUE");
     expect(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE).not.toContain("DISTINCT ON");

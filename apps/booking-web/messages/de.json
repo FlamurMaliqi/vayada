@@ -92,6 +92,14 @@
     "selectThisRate": "Diesen Tarif wählen",
     "selectingRate": "Checkout wird vorbereitet...",
     "soldOut": "Ausgebucht",
+    "gallery": {
+      "viewPhotos": "Fotos ansehen ({count})",
+      "dialogLabel": "Unsere Bildergalerie für {hotelName}",
+      "close": "Unsere Bildergalerie schließen",
+      "photoAlt": "Unser Foto {index} von {hotelName}",
+      "previous": "Vorheriges Foto unserer Unterkunft",
+      "next": "Nächstes Foto unserer Unterkunft"
+    },
     "calendar": {
       "checkingAvailability": "Verfügbarkeit wird geprüft",
       "availabilityUnavailable": "Die Verfügbarkeit für diese Reisedaten ist vorübergehend nicht abrufbar.",

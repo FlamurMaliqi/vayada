@@ -669,15 +669,21 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
       )),
       COALESCE((
         SELECT jsonb_agg(jsonb_strip_nulls(jsonb_build_object(
+          'type', 'gallery_image',
           'url', media.item ->> 'url',
           'alt', media.item ->> 'altText'
-        )))
-        FROM jsonb_array_elements(input.media) media(item)
-        WHERE NULLIF(media.item ->> 'url', '') IS NOT NULL
-          AND lower(COALESCE(
+        )) ORDER BY media.ordinality)
+        FROM (
+          SELECT item, ordinality
+          FROM jsonb_array_elements(input.media) WITH ORDINALITY media(item, ordinality)
+          WHERE lower(COALESCE(
             NULLIF(BTRIM(media.item ->> 'type'), ''),
             NULLIF(BTRIM(media.item ->> 'mediaType'), '')
-          )) IS DISTINCT FROM 'logo'
+          )) = 'gallery_image'
+            AND NULLIF(media.item ->> 'url', '') IS NOT NULL
+          ORDER BY ordinality
+          LIMIT 10
+        ) media
       ), '[]'::jsonb),
       input.amenities,
       jsonb_strip_nulls(jsonb_build_object(

@@ -1,7 +1,21 @@
 "use client";
 
-import { type RefObject } from "react";
-import { PhotoIcon, XMarkIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
+import { type RefObject, useRef, useState } from "react";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  PhotoIcon,
+  PlusIcon,
+  XMarkIcon,
+  ArrowPathIcon,
+} from "@heroicons/react/24/outline";
+import { MAX_PROPERTY_GALLERY_PHOTOS } from "@/lib/utils/uploadImage";
+
+export type PropertyGalleryImage = {
+  mediaObjectId: string;
+  url: string;
+  altText: string | null;
+};
 
 interface MediaTabProps {
   heroImage: string;
@@ -19,6 +33,12 @@ interface MediaTabProps {
   removeHeaderLogo: () => void;
   uploadingLogo: boolean;
   resetContent: () => void;
+  galleryImages: PropertyGalleryImage[];
+  galleryAtCapacity: boolean;
+  galleryBusy: boolean;
+  addGalleryImages: (files: File[]) => void;
+  removeGalleryImage: (index: number) => void;
+  reorderGalleryImage: (sourceIndex: number, targetIndex: number) => void;
   publicationSetup?: {
     localityPublic: boolean;
     hasCanonicalPublicMedia: boolean;
@@ -43,10 +63,26 @@ export default function MediaTab({
   removeHeaderLogo,
   uploadingLogo,
   resetContent,
+  galleryImages,
+  galleryAtCapacity,
+  galleryBusy,
+  addGalleryImages,
+  removeGalleryImage,
+  reorderGalleryImage,
   publicationSetup = null,
 }: MediaTabProps) {
   const subtextMaxLength = publicationSetup ? 500 : 1000;
   const displayedSubtext = publicationSetup?.publicDescription ?? heroSubtext;
+  const galleryInputRef = useRef<HTMLInputElement>(null);
+  const [draggingPhoto, setDraggingPhoto] = useState<number | null>(null);
+  const [draggingFiles, setDraggingFiles] = useState(false);
+  const canAddGalleryImages =
+    !galleryAtCapacity && galleryImages.length < MAX_PROPERTY_GALLERY_PHOTOS && !galleryBusy;
+
+  const chooseGalleryFiles = (files: FileList | null) => {
+    if (!files || !canAddGalleryImages) return;
+    addGalleryImages(Array.from(files));
+  };
 
   return (
     <>
@@ -123,6 +159,149 @@ export default function MediaTab({
           >
             Replace Image
           </button>
+        )}
+      </div>
+
+      {/* Property Gallery */}
+      <div
+        className={`bg-white rounded-lg border p-4 transition-colors ${draggingFiles ? "border-primary-400 bg-primary-50/40" : "border-gray-200"}`}
+        onDragEnter={(event) => {
+          if (event.dataTransfer.types.includes("Files") && canAddGalleryImages) {
+            event.preventDefault();
+            setDraggingFiles(true);
+          }
+        }}
+        onDragOver={(event) => {
+          if (event.dataTransfer.types.includes("Files") && canAddGalleryImages) {
+            event.preventDefault();
+          }
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            setDraggingFiles(false);
+          }
+        }}
+        onDrop={(event) => {
+          if (!event.dataTransfer.types.includes("Files")) return;
+          event.preventDefault();
+          setDraggingFiles(false);
+          chooseGalleryFiles(event.dataTransfer.files);
+        }}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-[13px] font-semibold text-gray-900">Property Gallery</h2>
+            <p className="mt-0.5 text-[12px] leading-5 text-gray-500">
+              Showcase your property with up to 10 photos. Guests can view these from the gallery
+              icon on your hero image.
+            </p>
+          </div>
+          <span className="shrink-0 text-[11px] font-medium tabular-nums text-gray-400">
+            {galleryImages.length}/{MAX_PROPERTY_GALLERY_PHOTOS}
+          </span>
+        </div>
+
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          {galleryImages.map((image, index) => (
+            <div
+              key={image.mediaObjectId}
+              draggable={!galleryBusy}
+              onDragStart={(event) => {
+                setDraggingPhoto(index);
+                event.dataTransfer.effectAllowed = "move";
+              }}
+              onDragEnd={() => setDraggingPhoto(null)}
+              onDragOver={(event) => {
+                if (draggingPhoto !== null) event.preventDefault();
+              }}
+              onDrop={(event) => {
+                if (draggingPhoto === null) return;
+                event.preventDefault();
+                reorderGalleryImage(draggingPhoto, index);
+                setDraggingPhoto(null);
+              }}
+              className={`group relative aspect-[4/3] overflow-hidden rounded-lg border bg-gray-100 transition ${draggingPhoto === index ? "border-primary-400 opacity-50" : "border-gray-200"}`}
+            >
+              <img src={image.url} alt="" className="h-full w-full object-cover" />
+              {index === 0 && (
+                <span className="absolute bottom-1.5 left-1.5 rounded bg-gray-950/80 px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-white">
+                  COVER
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => removeGalleryImage(index)}
+                disabled={galleryBusy}
+                aria-label={`Remove property photo ${index + 1}`}
+                className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-gray-950/75 text-white transition hover:bg-red-600 disabled:opacity-50"
+              >
+                <XMarkIcon className="h-3.5 w-3.5" />
+              </button>
+              <div className="absolute bottom-1.5 right-1.5 flex overflow-hidden rounded bg-gray-950/75 opacity-0 transition group-focus-within:opacity-100 group-hover:opacity-100">
+                <button
+                  type="button"
+                  onClick={() => reorderGalleryImage(index, index - 1)}
+                  disabled={galleryBusy || index === 0}
+                  aria-label={`Move property photo ${index + 1} earlier`}
+                  className="flex h-7 w-7 items-center justify-center text-white transition hover:bg-white/15 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ChevronLeftIcon className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => reorderGalleryImage(index, index + 1)}
+                  disabled={galleryBusy || index === galleryImages.length - 1}
+                  aria-label={`Move property photo ${index + 1} later`}
+                  className="flex h-7 w-7 items-center justify-center text-white transition hover:bg-white/15 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ChevronRightIcon className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {galleryImages.length > 0 && canAddGalleryImages && (
+            <button
+              type="button"
+              onClick={() => galleryInputRef.current?.click()}
+              className="flex aspect-[4/3] flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-gray-300 text-gray-400 transition hover:border-primary-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"
+            >
+              <PlusIcon className="h-5 w-5" />
+              <span className="text-[11px] font-medium">Add</span>
+            </button>
+          )}
+        </div>
+
+        {galleryImages.length === 0 && (
+          <button
+            type="button"
+            onClick={() => galleryInputRef.current?.click()}
+            disabled={!canAddGalleryImages}
+            className="mt-3 flex h-20 w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-gray-300 text-[12px] text-gray-500 transition hover:border-primary-400 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <PhotoIcon className="h-5 w-5" />
+            Click or drag photos here
+          </button>
+        )}
+
+        <input
+          ref={galleryInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          multiple
+          className="hidden"
+          onChange={(event) => {
+            chooseGalleryFiles(event.target.files);
+            event.target.value = "";
+          }}
+        />
+        <p className="mt-2 text-[11px] leading-4 text-gray-400">
+          Landscape photos work best. Recommended: 1920×1080.
+        </p>
+        {galleryBusy && (
+          <p className="mt-1 text-[11px] font-medium text-primary-600" role="status">
+            Saving gallery…
+          </p>
         )}
       </div>
 

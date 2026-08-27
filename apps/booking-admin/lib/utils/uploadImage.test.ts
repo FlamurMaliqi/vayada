@@ -303,6 +303,164 @@ describe("uploadImages", () => {
     ).rejects.toThrow("outside the active organization scope");
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("uploads gallery photos against the canonical property and returns media object IDs", async () => {
+    vi.stubEnv("NEXT_PUBLIC_PLATFORM_MEDIA_API_URL", "https://next-api.vayada.com");
+    const propertyId = "55555555-5555-4555-8555-555555555552";
+    const mediaObjectId = "66666666-6666-4666-8666-666666666663";
+    const { uploadPropertyGalleryImages } = await import("./uploadImage");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/api/media/upload-sessions")) {
+          expect(JSON.parse(String(init?.body))).toMatchObject({
+            purpose: "property.gallery_image",
+            visibility: "private",
+            resource: {
+              product: "hotel_catalog",
+              resourceType: "property",
+              resourceId: propertyId,
+            },
+          });
+          return jsonResponse({
+            contractVersion: "platform-media-upload.v2",
+            uploadSession: { sessionId: "session_1", status: "signed" },
+            uploadTargets: [
+              {
+                uploadTargetId: "target_1",
+                clientFileId: "file_1",
+                method: "PUT",
+                uploadUrl: "https://uploads.vayada.localhost/target_1",
+                headers: {},
+              },
+            ],
+          });
+        }
+        return jsonResponse({
+          contractVersion: "platform-media-upload.v2",
+          uploadSession: { sessionId: "session_1", status: "completed" },
+          uploadTargets: [],
+          mediaObjects: [
+            {
+              mediaObjectId,
+              purpose: "property.gallery_image",
+              status: "private_ready",
+              publicVariants: [],
+            },
+          ],
+        });
+      }),
+    );
+
+    await expect(
+      uploadPropertyGalleryImages(
+        [new File(["image"], "pool.jpg", { type: "image/jpeg" })],
+        propertyId,
+      ),
+    ).resolves.toEqual([mediaObjectId]);
+  });
+
+  it("returns a stable error when gallery upload session creation times out", async () => {
+    vi.stubEnv("NEXT_PUBLIC_PLATFORM_MEDIA_API_URL", "https://next-api.vayada.com");
+    const { uploadPropertyGalleryImages } = await import("./uploadImage");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        const error = new Error("request timed out");
+        error.name = "TimeoutError";
+        throw error;
+      }),
+    );
+
+    await expect(
+      uploadPropertyGalleryImages(
+        [new File(["image"], "pool.jpg", { type: "image/jpeg" })],
+        "55555555-5555-4555-8555-555555555554",
+      ),
+    ).rejects.toThrow("Gallery upload timed out. Try again.");
+  });
+
+  it("matches reversed upload targets to files and finalizes their metadata in file order", async () => {
+    vi.stubEnv("NEXT_PUBLIC_PLATFORM_MEDIA_API_URL", "https://next-api.vayada.com");
+    const propertyId = "55555555-5555-4555-8555-555555555553";
+    const firstFile = new File(["first"], "pool.jpg", { type: "image/jpeg" });
+    const secondFile = new File(["second-image"], "suite.webp", { type: "image/webp" });
+    const firstMediaObjectId = "66666666-6666-4666-8666-666666666664";
+    const secondMediaObjectId = "66666666-6666-4666-8666-666666666665";
+    const { uploadPropertyGalleryImages } = await import("./uploadImage");
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/media/upload-sessions")) {
+        return jsonResponse({
+          contractVersion: "platform-media-upload.v2",
+          uploadSession: { sessionId: "session_2", status: "signed" },
+          uploadTargets: [
+            {
+              uploadTargetId: "target_2",
+              clientFileId: "file_2",
+              method: "PUT",
+              uploadUrl: "https://uploads.example.com/target_2",
+              headers: { "Content-Type": "image/webp" },
+            },
+            {
+              uploadTargetId: "target_1",
+              clientFileId: "file_1",
+              method: "PUT",
+              uploadUrl: "https://uploads.example.com/target_1",
+              headers: { "Content-Type": "image/jpeg" },
+            },
+          ],
+        });
+      }
+      if (url.startsWith("https://uploads.example.com/")) {
+        return new Response(null, { status: 200 });
+      }
+      expect(url).toContain("/api/media/upload-sessions/session_2/finalize");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        files: [
+          {
+            uploadTargetId: "target_1",
+            contentType: "image/jpeg",
+            sizeBytes: firstFile.size,
+          },
+          {
+            uploadTargetId: "target_2",
+            contentType: "image/webp",
+            sizeBytes: secondFile.size,
+          },
+        ],
+      });
+      return jsonResponse({
+        contractVersion: "platform-media-upload.v2",
+        uploadSession: { sessionId: "session_2", status: "completed" },
+        uploadTargets: [],
+        mediaObjects: [
+          {
+            clientFileId: "file_2",
+            mediaObjectId: secondMediaObjectId,
+            purpose: "property.gallery_image",
+            status: "private_ready",
+          },
+          {
+            clientFileId: "file_1",
+            mediaObjectId: firstMediaObjectId,
+            purpose: "property.gallery_image",
+            status: "private_ready",
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(uploadPropertyGalleryImages([firstFile, secondFile], propertyId)).resolves.toEqual(
+      [firstMediaObjectId, secondMediaObjectId],
+    );
+
+    const firstUpload = fetch.mock.calls.find(([input]) => String(input).endsWith("/target_1"));
+    const secondUpload = fetch.mock.calls.find(([input]) => String(input).endsWith("/target_2"));
+    expect(firstUpload?.[1]?.body).toBe(firstFile);
+    expect(secondUpload?.[1]?.body).toBe(secondFile);
+  });
 });
 
 function jsonResponse(body: unknown): Response {

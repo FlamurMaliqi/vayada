@@ -8,6 +8,7 @@ import {
 
 function publicHotelResponse(
   publicContacts?: BookingWebPublicHotelResponse["hotel"]["publicContacts"],
+  images: BookingWebPublicHotelResponse["hotel"]["images"] = [],
 ): BookingWebPublicHotelResponse {
   return {
     hotel: {
@@ -30,7 +31,7 @@ function publicHotelResponse(
         longitude: null,
       },
       summary: "Independent alpine hotel.",
-      images: [],
+      images,
       amenities: ["wifi"],
       publicContacts,
       policies: {
@@ -163,5 +164,30 @@ describe("Booking Web public hotel adapter", () => {
     expect(omitted.socialLinks).toEqual(empty.socialLinks);
     expect(unsafe.contact.website).toBeUndefined();
     expect(unsafe.socialLinks?.instagram).toBeUndefined();
+  });
+
+  it("keeps the hero separate from the property gallery", () => {
+    const response = publicHotelResponse(undefined, [
+      { url: "https://cdn.vayada.example/pool.jpg", alt: "Pool" },
+      { url: "https://cdn.vayada.example/lobby.jpg", alt: "Lobby" },
+    ]);
+    response.hotel.branding = {
+      heroImage: "https://cdn.vayada.example/hero.jpg",
+      heroHeading: null,
+      heroSubtext: null,
+      primaryColor: null,
+      fontPairing: null,
+    };
+
+    const hotel = toLegacyHotel(response);
+
+    expect(hotel.heroImage).toBe("https://cdn.vayada.example/hero.jpg");
+    expect(hotel.images).toEqual([
+      "https://cdn.vayada.example/pool.jpg",
+      "https://cdn.vayada.example/lobby.jpg",
+    ]);
+    response.hotel.branding = undefined;
+    expect(toLegacyHotel(response).heroImage).toBe("/vayada-logo.png");
+    expect(toLegacyHotel(publicHotelResponse()).images).toEqual([]);
   });
 });
