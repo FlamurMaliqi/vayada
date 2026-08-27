@@ -26,7 +26,7 @@ interface MonthViewProps {
   blocksByRoom: Record<string, CalendarBlock[]>;
   legacyBlocksByRoomType: Record<string, CalendarBlock[]>;
   roomIndexInType: Record<string, number>;
-  onSelectBooking: (id: string) => void;
+  onSelectBooking: (booking: CalendarBooking) => void;
   onSelectBlock: (block: CalendarBlock) => void;
   blockEditingAvailable?: boolean;
 }
@@ -63,7 +63,7 @@ export default function MonthView({
 
   const today = new Date();
   // prettier-ignore
-  const displayedRooms = unassignedBookings.length ? [...rooms, { id: "", roomTypeId: "", roomTypeName: "Unassigned", roomNumber: "—", floor: "", status: "unassigned" }] : rooms;
+  const displayedRooms = unassignedBookings.length ? [...rooms, { id: "", roomTypeId: "", roomTypeName: "Unassigned", roomNumber: "—", floor: "", status: "unassigned", baseRate: 0, currency: "EUR", maxOccupancy: 0, size: 0 }] : rooms;
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl overflow-hidden flex-1 overflow-y-auto">
@@ -184,7 +184,7 @@ export default function MonthView({
                               <button
                                 key={`booking-${b.id}-${b.roomPosition}-${day.toISOString()}`}
                                 type="button"
-                                onClick={() => onSelectBooking(b.id)}
+                                onClick={() => onSelectBooking(b)}
                                 title={`${b.guestFirstName} ${b.guestLastName} (${b.status})\n${b.checkIn} → ${b.checkOut}\nChannel: ${b.channel}${multiRoomTitle}`}
                                 className={`w-full flex items-center gap-1 px-1 py-0.5 rounded text-[10px] font-medium text-white ${channelColor} hover:brightness-110 transition-all truncate ${
                                   isMultiRoom ? "ring-1 ring-inset ring-white/50" : ""
