@@ -229,8 +229,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
         ).rows,
       ).toEqual(
         [
-          { userId: ownerUserId, roleKey: "hotel_member", propertyAccessMode: "assigned" },
-          { userId: staffUserId, roleKey: "hotel_owner", propertyAccessMode: "all" },
+          { userId: ownerUserId, roleKey: "hotel_owner", propertyAccessMode: "all" },
+          { userId: staffUserId, roleKey: "hotel_member", propertyAccessMode: "assigned" },
         ].sort((left, right) => left.userId.localeCompare(right.userId)),
       );
       const membershipIds = await admin.query<{ id: string; userId: string }>(
@@ -255,7 +255,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
         );
         await admin.query(
           `UPDATE identity.organization_memberships
-           SET role_key = 'front_desk', access_origin = 'external_owner'
+           SET role_key = 'front_desk', property_access_mode = 'assigned',
+               access_origin = 'external_owner'
            WHERE id = $1`,
           [subjectMembershipId],
         );
@@ -346,6 +347,166 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
         });
       }
       expect.soft(cleanupError, "delegation test cleanup").toBeUndefined();
+    }
+  });
+
+  it("holds accepted WorkOS membership events behind pending Vayada invitation access", async () => {
+    const organizationId = randomUUID();
+    const propertyId = randomUUID();
+    const ownerUserId = randomUUID();
+    const invitedUserId = randomUUID();
+    const ownerWorkosUserId = `user_vay_1085_owner_${randomUUID()}`;
+    const invitedWorkosUserId = `user_vay_1085_invited_${randomUUID()}`;
+    const workosOrgId = `org_vay_1085_${randomUUID()}`;
+    const invitedEmail = `invited-${invitedUserId}@example.test`;
+
+    try {
+      await admin.query(
+        `INSERT INTO identity.users (id, email, name, status)
+         VALUES ($1, $2, 'Owner', 'active'), ($3, $4, 'Invited staff', 'active')`,
+        [ownerUserId, `owner-${ownerUserId}@example.test`, invitedUserId, invitedEmail],
+      );
+      await admin.query(
+        `INSERT INTO identity.external_identities
+           (user_id, provider, provider_user_id, provider_email)
+         VALUES ($1, 'workos', $2, $3), ($4, 'workos', $5, $6)`,
+        [
+          ownerUserId,
+          ownerWorkosUserId,
+          `owner-${ownerUserId}@example.test`,
+          invitedUserId,
+          invitedWorkosUserId,
+          invitedEmail,
+        ],
+      );
+      await admin.query(
+        `INSERT INTO identity.organizations (id, kind, name, slug, status, workos_org_id)
+         VALUES ($1, 'hotel_group', 'VAY-1085 invitation ordering', $2, 'active', $3)`,
+        [organizationId, `vay-1085-invite-${organizationId}`, workosOrgId],
+      );
+      await admin.query(
+        `INSERT INTO hotel_catalog.properties (id, public_id, display_name)
+         VALUES ($1, $2, 'VAY-1085 property')`,
+        [propertyId, `property-${propertyId}`],
+      );
+      await admin.query(
+        `INSERT INTO identity.organization_resource_links
+           (organization_id, product, resource_type, resource_id, relationship, status)
+         VALUES ($1, 'hotel_catalog', 'property', $2, 'owner', 'active')`,
+        [organizationId, propertyId],
+      );
+      await store.upsertWorkosMembership({
+        workosMembershipId: `om_owner_${randomUUID()}`,
+        workosUserId: ownerWorkosUserId,
+        workosOrgId,
+        roleKey: "admin",
+        workosRoleSlugs: ["admin"],
+        status: "active",
+      });
+      const ownerMembershipId = (
+        await admin.query<{ id: string }>(
+          `SELECT id FROM identity.organization_memberships
+           WHERE organization_id = $1 AND user_id = $2`,
+          [organizationId, ownerUserId],
+        )
+      ).rows[0]!.id;
+      const invitationId = (
+        await admin.query<{ id: string }>(
+          `INSERT INTO identity.staff_invitations
+             (organization_id, email, inviter_membership_id, inviter_user_id,
+              inviter_name_snapshot, role_key, permission_overrides, property_access_mode,
+              configuration_revision, command_id, idempotency_key_hash,
+              request_fingerprint_hash, provider_invitation_id, expires_at, request_id,
+              request_source, reason, requested_at, delivery_state, delivery_attempted_at)
+           VALUES ($1, $2, $3, $4, 'Owner', 'housekeeping', $5::jsonb, 'assigned',
+                   1, $6, $7, $8, $9, now() + interval '1 day', $10,
+                   'web', 'test event ordering', now(), 'delivered', now())
+           RETURNING id`,
+          [
+            organizationId,
+            invitedEmail,
+            ownerMembershipId,
+            ownerUserId,
+            JSON.stringify({ grant: [], deny: ["booking.reservation.read"] }),
+            `command-${randomUUID()}`,
+            Buffer.alloc(32, 1),
+            Buffer.alloc(32, 2),
+            `invitation-${randomUUID()}`,
+            `request-${randomUUID()}`,
+          ],
+        )
+      ).rows[0]!.id;
+      await admin.query(
+        `INSERT INTO identity.staff_invitation_property_assignments (invitation_id, property_id)
+         VALUES ($1, $2)`,
+        [invitationId, propertyId],
+      );
+
+      await store.upsertWorkosMembership({
+        workosMembershipId: `om_invited_${randomUUID()}`,
+        workosUserId: invitedWorkosUserId,
+        workosOrgId,
+        roleKey: "admin",
+        workosRoleSlugs: ["admin"],
+        status: "active",
+      });
+      await admin.query("UPDATE identity.staff_invitations SET status = 'revoked' WHERE id = $1", [
+        invitationId,
+      ]);
+      await store.upsertWorkosMembership({
+        workosMembershipId: `om_invited_update_${randomUUID()}`,
+        workosUserId: invitedWorkosUserId,
+        workosOrgId,
+        roleKey: "admin",
+        workosRoleSlugs: ["admin"],
+        status: "active",
+      });
+
+      expect(
+        (
+          await admin.query(
+            `SELECT membership.status, membership.role_key AS "roleKey",
+                    membership.permission_overrides AS "permissionOverrides",
+                    membership.property_access_mode AS "propertyAccessMode",
+                    membership.access_origin AS "accessOrigin",
+                    count(assignment.property_id)::int AS "assignmentCount"
+             FROM identity.organization_memberships membership
+             LEFT JOIN identity.membership_property_assignments assignment
+               ON assignment.membership_id = membership.id
+             WHERE membership.organization_id = $1 AND membership.user_id = $2
+             GROUP BY membership.id`,
+            [organizationId, invitedUserId],
+          )
+        ).rows[0],
+      ).toEqual({
+        status: "pending",
+        roleKey: "housekeeping",
+        permissionOverrides: { grant: [], deny: ["booking.reservation.read"] },
+        propertyAccessMode: "assigned",
+        accessOrigin: "agency",
+        assignmentCount: 0,
+      });
+    } finally {
+      await admin.query("DELETE FROM identity.staff_invitations WHERE organization_id = $1", [
+        organizationId,
+      ]);
+      await admin.query(
+        "DELETE FROM identity.organization_memberships WHERE organization_id = $1",
+        [organizationId],
+      );
+      await admin.query(
+        "DELETE FROM identity.organization_resource_links WHERE organization_id = $1",
+        [organizationId],
+      );
+      await admin.query("DELETE FROM hotel_catalog.properties WHERE id = $1", [propertyId]);
+      await admin.query("DELETE FROM identity.organizations WHERE id = $1", [organizationId]);
+      await admin.query(
+        "DELETE FROM identity.external_identities WHERE user_id = ANY($1::uuid[])",
+        [[ownerUserId, invitedUserId]],
+      );
+      await admin.query("DELETE FROM identity.users WHERE id = ANY($1::uuid[])", [
+        [ownerUserId, invitedUserId],
+      ]);
     }
   });
 

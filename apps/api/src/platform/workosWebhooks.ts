@@ -514,11 +514,34 @@ async function upsertWorkosMembership(
      LIMIT 1`,
     [organization.id, userId],
   );
+  const pendingInvitation =
+    organization.kind === "hotel_group"
+      ? (
+          await pool.query<{ permission_overrides: unknown; role_key: string }>(
+            `SELECT invitation.role_key, invitation.permission_overrides
+             FROM identity.staff_invitations invitation
+             JOIN identity.users users ON users.id = $2
+             JOIN identity.external_identities external
+               ON external.user_id = users.id AND external.provider = 'workos'
+              AND external.provider_user_id = $3
+             WHERE invitation.organization_id = $1
+               AND invitation.status = 'pending'
+               AND invitation.delivery_state = 'delivered'
+               AND invitation.expires_at > now()
+               AND invitation.email IN (
+                 lower(btrim(users.email)), lower(btrim(external.provider_email))
+               )
+             LIMIT 1`,
+            [organization.id, userId, input.workosUserId],
+          )
+        ).rows[0]
+      : undefined;
   const roleKey = mapWorkosMembershipRoleKey({
     organizationKind: organization.kind,
-    roleKey: input.roleKey,
+    roleKey: pendingInvitation?.role_key ?? input.roleKey,
     existingRoleKey: existingMembership.rows[0]?.role_key,
   });
+  const holdPending = Boolean(pendingInvitation) && input.status === "active";
 
   await pool.query(
     `INSERT INTO identity.organization_memberships
@@ -527,27 +550,34 @@ async function upsertWorkosMembership(
          user_id,
          status,
          role_key,
+         permission_overrides,
          property_access_mode,
          access_origin,
          workos_membership_id,
          workos_role_slugs
        )
-     VALUES ($1, $2, $3, $4, $5, 'agency', $6, $7)
+     VALUES ($1, $2, $3, $4, $5, $6, 'agency', $7, $8)
      ON CONFLICT (organization_id, user_id)
      DO UPDATE SET
        status = CASE
          WHEN identity.organization_memberships.status IN ('inactive', 'suspended')
-          AND EXCLUDED.status = 'active'
+          AND $9 IN ('active', 'pending')
          THEN identity.organization_memberships.status
-         ELSE EXCLUDED.status
+         WHEN $10 AND $9 = 'active' THEN identity.organization_memberships.status
+         WHEN $11 AND $9 = 'active'
+          AND identity.organization_memberships.status = 'pending'
+          AND identity.organization_memberships.role_key IN
+            ('hotel_manager', 'front_desk', 'housekeeping', 'hotel_custom')
+         THEN identity.organization_memberships.status
+         ELSE $9
        END,
        role_key = CASE
-         WHEN identity.organization_memberships.access_origin = 'external_owner'
+         WHEN identity.organization_memberships.access_origin = 'external_owner' OR $11
          THEN identity.organization_memberships.role_key
          ELSE EXCLUDED.role_key
        END,
        property_access_mode = CASE
-         WHEN identity.organization_memberships.access_origin = 'external_owner'
+         WHEN identity.organization_memberships.access_origin = 'external_owner' OR $11
          THEN identity.organization_memberships.property_access_mode
          ELSE EXCLUDED.property_access_mode
        END,
@@ -557,11 +587,17 @@ async function upsertWorkosMembership(
     [
       organization.id,
       userId,
-      input.status,
+      holdPending ? "pending" : input.status,
       roleKey,
-      membershipPropertyAccessModeForProvisioning(organization.kind, roleKey),
+      pendingInvitation ? JSON.stringify(pendingInvitation.permission_overrides) : null,
+      pendingInvitation
+        ? "assigned"
+        : membershipPropertyAccessModeForProvisioning(organization.kind, roleKey),
       input.workosMembershipId,
       input.workosRoleSlugs,
+      input.status,
+      Boolean(pendingInvitation),
+      organization.kind === "hotel_group",
     ],
   );
   return { userId, organizationId: organization.id };
