@@ -14,9 +14,12 @@ import {
   VayadaPmsDuplicateReservationError,
   createVayadaPmsReservationAdapter,
   type VayadaPmsConnection,
+  type VayadaPmsAssignmentPayloadPatch,
+  type VayadaPmsCreateReservationInput,
   type VayadaPmsIdempotencyRecord,
   type VayadaPmsOfferMapping,
   type VayadaPmsReservationRepository,
+  type VayadaPmsUpdateReservationInput,
 } from "./index.js";
 
 describe("@vayada/pms-vayada-adapter", () => {
@@ -107,6 +110,25 @@ describe("@vayada/pms-vayada-adapter", () => {
       },
     });
     expect(repository.createCount).toBe(1);
+  });
+
+  it("rejects create and update replay when only the exact receipt changes", async () => {
+    const repository = new InMemoryVayadaPmsRepository();
+    const adapter = createVayadaPmsReservationAdapter(repository);
+    const firstReceipt = exactReceipt("599e6c2a-95f8-47f2-8bf1-c2d18e3d7a66");
+    const nextReceipt = exactReceipt("699e6c2a-95f8-47f2-8bf1-c2d18e3d7a66");
+
+    await adapter.createReservation(createCommand({ inventoryReservation: firstReceipt }));
+    await expect(
+      adapter.createReservation(createCommand({ inventoryReservation: nextReceipt })),
+    ).resolves.toMatchObject({ outcome: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
+
+    await adapter.updateReservation({ ...updateCommand(), inventoryReservation: firstReceipt });
+    await expect(
+      adapter.updateReservation({ ...updateCommand(), inventoryReservation: nextReceipt }),
+    ).resolves.toMatchObject({ outcome: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
+    expect(repository.createCount).toBe(1);
+    expect(repository.updateCount).toBe(1);
   });
 
   it.each([
@@ -226,12 +248,22 @@ describe("@vayada/pms-vayada-adapter", () => {
   it("updates and cancels existing operational reservations through the same sink contract", async () => {
     const repository = new InMemoryVayadaPmsRepository();
     const adapter = createVayadaPmsReservationAdapter(repository);
-    await adapter.createReservation(createCommand());
+    const createdReceipt = exactReceipt("799e6c2a-95f8-47f2-8bf1-c2d18e3d7a66");
+    await adapter.createReservation(createCommand({ inventoryReservation: createdReceipt }));
+    expect(repository.assignmentPayloads.get("book_123")).toEqual({
+      inventoryReservation: createdReceipt,
+    });
 
-    await expect(adapter.updateReservation(updateCommand())).resolves.toMatchObject({
+    const updatedReceipt = exactReceipt("899e6c2a-95f8-47f2-8bf1-c2d18e3d7a66");
+    await expect(
+      adapter.updateReservation({ ...updateCommand(), inventoryReservation: updatedReceipt }),
+    ).resolves.toMatchObject({
       outcome: "succeeded",
       status: "modified",
       providerVersion: "v2",
+    });
+    expect(repository.assignmentPayloads.get("book_123")).toEqual({
+      inventoryReservation: updatedReceipt,
     });
     await expect(adapter.cancelReservation(cancelCommand())).resolves.toMatchObject({
       outcome: "succeeded",
@@ -363,6 +395,7 @@ class InMemoryVayadaPmsRepository implements VayadaPmsReservationRepository {
   readonly idempotency = new Map<string, VayadaPmsIdempotencyRecord>();
   readonly reservations = new Map<string, PmsOperationalReservationReadModel>();
   readonly byGuestBooking = new Map<string, string>();
+  readonly assignmentPayloads = new Map<string, VayadaPmsAssignmentPayloadPatch>();
   readonly connection: VayadaPmsConnection;
   readonly mapping: VayadaPmsOfferMapping | null;
   failCreates: boolean;
@@ -422,10 +455,9 @@ class InMemoryVayadaPmsRepository implements VayadaPmsReservationRepository {
     return this.mapping;
   }
 
-  async createOperationalReservation(input: {
-    command: CreatePmsReservationCommand;
-    mapping: VayadaPmsOfferMapping;
-  }): Promise<PmsOperationalReservationReadModel> {
+  async createOperationalReservation(
+    input: VayadaPmsCreateReservationInput,
+  ): Promise<PmsOperationalReservationReadModel> {
     if (this.failCreates) {
       throw new Error("write unavailable");
     }
@@ -437,6 +469,7 @@ class InMemoryVayadaPmsRepository implements VayadaPmsReservationRepository {
     }
     this.createCount += 1;
     const reservation = reservationFromCommand(command, mapping);
+    this.assignmentPayloads.set(command.guestBooking.guestBookingId, input.assignmentPayloadPatch);
     this.reservations.set(reservation.pmsReservationRef, reservation);
     this.byGuestBooking.set(
       `${reservation.propertyId}:${command.guestBooking.guestBookingId}`,
@@ -446,8 +479,9 @@ class InMemoryVayadaPmsRepository implements VayadaPmsReservationRepository {
   }
 
   async updateOperationalReservation(
-    command: UpdatePmsReservationCommand,
+    input: VayadaPmsUpdateReservationInput,
   ): Promise<PmsOperationalReservationReadModel | null> {
+    const { command } = input;
     this.updateCount += 1;
     const existing = this.reservations.get(command.target.pmsReservationRef);
     if (!existing) {
@@ -464,6 +498,7 @@ class InMemoryVayadaPmsRepository implements VayadaPmsReservationRepository {
       },
       version: "v2",
     };
+    this.assignmentPayloads.set(command.guestBooking.guestBookingId, input.assignmentPayloadPatch);
     this.reservations.set(updated.pmsReservationRef, updated);
     return updated;
   }
@@ -685,6 +720,14 @@ function updateCommand(): UpdatePmsReservationCommand {
       },
     },
     expectedPreviousVersion: "v1",
+  };
+}
+
+function exactReceipt(receiptId: string) {
+  return {
+    contractVersion: "pms-inventory-reservation-lifecycle.v1" as const,
+    owner: "pms" as const,
+    receiptId,
   };
 }
 

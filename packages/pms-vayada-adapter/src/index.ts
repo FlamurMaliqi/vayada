@@ -7,6 +7,7 @@ import {
   type PmsCapability,
   type PmsConnectionStatus,
   type PmsExternalReference,
+  type PmsInventoryReservationReceipt,
   type PmsOperationalReservationListResult,
   type PmsOperationalReservationReadModel,
   type PmsOperationalReservationReadPort,
@@ -36,7 +37,19 @@ export type VayadaPmsOfferMapping = {
 export type VayadaPmsCreateReservationInput = {
   command: CreatePmsReservationCommand;
   mapping: VayadaPmsOfferMapping;
+  /** Merge into every affected assignment in the same transaction as the reservation write. */
+  assignmentPayloadPatch: VayadaPmsAssignmentPayloadPatch;
 };
+
+export type VayadaPmsUpdateReservationInput = {
+  command: UpdatePmsReservationCommand;
+  /** Merge into every affected assignment in the same transaction as the reservation write. */
+  assignmentPayloadPatch: VayadaPmsAssignmentPayloadPatch;
+};
+
+export type VayadaPmsAssignmentPayloadPatch = Readonly<{
+  inventoryReservation?: PmsInventoryReservationReceipt;
+}>;
 
 export type VayadaPmsIdempotencyRecord = {
   idempotencyKey: string;
@@ -69,7 +82,7 @@ export type VayadaPmsReservationRepository = {
     input: VayadaPmsCreateReservationInput,
   ): Promise<PmsOperationalReservationReadModel>;
   updateOperationalReservation(
-    command: UpdatePmsReservationCommand,
+    input: VayadaPmsUpdateReservationInput,
   ): Promise<PmsOperationalReservationReadModel | null>;
   cancelOperationalReservation(
     command: CancelPmsReservationCommand,
@@ -126,7 +139,13 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
     }
 
     try {
-      const reservation = await this.repository.createOperationalReservation({ command, mapping });
+      const reservation = await this.repository.createOperationalReservation({
+        command,
+        mapping,
+        assignmentPayloadPatch: command.inventoryReservation
+          ? { inventoryReservation: command.inventoryReservation }
+          : {},
+      });
       return await this.persistResultOrFailure(
         command,
         await this.succeeded(command, reservation, "succeeded"),
@@ -167,7 +186,12 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
     }
 
     try {
-      const reservation = await this.repository.updateOperationalReservation(command);
+      const reservation = await this.repository.updateOperationalReservation({
+        command,
+        assignmentPayloadPatch: command.inventoryReservation
+          ? { inventoryReservation: command.inventoryReservation }
+          : {},
+      });
       if (!reservation) {
         return this.persistResultOrFailure(command, this.failed(command, mappingMissingError()));
       }
@@ -551,6 +575,7 @@ function canonicalIdempotencyPayload(command: unknown): unknown {
       contractVersion: command.contractVersion,
       target: command.target,
       guestBooking: command.guestBooking,
+      inventoryReservation: command.inventoryReservation,
       stay: command.stay,
       guests: command.guests,
       bookedOffer: command.bookedOffer,
@@ -564,6 +589,7 @@ function canonicalIdempotencyPayload(command: unknown): unknown {
       contractVersion: command.contractVersion,
       target: command.target,
       guestBooking: command.guestBooking,
+      inventoryReservation: command.inventoryReservation,
       changes: command.changes,
       expectedPreviousVersion: command.expectedPreviousVersion,
     });
