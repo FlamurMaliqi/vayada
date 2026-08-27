@@ -89,6 +89,7 @@ describe("identity lifecycle command contract", () => {
   it.each([
     ["owner role", { roleKey: "hotel_owner" }, "invalid_role"],
     ["broad scope", { propertyAccessMode: "all" }, "invalid_property_access_mode"],
+    ["empty assigned scope", { propertyIds: [] }, "missing_property_assignment"],
     ["malformed property", { propertyIds: ["property_001"] }, "invalid_property_id"],
     [
       "duplicate property",
@@ -181,7 +182,7 @@ describe("identity lifecycle command contract", () => {
       validateStaffInviteAccess({
         roleKey,
         propertyAccessMode: "assigned",
-        propertyIds: [],
+        propertyIds: ["11111111-1111-4111-8111-111111111111"],
         permissionOverrides: { grant: [], deny },
       }),
     ).toEqual([]);
