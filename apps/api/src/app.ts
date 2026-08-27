@@ -617,6 +617,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPmsOperationsRoutes, {
       prefix: "/api/pms",
       repository: options.pmsOperationsRepository,
+      propertyAccessRepository: options.auth?.propertyAccessRepository,
       checkoutChargeMarkPaidFreezeEnabled: options.pmsCheckoutChargeMarkPaidFreezeEnabled,
       commandRepository: options.pmsOperationsCommandRepository,
       resolveOnboardingRoomCurrency: async (propertyId) =>

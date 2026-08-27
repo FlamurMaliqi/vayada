@@ -664,6 +664,40 @@ describe("effective property access", () => {
     ).resolves.toBe(context);
   });
 
+  it("applies explicit relationships to both canonical and target property links", async () => {
+    const frontDeskContext = propertyContext();
+    for (const resource of frontDeskContext.linkedResources) {
+      if (resource.resourceId === PROPERTY_A) resource.relationship = "front_desk";
+    }
+    const repository = propertyScopeRepository(
+      propertyScope({ assignedPropertyIds: [PROPERTY_A] }),
+    );
+    const requirement = {
+      propertyId: PROPERTY_A,
+      targetResource: { product: "pms" as const, resourceType: "pms_property" as const },
+    };
+
+    await expect(requirePropertyAccess(frontDeskContext, repository, requirement)).rejects.toThrow(
+      AuthorizationError,
+    );
+    await expect(
+      requirePropertyAccess(frontDeskContext, repository, {
+        ...requirement,
+        allowedRelationships: ["front_desk"],
+      }),
+    ).resolves.toBe(frontDeskContext);
+
+    frontDeskContext.linkedResources.find(
+      ({ product, resourceId }) => product === "hotel_catalog" && resourceId === PROPERTY_A,
+    )!.relationship = "owner";
+    await expect(
+      requirePropertyAccess(frontDeskContext, repository, {
+        ...requirement,
+        allowedRelationships: ["front_desk"],
+      }),
+    ).rejects.toThrow(AuthorizationError);
+  });
+
   it("denies inactive principals, invalid scopes, and properties outside the assignment", async () => {
     const context = propertyContext();
     const all = propertyScope({ mode: "all" });

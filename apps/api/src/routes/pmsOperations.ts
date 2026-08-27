@@ -40,6 +40,7 @@ import type {
   PmsSourceFreshness,
 } from "../domains/pmsOperationsReadModel.js";
 import { requireAuthContext, type RequestActor } from "@vayada/backend-auth";
+import type { PropertyAccessRepository } from "@vayada/backend-authorization";
 import { enforceRoutePolicy } from "./policy.js";
 
 export const PMS_OPERATIONS_CONTRACT_VERSION = "pms-operations.v1" as const;
@@ -923,6 +924,7 @@ export type PmsOperationsCommandRepository = {
 
 export type PmsOperationsRoutesOptions = {
   repository: PmsOperationsReadRepository;
+  propertyAccessRepository?: PropertyAccessRepository;
   checkoutChargeMarkPaidFreezeEnabled?: boolean;
   commandRepository?: PmsOperationsCommandRepository;
   resolveOnboardingRoomCurrency?: (propertyId: string) => Promise<string | null>;
