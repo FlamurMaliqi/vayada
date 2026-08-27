@@ -38,7 +38,7 @@ type AuthOptions = {
   entitlements?: readonly ProductEntitlement[];
   links?: readonly LinkedResource[];
   membershipStatus?: RequestContext["membership"]["status"];
-  propertyScope?: MembershipPropertyScope | null;
+  propertyScope?: Partial<MembershipPropertyScope> | null;
 };
 type FakePorts = Omit<BookingDesignRoutesOptions, "propertyAccessRepository"> & {
   commands: UpsertBookingDesignCommand[];
@@ -97,8 +97,10 @@ async function testApp(ports: FakePorts, auth: AuthOptions = {}) {
   const app = Fastify({ logger: false });
   const propertyScope =
     auth.propertyScope === undefined
-      ? { mode: "all", assignedPropertyIds: [] }
-      : auth.propertyScope;
+      ? membershipPropertyScope()
+      : auth.propertyScope === null
+        ? null
+        : membershipPropertyScope(auth.propertyScope);
   app.decorateRequest("authContext", null);
   app.addHook("onRequest", async (request) => {
     if (auth.authenticated === false || request.headers.authorization !== "Bearer valid-token") {
@@ -356,6 +358,18 @@ function entitlement(status: ProductEntitlement["status"] = "active"): ProductEn
     key: "booking-engine",
     status,
     resource: { product: "booking", resourceType: "booking_hotel", resourceId: propertyId },
+  };
+}
+
+function membershipPropertyScope(
+  overrides: Partial<MembershipPropertyScope> = {},
+): MembershipPropertyScope {
+  return {
+    mode: "all",
+    roleKey: "hotel_owner",
+    accessOrigin: "agency",
+    assignedPropertyIds: [],
+    ...overrides,
   };
 }
 
