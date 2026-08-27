@@ -133,6 +133,8 @@ describe("target PMS linked calendar blocks", () => {
       ],
     });
     expect(query).toContain("source_assignment.guest_booking_id");
+    expect(query).toContain("block.source_inventory_reservation_receipt_id::text");
+    expect(query).toContain("receipt_booking.public_reference");
     expect(query).toContain('AS "sourceSummary"');
   });
 });

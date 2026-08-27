@@ -246,7 +246,11 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
       );
     const first = await reserve(randomUUID(), "2026-08-04", "2026-08-06");
     const second = await reserve(randomUUID(), "2026-08-04", "2026-08-05");
-    expect(first).not.toBeNull();
+    expect(first).toMatchObject({
+      contractVersion: PMS_INVENTORY_RESERVATION_LIFECYCLE_CONTRACT_VERSION,
+      owner: "pms",
+      receiptId: expect.any(String),
+    });
     expect(second).not.toBeNull();
 
     const release = (reservation: NonNullable<typeof first>) =>
@@ -279,8 +283,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
     ]);
 
     const legacy = await reserve(randomUUID(), "2026-08-06", "2026-08-07");
-    expect(legacy).not.toBeNull();
-    await release(legacy!);
+    expect(legacy).toBeNull();
     const legacyDay = (await readDays(admin, fixture)).at(-1);
     expect(legacyDay).toEqual({
       stayDate: "2026-08-06",
@@ -296,7 +299,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
          AND operation = 'pms.direct_booking_inventory.release'`,
       [fixture.propertyId],
     );
-    expect(releases.rows[0]?.count).toBe(3);
+    expect(releases.rows[0]?.count).toBe(2);
 
     await admin.query(
       `INSERT INTO pms.inventory_days (
@@ -380,7 +383,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
          AND operation = 'pms.direct_booking_inventory.release'`,
       [fixture.propertyId],
     );
-    expect(finalReleases.rows[0]?.count).toBe(3);
+    expect(finalReleases.rows[0]?.count).toBe(2);
   });
 
   it("stop-sells and releases every linked type for direct booking holds", async () => {
