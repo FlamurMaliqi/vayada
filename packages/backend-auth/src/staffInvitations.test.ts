@@ -1,6 +1,13 @@
 import pg from "pg";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  createPgStaffInvitationDeliveryRepository,
+  createStaffInvitationDeliveryCoordinator,
+  type StaffInvitationDeliveryClaim,
+  type StaffInvitationProvider,
+  type StaffInvitationProviderResponse,
+} from "./staffInvitationDelivery.js";
 import { createPgStaffInvitationRepository } from "./staffInvitations.js";
 import type { CreateStaffInviteCommand } from "./lifecycle.js";
 
@@ -12,6 +19,8 @@ const otherUser = "44444444-4444-4444-8444-444444444444";
 const membership = "55555555-5555-4555-8555-555555555555";
 const property = "66666666-6666-4666-8666-666666666666";
 const foreignProperty = "77777777-7777-4777-8777-777777777777";
+const workosIdentity = "99999999-9999-4999-8999-999999999999";
+const ambiguousIdentity = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 type RejectionReason =
   | "inviter_not_authorized"
   | "idempotency_conflict"
@@ -27,7 +36,7 @@ function command(
     organizationId: string;
     actorUserId: string;
     propertyIds: string[];
-    roleKey: "front_desk" | "housekeeping";
+    roleKey: "hotel_manager" | "front_desk" | "housekeeping";
   }> = {},
 ): CreateStaffInviteCommand {
   return {
@@ -58,6 +67,22 @@ function command(
   };
 }
 
+function providerResponse(
+  claim: StaffInvitationDeliveryClaim,
+  patch: Partial<StaffInvitationProviderResponse> = {},
+): StaffInvitationProviderResponse {
+  return {
+    invitationId: `invitation_${claim.invitationId}`,
+    email: claim.email,
+    organizationId: claim.organizationId,
+    inviterUserId: claim.inviterUserId,
+    roleSlug: claim.roleSlug,
+    state: "pending",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    ...patch,
+  };
+}
+
 async function expectRejection(
   repository: ReturnType<typeof createPgStaffInvitationRepository>,
   invitation: CreateStaffInviteCommand,
@@ -69,6 +94,7 @@ async function expectRejection(
 describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", () => {
   let client: pg.Client;
   let repository: ReturnType<typeof createPgStaffInvitationRepository>;
+  let deliveryRepository: ReturnType<typeof createPgStaffInvitationDeliveryRepository>;
 
   beforeAll(async () => {
     const dbName = new URL(TEST_DATABASE_URL!).pathname.replace(/^\//, "");
@@ -76,6 +102,9 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
     client = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await client.connect();
     repository = createPgStaffInvitationRepository({ connectionString: TEST_DATABASE_URL! });
+    deliveryRepository = createPgStaffInvitationDeliveryRepository({
+      connectionString: TEST_DATABASE_URL!,
+    });
     await client.query(`
       INSERT INTO identity.users (id, email, name, status) VALUES
         ('${owner}', 'owner@example.com', 'Owner Example', 'active'), ('${otherUser}', 'other@example.com', 'Other User', 'active')
@@ -94,18 +123,35 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
         ('${org}', 'hotel_catalog', 'property', '${property}', 'owner', 'active'),
         ('${otherOrg}', 'hotel_catalog', 'property', '${foreignProperty}', 'owner', 'active')
       ON CONFLICT DO NOTHING;
+      UPDATE identity.organizations SET workos_org_id = 'org_staff_delivery' WHERE id = '${org}';
+      UPDATE identity.organization_memberships SET workos_membership_id = 'om_staff_delivery'
+      WHERE id = '${membership}';
+      INSERT INTO identity.external_identities
+        (id, user_id, provider, provider_user_id, provider_email, provider_email_verified)
+      VALUES ('${workosIdentity}', '${owner}', 'workos', 'user_staff_delivery',
+              'owner@example.com', true)
+      ON CONFLICT (id) DO UPDATE SET provider_user_id = EXCLUDED.provider_user_id;
     `);
   });
 
   beforeEach(async () => {
     await client.query("DELETE FROM identity.staff_invitations");
     await client.query(
-      "UPDATE identity.organization_memberships SET status = 'active', permission_overrides = NULL WHERE id = $1",
+      `UPDATE identity.organization_memberships
+       SET status = 'active', permission_overrides = NULL, workos_membership_id = 'om_staff_delivery'
+       WHERE id = $1`,
       [membership],
     );
+    await client.query(`
+      UPDATE identity.users SET status = 'active' WHERE id = '${owner}';
+      UPDATE identity.organizations SET status = 'active', workos_org_id = 'org_staff_delivery'
+      WHERE id = '${org}';
+      DELETE FROM identity.external_identities WHERE id = '${ambiguousIdentity}';
+    `);
   });
 
   afterAll(async () => {
+    await deliveryRepository.close();
     await repository.close();
     await client.end();
   });
@@ -226,5 +272,135 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
     expect(results.find((result) => result.outcome === "rejected")).toMatchObject({
       reason: "idempotency_conflict",
     });
+  });
+
+  it("claims once and atomically records a matching provider invitation", async () => {
+    const created = await repository.persist(command({ roleKey: "hotel_manager" }));
+    if (created.outcome !== "created") throw new Error("expected invitation creation");
+    const sendInvitation = vi.fn(async (claim: StaffInvitationDeliveryClaim) =>
+      providerResponse(claim, { invitationId: ` invitation_${claim.invitationId} ` }),
+    );
+    const coordinator = createStaffInvitationDeliveryCoordinator({
+      repository: deliveryRepository,
+      provider: { sendInvitation },
+    });
+
+    const outcomes = await Promise.all([
+      coordinator.deliver(created.invitationId),
+      coordinator.deliver(created.invitationId),
+    ]);
+    expect(outcomes.map(({ outcome }) => outcome).sort()).toEqual(["delivered", "not_ready"]);
+    expect(outcomes).toContainEqual({
+      outcome: "delivered",
+      invitationId: created.invitationId,
+      providerInvitationId: `invitation_${created.invitationId}`,
+    });
+    expect(sendInvitation).toHaveBeenCalledOnce();
+    expect(sendInvitation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: "org_staff_delivery",
+        inviterUserId: "user_staff_delivery",
+        roleSlug: "hotel_admin",
+        expiresInDays: 7,
+      }),
+    );
+    expect(
+      (
+        await client.query(
+          `SELECT delivery_state, provider_invitation_id FROM identity.staff_invitations WHERE id = $1`,
+          [created.invitationId],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        delivery_state: "delivered",
+        provider_invitation_id: `invitation_${created.invitationId}`,
+      },
+    ]);
+  });
+
+  it("quarantines provider failures and mismatched responses without retrying", async () => {
+    const failed = await repository.persist(command());
+    if (failed.outcome !== "created") throw new Error("expected invitation creation");
+    const sendInvitation = vi
+      .fn<StaffInvitationProvider["sendInvitation"]>()
+      .mockRejectedValue(new Error("ambiguous provider failure"));
+    const coordinator = createStaffInvitationDeliveryCoordinator({
+      repository: deliveryRepository,
+      provider: { sendInvitation },
+    });
+
+    await expect(coordinator.deliver(failed.invitationId)).resolves.toMatchObject({
+      outcome: "unknown",
+    });
+    await expect(coordinator.deliver(failed.invitationId)).resolves.toMatchObject({
+      outcome: "not_ready",
+    });
+    expect(sendInvitation).toHaveBeenCalledOnce();
+
+    const mismatch = await repository.persist(
+      command({ commandId: "mismatch", idempotencyKey: "mismatch", email: "mismatch@example.com" }),
+    );
+    if (mismatch.outcome !== "created") throw new Error("expected invitation creation");
+    sendInvitation.mockReset();
+    sendInvitation.mockImplementation(async (claim) =>
+      providerResponse(claim, { organizationId: "org_foreign" }),
+    );
+    await expect(coordinator.deliver(mismatch.invitationId)).resolves.toMatchObject({
+      outcome: "unknown",
+    });
+  });
+
+  it("does not claim revoked, inactive, or ambiguous identity context", async () => {
+    const created = await repository.persist(command());
+    if (created.outcome !== "created") throw new Error("expected invitation creation");
+    const provider = { sendInvitation: vi.fn<StaffInvitationProvider["sendInvitation"]>() };
+    const coordinator = createStaffInvitationDeliveryCoordinator({
+      repository: deliveryRepository,
+      provider,
+    });
+    await client.query("UPDATE identity.staff_invitations SET status = 'revoked' WHERE id = $1", [
+      created.invitationId,
+    ]);
+    await expect(coordinator.deliver(created.invitationId)).resolves.toMatchObject({
+      outcome: "not_ready",
+    });
+
+    const inactive = await repository.persist(
+      command({ commandId: "inactive", idempotencyKey: "inactive", email: "inactive@example.com" }),
+    );
+    if (inactive.outcome !== "created") throw new Error("expected invitation creation");
+    await client.query(
+      "UPDATE identity.organization_memberships SET status = 'suspended' WHERE id = $1",
+      [membership],
+    );
+    await expect(coordinator.deliver(inactive.invitationId)).resolves.toMatchObject({
+      outcome: "not_ready",
+    });
+
+    await client.query(
+      "UPDATE identity.organization_memberships SET status = 'active' WHERE id = $1",
+      [membership],
+    );
+    await client.query(
+      `INSERT INTO identity.external_identities
+         (id, user_id, provider, provider_user_id, provider_email_verified)
+       VALUES ($1, $2, 'workos', 'user_staff_ambiguous', true)`,
+      [ambiguousIdentity, owner],
+    );
+    await expect(coordinator.deliver(inactive.invitationId)).resolves.toMatchObject({
+      outcome: "not_ready",
+    });
+    await client.query("DELETE FROM identity.external_identities WHERE id = $1", [
+      ambiguousIdentity,
+    ]);
+    await client.query(
+      "UPDATE identity.organization_memberships SET workos_membership_id = NULL WHERE id = $1",
+      [membership],
+    );
+    await expect(coordinator.deliver(inactive.invitationId)).resolves.toMatchObject({
+      outcome: "not_ready",
+    });
+    expect(provider.sendInvitation).not.toHaveBeenCalled();
   });
 });
