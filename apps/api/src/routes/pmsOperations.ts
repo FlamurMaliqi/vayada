@@ -18,6 +18,10 @@ import type {
 } from "@vayada/domain-distribution";
 import { PROPERTY_FEATURE_LIMITS, type PropertyPlanReadModel } from "@vayada/domain-finance";
 import type { PropertyPlanReadRepository } from "../domains/propertyPlanReadModel.js";
+import type {
+  PmsLinkedInventoryGroupCommandRepository,
+  PmsLinkedInventoryGroupCommandResult,
+} from "../domains/pmsLinkedInventoryGroupRepository.js";
 import type { PmsRoomAssignmentSettingsPort } from "../domains/pmsRoomAssignmentSettings.js";
 import { pmsRoomOrderVersion } from "../domains/pmsRoomOrder.js";
 import type {
@@ -81,6 +85,12 @@ export type PmsLinkedInventoryGroupsResponse = {
   propertyId: string;
   items: PmsLinkedInventoryGroup[];
   sourceFreshness: PmsSourceFreshness;
+};
+
+export type PmsLinkedInventoryGroupCommandResponse = {
+  contractVersion: PmsOperationsContractVersion;
+  propertyId: string;
+  group: PmsLinkedInventoryGroup | null;
 };
 
 export type PmsRoomTypeDetailResponse = {
@@ -934,6 +944,7 @@ export type PmsOperationsRoutesOptions = {
   repository: PmsOperationsReadRepository;
   checkoutChargeMarkPaidFreezeEnabled?: boolean;
   commandRepository?: PmsOperationsCommandRepository;
+  linkedInventoryGroupCommandRepository?: PmsLinkedInventoryGroupCommandRepository;
   resolveOnboardingRoomCurrency?: (propertyId: string) => Promise<string | null>;
   bookingGuestPiiPort?: BookingGuestPiiPort;
   inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
@@ -952,6 +963,8 @@ type PmsPropertyParams = {
 type PmsRoomTypeParams = PmsPropertyParams & {
   roomTypeId: string;
 };
+
+type PmsLinkedInventoryGroupParams = PmsPropertyParams & { groupId: string };
 
 type PmsRoomBlockParams = PmsPropertyParams & {
   blockId: string;
@@ -1049,6 +1062,13 @@ type PmsOperationsErrorCode =
   | "property_currency_conflict"
   | "room_order_conflict"
   | "room_type_conflict"
+  | "group_not_found"
+  | "revision_conflict"
+  | "idempotency_conflict"
+  | "linked_inventory_group_invalid"
+  | "linked_inventory_name_conflict"
+  | "linked_inventory_membership_conflict"
+  | "linked_inventory_overlap_conflict"
   | "room_photo_plan_limit_reached"
   | "read_model_unavailable"
   | "room_type_not_found"
@@ -1085,6 +1105,7 @@ export async function registerPmsOperationsRoutes(
   app.addHook("onClose", async () => {
     await repository.close?.();
     await commandRepository?.close?.();
+    await options.linkedInventoryGroupCommandRepository?.close();
     await bookingGuestPiiPort?.close?.();
     await options.propertyPlanReadRepository?.close?.();
     await options.roomAssignmentSettings?.close?.();
@@ -1098,6 +1119,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/room-types",
     "/properties/:propertyId/room-types/:roomTypeId",
     "/properties/:propertyId/linked-inventory-groups",
+    "/properties/:propertyId/linked-inventory-groups/:groupId",
     "/properties/:propertyId/plan-limits",
     "/properties/:propertyId/calendar",
     "/properties/:propertyId/room-blocks",
@@ -1194,6 +1216,68 @@ export async function registerPmsOperationsRoutes(
       }
     },
   );
+
+  if (options.linkedInventoryGroupCommandRepository) {
+    app.post<{ Params: PmsPropertyParams; Body: unknown }>(
+      "/properties/:propertyId/linked-inventory-groups",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toLinkedInventoryGroupPutCommand(propertyId, request);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await options.linkedInventoryGroupCommandRepository!.create(command.value);
+        if (!result.ok) return sendLinkedInventoryGroupCommandError(reply, result);
+        return reply.code(result.replayed ? 200 : 201).send({
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          group: result.group,
+        } satisfies PmsLinkedInventoryGroupCommandResponse);
+      },
+    );
+
+    app.put<{ Params: PmsLinkedInventoryGroupParams; Body: unknown }>(
+      "/properties/:propertyId/linked-inventory-groups/:groupId",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId, groupId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toLinkedInventoryGroupPutCommand(propertyId, request, groupId);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await options.linkedInventoryGroupCommandRepository!.replace(command.value);
+        if (!result.ok) return sendLinkedInventoryGroupCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          group: result.group,
+        } satisfies PmsLinkedInventoryGroupCommandResponse;
+      },
+    );
+
+    app.delete<{ Params: PmsLinkedInventoryGroupParams; Body: unknown }>(
+      "/properties/:propertyId/linked-inventory-groups/:groupId",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId, groupId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toLinkedInventoryGroupDeleteCommand(propertyId, request, groupId);
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await options.linkedInventoryGroupCommandRepository!.delete(command.value);
+        if (!result.ok) return sendLinkedInventoryGroupCommandError(reply, result);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          group: null,
+        } satisfies PmsLinkedInventoryGroupCommandResponse;
+      },
+    );
+  }
 
   app.get<{ Params: PmsPropertyParams }>(
     "/properties/:propertyId/rooms",
@@ -5185,6 +5269,104 @@ function pmsOperationsCommandAudit(
     reason,
     requestedAt: authContext?.audit.receivedAt ?? now,
   };
+}
+
+function toLinkedInventoryGroupPutCommand(
+  propertyId: string,
+  request: FastifyRequest<{ Body: unknown }>,
+  groupId?: string,
+):
+  | {
+      value: import("../domains/pmsLinkedInventoryGroupRepository.js").PmsLinkedInventoryGroupPutCommand;
+    }
+  | { error: PmsOperationsError } {
+  const body = objectBody(request.body);
+  const commandId = body && stringField(body.commandId);
+  const idempotencyKey = body && stringField(body.idempotencyKey);
+  const name = body && stringField(body.name);
+  const memberRoomTypeIds = body && toStringArray(body.memberRoomTypeIds);
+  const expectedRevision = body && optionalPositiveInteger(body.expectedRevision);
+  if (
+    !body ||
+    !commandId ||
+    !idempotencyKey ||
+    !name ||
+    !memberRoomTypeIds ||
+    memberRoomTypeIds.length < 2 ||
+    !memberRoomTypeIds.every(isUuid) ||
+    (groupId !== undefined && (!isUuid(groupId) || expectedRevision === undefined))
+  ) {
+    return {
+      error: invalidBody(
+        "Linked inventory group requires commandId, idempotencyKey, name, two room type IDs, and the current revision when replacing.",
+      ),
+    };
+  }
+  return {
+    value: {
+      propertyId,
+      groupId,
+      commandId,
+      idempotencyKey,
+      name,
+      memberRoomTypeIds,
+      expectedRevision,
+      audit: pmsOperationsCommandAudit(
+        request,
+        commandId,
+        groupId ? "Replace linked inventory group" : "Create linked inventory group",
+      ),
+    },
+  };
+}
+
+function toLinkedInventoryGroupDeleteCommand(
+  propertyId: string,
+  request: FastifyRequest<{ Body: unknown }>,
+  groupId: string,
+):
+  | {
+      value: import("../domains/pmsLinkedInventoryGroupRepository.js").PmsLinkedInventoryGroupDeleteCommand;
+    }
+  | { error: PmsOperationsError } {
+  const body = objectBody(request.body);
+  const commandId = body && stringField(body.commandId);
+  const idempotencyKey = body && stringField(body.idempotencyKey);
+  const expectedRevision = body && optionalPositiveInteger(body.expectedRevision);
+  if (!isUuid(groupId) || !commandId || !idempotencyKey || expectedRevision === undefined) {
+    return {
+      error: invalidBody(
+        "Linked inventory group delete requires commandId, idempotencyKey, group ID, and current revision.",
+      ),
+    };
+  }
+  return {
+    value: {
+      propertyId,
+      groupId,
+      commandId,
+      idempotencyKey,
+      expectedRevision,
+      audit: pmsOperationsCommandAudit(request, commandId, "Delete linked inventory group"),
+    },
+  };
+}
+
+function sendLinkedInventoryGroupCommandError(
+  reply: FastifyReply,
+  result: Exclude<PmsLinkedInventoryGroupCommandResult, { ok: true }>,
+): FastifyReply {
+  return sendPmsOperationsError(reply, {
+    statusCode: result.statusCode,
+    code: result.code,
+    category:
+      result.statusCode === 400
+        ? "validation"
+        : result.statusCode === 404
+          ? "not_found"
+          : "conflict",
+    message: result.message,
+  });
 }
 
 function bookingGuestPiiAudit(
