@@ -31,7 +31,7 @@ type AuthOptions = {
   entitlements?: readonly ProductEntitlement[];
   links?: readonly LinkedResource[];
   membershipStatus?: RequestContext["membership"]["status"];
-  propertyScope?: MembershipPropertyScope | null;
+  propertyScope?: Partial<MembershipPropertyScope> | null;
 };
 type FakeRepository = BookingPublicationCommandPort & {
   requestCalls: RequestBookingPublicationCommand[];
@@ -386,8 +386,10 @@ function testApp(
 ) {
   const propertyScope =
     options.propertyScope === undefined
-      ? { mode: "all", assignedPropertyIds: [] }
-      : options.propertyScope;
+      ? membershipPropertyScope()
+      : options.propertyScope === null
+        ? null
+        : membershipPropertyScope(options.propertyScope);
   const app = buildApp({
     logger: false,
     bookingPublication: {
@@ -439,6 +441,18 @@ function entitlement(
     key: "booking-engine",
     status,
     resource: { product: "booking", resourceType: "booking_hotel", resourceId },
+  };
+}
+
+function membershipPropertyScope(
+  overrides: Partial<MembershipPropertyScope> = {},
+): MembershipPropertyScope {
+  return {
+    mode: "all",
+    roleKey: "hotel_owner",
+    accessOrigin: "agency",
+    assignedPropertyIds: [],
+    ...overrides,
   };
 }
 
