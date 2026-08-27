@@ -1,4 +1,8 @@
-import { createPgIdentityRepository, createWorkOSVerifier } from "@vayada/backend-auth";
+import {
+  createPgIdentityRepository,
+  createPgStaffInvitationAcceptanceRepository,
+  createWorkOSVerifier,
+} from "@vayada/backend-auth";
 import {
   createPgEntitlementRepository,
   createPgPropertyAccessRepository,
@@ -976,6 +980,9 @@ const app = buildApp({
             secret: config.authSession.workosWebhookSecret,
           }),
           store: createPgWorkosWebhookStore({
+            connectionString: config.auth.databaseUrl,
+          }),
+          staffInvitationAcceptance: createPgStaffInvitationAcceptanceRepository({
             connectionString: config.auth.databaseUrl,
           }),
         }

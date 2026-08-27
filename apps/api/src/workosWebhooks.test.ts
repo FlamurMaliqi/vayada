@@ -445,6 +445,133 @@ describe("WorkOS webhook routes", () => {
     await app.close();
   });
 
+  it("reconciles accepted invitations using WorkOS SDK field names", async () => {
+    const store = createMemoryStore();
+    const reconciled: unknown[] = [];
+    const app = buildApp({
+      workosWebhooks: {
+        secret: "whsec_test",
+        verifier: verifierFor(
+          event("evt_invitation_accepted", "invitation.accepted", {
+            id: "invitation_123",
+            email: "staff@example.com",
+            organizationId: "org_workos_platform",
+            acceptedUserId: "user_workos_staff",
+            state: "accepted",
+          }),
+        ),
+        store,
+        staffInvitationAcceptance: {
+          async reconcile(input) {
+            reconciled.push(input);
+            return {
+              outcome: "accepted",
+              invitationId: "invitation_internal",
+              membershipId: "membership_internal",
+            };
+          },
+        },
+        processInline: true,
+      },
+    });
+
+    const response = await postWebhook(app, "evt_invitation_accepted");
+
+    expect(response.json()).toMatchObject({ status: "accepted" });
+    expect(reconciled).toEqual([
+      {
+        providerEventId: "evt_invitation_accepted",
+        providerInvitationId: "invitation_123",
+        providerUserId: "user_workos_staff",
+        providerOrganizationId: "org_workos_platform",
+        invitationEmail: "staff@example.com",
+      },
+    ]);
+    await app.close();
+  });
+
+  it("treats audited invitation rejection as a terminal processed event", async () => {
+    const store = createMemoryStore();
+    let reconciliationCalls = 0;
+    const app = buildApp({
+      workosWebhooks: {
+        secret: "whsec_test",
+        verifier: verifierFor(
+          event("evt_invitation_rejected", "invitation.accepted", invitationAcceptedData()),
+        ),
+        store,
+        staffInvitationAcceptance: {
+          async reconcile() {
+            reconciliationCalls += 1;
+            return { outcome: "rejected", reason: "provider_context_mismatch" };
+          },
+        },
+        processInline: true,
+      },
+    });
+
+    const first = await postWebhook(app, "evt_invitation_rejected");
+    const retry = await postWebhook(app, "evt_invitation_rejected");
+
+    expect(first.json()).toMatchObject({ status: "accepted" });
+    expect(retry.json()).toMatchObject({ status: "duplicate" });
+    expect(reconciliationCalls).toBe(1);
+    expect(store.deadLetters).toEqual([]);
+    await app.close();
+  });
+
+  it("dead-letters acceptance until its verified identity exists", async () => {
+    const store = createMemoryStore();
+    const app = buildApp({
+      workosWebhooks: {
+        secret: "whsec_test",
+        verifier: verifierFor(
+          event("evt_invitation_deferred", "invitation.accepted", invitationAcceptedData()),
+        ),
+        store,
+        staffInvitationAcceptance: {
+          async reconcile() {
+            return { outcome: "deferred", reason: "identity_not_found" };
+          },
+        },
+        processInline: true,
+      },
+    });
+
+    const response = await postWebhook(app, "evt_invitation_deferred");
+
+    expect(response.json()).toMatchObject({ status: "dead_lettered" });
+    expect(store.deadLetters).toEqual([
+      expect.objectContaining({
+        reasonCode: "identity_reconciliation_failed",
+        failureSummary: "Staff invitation acceptance deferred: identity_not_found",
+      }),
+    ]);
+    await app.close();
+  });
+
+  it("fails closed when invitation acceptance reconciliation is not configured", async () => {
+    const store = createMemoryStore();
+    const app = buildApp({
+      workosWebhooks: {
+        secret: "whsec_test",
+        verifier: verifierFor(
+          event("evt_invitation_unconfigured", "invitation.accepted", invitationAcceptedData()),
+        ),
+        store,
+        processInline: true,
+      },
+    });
+
+    const response = await postWebhook(app, "evt_invitation_unconfigured");
+
+    expect(response.json()).toMatchObject({ status: "dead_lettered" });
+    expect(store.deadLetters[0]).toMatchObject({
+      failureSummary: "Staff invitation acceptance reconciliation is not configured",
+    });
+    await app.close();
+  });
+
   it("maps WorkOS admin memberships back to internal owner roles", () => {
     expect(
       mapWorkosMembershipRoleKey({
@@ -567,6 +694,16 @@ function membershipPayload(): WorkosMembershipPayload {
     roleKey: "platform_admin",
     workosRoleSlugs: ["platform_admin", "billing_admin"],
     status: "active",
+  };
+}
+
+function invitationAcceptedData() {
+  return {
+    id: "invitation_123",
+    email: "staff@example.com",
+    organization_id: "org_workos_platform",
+    accepted_user_id: "user_workos_staff",
+    state: "accepted",
   };
 }
 
