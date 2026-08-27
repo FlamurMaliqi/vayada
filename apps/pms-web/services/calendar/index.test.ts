@@ -179,6 +179,7 @@ describe("calendarService manual-booking rates", () => {
               roomTypeId: "room-type-1",
               name: "Suite",
               category: null,
+              attributes: { size: { value: 38, unit: "sqm" } },
               occupancyLimits: { adults: 2, children: 0, total: 2 },
               baseRate: { amountDecimal: "100.00", currency: "EUR" },
               roomCount: 1,
@@ -205,6 +206,19 @@ describe("calendarService manual-booking rates", () => {
         };
       if (route.includes("/reservations?"))
         return { items: [], pagination: { total: 0, limit: 500, offset: 0 } };
+      if (route.endsWith("/rooms"))
+        return {
+          items: [
+            {
+              roomId: "room-1",
+              roomTypeId: "room-type-1",
+              roomNumber: "101",
+              floor: "1",
+              status: "available",
+            },
+          ],
+          orderVersion: "room-order-v1",
+        };
       return { items: [] };
     });
   });
@@ -220,5 +234,6 @@ describe("calendarService manual-booking rates", () => {
         baseRate: 150,
       },
     ]);
+    expect(result.rooms[0]?.size).toBe(38);
   });
 });

@@ -220,6 +220,7 @@ describe("PMS target booking projection", () => {
   it("hydrates manual payment state and uses the target acceptance and mark-paid commands", async () => {
     const manualReservation = {
       ...reservation,
+      source: "manual" as const,
       status: "pending_payment",
       payment: { method: "bank_transfer", status: "unpaid" },
       hostResponseDeadlineAt: "2026-07-24T10:00:00.000Z",
@@ -235,6 +236,7 @@ describe("PMS target booking projection", () => {
     });
 
     await expect(bookingsService.acceptBooking("booking-1")).resolves.toMatchObject({
+      channel: "manual",
       paymentMethod: "bank_transfer",
       paymentStatus: "unpaid",
       status: "pending",
@@ -259,6 +261,33 @@ describe("PMS target booking projection", () => {
       idempotencyKey: "pms.booking.mark-paid:booking-1:v1",
     });
   });
+
+  it("targets one assignment and forwards the selected move rate policy", async () => {
+    mocks.get.mockImplementation(async (endpoint: string) =>
+      endpoint.endsWith("/room-types") ? { items: roomTypes } : { item: heterogeneousReservation },
+    );
+    mocks.patch.mockResolvedValue({});
+
+    await bookingsService.moveRoom("booking-1", "room-9", "a-2", "target_base");
+    await bookingsService.unassignRoom("booking-1", "a-2");
+
+    expect(mocks.patch).toHaveBeenCalledWith(
+      "/api/pms/properties/property-1/reservations/booking-1/assignments",
+      expect.objectContaining({
+        action: "move",
+        roomId: "room-9",
+        assignmentId: "a-2",
+        ratePolicy: "target_base",
+      }),
+      expect.any(Object),
+    );
+    expect(mocks.patch).toHaveBeenLastCalledWith(
+      "/api/pms/properties/property-1/reservations/booking-1/assignments",
+      expect.objectContaining({ action: "unassign", assignmentId: "a-2" }),
+      expect.any(Object),
+    );
+  });
+
   it("uses the authoritative Booking correction response without a fallible reload", async () => {
     mocks.patch.mockResolvedValue({
       primaryGuest: {

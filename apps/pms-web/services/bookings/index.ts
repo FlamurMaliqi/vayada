@@ -10,6 +10,7 @@ export interface AssignedRoom {
   roomId: string | null;
   roomNumber: string | null;
   position: number;
+  roomTypeId: string;
 }
 
 // prettier-ignore
@@ -27,6 +28,7 @@ export interface BookingStay {
   nightly: Array<{
     appliedAmount: number | null;
     currency: string | null;
+    evidenceQuality: "exact" | "inferred" | "missing";
   }>;
 }
 
@@ -722,7 +724,12 @@ export const bookingsService = {
     return refreshBooking(id);
   },
 
-  moveRoom: async (id: string, roomId: string, sourceAssignmentRef?: string) => {
+  moveRoom: async (
+    id: string,
+    roomId: string,
+    sourceAssignmentRef?: string,
+    ratePolicy: "preserve" | "target_base" = "preserve",
+  ) => {
     const booking = await refreshBooking(id);
     const sourceAssignment = sourceAssignmentRef
       ? booking.assignedRooms.find(
@@ -746,6 +753,7 @@ export const bookingsService = {
         ...(sourceAssignment?.assignmentId
           ? { assignmentId: sourceAssignment.assignmentId }
           : { position: sourceAssignment?.position ?? 0 }),
+        ...(ratePolicy === "target_base" ? { ratePolicy } : {}),
       },
       pmsOperationsRequestOptions,
     );
@@ -755,10 +763,30 @@ export const bookingsService = {
   swapRoom: (_id: string, _partnerBookingId: string, _partnerDestinationRoomId?: string) =>
     unsupportedPmsNextStackFeature<Booking>("Room swaps"),
 
-  unassignRoom: async (id: string) => {
+  unassignRoom: async (id: string, sourceAssignmentRef?: string) => {
+    const booking = await refreshBooking(id);
+    const sourceAssignment = sourceAssignmentRef
+      ? booking.assignedRooms.find(
+          (assignment) =>
+            assignment.assignmentId === sourceAssignmentRef ||
+            assignment.roomId === sourceAssignmentRef,
+        )
+      : booking.assignedRooms[0];
+    if (sourceAssignmentRef && !sourceAssignment) {
+      return unsupportedPmsNextStackFeature<Booking>(
+        "Multi-room unassign without assignment identity",
+      );
+    }
     await pmsOperationsClient.patch<PmsOperationsCommandResponse>(
       await reservationEndpoint(id, "/assignments"),
-      { ...commandMetadata("pms.assignment.unassign"), action: "unassign", roomId: null },
+      {
+        ...commandMetadata("pms.assignment.unassign"),
+        action: "unassign",
+        roomId: null,
+        ...(sourceAssignment?.assignmentId
+          ? { assignmentId: sourceAssignment.assignmentId }
+          : { position: sourceAssignment?.position ?? 0 }),
+      },
       pmsOperationsRequestOptions,
     );
     return refreshBooking(id);
@@ -1048,6 +1076,7 @@ function toBooking(
       roomId: assignment.roomId,
       roomNumber: assignment.roomNumber,
       position: Math.max(assignment.position - 1, 0),
+      roomTypeId: assignment.roomTypeId,
     })),
     stays: reservation.assignments.map((assignment) => {
       const assignmentRoomType = roomTypesById.get(assignment.roomTypeId);
@@ -1066,10 +1095,14 @@ function toBooking(
         nightly: (assignment.nightly ?? []).map((night) => ({
           appliedAmount: night.applied ? moneyAmount(night.applied) : null,
           currency: night.applied?.currency ?? null,
+          evidenceQuality: night.evidenceQuality,
         })),
       };
     }),
-    channel: primaryAssignment?.channel ?? reservationSource(reservation.source),
+    channel:
+      reservation.source === "manual"
+        ? "manual"
+        : (primaryAssignment?.channel ?? reservationSource(reservation.source)),
     paymentMethod: reservation.payment?.method ?? null,
     expectedPaymentMethod: reservation.payment?.expectedMethod ?? "unknown",
     paymentStatus: reservation.payment?.status ?? null,
