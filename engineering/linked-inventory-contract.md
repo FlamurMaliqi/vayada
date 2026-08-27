@@ -72,7 +72,10 @@ The flag is a non-additive gate, not another capacity count. When true,
 `available_count` is zero. Explanatory linked-block rows remain per cause, but
 their contribution to `blocked_count` saturates at remaining physical capacity:
 `assigned_count + blocked_count` never exceeds `total_count` even when several
-causes overlap.
+causes overlap. Canonical inventory storage rejects rows whose available,
+assigned, and blocked counts exceed total capacity. The saturation clamp is
+defensive; reconciliation does not repair or legitimize invalid imported data
+and fails the storage constraint until that data is repaired.
 
 Derived block dates use the existing inclusive room-block range. Booking
 assignments remain checkout-exclusive, so a stay `[check_in, check_out)` becomes
@@ -206,6 +209,13 @@ ranges:
 - `distribution.public-bookability` refreshes public offers;
 - `pms.calendar-projection` refreshes the PMS calendar; and
 - `pms.channel-manager` enqueues durable `channex.push-ari` work.
+
+The channel-manager intent maps the internal `pms.inventory.changed` domain
+event to the concrete `pms.inventory.ari_changed` outbox event. The outbox
+payload carries `inventoryVersion`, and its envelope supplies `outboxKey`; the
+scheduler copies both into the job payload. The durable `channex.push-ari`
+idempotency key contains the inventory version, and the request fingerprint
+covers the complete job payload, including the source outbox key.
 
 Channex remains PMS-owned. The Booking domain never calls it directly. Existing
 idempotency, retry, provider-attempt, and dead-letter behavior applies. Before a
