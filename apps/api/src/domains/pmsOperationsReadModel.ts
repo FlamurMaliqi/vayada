@@ -78,6 +78,7 @@ export type PmsRoomType = {
 export type PmsSourceFreshness = PmsJsonRecord;
 
 export type PmsRoomBlockStatus = "active" | "released" | "expired";
+export type PmsRoomBlockKind = "manual" | "linked_booking" | "linked_manual_block";
 
 export type PmsRoomBlockSummary = {
   blockId: string;
@@ -89,6 +90,11 @@ export type PmsRoomBlockSummary = {
   blockedCount: number;
   reason: string;
   status: PmsRoomBlockStatus;
+  kind?: PmsRoomBlockKind;
+  sourceRoomTypeId?: string | null;
+  sourceRoomTypeName?: string | null;
+  sourceSummary?: string | null;
+  protected?: boolean;
 };
 
 export type PmsLinkedInventoryGroup = {
@@ -420,11 +426,42 @@ export function createTargetPmsOperationsReadRepository(config: {
                       'endsOn', block.ends_on::text,
                       'blockedCount', block.blocked_count,
                       'reason', block.reason,
-                      'status', block.status
+                      'status', block.status,
+                      'kind', block.block_kind,
+                      'sourceRoomTypeId', block.source_room_type_id::text,
+                      'sourceRoomTypeName', source_type.name,
+                      'sourceSummary', CASE
+                        WHEN block.block_kind = 'linked_booking' THEN concat_ws(
+                          ' · ',
+                          CASE WHEN source_booking.public_reference IS NOT NULL
+                            THEN concat('Booking ', source_booking.public_reference)
+                            ELSE 'Booking' END,
+                          source_type.name
+                        )
+                        WHEN block.block_kind = 'linked_manual_block' THEN concat_ws(
+                          ' · ',
+                          concat('Block: ', source_block.reason),
+                          source_type.name
+                        )
+                        ELSE NULL
+                      END,
+                      'protected', block.block_kind <> 'manual'
                     )
                     ORDER BY block.starts_on ASC, block.id ASC
                   ) AS items
            FROM pms.room_blocks block
+           LEFT JOIN pms.room_types source_type
+             ON source_type.id = block.source_room_type_id
+            AND source_type.property_id = block.property_id
+           LEFT JOIN pms.operational_booking_assignments source_assignment
+             ON source_assignment.id = block.source_assignment_id
+            AND source_assignment.property_id = block.property_id
+           LEFT JOIN booking.guest_bookings source_booking
+             ON source_booking.id = source_assignment.guest_booking_id
+            AND source_booking.property_id = source_assignment.property_id
+           LEFT JOIN pms.room_blocks source_block
+             ON source_block.id = block.source_room_block_id
+            AND source_block.property_id = block.property_id
            WHERE block.property_id = inventory.property_id
              AND block.room_type_id = inventory.room_type_id
              AND block.status = 'active'
@@ -571,11 +608,39 @@ export function createTargetPmsOperationsReadRepository(config: {
            block.ends_on AS "endsOn",
            block.blocked_count AS "blockedCount",
            block.reason,
-           block.status
+           block.status,
+           block.block_kind AS kind,
+           block.source_room_type_id::text AS "sourceRoomTypeId",
+           source_type.name AS "sourceRoomTypeName",
+           CASE
+             WHEN block.block_kind = 'linked_booking' THEN concat_ws(
+               ' · ',
+               CASE WHEN source_booking.public_reference IS NOT NULL
+                 THEN concat('Booking ', source_booking.public_reference)
+                 ELSE 'Booking' END,
+               source_type.name
+             )
+             WHEN block.block_kind = 'linked_manual_block' THEN concat_ws(
+               ' · ', concat('Block: ', source_block.reason), source_type.name
+             )
+             ELSE NULL
+           END AS "sourceSummary"
          FROM pms.room_blocks block
          JOIN pms.room_types room_type
            ON room_type.id = block.room_type_id
           AND room_type.property_id = block.property_id
+         LEFT JOIN pms.room_types source_type
+           ON source_type.id = block.source_room_type_id
+          AND source_type.property_id = block.property_id
+         LEFT JOIN pms.operational_booking_assignments source_assignment
+           ON source_assignment.id = block.source_assignment_id
+          AND source_assignment.property_id = block.property_id
+         LEFT JOIN booking.guest_bookings source_booking
+           ON source_booking.id = source_assignment.guest_booking_id
+          AND source_booking.property_id = source_assignment.property_id
+         LEFT JOIN pms.room_blocks source_block
+           ON source_block.id = block.source_room_block_id
+          AND source_block.property_id = block.property_id
          WHERE ${whereSql}
          ORDER BY block.starts_on ASC, room_type.sort_order ASC, block.id ASC`,
         params,
@@ -721,6 +786,10 @@ type TargetPmsRoomBlockRow = {
   blockedCount: number;
   reason: string;
   status: PmsRoomBlockStatus;
+  kind: PmsRoomBlockKind;
+  sourceRoomTypeId: string | null;
+  sourceRoomTypeName: string | null;
+  sourceSummary: string | null;
 };
 
 type TargetPmsLinkedInventoryGroupRow = {
@@ -1198,6 +1267,11 @@ function toPmsRoomBlockSummary(row: TargetPmsRoomBlockRow): PmsRoomBlockSummary 
     blockedCount: toInteger(row.blockedCount),
     reason: row.reason,
     status: row.status,
+    kind: row.kind,
+    sourceRoomTypeId: row.sourceRoomTypeId,
+    sourceRoomTypeName: row.sourceRoomTypeName,
+    sourceSummary: row.sourceSummary,
+    protected: row.kind !== "manual",
   };
 }
 
@@ -1322,10 +1396,20 @@ function toRoomBlockSummaries(value: unknown): PmsRoomBlockSummary[] {
       blockedCount: toInteger(Number(item.blockedCount ?? 0)),
       reason: String(item.reason ?? ""),
       status: toRoomBlockStatus(item.status),
+      kind: toRoomBlockKind(item.kind),
+      sourceRoomTypeId: typeof item.sourceRoomTypeId === "string" ? item.sourceRoomTypeId : null,
+      sourceRoomTypeName:
+        typeof item.sourceRoomTypeName === "string" ? item.sourceRoomTypeName : null,
+      sourceSummary: typeof item.sourceSummary === "string" ? item.sourceSummary : null,
+      protected: item.protected === true,
     }))
     .filter(
       (item) => item.blockId.length > 0 && item.version.length > 0 && item.roomTypeId.length > 0,
     );
+}
+
+function toRoomBlockKind(value: unknown): PmsRoomBlockKind {
+  return value === "linked_booking" || value === "linked_manual_block" ? value : "manual";
 }
 
 function toOperationalAssignments(value: unknown): PmsOperationalAssignment[] {
