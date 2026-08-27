@@ -444,12 +444,15 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
          FROM unnest(ARRAY[DATE '2026-09-10',DATE '2026-09-11']) stay_date`,
       [fixture.propertyId, fixture.roomTypeId, publicOfferKey],
     );
+    const initialQuoteSessionId = randomUUID();
+    // prettier-ignore
+    await admin.query(`INSERT INTO booking.quote_sessions (id,property_id,request_hash,public_quote_reference,requested_check_in,requested_check_out,requested_room_count,currency,expires_at) VALUES ($1,$2,'linked-handoff',$3,'2026-09-10','2026-09-12',2,'EUR','2026-09-10T12:00:00Z')`, [initialQuoteSessionId, fixture.propertyId, `Q-${initialQuoteSessionId}`]);
     const port = createTargetPmsInventoryReservationPort();
     await admin.query("BEGIN");
     const marker = await port.reserve({
       transaction: admin,
       propertyId: fixture.propertyId,
-      quoteSessionId: randomUUID(),
+      quoteSessionId: initialQuoteSessionId,
       roomTypeId: fixture.roomTypeId,
       publicOfferKey,
       checkIn: "2026-09-10",
@@ -460,6 +463,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
     });
     await admin.query("COMMIT");
     expect(marker).not.toBeNull();
+    // prettier-ignore
+    if (!marker || marker.contractVersion !== PMS_INVENTORY_RESERVATION_LIFECYCLE_CONTRACT_VERSION) throw new Error("Expected an exact PMS inventory receipt");
     await expect(linkedState(admin, fixture.propertyId, linkedRoomTypeId)).resolves.toEqual({
       available: [0, 0],
       activeBlocks: 1,
@@ -476,12 +481,13 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
     await admin.query(
       `INSERT INTO booking.guest_bookings (
          id,property_id,public_reference,lifecycle_status,check_in,check_out,adults,children,
-         room_count,currency,booking_metadata
-       ) VALUES ($1,$2,$3,'confirmed','2026-09-10','2026-09-12',4,0,2,'EUR',$4::jsonb)`,
+         room_count,currency,quote_session_id,booking_metadata
+       ) VALUES ($1,$2,$3,'confirmed','2026-09-10','2026-09-12',4,0,2,'EUR',$4,$5::jsonb)`,
       [
         bookingId,
         fixture.propertyId,
         `VAY-${bookingId.slice(0, 8)}`,
+        initialQuoteSessionId,
         JSON.stringify({
           inventoryReservation: marker,
         }),
@@ -563,7 +569,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
     await port.release({
       transaction: admin,
       propertyId: fixture.propertyId,
-      reservation: marker!,
+      reservation: marker,
       occurredAt: RELEASED_AT,
     });
     await admin.query("COMMIT");
@@ -581,22 +587,142 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
     // prettier-ignore
     expect((await admin.query(`SELECT array_agg(blocked_count ORDER BY stay_date) AS blocked FROM pms.inventory_days WHERE property_id=$1 AND room_type_id=$2`, [fixture.propertyId, linkedRoomTypeId])).rows[0]?.blocked).toEqual([2, 2]);
 
-    await admin.query("BEGIN");
+    const updatedOfferKey = `linked-updated-${fixture.roomTypeId}:flexible`;
     await admin.query(
-      `UPDATE pms.operational_booking_assignments SET assignment_status='released',room_id=NULL
+      `INSERT INTO pms.inventory_days (
+         property_id,room_type_id,stay_date,total_count,available_count,calendar_revision,
+         inventory_revision,generated_sellable_limit_count,effective_sellable_limit_count,
+         generated_source_revision,channel_source_revision,manual_source_revision,
+         block_source_revision,booking_source_revision
+       ) SELECT $1,room_type_id,stay_date,2,2,1,1,2,2,1,0,0,0,0
+         FROM unnest($2::uuid[]) room_type_id
+         CROSS JOIN unnest(ARRAY[DATE '2026-09-12',DATE '2026-09-13']) stay_date`,
+      [fixture.propertyId, [fixture.roomTypeId, linkedRoomTypeId]],
+    );
+    await admin.query(
+      `INSERT INTO distribution.public_room_offer_snapshots (
+         property_id,room_type_id,stay_date,public_offer_key,available_rooms,currency,freshness_status
+       ) SELECT $1,$2,stay_date,$3,2,'EUR','fresh'
+         FROM unnest(ARRAY[DATE '2026-09-12',DATE '2026-09-13']) stay_date`,
+      [fixture.propertyId, fixture.roomTypeId, updatedOfferKey],
+    );
+    await admin.query("BEGIN");
+    // prettier-ignore
+    const updatedMarker = await port.reserve({ transaction: admin, propertyId: fixture.propertyId, quoteSessionId: randomUUID(), roomTypeId: fixture.roomTypeId, publicOfferKey: updatedOfferKey, checkIn: "2026-09-12", checkOut: "2026-09-14", roomCount: 2, currency: "EUR", occurredAt: ACCEPTED_AT });
+    await admin.query("COMMIT");
+    expect(updatedMarker).not.toBeNull();
+    // prettier-ignore
+    if (!updatedMarker || updatedMarker.contractVersion !== PMS_INVENTORY_RESERVATION_LIFECYCLE_CONTRACT_VERSION) throw new Error("Expected an updated exact PMS inventory receipt");
+    // prettier-ignore
+    await expect(linkedState(admin, fixture.propertyId, linkedRoomTypeId)).resolves.toMatchObject({ available: [0, 0, 0, 0], activeBlocks: 3 });
+
+    // prettier-ignore
+    const setBookingReceipt = (client: pg.Client, receipt: unknown) => client.query(`UPDATE booking.guest_bookings SET check_in='2026-09-12',check_out='2026-09-14',booking_metadata=$3::jsonb,updated_at=$4::timestamptz WHERE property_id=$1 AND id=$2`, [fixture.propertyId, bookingId, JSON.stringify({ inventoryReservation: receipt }), RELEASED_AT.toISOString()]);
+    await setBookingReceipt(admin, updatedMarker);
+    const updateBlocker = new pg.Client({ connectionString: TEST_DATABASE_URL! });
+    await updateBlocker.connect();
+    try {
+      await updateBlocker.query("BEGIN");
+      await lockPmsInventoryMutationScope(updateBlocker, fixture.propertyId);
+      await setBookingReceipt(updateBlocker, { ...updatedMarker, receiptId: randomUUID() });
+      await admin.query("BEGIN");
+      const adminPid = await admin.query<{ pid: number }>("SELECT pg_backend_pid()::integer pid");
+      await admin.query(
+        `UPDATE pms.operational_booking_assignments
+         SET check_in='2026-09-12',check_out='2026-09-14',assignment_payload=$3::jsonb,
+             updated_at=$4::timestamptz WHERE property_id=$1 AND guest_booking_id=$2`,
+        [
+          fixture.propertyId,
+          bookingId,
+          JSON.stringify({ inventoryReservation: updatedMarker }),
+          RELEASED_AT.toISOString(),
+        ],
+      );
+      const pendingCommit = admin.query("COMMIT");
+      const rejectedCommit = expect(pendingCommit).rejects.toMatchObject({
+        constraint: "chk_pms_direct_booking_receipt_handoff_scope",
+      });
+      await waitForAdvisoryWaiter(updateBlocker, adminPid.rows[0]!.pid);
+      await updateBlocker.query("COMMIT");
+      await rejectedCommit;
+    } finally {
+      await updateBlocker.end();
+    }
+    await admin.query("ROLLBACK");
+    const reservedAfterMismatch = await admin.query<{ lifecycleState: string }>(
+      `SELECT lifecycle_state AS "lifecycleState"
+       FROM pms.inventory_reservation_statuses WHERE receipt_id=$1`,
+      [updatedMarker.receiptId],
+    );
+    expect(reservedAfterMismatch.rows).toEqual([{ lifecycleState: "reserved" }]);
+
+    await admin.query("BEGIN");
+    await setBookingReceipt(admin, updatedMarker);
+    await admin.query(
+      `UPDATE pms.operational_booking_assignments
+       SET check_in='2026-09-12',check_out='2026-09-14',updated_at=$3::timestamptz
        WHERE property_id=$1 AND guest_booking_id=$2`,
-      [fixture.propertyId, bookingId],
+      [fixture.propertyId, bookingId, RELEASED_AT.toISOString()],
+    );
+    await admin.query(
+      `UPDATE pms.operational_booking_assignments SET assignment_payload=$3::jsonb
+       WHERE property_id=$1 AND guest_booking_id=$2`,
+      [fixture.propertyId, bookingId, JSON.stringify({ inventoryReservation: updatedMarker })],
     );
     await reconcilePmsOccupiedInventory(
       admin,
       fixture.propertyId,
-      [{ roomTypeId: fixture.roomTypeId, checkIn: "2026-09-10", checkOut: "2026-09-12" }],
+      [
+        { roomTypeId: fixture.roomTypeId, checkIn: "2026-09-10", checkOut: "2026-09-12" },
+        { roomTypeId: fixture.roomTypeId, checkIn: "2026-09-12", checkOut: "2026-09-14" },
+      ],
+      RELEASED_AT.toISOString(),
+    );
+    await reconcilePmsLinkedInventory(admin, fixture.propertyId, RELEASED_AT.toISOString());
+    await admin.query("COMMIT");
+    const adoptedReceipts = await admin.query<{ receiptId: string; lifecycleState: string }>(
+      `SELECT receipt.receipt_id::text AS "receiptId",status.lifecycle_state AS "lifecycleState"
+       FROM pms.inventory_reservation_receipts receipt
+       JOIN pms.inventory_reservation_statuses status USING (receipt_id)
+       WHERE receipt.receipt_id=ANY($1::uuid[]) ORDER BY receipt.receipt_id`,
+      [[marker.receiptId, updatedMarker.receiptId]],
+    );
+    expect(adoptedReceipts.rows).toHaveLength(2);
+    expect(
+      adoptedReceipts.rows.every(({ lifecycleState }) => lifecycleState === "handed_off"),
+    ).toBe(true);
+    await expect(linkedState(admin, fixture.propertyId, linkedRoomTypeId)).resolves.toEqual({
+      available: [3, 3, 0, 0],
+      activeBlocks: 2,
+      lifecycleState: "handed_off",
+    });
+
+    await admin.query("BEGIN");
+    await port.release({
+      transaction: admin,
+      propertyId: fixture.propertyId,
+      reservation: updatedMarker,
+      occurredAt: RELEASED_AT,
+    });
+    await admin.query("COMMIT");
+
+    await admin.query("BEGIN");
+    await admin.query(
+      `UPDATE pms.operational_booking_assignments SET assignment_status='released',room_id=NULL,
+         updated_at=$3::timestamptz
+       WHERE property_id=$1 AND guest_booking_id=$2`,
+      [fixture.propertyId, bookingId, RELEASED_AT.toISOString()],
+    );
+    await reconcilePmsOccupiedInventory(
+      admin,
+      fixture.propertyId,
+      [{ roomTypeId: fixture.roomTypeId, checkIn: "2026-09-12", checkOut: "2026-09-14" }],
       RELEASED_AT.toISOString(),
     );
     await reconcilePmsLinkedInventory(admin, fixture.propertyId, RELEASED_AT.toISOString());
     await admin.query("COMMIT");
     await expect(linkedState(admin, fixture.propertyId, linkedRoomTypeId)).resolves.toEqual({
-      available: [3, 3],
+      available: [3, 3, 2, 2],
       activeBlocks: 0,
       lifecycleState: "handed_off",
     });

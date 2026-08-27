@@ -42,6 +42,9 @@ export type VayadaPmsCreateReservationInput = {
   };
 };
 
+// prettier-ignore
+export type VayadaPmsUpdateReservationInput = { command: UpdatePmsReservationCommand; assignmentPayloadPatch: VayadaPmsCreateReservationInput["assignmentPayloadPatch"] };
+
 export type VayadaPmsIdempotencyRecord = {
   idempotencyKey: string;
   commandFingerprint: string;
@@ -73,7 +76,7 @@ export type VayadaPmsReservationRepository = {
     input: VayadaPmsCreateReservationInput,
   ): Promise<PmsOperationalReservationReadModel>;
   updateOperationalReservation(
-    command: UpdatePmsReservationCommand,
+    input: VayadaPmsUpdateReservationInput,
   ): Promise<PmsOperationalReservationReadModel | null>;
   cancelOperationalReservation(
     command: CancelPmsReservationCommand,
@@ -165,6 +168,8 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
     if (validationError) {
       return this.persistResultOrFailure(command, this.failed(command, validationError));
     }
+    const inventoryReservation = parsePmsInventoryReservationReceipt(command.inventoryReservation);
+    if (inventoryReservation) command = { ...command, inventoryReservation };
 
     const replay = await this.idempotencyReplay(command);
     if (replay) {
@@ -180,7 +185,13 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
     }
 
     try {
-      const reservation = await this.repository.updateOperationalReservation(command);
+      const assignmentPayloadPatch = command.inventoryReservation
+        ? { inventoryReservation: command.inventoryReservation }
+        : {};
+      const reservation = await this.repository.updateOperationalReservation({
+        command,
+        assignmentPayloadPatch,
+      });
       if (!reservation) {
         return this.persistResultOrFailure(command, this.failed(command, mappingMissingError()));
       }
@@ -520,6 +531,14 @@ function validateCommand(
   }
 
   if (isUpdateCommand(command)) {
+    if (
+      command.inventoryReservation !== undefined &&
+      !parsePmsInventoryReservationReceipt(command.inventoryReservation)
+    ) {
+      return validationError("Inventory reservation receipt is invalid.");
+    }
+    // prettier-ignore
+    if (command.inventoryReservation !== undefined && Object.keys(command.changes.stay ?? {}).length === 0 && command.changes.bookedOffer?.roomTypeId === undefined) return validationError("Inventory reservation receipt requires a stay or room-type update.");
     const stay = command.changes.stay;
     if (
       (stay?.checkInDate !== undefined && !isIsoDate(stay.checkInDate)) ||
@@ -586,6 +605,7 @@ function canonicalIdempotencyPayload(command: unknown): unknown {
       contractVersion: command.contractVersion,
       target: command.target,
       guestBooking: command.guestBooking,
+      inventoryReservation: command.inventoryReservation,
       changes: command.changes,
       expectedPreviousVersion: command.expectedPreviousVersion,
     });

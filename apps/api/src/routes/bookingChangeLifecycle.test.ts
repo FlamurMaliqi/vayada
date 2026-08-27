@@ -184,7 +184,7 @@ class LifecyclePool {
             occupancy: { maxAdults: 2, maxChildren: 0 },
             publicPolicy: {},
             paymentOptions: ["pay_at_property"],
-            availableRooms: 2,
+            availableRooms: 1,
             nightlyRoomAmounts: this.offerStayDates.map((stayDate) => ({
               stayDate,
               grossRoomAmount: "150.00",
@@ -278,19 +278,12 @@ function decisionCommand(input: {
 function inventoryPort() {
   const state = { reserves: 0, releases: 0 };
   const port: DirectBookingInventoryReservationPort = {
-    async reserve(input) {
+    async reserve() {
       state.reserves += 1;
       return {
-        contractVersion: "pms.inventory-reservation.v1",
+        contractVersion: "pms-inventory-reservation-lifecycle.v1",
         owner: "pms",
-        source: "booking_engine",
-        quoteSessionId: input.quoteSessionId,
-        propertyId: input.propertyId,
-        roomTypeId: input.roomTypeId,
-        publicOfferKey: input.publicOfferKey,
-        checkIn: input.checkIn,
-        checkOut: input.checkOut,
-        roomCount: input.roomCount,
+        receiptId: inventoryReceiptId,
       };
     },
     async release() {
@@ -430,9 +423,10 @@ describe("target booking date-change lifecycle", () => {
     ).rejects.toMatchObject({ statusCode: 409 });
   });
 
-  it("atomically accepts unpaid changes, swaps inventory, and versions the PMS update", async () => {
+  it("atomically accepts a capacity-one overlapping change with its exact PMS receipt", async () => {
     const pool = new LifecyclePool();
     const inventory = inventoryPort();
+    pool.offerStayDates = ["2026-08-11", "2026-08-12"];
     const adapter = createTargetBookingWebCheckoutAdapter({
       connectionString: "postgres://unused",
       pool: pool as never,
@@ -441,7 +435,7 @@ describe("target booking date-change lifecycle", () => {
     await adapter.submitChangeRequest(
       "hotel",
       bookingId,
-      { guestEmail: "guest@example.test", checkIn: "2026-08-15", checkOut: "2026-08-17" },
+      { guestEmail: "guest@example.test", checkIn: "2026-08-11", checkOut: "2026-08-13" },
       command("booking-change-submit", "c"),
     );
 
@@ -459,8 +453,8 @@ describe("target booking date-change lifecycle", () => {
       }),
     ).resolves.toMatchObject({ status: "approved", newTotal: 310 });
     expect(pool.booking).toMatchObject({
-      checkIn: "2026-08-15",
-      checkOut: "2026-08-17",
+      checkIn: "2026-08-11",
+      checkOut: "2026-08-13",
       totalAmount: "310.00",
       balanceAmount: "310.00",
     });
@@ -468,6 +462,8 @@ describe("target booking date-change lifecycle", () => {
     const handoff = pool.calls.find((call) => call.text.includes("INSERT INTO platform.jobs"));
     expect(handoff?.values?.[0]).toContain(changeId);
     expect(String(handoff?.values?.[6])).toContain(`:${changeId}`);
+    // prettier-ignore
+    expect(JSON.parse(String(handoff?.values?.[6]))).toMatchObject({ operation: "update", inventoryReservation: { receiptId: inventoryReceiptId } });
 
     const laterChangeId = "27d0df4c-87b9-4a1c-9f43-e1d2314c6e59";
     pool.changeRequest = {
@@ -475,8 +471,8 @@ describe("target booking date-change lifecycle", () => {
       guestBookingId: bookingId,
       status: "pending",
       requestedChanges: {
-        oldCheckIn: "2026-08-15",
-        oldCheckOut: "2026-08-17",
+        oldCheckIn: "2026-08-11",
+        oldCheckOut: "2026-08-13",
         requestedCheckIn: "2026-08-20",
         requestedCheckOut: "2026-08-22",
         newTotal: 320,

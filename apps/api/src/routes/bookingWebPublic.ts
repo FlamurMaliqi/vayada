@@ -1361,11 +1361,11 @@ const BOOKING_CONFIRMATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const BOOKING_LOOKUP_RATE_LIMIT = 5;
 const BOOKING_LOOKUP_RATE_WINDOW_MS = 60 * 1000;
 
-type TargetCheckoutCommandReservation =
-  { status: "reserved" } | { status: "replay"; body: unknown };
+// prettier-ignore
+type TargetCheckoutCommandReservation = { status: "reserved" } | { status: "replay"; body: unknown };
 
-type TargetBookingChangeDecisionReservation =
-  { status: "reserved" } | { status: "replay"; body: unknown };
+// prettier-ignore
+type TargetBookingChangeDecisionReservation = { status: "reserved" } | { status: "replay"; body: unknown };
 
 async function withTargetCheckoutTransaction<T>(
   pool: pg.Pool,
@@ -5123,7 +5123,7 @@ async function enqueuePmsReservationHandoff(
         propertyId,
         guestBookingId: booking.guestBookingId,
         bookingReference: booking.publicReference,
-        ...(operation === "create" &&
+        ...(operation !== "cancel" &&
         inventoryReservation?.contractVersion === "pms-inventory-reservation-lifecycle.v1"
           ? { inventoryReservation }
           : {}),
