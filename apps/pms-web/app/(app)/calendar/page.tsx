@@ -1105,9 +1105,13 @@ export default function CalendarPage() {
                                 type="button"
                                 data-bar="block"
                                 onClick={() => setSelectedBlock(bl)}
-                                className="absolute top-1.5 h-8 rounded-md px-2 text-[11px] font-medium leading-8 truncate z-[1] bg-red-100 border border-red-300 border-dashed text-red-600 flex items-center gap-1 cursor-pointer hover:bg-red-200"
+                                className={`absolute top-1.5 h-8 rounded-md px-2 text-[11px] font-medium leading-8 truncate z-[1] border border-dashed flex items-center gap-1 cursor-pointer ${
+                                  bl.protected
+                                    ? "bg-amber-100 border-amber-300 text-amber-700 hover:bg-amber-200"
+                                    : "bg-red-100 border-red-300 text-red-600 hover:bg-red-200"
+                                }`}
                                 style={style}
-                                title={`Blocked: ${bl.reason || "No reason"}\n${bl.startDate} → ${bl.endDate}${
+                                title={`${bl.protected ? "Linked" : "Blocked"}: ${bl.sourceSummary || bl.reason || "No reason"}\n${bl.startDate} → ${bl.endDate}${
                                   bl.roomId
                                     ? `\nRoom #${bl.roomNumber ?? ""}`
                                     : `\n${bl.blockedCount} room${bl.blockedCount !== 1 ? "s" : ""}`
@@ -1126,7 +1130,9 @@ export default function CalendarPage() {
                                     d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
                                   />
                                 </svg>
-                                <span className="truncate">{bl.reason || "Blocked"}</span>
+                                <span className="truncate">
+                                  {bl.protected ? "Linked" : bl.reason || "Blocked"}
+                                </span>
                               </button>
                             );
                           })}
