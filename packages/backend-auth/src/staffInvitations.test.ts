@@ -8,6 +8,10 @@ import {
   type StaffInvitationProvider,
   type StaffInvitationProviderResponse,
 } from "./staffInvitationDelivery.js";
+import {
+  createPgStaffInvitationAcceptanceRepository,
+  type StaffInvitationAcceptanceEvent,
+} from "./staffInvitationAcceptance.js";
 import { createPgStaffInvitationRepository } from "./staffInvitations.js";
 import type { CreateStaffInviteCommand } from "./lifecycle.js";
 
@@ -21,6 +25,10 @@ const property = "66666666-6666-4666-8666-666666666666";
 const foreignProperty = "77777777-7777-4777-8777-777777777777";
 const workosIdentity = "99999999-9999-4999-8999-999999999999";
 const ambiguousIdentity = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const staffUser = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const staffMembership = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const staffIdentity = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const secondProperty = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 type RejectionReason =
   | "inviter_not_authorized"
   | "idempotency_conflict"
@@ -83,6 +91,20 @@ function providerResponse(
   };
 }
 
+function acceptanceEvent(
+  providerInvitationId: string,
+  patch: Partial<StaffInvitationAcceptanceEvent> = {},
+): StaffInvitationAcceptanceEvent {
+  return {
+    providerEventId: `event_${providerInvitationId}`,
+    providerInvitationId,
+    providerUserId: "user_staff_acceptance",
+    providerOrganizationId: "org_staff_delivery",
+    invitationEmail: "staff@example.com",
+    ...patch,
+  };
+}
+
 async function expectRejection(
   repository: ReturnType<typeof createPgStaffInvitationRepository>,
   invitation: CreateStaffInviteCommand,
@@ -95,6 +117,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
   let client: pg.Client;
   let repository: ReturnType<typeof createPgStaffInvitationRepository>;
   let deliveryRepository: ReturnType<typeof createPgStaffInvitationDeliveryRepository>;
+  let acceptanceRepository: ReturnType<typeof createPgStaffInvitationAcceptanceRepository>;
 
   beforeAll(async () => {
     const dbName = new URL(TEST_DATABASE_URL!).pathname.replace(/^\//, "");
@@ -105,22 +128,29 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
     deliveryRepository = createPgStaffInvitationDeliveryRepository({
       connectionString: TEST_DATABASE_URL!,
     });
+    acceptanceRepository = createPgStaffInvitationAcceptanceRepository({
+      connectionString: TEST_DATABASE_URL!,
+    });
     await client.query(`
       INSERT INTO identity.users (id, email, name, status) VALUES
-        ('${owner}', 'owner@example.com', 'Owner Example', 'active'), ('${otherUser}', 'other@example.com', 'Other User', 'active')
+        ('${owner}', 'owner@example.com', 'Owner Example', 'active'), ('${otherUser}', 'other@example.com', 'Other User', 'active'),
+        ('${staffUser}', 'staff@example.com', 'Staff Example', 'active')
       ON CONFLICT (id) DO NOTHING;
       INSERT INTO identity.organizations (id, kind, name, slug, status) VALUES
         ('${org}', 'hotel_group', 'Owner Org', 'owner-org', 'active'), ('${otherOrg}', 'hotel_group', 'Other Org', 'other-org', 'active')
       ON CONFLICT (id) DO NOTHING;
       INSERT INTO identity.organization_memberships (id, organization_id, user_id, status, role_key, property_access_mode, access_origin) VALUES
         ('${membership}', '${org}', '${owner}', 'active', 'hotel_owner', 'all', 'agency'),
-        ('88888888-8888-4888-8888-888888888888', '${otherOrg}', '${otherUser}', 'active', 'hotel_owner', 'all', 'agency')
+        ('88888888-8888-4888-8888-888888888888', '${otherOrg}', '${otherUser}', 'active', 'hotel_owner', 'all', 'agency'),
+        ('${staffMembership}', '${org}', '${staffUser}', 'active', 'housekeeping', 'assigned', 'agency')
       ON CONFLICT (id) DO NOTHING;
       INSERT INTO hotel_catalog.properties (id, public_id, display_name) VALUES
-        ('${property}', 'owner-property', 'Owner Property'), ('${foreignProperty}', 'foreign-property', 'Foreign Property')
+        ('${property}', 'owner-property', 'Owner Property'), ('${foreignProperty}', 'foreign-property', 'Foreign Property'),
+        ('${secondProperty}', 'second-property', 'Second Property')
       ON CONFLICT (id) DO NOTHING;
       INSERT INTO identity.organization_resource_links (organization_id, product, resource_type, resource_id, relationship, status) VALUES
         ('${org}', 'hotel_catalog', 'property', '${property}', 'owner', 'active'),
+        ('${org}', 'hotel_catalog', 'property', '${secondProperty}', 'owner', 'active'),
         ('${otherOrg}', 'hotel_catalog', 'property', '${foreignProperty}', 'owner', 'active')
       ON CONFLICT DO NOTHING;
       UPDATE identity.organizations SET workos_org_id = 'org_staff_delivery' WHERE id = '${org}';
@@ -131,11 +161,20 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
       VALUES ('${workosIdentity}', '${owner}', 'workos', 'user_staff_delivery',
               'owner@example.com', true)
       ON CONFLICT (id) DO UPDATE SET provider_user_id = EXCLUDED.provider_user_id;
+      INSERT INTO identity.external_identities
+        (id, user_id, provider, provider_user_id, provider_email, provider_email_verified)
+      VALUES ('${staffIdentity}', '${staffUser}', 'workos', 'user_staff_acceptance',
+              'staff@example.com', true)
+      ON CONFLICT (id) DO UPDATE SET provider_user_id = EXCLUDED.provider_user_id;
     `);
   });
 
   beforeEach(async () => {
     await client.query("DELETE FROM identity.staff_invitations");
+    await client.query(
+      "DELETE FROM identity.membership_property_assignments WHERE membership_id = $1",
+      [staffMembership],
+    );
     await client.query(
       `UPDATE identity.organization_memberships
        SET status = 'active', permission_overrides = NULL, workos_membership_id = 'om_staff_delivery'
@@ -147,11 +186,22 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
       UPDATE identity.organizations SET status = 'active', workos_org_id = 'org_staff_delivery'
       WHERE id = '${org}';
       DELETE FROM identity.external_identities WHERE id = '${ambiguousIdentity}';
+      UPDATE identity.users SET status = 'active' WHERE id = '${staffUser}';
+      UPDATE identity.organization_memberships
+      SET status = 'active', role_key = 'housekeeping', permission_overrides = NULL,
+          property_access_mode = 'assigned', workos_membership_id = 'om_staff_acceptance'
+      WHERE id = '${staffMembership}';
+      UPDATE identity.external_identities
+      SET provider_user_id = 'user_staff_acceptance', provider_email = 'staff@example.com'
+      WHERE id = '${staffIdentity}';
+      UPDATE identity.organization_resource_links SET status = 'active'
+      WHERE organization_id = '${org}' AND resource_id IN ('${property}', '${secondProperty}');
     `);
   });
 
   afterAll(async () => {
     await deliveryRepository.close();
+    await acceptanceRepository.close();
     await repository.close();
     await client.end();
   });
@@ -402,5 +452,252 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
       outcome: "not_ready",
     });
     expect(provider.sendInvitation).not.toHaveBeenCalled();
+  });
+
+  async function deliveredInvitation(revision = 1) {
+    const created = await repository.persist(
+      command({
+        commandId: `accept-command-${revision}`,
+        idempotencyKey: `accept-key-${revision}`,
+        revision,
+      }),
+    );
+    if (created.outcome !== "created") throw new Error("expected invitation creation");
+    const providerInvitationId = `invitation_${created.invitationId}`;
+    await client.query(
+      `UPDATE identity.staff_invitations
+       SET delivery_state = 'delivered', delivery_attempted_at = now(),
+           provider_invitation_id = $2, expires_at = now() + interval '7 days'
+       WHERE id = $1`,
+      [created.invitationId, providerInvitationId],
+    );
+    return { ...created, providerInvitationId };
+  }
+
+  async function expectAcceptance(
+    invitation: Awaited<ReturnType<typeof deliveredInvitation>>,
+    expected: object,
+    patch: Partial<StaffInvitationAcceptanceEvent> = {},
+  ) {
+    expect(
+      await acceptanceRepository.reconcile(acceptanceEvent(invitation.providerInvitationId, patch)),
+    ).toMatchObject(expected);
+  }
+
+  it("atomically replaces staff access and leaves later edits intact on replay", async () => {
+    await client.query(
+      `INSERT INTO identity.membership_property_assignments (membership_id, property_id) VALUES ($1, $2)`,
+      [staffMembership, secondProperty],
+    );
+    const invitation = await deliveredInvitation();
+    expect(
+      (
+        await Promise.all([
+          acceptanceRepository.reconcile(acceptanceEvent(invitation.providerInvitationId)),
+          acceptanceRepository.reconcile(acceptanceEvent(invitation.providerInvitationId)),
+        ])
+      )
+        .map(({ outcome }) => outcome)
+        .sort(),
+    ).toEqual(["accepted", "idempotent_replay"]);
+    expect(
+      (
+        await client.query(
+          `SELECT membership.status, membership.role_key, membership.permission_overrides,
+              membership.property_access_mode, membership.access_origin,
+              membership.workos_membership_id,
+              ARRAY(SELECT property_id::text FROM identity.membership_property_assignments
+                    WHERE membership_id = membership.id ORDER BY property_id) AS properties
+       FROM identity.organization_memberships membership WHERE membership.id = $1`,
+          [staffMembership],
+        )
+      ).rows[0],
+    ).toMatchObject({
+      status: "active",
+      role_key: "front_desk",
+      permission_overrides: { grant: [], deny: ["booking.analytics.read"] },
+      property_access_mode: "assigned",
+      access_origin: "agency",
+      workos_membership_id: "om_staff_acceptance",
+      properties: [property],
+    });
+    await client.query(
+      "UPDATE identity.organization_memberships SET role_key = 'housekeeping' WHERE id = $1",
+      [staffMembership],
+    );
+    await expectAcceptance(invitation, {
+      outcome: "idempotent_replay",
+      membershipId: staffMembership,
+    });
+    expect(
+      (
+        await client.query("SELECT role_key FROM identity.organization_memberships WHERE id = $1", [
+          staffMembership,
+        ])
+      ).rows[0]?.role_key,
+    ).toBe("housekeeping");
+  });
+
+  it("fails closed across provider, identity, membership, expiry, and access denials", async () => {
+    const invitation = await deliveredInvitation();
+    await expectAcceptance(
+      invitation,
+      { outcome: "rejected", reason: "provider_context_mismatch" },
+      { providerEventId: "event_wrong_org", providerOrganizationId: "org_other" },
+    );
+    await client.query("DELETE FROM identity.external_identities WHERE id = $1", [staffIdentity]);
+    await expectAcceptance(
+      invitation,
+      { outcome: "deferred", reason: "identity_not_found" },
+      { providerEventId: "event_missing_user" },
+    );
+    await client.query(
+      `INSERT INTO identity.external_identities
+         (id, user_id, provider, provider_user_id, provider_email, provider_email_verified)
+       VALUES ($1, $2, 'workos', 'user_staff_acceptance', 'staff@example.com', true)`,
+      [staffIdentity, staffUser],
+    );
+    await client.query(
+      "UPDATE identity.external_identities SET provider_email_verified = false WHERE id = $1",
+      [staffIdentity],
+    );
+    await expectAcceptance(
+      invitation,
+      { outcome: "rejected", reason: "provider_identity_mismatch" },
+      { providerEventId: "event_unverified_email" },
+    );
+    await client.query(
+      "UPDATE identity.external_identities SET provider_email_verified = true WHERE id = $1",
+      [staffIdentity],
+    );
+    await client.query("UPDATE identity.users SET status = 'suspended' WHERE id = $1", [staffUser]);
+    await expectAcceptance(
+      invitation,
+      { outcome: "rejected", reason: "user_inactive" },
+      { providerEventId: "event_inactive_user" },
+    );
+    await client.query("UPDATE identity.users SET status = 'active' WHERE id = $1", [staffUser]);
+    await client.query(
+      "UPDATE identity.organization_memberships SET status = 'suspended' WHERE id = $1",
+      [staffMembership],
+    );
+    await expectAcceptance(
+      invitation,
+      { outcome: "rejected", reason: "membership_protected" },
+      { providerEventId: "event_suspended" },
+    );
+    await client.query("BEGIN");
+    await client.query(
+      "UPDATE identity.organization_memberships SET role_key = 'external_owner', property_access_mode = 'assigned' WHERE id = $1",
+      [membership],
+    );
+    await client.query(
+      "UPDATE identity.organization_memberships SET status = 'active', access_origin = 'external_owner' WHERE id = $1",
+      [staffMembership],
+    );
+    await client.query(
+      `INSERT INTO identity.membership_delegations
+         (organization_id, subject_membership_id, delegator_membership_id, created_by_membership_id)
+       VALUES ($1, $2, $3, $3)`,
+      [org, staffMembership, membership],
+    );
+    await client.query("COMMIT");
+    await expectAcceptance(
+      invitation,
+      { outcome: "rejected", reason: "membership_protected" },
+      { providerEventId: "event_external_owner_origin" },
+    );
+    await client.query("BEGIN");
+    await client.query(
+      "DELETE FROM identity.membership_delegations WHERE subject_membership_id = $1",
+      [staffMembership],
+    );
+    await client.query(
+      "UPDATE identity.organization_memberships SET access_origin = 'agency' WHERE id = $1",
+      [staffMembership],
+    );
+    await client.query(
+      "UPDATE identity.organization_memberships SET role_key = 'hotel_owner', property_access_mode = 'all' WHERE id = $1",
+      [membership],
+    );
+    await client.query("COMMIT");
+    await client.query(
+      "UPDATE identity.organization_memberships SET status = 'active', role_key = 'hotel_owner' WHERE id = $1",
+      [staffMembership],
+    );
+    await expectAcceptance(
+      invitation,
+      { outcome: "rejected", reason: "membership_protected" },
+      { providerEventId: "event_owner" },
+    );
+    await client.query(
+      "UPDATE identity.organization_memberships SET role_key = 'housekeeping' WHERE id = $1",
+      [staffMembership],
+    );
+    await client.query("UPDATE identity.organizations SET status = 'suspended' WHERE id = $1", [
+      org,
+    ]);
+    await expectAcceptance(
+      invitation,
+      { outcome: "rejected", reason: "organization_inactive" },
+      { providerEventId: "event_inactive_org" },
+    );
+    await client.query("UPDATE identity.organizations SET status = 'active' WHERE id = $1", [org]);
+    await client.query(
+      "UPDATE identity.staff_invitations SET expires_at = now() - interval '1 minute' WHERE id = $1",
+      [invitation.invitationId],
+    );
+    await expectAcceptance(
+      invitation,
+      { outcome: "rejected", reason: "invitation_expired" },
+      { providerEventId: "event_expired" },
+    );
+    expect(
+      (
+        await client.query("SELECT status FROM identity.staff_invitations WHERE id = $1", [
+          invitation.invitationId,
+        ])
+      ).rows[0]?.status,
+    ).toBe("expired");
+
+    const revoked = await deliveredInvitation(2);
+    await client.query("UPDATE identity.staff_invitations SET status = 'revoked' WHERE id = $1", [
+      revoked.invitationId,
+    ]);
+    await expectAcceptance(revoked, {
+      outcome: "rejected",
+      reason: "invitation_not_current",
+    });
+
+    const invalid = await deliveredInvitation(3);
+    await client.query(
+      `UPDATE identity.staff_invitations SET permission_overrides = '{"grant":["unknown"],"deny":[]}' WHERE id = $1`,
+      [invalid.invitationId],
+    );
+    await expectAcceptance(invalid, { outcome: "rejected", reason: "invitation_access_invalid" });
+    await client.query(
+      `UPDATE identity.staff_invitations
+       SET permission_overrides = '{"grant":[],"deny":["booking.analytics.read"]}' WHERE id = $1`,
+      [invalid.invitationId],
+    );
+    await client.query(
+      `UPDATE identity.organization_resource_links SET status = 'suspended'
+      WHERE organization_id = $1 AND resource_id = $2`,
+      [org, property],
+    );
+    await expectAcceptance(
+      invalid,
+      { outcome: "rejected", reason: "invitation_access_invalid" },
+      { providerEventId: "event_unlinked_property" },
+    );
+  });
+
+  it("rejects malformed provider fields without throwing", async () => {
+    await expect(
+      acceptanceRepository.reconcile({
+        ...acceptanceEvent("malformed"),
+        providerUserId: undefined,
+      } as unknown as StaffInvitationAcceptanceEvent),
+    ).resolves.toEqual({ outcome: "rejected", reason: "invalid_event" });
   });
 });
