@@ -1519,6 +1519,7 @@ export function createTargetBookingWebCheckoutAdapter(
         const requested = targetDateChangeRequestFromSnapshot(changeRequest.requestedChanges);
         const preview = await previewTargetDateChange(
           client,
+          config.inventoryReservationPort,
           property,
           booking,
           requested,
@@ -2119,6 +2120,7 @@ export function createTargetBookingWebCheckoutAdapter(
         );
         const preview = await previewTargetDateChange(
           pool,
+          config.inventoryReservationPort,
           property,
           booking,
           normalizeChangeRequest(request),
@@ -2157,6 +2159,7 @@ export function createTargetBookingWebCheckoutAdapter(
         }
         const preview = await previewTargetDateChange(
           client,
+          config.inventoryReservationPort,
           property,
           booking,
           normalizeChangeRequest(request),
@@ -4196,6 +4199,7 @@ function serializeTargetBookingStatus(booking: TargetBookingRow): Record<string,
 
 async function previewTargetDateChange(
   pool: BookingWebQueryExecutor,
+  inventoryReservationPort: DirectBookingInventoryReservationPort,
   property: TargetCheckoutPropertyRow,
   booking: TargetBookingRow,
   request: BookingWebChangeRequest,
@@ -4261,7 +4265,9 @@ async function previewTargetDateChange(
   if (!publicOfferKey || !roomTypeId) {
     return blocked("The original room offer cannot be changed online. Contact the property.");
   }
-  const availabilityCredit = targetInventoryAvailabilityCredit(
+  const availabilityCredit = await targetInventoryAvailabilityCredit(
+    inventoryReservationPort,
+    pool,
     booking,
     property.propertyId,
     roomTypeId,
@@ -4360,25 +4366,46 @@ async function lockTargetBookingChangeRequests(
   );
 }
 
-function targetInventoryAvailabilityCredit(
+async function targetInventoryAvailabilityCredit(
+  inventoryReservationPort: DirectBookingInventoryReservationPort,
+  pool: BookingWebQueryExecutor,
   booking: TargetBookingRow,
   propertyId: string,
   roomTypeId: string,
   publicOfferKey: string,
-): { checkIn: string; checkOut: string; roomCount: number } | undefined {
-  const marker = objectValue(objectValue(booking.bookingMetadata)["inventoryReservation"]);
-  if (
-    marker["owner"] !== "pms" ||
-    marker["source"] !== "booking_engine" ||
-    stringValue(marker["propertyId"]) !== propertyId ||
-    stringValue(marker["roomTypeId"]) !== roomTypeId ||
-    stringValue(marker["publicOfferKey"]) !== publicOfferKey
-  ) {
-    return undefined;
+): Promise<{ checkIn: string; checkOut: string; roomCount: number } | undefined> {
+  const reservation = inventoryReservationReceiptFromBookingMetadata(
+    booking.bookingMetadata,
+    propertyId,
+  );
+  if (!reservation) return undefined;
+  const bookingCheckIn = dateOnly(booking.checkIn);
+  const bookingCheckOut = dateOnly(booking.checkOut);
+  if ("receiptId" in reservation) {
+    return (
+      (await inventoryReservationPort.availabilityCredit?.({
+        transaction: pool,
+        propertyId,
+        reservation,
+        roomTypeId,
+        publicOfferKey,
+        checkIn: bookingCheckIn,
+        checkOut: bookingCheckOut,
+        roomCount: booking.roomCount,
+      })) ?? undefined
+    );
   }
-  const checkIn = normalizeDateOnly(stringValue(marker["checkIn"]) ?? undefined);
-  const checkOut = normalizeDateOnly(stringValue(marker["checkOut"]) ?? undefined);
-  const roomCount = integerValue(marker["roomCount"], 0);
+  if (
+    reservation.roomTypeId !== roomTypeId ||
+    reservation.publicOfferKey !== publicOfferKey ||
+    reservation.checkIn !== bookingCheckIn ||
+    reservation.checkOut !== bookingCheckOut ||
+    reservation.roomCount !== booking.roomCount
+  )
+    return undefined;
+  const checkIn = normalizeDateOnly(reservation.checkIn);
+  const checkOut = normalizeDateOnly(reservation.checkOut);
+  const roomCount = reservation.roomCount;
   if (!checkIn || !checkOut || checkIn >= checkOut || roomCount < 1) return undefined;
   return { checkIn, checkOut, roomCount };
 }

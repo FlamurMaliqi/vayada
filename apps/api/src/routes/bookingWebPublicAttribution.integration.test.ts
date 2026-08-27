@@ -256,10 +256,14 @@ describe.skipIf(!TEST_DATABASE_URL)(
        VALUES ($1::uuid, $2::uuid, 'VAY-1188 Room', '{"adults":2,"total":2}', 100, 'EUR')`,
         [roomTypeId, propertyId],
       );
+      // prettier-ignore
+      await admin.query(`BEGIN; SET LOCAL session_replication_role=replica; INSERT INTO pms.operating_calendar_revisions (organization_id,property_id,calendar_revision,contract_version,property_profile_revision,property_time_zone,schedule_mode,recurring_period_count,room_binding_count,default_minimum_stay_nights,idempotency_key_id,domain_event_id,outbox_event_id,created_by_user_id,created_at,updated_at) VALUES (gen_random_uuid(),'${propertyId}',1,'pms-operating-calendar.v1',1,'Europe/Athens','year_round',0,1,1,gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),now(),now()); INSERT INTO pms.operating_calendar_room_bindings (property_id,calendar_revision,room_type_id,source_room_facts_revision,source_room_units_revision,physical_capacity_count,starting_sellable_limit_count) VALUES ('${propertyId}',1,'${roomTypeId}',1,1,2,2); COMMIT;`);
       await admin.query(
         `INSERT INTO pms.inventory_days
-         (property_id, room_type_id, stay_date, total_count, available_count)
-       SELECT $1::uuid, $2::uuid, stay_date, 2, 2
+         (property_id,room_type_id,stay_date,total_count,available_count,calendar_revision,
+          inventory_revision,generated_sellable_limit_count,effective_sellable_limit_count,
+          generated_source_revision,channel_source_revision,manual_source_revision,block_source_revision,booking_source_revision)
+       SELECT $1::uuid,$2::uuid,stay_date,2,2,1,1,2,2,1,0,0,0,0
        FROM unnest(ARRAY[DATE '2027-02-01', DATE '2027-02-02']) AS stay_date`,
         [propertyId, roomTypeId],
       );
@@ -326,6 +330,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
         await client.query("BEGIN");
         await client.query("SET LOCAL session_replication_role = replica");
         for (const statement of [
+          "WITH s AS (DELETE FROM pms.inventory_reservation_statuses WHERE property_id=$1::uuid), w AS (DELETE FROM pms.inventory_reservation_day_watermarks WHERE property_id=$1::uuid), r AS (DELETE FROM pms.inventory_reservation_receipts WHERE property_id=$1::uuid) DELETE FROM platform.outbox_events WHERE property_id=$1::uuid",
           "DELETE FROM platform.product_audit_events WHERE property_id = $1::uuid",
           "DELETE FROM platform.jobs WHERE property_id = $1::uuid",
           "DELETE FROM platform.domain_events WHERE property_id = $1::uuid",
@@ -346,6 +351,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
           "DELETE FROM booking.addon_definitions WHERE property_id = $1::uuid",
           "DELETE FROM distribution.public_room_offer_snapshots WHERE property_id = $1::uuid",
           "DELETE FROM pms.inventory_days WHERE property_id = $1::uuid",
+          "WITH b AS (DELETE FROM pms.operating_calendar_room_bindings WHERE property_id=$1::uuid) DELETE FROM pms.operating_calendar_revisions WHERE property_id=$1::uuid",
           "DELETE FROM pms.room_types WHERE property_id = $1::uuid",
           "DELETE FROM distribution.public_hotel_bookability_profiles WHERE property_id = $1::uuid",
           "DELETE FROM booking.booking_settings WHERE property_id = $1::uuid",
