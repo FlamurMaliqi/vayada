@@ -2,7 +2,9 @@ import pg from "pg";
 import { WorkOS } from "@workos-inc/node";
 import { membershipPropertyAccessModeForProvisioning } from "@vayada/backend-auth";
 
+import { staffInvitationIdentityNotFoundReasonCode } from "../routes/workosWebhooks.js";
 import type {
+  DeferredStaffInvitationAcceptance,
   WorkosMembershipPayload,
   WorkosOrganizationPayload,
   WorkosUserPayload,
@@ -180,6 +182,12 @@ export function createPgWorkosWebhookStore(
         client.release();
       }
     },
+    async listDeferredStaffInvitationAcceptances(providerUserId) {
+      return listDeferredStaffInvitationAcceptances(pool, providerUserId);
+    },
+    async resolveDeferredStaffInvitationAcceptance(receiptId) {
+      await resolveDeferredStaffInvitationAcceptance(pool, receiptId);
+    },
     async findUserIdByWorkosUserId(workosUserId) {
       return findUserIdByWorkosUserId(pool, workosUserId);
     },
@@ -274,6 +282,101 @@ export function createPgWorkosWebhookStore(
       await pool.end();
     },
   };
+}
+
+type DeferredStaffInvitationAcceptanceRow = {
+  receipt_id: string;
+  provider_event_id: string;
+  provider_invitation_id: string;
+  provider_user_id: string;
+  provider_organization_id: string;
+  invitation_email: string;
+};
+
+async function listDeferredStaffInvitationAcceptances(
+  pool: pg.Pool,
+  providerUserId: string,
+): Promise<DeferredStaffInvitationAcceptance[]> {
+  const result = await pool.query<DeferredStaffInvitationAcceptanceRow>(
+    `SELECT dead.webhook_event_id::text AS receipt_id,
+            dead.failure_payload #>> '{staffInvitationAcceptance,providerEventId}' AS provider_event_id,
+            dead.failure_payload #>> '{staffInvitationAcceptance,providerInvitationId}' AS provider_invitation_id,
+            dead.failure_payload #>> '{staffInvitationAcceptance,providerUserId}' AS provider_user_id,
+            dead.failure_payload #>> '{staffInvitationAcceptance,providerOrganizationId}' AS provider_organization_id,
+            dead.failure_payload #>> '{staffInvitationAcceptance,invitationEmail}' AS invitation_email
+     FROM platform.dead_letter_events dead
+     JOIN platform.external_webhook_events receipt ON receipt.id = dead.webhook_event_id
+     WHERE dead.source_kind = 'webhook'
+       AND dead.reason_code = $1
+       AND dead.recovery_status = 'open'
+       AND receipt.provider = 'workos'
+       AND receipt.event_type = 'invitation.accepted'
+       AND receipt.signature_verified = TRUE
+       AND jsonb_typeof(dead.failure_payload -> 'staffInvitationAcceptance') = 'object'
+       AND jsonb_typeof(dead.failure_payload -> 'staffInvitationAcceptance' -> 'providerEventId') = 'string'
+       AND jsonb_typeof(dead.failure_payload -> 'staffInvitationAcceptance' -> 'providerInvitationId') = 'string'
+       AND jsonb_typeof(dead.failure_payload -> 'staffInvitationAcceptance' -> 'providerUserId') = 'string'
+       AND jsonb_typeof(dead.failure_payload -> 'staffInvitationAcceptance' -> 'providerOrganizationId') = 'string'
+       AND jsonb_typeof(dead.failure_payload -> 'staffInvitationAcceptance' -> 'invitationEmail') = 'string'
+       AND dead.failure_payload #>> '{staffInvitationAcceptance,providerEventId}' = receipt.provider_event_id
+       AND dead.failure_payload #>> '{staffInvitationAcceptance,providerUserId}' = $2
+       AND btrim(dead.failure_payload #>> '{staffInvitationAcceptance,providerInvitationId}') <> ''
+       AND btrim(dead.failure_payload #>> '{staffInvitationAcceptance,providerOrganizationId}') <> ''
+       AND btrim(dead.failure_payload #>> '{staffInvitationAcceptance,invitationEmail}') <> ''
+     ORDER BY dead.created_at, dead.id`,
+    [staffInvitationIdentityNotFoundReasonCode, providerUserId],
+  );
+  return result.rows.map((row) => ({
+    receiptId: row.receipt_id,
+    event: {
+      providerEventId: row.provider_event_id,
+      providerInvitationId: row.provider_invitation_id,
+      providerUserId: row.provider_user_id,
+      providerOrganizationId: row.provider_organization_id,
+      invitationEmail: row.invitation_email,
+    },
+  }));
+}
+
+async function resolveDeferredStaffInvitationAcceptance(
+  pool: pg.Pool,
+  receiptId: string,
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const resolved = await client.query(
+      `UPDATE platform.dead_letter_events
+       SET recovery_status = 'resolved', resolved_at = now()
+       WHERE source_kind = 'webhook'
+         AND webhook_event_id = $1::uuid
+         AND reason_code = $2
+         AND recovery_status = 'open'
+       RETURNING id`,
+      [receiptId, staffInvitationIdentityNotFoundReasonCode],
+    );
+    if (resolved.rowCount) {
+      await client.query(
+        `INSERT INTO identity.auth_reconciliation_events
+           (event_type, provider, provider_event_id, payload, processed_at)
+         VALUES ('workos.webhook.normalized', 'workos', $1, $2, now())`,
+        [
+          receiptId,
+          JSON.stringify({
+            receiptId,
+            status: "normalized",
+            recoveredFrom: staffInvitationIdentityNotFoundReasonCode,
+          }),
+        ],
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function insertReceipt(
