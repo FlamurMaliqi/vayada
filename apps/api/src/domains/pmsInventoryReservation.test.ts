@@ -42,7 +42,7 @@ describe("target PMS inventory reservation adapter", () => {
       checkOut: reservationInput.checkOut,
       roomCount: 1,
     });
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
     expect(calls[0]?.text).toContain("pg_advisory_xact_lock");
     expect(calls[1]?.text).toContain("UPDATE pms.inventory_days");
     expect(calls[1]?.text).toContain("booking_source_revision + 1");
@@ -63,6 +63,7 @@ describe("target PMS inventory reservation adapter", () => {
       reservationInput.currency,
       reservationInput.occurredAt.toISOString(),
     ]);
+    expect(calls[2]?.text).toContain("pms.direct_booking_linked_inventory.reserve");
   });
 
   it("returns null when the guarded reservation does not cover the full stay", async () => {
@@ -122,7 +123,7 @@ describe("target PMS inventory reservation adapter", () => {
       occurredAt: reservationInput.occurredAt,
     });
 
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
     expect(calls[0]?.text).toContain("pg_advisory_xact_lock");
     expect(calls[1]?.text).toContain("assigned_count = GREATEST");
     expect(calls[1]?.text).toContain("booking_source_revision + 1");
@@ -136,5 +137,6 @@ describe("target PMS inventory reservation adapter", () => {
       reservationInput.occurredAt.toISOString(),
       expect.stringMatching(/^[a-f0-9]{64}$/),
     ]);
+    expect(calls[2]?.text).toContain("pms.inventory_reservation_statuses");
   });
 });

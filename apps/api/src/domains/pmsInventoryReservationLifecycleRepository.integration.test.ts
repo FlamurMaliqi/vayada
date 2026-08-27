@@ -38,6 +38,7 @@ type Fixture = Readonly<{
   organizationId: string;
   propertyId: string;
   roomTypeId: string;
+  linkedRoomTypeId?: string;
   actorUserId: string;
   configuration: PmsOperatingCalendarConfigurationSnapshot;
   calendarState: { stale: boolean };
@@ -380,6 +381,85 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
       [fixture.propertyId],
     );
     expect(finalReleases.rows[0]?.count).toBe(3);
+  });
+
+  it("stop-sells and releases every linked type for direct booking holds", async () => {
+    const fixture = await createFixture(admin, closeables, {
+      capacity: 2,
+      startingLimit: 2,
+      linked: true,
+    });
+    const linkedRoomTypeId = fixture.linkedRoomTypeId!;
+    const publicOfferKey = `linked-${fixture.roomTypeId}:flexible`;
+    await admin.query(
+      `INSERT INTO pms.inventory_days (
+         property_id,room_type_id,stay_date,total_count,available_count,calendar_revision,
+         inventory_revision,generated_sellable_limit_count,effective_sellable_limit_count,
+         generated_source_revision,channel_source_revision,manual_source_revision,
+         block_source_revision,booking_source_revision
+       ) SELECT $1,room_type_id,stay_date,2,2,1,1,2,2,1,0,0,0,0
+         FROM unnest($2::uuid[]) room_type_id
+         CROSS JOIN unnest(ARRAY[DATE '2026-09-10',DATE '2026-09-11']) stay_date`,
+      [fixture.propertyId, [fixture.roomTypeId, linkedRoomTypeId]],
+    );
+    await admin.query(
+      `INSERT INTO hotel_catalog.property_public_profile_read_model (
+         property_id,public_id,display_name,canonical_slug,default_locale,
+         supported_locales,profile_status
+       ) VALUES ($1,$2,'Linked Hotel',$2,'en',ARRAY['en'],'complete')`,
+      [fixture.propertyId, `linked-${fixture.propertyId}`],
+    );
+    await admin.query(
+      `INSERT INTO distribution.public_hotel_bookability_profiles (
+         property_id,public_id,canonical_slug,canonical_url,booking_base_url,timezone,
+         default_currency,supported_currencies,profile_status,freshness_status,
+         public_setup_completeness
+       ) VALUES ($1,$2,$2,'https://booking.test/linked','https://booking.test','Europe/Berlin',
+         'EUR',ARRAY['EUR'],'public','fresh','{"status":"ready"}')`,
+      [fixture.propertyId, `linked-${fixture.propertyId}`],
+    );
+    await admin.query(
+      `INSERT INTO distribution.public_room_offer_snapshots (
+         property_id,room_type_id,stay_date,public_offer_key,available_rooms,currency,freshness_status
+       ) SELECT $1,$2,stay_date,$3,2,'EUR','fresh'
+         FROM unnest(ARRAY[DATE '2026-09-10',DATE '2026-09-11']) stay_date`,
+      [fixture.propertyId, fixture.roomTypeId, publicOfferKey],
+    );
+    const port = createTargetPmsInventoryReservationPort();
+    await admin.query("BEGIN");
+    const marker = await port.reserve({
+      transaction: admin,
+      propertyId: fixture.propertyId,
+      quoteSessionId: randomUUID(),
+      roomTypeId: fixture.roomTypeId,
+      publicOfferKey,
+      checkIn: "2026-09-10",
+      checkOut: "2026-09-12",
+      roomCount: 1,
+      currency: "EUR",
+      occurredAt: ACCEPTED_AT,
+    });
+    await admin.query("COMMIT");
+    expect(marker).not.toBeNull();
+    await expect(linkedState(admin, fixture.propertyId, linkedRoomTypeId)).resolves.toEqual({
+      available: [0, 0],
+      activeBlocks: 1,
+      lifecycleState: "reserved",
+    });
+
+    await admin.query("BEGIN");
+    await port.release({
+      transaction: admin,
+      propertyId: fixture.propertyId,
+      reservation: marker!,
+      occurredAt: RELEASED_AT,
+    });
+    await admin.query("COMMIT");
+    await expect(linkedState(admin, fixture.propertyId, linkedRoomTypeId)).resolves.toEqual({
+      available: [2, 2],
+      activeBlocks: 0,
+      lifecycleState: "released",
+    });
   });
 
   it("rejects a stale full-stay watermark without changing any day", async () => {
@@ -853,14 +933,33 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
   });
 });
 
+async function linkedState(admin: pg.Client, propertyId: string, roomTypeId: string) {
+  const state = await admin.query<{
+    available: number[];
+    activeBlocks: number;
+    lifecycleState: string;
+  }>(
+    `SELECT ARRAY(SELECT available_count FROM pms.inventory_days
+                    WHERE property_id=$1 AND room_type_id=$2 ORDER BY stay_date) AS available,
+            (SELECT count(*)::int FROM pms.room_blocks
+              WHERE property_id=$1 AND room_type_id=$2 AND status='active') AS "activeBlocks",
+            (SELECT lifecycle_state FROM pms.inventory_reservation_statuses status
+              JOIN pms.inventory_reservation_receipts receipt USING (receipt_id)
+              WHERE receipt.property_id=$1 LIMIT 1) AS "lifecycleState"`,
+    [propertyId, roomTypeId],
+  );
+  return state.rows[0];
+}
+
 async function createFixture(
   admin: pg.Client,
   closeables: Array<{ close(): Promise<void> }>,
-  options: Readonly<{ capacity: number; startingLimit: number }>,
+  options: Readonly<{ capacity: number; startingLimit: number; linked?: boolean }>,
 ): Promise<Fixture> {
   const organizationId = randomUUID();
   const propertyId = randomUUID();
   const roomTypeId = randomUUID();
+  const linkedRoomTypeId = options.linked ? randomUUID() : undefined;
   const actorUserId = randomUUID();
   await admin.query(
     `INSERT INTO identity.organizations (id, kind, name, slug)
@@ -882,6 +981,21 @@ async function createFixture(
      VALUES ($1::uuid, $2::uuid, 'Room')`,
     [roomTypeId, propertyId],
   );
+  if (linkedRoomTypeId) {
+    const groupId = randomUUID();
+    await admin.query(
+      `INSERT INTO pms.room_types (id,property_id,name) VALUES ($1,$2,'Linked Room')`,
+      [linkedRoomTypeId, propertyId],
+    );
+    await admin.query(
+      `INSERT INTO pms.linked_inventory_groups (id,property_id,name) VALUES ($1,$2,'Convertible')`,
+      [groupId, propertyId],
+    );
+    await admin.query(
+      `UPDATE pms.room_types SET linked_inventory_group_id=$1 WHERE id=ANY($2::uuid[])`,
+      [groupId, [roomTypeId, linkedRoomTypeId]],
+    );
+  }
   const configuration = configurationSnapshot({
     propertyId,
     roomTypeId,
@@ -891,7 +1005,7 @@ async function createFixture(
   await seedCalendarRevision(admin, {
     organizationId,
     propertyId,
-    roomTypeId,
+    roomTypeIds: [roomTypeId, ...(linkedRoomTypeId ? [linkedRoomTypeId] : [])],
     actorUserId,
     capacity: options.capacity,
     startingLimit: options.startingLimit,
@@ -991,6 +1105,7 @@ async function createFixture(
     organizationId,
     propertyId,
     roomTypeId,
+    linkedRoomTypeId,
     actorUserId,
     configuration,
     calendarState,
@@ -1035,8 +1150,8 @@ function configurationSnapshot(input: {
       },
       schedule: { mode: "year_round", periods: [] },
       defaultMinimumStayNights: 1,
-      createdAt: "2026-08-04T08:00:00.000Z",
-      updatedAt: "2026-08-04T08:00:00.000Z",
+      createdAt: ACCEPTED_AT.toISOString(),
+      updatedAt: ACCEPTED_AT.toISOString(),
     },
     {
       ownerDomain: "hotel_catalog",
@@ -1053,7 +1168,7 @@ async function seedCalendarRevision(
   input: {
     organizationId: string;
     propertyId: string;
-    roomTypeId: string;
+    roomTypeIds: string[];
     actorUserId: string;
     capacity: number;
     startingLimit: number;
@@ -1111,7 +1226,7 @@ async function seedCalendarRevision(
          created_by_user_id, created_at, updated_at
        ) VALUES (
          $1::uuid, $2::uuid, 1, 'pms-operating-calendar.v1', 1,
-         'Europe/Berlin', 'year_round', 0, 1, 1, $3::uuid, $4::uuid,
+         'Europe/Berlin', 'year_round', 0, $8, 1, $3::uuid, $4::uuid,
          $5::uuid, $6::uuid, $7::timestamptz, $7::timestamptz
        )`,
       [
@@ -1122,6 +1237,7 @@ async function seedCalendarRevision(
         outboxId,
         input.actorUserId,
         ACCEPTED_AT.toISOString(),
+        input.roomTypeIds.length,
       ],
     );
     await admin.query(
@@ -1129,8 +1245,9 @@ async function seedCalendarRevision(
          property_id, calendar_revision, room_type_id,
          source_room_facts_revision, source_room_units_revision,
          physical_capacity_count, starting_sellable_limit_count
-       ) VALUES ($1::uuid, 1, $2::uuid, 1, 1, $3, $4)`,
-      [input.propertyId, input.roomTypeId, input.capacity, input.startingLimit],
+       ) SELECT $1::uuid,1,room_type_id,1,1,$3,$4
+         FROM unnest($2::uuid[]) room_type_id`,
+      [input.propertyId, input.roomTypeIds, input.capacity, input.startingLimit],
     );
     await admin.query("COMMIT");
   } catch (error) {
