@@ -1362,12 +1362,10 @@ const BOOKING_LOOKUP_RATE_LIMIT = 5;
 const BOOKING_LOOKUP_RATE_WINDOW_MS = 60 * 1000;
 
 type TargetCheckoutCommandReservation =
-  | { status: "reserved" }
-  | { status: "replay"; body: unknown };
+  { status: "reserved" } | { status: "replay"; body: unknown };
 
 type TargetBookingChangeDecisionReservation =
-  | { status: "reserved" }
-  | { status: "replay"; body: unknown };
+  { status: "reserved" } | { status: "replay"; body: unknown };
 
 async function withTargetCheckoutTransaction<T>(
   pool: pg.Pool,
@@ -5037,6 +5035,10 @@ async function enqueuePmsReservationHandoff(
     operation,
     revision,
   );
+  const inventoryReservation = inventoryReservationReceiptFromBookingMetadata(
+    booking.bookingMetadata,
+    propertyId,
+  );
   await pool.query(
     `INSERT INTO platform.jobs
        (
@@ -5094,6 +5096,10 @@ async function enqueuePmsReservationHandoff(
         propertyId,
         guestBookingId: booking.guestBookingId,
         bookingReference: booking.publicReference,
+        ...(operation === "create" &&
+        inventoryReservation?.contractVersion === "pms-inventory-reservation-lifecycle.v1"
+          ? { inventoryReservation }
+          : {}),
         stay: {
           checkInDate: dateOnly(booking.checkIn),
           checkOutDate: dateOnly(booking.checkOut),

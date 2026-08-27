@@ -26,6 +26,11 @@ describe("Stripe booking lifecycle notifications", () => {
     expect(fixture.pmsJobs).toEqual([
       "booking-checkout:create:b9fccec2-eb4c-4c35-bfd3-02a748c2e117:v1",
     ]);
+    expect(fixture.pmsPayloads[0]).toMatchObject({
+      inventoryReservation: {
+        receiptId: "c9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+      },
+    });
     expect(fixture.statusEvents.filter((event) => event === "guest_booking.accepted")).toHaveLength(
       1,
     );
@@ -105,12 +110,18 @@ function settlementFixture(metadata: Record<string, unknown> = { acceptanceMode:
   const domainEvents = new Map<string, string>();
   const notificationJobs = new Map<string, string>();
   const pmsJobs: string[] = [];
+  const pmsPayloads: Record<string, unknown>[] = [];
   const statusEvents: string[] = [];
   const propertyId = "a9fccec2-eb4c-4c35-bfd3-02a748c2e117";
   const guestBookingId = "b9fccec2-eb4c-4c35-bfd3-02a748c2e117";
   const bookingMetadata = {
     requestFingerprint: "a".repeat(64),
     paymentMethod: "card",
+    inventoryReservation: {
+      contractVersion: "pms-inventory-reservation-lifecycle.v1",
+      owner: "pms",
+      receiptId: "c9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+    },
     ...metadata,
     selectedOffer: {
       roomTypeId: "d9fccec2-eb4c-4c35-bfd3-02a748c2e117",
@@ -202,6 +213,7 @@ function settlementFixture(metadata: Record<string, unknown> = { acceptanceMode:
       if (sql.includes("INSERT INTO platform.jobs")) {
         const jobKey = String(values?.[0]);
         if (!pmsJobs.includes(jobKey)) pmsJobs.push(jobKey);
+        pmsPayloads.push(JSON.parse(String(values?.[6])) as Record<string, unknown>);
         return { rows: [] };
       }
       return { rows: [] };
@@ -210,6 +222,7 @@ function settlementFixture(metadata: Record<string, unknown> = { acceptanceMode:
   return {
     notificationJobs,
     pmsJobs,
+    pmsPayloads,
     statusEvents,
     settle(source: string) {
       return settleStripeBookingPayment(client as never, {

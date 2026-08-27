@@ -10,6 +10,10 @@ const migration = await readFile(
   join(import.meta.dirname, "../migrations/0057_pms_inventory_readiness_reservations.sql"),
   "utf8",
 );
+const handoffMigration = await readFile(
+  join(import.meta.dirname, "../migrations/0111_pms_inventory_receipt_handoff.sql"),
+  "utf8",
+);
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 
 const ORGANIZATION_ID = "10000000-0000-4000-8000-000000000001";
@@ -33,6 +37,14 @@ const EVIDENCE = {
 } as const;
 
 describe("PMS inventory readiness and reservation migration contract", () => {
+  it("adopts exact direct-booking receipts in the assignment transaction", () => {
+    expect(handoffMigration).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(handoffMigration).toContain("FOR UPDATE OF status");
+    expect(handoffMigration).toContain("assignment_count <> receipt_row.room_count");
+    expect(handoffMigration).toContain("lifecycle_state = 'handed_off'");
+    expect(handoffMigration).toContain("source_assignment_id = target_assignment_id");
+  });
+
   it("is additive for legacy inventory and contains no Distribution coupling", () => {
     expect(migration).toContain("ALTER TABLE pms.inventory_days");
     expect(migration).toContain("chk_pms_inventory_days_canonical_envelope");

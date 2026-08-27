@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { parsePmsInventoryReservationReceipt } from "@vayada/domain-pms";
 import type { QueryResult, QueryResultRow } from "pg";
 
 import { enqueueBookingTransitionNotifications } from "../jobs/bookingEmails.js";
@@ -293,6 +294,9 @@ export async function settleStripeBookingPayment(
 
   const handoffKey = pmsCreateHandoffKey(row.propertyId, row.guestBookingId);
   const handoffHash = sha256(handoffKey);
+  const inventoryReservation = parsePmsInventoryReservationReceipt(
+    record(row.bookingMetadata)["inventoryReservation"],
+  );
   await client.query(
     `INSERT INTO platform.jobs (
        job_key, queue_name, job_type, source_domain_event_id, tenant_scope,
@@ -326,6 +330,7 @@ export async function settleStripeBookingPayment(
         propertyId: row.propertyId,
         guestBookingId: row.guestBookingId,
         bookingReference: row.publicReference,
+        ...(inventoryReservation ? { inventoryReservation } : {}),
         stay: {
           checkInDate: row.checkIn,
           checkOutDate: row.checkOut,
@@ -527,7 +532,7 @@ const text = (value: unknown): string | null =>
   typeof value === "string" && value.trim() ? value.trim() : null;
 function dates(from: string, to: string): string[] {
   const result: string[] = [];
-  for (let date = new Date(`${from}T00:00:00Z`); date < new Date(`${to}T00:00:00Z`); ) {
+  for (let date = new Date(`${from}T00:00:00Z`); date < new Date(`${to}T00:00:00Z`);) {
     result.push(date.toISOString().slice(0, 10));
     date = new Date(date.getTime() + 86_400_000);
   }
