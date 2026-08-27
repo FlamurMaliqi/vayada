@@ -166,6 +166,7 @@ export type StaffPermissionOverrides = {
 export type StaffInviteAccessValidationIssue =
   | "invalid_role"
   | "invalid_property_access_mode"
+  | "missing_property_assignment"
   | "invalid_property_id"
   | "duplicate_property_id"
   | "unknown_permission_key"
@@ -203,6 +204,9 @@ export function validateStaffInviteAccess(input: {
   const issues = new Set<StaffInviteAccessValidationIssue>();
   if (!hotelStaffRoleKeys.includes(input.roleKey as HotelStaffRoleKey)) issues.add("invalid_role");
   if (input.propertyAccessMode !== "assigned") issues.add("invalid_property_access_mode");
+  if (input.propertyAccessMode === "assigned" && input.propertyIds.length === 0) {
+    issues.add("missing_property_assignment");
+  }
 
   const propertyIds = new Set<string>();
   for (const propertyId of input.propertyIds) {
