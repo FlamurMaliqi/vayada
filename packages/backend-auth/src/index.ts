@@ -25,6 +25,7 @@ export {
   identityLifecycleCommandTypes,
   identityLifecycleEventTypes,
   identityLifecycleIdempotencyScope,
+  hasValidStaffPermissionHierarchy,
   hotelStaffRoleKeys,
   membershipPropertyAccessModeForProvisioning,
   staffAccessPermissionKeys,
@@ -106,6 +107,8 @@ export {
   type IdentityUser,
   type RepositoryConfig,
 } from "./repository.js";
+
+export { createPgStaffInvitationRepository } from "./staffInvitations.js";
 
 // RequestContext resolution
 export {

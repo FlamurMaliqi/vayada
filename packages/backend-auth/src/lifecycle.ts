@@ -195,6 +195,14 @@ const requiredLowerPermissions: Partial<
 const canonicalPropertyId =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+export function hasValidStaffPermissionHierarchy(permissionKeys: ReadonlySet<string>): boolean {
+  for (const key of permissionKeys) {
+    const lowerKeys = requiredLowerPermissions[key as StaffAccessPermissionKey] ?? [];
+    if (lowerKeys.some((lowerKey) => !permissionKeys.has(lowerKey))) return false;
+  }
+  return true;
+}
+
 export function validateStaffInviteAccess(input: {
   roleKey: string;
   propertyAccessMode: string;
@@ -245,11 +253,8 @@ export function validateStaffInviteAccess(input: {
     if (knownPermissions.has(key)) effectivePermissions.add(key as StaffAccessPermissionKey);
   }
   for (const key of deny) effectivePermissions.delete(key as StaffAccessPermissionKey);
-  for (const key of effectivePermissions) {
-    const lowerKeys = requiredLowerPermissions[key] ?? [];
-    if (lowerKeys.some((lowerKey) => !effectivePermissions.has(lowerKey))) {
-      issues.add("missing_required_permission");
-    }
+  if (!hasValidStaffPermissionHierarchy(effectivePermissions)) {
+    issues.add("missing_required_permission");
   }
   return [...issues];
 }
