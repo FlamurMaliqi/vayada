@@ -493,6 +493,12 @@ function validateCommand(
   }
 
   if (isUpdateCommand(command)) {
+    if (
+      command.inventoryReservation !== undefined &&
+      !parsePmsInventoryReservationReceipt(command.inventoryReservation)
+    ) {
+      return validationError("Inventory reservation receipt is invalid.");
+    }
     const stay = command.changes.stay;
     if (
       (stay?.checkInDate !== undefined && !isIsoDate(stay.checkInDate)) ||

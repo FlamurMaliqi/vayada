@@ -219,6 +219,8 @@ export type UpdatePmsReservationCommand = {
     guestBookingId: string;
     bookingReference: string;
   };
+  /** New exact PMS-owned hold to adopt with a stay or room-type update. */
+  inventoryReservation?: PmsInventoryReservationReceipt;
   changes: {
     stay?: Partial<CreatePmsReservationCommand["stay"]>;
     guests?: Partial<CreatePmsReservationCommand["guests"]>;

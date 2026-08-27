@@ -5096,7 +5096,7 @@ async function enqueuePmsReservationHandoff(
         propertyId,
         guestBookingId: booking.guestBookingId,
         bookingReference: booking.publicReference,
-        ...(operation === "create" &&
+        ...(operation !== "cancel" &&
         inventoryReservation?.contractVersion === "pms-inventory-reservation-lifecycle.v1"
           ? { inventoryReservation }
           : {}),

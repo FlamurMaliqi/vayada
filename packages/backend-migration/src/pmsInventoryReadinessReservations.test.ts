@@ -14,6 +14,10 @@ const handoffMigration = await readFile(
   join(import.meta.dirname, "../migrations/0111_pms_inventory_receipt_handoff.sql"),
   "utf8",
 );
+const updateHandoffMigration = await readFile(
+  join(import.meta.dirname, "../migrations/0112_pms_inventory_receipt_update_handoff.sql"),
+  "utf8",
+);
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 
 const ORGANIZATION_ID = "10000000-0000-4000-8000-000000000001";
@@ -43,6 +47,21 @@ describe("PMS inventory readiness and reservation migration contract", () => {
     expect(handoffMigration).toContain("assignment_count <> receipt_row.room_count");
     expect(handoffMigration).toContain("lifecycle_state = 'handed_off'");
     expect(handoffMigration).toContain("source_assignment_id = target_assignment_id");
+  });
+
+  it("requires the exact command receipt when adopting inserted or updated assignments", () => {
+    expect(updateHandoffMigration).toContain("AFTER INSERT OR UPDATE OF");
+    expect(updateHandoffMigration).toContain(
+      "assignment_row.assignment_payload #>> '{inventoryReservation,receiptId}'",
+    );
+    expect(updateHandoffMigration).toContain(
+      "FROM pms.operational_booking_assignments current_assignment",
+    );
+    expect(updateHandoffMigration).toContain(
+      "booking_receipt_text IS DISTINCT FROM explicit_receipt_text",
+    );
+    expect(updateHandoffMigration).toContain("assignment_count <> receipt_row.room_count");
+    expect(updateHandoffMigration).toContain("receipt_row.lifecycle_state = 'handed_off'");
   });
 
   it("is additive for legacy inventory and contains no Distribution coupling", () => {
