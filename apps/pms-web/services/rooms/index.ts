@@ -166,6 +166,23 @@ export interface Room {
   updatedAt: string;
 }
 
+export interface LinkedInventoryGroup {
+  groupId: string;
+  name: string;
+  revision: number;
+  memberRoomTypeIds: string[];
+}
+
+interface LinkedInventoryGroupsResponse {
+  propertyId: string;
+  items: LinkedInventoryGroup[];
+}
+
+interface LinkedInventoryGroupCommandResponse {
+  propertyId: string;
+  group: LinkedInventoryGroup | null;
+}
+
 export type PmsOperationsContractVersion = "pms-operations.v1";
 
 export interface PropertyPlan {
@@ -589,6 +606,66 @@ export const pmsOperationsRoomsReadService = {
     );
   },
 };
+
+export const linkedInventoryGroupsService = {
+  list: async (): Promise<LinkedInventoryGroup[]> => {
+    assertPmsOperationsReadModelEnabled();
+    const propertyId = await resolveSelectedPmsPropertyId("loading linked inventory groups");
+    const response = await pmsOperationsClient.get<LinkedInventoryGroupsResponse>(
+      linkedInventoryGroupsEndpoint(propertyId),
+      pmsOperationsRequestOptions,
+    );
+    return response.items;
+  },
+
+  create: async (name: string, memberRoomTypeIds: string[]): Promise<LinkedInventoryGroup> => {
+    const propertyId = await resolveSelectedPmsPropertyId("creating linked inventory group");
+    const commandId = randomCommandId("pms-linked-inventory-create");
+    const response = await pmsOperationsClient.post<LinkedInventoryGroupCommandResponse>(
+      linkedInventoryGroupsEndpoint(propertyId),
+      { commandId, idempotencyKey: commandId, name, memberRoomTypeIds },
+      pmsOperationsRequestOptions,
+    );
+    return response.group!;
+  },
+
+  update: async (group: LinkedInventoryGroup): Promise<LinkedInventoryGroup> => {
+    const propertyId = await resolveSelectedPmsPropertyId("updating linked inventory group");
+    const commandId = randomCommandId("pms-linked-inventory-update");
+    const response = await pmsOperationsClient.put<LinkedInventoryGroupCommandResponse>(
+      `${linkedInventoryGroupsEndpoint(propertyId)}/${encodeURIComponent(group.groupId)}`,
+      {
+        commandId,
+        idempotencyKey: commandId,
+        expectedRevision: group.revision,
+        name: group.name,
+        memberRoomTypeIds: group.memberRoomTypeIds,
+      },
+      pmsOperationsRequestOptions,
+    );
+    return response.group!;
+  },
+
+  delete: async (group: LinkedInventoryGroup): Promise<void> => {
+    const propertyId = await resolveSelectedPmsPropertyId("deleting linked inventory group");
+    const commandId = randomCommandId("pms-linked-inventory-delete");
+    await pmsOperationsClient.delete<LinkedInventoryGroupCommandResponse>(
+      `${linkedInventoryGroupsEndpoint(propertyId)}/${encodeURIComponent(group.groupId)}`,
+      {
+        ...pmsOperationsRequestOptions,
+        body: JSON.stringify({
+          commandId,
+          idempotencyKey: commandId,
+          expectedRevision: group.revision,
+        }),
+      },
+    );
+  },
+};
+
+function linkedInventoryGroupsEndpoint(propertyId: string): string {
+  return `/api/pms/properties/${encodeURIComponent(propertyId)}/linked-inventory-groups`;
+}
 
 async function replaceRoomTypeMedia(
   propertyId: string,
