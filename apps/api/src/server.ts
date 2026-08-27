@@ -1,6 +1,9 @@
 import {
   createPgIdentityRepository,
   createPgStaffInvitationAcceptanceRepository,
+  createPgStaffInvitationDeliveryRepository,
+  createPgStaffInvitationRepository,
+  createStaffInvitationDeliveryCoordinator,
   createWorkOSVerifier,
 } from "@vayada/backend-auth";
 import {
@@ -47,6 +50,7 @@ import { createTargetBookingReservationsReadRepository } from "./platform/bookin
 import { createPgProviderWebhookStore } from "./platform/providerWebhooks.js";
 import { composePlatformMediaRuntime } from "./platform/platformMediaRuntime.js";
 import { createWorkOSAuthKitClient } from "./platform/workosAuthKit.js";
+import { createWorkOSStaffInvitationProvider } from "./platform/workosStaffInvitations.js";
 import { installPostgresPoolRuntime } from "./platform/postgresRuntime.js";
 import {
   createPgWorkosWebhookStore,
@@ -867,6 +871,28 @@ const authSessionHandoffRepository =
     ? createPgAuthSessionHandoffRepository({ connectionString: config.auth.databaseUrl })
     : undefined;
 
+const staffInvitationRuntime =
+  config.auth && config.authSession
+    ? (() => {
+        const repository = createPgStaffInvitationRepository({
+          connectionString: config.auth.databaseUrl,
+        });
+        const deliveryRepository = createPgStaffInvitationDeliveryRepository({
+          connectionString: config.auth.databaseUrl,
+        });
+        return {
+          repository,
+          deliveryRepository,
+          delivery: createStaffInvitationDeliveryCoordinator({
+            repository: deliveryRepository,
+            provider: createWorkOSStaffInvitationProvider({
+              apiKey: config.authSession.workosApiKey,
+            }),
+          }),
+        };
+      })()
+    : undefined;
+
 const app = buildApp({
   trustProxy: ["loopback", "linklocal", "uniquelocal"],
   auth: buildAuthOptions(config.auth),
@@ -1214,6 +1240,7 @@ const app = buildApp({
         connectionString: config.auth.databaseUrl,
       })
     : undefined,
+  staffInvitations: staffInvitationRuntime,
   identityPrivacyAllowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
   publicHotelProfileRepository,
   publicHotelQuoteRepository,
@@ -1252,6 +1279,8 @@ app.addHook("onClose", async () => {
     bookingDesignRepository.close(),
     bookingDesignCatalogEvidenceRepository?.close(),
     bookingPropertyAccessRepository.close?.(),
+    staffInvitationRuntime?.repository.close(),
+    staffInvitationRuntime?.deliveryRepository.close(),
     financeOtaCommissionSettingsRepository?.close(),
     financeExpenseRuntime?.close(),
     bookingDesignMediaAdapter?.close?.(),
