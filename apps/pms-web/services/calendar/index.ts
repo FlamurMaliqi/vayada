@@ -72,6 +72,11 @@ export interface CalendarBlock {
   blockedCount: number;
   reason: string;
   createdAt: string;
+  kind: "manual" | "linked_booking" | "linked_manual_block";
+  sourceRoomTypeId: string | null;
+  sourceRoomTypeName: string | null;
+  sourceSummary: string | null;
+  protected: boolean;
 }
 
 export interface CalendarData {
@@ -148,6 +153,11 @@ type PmsOperationsRoomBlock = {
   blockedCount: number;
   reason: string;
   status: "active" | "released" | "expired";
+  kind?: "manual" | "linked_booking" | "linked_manual_block";
+  sourceRoomTypeId?: string | null;
+  sourceRoomTypeName?: string | null;
+  sourceSummary?: string | null;
+  protected?: boolean;
 };
 
 type PmsRoomBlockCommandResponse = {
@@ -543,5 +553,10 @@ function toCalendarBlock(block: PmsOperationsRoomBlock, roomNumber: string | nul
     blockedCount: block.blockedCount,
     reason: block.reason,
     createdAt: `${block.startsOn}T00:00:00.000Z`,
+    kind: block.kind ?? "manual",
+    sourceRoomTypeId: block.sourceRoomTypeId ?? null,
+    sourceRoomTypeName: block.sourceRoomTypeName ?? null,
+    sourceSummary: block.sourceSummary ?? null,
+    protected: block.protected ?? block.kind?.startsWith("linked_") ?? false,
   };
 }
