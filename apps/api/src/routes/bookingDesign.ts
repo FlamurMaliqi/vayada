@@ -1,5 +1,5 @@
 import { UnauthorizedError } from "@vayada/backend-auth";
-import { AuthorizationError } from "@vayada/backend-authorization";
+import { AuthorizationError, type PropertyAccessRepository } from "@vayada/backend-authorization";
 import {
   parseBookingDesignRevision,
   parseUpsertBookingDesignRequest,
@@ -11,16 +11,17 @@ import {
 } from "@vayada/domain-booking";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
-import { enforceRoutePolicy } from "./policy.js";
+import { enforcePropertyRoutePolicy, enforceRoutePolicy } from "./policy.js";
 
 type PropertyParams = { propertyId: string };
 type AuthorizedScope = {
-  context: ReturnType<typeof enforceRoutePolicy>;
+  context: Awaited<ReturnType<typeof enforcePropertyRoutePolicy>>;
   propertyId: string;
 };
 
 export type BookingDesignRoutesOptions = {
   commandPort: BookingDesignCommandPort;
+  propertyAccessRepository: PropertyAccessRepository;
   readPort: BookingDesignReadPort;
 };
 
@@ -33,7 +34,7 @@ export async function registerBookingDesignRoutes(
 ): Promise<void> {
   const authorized = new WeakMap<FastifyRequest, AuthorizedScope>();
   const authorize = async (request: FastifyRequest, reply: FastifyReply) => {
-    const scope = authorizeRequest(request, reply);
+    const scope = await authorizeRequest(request, reply, options.propertyAccessRepository);
     if (scope) authorized.set(request, scope);
   };
 
@@ -110,7 +111,11 @@ export async function registerBookingDesignRoutes(
   );
 }
 
-function authorizeRequest(request: FastifyRequest, reply: FastifyReply): AuthorizedScope | null {
+async function authorizeRequest(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  propertyAccessRepository: PropertyAccessRepository,
+): Promise<AuthorizedScope | null> {
   try {
     const baseContext = enforceRoutePolicy(request, { permission: "booking.settings.manage" });
     if (baseContext.selectedOrganization.kind !== "hotel_group") {
@@ -128,11 +133,19 @@ function authorizeRequest(request: FastifyRequest, reply: FastifyReply): Authori
       resourceType: "booking_hotel",
       resourceId: propertyId,
     } as const;
-    const context = enforceRoutePolicy(request, {
-      permission: "booking.settings.manage",
-      entitlement: { product: "booking", key: "booking-engine", resource },
-      resource: { ...resource, allowedRelationships: ["owner", "operator"] },
-    });
+    const context = await enforcePropertyRoutePolicy(
+      request,
+      {
+        permission: "booking.settings.manage",
+        property: {
+          propertyId,
+          targetResource: { product: "booking", resourceType: "booking_hotel" },
+        },
+        entitlement: { product: "booking", key: "booking-engine", resource },
+        resource: { ...resource, allowedRelationships: ["owner", "operator"] },
+      },
+      propertyAccessRepository,
+    );
     return { context, propertyId };
   } catch (error) {
     if (error instanceof UnauthorizedError) {

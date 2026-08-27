@@ -14,6 +14,7 @@ describe("adaptive property setup production mounts", () => {
   it("registers every canonical protected route without invoking an owner port before auth", async () => {
     const ownerPort = vi.fn();
     const close = vi.fn(async () => undefined);
+    const propertyAccessRepository = { findMembershipPropertyScope: ownerPort };
     app = buildApp({
       logger: false,
       hotelSetupTrackCommandRepository: { getTrackStatus: ownerPort } as never,
@@ -28,10 +29,11 @@ describe("adaptive property setup production mounts", () => {
       },
       bookingDesign: {
         commandPort: { upsertDesign: ownerPort },
+        propertyAccessRepository,
         readPort: { getCurrentDesign: ownerPort },
       },
       bookingDesignReadiness: {
-        propertyAccessRepository: { findMembershipPropertyScope: ownerPort },
+        propertyAccessRepository,
         readinessPort: { getBookingDesignReadiness: ownerPort },
       },
       pmsRoomPublication: {
