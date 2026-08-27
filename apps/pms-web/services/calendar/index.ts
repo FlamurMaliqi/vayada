@@ -494,7 +494,10 @@ function calendarBookingsForReservation(
         status,
         roomId: assignment?.roomId ?? null,
         roomNumber: assignment?.roomNumber ?? null,
-        channel: assignment?.channel ?? reservationSource(reservation.source),
+        channel:
+          reservation.source === "manual"
+            ? "manual"
+            : (assignment?.channel ?? reservationSource(reservation.source)),
         bookingReference: reservation.bookingReference,
         numberOfRooms,
         roomPosition: assignment ? Math.max(assignment.position - 1, 0) : index,

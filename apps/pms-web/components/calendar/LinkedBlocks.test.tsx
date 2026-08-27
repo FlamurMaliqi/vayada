@@ -54,6 +54,10 @@ describe("month availability mode", () => {
       roomNumber: "101",
       floor: "1",
       status: "available",
+      baseRate: 100,
+      currency: "EUR",
+      maxOccupancy: 2,
+      size: 20,
     };
     const manualBlock: CalendarBlock = {
       ...linkedBlock,

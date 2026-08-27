@@ -13,6 +13,8 @@ export interface AssignedRoom {
   roomTypeId: string;
 }
 
+export type AssignmentSelector = { assignmentId: string } | { position: number };
+
 // prettier-ignore
 export type BookingExpectedPaymentMethod = "unknown" | "pay_at_property" | "bank_transfer" | "manual_card" | "cash" | "other";
 
@@ -205,6 +207,16 @@ function normalizeBookingChangeRequest(
 
 async function refreshBooking(guestBookingId: string): Promise<Booking> {
   return pmsOperationsBookingsReadService.get(guestBookingId);
+}
+
+function findAssignedRoom(
+  assignedRooms: AssignedRoom[],
+  selector?: AssignmentSelector,
+): AssignedRoom | undefined {
+  if (!selector) return assignedRooms[0];
+  return "assignmentId" in selector
+    ? assignedRooms.find((assignment) => assignment.assignmentId === selector.assignmentId)
+    : assignedRooms.find((assignment) => assignment.position === selector.position);
 }
 
 function toCheckoutCharge(charge: PmsCheckoutCharge, bookingId: string): CheckoutCharge {
@@ -727,18 +739,12 @@ export const bookingsService = {
   moveRoom: async (
     id: string,
     roomId: string,
-    sourceAssignmentRef?: string,
+    sourceAssignmentSelector?: AssignmentSelector,
     ratePolicy: "preserve" | "target_base" = "preserve",
   ) => {
     const booking = await refreshBooking(id);
-    const sourceAssignment = sourceAssignmentRef
-      ? booking.assignedRooms.find(
-          (assignment) =>
-            assignment.assignmentId === sourceAssignmentRef ||
-            assignment.roomId === sourceAssignmentRef,
-        )
-      : booking.assignedRooms[0];
-    if (sourceAssignmentRef && !sourceAssignment) {
+    const sourceAssignment = findAssignedRoom(booking.assignedRooms, sourceAssignmentSelector);
+    if (sourceAssignmentSelector && !sourceAssignment) {
       return unsupportedPmsNextStackFeature<Booking>(
         "Multi-room moves without assignment identity",
       );
@@ -750,9 +756,11 @@ export const bookingsService = {
         ...commandMetadata("pms.assignment.move"),
         action: "move",
         roomId,
-        ...(sourceAssignment?.assignmentId
-          ? { assignmentId: sourceAssignment.assignmentId }
-          : { position: sourceAssignment?.position ?? 0 }),
+        ...(sourceAssignment
+          ? sourceAssignment.assignmentId
+            ? { assignmentId: sourceAssignment.assignmentId }
+            : { position: sourceAssignment.position + 1 }
+          : {}),
         ...(ratePolicy === "target_base" ? { ratePolicy } : {}),
       },
       pmsOperationsRequestOptions,
@@ -763,16 +771,10 @@ export const bookingsService = {
   swapRoom: (_id: string, _partnerBookingId: string, _partnerDestinationRoomId?: string) =>
     unsupportedPmsNextStackFeature<Booking>("Room swaps"),
 
-  unassignRoom: async (id: string, sourceAssignmentRef?: string) => {
+  unassignRoom: async (id: string, sourceAssignmentSelector?: AssignmentSelector) => {
     const booking = await refreshBooking(id);
-    const sourceAssignment = sourceAssignmentRef
-      ? booking.assignedRooms.find(
-          (assignment) =>
-            assignment.assignmentId === sourceAssignmentRef ||
-            assignment.roomId === sourceAssignmentRef,
-        )
-      : booking.assignedRooms[0];
-    if (sourceAssignmentRef && !sourceAssignment) {
+    const sourceAssignment = findAssignedRoom(booking.assignedRooms, sourceAssignmentSelector);
+    if (sourceAssignmentSelector && !sourceAssignment) {
       return unsupportedPmsNextStackFeature<Booking>(
         "Multi-room unassign without assignment identity",
       );
@@ -783,9 +785,11 @@ export const bookingsService = {
         ...commandMetadata("pms.assignment.unassign"),
         action: "unassign",
         roomId: null,
-        ...(sourceAssignment?.assignmentId
-          ? { assignmentId: sourceAssignment.assignmentId }
-          : { position: sourceAssignment?.position ?? 0 }),
+        ...(sourceAssignment
+          ? sourceAssignment.assignmentId
+            ? { assignmentId: sourceAssignment.assignmentId }
+            : { position: sourceAssignment.position + 1 }
+          : {}),
       },
       pmsOperationsRequestOptions,
     );

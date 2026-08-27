@@ -268,8 +268,8 @@ describe("PMS target booking projection", () => {
     );
     mocks.patch.mockResolvedValue({});
 
-    await bookingsService.moveRoom("booking-1", "room-9", "a-2", "target_base");
-    await bookingsService.unassignRoom("booking-1", "a-2");
+    await bookingsService.moveRoom("booking-1", "room-9", { assignmentId: "a-2" }, "target_base");
+    await bookingsService.unassignRoom("booking-1", { assignmentId: "a-2" });
 
     expect(mocks.patch).toHaveBeenCalledWith(
       "/api/pms/properties/property-1/reservations/booking-1/assignments",
@@ -286,6 +286,49 @@ describe("PMS target booking projection", () => {
       expect.objectContaining({ action: "unassign", assignmentId: "a-2" }),
       expect.any(Object),
     );
+  });
+
+  it("uses exact one-based positions when repeated room IDs lack assignment IDs", async () => {
+    const reservationWithoutAssignmentIds = {
+      ...heterogeneousReservation,
+      assignments: assignments.map((assignment) => ({
+        ...assignment,
+        assignmentId: null,
+        roomId: "room-1",
+      })),
+    };
+    mocks.get.mockImplementation(async (endpoint: string) =>
+      endpoint.endsWith("/room-types")
+        ? { items: roomTypes }
+        : { item: reservationWithoutAssignmentIds },
+    );
+    mocks.patch.mockResolvedValue({});
+
+    await bookingsService.moveRoom("booking-1", "room-9", { position: 1 });
+    await bookingsService.unassignRoom("booking-1", { position: 1 });
+
+    expect(mocks.patch.mock.calls[0]?.[1]).toMatchObject({
+      action: "move",
+      roomId: "room-9",
+      position: 2,
+    });
+    expect(mocks.patch.mock.calls[1]?.[1]).toMatchObject({
+      action: "unassign",
+      roomId: null,
+      position: 2,
+    });
+  });
+
+  it("omits the assignment selector when the booking has no assignments", async () => {
+    mocks.get.mockImplementation(async (endpoint: string) =>
+      endpoint.endsWith("/room-types") ? { items: roomTypes } : { item: reservation },
+    );
+    mocks.patch.mockResolvedValue({});
+
+    await bookingsService.moveRoom("booking-1", "room-9");
+
+    expect(mocks.patch.mock.calls[0]?.[1]).not.toHaveProperty("assignmentId");
+    expect(mocks.patch.mock.calls[0]?.[1]).not.toHaveProperty("position");
   });
 
   it("uses the authoritative Booking correction response without a fallible reload", async () => {
