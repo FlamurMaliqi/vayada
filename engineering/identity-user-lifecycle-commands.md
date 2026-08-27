@@ -31,6 +31,7 @@ should depend on the command bus contract, not on raw Auth DB tables.
 | `identity.access.revoke`           | Revoke or suspend an existing user's organization membership, resource links, and role permission grants.                      |
 | `identity.resource_links.grant`    | Add exact resource links to an existing active organization without changing organization, membership, or permission state.    |
 | `identity.recovery.flow.create`    | Start recovery, password reset, email verification, or email change through identity/provider flows, not product token tables. |
+| `identity.invite.staff.create`     | Record one hotel staff invitation intent with an assigned property scope and validated permission overrides.                   |
 | `identity.invite.affiliate.create` | Invite or link an affiliate user through an affiliate-partner organization, membership, resource link, and permission grants.  |
 | `identity.invite.customer.create`  | Invite a customer account without granting hotel ownership or staff membership. Guest booking data remains booking-owned.      |
 
@@ -58,6 +59,17 @@ Identity command handlers must treat the tuple
 `(commandType, idempotencyKey)` as replay-safe. A retry can return
 `idempotent_replay`, but it must not create duplicate users, memberships,
 resource links, reset flows, or provider invites.
+
+Staff invitation audit actor fields come from trusted `RequestContext`, never
+the request body. Before idempotency lookup or persistence, handlers require an
+active actor user and active hotel-group organization, require the actor and
+command organization IDs to match, then resolve that user's active membership
+for the organization and require `identity.staff.manage`. They also verify that
+every canonical property is actively linked to that organization. The resolved
+membership identifies the inviter; callers do not supply a membership ID.
+Handlers persist one pending intent per organization/email before calling
+WorkOS. The command never accepts owner roles, `all` property scope, provider
+IDs, provider URLs, or caller-selected expiry.
 
 Recovery commands must name the recovery target at the contract boundary.
 Password reset, account recovery, and email verification require either an

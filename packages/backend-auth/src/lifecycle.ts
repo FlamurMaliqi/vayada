@@ -22,6 +22,7 @@ export const identityLifecycleCommandTypes = [
   "identity.access.revoke",
   "identity.resource_links.grant",
   "identity.recovery.flow.create",
+  "identity.invite.staff.create",
   "identity.invite.affiliate.create",
   "identity.invite.customer.create",
   "identity.consent.cookie.upsert",
@@ -44,6 +45,7 @@ export const identityLifecycleEventTypes = [
   "identity.access.revoked",
   "identity.resource_links.granted",
   "identity.recovery.flow.created",
+  "identity.invite.staff.created",
   "identity.invite.affiliate.created",
   "identity.invite.customer.created",
   "identity.consent.cookie.upserted",
@@ -91,6 +93,162 @@ export type OrganizationCommandInput = {
 };
 
 export type MembershipPropertyAccessMode = "all" | "assigned";
+
+export const hotelStaffRoleKeys = [
+  "hotel_manager",
+  "front_desk",
+  "housekeeping",
+  "hotel_custom",
+] as const;
+
+export type HotelStaffRoleKey = (typeof hotelStaffRoleKeys)[number];
+
+export const staffAccessPermissionKeys = [
+  "pms.dashboard.read",
+  "pms.dashboard.operations.read",
+  "pms.dashboard.finance.read",
+  "pms.calendar.read",
+  "pms.calendar.manage",
+  "pms.reservation.read",
+  "pms.reservation.update",
+  "pms.reservation.cancel",
+  "pms.inbox.read",
+  "pms.inbox.reply",
+  "pms.room_status.read",
+  "pms.rooms_rates.read",
+  "pms.rooms_rates.manage",
+  "pms.channel_manager.read",
+  "pms.finance.read",
+  "pms.settings.read",
+  "pms.settings.manage",
+  "identity.staff.manage",
+  "finance.billing.manage",
+  "pms.guest_contact.read",
+  "booking.analytics.read",
+  "booking.design.read",
+  "booking.design.manage",
+  "booking.flow.read",
+  "booking.flow.manage",
+  "booking.settings.read",
+  "booking.settings.manage",
+] as const satisfies readonly PermissionKey[];
+
+export type StaffAccessPermissionKey = (typeof staffAccessPermissionKeys)[number];
+
+export const staffRoleDefaultPermissions: Readonly<
+  Record<HotelStaffRoleKey, readonly StaffAccessPermissionKey[]>
+> = {
+  hotel_manager: staffAccessPermissionKeys.filter(
+    (key) => key !== "identity.staff.manage" && key !== "finance.billing.manage",
+  ),
+  front_desk: [
+    "pms.dashboard.read",
+    "pms.dashboard.operations.read",
+    "pms.calendar.read",
+    "pms.calendar.manage",
+    "pms.reservation.read",
+    "pms.reservation.update",
+    "pms.inbox.read",
+    "pms.inbox.reply",
+    "pms.room_status.read",
+    "pms.rooms_rates.read",
+    "pms.guest_contact.read",
+  ],
+  housekeeping: ["pms.dashboard.read", "pms.calendar.read", "pms.room_status.read"],
+  hotel_custom: [],
+};
+
+export type StaffPermissionOverrides = {
+  grant: readonly StaffAccessPermissionKey[];
+  deny: readonly StaffAccessPermissionKey[];
+};
+
+export type StaffInviteAccessValidationIssue =
+  | "invalid_role"
+  | "invalid_property_access_mode"
+  | "invalid_property_id"
+  | "duplicate_property_id"
+  | "unknown_permission_key"
+  | "duplicate_permission_key"
+  | "conflicting_permission_override"
+  | "missing_required_permission"
+  | "forbidden_permission";
+
+const requiredLowerPermissions: Partial<
+  Record<StaffAccessPermissionKey, readonly StaffAccessPermissionKey[]>
+> = {
+  "pms.dashboard.operations.read": ["pms.dashboard.read"],
+  "pms.dashboard.finance.read": ["pms.dashboard.read", "pms.dashboard.operations.read"],
+  "pms.calendar.manage": ["pms.calendar.read"],
+  "pms.reservation.update": ["pms.reservation.read"],
+  "pms.reservation.cancel": ["pms.reservation.read", "pms.reservation.update"],
+  "pms.inbox.reply": ["pms.inbox.read"],
+  "pms.rooms_rates.read": ["pms.room_status.read"],
+  "pms.rooms_rates.manage": ["pms.room_status.read", "pms.rooms_rates.read"],
+  "pms.settings.manage": ["pms.settings.read"],
+  "booking.design.manage": ["booking.design.read"],
+  "booking.flow.manage": ["booking.flow.read"],
+  "booking.settings.manage": ["booking.settings.read"],
+};
+
+const canonicalPropertyId =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function validateStaffInviteAccess(input: {
+  roleKey: string;
+  propertyAccessMode: string;
+  propertyIds: readonly string[];
+  permissionOverrides: { grant: readonly string[]; deny: readonly string[] };
+}): readonly StaffInviteAccessValidationIssue[] {
+  const issues = new Set<StaffInviteAccessValidationIssue>();
+  if (!hotelStaffRoleKeys.includes(input.roleKey as HotelStaffRoleKey)) issues.add("invalid_role");
+  if (input.propertyAccessMode !== "assigned") issues.add("invalid_property_access_mode");
+
+  const propertyIds = new Set<string>();
+  for (const propertyId of input.propertyIds) {
+    if (!canonicalPropertyId.test(propertyId)) issues.add("invalid_property_id");
+    const normalizedPropertyId = propertyId.toLowerCase();
+    if (propertyIds.has(normalizedPropertyId)) issues.add("duplicate_property_id");
+    propertyIds.add(normalizedPropertyId);
+  }
+
+  const knownPermissions = new Set<string>(staffAccessPermissionKeys);
+  const grant = new Set<string>();
+  const deny = new Set<string>();
+  for (const [keys, seen] of [
+    [input.permissionOverrides.grant, grant],
+    [input.permissionOverrides.deny, deny],
+  ] as const) {
+    for (const key of keys) {
+      if (!knownPermissions.has(key)) issues.add("unknown_permission_key");
+      if (seen.has(key)) issues.add("duplicate_permission_key");
+      seen.add(key);
+    }
+  }
+
+  if ([...grant].some((key) => deny.has(key))) issues.add("conflicting_permission_override");
+  if (grant.has("identity.staff.manage") || grant.has("finance.billing.manage")) {
+    issues.add("forbidden_permission");
+  }
+  if (input.roleKey === "housekeeping" && grant.has("pms.guest_contact.read")) {
+    issues.add("forbidden_permission");
+  }
+  const roleKey = input.roleKey as HotelStaffRoleKey;
+  const effectivePermissions = new Set<StaffAccessPermissionKey>(
+    hotelStaffRoleKeys.includes(roleKey) ? staffRoleDefaultPermissions[roleKey] : [],
+  );
+  for (const key of grant) {
+    if (knownPermissions.has(key)) effectivePermissions.add(key as StaffAccessPermissionKey);
+  }
+  for (const key of deny) effectivePermissions.delete(key as StaffAccessPermissionKey);
+  for (const key of effectivePermissions) {
+    const lowerKeys = requiredLowerPermissions[key] ?? [];
+    if (lowerKeys.some((lowerKey) => !effectivePermissions.has(lowerKey))) {
+      issues.add("missing_required_permission");
+    }
+  }
+  return [...issues];
+}
 
 export function membershipPropertyAccessModeForProvisioning(
   organizationKind: OrganizationKind,
@@ -276,6 +434,17 @@ export type CreateCustomerInvitePayload = {
   resourceLinks?: never;
 };
 
+export type CreateStaffInvitePayload = {
+  organizationId: string;
+  email: string;
+  name?: string;
+  roleKey: HotelStaffRoleKey;
+  propertyAccessMode: "assigned";
+  propertyIds: readonly string[];
+  permissionOverrides: StaffPermissionOverrides;
+  configurationRevision: number;
+};
+
 export type CookieConsentPayload = {
   visitorId: string;
   userId?: string;
@@ -316,6 +485,10 @@ export type IdentityLifecycleCommandBase<
   idempotencyKey: string;
   audit: IdentityCommandAudit;
   payload: TPayload;
+};
+
+export type StaffInviteAudit = IdentityCommandAudit & {
+  actor: Extract<IdentityCommandActor, { kind: "user" }> & { organizationId: string };
 };
 
 export type CreateIdentityUserCommand = IdentityLifecycleCommandBase<
@@ -373,6 +546,13 @@ export type CreateAffiliateInviteCommand = IdentityLifecycleCommandBase<
   CreateAffiliateInvitePayload
 >;
 
+export type CreateStaffInviteCommand = IdentityLifecycleCommandBase<
+  "identity.invite.staff.create",
+  CreateStaffInvitePayload
+> & {
+  audit: StaffInviteAudit;
+};
+
 export type CreateCustomerInviteCommand = IdentityLifecycleCommandBase<
   "identity.invite.customer.create",
   CreateCustomerInvitePayload
@@ -414,6 +594,7 @@ export type IdentityLifecycleCommand =
   | RevokeIdentityAccessCommand
   | GrantIdentityResourceLinksCommand
   | CreateIdentityRecoveryFlowCommand
+  | CreateStaffInviteCommand
   | CreateAffiliateInviteCommand
   | CreateCustomerInviteCommand
   | UpsertCookieConsentCommand
@@ -435,6 +616,11 @@ export type IdentityLifecycleEventBase<TEventType extends IdentityLifecycleEvent
   payload: TPayload;
 };
 
+export type StaffInviteCreatedEvent = IdentityLifecycleEventBase<
+  "identity.invite.staff.created",
+  CreateStaffInvitePayload
+> & { audit: StaffInviteAudit };
+
 export type IdentityLifecycleEvent =
   | IdentityLifecycleEventBase<"identity.user.created", CreateIdentityUserPayload>
   | IdentityLifecycleEventBase<"identity.user.profile.updated", UpdateIdentityUserProfilePayload>
@@ -446,6 +632,7 @@ export type IdentityLifecycleEvent =
   | IdentityLifecycleEventBase<"identity.access.revoked", RevokeIdentityAccessPayload>
   | IdentityLifecycleEventBase<"identity.resource_links.granted", GrantIdentityResourceLinksPayload>
   | IdentityLifecycleEventBase<"identity.recovery.flow.created", CreateIdentityRecoveryFlowPayload>
+  | StaffInviteCreatedEvent
   | IdentityLifecycleEventBase<"identity.invite.affiliate.created", CreateAffiliateInvitePayload>
   | IdentityLifecycleEventBase<"identity.invite.customer.created", CreateCustomerInvitePayload>
   | IdentityLifecycleEventBase<"identity.consent.cookie.upserted", CookieConsentPayload>

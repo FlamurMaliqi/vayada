@@ -5,11 +5,13 @@ import {
   identityLifecycleEventTypes,
   identityLifecycleIdempotencyScope,
   membershipPropertyAccessModeForProvisioning,
+  validateStaffInviteAccess,
   type CreateAffiliateInviteCommand,
   type CreateCustomerInviteCommand,
   type CreateIdentityRecoveryFlowCommand,
   type CreateIdentityRecoveryFlowPayload,
   type CreateIdentityUserCommand,
+  type CreateStaffInviteCommand,
   type GrantIdentityAccessCommand,
   type GrantIdentityResourceLinksCommand,
   type IdentityCommandAudit,
@@ -42,6 +44,149 @@ describe("identity lifecycle command contract", () => {
     );
   });
 
+  it("models replay-safe staff invitations with assigned property scope", () => {
+    const command: CreateStaffInviteCommand = {
+      commandType: "identity.invite.staff.create",
+      commandId: "cmd_staff_invite_001",
+      idempotencyKey: "hotel:org_001:staff@example.com:revision:1",
+      audit: {
+        ...audit,
+        actor: { kind: "user", userId: "hotel_owner_001", organizationId: "org_001" },
+      },
+      payload: {
+        organizationId: "org_001",
+        email: "staff@example.com",
+        name: "Staff Example",
+        roleKey: "front_desk",
+        propertyAccessMode: "assigned",
+        propertyIds: ["11111111-1111-4111-8111-111111111111"],
+        permissionOverrides: {
+          grant: ["pms.calendar.read", "pms.calendar.manage"],
+          deny: ["booking.analytics.read"],
+        },
+        configurationRevision: 1,
+      },
+    };
+
+    expect(validateStaffInviteAccess(command.payload)).toEqual([]);
+    expect(identityLifecycleIdempotencyScope(command)).toBe(
+      "identity.invite.staff.create:hotel:org_001:staff@example.com:revision:1",
+    );
+
+    const event: IdentityLifecycleEvent = {
+      eventType: "identity.invite.staff.created",
+      eventId: "event_staff_invite_001",
+      commandId: command.commandId,
+      idempotencyKey: command.idempotencyKey,
+      organizationId: command.payload.organizationId,
+      occurredAt: "2026-06-07T10:01:00.000Z",
+      audit: command.audit,
+      payload: command.payload,
+    };
+    expect(event.audit.actor.organizationId).toBe("org_001");
+  });
+
+  it.each([
+    ["owner role", { roleKey: "hotel_owner" }, "invalid_role"],
+    ["broad scope", { propertyAccessMode: "all" }, "invalid_property_access_mode"],
+    ["malformed property", { propertyIds: ["property_001"] }, "invalid_property_id"],
+    [
+      "duplicate property",
+      {
+        propertyIds: [
+          "11111111-1111-4111-8111-111111111111",
+          "11111111-1111-4111-8111-111111111111",
+        ],
+      },
+      "duplicate_property_id",
+    ],
+    [
+      "mixed-case duplicate property",
+      {
+        propertyIds: [
+          "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+          "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        ],
+      },
+      "duplicate_property_id",
+    ],
+    [
+      "unknown permission",
+      { permissionOverrides: { grant: ["unknown.permission"], deny: [] } },
+      "unknown_permission_key",
+    ],
+    [
+      "duplicate permission",
+      { permissionOverrides: { grant: ["pms.calendar.read", "pms.calendar.read"], deny: [] } },
+      "duplicate_permission_key",
+    ],
+    [
+      "grant/deny overlap",
+      { permissionOverrides: { grant: ["pms.calendar.read"], deny: ["pms.calendar.read"] } },
+      "conflicting_permission_override",
+    ],
+    [
+      "missing lower permission",
+      { permissionOverrides: { grant: ["pms.reservation.cancel"], deny: [] } },
+      "missing_required_permission",
+    ],
+    [
+      "lower default permission denied while retaining a stronger permission",
+      {
+        roleKey: "front_desk",
+        permissionOverrides: { grant: [], deny: ["pms.reservation.read"] },
+      },
+      "missing_required_permission",
+    ],
+    [
+      "team delegation",
+      { permissionOverrides: { grant: ["identity.staff.manage"], deny: [] } },
+      "forbidden_permission",
+    ],
+    [
+      "billing delegation",
+      { permissionOverrides: { grant: ["finance.billing.manage"], deny: [] } },
+      "forbidden_permission",
+    ],
+    [
+      "housekeeping guest contacts",
+      {
+        roleKey: "housekeeping",
+        permissionOverrides: { grant: ["pms.guest_contact.read"], deny: [] },
+      },
+      "forbidden_permission",
+    ],
+  ])("rejects %s in staff invitation access", (_name, patch, expectedIssue) => {
+    const input = {
+      roleKey: "hotel_custom",
+      propertyAccessMode: "assigned",
+      propertyIds: ["11111111-1111-4111-8111-111111111111"],
+      permissionOverrides: { grant: [], deny: [] },
+      ...patch,
+    };
+
+    expect(validateStaffInviteAccess(input)).toContain(expectedIssue);
+  });
+
+  it.each([
+    ["housekeeping hides calendar", "housekeeping", ["pms.calendar.read"]],
+    ["front desk downgrades calendar", "front_desk", ["pms.calendar.manage"]],
+    [
+      "manager hides reservations",
+      "hotel_manager",
+      ["pms.reservation.read", "pms.reservation.update", "pms.reservation.cancel"],
+    ],
+  ])("accepts coherent least-privilege override: %s", (_name, roleKey, deny) => {
+    expect(
+      validateStaffInviteAccess({
+        roleKey,
+        propertyAccessMode: "assigned",
+        propertyIds: [],
+        permissionOverrides: { grant: [], deny },
+      }),
+    ).toEqual([]);
+  });
+
   it("catalogs the VAY-656 user lifecycle command surface", () => {
     expect(identityLifecycleCommandTypes).toEqual([
       "identity.user.create",
@@ -54,6 +199,7 @@ describe("identity lifecycle command contract", () => {
       "identity.access.revoke",
       "identity.resource_links.grant",
       "identity.recovery.flow.create",
+      "identity.invite.staff.create",
       "identity.invite.affiliate.create",
       "identity.invite.customer.create",
       "identity.consent.cookie.upsert",
@@ -74,6 +220,7 @@ describe("identity lifecycle command contract", () => {
       "identity.access.revoked",
       "identity.resource_links.granted",
       "identity.recovery.flow.created",
+      "identity.invite.staff.created",
       "identity.invite.affiliate.created",
       "identity.invite.customer.created",
       "identity.consent.cookie.upserted",
