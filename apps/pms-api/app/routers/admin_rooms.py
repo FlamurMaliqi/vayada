@@ -21,6 +21,7 @@ from app.repositories.room_block_repo import RoomBlockRepository
 from app.repositories.room_repo import RoomRepository
 from app.repositories.room_type_repo import RoomTypeRepository
 from app.services.availability_service import occupancy_for_range
+from app.services import fixed_plan_billing
 from app.utils import get_hotel_id, parse_jsonb
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,7 @@ async def create_room(
             status_code=409,
             detail="A room with this number already exists",
         ) from e
+    await fixed_plan_billing.sync_subscription_price_for_hotel(hotel_id)
     return _room_to_response(room)
 
 
@@ -163,6 +165,7 @@ async def delete_room(
             status_code=409,
             detail="Cannot delete room with existing bookings",
         ) from e
+    await fixed_plan_billing.sync_subscription_price_for_hotel(hotel_id)
 
 
 @router.get("/calendar", response_model=CalendarResponse)

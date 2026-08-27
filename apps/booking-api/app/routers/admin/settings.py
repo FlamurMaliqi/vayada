@@ -1,7 +1,6 @@
 import logging
 import re
 import secrets
-from datetime import date
 from typing import Any
 
 import asyncpg
@@ -18,10 +17,8 @@ from app.models.utils import parse_json, slugify
 from app.repositories.booking_hotel_repo import BookingHotelRepository
 from app.services import pms_client
 from app.services.billing_service import (
-    apply_pending_plan_switch_if_due,
     compute_fixed_plan_projected_fee,
     count_active_rooms,
-    schedule_pending_plan_switch,
 )
 from app.services.pms_client import PmsClientError
 
@@ -73,7 +70,6 @@ _PROPERTY_FIELD_MAP = {
     # flow only (see billing_service.apply_pending_plan_switch_if_due), never via PATCH.
     "billing_commission_rate": "billing_commission_rate",
     "billing_fixed_fee": "billing_fixed_fee",
-    "billing_pending_switch": "billing_pending_switch",
     "payout_account_holder": "payout_account_holder",
     "payout_account_type": "payout_account_type",
     "payout_iban": "payout_iban",
@@ -202,7 +198,6 @@ async def get_property_settings(
 ):
     if not hotel:
         return await _build_default_property_settings()
-    await apply_pending_plan_switch_if_due(str(hotel["id"]))
     full_hotel = await BookingHotelRepository.get_by_id(str(hotel["id"]))
     return await _hotel_to_property_settings(full_hotel)
 
@@ -451,8 +446,6 @@ async def update_property_settings(
                 hotel.get("paypal_payment_window_hours") or 24,
             ),
         )
-
-        schedule_pending_plan_switch(updates, date.today())
 
         # VAY-394: when the property name changes, regenerate the URL slug
         # so subdomains and the Preview button track the new name. The old

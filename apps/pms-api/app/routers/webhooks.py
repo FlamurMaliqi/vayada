@@ -14,7 +14,8 @@ from app.repositories.channex_webhook_event_repo import ChannexWebhookEventRepos
 from app.repositories.hotel_payment_settings_repo import HotelPaymentSettingsRepository
 from app.repositories.payment_repo import PaymentRepository
 from app.repositories.payout_repo import PayoutRepository
-from app.services import stripe_service
+from app.services import fixed_plan_billing, hotel_identity_service, stripe_service
+from app.services.email_service import send_fixed_plan_payment_failed_notification
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,102 @@ async def _materialize_or_get_booking_for_pi(pi_id: str, payment_status: str) ->
     return None
 
 
+def _subscription_id_from_invoice(data: dict) -> str | None:
+    subscription = data.get("subscription")
+    if isinstance(subscription, str):
+        return subscription
+    if isinstance(subscription, dict):
+        return subscription.get("id")
+    parent = data.get("parent") or {}
+    details = parent.get("subscription_details") or {}
+    nested = details.get("subscription")
+    if isinstance(nested, str):
+        return nested
+    if isinstance(nested, dict):
+        return nested.get("id")
+    return None
+
+
+def _subscription_id(value: object) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        identifier = value.get("id")
+        return str(identifier) if identifier else None
+    return None
+
+
+async def _fixed_plan_context(event_type: str, data: dict) -> tuple[str, str | None] | None:
+    metadata = data.get("metadata") or {}
+    subscription_id = None
+    if event_type.startswith("invoice."):
+        subscription_id = _subscription_id_from_invoice(data)
+    elif event_type.startswith("customer.subscription."):
+        subscription_id = _subscription_id(data)
+    elif event_type.startswith("checkout.session."):
+        subscription_id = _subscription_id(data.get("subscription"))
+
+    if metadata.get("vayada_payment_kind") == "fixed_plan" and metadata.get("hotel_id"):
+        return str(metadata["hotel_id"]), subscription_id
+
+    if subscription_id:
+        payment_settings = await HotelPaymentSettingsRepository.get_by_billing_subscription_id(
+            subscription_id
+        )
+        if payment_settings:
+            return str(payment_settings["hotel_id"]), subscription_id
+        subscription = await stripe_service.retrieve_billing_subscription(subscription_id)
+        subscription_metadata = subscription.get("metadata") or {}
+        if subscription_metadata.get(
+            "vayada_payment_kind"
+        ) == "fixed_plan" and subscription_metadata.get("hotel_id"):
+            return str(subscription_metadata["hotel_id"]), subscription_id
+    return None
+
+
+async def _handle_fixed_plan_event(
+    event: dict,
+    event_type: str,
+    data: dict,
+    hotel_id: str,
+    subscription_id: str | None,
+) -> None:
+    event_id = event.get("id")
+    if not event_id:
+        raise ValueError("Stripe billing event is missing its id")
+    claim_status = await HotelPaymentSettingsRepository.claim_billing_webhook_event(
+        event_id, event_type
+    )
+    if claim_status == "completed":
+        return
+    if claim_status == "in_progress":
+        raise HTTPException(status_code=503, detail="Stripe billing event is still processing")
+
+    try:
+        if event_type == "checkout.session.completed":
+            if data.get("payment_status") == "paid" and subscription_id:
+                await fixed_plan_billing.activate_subscription(hotel_id, subscription_id)
+        elif event_type == "invoice.paid" and subscription_id:
+            await fixed_plan_billing.activate_subscription(hotel_id, subscription_id)
+        elif event_type == "invoice.payment_failed" and subscription_id:
+            payment_settings = await fixed_plan_billing.mark_payment_failed(subscription_id)
+            if payment_settings:
+                hotel_name = await hotel_identity_service.get_name(hotel_id) or hotel_id
+                await send_fixed_plan_payment_failed_notification(
+                    hotel_id=hotel_id,
+                    hotel_name=hotel_name,
+                    subscription_id=subscription_id,
+                )
+        elif event_type == "customer.subscription.updated" and subscription_id:
+            await fixed_plan_billing.update_subscription_state(subscription_id)
+        elif event_type == "customer.subscription.deleted" and subscription_id:
+            await fixed_plan_billing.end_subscription(subscription_id, hotel_id)
+        await HotelPaymentSettingsRepository.complete_billing_webhook_event(event_id)
+    except Exception:
+        await HotelPaymentSettingsRepository.release_billing_webhook_event(event_id)
+        raise
+
+
 @router.post("/webhooks/stripe")
 async def stripe_webhook(request: Request):
     """Handle platform-account Stripe events during the compatibility window."""
@@ -168,6 +265,17 @@ async def _handle_stripe_webhook(request: Request, webhook_secret: str):
         data = data.to_dict_recursive()
     elif hasattr(data, "to_dict"):
         data = data.to_dict()
+    fixed_plan_context = await _fixed_plan_context(event_type, data)
+    if fixed_plan_context:
+        await _handle_fixed_plan_event(
+            event,
+            event_type,
+            data,
+            fixed_plan_context[0],
+            fixed_plan_context[1],
+        )
+        return {"status": "ok"}
+
     mode = settings.provider_webhook_cutover_mode("stripe")
     non_mutating_response = await _non_mutating_webhook_response(
         "stripe",

@@ -40,9 +40,9 @@ jobs:
         run: |
           case "${SERVICE}" in
             booking-admin)
-              echo "source_ref=c879df4fb2b207ff69eb87442743aee7e42536ff" >> "${GITHUB_OUTPUT}"
+              echo "source_ref=d1fc405fb381853ace756af829c8959a9f7ee939" >> "${GITHUB_OUTPUT}"
               echo "rollback_source_ref=e3809df436514fc14df84f0adf14f365856fea2c" >> "${GITHUB_OUTPUT}"
-              echo "image_tag=prod-recovery-booking-admin-c879df4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
+              echo "image_tag=prod-recovery-booking-admin-d1fc405-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
               echo "rollback_tag=prod-rollback-booking-admin-e3809df-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
               echo "app_dir=apps/booking-admin" >> "${GITHUB_OUTPUT}"
               echo "ecr_repository=vayada-booking-admin-frontend" >> "${GITHUB_OUTPUT}"

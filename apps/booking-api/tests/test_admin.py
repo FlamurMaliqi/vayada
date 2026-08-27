@@ -279,43 +279,15 @@ class TestFixedPlanProjection:
 
 
 class TestBillingPlanSwitch:
-    """Setting billing_pending_switch must auto-compute billing_switch_effective_date."""
+    """The settings PATCH cannot activate the retired unpaid plan switch."""
 
-    async def test_setting_pending_switch_auto_schedules_first_of_next_month(
-        self, client, hotel_with_property
-    ):
-        from datetime import date
-
+    async def test_pending_switch_is_ignored(self, client, hotel_with_property):
         user = hotel_with_property["user"]
         headers = get_auth_headers(user["token"])
 
         resp = await client.patch(
             "/admin/settings/property",
             json={"billing_pending_switch": "fixed"},
-            headers=headers,
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["billing_pending_switch"] == "fixed"
-
-        effective = date.fromisoformat(body["billing_switch_effective_date"])
-        today = date.today()
-        expected_year = today.year + (1 if today.month == 12 else 0)
-        expected_month = 1 if today.month == 12 else today.month + 1
-        assert effective == date(expected_year, expected_month, 1)
-
-    async def test_clearing_pending_switch_clears_effective_date(self, client, hotel_with_property):
-        user = hotel_with_property["user"]
-        headers = get_auth_headers(user["token"])
-
-        await client.patch(
-            "/admin/settings/property",
-            json={"billing_pending_switch": "fixed"},
-            headers=headers,
-        )
-        resp = await client.patch(
-            "/admin/settings/property",
-            json={"billing_pending_switch": ""},
             headers=headers,
         )
         assert resp.status_code == 200
