@@ -4,6 +4,7 @@ import {
   type PmsAuditContext,
   type PmsExternalReference,
   type PmsGuest,
+  type PmsInventoryReservationReceipt,
   type PmsMoney,
   type PmsProviderKey,
   type PmsReservationError,
@@ -431,6 +432,7 @@ export type CommittedGuestBooking = {
   };
   payment: CreatePmsReservationCommand["payment"];
   policy: CreatePmsReservationCommand["policy"];
+  inventoryReservation?: PmsInventoryReservationReceipt;
 };
 
 export type PmsReservationConnection = {
@@ -521,6 +523,7 @@ export function buildCreatePmsReservationCommand(
       source: "direct_booking",
       locale: booking.locale,
     },
+    inventoryReservation: booking.inventoryReservation,
     stay: booking.stay,
     guests: booking.guests,
     bookedOffer: booking.bookedOffer,

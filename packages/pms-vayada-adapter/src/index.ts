@@ -1,11 +1,13 @@
 import {
   PMS_RESERVATION_CONTRACT_VERSION,
+  parsePmsInventoryReservationReceipt,
   type CancelPmsReservationCommand,
   type CreatePmsReservationCommand,
   type ListPmsOperationalReservationsQuery,
   type PmsCapability,
   type PmsConnectionStatus,
   type PmsExternalReference,
+  type PmsInventoryReservationReceipt,
   type PmsOperationalReservationListResult,
   type PmsOperationalReservationReadModel,
   type PmsOperationalReservationReadPort,
@@ -35,6 +37,9 @@ export type VayadaPmsOfferMapping = {
 export type VayadaPmsCreateReservationInput = {
   command: CreatePmsReservationCommand;
   mapping: VayadaPmsOfferMapping;
+  assignmentPayloadPatch: {
+    inventoryReservation?: PmsInventoryReservationReceipt;
+  };
 };
 
 export type VayadaPmsIdempotencyRecord = {
@@ -108,6 +113,8 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
     if (validationError) {
       return this.persistResultOrFailure(command, this.failed(command, validationError));
     }
+    const inventoryReservation = parsePmsInventoryReservationReceipt(command.inventoryReservation);
+    if (inventoryReservation) command = { ...command, inventoryReservation };
 
     const replay = await this.idempotencyReplay(command);
     if (replay) {
@@ -125,7 +132,14 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
     }
 
     try {
-      const reservation = await this.repository.createOperationalReservation({ command, mapping });
+      const assignmentPayloadPatch = command.inventoryReservation
+        ? { inventoryReservation: command.inventoryReservation }
+        : {};
+      const reservation = await this.repository.createOperationalReservation({
+        command,
+        mapping,
+        assignmentPayloadPatch,
+      });
       return await this.persistResultOrFailure(
         command,
         await this.succeeded(command, reservation, "succeeded"),
@@ -476,6 +490,12 @@ function validateCommand(
 
   if (isCreateCommand(command)) {
     if (
+      command.inventoryReservation !== undefined &&
+      !parsePmsInventoryReservationReceipt(command.inventoryReservation)
+    ) {
+      return validationError("Inventory reservation receipt is invalid.");
+    }
+    if (
       !isIsoDate(command.stay.checkInDate) ||
       !isIsoDate(command.stay.checkOutDate) ||
       !isUtcDateTime(command.guestBooking.createdAt)
@@ -552,6 +572,7 @@ function canonicalIdempotencyPayload(command: unknown): unknown {
       contractVersion: command.contractVersion,
       target: command.target,
       guestBooking: command.guestBooking,
+      inventoryReservation: command.inventoryReservation,
       stay: command.stay,
       guests: command.guests,
       bookedOffer: command.bookedOffer,
