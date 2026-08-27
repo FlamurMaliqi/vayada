@@ -1,7 +1,6 @@
 import { backendAuthPlugin, type BackendAuthPluginOptions } from "@vayada/backend-auth";
 import type { IdentityLifecycleCommandBus } from "@vayada/backend-auth";
 import type { BookingGuestPiiPort } from "@vayada/domain-booking";
-import type { BookingPublicationCommandPort } from "@vayada/domain-booking";
 import type { FinanceSubscriptionService } from "@vayada/domain-finance";
 import type {
   PmsInventoryPublicOfferProjectionPort,
@@ -296,10 +295,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   bookingDesignReadiness?: BookingDesignReadinessRoutesOptions;
   propertySetupDraftCommandRepository?: PropertySetupDraftCommandRepository;
   propertySetupRouteStateReadPort?: PropertySetupRouteStateReadPort;
-  bookingPublication?: {
-    repository: BookingPublicationCommandPort;
-    readinessProvider: BookingPublicationRoutesOptions["readinessProvider"];
-  };
+  bookingPublication?: BookingPublicationRoutesOptions;
   identityPrivacyRepository?: IdentityPrivacyRepository;
   identityLifecycleCommandBus?: IdentityLifecycleCommandBus;
   identityAdminUsersReadRepository?: IdentityAdminUsersReadRepository;

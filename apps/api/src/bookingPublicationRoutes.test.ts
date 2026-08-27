@@ -6,6 +6,7 @@ import type {
   ProductEntitlement,
   RequestContext,
 } from "@vayada/backend-auth";
+import type { MembershipPropertyScope } from "@vayada/backend-authorization";
 import { injectJson } from "@vayada/backend-test";
 import type {
   BookingPublicationCommandPort,
@@ -22,11 +23,15 @@ const propertyId = "85858585-8585-4585-8585-858585858501";
 const operationId = "85858585-8585-4585-8585-858585858502";
 const organizationId = "85858585-8585-4585-8585-858585858503";
 const actorUserId = "85858585-8585-4585-8585-858585858504";
+const otherPropertyId = "85858585-8585-4585-8585-858585858505";
+const foreignPropertyId = "85858585-8585-4585-8585-858585858506";
 type AuthOptions = {
   kind?: "hotel_group" | "creator_workspace";
-  permissions?: PermissionKey[];
-  entitlements?: ProductEntitlement[];
-  links?: LinkedResource[];
+  permissions?: readonly PermissionKey[];
+  entitlements?: readonly ProductEntitlement[];
+  links?: readonly LinkedResource[];
+  membershipStatus?: RequestContext["membership"]["status"];
+  propertyScope?: Partial<MembershipPropertyScope> | null;
 };
 type FakeRepository = BookingPublicationCommandPort & {
   requestCalls: RequestBookingPublicationCommand[];
@@ -37,6 +42,31 @@ type FakeRepository = BookingPublicationCommandPort & {
     actorUserId: string;
   }>;
 };
+const authorizationDenials: Array<[string, string | null, AuthOptions]> = [
+  ["missing authentication", null, {}],
+  ["invalid authentication", "invalid", {}],
+  ["wrong organization", "valid-token", { kind: "creator_workspace" }],
+  ["inactive membership", "valid-token", { membershipStatus: "inactive" }],
+  ["suspended membership", "valid-token", { membershipStatus: "suspended" }],
+  ["missing permission", "valid-token", { permissions: [] }],
+  [
+    "no property assignment",
+    "valid-token",
+    { propertyScope: { mode: "assigned", assignedPropertyIds: [] } },
+  ],
+  [
+    "unknown property scope",
+    "valid-token",
+    { propertyScope: { mode: "unknown", assignedPropertyIds: [propertyId] } },
+  ],
+  ["missing entitlement", "valid-token", { entitlements: [] }],
+  ["suspended entitlement", "valid-token", { entitlements: [entitlement("suspended")] }],
+  ["expired entitlement", "valid-token", { entitlements: [entitlement("expired")] }],
+  ["missing link", "valid-token", { links: [] }],
+  ["missing canonical link", "valid-token", { links: [targetLink()] }],
+  ["missing target link", "valid-token", { links: [canonicalLink()] }],
+  ["disallowed relationship", "valid-token", { links: links("front_desk") }],
+];
 
 describe("Booking publication routes", () => {
   let app: ReturnType<typeof buildApp> | null = null;
@@ -70,17 +100,24 @@ describe("Booking publication routes", () => {
     });
   });
 
-  it.each([
-    ["missing authentication", null, {}],
-    ["invalid authentication", "invalid", {}],
-    ["wrong organization", "valid-token", { kind: "creator_workspace" }],
-    ["missing permission", "valid-token", { permissions: [] }],
-    ["missing entitlement", "valid-token", { entitlements: [] }],
-    ["suspended entitlement", "valid-token", { entitlements: [entitlement("suspended")] }],
-    ["expired entitlement", "valid-token", { entitlements: [entitlement("expired")] }],
-    ["missing link", "valid-token", { links: [] }],
-    ["disallowed relationship", "valid-token", { links: [link({ relationship: "front_desk" })] }],
-  ] as Array<[string, string | null, AuthOptions]>)(
+  it("allows publication and status reads for an explicitly assigned property", async () => {
+    const readiness = await readyEvidence();
+    const repository = fakeRepository();
+    app = testApp(repository, readinessProvider(readiness), {
+      propertyScope: { mode: "assigned", assignedPropertyIds: [propertyId] },
+    });
+
+    const publication = await post(app, {
+      expectedSourceManifestHash: readiness.sourceManifestHash,
+      expectedReadinessHash: readiness.readinessHash,
+    });
+    expect(publication.statusCode).toBe(202);
+    expect((await getStatus(app)).statusCode).toBe(200);
+    expect(repository.requestCalls).toHaveLength(1);
+    expect(repository.statusCalls).toHaveLength(1);
+  });
+
+  it.each(authorizationDenials)(
     "denies %s before readiness or command execution",
     async (_name, token, options) => {
       const readiness = await readyEvidence();
@@ -101,17 +138,7 @@ describe("Booking publication routes", () => {
     },
   );
 
-  it.each([
-    ["missing authentication", null, {}],
-    ["invalid authentication", "invalid", {}],
-    ["wrong organization", "valid-token", { kind: "creator_workspace" }],
-    ["missing permission", "valid-token", { permissions: [] }],
-    ["missing entitlement", "valid-token", { entitlements: [] }],
-    ["suspended entitlement", "valid-token", { entitlements: [entitlement("suspended")] }],
-    ["expired entitlement", "valid-token", { entitlements: [entitlement("expired")] }],
-    ["missing link", "valid-token", { links: [] }],
-    ["disallowed relationship", "valid-token", { links: [link({ relationship: "front_desk" })] }],
-  ] as Array<[string, string | null, AuthOptions]>)(
+  it.each(authorizationDenials)(
     "denies status GET for %s before repository access",
     async (_name, token, options) => {
       const repository = fakeRepository();
@@ -127,6 +154,114 @@ describe("Booking publication routes", () => {
       expect(repository.statusCalls).toHaveLength(0);
     },
   );
+
+  it.each([
+    [
+      "authentication",
+      null,
+      {},
+      {
+        statusCode: 401,
+        error: "Unauthorized",
+        message: "A valid access token is required.",
+      },
+    ],
+    [
+      "permission",
+      "valid-token",
+      { permissions: [] },
+      {
+        statusCode: 403,
+        error: "Forbidden",
+        message: "Missing required permission: booking.settings.manage",
+      },
+    ],
+    [
+      "organization",
+      "valid-token",
+      { kind: "creator_workspace" },
+      {
+        statusCode: 403,
+        error: "Forbidden",
+        message: "Booking publication requires a hotel-group organization.",
+      },
+    ],
+    [
+      "entitlement",
+      "valid-token",
+      { entitlements: [] },
+      {
+        statusCode: 403,
+        error: "Forbidden",
+        message: `Missing active entitlement: booking:booking-engine for booking:booking_hotel:${propertyId}`,
+      },
+    ],
+  ] as const)("preserves the existing %s denial body", async (_name, token, options, body) => {
+    const readiness = await readyEvidence();
+    const repository = fakeRepository();
+    app = testApp(repository, readinessProvider(readiness), options);
+
+    const response = await post(
+      app,
+      {
+        expectedSourceManifestHash: readiness.sourceManifestHash,
+        expectedReadinessHash: readiness.readinessHash,
+      },
+      token,
+    );
+
+    expect(response.body).toEqual(body);
+    expect(repository.requestCalls).toHaveLength(0);
+  });
+
+  it("returns the same denial for unassigned and foreign properties", async () => {
+    const readiness = await readyEvidence();
+    const repository = fakeRepository();
+    const provider = readinessProvider(readiness);
+    app = testApp(repository, provider, {
+      links: [...links(), ...links("owner", otherPropertyId)],
+      entitlements: [entitlement(), entitlement("active", otherPropertyId)],
+      propertyScope: { mode: "assigned", assignedPropertyIds: [propertyId] },
+    });
+
+    const responses = await Promise.all([
+      post(
+        app,
+        {
+          expectedSourceManifestHash: readiness.sourceManifestHash,
+          expectedReadinessHash: readiness.readinessHash,
+        },
+        "valid-token",
+        "unassigned-key",
+        otherPropertyId,
+      ),
+      getStatus(app, otherPropertyId),
+      post(
+        app,
+        {
+          expectedSourceManifestHash: readiness.sourceManifestHash,
+          expectedReadinessHash: readiness.readinessHash,
+        },
+        "valid-token",
+        "foreign-key",
+        foreignPropertyId,
+      ),
+      getStatus(app, foreignPropertyId),
+    ]);
+
+    expect(responses.map(({ statusCode, body }) => ({ statusCode, body }))).toEqual(
+      Array(4).fill({
+        statusCode: 403,
+        body: {
+          code: "forbidden",
+          message: "Booking publication requires an entitled hotel-group property.",
+        },
+      }),
+    );
+    expect(provider.calls).toBe(0);
+    expect(repository.requestCalls).toHaveLength(0);
+    expect(repository.statusCalls).toHaveLength(0);
+  });
 
   it("runs authorization before Fastify parses a malformed body", async () => {
     const repository = fakeRepository();
@@ -249,43 +384,109 @@ function testApp(
   provider: BookingPublicationReadinessProvider,
   options: AuthOptions = {},
 ) {
+  const propertyScope =
+    options.propertyScope === undefined
+      ? membershipPropertyScope()
+      : options.propertyScope === null
+        ? null
+        : membershipPropertyScope(options.propertyScope);
   const app = buildApp({
     logger: false,
-    bookingPublication: { repository, readinessProvider: provider },
+    bookingPublication: {
+      propertyAccessRepository: {
+        findMembershipPropertyScope: async () => propertyScope,
+      },
+      repository,
+      readinessProvider: provider,
+    },
   });
   app.decorateRequest("authContext", null);
   app.addHook("onRequest", async (request) => {
     if (request.headers.authorization !== "Bearer valid-token") return;
     request.authContext = {
-      actor: { internalUserId: actorUserId },
-      selectedOrganization: { organizationId, kind: options.kind ?? "hotel_group" },
-      membership: { permissions: options.permissions ?? ["booking.settings.manage"] },
-      linkedResources: options.links ?? [link()],
-      entitlements: options.entitlements ?? [entitlement()],
+      actor: {
+        internalUserId: actorUserId,
+        providerIdentity: { provider: "workos", providerUserId: "user_1" },
+        email: "owner@example.com",
+        status: "active",
+      },
+      selectedOrganization: {
+        organizationId,
+        kind: options.kind ?? "hotel_group",
+        status: "active",
+      },
+      membership: {
+        membershipId: "85858585-8585-4585-8585-858585858507",
+        status: options.membershipStatus ?? "active",
+        roleKey: "hotel_owner",
+        workosRoleSlugs: ["hotel_owner"],
+        permissions: [...(options.permissions ?? ["booking.settings.manage"])],
+      },
+      linkedResources: [...(options.links ?? links())],
+      entitlements: [...(options.entitlements ?? [entitlement()])],
+      locale: "en",
+      currency: "EUR",
       audit: { requestId: "request-1", source: "api", receivedAt: "2026-08-02T12:00:00Z" },
-    } as RequestContext;
+    } satisfies RequestContext;
   });
   return app;
 }
 
-function entitlement(status: ProductEntitlement["status"] = "active"): ProductEntitlement {
+function entitlement(
+  status: ProductEntitlement["status"] = "active",
+  resourceId = propertyId,
+): ProductEntitlement {
   return {
     product: "booking",
     key: "booking-engine",
     status,
-    resource: { product: "booking", resourceType: "booking_hotel", resourceId: propertyId },
+    resource: { product: "booking", resourceType: "booking_hotel", resourceId },
   };
 }
 
-function link(overrides: Partial<LinkedResource> = {}): LinkedResource {
+function membershipPropertyScope(
+  overrides: Partial<MembershipPropertyScope> = {},
+): MembershipPropertyScope {
+  return {
+    mode: "all",
+    roleKey: "hotel_owner",
+    accessOrigin: "agency",
+    assignedPropertyIds: [],
+    ...overrides,
+  };
+}
+
+function canonicalLink(
+  relationship: LinkedResource["relationship"] = "owner",
+  resourceId = propertyId,
+): LinkedResource {
+  return {
+    product: "hotel_catalog",
+    resourceType: "property",
+    resourceId,
+    relationship,
+    status: "active",
+  };
+}
+
+function targetLink(
+  relationship: LinkedResource["relationship"] = "operator",
+  resourceId = propertyId,
+): LinkedResource {
   return {
     product: "booking",
     resourceType: "booking_hotel",
-    resourceId: propertyId,
-    relationship: "operator",
+    resourceId,
+    relationship,
     status: "active",
-    ...overrides,
   };
+}
+
+function links(
+  relationship: LinkedResource["relationship"] = "owner",
+  resourceId = propertyId,
+): LinkedResource[] {
+  return [canonicalLink(relationship, resourceId), targetLink(relationship, resourceId)];
 }
 
 function operation(status: BookingPublicationOperation["status"]): BookingPublicationOperation {
@@ -353,15 +554,24 @@ async function post(
   body: Record<string, unknown>,
   token: string | null = "valid-token",
   key: string | null = "publication-key",
+  targetPropertyId = propertyId,
 ) {
   const headers: Record<string, string> = {};
   if (token !== null) headers.authorization = `Bearer ${token}`;
   if (key !== null) headers["idempotency-key"] = key;
   return injectJson<Record<string, unknown>>(target, {
     method: "POST",
-    url: `/api/hotel-setup/properties/${propertyId}/publications/booking`,
+    url: `/api/hotel-setup/properties/${targetPropertyId}/publications/booking`,
     headers,
     payload: { expectedActiveContentRevisionId: null, ...body },
+  });
+}
+
+async function getStatus(target: ReturnType<typeof buildApp>, targetPropertyId = propertyId) {
+  return injectJson<Record<string, unknown>>(target, {
+    method: "GET",
+    url: `/api/hotel-setup/properties/${targetPropertyId}/publications/booking/${operationId}`,
+    headers: { authorization: "Bearer valid-token" },
   });
 }
 

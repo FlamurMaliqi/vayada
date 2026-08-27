@@ -36,6 +36,14 @@ describe("adaptive property setup production mounts", () => {
         propertyAccessRepository,
         readinessPort: { getBookingDesignReadiness: ownerPort },
       },
+      bookingPublication: {
+        propertyAccessRepository,
+        repository: {
+          requestPublication: ownerPort,
+          getPublicationStatus: ownerPort,
+        },
+        readinessProvider: { getBookingReadiness: ownerPort },
+      },
       pmsRoomPublication: {
         mediaCommandPort: { assignRoomTypeMedia: ownerPort },
         amenitiesCommandPort: { confirmRoomTypeAmenities: ownerPort },
@@ -49,6 +57,7 @@ describe("adaptive property setup production mounts", () => {
       `/api/marketplace/properties/${propertyId}/hotel-collaboration-preferences`,
       `/api/booking/properties/${propertyId}/booking-design`,
       `/api/booking/properties/${propertyId}/booking-design/readiness`,
+      `/api/hotel-setup/properties/${propertyId}/publications/booking/${propertyId}`,
       `/api/pms/properties/${propertyId}/room-publication-snapshot`,
     ]) {
       const response = await app.inject({ method: "GET", url });
