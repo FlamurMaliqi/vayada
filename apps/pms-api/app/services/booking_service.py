@@ -711,8 +711,6 @@ async def _create_card_payment_intent_for_draft(
     application_fee_cents = 0
     split = {"platform_fee": 0.0, "affiliate_commission": 0.0}
     if stripe_account:
-        # Keep applying due plan switches for other legacy billing consumers.
-        await fetch_billing_config(hotel_id)
         affiliate_commission_pct = 0.0
         if affiliate_id:
             affiliate_commission_pct = (

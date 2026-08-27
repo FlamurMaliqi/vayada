@@ -20,8 +20,8 @@ from app.repositories.hotel_repo import HotelRepository
 from app.repositories.room_block_repo import RoomBlockRepository
 from app.repositories.room_repo import RoomRepository
 from app.repositories.room_type_repo import RoomTypeRepository
-from app.services.availability_service import occupancy_for_range
 from app.services import fixed_plan_billing
+from app.services.availability_service import occupancy_for_range
 from app.utils import get_hotel_id, parse_jsonb
 
 logger = logging.getLogger(__name__)
