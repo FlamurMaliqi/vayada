@@ -62,6 +62,7 @@ import {
 } from "./platform/workosWebhooks.js";
 import { createPublicRuntimeRepositories } from "./publicRuntime.js";
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
+import { createPgPmsLinkedInventoryGroupCommandRepository } from "./domains/pmsLinkedInventoryGroupRepository.js";
 import { createTargetBookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
 import { createTargetPmsInventoryPublicOfferProjection } from "./domains/pmsInventoryPublicOfferProjection.js";
 import { createTargetPmsInventoryReservationPort } from "./domains/pmsInventoryReservation.js";
@@ -371,6 +372,9 @@ const pmsOperationsCommandRepository = pmsOperationsRepository
       stripePaymentProvider: stripeBookingPaymentProvider,
       roomAssignmentOptimization: createPmsRoomAssignmentOptimizationTriggerPort(),
     })
+  : undefined;
+const pmsLinkedInventoryGroupCommandRepository = pmsOperationsRepository
+  ? createPgPmsLinkedInventoryGroupCommandRepository({ connectionString: targetDatabaseUrl })
   : undefined;
 
 const bookingAcceptanceSettings = createTargetBookingAcceptanceSettingsPort({
@@ -1117,6 +1121,7 @@ const app = buildApp({
   pmsModuleActivationRepository,
   pmsReviewRepository: createPgPmsReviewRepository({ connectionString: targetDatabaseUrl }),
   pmsOperationsCommandRepository,
+  pmsLinkedInventoryGroupCommandRepository,
   bookingAcceptanceSettings,
   pmsRoomAssignmentSettings,
   pmsRoomAssignmentHistory,

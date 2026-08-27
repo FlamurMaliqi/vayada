@@ -177,6 +177,7 @@ import {
   type PlatformPropertyLifecycleRoutesOptions,
 } from "./routes/platform/admin/propertyLifecycle.js";
 import { registerPmsOperationsRoutes } from "./routes/pmsOperations.js";
+import type { PmsLinkedInventoryGroupCommandRepository } from "./domains/pmsLinkedInventoryGroupRepository.js";
 import {
   registerPmsManualBookingPreviewRoutes,
   type PmsManualBookingPreviewRoutesOptions,
@@ -248,6 +249,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   pmsChannexManagement?: PmsChannexManagementRoutesOptions;
   pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
   pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
+  pmsLinkedInventoryGroupCommandRepository?: PmsLinkedInventoryGroupCommandRepository;
   pmsInventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
   bookingGuestPiiPort?: BookingGuestPiiPort;
   pmsOperationsAllowedOrigins?: string[];
@@ -632,6 +634,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       repository: options.pmsOperationsRepository,
       checkoutChargeMarkPaidFreezeEnabled: options.pmsCheckoutChargeMarkPaidFreezeEnabled,
       commandRepository: options.pmsOperationsCommandRepository,
+      linkedInventoryGroupCommandRepository: options.pmsLinkedInventoryGroupCommandRepository,
       resolveOnboardingRoomCurrency: async (propertyId) =>
         (await options.bookingSettingsRepository?.findPropertySettingsByHotelId?.(propertyId))
           ?.defaultCurrency ?? null,
