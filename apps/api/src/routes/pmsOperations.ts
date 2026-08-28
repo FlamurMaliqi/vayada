@@ -46,7 +46,12 @@ import type {
   PmsRoomType,
   PmsSourceFreshness,
 } from "../domains/pmsOperationsReadModel.js";
-import type { PermissionKey, RequestActor, RequestContext } from "@vayada/backend-auth";
+import type {
+  PermissionKey,
+  RequestActor,
+  RequestContext,
+  ResourceRelationship,
+} from "@vayada/backend-auth";
 import { hasPermission, type PropertyAccessRepository } from "@vayada/backend-authorization";
 import { enforceRoutePolicy } from "./policy.js";
 import { enforcePmsPropertyRoutePolicy } from "./pmsPropertyPolicy.js";
@@ -1781,7 +1786,17 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsRoomOptimizationManagePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyAccessPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.operations.manage",
+          options.propertyAccessRepository,
+          ["owner", "operator"],
+        ))
+      )
+        return reply;
       if (!options.roomAssignmentSettings)
         return sendPmsOperationsError(
           reply,
@@ -3202,6 +3217,7 @@ async function enforcePmsPropertyAccessPolicy(
   propertyId: string,
   permission: PermissionKey,
   repository: PropertyAccessRepository | undefined,
+  allowedRelationships: readonly ResourceRelationship[] = ["owner", "operator", "front_desk"],
 ): Promise<RequestContext | null> {
   try {
     if (!repository) throw new Error("PMS property access repository is unavailable");
@@ -3210,7 +3226,7 @@ async function enforcePmsPropertyAccessPolicy(
       {
         propertyId,
         permission,
-        allowedRelationships: ["owner", "operator", "front_desk"],
+        allowedRelationships,
       },
       repository,
     );
