@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   post: vi.fn(),
   put: vi.fn(),
   patch: vi.fn(),
+  delete: vi.fn(),
   uploadImages: vi.fn(),
   resolvePropertyId: vi.fn(),
 }));
@@ -17,6 +18,7 @@ vi.mock("../api/pmsOperationsClient", () => ({
     post: mocks.post,
     put: mocks.put,
     patch: mocks.patch,
+    delete: mocks.delete,
   },
   pmsOperationsRequestOptions: { headers: { "X-Vayada-Omit-Hotel-Context": "true" } },
 }));
@@ -44,7 +46,7 @@ vi.mock("../api/unsupported", () => ({
   ),
 }));
 
-import { roomsService } from ".";
+import { linkedInventoryGroupsService, roomsService } from ".";
 
 function pmsRoomTypeItem(overrides: Record<string, unknown> = {}) {
   return {
@@ -404,5 +406,91 @@ describe("roomsService.create", () => {
       expect.objectContaining({ expectedRoomMediaRevision: 1 }),
       expect.any(Object),
     );
+  });
+});
+
+describe("linkedInventoryGroupsService", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.resolvePropertyId.mockResolvedValue("pms-property-1");
+  });
+
+  it("lists the selected property's linked groups", async () => {
+    mocks.get.mockResolvedValue({
+      propertyId: "pms-property-1",
+      items: [
+        {
+          groupId: "group-1",
+          name: "Convertible suites",
+          revision: 2,
+          memberRoomTypeIds: ["type-1", "type-2"],
+        },
+      ],
+    });
+
+    await expect(linkedInventoryGroupsService.list()).resolves.toHaveLength(1);
+    expect(mocks.get).toHaveBeenCalledWith(
+      "/api/pms/properties/pms-property-1/linked-inventory-groups",
+      expect.any(Object),
+    );
+  });
+
+  it("sends create, revisioned replace, and delete commands", async () => {
+    const group = {
+      groupId: "group-1",
+      name: "Convertible suites",
+      revision: 2,
+      memberRoomTypeIds: ["type-1", "type-2"],
+    };
+    mocks.post.mockResolvedValue({ group });
+    mocks.put.mockResolvedValue({ group: { ...group, revision: 3 } });
+    mocks.delete.mockResolvedValue({ group: null });
+
+    await linkedInventoryGroupsService.create(group.name, group.memberRoomTypeIds);
+    await linkedInventoryGroupsService.update(group);
+    await linkedInventoryGroupsService.delete(group);
+
+    expect(mocks.post).toHaveBeenCalledWith(
+      "/api/pms/properties/pms-property-1/linked-inventory-groups",
+      expect.objectContaining({
+        name: "Convertible suites",
+        memberRoomTypeIds: ["type-1", "type-2"],
+      }),
+      expect.any(Object),
+    );
+    expect(mocks.put).toHaveBeenCalledWith(
+      "/api/pms/properties/pms-property-1/linked-inventory-groups/group-1",
+      expect.objectContaining({
+        expectedRevision: 2,
+        memberRoomTypeIds: ["type-1", "type-2"],
+      }),
+      expect.any(Object),
+    );
+    expect(JSON.parse(mocks.delete.mock.calls[0]![1].body)).toMatchObject({
+      expectedRevision: 2,
+    });
+  });
+
+  it("reuses a create command after an ambiguous failure", async () => {
+    const group = {
+      groupId: "group-retry",
+      name: "Retry suites",
+      revision: 1,
+      memberRoomTypeIds: ["type-1", "type-2"],
+    };
+    mocks.post.mockRejectedValueOnce(new TypeError("network lost"));
+    mocks.post.mockResolvedValueOnce({ group });
+
+    await expect(
+      linkedInventoryGroupsService.create(
+        ` ${group.name} `,
+        [...group.memberRoomTypeIds].reverse(),
+      ),
+    ).rejects.toThrow("network lost");
+    await expect(
+      linkedInventoryGroupsService.create(group.name, group.memberRoomTypeIds),
+    ).resolves.toEqual(group);
+
+    expect(mocks.post.mock.calls[1]![1].commandId).toBe(mocks.post.mock.calls[0]![1].commandId);
   });
 });
