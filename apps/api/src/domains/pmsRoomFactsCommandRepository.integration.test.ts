@@ -43,6 +43,7 @@ const disabledRecurringSourceId = "16800000-0000-4000-8000-000000000027";
 const invalidRecurringSourceId = "16800000-0000-4000-8000-000000000028";
 const nonRefundableRecurringSourceId = "16800000-0000-4000-8000-000000000029";
 const recurringMaterializationReceiptId = "16800000-0000-4000-8000-000000000030";
+const linkedInventoryGroupId = "16800000-0000-4000-8000-000000000031";
 const acceptedAt = "2026-08-03T13:00:00.000Z";
 const roleKey = "vay1068_room_facts_integration";
 const unexpectedReferenceTable = "pms.vay1068_unexpected_room_reference";
@@ -222,6 +223,53 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS room-facts command repositor
       { status: "completed", attempt: 1 },
     ]);
     await expect(roomTypeCount()).resolves.toBe(1);
+  });
+
+  it("keeps linked group members active until lifecycle reconciliation can dissolve the group", async () => {
+    const first = await repository.createRoomTypeFacts(
+      createCommand("create-linked-first", "linked-first-draft", facts("Linked First")),
+    );
+    const second = await repository.createRoomTypeFacts(
+      createCommand("create-linked-second", "linked-second-draft", facts("Linked Second")),
+    );
+    if (!first.ok || !second.ok) throw new Error("Expected linked fixture rooms to be created");
+
+    await admin.query(
+      `INSERT INTO pms.linked_inventory_groups (id, property_id, name)
+       VALUES ($1::uuid, $2::uuid, 'Linked delete guard')`,
+      [linkedInventoryGroupId, propertyId],
+    );
+    await admin.query(
+      `UPDATE pms.room_types
+       SET linked_inventory_group_id = $1::uuid
+       WHERE property_id = $2::uuid AND id = ANY($3::uuid[])`,
+      [
+        linkedInventoryGroupId,
+        propertyId,
+        [first.response.roomType.roomTypeId, second.response.roomType.roomTypeId],
+      ],
+    );
+
+    await expect(
+      repository.safeDeleteRoomType(
+        safeDeleteCommand("delete-linked-member", first.response.roomType.roomTypeId, 1),
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "room_type_delete_blocked",
+        currentRevision: 1,
+        blockers: [{ code: "other_operational_reference", affectedCount: 1 }],
+      },
+    });
+    await expect(readRoomType(first.response.roomType.roomTypeId)).resolves.toMatchObject({
+      active: true,
+      roomFactsRevision: "1",
+    });
+    await expect(readRoomType(second.response.roomType.roomTypeId)).resolves.toMatchObject({
+      active: true,
+      roomFactsRevision: "1",
+    });
   });
 
   it("serializes concurrent stale CAS commands with durable idempotency evidence", async () => {
@@ -1153,6 +1201,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS room-facts command repositor
         ["DELETE FROM pms.room_type_media WHERE property_id = $1::uuid", [propertyId]],
         ["DELETE FROM pms.rooms WHERE property_id = $1::uuid", [propertyId]],
         ["DELETE FROM pms.room_types WHERE property_id = $1::uuid", [propertyId]],
+        ["DELETE FROM pms.linked_inventory_groups WHERE property_id = $1::uuid", [propertyId]],
         [
           "DELETE FROM booking.booking_publication_attempts WHERE property_id = $1::uuid",
           [propertyId],
