@@ -766,6 +766,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     expect(result.applied).toContain("0047");
     expect(result.applied).toContain("0090");
     expect(result.applied).toContain("0113");
+    expect(result.applied).toContain("0114");
 
     const verifyClient = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await verifyClient.connect();
@@ -5056,6 +5057,101 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
       await expect(
         verifyClient.query(`DELETE FROM pms.room_blocks WHERE id = $1`, [manualBlockId]),
       ).rejects.toMatchObject({ code: "23503" });
+
+      const linkedAssignmentId = "aaaaaaaa-6666-4666-8666-aaaaaaaaaaa1";
+      await expect(
+        verifyClient.query(
+          `UPDATE pms.inventory_days
+           SET linked_stop_sell=TRUE, linked_source_revision=99, available_count=0
+           WHERE property_id=$1 AND room_type_id=$2 AND stay_date=DATE '2026-03-01'`,
+          [distributionPropertyId, distributionRoomTypeId],
+        ),
+      ).rejects.toMatchObject({
+        code: "23514",
+        constraint: "chk_pms_inventory_days_linked_requires_canonical",
+      });
+      await verifyClient.query("SET session_replication_role = replica");
+      await verifyClient.query(
+        `INSERT INTO pms.operational_booking_assignments
+           (id, property_id, guest_booking_id, room_type_id)
+         VALUES ($1, $2, 'aaaaaaaa-7777-4777-8777-aaaaaaaaaaa1', $3)`,
+        [linkedAssignmentId, distributionPropertyId, distributionRoomTypeId],
+      );
+      await verifyClient.query(
+        `INSERT INTO pms.inventory_days
+           (property_id, room_type_id, stay_date, total_count, available_count,
+            assigned_count, blocked_count, status, source_freshness, calendar_revision,
+            inventory_revision, generated_sellable_limit_count,
+            effective_sellable_limit_count, generated_source_revision,
+            channel_source_revision, manual_source_revision, block_source_revision,
+            booking_source_revision, linked_stop_sell, linked_source_revision)
+         VALUES ($1, $2, DATE '2026-03-03', 5, 5, 0, 0, 'open', '{}'::jsonb,
+                 1, 1, 5, 5, 1, 0, 0, 0, 0, FALSE, 0)`,
+        [distributionPropertyId, distributionRoomTypeId],
+      );
+      await verifyClient.query("SET session_replication_role = origin");
+      await expect(
+        verifyClient.query(
+          `INSERT INTO pms.room_blocks
+             (property_id, room_type_id, starts_on, ends_on, block_kind,
+              source_room_type_id, source_assignment_id)
+           VALUES ($1, $2, DATE '2026-03-03', DATE '2026-03-03',
+                   'linked_booking', $3, $4)`,
+          [distributionPropertyId, linkedRoomTypeIds[0], linkedRoomTypeIds[1], linkedAssignmentId],
+        ),
+      ).rejects.toMatchObject({ code: "23503" });
+      await verifyClient.query(
+        `UPDATE pms.inventory_days
+         SET linked_stop_sell=TRUE, linked_source_revision=1,
+             inventory_revision=2, available_count=0
+         WHERE property_id=$1 AND room_type_id=$2 AND stay_date=DATE '2026-03-03'`,
+        [distributionPropertyId, distributionRoomTypeId],
+      );
+      const { rows: linkedStopped } = await verifyClient.query<{ available_count: number }>(
+        `SELECT available_count FROM pms.inventory_days
+         WHERE property_id=$1 AND room_type_id=$2 AND stay_date=DATE '2026-03-03'`,
+        [distributionPropertyId, distributionRoomTypeId],
+      );
+      expect(linkedStopped).toEqual([{ available_count: 0 }]);
+      await expect(
+        verifyClient.query(
+          `UPDATE pms.inventory_days SET linked_stop_sell=FALSE,
+             inventory_revision=3, available_count=5
+           WHERE property_id=$1 AND room_type_id=$2 AND stay_date=DATE '2026-03-03'`,
+          [distributionPropertyId, distributionRoomTypeId],
+        ),
+      ).rejects.toMatchObject({
+        code: "23514",
+        constraint: "chk_pms_inventory_days_linked_transition",
+      });
+      await expect(
+        verifyClient.query(
+          `UPDATE pms.inventory_days SET linked_stop_sell=FALSE, linked_source_revision=2,
+             assigned_count=1, booking_source_revision=1, inventory_revision=3, available_count=4
+           WHERE property_id=$1 AND room_type_id=$2 AND stay_date=DATE '2026-03-03'`,
+          [distributionPropertyId, distributionRoomTypeId],
+        ),
+      ).rejects.toMatchObject({
+        code: "23514",
+        constraint: "chk_pms_inventory_days_owner_revision_transition",
+      });
+      await verifyClient.query(
+        `UPDATE pms.inventory_days SET linked_stop_sell=FALSE, linked_source_revision=2,
+           blocked_count=1, block_source_revision=1, inventory_revision=3, available_count=4
+         WHERE property_id=$1 AND room_type_id=$2 AND stay_date=DATE '2026-03-03'`,
+        [distributionPropertyId, distributionRoomTypeId],
+      );
+      await expect(
+        verifyClient.query(
+          `UPDATE pms.inventory_days SET linked_stop_sell=TRUE, linked_source_revision=3,
+             inventory_revision=4, available_count=1
+           WHERE property_id=$1 AND room_type_id=$2 AND stay_date=DATE '2026-03-03'`,
+          [distributionPropertyId, distributionRoomTypeId],
+        ),
+      ).rejects.toMatchObject({
+        code: "23514",
+        constraint: "chk_pms_inventory_days_canonical_availability",
+      });
     } finally {
       await verifyClient.end();
     }
