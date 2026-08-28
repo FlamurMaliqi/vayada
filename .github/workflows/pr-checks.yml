@@ -150,6 +150,7 @@ jobs:
         run: >-
           npm --workspace vayada-api run test --
           --no-file-parallelism
+          src/domains/pmsLinkedInventoryGroupRepository.integration.test.ts
           src/domains/pmsRoomFactsCommandRepository.integration.test.ts
           src/domains/pmsPhysicalRoomUnitReconcileRepository.integration.test.ts
           src/domains/pmsRoomPublicationCommandRepository.integration.test.ts
