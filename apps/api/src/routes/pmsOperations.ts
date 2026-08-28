@@ -30,6 +30,7 @@ import {
 } from "../domains/bookingAcceptanceSettings.js";
 import type {
   PmsCalendarDay,
+  PmsLinkedInventoryGroup,
   PmsOperationsReadRepository,
   PmsOperationalReservation,
   PmsMoney,
@@ -72,6 +73,13 @@ export type PmsRoomTypesResponse = {
   contractVersion: PmsOperationsContractVersion;
   propertyId: string;
   items: PmsRoomType[];
+  sourceFreshness: PmsSourceFreshness;
+};
+
+export type PmsLinkedInventoryGroupsResponse = {
+  contractVersion: PmsOperationsContractVersion;
+  propertyId: string;
+  items: PmsLinkedInventoryGroup[];
   sourceFreshness: PmsSourceFreshness;
 };
 
@@ -663,6 +671,7 @@ export type PmsCheckOutCommandResponse = {
   commandMeta: PmsCommandMeta;
 };
 
+// prettier-ignore
 export type PmsAssignmentCommandConflictCode =
   | "version_conflict"
   | "room_unavailable"
@@ -1060,6 +1069,7 @@ type PmsOperationsError = {
   message: string;
 };
 
+// prettier-ignore
 type PmsOperationsAuthorizationErrorCode =
   | "missing_permission"
   | "missing_entitlement"
@@ -1087,6 +1097,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/rooms/reorder",
     "/properties/:propertyId/room-types",
     "/properties/:propertyId/room-types/:roomTypeId",
+    "/properties/:propertyId/linked-inventory-groups",
     "/properties/:propertyId/plan-limits",
     "/properties/:propertyId/calendar",
     "/properties/:propertyId/room-blocks",
@@ -1308,6 +1319,37 @@ export async function registerPmsOperationsRoutes(
         return sendPmsOperationsError(
           reply,
           readModelUnavailable("PMS room types read model is unavailable."),
+        );
+      }
+    },
+  );
+
+  app.get<{ Params: PmsPropertyParams }>(
+    "/properties/:propertyId/linked-inventory-groups",
+    async (request, reply) => {
+      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+        return sendPmsOperationsError(reply, originNotAllowed());
+      }
+      const { propertyId } = request.params;
+      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (!repository.listLinkedInventoryGroupsByPropertyId) {
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS linked inventory read model is unavailable."),
+        );
+      }
+      try {
+        const result = await repository.listLinkedInventoryGroupsByPropertyId(propertyId);
+        return {
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          items: result.items,
+          sourceFreshness: result.sourceFreshness ?? {},
+        } satisfies PmsLinkedInventoryGroupsResponse;
+      } catch {
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS linked inventory read model is unavailable."),
         );
       }
     },

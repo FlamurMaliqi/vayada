@@ -91,6 +91,13 @@ export type PmsRoomBlockSummary = {
   status: PmsRoomBlockStatus;
 };
 
+export type PmsLinkedInventoryGroup = {
+  groupId: string;
+  name: string;
+  revision: number;
+  memberRoomTypeIds: string[];
+};
+
 export type PmsCalendarStatus = "open" | "closed" | "limited";
 
 export type PmsCalendarDay = {
@@ -109,6 +116,7 @@ export type PmsCalendarDay = {
 
 export type PmsReservationSource = "direct_booking" | "channel" | "manual" | "migration";
 
+// prettier-ignore
 export type PmsOperationalAssignmentStatus =
   | "pending"
   | "assigned"
@@ -118,6 +126,7 @@ export type PmsOperationalAssignmentStatus =
   | "canceled"
   | "released";
 
+// prettier-ignore
 export type PmsExpectedPaymentMethod =
   | "unknown"
   | "pay_at_property"
@@ -203,6 +212,9 @@ export type PmsOperationsPaginatedReadResult<T> = PmsOperationsReadResult<T> & {
 export type PmsOperationsReadRepository = {
   listRoomsByPropertyId(propertyId: string): Promise<PmsOperationsReadResult<PmsRoom>>;
   listRoomTypesByPropertyId(propertyId: string): Promise<PmsOperationsReadResult<PmsRoomType>>;
+  listLinkedInventoryGroupsByPropertyId?(
+    propertyId: string,
+  ): Promise<PmsOperationsReadResult<PmsLinkedInventoryGroup>>;
   findRoomTypeById(propertyId: string, roomTypeId: string): Promise<PmsRoomType | null>;
   listCalendarDaysByPropertyId(
     propertyId: string,
@@ -286,6 +298,23 @@ export function createTargetPmsOperationsReadRepository(config: {
 
     async listRoomTypesByPropertyId(propertyId) {
       return listRoomTypes(pool, propertyId);
+    },
+
+    async listLinkedInventoryGroupsByPropertyId(propertyId) {
+      const result = await pool.query<TargetPmsLinkedInventoryGroupRow>(
+        `SELECT group_row.id::text AS "groupId", group_row.name, group_row.revision,
+                COALESCE(array_agg(room_type.id::text ORDER BY room_type.sort_order, room_type.id)
+                  FILTER (WHERE room_type.id IS NOT NULL), ARRAY[]::text[]) AS "memberRoomTypeIds"
+         FROM pms.linked_inventory_groups group_row
+         LEFT JOIN pms.room_types room_type
+           ON room_type.property_id=group_row.property_id
+          AND room_type.linked_inventory_group_id=group_row.id
+         WHERE group_row.property_id=$1::uuid
+         GROUP BY group_row.id, group_row.name, group_row.revision
+         ORDER BY lower(group_row.name), group_row.id`,
+        [propertyId],
+      );
+      return { items: result.rows.map(toPmsLinkedInventoryGroup), sourceFreshness: {} };
     },
 
     async getPhysicalRoomAvailability(propertyId, stays) {
@@ -692,6 +721,13 @@ type TargetPmsRoomBlockRow = {
   blockedCount: number;
   reason: string;
   status: PmsRoomBlockStatus;
+};
+
+type TargetPmsLinkedInventoryGroupRow = {
+  groupId: string;
+  name: string;
+  revision: number | string;
+  memberRoomTypeIds: string[];
 };
 
 type TargetPmsCalendarDayRow = {
@@ -1162,6 +1198,15 @@ function toPmsRoomBlockSummary(row: TargetPmsRoomBlockRow): PmsRoomBlockSummary 
     blockedCount: toInteger(row.blockedCount),
     reason: row.reason,
     status: row.status,
+  };
+}
+
+function toPmsLinkedInventoryGroup(row: TargetPmsLinkedInventoryGroupRow): PmsLinkedInventoryGroup {
+  return {
+    groupId: row.groupId,
+    name: row.name,
+    revision: toInteger(row.revision),
+    memberRoomTypeIds: row.memberRoomTypeIds,
   };
 }
 
