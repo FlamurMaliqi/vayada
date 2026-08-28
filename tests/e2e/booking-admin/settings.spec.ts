@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { stripeOnboardingPropertyKey } from "../../../apps/booking-admin/lib/utils/stripeOnboardingRefresh";
 import {
   BOOKING_ADMIN_CUSTOM_DOMAIN_PATH,
   BOOKING_ADMIN_FINANCE_PLAN_STATUS_PATH,
@@ -668,7 +669,7 @@ test.describe("booking-admin settings no-legacy guard", () => {
     );
   });
 
-  test("relinks a persisted Stripe account without rewriting payment settings", async ({
+  test("relinks a persisted Stripe account once without rewriting payment settings", async ({
     page,
   }) => {
     test.skip(
@@ -716,6 +717,7 @@ test.describe("booking-admin settings no-legacy guard", () => {
       `**/api/finance/properties/${BOOKING_ADMIN_PROPERTY_ID}/provider-accounts/provider_account_e2e/onboarding-link`,
       async (route) => {
         onboardingLinks += 1;
+        await new Promise((resolve) => setTimeout(resolve, 250));
         await route.fulfill({
           json: {
             contractVersion: "finance-route-contracts.v1",
@@ -732,12 +734,180 @@ test.describe("booking-admin settings no-legacy guard", () => {
 
     await page.goto("/settings?section=payments");
     const popup = page.waitForEvent("popup");
-    await page.getByRole("button", { name: "Complete Onboarding" }).click();
+    await page.getByRole("button", { name: "Complete Onboarding" }).dblclick();
     const onboarding = await popup;
     await onboarding.waitForURL("about:blank#stripe-relink");
 
     expect(settingsWrites).toBe(0);
     expect(onboardingLinks).toBe(1);
     await onboarding.close();
+  });
+
+  test("reconciles Stripe on return and reloads the connected payment state", async ({
+    page,
+  }, testInfo) => {
+    test.skip(
+      !PROD,
+      "Requires a production booking-admin build so the authenticated shell hydrates.",
+    );
+    const assertHealthy = watchPageHealth(page, testInfo);
+    const assertNoLegacyCalls = watchNoLegacyCalls(page, testInfo, "booking-admin-settings");
+    await mockBookingAdminAuthenticatedSession(page);
+    await mockBookingAdminShellRoutes(page);
+    const onboardingFlowId = "stripe-onboarding-e2e-flow";
+    await page.addInitScript(
+      ({ key, value }) => {
+        if (window.location.search.includes("stripe=return")) {
+          window.localStorage.setItem(key, value);
+        }
+      },
+      {
+        key: stripeOnboardingPropertyKey(BOOKING_ADMIN_PROPERTY_ID),
+        value: onboardingFlowId,
+      },
+    );
+
+    let stripeConnected = false;
+    let returnMissingAccount = false;
+    let paymentSettingsReads = 0;
+    let releaseInitialRead!: () => void;
+    let confirmInitialReadFinished!: () => void;
+    const initialReadGate = new Promise<void>((resolve) => {
+      releaseInitialRead = resolve;
+    });
+    const initialReadFinished = new Promise<void>((resolve) => {
+      confirmInitialReadFinished = resolve;
+    });
+    await page.route(`**${BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH}`, async (route) => {
+      paymentSettingsReads += 1;
+      const isInitialRead = paymentSettingsReads === 1;
+      if (isInitialRead) await initialReadGate;
+      await route.fulfill({
+        json: {
+          contractVersion: "finance-route-contracts.v1",
+          propertyId: BOOKING_ADMIN_PROPERTY_ID,
+          paymentSettings: {
+            paymentsEnabled: true,
+            paymentProvider: "stripe",
+            acceptedMethods: ["card"],
+            defaultCurrency: "EUR",
+            supportedCurrencies: ["EUR"],
+            depositPolicy: {},
+            requiresManualReview: false,
+            providerAccount: {
+              providerAccountId: returnMissingAccount ? null : "provider_account_e2e",
+              provider: returnMissingAccount ? null : "stripe",
+              status: returnMissingAccount
+                ? "not_configured"
+                : stripeConnected
+                  ? "active"
+                  : "setup_incomplete",
+              onboardingStatus: returnMissingAccount
+                ? "not_started"
+                : stripeConnected
+                  ? "completed"
+                  : "invited",
+              chargesEnabled: !returnMissingAccount && stripeConnected,
+              payoutsEnabled: !returnMissingAccount && stripeConnected,
+              capabilities:
+                !returnMissingAccount && stripeConnected ? ["card_payments", "transfers"] : [],
+            },
+          },
+        },
+      });
+      if (isInitialRead) confirmInitialReadFinished();
+    });
+
+    const reconciliationBodies: Array<Record<string, unknown>> = [];
+    let failReconciliation = false;
+    const forbiddenSetupRequests: string[] = [];
+    page.on("request", (request) => {
+      const pathname = new URL(request.url()).pathname;
+      if (
+        request.method() === "POST" &&
+        (pathname.endsWith("/provider-accounts/stripe") || pathname.endsWith("/onboarding-link"))
+      ) {
+        forbiddenSetupRequests.push(pathname);
+      }
+    });
+    await page.route(
+      `**/api/finance/properties/${BOOKING_ADMIN_PROPERTY_ID}/provider-accounts/stripe/reconcile`,
+      async (route) => {
+        const body = route.request().postDataJSON() as Record<string, unknown>;
+        reconciliationBodies.push(body);
+        expect(body.idempotencyKey).toBe(body.commandId);
+        expect(body).not.toHaveProperty("providerAccountRef");
+        if (failReconciliation) {
+          await route.fulfill({ status: 503, json: { error: "temporarily unavailable" } });
+          return;
+        }
+        stripeConnected = true;
+        await route.fulfill({
+          json: {
+            contractVersion: "finance-route-contracts.v1",
+            propertyId: BOOKING_ADMIN_PROPERTY_ID,
+            providerAccount: {
+              provider: "stripe",
+              status: "setup_incomplete",
+              onboardingStatus: "invited",
+              chargesEnabled: false,
+              payoutsEnabled: false,
+              detailsSubmitted: false,
+              cardPaymentsStatus: "pending",
+              ready: false,
+            },
+          },
+        });
+      },
+    );
+
+    await page.goto("/settings?stripe=return");
+
+    await expect(page).toHaveURL(/\/settings\?section=payments$/);
+    await expect(page.getByText("Stripe is connected.")).toBeVisible();
+    await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+    expect(reconciliationBodies).toEqual(
+      [1, 2, 3].map((attempt) => ({
+        commandId: `${onboardingFlowId}:attempt:${attempt}`,
+        idempotencyKey: `${onboardingFlowId}:attempt:${attempt}`,
+      })),
+    );
+    expect(paymentSettingsReads).toBeGreaterThanOrEqual(2);
+
+    releaseInitialRead();
+    await initialReadFinished;
+    await page.waitForTimeout(100);
+    await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+    await expect(page.getByText("Pending Onboarding", { exact: true })).toHaveCount(0);
+    const markerKey = stripeOnboardingPropertyKey(BOOKING_ADMIN_PROPERTY_ID);
+    await expect
+      .poll(() => page.evaluate((key) => window.localStorage.getItem(key), markerKey))
+      .toBe(`settled:${onboardingFlowId}`);
+
+    await page.goto("/settings?section=payments");
+    await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+    const readsBeforeOriginalFocus = paymentSettingsReads;
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect
+      .poll(() => page.evaluate((key) => window.localStorage.getItem(key), markerKey))
+      .toBeNull();
+    expect(reconciliationBodies).toHaveLength(3);
+    expect(paymentSettingsReads).toBeGreaterThan(readsBeforeOriginalFocus);
+    await assertHealthy();
+
+    stripeConnected = false;
+    returnMissingAccount = true;
+    failReconciliation = true;
+    await page.goto("/settings?stripe=return");
+    await expect(page).toHaveURL(/\/settings\?section=payments$/);
+    await expect(page.getByText("Couldn't refresh Stripe status.")).toBeVisible();
+    await expect(page.getByText("Pending Onboarding", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Check Stripe status" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Connect payment account" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Check Stripe status" }).click();
+    await expect(page.getByText("Couldn't refresh Stripe status.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Connect payment account" })).toHaveCount(0);
+    expect(forbiddenSetupRequests).toEqual([]);
+    await assertNoLegacyCalls();
   });
 });

@@ -12,6 +12,7 @@ import {
   getFinancePaymentSettings,
   issueFinanceStripeOnboardingLink,
   payAtHotelMethodsFromFinance,
+  reconcileFinanceStripeProviderAccount,
   updateFinancePaymentSettings,
   type UpdateFinancePaymentSettingsBody,
 } from "./financePaymentSettingsClient";
@@ -210,6 +211,49 @@ describe("payment settings target clients", () => {
         options: omitHotelContext,
       },
     ]);
+  });
+
+  it("reconciles only the property's stored Stripe account", async () => {
+    const calls: Array<{ endpoint: string; body?: unknown; options?: RequestInit }> = [];
+    const client = {
+      post: async <T>(endpoint: string, body?: unknown, options?: RequestInit) => {
+        calls.push({ endpoint, body, options });
+        return {
+          contractVersion: "finance-route-contracts.v1",
+          propertyId: "property/with space",
+          providerAccount: {
+            provider: "stripe",
+            status: "active",
+            onboardingStatus: "completed",
+            chargesEnabled: true,
+            payoutsEnabled: true,
+            detailsSubmitted: true,
+            cardPaymentsStatus: "active",
+            ready: true,
+          },
+        } as T;
+      },
+    } satisfies Pick<ApiClient, "post">;
+
+    await reconcileFinanceStripeProviderAccount(
+      {
+        propertyId: " property/with space ",
+        commandId: "stripe-onboarding-flow:attempt:1",
+      },
+      client,
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      endpoint:
+        "/api/finance/properties/property%2Fwith%20space/provider-accounts/stripe/reconcile",
+      body: {
+        commandId: "stripe-onboarding-flow:attempt:1",
+        idempotencyKey: "stripe-onboarding-flow:attempt:1",
+      },
+      options: omitHotelContext,
+    });
+    expect(calls[0]?.body).not.toHaveProperty("providerAccountRef");
   });
 
   it("maps Booking Admin toggles to strict Finance payment methods", () => {

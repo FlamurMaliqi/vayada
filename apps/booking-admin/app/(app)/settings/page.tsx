@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { getBookingHotelPropertyLink } from "@/services/api/bookingPropertyLinkClient";
 import {
   buildFinancePaymentSettingsBody,
@@ -9,8 +9,10 @@ import {
   FinancePaymentSettingsClientError,
   getFinancePaymentSettings,
   issueFinanceStripeOnboardingLink,
+  reconcileFinanceStripeProviderAccount,
   updateFinancePaymentSettings,
   payAtHotelMethodsFromFinance,
+  type FinancePaymentSettingsResponse,
 } from "@/services/api/financePaymentSettingsClient";
 import {
   createFixedPlanCheckout,
@@ -59,6 +61,12 @@ import {
   type SettingsSectionId,
 } from "@/lib/utils/settingsSectionUrl";
 import { continueStripeAfterSavingSettings } from "@/lib/utils/stripeOnboarding";
+import {
+  coordinateStripeRefresh,
+  refreshStripeAfterOnboarding,
+  tryMarkStripeOnboardingStarted,
+  watchStripeOnboardingRefresh,
+} from "@/lib/utils/stripeOnboardingRefresh";
 
 // Audit-driven section IDs (VAY-400):
 // - "payments" separates Stripe Connect + Xendit from billing (billing = what
@@ -82,6 +90,18 @@ function readBookingHotelId(settings: PropertySettings): string {
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function isFinanceStripeReady(response: FinancePaymentSettingsResponse): boolean {
+  const account = response.paymentSettings.providerAccount;
+  return (
+    account.provider === "stripe" &&
+    account.status === "active" &&
+    account.onboardingStatus === "completed" &&
+    account.chargesEnabled &&
+    account.payoutsEnabled &&
+    account.capabilities.includes("card_payments")
+  );
 }
 
 function formatBillingAmount(amountMinor: number): string {
@@ -271,6 +291,12 @@ export default function SettingsPage() {
   );
   const [connectCountry, setConnectCountry] = useState("AT");
   const [creatingAccount, setCreatingAccount] = useState(false);
+  const [issuingStripeOnboardingLink, setIssuingStripeOnboardingLink] = useState(false);
+  const stripeOnboardingLinkPending = useRef(false);
+  const [refreshingStripe, setRefreshingStripe] = useState(false);
+  const stripeRefreshAbort = useRef<AbortController | null>(null);
+  const paymentSettingsLoadVersion = useRef(0);
+  const [stripeAccountCreationBlocked, setStripeAccountCreationBlocked] = useState(false);
   const [paymentProvider, setPaymentProvider] = useState<"stripe" | "xendit" | "vayada">("stripe");
   const [xenditChannelCode, setXenditChannelCode] = useState("ID_BCA");
   const [xenditAccountNumber, setXenditAccountNumber] = useState("");
@@ -318,7 +344,49 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const applyFinancePaymentSettings = useCallback((res: FinancePaymentSettingsResponse) => {
+    const ps = res.paymentSettings;
+    const providerAccount = ps.providerAccount;
+    const stripeAccountId =
+      providerAccount.provider === "stripe" &&
+      !providerAccount.providerAccountId?.startsWith("settings-choice:")
+        ? providerAccount.providerAccountId
+        : null;
+    setStripeAccountId(stripeAccountId);
+    setStripeOnboarded(isFinanceStripeReady(res));
+    setPaymentProvider(toSettingsPaymentProvider(ps.paymentProvider));
+    setXenditChannelCode("ID_BCA");
+    setXenditAccountNumber("");
+    setXenditAccountHolderName("");
+    setSettings((prev) => ({
+      ...prev,
+      pay_at_property_enabled: ps.acceptedMethods.includes("pay_at_property"),
+      pay_at_hotel_methods: payAtHotelMethodsFromFinance(ps.acceptedMethods),
+      online_card_payment:
+        ps.acceptedMethods.includes("card") || ps.acceptedMethods.includes("xendit"),
+      bank_transfer: ps.acceptedMethods.includes("bank_transfer"),
+      paypal_enabled: ps.acceptedMethods.includes("paypal"),
+      paypal_email: paymentPolicyText(ps.depositPolicy, "paypalEmail"),
+      paypal_payment_window_hours: paymentPolicyNumber(
+        ps.depositPolicy,
+        "paypalPaymentWindowHours",
+        24,
+      ),
+      payout_bank_name: paymentPolicyText(ps.depositPolicy, "bankName"),
+      payout_account_holder: paymentPolicyText(ps.depositPolicy, "accountHolder"),
+      payout_account_type: "account_number",
+      payout_account_number: paymentPolicyText(ps.depositPolicy, "accountNumber"),
+      payout_swift: paymentPolicyText(ps.depositPolicy, "bicSwift"),
+    }));
+    setPaymentSettingsLoaded(true);
+  }, []);
+
   useEffect(() => {
+    const paymentSettingsVersion = ++paymentSettingsLoadVersion.current;
+    const stripeReturn = new URLSearchParams(window.location.search).get("stripe");
+    if (stripeReturn === "return" || stripeReturn === "refresh") {
+      setStripeAccountCreationBlocked(true);
+    }
     setPaymentSettingsLoaded(false);
     setBillingPlanLoading(true);
     setAcceptanceLoading(true);
@@ -380,59 +448,120 @@ export default function SettingsPage() {
         const [, paymentSettings] = await Promise.all([planStatusPromise, paymentSettingsPromise]);
         return paymentSettings;
       })
-      .then((res) => {
-        if (!res) {
+      .then((paymentSettings) => {
+        if (paymentSettingsVersion !== paymentSettingsLoadVersion.current) return;
+        if (!paymentSettings) {
           setPaymentSettingsLoaded(true);
           return;
         }
-        const ps = res.paymentSettings;
-        const providerAccount = ps.providerAccount;
-        const stripeAccountId =
-          providerAccount.provider === "stripe" &&
-          !providerAccount.providerAccountId?.startsWith("settings-choice:")
-            ? providerAccount.providerAccountId
-            : null;
-        setStripeAccountId(stripeAccountId);
-        setStripeOnboarded(
-          providerAccount.provider === "stripe" &&
-            providerAccount.status === "active" &&
-            providerAccount.onboardingStatus === "completed" &&
-            providerAccount.chargesEnabled &&
-            providerAccount.payoutsEnabled &&
-            providerAccount.capabilities.includes("card_payments"),
-        );
-        setPaymentProvider(toSettingsPaymentProvider(ps.paymentProvider));
-        setXenditChannelCode("ID_BCA");
-        setXenditAccountNumber("");
-        setXenditAccountHolderName("");
-        setSettings((prev) => ({
-          ...prev,
-          pay_at_property_enabled: ps.acceptedMethods.includes("pay_at_property"),
-          pay_at_hotel_methods: payAtHotelMethodsFromFinance(ps.acceptedMethods),
-          online_card_payment:
-            ps.acceptedMethods.includes("card") || ps.acceptedMethods.includes("xendit"),
-          bank_transfer: ps.acceptedMethods.includes("bank_transfer"),
-          paypal_enabled: ps.acceptedMethods.includes("paypal"),
-          paypal_email: paymentPolicyText(ps.depositPolicy, "paypalEmail"),
-          paypal_payment_window_hours: paymentPolicyNumber(
-            ps.depositPolicy,
-            "paypalPaymentWindowHours",
-            24,
-          ),
-          payout_bank_name: paymentPolicyText(ps.depositPolicy, "bankName"),
-          payout_account_holder: paymentPolicyText(ps.depositPolicy, "accountHolder"),
-          payout_account_type: "account_number",
-          payout_account_number: paymentPolicyText(ps.depositPolicy, "accountNumber"),
-          payout_swift: paymentPolicyText(ps.depositPolicy, "bicSwift"),
-        }));
-        setPaymentSettingsLoaded(true);
+        applyFinancePaymentSettings(paymentSettings);
       })
       .catch((err: unknown) => {
+        if (paymentSettingsVersion !== paymentSettingsLoadVersion.current) return;
         setPaymentSettingsLoaded(false);
         setBillingPlanLoading(false);
         setPaymentError(errorMessage(err, "Payment settings failed to load."));
       });
-  }, [fetchSettings, loadBookingAcceptance]);
+  }, [applyFinancePaymentSettings, fetchSettings, loadBookingAcceptance]);
+
+  const refreshStripeOnboarding = useCallback(
+    async (
+      flowId?: string,
+      mode: "reconcile" | "reload" = "reconcile",
+    ): Promise<"settled" | "aborted"> => {
+      if (!billingPropertyId || stripeRefreshAbort.current) return "aborted";
+      const controller = new AbortController();
+      stripeRefreshAbort.current = controller;
+      const paymentSettingsVersion = ++paymentSettingsLoadVersion.current;
+      setStripeAccountCreationBlocked(true);
+      setRefreshingStripe(true);
+      setPaymentError("");
+      setPaymentSuccess("");
+      try {
+        const paymentSettings =
+          mode === "reload"
+            ? await getFinancePaymentSettings({ propertyId: billingPropertyId })
+            : await coordinateStripeRefresh(
+                {
+                  propertyId: billingPropertyId,
+                  flowId,
+                  signal: controller.signal,
+                  locks: navigator.locks,
+                },
+                {
+                  run: async (claimedFlowId) => {
+                    const result = await refreshStripeAfterOnboarding(
+                      { propertyId: billingPropertyId, signal: controller.signal },
+                      {
+                        reconcile: (propertyId, attempt) =>
+                          reconcileFinanceStripeProviderAccount({
+                            propertyId,
+                            commandId: `${claimedFlowId}:attempt:${attempt + 1}`,
+                          }),
+                        loadPaymentSettings: (propertyId) =>
+                          getFinancePaymentSettings({ propertyId }),
+                      },
+                    );
+                    return result.paymentSettings;
+                  },
+                  reload: () => getFinancePaymentSettings({ propertyId: billingPropertyId }),
+                },
+              );
+        if (controller.signal.aborted) return "aborted";
+        if (paymentSettingsVersion === paymentSettingsLoadVersion.current) {
+          applyFinancePaymentSettings(paymentSettings);
+        }
+        if (isFinanceStripeReady(paymentSettings)) {
+          setStripeAccountCreationBlocked(false);
+          setPaymentSuccess("Stripe is connected.");
+        } else {
+          setPaymentError("Stripe setup is still pending. Complete onboarding or check again.");
+        }
+        return "settled";
+      } catch (error) {
+        if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+          return "aborted";
+        }
+        setPaymentError("Couldn't refresh Stripe status. Check again in a moment.");
+        return "settled";
+      } finally {
+        if (stripeRefreshAbort.current === controller) {
+          stripeRefreshAbort.current = null;
+          setRefreshingStripe(false);
+        }
+      }
+    },
+    [applyFinancePaymentSettings, billingPropertyId],
+  );
+
+  useEffect(() => {
+    if (!billingPropertyId) return;
+    const search = new URLSearchParams(window.location.search);
+    const stripeReturn = search.get("stripe");
+    const isStripeReturn = stripeReturn === "return" || stripeReturn === "refresh";
+    if (isStripeReturn) {
+      setActiveSection("payments");
+      search.delete("stripe");
+      search.set("section", "payments");
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}?${search.toString()}${window.location.hash}`,
+      );
+    }
+    const stopWatching = watchStripeOnboardingRefresh({
+      propertyId: billingPropertyId,
+      isStripeReturn,
+      target: window,
+      store: window.localStorage,
+      onRefresh: (flowId, mode) => refreshStripeOnboarding(flowId, mode),
+    });
+    return () => {
+      stopWatching();
+      stripeRefreshAbort.current?.abort();
+      stripeRefreshAbort.current = null;
+    };
+  }, [billingPropertyId, refreshStripeOnboarding]);
 
   const handleAcceptanceToggle = async () => {
     const hotelId = readBookingHotelId(settings);
@@ -479,22 +608,35 @@ export default function SettingsPage() {
         setPaymentError("Select a hotel before creating a Stripe account.");
         return;
       }
+      let onboardingPropertyId = "";
       const result = await continueStripeAfterSavingSettings({
         saveSettings: () => savePaymentProviderSettings(),
-        continueStripe: (propertyId) =>
-          createFinanceStripeProviderAccount({
+        continueStripe: (propertyId) => {
+          onboardingPropertyId = propertyId;
+          return createFinanceStripeProviderAccount({
             propertyId,
             email: connectEmail,
             country: connectCountry,
             commandPrefix: `settings-stripe-account-${hotelId}`,
-          }),
+          });
+        },
       });
       if (!result) {
         stripeTab.close();
         return;
       }
       setStripeAccountId(result.providerAccountId);
+      const trackingFlowId = tryMarkStripeOnboardingStarted(
+        onboardingPropertyId,
+        window.localStorage,
+      );
       stripeTab.location.assign(result.onboardingUrl);
+      if (!trackingFlowId) {
+        setStripeAccountCreationBlocked(true);
+        setPaymentError(
+          "Stripe setup opened, but automatic status tracking is unavailable. Check Stripe status when you return.",
+        );
+      }
     } catch (err: unknown) {
       stripeTab.close();
       const msg =
@@ -508,8 +650,13 @@ export default function SettingsPage() {
   };
 
   const handleOnboarding = async () => {
+    if (stripeOnboardingLinkPending.current) return;
+    stripeOnboardingLinkPending.current = true;
+    setIssuingStripeOnboardingLink(true);
     const stripeTab = window.open("about:blank", "vayada-stripe-connect");
     if (!stripeTab) {
+      stripeOnboardingLinkPending.current = false;
+      setIssuingStripeOnboardingLink(false);
       setPaymentError("Allow pop-ups to continue to Stripe setup.");
       return;
     }
@@ -527,10 +674,23 @@ export default function SettingsPage() {
         providerAccountId: stripeAccountId,
         commandPrefix: `settings-stripe-onboarding-${hotelId}`,
       });
+      const trackingFlowId = tryMarkStripeOnboardingStarted(
+        propertyLink.propertyId,
+        window.localStorage,
+      );
       stripeTab.location.assign(link.onboardingUrl);
+      if (!trackingFlowId) {
+        setStripeAccountCreationBlocked(true);
+        setPaymentError(
+          "Stripe setup opened, but automatic status tracking is unavailable. Check Stripe status when you return.",
+        );
+      }
     } catch {
       stripeTab.close();
       setPaymentError(t("settings.billing.errorOnboardingLink"));
+    } finally {
+      stripeOnboardingLinkPending.current = false;
+      setIssuingStripeOnboardingLink(false);
     }
   };
 
@@ -2190,7 +2350,28 @@ export default function SettingsPage() {
           title="Payments"
           description="How your hotel collects payments from guests."
         >
-          {!settings.online_card_payment ? (
+          {!stripeAccountId &&
+          (stripeAccountCreationBlocked || !paymentSettingsLoaded) &&
+          paymentError ? (
+            <SettingsCard>
+              <FeedbackAlert type="error" message={paymentError} className="mb-3" />
+              <span className="mb-3 inline-flex rounded-full bg-yellow-100 px-2 py-0.5 text-[11px] font-medium text-yellow-700">
+                {t("settings.billing.pendingOnboarding")}
+              </span>
+              <p className="mb-3 text-sm text-gray-700">
+                Stripe account status couldn&apos;t be confirmed. Check the existing account before
+                starting setup again.
+              </p>
+              <button
+                type="button"
+                onClick={() => void refreshStripeOnboarding()}
+                disabled={refreshingStripe || !billingPropertyId}
+                className="px-4 py-2 text-[13px] font-medium border border-gray-300 bg-white text-gray-800 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
+              >
+                {refreshingStripe ? "Checking Stripe..." : "Check Stripe status"}
+              </button>
+            </SettingsCard>
+          ) : !settings.online_card_payment ? (
             <SettingsCard>
               <p className="text-sm text-gray-700">
                 Enable <strong>Online card payment</strong> in{" "}
@@ -2414,12 +2595,25 @@ export default function SettingsPage() {
                         <p className="text-[13px] text-gray-600 mb-2">
                           {t("settings.billing.completeOnboardingDesc")}
                         </p>
-                        <button
-                          onClick={handleOnboarding}
-                          className="px-4 py-2 text-[13px] font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
-                        >
-                          {t("settings.billing.completeOnboarding")}
-                        </button>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={handleOnboarding}
+                            disabled={refreshingStripe || issuingStripeOnboardingLink}
+                            className="px-4 py-2 text-[13px] font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 transition-colors"
+                          >
+                            {issuingStripeOnboardingLink
+                              ? "Opening Stripe..."
+                              : t("settings.billing.completeOnboarding")}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void refreshStripeOnboarding()}
+                            disabled={refreshingStripe}
+                            className="px-4 py-2 text-[13px] font-medium border border-gray-300 bg-white text-gray-800 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                          >
+                            {refreshingStripe ? "Checking Stripe..." : "Check Stripe status"}
+                          </button>
+                        </div>
                       </div>
                     )}
                     <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3">
@@ -2442,6 +2636,21 @@ export default function SettingsPage() {
                         {t("common.save")}
                       </SaveButton>
                     </div>
+                  </div>
+                ) : stripeAccountCreationBlocked || !paymentSettingsLoaded ? (
+                  <div className="space-y-3">
+                    <p className="text-[13px] text-gray-600">
+                      Stripe account status couldn&apos;t be confirmed. Check the existing account
+                      before starting setup again.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void refreshStripeOnboarding()}
+                      disabled={refreshingStripe || !billingPropertyId}
+                      className="px-4 py-2 text-[13px] font-medium border border-gray-300 bg-white text-gray-800 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                    >
+                      {refreshingStripe ? "Checking Stripe..." : "Check Stripe status"}
+                    </button>
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -2468,7 +2677,7 @@ export default function SettingsPage() {
                     </div>
                     <button
                       onClick={handleCreateStripeAccount}
-                      disabled={creatingAccount || !connectEmail}
+                      disabled={creatingAccount || refreshingStripe || !connectEmail}
                       className="px-4 py-2 text-[13px] font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 transition-colors"
                     >
                       {creatingAccount
