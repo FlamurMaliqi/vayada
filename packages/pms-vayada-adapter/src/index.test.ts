@@ -18,6 +18,7 @@ import {
   type VayadaPmsIdempotencyRecord,
   type VayadaPmsOfferMapping,
   type VayadaPmsReservationRepository,
+  type VayadaPmsUpdateReservationInput,
 } from "./index.js";
 
 describe("@vayada/pms-vayada-adapter", () => {
@@ -240,6 +241,10 @@ describe("@vayada/pms-vayada-adapter", () => {
       status: "modified",
       providerVersion: "v2",
     });
+    // prettier-ignore
+    expect(repository.lastUpdatePayloadPatch?.inventoryReservation?.receiptId).toBe("c9fccec2-eb4c-4c35-bfd3-02a748c2e117");
+    // prettier-ignore
+    await expect(adapter.updateReservation({ ...updateCommand(), inventoryReservation: inventoryReceipt("d9fccec2-eb4c-4c35-bfd3-02a748c2e117") })).resolves.toMatchObject({ outcome: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
     await expect(adapter.cancelReservation(cancelCommand())).resolves.toMatchObject({
       outcome: "succeeded",
       status: "cancelled",
@@ -339,7 +344,7 @@ describe("@vayada/pms-vayada-adapter", () => {
         ...updateCommand(),
         changes: {
           pricing: {
-            grandTotal: { amountDecimal: "12.00", currency: "eur" },
+            grandTotal: { amountDecimal: "12.00", currency: "EUR" },
           },
         },
       }),
@@ -377,6 +382,7 @@ class InMemoryVayadaPmsRepository implements VayadaPmsReservationRepository {
   createCount = 0;
   updateCount = 0;
   cancelCount = 0;
+  lastUpdatePayloadPatch: VayadaPmsUpdateReservationInput["assignmentPayloadPatch"] | null = null;
   lastAssignmentPayloadPatch: VayadaPmsCreateReservationInput["assignmentPayloadPatch"] | null =
     null;
   private auditCount = 0;
@@ -454,10 +460,12 @@ class InMemoryVayadaPmsRepository implements VayadaPmsReservationRepository {
     return reservation;
   }
 
-  async updateOperationalReservation(
-    command: UpdatePmsReservationCommand,
-  ): Promise<PmsOperationalReservationReadModel | null> {
+  async updateOperationalReservation({
+    command,
+    assignmentPayloadPatch,
+  }: VayadaPmsUpdateReservationInput): Promise<PmsOperationalReservationReadModel | null> {
     this.updateCount += 1;
+    this.lastUpdatePayloadPatch = assignmentPayloadPatch;
     const existing = this.reservations.get(command.target.pmsReservationRef);
     if (!existing) {
       return null;
@@ -696,6 +704,7 @@ function updateCommand(): UpdatePmsReservationCommand {
       guestBookingId: "book_123",
       bookingReference: "VAY-2026-0001",
     },
+    inventoryReservation: inventoryReceipt("C9FCCEC2-EB4C-4C35-BFD3-02A748C2E117"),
     changes: {
       stay: {
         checkOutDate: "2026-09-16",

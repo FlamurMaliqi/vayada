@@ -451,11 +451,10 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       { date: "2026-09-01", assigned: 2, available: 1 },
       { date: "2026-09-02", assigned: 2, available: 1 },
     ]);
-    await admin.query(
-      `UPDATE pms.operational_booking_assignments SET check_in='2026-09-01',check_out='2026-09-03'
-       WHERE property_id=$1 AND guest_booking_id=$2`,
-      [propertyId, bookingId],
-    );
+    // prettier-ignore
+    await admin.query(`UPDATE pms.operational_booking_assignments SET check_in='2026-09-01',check_out='2026-09-03',assignment_payload=jsonb_build_object('inventoryReservation',$3::jsonb) WHERE property_id=$1 AND guest_booking_id=$2`, [propertyId, bookingId, JSON.stringify(marker)]);
+    // prettier-ignore
+    await expect(admin.query(`UPDATE pms.operational_booking_assignments SET assignment_payload='{}'::jsonb WHERE property_id=$1 AND guest_booking_id=$2`, [propertyId, bookingId])).rejects.toMatchObject({ constraint: "chk_pms_direct_booking_receipt_handoff_scope" });
     await expect(
       operations.executeNoShowCommand({
         propertyId,

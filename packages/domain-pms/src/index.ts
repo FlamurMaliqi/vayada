@@ -219,6 +219,8 @@ export type UpdatePmsReservationCommand = {
     guestBookingId: string;
     bookingReference: string;
   };
+  /** New exact PMS-owned hold to adopt with a stay or room-type update. */
+  inventoryReservation?: PmsInventoryReservationReceipt;
   changes: {
     stay?: Partial<CreatePmsReservationCommand["stay"]>;
     guests?: Partial<CreatePmsReservationCommand["guests"]>;
@@ -381,8 +383,8 @@ export type PmsOperationalReservationReadPort = {
   ): Promise<PmsOperationalReservationListResult>;
 };
 
-export type CanonicalJsonValue =
-  null | boolean | string | number | CanonicalJsonValue[] | { [key: string]: CanonicalJsonValue };
+// prettier-ignore
+export type CanonicalJsonValue = null | boolean | string | number | CanonicalJsonValue[] | { [key: string]: CanonicalJsonValue };
 
 export type CanonicalizePayloadForIdempotency = (command: unknown) => string;
 
