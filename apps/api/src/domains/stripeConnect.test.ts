@@ -75,7 +75,10 @@ describe("Stripe Connect provider", () => {
       returnSurface: "booking_admin",
     });
     expect(calls[2]?.body.get("return_url")).toBe(
-      "https://admin.booking.test/settings?stripe=return",
+      "https://admin.booking.test/settings?section=payments&stripe=return",
+    );
+    expect(calls[2]?.body.get("refresh_url")).toBe(
+      "https://admin.booking.test/settings?section=payments&stripe=refresh",
     );
 
     await expect(provider.createLoginLink({ providerAccountRef: "acct_property_1" })).resolves.toBe(

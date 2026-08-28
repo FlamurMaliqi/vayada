@@ -62,14 +62,15 @@ export function createStripeConnectProvider(config: {
   ): Promise<string> => {
     const returnBaseUrl = returnBaseUrls[returnSurface];
     const returnPath = returnSurface === "booking_admin" ? "/settings" : "/setup";
+    const returnQuery = returnSurface === "booking_admin" ? "section=payments&stripe" : "stripe";
     const result = await request(
       "POST",
       "/account_links",
       [
         ["account", account],
         ["type", "account_onboarding"],
-        ["refresh_url", `${returnBaseUrl}${returnPath}?stripe=refresh`],
-        ["return_url", `${returnBaseUrl}${returnPath}?stripe=return`],
+        ["refresh_url", `${returnBaseUrl}${returnPath}?${returnQuery}=refresh`],
+        ["return_url", `${returnBaseUrl}${returnPath}?${returnQuery}=return`],
       ],
       idempotencyKey,
     );
