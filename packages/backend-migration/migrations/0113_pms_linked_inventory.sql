@@ -1,4 +1,4 @@
--- Migration: 0108_pms_linked_inventory
+-- Migration: 0113_pms_linked_inventory
 -- Owner: domain-pms; see VAY-1338 and engineering/linked-inventory-contract.md
 
 CREATE TABLE pms.linked_inventory_groups (
@@ -150,4 +150,3 @@ CREATE UNIQUE INDEX uq_pms_linked_block_assignment_target
 CREATE UNIQUE INDEX uq_pms_linked_block_manual_target
   ON pms.room_blocks (property_id, source_room_block_id, room_type_id)
   WHERE block_kind = 'linked_manual_block';
-
