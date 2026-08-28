@@ -433,8 +433,10 @@ export function createTargetPmsOperationsReadRepository(config: {
                       'sourceSummary', CASE
                         WHEN block.block_kind = 'linked_booking' THEN concat_ws(
                           ' · ',
-                          CASE WHEN source_booking.public_reference IS NOT NULL
-                            THEN concat('Booking ', source_booking.public_reference)
+                          CASE WHEN COALESCE(source_booking.public_reference,
+                              receipt_booking.public_reference) IS NOT NULL
+                            THEN concat('Booking ', COALESCE(source_booking.public_reference,
+                              receipt_booking.public_reference))
                             ELSE 'Booking' END,
                           source_type.name
                         )
@@ -459,6 +461,14 @@ export function createTargetPmsOperationsReadRepository(config: {
            LEFT JOIN booking.guest_bookings source_booking
              ON source_booking.id = source_assignment.guest_booking_id
             AND source_booking.property_id = source_assignment.property_id
+           LEFT JOIN LATERAL (
+             SELECT booking.public_reference
+             FROM booking.guest_bookings booking
+             WHERE booking.property_id = block.property_id
+               AND booking.booking_metadata #>> '{inventoryReservation,receiptId}' =
+                 block.source_inventory_reservation_receipt_id::text
+             ORDER BY booking.created_at, booking.id LIMIT 1
+           ) receipt_booking ON TRUE
            LEFT JOIN pms.room_blocks source_block
              ON source_block.id = block.source_room_block_id
             AND source_block.property_id = block.property_id
@@ -615,8 +625,10 @@ export function createTargetPmsOperationsReadRepository(config: {
            CASE
              WHEN block.block_kind = 'linked_booking' THEN concat_ws(
                ' · ',
-               CASE WHEN source_booking.public_reference IS NOT NULL
-                 THEN concat('Booking ', source_booking.public_reference)
+               CASE WHEN COALESCE(source_booking.public_reference,
+                   receipt_booking.public_reference) IS NOT NULL
+                 THEN concat('Booking ', COALESCE(source_booking.public_reference,
+                   receipt_booking.public_reference))
                  ELSE 'Booking' END,
                source_type.name
              )
@@ -638,6 +650,14 @@ export function createTargetPmsOperationsReadRepository(config: {
          LEFT JOIN booking.guest_bookings source_booking
            ON source_booking.id = source_assignment.guest_booking_id
           AND source_booking.property_id = source_assignment.property_id
+         LEFT JOIN LATERAL (
+           SELECT booking.public_reference
+           FROM booking.guest_bookings booking
+           WHERE booking.property_id = block.property_id
+             AND booking.booking_metadata #>> '{inventoryReservation,receiptId}' =
+               block.source_inventory_reservation_receipt_id::text
+           ORDER BY booking.created_at, booking.id LIMIT 1
+         ) receipt_booking ON TRUE
          LEFT JOIN pms.room_blocks source_block
            ON source_block.id = block.source_room_block_id
           AND source_block.property_id = block.property_id

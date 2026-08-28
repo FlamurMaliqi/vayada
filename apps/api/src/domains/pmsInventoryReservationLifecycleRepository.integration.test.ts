@@ -246,7 +246,11 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
       );
     const first = await reserve(randomUUID(), "2026-08-04", "2026-08-06");
     const second = await reserve(randomUUID(), "2026-08-04", "2026-08-05");
-    expect(first).not.toBeNull();
+    expect(first).toMatchObject({
+      contractVersion: PMS_INVENTORY_RESERVATION_LIFECYCLE_CONTRACT_VERSION,
+      owner: "pms",
+      receiptId: expect.any(String),
+    });
     expect(second).not.toBeNull();
 
     const release = (reservation: NonNullable<typeof first>) =>
@@ -279,8 +283,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
     ]);
 
     const legacy = await reserve(randomUUID(), "2026-08-06", "2026-08-07");
-    expect(legacy).not.toBeNull();
-    await release(legacy!);
+    expect(legacy).toBeNull();
     const legacyDay = (await readDays(admin, fixture)).at(-1);
     expect(legacyDay).toEqual({
       stayDate: "2026-08-06",
@@ -296,7 +299,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
          AND operation = 'pms.direct_booking_inventory.release'`,
       [fixture.propertyId],
     );
-    expect(releases.rows[0]?.count).toBe(3);
+    expect(releases.rows[0]?.count).toBe(2);
 
     await admin.query(
       `INSERT INTO pms.inventory_days (
@@ -320,6 +323,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
     );
     const contested = await reserve(randomUUID(), "2026-08-07", "2026-08-09");
     if (!contested) throw new Error("Expected contested reservation marker");
+    if (!("receiptId" in contested)) throw new Error("Expected opaque reservation receipt");
+    const contestedSideEffects = await sideEffectCounts(admin, fixture.propertyId);
     const blocker = new pg.Client({ connectionString: TEST_DATABASE_URL! });
     const waiter = new pg.Client({ connectionString: TEST_DATABASE_URL! });
     let pendingRelease: Promise<void> | undefined;
@@ -337,6 +342,9 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
         occurredAt: RELEASED_AT,
       });
       await waitForAdvisoryWaiter(admin, waiterPid.rows[0]!.pid);
+      const rejectedRelease = expect(pendingRelease).rejects.toThrow(
+        "receipt could not be released",
+      );
       await blocker.query(
         `UPDATE pms.inventory_days
          SET assigned_count = 0, available_count = 2,
@@ -347,8 +355,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
         [fixture.propertyId, fixture.roomTypeId],
       );
       await blocker.query("COMMIT");
-      await pendingRelease;
-      await waiter.query("COMMIT");
+      await rejectedRelease;
+      await waiter.query("ROLLBACK");
     } finally {
       await Promise.allSettled([blocker.query("ROLLBACK"), waiter.query("ROLLBACK")]);
       if (pendingRelease) await Promise.allSettled([pendingRelease]);
@@ -373,6 +381,15 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
       { stayDate: "2026-08-07", assignedCount: 1, inventoryRevision: 2, bookingRevision: 1 },
       { stayDate: "2026-08-08", assignedCount: 0, inventoryRevision: 3, bookingRevision: 2 },
     ]);
+    await expect(sideEffectCounts(admin, fixture.propertyId)).resolves.toEqual(
+      contestedSideEffects,
+    );
+    const contestedStatus = await admin.query<{ state: string }>(
+      `SELECT lifecycle_state AS state FROM pms.inventory_reservation_statuses
+       WHERE receipt_id=$1::uuid`,
+      [contested.receiptId],
+    );
+    expect(contestedStatus.rows[0]?.state).toBe("reserved");
     const finalReleases = await admin.query<{ count: number }>(
       `SELECT count(*)::integer AS count
        FROM platform.idempotency_keys
@@ -380,7 +397,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
          AND operation = 'pms.direct_booking_inventory.release'`,
       [fixture.propertyId],
     );
-    expect(finalReleases.rows[0]?.count).toBe(3);
+    expect(finalReleases.rows[0]?.count).toBe(2);
   });
 
   it("stop-sells and releases every linked type for direct booking holds", async () => {
@@ -459,8 +476,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
     await admin.query("UPDATE pms.inventory_days SET calendar_revision=NULL,inventory_revision=NULL,generated_sellable_limit_count=NULL,effective_sellable_limit_count=NULL,generated_source_revision=NULL,channel_source_revision=NULL,manual_source_revision=NULL,block_source_revision=NULL,booking_source_revision=NULL WHERE property_id=$1 AND room_type_id=$2 AND stay_date=DATE '2026-09-11'", [fixture.propertyId, fixture.roomTypeId]);
     await admin.query("BEGIN");
     // prettier-ignore
-    await expect(port.reserve({ transaction: admin, propertyId: fixture.propertyId, quoteSessionId: randomUUID(), roomTypeId: fixture.roomTypeId, publicOfferKey, checkIn: "2026-09-10", checkOut: "2026-09-12", roomCount: 1, currency: "EUR", occurredAt: ACCEPTED_AT })).rejects.toThrow("receipt could not be persisted");
-    await admin.query("ROLLBACK");
+    await expect(port.reserve({ transaction: admin, propertyId: fixture.propertyId, quoteSessionId: randomUUID(), roomTypeId: fixture.roomTypeId, publicOfferKey, checkIn: "2026-09-10", checkOut: "2026-09-12", roomCount: 1, currency: "EUR", occurredAt: ACCEPTED_AT })).resolves.toBeNull();
+    await admin.query("COMMIT");
     // prettier-ignore
     await expect(linkedState(admin, fixture.propertyId, fixture.roomTypeId)).resolves.toMatchObject({ available: [2, 2] });
   });

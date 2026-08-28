@@ -1511,6 +1511,9 @@ describe("Booking Web public bootstrap parity", () => {
               ],
             };
           }
+          if (text.includes("INSERT INTO pms.inventory_reservation_receipts")) {
+            return { rows: [{ receiptId: "599e6c2a-95f8-47f2-8bf1-c2d18e3d7a66" }] };
+          }
           if (text.includes("INSERT INTO platform.idempotency_keys")) {
             return { rows: [{ id: "899e6c2a-95f8-47f2-8bf1-c2d18e3d7a66" }] };
           }
@@ -1787,16 +1790,9 @@ describe("Booking Web public bootstrap parity", () => {
       hostResponseDeadlineAt: "2026-06-26T12:00:00.000Z",
       policySnapshot: { freeUntilDays: 7 },
       inventoryReservation: {
-        contractVersion: "pms.inventory-reservation.v1",
+        contractVersion: "pms-inventory-reservation-lifecycle.v1",
         owner: "pms",
-        source: "booking_engine",
-        quoteSessionId: "49b3e1e1-95f8-47f2-8bf1-c2d18e3d7a66",
-        propertyId: "a9fccec2-eb4c-4c35-bfd3-02a748c2e117",
-        roomTypeId: "room_deluxe",
-        publicOfferKey: "room_deluxe:flexible",
-        checkIn: "2026-09-12",
-        checkOut: "2026-09-15",
-        roomCount: 1,
+        receiptId: "599e6c2a-95f8-47f2-8bf1-c2d18e3d7a66",
       },
     });
     expect(
@@ -1811,7 +1807,7 @@ describe("Booking Web public bootstrap parity", () => {
     });
     expect(
       optionalPhone.calls.filter((text) => text.includes("INSERT INTO platform.domain_events")),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     const invalidNationality = createAdapter(false);
     await expect(
       invalidNationality.adapter.createBooking(
@@ -2022,6 +2018,9 @@ describe("Booking Web public bootstrap parity", () => {
           return {
             rows: [{ propertyId, displayName: "Hotel Alpenrose", defaultLocale: "en" }],
           };
+        }
+        if (text.includes("INSERT INTO pms.inventory_reservation_receipts")) {
+          return { rows: [{ receiptId: "699e6c2a-95f8-47f2-8bf1-c2d18e3d7a66" }] };
         }
         if (text.includes("INSERT INTO platform.idempotency_keys")) {
           return { rows: [{ id: "999e6c2a-95f8-47f2-8bf1-c2d18e3d7a66" }] };
@@ -2369,6 +2368,9 @@ describe("Booking Web public bootstrap parity", () => {
     const pool = {
       async query(text: string, values?: readonly unknown[]) {
         calls.push({ text, values });
+        if (text.includes("INSERT INTO pms.inventory_reservation_receipts")) {
+          return { rows: [{ receiptId: "699e6c2a-95f8-47f2-8bf1-c2d18e3d7a66" }] };
+        }
         if (text.includes("FROM hotel_catalog.property_slugs")) {
           return {
             rows: [{ propertyId, displayName: "Hotel Alpenrose", defaultLocale: "en" }],
@@ -2623,6 +2625,9 @@ describe("Booking Web public bootstrap parity", () => {
           return values?.[0] === "hotel-alpenrose"
             ? { rows: [{ propertyId, displayName: "Hotel Alpenrose", defaultLocale: "en" }] }
             : { rows: [] };
+        }
+        if (text.includes("INSERT INTO pms.inventory_reservation_receipts")) {
+          return { rows: [{ receiptId: "799e6c2a-95f8-47f2-8bf1-c2d18e3d7a66" }] };
         }
         if (text.trimStart().startsWith("INSERT INTO platform.idempotency_keys")) {
           if (values?.[0] === "booking-create" && createCommandReserved) return { rows: [] };

@@ -10,6 +10,7 @@ const organizationId = id(2);
 const roomTypeId = id(3);
 const turnoverRoomId = id(4);
 const receiptId = id(5);
+const linkedRoomTypeId = id(9);
 
 describe.skipIf(!TEST_DATABASE_URL)("PMS calendar occupancy projection", () => {
   const pool = new pg.Pool({ connectionString: TEST_DATABASE_URL ?? "postgresql://disabled" });
@@ -28,8 +29,11 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar occupancy projection", () => {
     await fixture(`
       INSERT INTO pms.room_types
         (id,property_id,name,occupancy_limits,base_rate_amount,currency)
-      VALUES ('${roomTypeId}','${propertyId}','Occupancy fixture',
-        '{"adults":8,"children":8,"total":8}',100,'EUR');
+      VALUES
+        ('${roomTypeId}','${propertyId}','Occupancy fixture',
+          '{"adults":8,"children":8,"total":8}',100,'EUR'),
+        ('${linkedRoomTypeId}','${propertyId}','Linked target',
+          '{"adults":8,"children":8,"total":8}',100,'EUR');
       INSERT INTO pms.inventory_days
         (property_id,room_type_id,stay_date,total_count,assigned_count,blocked_count,
          available_count,status)
@@ -61,7 +65,9 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar occupancy projection", () => {
         ('${id(13)}','${propertyId}','VAY-TURNOVER','pms','turnover','confirmed',
           '2026-08-21','2026-08-22',1,'EUR','{}'),
         ('${id(14)}','${propertyId}','VAY-CANCELED','pms','canceled','canceled',
-          '2026-08-20','2026-08-22',1,'EUR','{}');
+          '2026-08-20','2026-08-22',1,'EUR','{}'),
+        ('${id(15)}','${propertyId}','VAY-RECEIPT','booking',NULL,'canceled',
+          '2026-08-20','2026-08-22',1,'EUR',${receiptMarker()});
       INSERT INTO pms.operational_booking_assignments
         (id,property_id,guest_booking_id,room_type_id,room_id,position,assignment_status,
          source,stay_evidence_kind,check_in,check_out,adults,children)
@@ -76,6 +82,11 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar occupancy projection", () => {
           'assigned','manual','exact','2026-08-21','2026-08-22',1,0),
         ('${id(24)}','${propertyId}','${id(14)}','${roomTypeId}',NULL,1,'assigned',
           'manual','exact','2026-08-20','2026-08-22',1,0);
+      INSERT INTO pms.room_blocks
+        (id,property_id,room_type_id,starts_on,ends_on,blocked_count,reason,status,
+         block_kind,source_room_type_id,source_inventory_reservation_receipt_id)
+      VALUES ('${id(30)}','${propertyId}','${linkedRoomTypeId}','2026-08-20','2026-08-21',1,
+        'Linked inventory','active','linked_booking','${roomTypeId}','${receiptId}');
     `);
   });
 
@@ -118,6 +129,19 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar occupancy projection", () => {
     ]);
   });
 
+  it("labels a receipt-derived linked block with its source booking reference", async () => {
+    const result = await repository.listRoomBlocksByPropertyId(propertyId, {
+      from: "2026-08-20",
+      to: "2026-08-21",
+    });
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        blockId: id(30),
+        sourceSummary: "Booking VAY-RECEIPT · Occupancy fixture",
+      }),
+    ]);
+  });
+
   async function fixture(sql: string) {
     const client = await pool.connect();
     try {
@@ -136,6 +160,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar occupancy projection", () => {
   async function cleanup() {
     await fixture(`
       DELETE FROM pms.operational_booking_assignments WHERE property_id='${propertyId}';
+      DELETE FROM pms.room_blocks WHERE property_id='${propertyId}';
       DELETE FROM booking.guest_bookings WHERE property_id='${propertyId}';
       DELETE FROM pms.inventory_reservation_statuses WHERE property_id='${propertyId}';
       DELETE FROM pms.inventory_reservation_receipts WHERE property_id='${propertyId}';
@@ -154,6 +179,16 @@ function marker(quoteSessionId: string) {
       quoteSessionId,
       propertyId,
       roomTypeId,
+    },
+  })}'::jsonb`;
+}
+
+function receiptMarker() {
+  return `'${JSON.stringify({
+    inventoryReservation: {
+      contractVersion: "pms-inventory-reservation-lifecycle.v1",
+      owner: "pms",
+      receiptId,
     },
   })}'::jsonb`;
 }
