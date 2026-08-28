@@ -447,6 +447,8 @@ describe("PMS room facts command repository", () => {
     expect(referenceScan?.text).toContain("FROM pms.recurring_pricing_source_room_values");
     expect(referenceScan?.text).toContain("FROM pms.non_refundable_rate_plan_source_rooms");
     expect(referenceScan?.text).toContain("FROM pms.recurring_pricing_materialized_rows");
+    expect(referenceScan?.text).toContain("block.source_room_type_id = $2::uuid");
+    expect(referenceScan?.text).toContain("room_type.linked_inventory_group_id IS NOT NULL");
     expect(referenceScan?.values).toEqual([propertyId, roomTypeId, acceptedAt.toISOString()]);
     expect(target.sql()).not.toContain("active = FALSE");
     expect(target.commands.at(-1)).toBe("COMMIT");
@@ -812,6 +814,7 @@ function expectedInboundForeignKeys(): InboundForeignKeyRow[] {
     ),
     inbound("pms", "inventory_days", "fk_pms_inventory_days_room_type_property", "pms.room_types"),
     inbound("pms", "room_blocks", "fk_pms_room_blocks_room_type_property", "pms.room_types"),
+    inbound("pms", "room_blocks", "fk_pms_room_blocks_source_room_type_property", "pms.room_types"),
     inbound(
       "pms",
       "operational_booking_assignments",

@@ -227,6 +227,7 @@ type PmsRoomBlockOperation = "room_block_create" | "room_block_update" | "room_b
 
 type PmsRoomBlockRow = {
   blockId: string;
+  blockKind: "manual" | "linked_booking" | "linked_manual_block";
   roomTypeId: string;
   roomId: string | null;
   startsOn: Date | string;
@@ -2673,7 +2674,9 @@ async function applyRoomBlockMutation(
     existingCommand.blockId,
     true,
   );
-  if (!current || current.status !== "active") return roomBlockNotFound(existingCommand.blockId);
+  if (!current || current.status !== "active" || current.blockKind !== "manual") {
+    return roomBlockNotFound(existingCommand.blockId);
+  }
   if (existingCommand.expectedVersion !== `room-block-v${current.revision}`) {
     return roomBlockConflict("version_conflict", "Room block changed. Refresh and try again.");
   }
@@ -2715,7 +2718,8 @@ async function applyRoomBlockMutation(
       `UPDATE pms.room_blocks
        SET starts_on = $3::date, ends_on = $4::date, reason = $5,
            revision = revision + 1, updated_at = $6::timestamptz
-       WHERE property_id = $1::uuid AND id = $2::uuid AND status = 'active'
+       WHERE property_id = $1::uuid AND id = $2::uuid
+         AND status = 'active' AND block_kind = 'manual'
        RETURNING id::text AS "blockId", room_type_id::text AS "roomTypeId",
          room_id::text AS "roomId",
          starts_on AS "startsOn", ends_on AS "endsOn", blocked_count AS "blockedCount",
@@ -2755,7 +2759,8 @@ async function applyRoomBlockMutation(
     `UPDATE pms.room_blocks
      SET status = 'released', released_at = $3::timestamptz,
          revision = revision + 1, updated_at = $3::timestamptz
-     WHERE property_id = $1::uuid AND id = $2::uuid AND status = 'active'
+     WHERE property_id = $1::uuid AND id = $2::uuid
+       AND status = 'active' AND block_kind = 'manual'
      RETURNING id::text AS "blockId", room_type_id::text AS "roomTypeId",
        room_id::text AS "roomId",
        starts_on AS "startsOn", ends_on AS "endsOn", blocked_count AS "blockedCount",
@@ -2920,7 +2925,8 @@ async function findRoomBlock(
   forUpdate = false,
 ): Promise<PmsRoomBlockRow | null> {
   const result = await client.query<PmsRoomBlockRow>(
-    `SELECT id::text AS "blockId", room_type_id::text AS "roomTypeId",
+    `SELECT id::text AS "blockId", block_kind AS "blockKind",
+       room_type_id::text AS "roomTypeId",
        room_id::text AS "roomId",
        starts_on AS "startsOn", ends_on AS "endsOn", blocked_count AS "blockedCount",
        reason, status, revision

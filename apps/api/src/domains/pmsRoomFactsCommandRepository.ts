@@ -129,6 +129,7 @@ const EXPECTED_INBOUND_FOREIGN_KEYS = new Set([
   "pms.recurring_pricing_materialized_rows:fk_pms_recurring_pricing_materialized_rows_room_type:pms.room_types",
   "pms.inventory_days:fk_pms_inventory_days_room_type_property:pms.room_types",
   "pms.room_blocks:fk_pms_room_blocks_room_type_property:pms.room_types",
+  "pms.room_blocks:fk_pms_room_blocks_source_room_type_property:pms.room_types",
   "pms.operational_booking_assignments:fk_pms_operational_assignments_room_type_property:pms.room_types",
   "pms.channel_room_type_mappings:fk_pms_channel_room_mappings_room_type_property:pms.room_types",
   "pms.channel_rate_plan_mappings:fk_pms_channel_rate_mappings_room_type_property:pms.room_types",
@@ -1095,7 +1096,8 @@ async function inspectDeleteReferences(
         WHERE inventory.property_id = $1::uuid AND inventory.room_type_id = $2::uuid)::bigint
          AS "calendarReferenceCount",
        (SELECT count(*) FROM pms.room_blocks block
-        WHERE block.property_id = $1::uuid AND block.room_type_id = $2::uuid)::bigint
+        WHERE block.property_id = $1::uuid
+          AND (block.room_type_id = $2::uuid OR block.source_room_type_id = $2::uuid))::bigint
          AS "roomBlockReferenceCount",
        (
          (SELECT count(*) FROM pms.channel_room_type_mappings mapping
@@ -1105,6 +1107,12 @@ async function inspectDeleteReferences(
           WHERE mapping.property_id = $1::uuid AND mapping.room_type_id = $2::uuid)
        )::bigint AS "channelReferenceCount",
        (
+         (SELECT count(*)
+          FROM pms.room_types room_type
+          WHERE room_type.property_id = $1::uuid
+            AND room_type.id = $2::uuid
+            AND room_type.linked_inventory_group_id IS NOT NULL)
+         +
          (SELECT count(*)
           FROM platform.outbox_events outbox
           WHERE outbox.property_id = $1::uuid

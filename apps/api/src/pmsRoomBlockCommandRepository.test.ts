@@ -93,6 +93,22 @@ describe("target PMS room block command repository", () => {
     ).toEqual([propertyId, roomTypeId, "2026-08-20", "2026-08-23", expect.any(String)]);
   });
 
+  it("rejects edits to reconciler-owned linked blocks", async () => {
+    const target = roomBlockPool({ blockKind: "linked_booking" });
+    const repository = createTargetPmsOperationsCommandRepository({
+      connectionString: "postgresql://room-block-test",
+      pool: target.pool,
+      readRepository: {} as PmsOperationsReadRepository,
+    });
+
+    await expect(repository.updateRoomBlock!(updateCommand())).resolves.toMatchObject({
+      ok: false,
+      statusCode: 404,
+      code: "room_block_not_found",
+    });
+    expect(target.calls.some((call) => call.text.includes("UPDATE pms.room_blocks"))).toBe(false);
+  });
+
   it("returns a structured failure and rolls back when the ARI outbox write fails", async () => {
     const target = roomBlockPool({ failAriOutbox: true });
     const repository = createTargetPmsOperationsCommandRepository({
@@ -115,6 +131,7 @@ describe("target PMS room block command repository", () => {
 function roomBlockPool(
   options: {
     availableRoomIds?: string[];
+    blockKind?: "manual" | "linked_booking" | "linked_manual_block";
     failAriOutbox?: boolean;
   } = {},
 ) {
@@ -175,6 +192,7 @@ function roomBlockPool(
         return rows<T>([
           {
             blockId: "f6855400-0000-0000-0000-000000000001",
+            blockKind: options.blockKind ?? "manual",
             propertyId,
             roomTypeId,
             roomId: roomIds[0],
