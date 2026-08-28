@@ -45,9 +45,10 @@ import type {
   PmsRoomType,
   PmsSourceFreshness,
 } from "../domains/pmsOperationsReadModel.js";
-import { requireAuthContext, type RequestActor } from "@vayada/backend-auth";
+import type { RequestActor } from "@vayada/backend-auth";
 import type { PropertyAccessRepository } from "@vayada/backend-authorization";
 import { enforceRoutePolicy } from "./policy.js";
+import { enforcePmsPropertyRoutePolicy } from "./pmsPropertyPolicy.js";
 
 export const PMS_OPERATIONS_CONTRACT_VERSION = "pms-operations.v1" as const;
 
@@ -1842,7 +1843,15 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsReservationReadPolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       const filters = toReservationFilters(request.query);
       if ("error" in filters) return sendPmsOperationsError(reply, filters.error);
@@ -1896,7 +1905,15 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId, guestBookingId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsReservationReadPolicy(
+          request,
+          reply,
+          propertyId,
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       try {
         const item = await repository.findReservationByGuestBookingId(propertyId, guestBookingId);
@@ -3080,6 +3097,37 @@ function enforcePmsOperationsReadPolicy(
     const contractError = toPmsOperationsAccessError(error, request, propertyId);
     if (!contractError) throw error;
     sendPmsOperationsError(reply, contractError);
+    return false;
+  }
+}
+
+async function enforcePmsReservationReadPolicy(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  propertyId: string,
+  repository: PropertyAccessRepository | undefined,
+): Promise<boolean> {
+  try {
+    if (!repository) throw new Error("PMS property access repository is unavailable");
+    await enforcePmsPropertyRoutePolicy(
+      request,
+      {
+        propertyId,
+        permission: "pms.reservation.read",
+        allowedRelationships: ["owner", "operator", "front_desk"],
+      },
+      repository,
+    );
+    return true;
+  } catch (error) {
+    const accessError = toPmsOperationsAccessError(error, request, propertyId);
+    if (!accessError) {
+      request.log.error({ err: error, propertyId }, "PMS reservation access check failed");
+    }
+    sendPmsOperationsError(
+      reply,
+      accessError ?? readModelUnavailable("PMS property access is unavailable."),
+    );
     return false;
   }
 }

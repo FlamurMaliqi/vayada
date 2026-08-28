@@ -1,11 +1,16 @@
 import {
   createFakeVerifier,
   requireAuthContext,
+  resolveRequestContext,
   type ProductEntitlement,
   type IdentityRepository,
   type PermissionKey,
   type VerifiedSession,
 } from "@vayada/backend-auth";
+import type {
+  MembershipPropertyScope,
+  PropertyAccessRepository,
+} from "@vayada/backend-authorization";
 import { injectJson } from "@vayada/backend-test";
 import type {
   BookingAdditionalGuestCreateCommand,
@@ -31,6 +36,7 @@ import {
 } from "@vayada/domain-finance";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import Fastify from "fastify";
 import type { QueryResult, QueryResultRow } from "pg";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -149,6 +155,7 @@ import type {
   PmsRoomTypeCreateCommand,
   PmsRoomTypeUpdateCommand,
 } from "./routes/pmsOperations.js";
+import { registerPmsOperationsRoutes } from "./routes/pmsOperations.js";
 import { createTargetBookingReservationsReadRepository } from "./platform/bookingReservations.js";
 
 type BookingReservationsReadPool = NonNullable<
@@ -2517,11 +2524,30 @@ function identityRepositoryWithResources(
   hotelId: string | null = "booking_hotel_alpenrose",
   linkedPmsPropertyId: string | null = pmsPropertyId,
   linkedPmsRelationship: "owner" | "operator" | "front_desk" = "operator",
+  roleKey = "hotel_owner",
+  additionalPmsPropertyId?: string,
 ): IdentityRepository {
   return {
     ...identityRepository,
+    async findActiveMembership() {
+      return {
+        membershipId: "membership_hotel_owner",
+        roleKey,
+        status: "active",
+        workosMembershipId: "om_hotel_owner",
+        workosRoleSlugs: ["hotel_owner"],
+      };
+    },
     async findLinkedResources() {
-      const resources: Awaited<ReturnType<IdentityRepository["findLinkedResources"]>> = [];
+      const resources: Awaited<ReturnType<IdentityRepository["findLinkedResources"]>> = [
+        {
+          product: "hotel_catalog",
+          resourceType: "property",
+          resourceId: pmsPropertyId,
+          relationship: linkedPmsRelationship,
+          status: "active",
+        },
+      ];
       if (hotelId) {
         resources.push({
           product: "booking",
@@ -2539,6 +2565,24 @@ function identityRepositoryWithResources(
           relationship: linkedPmsRelationship,
           status: "active",
         });
+      }
+      if (additionalPmsPropertyId) {
+        resources.push(
+          {
+            product: "hotel_catalog",
+            resourceType: "property",
+            resourceId: additionalPmsPropertyId,
+            relationship: linkedPmsRelationship,
+            status: "active",
+          },
+          {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: additionalPmsPropertyId,
+            relationship: linkedPmsRelationship,
+            status: "active",
+          },
+        );
       }
       return resources;
     },
@@ -2573,6 +2617,10 @@ function buildAuthenticatedApp(
     browserAllowedOrigins?: string[];
     linkedPmsPropertyId?: string | null;
     linkedPmsRelationship?: "owner" | "operator" | "front_desk";
+    roleKey?: string;
+    additionalPmsPropertyId?: string;
+    propertyScope?: MembershipPropertyScope | null;
+    propertyAccessRepository?: PropertyAccessRepository;
   } = {},
 ): ReturnType<typeof buildApp> {
   return buildApp({
@@ -2605,8 +2653,18 @@ function buildAuthenticatedApp(
         options.linkedHotelId,
         options.linkedPmsPropertyId,
         options.linkedPmsRelationship,
+        options.roleKey,
+        options.additionalPmsPropertyId,
       ),
-      propertyAccessRepository: agencyPropertyAccessRepository,
+      propertyAccessRepository:
+        options.propertyAccessRepository ??
+        (options.propertyScope === undefined
+          ? agencyPropertyAccessRepository
+          : {
+              async findMembershipPropertyScope() {
+                return options.propertyScope ?? null;
+              },
+            }),
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["booking.settings.manage", "booking.reservation.read"];
@@ -2627,6 +2685,23 @@ function buildAuthenticatedApp(
       },
     },
   });
+}
+
+function propertyAccessFailureAfterAuthorization(): PropertyAccessRepository {
+  let reads = 0;
+  return {
+    async findMembershipPropertyScope(context) {
+      if (reads++ === 0) {
+        return {
+          mode: "all",
+          roleKey: context.membership.roleKey,
+          accessOrigin: "agency",
+          assignedPropertyIds: [],
+        };
+      }
+      throw new Error("sensitive property access failure");
+    },
+  };
 }
 
 function readContractPath(value: unknown, path: string): unknown {
@@ -11847,7 +11922,7 @@ describe("vayada-api", () => {
 
   it("returns PMS operational reservations with assigned and unassigned positions", async () => {
     app = buildAuthenticatedApp({
-      permissions: ["pms.operations.read"],
+      permissions: ["pms.reservation.read"],
       entitlements: [
         {
           product: "pms",
@@ -11880,9 +11955,241 @@ describe("vayada-api", () => {
     expect(body.items[1].assignments[0].roomId).toBeNull();
   });
 
+  it("allows assigned front-desk reservation list and detail reads", async () => {
+    let readCount = 0;
+    app = buildAuthenticatedApp({
+      permissions: ["pms.reservation.read"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      roleKey: "front_desk",
+      linkedPmsRelationship: "front_desk",
+      propertyScope: {
+        mode: "assigned",
+        roleKey: "front_desk",
+        accessOrigin: "agency",
+        assignedPropertyIds: [pmsPropertyId],
+      },
+      pmsOperationsRepository: {
+        ...pmsOperationsRepository,
+        async listReservationsByPropertyId(propertyId, filters) {
+          readCount += 1;
+          return pmsOperationsRepository.listReservationsByPropertyId(propertyId, filters);
+        },
+        async findReservationByGuestBookingId(propertyId, guestBookingId) {
+          readCount += 1;
+          return pmsOperationsRepository.findReservationByGuestBookingId(
+            propertyId,
+            guestBookingId,
+          );
+        },
+      },
+    });
+
+    const list = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/reservations`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const detail = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/reservations/${pmsReservations[0].guestBookingId}`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect([list.statusCode, detail.statusCode]).toEqual([200, 200]);
+    expect(readCount).toBe(2);
+  });
+
+  it("fails closed across the PMS reservation route denial matrix", async () => {
+    type AuthenticatedAppOptions = Parameters<typeof buildAuthenticatedApp>[0];
+    const entitlement: ProductEntitlement = {
+      product: "pms",
+      key: "property-management",
+      status: "active",
+    };
+    const unassignedPropertyId = "f6853000-0000-0000-0000-000000000098";
+    const foreignPropertyId = "f6853000-0000-0000-0000-000000000099";
+    const cases: Array<{
+      name: string;
+      appOptions?: AuthenticatedAppOptions;
+      authorization?: string | null;
+      propertyId?: string;
+      detail?: boolean;
+      statusCode: number;
+      code?: string;
+    }> = [
+      {
+        name: "missing authentication",
+        authorization: null,
+        statusCode: 401,
+        code: "unauthenticated",
+      },
+      {
+        name: "invalid authentication",
+        authorization: "Bearer invalid-token",
+        statusCode: 401,
+        code: "unauthenticated",
+      },
+      {
+        name: "compatibility-only permission",
+        appOptions: { permissions: ["pms.operations.read"] },
+        statusCode: 403,
+        code: "missing_permission",
+      },
+      {
+        name: "missing entitlement",
+        appOptions: { entitlements: [] },
+        statusCode: 403,
+        code: "missing_entitlement",
+      },
+      {
+        name: "suspended entitlement",
+        appOptions: { entitlements: [{ ...entitlement, status: "suspended" }] },
+        statusCode: 403,
+        code: "inactive_entitlement",
+      },
+      {
+        name: "empty assigned scope",
+        appOptions: {
+          propertyScope: {
+            mode: "assigned",
+            roleKey: "hotel_owner",
+            accessOrigin: "agency",
+            assignedPropertyIds: [],
+          },
+        },
+        statusCode: 403,
+        code: "missing_resource_access",
+      },
+      {
+        name: "unassigned direct detail URL",
+        appOptions: {
+          additionalPmsPropertyId: unassignedPropertyId,
+          propertyScope: {
+            mode: "assigned",
+            roleKey: "hotel_owner",
+            accessOrigin: "agency",
+            assignedPropertyIds: [pmsPropertyId],
+          },
+        },
+        propertyId: unassignedPropertyId,
+        detail: true,
+        statusCode: 403,
+        code: "missing_resource_access",
+      },
+      {
+        name: "cross-tenant direct URL",
+        propertyId: foreignPropertyId,
+        statusCode: 403,
+        code: "missing_resource_access",
+      },
+      {
+        name: "authorization property scope repository failure",
+        appOptions: {
+          propertyAccessRepository: {
+            async findMembershipPropertyScope() {
+              throw new Error("sensitive property access failure");
+            },
+          },
+        },
+        statusCode: 500,
+      },
+      {
+        name: "property scope repository failure",
+        appOptions: {
+          propertyAccessRepository: propertyAccessFailureAfterAuthorization(),
+        },
+        statusCode: 500,
+        code: "read_model_unavailable",
+      },
+    ];
+    const denialBodies = new Map<string, unknown>();
+
+    for (const candidate of cases) {
+      let readCount = 0;
+      app = buildAuthenticatedApp({
+        permissions: ["pms.reservation.read"],
+        entitlements: [entitlement],
+        ...candidate.appOptions,
+        pmsOperationsRepository: {
+          ...pmsOperationsRepository,
+          async listReservationsByPropertyId() {
+            readCount += 1;
+            throw new Error("reservation list read must not run");
+          },
+          async findReservationByGuestBookingId() {
+            readCount += 1;
+            throw new Error("reservation detail read must not run");
+          },
+        },
+      });
+      const propertyId = candidate.propertyId ?? pmsPropertyId;
+      const response = await injectJson(app, {
+        method: "GET",
+        url: candidate.detail
+          ? `/api/pms/properties/${propertyId}/reservations/${pmsReservations[0].guestBookingId}`
+          : `/api/pms/properties/${propertyId}/reservations`,
+        headers:
+          candidate.authorization === null
+            ? undefined
+            : { authorization: candidate.authorization ?? "Bearer valid-token" },
+      });
+      await app.close();
+      app = null;
+
+      expect(response.statusCode, candidate.name).toBe(candidate.statusCode);
+      if (candidate.code) {
+        expect(response.body, candidate.name).toMatchObject({ code: candidate.code });
+      }
+      expect(JSON.stringify(response.body), candidate.name).not.toContain(
+        "sensitive property access failure",
+      );
+      expect(readCount, candidate.name).toBe(0);
+      denialBodies.set(candidate.name, response.body);
+    }
+
+    expect(denialBodies.get("unassigned direct detail URL")).toEqual(
+      denialBodies.get("cross-tenant direct URL"),
+    );
+  });
+
+  it("fails closed before reservation reads when property access is not configured", async () => {
+    let readCount = 0;
+    const authContext = await resolveRequestContext(session, identityRepositoryWithResources(), {
+      requestId: "pms-reservation-missing-property-access",
+      authorizationResolver: async () => ({
+        permissions: ["pms.reservation.read"],
+        entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      }),
+    });
+    app = Fastify({ logger: false });
+    app.decorateRequest("authContext", null);
+    app.addHook("onRequest", async (request) => {
+      request.authContext = authContext;
+    });
+    app.register(registerPmsOperationsRoutes, {
+      prefix: "/api/pms",
+      repository: {
+        ...pmsOperationsRepository,
+        async listReservationsByPropertyId() {
+          readCount += 1;
+          throw new Error("reservation list read must not run");
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/reservations`,
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toMatchObject({ code: "read_model_unavailable" });
+    expect(readCount).toBe(0);
+  });
+
   it("returns PMS reservation empty states and forwards pagination/search filters", async () => {
     app = buildAuthenticatedApp({
-      permissions: ["pms.operations.read"],
+      permissions: ["pms.reservation.read"],
       entitlements: [
         {
           product: "pms",
@@ -11934,7 +12241,7 @@ describe("vayada-api", () => {
 
   it("returns PMS reservations overlapping the requested stay range for calendar reads", async () => {
     app = buildAuthenticatedApp({
-      permissions: ["pms.operations.read"],
+      permissions: ["pms.reservation.read"],
       entitlements: [
         {
           product: "pms",
@@ -11983,7 +12290,7 @@ describe("vayada-api", () => {
 
   it("rejects PMS reservation stay ranges mixed with list filters", async () => {
     app = buildAuthenticatedApp({
-      permissions: ["pms.operations.read"],
+      permissions: ["pms.reservation.read"],
       entitlements: [
         {
           product: "pms",
@@ -12026,7 +12333,7 @@ describe("vayada-api", () => {
 
   it("returns PMS reservation detail and not-found errors", async () => {
     app = buildAuthenticatedApp({
-      permissions: ["pms.operations.read"],
+      permissions: ["pms.reservation.read"],
       entitlements: [
         {
           product: "pms",
