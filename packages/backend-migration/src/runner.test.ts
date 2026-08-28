@@ -5070,6 +5070,14 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         code: "23514",
         constraint: "chk_pms_inventory_days_linked_requires_canonical",
       });
+      await verifyClient.query(
+        `INSERT INTO booking.guest_bookings
+           (id, property_id, public_reference, lifecycle_status, check_in, check_out, currency)
+         VALUES ('aaaaaaaa-7777-4777-8777-aaaaaaaaaaa1', $1,
+                 'linked-assignment-causality', 'confirmed',
+                 DATE '2026-03-03', DATE '2026-03-04', 'USD')`,
+        [distributionPropertyId],
+      );
       await verifyClient.query("SET session_replication_role = replica");
       await verifyClient.query(
         `INSERT INTO pms.operational_booking_assignments
@@ -5099,7 +5107,94 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
                    'linked_booking', $3, $4)`,
           [distributionPropertyId, linkedRoomTypeIds[0], linkedRoomTypeIds[1], linkedAssignmentId],
         ),
-      ).rejects.toMatchObject({ code: "23503" });
+      ).rejects.toMatchObject({
+        code: "23514",
+        constraint: "chk_pms_room_blocks_linked_assignment_source",
+      });
+      const movableLinkedBlockId = "aaaaaaaa-5555-4555-8555-aaaaaaaaaaa3";
+      await verifyClient.query(
+        `INSERT INTO pms.room_blocks
+           (id, property_id, room_type_id, starts_on, ends_on, block_kind,
+            source_room_type_id, source_assignment_id)
+         VALUES ($1, $2, $3, DATE '2026-03-03', DATE '2026-03-03',
+                 'linked_booking', $4, $5)`,
+        [
+          movableLinkedBlockId,
+          distributionPropertyId,
+          linkedRoomTypeIds[0],
+          distributionRoomTypeId,
+          linkedAssignmentId,
+        ],
+      );
+      await verifyClient.query("BEGIN");
+      await verifyClient.query(
+        `UPDATE pms.operational_booking_assignments SET room_type_id=$2 WHERE id=$1`,
+        [linkedAssignmentId, linkedRoomTypeIds[1]],
+      );
+      await expect(verifyClient.query("COMMIT")).rejects.toMatchObject({
+        code: "23514",
+        constraint: "chk_pms_assignment_linked_blocks_current",
+      });
+      await verifyClient.query("ROLLBACK");
+      await verifyClient.query("BEGIN");
+      await verifyClient.query(
+        `UPDATE pms.operational_booking_assignments SET room_type_id=$2 WHERE id=$1`,
+        [linkedAssignmentId, linkedRoomTypeIds[1]],
+      );
+      await verifyClient.query(
+        `UPDATE pms.operational_booking_assignments SET room_type_id=$2 WHERE id=$1`,
+        [linkedAssignmentId, distributionRoomTypeId],
+      );
+      await verifyClient.query("COMMIT");
+      await verifyClient.query("BEGIN");
+      await verifyClient.query(
+        `UPDATE pms.operational_booking_assignments SET room_type_id=$2 WHERE id=$1`,
+        [linkedAssignmentId, linkedRoomTypeIds[1]],
+      );
+      await verifyClient.query(
+        `UPDATE pms.room_blocks SET status='released', released_at=now() WHERE id=$1`,
+        [movableLinkedBlockId],
+      );
+      await verifyClient.query("COMMIT");
+      await expect(
+        verifyClient.query(
+          `UPDATE pms.room_blocks SET status='active', released_at=NULL WHERE id=$1`,
+          [movableLinkedBlockId],
+        ),
+      ).rejects.toMatchObject({
+        code: "23514",
+        constraint: "chk_pms_room_blocks_linked_assignment_source",
+      });
+      const concurrentClient = new pg.Client({ connectionString: TEST_DATABASE_URL });
+      await concurrentClient.connect();
+      try {
+        await verifyClient.query("BEGIN");
+        await verifyClient.query(
+          `INSERT INTO pms.room_blocks
+             (id, property_id, room_type_id, starts_on, ends_on, block_kind,
+              source_room_type_id, source_assignment_id)
+           VALUES ('aaaaaaaa-5555-4555-8555-aaaaaaaaaaa4', $1, $2,
+                   DATE '2026-03-03', DATE '2026-03-03', 'linked_booking', $3, $4)`,
+          [
+            distributionPropertyId,
+            distributionRoomTypeId,
+            linkedRoomTypeIds[1],
+            linkedAssignmentId,
+          ],
+        );
+        await concurrentClient.query("BEGIN");
+        await concurrentClient.query("SET LOCAL lock_timeout = '250ms'");
+        await expect(
+          concurrentClient.query(
+            `UPDATE pms.operational_booking_assignments SET room_type_id=$2 WHERE id=$1`,
+            [linkedAssignmentId, distributionRoomTypeId],
+          ),
+        ).rejects.toMatchObject({ code: "55P03" });
+        await concurrentClient.query("ROLLBACK");
+        await verifyClient.query("COMMIT");
+      } finally {
+        await concurrentClient.end();
+      }
       await verifyClient.query(
         `UPDATE pms.inventory_days
          SET linked_stop_sell=TRUE, linked_source_revision=1,
@@ -5155,5 +5250,5 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
     } finally {
       await verifyClient.end();
     }
-  });
+  }, 10_000);
 });
