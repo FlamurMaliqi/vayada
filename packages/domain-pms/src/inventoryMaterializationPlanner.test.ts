@@ -99,6 +99,8 @@ function currentDay(
     effectiveSellableLimitCount: generatedLimit,
     assignedCount: 0,
     blockedCount: 0,
+    linkedStopSell: false,
+    linkedSourceRevision: 0,
     availableCount: operatingStatus === "open" ? generatedLimit : 0,
     ...overrides,
   };
@@ -238,6 +240,27 @@ describe("PMS inventory materialization planner", () => {
       blockedCount: 1,
       availableCount: 0,
     });
+  });
+
+  it("preserves linked stop-sell while rematerializing generated fields", () => {
+    const linked = currentDay(ROOM_A, "2026-12-20", {
+      linkedStopSell: true,
+      linkedSourceRevision: 4,
+      availableCount: 0,
+    });
+    const result = planPmsInventoryMaterialization({
+      ...baseInput,
+      horizon: { from: "2026-12-20", through: "2026-12-20" },
+      currentDays: [linked, currentDay(ROOM_B, "2026-12-20")],
+    });
+    expect(result.ok && result.outcome).toBe("unchanged");
+    if (result.ok) {
+      expect(result.days[0]).toMatchObject({
+        linkedStopSell: true,
+        linkedSourceRevision: 4,
+        availableCount: 0,
+      });
+    }
   });
 
   it("fails closed on scope, gaps, conflicts, and retained invariant violations", () => {

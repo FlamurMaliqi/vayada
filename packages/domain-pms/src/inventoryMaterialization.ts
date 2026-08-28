@@ -37,10 +37,11 @@ export type PmsInventorySourceRevisionVector = Readonly<{
 /**
  * Owner revisions are monotonic. Calendar rematerialization may change only
  * generated/calendar-owned fields; manual, channel, block, and booking state
- * remains authoritative until its owning writer advances its revision. Every
- * stored sellable limit is bounded by physical capacity, assigned plus blocked
- * never exceeds that capacity, and available is zero while closed or otherwise
- * max(0, effective sellable limit - assigned - blocked).
+ * remains authoritative until its owning writer advances its revision. Linked
+ * stop-sell state is likewise retained. Every stored sellable limit is bounded
+ * by physical capacity, assigned plus blocked never exceeds that capacity, and
+ * available is zero while closed or linked, or otherwise max(0, effective
+ * sellable limit - assigned - blocked).
  */
 export type PmsInventoryDaySnapshot = Readonly<{
   propertyId: string;
@@ -57,6 +58,8 @@ export type PmsInventoryDaySnapshot = Readonly<{
   effectiveSellableLimitCount: number;
   assignedCount: number;
   blockedCount: number;
+  linkedStopSell: boolean;
+  linkedSourceRevision: number;
   availableCount: number;
 }>;
 

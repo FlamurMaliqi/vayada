@@ -31,6 +31,8 @@ const DAY_KEYS = [
   "effectiveSellableLimitCount",
   "assignedCount",
   "blockedCount",
+  "linkedStopSell",
+  "linkedSourceRevision",
   "availableCount",
 ] as const;
 const SOURCE_REVISION_KEYS = ["generated", "channel", "manual", "block", "booking"] as const;
@@ -199,7 +201,7 @@ function planExistingDay(
     return { error: { code: "inventory_invariant_violation", ...errorKey } };
   }
   const availableCount =
-    operatingStatus === "closed"
+    operatingStatus === "closed" || current.linkedStopSell
       ? 0
       : Math.max(0, effectiveSellableLimitCount - current.assignedCount - current.blockedCount);
   const changed =
@@ -257,6 +259,8 @@ function newDay(
       effectiveSellableLimitCount: binding.startingSellableLimitCount,
       assignedCount: 0,
       blockedCount: 0,
+      linkedStopSell: false,
+      linkedSourceRevision: 0,
       availableCount: operatingStatus === "open" ? binding.startingSellableLimitCount : 0,
     }),
   };
@@ -269,7 +273,7 @@ function validCurrentInvariant(
   const retainedLimit = day.manualSellableLimitCount ?? day.channelSellableLimitCount;
   const effectiveLimit = retainedLimit === null ? day.generatedSellableLimitCount : retainedLimit;
   const available =
-    day.operatingStatus === "closed"
+    day.operatingStatus === "closed" || day.linkedStopSell
       ? 0
       : Math.max(0, effectiveLimit - day.assignedCount - day.blockedCount);
   return (
@@ -305,6 +309,8 @@ function parseCurrentDay(value: unknown): PmsInventoryDaySnapshot | null {
     !count(value.effectiveSellableLimitCount, 0, 500) ||
     !count(value.assignedCount, 0, 500) ||
     !count(value.blockedCount, 0, 500) ||
+    typeof value.linkedStopSell !== "boolean" ||
+    !revision(value.linkedSourceRevision, true) ||
     !count(value.availableCount, 0, 500)
   ) {
     return null;

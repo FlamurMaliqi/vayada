@@ -14,13 +14,20 @@ export type PmsLinkedInventoryChange = {
   stayDate: string;
 };
 
-type DerivedRange = {
-  blockId: string;
+export type PmsLinkedInventoryDirtyRange = {
+  roomTypeId: string;
+  startsOn: string;
+  endsOn: string;
+};
+
+type InventoryRange = {
   sourceRoomTypeId: string;
   targetRoomTypeId: string;
   startsOn: string;
   endsOn: string;
 };
+
+type DerivedRange = InventoryRange & { blockId: string };
 
 export class PmsLinkedInventoryNotCanonicalError extends Error {}
 
@@ -28,6 +35,7 @@ export async function reconcilePmsLinkedInventory(
   client: PmsLinkedInventoryClient,
   propertyId: string,
   changedAt: string,
+  requestedRanges: readonly PmsLinkedInventoryDirtyRange[] = [],
 ): Promise<PmsLinkedInventoryChange[]> {
   await lockPmsInventoryMutationScope(client, propertyId);
   const groups = await client.query(
@@ -52,8 +60,8 @@ export async function reconcilePmsLinkedInventory(
     [propertyId],
   );
   if (groups.rows.length === 0) return [];
-  await client.query(
-    `SELECT room_type.id
+  const linkedRoomTypes = await client.query<{ roomTypeId: string }>(
+    `SELECT room_type.id::text AS "roomTypeId"
      FROM pms.room_types room_type
      WHERE room_type.property_id = $1::uuid
        AND room_type.linked_inventory_group_id IS NOT NULL
@@ -103,10 +111,21 @@ export async function reconcilePmsLinkedInventory(
   const changedBlocks = await upsertDerivedBlocks(client, propertyId, changedAt);
   const releasedBlocks = await releaseStaleDerivedBlocks(client, propertyId, changedAt);
   const oldById = new Map(before.rows.map((range) => [range.blockId, range]));
-  const dirtyRanges = [...changedBlocks, ...releasedBlocks].flatMap((range) => {
+  const dirtyRanges: InventoryRange[] = [...changedBlocks, ...releasedBlocks].flatMap((range) => {
     const old = oldById.get(range.blockId);
     return old ? [old, range] : [range];
   });
+  const linkedRoomTypeIds = new Set(linkedRoomTypes.rows.map(({ roomTypeId }) => roomTypeId));
+  dirtyRanges.push(
+    ...requestedRanges
+      .filter((range) => linkedRoomTypeIds.has(range.roomTypeId))
+      .map((range) => ({
+        sourceRoomTypeId: range.roomTypeId,
+        targetRoomTypeId: range.roomTypeId,
+        startsOn: range.startsOn,
+        endsOn: range.endsOn,
+      })),
+  );
   if (dirtyRanges.length === 0) return [];
 
   const changed = await client.query<PmsLinkedInventoryChange>(
