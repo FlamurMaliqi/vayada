@@ -24,6 +24,7 @@ export const identityLifecycleCommandTypes = [
   "identity.recovery.flow.create",
   "identity.invite.staff.create",
   "identity.staff.access.update",
+  "identity.staff.status.update",
   "identity.invite.affiliate.create",
   "identity.invite.customer.create",
   "identity.consent.cookie.upsert",
@@ -48,6 +49,7 @@ export const identityLifecycleEventTypes = [
   "identity.recovery.flow.created",
   "identity.invite.staff.created",
   "identity.staff.access.updated",
+  "identity.staff.status.updated",
   "identity.invite.affiliate.created",
   "identity.invite.customer.created",
   "identity.consent.cookie.upserted",
@@ -461,6 +463,12 @@ export type UpdateStaffAccessPayload = Omit<
   "email" | "name" | "configurationRevision"
 > & { membershipId: string };
 
+export type UpdateStaffStatusPayload = {
+  organizationId: string;
+  membershipId: string;
+  membershipStatus: Extract<MembershipStatus, "active" | "suspended">;
+};
+
 export type CookieConsentPayload = {
   visitorId: string;
   userId?: string;
@@ -576,6 +584,13 @@ export type UpdateStaffAccessCommand = IdentityLifecycleCommandBase<
   audit: StaffInviteAudit;
 };
 
+export type UpdateStaffStatusCommand = IdentityLifecycleCommandBase<
+  "identity.staff.status.update",
+  UpdateStaffStatusPayload
+> & {
+  audit: StaffInviteAudit;
+};
+
 export type CreateCustomerInviteCommand = IdentityLifecycleCommandBase<
   "identity.invite.customer.create",
   CreateCustomerInvitePayload
@@ -619,6 +634,7 @@ export type IdentityLifecycleCommand =
   | CreateIdentityRecoveryFlowCommand
   | CreateStaffInviteCommand
   | UpdateStaffAccessCommand
+  | UpdateStaffStatusCommand
   | CreateAffiliateInviteCommand
   | CreateCustomerInviteCommand
   | UpsertCookieConsentCommand
@@ -661,6 +677,11 @@ export type StaffAccessUpdatedEvent = IdentityLifecycleEventBase<
   UpdateStaffAccessPayload
 > & { audit: StaffInviteAudit };
 
+export type StaffStatusUpdatedEvent = IdentityLifecycleEventBase<
+  "identity.staff.status.updated",
+  UpdateStaffStatusPayload
+> & { audit: StaffInviteAudit };
+
 export type IdentityLifecycleEvent =
   | IdentityLifecycleEventBase<"identity.user.created", CreateIdentityUserPayload>
   | IdentityLifecycleEventBase<"identity.user.profile.updated", UpdateIdentityUserProfilePayload>
@@ -674,6 +695,7 @@ export type IdentityLifecycleEvent =
   | IdentityLifecycleEventBase<"identity.recovery.flow.created", CreateIdentityRecoveryFlowPayload>
   | StaffInviteCreatedEvent
   | StaffAccessUpdatedEvent
+  | StaffStatusUpdatedEvent
   | IdentityLifecycleEventBase<"identity.invite.affiliate.created", CreateAffiliateInvitePayload>
   | IdentityLifecycleEventBase<"identity.invite.customer.created", CreateCustomerInvitePayload>
   | IdentityLifecycleEventBase<"identity.consent.cookie.upserted", CookieConsentPayload>

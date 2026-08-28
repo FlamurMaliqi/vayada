@@ -14,7 +14,11 @@ import {
   type StaffInvitationAcceptanceEvent,
 } from "./staffInvitationAcceptance.js";
 import { createPgStaffInvitationRepository } from "./staffInvitations.js";
-import type { CreateStaffInviteCommand, UpdateStaffAccessCommand } from "./lifecycle.js";
+import type {
+  CreateStaffInviteCommand,
+  UpdateStaffAccessCommand,
+  UpdateStaffStatusCommand,
+} from "./lifecycle.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const org = "11111111-1111-4111-8111-111111111111";
@@ -106,6 +110,35 @@ function updateCommand(
       propertyAccessMode: "assigned",
       propertyIds: input.propertyIds ?? [property],
       permissionOverrides: { grant: [], deny: ["booking.analytics.read"] },
+    },
+  };
+}
+
+function statusCommand(
+  input: Partial<{
+    idempotencyKey: string;
+    organizationId: string;
+    membershipId: string;
+    actorUserId: string;
+    membershipStatus: "active" | "suspended";
+  }> = {},
+): UpdateStaffStatusCommand {
+  const organizationId = input.organizationId ?? org;
+  return {
+    commandType: "identity.staff.status.update",
+    commandId: randomUUID(),
+    idempotencyKey: input.idempotencyKey ?? `status-${randomUUID()}`,
+    audit: {
+      actor: { kind: "user", userId: input.actorUserId ?? owner, organizationId },
+      source: "admin",
+      requestId: `request-${randomUUID()}`,
+      reason: "Update staff status",
+      requestedAt: "2026-08-24T00:00:00.000Z",
+    },
+    payload: {
+      organizationId,
+      membershipId: input.membershipId ?? staffMembership,
+      membershipStatus: input.membershipStatus ?? "suspended",
     },
   };
 }
@@ -441,6 +474,100 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
         ])
       ).rows[0]?.role_key,
     ).toBe("housekeeping");
+  });
+
+  it("deactivates, audits, replays, and reactivates staff without losing access settings", async () => {
+    await client.query(
+      "INSERT INTO identity.membership_property_assignments (membership_id, property_id) VALUES ($1, $2)",
+      [staffMembership, property],
+    );
+    const deactivate = statusCommand();
+    await expect(repository.updateStatus(deactivate)).resolves.toEqual({
+      outcome: "updated",
+      membershipId: staffMembership,
+      membershipStatus: "suspended",
+    });
+    await expect(
+      repository.updateStatus({ ...deactivate, commandId: randomUUID() }),
+    ).resolves.toEqual({
+      outcome: "idempotent_replay",
+      membershipId: staffMembership,
+      membershipStatus: "suspended",
+    });
+    await expect(
+      repository.updateStatus({
+        ...deactivate,
+        commandId: randomUUID(),
+        payload: { ...deactivate.payload, membershipStatus: "active" },
+      }),
+    ).resolves.toEqual({ outcome: "rejected", reason: "idempotency_conflict" });
+    const stored = await client.query(
+      `SELECT membership.status, membership.role_key, membership.permission_overrides,
+              ARRAY(SELECT property_id::text FROM identity.membership_property_assignments
+                    WHERE membership_id = membership.id ORDER BY property_id) AS properties
+       FROM identity.organization_memberships membership WHERE membership.id = $1`,
+      [staffMembership],
+    );
+    expect(stored.rows[0]).toMatchObject({
+      status: "suspended",
+      role_key: "housekeeping",
+      permission_overrides: null,
+      properties: [property],
+    });
+    expect((await repository.listRoster(org))[0]?.status).toBe("deactivated");
+    const audit = await client.query(
+      `SELECT action, actor_user_id::text, target_resource_id, redacted_payload, private_payload
+       FROM platform.product_audit_events WHERE product = 'identity' AND causation_id = $1`,
+      [deactivate.commandId],
+    );
+    expect(audit.rows[0]).toMatchObject({
+      action: "identity.staff.status.updated",
+      actor_user_id: owner,
+      target_resource_id: staffMembership,
+      redacted_payload: { outcome: "updated", membershipStatus: "suspended" },
+      private_payload: {
+        targetUserId: staffUser,
+        previous: { membershipStatus: "active" },
+        next: { membershipStatus: "suspended" },
+      },
+    });
+    await expect(
+      repository.updateStatus(statusCommand({ membershipStatus: "active" })),
+    ).resolves.toMatchObject({ outcome: "updated", membershipStatus: "active" });
+    expect((await repository.listRoster(org))[0]?.status).toBe("active");
+  });
+
+  it("hides unauthorized, owner, removed, cross-tenant, and globally suspended targets", async () => {
+    await expect(
+      repository.updateStatus(statusCommand({ actorUserId: otherUser })),
+    ).resolves.toEqual({ outcome: "rejected", reason: "inviter_not_authorized" });
+    await expect(
+      repository.updateStatus(statusCommand({ membershipId: membership })),
+    ).resolves.toEqual({ outcome: "rejected", reason: "target_not_found" });
+    await client.query(
+      "UPDATE identity.organization_memberships SET role_key = 'front_desk' WHERE id = $1",
+      [otherMembership],
+    );
+    await expect(
+      repository.updateStatus(statusCommand({ membershipId: otherMembership })),
+    ).resolves.toEqual({ outcome: "rejected", reason: "target_not_found" });
+    await client.query(
+      "UPDATE identity.organization_memberships SET status = 'inactive' WHERE id = $1",
+      [staffMembership],
+    );
+    await expect(repository.updateStatus(statusCommand())).resolves.toEqual({
+      outcome: "rejected",
+      reason: "target_not_found",
+    });
+    await client.query(
+      "UPDATE identity.organization_memberships SET status = 'active' WHERE id = $1",
+      [staffMembership],
+    );
+    await client.query("UPDATE identity.users SET status = 'suspended' WHERE id = $1", [staffUser]);
+    await expect(repository.updateStatus(statusCommand())).resolves.toEqual({
+      outcome: "rejected",
+      reason: "target_not_found",
+    });
   });
 
   it("persists, normalizes, and replays one intent", async () => {

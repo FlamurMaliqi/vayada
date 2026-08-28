@@ -33,6 +33,7 @@ should depend on the command bus contract, not on raw Auth DB tables.
 | `identity.recovery.flow.create`    | Start recovery, password reset, email verification, or email change through identity/provider flows, not product token tables. |
 | `identity.invite.staff.create`     | Record one hotel staff invitation intent with an assigned property scope and validated permission overrides.                   |
 | `identity.staff.access.update`     | Atomically replace an existing hotel staff membership's role, permission overrides, and assigned canonical properties.         |
+| `identity.staff.status.update`     | Suspend or reactivate one existing hotel staff membership without changing its shared user or access configuration.            |
 | `identity.invite.affiliate.create` | Invite or link an affiliate user through an affiliate-partner organization, membership, resource link, and permission grants.  |
 | `identity.invite.customer.create`  | Invite a customer account without granting hotel ownership or staff membership. Guest booking data remains booking-owned.      |
 
