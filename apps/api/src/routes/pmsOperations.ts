@@ -1868,7 +1868,17 @@ export async function registerPmsOperationsRoutes(
       if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? []))
         return sendPmsOperationsError(reply, missingOriginPermission());
       const { propertyId } = request.params;
-      if (!enforcePmsRoomOptimizationManagePolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyAccessPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.operations.manage",
+          options.propertyAccessRepository,
+          ["owner", "operator"],
+        ))
+      )
+        return reply;
       if (!options.roomAssignmentHistory)
         return sendPmsOperationsError(
           reply,
