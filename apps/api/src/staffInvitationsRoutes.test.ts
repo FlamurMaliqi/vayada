@@ -1,6 +1,9 @@
+import { request as httpRequest } from "node:http";
+
 import type {
   CreateStaffInviteCommand,
   PermissionKey,
+  RemoveStaffCommand,
   RequestContext,
   UpdateStaffAccessCommand,
   UpdateStaffStatusCommand,
@@ -22,6 +25,8 @@ const staffMembershipId = "55555555-5555-4555-8555-555555555555";
 type PersistResult = Awaited<ReturnType<StaffInvitationRoutesOptions["repository"]["persist"]>>;
 type UpdateResult = Awaited<ReturnType<StaffInvitationRoutesOptions["repository"]["updateAccess"]>>;
 type StatusResult = Awaited<ReturnType<StaffInvitationRoutesOptions["repository"]["updateStatus"]>>;
+type RemoveResult = Awaited<ReturnType<StaffInvitationRoutesOptions["repository"]["remove"]>>;
+type RevocationResult = Awaited<ReturnType<StaffInvitationRoutesOptions["removal"]["revoke"]>>;
 type Auth = {
   authenticated?: boolean;
   actorStatus?: RequestContext["actor"]["status"];
@@ -35,6 +40,8 @@ function fakes() {
   const commands: CreateStaffInviteCommand[] = [];
   const accessCommands: UpdateStaffAccessCommand[] = [];
   const statusCommands: UpdateStaffStatusCommand[] = [];
+  const removalCommands: RemoveStaffCommand[] = [];
+  const revocationJobs: string[] = [];
   const deliveries: string[] = [];
   const rosterOrganizations: string[] = [];
   let result: PersistResult = { outcome: "created", invitationId };
@@ -44,10 +51,21 @@ function fakes() {
     membershipId: staffMembershipId,
     membershipStatus: "suspended",
   };
+  let removeResult: RemoveResult = {
+    outcome: "removed",
+    membershipId: staffMembershipId,
+    providerRevocationJobId: "66666666-6666-4666-8666-666666666666",
+  };
+  let revocationResult: RevocationResult = {
+    outcome: "revoked",
+    jobId: "66666666-6666-4666-8666-666666666666",
+  };
   return {
     commands,
     accessCommands,
     statusCommands,
+    removalCommands,
+    revocationJobs,
     deliveries,
     rosterOrganizations,
     setResult(value: PersistResult) {
@@ -58,6 +76,12 @@ function fakes() {
     },
     setStatusResult(value: StatusResult) {
       statusResult = value;
+    },
+    setRemoveResult(value: RemoveResult) {
+      removeResult = value;
+    },
+    setRevocationResult(value: RevocationResult) {
+      revocationResult = value;
     },
     options: {
       repository: {
@@ -87,6 +111,10 @@ function fakes() {
           statusCommands.push(command);
           return statusResult;
         },
+        async remove(command) {
+          removalCommands.push(command);
+          return removeResult;
+        },
       },
       delivery: {
         async deliver(id) {
@@ -96,6 +124,12 @@ function fakes() {
             invitationId: id,
             providerInvitationId: "provider-invitation",
           };
+        },
+      },
+      removal: {
+        async revoke(jobId) {
+          revocationJobs.push(jobId);
+          return revocationResult;
         },
       },
     } satisfies StaffInvitationRoutesOptions,
@@ -239,6 +273,24 @@ describe("staff invitation routes", () => {
     expect(fake.statusCommands[1]?.payload.membershipStatus).toBe("active");
   });
 
+  it("removes tenant staff and revokes only its provider membership", async () => {
+    const fake = fakes();
+    app = await testApp(fake.options);
+    const response = await remove(app);
+    expect(response).toMatchObject({
+      statusCode: 200,
+      body: { membershipId: staffMembershipId, status: "removed", providerStatus: "revoked" },
+    });
+    expect(fake.removalCommands[0]).toMatchObject({
+      commandType: "identity.staff.remove",
+      idempotencyKey: `hotel:${organizationId}:remove-key`,
+      audit: { actor: { userId: "user-owner", organizationId }, source: "api" },
+      payload: { organizationId, membershipId: staffMembershipId },
+    });
+    expect(fake.revocationJobs).toEqual(["66666666-6666-4666-8666-666666666666"]);
+    expect(JSON.stringify(response.body)).not.toMatch(/workos|jobId|userId|organizationId/i);
+  });
+
   it.each([
     ["unauthenticated", { authenticated: false }, 401],
     ["wrong organization", { organizationKind: "creator_workspace" }, 403],
@@ -253,9 +305,12 @@ describe("staff invitation routes", () => {
     expect((await get(app)).statusCode).toBe(statusCode);
     expect((await patchAccess(app, { unsafe: true })).statusCode).toBe(statusCode);
     expect((await patchStatus(app, { unsafe: true })).statusCode).toBe(statusCode);
+    expect((await remove(app)).statusCode).toBe(statusCode);
     expect(fake.commands).toHaveLength(0);
     expect(fake.accessCommands).toHaveLength(0);
     expect(fake.statusCommands).toHaveLength(0);
+    expect(fake.removalCommands).toHaveLength(0);
+    expect(fake.revocationJobs).toHaveLength(0);
     expect(fake.rosterOrganizations).toHaveLength(0);
   });
 
@@ -317,6 +372,47 @@ describe("staff invitation routes", () => {
     fake.setStatusResult({ outcome: "rejected", reason: "idempotency_conflict" });
     expect((await patchStatus(app)).statusCode).toBe(409);
   });
+
+  it("fails closed for malformed, hidden, and cross-tenant removal targets", async () => {
+    const fake = fakes();
+    app = await testApp(fake.options);
+    expect((await remove(app, null)).statusCode).toBe(400);
+    expect(fake.removalCommands).toHaveLength(0);
+    fake.setRemoveResult({ outcome: "rejected", reason: "target_not_found" });
+    expect((await remove(app, "remove-key", foreignPropertyId)).statusCode).toBe(404);
+    fake.setRemoveResult({ outcome: "rejected", reason: "inviter_not_authorized" });
+    expect((await remove(app)).statusCode).toBe(403);
+    fake.setRemoveResult({ outcome: "rejected", reason: "idempotency_conflict" });
+    expect((await remove(app)).statusCode).toBe(409);
+    expect(fake.revocationJobs).toHaveLength(0);
+  });
+
+  it("rejects repeated Idempotency-Key headers before removal", async () => {
+    const fake = fakes();
+    app = await testApp(fake.options);
+    expect(await repeatedIdempotencyDelete(app)).toBe(400);
+    expect(fake.removalCommands).toHaveLength(0);
+    expect(fake.revocationJobs).toHaveLength(0);
+  });
+
+  it.each([
+    ["pending", "pending"],
+    ["reconciliation_required", "reconciliation_required"],
+  ] as const)(
+    "returns accepted while provider revocation is %s",
+    async (outcome, providerStatus) => {
+      const fake = fakes();
+      fake.setRevocationResult({
+        outcome,
+        jobId: "66666666-6666-4666-8666-666666666666",
+      });
+      app = await testApp(fake.options);
+      expect(await remove(app)).toMatchObject({
+        statusCode: 202,
+        body: { status: "removed", providerStatus },
+      });
+    },
+  );
 });
 
 function body() {
@@ -391,5 +487,46 @@ function patchStatus(
       ...(key === null ? {} : { "idempotency-key": key }),
     },
     payload,
+  });
+}
+
+function remove(
+  app: Awaited<ReturnType<typeof testApp>>,
+  key: string | null = "remove-key",
+  membershipId = staffMembershipId,
+) {
+  return injectJson(app, {
+    method: "DELETE",
+    url: `/api/identity/staff/members/${membershipId}`,
+    headers: {
+      authorization: "Bearer valid-token",
+      ...(key === null ? {} : { "idempotency-key": key }),
+    },
+  });
+}
+
+async function repeatedIdempotencyDelete(app: Awaited<ReturnType<typeof testApp>>) {
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address();
+  if (!address || typeof address === "string") throw new Error("Test server did not bind");
+  return new Promise<number>((resolve, reject) => {
+    const request = httpRequest(
+      {
+        host: "127.0.0.1",
+        port: address.port,
+        path: `/api/identity/staff/members/${staffMembershipId}`,
+        method: "DELETE",
+        headers: {
+          authorization: "Bearer valid-token",
+          "idempotency-key": ["first", "second"],
+        },
+      },
+      (response) => {
+        response.resume();
+        response.on("end", () => resolve(response.statusCode ?? 0));
+      },
+    );
+    request.on("error", reject);
+    request.end();
   });
 }
