@@ -5,6 +5,7 @@ import type {
   ProductEntitlement,
   RequestContext,
 } from "@vayada/backend-auth";
+import type { MembershipPropertyScope } from "@vayada/backend-authorization";
 import { injectJson } from "@vayada/backend-test";
 import {
   BOOKING_GUEST_POLICY_CONTRACT_VERSION,
@@ -52,6 +53,7 @@ describe("protected Booking guest-policy routes", () => {
           firstVisitReadiness(),
           [],
         ),
+        propertyAccessRepository: propertyAccessRepository(),
       },
     });
     expect((await app.inject({ method: "GET", url: path })).statusCode).toBe(401);
@@ -99,6 +101,26 @@ describe("protected Booking guest-policy routes", () => {
     );
   });
 
+  it("allows an explicitly assigned property", async () => {
+    const application = routeApplication(
+      revisionFixture(),
+      compositionFixture(),
+      firstVisitReadiness(),
+      [],
+    );
+    app = await routeApp(application, {
+      propertyScope: {
+        mode: "assigned",
+        roleKey: "hotel_manager",
+        accessOrigin: "agency",
+        assignedPropertyIds: [propertyId],
+      },
+    });
+
+    expect((await get(app, "")).statusCode).toBe(200);
+    expect(application.getGuestPolicySetup).toHaveBeenCalledWith({ organizationId, propertyId });
+  });
+
   it.each([
     ["missing authentication", {}, null],
     ["invalid authentication", {}, "Bearer invalid-token"],
@@ -108,6 +130,31 @@ describe("protected Booking guest-policy routes", () => {
       "Bearer valid-token",
     ],
     ["missing permission", { permissions: [] }, "Bearer valid-token"],
+    ["inactive membership", { membershipStatus: "inactive" as const }, "Bearer valid-token"],
+    [
+      "no property assignment",
+      {
+        propertyScope: {
+          mode: "assigned",
+          roleKey: "hotel_manager",
+          accessOrigin: "agency",
+          assignedPropertyIds: [],
+        },
+      },
+      "Bearer valid-token",
+    ],
+    [
+      "unknown property scope",
+      {
+        propertyScope: {
+          mode: "unknown",
+          roleKey: "hotel_manager",
+          accessOrigin: "agency",
+          assignedPropertyIds: [propertyId],
+        },
+      },
+      "Bearer valid-token",
+    ],
     ["missing entitlement", { entitlements: [] }, "Bearer valid-token"],
     ["inactive entitlement", { entitlements: [entitlement("suspended")] }, "Bearer valid-token"],
     [
@@ -148,6 +195,41 @@ describe("protected Booking guest-policy routes", () => {
     expect(application.previewGuestPolicy).not.toHaveBeenCalled();
     expect(application.upsertGuestPolicy).not.toHaveBeenCalled();
     expect(application.getGuestPolicyReadiness).not.toHaveBeenCalled();
+  });
+
+  it("returns the same denial for unassigned and cross-tenant properties", async () => {
+    const application = routeApplication(
+      revisionFixture(),
+      compositionFixture(),
+      firstVisitReadiness(),
+      [],
+    );
+    app = await routeApp(application, {
+      links: [...links(), ...links(otherPropertyId)],
+      propertyScope: {
+        mode: "assigned",
+        roleKey: "hotel_manager",
+        accessOrigin: "agency",
+        assignedPropertyIds: [propertyId],
+      },
+    });
+    const unassigned = await get(app, "", "Bearer valid-token", otherPropertyId);
+    expect(application.getGuestPolicySetup).not.toHaveBeenCalled();
+    await app.close();
+
+    app = await routeApp(application, {
+      propertyScope: {
+        mode: "assigned",
+        roleKey: "hotel_manager",
+        accessOrigin: "agency",
+        assignedPropertyIds: [otherPropertyId],
+      },
+    });
+    const crossTenant = await get(app, "", "Bearer valid-token", otherPropertyId);
+
+    expect(unassigned).toMatchObject({ statusCode: 403, body: { code: "forbidden" } });
+    expect(crossTenant).toEqual(unassigned);
+    expect(application.getGuestPolicySetup).not.toHaveBeenCalled();
   });
 
   it("authorizes before Fastify parses malformed JSON", async () => {
@@ -217,9 +299,11 @@ function firstVisitReadiness() {
 type AuthOptions = {
   authenticated?: boolean;
   organizationKind?: OrganizationKind;
+  membershipStatus?: RequestContext["membership"]["status"];
   permissions?: readonly PermissionKey[];
   entitlements?: readonly ProductEntitlement[];
   links?: readonly LinkedResource[];
+  propertyScope?: MembershipPropertyScope | null;
 };
 
 async function routeApp(application: BookingGuestPolicyApplicationPort, auth: AuthOptions = {}) {
@@ -229,13 +313,25 @@ async function routeApp(application: BookingGuestPolicyApplicationPort, auth: Au
     if (auth.authenticated === false || request.headers.authorization !== "Bearer valid-token")
       return;
     request.authContext = {
-      actor: { internalUserId: actorUserId },
+      actor: {
+        internalUserId: actorUserId,
+        providerIdentity: { provider: "workos", providerUserId: "user_staff" },
+        email: "staff@example.com",
+        status: "active",
+      },
       selectedOrganization: {
         organizationId,
         kind: auth.organizationKind ?? "hotel_group",
+        status: "active",
       },
-      membership: { permissions: [...(auth.permissions ?? ["booking.settings.manage"])] },
-      linkedResources: [...(auth.links ?? [link()])],
+      membership: {
+        membershipId: "723e4567-e89b-42d3-a456-426614174000",
+        status: auth.membershipStatus ?? "active",
+        roleKey: "hotel_manager",
+        workosRoleSlugs: ["hotel_admin"],
+        permissions: [...(auth.permissions ?? ["booking.settings.manage"])],
+      },
+      linkedResources: [...(auth.links ?? links())],
       entitlements: [...(auth.entitlements ?? [entitlement()])],
       locale: "en",
       currency: "EUR",
@@ -245,10 +341,28 @@ async function routeApp(application: BookingGuestPolicyApplicationPort, auth: Au
         source: "api",
         receivedAt: now,
       },
-    } as RequestContext;
+    };
   });
-  await app.register(registerBookingGuestPolicyRoutes, { application });
+  await app.register(registerBookingGuestPolicyRoutes, {
+    application,
+    propertyAccessRepository: propertyAccessRepository(auth.propertyScope),
+  });
   return app;
+}
+
+function propertyAccessRepository(scope?: MembershipPropertyScope | null) {
+  return {
+    findMembershipPropertyScope: vi.fn(async () =>
+      scope === undefined
+        ? {
+            mode: "all",
+            roleKey: "hotel_manager",
+            accessOrigin: "agency",
+            assignedPropertyIds: [],
+          }
+        : scope,
+    ),
+  };
 }
 
 function entitlement(
@@ -274,14 +388,29 @@ function link(overrides: Partial<LinkedResource> = {}): LinkedResource {
   };
 }
 
+function canonicalLink(resourceId = propertyId): LinkedResource {
+  return {
+    product: "hotel_catalog",
+    resourceType: "property",
+    resourceId,
+    relationship: "owner",
+    status: "active",
+  };
+}
+
+function links(resourceId = propertyId): LinkedResource[] {
+  return [canonicalLink(resourceId), link({ resourceId })];
+}
+
 function get(
   app: FastifyInstance,
   suffix: string,
   authorization: string | null = "Bearer valid-token",
+  requestedPropertyId = propertyId,
 ) {
   return injectJson(app, {
     method: "GET",
-    url: `/properties/${propertyId}/booking-guest-policy${suffix}`,
+    url: `/properties/${requestedPropertyId}/booking-guest-policy${suffix}`,
     ...(authorization ? { headers: { authorization } } : {}),
   });
 }
