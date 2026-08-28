@@ -51,7 +51,9 @@ export function createPgIdentityLifecycleCommandBus(
         case "identity.resource_links.grant":
           return grantIdentityResourceLinks(pool, command);
         default:
-          throw new Error(`Unsupported identity lifecycle command: ${command.commandType}`);
+          throw new Error(
+            `Unsupported identity lifecycle command: ${(command as { commandType?: string }).commandType ?? "unknown"}`,
+          );
       }
     },
   };
