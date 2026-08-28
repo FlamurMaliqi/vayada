@@ -79,6 +79,64 @@ describe("target PMS linked inventory groups", () => {
   });
 });
 
+describe("target PMS linked calendar blocks", () => {
+  it("projects linked cause context and protects derived blocks", async () => {
+    let query = "";
+    const pool: PmsOperationsReadPool = {
+      async query<T extends QueryResultRow = QueryResultRow>(
+        text: string,
+      ): Promise<QueryResult<T>> {
+        query = text;
+        return {
+          command: "SELECT",
+          rowCount: 1,
+          oid: 0,
+          fields: [],
+          rows: [
+            {
+              blockId: "block-1",
+              revision: 3,
+              roomTypeId: "type-2",
+              roomId: null,
+              startsOn: "2026-09-01",
+              endsOn: "2026-09-02",
+              blockedCount: 1,
+              reason: "Linked inventory",
+              status: "active",
+              kind: "linked_booking",
+              sourceRoomTypeId: "type-1",
+              sourceRoomTypeName: "Alpine Suite",
+              sourceSummary: "Booking VAY-42 · Alpine Suite",
+            },
+          ] as unknown as T[],
+        };
+      },
+    };
+    const repository = createTargetPmsOperationsReadRepository({
+      connectionString: "postgresql://pms-operations-read",
+      pool,
+    });
+
+    await expect(
+      repository.listRoomBlocksByPropertyId("property-1", {
+        from: "2026-09-01",
+        to: "2026-09-30",
+      }),
+    ).resolves.toMatchObject({
+      items: [
+        {
+          kind: "linked_booking",
+          sourceRoomTypeName: "Alpine Suite",
+          sourceSummary: "Booking VAY-42 · Alpine Suite",
+          protected: true,
+        },
+      ],
+    });
+    expect(query).toContain("source_assignment.guest_booking_id");
+    expect(query).toContain('AS "sourceSummary"');
+  });
+});
+
 describe("target PMS reservation stay dates", () => {
   it("reads DATE columns as text so the calendar date is preserved", async () => {
     const queries: string[] = [];
