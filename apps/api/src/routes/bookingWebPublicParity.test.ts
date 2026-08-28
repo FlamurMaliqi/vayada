@@ -2608,6 +2608,11 @@ describe("Booking Web public bootstrap parity", () => {
           nightlyRoomAmounts: nights("200"),
         },
         requestFingerprint: "2".repeat(64),
+        inventoryReservation: {
+          contractVersion: "pms-inventory-reservation-lifecycle.v1",
+          owner: "pms",
+          receiptId: "799e6c2a-95f8-47f2-8bf1-c2d18e3d7a66",
+        },
         ...confirmationMetadata,
       },
       cardBrand,
@@ -2982,6 +2987,12 @@ describe("Booking Web public bootstrap parity", () => {
     });
     expect(calls.some((call) => call.text.includes("guest_booking.payment_received"))).toBe(true);
     expect(calls.some((call) => call.text.includes("'pms-reservation-handoff'"))).toBe(true);
+    const pmsHandoff = calls.findLast((call) => call.text.includes("'pms-reservation-handoff'"));
+    expect(JSON.parse(String(pmsHandoff?.values?.[6]))).toMatchObject({
+      inventoryReservation: {
+        receiptId: "799e6c2a-95f8-47f2-8bf1-c2d18e3d7a66",
+      },
+    });
 
     cardBrand = null;
     cardLast4 = null;
