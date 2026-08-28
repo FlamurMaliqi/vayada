@@ -12,11 +12,19 @@ import {
   CheckIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
-import { roomsService, individualRoomsService, RoomType, Room } from "@/services/rooms";
+import {
+  roomsService,
+  individualRoomsService,
+  linkedInventoryGroupsService,
+  type LinkedInventoryGroup,
+  type RoomType,
+  type Room,
+} from "@/services/rooms";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { formatCurrency } from "@/lib/formatCurrency";
 import { useTranslation } from "@/lib/i18n";
 import { imageReferenceUrl } from "@/services/upload";
+import LinkedInventoryGroupsPanel from "./LinkedInventoryGroupsPanel";
 
 const CATEGORY_STYLES: Record<string, string> = {
   suite: "bg-blue-50 text-blue-600 border border-blue-200",
@@ -120,11 +128,13 @@ function RoomTypeCard({
   rooms,
   onRoomsChange,
   onDuplicate,
+  linkedGroup,
 }: {
   room: RoomType;
   rooms: Room[];
   onRoomsChange: () => void;
   onDuplicate: (id: string) => void;
+  linkedGroup?: LinkedInventoryGroup;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -258,6 +268,14 @@ function RoomTypeCard({
             >
               {room.category || getCategoryLabel(room.name)}
             </span>
+            {linkedGroup && (
+              <span
+                title={`Linked inventory: ${linkedGroup.name}`}
+                className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700"
+              >
+                Linked
+              </span>
+            )}
           </div>
           <p className="text-[12px] text-gray-400 mt-0.5 truncate">
             {typeRooms.length} room{typeRooms.length !== 1 ? "s" : ""}
@@ -543,16 +561,24 @@ export default function RoomsPage() {
   const { t } = useTranslation();
   const [rooms, setRooms] = useState<RoomType[]>([]);
   const [individualRooms, setIndividualRooms] = useState<Room[]>([]);
+  const [linkedGroups, setLinkedGroups] = useState<LinkedInventoryGroup[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
 
   const loadData = () => {
-    Promise.all([roomsService.list(), individualRoomsService.list()])
-      .then(([types, indRooms]) => {
-        setRooms(types);
-        setIndividualRooms(indRooms);
+    Promise.allSettled([
+      roomsService.list(),
+      individualRoomsService.list(),
+      linkedInventoryGroupsService.list(),
+    ])
+      .then(([types, indRooms, groups]) => {
+        if (types.status === "fulfilled") setRooms(types.value);
+        else console.error(types.reason);
+        if (indRooms.status === "fulfilled") setIndividualRooms(indRooms.value);
+        else console.error(indRooms.reason);
+        if (groups.status === "fulfilled") setLinkedGroups(groups.value);
+        else console.error(groups.reason);
       })
-      .catch(console.error)
       .finally(() => setLoading(false));
   };
 
@@ -613,6 +639,14 @@ export default function RoomsPage() {
         </div>
       </div>
 
+      {!loading && linkedGroups && (
+        <LinkedInventoryGroupsPanel
+          groups={linkedGroups}
+          roomTypes={rooms}
+          onChange={(update) => setLinkedGroups((groups) => (groups ? update(groups) : groups))}
+        />
+      )}
+
       {/* Room Type List */}
       {loading ? (
         <div className="animate-pulse space-y-3">
@@ -659,6 +693,7 @@ export default function RoomsPage() {
               rooms={individualRooms}
               onRoomsChange={refreshRooms}
               onDuplicate={handleDuplicate}
+              linkedGroup={linkedGroups?.find((group) => group.memberRoomTypeIds.includes(room.id))}
             />
           ))}
         </div>
