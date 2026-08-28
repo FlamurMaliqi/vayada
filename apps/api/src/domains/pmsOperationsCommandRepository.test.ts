@@ -366,6 +366,7 @@ function successfulOperationalHandler(status = "assigned"): QueryHandler {
       return ok([{ roomTypeId }]);
     }
     if (text.includes("pg_advisory_xact_lock")) return ok();
+    if (text.includes("FROM pms.linked_inventory_groups")) return ok();
     if (text.includes("room_type_id = ANY") && text.includes("FOR UPDATE")) return ok();
     if (text.includes('AS "expectedAssignedCount"')) {
       const targetDays = JSON.parse(String(values?.[1])) as Array<{
@@ -455,6 +456,7 @@ function successfulAssignmentHandler(): QueryHandler {
       return ok([assignmentRows()[0]!]);
     }
     if (text.includes("pg_advisory_xact_lock")) return ok([{ locked: true }]);
+    if (text.includes("FROM pms.linked_inventory_groups")) return ok();
     if (text.includes("room_type_id = $2::uuid") && text.includes("FOR UPDATE")) return ok();
     if (text.includes("status = 'available'") && text.includes("FROM pms.rooms")) {
       return ok([

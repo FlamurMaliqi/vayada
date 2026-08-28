@@ -30,14 +30,28 @@ export async function reconcilePmsLinkedInventory(
   changedAt: string,
 ): Promise<PmsLinkedInventoryChange[]> {
   await lockPmsInventoryMutationScope(client, propertyId);
-  await client.query(
-    `SELECT group_row.id
-     FROM pms.linked_inventory_groups group_row
-     WHERE group_row.property_id = $1::uuid
-     ORDER BY group_row.id
-     FOR UPDATE`,
+  const groups = await client.query(
+    `WITH locked_groups AS MATERIALIZED (
+       SELECT group_row.id
+       FROM pms.linked_inventory_groups group_row
+       WHERE group_row.property_id = $1::uuid
+       ORDER BY group_row.id
+       FOR UPDATE
+     )
+     SELECT id FROM locked_groups
+     UNION ALL
+     SELECT NULL::uuid
+     WHERE NOT EXISTS (SELECT 1 FROM locked_groups)
+       AND (EXISTS (
+         SELECT 1 FROM pms.room_blocks
+         WHERE property_id=$1::uuid AND block_kind <> 'manual'
+       ) OR EXISTS (
+         SELECT 1 FROM pms.inventory_days
+         WHERE property_id=$1::uuid AND linked_stop_sell
+       ))`,
     [propertyId],
   );
+  if (groups.rows.length === 0) return [];
   await client.query(
     `SELECT room_type.id
      FROM pms.room_types room_type

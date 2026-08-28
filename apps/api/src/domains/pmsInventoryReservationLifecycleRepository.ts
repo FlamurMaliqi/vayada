@@ -33,6 +33,8 @@ import {
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import { lockPmsInventoryMutationScope } from "./pmsInventoryMutationLock.js";
+import { reconcilePmsLinkedInventory } from "./pmsLinkedInventoryReconciler.js";
+import { enqueuePmsLinkedInventorySideEffects } from "./pmsLinkedInventorySideEffects.js";
 import { lockPmsPhysicalRoomUnitMutationScope } from "./pmsPhysicalRoomUnitMutationLock.js";
 import { lockPmsRoomFactsMutationScope } from "./pmsRoomFactsMutationLock.js";
 
@@ -124,6 +126,8 @@ type InventoryDayRow = {
   assignedCount: number | string;
   blockedCount: number | string;
   availableCount: number | string;
+  linkedStopSell: boolean;
+  linkedSourceRevision: number | string;
 };
 
 type CanonicalInventoryDay = Readonly<{
@@ -146,6 +150,8 @@ type CanonicalInventoryDay = Readonly<{
   assignedCount: number;
   blockedCount: number;
   availableCount: number;
+  linkedStopSell: boolean;
+  linkedSourceRevision: number;
 }>;
 
 type ReservationRootRow = {
@@ -481,6 +487,23 @@ async function executeReserve(
           event.outboxEventId,
           acceptedAt,
         );
+        const linkedChanges = await reconcilePmsLinkedInventory(
+          client,
+          command.propertyId,
+          acceptedAt.toISOString(),
+        );
+        await enqueuePmsLinkedInventorySideEffects(
+          client,
+          {
+            propertyId: command.propertyId,
+            operation: "reserve",
+            commandId: command.audit.requestId,
+            keyHash,
+            acceptedAt: acceptedAt.toISOString(),
+            audit: command.audit,
+          },
+          linkedChanges,
+        );
         const status = statusFromReserve(command, receiptId, acceptedAt);
         const result: PmsInventoryReservationReserveResult = Object.freeze({
           ok: true,
@@ -652,6 +675,23 @@ async function executeRelease(
     if (transitioned.rowCount !== 1) {
       throw new InventoryInvariantError("PMS inventory reservation release transition failed");
     }
+    const linkedChanges = await reconcilePmsLinkedInventory(
+      client,
+      command.propertyId,
+      acceptedAt.toISOString(),
+    );
+    await enqueuePmsLinkedInventorySideEffects(
+      client,
+      {
+        propertyId: command.propertyId,
+        operation: "release",
+        commandId: command.audit.requestId,
+        keyHash,
+        acceptedAt: acceptedAt.toISOString(),
+        audit: command.audit,
+      },
+      linkedChanges,
+    );
     const result: PmsInventoryReservationReleaseResult = Object.freeze({
       ok: true,
       outcome: "released",
@@ -738,7 +778,8 @@ async function lockInventoryDays(
             manual_sellable_limit_count AS "manualSellableLimitCount",
             effective_sellable_limit_count AS "effectiveSellableLimitCount",
             assigned_count AS "assignedCount", blocked_count AS "blockedCount",
-            available_count AS "availableCount"
+            available_count AS "availableCount", linked_stop_sell AS "linkedStopSell",
+            linked_source_revision AS "linkedSourceRevision"
      FROM pms.inventory_days
      WHERE property_id = $1::uuid
        AND room_type_id = $2::uuid
@@ -778,6 +819,7 @@ function canonicalInventoryDay(row: InventoryDayRow): CanonicalInventoryDay | nu
   const assignedCount = nonNegativeDatabaseInteger(row.assignedCount);
   const blockedCount = nonNegativeDatabaseInteger(row.blockedCount);
   const availableCount = nonNegativeDatabaseInteger(row.availableCount);
+  const linkedSourceRevision = nonNegativeDatabaseInteger(row.linkedSourceRevision);
   if (
     !propertyId ||
     !roomTypeId ||
@@ -797,6 +839,8 @@ function canonicalInventoryDay(row: InventoryDayRow): CanonicalInventoryDay | nu
     assignedCount === null ||
     blockedCount === null ||
     availableCount === null ||
+    typeof row.linkedStopSell !== "boolean" ||
+    linkedSourceRevision === null ||
     (row.status !== "open" && row.status !== "closed")
   ) {
     return null;
@@ -823,6 +867,8 @@ function canonicalInventoryDay(row: InventoryDayRow): CanonicalInventoryDay | nu
     assignedCount,
     blockedCount,
     availableCount,
+    linkedStopSell: row.linkedStopSell,
+    linkedSourceRevision,
   });
 }
 
@@ -901,7 +947,7 @@ function dayInvariant(day: CanonicalInventoryDay): boolean {
     day.channelSellableLimitCount ??
     day.generatedSellableLimitCount;
   const expectedAvailable =
-    day.status === "closed"
+    day.status === "closed" || day.linkedStopSell
       ? 0
       : Math.max(0, day.effectiveSellableLimitCount - day.assignedCount - day.blockedCount);
   return (
@@ -945,7 +991,7 @@ async function applyBookingDelta(
       throw new InventoryInvariantError("Inventory booking delta violates physical capacity");
     }
     const availableCount =
-      day.status === "closed"
+      day.status === "closed" || day.linkedStopSell
         ? 0
         : Math.max(0, day.effectiveSellableLimitCount - assignedCount - day.blockedCount);
     const result = await client.query(

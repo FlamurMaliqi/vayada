@@ -141,6 +141,28 @@ describe.skipIf(!URL)("PostgreSQL linked inventory reconciliation", () => {
         [PROPERTY, OTHER_ROOM_TYPES],
       ),
     ).resolves.toMatchObject({ rows: [{ changed: 0 }] });
+
+    await client.query(
+      `INSERT INTO pms.room_blocks
+         (property_id, room_type_id, starts_on, ends_on, reason)
+       VALUES ($1, $2, '2026-09-01', '2026-09-01', 'Final group cleanup')`,
+      [PROPERTY, ROOM_TYPES[2]],
+    );
+    await reconcilePmsLinkedInventory(client, PROPERTY, CHANGED_AT);
+    await client.query(
+      "UPDATE pms.room_types SET linked_inventory_group_id=NULL WHERE property_id=$1",
+      [PROPERTY],
+    );
+    await client.query("DELETE FROM pms.linked_inventory_groups WHERE property_id=$1", [PROPERTY]);
+    await reconcilePmsLinkedInventory(client, PROPERTY, CHANGED_AT);
+    await expect(activeDerivedCounts(client)).resolves.toEqual({
+      assignment: 0,
+      manual: 0,
+      receipt: 0,
+    });
+    await expect(inventory(client)).resolves.toMatchObject(
+      Array.from({ length: 5 }, () => ({ stopped: false, available: 1, blocked: 0 })),
+    );
   });
 });
 
