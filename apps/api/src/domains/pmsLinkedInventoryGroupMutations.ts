@@ -34,6 +34,7 @@ export type PmsLinkedInventoryGroupCommandErrorCode =
   | "linked_inventory_group_invalid"
   | "linked_inventory_name_conflict"
   | "linked_inventory_membership_conflict"
+  | "linked_inventory_not_canonical"
   | "linked_inventory_overlap_conflict";
 export type PmsLinkedInventoryGroupCommandResult =
   | { ok: true; group: PmsLinkedInventoryGroup | null; replayed?: boolean }
