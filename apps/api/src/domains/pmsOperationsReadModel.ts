@@ -4,6 +4,7 @@ import pg from "pg";
 import {
   BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL,
   guestContactForPropertyPlan,
+  HIDDEN_GUEST_CONTACT,
 } from "./bookingGuestContactAccess.js";
 import { readPropertyPlan } from "./propertyPlanReadModel.js";
 
@@ -202,6 +203,7 @@ export type PmsReservationListFilters = {
   arrivalFrom?: PmsDate;
   arrivalTo?: PmsDate;
   search?: string;
+  canReadGuestContact: boolean;
   limit: number;
   offset: number;
 };
@@ -236,11 +238,12 @@ export type PmsOperationsReadRepository = {
   ): Promise<PmsOperationsPaginatedReadResult<PmsOperationalReservation>>;
   listReservationsOverlappingStayRangeByPropertyId?(
     propertyId: string,
-    range: { from: PmsDate; to: PmsDate },
+    range: { from: PmsDate; to: PmsDate; canReadGuestContact: boolean },
   ): Promise<PmsOperationsPaginatedReadResult<PmsOperationalReservation>>;
   findReservationByGuestBookingId(
     propertyId: string,
     guestBookingId: string,
+    canReadGuestContact?: boolean,
   ): Promise<PmsOperationalReservation | null>;
   close?(): Promise<void>;
 };
@@ -673,6 +676,7 @@ export function createTargetPmsOperationsReadRepository(config: {
     },
 
     async listReservationsByPropertyId(propertyId, filters) {
+      const { canReadGuestContact } = filters;
       const propertyPlan = await readPropertyPlan(pool, propertyId);
       const { whereSql, params } = toReservationWhere(propertyId, filters, propertyPlan);
       const listParams = [...params, filters.limit, filters.offset];
@@ -681,7 +685,7 @@ export function createTargetPmsOperationsReadRepository(config: {
 
       const [reservationResult, countResult] = await Promise.all([
         pool.query<TargetPmsOperationalReservationRow>(
-          `${PMS_OPERATIONAL_RESERVATION_SELECT_SQL}
+          `${pmsOperationalReservationSelectSql(canReadGuestContact)}
            WHERE ${whereSql}
            ORDER BY booking.check_in ASC, booking.public_reference ASC
            LIMIT $${limitParam} OFFSET $${offsetParam}`,
@@ -699,7 +703,7 @@ export function createTargetPmsOperationsReadRepository(config: {
              LIMIT 1
            ) primary_assignment ON TRUE
            LEFT JOIN LATERAL (
-             SELECT guest.first_name, guest.last_name, guest.email, guest.phone
+             SELECT guest.first_name, guest.last_name${pmsGuestContactSelectSql(canReadGuestContact)}
              FROM booking.booking_guests guest
              WHERE guest.guest_booking_id = booking.id
              ORDER BY
@@ -718,15 +722,18 @@ export function createTargetPmsOperationsReadRepository(config: {
       ]);
 
       return {
-        items: reservationResult.rows.map((row) => toPmsOperationalReservation(row, propertyPlan)),
+        items: reservationResult.rows.map((row) =>
+          toPmsOperationalReservation(row, propertyPlan, canReadGuestContact),
+        ),
         total: toInteger(countResult.rows[0]?.total ?? 0),
         sourceFreshness: {},
       };
     },
 
     async listReservationsOverlappingStayRangeByPropertyId(propertyId, range) {
+      const { canReadGuestContact } = range;
       const result = await pool.query<TargetPmsOperationalReservationRow>(
-        `${PMS_OPERATIONAL_RESERVATION_SELECT_SQL}
+        `${pmsOperationalReservationSelectSql(canReadGuestContact)}
          WHERE booking.property_id = $1
            AND booking.check_in < $2::date
            AND booking.check_out > $3::date
@@ -737,16 +744,18 @@ export function createTargetPmsOperationsReadRepository(config: {
       const propertyPlan = result.rows.length ? await readPropertyPlan(pool, propertyId) : null;
       return {
         items: propertyPlan
-          ? result.rows.map((row) => toPmsOperationalReservation(row, propertyPlan))
+          ? result.rows.map((row) =>
+              toPmsOperationalReservation(row, propertyPlan, canReadGuestContact),
+            )
           : [],
         total: result.rows.length,
         sourceFreshness: {},
       };
     },
 
-    async findReservationByGuestBookingId(propertyId, guestBookingId) {
+    async findReservationByGuestBookingId(propertyId, guestBookingId, canReadGuestContact = false) {
       const result = await pool.query<TargetPmsOperationalReservationRow>(
-        `${PMS_OPERATIONAL_RESERVATION_SELECT_SQL}
+        `${pmsOperationalReservationSelectSql(canReadGuestContact)}
          WHERE booking.property_id = $1
            AND booking.id = $2`,
         [propertyId, guestBookingId],
@@ -754,7 +763,7 @@ export function createTargetPmsOperationsReadRepository(config: {
 
       if (!result.rows[0]) return null;
       const propertyPlan = await readPropertyPlan(pool, propertyId);
-      return toPmsOperationalReservation(result.rows[0], propertyPlan);
+      return toPmsOperationalReservation(result.rows[0], propertyPlan, canReadGuestContact);
     },
 
     async close() {
@@ -886,7 +895,8 @@ const PMS_OPERATIONAL_RESERVATION_SOURCE_SQL = `COALESCE(
   END
 )`;
 
-const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
+function pmsOperationalReservationSelectSql(canReadGuestContact: boolean): string {
+  return `SELECT
   booking.id::text AS "guestBookingId",
   booking.public_reference AS "bookingReference",
   ${PMS_OPERATIONAL_RESERVATION_STATUS_SQL} AS "status",
@@ -905,8 +915,8 @@ const PMS_OPERATIONAL_RESERVATION_SELECT_SQL = `SELECT
     ),
     ''
   ) AS "primaryGuestDisplayName",
-  primary_guest.email AS "primaryGuestEmail",
-  primary_guest.phone AS "primaryGuestPhone",
+  ${canReadGuestContact ? "primary_guest.email" : "NULL::text"} AS "primaryGuestEmail",
+  ${canReadGuestContact ? "primary_guest.phone" : "NULL::text"} AS "primaryGuestPhone",
   primary_guest.country_code AS "primaryGuestCountryCode",
   primary_guest.special_requests AS "primaryGuestSpecialRequests",
   ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
@@ -982,7 +992,7 @@ LEFT JOIN LATERAL (
   LIMIT 1
 ) primary_assignment ON TRUE
 LEFT JOIN LATERAL (
-  SELECT guest.first_name, guest.last_name, guest.email, guest.phone, guest.country_code,
+  SELECT guest.first_name, guest.last_name${pmsGuestContactSelectSql(canReadGuestContact)}, guest.country_code,
     guest.special_requests
   FROM booking.booking_guests guest
   WHERE guest.guest_booking_id = booking.id
@@ -1104,6 +1114,11 @@ LEFT JOIN LATERAL (
   WHERE guest.guest_booking_id = booking.id
     AND guest.guest_role = 'additional_guest'
 ) additional_guests ON TRUE`;
+}
+
+function pmsGuestContactSelectSql(canReadGuestContact: boolean): string {
+  return canReadGuestContact ? ", guest.email, guest.phone" : "";
+}
 
 async function listRoomTypes(
   pool: PmsOperationsReadPool,
@@ -1323,13 +1338,16 @@ function toPmsCalendarDay(row: TargetPmsCalendarDayRow): PmsCalendarDay {
 function toPmsOperationalReservation(
   row: TargetPmsOperationalReservationRow,
   propertyPlan: PropertyPlanReadModel,
+  canReadGuestContact: boolean,
 ): PmsOperationalReservation {
   const bookedRoomTypeId = row.bookedRoomTypeId.trim();
   const bookedRoomName = row.bookedRoomName.trim();
-  const contact = guestContactForPropertyPlan(propertyPlan, row.guestContactAccepted, {
-    email: row.primaryGuestEmail,
-    phone: row.primaryGuestPhone,
-  });
+  const contact = canReadGuestContact
+    ? guestContactForPropertyPlan(propertyPlan, row.guestContactAccepted, {
+        email: row.primaryGuestEmail,
+        phone: row.primaryGuestPhone,
+      })
+    : { email: HIDDEN_GUEST_CONTACT, phone: HIDDEN_GUEST_CONTACT };
 
   return {
     guestBookingId: row.guestBookingId,
@@ -1573,14 +1591,18 @@ function toReservationWhere(
         OR primary_guest.first_name ILIKE $${params.length}
         OR primary_guest.last_name ILIKE $${params.length}
         OR CONCAT(primary_guest.first_name, ' ', primary_guest.last_name) ILIKE $${params.length}
-        OR (
+        ${
+          filters.canReadGuestContact
+            ? `OR (
           (${propertyPlan.limits.guestContactAccess === "always"}
             OR ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL})
           AND (
             primary_guest.email ILIKE $${params.length}
             OR primary_guest.phone ILIKE $${params.length}
           )
-        )
+        )`
+            : ""
+        }
         OR EXISTS (
           SELECT 1
           FROM pms.operational_booking_assignments assignment_search

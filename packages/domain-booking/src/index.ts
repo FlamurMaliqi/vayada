@@ -380,6 +380,7 @@ export type BookingGuestPiiPort = {
   listGuestPiiForPmsOperations(input: {
     propertyId: string;
     guestBookingId: string;
+    canReadGuestContact: boolean;
   }): Promise<BookingGuestPiiProjection | null>;
   correctPrimaryGuestNationalityForPmsOperations(
     command: BookingPrimaryGuestNationalityCorrectionCommand,

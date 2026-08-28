@@ -93,7 +93,12 @@ export function createTargetBookingGuestPiiPort(
         if (!(await reservationExists(client, input.propertyId, input.guestBookingId))) {
           return null;
         }
-        return listGuestPiiProjection(client, input.propertyId, input.guestBookingId);
+        return listGuestPiiProjection(
+          client,
+          input.propertyId,
+          input.guestBookingId,
+          input.canReadGuestContact,
+        );
       } finally {
         client.release();
       }
@@ -154,6 +159,7 @@ export function createTargetBookingGuestPiiPort(
           client,
           command.propertyId,
           command.guestBookingId,
+          true,
         );
         const primaryGuest = projection.primaryGuest;
         if (!primaryGuest) throw new Error("Corrected primary guest was not projected");
@@ -247,6 +253,7 @@ export function createTargetBookingGuestPiiPort(
           client,
           command.propertyId,
           command.guestBookingId,
+          true,
         );
         const visibleAdditionalGuest = projection.additionalGuests.find(
           (guest) => guest.guestId === additionalGuest.guestId,
@@ -354,6 +361,7 @@ export function createTargetBookingGuestPiiPort(
           client,
           command.propertyId,
           command.guestBookingId,
+          true,
         );
         const visibleAdditionalGuest = projection.additionalGuests.find(
           (guest) => guest.guestId === additionalGuest.guestId,
@@ -407,6 +415,7 @@ export function createTargetBookingGuestPiiPort(
           client,
           command.propertyId,
           command.guestBookingId,
+          true,
         );
         await client.query("COMMIT");
         return { ok: true, guestId, projection, commandMeta };
@@ -443,6 +452,7 @@ async function listGuestPiiProjection(
   client: BookingGuestPiiClient,
   propertyId: string,
   guestBookingId: string,
+  canReadGuestContact: boolean,
 ): Promise<BookingGuestPiiProjection> {
   const propertyPlan = await readPropertyPlan(client, propertyId);
   const result = await client.query<BookingGuestPiiProjectionRow>(
@@ -452,8 +462,8 @@ async function listGuestPiiProjection(
        guest.guest_role AS "role",
        guest.first_name AS "firstName",
        guest.last_name AS "lastName",
-       guest.email,
-       guest.phone,
+       ${canReadGuestContact ? "guest.email" : "NULL::text AS email"},
+       ${canReadGuestContact ? "guest.phone" : "NULL::text AS phone"},
        ${BOOKING_HAS_EVER_BEEN_ACCEPTED_SQL} AS "guestContactAccepted",
        NULLIF(BTRIM(guest.country_code), '') AS "countryCode",
        guest.country_code_raw AS "countryCodeRaw",

@@ -50,6 +50,7 @@ import {
 import { buildApp } from "./app.js";
 import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import { loadConfig } from "./config.js";
+import { HIDDEN_GUEST_CONTACT } from "./domains/bookingGuestContactAccess.js";
 import type { PropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
 import { pmsRoomOrderVersion } from "./domains/pmsRoomOrder.js";
 import {
@@ -1454,6 +1455,7 @@ const pmsOperationsRepository: PmsOperationsReadRepository = {
       arrivalFrom: undefined,
       arrivalTo: undefined,
       search: undefined,
+      canReadGuestContact: false,
       limit: 50,
       offset: 0,
     });
@@ -11642,6 +11644,7 @@ describe("vayada-api", () => {
 
     const result = await repository.listReservationsByPropertyId(pmsPropertyId, {
       status: "no_show",
+      canReadGuestContact: true,
       limit: 25,
       offset: 0,
     });
@@ -11731,6 +11734,7 @@ describe("vayada-api", () => {
       {
         from: "2026-08-15",
         to: "2026-08-18",
+        canReadGuestContact: true,
       },
     );
 
@@ -12206,6 +12210,7 @@ describe("vayada-api", () => {
             arrivalFrom: "2026-08-01",
             arrivalTo: "2026-08-31",
             search: "Nora",
+            canReadGuestContact: false,
             limit: 500,
             offset: 10,
           });
@@ -12239,6 +12244,119 @@ describe("vayada-api", () => {
     });
   });
 
+  it.each([
+    {
+      label: "redacts contact for housekeeping regardless of plan",
+      permissions: ["pms.reservation.read"] as PermissionKey[],
+      roleKey: "housekeeping",
+      canReadGuestContact: false,
+      propertyPlanAllowsGuestContact: true,
+    },
+    {
+      label: "returns contact with guest-contact permission",
+      permissions: ["pms.reservation.read", "pms.guest_contact.read"] as PermissionKey[],
+      canReadGuestContact: true,
+      propertyPlanAllowsGuestContact: true,
+    },
+    {
+      label: "keeps plan-gated contact hidden despite guest-contact permission",
+      permissions: ["pms.reservation.read", "pms.guest_contact.read"] as PermissionKey[],
+      canReadGuestContact: true,
+      propertyPlanAllowsGuestContact: false,
+    },
+  ])("$label across PMS reservation list and detail reads", async (testCase) => {
+    let observedListAccess: boolean | undefined;
+    let observedDetailAccess: boolean | undefined;
+    let observedGuestPiiAccess: boolean | undefined;
+    const additionalGuest: BookingGuestPii = {
+      ...bookingPrimaryGuestPii,
+      guestId: "f6855800-0000-0000-0000-000000000099",
+      role: "additional_guest",
+      email: "additional@example.test",
+      phone: "+43123456789",
+    };
+    const bookingGuestPiiPort: BookingGuestPiiPort = {
+      ...createBookingGuestPiiPort(),
+      async listGuestPiiForPmsOperations(input) {
+        observedGuestPiiAccess = input.canReadGuestContact;
+        return {
+          propertyId: pmsPropertyId,
+          guestBookingId: pmsReservations[0].guestBookingId,
+          primaryGuest: bookingPrimaryGuestPii,
+          additionalGuests: [additionalGuest],
+        };
+      },
+    };
+    const reservation = testCase.propertyPlanAllowsGuestContact
+      ? pmsReservations[0]
+      : {
+          ...pmsReservations[0],
+          primaryGuest: {
+            ...pmsReservations[0].primaryGuest,
+            email: HIDDEN_GUEST_CONTACT,
+            phone: HIDDEN_GUEST_CONTACT,
+          },
+        };
+    app = buildAuthenticatedApp({
+      permissions: testCase.permissions,
+      roleKey: testCase.roleKey,
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      bookingGuestPiiPort,
+      pmsOperationsRepository: {
+        ...pmsOperationsRepository,
+        async listReservationsByPropertyId(_propertyId, filters) {
+          observedListAccess = filters.canReadGuestContact;
+          return { items: [reservation], total: 1 };
+        },
+        async findReservationByGuestBookingId(_propertyId, _guestBookingId, canReadGuestContact) {
+          observedDetailAccess = canReadGuestContact;
+          return reservation;
+        },
+      },
+    });
+
+    const list = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/reservations?search=nora.ops@example.test`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const detail = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/reservations/${pmsReservations[0].guestBookingId}`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const listBody = list.body as PmsOperationsTestReservationListResponse;
+    const detailBody = detail.body as PmsOperationsTestDetailResponse<
+      PmsOperationalReservation & { additionalGuests: BookingGuestPii[] }
+    >;
+    const canExposeGuestContact =
+      testCase.canReadGuestContact && testCase.propertyPlanAllowsGuestContact;
+    const expectedEmail = canExposeGuestContact
+      ? bookingPrimaryGuestPii.email
+      : HIDDEN_GUEST_CONTACT;
+    const expectedPhone = canExposeGuestContact
+      ? bookingPrimaryGuestPii.phone
+      : HIDDEN_GUEST_CONTACT;
+
+    expect([list.statusCode, detail.statusCode]).toEqual([200, 200]);
+    expect(observedListAccess).toBe(testCase.canReadGuestContact);
+    expect(observedDetailAccess).toBe(testCase.canReadGuestContact);
+    expect(observedGuestPiiAccess).toBe(testCase.canReadGuestContact);
+    expect(listBody.items[0].primaryGuest).toMatchObject({
+      email: expectedEmail,
+      phone: expectedPhone,
+    });
+    expect(detailBody.item.primaryGuest).toMatchObject({
+      email: expectedEmail,
+      phone: expectedPhone,
+    });
+    expect(detailBody.item.additionalGuests[0]).toMatchObject({
+      displayName: additionalGuest.displayName,
+      email: canExposeGuestContact ? additionalGuest.email : HIDDEN_GUEST_CONTACT,
+      phone: canExposeGuestContact ? additionalGuest.phone : HIDDEN_GUEST_CONTACT,
+    });
+  });
+
   it("returns PMS reservations overlapping the requested stay range for calendar reads", async () => {
     app = buildAuthenticatedApp({
       permissions: ["pms.reservation.read"],
@@ -12256,7 +12374,11 @@ describe("vayada-api", () => {
         },
         async listReservationsOverlappingStayRangeByPropertyId(propertyId, range) {
           expect(propertyId).toBe(pmsPropertyId);
-          expect(range).toEqual({ from: "2026-08-15", to: "2026-08-18" });
+          expect(range).toEqual({
+            from: "2026-08-15",
+            to: "2026-08-18",
+            canReadGuestContact: false,
+          });
           return { items: pmsReservations, total: pmsReservations.length };
         },
       },
@@ -12286,6 +12408,9 @@ describe("vayada-api", () => {
     expect(
       (response.body as PmsOperationsTestReservationListResponse).items[0].guestBookingId,
     ).toBe(pmsReservations[1].guestBookingId);
+    expect(
+      (response.body as PmsOperationsTestReservationListResponse).items[0].primaryGuest,
+    ).toMatchObject({ email: HIDDEN_GUEST_CONTACT, phone: HIDDEN_GUEST_CONTACT });
   });
 
   it("rejects PMS reservation stay ranges mixed with list filters", async () => {

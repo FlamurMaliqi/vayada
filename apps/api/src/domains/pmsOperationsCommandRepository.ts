@@ -1202,6 +1202,7 @@ export function createTargetPmsOperationsCommandRepository(
           const reservation = await config.readRepository.findReservationByGuestBookingId(
             command.propertyId,
             command.guestBookingId,
+            true,
           );
           return reservation
             ? { ok: true, reservation, commandMeta: replay, replayed: true }
@@ -1228,6 +1229,7 @@ export function createTargetPmsOperationsCommandRepository(
             const reservation = await config.readRepository.findReservationByGuestBookingId(
               command.propertyId,
               command.guestBookingId,
+              true,
             );
             return reservation
               ? { ok: true, reservation, commandMeta: existing, replayed: true }
@@ -1329,6 +1331,7 @@ export function createTargetPmsOperationsCommandRepository(
       const reservation = await config.readRepository.findReservationByGuestBookingId(
         command.propertyId,
         command.guestBookingId,
+        true,
       );
       return reservation
         ? { ok: true, reservation, commandMeta }
@@ -4466,6 +4469,7 @@ async function checkOutResultForCommand(
   const reservation = await config.readRepository.findReservationByGuestBookingId(
     command.propertyId,
     command.guestBookingId,
+    true,
   );
   if (!reservation) return checkOutReservationNotFound(command.guestBookingId);
   return {
@@ -7229,6 +7233,7 @@ async function reservationResultForCommand(
   const reservation = await config.readRepository.findReservationByGuestBookingId(
     command.propertyId,
     command.guestBookingId,
+    true,
   );
   return reservation
     ? { ok: true, reservation, commandMeta, replayed }
