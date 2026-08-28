@@ -10,7 +10,7 @@ import {
   reconcileStripeBookingPaymentProviderDetails,
   settleStripeBookingPayment,
 } from "../domains/stripeBookingSettlement.js";
-import { PROJECT_PUBLIC_BOOKABILITY_PROFILE } from "./publicBookabilityPublication.js";
+import { applyStripeProviderAccountSnapshot } from "../domains/stripeProviderAccountReconciliation.js";
 import type {
   ProviderWebhookPromotionInput,
   ProviderWebhookPromotionResult,
@@ -310,6 +310,16 @@ export async function reconcileStripeProviderAccount(
   ) {
     return;
   }
+  const locked = await client.query<{ id: string }>(
+    `SELECT id::text AS id
+     FROM finance.payment_provider_accounts
+     WHERE provider = 'stripe' AND provider_account_id = $1
+     LIMIT 1
+     FOR UPDATE`,
+    [input.normalizedPreview.resourceId],
+  );
+  if (!locked.rows[0]) return;
+
   const payload = input.normalizedPreview.payload;
   const canonical = stripeConnectProvider
     ? await stripeConnectProvider.retrieveAccount({
@@ -325,51 +335,15 @@ export async function reconcileStripeProviderAccount(
         defaultCurrency:
           typeof payload["defaultCurrency"] === "string" ? payload["defaultCurrency"] : null,
       };
-  const cardPaymentsReady =
-    canonical.cardPaymentsStatus === null || canonical.cardPaymentsStatus === "active";
-  const updated = await client.query<{ propertyId: string }>(
-    `UPDATE finance.payment_provider_accounts
-     SET status = CASE
-           WHEN $2::boolean AND $3::boolean AND $4::boolean AND $7::boolean THEN 'active'
-           ELSE 'setup_incomplete'
-         END,
-         onboarding_status = CASE WHEN $4::boolean THEN 'completed' ELSE 'invited' END,
-         charges_enabled = $2::boolean,
-         payouts_enabled = $3::boolean,
-         default_currency = COALESCE(NULLIF(upper($5), ''), default_currency),
-         account_metadata = account_metadata || $6::jsonb,
-         updated_at = now()
-     WHERE provider = 'stripe' AND provider_account_id = $1
-     RETURNING property_id::text AS "propertyId"`,
-    [
-      input.normalizedPreview.resourceId,
-      canonical.chargesEnabled,
-      canonical.payoutsEnabled,
-      canonical.detailsSubmitted,
-      canonical.defaultCurrency ?? "",
-      JSON.stringify({
-        lastStripeEventId: payload["rawEventId"] ?? null,
-        cardPaymentsStatus: canonical.cardPaymentsStatus,
-      }),
-      cardPaymentsReady,
-    ],
-  );
-  const propertyId = updated.rows[0]?.propertyId;
-  if (!propertyId) return;
-  const publicProfile = await client.query<{ canonicalUrl: string; bookingBaseUrl: string }>(
-    `SELECT canonical_url AS "canonicalUrl", booking_base_url AS "bookingBaseUrl"
-     FROM distribution.public_hotel_bookability_profiles
-     WHERE property_id = $1::uuid`,
-    [propertyId],
-  );
-  const urls = publicProfile.rows[0];
-  if (urls) {
-    await client.query(PROJECT_PUBLIC_BOOKABILITY_PROFILE, [
-      propertyId,
-      urls.canonicalUrl,
-      urls.bookingBaseUrl,
-    ]);
+  if (canonical.providerAccountRef !== input.normalizedPreview.resourceId) {
+    throw new Error("Stripe account reconciliation returned an unexpected account reference.");
   }
+  await applyStripeProviderAccountSnapshot(client, {
+    snapshot: canonical,
+    cardPaymentsReady:
+      canonical.cardPaymentsStatus === null || canonical.cardPaymentsStatus === "active",
+    metadata: { lastStripeEventId: payload["rawEventId"] ?? null },
+  });
 }
 
 async function selectExistingReceipt(

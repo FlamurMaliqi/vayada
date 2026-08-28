@@ -44,6 +44,8 @@ import {
   type FinanceProviderAccountStatus,
   type FinanceProviderOnboardingStatus,
   type FinanceStripeDashboardLoginLinkResult,
+  type FinanceStripeProviderAccountReconciliationResponse,
+  type FinanceStripeProviderAccountReconciliationResult,
   type FinanceReconciliationItem,
   type FinanceReconciliationJobStatus,
   type FinanceReconciliationRecommendedAction,
@@ -55,7 +57,9 @@ import {
   type FinanceRoutePaymentProvider,
   type FinanceStripeConnectProvider,
   type IssueStripeOnboardingLinkCommand,
+  type ReconcileStripePropertyAccountCommand,
   StripeConnectAccountNotFoundError,
+  type StripeConnectProviderAccountSnapshot,
   type FinanceXenditBankValidationCommand,
   type FinanceXenditBankValidationResponse,
   type FinanceXenditPayoutReconciliationCommand,
@@ -70,6 +74,10 @@ import { createHash } from "node:crypto";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import type { PublicHotelProfileRepository } from "./aiHotels.js";
+import {
+  applyStripeProviderAccountSnapshot,
+  type StripeProviderAccountReconciliationState,
+} from "../domains/stripeProviderAccountReconciliation.js";
 import { createFinancePlatformAffiliatePayoutMarkPaidRepository } from "./financePlatformAffiliatePayoutMarkPaid.js";
 import { createFinancePlatformAffiliatePayoutReadRepository } from "./financePlatformAffiliatePayoutRepository.js";
 import { registerFinancePlatformAffiliatePayoutRoutes } from "./financePlatformAffiliatePayoutRoutes.js";
@@ -287,6 +295,10 @@ type FinanceProviderAccountRow = {
   onboardingUrl: string | null;
 };
 
+type ConfiguredStripeProviderAccountRow = StripeProviderAccountReconciliationState & {
+  providerAccountRef: string;
+};
+
 type FinanceRowsWithTotal<T extends { total: string | number }> = {
   rows: T[];
   total: number;
@@ -366,6 +378,11 @@ type OnboardingLinkBody = {
   commandId?: unknown;
   idempotencyKey?: unknown;
   returnSurface?: unknown;
+};
+
+type StripeProviderAccountReconciliationBody = {
+  commandId?: unknown;
+  idempotencyKey?: unknown;
 };
 
 type XenditBankValidationBody = {
@@ -551,6 +568,43 @@ export async function registerFinanceRoutes(
         return error;
       }
 
+      return result.response;
+    },
+  );
+
+  app.post<{
+    Params: FinancePropertyParams;
+    Body: StripeProviderAccountReconciliationBody;
+  }>(
+    "/finance/properties/:propertyId/provider-accounts/stripe/reconcile",
+    async (request, reply) => {
+      const propertyId = request.params.propertyId;
+      if (!enforceFinancePropertyWritePolicy(request, reply, propertyId)) return reply;
+
+      if (!options.repository.reconcileStripeProviderAccount) {
+        reply.code(501);
+        return {
+          statusCode: 501,
+          code: "write_unavailable",
+          category: "write_model",
+          message: "Finance Stripe reconciliation is not configured.",
+        } satisfies FinanceCommandError;
+      }
+
+      const parsed = toStripePropertyAccountReconciliationCommand(request, propertyId);
+      if ("statusCode" in parsed) {
+        reply.code(parsed.statusCode);
+        return parsed;
+      }
+
+      const result = await options.repository.reconcileStripeProviderAccount(parsed);
+      if (!result.ok) {
+        const error = toFinanceCommandError(result);
+        reply.code(error.statusCode);
+        return error;
+      }
+
+      reply.header("Cache-Control", "no-store");
       return result.response;
     },
   );
@@ -1274,6 +1328,17 @@ export function createTargetFinancePropertySettingsRepository(config: {
       } finally {
         if (ownsTransaction) client.release?.();
       }
+    },
+    async reconcileStripeProviderAccount(command) {
+      if (!config.stripeConnectProvider) {
+        return {
+          ok: false,
+          statusCode: 502,
+          code: "provider_unavailable",
+          message: "Stripe account status is unavailable.",
+        };
+      }
+      return reconcileStripeProviderAccount(pool, command, config.stripeConnectProvider);
     },
     async issueStripeDashboardLoginLink(propertyId) {
       if (!config.stripeConnectProvider) {
@@ -2026,6 +2091,415 @@ async function issueStripeOnboardingLinkInClient(
     ok: true,
     status: existingIdempotency ? "idempotent_replay" : "created",
     response,
+  };
+}
+
+class StripeProviderAccountBindingChangedError extends Error {}
+
+async function reconcileStripeProviderAccount(
+  pool: FinancePropertySettingsReadPool,
+  command: ReconcileStripePropertyAccountCommand,
+  provider: FinanceStripeConnectProvider,
+): Promise<FinanceStripeProviderAccountReconciliationResult> {
+  const client = await checkoutFinanceWriteClient(pool);
+  const ownsTransaction = typeof client.release === "function";
+  try {
+    if (ownsTransaction) await client.query("BEGIN");
+    const result = await reconcileStripeProviderAccountInClient(client, command, provider);
+    if (ownsTransaction) {
+      await client.query(
+        result.ok || result.code === "idempotency_conflict" ? "COMMIT" : "ROLLBACK",
+      );
+    }
+    return result;
+  } catch (error) {
+    if (ownsTransaction) await client.query("ROLLBACK");
+    if (error instanceof StripeProviderAccountBindingChangedError) {
+      return stripeProviderAccountNotFound();
+    }
+    return stripeProviderAccountReconciliationWriteUnavailable();
+  } finally {
+    if (ownsTransaction) client.release?.();
+  }
+}
+
+async function reconcileStripeProviderAccountInClient(
+  client: FinancePropertySettingsWriteClient,
+  command: ReconcileStripePropertyAccountCommand,
+  provider: FinanceStripeConnectProvider,
+): Promise<FinanceStripeProviderAccountReconciliationResult> {
+  const account = await loadConfiguredStripeProviderAccountReconciliationState(
+    client,
+    command.propertyId,
+  );
+  if (!account) return stripeProviderAccountNotFound();
+
+  const { keyHash, fingerprint } = stripeProviderAccountReconciliationIdentity(command, account);
+  const existing = await loadStripeProviderAccountReconciliationIdempotency(
+    client,
+    command.propertyId,
+    keyHash,
+  );
+  if (existing) {
+    if (existing.requestFingerprintHash !== fingerprint || existing.status !== "completed") {
+      return stripeProviderAccountReconciliationConflict();
+    }
+    return {
+      ok: true,
+      status: "idempotent_replay",
+      response: stripeProviderAccountReconciliationResponse(command, account),
+    };
+  }
+
+  const reserved = await client.query<{ requestFingerprintHash: string }>(
+    `INSERT INTO platform.idempotency_keys (
+       operation_scope,
+       operation,
+       key_hash,
+       request_fingerprint_hash,
+       status,
+       tenant_scope,
+       property_id,
+       correlation_id,
+       first_seen_at,
+       last_seen_at,
+       expires_at,
+       idempotency_metadata
+     )
+     VALUES (
+       'finance',
+       'stripe_provider_account_reconcile',
+       $1,
+       $2,
+       'in_progress',
+       'property',
+       $3::uuid,
+       $4,
+       $5::timestamptz,
+       $5::timestamptz,
+       $5::timestamptz + interval '24 hours',
+       $6::jsonb
+     )
+     ON CONFLICT (operation_scope, operation, key_hash, scope_key) DO NOTHING
+     RETURNING request_fingerprint_hash AS "requestFingerprintHash"`,
+    [
+      keyHash,
+      fingerprint,
+      command.propertyId,
+      command.audit.correlationId ?? command.audit.requestId,
+      command.audit.requestedAt,
+      JSON.stringify({ commandId: command.commandId, provider: "stripe" }),
+    ],
+  );
+  if (!reserved.rows[0]) {
+    const existing = await loadStripeProviderAccountReconciliationIdempotency(
+      client,
+      command.propertyId,
+      keyHash,
+    );
+    if (existing?.requestFingerprintHash !== fingerprint || existing.status !== "completed") {
+      return stripeProviderAccountReconciliationConflict();
+    }
+    return {
+      ok: true,
+      status: "idempotent_replay",
+      response: stripeProviderAccountReconciliationResponse(command, account),
+    };
+  }
+
+  let snapshot: StripeConnectProviderAccountSnapshot;
+  try {
+    snapshot = await provider.retrieveAccount({
+      providerAccountRef: account.providerAccountRef,
+    });
+  } catch (error) {
+    if (
+      error instanceof StripeConnectAccountNotFoundError ||
+      (error !== null &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "stripe_connect_account_not_found")
+    ) {
+      return stripeProviderAccountNotFound();
+    }
+    return {
+      ok: false,
+      statusCode: 502,
+      code: "provider_unavailable",
+      message: "Stripe account status is unavailable.",
+    };
+  }
+  if (snapshot.providerAccountRef !== account.providerAccountRef) {
+    return {
+      ok: false,
+      statusCode: 502,
+      code: "provider_unavailable",
+      message: "Stripe account status is unavailable.",
+    };
+  }
+
+  const state = await applyStripeProviderAccountSnapshot(client, {
+    snapshot,
+    propertyId: command.propertyId,
+    providerAccountId: account.providerAccountId,
+    metadata: { reconciledByCommandId: command.commandId },
+  });
+  if (!state) throw new StripeProviderAccountBindingChangedError();
+
+  const response = stripeProviderAccountReconciliationResponse(command, state);
+  await recordStripeProviderAccountReconciliationAudit(client, command, state, keyHash);
+  await completeStripeProviderAccountReconciliationIdempotency(
+    client,
+    command,
+    state.providerAccountId,
+    keyHash,
+    fingerprint,
+    response,
+  );
+  return { ok: true, status: "reconciled", response };
+}
+
+async function loadConfiguredStripeProviderAccountReconciliationState(
+  client: FinanceQueryExecutor,
+  propertyId: string,
+): Promise<ConfiguredStripeProviderAccountRow | null> {
+  const result = await client.query<ConfiguredStripeProviderAccountRow>(
+    `SELECT
+       account.id::text AS "providerAccountId",
+       account.provider_account_id AS "providerAccountRef",
+       account.property_id::text AS "propertyId",
+       CASE WHEN account.status = 'active' THEN 'active' ELSE 'setup_incomplete' END AS status,
+       CASE
+         WHEN account.onboarding_status = 'completed' THEN 'completed'
+         ELSE 'invited'
+       END AS "onboardingStatus",
+       account.charges_enabled AS "chargesEnabled",
+       account.payouts_enabled AS "payoutsEnabled",
+       COALESCE(account.account_metadata ->> 'detailsSubmitted' = 'true', FALSE)
+         AS "detailsSubmitted",
+       account.account_metadata ->> 'cardPaymentsStatus' AS "cardPaymentsStatus"
+     FROM finance.payment_provider_accounts account
+     JOIN finance.payment_settings settings
+       ON settings.provider_account_id = account.id
+      AND settings.property_id = account.property_id
+     WHERE settings.property_id = $1::uuid
+       AND account.account_scope = 'property'
+       AND account.provider = 'stripe'
+       AND account.provider_account_id NOT LIKE 'settings-choice:%'
+     LIMIT 1
+     FOR UPDATE OF account, settings`,
+    [propertyId],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function loadStripeProviderAccountReconciliationIdempotency(
+  client: FinanceQueryExecutor,
+  propertyId: string,
+  keyHash: string,
+): Promise<FinanceIdempotencyRow | null> {
+  const result = await client.query<FinanceIdempotencyRow>(
+    `SELECT status, request_fingerprint_hash AS "requestFingerprintHash"
+     FROM platform.idempotency_keys
+     WHERE operation_scope = 'finance'
+       AND operation = 'stripe_provider_account_reconcile'
+       AND key_hash = $1
+       AND tenant_scope = 'property'
+       AND property_id = $2::uuid
+     LIMIT 1`,
+    [keyHash, propertyId],
+  );
+  return result.rows[0] ?? null;
+}
+
+function stripeProviderAccountReconciliationIdentity(
+  command: ReconcileStripePropertyAccountCommand,
+  account: Pick<ConfiguredStripeProviderAccountRow, "providerAccountId">,
+): { keyHash: string; fingerprint: string } {
+  return {
+    keyHash: sha256(command.idempotencyKey),
+    fingerprint: sha256(
+      stableJson({ propertyId: command.propertyId, providerAccountId: account.providerAccountId }),
+    ),
+  };
+}
+
+function stripeProviderAccountReconciliationResponse(
+  command: ReconcileStripePropertyAccountCommand,
+  state: StripeProviderAccountReconciliationState,
+): FinanceStripeProviderAccountReconciliationResponse {
+  return {
+    contractVersion: FINANCE_ROUTE_CONTRACT_VERSION,
+    propertyId: command.propertyId,
+    providerAccount: {
+      provider: "stripe",
+      status: state.status,
+      onboardingStatus: state.onboardingStatus,
+      chargesEnabled: state.chargesEnabled,
+      payoutsEnabled: state.payoutsEnabled,
+      detailsSubmitted: state.detailsSubmitted,
+      cardPaymentsStatus: state.cardPaymentsStatus,
+      ready: state.status === "active",
+    },
+    commandMeta: {
+      commandId: command.commandId,
+      idempotencyKey: command.idempotencyKey,
+      sideEffects: ["provider_validation", "audit_event"],
+      outboxEvents: [],
+      jobs: [],
+    },
+  };
+}
+
+async function recordStripeProviderAccountReconciliationAudit(
+  client: FinancePropertySettingsWriteClient,
+  command: ReconcileStripePropertyAccountCommand,
+  state: StripeProviderAccountReconciliationState,
+  keyHash: string,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO platform.product_audit_events (
+       audit_key,
+       product,
+       action,
+       action_version,
+       occurred_at,
+       tenant_scope,
+       organization_id,
+       property_id,
+       actor_type,
+       actor_user_id,
+       target_resource_product,
+       target_resource_type,
+       target_resource_id,
+       correlation_id,
+       causation_id,
+       redacted_payload,
+       private_payload,
+       audit_metadata,
+       retention_class,
+       privacy_scope
+     )
+     VALUES (
+       $1,
+       'finance',
+       'finance.provider_account.stripe.reconciled',
+       1,
+       $2::timestamptz,
+       'property',
+       NULL,
+       $3::uuid,
+       $4,
+       $5::uuid,
+       'finance',
+       'payment_provider_account',
+       $6,
+       $7,
+       $8,
+       $9::jsonb,
+       '{}'::jsonb,
+       $10::jsonb,
+       'financial',
+       'confidential'
+     )`,
+    [
+      `finance.provider-account.stripe.reconcile.property.${command.propertyId}.key.${keyHash}.v1`,
+      command.audit.requestedAt,
+      command.propertyId,
+      command.audit.actor.kind,
+      command.audit.actor.kind === "user" ? command.audit.actor.userId : null,
+      state.providerAccountId,
+      command.audit.correlationId ?? command.audit.requestId,
+      command.commandId,
+      JSON.stringify({
+        propertyId: command.propertyId,
+        provider: "stripe",
+        status: state.status,
+        onboardingStatus: state.onboardingStatus,
+        chargesEnabled: state.chargesEnabled,
+        payoutsEnabled: state.payoutsEnabled,
+        detailsSubmitted: state.detailsSubmitted,
+        cardPaymentsStatus: state.cardPaymentsStatus,
+      }),
+      JSON.stringify({
+        contractVersion: FINANCE_ROUTE_CONTRACT_VERSION,
+        idempotencyKeyHash: keyHash,
+        requestId: command.audit.requestId,
+      }),
+    ],
+  );
+}
+
+async function completeStripeProviderAccountReconciliationIdempotency(
+  client: FinancePropertySettingsWriteClient,
+  command: ReconcileStripePropertyAccountCommand,
+  providerAccountId: string,
+  keyHash: string,
+  fingerprint: string,
+  response: FinanceStripeProviderAccountReconciliationResponse,
+): Promise<void> {
+  await client.query(
+    `UPDATE platform.idempotency_keys
+     SET status = 'completed',
+         request_fingerprint_hash = $1,
+         response_status_code = 200,
+         response_resource_product = 'finance',
+         response_resource_type = 'payment_provider_account',
+         response_resource_id = $2,
+         response_body_hash = $3,
+         completed_at = $4::timestamptz,
+         last_seen_at = $4::timestamptz,
+         idempotency_metadata = idempotency_metadata || $5::jsonb
+     WHERE operation_scope = 'finance'
+       AND operation = 'stripe_provider_account_reconcile'
+       AND key_hash = $6
+       AND tenant_scope = 'property'
+       AND property_id = $7::uuid`,
+    [
+      fingerprint,
+      providerAccountId,
+      sha256(stableJson(response)),
+      command.audit.requestedAt,
+      JSON.stringify({ commandMeta: response.commandMeta }),
+      keyHash,
+      command.propertyId,
+    ],
+  );
+}
+
+function stripeProviderAccountNotFound(): Extract<
+  FinanceStripeProviderAccountReconciliationResult,
+  { ok: false }
+> {
+  return {
+    ok: false,
+    statusCode: 404,
+    code: "provider_account_not_found",
+    message: "Finance provider account was not found.",
+  };
+}
+
+function stripeProviderAccountReconciliationConflict(): Extract<
+  FinanceStripeProviderAccountReconciliationResult,
+  { ok: false }
+> {
+  return {
+    ok: false,
+    statusCode: 409,
+    code: "idempotency_conflict",
+    message: "Idempotency key is already in use for another Stripe reconciliation.",
+  };
+}
+
+function stripeProviderAccountReconciliationWriteUnavailable(): Extract<
+  FinanceStripeProviderAccountReconciliationResult,
+  { ok: false }
+> {
+  return {
+    ok: false,
+    statusCode: 500,
+    code: "write_unavailable",
+    message: "Stripe account reconciliation could not be saved.",
   };
 }
 
@@ -4627,6 +5101,29 @@ function toStripePropertyOnboardingLinkCommand(
   };
 }
 
+function toStripePropertyAccountReconciliationCommand(
+  request: FastifyRequest<{ Body: StripeProviderAccountReconciliationBody }>,
+  propertyId: string,
+): ReconcileStripePropertyAccountCommand | FinanceValidationError {
+  const body = request.body ?? {};
+  const commandId = nonEmptyString(body.commandId);
+  const idempotencyKey = nonEmptyString(body.idempotencyKey);
+  if (!commandId || !idempotencyKey) {
+    return invalidQuery(
+      "invalid_body",
+      "Stripe reconciliation requires commandId and idempotencyKey.",
+    );
+  }
+  return {
+    commandType: "finance.provider_account.stripe.reconcile",
+    commandId,
+    idempotencyKey,
+    propertyId,
+    audit: financeCommandAudit(request, "Reconcile property Stripe Connect readiness"),
+    payload: {},
+  };
+}
+
 function toStripeAffiliateOnboardingLinkCommand(
   request: FastifyRequest<{ Body: OnboardingLinkBody }>,
   affiliateId: string,
@@ -5163,6 +5660,7 @@ function maskAccountNumber(accountNumber: string): string {
 function toFinanceCommandError(
   result:
     | Extract<FinanceProviderAccountCommandResult, { ok: false }>
+    | Extract<FinanceStripeProviderAccountReconciliationResult, { ok: false }>
     | Extract<FinanceXenditPayoutReconciliationResult, { ok: false }>
     | Extract<FinancePropertyPayoutDispatchResult, { ok: false }>
     | Extract<FinancePaymentSettingsPatchResult, { ok: false }>
