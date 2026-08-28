@@ -11,6 +11,7 @@ export type StaffRemovalJobClaim = {
 };
 
 export interface StaffRemovalJobRepository {
+  listDueJobIds(): Promise<string[]>;
   claim(
     jobId: string,
   ): Promise<
@@ -44,6 +45,20 @@ export function createPgStaffRemovalJobRepository(config: RepositoryConfig) {
   const pool = new pg.Pool({ connectionString: config.connectionString, max: config.max });
 
   return {
+    async listDueJobIds() {
+      const result = await pool.query<{ id: string }>(
+        `SELECT id::text AS id
+         FROM platform.jobs
+         WHERE queue_name = 'identity-provider'
+           AND job_type = 'workos.organization-membership.delete'
+           AND ((status = 'pending' AND run_after <= now() AND attempts_count < max_attempts)
+             OR (status = 'running' AND locked_at < now() - interval '5 minutes'))
+         ORDER BY run_after, created_at, id
+         LIMIT 25`,
+      );
+      return result.rows.map((row) => row.id);
+    },
+
     async claim(jobId: string) {
       if (!uuidPattern.test(jobId)) return { outcome: "not_ready" as const, jobId };
       await pool.query(

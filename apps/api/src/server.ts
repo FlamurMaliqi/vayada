@@ -54,6 +54,7 @@ import { composePlatformMediaRuntime } from "./platform/platformMediaRuntime.js"
 import { createWorkOSAuthKitClient } from "./platform/workosAuthKit.js";
 import { createWorkOSStaffInvitationProvider } from "./platform/workosStaffInvitations.js";
 import { createWorkOSStaffRemovalProvider } from "./platform/workosStaffRemoval.js";
+import { startStaffRemovalWorker } from "./platform/staffRemovalWorker.js";
 import { installPostgresPoolRuntime } from "./platform/postgresRuntime.js";
 import {
   createPgWorkosWebhookStore,
@@ -1270,6 +1271,14 @@ const app = buildApp({
   platformMedia: platformMediaRuntime?.routes,
 });
 
+const staffRemovalWorker = staffInvitationRuntime
+  ? startStaffRemovalWorker({
+      repository: staffInvitationRuntime.removalJobRepository,
+      coordinator: staffInvitationRuntime.removal,
+      warn: (error, message) => app.log.warn(error, message),
+    })
+  : undefined;
+
 const stopPostgresTelemetry = postgresRuntime.startTelemetry(app.log);
 app.addHook("onClose", async () => {
   stopPostgresTelemetry();
@@ -1285,6 +1294,7 @@ const bookingPublicationWorker = bookingPublicationRuntime
   : undefined;
 
 app.addHook("onClose", async () => {
+  await staffRemovalWorker?.close();
   await bookingPublicationWorker?.close();
   await bookingPublicationRuntime?.close();
   await Promise.all([
