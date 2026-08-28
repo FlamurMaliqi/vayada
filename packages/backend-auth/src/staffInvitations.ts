@@ -3,9 +3,11 @@ import pg from "pg";
 
 import {
   hasValidStaffPermissionHierarchy,
+  hotelStaffRoleKeys,
   staffAccessPermissionKeys,
   validateStaffInviteAccess,
   type CreateStaffInviteCommand,
+  type HotelStaffRoleKey,
 } from "./lifecycle.js";
 import type { RepositoryConfig } from "./repository.js";
 
@@ -21,6 +23,25 @@ type InvitationRow = {
   request_fingerprint_hash: Buffer;
   supersedes_invitation_id: string | null;
 };
+type StaffRosterRow = {
+  id: string;
+  name: string | null;
+  email: string;
+  role_key: HotelStaffRoleKey;
+  property_ids: string[];
+  status: StaffRosterMember["status"];
+  last_active_at: Date | null;
+};
+
+export type StaffRosterMember = {
+  id: string;
+  name: string | null;
+  email: string;
+  roleKey: HotelStaffRoleKey;
+  propertyIds: string[];
+  status: "active" | "pending" | "deactivated";
+  lastActiveAt: string | null;
+};
 
 const permissionKeys = new Set<string>(staffAccessPermissionKeys);
 
@@ -31,6 +52,74 @@ export function createPgStaffInvitationRepository(config: RepositoryConfig) {
   const pool = new pg.Pool({ connectionString: config.connectionString, max: config.max });
 
   return {
+    async listRoster(organizationId: string): Promise<StaffRosterMember[]> {
+      const result = await pool.query<StaffRosterRow>(
+        `WITH canonical_properties AS (
+           SELECT DISTINCT property.id AS property_id
+           FROM identity.organizations organization
+           JOIN identity.organization_resource_links link
+             ON link.organization_id = organization.id
+           JOIN hotel_catalog.properties property ON property.id::text = link.resource_id
+           WHERE organization.id = $1 AND organization.kind = 'hotel_group'
+             AND organization.status = 'active' AND link.product = 'hotel_catalog'
+             AND link.resource_type = 'property' AND link.relationship IN ('owner', 'operator')
+             AND link.status = 'active'
+         ), roster AS (
+           SELECT membership.id, staff.name, staff.email, membership.role_key,
+                  CASE WHEN membership.status = 'active' AND staff.status = 'active'
+                    THEN 'active' ELSE 'deactivated' END AS status,
+                  (SELECT max(external.last_login_at)
+                   FROM identity.external_identities external
+                   WHERE external.user_id = staff.id AND external.provider = 'workos') AS last_active_at,
+                  ARRAY(
+                    SELECT property.property_id::text FROM canonical_properties property
+                    WHERE membership.property_access_mode = 'all'
+                       OR EXISTS (
+                         SELECT 1 FROM identity.membership_property_assignments assignment
+                         WHERE assignment.membership_id = membership.id
+                           AND assignment.property_id = property.property_id
+                       )
+                    ORDER BY property.property_id
+                  ) AS property_ids
+           FROM identity.organization_memberships membership
+           JOIN identity.users staff ON staff.id = membership.user_id
+           JOIN identity.organizations organization ON organization.id = membership.organization_id
+           WHERE membership.organization_id = $1 AND organization.kind = 'hotel_group'
+             AND organization.status = 'active'
+             AND membership.role_key = ANY($2::text[])
+             AND membership.status IN ('active', 'inactive', 'suspended')
+           UNION ALL
+           SELECT invitation.id, invitation.display_name, invitation.email, invitation.role_key,
+                  'pending', NULL,
+                  ARRAY(
+                    SELECT property.property_id::text
+                    FROM identity.staff_invitation_property_assignments assignment
+                    JOIN canonical_properties property ON property.property_id = assignment.property_id
+                    WHERE assignment.invitation_id = invitation.id
+                    ORDER BY property.property_id
+                  )
+           FROM identity.staff_invitations invitation
+           JOIN identity.organizations organization ON organization.id = invitation.organization_id
+           WHERE invitation.organization_id = $1 AND organization.kind = 'hotel_group'
+             AND organization.status = 'active' AND invitation.status = 'pending'
+             AND (invitation.expires_at IS NULL OR invitation.expires_at > now())
+         )
+         SELECT id, name, email, role_key, property_ids, status, last_active_at
+         FROM roster
+         ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
+                  lower(COALESCE(name, email)), id`,
+        [organizationId, hotelStaffRoleKeys],
+      );
+      return result.rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        email: row.email,
+        roleKey: row.role_key,
+        propertyIds: row.property_ids,
+        status: row.status,
+        lastActiveAt: row.last_active_at?.toISOString() ?? null,
+      }));
+    },
     async persist(command: CreateStaffInviteCommand) {
       const normalized = normalize(command);
       if (!normalized) return { outcome: "rejected" as const, reason: "invalid_command" as const };

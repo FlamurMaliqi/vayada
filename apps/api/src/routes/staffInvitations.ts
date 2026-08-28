@@ -13,7 +13,7 @@ import { enforceRoutePolicy } from "./policy.js";
 
 type StaffInvitationRepository = Pick<
   ReturnType<typeof createPgStaffInvitationRepository>,
-  "persist"
+  "listRoster" | "persist"
 >;
 type StaffInvitationDelivery = Pick<
   ReturnType<typeof createStaffInvitationDeliveryCoordinator>,
@@ -66,6 +66,19 @@ export async function registerStaffInvitationRoutes(
       throw error;
     }
   };
+
+  app.get("/members", { onRequest: authorize }, async (request, reply) => {
+    const context = authorized.get(request);
+    if (!context) throw new Error("Staff roster authorization was not resolved");
+    try {
+      const members = await options.repository.listRoster(
+        context.selectedOrganization.organizationId,
+      );
+      return reply.send({ members });
+    } catch {
+      return reply.status(500).send({ code: "staff_roster_failed" });
+    }
+  });
 
   app.post<{ Body: unknown }>("/invitations", { onRequest: authorize }, async (request, reply) => {
     const context = authorized.get(request);

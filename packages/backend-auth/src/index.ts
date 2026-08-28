@@ -108,7 +108,7 @@ export {
   type RepositoryConfig,
 } from "./repository.js";
 
-export { createPgStaffInvitationRepository } from "./staffInvitations.js";
+export { createPgStaffInvitationRepository, type StaffRosterMember } from "./staffInvitations.js";
 export {
   createPgStaffInvitationAcceptanceRepository,
   type StaffInvitationAcceptanceEvent,

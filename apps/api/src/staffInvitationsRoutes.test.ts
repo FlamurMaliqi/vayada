@@ -25,15 +25,31 @@ type Auth = {
 function fakes() {
   const commands: CreateStaffInviteCommand[] = [];
   const deliveries: string[] = [];
+  const rosterOrganizations: string[] = [];
   let result: PersistResult = { outcome: "created", invitationId };
   return {
     commands,
     deliveries,
+    rosterOrganizations,
     setResult(value: PersistResult) {
       result = value;
     },
     options: {
       repository: {
+        async listRoster(id) {
+          rosterOrganizations.push(id);
+          return [
+            {
+              id: "membership-staff",
+              name: "Staff Example",
+              email: "staff@example.test",
+              roleKey: "front_desk" as const,
+              propertyIds: [propertyId],
+              status: "active" as const,
+              lastActiveAt: "2026-08-24T00:00:00.000Z",
+            },
+          ];
+        },
         async persist(command) {
           commands.push(command);
           return result;
@@ -120,6 +136,27 @@ describe("staff invitation routes", () => {
     expect(JSON.stringify(response.body)).not.toMatch(/provider|token|accept/i);
   });
 
+  it("lists only the authenticated organization's roster", async () => {
+    const fake = fakes();
+    app = await testApp(fake.options);
+    const response = await get(app);
+    expect(response).toMatchObject({
+      statusCode: 200,
+      body: {
+        members: [
+          {
+            id: "membership-staff",
+            email: "staff@example.test",
+            status: "active",
+            propertyIds: [propertyId],
+          },
+        ],
+      },
+    });
+    expect(fake.rosterOrganizations).toEqual([organizationId]);
+    expect(JSON.stringify(response.body)).not.toMatch(/workos|provider|token/i);
+  });
+
   it.each([
     ["unauthenticated", { authenticated: false }, 401],
     ["wrong organization", { organizationKind: "creator_workspace" }, 403],
@@ -131,7 +168,9 @@ describe("staff invitation routes", () => {
     const fake = fakes();
     app = await testApp(fake.options, auth as Auth);
     expect((await post(app, { unsafe: true })).statusCode).toBe(statusCode);
+    expect((await get(app)).statusCode).toBe(statusCode);
     expect(fake.commands).toHaveLength(0);
+    expect(fake.rosterOrganizations).toHaveLength(0);
   });
 
   it("fails closed for malformed access and cross-tenant properties", async () => {
@@ -189,5 +228,13 @@ function post(
       ...(key === null ? {} : { "idempotency-key": key }),
     },
     payload,
+  });
+}
+
+function get(app: Awaited<ReturnType<typeof testApp>>) {
+  return injectJson(app, {
+    method: "GET",
+    url: "/api/identity/staff/members",
+    headers: { authorization: "Bearer valid-token" },
   });
 }
