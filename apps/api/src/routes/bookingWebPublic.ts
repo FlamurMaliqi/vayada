@@ -1162,7 +1162,7 @@ type TargetCheckoutConfigRow = QueryResultRow & {
   requiresManualReview: boolean | null;
   providerAccountId: string | null;
   providerAccountRef: string | null;
-  providerReady: boolean | null;
+  onlineCardReady: boolean | null;
 };
 
 type TargetBookingRow = QueryResultRow & {
@@ -1362,12 +1362,10 @@ const BOOKING_LOOKUP_RATE_LIMIT = 5;
 const BOOKING_LOOKUP_RATE_WINDOW_MS = 60 * 1000;
 
 type TargetCheckoutCommandReservation =
-  | { status: "reserved" }
-  | { status: "replay"; body: unknown };
+  { status: "reserved" } | { status: "replay"; body: unknown };
 
 type TargetBookingChangeDecisionReservation =
-  | { status: "reserved" }
-  | { status: "replay"; body: unknown };
+  { status: "reserved" } | { status: "replay"; body: unknown };
 
 async function withTargetCheckoutTransaction<T>(
   pool: pg.Pool,
@@ -2425,19 +2423,20 @@ async function loadTargetCheckoutConfig(
        fs.requires_manual_review AS "requiresManualReview",
        account.id::text AS "providerAccountId",
        account.provider_account_id AS "providerAccountRef",
-       (
-         account.provider = 'stripe'
-         AND account.status = 'active'
-         AND account.onboarding_status = 'completed'
-         AND account.charges_enabled = TRUE
-       ) AS "providerReady"
+       COALESCE(
+         readiness.online_card_ready
+         AND upper(trim(fs.default_currency)) = upper(trim(bs.default_currency)),
+         FALSE
+       ) AS "onlineCardReady"
      FROM hotel_catalog.properties p
      LEFT JOIN booking.booking_settings bs ON bs.property_id = p.id
      LEFT JOIN hotel_catalog.property_policy_summaries policy ON policy.property_id = p.id
      LEFT JOIN finance.payment_settings fs ON fs.property_id = p.id
-     LEFT JOIN finance.payment_provider_accounts account
+    LEFT JOIN finance.payment_provider_accounts account
        ON account.id = fs.provider_account_id
       AND account.property_id = p.id
+     LEFT JOIN finance.online_card_readiness readiness
+       ON readiness.property_id = p.id
      WHERE p.id = $1::uuid
      LIMIT 1`,
     [propertyId],
@@ -2451,7 +2450,7 @@ function serializeTargetCheckoutConfig(
 ): Record<string, unknown> {
   const depositPolicy = objectValue(row?.depositPolicy);
   const methods = targetCheckoutSupportedPaymentMethods(row?.acceptedMethods).filter((method) => {
-    if (method === "card") return row?.providerReady === true;
+    if (method === "card") return row?.onlineCardReady === true;
     if (method === "bank_transfer") {
       return bankTransferDetailsFromPolicy(depositPolicy) !== null;
     }
@@ -2967,7 +2966,7 @@ function assertTargetCheckoutConfigMatchesQuote(
     config?.paymentsEnabled === true &&
     Boolean(method) &&
     (method === "card"
-      ? accepted.includes("card") && config?.providerReady === true
+      ? accepted.includes("card") && config?.onlineCardReady === true
       : method === "pay_at_property"
         ? accepted.includes("pay_at_property") &&
           accepted.some((candidate) => candidate === "cash" || candidate === "manual_card")
@@ -3634,7 +3633,7 @@ async function createTargetCardPayment(
 ): Promise<StripeBookingPaymentIntent> {
   if (
     !config.stripePaymentProvider ||
-    checkoutConfig?.providerReady !== true ||
+    checkoutConfig?.onlineCardReady !== true ||
     !checkoutConfig.providerAccountId ||
     !checkoutConfig.providerAccountRef
   ) {

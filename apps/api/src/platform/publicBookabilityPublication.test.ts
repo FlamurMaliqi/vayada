@@ -123,16 +123,12 @@ describe("target public bookability publication", () => {
       "'refundWindowDays', input.finance_refund_policy -> 'refundWindowDays'",
     );
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).not.toContain("'USD'");
-    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("finance.online_card_readiness");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("input.finance_online_card_ready");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).not.toContain(
       "payment_provider_onboarding_status = 'completed'",
     );
-    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("payment_provider_charges_enabled = TRUE");
-    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
-      "NOT IN ('BHD', 'JOD', 'KWD', 'OMR', 'TND')",
-    );
-    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
-      "'card' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))",
-    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).not.toContain("NOT IN ('BHD', 'JOD', 'KWD'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'bank_transfer'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'paypal'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("AS public_payment_methods");
@@ -155,8 +151,12 @@ describe("target public bookability publication", () => {
       "UPDATE distribution.public_room_offer_snapshots offer",
     );
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("SET payment_options = CASE");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+      "offer.rate_summary ->> 'rateType', '')) = 'non_refundable'",
+    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("THEN ARRAY['card']::text[]");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("AS pay_at_property_ready");
-    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("finance.payment_provider_accounts");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).not.toContain("finance.payment_provider_accounts");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("pg_timezone_names");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("ELSE 'Etc/UTC'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'sellable_availability'");

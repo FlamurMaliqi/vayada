@@ -348,13 +348,12 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
       settings.acceptance_mode,
       finance.payments_enabled,
       finance.accepted_methods,
+      finance.default_currency AS finance_default_currency,
+      finance.payment_readiness_contract_version AS finance_payment_readiness_contract_version,
       finance.deposit_policy AS finance_deposit_policy,
       finance.refund_policy AS finance_refund_policy,
       finance.updated_at AS finance_updated_at,
-      payment_provider.provider AS payment_provider,
-      payment_provider.status AS payment_provider_status,
-      payment_provider.onboarding_status AS payment_provider_onboarding_status,
-      payment_provider.charges_enabled AS payment_provider_charges_enabled,
+      online_card.online_card_ready AS finance_online_card_ready,
       EXISTS (
         SELECT 1
         FROM finance.billing_entitlements entitlement
@@ -410,9 +409,8 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
     FROM hotel_catalog.property_public_profile_read_model profile
     LEFT JOIN booking.booking_settings settings ON settings.property_id = profile.property_id
     LEFT JOIN finance.payment_settings finance ON finance.property_id = profile.property_id
-    LEFT JOIN finance.payment_provider_accounts payment_provider
-      ON payment_provider.id = finance.provider_account_id
-     AND payment_provider.property_id = profile.property_id
+    LEFT JOIN finance.online_card_readiness online_card
+      ON online_card.property_id = profile.property_id
     LEFT JOIN hotel_catalog.property_locations location ON location.property_id = profile.property_id
     LEFT JOIN LATERAL (
       SELECT domain.hostname
@@ -487,35 +485,31 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
         )
       ) AS booking_profile_ready,
       COALESCE(
-        input.payments_enabled
-          AND input.payment_provider = 'stripe'
-          AND input.payment_provider_status = 'active'
-          AND input.payment_provider_onboarding_status = 'completed'
-          AND input.payment_provider_charges_enabled = TRUE
-          AND upper(trim(input.booking_default_currency)) NOT IN ('BHD', 'JOD', 'KWD', 'OMR', 'TND')
-          AND 'card' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[])),
+        input.finance_online_card_ready
+          AND upper(trim(input.finance_default_currency)) = upper(trim(input.booking_default_currency)),
         FALSE
       ) AS online_payment_ready,
       COALESCE(input.payments_enabled, FALSE)
         AND 'pay_at_property' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))
-        AND COALESCE(input.accepted_methods, ARRAY[]::text[])
-          && ARRAY['cash', 'manual_card']::text[] AS pay_at_property_ready,
+        AND (
+          input.finance_payment_readiness_contract_version = 'finance-payment-readiness.v1'
+          OR COALESCE(input.accepted_methods, ARRAY[]::text[])
+            && ARRAY['cash', 'manual_card']::text[]
+        ) AS pay_at_property_ready,
       ARRAY_REMOVE(ARRAY[
         CASE
-          WHEN COALESCE(input.payments_enabled, FALSE)
-            AND input.payment_provider = 'stripe'
-            AND input.payment_provider_status = 'active'
-            AND input.payment_provider_onboarding_status = 'completed'
-            AND input.payment_provider_charges_enabled = TRUE
-            AND upper(trim(input.booking_default_currency)) NOT IN ('BHD', 'JOD', 'KWD', 'OMR', 'TND')
-            AND 'card' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))
+          WHEN COALESCE(input.finance_online_card_ready, FALSE)
+            AND upper(trim(input.finance_default_currency)) = upper(trim(input.booking_default_currency))
             THEN 'card'
         END,
         CASE
           WHEN COALESCE(input.payments_enabled, FALSE)
             AND 'pay_at_property' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))
-            AND COALESCE(input.accepted_methods, ARRAY[]::text[])
-              && ARRAY['cash', 'manual_card']::text[]
+            AND (
+              input.finance_payment_readiness_contract_version = 'finance-payment-readiness.v1'
+              OR COALESCE(input.accepted_methods, ARRAY[]::text[])
+                && ARRAY['cash', 'manual_card']::text[]
+            )
             THEN 'pay_at_property'
         END,
         CASE
@@ -817,6 +811,13 @@ export const PROJECT_PUBLIC_BOOKABILITY_PROFILE = `
   refreshed_offers AS (
     UPDATE distribution.public_room_offer_snapshots offer
     SET payment_options = CASE
+          WHEN lower(COALESCE(offer.rate_summary ->> 'rateType', '')) = 'non_refundable'
+            THEN CASE
+              WHEN cardinality(readiness.missing_readiness) = 0
+                AND 'card' = ANY(readiness.public_payment_methods)
+                THEN ARRAY['card']::text[]
+              ELSE ARRAY[]::text[]
+            END
           WHEN cardinality(readiness.missing_readiness) = 0
             THEN readiness.public_payment_methods
           ELSE ARRAY[]::text[]

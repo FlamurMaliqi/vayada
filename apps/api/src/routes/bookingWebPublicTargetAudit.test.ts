@@ -392,7 +392,7 @@ function bookingCollisionHarness(propertyId: string) {
               paymentsEnabled: true,
               acceptedMethods: ["pay_at_property", "cash"],
               depositPolicy: {},
-              providerReady: false,
+              onlineCardReady: false,
             },
           ],
         };

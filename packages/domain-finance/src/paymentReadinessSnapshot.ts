@@ -1,12 +1,16 @@
 import {
   FINANCE_PAYMENT_READINESS_CONTRACT_VERSION,
   FINANCE_PAYMENT_READINESS_METHODS,
+  FINANCE_ONLINE_CARD_EXECUTION_EVIDENCE_CONTRACT_VERSION,
+  FINANCE_ONLINE_CARD_READINESS_DECISIONS,
   type FinancePaymentMethodReadiness,
   type FinancePaymentNextAction,
   type FinancePaymentReadinessBlocker,
   type FinancePaymentReadinessInput,
   type FinancePaymentReadinessMethod,
   type FinancePaymentReadinessSnapshot,
+  type FinanceOnlineCardReadinessDecision,
+  type FinanceOnlineCardReadinessEvidence,
   type FinancePricingCurrencyEvidence,
 } from "./paymentReadiness.js";
 
@@ -19,6 +23,7 @@ export function createFinancePaymentReadinessSnapshot(
     !uuid(input.propertyId) ||
     !revision(input.paymentMethodsRevision, false) ||
     !parseMethods(input.selectedMethods, true) ||
+    !FINANCE_ONLINE_CARD_READINESS_DECISIONS.includes(input.onlineCardReadiness) ||
     !(input.updatedAt === null || isoDate(input.updatedAt)) ||
     committedPricing === undefined ||
     currentPricing === undefined
@@ -36,7 +41,11 @@ export function createFinancePaymentReadinessSnapshot(
   const methodInputs = FINANCE_PAYMENT_READINESS_METHODS.map((method) => ({
     method,
     selected: selected.has(method),
-    ready: method === "pay_at_property" && selected.has(method) && matchesCurrent,
+    ready:
+      selected.has(method) &&
+      matchesCurrent &&
+      (method === "pay_at_property" ||
+        (method === "card" && input.onlineCardReadiness === "ready")),
   }));
   const bookingPaymentReady = methodInputs.some(({ ready }) => ready);
   const methods = methodInputs.map(({ method, selected: isSelected, ready }) => {
@@ -44,8 +53,30 @@ export function createFinancePaymentReadinessSnapshot(
     const blockers: FinancePaymentReadinessBlocker[] = [];
     const nextActions: FinancePaymentNextAction[] = [];
     if (method === "card") {
-      blockers.push("online_card_execution_unavailable");
-      nextActions.push("wait_for_online_card_execution");
+      if (!committedPricing) {
+        blockers.push("payment_settings_uncommitted");
+        nextActions.push("reload_payment_settings");
+      } else if (!currentPricing) {
+        blockers.push("pricing_currency_unavailable");
+        nextActions.push("edit_pricing");
+      } else if (!matchesCurrent) {
+        blockers.push("pricing_currency_mismatch");
+        nextActions.push("reload_payment_settings", "edit_pricing");
+      }
+      if (input.onlineCardReadiness !== "ready") {
+        blockers.push(
+          input.onlineCardReadiness === "execution_unavailable"
+            ? "online_card_execution_unavailable"
+            : input.onlineCardReadiness === "currency_unsupported"
+              ? "online_card_currency_unsupported"
+              : input.onlineCardReadiness,
+        );
+        nextActions.push(
+          input.onlineCardReadiness === "currency_unsupported"
+            ? "edit_pricing"
+            : "wait_for_online_card_execution",
+        );
+      }
     } else if (method === "bank_transfer") {
       blockers.push("bank_transfer_contract_unavailable");
       nextActions.push("wait_for_bank_transfer_contract");
@@ -93,6 +124,128 @@ export function createFinancePaymentReadinessSnapshot(
     methods,
     updatedAt: input.updatedAt,
   });
+}
+
+export function resolveFinanceOnlineCardReadiness(
+  input: FinanceOnlineCardReadinessEvidence,
+): FinanceOnlineCardReadinessDecision {
+  if (
+    typeof input.currencyEligible !== "boolean" ||
+    !revision(input.propertyReadinessRevision, true)
+  ) {
+    throw new Error("Finance online-card currency evidence is invalid");
+  }
+  const account = providerAccount(input.providerAccount);
+  const evidence = executionEvidence(input.executionEvidence);
+  if (input.providerAccount !== null && !account) {
+    throw new Error("Finance online-card provider evidence is invalid");
+  }
+  if (input.executionEvidence !== null && !evidence) {
+    throw new Error("Finance online-card execution evidence is invalid");
+  }
+  if (!account) return "execution_unavailable";
+  if (!input.currencyEligible) return "currency_unsupported";
+  if (["restricted", "suspended", "disabled"].includes(account.status)) {
+    return "provider_restricted";
+  }
+  if (
+    account.provider !== "stripe" ||
+    account.accountScope !== "property" ||
+    !account.providerBindingActive ||
+    account.status !== "active" ||
+    account.onboardingStatus !== "completed" ||
+    !account.chargesEnabled ||
+    !account.payoutsEnabled ||
+    !account.detailsSubmitted ||
+    account.cardPaymentsStatus !== "active" ||
+    !account.capabilities.includes("card_payments") ||
+    account.cardCapabilityRevision < 1
+  ) {
+    return "provider_capability_lost";
+  }
+  return evidence &&
+    evidence.contractVersion === FINANCE_ONLINE_CARD_EXECUTION_EVIDENCE_CONTRACT_VERSION &&
+    evidence.providerAccountId === account.id &&
+    evidence.providerCapabilityRevision === account.cardCapabilityRevision &&
+    evidence.propertyReadinessRevision === input.propertyReadinessRevision &&
+    evidence.revokedAt === null
+    ? "ready"
+    : "execution_unavailable";
+}
+
+function providerAccount(
+  value: FinanceOnlineCardReadinessEvidence["providerAccount"],
+): FinanceOnlineCardReadinessEvidence["providerAccount"] | null {
+  return value &&
+    isExactRecord(value, [
+      "id",
+      "provider",
+      "accountScope",
+      "providerBindingActive",
+      "status",
+      "onboardingStatus",
+      "chargesEnabled",
+      "payoutsEnabled",
+      "detailsSubmitted",
+      "cardPaymentsStatus",
+      "capabilities",
+      "cardCapabilityRevision",
+    ]) &&
+    uuid(value.id) &&
+    trimmedText(value.provider, 1, 50) &&
+    trimmedText(value.accountScope, 1, 50) &&
+    typeof value.providerBindingActive === "boolean" &&
+    trimmedText(value.status, 1, 50) &&
+    trimmedText(value.onboardingStatus, 1, 50) &&
+    typeof value.chargesEnabled === "boolean" &&
+    typeof value.payoutsEnabled === "boolean" &&
+    typeof value.detailsSubmitted === "boolean" &&
+    (value.cardPaymentsStatus === null || trimmedText(value.cardPaymentsStatus, 1, 50)) &&
+    Array.isArray(value.capabilities) &&
+    value.capabilities.every((capability) => trimmedText(capability, 1, 100)) &&
+    new Set(value.capabilities).size === value.capabilities.length &&
+    revision(value.cardCapabilityRevision, true)
+    ? deepFreeze({
+        id: normalizeUuid(value.id),
+        provider: value.provider,
+        accountScope: value.accountScope,
+        providerBindingActive: value.providerBindingActive,
+        status: value.status,
+        onboardingStatus: value.onboardingStatus,
+        chargesEnabled: value.chargesEnabled,
+        payoutsEnabled: value.payoutsEnabled,
+        detailsSubmitted: value.detailsSubmitted,
+        cardPaymentsStatus: value.cardPaymentsStatus,
+        capabilities: [...value.capabilities],
+        cardCapabilityRevision: value.cardCapabilityRevision,
+      })
+    : null;
+}
+
+function executionEvidence(
+  value: FinanceOnlineCardReadinessEvidence["executionEvidence"],
+): FinanceOnlineCardReadinessEvidence["executionEvidence"] | null {
+  return value &&
+    isExactRecord(value, [
+      "contractVersion",
+      "providerAccountId",
+      "providerCapabilityRevision",
+      "propertyReadinessRevision",
+      "revokedAt",
+    ]) &&
+    trimmedText(value.contractVersion, 1, 200) &&
+    uuid(value.providerAccountId) &&
+    revision(value.providerCapabilityRevision, false) &&
+    revision(value.propertyReadinessRevision, true) &&
+    (value.revokedAt === null || isoDate(value.revokedAt))
+    ? Object.freeze({
+        contractVersion: value.contractVersion,
+        providerAccountId: normalizeUuid(value.providerAccountId),
+        providerCapabilityRevision: value.providerCapabilityRevision,
+        propertyReadinessRevision: value.propertyReadinessRevision,
+        revokedAt: value.revokedAt,
+      })
+    : null;
 }
 
 function parseMethods(

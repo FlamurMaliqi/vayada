@@ -3,7 +3,7 @@ import type {
   ReconcileStripePropertyAccountCommand,
   StripeConnectProviderAccountSnapshot,
 } from "@vayada/domain-finance";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -18,6 +18,9 @@ const providerAccountId = randomUUID();
 const replacementProviderAccountId = randomUUID();
 const publicId = `vay-1343-${randomUUID()}`;
 const providerAccountRef = `stripe-account-${randomUUID()}`;
+const providerAccountHash = `sha256:${createHash("sha256")
+  .update(providerAccountRef)
+  .digest("hex")}`;
 const replacementProviderAccountRef = `stripe-account-${randomUUID()}`;
 const auditTrigger = `trg_vay_1343_${randomUUID().replaceAll("-", "")}`;
 const auditFunction = `fn_vay_1343_${randomUUID().replaceAll("-", "")}`;
@@ -59,6 +62,11 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
     await admin.connect();
     await cleanup();
     await admin.query(
+      `INSERT INTO identity.organizations (id, kind, name, slug, status)
+       VALUES ($1::uuid, 'platform', 'VAY-1345 Reconciliation Review', $2, 'active')`,
+      [organizationId, `vay-1345-reconciliation-${organizationId}`],
+    );
+    await admin.query(
       `INSERT INTO identity.users (id, email, name, status)
        VALUES ($1::uuid, $2, 'VAY-1343 Finance Actor', 'active')`,
       [actorUserId, `${actorUserId}@example.test`],
@@ -83,6 +91,12 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
       [propertyId],
     );
     await admin.query(
+      `INSERT INTO pms.property_pricing_settings
+         (property_id, currency, pricing_currency_revision)
+       VALUES ($1::uuid, 'EUR', 1)`,
+      [propertyId],
+    );
+    await admin.query(
       `INSERT INTO finance.payment_provider_accounts (
          id, property_id, account_scope, provider, provider_account_id,
          status, onboarding_status, charges_enabled, payouts_enabled,
@@ -96,19 +110,25 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
     );
     await admin.query(
       `INSERT INTO finance.payment_settings (
-         property_id, provider_account_id, payments_enabled, accepted_methods, default_currency
-       ) VALUES ($1::uuid, $2::uuid, TRUE, ARRAY['card'], 'EUR')`,
+         property_id, provider_account_id, payments_enabled, accepted_methods, default_currency,
+         payment_readiness_contract_version, payment_methods_revision,
+         source_pricing_currency_revision
+       ) VALUES (
+         $1::uuid, $2::uuid, TRUE, ARRAY['card'], 'EUR',
+         'finance-payment-readiness.v1', 1, 1
+       )`,
       [propertyId, providerAccountId],
     );
     await admin.query(
       `INSERT INTO distribution.public_hotel_bookability_profiles (
          property_id, public_id, canonical_slug, canonical_url, booking_base_url,
          timezone, default_locale, supported_locales, default_currency,
-         supported_currencies, profile_status, freshness_status
+         supported_currencies, profile_status, freshness_status, capabilities
        ) VALUES (
          $1::uuid, $2, $2, 'https://booking.example.test/' || $2,
          'https://booking.example.test', 'Europe/Berlin', 'en', ARRAY['en'],
-         'EUR', ARRAY['EUR'], 'public', 'fresh'
+         'EUR', ARRAY['EUR'], 'public', 'fresh',
+         '{"onlinePayment":false,"paymentMethods":[]}'::jsonb
        )`,
       [propertyId, publicId],
     );
@@ -120,7 +140,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
     await admin.end();
   });
 
-  it("promotes, exactly replays, and demotes canonical readiness with one effect set per key", async () => {
+  it("reconciles provider readiness without publishing card before execution evidence", async () => {
     retrieveCount = 0;
     const first = await repository.reconcileStripeProviderAccount!(command("gain"));
     expect(first).toMatchObject({
@@ -129,7 +149,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
       response: { providerAccount: { status: "active", ready: true } },
     });
     const firstProjection = await projection();
-    expect(firstProjection.onlinePayment).toBe("true");
+    expect(firstProjection.onlinePayment).toBe("false");
 
     const replay = await repository.reconcileStripeProviderAccount!(command("gain"));
     expect(replay).toMatchObject({
@@ -139,7 +159,50 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
     });
     expect((await projection()).projectedAt).toEqual(firstProjection.projectedAt);
     expect(retrieveCount).toBe(1);
-    await expect(evidence()).resolves.toEqual({ audits: 1, keys: 1 });
+    await expect(reconciliationCounts()).resolves.toEqual({
+      audits: 1,
+      keys: 1,
+      readinessEvents: 0,
+      readinessOutbox: 0,
+    });
+
+    const revision = await admin.query<{ revision: string }>(
+      `SELECT card_capability_revision::text AS revision
+       FROM finance.payment_provider_accounts WHERE id = $1::uuid`,
+      [providerAccountId],
+    );
+    await admin.query(
+      `INSERT INTO finance.online_card_execution_evidence (
+         property_id, provider_account_id, contract_version, test_suite,
+         provider_capability_revision, property_readiness_revision, evidence_fingerprint_hash,
+         executed_at, accepted_at, accepted_by_organization_id, accepted_by_user_id
+       ) VALUES (
+         $1::uuid, $2::uuid, 'finance-online-card-execution-evidence.v1', 'onb-25a',
+         $3::bigint, 1, $4, '2026-08-28T09:50:00Z', '2026-08-28T09:55:00Z',
+         $5::uuid, $6::uuid
+       )`,
+      [
+        propertyId,
+        providerAccountId,
+        revision.rows[0]!.revision,
+        "e".repeat(64),
+        organizationId,
+        actorUserId,
+      ],
+    );
+    await admin.query(
+      `UPDATE distribution.public_hotel_bookability_profiles
+       SET capabilities = capabilities ||
+         '{"onlinePayment":true,"paymentMethods":["card"]}'::jsonb
+       WHERE property_id = $1::uuid`,
+      [propertyId],
+    );
+    const ready = await admin.query<{ ready: boolean }>(
+      `SELECT online_card_ready AS ready FROM finance.online_card_readiness
+       WHERE property_id = $1::uuid`,
+      [propertyId],
+    );
+    expect(ready.rows[0]?.ready).toBe(true);
 
     snapshot = { ...activeSnapshot(), payoutsEnabled: false, cardPaymentsStatus: null };
     const loss = await repository.reconcileStripeProviderAccount!(command("loss"));
@@ -153,11 +216,41 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
           cardPaymentsStatus: null,
           ready: false,
         },
+        commandMeta: { outboxEvents: ["finance.online_card_readiness.changed"] },
       },
     });
     expect((await projection()).onlinePayment).toBe("false");
     expect(retrieveCount).toBe(2);
-    await expect(evidence()).resolves.toEqual({ audits: 2, keys: 2 });
+    await expect(reconciliationCounts()).resolves.toEqual({
+      audits: 2,
+      keys: 2,
+      readinessEvents: 1,
+      readinessOutbox: 1,
+    });
+
+    const revisionPayloadTypes = await admin.query<{
+      domainEvent: string;
+      outboxEvent: string;
+    }>(
+      `SELECT
+         (SELECT jsonb_typeof(payload -> 'providerCapabilityRevision')
+          FROM platform.domain_events
+          WHERE property_id = $1::uuid
+            AND event_type = 'finance.online_card_readiness.changed'
+          ORDER BY occurred_at DESC
+          LIMIT 1) AS "domainEvent",
+         (SELECT jsonb_typeof(payload -> 'providerCapabilityRevision')
+          FROM platform.outbox_events
+          WHERE property_id = $1::uuid
+            AND event_type = 'finance.online_card_readiness.changed'
+          ORDER BY created_at DESC
+          LIMIT 1) AS "outboxEvent"`,
+      [propertyId],
+    );
+    expect(revisionPayloadTypes.rows[0]).toEqual({
+      domainEvent: "number",
+      outboxEvent: "number",
+    });
 
     const durable = await admin.query<{ payloads: unknown }>(
       `SELECT jsonb_build_object(
@@ -303,6 +396,19 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
 
     const reconciliation = repository.reconcileStripeProviderAccount!(command("binding-lock"));
     await providerStarted;
+    const publicationClient = new pg.Client({ connectionString: TEST_DATABASE_URL! });
+    await publicationClient.connect();
+    await publicationClient.query("BEGIN");
+    let publicationLockFinished = false;
+    const publicationLock = publicationClient
+      .query(
+        `SELECT id FROM hotel_catalog.properties
+         WHERE id = $1::uuid FOR UPDATE`,
+        [propertyId],
+      )
+      .then(() => {
+        publicationLockFinished = true;
+      });
     const rebindClient = new pg.Client({ connectionString: TEST_DATABASE_URL! });
     await rebindClient.connect();
     let rebindFinished = false;
@@ -317,6 +423,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
       });
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(rebindFinished).toBe(false);
+    expect(publicationLockFinished).toBe(false);
     releaseProvider();
 
     await expect(reconciliation).resolves.toMatchObject({
@@ -324,6 +431,9 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
       response: { providerAccount: { ready: true } },
     });
     await rebind;
+    await publicationLock;
+    await publicationClient.query("ROLLBACK");
+    await publicationClient.end();
     await rebindClient.end();
     expect(rebindFinished).toBe(true);
     const binding = await admin.query<{ providerAccountId: string }>(
@@ -371,14 +481,14 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
         receiptKey: "webhook:stripe:evt_account_race",
         receiptKeyHash: "hash",
         payloadHash: "payload-hash",
-        rawPayload: {},
+        rawPayload: { data: { object: { id: providerAccountRef } } },
         normalizedPreview: {
-          domainEventKey: `finance.provider-account.updated:stripe:${providerAccountRef}:race:v1`,
+          domainEventKey: `finance.provider-account.updated:stripe:${providerAccountHash}:race:v1`,
           domainEventType: "finance.provider-account.updated",
           resourceProduct: "finance",
           resourceType: "provider_account",
-          resourceId: providerAccountRef,
-          jobKey: `finance.reconcile-provider-account:${providerAccountRef}:race:v1`,
+          resourceId: providerAccountHash,
+          jobKey: `finance.reconcile-provider-account:${providerAccountHash}:race:v1`,
           queueName: "finance.webhooks",
           jobType: "finance.reconcile-provider-account",
           payload: { rawEventId: "evt_account_race" },
@@ -474,15 +584,31 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
     return result.rows[0]!;
   }
 
-  async function evidence(): Promise<{ audits: number; keys: number }> {
-    const result = await admin.query<{ audits: number; keys: number }>(
+  async function reconciliationCounts(): Promise<{
+    audits: number;
+    keys: number;
+    readinessEvents: number;
+    readinessOutbox: number;
+  }> {
+    const result = await admin.query<{
+      audits: number;
+      keys: number;
+      readinessEvents: number;
+      readinessOutbox: number;
+    }>(
       `SELECT
          (SELECT count(*)::int FROM platform.product_audit_events
           WHERE property_id = $1::uuid
             AND action = 'finance.provider_account.stripe.reconciled') AS audits,
          (SELECT count(*)::int FROM platform.idempotency_keys
           WHERE property_id = $1::uuid
-            AND operation = 'stripe_provider_account_reconcile') AS keys`,
+            AND operation = 'stripe_provider_account_reconcile') AS keys,
+         (SELECT count(*)::int FROM platform.domain_events
+          WHERE property_id = $1::uuid
+            AND event_type = 'finance.online_card_readiness.changed') AS "readinessEvents",
+         (SELECT count(*)::int FROM platform.outbox_events
+          WHERE property_id = $1::uuid
+            AND event_type = 'finance.online_card_readiness.changed') AS "readinessOutbox"`,
       [propertyId],
     );
     return result.rows[0]!;
@@ -515,6 +641,12 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
     await admin.query("BEGIN");
     try {
       await admin.query("SET LOCAL session_replication_role = replica");
+      await admin.query("DELETE FROM platform.outbox_events WHERE property_id = $1::uuid", [
+        propertyId,
+      ]);
+      await admin.query("DELETE FROM platform.domain_events WHERE property_id = $1::uuid", [
+        propertyId,
+      ]);
       await admin.query("DELETE FROM platform.product_audit_events WHERE property_id = $1::uuid", [
         propertyId,
       ]);
@@ -529,10 +661,17 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
         propertyId,
       ]);
       await admin.query(
+        "DELETE FROM finance.online_card_execution_evidence WHERE property_id = $1::uuid",
+        [propertyId],
+      );
+      await admin.query(
         "DELETE FROM finance.payment_provider_accounts WHERE property_id = $1::uuid",
         [propertyId],
       );
       await admin.query("DELETE FROM booking.booking_settings WHERE property_id = $1::uuid", [
+        propertyId,
+      ]);
+      await admin.query("DELETE FROM pms.property_pricing_settings WHERE property_id = $1::uuid", [
         propertyId,
       ]);
       await admin.query(
@@ -541,6 +680,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
       );
       await admin.query("DELETE FROM hotel_catalog.properties WHERE id = $1::uuid", [propertyId]);
       await admin.query("DELETE FROM identity.users WHERE id = $1::uuid", [actorUserId]);
+      await admin.query("DELETE FROM identity.organizations WHERE id = $1::uuid", [organizationId]);
       await admin.query("COMMIT");
     } catch (error) {
       await admin.query("ROLLBACK");

@@ -1,10 +1,9 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { buildApp } from "./app.js";
 import { promotePulledChannexBookingRevision } from "./routes/providerWebhooks.js";
 import type {
-  ProviderWebhookMode,
   ProviderWebhookPromotionInput,
   ProviderWebhookReceiptInput,
   ProviderWebhookReceiptLifecycleStatus,
@@ -155,6 +154,48 @@ describe("target provider webhook routes", () => {
     expect(JSON.stringify(store.domainEvents)).not.toContain("pi_secret_must_not_persist");
     expect(JSON.stringify(store.jobs)).not.toContain("pi_secret_must_not_persist");
     expect(JSON.stringify(store.receipts)).not.toContain("client_secret");
+    await app.close();
+  });
+
+  it("keeps Stripe account references only in restricted webhook intake", async () => {
+    const store = createMemoryProviderWebhookStore();
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { stripe: "whsec_stripe_test" },
+        modes: { stripe: "mutating" },
+        store,
+        now: () => fixedNow,
+      },
+    });
+    const providerAccountRef = "acct_private_1345";
+    const providerAccountHash = `sha256:${createHash("sha256")
+      .update(providerAccountRef)
+      .digest("hex")}`;
+    const payload = {
+      id: "evt_stripe_account_updated",
+      type: "account.updated",
+      data: {
+        object: {
+          id: providerAccountRef,
+          charges_enabled: true,
+          payouts_enabled: true,
+          details_submitted: true,
+          capabilities: { card_payments: "active" },
+          default_currency: "eur",
+        },
+      },
+    };
+
+    const response = await postProviderPayload(app, "stripe", payload);
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.stringify(store.receipts[0]?.rawPayload)).toContain(providerAccountRef);
+    expect(JSON.stringify(store.receipts[0]?.normalizedPreview)).not.toContain(providerAccountRef);
+    expect(JSON.stringify(store.domainEvents)).not.toContain(providerAccountRef);
+    expect(JSON.stringify(store.jobs)).not.toContain(providerAccountRef);
+    expect(JSON.stringify(store.auditEvents)).not.toContain(providerAccountRef);
+    expect(store.receipts[0]?.normalizedPreview.resourceId).toBe(providerAccountHash);
+    expect(store.domainEvents[0]?.resourceId).toBe(providerAccountHash);
     await app.close();
   });
 
@@ -323,20 +364,28 @@ describe("target provider webhook routes", () => {
         },
       },
     };
+    const providerAccountHash = `sha256:${createHash("sha256")
+      .update("acct_property_123")
+      .digest("hex")}`;
 
     const response = await postProviderPayload(app, "stripe", payload);
 
     expect(response.statusCode).toBe(200);
     expect(store.domainEvents[0]).toMatchObject({
-      domainEventKey:
-        "payment.fee-updated:stripe:acct_property_123:pi_stripe_123:txn_stripe_123:v1",
+      domainEventKey: `payment.fee-updated:stripe:${providerAccountHash}:pi_stripe_123:txn_stripe_123:v1`,
       domainEventType: "payment.fee_updated",
       resourceId: "pi_stripe_123",
     });
     expect(store.domainEvents[0]?.payload).toMatchObject({
-      providerAccountRef: "acct_property_123",
+      providerAccountHash,
       financeStatus: "paid",
     });
+    expect(JSON.stringify(store.receipts[0]?.rawPayload)).toContain("acct_property_123");
+    expect(JSON.stringify(store.receipts[0]?.normalizedPreview)).not.toContain("acct_property_123");
+    expect(JSON.stringify(store.domainEvents)).not.toContain("acct_property_123");
+    expect(JSON.stringify(store.jobs)).not.toContain("acct_property_123");
+    expect(JSON.stringify(store.auditEvents)).not.toContain("acct_property_123");
+    expect(store.domainEvents[0]?.payload).not.toHaveProperty("rawPayload");
     await app.close();
   });
 

@@ -33,7 +33,7 @@ export async function registerFinancePlatformAffiliatePayoutRoutes(
   app.get<{ Querystring: ListQuery }>(
     "/finance/platform/affiliate-payouts",
     async (request, reply) => {
-      if (!authorize(request, reply, "read")) return reply;
+      if (!authorizePlatformFinance(request, reply, "read")) return reply;
       if (!options.repository.listPlatformAffiliatePayoutSummaries) {
         return unavailable(reply, "Platform affiliate payout reads are not configured.");
       }
@@ -49,7 +49,7 @@ export async function registerFinancePlatformAffiliatePayoutRoutes(
   app.get<{ Params: Params; Querystring: DetailQuery }>(
     "/finance/platform/affiliate-payouts/:affiliateId",
     async (request, reply) => {
-      if (!authorize(request, reply, "read")) return reply;
+      if (!authorizePlatformFinance(request, reply, "read")) return reply;
       if (!options.repository.getPlatformAffiliatePayoutDetail) {
         return unavailable(reply, "Platform affiliate payout reads are not configured.");
       }
@@ -74,7 +74,7 @@ export async function registerFinancePlatformAffiliatePayoutRoutes(
   app.post<{ Params: Params; Body: MarkPaidBody }>(
     "/finance/platform/affiliate-payouts/:affiliateId/mark-paid",
     async (request, reply) => {
-      const context = authorize(request, reply, "manage");
+      const context = authorizePlatformFinance(request, reply, "manage");
       if (!context) return reply;
       if (!options.repository.markAffiliatePayoutPaid) {
         return unavailable(reply, "Platform affiliate payout writes are not configured.");
@@ -108,7 +108,7 @@ export async function registerFinancePlatformAffiliatePayoutRoutes(
   );
 }
 
-function authorize(
+export function authorizePlatformFinance(
   request: FastifyRequest,
   reply: FastifyReply,
   access: "read" | "manage",

@@ -84,6 +84,7 @@ function readySnapshot() {
     selectedMethods: ["pay_at_property", "card"],
     committedPricing: pricing,
     currentPricing: pricing,
+    onlineCardReadiness: "execution_unavailable",
     updatedAt: "2026-08-03T12:00:00.000Z",
   });
 }

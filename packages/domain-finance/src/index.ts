@@ -23,6 +23,7 @@
  */
 
 import type { FinancePlatformAffiliatePayoutRepository } from "./platformAffiliatePayouts.js";
+import { FINANCE_ONLINE_CARD_EXECUTION_EVIDENCE_CONTRACT_VERSION } from "./paymentReadiness.js";
 
 export * from "./paymentReadiness.js";
 export * from "./paymentReadinessParsing.js";
@@ -186,12 +187,7 @@ export type PaymentSettingsReadModel = {
 export type FinanceJsonPolicy = Record<string, string | number | boolean | null>;
 export type FinanceJsonObject = Record<string, FinanceJsonValue>;
 export type FinanceJsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | FinanceJsonValue[]
-  | { [key: string]: FinanceJsonValue };
+  string | number | boolean | null | FinanceJsonValue[] | { [key: string]: FinanceJsonValue };
 
 export type FinanceProviderAccountReadModel = {
   providerAccountId: string | null;
@@ -550,8 +546,7 @@ export type CreateStripeAffiliateAccountCommand = Omit<
 };
 
 export type CreateStripeProviderAccountCommand =
-  | CreateStripePropertyAccountCommand
-  | CreateStripeAffiliateAccountCommand;
+  CreateStripePropertyAccountCommand | CreateStripeAffiliateAccountCommand;
 
 export type IssueStripeOnboardingLinkPayload = {
   providerAccountId: string;
@@ -575,8 +570,7 @@ export type IssueStripeAffiliateOnboardingLinkCommand = Omit<
 };
 
 export type IssueStripeOnboardingLinkCommand =
-  | IssueStripePropertyOnboardingLinkCommand
-  | IssueStripeAffiliateOnboardingLinkCommand;
+  IssueStripePropertyOnboardingLinkCommand | IssueStripeAffiliateOnboardingLinkCommand;
 
 export type ReconcileStripePropertyAccountCommand = FinanceCommandBase<
   "finance.provider_account.stripe.reconcile",
@@ -615,6 +609,64 @@ export type FinanceStripeProviderAccountReconciliationResult =
         | "provider_unavailable";
       message: string;
     };
+
+export type AcceptFinanceOnlineCardExecutionEvidenceCommand = FinanceCommandBase<
+  "finance.online_card_execution_evidence.accept",
+  {
+    expectedCardCapabilityRevision: number;
+    expectedPropertyReadinessRevision: number;
+    evidenceFingerprintHash: string;
+    executedAt: FinanceUtcDateTime;
+  }
+>;
+
+export type RevokeFinanceOnlineCardExecutionEvidenceCommand = FinanceCommandBase<
+  "finance.online_card_execution_evidence.revoke",
+  { evidenceId: string }
+>;
+
+export type FinanceOnlineCardExecutionEvidenceResponse = {
+  contractVersion: typeof FINANCE_ONLINE_CARD_EXECUTION_EVIDENCE_CONTRACT_VERSION;
+  propertyId: FinancePropertyId;
+  evidenceId: string;
+  providerCapabilityRevision: number;
+  propertyReadinessRevision: number;
+  status: "accepted" | "revoked";
+  acceptedAt: FinanceUtcDateTime;
+  revokedAt: FinanceUtcDateTime | null;
+  cardReady: boolean;
+  commandMeta: FinanceCommandMeta;
+};
+
+export type FinanceOnlineCardExecutionEvidenceResult =
+  | {
+      ok: true;
+      status: "accepted" | "revoked" | "idempotent_replay";
+      response: FinanceOnlineCardExecutionEvidenceResponse;
+    }
+  | {
+      ok: false;
+      statusCode: 400 | 404 | 409 | 500;
+      code:
+        | "invalid_command"
+        | "provider_account_not_found"
+        | "provider_capability_revision_conflict"
+        | "property_readiness_revision_conflict"
+        | "provider_capability_unavailable"
+        | "evidence_not_found"
+        | "idempotency_conflict"
+        | "write_unavailable";
+      message: string;
+    };
+
+export type FinancePlatformOnlineCardExecutionEvidenceRepository = {
+  acceptOnlineCardExecutionEvidence(
+    command: AcceptFinanceOnlineCardExecutionEvidenceCommand,
+  ): Promise<FinanceOnlineCardExecutionEvidenceResult>;
+  revokeOnlineCardExecutionEvidence(
+    command: RevokeFinanceOnlineCardExecutionEvidenceCommand,
+  ): Promise<FinanceOnlineCardExecutionEvidenceResult>;
+};
 
 export type FinanceProviderAccountCommandResponse = {
   contractVersion: FinanceContractVersion;
@@ -845,10 +897,7 @@ export type FinanceAffiliatePayoutSettingsPatchResult =
       ok: false;
       statusCode: 400 | 404 | 409 | 500;
       code:
-        | "invalid_command"
-        | "affiliate_not_found"
-        | "idempotency_conflict"
-        | "write_unavailable";
+        "invalid_command" | "affiliate_not_found" | "idempotency_conflict" | "write_unavailable";
       message: string;
     };
 
@@ -1084,6 +1133,7 @@ export type FinancePropertyReadRepository = FinancePropertySettingsReadRepositor
   Partial<FinancePropertyOperationsReadRepository> &
   Partial<FinanceAffiliateRepository> &
   Partial<FinancePlatformAffiliatePayoutRepository> &
+  Partial<FinancePlatformOnlineCardExecutionEvidenceRepository> &
   Partial<FinancePropertyCommandRepository>;
 
 export function toFinancePaymentSettingsResponse(

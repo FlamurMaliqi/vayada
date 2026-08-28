@@ -712,6 +712,7 @@ function previewStripeEvent(
 ): ProviderWebhookNormalizedPreview {
   const eventType = requiredString(payload, "type", "Stripe event");
   const providerAccountRef = optionalString(payload, "account");
+  const providerAccountHash = providerAccountRef ? sha256(providerAccountRef) : "platform";
   const dataObject = optionalRecord(optionalRecord(payload, "data"), "object") ?? {};
   const objectId = optionalString(dataObject, "id") ?? receiptKey;
   const eventId = requiredString(payload, "id", "Stripe event");
@@ -760,8 +761,8 @@ function previewStripeEvent(
       semanticAction: `stripe-event-${requiredString(payload, "id", "Stripe event")}`,
       paymentId: objectId,
       amount,
-      providerAccountRef,
-      domainEventKey: `payment.authorized:stripe:${providerAccountRef ?? "platform"}:${objectId}:${amount}:v2`,
+      providerAccountHash,
+      domainEventKey: `payment.authorized:stripe:${providerAccountHash}:${objectId}:${amount}:v2`,
       rawPayload: payload,
     });
   }
@@ -772,8 +773,8 @@ function previewStripeEvent(
       semanticAction: `stripe-event-${requiredString(payload, "id", "Stripe event")}`,
       paymentId: objectId,
       amount,
-      providerAccountRef,
-      domainEventKey: `payment.captured:stripe:${providerAccountRef ?? "platform"}:${objectId}:${amount}:v2`,
+      providerAccountHash,
+      domainEventKey: `payment.captured:stripe:${providerAccountHash}:${objectId}:${amount}:v2`,
       rawPayload: payload,
     });
   }
@@ -785,8 +786,8 @@ function previewStripeEvent(
       semanticAction: `stripe-event-${requiredString(payload, "id", "Stripe event")}`,
       paymentId: objectId,
       amount,
-      providerAccountRef,
-      domainEventKey: `payment.terminal:stripe:${providerAccountRef ?? "platform"}:${objectId}:${status}:v2`,
+      providerAccountHash,
+      domainEventKey: `payment.terminal:stripe:${providerAccountHash}:${objectId}:${status}:v2`,
       rawPayload: payload,
     });
   }
@@ -808,14 +809,15 @@ function previewStripeEvent(
         semanticAction: `stripe-charge-updated-${requiredString(payload, "id", "Stripe event")}`,
         paymentId: paymentIntentId,
         amount,
-        providerAccountRef,
-        domainEventKey: `payment.fee-updated:stripe:${providerAccountRef ?? "platform"}:${paymentIntentId}:${balanceTransactionId}:v1`,
+        providerAccountHash,
+        domainEventKey: `payment.fee-updated:stripe:${providerAccountHash}:${paymentIntentId}:${balanceTransactionId}:v1`,
         rawPayload: payload,
       });
     }
   }
   if (eventType === "account.updated") {
     const eventId = requiredString(payload, "id", "Stripe event");
+    const providerAccountHash = sha256(objectId);
     const chargesEnabled = optionalBoolean(dataObject, "charges_enabled") ?? false;
     const payoutsEnabled = optionalBoolean(dataObject, "payouts_enabled") ?? false;
     const detailsSubmitted = optionalBoolean(dataObject, "details_submitted") ?? false;
@@ -824,17 +826,17 @@ function previewStripeEvent(
       "card_payments",
     );
     return {
-      domainEventKey: `finance.provider-account.updated:stripe:${objectId}:${eventId}:v1`,
+      domainEventKey: `finance.provider-account.updated:stripe:${providerAccountHash}:${eventId}:v1`,
       domainEventType: "finance.provider-account.updated",
       resourceProduct: "finance",
       resourceType: "provider_account",
-      resourceId: objectId,
-      jobKey: `finance.reconcile-provider-account:provider_account:${objectId}:${eventId}:v1`,
+      resourceId: providerAccountHash,
+      jobKey: `finance.reconcile-provider-account:provider_account:${providerAccountHash}:${eventId}:v1`,
       queueName: "finance.webhooks",
       jobType: "finance.reconcile-provider-account",
       payload: {
         provider: "stripe",
-        providerAccountId: objectId,
+        providerAccountHash,
         chargesEnabled,
         payoutsEnabled,
         detailsSubmitted,
@@ -1023,14 +1025,11 @@ function previewChannexEvent(
 function paymentPreview(input: {
   provider: "stripe" | "xendit";
   domainEventType:
-    | "payment.authorized"
-    | "payment.captured"
-    | "payment.terminal"
-    | "payment.fee_updated";
+    "payment.authorized" | "payment.captured" | "payment.terminal" | "payment.fee_updated";
   semanticAction: string;
   paymentId: string;
   amount: number;
-  providerAccountRef?: string | null;
+  providerAccountHash?: string | null;
   domainEventKey: string;
   rawPayload: Record<string, unknown>;
 }): ProviderWebhookNormalizedPreview {
@@ -1052,7 +1051,7 @@ function paymentPreview(input: {
     jobType: "payment.reconcile-status",
     payload: {
       provider: input.provider,
-      providerAccountRef: input.providerAccountRef ?? null,
+      providerAccountHash: input.providerAccountHash ?? null,
       paymentId: input.paymentId,
       amount: input.amount,
       currency: optionalString(
@@ -1060,7 +1059,6 @@ function paymentPreview(input: {
         "currency",
       ),
       financeStatus,
-      rawPayload: input.rawPayload,
     },
   };
 }
@@ -1070,13 +1068,7 @@ function payoutPreview(input: {
   payoutId: string;
   providerStatus: string;
   financeStatus:
-    | "pending"
-    | "scheduled"
-    | "processing"
-    | "paid"
-    | "failed"
-    | "canceled"
-    | "reversed";
+    "pending" | "scheduled" | "processing" | "paid" | "failed" | "canceled" | "reversed";
   rawPayload: Record<string, unknown>;
 }): ProviderWebhookNormalizedPreview {
   return {

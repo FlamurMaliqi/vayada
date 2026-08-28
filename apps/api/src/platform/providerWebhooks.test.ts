@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 
 import { reconcileStripeProviderAccount, settleCapturedStripeBooking } from "./providerWebhooks.js";
+
+const stripeAccountHash = `sha256:${createHash("sha256").update("acct_1").digest("hex")}`;
 
 describe("provider webhook booking settlement", () => {
   it("atomically settles a target card booking and enqueues the PMS handoff", async () => {
@@ -111,23 +114,28 @@ describe("provider webhook booking settlement", () => {
     );
   });
 
-  it("promotes a completed Stripe account.updated event into canonical provider readiness", async () => {
+  it("promotes canonical Stripe readiness without silently publishing a gain", async () => {
     const query = vi.fn(async (sql: string, _values?: readonly unknown[]) => {
-      if (sql.includes("FOR UPDATE")) {
+      if (sql.includes('SELECT property_id::text AS "propertyId"')) {
+        return { rows: [{ propertyId: "property-1" }] };
+      }
+      if (sql.includes("FROM hotel_catalog.properties")) {
+        return { rows: [{ id: "property-1" }] };
+      }
+      if (
+        sql.includes("FROM finance.payment_provider_accounts account") &&
+        sql.includes("JOIN finance.payment_settings settings")
+      ) {
         return { rows: [{ id: "provider-account-1" }] };
       }
       if (sql.includes("UPDATE finance.payment_provider_accounts")) {
         return { rows: [{ propertyId: "property-1" }], rowCount: 1 };
       }
       if (sql.includes("FROM distribution.public_hotel_bookability_profiles")) {
-        return {
-          rows: [
-            {
-              canonicalUrl: "https://hotel.booking.test/en",
-              bookingBaseUrl: "https://hotel.booking.test",
-            },
-          ],
-        };
+        return { rows: [] };
+      }
+      if (sql.includes("FROM finance.online_card_readiness")) {
+        return { rows: [{ cardReady: false }] };
       }
       return { rows: [] };
     });
@@ -137,20 +145,21 @@ describe("provider webhook booking settlement", () => {
       receiptKey: "webhook:stripe:evt_account",
       receiptKeyHash: "hash",
       payloadHash: "payload-hash",
-      rawPayload: {},
+      rawPayload: { data: { object: { id: "acct_1" } } },
       normalizedPreview: {
-        domainEventKey: "finance.provider-account.updated:stripe:acct_1:true:v1",
+        domainEventKey: `finance.provider-account.updated:stripe:${stripeAccountHash}:true:v1`,
         domainEventType: "finance.provider-account.updated",
         resourceProduct: "finance",
         resourceType: "provider_account",
-        resourceId: "acct_1",
-        jobKey: "finance.reconcile-provider-account:acct_1:v1",
+        resourceId: stripeAccountHash,
+        jobKey: `finance.reconcile-provider-account:${stripeAccountHash}:v1`,
         queueName: "finance.webhooks",
         jobType: "finance.reconcile-provider-account",
         payload: {
           chargesEnabled: true,
           payoutsEnabled: true,
           detailsSubmitted: true,
+          cardPaymentsStatus: "active",
           defaultCurrency: "eur",
           rawEventId: "evt_account",
         },
@@ -165,20 +174,33 @@ describe("provider webhook booking settlement", () => {
       sql.includes("UPDATE finance.payment_provider_accounts"),
     );
     expect(update?.[1]?.[6]).toBe(true);
-    expect(query.mock.calls.some(([sql]) => sql.includes("public_payment_methods"))).toBe(true);
+    expect(query.mock.calls.some(([sql]) => sql.includes("public_payment_methods"))).toBe(false);
   });
 
   it("uses canonical Stripe account state when an older incomplete webhook arrives last", async () => {
     const updateValues: Array<readonly unknown[]> = [];
     const executionOrder: string[] = [];
     const query = vi.fn(async (sql: string, values?: readonly unknown[]) => {
-      if (sql.includes("FOR UPDATE")) {
-        executionOrder.push("lock");
+      if (sql.includes('SELECT property_id::text AS "propertyId"')) {
+        return { rows: [{ propertyId: "property-1" }] };
+      }
+      if (sql.includes("FROM hotel_catalog.properties")) {
+        executionOrder.push("property-lock");
+        return { rows: [{ id: "property-1" }] };
+      }
+      if (
+        sql.includes("FROM finance.payment_provider_accounts account") &&
+        sql.includes("JOIN finance.payment_settings settings")
+      ) {
+        executionOrder.push("account-lock");
         return { rows: [{ id: "provider-account-1" }] };
       }
       if (sql.includes("UPDATE finance.payment_provider_accounts")) {
         updateValues.push(values ?? []);
         return { rows: [{ propertyId: "property-1" }], rowCount: 1 };
+      }
+      if (sql.includes("FROM finance.online_card_readiness")) {
+        return { rows: [{ cardReady: false }] };
       }
       return { rows: [] };
     });
@@ -206,14 +228,14 @@ describe("provider webhook booking settlement", () => {
           receiptKey: `webhook:stripe:${fixture.event}`,
           receiptKeyHash: "hash",
           payloadHash: "payload-hash",
-          rawPayload: {},
+          rawPayload: { data: { object: { id: "acct_1" } } },
           normalizedPreview: {
-            domainEventKey: `finance.provider-account.updated:stripe:acct_1:${fixture.event}:v1`,
+            domainEventKey: `finance.provider-account.updated:stripe:${stripeAccountHash}:${fixture.event}:v1`,
             domainEventType: "finance.provider-account.updated",
             resourceProduct: "finance",
             resourceType: "provider_account",
-            resourceId: "acct_1",
-            jobKey: `finance.reconcile-provider-account:acct_1:${fixture.event}:v1`,
+            resourceId: stripeAccountHash,
+            jobKey: `finance.reconcile-provider-account:${stripeAccountHash}:${fixture.event}:v1`,
             queueName: "finance.webhooks",
             jobType: "finance.reconcile-provider-account",
             payload: {
@@ -229,7 +251,14 @@ describe("provider webhook booking settlement", () => {
     }
 
     expect(retrieveAccount).toHaveBeenCalledTimes(2);
-    expect(executionOrder).toEqual(["lock", "retrieve", "lock", "retrieve"]);
+    expect(executionOrder).toEqual([
+      "property-lock",
+      "account-lock",
+      "retrieve",
+      "property-lock",
+      "account-lock",
+      "retrieve",
+    ]);
     expect(updateValues).toHaveLength(2);
     for (const values of updateValues) {
       expect(values.slice(1, 4)).toEqual([true, true, true]);

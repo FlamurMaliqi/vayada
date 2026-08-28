@@ -165,27 +165,41 @@ async function promoteReceipt(
   stripeConnectProvider?: Pick<FinanceStripeConnectProvider, "retrieveAccount">,
   stripePaymentProvider?: Pick<StripeBookingPaymentProvider, "retrievePaymentIntent">,
 ): Promise<ProviderWebhookPromotionResult> {
-  const stripePaymentIntent = await resolveStripePaymentIntent(input, stripePaymentProvider);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const receiptStatus = await lockReceiptForPromotion(client, input);
+    if (!receiptStatus) {
+      throw new Error(`Unable to resolve provider webhook receipt ${input.receiptId}`);
+    }
+    if (!["received", "validated", "observed"].includes(receiptStatus)) {
+      await client.query("COMMIT");
+      return {
+        status: promotionStatusForReceipt(receiptStatus),
+        receiptId: input.receiptId,
+        jobIds: [],
+        auditEventIds: [],
+      };
+    }
+    const stripePaymentIntent = await resolveStripePaymentIntent(input, stripePaymentProvider);
+    const promotionInput = await resolveProviderAccountResourceId(client, input);
     await insertOrTouchIdempotencyKey(client, {
       operation: "external_webhook_domain_event",
-      keyHash: hashForKey(input.normalizedPreview.domainEventKey),
-      requestFingerprintHash: input.payloadHash,
-      responseResourceProduct: input.normalizedPreview.resourceProduct,
-      responseResourceType: input.normalizedPreview.resourceType,
-      responseResourceId: input.normalizedPreview.resourceId,
+      keyHash: hashForKey(promotionInput.normalizedPreview.domainEventKey),
+      requestFingerprintHash: promotionInput.payloadHash,
+      responseResourceProduct: promotionInput.normalizedPreview.resourceProduct,
+      responseResourceType: promotionInput.normalizedPreview.resourceType,
+      responseResourceId: promotionInput.normalizedPreview.resourceId,
       metadata: {
-        provider: input.provider,
-        receiptKey: input.receiptKey,
-        domainEventKey: input.normalizedPreview.domainEventKey,
+        provider: promotionInput.provider,
+        receiptKey: promotionInput.receiptKey,
+        domainEventKey: promotionInput.normalizedPreview.domainEventKey,
       },
     });
 
-    const eventId = await insertOrFindDomainEvent(client, input);
-    const jobId = await insertOrFindJob(client, input, eventId);
-    await settleCapturedStripeBooking(client, input, eventId);
+    const eventId = await insertOrFindDomainEvent(client, promotionInput);
+    const jobId = await insertOrFindJob(client, promotionInput, eventId);
+    await settleCapturedStripeBooking(client, promotionInput, eventId);
     if (stripePaymentIntent) {
       await reconcileStripeBookingPaymentProviderDetails(client, stripePaymentIntent, new Date());
     }
@@ -193,15 +207,15 @@ async function promoteReceipt(
 
     await insertOrTouchIdempotencyKey(client, {
       operation: "external_webhook_job",
-      keyHash: hashForKey(input.normalizedPreview.jobKey),
-      requestFingerprintHash: input.payloadHash,
-      responseResourceProduct: input.normalizedPreview.resourceProduct,
-      responseResourceType: input.normalizedPreview.resourceType,
-      responseResourceId: input.normalizedPreview.resourceId,
+      keyHash: hashForKey(promotionInput.normalizedPreview.jobKey),
+      requestFingerprintHash: promotionInput.payloadHash,
+      responseResourceProduct: promotionInput.normalizedPreview.resourceProduct,
+      responseResourceType: promotionInput.normalizedPreview.resourceType,
+      responseResourceId: promotionInput.normalizedPreview.resourceId,
       metadata: {
-        provider: input.provider,
-        receiptKey: input.receiptKey,
-        jobKey: input.normalizedPreview.jobKey,
+        provider: promotionInput.provider,
+        receiptKey: promotionInput.receiptKey,
+        jobKey: promotionInput.normalizedPreview.jobKey,
         jobId,
       },
     });
@@ -222,7 +236,12 @@ async function promoteReceipt(
       ? "promoted"
       : promotionStatusForReceipt(await selectReceiptStatusById(client, input.receiptId));
 
-    const auditEventId = await insertOrFindFinanceAuditEvent(client, input, eventId, jobId);
+    const auditEventId = await insertOrFindFinanceAuditEvent(
+      client,
+      promotionInput,
+      eventId,
+      jobId,
+    );
 
     await client.query("COMMIT");
     return {
@@ -240,6 +259,56 @@ async function promoteReceipt(
   }
 }
 
+async function lockReceiptForPromotion(
+  client: Pick<pg.PoolClient, "query">,
+  input: Pick<ProviderWebhookPromotionInput, "provider" | "receiptId">,
+): Promise<string | null> {
+  const receipt = await client.query<{ delivery_status: string }>(
+    `SELECT delivery_status
+     FROM platform.external_webhook_events
+     WHERE id = $1::uuid AND provider = $2
+     FOR UPDATE`,
+    [input.receiptId, input.provider],
+  );
+  return receipt.rows[0]?.delivery_status ?? null;
+}
+
+async function resolveProviderAccountResourceId(
+  client: Pick<pg.PoolClient, "query">,
+  input: ProviderWebhookPromotionInput,
+): Promise<ProviderWebhookPromotionInput> {
+  if (
+    input.provider !== "stripe" ||
+    input.normalizedPreview.domainEventType !== "finance.provider-account.updated"
+  ) {
+    return input;
+  }
+  const providerAccountRef = stripeAccountUpdatedProviderRef(input.rawPayload);
+  if (
+    !providerAccountRef ||
+    input.normalizedPreview.resourceId !== hashForKey(providerAccountRef)
+  ) {
+    throw new Error("Stripe account webhook identity is invalid.");
+  }
+  const account = await client.query<{ id: string }>(
+    `SELECT id::text AS id
+     FROM finance.payment_provider_accounts
+     WHERE provider = 'stripe' AND provider_account_id = $1
+     LIMIT 2`,
+    [providerAccountRef],
+  );
+  if (account.rows.length !== 1 || !account.rows[0]?.id) {
+    throw new Error("Stripe account webhook owner is unresolved.");
+  }
+  return {
+    ...input,
+    normalizedPreview: {
+      ...input.normalizedPreview,
+      resourceId: account.rows[0].id,
+    },
+  };
+}
+
 export async function settleCapturedStripeBooking(
   client: Pick<pg.PoolClient, "query">,
   input: ProviderWebhookPromotionInput,
@@ -255,10 +324,7 @@ export async function settleCapturedStripeBooking(
   if (!Number.isInteger(amountMinor) || amountMinor < 0) return;
   await settleStripeBookingPayment(client, {
     paymentIntentId: input.normalizedPreview.resourceId,
-    providerAccountRef:
-      typeof input.normalizedPreview.payload["providerAccountRef"] === "string"
-        ? input.normalizedPreview.payload["providerAccountRef"]
-        : null,
+    providerAccountRef: stripeConnectedAccountRef(input.rawPayload),
     amountMinor,
     currency:
       typeof input.normalizedPreview.payload["currency"] === "string"
@@ -283,11 +349,17 @@ async function resolveStripePaymentIntent(
   ) {
     return null;
   }
-  const providerAccountRef = input.normalizedPreview.payload["providerAccountRef"];
+  const providerAccountRef = stripeConnectedAccountRef(input.rawPayload);
+  const expectedProviderAccountHash = providerAccountRef
+    ? hashForKey(providerAccountRef)
+    : "platform";
+  if (input.normalizedPreview.payload["providerAccountHash"] !== expectedProviderAccountHash) {
+    throw new Error("Stripe payment webhook account identity is invalid.");
+  }
   try {
     const intent = await provider.retrievePaymentIntent(
       input.normalizedPreview.resourceId,
-      typeof providerAccountRef === "string" ? providerAccountRef : null,
+      providerAccountRef,
     );
     if (input.normalizedPreview.domainEventType === "payment.fee_updated" && !intent.feeBreakdown) {
       throw new Error("Stripe fee breakdown is not available yet.");
@@ -310,23 +382,52 @@ export async function reconcileStripeProviderAccount(
   ) {
     return;
   }
-  const locked = await client.query<{ id: string }>(
-    `SELECT id::text AS id
+  const providerAccountRef = stripeAccountUpdatedProviderRef(input.rawPayload);
+  if (
+    !providerAccountRef ||
+    input.normalizedPreview.resourceId !== hashForKey(providerAccountRef)
+  ) {
+    throw new Error("Stripe account webhook identity is invalid.");
+  }
+  const resolved = await client.query<{ propertyId: string }>(
+    `SELECT property_id::text AS "propertyId"
      FROM finance.payment_provider_accounts
      WHERE provider = 'stripe' AND provider_account_id = $1
-     LIMIT 1
+     LIMIT 2`,
+    [providerAccountRef],
+  );
+  if (resolved.rows.length !== 1) return;
+  const propertyId = resolved.rows[0]!.propertyId;
+  const property = await client.query(
+    `SELECT id
+     FROM hotel_catalog.properties
+     WHERE id = $1::uuid
      FOR UPDATE`,
-    [input.normalizedPreview.resourceId],
+    [propertyId],
+  );
+  if (!property.rows[0]) return;
+  const locked = await client.query<{ id: string }>(
+    `SELECT account.id::text AS id
+     FROM finance.payment_provider_accounts account
+     JOIN finance.payment_settings settings
+       ON settings.provider_account_id = account.id
+      AND settings.property_id = account.property_id
+     WHERE account.provider = 'stripe'
+       AND account.provider_account_id = $1
+       AND account.property_id = $2::uuid
+     LIMIT 1
+     FOR UPDATE OF account, settings`,
+    [providerAccountRef, propertyId],
   );
   if (!locked.rows[0]) return;
 
   const payload = input.normalizedPreview.payload;
   const canonical = stripeConnectProvider
     ? await stripeConnectProvider.retrieveAccount({
-        providerAccountRef: input.normalizedPreview.resourceId,
+        providerAccountRef,
       })
     : {
-        providerAccountRef: input.normalizedPreview.resourceId,
+        providerAccountRef,
         chargesEnabled: payload["chargesEnabled"] === true,
         payoutsEnabled: payload["payoutsEnabled"] === true,
         detailsSubmitted: payload["detailsSubmitted"] === true,
@@ -335,15 +436,44 @@ export async function reconcileStripeProviderAccount(
         defaultCurrency:
           typeof payload["defaultCurrency"] === "string" ? payload["defaultCurrency"] : null,
       };
-  if (canonical.providerAccountRef !== input.normalizedPreview.resourceId) {
+  if (canonical.providerAccountRef !== providerAccountRef) {
     throw new Error("Stripe account reconciliation returned an unexpected account reference.");
   }
   await applyStripeProviderAccountSnapshot(client, {
     snapshot: canonical,
-    cardPaymentsReady:
-      canonical.cardPaymentsStatus === null || canonical.cardPaymentsStatus === "active",
+    propertyId,
+    providerAccountId: locked.rows[0].id,
     metadata: { lastStripeEventId: payload["rawEventId"] ?? null },
+    readinessChange: {
+      occurredAt: new Date().toISOString(),
+      actorType: "provider",
+      actorUserId: null,
+      correlationId: input.receiptKey,
+      causationId: input.receiptId,
+    },
   });
+}
+
+function stripeAccountUpdatedProviderRef(payload: Record<string, unknown>): string | null {
+  const data = plainRecord(payload["data"]);
+  const object = plainRecord(data?.["object"]);
+  const providerAccountRef = object?.["id"];
+  return typeof providerAccountRef === "string" && providerAccountRef.trim()
+    ? providerAccountRef.trim()
+    : null;
+}
+
+function stripeConnectedAccountRef(payload: Record<string, unknown>): string | null {
+  const providerAccountRef = payload["account"];
+  return typeof providerAccountRef === "string" && providerAccountRef.trim()
+    ? providerAccountRef.trim()
+    : null;
+}
+
+function plainRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 async function selectExistingReceipt(
@@ -580,10 +710,10 @@ async function insertOrFindFinanceAuditEvent(
          $3,
          $4,
          $5,
-         $6,
+         $6::uuid,
          $7,
          $8,
-         $6,
+         $6::text,
          $9,
          '{}'::jsonb,
          $10,

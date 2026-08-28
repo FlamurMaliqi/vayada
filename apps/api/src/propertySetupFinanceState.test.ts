@@ -139,6 +139,7 @@ function paymentReadiness(
     selectedMethods,
     committedPricing: pricing,
     currentPricing: pricing,
+    onlineCardReadiness: "execution_unavailable",
     updatedAt: "2026-08-04T12:00:00.000Z",
   });
 }

@@ -7,9 +7,12 @@ import {
   createFinancePaymentReadinessSnapshot,
   parseReplaceFinancePaymentMethodsCommand,
   parseReplaceFinancePaymentMethodsResult,
+  resolveFinanceOnlineCardReadiness,
   serializeReplaceFinancePaymentMethodsFingerprint,
   type FinancePaymentReadinessChangedEvent,
   type FinancePaymentReadinessMethod,
+  type FinanceOnlineCardReadinessDecision,
+  type FinanceOnlineCardReadinessEvidence,
   type FinancePricingCurrencyEvidence,
   type ReplaceFinancePaymentMethodsCommand,
   type ReplaceFinancePaymentMethodsError,
@@ -18,6 +21,10 @@ import {
 import { PMS_PRICING_CONTRACT_VERSION } from "@vayada/domain-pms";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
+import {
+  applyFinanceOnlineCardReadinessLoss,
+  loadFinanceOnlineCardReadinessState,
+} from "./financeOnlineCardReadinessTransition.js";
 import type { FinancePaymentMethodsRepositoryPort } from "./financePaymentReadinessService.js";
 
 export type FinancePaymentReadinessCommandClient = {
@@ -55,6 +62,25 @@ type PaymentSettingsRow = {
   sourcePricingCurrencyRevision: unknown;
   currency: unknown;
   acceptedMethods: unknown;
+  onlineCardCurrencyEligible: unknown;
+  providerAccountId: unknown;
+  provider: unknown;
+  providerAccountScope: unknown;
+  providerBindingActive: unknown;
+  providerStatus: unknown;
+  providerOnboardingStatus: unknown;
+  providerChargesEnabled: unknown;
+  providerPayoutsEnabled: unknown;
+  providerDetailsSubmitted: unknown;
+  providerCardPaymentsStatus: unknown;
+  providerCapabilities: unknown;
+  providerCardCapabilityRevision: unknown;
+  propertyReadinessRevision: unknown;
+  executionEvidenceContractVersion: unknown;
+  executionEvidenceProviderAccountId: unknown;
+  executionEvidenceCapabilityRevision: unknown;
+  executionEvidencePropertyReadinessRevision: unknown;
+  executionEvidenceRevokedAt: unknown;
   updatedAt: unknown;
 };
 
@@ -170,7 +196,17 @@ async function applyCommand(
   }
 
   const stored = await lockPaymentSettings(client, command.propertyId);
-  const aggregate = storedAggregate(stored, command.propertyId, currentPricing);
+  const previousOnlineCardReadiness = await loadFinanceOnlineCardReadinessState(
+    client,
+    command.propertyId,
+  );
+  const currentOnlineCardReadiness = resolveFinanceOnlineCardReadiness(onlineCardEvidence(stored));
+  const aggregate = storedAggregate(
+    stored,
+    command.propertyId,
+    currentPricing,
+    currentOnlineCardReadiness,
+  );
   if (aggregate.revision !== command.expectedPaymentMethodsRevision) {
     return failure({
       code: "payment_methods_revision_conflict",
@@ -211,12 +247,28 @@ async function applyCommand(
     ],
   );
 
+  const nextStored = await lockPaymentSettings(client, command.propertyId);
+  if (!nextStored) throw new Error("Finance payment readiness write was not visible");
+  const nextOnlineCardReadiness = resolveFinanceOnlineCardReadiness(onlineCardEvidence(nextStored));
+  await applyFinanceOnlineCardReadinessLoss(client, {
+    propertyId: command.propertyId,
+    previous: previousOnlineCardReadiness,
+    context: {
+      occurredAt: at,
+      actorType: "user",
+      actorUserId: command.audit.actor.userId,
+      correlationId: command.audit.correlationId ?? command.audit.requestId,
+      causationId: command.audit.requestId,
+    },
+  });
+
   const paymentReadiness = createFinancePaymentReadinessSnapshot({
     propertyId: command.propertyId,
     paymentMethodsRevision: nextRevision,
     selectedMethods: command.selectedMethods,
     committedPricing: currentPricing,
     currentPricing,
+    onlineCardReadiness: nextOnlineCardReadiness,
     updatedAt: at,
   });
   const result = parseReplaceFinancePaymentMethodsResult({
@@ -320,14 +372,40 @@ async function lockPaymentSettings(
   propertyId: string,
 ): Promise<PaymentSettingsRow | null> {
   const result = await client.query<PaymentSettingsRow>(
-    `SELECT payment_readiness_contract_version AS "contractVersion",
-            payment_methods_revision AS "paymentMethodsRevision",
-            source_pricing_currency_revision AS "sourcePricingCurrencyRevision",
-            default_currency::text AS currency, accepted_methods AS "acceptedMethods",
-            updated_at AS "updatedAt"
-     FROM finance.payment_settings
-     WHERE property_id = $1::uuid
-     FOR UPDATE`,
+    `SELECT settings.payment_readiness_contract_version AS "contractVersion",
+            settings.payment_methods_revision AS "paymentMethodsRevision",
+            settings.source_pricing_currency_revision AS "sourcePricingCurrencyRevision",
+            settings.default_currency::text AS currency,
+            settings.accepted_methods AS "acceptedMethods",
+            online_card.currency_eligible AS "onlineCardCurrencyEligible",
+            online_card.provider_account_id::text AS "providerAccountId",
+            online_card.provider,
+            online_card.account_scope AS "providerAccountScope",
+            online_card.provider_binding_active AS "providerBindingActive",
+            online_card.provider_status AS "providerStatus",
+            online_card.provider_onboarding_status AS "providerOnboardingStatus",
+            online_card.charges_enabled AS "providerChargesEnabled",
+            online_card.payouts_enabled AS "providerPayoutsEnabled",
+            online_card.details_submitted AS "providerDetailsSubmitted",
+            online_card.card_payments_status AS "providerCardPaymentsStatus",
+            online_card.capabilities AS "providerCapabilities",
+            online_card.card_capability_revision AS "providerCardCapabilityRevision",
+            online_card.property_readiness_revision AS "propertyReadinessRevision",
+            online_card.execution_evidence_contract_version
+              AS "executionEvidenceContractVersion",
+            online_card.execution_evidence_provider_account_id::text
+              AS "executionEvidenceProviderAccountId",
+            online_card.execution_evidence_capability_revision
+              AS "executionEvidenceCapabilityRevision",
+            online_card.execution_evidence_property_readiness_revision
+              AS "executionEvidencePropertyReadinessRevision",
+            online_card.execution_evidence_revoked_at AS "executionEvidenceRevokedAt",
+            settings.updated_at AS "updatedAt"
+     FROM finance.payment_settings settings
+     LEFT JOIN finance.online_card_readiness online_card
+       ON online_card.property_id = settings.property_id
+     WHERE settings.property_id = $1::uuid
+     FOR UPDATE OF settings`,
     [propertyId],
   );
   if (result.rows.length > 1) throw new Error("Finance payment readiness row is not unique");
@@ -338,6 +416,7 @@ function storedAggregate(
   row: PaymentSettingsRow | null,
   propertyId: string,
   currentPricing: FinancePricingCurrencyEvidence,
+  onlineCardReadiness: FinanceOnlineCardReadinessDecision,
 ): { revision: number; bookingReady: boolean } {
   if (!row) return { revision: 0, bookingReady: false };
   if (
@@ -372,9 +451,54 @@ function storedAggregate(
       pricingCurrencyRevision: pricingRevision,
     },
     currentPricing,
+    onlineCardReadiness,
     updatedAt,
   });
   return { revision, bookingReady: snapshot.bookingPaymentReady };
+}
+
+function onlineCardEvidence(row: PaymentSettingsRow | null): FinanceOnlineCardReadinessEvidence {
+  if (!row) {
+    return {
+      currencyEligible: false,
+      propertyReadinessRevision: 1,
+      providerAccount: null,
+      executionEvidence: null,
+    };
+  }
+  const providerAccount =
+    typeof row.providerAccountId === "string"
+      ? {
+          id: row.providerAccountId,
+          provider: row.provider,
+          accountScope: row.providerAccountScope,
+          providerBindingActive: row.providerBindingActive,
+          status: row.providerStatus,
+          onboardingStatus: row.providerOnboardingStatus,
+          chargesEnabled: row.providerChargesEnabled,
+          payoutsEnabled: row.providerPayoutsEnabled,
+          detailsSubmitted: row.providerDetailsSubmitted,
+          cardPaymentsStatus: row.providerCardPaymentsStatus,
+          capabilities: row.providerCapabilities,
+          cardCapabilityRevision: integer(row.providerCardCapabilityRevision),
+        }
+      : null;
+  const executionEvidence =
+    typeof row.executionEvidenceProviderAccountId === "string"
+      ? {
+          contractVersion: row.executionEvidenceContractVersion,
+          providerAccountId: row.executionEvidenceProviderAccountId,
+          providerCapabilityRevision: integer(row.executionEvidenceCapabilityRevision),
+          propertyReadinessRevision: integer(row.executionEvidencePropertyReadinessRevision),
+          revokedAt: storedDate(row.executionEvidenceRevokedAt),
+        }
+      : null;
+  return {
+    currencyEligible: row.onlineCardCurrencyEligible,
+    propertyReadinessRevision: integer(row.propertyReadinessRevision),
+    providerAccount,
+    executionEvidence,
+  } as FinanceOnlineCardReadinessEvidence;
 }
 
 async function findReplay(
@@ -687,6 +811,22 @@ function positiveInteger(value: unknown): number | null {
         ? Number(value)
         : NaN;
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= MAX_REVISION ? parsed : null;
+}
+
+function integer(value: unknown): number {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && /^\d+$/.test(value)
+        ? Number(value)
+        : NaN;
+  return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= MAX_REVISION ? parsed : -1;
+}
+
+function storedDate(value: unknown): string | null {
+  if (value === null) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? "invalid" : value.toISOString();
+  return typeof value === "string" ? value : "invalid";
 }
 
 function isoDate(value: unknown): string | null {

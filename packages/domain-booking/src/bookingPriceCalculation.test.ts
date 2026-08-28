@@ -236,6 +236,7 @@ function financeWithUnreadyCard() {
       currency: "EUR",
       pricingCurrencyRevision: 2,
     },
+    onlineCardReadiness: "execution_unavailable",
     updatedAt: now,
   });
 }

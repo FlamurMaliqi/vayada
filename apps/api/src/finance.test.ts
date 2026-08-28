@@ -35,7 +35,7 @@ import { createHash } from "node:crypto";
 import type { PublicBookabilityProfileProjection } from "@vayada/domain-distribution";
 import { readFileSync } from "node:fs";
 import type { QueryResultRow } from "pg";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
 import { agencyPropertyAccessRepository } from "./testAuthorization.js";
@@ -706,6 +706,81 @@ describe("finance route contracts", () => {
     );
   });
 
+  it("queues private retry work when immediate Stripe account compensation fails", async () => {
+    const provider = fakeStripeConnectProvider({ failCompensation: true });
+    const target = targetStripeProviderAccountPool({ failInsert: true });
+    const repository = createTargetFinancePropertySettingsRepository({
+      connectionString: "postgresql://finance-target",
+      pool: target.pool,
+      stripeConnectProvider: provider,
+    });
+
+    const result = await repository.createStripeProviderAccount!(
+      stripePropertyTargetCommand({
+        idempotencyKey: "finance-stripe-property-compensation-retry",
+      }),
+    );
+
+    expect(result).toMatchObject({ ok: false, code: "write_unavailable" });
+    expect(provider.compensationCount).toBe(1);
+    expect(target.compensationJobCount).toBe(1);
+    const failedMetadata = String(
+      target.requiredCall("UPDATE platform.idempotency_keys").values?.[1],
+    );
+    expect(failedMetadata).toContain('"compensationStatus":"queued"');
+    expect(failedMetadata).not.toContain("acct_target_property_686");
+  });
+
+  it("fails closed when provider-account creation cannot guarantee transactions or compensation", async () => {
+    const target = targetStripeProviderAccountPool();
+    const provider = fakeStripeConnectProvider();
+    const retrieveAccount = vi.spyOn(provider, "retrieveAccount");
+    const queryOnlyRepository = createTargetFinancePropertySettingsRepository({
+      connectionString: "postgresql://finance-target",
+      pool: { query: target.pool.query, end: target.pool.end },
+      stripeConnectProvider: provider,
+    });
+    await expect(
+      queryOnlyRepository.createStripeProviderAccount!(stripePropertyTargetCommand()),
+    ).resolves.toMatchObject({ ok: false, code: "write_unavailable" });
+    await expect(
+      queryOnlyRepository.issueStripeOnboardingLink!(
+        stripePropertyOnboardingLinkTargetCommand("acct_target_property_686"),
+      ),
+    ).resolves.toMatchObject({ ok: false, code: "write_unavailable" });
+    await expect(
+      queryOnlyRepository.updatePaymentSettings!(paymentSettingsTargetCommand()),
+    ).resolves.toMatchObject({ ok: false, code: "write_unavailable" });
+    await expect(
+      queryOnlyRepository.reconcileStripeProviderAccount!(
+        stripePropertyReconciliationTargetCommand(),
+      ),
+    ).resolves.toMatchObject({ ok: false, code: "write_unavailable" });
+    expect(target.calls).toHaveLength(0);
+    expect(retrieveAccount).not.toHaveBeenCalled();
+
+    provider.compensateAccountCreation = undefined;
+    const uncompensatedRepository = createTargetFinancePropertySettingsRepository({
+      connectionString: "postgresql://finance-target",
+      pool: target.pool,
+      stripeConnectProvider: provider,
+    });
+    await expect(
+      uncompensatedRepository.createStripeProviderAccount!(stripePropertyTargetCommand()),
+    ).resolves.toMatchObject({ ok: false, code: "provider_unavailable" });
+    expect(provider.createAccountCount).toBe(0);
+  });
+
+  it("keeps ONB-25A acceptance unreachable until a sanctioned attestation verifier exists", () => {
+    const repository = createTargetFinancePropertySettingsRepository({
+      connectionString: "postgresql://finance-target",
+      pool: targetStripeProviderAccountPool().pool,
+    });
+
+    expect(repository.acceptOnlineCardExecutionEvidence).toBeUndefined();
+    expect(repository.revokeOnlineCardExecutionEvidence).toEqual(expect.any(Function));
+  });
+
   it("persists target Stripe provider accounts by owner scope and replays without duplicate provider accounts", async () => {
     const provider = fakeStripeConnectProvider();
     const target = targetStripeProviderAccountPool();
@@ -729,11 +804,13 @@ describe("finance route contracts", () => {
     expect(replay.ok).toBe(true);
     if (!first.ok || !replay.ok) throw new Error("Unexpected Stripe provider-account failure");
     expect(replay.response.providerAccountId).toBe(first.response.providerAccountId);
+    expect(replay).toEqual({ ok: true, status: "idempotent_replay", response: first.response });
     expect(provider.createAccountCount).toBe(1);
+    expect(provider.createOnboardingLinkCount).toBe(0);
     const relinkCalls = target.calls.filter((call) =>
       call.text.includes("UPDATE finance.payment_settings"),
     );
-    expect(relinkCalls).toHaveLength(2);
+    expect(relinkCalls).toHaveLength(1);
 
     const idempotencyInsert = target.requiredCall("INSERT INTO platform.idempotency_keys");
     expect(idempotencyInsert.text).toMatch(/'finance'/);
@@ -748,6 +825,27 @@ describe("finance route contracts", () => {
       first.response.providerAccountId,
       `settings-choice:${propertyId}:stripe`,
     ]);
+  });
+
+  it("does not compensate a Stripe account when the commit succeeded but its acknowledgement was lost", async () => {
+    const provider = fakeStripeConnectProvider();
+    const target = targetStripeProviderAccountPool({ failCommitAfterWrite: true });
+    const repository = createTargetFinancePropertySettingsRepository({
+      connectionString: "postgresql://finance-target",
+      pool: target.pool,
+      stripeConnectProvider: provider,
+    });
+
+    const result = await repository.createStripeProviderAccount!(
+      stripePropertyTargetCommand({
+        idempotencyKey: "finance-stripe-property-lost-commit-acknowledgement",
+      }),
+    );
+
+    expect(result).toMatchObject({ ok: true, status: "idempotent_replay" });
+    expect(provider.createAccountCount).toBe(1);
+    expect(provider.compensationCount).toBe(0);
+    expect(target.compensationJobCount).toBe(0);
   });
 
   it("issues target Stripe onboarding links when the client sends the provider account ref", async () => {
@@ -766,9 +864,9 @@ describe("finance route contracts", () => {
       onboardingUrl: "https://connect.stripe.test/onboard/acct_target_property_686/1",
     };
 
-    const result = await repository.issueStripeOnboardingLink!(
-      stripePropertyOnboardingLinkTargetCommand("acct_target_property_686"),
-    );
+    const command = stripePropertyOnboardingLinkTargetCommand("acct_target_property_686");
+    const result = await repository.issueStripeOnboardingLink!(command);
+    const replay = await repository.issueStripeOnboardingLink!(command);
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("Unexpected Stripe onboarding-link failure");
@@ -776,6 +874,39 @@ describe("finance route contracts", () => {
     expect(result.response.onboardingUrl).toBe(
       "https://connect.stripe.test/onboard/acct_target_property_686/2",
     );
+    expect(replay).toEqual({ ok: true, status: "idempotent_replay", response: result.response });
+    expect(provider.createOnboardingLinkCount).toBe(1);
+  });
+
+  it("reserves an existing-account command before issuing its Stripe onboarding link", async () => {
+    const provider = fakeStripeConnectProvider();
+    const target = targetStripeProviderAccountPool();
+    target.existingAccount = {
+      providerAccountId: "f7000000-0000-0000-0000-000000000686",
+      providerAccountRef: "acct_target_property_686",
+      status: "setup_incomplete",
+      onboardingStatus: "invited",
+      onboardingUrl: "https://connect.stripe.test/onboard/acct_target_property_686/1",
+    };
+    const repository = createTargetFinancePropertySettingsRepository({
+      connectionString: "postgresql://finance-target",
+      pool: target.pool,
+      stripeConnectProvider: provider,
+    });
+    const command = stripePropertyTargetCommand({
+      idempotencyKey: "finance-stripe-existing-concurrent",
+    });
+
+    const results = await Promise.all([
+      repository.createStripeProviderAccount!(command),
+      repository.createStripeProviderAccount!(command),
+    ]);
+
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    expect(results.filter((result) => !result.ok)).toEqual([
+      expect.objectContaining({ code: "idempotency_conflict" }),
+    ]);
+    expect(provider.createOnboardingLinkCount).toBe(1);
   });
 
   it("issues fresh Stripe dashboard links from the property's stored provider account", async () => {
@@ -843,7 +974,7 @@ describe("finance route contracts", () => {
     expect(JSON.stringify(result)).not.toContain("acct_disconnected");
   });
 
-  it("reconciles Stripe readiness gain and loss without duplicate audit or projection effects", async () => {
+  it("reconciles Stripe readiness without silently projecting card", async () => {
     const target = targetStripeReconciliationPool();
     const provider = fakeStripeConnectProvider();
     let snapshot = {
@@ -880,7 +1011,7 @@ describe("finance route contracts", () => {
     });
     expect(replay).toMatchObject({ ok: true, status: "idempotent_replay" });
     expect(target.auditCount).toBe(1);
-    expect(target.projectionCount).toBe(1);
+    expect(target.projectionCount).toBe(0);
 
     snapshot = {
       ...snapshot,
@@ -908,9 +1039,9 @@ describe("finance route contracts", () => {
     });
     expect(retrieveCount).toBe(2);
     expect(target.auditCount).toBe(2);
-    expect(target.projectionCount).toBe(2);
+    expect(target.projectionCount).toBe(0);
     expect(
-      target.requiredCall("UPDATE finance.payment_provider_accounts").values?.slice(7),
+      target.requiredCall("UPDATE finance.payment_provider_accounts").values?.slice(7, 9),
     ).toEqual([propertyId, "f7000000-0000-0000-0000-000000000686"]);
     expect(JSON.stringify(loss)).not.toMatch(/acct_|secret|rawPayload/i);
   });
@@ -2040,7 +2171,7 @@ describe("finance route contracts", () => {
     });
   });
 
-  it("matches provider-account reconciliation jobs using webhook job keys and provider object IDs", async () => {
+  it("matches provider-account reconciliation jobs using internal account IDs", async () => {
     const repository = createTargetFinancePropertySettingsRepository({
       connectionString: "postgresql://finance-target",
       pool: {
@@ -2049,10 +2180,12 @@ describe("finance route contracts", () => {
           values?: readonly unknown[],
         ) {
           expect(text).toContain("receipt.normalized_domain_event_id");
-          expect(text).toContain("receipt_event.resource_id = account.provider_account_id");
+          expect(text).toContain("receipt_event.resource_id = account.id::text");
           expect(text).toContain("SELECT job.id");
           expect(text).toContain("job.tenant_scope = 'external'");
-          expect(text).toContain("job.resource_id = account.provider_account_id");
+          expect(text).toContain("job.resource_id = account.id::text");
+          expect(text).not.toContain("job.resource_id = account.provider_account_id");
+          expect(text).not.toContain("dead.resource_id = account.provider_account_id");
           expect(text).toContain("finance.reconcile-provider-account:provider_account:");
           expect(text).not.toContain("finance.provider-account.reconcile");
           expect(text).toContain("dead.job_id = job.id");
@@ -2724,9 +2857,12 @@ function targetPaymentSettingsRow(
   };
 }
 
-function targetStripeProviderAccountPool(options: { failInsert?: boolean } = {}): {
+function targetStripeProviderAccountPool(
+  options: { failInsert?: boolean; failCommitAfterWrite?: boolean } = {},
+): {
   calls: QueryCall[];
   existingAccount: FinanceProviderAccountRowFixture | null;
+  compensationJobCount: number;
   pool: {
     connect(): Promise<{
       query<T extends QueryResultRow = QueryResultRow>(
@@ -2746,9 +2882,17 @@ function targetStripeProviderAccountPool(options: { failInsert?: boolean } = {})
   const state: {
     calls: QueryCall[];
     existingAccount: FinanceProviderAccountRowFixture | null;
+    compensationJobCount: number;
+    idempotency: {
+      status: string;
+      requestFingerprintHash: string;
+      idempotencyMetadata: Record<string, unknown>;
+    } | null;
   } = {
     calls: [],
     existingAccount: null,
+    compensationJobCount: 0,
+    idempotency: null,
   };
 
   const query = async <T extends QueryResultRow = QueryResultRow>(
@@ -2756,14 +2900,41 @@ function targetStripeProviderAccountPool(options: { failInsert?: boolean } = {})
     values?: readonly unknown[],
   ): Promise<{ rows: T[]; rowCount: number }> => {
     state.calls.push({ text, values });
+    if (text === "COMMIT" && options.failCommitAfterWrite) {
+      throw new Error("simulated lost commit acknowledgement");
+    }
     if (text.includes("SELECT") && text.includes("FROM platform.idempotency_keys")) {
-      return { rows: [] as T[], rowCount: 0 };
+      const rows = state.idempotency ? [state.idempotency as unknown as T] : [];
+      return { rows, rowCount: rows.length };
+    }
+    if (
+      text.includes("FROM finance.payment_provider_accounts") &&
+      text.includes("WHERE provider = 'stripe' AND provider_account_id = $1")
+    ) {
+      const rows = state.existingAccount
+        ? [
+            {
+              ...state.existingAccount,
+              accountScope: "property",
+              propertyId,
+              organizationId: null,
+              affiliateId: null,
+            } as unknown as T,
+          ]
+        : [];
+      return { rows, rowCount: rows.length };
     }
     if (text.includes("FROM finance.payment_provider_accounts")) {
       const rows = state.existingAccount ? [state.existingAccount as unknown as T] : [];
       return { rows, rowCount: rows.length };
     }
     if (text.includes("INSERT INTO platform.idempotency_keys")) {
+      if (state.idempotency) return { rows: [] as T[], rowCount: 0 };
+      state.idempotency = {
+        status: "in_progress",
+        requestFingerprintHash: String(values?.[2]),
+        idempotencyMetadata: {},
+      };
       return {
         rows: [{ requestFingerprintHash: String(values?.[2]) } as unknown as T],
         rowCount: 1,
@@ -2783,10 +2954,26 @@ function targetStripeProviderAccountPool(options: { failInsert?: boolean } = {})
       state.existingAccount = account;
       return { rows: [account as unknown as T], rowCount: 1 };
     }
+    if (text.includes("INSERT INTO platform.jobs")) {
+      state.compensationJobCount += 1;
+      return {
+        rows: [{ jobKey: String(values?.[0]) } as unknown as T],
+        rowCount: 1,
+      };
+    }
     if (text.includes("UPDATE finance.payment_provider_accounts")) {
       return { rows: [] as T[], rowCount: 1 };
     }
     if (text.includes("UPDATE platform.idempotency_keys")) {
+      if (state.idempotency && text.includes("status = 'completed'")) {
+        state.idempotency.status = "completed";
+        state.idempotency.idempotencyMetadata = {
+          ...state.idempotency.idempotencyMetadata,
+          ...(JSON.parse(String(values?.[4])) as Record<string, unknown>),
+        };
+      } else if (state.idempotency && text.includes("status = 'failed'")) {
+        state.idempotency.status = "failed";
+      }
       return { rows: [] as T[], rowCount: 1 };
     }
     return { rows: [] as T[], rowCount: 0 };
@@ -2799,6 +2986,9 @@ function targetStripeProviderAccountPool(options: { failInsert?: boolean } = {})
     },
     get existingAccount() {
       return state.existingAccount;
+    },
+    get compensationJobCount() {
+      return state.compensationJobCount;
     },
     set existingAccount(account: FinanceProviderAccountRowFixture | null) {
       state.existingAccount = account;
@@ -2890,6 +3080,9 @@ function targetStripeReconciliationPool(
       state.transactionKeys.clear();
       return { rows: [], rowCount: 0 };
     }
+    if (text.includes("FROM hotel_catalog.properties") && text.includes("FOR UPDATE")) {
+      return { rows: [{ id: propertyId } as unknown as T], rowCount: 1 };
+    }
     if (
       text.includes("FROM finance.payment_provider_accounts account") &&
       text.includes("JOIN finance.payment_settings settings")
@@ -2941,16 +3134,11 @@ function targetStripeReconciliationPool(
       };
       return { rows: [state.account as unknown as T], rowCount: 1 };
     }
+    if (text.includes("FROM finance.online_card_readiness")) {
+      return { rows: [{ cardReady: false } as unknown as T], rowCount: 1 };
+    }
     if (text.includes("FROM distribution.public_hotel_bookability_profiles")) {
-      return {
-        rows: [
-          {
-            canonicalUrl: "https://hotel.example.test",
-            bookingBaseUrl: "https://book.example.test",
-          } as unknown as T,
-        ],
-        rowCount: 1,
-      };
+      return { rows: [], rowCount: 0 };
     }
     if (text.includes("INSERT INTO distribution.public_hotel_bookability_profiles")) {
       state.projectionCount += 1;
@@ -3002,14 +3190,19 @@ type FinanceProviderAccountRowFixture = {
   onboardingUrl: string | null;
 };
 
-function fakeStripeConnectProvider(): FinanceStripeConnectProvider & {
+function fakeStripeConnectProvider(
+  options: { failCompensation?: boolean } = {},
+): FinanceStripeConnectProvider & {
   createAccountCount: number;
+  createOnboardingLinkCount: number;
   compensationCount: number;
 } {
   let createAccountCount = 0;
+  let createOnboardingLinkCount = 0;
   let compensationCount = 0;
   const provider: FinanceStripeConnectProvider & {
     createAccountCount: number;
+    createOnboardingLinkCount: number;
     compensationCount: number;
   } = {
     get createAccountCount() {
@@ -3017,6 +3210,9 @@ function fakeStripeConnectProvider(): FinanceStripeConnectProvider & {
     },
     get compensationCount() {
       return compensationCount;
+    },
+    get createOnboardingLinkCount() {
+      return createOnboardingLinkCount;
     },
     async createAccount() {
       createAccountCount += 1;
@@ -3026,6 +3222,7 @@ function fakeStripeConnectProvider(): FinanceStripeConnectProvider & {
       };
     },
     async createOnboardingLink(request) {
+      createOnboardingLinkCount += 1;
       return `https://connect.stripe.test/onboard/${request.providerAccountRef}/2`;
     },
     async createLoginLink(request) {
@@ -3043,6 +3240,7 @@ function fakeStripeConnectProvider(): FinanceStripeConnectProvider & {
     },
     async compensateAccountCreation() {
       compensationCount += 1;
+      if (options.failCompensation) throw new Error("temporary Stripe compensation failure");
     },
   };
   return provider;
