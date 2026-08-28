@@ -1281,7 +1281,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.room_status.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       try {
         const result = await repository.listRoomsByPropertyId(propertyId);
@@ -1339,7 +1348,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.rooms_rates.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       try {
         const result = await repository.listRoomTypesByPropertyId(propertyId);
@@ -1370,7 +1388,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId, roomTypeId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.rooms_rates.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       try {
         const item = await repository.findRoomTypeById(propertyId, roomTypeId);
