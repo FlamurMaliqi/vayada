@@ -1818,17 +1818,24 @@ export async function registerPmsOperationsRoutes(
 
   app.patch<{ Params: PmsPropertyParams; Body: unknown }>(
     "/properties/:propertyId/calendar-settings",
+    {
+      onRequest: async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          sendPmsOperationsError(reply, originNotAllowed());
+          return;
+        }
+        await enforcePmsPropertyAccessPolicy(
+          request,
+          reply,
+          request.params.propertyId,
+          "pms.operations.manage",
+          options.propertyAccessRepository,
+          ["owner", "operator"],
+        );
+      },
+    },
     async (request, reply) => {
-      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
-        return sendPmsOperationsError(reply, {
-          statusCode: 403,
-          code: "missing_permission",
-          category: "authorization",
-          message: "PMS operations origin is not allowed.",
-        });
-      }
       const { propertyId } = request.params;
-      if (!enforcePmsRoomOptimizationManagePolicy(request, reply, propertyId)) return reply;
       if (!options.roomAssignmentSettings)
         return sendPmsOperationsError(
           reply,
@@ -3294,31 +3301,6 @@ function enforcePmsOperationsManagePolicy(
         resourceId: propertyId,
         allowedRelationships: ["owner", "operator", "front_desk"],
       },
-    });
-    return true;
-  } catch (error) {
-    const contractError = toPmsOperationsAccessError(error, request, propertyId);
-    if (!contractError) throw error;
-    sendPmsOperationsError(reply, contractError);
-    return false;
-  }
-}
-
-function enforcePmsRoomOptimizationManagePolicy(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  propertyId: string,
-): boolean {
-  try {
-    const resource = {
-      product: "pms",
-      resourceType: "pms_property",
-      resourceId: propertyId,
-    } as const;
-    enforceRoutePolicy(request, {
-      permission: "pms.operations.manage",
-      entitlement: { product: "pms", key: "property-management", resource },
-      resource: { ...resource, allowedRelationships: ["owner", "operator"] },
     });
     return true;
   } catch (error) {
