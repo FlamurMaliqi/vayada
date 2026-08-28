@@ -51,6 +51,10 @@ type ReplayRow = {
 };
 type IdempotencyReservation = { id: string; attempt: number };
 
+export function pmsLinkedInventoryGroupCommandResponse<Group>(propertyId: string, group: Group) {
+  return { contractVersion: "pms-operations.v1" as const, propertyId, group };
+}
+
 export function createPgPmsLinkedInventoryGroupCommandRepository(
   config: Config,
 ): PmsLinkedInventoryGroupCommandRepository {
@@ -197,7 +201,10 @@ async function findReplay(
     replay.status !== "completed" ||
     !validResult ||
     replay.responseStatusCode !== idempotencyResponseStatus(operation) ||
-    replay.responseBodyHash !== sha256(stableJson(idempotencyResponseBody(replayedGroup))) ||
+    replay.responseBodyHash !==
+      sha256(
+        stableJson(pmsLinkedInventoryGroupCommandResponse(command.propertyId, replayedGroup)),
+      ) ||
     replay.responseResourceId !== expectedResourceId
   ) {
     return linkedInventoryConflict(
@@ -270,7 +277,7 @@ async function completeIdempotency(
       idempotencyResponseStatus(operation),
       group?.groupId ?? ("groupId" in command ? command.groupId : command.propertyId),
       JSON.stringify(group),
-      sha256(stableJson(idempotencyResponseBody(group))),
+      sha256(stableJson(pmsLinkedInventoryGroupCommandResponse(command.propertyId, group))),
       acceptedAt,
     ],
   );
@@ -353,10 +360,6 @@ function isLinkedInventoryGroup(value: unknown): value is PmsLinkedInventoryGrou
 
 const idempotencyResponseStatus = (operation: Operation): 200 | 201 =>
   operation === "create" ? 201 : 200;
-const idempotencyResponseBody = (group: unknown): { ok: true; group: unknown } => ({
-  ok: true,
-  group,
-});
 function stableJson(value: unknown): string {
   return JSON.stringify(sortJsonValue(value));
 }
