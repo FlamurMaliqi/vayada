@@ -262,6 +262,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   pmsOperatingCalendar?: PmsOperatingCalendarRoutesOptions;
   pmsPhysicalRoomOperationalLabels?: PmsPhysicalRoomOperationalLabelRoutesOptions;
   bookingDashboardMetricsReadPort?: BookingRoutesOptions["dashboardMetricsReadPort"];
+  bookingPropertyAccessRepository?: BookingRoutesOptions["propertyAccessRepository"];
   bookingAddonItemsRepository?: BookingAddonItemsRepository;
   bookingPromoCodesRepository?: BookingPromoCodesRepository;
   bookingSettingsRepository?: BookingSettingsReadRepository;
@@ -604,6 +605,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     addonItemsRepository: options.bookingAddonItemsRepository,
     promoCodesRepository: options.bookingPromoCodesRepository,
     dashboardMetricsReadPort: options.bookingDashboardMetricsReadPort,
+    propertyAccessRepository: options.bookingPropertyAccessRepository,
     reservationsRepository: options.bookingReservationsRepository,
     settingsRepository: options.bookingSettingsRepository,
     settingsWriteRepository: options.bookingSettingsWriteRepository,

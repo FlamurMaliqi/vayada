@@ -6,9 +6,10 @@ import type {
   BookingSourceMixReadModel,
   BookingSparklineReadModel,
 } from "@vayada/domain-booking";
+import { AuthorizationError, type PropertyAccessRepository } from "@vayada/backend-authorization";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
-import { enforceRoutePolicy } from "./policy.js";
+import { enforcePropertyRoutePolicy, enforceRoutePolicy } from "./policy.js";
 
 export const BOOKING_DASHBOARD_CONTRACT_VERSION = "booking-dashboard.v1" as const;
 
@@ -16,8 +17,10 @@ export type BookingDashboardContractVersion = typeof BOOKING_DASHBOARD_CONTRACT_
 
 export type BookingDashboardRoutesOptions = {
   metricsReadPort: BookingDashboardMetricsReadPort & {
+    resolveCanonicalPropertyId(propertyId: string): Promise<string | null>;
     close?(): Promise<void>;
   };
+  propertyAccessRepository: PropertyAccessRepository;
 };
 
 type BookingDashboardPropertyParams = {
@@ -90,7 +93,8 @@ export async function registerBookingDashboardRoutes(
     "/properties/:propertyId/dashboard/stats",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceBookingDashboardReadPolicy(request, reply, propertyId)) return reply;
+      if (!(await enforceBookingDashboardReadPolicy(request, reply, propertyId, options)))
+        return reply;
 
       const period = parseDashboardPeriodQuery(request.query);
       if (!period.ok) {
@@ -127,7 +131,8 @@ export async function registerBookingDashboardRoutes(
     "/properties/:propertyId/dashboard/bookings-by-source",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceBookingDashboardReadPolicy(request, reply, propertyId)) return reply;
+      if (!(await enforceBookingDashboardReadPolicy(request, reply, propertyId, options)))
+        return reply;
 
       const period = parseSourceMixPeriodQuery(request.query);
       if (!period.ok) {
@@ -154,7 +159,8 @@ export async function registerBookingDashboardRoutes(
     "/properties/:propertyId/dashboard/sparklines",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceBookingDashboardReadPolicy(request, reply, propertyId)) return reply;
+      if (!(await enforceBookingDashboardReadPolicy(request, reply, propertyId, options)))
+        return reply;
 
       const window = parseSparklineWindowQuery(request.query);
       if (!window.ok) {
@@ -181,7 +187,8 @@ export async function registerBookingDashboardRoutes(
     "/properties/:propertyId/dashboard/page-views",
     async (request, reply) => {
       const { propertyId } = request.params;
-      if (!enforceBookingDashboardReadPolicy(request, reply, propertyId)) return reply;
+      if (!(await enforceBookingDashboardReadPolicy(request, reply, propertyId, options)))
+        return reply;
 
       const window = parsePageViewWindowQuery(request.query);
       if (!window.ok) {
@@ -213,34 +220,52 @@ export async function registerBookingDashboardRoutes(
   );
 }
 
-function enforceBookingDashboardReadPolicy(
+async function enforceBookingDashboardReadPolicy(
   request: FastifyRequest,
   reply: FastifyReply,
   propertyId: string,
-): boolean {
+  options: BookingDashboardRoutesOptions,
+): Promise<boolean> {
   try {
-    enforceRoutePolicy(request, {
-      permission: "booking.analytics.read",
-      entitlement: {
-        product: "booking",
-        key: "booking-engine",
+    // Keep unauthorized callers from reaching the property-alias lookup.
+    enforceRoutePolicy(request, { permission: "booking.analytics.read" });
+    const canonicalPropertyId =
+      await options.metricsReadPort.resolveCanonicalPropertyId(propertyId);
+    if (!canonicalPropertyId) throw new AuthorizationError();
+    await enforcePropertyRoutePolicy(
+      request,
+      {
+        permission: "booking.analytics.read",
+        property: {
+          propertyId: canonicalPropertyId,
+          targetResource: { product: "booking", resourceType: "booking_hotel" },
+        },
+        entitlement: {
+          product: "booking",
+          key: "booking-engine",
+          resource: {
+            product: "booking",
+            resourceType: "booking_hotel",
+            resourceId: propertyId,
+          },
+        },
         resource: {
           product: "booking",
           resourceType: "booking_hotel",
           resourceId: propertyId,
+          allowedRelationships: ["owner", "operator"],
         },
       },
-      resource: {
-        product: "booking",
-        resourceType: "booking_hotel",
-        resourceId: propertyId,
-        allowedRelationships: ["owner", "operator"],
-      },
-    });
+      options.propertyAccessRepository,
+    );
   } catch (error) {
     const accessError = toBookingDashboardAccessError(error, request, propertyId);
-    if (!accessError) throw error;
-    sendBookingDashboardError(reply, accessError.statusCode, accessError);
+    if (accessError) {
+      sendBookingDashboardError(reply, accessError.statusCode, accessError);
+      return false;
+    }
+    request.log.error({ err: error }, "Booking dashboard property access read failed");
+    sendBookingDashboardError(reply, 500, readModelUnavailableError());
     return false;
   }
 

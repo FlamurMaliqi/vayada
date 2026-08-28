@@ -58,7 +58,10 @@ export function createTargetBookingDashboardMetricsReadPort(config: {
   connectionString: string;
   max?: number;
   pool?: BookingDashboardMetricsReadPool;
-}): BookingDashboardMetricsReadPort & { close(): Promise<void> } {
+}): BookingDashboardMetricsReadPort & {
+  resolveCanonicalPropertyId(propertyId: string): Promise<string | null>;
+  close(): Promise<void>;
+} {
   if (!config.connectionString.trim()) {
     throw new Error("Booking dashboard metrics read port connectionString must not be empty");
   }
@@ -72,6 +75,14 @@ export function createTargetBookingDashboardMetricsReadPort(config: {
     });
 
   return {
+    async resolveCanonicalPropertyId(propertyId) {
+      const result = await pool.query<{ propertyId: string }>(
+        `${bookingScopedPropertyCte()}
+         SELECT property_id::text AS "propertyId" FROM scoped_property`,
+        [propertyId],
+      );
+      return result.rows[0]?.propertyId ?? null;
+    },
     async getDashboardMetrics(input) {
       const [currentResult, previousResult, currentPageViews, previousPageViews] =
         await Promise.all([
