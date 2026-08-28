@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import type { RemoveStaffCommand, RemoveStaffPayload, StaffRemovedEvent } from "./index.js";
+
 import {
   identityLifecycleCommandTypes,
   identityLifecycleEventTypes,
@@ -32,6 +34,32 @@ const audit: IdentityCommandAudit = {
 };
 
 describe("identity lifecycle command contract", () => {
+  it("exports tenant-scoped staff removal as a replay-safe lifecycle contract", () => {
+    const payload: RemoveStaffPayload = {
+      organizationId: "org_001",
+      membershipId: "membership_001",
+    };
+    const command: RemoveStaffCommand = {
+      commandType: "identity.staff.remove",
+      commandId: "cmd_staff_remove_001",
+      idempotencyKey: "hotel:org_001:membership:membership_001:remove",
+      audit: {
+        ...audit,
+        actor: { kind: "user", userId: "hotel_owner_001", organizationId: "org_001" },
+      },
+      payload,
+    };
+    const event: StaffRemovedEvent = {
+      eventType: "identity.staff.removed",
+      eventId: "event_staff_remove_001",
+      occurredAt: audit.requestedAt,
+      organizationId: payload.organizationId,
+      ...command,
+    };
+
+    expect(event.payload).toEqual(payload);
+  });
+
   it("provisions broad property scope only for hotel owner roles", () => {
     expect(membershipPropertyAccessModeForProvisioning("hotel_group", "hotel_owner")).toBe("all");
     expect(membershipPropertyAccessModeForProvisioning("hotel_group", "owner")).toBe("all");
@@ -203,6 +231,7 @@ describe("identity lifecycle command contract", () => {
       "identity.invite.staff.create",
       "identity.staff.access.update",
       "identity.staff.status.update",
+      "identity.staff.remove",
       "identity.invite.affiliate.create",
       "identity.invite.customer.create",
       "identity.consent.cookie.upsert",
@@ -226,6 +255,7 @@ describe("identity lifecycle command contract", () => {
       "identity.invite.staff.created",
       "identity.staff.access.updated",
       "identity.staff.status.updated",
+      "identity.staff.removed",
       "identity.invite.affiliate.created",
       "identity.invite.customer.created",
       "identity.consent.cookie.upserted",
