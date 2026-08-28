@@ -14,6 +14,7 @@ import {
   type StaffInvitationAcceptanceEvent,
 } from "./staffInvitationAcceptance.js";
 import { createPgStaffInvitationRepository } from "./staffInvitations.js";
+import { createStaffRemovalCoordinator, type StaffRemovalProvider } from "./staffRemoval.js";
 import { createPgStaffRemovalJobRepository } from "./staffRemovalJobs.js";
 import type {
   CreateStaffInviteCommand,
@@ -781,6 +782,131 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
     await expect(
       removalJobRepository.markRetryableFailure(removed.providerRevocationJobId, claim.leaseToken),
     ).resolves.toBe("pending");
+  });
+
+  it("deletes only the expected provider membership and replays safely", async () => {
+    const removed = await repository.remove(removalCommand());
+    if (removed.outcome !== "removed") throw new Error("expected staff removal");
+    const provider: StaffRemovalProvider = {
+      getMembership: vi.fn(async (id) => ({
+        id,
+        organizationId: "org_staff_delivery",
+        userId: "user_staff_acceptance",
+      })),
+      deleteMembership: vi.fn(async () => "deleted" as const),
+    };
+    const coordinator = createStaffRemovalCoordinator({
+      repository: removalJobRepository,
+      provider,
+    });
+
+    await expect(coordinator.revoke(removed.providerRevocationJobId)).resolves.toEqual({
+      outcome: "revoked",
+      jobId: removed.providerRevocationJobId,
+    });
+    await expect(coordinator.revoke(removed.providerRevocationJobId)).resolves.toEqual({
+      outcome: "revoked",
+      jobId: removed.providerRevocationJobId,
+    });
+    expect(provider.deleteMembership).toHaveBeenCalledTimes(1);
+  });
+
+  it("converges when the provider membership is already absent", async () => {
+    const removed = await repository.remove(removalCommand());
+    if (removed.outcome !== "removed") throw new Error("expected staff removal");
+    const provider: StaffRemovalProvider = {
+      getMembership: vi.fn(async () => null),
+      deleteMembership: vi.fn(async () => "deleted" as const),
+    };
+
+    await expect(
+      createStaffRemovalCoordinator({ repository: removalJobRepository, provider }).revoke(
+        removed.providerRevocationJobId,
+      ),
+    ).resolves.toMatchObject({ outcome: "revoked" });
+    expect(provider.deleteMembership).not.toHaveBeenCalled();
+  });
+
+  it("dead-letters missing or mismatched provider bindings without deleting", async () => {
+    await client.query(
+      "UPDATE identity.external_identities SET provider_user_id = NULL WHERE id = $1",
+      [staffIdentity],
+    );
+    const missing = await repository.remove(removalCommand());
+    if (missing.outcome !== "removed") throw new Error("expected staff removal");
+    const provider: StaffRemovalProvider = {
+      getMembership: vi.fn(async (id) => ({
+        id,
+        organizationId: "org_other",
+        userId: "user_other",
+      })),
+      deleteMembership: vi.fn(async () => "deleted" as const),
+    };
+    const coordinator = createStaffRemovalCoordinator({
+      repository: removalJobRepository,
+      provider,
+    });
+    await expect(coordinator.revoke(missing.providerRevocationJobId)).resolves.toMatchObject({
+      outcome: "reconciliation_required",
+    });
+    expect(provider.getMembership).not.toHaveBeenCalled();
+
+    await client.query(
+      "UPDATE identity.organization_memberships SET status = 'active' WHERE id = $1",
+      [staffMembership],
+    );
+    await client.query(
+      "UPDATE identity.external_identities SET provider_user_id = 'user_staff_acceptance' WHERE id = $1",
+      [staffIdentity],
+    );
+    const mismatched = await repository.remove(removalCommand());
+    if (mismatched.outcome !== "removed") throw new Error("expected staff removal");
+    await expect(coordinator.revoke(mismatched.providerRevocationJobId)).resolves.toMatchObject({
+      outcome: "reconciliation_required",
+    });
+    expect(provider.getMembership).toHaveBeenCalledTimes(1);
+    expect(provider.deleteMembership).not.toHaveBeenCalled();
+  });
+
+  it("keeps provider failures retryable", async () => {
+    const removed = await repository.remove(removalCommand());
+    if (removed.outcome !== "removed") throw new Error("expected staff removal");
+    const provider: StaffRemovalProvider = {
+      getMembership: vi.fn().mockRejectedValueOnce(new Error("provider unavailable")),
+      deleteMembership: vi.fn(async () => "deleted" as const),
+    };
+
+    await expect(
+      createStaffRemovalCoordinator({ repository: removalJobRepository, provider }).revoke(
+        removed.providerRevocationJobId,
+      ),
+    ).resolves.toMatchObject({ outcome: "pending" });
+  });
+
+  it("converges when provider deletion races with another worker", async () => {
+    const removed = await repository.remove(removalCommand());
+    if (removed.outcome !== "removed") throw new Error("expected staff removal");
+    const provider: StaffRemovalProvider = {
+      getMembership: vi.fn(async (id) => ({
+        id,
+        organizationId: "org_staff_delivery",
+        userId: "user_staff_acceptance",
+      })),
+      deleteMembership: vi.fn(async () => "already_absent" as const),
+    };
+
+    await expect(
+      createStaffRemovalCoordinator({ repository: removalJobRepository, provider }).revoke(
+        removed.providerRevocationJobId,
+      ),
+    ).resolves.toMatchObject({ outcome: "revoked" });
+    expect(
+      (
+        await client.query("SELECT job_metadata FROM platform.jobs WHERE id = $1", [
+          removed.providerRevocationJobId,
+        ])
+      ).rows[0],
+    ).toMatchObject({ job_metadata: { providerOutcome: "already_absent" } });
   });
 
   it("persists, normalizes, and replays one intent", async () => {
