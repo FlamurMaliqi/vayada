@@ -1247,6 +1247,34 @@ export function createTargetPmsOperationsCommandRepository(
           return mutation;
         }
 
+        const linkedChanges = await reconcilePmsLinkedInventory(
+          client,
+          command.propertyId,
+          acceptedAt,
+        );
+        if (mutation.inventoryTransfer) {
+          const { sourceRoomTypeId, targetRoomTypeId, checkIn, checkOut } =
+            mutation.inventoryTransfer;
+          const endsOn = new Date(Date.parse(`${checkOut}T00:00:00Z`) - 86_400_000)
+            .toISOString()
+            .slice(0, 10);
+          await reconcilePmsOccupiedInventory(
+            client,
+            command.propertyId,
+            [
+              { roomTypeId: sourceRoomTypeId, checkIn, checkOut },
+              { roomTypeId: targetRoomTypeId, checkIn, checkOut },
+            ],
+            acceptedAt,
+          );
+          linkedChanges.push(
+            ...(await reconcilePmsLinkedInventory(client, command.propertyId, acceptedAt, [
+              { roomTypeId: sourceRoomTypeId, startsOn: checkIn, endsOn },
+              { roomTypeId: targetRoomTypeId, startsOn: checkIn, endsOn },
+            ])),
+          );
+        }
+
         await enqueueAssignmentCommandSideEffects(
           client,
           command,
@@ -1254,11 +1282,15 @@ export function createTargetPmsOperationsCommandRepository(
           keyHash,
           acceptedAt,
         );
-        const linkedChanges = await reconcilePmsLinkedInventory(
-          client,
-          command.propertyId,
-          acceptedAt,
-        );
+        if (mutation.inventoryTransfer) {
+          await enqueueAssignmentInventoryTransferSideEffects(
+            client,
+            command,
+            mutation.inventoryTransfer,
+            keyHash,
+            acceptedAt,
+          );
+        }
         await enqueuePmsLinkedInventorySideEffects(
           client,
           {
@@ -6167,10 +6199,21 @@ async function applyManualPriceCorrectionCommandMutation(
 async function applyAssignmentCommandMutation(
   client: PmsOperationsCommandClient,
   command: PmsAssignmentCommand,
-): Promise<{ ok: true } | Exclude<PmsAssignmentCommandResult, { ok: true }>> {
+): Promise<
+  | { ok: true; inventoryTransfer?: AssignmentInventoryTransfer }
+  | Exclude<PmsAssignmentCommandResult, { ok: true }>
+> {
   const roomTypeId = await findAssignmentRoomTypeForCommand(client, command);
   if (!roomTypeId) return reservationNotFound(command.guestBookingId);
-  await lockRoomTypeRoomsForAssignment(client, command.propertyId, roomTypeId);
+  const requestedMoveRoom =
+    command.action === "move" && command.roomId
+      ? await findAvailableRoomForAssignment(client, command.propertyId, command.roomId)
+      : null;
+  for (const lockRoomTypeId of [...new Set([roomTypeId, requestedMoveRoom?.roomTypeId])]
+    .filter((value): value is string => value !== undefined)
+    .sort()) {
+    await lockRoomTypeRoomsForAssignment(client, command.propertyId, lockRoomTypeId);
+  }
   const source = await findAssignmentForCommand(client, command);
   if (!source || source.roomTypeId !== roomTypeId) {
     return assignmentConflict("assignment_conflict", "Reservation assignment changed.");
@@ -6211,11 +6254,14 @@ async function applyAssignmentCommandMutation(
   }
 
   const room = await findAvailableRoomForAssignment(client, command.propertyId, command.roomId);
-  if (!room || room.roomTypeId !== source.roomTypeId) {
+  if (!room || (command.action === "assign" && room.roomTypeId !== source.roomTypeId)) {
     return assignmentConflict("room_unavailable", "Requested room is unavailable for this stay.");
   }
+  if (command.action === "move" && room.roomTypeId !== requestedMoveRoom?.roomTypeId) {
+    return assignmentConflict("assignment_conflict", "Requested room type changed.");
+  }
 
-  if (!(await isRoomAvailableForStay(client, command, source))) {
+  if (!(await isRoomAvailableForStay(client, command, source, room.roomTypeId))) {
     return assignmentConflict("room_unavailable", "Requested room is unavailable for this stay.");
   }
 
@@ -6223,7 +6269,12 @@ async function applyAssignmentCommandMutation(
   await client.query(
     `UPDATE pms.operational_booking_assignments
      SET room_id = $1::uuid,
-         assignment_status = 'assigned',
+         room_type_id = $6::uuid,
+         rate_plan_id = CASE WHEN room_type_id = $6::uuid THEN rate_plan_id ELSE NULL END,
+         assignment_status = CASE
+           WHEN assignment_status IN ('checked_in', 'in_house') THEN assignment_status
+           ELSE 'assigned'
+         END,
          assigned_at = COALESCE(assigned_at, now()),
          assignment_payload = jsonb_set(
            COALESCE(assignment_payload, '{}'::jsonb),
@@ -6235,10 +6286,36 @@ async function applyAssignmentCommandMutation(
      WHERE id = $2::uuid
        AND property_id = $3::uuid
        AND guest_booking_id = $4::uuid`,
-    [command.roomId, source.assignmentId, command.propertyId, command.guestBookingId, nextVersion],
+    [
+      command.roomId,
+      source.assignmentId,
+      command.propertyId,
+      command.guestBookingId,
+      nextVersion,
+      room.roomTypeId,
+    ],
   );
-  return { ok: true };
+  return {
+    ok: true,
+    ...(room.roomTypeId === source.roomTypeId
+      ? {}
+      : {
+          inventoryTransfer: {
+            sourceRoomTypeId: source.roomTypeId,
+            targetRoomTypeId: room.roomTypeId,
+            checkIn: source.checkIn,
+            checkOut: source.checkOut,
+          },
+        }),
+  };
 }
+
+type AssignmentInventoryTransfer = {
+  sourceRoomTypeId: string;
+  targetRoomTypeId: string;
+  checkIn: string;
+  checkOut: string;
+};
 
 async function applySwapAssignmentCommand(
   client: PmsOperationsCommandClient,
@@ -6348,8 +6425,8 @@ async function findAssignmentForCommand(
        assignment.updated_at AS "updatedAt",
        assignment.source,
        assignment.stay_evidence_kind AS "stayEvidenceKind",
-       booking.check_in::text AS "checkIn",
-       booking.check_out::text AS "checkOut"
+       COALESCE(assignment.check_in, booking.check_in)::text AS "checkIn",
+       COALESCE(assignment.check_out, booking.check_out)::text AS "checkOut"
      FROM pms.operational_booking_assignments assignment
      JOIN booking.guest_bookings booking
        ON booking.id = assignment.guest_booking_id
@@ -6644,6 +6721,7 @@ async function isRoomAvailableForStay(
   client: PmsOperationsCommandClient,
   command: PmsAssignmentCommand,
   source: PmsAssignmentRow,
+  targetRoomTypeId: string,
 ): Promise<boolean> {
   if (!command.roomId) return false;
   const result = await client.query(
@@ -6660,7 +6738,10 @@ async function isRoomAvailableForStay(
          AND other_assignment.room_id = $2::uuid
          AND other_assignment.id <> $3::uuid
          AND other_assignment.assignment_status IN ('assigned', 'checked_in', 'in_house')
-         AND daterange(other_booking.check_in, other_booking.check_out, '[)') &&
+         AND daterange(
+               COALESCE(other_assignment.check_in, other_booking.check_in),
+               COALESCE(other_assignment.check_out, other_booking.check_out), '[)'
+             ) &&
              daterange($4::date, $5::date, '[)')
        LIMIT 1
      ),
@@ -6698,7 +6779,10 @@ async function isRoomAvailableForStay(
        LEFT JOIN booking.guest_bookings other_booking
          ON other_booking.id = other_assignment.guest_booking_id
         AND other_booking.property_id = other_assignment.property_id
-        AND daterange(other_booking.check_in, other_booking.check_out, '[)') @> stay_dates.stay_date
+        AND daterange(
+              COALESCE(other_assignment.check_in, other_booking.check_in),
+              COALESCE(other_assignment.check_out, other_booking.check_out), '[)'
+            ) @> stay_dates.stay_date
        GROUP BY stay_dates.stay_date
      ),
      type_blocked_by_date AS (
@@ -6711,6 +6795,7 @@ async function isRoomAvailableForStay(
         AND block.room_type_id = $6::uuid
         AND block.room_id IS NULL
         AND block.status = 'active'
+        AND block.source_assignment_id IS DISTINCT FROM $3::uuid
         AND daterange(block.starts_on, block.ends_on + 1, '[)') @> stay_dates.stay_date
        GROUP BY stay_dates.stay_date
      ),
@@ -6723,17 +6808,56 @@ async function isRoomAvailableForStay(
        WHERE assigned_by_date.assigned_count + type_blocked_by_date.blocked_count >=
              room_type_capacity.total_count
        LIMIT 1
+     ),
+     canonical_inventory_unavailable AS (
+       SELECT 1
+       FROM stay_dates
+       JOIN type_blocked_by_date USING (stay_date)
+       LEFT JOIN pms.inventory_days inventory
+         ON inventory.property_id=$1::uuid AND inventory.room_type_id=$6::uuid
+        AND inventory.stay_date=stay_dates.stay_date
+       WHERE inventory.calendar_revision IS NULL OR inventory.status<>'open'
+          OR GREATEST(inventory.assigned_count
+               - CASE WHEN $6::uuid=$7::uuid THEN 1 ELSE 0 END,0)
+             + type_blocked_by_date.blocked_count >=
+             inventory.effective_sellable_limit_count
+          OR (inventory.linked_stop_sell AND EXISTS (
+            SELECT 1 FROM pms.room_types target_type
+            JOIN pms.room_types source_type ON source_type.property_id=target_type.property_id
+              AND source_type.linked_inventory_group_id=target_type.linked_inventory_group_id
+            WHERE target_type.property_id=$1::uuid AND target_type.id=$6::uuid
+              AND target_type.linked_inventory_group_id IS NOT NULL
+              AND (EXISTS (SELECT 1 FROM pms.inventory_reservation_receipts receipt
+                JOIN pms.inventory_reservation_statuses receipt_status
+                  ON receipt_status.receipt_id=receipt.receipt_id
+                WHERE receipt.property_id=$1::uuid AND receipt.room_type_id=source_type.id
+                  AND receipt_status.lifecycle_state='reserved'
+                  AND stay_dates.stay_date>=receipt.check_in
+                  AND stay_dates.stay_date<receipt.check_out)
+                OR EXISTS (SELECT 1 FROM pms.operational_booking_assignments cause
+                  WHERE cause.property_id=$1::uuid AND cause.room_type_id=source_type.id
+                    AND cause.id<>$3::uuid AND cause.stay_evidence_kind='exact'
+                    AND cause.assignment_status NOT IN ('canceled','released')
+                    AND stay_dates.stay_date>=cause.check_in
+                    AND stay_dates.stay_date<cause.check_out)
+                OR EXISTS (SELECT 1 FROM pms.room_blocks cause
+                  WHERE cause.property_id=$1::uuid AND cause.room_type_id=source_type.id
+                    AND cause.block_kind='manual' AND cause.status='active'
+                    AND stay_dates.stay_date BETWEEN cause.starts_on AND cause.ends_on))))
+       LIMIT 1
      )
      SELECT 1
      WHERE NOT EXISTS (SELECT 1 FROM overlapping_assignments)
        AND NOT EXISTS (SELECT 1 FROM room_specific_blocks)
-       AND NOT EXISTS (SELECT 1 FROM type_capacity_sold_out)`,
+       AND NOT EXISTS (SELECT 1 FROM type_capacity_sold_out)
+       AND NOT EXISTS (SELECT 1 FROM canonical_inventory_unavailable)`,
     [
       command.propertyId,
       command.roomId,
       source.assignmentId,
       source.checkIn,
       source.checkOut,
+      targetRoomTypeId,
       source.roomTypeId,
     ],
   );
@@ -6853,6 +6977,87 @@ async function enqueueAssignmentCommandSideEffects(
       JSON.stringify({ sideEffects: commandMeta.sideEffects }),
     ],
   );
+}
+
+async function enqueueAssignmentInventoryTransferSideEffects(
+  client: PmsOperationsCommandClient,
+  command: PmsAssignmentCommand,
+  transfer: AssignmentInventoryTransfer,
+  keyHash: string,
+  acceptedAt: string,
+): Promise<void> {
+  const dateRange = {
+    from: transfer.checkIn,
+    to: new Date(Date.parse(`${transfer.checkOut}T00:00:00Z`) - 86_400_000)
+      .toISOString()
+      .slice(0, 10),
+  };
+  for (const roomTypeId of [transfer.sourceRoomTypeId, transfer.targetRoomTypeId]) {
+    const eventKey = `pms.assignment.inventory_changed.property.${command.propertyId}.room_type.${roomTypeId}.command.${command.commandId}.key.${keyHash}.v1`;
+    const payload = JSON.stringify({
+      propertyId: command.propertyId,
+      roomTypeId,
+      dateRange,
+      inventoryVersion: keyHash,
+      triggerRefId: command.commandId,
+    });
+    const event = await client.query<{ eventId: string }>(
+      `WITH inserted AS (
+         INSERT INTO platform.domain_events (
+           source_system, event_key, event_type, event_version, occurred_at,
+           tenant_scope, property_id, resource_product, resource_type, resource_id,
+           correlation_id, causation_id, idempotency_key_hash, payload, event_metadata
+         ) VALUES (
+           'pms', $1, 'pms.inventory.changed', 1, $2::timestamptz,
+           'property', $3::uuid, 'pms', 'room_type', $4::uuid,
+           $5, $5, $6, $7::jsonb, $8::jsonb
+         ) ON CONFLICT (source_system, event_key) DO NOTHING
+         RETURNING id::text AS "eventId"
+       )
+       SELECT "eventId" FROM inserted
+       UNION ALL
+       SELECT id::text FROM platform.domain_events
+       WHERE source_system='pms' AND event_key=$1
+       LIMIT 1`,
+      [
+        eventKey,
+        acceptedAt,
+        command.propertyId,
+        roomTypeId,
+        command.commandId,
+        keyHash,
+        payload,
+        JSON.stringify({ contractVersion: PMS_OPERATIONS_CONTRACT_VERSION }),
+      ],
+    );
+    const eventId = event.rows[0]?.eventId;
+    if (!eventId) throw new Error("Assignment inventory event could not be persisted");
+    await client.query(
+      `INSERT INTO platform.outbox_events (
+         domain_event_id, outbox_key, destination, event_type, tenant_scope,
+         property_id, resource_product, resource_type, resource_id, correlation_id,
+         idempotency_key_hash, payload, outbox_metadata
+       ) SELECT $1::uuid, output.outbox_key, output.destination, output.event_type,
+                'property', $2::uuid, 'pms', 'room_type', $3::uuid, $4, $5,
+                $6::jsonb, $7::jsonb
+         FROM (VALUES
+           ($8::text, 'pms.channel-manager'::text, 'pms.inventory.ari_changed'::text),
+           ($9::text, 'distribution.public-bookability'::text, 'pms.inventory.changed'::text)
+         ) AS output(outbox_key, destination, event_type)
+       ON CONFLICT (destination, outbox_key) DO NOTHING`,
+      [
+        eventId,
+        command.propertyId,
+        roomTypeId,
+        command.commandId,
+        keyHash,
+        payload,
+        JSON.stringify({ contractVersion: PMS_OPERATIONS_CONTRACT_VERSION }),
+        `${eventKey}.ari`,
+        `${eventKey}.distribution`,
+      ],
+    );
+  }
 }
 
 async function completeAssignmentCommandIdempotency(
