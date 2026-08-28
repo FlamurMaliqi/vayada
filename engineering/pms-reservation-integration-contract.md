@@ -81,11 +81,7 @@ type PmsCapability =
   | "read_inventory_assignments";
 
 type PmsConnectionStatus =
-  | "connected"
-  | "disconnected"
-  | "suspended"
-  | "degraded"
-  | "setup_incomplete";
+  "connected" | "disconnected" | "suspended" | "degraded" | "setup_incomplete";
 
 type PmsReservationStatus =
   | "pending_handoff"
@@ -129,6 +125,12 @@ type PmsExternalReference = {
   externalRatePlanId?: string;
   opaqueProviderData?: Record<string, string | number | boolean | null>;
 };
+
+type PmsInventoryReservationReceipt = {
+  contractVersion: "pms-inventory-reservation-lifecycle.v1";
+  owner: "pms";
+  receiptId: string;
+};
 ```
 
 Scalar format rules:
@@ -138,6 +140,8 @@ Scalar format rules:
 - `PmsDecimalAmount` is a base-10 decimal string in major units, for example
   `"120.50"`. It must not use floating point JSON numbers, exponential
   notation, thousands separators, or currency symbols.
+- `PmsInventoryReservationReceipt.receiptId` must be a parser-validated UUID;
+  its canonical serialized form is lowercase.
 - Monetary values must be rounded before serialization using the currency minor
   unit for the target `PmsCurrencyCode` unless a field explicitly documents a
   different precision. For standard currencies this means `"120.50"` for EUR and
@@ -197,6 +201,7 @@ type CreatePmsReservationCommand = {
     source: "direct_booking";
     locale: string;
   };
+  inventoryReservation?: PmsInventoryReservationReceipt;
   stay: {
     checkInDate: PmsDate;
     checkOutDate: PmsDate;
@@ -252,6 +257,23 @@ Create commands should be emitted only after Booking Engine has committed the
 guest-facing booking. The PMS handoff must not be the source of truth for
 whether checkout succeeded.
 
+For target direct bookings, `inventoryReservation` is the opaque token returned
+by the PMS inventory reservation lifecycle. Booking persists and forwards it
+unchanged. It is optional only for rollout compatibility with bookings that did
+not consume a PMS-owned hold.
+
+The Vayada PMS adapter copies the token into each assignment payload. A deferred
+PMS-owned database trigger uses only its receipt ID to load the persisted
+`pms.inventory_reservation_receipts` row and lifecycle status under the
+receipt/property lock. It compares the stored room type, dates, and room count
+with the transaction's final assignment set, then atomically changes `reserved`
+to `handed_off`. Missing, released, or mismatched receipts fail closed and roll
+back the transaction. A matching handed-off receipt is a compatibility no-op;
+command replay identity remains the adapter idempotency contract's
+responsibility. No assignment may commit before receipt validation succeeds.
+External PMS adapters may preserve the token as Vayada-owned correlation
+metadata, but must not parse it or use it as a provider reservation ID.
+
 ## Update Command
 
 ```ts
@@ -271,6 +293,7 @@ type UpdatePmsReservationCommand = {
     guestBookingId: string;
     bookingReference: string;
   };
+  inventoryReservation?: PmsInventoryReservationReceipt;
   changes: {
     stay?: Partial<CreatePmsReservationCommand["stay"]>;
     guests?: Partial<CreatePmsReservationCommand["guests"]>;
@@ -434,12 +457,7 @@ payloads for replay versus `IDEMPOTENCY_CONFLICT`:
 
 ```ts
 type CanonicalJsonValue =
-  | null
-  | boolean
-  | string
-  | number
-  | CanonicalJsonValue[]
-  | { [key: string]: CanonicalJsonValue };
+  null | boolean | string | number | CanonicalJsonValue[] | { [key: string]: CanonicalJsonValue };
 
 function canonicalizePayloadForIdempotency(command: unknown): string;
 ```
