@@ -402,6 +402,135 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
     expect(finalReleases.rows[0]?.count).toBe(2);
   });
 
+  it("permits room-type divergence only after a direct-booking receipt is handed off", async () => {
+    const organizationId = randomUUID();
+    const propertyId = randomUUID();
+    const sourceRoomTypeId = randomUUID();
+    const targetRoomTypeId = randomUUID();
+    const sourceRoomId = randomUUID();
+    const targetRoomId = randomUUID();
+    const bookingId = randomUUID();
+    const assignmentId = randomUUID();
+    const receiptId = randomUUID();
+    const marker = {
+      contractVersion: PMS_INVENTORY_RESERVATION_LIFECYCLE_CONTRACT_VERSION,
+      owner: "pms",
+      receiptId,
+    };
+
+    await admin.query("BEGIN");
+    await admin.query("SET LOCAL session_replication_role=replica");
+    await admin.query(
+      `INSERT INTO identity.organizations (id,kind,name,slug)
+       VALUES ($1,'hotel_group','Receipt move test',$2)`,
+      [organizationId, `receipt-move-${organizationId}`],
+    );
+    await admin.query(
+      `INSERT INTO hotel_catalog.properties (id,public_id,display_name)
+       VALUES ($1,$2,'Receipt move test')`,
+      [propertyId, `receipt-move-${propertyId}`],
+    );
+    await admin.query(
+      `INSERT INTO pms.room_types (id,property_id,name)
+       VALUES ($1,$3,'Source'),($2,$3,'Target')`,
+      [sourceRoomTypeId, targetRoomTypeId, propertyId],
+    );
+    await admin.query(
+      `INSERT INTO pms.rooms (id,property_id,room_type_id,room_number)
+       VALUES ($1,$5,$3,'101'),($2,$5,$4,'201')`,
+      [sourceRoomId, targetRoomId, sourceRoomTypeId, targetRoomTypeId, propertyId],
+    );
+    await admin.query(
+      `INSERT INTO booking.guest_bookings (
+         id,property_id,public_reference,lifecycle_status,check_in,check_out,
+         adults,children,room_count,currency,booking_metadata
+       ) VALUES ($1,$2,$3,'confirmed','2026-09-10','2026-09-12',2,0,1,'EUR',$4::jsonb)`,
+      [
+        bookingId,
+        propertyId,
+        `VAY-${bookingId.slice(0, 8)}`,
+        JSON.stringify({ inventoryReservation: marker }),
+      ],
+    );
+    await admin.query(
+      `INSERT INTO pms.inventory_reservation_receipts (
+         receipt_id,contract_version,receipt_owner,organization_id,property_id,
+         room_type_id,check_in,check_out,room_count,quote_session_id,public_offer_key,
+         calendar_revision,materialized_revision,reserve_fingerprint_hash,
+         reserve_idempotency_key_id,reserve_domain_event_id,reserve_outbox_event_id,reserved_at
+       ) VALUES ($1,'pms-inventory-reservation-lifecycle.v1','pms',$2,$3,$4,
+         '2026-09-10','2026-09-12',1,'receipt-move','receipt-move',1,1,$5,$6,$7,$8,$9)`,
+      [
+        receiptId,
+        organizationId,
+        propertyId,
+        sourceRoomTypeId,
+        `sha256:${"0".repeat(64)}`,
+        randomUUID(),
+        randomUUID(),
+        randomUUID(),
+        ACCEPTED_AT.toISOString(),
+      ],
+    );
+    await admin.query(
+      `INSERT INTO pms.inventory_reservation_statuses (
+         receipt_id,organization_id,property_id,lifecycle_state,lifecycle_revision
+       ) VALUES ($1,$2,$3,'reserved',1)`,
+      [receiptId, organizationId, propertyId],
+    );
+    await admin.query(
+      `INSERT INTO pms.operational_booking_assignments (
+         id,property_id,guest_booking_id,room_type_id,room_id,position,assignment_status,
+         source,stay_evidence_kind,check_in,check_out,adults,children,assignment_payload
+       ) VALUES ($1,$2,$3,$4,$5,1,'assigned','direct_booking','exact',
+         '2026-09-10','2026-09-12',2,0,$6::jsonb)`,
+      [
+        assignmentId,
+        propertyId,
+        bookingId,
+        sourceRoomTypeId,
+        sourceRoomId,
+        JSON.stringify({ inventoryReservation: marker }),
+      ],
+    );
+    await admin.query("COMMIT");
+
+    await admin.query("BEGIN");
+    await admin.query(
+      `UPDATE pms.operational_booking_assignments SET room_type_id=$2,room_id=$3
+       WHERE id=$1`,
+      [assignmentId, targetRoomTypeId, targetRoomId],
+    );
+    await expect(admin.query("COMMIT")).rejects.toMatchObject({
+      constraint: "chk_pms_direct_booking_receipt_handoff_scope",
+    });
+    await admin.query("ROLLBACK");
+
+    await admin.query("BEGIN");
+    await admin.query("SET LOCAL session_replication_role=replica");
+    await admin.query(
+      `UPDATE pms.inventory_reservation_statuses
+       SET lifecycle_state='handed_off',lifecycle_revision=2,handed_off_at=$2
+       WHERE receipt_id=$1`,
+      [receiptId, RELEASED_AT.toISOString()],
+    );
+    await admin.query("COMMIT");
+    await admin.query("BEGIN");
+    await admin.query(
+      `UPDATE pms.operational_booking_assignments SET room_type_id=$2,room_id=$3
+       WHERE id=$1`,
+      [assignmentId, targetRoomTypeId, targetRoomId],
+    );
+    await admin.query("COMMIT");
+
+    const moved = await admin.query<{ roomTypeId: string }>(
+      `SELECT room_type_id::text AS "roomTypeId"
+       FROM pms.operational_booking_assignments WHERE id=$1`,
+      [assignmentId],
+    );
+    expect(moved.rows).toEqual([{ roomTypeId: targetRoomTypeId }]);
+  });
+
   it("atomically adopts exact multi-room direct booking holds", async () => {
     const fixture = await createFixture(admin, closeables, {
       capacity: 3,
