@@ -4,6 +4,7 @@ import {
   validateStaffInviteAccess,
   type CreateStaffInviteCommand,
   type UpdateStaffAccessCommand,
+  type UpdateStaffStatusCommand,
   createPgStaffInvitationRepository,
   createStaffInvitationDeliveryCoordinator,
 } from "@vayada/backend-auth";
@@ -14,7 +15,7 @@ import { enforceRoutePolicy } from "./policy.js";
 
 type StaffInvitationRepository = Pick<
   ReturnType<typeof createPgStaffInvitationRepository>,
-  "listRoster" | "persist" | "updateAccess"
+  "listRoster" | "persist" | "updateAccess" | "updateStatus"
 >;
 type StaffInvitationDelivery = Pick<
   ReturnType<typeof createStaffInvitationDeliveryCoordinator>,
@@ -128,6 +129,54 @@ export async function registerStaffInvitationRoutes(
     },
   );
 
+  app.patch<{ Params: { membershipId: string }; Body: unknown }>(
+    "/members/:membershipId/status",
+    { onRequest: authorize },
+    async (request, reply) => {
+      const context = authorized.get(request);
+      if (!context) throw new Error("Staff status authorization was not resolved");
+      const idempotencyKey = readIdempotencyKey(request);
+      const status = parseStaffStatusRequest(request.body);
+      if (!idempotencyKey || !status) return reply.status(400).send({ code: "invalid_request" });
+      const command: UpdateStaffStatusCommand = {
+        commandType: "identity.staff.status.update",
+        commandId: randomUUID(),
+        idempotencyKey: `hotel:${context.selectedOrganization.organizationId}:${idempotencyKey}`,
+        audit: {
+          actor: {
+            kind: "user",
+            userId: context.actor.internalUserId,
+            organizationId: context.selectedOrganization.organizationId,
+          },
+          source: context.audit.source,
+          requestId: context.audit.requestId,
+          ...(context.audit.correlationId ? { correlationId: context.audit.correlationId } : {}),
+          reason:
+            status === "deactivated"
+              ? "Deactivate hotel staff member"
+              : "Reactivate hotel staff member",
+          requestedAt: context.audit.receivedAt,
+        },
+        payload: {
+          organizationId: context.selectedOrganization.organizationId,
+          membershipId: request.params.membershipId,
+          membershipStatus: status === "deactivated" ? "suspended" : "active",
+        },
+      };
+      try {
+        const result = await options.repository.updateStatus(command);
+        if (result.outcome === "rejected") return sendAccessUpdateRejection(reply, result.reason);
+        return reply.send({
+          outcome: result.outcome,
+          membershipId: result.membershipId,
+          status: result.membershipStatus === "suspended" ? "deactivated" : "active",
+        });
+      } catch {
+        return reply.status(500).send({ code: "staff_status_update_failed" });
+      }
+    },
+  );
+
   app.post<{ Body: unknown }>("/invitations", { onRequest: authorize }, async (request, reply) => {
     const context = authorized.get(request);
     if (!context) throw new Error("Staff invitation authorization was not resolved");
@@ -209,6 +258,11 @@ function parseStaffAccessRequest(value: unknown): StaffAccessRequest | null {
   if (!plainRecord(value) || Object.keys(value).some((key) => !accessBodyKeys.has(key)))
     return null;
   return parseStaffAccess(value);
+}
+
+function parseStaffStatusRequest(value: unknown): "active" | "deactivated" | null {
+  if (!plainRecord(value) || Object.keys(value).length !== 1) return null;
+  return value["status"] === "active" || value["status"] === "deactivated" ? value["status"] : null;
 }
 
 function parseStaffAccess(value: Record<string, unknown>): StaffAccessRequest | null {

@@ -3,6 +3,7 @@ import type {
   PermissionKey,
   RequestContext,
   UpdateStaffAccessCommand,
+  UpdateStaffStatusCommand,
 } from "@vayada/backend-auth";
 import { injectJson } from "@vayada/backend-test";
 import Fastify from "fastify";
@@ -20,6 +21,7 @@ const invitationId = "44444444-4444-4444-8444-444444444444";
 const staffMembershipId = "55555555-5555-4555-8555-555555555555";
 type PersistResult = Awaited<ReturnType<StaffInvitationRoutesOptions["repository"]["persist"]>>;
 type UpdateResult = Awaited<ReturnType<StaffInvitationRoutesOptions["repository"]["updateAccess"]>>;
+type StatusResult = Awaited<ReturnType<StaffInvitationRoutesOptions["repository"]["updateStatus"]>>;
 type Auth = {
   authenticated?: boolean;
   actorStatus?: RequestContext["actor"]["status"];
@@ -32,13 +34,20 @@ type Auth = {
 function fakes() {
   const commands: CreateStaffInviteCommand[] = [];
   const accessCommands: UpdateStaffAccessCommand[] = [];
+  const statusCommands: UpdateStaffStatusCommand[] = [];
   const deliveries: string[] = [];
   const rosterOrganizations: string[] = [];
   let result: PersistResult = { outcome: "created", invitationId };
   let updateResult: UpdateResult = { outcome: "updated", membershipId: staffMembershipId };
+  let statusResult: StatusResult = {
+    outcome: "updated",
+    membershipId: staffMembershipId,
+    membershipStatus: "suspended",
+  };
   return {
     commands,
     accessCommands,
+    statusCommands,
     deliveries,
     rosterOrganizations,
     setResult(value: PersistResult) {
@@ -46,6 +55,9 @@ function fakes() {
     },
     setUpdateResult(value: UpdateResult) {
       updateResult = value;
+    },
+    setStatusResult(value: StatusResult) {
+      statusResult = value;
     },
     options: {
       repository: {
@@ -70,6 +82,10 @@ function fakes() {
         async updateAccess(command) {
           accessCommands.push(command);
           return updateResult;
+        },
+        async updateStatus(command) {
+          statusCommands.push(command);
+          return statusResult;
         },
       },
       delivery: {
@@ -194,6 +210,35 @@ describe("staff invitation routes", () => {
     });
   });
 
+  it("deactivates and reactivates staff from authenticated context", async () => {
+    const fake = fakes();
+    app = await testApp(fake.options);
+    expect(await patchStatus(app)).toMatchObject({
+      statusCode: 200,
+      body: { outcome: "updated", membershipId: staffMembershipId, status: "deactivated" },
+    });
+    expect(fake.statusCommands[0]).toMatchObject({
+      commandType: "identity.staff.status.update",
+      idempotencyKey: `hotel:${organizationId}:status-key`,
+      audit: { actor: { userId: "user-owner", organizationId }, source: "api" },
+      payload: {
+        organizationId,
+        membershipId: staffMembershipId,
+        membershipStatus: "suspended",
+      },
+    });
+    fake.setStatusResult({
+      outcome: "updated",
+      membershipId: staffMembershipId,
+      membershipStatus: "active",
+    });
+    expect(await patchStatus(app, { status: "active" }, "reactivate-key")).toMatchObject({
+      statusCode: 200,
+      body: { status: "active" },
+    });
+    expect(fake.statusCommands[1]?.payload.membershipStatus).toBe("active");
+  });
+
   it.each([
     ["unauthenticated", { authenticated: false }, 401],
     ["wrong organization", { organizationKind: "creator_workspace" }, 403],
@@ -207,8 +252,10 @@ describe("staff invitation routes", () => {
     expect((await post(app, { unsafe: true })).statusCode).toBe(statusCode);
     expect((await get(app)).statusCode).toBe(statusCode);
     expect((await patchAccess(app, { unsafe: true })).statusCode).toBe(statusCode);
+    expect((await patchStatus(app, { unsafe: true })).statusCode).toBe(statusCode);
     expect(fake.commands).toHaveLength(0);
     expect(fake.accessCommands).toHaveLength(0);
+    expect(fake.statusCommands).toHaveLength(0);
     expect(fake.rosterOrganizations).toHaveLength(0);
   });
 
@@ -255,6 +302,20 @@ describe("staff invitation routes", () => {
     expect((await patchAccess(app)).statusCode).toBe(404);
     fake.setUpdateResult({ outcome: "rejected", reason: "idempotency_conflict" });
     expect((await patchAccess(app)).statusCode).toBe(409);
+  });
+
+  it("rejects malformed and hidden staff status updates", async () => {
+    const fake = fakes();
+    app = await testApp(fake.options);
+    expect((await patchStatus(app, { status: "inactive" })).statusCode).toBe(400);
+    expect((await patchStatus(app, { status: "deactivated", organizationId })).statusCode).toBe(
+      400,
+    );
+    expect((await patchStatus(app, { status: "deactivated" }, null)).statusCode).toBe(400);
+    fake.setStatusResult({ outcome: "rejected", reason: "target_not_found" });
+    expect((await patchStatus(app)).statusCode).toBe(404);
+    fake.setStatusResult({ outcome: "rejected", reason: "idempotency_conflict" });
+    expect((await patchStatus(app)).statusCode).toBe(409);
   });
 });
 
@@ -309,6 +370,22 @@ function patchAccess(
   return injectJson(app, {
     method: "PATCH",
     url: `/api/identity/staff/members/${staffMembershipId}`,
+    headers: {
+      authorization: "Bearer valid-token",
+      ...(key === null ? {} : { "idempotency-key": key }),
+    },
+    payload,
+  });
+}
+
+function patchStatus(
+  app: Awaited<ReturnType<typeof testApp>>,
+  payload: Record<string, unknown> = { status: "deactivated" },
+  key: string | null = "status-key",
+) {
+  return injectJson(app, {
+    method: "PATCH",
+    url: `/api/identity/staff/members/${staffMembershipId}/status`,
     headers: {
       authorization: "Bearer valid-token",
       ...(key === null ? {} : { "idempotency-key": key }),
