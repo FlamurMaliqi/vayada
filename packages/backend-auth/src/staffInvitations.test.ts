@@ -16,6 +16,7 @@ import {
 import { createPgStaffInvitationRepository } from "./staffInvitations.js";
 import type {
   CreateStaffInviteCommand,
+  RemoveStaffCommand,
   UpdateStaffAccessCommand,
   UpdateStaffStatusCommand,
 } from "./lifecycle.js";
@@ -143,6 +144,33 @@ function statusCommand(
   };
 }
 
+function removalCommand(
+  input: Partial<{
+    idempotencyKey: string;
+    organizationId: string;
+    membershipId: string;
+    actorUserId: string;
+  }> = {},
+): RemoveStaffCommand {
+  const organizationId = input.organizationId ?? org;
+  return {
+    commandType: "identity.staff.remove",
+    commandId: randomUUID(),
+    idempotencyKey: input.idempotencyKey ?? `remove-${randomUUID()}`,
+    audit: {
+      actor: { kind: "user", userId: input.actorUserId ?? owner, organizationId },
+      source: "admin",
+      requestId: `request-${randomUUID()}`,
+      reason: "Remove staff membership",
+      requestedAt: "2026-08-24T00:00:00.000Z",
+    },
+    payload: {
+      organizationId,
+      membershipId: input.membershipId ?? staffMembership,
+    },
+  };
+}
+
 function providerResponse(
   claim: StaffInvitationDeliveryClaim,
   patch: Partial<StaffInvitationProviderResponse> = {},
@@ -240,6 +268,10 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
   beforeEach(async () => {
     await client.query("DELETE FROM identity.staff_invitations");
     await client.query(
+      "DELETE FROM identity.organization_memberships WHERE organization_id = $1 AND user_id = $2",
+      [otherOrg, staffUser],
+    );
+    await client.query(
       "DELETE FROM identity.membership_property_assignments WHERE membership_id = $1",
       [staffMembership],
     );
@@ -314,7 +346,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
     expect(count.rows[0]?.count).toBe(0);
   });
 
-  it("lists active, pending, and deactivated staff without crossing tenant scope", async () => {
+  it("lists active, pending, and deactivated staff but hides removed memberships", async () => {
     await client.query(
       `INSERT INTO identity.membership_property_assignments (membership_id, property_id)
        VALUES ($1, $2)`,
@@ -383,11 +415,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
        WHERE organization_id = $1 AND resource_id = $2`,
       [org, property],
     );
-    expect((await repository.listRoster(org))[0]).toMatchObject({
-      id: staffMembership,
-      status: "deactivated",
-      propertyIds: [],
-    });
+    expect(await repository.listRoster(org)).toEqual([]);
   });
 
   it("atomically updates, audits, and replays staff access", async () => {
@@ -568,6 +596,123 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
       outcome: "rejected",
       reason: "target_not_found",
     });
+  });
+
+  it("removes only the selected tenant membership and durably schedules provider revocation", async () => {
+    const otherStaffMembership = randomUUID();
+    await client.query(
+      `INSERT INTO identity.organization_memberships
+         (id, organization_id, user_id, status, role_key, property_access_mode, access_origin)
+       VALUES ($1, $2, $3, 'active', 'front_desk', 'assigned', 'agency')`,
+      [otherStaffMembership, otherOrg, staffUser],
+    );
+    await client.query(
+      "INSERT INTO identity.membership_property_assignments (membership_id, property_id) VALUES ($1, $2)",
+      [staffMembership, property],
+    );
+    await client.query(
+      "UPDATE identity.organization_memberships SET status = 'suspended' WHERE id = $1",
+      [staffMembership],
+    );
+    const command = removalCommand();
+    const removed = await repository.remove(command);
+    expect(removed).toMatchObject({ outcome: "removed", membershipId: staffMembership });
+    if (removed.outcome !== "removed") throw new Error("expected staff removal");
+    await expect(repository.remove({ ...command, commandId: randomUUID() })).resolves.toEqual({
+      outcome: "idempotent_replay",
+      membershipId: staffMembership,
+      providerRevocationJobId: removed.providerRevocationJobId,
+    });
+
+    const stored = await client.query(
+      `SELECT membership.status, membership.role_key, membership.permission_overrides,
+              staff.status AS user_status,
+              ARRAY(SELECT property_id::text FROM identity.membership_property_assignments
+                    WHERE membership_id = membership.id ORDER BY property_id) AS properties,
+              (SELECT status FROM identity.organization_memberships WHERE id = $2) AS other_status
+       FROM identity.organization_memberships membership
+       JOIN identity.users staff ON staff.id = membership.user_id
+       WHERE membership.id = $1`,
+      [staffMembership, otherStaffMembership],
+    );
+    expect(stored.rows[0]).toMatchObject({
+      status: "inactive",
+      role_key: "housekeeping",
+      permission_overrides: null,
+      user_status: "active",
+      properties: [property],
+      other_status: "active",
+    });
+    expect(await repository.listRoster(org)).toEqual([]);
+    await expect(repository.updateAccess(updateCommand())).resolves.toEqual({
+      outcome: "rejected",
+      reason: "target_not_found",
+    });
+
+    const job = await client.query(
+      `SELECT status, queue_name, job_type, organization_id::text, resource_id, payload
+       FROM platform.jobs WHERE id = $1`,
+      [removed.providerRevocationJobId],
+    );
+    expect(job.rows[0]).toMatchObject({
+      status: "pending",
+      queue_name: "identity-provider",
+      job_type: "workos.organization-membership.delete",
+      organization_id: org,
+      resource_id: staffMembership,
+      payload: {
+        workosMembershipId: "om_staff_acceptance",
+        expectedWorkosOrganizationId: "org_staff_delivery",
+        expectedWorkosUserId: "user_staff_acceptance",
+      },
+    });
+    const audit = await client.query(
+      `SELECT action, actor_user_id::text, target_resource_id, job_id::text,
+              redacted_payload, private_payload
+       FROM platform.product_audit_events WHERE causation_id = $1`,
+      [command.commandId],
+    );
+    expect(audit.rows[0]).toMatchObject({
+      action: "identity.staff.removed",
+      actor_user_id: owner,
+      target_resource_id: staffMembership,
+      job_id: removed.providerRevocationJobId,
+      redacted_payload: { outcome: "access_revoked", providerRevocation: "pending" },
+      private_payload: {
+        targetUserId: staffUser,
+        previous: { membershipStatus: "suspended" },
+        next: { membershipStatus: "inactive" },
+      },
+    });
+  });
+
+  it("fails closed for unauthorized, owner, cross-tenant, removed, and invalid removal targets", async () => {
+    await expect(repository.remove(removalCommand({ actorUserId: otherUser }))).resolves.toEqual({
+      outcome: "rejected",
+      reason: "inviter_not_authorized",
+    });
+    await expect(repository.remove(removalCommand({ membershipId: membership }))).resolves.toEqual({
+      outcome: "rejected",
+      reason: "target_not_found",
+    });
+    await client.query(
+      "UPDATE identity.organization_memberships SET role_key = 'front_desk' WHERE id = $1",
+      [otherMembership],
+    );
+    await expect(
+      repository.remove(removalCommand({ membershipId: otherMembership })),
+    ).resolves.toEqual({ outcome: "rejected", reason: "target_not_found" });
+    await client.query(
+      "UPDATE identity.organization_memberships SET status = 'inactive' WHERE id = $1",
+      [staffMembership],
+    );
+    await expect(repository.remove(removalCommand())).resolves.toEqual({
+      outcome: "rejected",
+      reason: "target_not_found",
+    });
+    await expect(
+      repository.remove(removalCommand({ membershipId: "not-a-membership" })),
+    ).resolves.toEqual({ outcome: "rejected", reason: "invalid_command" });
   });
 
   it("persists, normalizes, and replays one intent", async () => {
