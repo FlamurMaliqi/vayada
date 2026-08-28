@@ -46,7 +46,7 @@ import type {
   PmsRoomType,
   PmsSourceFreshness,
 } from "../domains/pmsOperationsReadModel.js";
-import type { RequestActor, RequestContext } from "@vayada/backend-auth";
+import type { PermissionKey, RequestActor, RequestContext } from "@vayada/backend-auth";
 import { hasPermission, type PropertyAccessRepository } from "@vayada/backend-authorization";
 import { enforceRoutePolicy } from "./policy.js";
 import { enforcePmsPropertyRoutePolicy } from "./pmsPropertyPolicy.js";
@@ -1441,7 +1441,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.calendar.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       const range = toCalendarRange(request.query);
       if ("error" in range) return sendPmsOperationsError(reply, range.error);
@@ -1482,7 +1491,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.calendar.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       const range = toOptionalDateRange(request.query);
       if ("error" in range) return sendPmsOperationsError(reply, range.error);
@@ -1844,10 +1862,11 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      const context = await enforcePmsReservationReadPolicy(
+      const context = await enforcePmsPropertyReadPolicy(
         request,
         reply,
         propertyId,
+        "pms.reservation.read",
         options.propertyAccessRepository,
       );
       if (!context) return reply;
@@ -1908,10 +1927,11 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId, guestBookingId } = request.params;
-      const context = await enforcePmsReservationReadPolicy(
+      const context = await enforcePmsPropertyReadPolicy(
         request,
         reply,
         propertyId,
+        "pms.reservation.read",
         options.propertyAccessRepository,
       );
       if (!context) return reply;
@@ -3114,10 +3134,11 @@ function enforcePmsOperationsReadPolicy(
   }
 }
 
-async function enforcePmsReservationReadPolicy(
+async function enforcePmsPropertyReadPolicy(
   request: FastifyRequest,
   reply: FastifyReply,
   propertyId: string,
+  permission: PermissionKey,
   repository: PropertyAccessRepository | undefined,
 ): Promise<RequestContext | null> {
   try {
@@ -3126,7 +3147,7 @@ async function enforcePmsReservationReadPolicy(
       request,
       {
         propertyId,
-        permission: "pms.reservation.read",
+        permission,
         allowedRelationships: ["owner", "operator", "front_desk"],
       },
       repository,
@@ -3134,7 +3155,7 @@ async function enforcePmsReservationReadPolicy(
   } catch (error) {
     const accessError = toPmsOperationsAccessError(error, request, propertyId);
     if (!accessError) {
-      request.log.error({ err: error, propertyId }, "PMS reservation access check failed");
+      request.log.error({ err: error, propertyId }, "PMS property access check failed");
     }
     sendPmsOperationsError(
       reply,
