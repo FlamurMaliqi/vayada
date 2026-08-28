@@ -38,6 +38,18 @@ const targetBlock = {
   status: "active" as const,
 };
 
+const linkedBlock = {
+  ...targetBlock,
+  blockId: "linked-block-1",
+  roomId: null,
+  reason: "Linked inventory",
+  kind: "linked_booking" as const,
+  sourceRoomTypeId: "room-type-source",
+  sourceRoomTypeName: "Alpine Suite",
+  sourceSummary: "Booking VAY-42 · Alpine Suite",
+  protected: true,
+};
+
 describe("calendarService room block commands", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -105,6 +117,25 @@ describe("calendarService room block commands", () => {
         body: expect.stringContaining('"expectedVersion":"room-block-v2"'),
       }),
     );
+  });
+
+  it("preserves linked cause context for protected calendar blocks", async () => {
+    mocks.post.mockResolvedValue({ items: [linkedBlock] });
+
+    const [block] = await calendarService.createRoomBlock({
+      roomTypeId: "room-type-1",
+      roomIds: [],
+      startDate: "2026-08-20",
+      endDate: "2026-08-23",
+      reason: "Linked inventory",
+    });
+
+    expect(block).toMatchObject({
+      kind: "linked_booking",
+      sourceRoomTypeName: "Alpine Suite",
+      sourceSummary: "Booking VAY-42 · Alpine Suite",
+      protected: true,
+    });
   });
 });
 
