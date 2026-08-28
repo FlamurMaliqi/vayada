@@ -10125,6 +10125,35 @@ describe("vayada-api", () => {
     expect(readCount).toBe(1);
   });
 
+  it("authorizes the PMS property profile for an assigned manager", async () => {
+    app = buildAuthenticatedApp({
+      permissions: ["pms.settings.read"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      roleKey: "hotel_manager",
+      linkedPmsRelationship: "operator",
+      propertyScope: {
+        mode: "assigned",
+        roleKey: "hotel_manager",
+        accessOrigin: "agency",
+        assignedPropertyIds: [pmsPropertyId],
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/profile`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toEqual({
+      statusCode: 500,
+      code: "read_model_unavailable",
+      category: "read_model",
+      message: "PMS property profile read model is unavailable.",
+    });
+  });
+
   it("updates Booking-owned acceptance mode for an assigned manager", async () => {
     let updateCount = 0;
     let publishCount = 0;
@@ -10176,7 +10205,7 @@ describe("vayada-api", () => {
     expect(publishCount).toBe(1);
   });
 
-  it("fails closed across the PMS booking acceptance read denial matrix", async () => {
+  it("fails closed across the PMS settings read denial matrix", async () => {
     type AuthenticatedAppOptions = Parameters<typeof buildAuthenticatedApp>[0];
     const entitlement: ProductEntitlement = {
       product: "pms",
@@ -10282,9 +10311,10 @@ describe("vayada-api", () => {
       {
         name: "empty assigned scope",
         appOptions: {
+          roleKey: "hotel_manager",
           propertyScope: {
             mode: "assigned",
-            roleKey: "hotel_owner",
+            roleKey: "hotel_manager",
             accessOrigin: "agency",
             assignedPropertyIds: [],
           },
@@ -10296,9 +10326,10 @@ describe("vayada-api", () => {
         name: "unassigned direct URL",
         appOptions: {
           additionalPmsPropertyId: unassignedPropertyId,
+          roleKey: "hotel_manager",
           propertyScope: {
             mode: "assigned",
-            roleKey: "hotel_owner",
+            roleKey: "hotel_manager",
             accessOrigin: "agency",
             assignedPropertyIds: [pmsPropertyId],
           },
@@ -10307,6 +10338,20 @@ describe("vayada-api", () => {
         statusCode: 403,
         code: "missing_resource_access",
         hiddenProperty: true,
+      },
+      {
+        name: "malformed assigned scope",
+        appOptions: {
+          roleKey: "hotel_manager",
+          propertyScope: {
+            mode: "assigned",
+            roleKey: "hotel_manager",
+            accessOrigin: "agency",
+            assignedPropertyIds: ["not-a-property-id"],
+          },
+        },
+        statusCode: 403,
+        code: "missing_resource_access",
       },
       {
         name: "missing membership scope",
@@ -10385,32 +10430,35 @@ describe("vayada-api", () => {
         },
       });
       const propertyId = candidate.propertyId ?? pmsPropertyId;
-      const response = await injectJson(app, {
-        method: "GET",
-        url: `/api/pms/properties/${propertyId}/booking-acceptance`,
-        headers:
-          candidate.authorization === null
-            ? undefined
-            : {
-                authorization: candidate.authorization ?? "Bearer valid-token",
-                "x-hotel-id": pmsPropertyId,
-              },
-      });
+      for (const route of ["booking-acceptance", "profile"]) {
+        const assertionName = `${candidate.name}: ${route}`;
+        const response = await injectJson(app, {
+          method: "GET",
+          url: `/api/pms/properties/${propertyId}/${route}`,
+          headers:
+            candidate.authorization === null
+              ? undefined
+              : {
+                  authorization: candidate.authorization ?? "Bearer valid-token",
+                  "x-hotel-id": pmsPropertyId,
+                },
+        });
 
-      expect(response.statusCode, candidate.name).toBe(candidate.statusCode);
-      if (candidate.code) {
-        expect(response.body, candidate.name).toMatchObject({ code: candidate.code });
-      }
-      if (candidate.message) {
-        expect(response.body, candidate.name).toMatchObject({ message: candidate.message });
+        expect(response.statusCode, assertionName).toBe(candidate.statusCode);
+        if (candidate.code) {
+          expect(response.body, assertionName).toMatchObject({ code: candidate.code });
+        }
+        if (candidate.message) {
+          expect(response.body, assertionName).toMatchObject({ message: candidate.message });
+        }
+        const serializedBody = JSON.stringify(response.body);
+        expect(serializedBody, assertionName).not.toContain("sensitive property access failure");
+        if (candidate.hiddenProperty) {
+          expect(serializedBody, assertionName).not.toContain(propertyId);
+          hiddenPropertyDenials.add(serializedBody);
+        }
       }
       expect(readCount, candidate.name).toBe(0);
-      const serializedBody = JSON.stringify(response.body);
-      expect(serializedBody, candidate.name).not.toContain("sensitive property access failure");
-      if (candidate.hiddenProperty) {
-        expect(serializedBody, candidate.name).not.toContain(propertyId);
-        hiddenPropertyDenials.add(serializedBody);
-      }
 
       await app.close();
       app = null;
@@ -11097,7 +11145,12 @@ describe("vayada-api", () => {
 
   it("returns explicit unavailable errors for retired PMS Web placeholder facades", async () => {
     app = buildAuthenticatedApp({
-      permissions: ["pms.operations.read", "pms.operations.manage", "pms.inbox.read"],
+      permissions: [
+        "pms.operations.read",
+        "pms.operations.manage",
+        "pms.inbox.read",
+        "pms.settings.read",
+      ],
       entitlements: [
         {
           product: "pms",
