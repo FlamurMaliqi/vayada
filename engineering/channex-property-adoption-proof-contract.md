@@ -6,10 +6,11 @@ _VAY-1320 decision record. Builds on
 
 ## Status
 
-The proof contract is decided. Executing or implementing an adoption remains
-blocked until a product-authorized property owner supplies one exact target
-property / external Channex property pair and proves provider control as
-described below.
+The proposed proof contract is review-ready. Product, design, and security
+acceptance are still required. Executing or implementing an adoption remains
+blocked until that acceptance is recorded and a product-authorized property
+owner supplies one exact target property / external Channex property pair and
+proves provider control as described below.
 
 No existing production pair is sanctioned by current evidence. In particular,
 target property `7e74ee43-517f-47bd-9167-6733568fea71` has no authoritative link
@@ -89,9 +90,8 @@ The contract must prevent:
 6. Re-resolve authorization immediately before persistence. In one serialized
    transaction, reject if:
    - the target has a current or conflicting Channex binding;
-   - the external ID is currently claimed by another target;
-   - retained binding history associates the external ID with another target
-     and no reviewed release exists;
+   - the external ID is currently reserved or bound by another target;
+   - authoritative binding history for either side is `conflict` or `unknown`;
    - organization/resource ownership changed after initial authorization;
    - command/idempotency replay does not match the original request fingerprint.
 7. Persist a verified, non-active binding claim plus secret-free audit evidence.
@@ -157,10 +157,30 @@ provider property connected. Adoption must not:
 
 The implementation must add an atomic binding-claim registry, with database
 uniqueness for provider plus external property ID and for one live Channex claim
-per target property. Existing `pms.channel_connections` only guarantees one
-provider row per target property; it does not prevent one Channex external ID
-from being used by two target properties, and its current `enable` flow can mark
-an existing external ID connected without another provider request.
+per target property. The registry is the canonical reservation boundary for
+every path that stores or activates an external property ID, including adoption,
+the existing `enable` checkpoint, cutover, migrations, and manual repair. Each
+path must acquire the same reservation in its binding transaction and reject a
+reservation owned by another target. Adoption must remain disabled until this
+cross-path invariant is enforced.
+
+Existing `pms.channel_connections` only guarantees one provider row per target
+property; it does not prevent one Channex external ID from being used by two
+target properties, and its current `enable` flow can mark an existing external
+ID connected without another provider request. A connection row must therefore
+reference a matching registry reservation, or an equivalent database constraint
+or trigger must make bypass impossible.
+
+The registry retains binding history and classifies a lookup as `clear`,
+`conflict`, or `unknown`. Initial backfill must cover every non-null target
+`pms.channel_connections.external_property_id` and every retained target binding
+record or audit source. Backfill validation must prove coverage of all durable
+target paths that could have stored an external ID; incomplete coverage is
+`unknown`, not `clear`. A prior association with another target is an
+unconditional conflict. Any future transfer requires a separate reviewed
+ownership-release contract defining approvers, authoritative ownership evidence,
+atomic consumption, audit, and retention; this adoption contract grants no such
+exception.
 
 A separate reviewed cutover command may promote a verified claim into
 `pms.channel_connections`. Promotion must recheck authorization, claim state,
@@ -174,11 +194,13 @@ already-bound, cross-property, cross-organization, stale-authorization,
 provider-error, timeout, or persistence-conflict outcome fails closed with no
 partial binding.
 
-Rollback releases only the target binding claim, leaves the target connection
-absent or `disconnected`, and records a restricted audit event. It does not
-mutate Channex, delete provider mappings, replay or acknowledge bookings, or
-stop legacy polling. Legacy ownership remains active throughout adoption and
-rollback.
+Rollback changes only the target binding claim to a retained `released` state,
+leaves the target connection absent or `disconnected`, and records a restricted
+audit event. A released claim remains binding history, is not an ownership
+release, and does not authorize another target to adopt the external property.
+It does not mutate Channex, delete provider mappings, replay or acknowledge
+bookings, or stop legacy polling. Legacy ownership remains active throughout
+adoption and rollback.
 
 ## Adoption-command acceptance criteria
 
@@ -192,14 +214,20 @@ rollback.
 - The proof key is redacted at ingress and never reaches durable storage.
 - Authorization and ownership are rechecked in the binding transaction.
 - Concurrent attempts cannot bind one external property to two targets.
+- Adoption, existing enablement, cutover, migration, and repair paths acquire
+  the same provider/external-property reservation before storing or activating
+  an external ID.
 - Existing or retained conflicting bindings fail closed.
+- Binding history is `clear`, `conflict`, or `unknown`; `conflict` and `unknown`
+  fail closed, and rollback cannot be interpreted as an ownership release.
 - Exact idempotent replay returns the original result; payload drift conflicts.
 - Success records the secret-free restricted audit evidence defined above.
 - Success stores only a non-active binding claim; it does not populate an active
   connection, and legacy booking ownership remains active.
 - Rollback removes/disables only target state and is independently audited.
 - Tests cover authorization, scoping, mismatch, secret non-persistence,
-  concurrency, replay, provider failure, rollback, and cutover non-mutation.
+  adoption-versus-enable concurrency, incomplete history, replay, provider
+  failure, rollback-versus-release semantics, and cutover non-mutation.
 
 ## QA pair gate
 
