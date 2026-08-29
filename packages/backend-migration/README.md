@@ -171,7 +171,7 @@ Use `--email` for one-user migration smoke tests:
 
 ```bash
 TARGET_DATABASE_URL=<target database url> \
-  WORKOS_BACKFILL_LEGACY_AUTH_DATABASE_URL=<legacy auth database url> \
+  WORKOS_BACKFILL_SOURCE_RUN_ID=<completed VAY-1351 run id> \
   WORKOS_API_KEY=<workos api key> \
   npm --workspace @vayada/backend-migration run target:workos:backfill:dist -- \
     --email user@example.com \
@@ -182,7 +182,7 @@ Apply mode requires the printed cohort key as a confirmation guard:
 
 ```bash
 TARGET_DATABASE_URL=<target database url> \
-  WORKOS_BACKFILL_LEGACY_AUTH_DATABASE_URL=<legacy auth database url> \
+  WORKOS_BACKFILL_SOURCE_RUN_ID=<completed VAY-1351 run id> \
   WORKOS_API_KEY=<workos api key> \
   npm --workspace @vayada/backend-migration run target:workos:backfill:dist -- \
     --email user@example.com \
@@ -190,9 +190,13 @@ TARGET_DATABASE_URL=<target database url> \
     --confirm email:user@example.com
 ```
 
-Use `--cohort-manifest <path>` for reviewed batch cohorts.
-Omit `WORKOS_BACKFILL_LEGACY_AUTH_DATABASE_URL` to migrate identities without
-importing legacy bcrypt password hashes.
+Use `--cohort-manifest <path>` for reviewed batch cohorts. The immutable source
+run supplies only the legacy bcrypt hash and verified-email flag needed for the
+one-time WorkOS handoff; reset, verification, rate-limit, and MFA state is never
+loaded into live target tables. Omit both source options to migrate identities
+without importing legacy bcrypt password hashes. The direct legacy auth
+connection remains available for pre-VAY-1351 recovery only and cannot be
+combined with `--source-run-id`.
 
 ## Next Stack Smoke Backfill
 

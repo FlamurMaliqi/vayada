@@ -2,6 +2,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  assertCompletedAuthSnapshotEvidence,
   createWorkosBackfillCohortForOrganizationKind,
   createWorkosBackfillCohortForEmail,
   createPgWorkosBackfillRepository,
@@ -17,6 +18,38 @@ const TEST_BCRYPT_HASH = "$2b$12$abcdefghijklmnopqrstuuJ/lL7AGas7gSUzwl3hBRMaGQJ
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 
 describe("runWorkosBackfill", () => {
+  it("does not allow mutable and immutable credential sources together", () => {
+    expect(() =>
+      createPgWorkosBackfillRepository({
+        connectionString: "postgresql://target",
+        legacyAuthConnectionString: "postgresql://legacy",
+        sourceRunId: "vay1351-0123456789abcdef01234567",
+      }),
+    ).toThrow("Use either a legacy auth connection or an immutable source run, not both.");
+  });
+
+  it("requires completed auth snapshot evidence with exact row parity", () => {
+    const completed = {
+      runStatus: "completed",
+      sourceStatus: "completed",
+      tableStatus: "completed",
+      expectedRows: 42,
+      actualRows: 42,
+    };
+
+    expect(() => assertCompletedAuthSnapshotEvidence(completed)).not.toThrow();
+    for (const field of ["runStatus", "sourceStatus", "tableStatus"] as const) {
+      for (const status of [null, "running", "failed"]) {
+        expect(() =>
+          assertCompletedAuthSnapshotEvidence({ ...completed, [field]: status }),
+        ).toThrow("completed immutable auth users snapshot");
+      }
+    }
+    expect(() => assertCompletedAuthSnapshotEvidence({ ...completed, expectedRows: 43 })).toThrow(
+      "row count mismatch: expected 43, found 42",
+    );
+  });
+
   it("builds a one-user cohort from email and includes that user's memberships", () => {
     const source = {
       users: [
