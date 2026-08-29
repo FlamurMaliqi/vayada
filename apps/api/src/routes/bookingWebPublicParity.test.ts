@@ -1400,6 +1400,7 @@ describe("Booking Web public bootstrap parity", () => {
                 termsText,
                 cancellationPolicyText: "Free cancellation until seven days before arrival.",
                 paymentsEnabled: true,
+                onlineCardReady: false,
                 acceptedMethods: [
                   "card",
                   "xendit",
@@ -1463,6 +1464,7 @@ describe("Booking Web public bootstrap parity", () => {
       termsText: "Hotel Alpenrose booking terms.",
       cancellationPolicyText: "Free cancellation until seven days before arrival.",
       paymentsEnabled: true,
+      onlineCardPayment: false,
       acceptedPaymentMethods: ["bank_transfer", "paypal", "pay_at_property"],
       bankTransfer: true,
       paypalEnabled: true,
@@ -1484,6 +1486,12 @@ describe("Booking Web public bootstrap parity", () => {
     });
     expect(calls.find((call) => call.includes("FROM hotel_catalog.properties p"))).toContain(
       "hotel_catalog.property_policy_summaries",
+    );
+    expect(calls.find((call) => call.includes("FROM hotel_catalog.properties p"))).toContain(
+      "finance.online_card_readiness",
+    );
+    expect(calls.find((call) => call.includes("FROM hotel_catalog.properties p"))).toContain(
+      "upper(trim(fs.default_currency)) = upper(trim(bs.default_currency))",
     );
   });
 
@@ -2671,7 +2679,7 @@ describe("Booking Web public bootstrap parity", () => {
                 depositPolicy: {},
                 providerAccountId: "c9fccec2-eb4c-4c35-bfd3-02a748c2e952",
                 providerAccountRef: "acct_property_952",
-                providerReady: true,
+                onlineCardReady: true,
               },
             ],
           };

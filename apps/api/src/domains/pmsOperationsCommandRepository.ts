@@ -214,18 +214,13 @@ type BookingPaymentLifecycleRow = QueryResultRow & {
   chargeType: string | null;
 };
 type PmsOperationalTemplateOperation =
-  | "checkin_checklist_template_update"
-  | "checkout_inspection_template_update";
+  "checkin_checklist_template_update" | "checkout_inspection_template_update";
 type PmsCheckoutChargeOperation =
-  | "checkout_charge_create"
-  | "checkout_charge_mark_paid"
-  | "checkout_charge_waive";
+  "checkout_charge_create" | "checkout_charge_mark_paid" | "checkout_charge_waive";
 type PmsRoomTypeCommandOperation = "room_type_create" | "room_type_location_update";
 type PmsRoomTypeCommand = PmsRoomTypeCreateCommand | PmsRoomTypeUpdateCommand;
 type PmsRoomBlockCommand =
-  | PmsRoomBlockCreateCommand
-  | PmsRoomBlockUpdateCommand
-  | PmsRoomBlockReleaseCommand;
+  PmsRoomBlockCreateCommand | PmsRoomBlockUpdateCommand | PmsRoomBlockReleaseCommand;
 type PmsRoomBlockOperation = "room_block_create" | "room_block_update" | "room_block_release";
 
 type PmsRoomBlockRow = {
@@ -5122,9 +5117,7 @@ async function insertPrivateNoteAuditEvent(
     action: "pms.private_note.created" | "pms.private_note.edited" | "pms.private_note.deleted";
     auditKey: string;
     command:
-      | PmsPrivateNoteCreateCommand
-      | PmsPrivateNoteUpdateCommand
-      | PmsPrivateNoteDeleteCommand;
+      PmsPrivateNoteCreateCommand | PmsPrivateNoteUpdateCommand | PmsPrivateNoteDeleteCommand;
     keyHash: string;
     noteId: string;
     occurredAt: string;

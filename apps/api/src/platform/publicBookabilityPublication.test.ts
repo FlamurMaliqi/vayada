@@ -123,16 +123,12 @@ describe("target public bookability publication", () => {
       "'refundWindowDays', input.finance_refund_policy -> 'refundWindowDays'",
     );
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).not.toContain("'USD'");
-    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("finance.online_card_readiness");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("input.finance_online_card_ready");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).not.toContain(
       "payment_provider_onboarding_status = 'completed'",
     );
-    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("payment_provider_charges_enabled = TRUE");
-    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
-      "NOT IN ('BHD', 'JOD', 'KWD', 'OMR', 'TND')",
-    );
-    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
-      "'card' = ANY(COALESCE(input.accepted_methods, ARRAY[]::text[]))",
-    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).not.toContain("NOT IN ('BHD', 'JOD', 'KWD'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'bank_transfer'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'paypal'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("AS public_payment_methods");
@@ -155,8 +151,12 @@ describe("target public bookability publication", () => {
       "UPDATE distribution.public_room_offer_snapshots offer",
     );
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("SET payment_options = CASE");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain(
+      "offer.rate_summary ->> 'rateType', '')) = 'non_refundable'",
+    );
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("THEN ARRAY['card']::text[]");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("AS pay_at_property_ready");
-    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("finance.payment_provider_accounts");
+    expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).not.toContain("finance.payment_provider_accounts");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("pg_timezone_names");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("ELSE 'Etc/UTC'");
     expect(PROJECT_PUBLIC_BOOKABILITY_PROFILE).toContain("'sellable_availability'");
@@ -544,6 +544,44 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical public location projection", () =
     );
     expect(result.rows[0]?.missing).toContain("billing_plan");
   });
+
+  it("preserves only valid legacy pay-at-property selections without readiness backfill", async () => {
+    await client.query(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE, [publicLocationPropertyId]);
+    await client.query(
+      `INSERT INTO booking.booking_settings (property_id, default_currency)
+       VALUES ($1::uuid, 'EUR')
+       ON CONFLICT (property_id) DO UPDATE SET default_currency = EXCLUDED.default_currency`,
+      [publicLocationPropertyId],
+    );
+    await client.query(
+      `INSERT INTO finance.payment_settings (
+         property_id, payments_enabled, accepted_methods, default_currency,
+         payment_readiness_contract_version, payment_methods_revision,
+         source_pricing_currency_revision
+       )
+       VALUES ($1::uuid, TRUE, ARRAY['pay_at_property', 'cash']::text[], 'EUR', NULL, NULL, NULL)
+       ON CONFLICT (property_id) DO UPDATE
+       SET payments_enabled = EXCLUDED.payments_enabled,
+           accepted_methods = EXCLUDED.accepted_methods,
+           default_currency = EXCLUDED.default_currency,
+           payment_readiness_contract_version = NULL,
+           payment_methods_revision = NULL,
+           source_pricing_currency_revision = NULL`,
+      [publicLocationPropertyId],
+    );
+
+    await projectPublicBookabilityLocation(client);
+    await expect(readBookabilityPaymentMethods(client)).resolves.toContain("pay_at_property");
+
+    await client.query(
+      `UPDATE finance.payment_settings
+       SET accepted_methods = ARRAY['pay_at_property']::text[]
+       WHERE property_id = $1::uuid`,
+      [publicLocationPropertyId],
+    );
+    await projectPublicBookabilityLocation(client);
+    await expect(readBookabilityPaymentMethods(client)).resolves.not.toContain("pay_at_property");
+  });
 });
 
 async function readProjectedLocation(client: pg.Client): Promise<Record<string, unknown>> {
@@ -554,6 +592,18 @@ async function readProjectedLocation(client: pg.Client): Promise<Record<string, 
     [publicLocationPropertyId],
   );
   return result.rows[0]?.location ?? {};
+}
+
+async function readBookabilityPaymentMethods(client: pg.Client): Promise<string[]> {
+  const result = await client.query<{ methods: string[] }>(
+    `SELECT ARRAY(
+       SELECT jsonb_array_elements_text(capabilities -> 'paymentMethods')
+     ) AS methods
+     FROM distribution.public_hotel_bookability_profiles
+     WHERE property_id = $1::uuid`,
+    [publicLocationPropertyId],
+  );
+  return result.rows[0]?.methods ?? [];
 }
 
 async function projectPublicBookabilityLocation(client: pg.Client): Promise<void> {

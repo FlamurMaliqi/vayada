@@ -75,6 +75,17 @@ export function parseFinancePaymentReadinessSnapshot(
   const selectedMethods = methods
     .filter((method) => method.selected)
     .map((method) => method.method as FinancePaymentReadinessMethod);
+  const card = methods.find((method) => method.method === "card");
+  if (!card) return null;
+  const onlineCardReadiness = card.blockers.includes("provider_restricted")
+    ? "provider_restricted"
+    : card.blockers.includes("provider_capability_lost")
+      ? "provider_capability_lost"
+      : card.blockers.includes("online_card_currency_unsupported")
+        ? "currency_unsupported"
+        : card.blockers.includes("online_card_execution_unavailable")
+          ? "execution_unavailable"
+          : "ready";
   let canonical: FinancePaymentReadinessSnapshot;
   try {
     canonical = createFinancePaymentReadinessSnapshot({
@@ -83,6 +94,7 @@ export function parseFinancePaymentReadinessSnapshot(
       selectedMethods,
       committedPricing: committed,
       currentPricing: current,
+      onlineCardReadiness,
       updatedAt: value.updatedAt,
     });
   } catch {

@@ -12,6 +12,7 @@ import {
 
 const organizationId = "123e4567-e89b-42d3-a456-426614174000";
 const propertyId = "223e4567-e89b-42d3-a456-426614174000";
+const providerAccountId = "323e4567-e89b-42d3-a456-426614174000";
 const updatedAt = "2026-08-03T12:00:00.000Z";
 
 function row(overrides: Record<string, unknown> = {}) {
@@ -22,6 +23,25 @@ function row(overrides: Record<string, unknown> = {}) {
     sourcePricingCurrencyRevision: "7",
     currency: "EUR",
     acceptedMethods: ["pay_at_property", "card"],
+    onlineCardCurrencyEligible: true,
+    providerAccountId,
+    provider: "stripe",
+    providerAccountScope: "property",
+    providerBindingActive: true,
+    providerStatus: "active",
+    providerOnboardingStatus: "completed",
+    providerChargesEnabled: true,
+    providerPayoutsEnabled: true,
+    providerDetailsSubmitted: true,
+    providerCardPaymentsStatus: "active",
+    providerCapabilities: ["card_payments"],
+    providerCardCapabilityRevision: "4",
+    propertyReadinessRevision: "8",
+    executionEvidenceContractVersion: null,
+    executionEvidenceProviderAccountId: null,
+    executionEvidenceCapabilityRevision: null,
+    executionEvidencePropertyReadinessRevision: "8",
+    executionEvidenceRevokedAt: null,
     updatedAt,
     ...overrides,
   };
@@ -102,6 +122,70 @@ describe("Finance payment readiness read model", () => {
     expect(deps.queries[0]?.values).toEqual([organizationId, propertyId]);
   });
 
+  it("makes card ready only for matching accepted ONB-25A evidence", async () => {
+    const { readModel } = model({
+      rows: [
+        row({
+          acceptedMethods: ["card"],
+          executionEvidenceContractVersion: "finance-online-card-execution-evidence.v1",
+          executionEvidenceProviderAccountId: providerAccountId,
+          executionEvidenceCapabilityRevision: "4",
+        }),
+      ],
+    });
+    const snapshot = await readModel.getPaymentReadiness({ organizationId, propertyId });
+    expect(snapshot).toMatchObject({ bookingPaymentReady: true, readyMethodCount: 1 });
+    expect(snapshot?.methods.find(({ method }) => method === "card")).toMatchObject({
+      readiness: "ready",
+      blockers: [],
+    });
+  });
+
+  it("keeps matching execution evidence closed for a Finance-unsupported currency", async () => {
+    const { readModel } = model({
+      rows: [
+        row({
+          acceptedMethods: ["card"],
+          currency: "KWD",
+          onlineCardCurrencyEligible: false,
+          executionEvidenceContractVersion: "finance-online-card-execution-evidence.v1",
+          executionEvidenceProviderAccountId: providerAccountId,
+          executionEvidenceCapabilityRevision: "4",
+        }),
+      ],
+      current: pricing({ currency: "KWD" }),
+    });
+    const snapshot = await readModel.getPaymentReadiness({ organizationId, propertyId });
+    expect(snapshot?.bookingPaymentReady).toBe(false);
+    expect(snapshot?.methods.find(({ method }) => method === "card")).toMatchObject({
+      blockers: ["online_card_currency_unsupported"],
+      nextActions: ["edit_pricing"],
+    });
+  });
+
+  it.each([
+    ["stale capability revision", { executionEvidenceCapabilityRevision: "3" }],
+    ["stale property revision", { executionEvidencePropertyReadinessRevision: "7" }],
+    ["other account", { executionEvidenceProviderAccountId: organizationId }],
+    ["lookalike contract", { executionEvidenceContractVersion: "lookalike.v1" }],
+  ])("fails card closed for %s evidence", async (_label, evidenceOverride) => {
+    const { readModel } = model({
+      rows: [
+        row({
+          acceptedMethods: ["card"],
+          executionEvidenceContractVersion: "finance-online-card-execution-evidence.v1",
+          executionEvidenceProviderAccountId: providerAccountId,
+          executionEvidenceCapabilityRevision: "4",
+          ...evidenceOverride,
+        }),
+      ],
+    });
+    const snapshot = await readModel.getPaymentReadiness({ organizationId, propertyId });
+    expect(snapshot?.methods.find(({ method }) => method === "card")?.blockers).toContain(
+      "online_card_execution_unavailable",
+    );
+  });
+
   it.each([
     ["missing", null, "pricing_currency_unavailable"],
     ["revision drift", pricing({ pricingCurrencyRevision: 8 }), "pricing_currency_mismatch"],
@@ -135,6 +219,7 @@ describe("Finance payment readiness read model", () => {
     expect(sql).toContain("resource.relationship IN ('owner', 'operator', 'finance_manager')");
     expect(sql).toContain("entitlement.status = 'active'");
     expect(sql).toContain("entitlement.status = 'suspended'");
+    expect(sql).toContain("finance.online_card_readiness");
     expect(sql).not.toMatch(/\bFROM\s+pms\./i);
     expect(sql).not.toMatch(/\bJOIN\s+pms\./i);
   });

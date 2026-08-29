@@ -72,6 +72,7 @@ function paymentReadiness(
       currency: "EUR",
       pricingCurrencyRevision: overrides.currentRevision ?? 7,
     },
+    onlineCardReadiness: "execution_unavailable",
     updatedAt: now,
   });
 }

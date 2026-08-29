@@ -146,6 +146,7 @@ import {
   runFinanceSubscriptionWebhookJobs,
 } from "./jobs/financeSubscriptions.js";
 import { runFinanceExpenseGenerationCycle } from "./jobs/financeExpenseGeneration.js";
+import { runFinanceStripeAccountCompensationJobs } from "./jobs/financeStripeAccountCompensation.js";
 import {
   createPgPropertySetupDraftRetentionStore,
   startPropertySetupDraftRetentionWorker,
@@ -1490,6 +1491,40 @@ if (financeSubscriptionJobsEnabled) runFinanceSubscriptionJobs();
 app.addHook("onClose", async () => {
   if (financeSubscriptionTimer) clearInterval(financeSubscriptionTimer);
   await activeFinanceSubscriptionBatch;
+});
+
+let activeStripeAccountCompensation: Promise<void> | undefined;
+const stripeAccountCompensationEnabled = Boolean(
+  config.financeSource === "target" && stripeConnectProvider,
+);
+const runStripeAccountCompensation = () => {
+  if (!stripeConnectProvider || activeStripeAccountCompensation) return;
+  activeStripeAccountCompensation = runFinanceStripeAccountCompensationJobs(
+    targetDatabaseUrl,
+    stripeConnectProvider,
+  )
+    .then((result) => {
+      if (result.failed > 0 || result.retryScheduled > 0) {
+        app.log.warn(result, "Stripe account compensation completed with attention required");
+      } else if (result.succeeded > 0) {
+        app.log.info(result, "Stripe account compensation completed");
+      }
+    })
+    .catch((error: unknown) =>
+      app.log.warn({ err: error }, "Stripe account compensation processing failed"),
+    )
+    .finally(() => {
+      activeStripeAccountCompensation = undefined;
+    });
+};
+const stripeAccountCompensationTimer = stripeAccountCompensationEnabled
+  ? setInterval(runStripeAccountCompensation, 5_000)
+  : undefined;
+stripeAccountCompensationTimer?.unref();
+if (stripeAccountCompensationEnabled) runStripeAccountCompensation();
+app.addHook("onClose", async () => {
+  if (stripeAccountCompensationTimer) clearInterval(stripeAccountCompensationTimer);
+  await activeStripeAccountCompensation;
 });
 
 let activeFinanceExpenseGeneration: Promise<void> | undefined;

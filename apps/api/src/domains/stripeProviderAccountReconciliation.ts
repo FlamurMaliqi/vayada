@@ -2,6 +2,11 @@ import type { StripeConnectProviderAccountSnapshot } from "@vayada/domain-financ
 import type { QueryResult, QueryResultRow } from "pg";
 
 import { PROJECT_PUBLIC_BOOKABILITY_PROFILE } from "../platform/publicBookabilityPublication.js";
+import {
+  applyFinanceOnlineCardReadinessLoss,
+  loadFinanceOnlineCardReadinessState,
+  type FinanceOnlineCardReadinessChangeContext,
+} from "./financeOnlineCardReadinessTransition.js";
 
 type StripeProviderAccountReconciliationClient = {
   query<T extends QueryResultRow = QueryResultRow>(
@@ -19,20 +24,26 @@ export type StripeProviderAccountReconciliationState = {
   payoutsEnabled: boolean;
   detailsSubmitted: boolean;
   cardPaymentsStatus: string | null;
+  cardCapabilityRevision: number;
+};
+
+export type StripeProviderAccountReconciliationResult = StripeProviderAccountReconciliationState & {
+  onlineCardReadinessLost: boolean;
 };
 
 export async function applyStripeProviderAccountSnapshot(
   client: StripeProviderAccountReconciliationClient,
   input: {
     snapshot: StripeConnectProviderAccountSnapshot;
-    propertyId?: string;
-    providerAccountId?: string;
-    cardPaymentsReady?: boolean;
+    propertyId: string;
+    providerAccountId: string;
     metadata?: Record<string, unknown>;
+    readinessChange: FinanceOnlineCardReadinessChangeContext;
   },
-): Promise<StripeProviderAccountReconciliationState | null> {
+): Promise<StripeProviderAccountReconciliationResult | null> {
   const snapshot = input.snapshot;
-  const cardPaymentsReady = input.cardPaymentsReady ?? snapshot.cardPaymentsStatus === "active";
+  const cardPaymentsReady = snapshot.cardPaymentsStatus === "active";
+  const previousReadiness = await loadFinanceOnlineCardReadinessState(client, input.propertyId);
   const updated = await client.query<StripeProviderAccountReconciliationState>(
     `UPDATE finance.payment_provider_accounts account
      SET status = CASE
@@ -43,6 +54,11 @@ export async function applyStripeProviderAccountSnapshot(
          charges_enabled = $2::boolean,
          payouts_enabled = $3::boolean,
          default_currency = COALESCE(NULLIF(upper($5), ''), default_currency),
+         capabilities = CASE
+           WHEN $7::boolean THEN
+             array_append(array_remove(capabilities, 'card_payments'), 'card_payments')
+           ELSE array_remove(capabilities, 'card_payments')
+         END,
          account_metadata = account_metadata || $6::jsonb,
          updated_at = now()
      WHERE account.provider = 'stripe'
@@ -63,7 +79,8 @@ export async function applyStripeProviderAccountSnapshot(
        charges_enabled AS "chargesEnabled",
        payouts_enabled AS "payoutsEnabled",
        (account_metadata ->> 'detailsSubmitted')::boolean AS "detailsSubmitted",
-       account_metadata ->> 'cardPaymentsStatus' AS "cardPaymentsStatus"`,
+       account_metadata ->> 'cardPaymentsStatus' AS "cardPaymentsStatus",
+       card_capability_revision::int AS "cardCapabilityRevision"`,
     [
       snapshot.providerAccountRef,
       snapshot.chargesEnabled,
@@ -76,26 +93,41 @@ export async function applyStripeProviderAccountSnapshot(
         cardPaymentsStatus: snapshot.cardPaymentsStatus,
       }),
       cardPaymentsReady,
-      input.propertyId ?? null,
-      input.providerAccountId ?? null,
+      input.propertyId,
+      input.providerAccountId,
     ],
   );
   const state = updated.rows[0];
   if (!state) return null;
 
-  const publicProfile = await client.query<{ canonicalUrl: string; bookingBaseUrl: string }>(
-    `SELECT canonical_url AS "canonicalUrl", booking_base_url AS "bookingBaseUrl"
-     FROM distribution.public_hotel_bookability_profiles
-     WHERE property_id = $1::uuid`,
+  const onlineCardReadinessLost = await applyFinanceOnlineCardReadinessLoss(client, {
+    propertyId: state.propertyId,
+    previous: previousReadiness,
+    context: input.readinessChange,
+  });
+  const currentReadiness =
+    (await loadFinanceOnlineCardReadinessState(client, state.propertyId))?.ready === true;
+
+  const publicProfile = await client.query<{
+    canonicalUrl: string;
+    bookingBaseUrl: string;
+    cardPublished: boolean;
+  }>(
+    `SELECT profile.canonical_url AS "canonicalUrl",
+            profile.booking_base_url AS "bookingBaseUrl",
+            COALESCE(profile.capabilities -> 'paymentMethods' ? 'card', FALSE)
+              AS "cardPublished"
+     FROM distribution.public_hotel_bookability_profiles profile
+     WHERE profile.property_id = $1::uuid`,
     [state.propertyId],
   );
   const urls = publicProfile.rows[0];
-  if (urls) {
+  if (urls?.cardPublished && !currentReadiness) {
     await client.query(PROJECT_PUBLIC_BOOKABILITY_PROFILE, [
       state.propertyId,
       urls.canonicalUrl,
       urls.bookingBaseUrl,
     ]);
   }
-  return state;
+  return { ...state, onlineCardReadinessLost };
 }

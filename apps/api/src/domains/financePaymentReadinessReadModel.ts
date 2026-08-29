@@ -2,6 +2,8 @@ import {
   FINANCE_PAYMENT_READINESS_CONTRACT_VERSION,
   FINANCE_PAYMENT_READINESS_METHODS,
   createFinancePaymentReadinessSnapshot,
+  resolveFinanceOnlineCardReadiness,
+  type FinanceOnlineCardReadinessEvidence,
   type FinancePaymentReadinessMethod,
   type FinancePaymentReadinessReadPort,
 } from "@vayada/domain-finance";
@@ -31,6 +33,25 @@ type PaymentSettingsRow = {
   sourcePricingCurrencyRevision: unknown;
   currency: unknown;
   acceptedMethods: unknown;
+  onlineCardCurrencyEligible: unknown;
+  providerAccountId: unknown;
+  provider: unknown;
+  providerAccountScope: unknown;
+  providerBindingActive: unknown;
+  providerStatus: unknown;
+  providerOnboardingStatus: unknown;
+  providerChargesEnabled: unknown;
+  providerPayoutsEnabled: unknown;
+  providerDetailsSubmitted: unknown;
+  providerCardPaymentsStatus: unknown;
+  providerCapabilities: unknown;
+  providerCardCapabilityRevision: unknown;
+  propertyReadinessRevision: unknown;
+  executionEvidenceContractVersion: unknown;
+  executionEvidenceProviderAccountId: unknown;
+  executionEvidenceCapabilityRevision: unknown;
+  executionEvidencePropertyReadinessRevision: unknown;
+  executionEvidenceRevokedAt: unknown;
   updatedAt: unknown;
 };
 
@@ -43,8 +64,32 @@ const READINESS_SQL = `SELECT
   settings.source_pricing_currency_revision AS "sourcePricingCurrencyRevision",
   settings.default_currency::text AS currency,
   settings.accepted_methods AS "acceptedMethods",
+  online_card.currency_eligible AS "onlineCardCurrencyEligible",
+  online_card.provider_account_id::text AS "providerAccountId",
+  online_card.provider,
+  online_card.account_scope AS "providerAccountScope",
+  online_card.provider_binding_active AS "providerBindingActive",
+  online_card.provider_status AS "providerStatus",
+  online_card.provider_onboarding_status AS "providerOnboardingStatus",
+  online_card.charges_enabled AS "providerChargesEnabled",
+  online_card.payouts_enabled AS "providerPayoutsEnabled",
+  online_card.details_submitted AS "providerDetailsSubmitted",
+  online_card.card_payments_status AS "providerCardPaymentsStatus",
+  online_card.capabilities AS "providerCapabilities",
+  online_card.card_capability_revision AS "providerCardCapabilityRevision",
+  online_card.property_readiness_revision AS "propertyReadinessRevision",
+  online_card.execution_evidence_contract_version AS "executionEvidenceContractVersion",
+  online_card.execution_evidence_provider_account_id::text
+    AS "executionEvidenceProviderAccountId",
+  online_card.execution_evidence_capability_revision
+    AS "executionEvidenceCapabilityRevision",
+  online_card.execution_evidence_property_readiness_revision
+    AS "executionEvidencePropertyReadinessRevision",
+  online_card.execution_evidence_revoked_at AS "executionEvidenceRevokedAt",
   settings.updated_at AS "updatedAt"
 FROM finance.payment_settings settings
+LEFT JOIN finance.online_card_readiness online_card
+  ON online_card.property_id = settings.property_id
 WHERE settings.property_id = $2::uuid
   AND settings.payment_methods_revision IS NOT NULL
   AND EXISTS (
@@ -150,6 +195,7 @@ export function createPgFinancePaymentReadinessReadModel(config: {
               pricingCurrencyRevision: current.pricingCurrencyRevision,
             }
           : null,
+        onlineCardReadiness: resolveFinanceOnlineCardReadiness(onlineCardEvidence(row)),
         updatedAt: stored.updatedAt,
       });
     },
@@ -161,6 +207,42 @@ export function createPgFinancePaymentReadinessReadModel(config: {
       closed = true;
     },
   };
+}
+
+function onlineCardEvidence(row: PaymentSettingsRow): FinanceOnlineCardReadinessEvidence {
+  const providerAccount =
+    typeof row.providerAccountId === "string"
+      ? {
+          id: row.providerAccountId,
+          provider: row.provider,
+          accountScope: row.providerAccountScope,
+          providerBindingActive: row.providerBindingActive,
+          status: row.providerStatus,
+          onboardingStatus: row.providerOnboardingStatus,
+          chargesEnabled: row.providerChargesEnabled,
+          payoutsEnabled: row.providerPayoutsEnabled,
+          detailsSubmitted: row.providerDetailsSubmitted,
+          cardPaymentsStatus: row.providerCardPaymentsStatus,
+          capabilities: row.providerCapabilities,
+          cardCapabilityRevision: integer(row.providerCardCapabilityRevision),
+        }
+      : null;
+  const executionEvidence =
+    typeof row.executionEvidenceProviderAccountId === "string"
+      ? {
+          contractVersion: row.executionEvidenceContractVersion,
+          providerAccountId: row.executionEvidenceProviderAccountId,
+          providerCapabilityRevision: integer(row.executionEvidenceCapabilityRevision),
+          propertyReadinessRevision: integer(row.executionEvidencePropertyReadinessRevision),
+          revokedAt: storedDate(row.executionEvidenceRevokedAt),
+        }
+      : null;
+  return {
+    currencyEligible: row.onlineCardCurrencyEligible,
+    propertyReadinessRevision: integer(row.propertyReadinessRevision),
+    providerAccount,
+    executionEvidence,
+  } as FinanceOnlineCardReadinessEvidence;
 }
 
 function storedConfiguration(row: PaymentSettingsRow, propertyId: string) {
@@ -213,6 +295,22 @@ function positiveInteger(value: unknown): number | null {
         ? Number(value)
         : NaN;
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 2_147_483_647 ? parsed : null;
+}
+
+function integer(value: unknown): number {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && /^\d+$/.test(value)
+        ? Number(value)
+        : NaN;
+  return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= 2_147_483_647 ? parsed : -1;
+}
+
+function storedDate(value: unknown): string | null {
+  if (value === null) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? "invalid" : value.toISOString();
+  return typeof value === "string" ? value : "invalid";
 }
 
 function isoDate(value: unknown): string | null {

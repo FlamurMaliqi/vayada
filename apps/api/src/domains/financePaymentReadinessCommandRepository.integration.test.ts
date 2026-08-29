@@ -15,6 +15,7 @@ const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const actorUserId = "10640000-0000-4000-8000-000000000001";
 const organizationId = "10640000-0000-4000-8000-000000000002";
 const propertyId = "10640000-0000-4000-8000-000000000003";
+const providerAccountId = "10640000-0000-4000-8000-000000000004";
 const acceptedAt = "2026-08-04T10:00:00.000Z";
 const pricing = {
   contractVersion: PMS_PRICING_CONTRACT_VERSION,
@@ -164,6 +165,108 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Finance payment-readiness comman
       requiresManualReview: true,
     });
     await expect(eventOutcomes()).resolves.toEqual(["readiness_gained", "readiness_lost"]);
+  });
+
+  it("recomputes card readiness after moving from a supported to unsupported currency", async () => {
+    await seedOnlineCardState({ financeCurrency: "EUR", pmsCurrency: "KWD", pmsRevision: 8 });
+    const result = await repository.replacePaymentMethods({
+      command: command("currency-becomes-unsupported", {
+        expectedPaymentMethodsRevision: 1,
+        expectedPricingCurrencyRevision: 8,
+        selectedMethods: ["card"],
+      }),
+      currentPricing: { ...pricing, currency: "KWD", pricingCurrencyRevision: 8 },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      response: {
+        paymentReadiness: {
+          bookingPaymentReady: false,
+          methods: expect.arrayContaining([
+            expect.any(Object),
+            expect.objectContaining({
+              method: "card",
+              readiness: "unready",
+              blockers: ["online_card_currency_unsupported"],
+            }),
+          ]),
+        },
+      },
+    });
+    await expect(eventOutcomes()).resolves.toEqual(["selection_changed"]);
+  });
+
+  it("requires new execution evidence after moving to a supported currency", async () => {
+    await seedOnlineCardState({ financeCurrency: "KWD", pmsCurrency: "EUR", pmsRevision: 7 });
+    const result = await repository.replacePaymentMethods({
+      command: command("currency-becomes-supported", {
+        expectedPaymentMethodsRevision: 1,
+        selectedMethods: ["card"],
+      }),
+      currentPricing: pricing,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      response: {
+        paymentReadiness: {
+          bookingPaymentReady: false,
+          methods: expect.arrayContaining([
+            expect.any(Object),
+            expect.objectContaining({
+              method: "card",
+              readiness: "unready",
+              blockers: ["online_card_execution_unavailable"],
+            }),
+          ]),
+        },
+      },
+    });
+    await expect(eventOutcomes()).resolves.toEqual(["selection_changed"]);
+  });
+
+  it("suppresses a published card in the same transaction when canonical selection removes it", async () => {
+    await seedOnlineCardState({ financeCurrency: "EUR", pmsCurrency: "EUR", pmsRevision: 7 });
+    await seedPublishedCard();
+
+    const result = await repository.replacePaymentMethods({
+      command: command("remove-card", {
+        expectedPaymentMethodsRevision: 1,
+        selectedMethods: ["pay_at_property"],
+      }),
+      currentPricing: pricing,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      response: {
+        paymentReadiness: {
+          bookingPaymentReady: true,
+          methods: expect.arrayContaining([
+            expect.objectContaining({ method: "pay_at_property", readiness: "ready" }),
+          ]),
+        },
+      },
+    });
+    const projection = await admin.query<{ capabilities: unknown }>(
+      `SELECT capabilities FROM distribution.public_hotel_bookability_profiles
+       WHERE property_id = $1::uuid`,
+      [propertyId],
+    );
+    expect(projection.rows[0]?.capabilities).toMatchObject({
+      onlinePayment: false,
+      payAtProperty: true,
+      paymentMethods: ["pay_at_property"],
+    });
+    const loss = await admin.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM platform.domain_events
+       WHERE property_id = $1::uuid
+         AND event_type = 'finance.online_card_readiness.changed'
+         AND payload ->> 'outcome' = 'readiness_lost'`,
+      [propertyId],
+    );
+    expect(loss.rows[0]?.count).toBe(1);
   });
 
   it("records unavailable methods once and rejects changed-key reuse without events", async () => {
@@ -442,6 +545,97 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Finance payment-readiness comman
     );
   }
 
+  async function seedOnlineCardState(input: {
+    financeCurrency: string;
+    pmsCurrency: string;
+    pmsRevision: number;
+  }): Promise<void> {
+    await admin.query("BEGIN");
+    try {
+      await admin.query("SET LOCAL session_replication_role = replica");
+      await admin.query(
+        `UPDATE pms.property_pricing_settings
+         SET currency = $2, pricing_currency_revision = $3
+         WHERE property_id = $1::uuid`,
+        [propertyId, input.pmsCurrency, input.pmsRevision],
+      );
+      await admin.query(
+        `INSERT INTO finance.payment_provider_accounts (
+           id, property_id, account_scope, provider, provider_account_id,
+           status, onboarding_status, charges_enabled, payouts_enabled,
+           default_currency, capabilities, account_metadata, card_capability_revision
+         ) VALUES (
+           $1::uuid, $2::uuid, 'property', 'stripe', $3,
+           'active', 'completed', TRUE, TRUE, $4, ARRAY['card_payments'],
+           '{"detailsSubmitted":true,"cardPaymentsStatus":"active"}'::jsonb, 7
+         )`,
+        [
+          providerAccountId,
+          propertyId,
+          `acct-vay-1345-${providerAccountId}`,
+          input.financeCurrency,
+        ],
+      );
+      await admin.query(
+        `INSERT INTO finance.payment_settings (
+           property_id, provider_account_id, payments_enabled, accepted_methods,
+           default_currency, payment_readiness_contract_version,
+           payment_methods_revision, source_pricing_currency_revision
+         ) VALUES (
+           $1::uuid, $2::uuid, TRUE, ARRAY['card'], $3,
+           'finance-payment-readiness.v1', 1, 7
+         )`,
+        [propertyId, providerAccountId, input.financeCurrency],
+      );
+      await admin.query("COMMIT");
+    } catch (error) {
+      await admin.query("ROLLBACK");
+      throw error;
+    }
+    await admin.query(
+      `INSERT INTO finance.online_card_execution_evidence (
+         property_id, provider_account_id, contract_version, test_suite,
+         provider_capability_revision, property_readiness_revision, evidence_fingerprint_hash,
+         executed_at, accepted_at, accepted_by_organization_id, accepted_by_user_id
+       ) VALUES (
+         $1::uuid, $2::uuid, 'finance-online-card-execution-evidence.v1', 'onb-25a',
+         7, 1, $3, '2026-08-04T09:00:00Z', '2026-08-04T09:05:00Z', $4::uuid, $5::uuid
+       )`,
+      [propertyId, providerAccountId, "9".repeat(64), organizationId, actorUserId],
+    );
+  }
+
+  async function seedPublishedCard(): Promise<void> {
+    await admin.query(
+      `INSERT INTO booking.booking_settings (
+         property_id, default_currency, default_language, supported_languages,
+         acceptance_mode
+       ) VALUES ($1::uuid, 'EUR', 'en', ARRAY['en'], 'instant')`,
+      [propertyId],
+    );
+    await admin.query(
+      `INSERT INTO hotel_catalog.property_public_profile_read_model (
+         property_id, public_id, display_name, canonical_slug,
+         default_locale, supported_locales, profile_status
+       ) VALUES ($1::uuid, 'vay1064', 'VAY-1064', 'vay1064', 'en', ARRAY['en'], 'complete')`,
+      [propertyId],
+    );
+    await admin.query(
+      `INSERT INTO distribution.public_hotel_bookability_profiles (
+         property_id, finance_payment_settings_property_id, public_id, canonical_slug,
+         canonical_url, booking_base_url, timezone, default_locale, supported_locales,
+         default_currency, supported_currencies, profile_status, freshness_status,
+         capabilities
+       ) VALUES (
+         $1::uuid, $1::uuid, 'vay1064', 'vay1064',
+         'https://booking.example.test/vay1064', 'https://booking.example.test',
+         'Europe/Berlin', 'en', ARRAY['en'], 'EUR', ARRAY['EUR'], 'public', 'fresh',
+         '{"onlinePayment":true,"payAtProperty":true,"paymentMethods":["card","pay_at_property"]}'::jsonb
+       )`,
+      [propertyId],
+    );
+  }
+
   async function cleanup(): Promise<void> {
     await admin.query("BEGIN");
     try {
@@ -451,8 +645,13 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL Finance payment-readiness comman
         "DELETE FROM platform.outbox_events WHERE property_id = $1::uuid",
         "DELETE FROM platform.domain_events WHERE property_id = $1::uuid",
         "DELETE FROM platform.idempotency_keys WHERE property_id = $1::uuid",
+        "DELETE FROM distribution.public_hotel_bookability_profiles WHERE property_id = $1::uuid",
+        "DELETE FROM finance.online_card_execution_evidence WHERE property_id = $1::uuid",
         "DELETE FROM finance.payment_settings WHERE property_id = $1::uuid",
+        "DELETE FROM finance.payment_provider_accounts WHERE property_id = $1::uuid",
         "DELETE FROM pms.property_pricing_settings WHERE property_id = $1::uuid",
+        "DELETE FROM booking.booking_settings WHERE property_id = $1::uuid",
+        "DELETE FROM hotel_catalog.property_public_profile_read_model WHERE property_id = $1::uuid",
       ]) {
         await admin.query(statement, [propertyId]);
       }

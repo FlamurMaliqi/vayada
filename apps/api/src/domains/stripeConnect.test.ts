@@ -5,7 +5,12 @@ import { createStripeConnectProvider } from "./stripeConnect.js";
 
 describe("Stripe Connect provider", () => {
   it("creates an Express account and issues a Marketplace onboarding link", async () => {
-    const calls: Array<{ url: string; body: URLSearchParams; key: string | null }> = [];
+    const calls: Array<{
+      url: string;
+      body: URLSearchParams;
+      key: string | null;
+      signal: AbortSignal | null;
+    }> = [];
     const provider = createStripeConnectProvider({
       secretKey: "sk_test",
       returnBaseUrls: {
@@ -17,6 +22,7 @@ describe("Stripe Connect provider", () => {
           url: String(input),
           body: new URLSearchParams(String(init?.body ?? "")),
           key: new Headers(init?.headers).get("Idempotency-Key"),
+          signal: init?.signal ?? null,
         });
         const url = String(input);
         if (url.includes("acct_deleted")) {
@@ -77,6 +83,7 @@ describe("Stripe Connect provider", () => {
     );
     expect(calls[3]?.url).toMatch(/\/accounts\/acct_property_1\/login_links$/);
     expect(calls[3]?.key).toBeNull();
+    expect(calls.every(({ signal }) => signal instanceof AbortSignal)).toBe(true);
 
     await expect(
       provider.retrieveAccount({ providerAccountRef: "acct_property_1" }),
@@ -92,5 +99,39 @@ describe("Stripe Connect provider", () => {
     await expect(
       provider.createLoginLink({ providerAccountRef: "acct_deleted" }),
     ).rejects.toBeInstanceOf(StripeConnectAccountNotFoundError);
+    await expect(
+      provider.compensateAccountCreation!({
+        owner: { ownerScope: "property", propertyId: "property-1", organizationId: "org-1" },
+        providerAccountRef: "acct_deleted",
+        reason: "db_write_failed",
+        idempotencyKey: "connect-property-1-compensate",
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("aborts stalled Stripe requests at the configured deadline", async () => {
+    const provider = createStripeConnectProvider({
+      secretKey: "sk_test",
+      returnBaseUrls: {
+        marketplace: "https://marketplace.test",
+        bookingAdmin: "https://admin.booking.test",
+      },
+      requestTimeoutMs: 5,
+      fetch: async (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          });
+        }),
+    });
+
+    await expect(
+      provider.compensateAccountCreation!({
+        owner: { ownerScope: "property", propertyId: "property-1", organizationId: "org-1" },
+        providerAccountRef: "acct_stalled",
+        reason: "db_write_failed",
+        idempotencyKey: "connect-property-1-compensate",
+      }),
+    ).rejects.toMatchObject({ name: "TimeoutError" });
   });
 });

@@ -15,6 +15,7 @@ export const FINANCE_PAYMENT_READINESS_BLOCKERS = [
   "pricing_currency_unavailable",
   "pricing_currency_mismatch",
   "online_card_execution_unavailable",
+  "online_card_currency_unsupported",
   "provider_restricted",
   "provider_capability_lost",
   "bank_transfer_contract_unavailable",
@@ -75,7 +76,48 @@ export type FinancePaymentReadinessInput = Readonly<{
   selectedMethods: readonly FinancePaymentReadinessMethod[];
   committedPricing: FinancePricingCurrencyEvidence | null;
   currentPricing: FinancePricingCurrencyEvidence | null;
+  onlineCardReadiness: FinanceOnlineCardReadinessDecision;
   updatedAt: string | null;
+}>;
+
+export const FINANCE_ONLINE_CARD_EXECUTION_EVIDENCE_CONTRACT_VERSION =
+  "finance-online-card-execution-evidence.v1" as const;
+
+export const FINANCE_ONLINE_CARD_READINESS_DECISIONS = [
+  "ready",
+  "execution_unavailable",
+  "currency_unsupported",
+  "provider_restricted",
+  "provider_capability_lost",
+] as const;
+
+export type FinanceOnlineCardReadinessDecision =
+  (typeof FINANCE_ONLINE_CARD_READINESS_DECISIONS)[number];
+
+export type FinanceOnlineCardReadinessEvidence = Readonly<{
+  currencyEligible: boolean;
+  propertyReadinessRevision: number;
+  providerAccount: Readonly<{
+    id: string;
+    provider: string;
+    accountScope: string;
+    providerBindingActive: boolean;
+    status: string;
+    onboardingStatus: string;
+    chargesEnabled: boolean;
+    payoutsEnabled: boolean;
+    detailsSubmitted: boolean;
+    cardPaymentsStatus: string | null;
+    capabilities: readonly string[];
+    cardCapabilityRevision: number;
+  }> | null;
+  executionEvidence: Readonly<{
+    contractVersion: string;
+    providerAccountId: string;
+    providerCapabilityRevision: number;
+    propertyReadinessRevision: number;
+    revokedAt: string | null;
+  }> | null;
 }>;
 
 export type FinancePricingCurrencyEvidence = Readonly<{

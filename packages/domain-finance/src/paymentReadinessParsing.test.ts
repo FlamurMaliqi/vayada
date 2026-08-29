@@ -23,6 +23,7 @@ function snapshot() {
       currency: "EUR",
       pricingCurrencyRevision: 4,
     },
+    onlineCardReadiness: "execution_unavailable",
     updatedAt: now,
   });
 }

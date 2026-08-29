@@ -254,6 +254,7 @@ function finance(paymentMethodsRevision = 3) {
       currency: "EUR",
       pricingCurrencyRevision: 2,
     },
+    onlineCardReadiness: "execution_unavailable",
     updatedAt: now,
   });
 }
