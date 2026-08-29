@@ -50,8 +50,20 @@ export type MembershipPropertyScope = {
   permissionOverrides?: unknown;
 };
 
+export type PropertyAccessContext = {
+  actor: Pick<RequestContext["actor"], "internalUserId" | "status">;
+  selectedOrganization: Pick<
+    RequestContext["selectedOrganization"],
+    "organizationId" | "kind" | "status"
+  >;
+  membership: Pick<RequestContext["membership"], "membershipId" | "roleKey" | "status">;
+  linkedResources: RequestContext["linkedResources"];
+};
+
 export type PropertyAccessRepository = {
-  findMembershipPropertyScope(context: RequestContext): Promise<MembershipPropertyScope | null>;
+  findMembershipPropertyScope(
+    context: PropertyAccessContext,
+  ): Promise<MembershipPropertyScope | null>;
   recordInvalidPermissionOverride?(
     context: RequestContext,
     issueCodes: readonly string[],
@@ -391,7 +403,7 @@ export function createAuthorizationResolver(
 }
 
 function isAgencyMembershipScope(
-  context: RequestContext,
+  context: PropertyAccessContext,
   scope: MembershipPropertyScope | null | undefined,
 ): scope is MembershipPropertyScope & { mode: "all" | "assigned" } {
   return (
@@ -422,7 +434,7 @@ export function hasActiveLinkedResource(
 }
 
 export async function resolveEffectivePropertyAccess(
-  context: RequestContext,
+  context: PropertyAccessContext,
   repository: PropertyAccessRepository,
   allowedRelationships: readonly ResourceRelationship[] = ["owner", "operator"],
 ): Promise<EffectivePropertyAccess | null> {

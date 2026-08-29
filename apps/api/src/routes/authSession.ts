@@ -2,7 +2,9 @@ import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from
 import type {
   IdentityLifecycleCommandBus,
   IdentityLifecycleCommandResult,
+  IdentityMembership,
   IdentityMembershipOrganization,
+  IdentityOrganization,
   IdentityResourceLink,
   IdentityRepository,
   IdentityUser,
@@ -14,6 +16,11 @@ import type {
   TokenVerifier,
 } from "@vayada/backend-auth";
 import { membershipPropertyAccessModeForProvisioning } from "@vayada/backend-auth";
+import {
+  resolveEffectivePropertyAccess,
+  type PropertyAccessContext,
+  type PropertyAccessRepository,
+} from "@vayada/backend-authorization";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 
 import { mapWorkOSAuthError } from "../platform/workosAuthState.js";
@@ -177,6 +184,7 @@ export type AuthSessionRouteOptions = {
   profileImageMediaRepository?: ApprovedPublicProfileImageRepository;
   hotelAccountInviteOnboarding?: Pick<HotelAccountInviteRepository, "resolveForOnboarding">;
   handoffRepository?: AuthSessionHandoffRepository;
+  propertyAccessRepository?: PropertyAccessRepository;
 };
 
 const SESSION_COOKIE = "vayada_workos_session";
@@ -3047,6 +3055,9 @@ async function resolveOrganizationAccess(
   surfacePolicy: AuthSurfacePolicy,
   accessOptions: OrganizationAccessOptions = {},
 ): Promise<Omit<IdentityResolution, "user">> {
+  if (user.status !== "active") {
+    throw new AuthAuthorizationError("User account is not active");
+  }
   if (!session.organizationId) {
     if (!accessOptions.skipSelection) {
       return resolveSelectableOrganization(session, user, options, surfacePolicy, accessOptions);
@@ -3112,11 +3123,28 @@ async function resolveOrganizationAccess(
   }
   if (surfacePolicy.requiredResourceLink) {
     const links = await options.identityRepository.findLinkedResources(organization.organizationId);
+    if (organization.kind === "hotel_group") {
+      const resourceIds = await resolveHotelPropertyResourceIds(
+        user,
+        organization,
+        membership,
+        links,
+        surfacePolicy.requiredResourceLink,
+        options.propertyAccessRepository,
+      );
+      if (resourceIds.length === 0 && accessOptions.requireResourceLink) {
+        throw missingResourceLinkError(surfacePolicy.requiredResourceLink);
+      }
+      return {
+        session,
+        organizationId: organization.organizationId,
+        organizationKind: organization.kind,
+        resourceScope: { ...surfacePolicy.requiredResourceLink, resourceIds },
+      };
+    }
     const matchingLinks = findRequiredResourceLinks(links, surfacePolicy.requiredResourceLink);
     if (matchingLinks.length === 0 && accessOptions.requireResourceLink) {
-      throw new AuthAuthorizationError(
-        `Selected organization is missing an active ${surfacePolicy.requiredResourceLink.product}/${surfacePolicy.requiredResourceLink.resourceType} resource link`,
-      );
+      throw missingResourceLinkError(surfacePolicy.requiredResourceLink);
     }
     if (matchingLinks.length === 0) {
       return {
@@ -3140,6 +3168,56 @@ async function resolveOrganizationAccess(
     organizationId: organization.organizationId,
     organizationKind: organization.kind,
   };
+}
+
+async function resolveHotelPropertyResourceIds(
+  user: IdentityUser,
+  organization: IdentityOrganization,
+  membership: IdentityMembership,
+  links: IdentityResourceLink[],
+  required: RequiredResourceLink,
+  repository: PropertyAccessRepository | undefined,
+): Promise<string[]> {
+  if (!repository) {
+    throw new Error("AuthKit session was rejected.");
+  }
+  let access: Awaited<ReturnType<typeof resolveEffectivePropertyAccess>>;
+  try {
+    access = await resolveEffectivePropertyAccess(
+      {
+        actor: { internalUserId: user.userId, status: user.status },
+        selectedOrganization: {
+          organizationId: organization.organizationId,
+          kind: organization.kind,
+          status: organization.status,
+        },
+        membership: {
+          membershipId: membership.membershipId,
+          roleKey: membership.roleKey,
+          status: membership.status,
+        },
+        linkedResources: links as PropertyAccessContext["linkedResources"],
+      } satisfies PropertyAccessContext,
+      repository,
+    );
+  } catch (cause) {
+    throw new Error("AuthKit session was rejected.", { cause });
+  }
+  if (!access) {
+    throw new AuthAuthorizationError("Property access is not active");
+  }
+  const targetIds = new Set(
+    findRequiredResourceLinks(links, required)
+      .filter((link) => link.relationship === "owner" || link.relationship === "operator")
+      .map((link) => link.resourceId),
+  );
+  return access.propertyIds.filter((propertyId) => targetIds.has(propertyId));
+}
+
+function missingResourceLinkError(required: RequiredResourceLink): AuthAuthorizationError {
+  return new AuthAuthorizationError(
+    `Selected organization is missing an active ${required.product}/${required.resourceType} resource link`,
+  );
 }
 
 class OrganizationSelectionRequiredError extends Error {
