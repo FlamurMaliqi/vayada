@@ -50,20 +50,21 @@ function createHarness(total = "0", resolvedPropertyId?: string) {
   };
 }
 
-function expectCanonicalFirstScope(text: string) {
-  expect(text).toContain("SELECT property.id AS property_id, 0 AS precedence");
+function expectUnambiguousAliasScope(text: string) {
+  expect(text).toContain("SELECT property.id AS property_id");
   expect(text).toContain("FROM hotel_catalog.properties property");
   expect(text).toContain("WHERE property.id::text = $1");
-  expect(text).toContain("SELECT source.property_id, 1 AS precedence");
+  expect(text).toContain("UNION\n    SELECT source.property_id");
   expect(text).toContain("source.source_table = 'booking_hotels'");
   expect(text).toContain("source.source_id = $1");
-  expect(text).toContain("ORDER BY precedence");
+  expect(text).toContain("HAVING COUNT(*) = 1");
+  expect(text).not.toContain("LIMIT 1");
   expect(text).not.toContain("$1::uuid");
 }
 
 function expectExactCanonicalScope(text: string) {
-  expect(text).toContain("SELECT property.id AS property_id");
-  expect(text).toContain("WHERE property.id = $1::uuid");
+  expect(text).toContain("booking.property_id = $1::uuid");
+  expect(text).not.toContain("scoped_property");
   expect(text).not.toContain("property_source_links");
 }
 
@@ -83,23 +84,6 @@ describe("target Booking reservations property scope", () => {
     }
   });
 
-  it("resolves an active legacy booking hotel source link", async () => {
-    const legacyHotelId = "booking_hotel_alpenrose";
-    const propertyId = "7a9333c2-f275-4571-8078-6a334e0fc28d";
-    const harness = createHarness("0", propertyId);
-
-    await expect(harness.repository.resolveCanonicalPropertyId(legacyHotelId)).resolves.toBe(
-      propertyId,
-    );
-
-    expect(harness.queries).toHaveLength(1);
-    expectCanonicalFirstScope(harness.queries[0]!.text);
-    expect(harness.queries[0]!.text).toContain("source.source_system = 'booking'");
-    expect(harness.queries[0]!.text).toContain("source.relationship = 'canonical_input'");
-    expect(harness.queries[0]!.text).toContain("source.status = 'active'");
-    expect(harness.queries[0]!.values?.[0]).toBe(legacyHotelId);
-  });
-
   it("resolves a legacy alias once before reading the authorized canonical property", async () => {
     const legacyHotelId = "booking_hotel_alpenrose";
     const propertyId = "7a9333c2-f275-4571-8078-6a334e0fc28d";
@@ -111,8 +95,11 @@ describe("target Booking reservations property scope", () => {
     await harness.repository.listReservationsByPropertyId(propertyId, defaultFilters);
 
     expect(harness.queries).toHaveLength(3);
-    expect(harness.queries[0]!.values).toEqual([legacyHotelId]);
-    expectCanonicalFirstScope(harness.queries[0]!.text);
+    expectUnambiguousAliasScope(harness.queries[0]!.text);
+    expect(harness.queries[0]!.text).toContain("source.source_system = 'booking'");
+    expect(harness.queries[0]!.text).toContain("source.relationship = 'canonical_input'");
+    expect(harness.queries[0]!.text).toContain("source.status = 'active'");
+    expect(harness.queries[0]!.values?.[0]).toBe(legacyHotelId);
     for (const query of harness.queries.slice(1)) {
       expect(query.values?.[0]).toBe(propertyId);
       expectExactCanonicalScope(query.text);
@@ -158,9 +145,7 @@ describe("target Booking reservations property scope", () => {
     expect(countQuery).toBeDefined();
     if (!listQuery || !countQuery) return;
 
-    const listCte = listQuery.text.slice(0, listQuery.text.indexOf("\n           SELECT"));
-    const countCte = countQuery.text.slice(0, countQuery.text.indexOf("\n           SELECT"));
-    expect(listCte).toBe(countCte);
+    for (const query of [listQuery, countQuery]) expectExactCanonicalScope(query.text);
     expect(listQuery.values?.slice(0, -2)).toEqual(countQuery.values);
     expect(countQuery.values).toEqual([propertyId, "confirmed", "%Ada%"]);
     expect(listQuery.values).toEqual([propertyId, "confirmed", "%Ada%", 25, 5]);

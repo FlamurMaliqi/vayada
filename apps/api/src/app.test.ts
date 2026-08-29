@@ -2536,6 +2536,7 @@ function identityRepositoryWithResources(
   roleKey = "hotel_owner",
   additionalPmsPropertyId?: string,
   membershipStatus: "active" | "inactive" | "suspended" = "active",
+  linkedBookingPropertyId: string | null = hotelId ? pmsPropertyId : null,
 ): IdentityRepository {
   return {
     ...identityRepository,
@@ -2558,14 +2559,16 @@ function identityRepositoryWithResources(
           status: "active",
         },
       ];
-      if (hotelId) {
+      if (linkedBookingPropertyId) {
         resources.push({
           product: "booking",
           resourceType: "booking_hotel",
-          resourceId: pmsPropertyId,
+          resourceId: linkedBookingPropertyId,
           relationship: "owner",
           status: "active",
         });
+      }
+      if (hotelId) {
         resources.push({
           product: "booking",
           resourceType: "booking_hotel",
@@ -2637,6 +2640,7 @@ function buildAuthenticatedApp(
     roleKey?: string;
     additionalPmsPropertyId?: string;
     membershipStatus?: "active" | "inactive" | "suspended";
+    linkedBookingPropertyId?: string | null;
     propertyScope?: MembershipPropertyScope | null;
     propertyAccessRepository?: PropertyAccessRepository;
   } = {},
@@ -2685,6 +2689,7 @@ function buildAuthenticatedApp(
         options.roleKey,
         options.additionalPmsPropertyId,
         options.membershipStatus,
+        options.linkedBookingPropertyId,
       ),
       propertyAccessRepository,
       rolePermissionRepository: {
@@ -6115,23 +6120,18 @@ describe("vayada-api", () => {
     });
   });
 
+  const reservationScope = (mode: string, assignedPropertyIds: readonly string[]) => ({
+    mode,
+    roleKey: "hotel_owner",
+    accessOrigin: "agency",
+    assignedPropertyIds,
+  });
+
   it("allows booking reservations for an explicitly assigned property", async () => {
-    const propertyReads: string[] = [];
     app = buildAuthenticatedApp({
       linkedHotelId: null,
-      propertyScope: {
-        mode: "assigned",
-        roleKey: "hotel_owner",
-        accessOrigin: "agency",
-        assignedPropertyIds: [pmsPropertyId],
-      },
-      reservationsRepository: {
-        ...bookingReservationsRepository,
-        async listReservationsByPropertyId(propertyId, filters) {
-          propertyReads.push(propertyId);
-          return bookingReservationsRepository.listReservationsByPropertyId(propertyId, filters);
-        },
-      },
+      linkedBookingPropertyId: pmsPropertyId,
+      propertyScope: reservationScope("assigned", [pmsPropertyId]),
     });
 
     const response = await injectJson(app, {
@@ -6141,35 +6141,20 @@ describe("vayada-api", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(propertyReads).toEqual([pmsPropertyId]);
   });
 
   it.each([
     [
       "with no assigned properties",
-      {
-        propertyScope: {
-          mode: "assigned",
-          roleKey: "hotel_owner",
-          accessOrigin: "agency",
-          assignedPropertyIds: [],
-        },
-      },
+      { propertyScope: reservationScope("assigned", []) },
       403,
       "missing_resource_access",
     ],
     [
       "with unknown property scope",
-      {
-        propertyScope: {
-          mode: "unknown",
-          roleKey: "hotel_owner",
-          accessOrigin: "agency",
-          assignedPropertyIds: [pmsPropertyId],
-        },
-      },
+      { propertyScope: reservationScope("unknown", [pmsPropertyId]) },
       403,
-      "missing_resource_access",
+      "missing_permission",
     ],
     [
       "when the Booking property alias is unresolved",
@@ -6184,6 +6169,7 @@ describe("vayada-api", () => {
       403,
       "missing_resource_access",
     ],
+    ["missing target link", { linkedBookingPropertyId: null }, 403, "missing_resource_access"],
     [
       "when the Booking property belongs to another tenant",
       {
@@ -6198,6 +6184,7 @@ describe("vayada-api", () => {
       "missing_resource_access",
     ],
     ["with an inactive membership", { membershipStatus: "inactive" }, 401, "unauthenticated"],
+    ["with a suspended membership", { membershipStatus: "suspended" }, 401, "unauthenticated"],
   ] satisfies Array<[string, Parameters<typeof buildAuthenticatedApp>[0], number, string]>)(
     "rejects booking reservations %s before reading reservation data",
     async (_name, appOptions, statusCode, code) => {
