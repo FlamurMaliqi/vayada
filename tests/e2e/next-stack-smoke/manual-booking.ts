@@ -219,7 +219,7 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
 
     await page.getByText("Vera Acceptance", { exact: true }).first().click();
     await expect(page.getByText("Expected payment method", { exact: true })).toBeVisible();
-    await expect(page.getByText("Bank transfer", { exact: true })).toBeVisible();
+    await expect(page.getByText("Bank Transfer", { exact: true })).toBeVisible();
     await expect(page.getByText("Payment recorded", { exact: true })).toBeVisible();
     await page.goto(`${NEXT_STACK_ORIGINS.pms}/bookings/${bookingId}`);
     await expect(page.getByText("Quiet room near the lift", { exact: true })).toBeVisible();
@@ -353,7 +353,7 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
     await expect(page.getByRole("combobox", { name: "Nationality" }).first()).toHaveValue(
       "Netherlands",
     );
-    await expect(page.getByText("Bank transfer", { exact: true })).toBeVisible();
+    await expect(page.getByText("Bank Transfer", { exact: true })).toBeVisible();
     await expect(page.getByText("Payment recorded", { exact: true })).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath("manual-booking-check-in.png"),
