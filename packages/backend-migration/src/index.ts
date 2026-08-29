@@ -77,6 +77,22 @@ export {
 } from "./sourceExtraction.js";
 
 export {
+  runProductionIdentityMigration,
+  type ProductionIdentityMigrationReport,
+  type ProductionIdentityMigrationMode,
+} from "./productionIdentityMigration.js";
+export {
+  buildProductionIdentityPlan,
+  type ProductionIdentityExistingState,
+  type ProductionIdentityPlan,
+} from "./productionIdentityPlan.js";
+export {
+  mapProductionLegacyUserStatus,
+  type IdentityMigrationBlocker,
+  type TargetIdentityUserStatus,
+} from "./productionIdentityDisposition.js";
+
+export {
   runParityChecks,
   type ParityCheckSeverity,
   type ParityConfig,
