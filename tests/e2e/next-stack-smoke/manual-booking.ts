@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from "@playwright/test";
+import { paymentMethodLabel } from "@vayada/locale-constants";
 
 import { type BookingResource } from "./booking-lifecycle";
 import {
@@ -415,7 +416,7 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
           paymentGrid
             .getByText("Expected method", { exact: true })
             .locator("..")
-            .getByText(methodLabel(expectedMethod), { exact: true }),
+            .getByText(paymentMethodLabel(expectedMethod), { exact: true }),
         ).toBeVisible();
         await expect(
           paymentGrid
@@ -499,8 +500,4 @@ function futureDate(offset: number): string {
   date.setUTCHours(0, 0, 0, 0);
   date.setUTCDate(date.getUTCDate() + offset);
   return date.toISOString().slice(0, 10);
-}
-
-function methodLabel(value: (typeof METHODS)[number]): string {
-  return value.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
 }
