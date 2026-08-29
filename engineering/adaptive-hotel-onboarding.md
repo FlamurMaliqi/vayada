@@ -251,6 +251,10 @@ GET  /api/hotel-setup/properties/:propertyId/public-profile
 PUT  /api/hotel-setup/properties/:propertyId/public-profile
 ```
 
+`GET /status` uses the membership-scoped, non-editable property-manifest
+baseline defined by [`staff-access-authorization-contract.md`](staff-access-authorization-contract.md);
+it does not authorize sibling profile, catalog, or setup commands.
+
 `@vayada/domain-hotels` is the single wire authority. The API and all three apps
 import its types and runtime parsers.
 
@@ -377,8 +381,9 @@ type PropertyProfileResponse = {
 ```
 
 Shared and public-profile updates require `hotel_catalog.setup.manage`, a direct
-Catalog property link, and `{ expectedProfileRevision, patch }`. Reads require
-`hotel_catalog.setup.read` and the same link. Patches preserve omitted values;
+Catalog property link, and `{ expectedProfileRevision, patch }`. Property-type
+and profile reads require `hotel_catalog.setup.read`; profile reads also require
+the same link. Patches preserve omitted values;
 validation returns `422` with `{ code: "invalid_setup_request", fields }`, and a
 stale revision returns the current revision with `409 profile_revision_conflict`.
 Public-profile patches own localized descriptions and ordered, approved media:
