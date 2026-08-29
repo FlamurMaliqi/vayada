@@ -11119,8 +11119,8 @@ describe("vayada-api", () => {
     expect(historyPages).toHaveLength(2);
   });
 
-  it("reads room-packing settings and history for an assigned operator", async () => {
-    const reads = { settings: 0, history: 0 };
+  it("reads and writes room-packing data for an assigned operator", async () => {
+    const calls = { settingsReads: 0, settingsWrites: 0, historyReads: 0 };
     app = buildAuthenticatedApp({
       permissions: ["pms.operations.manage"],
       entitlements: [{ product: "pms", key: "property-management", status: "active" }],
@@ -11134,16 +11134,21 @@ describe("vayada-api", () => {
       },
       pmsRoomAssignmentSettings: {
         async find(propertyId) {
-          reads.settings += 1;
+          calls.settingsReads += 1;
           return { propertyId, autoRearrangeEnabled: true, updatedAt: null };
         },
-        async update() {
-          throw new Error("room-packing settings write must not run");
+        async update(propertyId, enabled) {
+          calls.settingsWrites += 1;
+          return {
+            propertyId,
+            autoRearrangeEnabled: enabled,
+            updatedAt: "2026-08-18T10:01:00.000Z",
+          };
         },
       },
       pmsRoomAssignmentHistory: {
         async list() {
-          reads.history += 1;
+          calls.historyReads += 1;
           return { items: [], nextCursor: null };
         },
       },
@@ -11154,6 +11159,21 @@ describe("vayada-api", () => {
       url: `/api/pms/properties/${pmsPropertyId}/calendar-settings`,
       headers: { authorization: "Bearer valid-token" },
     });
+    const updated = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-settings`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { autoRearrangeEnabled: false },
+    });
+    const malformed = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-settings`,
+      headers: {
+        authorization: "Bearer valid-token",
+        "content-type": "application/json",
+      },
+      payload: "{not-json",
+    });
     const history = await injectJson(app, {
       method: "GET",
       url: `/api/pms/properties/${pmsPropertyId}/calendar-shuffles`,
@@ -11162,9 +11182,12 @@ describe("vayada-api", () => {
 
     expect(settings.statusCode).toBe(200);
     expect(settings.body).toMatchObject({ autoRearrangeEnabled: true, updatedAt: null });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.body).toMatchObject({ autoRearrangeEnabled: false });
+    expect(malformed.statusCode).toBe(400);
     expect(history.statusCode).toBe(200);
     expect(history.body).toMatchObject({ items: [], nextCursor: null });
-    expect(reads).toEqual({ settings: 1, history: 1 });
+    expect(calls).toEqual({ settingsReads: 1, settingsWrites: 1, historyReads: 1 });
   });
 
   it("sanitizes PMS room shuffle history storage failures", async () => {
@@ -11192,7 +11215,7 @@ describe("vayada-api", () => {
     expect(JSON.stringify(response.body)).not.toContain("sensitive room shuffle history failure");
   });
 
-  it("fails closed across the PMS room-packing read denial matrix", async () => {
+  it("fails closed across the PMS room-packing access denial matrix", async () => {
     type AuthenticatedAppOptions = Parameters<typeof buildAuthenticatedApp>[0];
     const entitlement: ProductEntitlement = {
       product: "pms",
@@ -11230,8 +11253,12 @@ describe("vayada-api", () => {
         code: "unauthenticated",
       },
       {
-        name: "missing permission",
-        appOptions: { permissions: [] },
+        name: "missing permission before unavailable models",
+        appOptions: {
+          permissions: [],
+          pmsRoomAssignmentSettings: undefined,
+          pmsRoomAssignmentHistory: undefined,
+        },
         statusCode: 403,
         code: "missing_permission",
       },
@@ -11326,7 +11353,7 @@ describe("vayada-api", () => {
         name: "malformed assigned scope",
         appOptions: {
           roleKey: "hotel_manager",
-          propertyScope: { ...assignedScope, assignedPropertyIds: ["not-a-property-id"] },
+          propertyScope: { ...assignedScope, assignedPropertyIds: [pmsPropertyId, null as never] },
         },
         statusCode: 403,
         code: "missing_resource_access",
@@ -11392,44 +11419,60 @@ describe("vayada-api", () => {
     const hiddenPropertyDenials = new Set<string>();
 
     for (const candidate of cases) {
-      const reads = { settings: 0, history: 0 };
+      const calls = { settingsReads: 0, settingsWrites: 0, historyReads: 0 };
       app = buildAuthenticatedApp({
         permissions: ["pms.operations.manage"],
         entitlements: [entitlement],
-        ...candidate.appOptions,
         pmsRoomAssignmentSettings: {
           async find() {
-            reads.settings += 1;
+            calls.settingsReads += 1;
             throw new Error("room-packing settings read must not run");
           },
           async update() {
+            calls.settingsWrites += 1;
             throw new Error("room-packing settings write must not run");
           },
         },
         pmsRoomAssignmentHistory: {
           async list() {
-            reads.history += 1;
+            calls.historyReads += 1;
             throw new Error("room-packing history read must not run");
           },
         },
+        ...candidate.appOptions,
       });
       const propertyId = candidate.propertyId ?? pmsPropertyId;
-      for (const route of [
-        "calendar-settings",
-        "calendar-shuffles",
-        "calendar-shuffles?cursor=invalid",
+      for (const requestSpec of [
+        { method: "GET" as const, route: "calendar-settings", payload: undefined },
+        { method: "GET" as const, route: "calendar-shuffles", payload: undefined },
+        {
+          method: "GET" as const,
+          route: "calendar-shuffles?cursor=invalid",
+          payload: undefined,
+        },
+        {
+          method: "PATCH" as const,
+          route: "calendar-settings",
+          payload: { autoRearrangeEnabled: "invalid" },
+        },
+        { method: "PATCH" as const, route: "calendar-settings", payload: "{not-json" },
       ]) {
-        const assertionName = `${candidate.name}: ${route}`;
+        const assertionName = `${candidate.name}: ${requestSpec.method} ${requestSpec.route}${typeof requestSpec.payload === "string" ? " malformed JSON" : ""}`;
         const response = await injectJson(app, {
-          method: "GET",
-          url: `/api/pms/properties/${propertyId}/${route}`,
-          headers:
-            candidate.authorization === null
-              ? undefined
+          method: requestSpec.method,
+          url: `/api/pms/properties/${propertyId}/${requestSpec.route}`,
+          headers: {
+            ...(candidate.authorization === null
+              ? {}
               : {
                   authorization: candidate.authorization ?? "Bearer valid-token",
                   "x-hotel-id": pmsPropertyId,
-                },
+                }),
+            ...(typeof requestSpec.payload === "string"
+              ? { "content-type": "application/json" }
+              : {}),
+          },
+          ...(requestSpec.payload === undefined ? {} : { payload: requestSpec.payload }),
         });
 
         expect(response.statusCode, assertionName).toBe(candidate.statusCode);
@@ -11446,7 +11489,11 @@ describe("vayada-api", () => {
           hiddenPropertyDenials.add(serializedBody);
         }
       }
-      expect(reads, candidate.name).toEqual({ settings: 0, history: 0 });
+      expect(calls, candidate.name).toEqual({
+        settingsReads: 0,
+        settingsWrites: 0,
+        historyReads: 0,
+      });
 
       await app.close();
       app = null;
