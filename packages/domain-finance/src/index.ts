@@ -718,6 +718,7 @@ export type StripeConnectCompensationRequest = {
   providerAccountRef: string;
   reason: "db_write_failed";
   idempotencyKey: string;
+  signal?: AbortSignal;
 };
 
 export type StripeConnectProviderAccount = {

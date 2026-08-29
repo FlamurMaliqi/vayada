@@ -81,7 +81,12 @@ import {
   applyStripeProviderAccountSnapshot,
   type StripeProviderAccountReconciliationState,
 } from "../domains/stripeProviderAccountReconciliation.js";
-import { lockStripeProviderAccountReference } from "../domains/financeStripeProviderAccountReferenceLock.js";
+import {
+  claimStripeProviderAccountCompensation,
+  completeStripeProviderAccountCompensation,
+  lockStripeProviderAccountReference,
+  stripeProviderAccountReferenceIsQuarantined,
+} from "../domains/financeStripeProviderAccountReferenceLock.js";
 import {
   applyFinanceOnlineCardReadinessLoss,
   loadFinanceOnlineCardReadinessState,
@@ -117,6 +122,8 @@ const PROPERTY_PAYOUT_DISPATCH_SIDE_EFFECTS: FinanceCommandMeta["sideEffects"] =
 
 const AFFILIATE_PAYOUT_SETTINGS_SIDE_EFFECTS: FinanceCommandMeta["sideEffects"] = ["audit_event"];
 const PAYMENT_SETTINGS_SIDE_EFFECTS: FinanceCommandMeta["sideEffects"] = ["audit_event"];
+const STRIPE_COMPENSATION_TIMEOUT_MS = 10_000;
+const STRIPE_PROVIDER_ACCOUNT_CREATE_LEASE_MS = 5 * 60_000;
 const STRIPE_DASHBOARD_LINK_RATE_LIMIT = 10;
 const STRIPE_DASHBOARD_LINK_RATE_WINDOW_MS = 60_000;
 
@@ -337,6 +344,7 @@ type FinanceIdempotencyRow = {
   status: string;
   requestFingerprintHash: string;
   idempotencyMetadata: unknown;
+  lastSeenAt?: Date | string | null;
 };
 
 type FinancePropertyPayoutDispatchReadinessRow = {
@@ -1556,12 +1564,13 @@ async function updatePaymentSettingsInClient(
       payload: command.payload,
     }),
   );
-  const commandMeta = buildPaymentSettingsCommandMeta(command);
-  let readinessLost = false;
+  let commandMeta = buildPaymentSettingsCommandMeta(command);
 
   const idempotency = await client.query<{
     inserted: boolean;
     requestFingerprintHash: string;
+    status: string;
+    idempotencyMetadata: unknown;
   }>(
     `INSERT INTO platform.idempotency_keys (
        operation_scope,
@@ -1571,14 +1580,10 @@ async function updatePaymentSettingsInClient(
        status,
        tenant_scope,
        property_id,
-       response_status_code,
-       response_body_hash,
-       response_resource_product,
-       response_resource_type,
-       response_resource_id,
        correlation_id,
+       first_seen_at,
+       last_seen_at,
        expires_at,
-       completed_at,
        idempotency_metadata
      )
      VALUES (
@@ -1586,30 +1591,28 @@ async function updatePaymentSettingsInClient(
        'payment_settings_update',
        $1,
        $2,
-       'completed',
+       'in_progress',
        'property',
        $3::uuid,
-       200,
        $4,
-       'finance',
-       'payment_settings',
-       $3,
-       $5,
-       now() + interval '24 hours',
-       now(),
+       $5::timestamptz,
+       $5::timestamptz,
+       $5::timestamptz + interval '24 hours',
        $6::jsonb
      )
      ON CONFLICT (operation_scope, operation, key_hash, scope_key)
      DO UPDATE SET last_seen_at = now()
      RETURNING (xmax = 0) AS inserted,
-               request_fingerprint_hash AS "requestFingerprintHash"`,
+               request_fingerprint_hash AS "requestFingerprintHash",
+               status,
+               idempotency_metadata AS "idempotencyMetadata"`,
     [
       keyHash,
       fingerprint,
       command.propertyId,
-      sha256(stableJson(commandMeta)),
       command.audit.correlationId ?? command.audit.requestId,
-      JSON.stringify({ commandMeta, commandId: command.commandId }),
+      command.audit.requestedAt,
+      JSON.stringify({ commandId: command.commandId }),
     ],
   );
 
@@ -1623,13 +1626,53 @@ async function updatePaymentSettingsInClient(
     };
   }
 
+  if (idempotencyRow && !idempotencyRow.inserted) {
+    if (idempotencyRow.status !== "completed") {
+      return {
+        ok: false,
+        statusCode: 409,
+        code: "idempotency_conflict",
+        message: "This payment-settings command is already in progress.",
+      };
+    }
+    const storedResponse = parseStoredPaymentSettingsResponse(
+      idempotencyRow.idempotencyMetadata,
+      command.propertyId,
+    );
+    if (storedResponse) {
+      return {
+        ok: true,
+        status: "idempotent_replay",
+        settings: storedResponse.settings,
+        commandMeta: storedResponse.commandMeta,
+      };
+    }
+    const legacyCommandMeta = parseLegacyStoredPaymentSettingsCommandMeta(
+      idempotencyRow.idempotencyMetadata,
+    );
+    if (!legacyCommandMeta) {
+      return {
+        ok: false,
+        statusCode: 409,
+        code: "idempotency_conflict",
+        message: "The completed payment-settings command has no valid stored response.",
+      };
+    }
+    // Rows created before response snapshots were introduced can only preserve
+    // the former behavior: replay the current settings with the original metadata.
+    commandMeta = legacyCommandMeta;
+  }
+
   if (idempotencyRow?.inserted) {
     await upsertPaymentSettings(client, command, next);
-    readinessLost = await applyFinanceOnlineCardReadinessLoss(client, {
+    const readinessLost = await applyFinanceOnlineCardReadinessLoss(client, {
       propertyId: command.propertyId,
       previous: previousOnlineCardReadiness,
       context: onlineCardReadinessChangeContext(command.audit, command.commandId),
     });
+    if (readinessLost) {
+      commandMeta = { ...commandMeta, outboxEvents: ["finance.online_card_readiness.changed"] };
+    }
     await recordPaymentSettingsAuditEvent(client, command, keyHash);
   }
 
@@ -1643,14 +1686,18 @@ async function updatePaymentSettingsInClient(
       message: "Finance property payment settings were not found.",
     };
   }
+  if (idempotencyRow?.inserted) {
+    await completePaymentSettingsIdempotency(client, command, keyHash, fingerprint, {
+      settings,
+      commandMeta,
+    });
+  }
 
   return {
     ok: true,
     status: idempotencyRow?.inserted ? "updated" : "idempotent_replay",
     settings,
-    commandMeta: readinessLost
-      ? { ...commandMeta, outboxEvents: ["finance.online_card_readiness.changed"] }
-      : commandMeta,
+    commandMeta,
   };
 }
 
@@ -1981,6 +2028,151 @@ function buildPaymentSettingsCommandMeta(
   };
 }
 
+function parseStoredPaymentSettingsResponse(
+  value: unknown,
+  propertyId: string,
+): { settings: FinancePaymentSettingsReadModel; commandMeta: FinanceCommandMeta } | null {
+  const metadata = plainRecord(value);
+  const response = plainRecord(metadata?.response);
+  const settings = plainRecord(response?.settings);
+  const providerAccount = plainRecord(settings?.providerAccount);
+  const stored = plainRecord(response?.commandMeta);
+  const commandId = nonEmptyString(stored?.commandId);
+  const idempotencyKey = nonEmptyString(stored?.idempotencyKey);
+  if (
+    !commandId ||
+    !idempotencyKey ||
+    settings?.propertyId !== propertyId ||
+    typeof settings.paymentsEnabled !== "boolean" ||
+    paymentProvider(settings.paymentProvider) !== settings.paymentProvider ||
+    !Array.isArray(settings.acceptedMethods) ||
+    settings.acceptedMethods.some(
+      (method) =>
+        ![
+          "card",
+          "pay_at_property",
+          "xendit",
+          "cash",
+          "bank_transfer",
+          "paypal",
+          "manual_card",
+          "wallet",
+          "other",
+        ].includes(String(method)),
+    ) ||
+    currencyCode(settings.defaultCurrency) !== settings.defaultCurrency ||
+    !Array.isArray(settings.supportedCurrencies) ||
+    settings.supportedCurrencies.length !== 1 ||
+    settings.supportedCurrencies[0] !== settings.defaultCurrency ||
+    !plainRecord(settings.depositPolicy) ||
+    !plainRecord(settings.refundPolicy) ||
+    !plainRecord(settings.taxPolicy) ||
+    (settings.statementDescriptor !== null && typeof settings.statementDescriptor !== "string") ||
+    typeof settings.requiresManualReview !== "boolean" ||
+    !providerAccount ||
+    (providerAccount.providerAccountId !== null &&
+      typeof providerAccount.providerAccountId !== "string") ||
+    (providerAccount.provider !== null &&
+      paymentProvider(providerAccount.provider) !== providerAccount.provider) ||
+    providerAccountStatus(providerAccount.status) !== providerAccount.status ||
+    providerOnboardingStatus(providerAccount.onboardingStatus) !==
+      providerAccount.onboardingStatus ||
+    typeof providerAccount.chargesEnabled !== "boolean" ||
+    typeof providerAccount.payoutsEnabled !== "boolean" ||
+    !Array.isArray(providerAccount.capabilities) ||
+    providerAccount.capabilities.some((capability) => typeof capability !== "string") ||
+    !plainRecord(settings.sourceFreshness) ||
+    typeof settings.updatedAt !== "string"
+  ) {
+    return null;
+  }
+  if (
+    !Array.isArray(stored?.sideEffects) ||
+    stored.sideEffects.length !== 1 ||
+    stored.sideEffects[0] !== "audit_event" ||
+    !Array.isArray(stored.outboxEvents) ||
+    stored.outboxEvents.some((event) => event !== "finance.online_card_readiness.changed") ||
+    !Array.isArray(stored.jobs) ||
+    stored.jobs.length !== 0
+  ) {
+    return null;
+  }
+  return {
+    settings: settings as FinancePaymentSettingsReadModel,
+    commandMeta: {
+      commandId,
+      idempotencyKey,
+      sideEffects: PAYMENT_SETTINGS_SIDE_EFFECTS,
+      outboxEvents: stored.outboxEvents as string[],
+      jobs: [],
+    },
+  };
+}
+
+function parseLegacyStoredPaymentSettingsCommandMeta(value: unknown): FinanceCommandMeta | null {
+  const metadata = plainRecord(value);
+  const stored = plainRecord(metadata?.commandMeta);
+  const commandId = nonEmptyString(stored?.commandId);
+  const idempotencyKey = nonEmptyString(stored?.idempotencyKey);
+  if (
+    !commandId ||
+    !idempotencyKey ||
+    !Array.isArray(stored?.sideEffects) ||
+    stored.sideEffects.length !== 1 ||
+    stored.sideEffects[0] !== "audit_event" ||
+    !Array.isArray(stored.outboxEvents) ||
+    stored.outboxEvents.length !== 0 ||
+    !Array.isArray(stored.jobs) ||
+    stored.jobs.length !== 0
+  ) {
+    return null;
+  }
+  return {
+    commandId,
+    idempotencyKey,
+    sideEffects: PAYMENT_SETTINGS_SIDE_EFFECTS,
+    outboxEvents: [],
+    jobs: [],
+  };
+}
+
+async function completePaymentSettingsIdempotency(
+  client: FinancePropertySettingsWriteClient,
+  command: FinancePaymentSettingsPatchCommand,
+  keyHash: string,
+  fingerprint: string,
+  response: { settings: FinancePaymentSettingsReadModel; commandMeta: FinanceCommandMeta },
+): Promise<void> {
+  const completed = await client.query(
+    `UPDATE platform.idempotency_keys
+     SET status = 'completed',
+         response_status_code = 200,
+         response_body_hash = $1,
+         response_resource_product = 'finance',
+         response_resource_type = 'payment_settings',
+         response_resource_id = $2,
+         completed_at = $3::timestamptz,
+         last_seen_at = $3::timestamptz,
+         idempotency_metadata = idempotency_metadata || $4::jsonb
+     WHERE operation_scope = 'finance'
+       AND operation = 'payment_settings_update'
+       AND key_hash = $5
+       AND tenant_scope = 'property'
+       AND property_id = $2::uuid
+       AND request_fingerprint_hash = $6
+       AND status = 'in_progress'`,
+    [
+      sha256(stableJson(response)),
+      command.propertyId,
+      command.audit.requestedAt,
+      JSON.stringify({ paymentSettingsResponseVersion: 2, response }),
+      keyHash,
+      fingerprint,
+    ],
+  );
+  if (completed.rowCount !== 1) throw new Error("Payment-settings idempotency completion failed");
+}
+
 async function createStripeProviderAccountInClient(
   client: FinancePropertySettingsWriteClient,
   command: CreateStripeProviderAccountCommand,
@@ -2012,11 +2204,27 @@ async function createStripeProviderAccountInClient(
     "stripe_provider_account_create",
     keyHash,
   );
-  const replay = replayProviderAccountCommand(existingIdempotency, fingerprint);
+  const reclaimingStaleCreation = staleProviderAccountCreationReservation(
+    existingIdempotency,
+    fingerprint,
+  );
+  const replay = reclaimingStaleCreation
+    ? null
+    : replayProviderAccountCommand(existingIdempotency, fingerprint);
   if (replay) return replay;
+  const retryingUnconfirmedCreation = retryableUnconfirmedProviderAccountCreation(
+    existingIdempotency,
+    fingerprint,
+  );
 
   const existingAccount = await loadStripeProviderAccountByOwner(client, owner);
-  if (existingAccount) {
+  if (existingAccount && !retryingUnconfirmedCreation && !reclaimingStaleCreation) {
+    const onboardingUrl = await provider.createOnboardingLink({
+      owner,
+      providerAccountRef: existingAccount.providerAccountRef,
+      idempotencyKey: stripeProviderIdempotencyKey(owner, keyHash, "onboarding-link"),
+      returnSurface: command.payload.returnSurface,
+    });
     return inFinanceWriteTransaction(client, transactional, async () => {
       let previousOnlineCardReadiness: FinanceOnlineCardReadinessState | null = null;
       if (owner.ownerScope === "property") {
@@ -2040,6 +2248,17 @@ async function createStripeProviderAccountInClient(
           message: "Finance provider account was not found.",
         };
       }
+      if (lockedAccount.providerAccountRef !== existingAccount.providerAccountRef) {
+        return stripeProviderAccountNotFound();
+      }
+      const concurrentIdempotency = await loadProviderAccountIdempotency(
+        client,
+        command,
+        "stripe_provider_account_create",
+        keyHash,
+      );
+      const concurrentReplay = replayProviderAccountCommand(concurrentIdempotency, fingerprint);
+      if (concurrentReplay) return concurrentReplay;
       const idempotencyError = await reserveProviderAccountIdempotency(
         client,
         command,
@@ -2048,12 +2267,6 @@ async function createStripeProviderAccountInClient(
         fingerprint,
       );
       if (idempotencyError) return idempotencyError;
-      const onboardingUrl = await provider.createOnboardingLink({
-        owner,
-        providerAccountRef: lockedAccount.providerAccountRef,
-        idempotencyKey: stripeProviderIdempotencyKey(owner, keyHash, "onboarding-link"),
-        returnSurface: command.payload.returnSurface,
-      });
       await updateStripeProviderAccountOnboardingUrl(client, lockedAccount, owner, onboardingUrl);
       let readinessLost = false;
       if (owner.ownerScope === "property") {
@@ -2095,13 +2308,34 @@ async function createStripeProviderAccountInClient(
   );
   if (idempotencyError) return idempotencyError;
 
-  const providerAccount = await provider.createAccount({
-    owner,
-    email: command.payload.email,
-    country: command.payload.country,
-    idempotencyKey: stripeProviderIdempotencyKey(owner, keyHash, "account"),
-    returnSurface: command.payload.returnSurface,
-  });
+  let providerAccount: { providerAccountRef: string; onboardingUrl: string };
+  try {
+    providerAccount = await provider.createAccount({
+      owner,
+      email: command.payload.email,
+      country: command.payload.country,
+      idempotencyKey: stripeProviderIdempotencyKey(owner, keyHash, "account"),
+      returnSurface: command.payload.returnSurface,
+    });
+  } catch {
+    await markProviderAccountIdempotencyFailed(
+      client,
+      command,
+      "stripe_provider_account_create",
+      keyHash,
+      {
+        compensationStatus: "not_attempted",
+        errorCode: "provider_account_create_unconfirmed",
+        retryable: true,
+      },
+    );
+    return {
+      ok: false,
+      statusCode: 502,
+      code: "provider_unavailable",
+      message: "Stripe account creation could not be confirmed; retry with the same key.",
+    };
+  }
 
   let writeOutcome:
     | { kind: "created"; response: FinanceProviderAccountCommandResponse }
@@ -2180,6 +2414,24 @@ async function createStripeProviderAccountInClient(
         statusCode: 500,
         code: "write_unavailable",
         message: "The Stripe account is durable, but command completion could not be confirmed.",
+      };
+    }
+    if (error instanceof StripeProviderAccountQuarantinedError) {
+      await markProviderAccountIdempotencyFailed(
+        client,
+        command,
+        "stripe_provider_account_create",
+        keyHash,
+        {
+          compensationStatus: "not_attempted",
+          errorCode: "provider_account_compensation_quarantined",
+        },
+      );
+      return {
+        ok: false,
+        statusCode: 502,
+        code: "provider_unavailable",
+        message: "Stripe returned an account reference that is still quarantined for cleanup.",
       };
     }
     if (error instanceof StripeProviderAccountOwnerConflictError) {
@@ -2445,6 +2697,20 @@ async function issueStripeOnboardingLinkInClient(
   const replay = replayProviderAccountCommand(existingIdempotency, fingerprint);
   if (replay) return replay;
 
+  const candidateAccount = await loadStripeProviderAccountById(
+    client,
+    command.payload.providerAccountId,
+    owner,
+    false,
+  );
+  if (!candidateAccount) return stripeProviderAccountNotFound();
+  const onboardingUrl = await provider.createOnboardingLink({
+    owner,
+    providerAccountRef: candidateAccount.providerAccountRef,
+    idempotencyKey: stripeProviderIdempotencyKey(owner, keyHash, "onboarding-link"),
+    returnSurface: command.payload.returnSurface,
+  });
+
   return inFinanceWriteTransaction(client, transactional, async () => {
     let previousOnlineCardReadiness: FinanceOnlineCardReadinessState | null = null;
     if (owner.ownerScope === "property") {
@@ -2468,6 +2734,17 @@ async function issueStripeOnboardingLinkInClient(
         message: "Finance provider account was not found.",
       };
     }
+    if (account.providerAccountRef !== candidateAccount.providerAccountRef) {
+      return stripeProviderAccountNotFound();
+    }
+    const concurrentIdempotency = await loadProviderAccountIdempotency(
+      client,
+      command,
+      "stripe_onboarding_link_issue",
+      keyHash,
+    );
+    const concurrentReplay = replayProviderAccountCommand(concurrentIdempotency, fingerprint);
+    if (concurrentReplay) return concurrentReplay;
     const idempotencyError = await reserveProviderAccountIdempotency(
       client,
       command,
@@ -2476,12 +2753,6 @@ async function issueStripeOnboardingLinkInClient(
       fingerprint,
     );
     if (idempotencyError) return idempotencyError;
-    const onboardingUrl = await provider.createOnboardingLink({
-      owner,
-      providerAccountRef: account.providerAccountRef,
-      idempotencyKey: stripeProviderIdempotencyKey(owner, keyHash, "onboarding-link"),
-      returnSurface: command.payload.returnSurface,
-    });
     await updateStripeProviderAccountOnboardingUrl(client, account, owner, onboardingUrl);
     const readinessLost =
       owner.ownerScope === "property"
@@ -3133,6 +3404,11 @@ async function insertStripeProviderAccount(
 ): Promise<StripeProviderAccountInsert> {
   const owner = financeProviderAccountOwner(command);
   await lockStripeProviderAccountReference(client, providerAccount.providerAccountRef);
+  if (
+    await stripeProviderAccountReferenceIsQuarantined(client, providerAccount.providerAccountRef)
+  ) {
+    throw new StripeProviderAccountQuarantinedError();
+  }
   const accountMetadata =
     owner.ownerScope === "affiliate"
       ? {
@@ -3241,16 +3517,32 @@ async function compensateStripeProviderAccountIfUnowned(
 ): Promise<
   { kind: "compensated" } | { kind: "durably_owned"; account: StripeProviderAccountOwnershipRow }
 > {
+  const claim = await inFinanceWriteTransaction(client, true, async () => {
+    await lockStripeProviderAccountReference(client, input.providerAccountRef);
+    const durableAccount = await loadStripeProviderAccountByRef(client, input.providerAccountRef);
+    if (durableAccount) return { kind: "durably_owned" as const, account: durableAccount };
+    const status = await claimStripeProviderAccountCompensation(client, input.providerAccountRef);
+    return { kind: "claimed" as const, status };
+  });
+  if (claim.kind === "durably_owned") return claim;
+  if (claim.status === "completed") return { kind: "compensated" as const };
+
+  await provider.compensateAccountCreation({
+    ...input,
+    signal: AbortSignal.timeout(STRIPE_COMPENSATION_TIMEOUT_MS),
+  });
+
   return inFinanceWriteTransaction(client, true, async () => {
     await lockStripeProviderAccountReference(client, input.providerAccountRef);
     const durableAccount = await loadStripeProviderAccountByRef(client, input.providerAccountRef);
     if (durableAccount) return { kind: "durably_owned" as const, account: durableAccount };
-    await provider.compensateAccountCreation(input);
+    await completeStripeProviderAccountCompensation(client, input.providerAccountRef);
     return { kind: "compensated" as const };
   });
 }
 
 class StripeProviderAccountOwnerConflictError extends Error {}
+class StripeProviderAccountQuarantinedError extends Error {}
 
 function stripeProviderAccountOwnerMatches(
   account: {
@@ -3331,7 +3623,8 @@ async function loadProviderAccountIdempotency(
     `SELECT
        status,
        request_fingerprint_hash AS "requestFingerprintHash",
-       idempotency_metadata AS "idempotencyMetadata"
+       idempotency_metadata AS "idempotencyMetadata",
+       last_seen_at AS "lastSeenAt"
      FROM platform.idempotency_keys
      WHERE operation_scope = 'finance'
        AND operation = $1
@@ -3388,11 +3681,30 @@ async function reserveProviderAccountIdempotency(
        $6::uuid,
        $7,
        $8::timestamptz,
-       $8::timestamptz,
-       $8::timestamptz + interval '24 hours',
+       now(),
+       now() + interval '24 hours',
        $9::jsonb
      )
-     ON CONFLICT (operation_scope, operation, key_hash, scope_key) DO NOTHING
+     ON CONFLICT (operation_scope, operation, key_hash, scope_key) DO UPDATE SET
+       status = 'in_progress',
+       last_seen_at = EXCLUDED.last_seen_at,
+       expires_at = EXCLUDED.expires_at,
+       idempotency_metadata = EXCLUDED.idempotency_metadata
+     WHERE platform.idempotency_keys.request_fingerprint_hash = EXCLUDED.request_fingerprint_hash
+       AND (
+         (
+           platform.idempotency_keys.status = 'failed'
+           AND platform.idempotency_keys.idempotency_metadata ->> 'retryable' = 'true'
+           AND platform.idempotency_keys.idempotency_metadata ->> 'errorCode' =
+             'provider_account_create_unconfirmed'
+         )
+         OR (
+           EXCLUDED.operation = 'stripe_provider_account_create'
+           AND platform.idempotency_keys.status = 'in_progress'
+           AND platform.idempotency_keys.last_seen_at <=
+             now() - ($10::double precision * interval '1 millisecond')
+         )
+       )
      RETURNING request_fingerprint_hash AS "requestFingerprintHash"`,
     [
       operation,
@@ -3408,6 +3720,7 @@ async function reserveProviderAccountIdempotency(
         owner,
         provider: "stripe",
       }),
+      STRIPE_PROVIDER_ACCOUNT_CREATE_LEASE_MS,
     ],
   );
   if (!result.rows[0]) {
@@ -3471,6 +3784,7 @@ async function markProviderAccountIdempotencyFailed(
     compensationStatus: "completed" | "queued" | "not_attempted";
     compensationJobKey?: string | null;
     errorCode: string;
+    retryable?: boolean;
   },
 ): Promise<void> {
   const owner = financeProviderAccountOwner(command);
@@ -3491,6 +3805,7 @@ async function markProviderAccountIdempotencyFailed(
         compensationStatus: result.compensationStatus,
         compensationJobKey: result.compensationJobKey ?? null,
         errorCode: result.errorCode,
+        retryable: result.retryable ?? false,
       }),
       operation,
       keyHash,
@@ -3607,6 +3922,8 @@ function replayProviderAccountCommand(
       "Idempotency key was already used with a different Stripe provider-account payload.",
     );
   }
+  const metadata = plainRecord(existing.idempotencyMetadata);
+  if (retryableUnconfirmedProviderAccountCreation(existing, fingerprint)) return null;
   if (existing.status !== "completed") {
     return providerAccountCommandConflict(
       existing.status === "in_progress"
@@ -3615,7 +3932,6 @@ function replayProviderAccountCommand(
     );
   }
 
-  const metadata = plainRecord(existing.idempotencyMetadata);
   const response = parseStoredProviderAccountResponse(metadata?.response);
   if (!response) {
     return providerAccountCommandConflict(
@@ -3623,6 +3939,42 @@ function replayProviderAccountCommand(
     );
   }
   return { ok: true, status: "idempotent_replay", response };
+}
+
+function retryableUnconfirmedProviderAccountCreation(
+  existing: FinanceIdempotencyRow | null,
+  fingerprint: string,
+): boolean {
+  if (
+    !existing ||
+    existing.requestFingerprintHash !== fingerprint ||
+    existing.status !== "failed"
+  ) {
+    return false;
+  }
+  const metadata = plainRecord(existing.idempotencyMetadata);
+  return (
+    metadata?.retryable === true && metadata.errorCode === "provider_account_create_unconfirmed"
+  );
+}
+
+function staleProviderAccountCreationReservation(
+  existing: FinanceIdempotencyRow | null,
+  fingerprint: string,
+): boolean {
+  if (
+    !existing ||
+    existing.requestFingerprintHash !== fingerprint ||
+    existing.status !== "in_progress" ||
+    !existing.lastSeenAt
+  ) {
+    return false;
+  }
+  const lastSeenAt = new Date(existing.lastSeenAt).getTime();
+  return (
+    Number.isFinite(lastSeenAt) &&
+    lastSeenAt <= Date.now() - STRIPE_PROVIDER_ACCOUNT_CREATE_LEASE_MS
+  );
 }
 
 function parseStoredProviderAccountResponse(

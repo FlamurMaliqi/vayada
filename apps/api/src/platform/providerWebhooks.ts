@@ -159,7 +159,7 @@ async function recordReceipt(
   }
 }
 
-async function promoteReceipt(
+export async function promoteReceipt(
   pool: pg.Pool,
   input: ProviderWebhookPromotionInput,
   stripeConnectProvider?: Pick<FinanceStripeConnectProvider, "retrieveAccount">,
@@ -183,6 +183,25 @@ async function promoteReceipt(
     }
     const stripePaymentIntent = await resolveStripePaymentIntent(input, stripePaymentProvider);
     const promotionInput = await resolveProviderAccountResourceId(client, input);
+    if (!promotionInput) {
+      await client.query(
+        `UPDATE platform.external_webhook_events
+         SET delivery_status = 'ignored',
+             processed_at = now(),
+             failure_reason = 'stripe_provider_account_owner_unresolved',
+             correlation_id = $2
+         WHERE id = $1::uuid
+           AND delivery_status IN ('received', 'validated', 'observed')`,
+        [input.receiptId, input.receiptKey],
+      );
+      await client.query("COMMIT");
+      return {
+        status: "ignored",
+        receiptId: input.receiptId,
+        jobIds: [],
+        auditEventIds: [],
+      };
+    }
     await insertOrTouchIdempotencyKey(client, {
       operation: "external_webhook_domain_event",
       keyHash: hashForKey(promotionInput.normalizedPreview.domainEventKey),
@@ -273,10 +292,10 @@ async function lockReceiptForPromotion(
   return receipt.rows[0]?.delivery_status ?? null;
 }
 
-async function resolveProviderAccountResourceId(
+export async function resolveProviderAccountResourceId(
   client: Pick<pg.PoolClient, "query">,
   input: ProviderWebhookPromotionInput,
-): Promise<ProviderWebhookPromotionInput> {
+): Promise<ProviderWebhookPromotionInput | null> {
   if (
     input.provider !== "stripe" ||
     input.normalizedPreview.domainEventType !== "finance.provider-account.updated"
@@ -298,7 +317,7 @@ async function resolveProviderAccountResourceId(
     [providerAccountRef],
   );
   if (account.rows.length !== 1 || !account.rows[0]?.id) {
-    throw new Error("Stripe account webhook owner is unresolved.");
+    return null;
   }
   return {
     ...input,
@@ -517,6 +536,8 @@ function promotionStatusForReceipt(
       return "already_promoted";
     case "normalized":
       return "already_normalized";
+    case "ignored":
+      return "ignored";
     case "failed":
       return "failed";
     case "dead_lettered":

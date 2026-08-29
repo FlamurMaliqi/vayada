@@ -27,6 +27,13 @@ const EXTERNAL_PENDING_BLOCKERS = new Set<FinancePaymentReadinessBlocker>([
   "bank_transfer_contract_unavailable",
 ]);
 
+const PAYMENT_BLOCKER_MESSAGES: Partial<Record<SetupPaymentBlockerCode, string>> = {
+  online_card_execution_unavailable:
+    "Online card payments are waiting for verified execution evidence.",
+  provider_capability_lost: "The payment provider withdrew card capability.",
+  bank_transfer_contract_unavailable: "Bank transfer is waiting for a completed payout contract.",
+};
+
 type SetupPaymentBlockerCode = FinancePaymentReadinessBlocker | "ready_payment_method_missing";
 
 export function createPropertySetupFinanceStateProvider(
@@ -136,10 +143,7 @@ function paymentBlocker(code: SetupPaymentBlockerCode, sourceRevision: string) {
     product: "finance" as const,
     ownerDomain: "finance" as const,
     owningStepId: "payments" as const,
-    message:
-      code === "online_card_execution_unavailable"
-        ? "Online card payments are waiting for verified execution evidence."
-        : "Complete at least one ready payment method.",
+    message: PAYMENT_BLOCKER_MESSAGES[code] ?? "Complete at least one ready payment method.",
     kind:
       code !== "ready_payment_method_missing" && EXTERNAL_PENDING_BLOCKERS.has(code)
         ? ("external_pending" as const)

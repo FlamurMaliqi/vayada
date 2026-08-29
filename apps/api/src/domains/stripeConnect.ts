@@ -12,9 +12,11 @@ export function createStripeConnectProvider(config: {
   returnBaseUrls: { marketplace: string; bookingAdmin: string };
   endpoint?: string;
   fetch?: typeof globalThis.fetch;
+  requestTimeoutMs?: number;
 }): FinanceStripeConnectProvider {
   const endpoint = config.endpoint ?? "https://api.stripe.com/v1";
   const fetchImpl = config.fetch ?? globalThis.fetch;
+  const requestTimeoutMs = config.requestTimeoutMs ?? 10_000;
   const returnBaseUrls = {
     marketplace: new URL(config.returnBaseUrls.marketplace).origin,
     booking_admin: new URL(config.returnBaseUrls.bookingAdmin).origin,
@@ -25,6 +27,7 @@ export function createStripeConnectProvider(config: {
     path: string,
     fields: ReadonlyArray<readonly [string, string]>,
     idempotencyKey?: string,
+    signal?: AbortSignal,
   ): Promise<StripeObject> => {
     const form = new URLSearchParams(fields.map(([key, value]): [string, string] => [key, value]));
     const response = await fetchImpl(
@@ -37,6 +40,7 @@ export function createStripeConnectProvider(config: {
           ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
         },
         ...(method === "POST" ? { body: form.toString() } : {}),
+        signal: signal ?? AbortSignal.timeout(requestTimeoutMs),
       },
     );
     const payload = object(await response.json());
@@ -132,12 +136,17 @@ export function createStripeConnectProvider(config: {
       };
     },
     async compensateAccountCreation(input) {
-      await request(
-        "DELETE",
-        `/accounts/${encodeURIComponent(input.providerAccountRef)}`,
-        [],
-        input.idempotencyKey,
-      );
+      try {
+        await request(
+          "DELETE",
+          `/accounts/${encodeURIComponent(input.providerAccountRef)}`,
+          [],
+          input.idempotencyKey,
+          input.signal,
+        );
+      } catch (error) {
+        if (!(error instanceof StripeConnectAccountNotFoundError)) throw error;
+      }
     },
   };
 }

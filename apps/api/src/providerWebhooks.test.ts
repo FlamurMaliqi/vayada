@@ -1168,6 +1168,8 @@ function promotionStatusForReceipt(
       return "already_promoted";
     case "normalized":
       return "already_normalized";
+    case "ignored":
+      return "ignored";
     case "failed":
       return "failed";
     case "dead_lettered":

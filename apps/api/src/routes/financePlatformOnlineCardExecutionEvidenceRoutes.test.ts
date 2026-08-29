@@ -296,4 +296,22 @@ describe("Platform Finance online-card execution evidence routes", () => {
     });
     expect(result.body).not.toContain(HASH);
   });
+
+  it("reports unconfigured evidence acceptance as an unavailable capability", async () => {
+    app = await testApp({});
+
+    const result = await app.inject({
+      method: "POST",
+      url: `/finance/platform/properties/${PROPERTY_ID}/online-card-execution-evidence`,
+      headers: { authorization: "Bearer valid" },
+      payload: acceptBody(),
+    });
+
+    expect(result.statusCode).toBe(501);
+    expect(result.json()).toMatchObject({
+      statusCode: 501,
+      code: "write_unavailable",
+      category: "write_model",
+    });
+  });
 });

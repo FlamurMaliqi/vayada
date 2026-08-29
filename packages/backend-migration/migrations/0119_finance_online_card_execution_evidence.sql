@@ -9,6 +9,45 @@ ALTER TABLE finance.payment_settings
   ADD COLUMN online_card_readiness_revision BIGINT NOT NULL DEFAULT 1
     CHECK (online_card_readiness_revision BETWEEN 1 AND 2147483647);
 
+-- A timed-out Stripe DELETE has an ambiguous remote outcome. Keep the external
+-- reference quarantined across retries so no durable account can be bound to a
+-- provider account that may already be deleted.
+CREATE TABLE finance.stripe_provider_account_compensation_claims (
+  provider_account_id  TEXT        PRIMARY KEY,
+  status               TEXT        NOT NULL DEFAULT 'pending'
+                                   CHECK (status IN ('pending', 'completed')),
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at         TIMESTAMPTZ,
+  CONSTRAINT chk_finance_stripe_compensation_claim_completion
+    CHECK (
+      (status = 'pending' AND completed_at IS NULL)
+      OR (status = 'completed' AND completed_at IS NOT NULL)
+    )
+);
+
+CREATE FUNCTION finance.reject_quarantined_stripe_provider_account()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.provider = 'stripe'
+    AND NEW.provider_account_id IS NOT NULL
+    AND EXISTS (
+      SELECT 1
+      FROM finance.stripe_provider_account_compensation_claims claim
+      WHERE claim.provider_account_id = NEW.provider_account_id
+    ) THEN
+    RAISE EXCEPTION 'Stripe provider account reference is quarantined for compensation'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_finance_reject_quarantined_stripe_provider_account
+  BEFORE INSERT OR UPDATE OF provider, provider_account_id
+  ON finance.payment_provider_accounts
+  FOR EACH ROW EXECUTE FUNCTION finance.reject_quarantined_stripe_provider_account();
+
 -- Existing real property-scoped Stripe rows already represent one observed
 -- provider state. Seed that state so an unchanged first reconciliation cannot
 -- leave an otherwise valid account permanently unable to accept evidence.
@@ -246,5 +285,7 @@ LEFT JOIN LATERAL (
 
 COMMENT ON TABLE finance.online_card_execution_evidence IS
   'Secret-safe acceptance of an ONB-25A test suite for one exact Stripe capability revision.';
+COMMENT ON TABLE finance.stripe_provider_account_compensation_claims IS
+  'Quarantines Stripe account references once deletion compensation starts or completes.';
 COMMENT ON VIEW finance.online_card_readiness IS
   'Finance-owned online-card release predicate consumed by setup and public projections.';

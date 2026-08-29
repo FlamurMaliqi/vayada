@@ -28,6 +28,9 @@ describe("Finance online-card execution evidence migration contract", () => {
     expect(migration).toContain("evidence_fingerprint_hash ~ '^[0-9a-f]{64}$'");
     expect(migration).toContain("FOREIGN KEY (provider_account_id, property_id)");
     expect(migration).toContain("WHERE revoked_at IS NULL");
+    expect(migration).toContain("finance.stripe_provider_account_compensation_claims");
+    expect(migration).toContain("status IN ('pending', 'completed')");
+    expect(migration).toContain("trg_finance_reject_quarantined_stripe_provider_account");
     expect(migration).not.toMatch(/payment_intent|client_secret|provider_secret/i);
   });
 
@@ -258,6 +261,30 @@ describe.skipIf(!TEST_DATABASE_URL)("Finance online-card execution evidence Post
       ),
     ).rejects.toMatchObject({ code: "55000" });
     await client.query("ROLLBACK TO SAVEPOINT immutable_evidence");
+  });
+
+  it("rejects durable Stripe bindings after compensation quarantines the provider reference", async () => {
+    const quarantinedRef = `acct-quarantined-${randomUUID()}`;
+    await client.query(
+      `INSERT INTO finance.stripe_provider_account_compensation_claims (provider_account_id)
+       VALUES ($1)`,
+      [quarantinedRef],
+    );
+
+    await client.query("SAVEPOINT quarantined_provider_account");
+    await expect(
+      client.query(
+        `INSERT INTO finance.payment_provider_accounts (
+           property_id, account_scope, provider, provider_account_id,
+           status, onboarding_status, default_currency
+         ) VALUES (
+           $1::uuid, 'property', 'stripe', $2,
+           'setup_incomplete', 'invited', 'EUR'
+         )`,
+        [propertyId, quarantinedRef],
+      ),
+    ).rejects.toThrow("quarantined for compensation");
+    await client.query("ROLLBACK TO SAVEPOINT quarantined_provider_account");
   });
 
   it("rejects cross-property evidence at the database boundary", async () => {

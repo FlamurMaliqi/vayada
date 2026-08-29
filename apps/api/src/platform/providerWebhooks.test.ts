@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
+import type { ProviderWebhookPromotionInput } from "../routes/providerWebhooks.js";
 
-import { reconcileStripeProviderAccount, settleCapturedStripeBooking } from "./providerWebhooks.js";
+import {
+  reconcileStripeProviderAccount,
+  promoteReceipt,
+  resolveProviderAccountResourceId,
+  settleCapturedStripeBooking,
+} from "./providerWebhooks.js";
 
 const stripeAccountHash = `sha256:${createHash("sha256").update("acct_1").digest("hex")}`;
 
@@ -135,7 +141,15 @@ describe("provider webhook booking settlement", () => {
         return { rows: [] };
       }
       if (sql.includes("FROM finance.online_card_readiness")) {
-        return { rows: [{ cardReady: false }] };
+        return {
+          rows: [
+            {
+              providerAccountId: "provider-account-1",
+              providerCapabilityRevision: 1,
+              ready: false,
+            },
+          ],
+        };
       }
       return { rows: [] };
     });
@@ -200,7 +214,15 @@ describe("provider webhook booking settlement", () => {
         return { rows: [] };
       }
       if (sql.includes("FROM finance.online_card_readiness")) {
-        return { rows: [{ cardReady: false }] };
+        return {
+          rows: [
+            {
+              providerAccountId: "provider-account-1",
+              providerCapabilityRevision: 1,
+              ready: false,
+            },
+          ],
+        };
       }
       return { rows: [] };
     });
@@ -257,7 +279,15 @@ describe("provider webhook booking settlement", () => {
         return { rows: [{ propertyId: "property-1" }], rowCount: 1 };
       }
       if (sql.includes("FROM finance.online_card_readiness")) {
-        return { rows: [{ cardReady: false }] };
+        return {
+          rows: [
+            {
+              providerAccountId: "provider-account-1",
+              providerCapabilityRevision: 1,
+              ready: false,
+            },
+          ],
+        };
       }
       return { rows: [] };
     });
@@ -321,5 +351,60 @@ describe("provider webhook booking settlement", () => {
       expect(values.slice(1, 4)).toEqual([true, true, true]);
       expect(values[6]).toBe(true);
     }
+  });
+
+  it("terminally ignores an unresolved Stripe account without creating work", async () => {
+    const input: ProviderWebhookPromotionInput = {
+      provider: "stripe" as const,
+      receiptId: "receipt-account-unresolved",
+      receiptKey: "webhook:stripe:evt_account_unresolved",
+      receiptKeyHash: "hash",
+      payloadHash: "payload-hash",
+      rawPayload: { data: { object: { id: "acct_1" } } },
+      normalizedPreview: {
+        domainEventKey: `finance.provider-account.updated:stripe:${stripeAccountHash}:unresolved:v1`,
+        domainEventType: "finance.provider-account.updated",
+        resourceProduct: "finance",
+        resourceType: "provider_account",
+        resourceId: stripeAccountHash,
+        jobKey: `finance.reconcile-provider-account:${stripeAccountHash}:unresolved:v1`,
+        queueName: "finance.webhooks",
+        jobType: "finance.reconcile-provider-account",
+        payload: { rawEventId: "evt_account_unresolved" },
+      },
+    };
+    let receiptStatus = "observed";
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("SELECT delivery_status") && sql.includes("FOR UPDATE")) {
+        return { rows: [{ delivery_status: receiptStatus }] };
+      }
+      if (sql.includes("FROM finance.payment_provider_accounts")) return { rows: [] };
+      if (sql.includes("SET delivery_status = 'ignored'")) {
+        receiptStatus = "ignored";
+        return { rows: [], rowCount: 1 };
+      }
+      return { rows: [] };
+    });
+    const pool = {
+      async connect() {
+        return { query, release() {} };
+      },
+    };
+
+    await expect(resolveProviderAccountResourceId({ query } as never, input)).resolves.toBeNull();
+    await expect(promoteReceipt(pool as never, input)).resolves.toMatchObject({
+      status: "ignored",
+      jobIds: [],
+      auditEventIds: [],
+    });
+    await expect(promoteReceipt(pool as never, input)).resolves.toMatchObject({
+      status: "ignored",
+      jobIds: [],
+    });
+    expect(
+      query.mock.calls.some(([sql]) => sql.includes("INSERT INTO platform.domain_events")),
+    ).toBe(false);
+    expect(query.mock.calls.some(([sql]) => sql.includes("INSERT INTO platform.jobs"))).toBe(false);
+    expect(JSON.stringify(input.normalizedPreview)).not.toContain("acct_1");
   });
 });

@@ -167,8 +167,8 @@ function sendResult(
 }
 
 function unavailable(reply: FastifyReply) {
-  return reply.code(500).send({
-    statusCode: 500,
+  return reply.code(501).send({
+    statusCode: 501,
     code: "write_unavailable",
     category: "write_model",
     message: "Online-card execution evidence writes are not configured.",

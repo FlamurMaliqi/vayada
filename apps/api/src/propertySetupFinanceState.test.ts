@@ -58,23 +58,40 @@ describe("property setup Finance owner state", () => {
 
   it("keeps card-only setup blocked until current execution evidence and capability are ready", async () => {
     for (const testCase of [
-      { readiness: "ready", state: "complete", blocker: null },
       {
+        selectedMethods: ["card"],
+        readiness: "ready",
+        state: "complete",
+        blocker: null,
+        message: null,
+      },
+      {
+        selectedMethods: ["card"],
         readiness: "execution_unavailable",
         state: "blocked",
         blocker: "online_card_execution_unavailable",
+        message: "Online card payments are waiting for verified execution evidence.",
       },
       {
+        selectedMethods: ["card"],
         readiness: "provider_capability_lost",
         state: "blocked",
         blocker: "provider_capability_lost",
+        message: "The payment provider withdrew card capability.",
+      },
+      {
+        selectedMethods: ["bank_transfer"],
+        readiness: "execution_unavailable",
+        state: "blocked",
+        blocker: "bank_transfer_contract_unavailable",
+        message: "Bank transfer is waiting for a completed payout contract.",
       },
     ] as const) {
       const provider = createPropertySetupFinanceStateProvider({
         scope: authorizedScope(),
         finance: {
           getPaymentReadiness: vi.fn(async () =>
-            paymentReadiness(2, 4, ["card"], testCase.readiness),
+            paymentReadiness(2, 4, [...testCase.selectedMethods], testCase.readiness),
           ),
         },
         pricing: { getPropertyPricingCurrency: vi.fn(async () => pricingCurrency(4)) },
@@ -91,6 +108,7 @@ describe("property setup Finance owner state", () => {
                   {
                     code: testCase.blocker,
                     kind: "external_pending",
+                    message: testCase.message,
                     sourceRevision: "payment-methods:2",
                   },
                 ]
@@ -191,7 +209,7 @@ function pricingCurrency(revision: number) {
 function paymentReadiness(
   paymentMethodsRevision: number,
   pricingRevision: number,
-  selectedMethods: Array<"pay_at_property" | "card"> = ["pay_at_property"],
+  selectedMethods: Array<"pay_at_property" | "card" | "bank_transfer"> = ["pay_at_property"],
   onlineCardReadiness: FinanceOnlineCardReadinessDecision = "execution_unavailable",
 ) {
   const pricing = {

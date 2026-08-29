@@ -5,12 +5,15 @@ import type {
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
 import {
+  claimStripeProviderAccountCompensation,
+  completeStripeProviderAccountCompensation,
   lockStripeProviderAccountReference,
   stripeProviderAccountReferenceIsDurable,
 } from "../domains/financeStripeProviderAccountReferenceLock.js";
 
 export const FINANCE_STRIPE_ACCOUNT_COMPENSATION_QUEUE = "finance-provider-compensation";
 export const FINANCE_STRIPE_ACCOUNT_COMPENSATION_JOB_TYPE = "finance.compensate-stripe-account";
+const STRIPE_COMPENSATION_TIMEOUT_MS = 10_000;
 
 type Client = {
   query<T extends QueryResultRow = QueryResultRow>(
@@ -86,28 +89,65 @@ async function compensateClaimedJob(
   jobId: string,
   payload: CompensationPayload,
 ): Promise<void> {
-  const client = await pool.connect();
+  let claimedOutcome: string | null = null;
+  const claimClient = await pool.connect();
   try {
-    await client.query("BEGIN");
-    await lockStripeProviderAccountReference(client, payload.providerAccountRef);
-    if (await stripeProviderAccountReferenceIsDurable(client, payload.providerAccountRef)) {
-      await finish(client, jobId, "provider_account_durably_owned");
+    await claimClient.query("BEGIN");
+    await lockStripeProviderAccountReference(claimClient, payload.providerAccountRef);
+    if (await stripeProviderAccountReferenceIsDurable(claimClient, payload.providerAccountRef)) {
+      claimedOutcome = "provider_account_durably_owned";
     } else {
-      await compensateAccountCreation({
-        owner: payload.owner,
-        providerAccountRef: payload.providerAccountRef,
-        reason: "db_write_failed",
-        idempotencyKey: payload.idempotencyKey,
-      });
-      await finish(client, jobId, "provider_account_compensated");
+      const claimStatus = await claimStripeProviderAccountCompensation(
+        claimClient,
+        payload.providerAccountRef,
+      );
+      if (claimStatus === "completed") {
+        claimedOutcome = "provider_account_already_compensated";
+      }
     }
-    await client.query("COMMIT");
+    await claimClient.query("COMMIT");
   } catch (error) {
-    await client.query("ROLLBACK");
+    await claimClient.query("ROLLBACK");
     throw error;
   } finally {
-    client.release();
+    claimClient.release();
   }
+
+  if (claimedOutcome) {
+    await finish(pool, jobId, claimedOutcome);
+    return;
+  }
+
+  await compensateAccountCreation({
+    owner: payload.owner,
+    providerAccountRef: payload.providerAccountRef,
+    reason: "db_write_failed",
+    idempotencyKey: payload.idempotencyKey,
+    signal: AbortSignal.timeout(STRIPE_COMPENSATION_TIMEOUT_MS),
+  });
+
+  const completionClient = await pool.connect();
+  let completionOutcome: string;
+  try {
+    await completionClient.query("BEGIN");
+    await lockStripeProviderAccountReference(completionClient, payload.providerAccountRef);
+    if (
+      await stripeProviderAccountReferenceIsDurable(completionClient, payload.providerAccountRef)
+    ) {
+      completionOutcome = "provider_account_durably_owned_after_claim";
+    } else {
+      await completeStripeProviderAccountCompensation(completionClient, payload.providerAccountRef);
+      completionOutcome = "provider_account_compensated";
+    }
+    await completionClient.query("COMMIT");
+  } catch (error) {
+    await completionClient.query("ROLLBACK");
+    throw error;
+  } finally {
+    completionClient.release();
+  }
+
+  await finish(pool, jobId, completionOutcome);
 }
 
 async function claim(pool: Pool, workerId: string): Promise<JobRow | null> {

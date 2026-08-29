@@ -65,6 +65,7 @@ export type ProviderWebhookPromotionResult = {
     | "promoted"
     | "already_promoted"
     | "already_normalized"
+    | "ignored"
     | "failed"
     | "dead_lettered"
     | "incompatible_terminal_state";
