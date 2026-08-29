@@ -59,6 +59,7 @@ export async function correctBookingPmsManualPrices(
   transaction: ExternalRevenueEvidenceClient,
   command: Command,
   acceptedAt: string,
+  options: { allowNoChange?: boolean; requirePricedTargets?: boolean } = {},
 ): Promise<void> {
   if (!validDate(command.accountingDate) || !Number.isFinite(Date.parse(acceptedAt)))
     throw new ManualPriceCorrectionEvidenceError("Manual price correction dates are invalid");
@@ -87,12 +88,11 @@ export async function correctBookingPmsManualPrices(
     throw new ManualPriceCorrectionEvidenceError(
       "Manual booking prices cannot be corrected after a refund",
     );
-  const zone = scope.timezone && getTimezone(scope.timezone);
-  if (!zone || zone.name !== scope.timezone || zone.aliasOf !== null)
+  if (!scope.timezone)
     throw new ManualPriceCorrectionEvidenceError(
       "Manual price correction requires a canonical property timezone",
     );
-  if (command.accountingDate < propertyDate(acceptedAt, scope.timezone!))
+  if (command.accountingDate < propertyDate(acceptedAt, scope.timezone))
     throw new ManualPriceCorrectionEvidenceError(
       "Manual price correction accounting date is invalid",
     );
@@ -101,8 +101,11 @@ export async function correctBookingPmsManualPrices(
   const replacements = resolveReplacements(command.pricing, tips, scope.currency);
   if (
     replacements.some(
-      ({ occupied, manual, recognizedOn }) =>
-        occupied !== 1 || !manual || command.accountingDate < recognizedOn,
+      ({ occupied, manual, recognizedOn, amount }) =>
+        occupied !== 1 ||
+        !manual ||
+        command.accountingDate < recognizedOn ||
+        (options.requirePricedTargets && amount === null),
     )
   )
     throw new ManualPriceCorrectionEvidenceError("Manual price correction targets are unavailable");
@@ -125,8 +128,9 @@ export async function correctBookingPmsManualPrices(
           },
         ];
   });
-  if (lines.length === 0)
+  if (lines.length === 0 && !options.allowNoChange)
     throw new ManualPriceCorrectionEvidenceError("Manual price correction has no price change");
+  if (lines.length === 0) return;
   await appendExternalNightlyRevenueEvidence(transaction, {
     propertyId: command.propertyId,
     guestBookingId: command.guestBookingId,
@@ -226,7 +230,12 @@ function amount(value: bigint): string {
   const normalized = `${digits.slice(0, -4)}.${digits.slice(-4)}`;
   return negative && absolute !== 0n ? `-${normalized}` : normalized;
 }
-function propertyDate(instant: string, timezone: string): string {
+export function propertyDate(instant: string, timezone: string): string {
+  const zone = getTimezone(timezone);
+  if (!zone || zone.name !== timezone || zone.aliasOf !== null)
+    throw new ManualPriceCorrectionEvidenceError(
+      "Manual price correction requires a canonical property timezone",
+    );
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
     year: "numeric",

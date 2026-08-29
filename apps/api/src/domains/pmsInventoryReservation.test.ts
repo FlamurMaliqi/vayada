@@ -14,14 +14,17 @@ const reservationInput = {
   currency: "EUR",
   occurredAt: new Date("2026-09-01T10:00:00.000Z"),
 } as const;
+const receiptId = "69b3e1e1-95f8-47f2-8bf1-c2d18e3d7a66";
 
 describe("target PMS inventory reservation adapter", () => {
-  it("reserves through the caller transaction and returns the durable marker", async () => {
+  it("reserves through the caller transaction and returns the opaque receipt", async () => {
     const calls: Array<{ text: string; values?: readonly unknown[] }> = [];
     const transaction = {
       async query(text: string, values?: readonly unknown[]) {
         calls.push({ text, values });
-        return { rows: [{ reserved: true }] };
+        if (text.includes('AS "receiptId"')) return { rows: [{ receiptId }] };
+        if (text.includes("UPDATE pms.inventory_days")) return { rows: [{ reserved: true }] };
+        return { rows: [] };
       },
     };
 
@@ -31,18 +34,11 @@ describe("target PMS inventory reservation adapter", () => {
     });
 
     expect(marker).toEqual({
-      contractVersion: "pms.inventory-reservation.v1",
+      contractVersion: "pms-inventory-reservation-lifecycle.v1",
       owner: "pms",
-      source: "booking_engine",
-      quoteSessionId: reservationInput.quoteSessionId,
-      propertyId: reservationInput.propertyId,
-      roomTypeId: reservationInput.roomTypeId,
-      publicOfferKey: reservationInput.publicOfferKey,
-      checkIn: reservationInput.checkIn,
-      checkOut: reservationInput.checkOut,
-      roomCount: 1,
+      receiptId,
     });
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(5);
     expect(calls[0]?.text).toContain("pg_advisory_xact_lock");
     expect(calls[1]?.text).toContain("UPDATE pms.inventory_days");
     expect(calls[1]?.text).toContain("booking_source_revision + 1");
@@ -63,6 +59,7 @@ describe("target PMS inventory reservation adapter", () => {
       reservationInput.currency,
       reservationInput.occurredAt.toISOString(),
     ]);
+    expect(calls[2]?.text).toContain("pms.direct_booking_inventory.reserve");
   });
 
   it("returns null when the guarded reservation does not cover the full stay", async () => {
@@ -80,11 +77,32 @@ describe("target PMS inventory reservation adapter", () => {
     ).resolves.toBeNull();
   });
 
-  it("releases only a valid marker for the same property through the caller transaction", async () => {
+  it("loads, releases, and credits only the exact opaque receipt", async () => {
     const calls: Array<{ text: string; values?: readonly unknown[] }> = [];
+    let terminal = false;
     const transaction = {
       async query(text: string, values?: readonly unknown[]) {
         calls.push({ text, values });
+        if (text.includes('receipt.quote_session_id AS "quoteSessionId"')) {
+          if (terminal) return { rows: [] };
+          return {
+            rows: [
+              {
+                quoteSessionId: reservationInput.quoteSessionId,
+                roomTypeId: reservationInput.roomTypeId,
+                publicOfferKey: reservationInput.publicOfferKey,
+                checkIn: reservationInput.checkIn,
+                checkOut: reservationInput.checkOut,
+                roomCount: reservationInput.roomCount,
+              },
+            ],
+          };
+        }
+        if (text.includes("UPDATE pms.inventory_reservation_statuses")) {
+          return { rows: [{ receiptId }] };
+        }
+        // prettier-ignore
+        if (text.includes('receipt.check_in::text AS "checkIn"')) return { rows: values?.[4] === reservationInput.checkIn ? [{ checkIn: reservationInput.checkIn, checkOut: reservationInput.checkOut, roomCount: reservationInput.roomCount }] : [] };
         return { rows: [] };
       },
     };
@@ -100,16 +118,9 @@ describe("target PMS inventory reservation adapter", () => {
     const reservation = inventoryReservationReceiptFromBookingMetadata(
       {
         inventoryReservation: {
-          contractVersion: "pms.inventory-reservation.v1",
+          contractVersion: "pms-inventory-reservation-lifecycle.v1",
           owner: "pms",
-          source: "booking_engine",
-          quoteSessionId: reservationInput.quoteSessionId,
-          propertyId: reservationInput.propertyId,
-          roomTypeId: reservationInput.roomTypeId,
-          publicOfferKey: reservationInput.publicOfferKey,
-          checkIn: reservationInput.checkIn,
-          checkOut: reservationInput.checkOut,
-          roomCount: reservationInput.roomCount,
+          receiptId,
         },
       },
       reservationInput.propertyId,
@@ -122,12 +133,14 @@ describe("target PMS inventory reservation adapter", () => {
       occurredAt: reservationInput.occurredAt,
     });
 
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(6);
     expect(calls[0]?.text).toContain("pg_advisory_xact_lock");
-    expect(calls[1]?.text).toContain("assigned_count = GREATEST");
-    expect(calls[1]?.text).toContain("booking_source_revision + 1");
-    expect(calls[1]?.text).toContain("pms.direct_booking_inventory.release");
-    expect(calls[1]?.values).toEqual([
+    expect(calls[1]?.text).toContain("FOR UPDATE OF status");
+    expect(calls[1]?.values).toEqual([receiptId, reservationInput.propertyId]);
+    expect(calls[2]?.text).toContain("assigned_count = GREATEST");
+    expect(calls[2]?.text).toContain("booking_source_revision + 1");
+    expect(calls[2]?.text).toContain("pms.direct_booking_inventory.release");
+    expect(calls[2]?.values).toEqual([
       reservationInput.propertyId,
       reservationInput.roomTypeId,
       reservationInput.checkIn,
@@ -136,5 +149,20 @@ describe("target PMS inventory reservation adapter", () => {
       reservationInput.occurredAt.toISOString(),
       expect.stringMatching(/^[a-f0-9]{64}$/),
     ]);
+    expect(calls[3]?.text).toContain("receipt.receipt_id=$12::uuid");
+    expect(calls[3]?.values?.[11]).toBe(receiptId);
+    terminal = true;
+    calls.length = 0;
+    // prettier-ignore
+    await adapter.release({ transaction: transaction as never, propertyId: reservationInput.propertyId, reservation: reservation!, occurredAt: reservationInput.occurredAt });
+    expect(calls).toHaveLength(2);
+    expect(calls.some(({ text }) => text.includes("assigned_count = GREATEST"))).toBe(false);
+    calls.length = 0;
+    // prettier-ignore
+    await expect(adapter.availabilityCredit!({ transaction: transaction as never, propertyId: reservationInput.propertyId, reservation: reservation! as never, roomTypeId: reservationInput.roomTypeId, publicOfferKey: reservationInput.publicOfferKey, checkIn: reservationInput.checkIn, checkOut: reservationInput.checkOut, roomCount: reservationInput.roomCount })).resolves.toEqual({ checkIn: reservationInput.checkIn, checkOut: reservationInput.checkOut, roomCount: 1 });
+    // prettier-ignore
+    expect(calls[0]?.values).toEqual([receiptId, reservationInput.propertyId, reservationInput.roomTypeId, reservationInput.publicOfferKey, reservationInput.checkIn, reservationInput.checkOut, 1, "pms-inventory-reservation-lifecycle.v1"]);
+    // prettier-ignore
+    await expect(adapter.availabilityCredit!({ transaction: transaction as never, propertyId: reservationInput.propertyId, reservation: reservation! as never, roomTypeId: reservationInput.roomTypeId, publicOfferKey: reservationInput.publicOfferKey, checkIn: "2026-09-13", checkOut: reservationInput.checkOut, roomCount: reservationInput.roomCount })).resolves.toBeNull();
   });
 });

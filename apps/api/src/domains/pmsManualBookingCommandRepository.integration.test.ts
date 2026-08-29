@@ -244,6 +244,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     const projection = await readRepository.findReservationByGuestBookingId(
       propertyId,
       created.guestBookingId,
+      true,
     );
     expect(projection).toMatchObject({
       stay: { checkIn: "2027-01-01", checkOut: "2027-01-04", adults: 3, children: 0 },
@@ -451,11 +452,10 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       { date: "2026-09-01", assigned: 2, available: 1 },
       { date: "2026-09-02", assigned: 2, available: 1 },
     ]);
-    await admin.query(
-      `UPDATE pms.operational_booking_assignments SET check_in='2026-09-01',check_out='2026-09-03'
-       WHERE property_id=$1 AND guest_booking_id=$2`,
-      [propertyId, bookingId],
-    );
+    // prettier-ignore
+    await admin.query(`UPDATE pms.operational_booking_assignments SET check_in='2026-09-01',check_out='2026-09-03',assignment_payload=jsonb_build_object('inventoryReservation',$3::jsonb) WHERE property_id=$1 AND guest_booking_id=$2`, [propertyId, bookingId, JSON.stringify(marker)]);
+    // prettier-ignore
+    await expect(admin.query(`UPDATE pms.operational_booking_assignments SET assignment_payload='{}'::jsonb WHERE property_id=$1 AND guest_booking_id=$2`, [propertyId, bookingId])).rejects.toMatchObject({ constraint: "chk_pms_direct_booking_receipt_handoff_scope" });
     await expect(
       operations.executeNoShowCommand({
         propertyId,
@@ -1860,7 +1860,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
 
   async function seedInventory() {
     await fixtureQuery(
-      `INSERT INTO pms.inventory_days
+      `WITH revision AS (INSERT INTO pms.operating_calendar_revisions (organization_id,property_id,calendar_revision,contract_version,property_profile_revision,property_time_zone,schedule_mode,recurring_period_count,room_binding_count,default_minimum_stay_nights,idempotency_key_id,domain_event_id,outbox_event_id,created_by_user_id,created_at,updated_at) VALUES (gen_random_uuid(),$1,1,'pms-operating-calendar.v1',1,'Europe/Athens','year_round',0,1,1,gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),now(),now()) RETURNING property_id,calendar_revision), binding AS (INSERT INTO pms.operating_calendar_room_bindings (property_id,calendar_revision,room_type_id,source_room_facts_revision,source_room_units_revision,physical_capacity_count,starting_sellable_limit_count) SELECT property_id,calendar_revision,$2,1,1,3,3 FROM revision) INSERT INTO pms.inventory_days
         (property_id,room_type_id,stay_date,total_count,available_count,calendar_revision,
          inventory_revision,generated_sellable_limit_count,effective_sellable_limit_count,
          generated_source_revision,channel_source_revision,manual_source_revision,
@@ -1892,6 +1892,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
       await admin.query("SET LOCAL session_replication_role = replica");
       for (const sql of [
         "DELETE FROM platform.outbox_events WHERE property_id = $1::uuid",
+        "WITH s AS (DELETE FROM pms.inventory_reservation_statuses WHERE property_id=$1::uuid), w AS (DELETE FROM pms.inventory_reservation_day_watermarks WHERE property_id=$1::uuid) DELETE FROM pms.inventory_reservation_receipts WHERE property_id=$1::uuid",
         "DELETE FROM platform.product_audit_events WHERE property_id = $1::uuid",
         "DELETE FROM platform.domain_events WHERE property_id = $1::uuid",
         "DELETE FROM platform.idempotency_keys WHERE property_id = $1::uuid",
@@ -1919,6 +1920,8 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
         await admin.query("DELETE FROM pms.inventory_days WHERE property_id = $1::uuid", [
           propertyId,
         ]);
+        // prettier-ignore
+        await admin.query(`DELETE FROM pms.operating_calendar_room_bindings WHERE property_id='${propertyId}'; DELETE FROM pms.operating_calendar_revisions WHERE property_id='${propertyId}'`);
         await admin.query(
           "DELETE FROM hotel_catalog.property_locations WHERE property_id = $1::uuid",
           [propertyId],

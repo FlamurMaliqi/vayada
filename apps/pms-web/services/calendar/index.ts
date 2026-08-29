@@ -39,6 +39,10 @@ export interface CalendarRoom {
   roomNumber: string;
   floor: string;
   status: string;
+  baseRate: number;
+  currency: string;
+  maxOccupancy: number;
+  size: number;
 }
 
 export interface CalendarBooking {
@@ -59,6 +63,7 @@ export interface CalendarBooking {
   // quantity; roomPosition is 0 for the primary room, 1..N-1 for extras.
   numberOfRooms: number;
   roomPosition: number;
+  assignmentId: string | null;
 }
 
 export interface CalendarBlock {
@@ -123,6 +128,7 @@ type PmsOperationsRoomType = {
   name: string;
   category: string | null;
   occupancyLimits: Record<string, number>;
+  attributes: Record<string, unknown>;
   baseRate: PmsOperationsMoney;
   roomCount: number;
   ratePlans: Array<{
@@ -181,6 +187,7 @@ type PmsOperationalReservation = {
   stay: { checkIn: string; checkOut: string };
   primaryGuest: { displayName: string };
   assignments: Array<{
+    assignmentId?: string | null;
     roomTypeId: string;
     roomId: string | null;
     roomNumber: string | null;
@@ -440,6 +447,10 @@ function toCalendarData(
         roomNumber: room.roomNumber,
         floor: room.floor ?? "",
         status: room.status,
+        baseRate: moneyAmount(roomTypesById.get(room.roomTypeId)?.baseRate),
+        currency: roomTypesById.get(room.roomTypeId)?.baseRate.currency ?? "EUR",
+        maxOccupancy: maxOccupancy(roomTypesById.get(room.roomTypeId)),
+        size: numericAttribute(roomTypesById.get(room.roomTypeId)?.attributes?.size),
       })),
     roomOrderVersion: range.roomOrderVersion,
     bookings: reservations.flatMap((reservation) =>
@@ -483,10 +494,14 @@ function calendarBookingsForReservation(
         status,
         roomId: assignment?.roomId ?? null,
         roomNumber: assignment?.roomNumber ?? null,
-        channel: assignment?.channel ?? reservationSource(reservation.source),
+        channel:
+          reservation.source === "manual"
+            ? "manual"
+            : (assignment?.channel ?? reservationSource(reservation.source)),
         bookingReference: reservation.bookingReference,
         numberOfRooms,
         roomPosition: assignment ? Math.max(assignment.position - 1, 0) : index,
+        assignmentId: assignment?.assignmentId ?? null,
       };
     })
     .filter(
@@ -512,6 +527,18 @@ function maxOccupancy(roomType: PmsOperationsRoomType | undefined): number {
   const total = roomType.occupancyLimits.total;
   if (typeof total === "number") return total;
   return Object.values(roomType.occupancyLimits).reduce((sum, value) => sum + value, 0);
+}
+
+function numericAttribute(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) && value > 0 ? value : 0;
+  if (!value || typeof value !== "object") return 0;
+  const attribute = value as { value?: unknown; unit?: unknown };
+  return attribute.unit === "sqm" &&
+    typeof attribute.value === "number" &&
+    Number.isFinite(attribute.value) &&
+    attribute.value > 0
+    ? attribute.value
+    : 0;
 }
 
 function reservationSource(source: PmsOperationalReservation["source"]): string {

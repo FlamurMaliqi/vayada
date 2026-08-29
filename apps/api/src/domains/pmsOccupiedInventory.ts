@@ -55,7 +55,10 @@ export async function reconcilePmsOccupiedInventory(
              FROM booking.guest_bookings booking
              JOIN pms.operational_booking_assignments adopted
                ON adopted.guest_booking_id=booking.id AND adopted.property_id=booking.property_id
-               AND adopted.source='direct_booking' AND adopted.room_type_id=receipt.room_type_id
+               AND adopted.source='direct_booking'
+               AND (reservation_status.lifecycle_state='handed_off'
+                 OR adopted.room_type_id=receipt.room_type_id)
+               AND COALESCE(adopted.check_in,booking.check_in)=receipt.check_in AND COALESCE(adopted.check_out,booking.check_out)=receipt.check_out
              WHERE booking.property_id=receipt.property_id
                AND (booking.booking_metadata#>>'{inventoryReservation,receiptId}'=
                  receipt.receipt_id::text OR booking.quote_session_id::text=receipt.quote_session_id
@@ -75,7 +78,6 @@ export async function reconcilePmsOccupiedInventory(
              FROM pms.operational_booking_assignments adopted
              WHERE adopted.property_id=booking.property_id
                AND adopted.guest_booking_id=booking.id AND adopted.source='direct_booking'
-               AND adopted.room_type_id=day.room_type_id
                AND COALESCE(adopted.check_in,booking.check_in)=booking.check_in
                AND COALESCE(adopted.check_out,booking.check_out)=booking.check_out
            ),0)))::int
@@ -115,10 +117,6 @@ export async function reconcilePmsOccupiedInventory(
              ) OR (
                COALESCE(assignment.check_in,booking.check_in)=booking.check_in
                AND COALESCE(assignment.check_out,booking.check_out)=booking.check_out
-               AND (booking.booking_metadata#>>'{inventoryReservation,contractVersion}'
-                 IS DISTINCT FROM 'pms.inventory-reservation.v1'
-                 OR booking.booking_metadata#>>'{inventoryReservation,roomTypeId}'=
-                   assignment.room_type_id::text)
              ))
          ),0)
        )::int AS "expectedAssignedCount"

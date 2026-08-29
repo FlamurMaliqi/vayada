@@ -33,6 +33,7 @@ import {
   isBookingAcceptanceMode,
   type BookingAcceptanceSettingsPort,
 } from "../domains/bookingAcceptanceSettings.js";
+import { HIDDEN_GUEST_CONTACT } from "../domains/bookingGuestContactAccess.js";
 import type {
   PmsCalendarDay,
   PmsLinkedInventoryGroup,
@@ -45,8 +46,10 @@ import type {
   PmsRoomType,
   PmsSourceFreshness,
 } from "../domains/pmsOperationsReadModel.js";
-import { requireAuthContext, type RequestActor } from "@vayada/backend-auth";
+import type { PermissionKey, RequestActor, RequestContext } from "@vayada/backend-auth";
+import { hasPermission, type PropertyAccessRepository } from "@vayada/backend-authorization";
 import { enforceRoutePolicy } from "./policy.js";
+import { enforcePmsPropertyRoutePolicy } from "./pmsPropertyPolicy.js";
 
 export const PMS_OPERATIONS_CONTRACT_VERSION = "pms-operations.v1" as const;
 
@@ -143,6 +146,7 @@ export type PmsOperationalReservationDetail = Omit<PmsOperationalReservation, "p
 };
 
 export type PmsAssignmentCommandAction = "assign" | "move" | "unassign" | "swap";
+export type PmsAssignmentRatePolicy = "preserve" | "target_base";
 export type PmsOperationsCommandSideEffect =
   | "calendar_refresh"
   | "ari_changed"
@@ -261,6 +265,7 @@ export type PmsAssignmentCommandRequest = {
   roomId?: string | null;
   targetAssignmentId?: string;
   targetPosition?: number;
+  ratePolicy?: PmsAssignmentRatePolicy;
 };
 
 export type PmsPrivateNoteCreateRequest = {
@@ -937,6 +942,7 @@ export type PmsOperationsCommandRepository = {
 
 export type PmsOperationsRoutesOptions = {
   repository: PmsOperationsReadRepository;
+  propertyAccessRepository?: PropertyAccessRepository;
   checkoutChargeMarkPaidFreezeEnabled?: boolean;
   commandRepository?: PmsOperationsCommandRepository;
   linkedInventoryGroupCommandRepository?: PmsLinkedInventoryGroupCommandRepository;
@@ -1277,7 +1283,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.room_status.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       try {
         const result = await repository.listRoomsByPropertyId(propertyId);
@@ -1335,7 +1350,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.rooms_rates.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       try {
         const result = await repository.listRoomTypesByPropertyId(propertyId);
@@ -1366,7 +1390,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId, roomTypeId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.rooms_rates.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       try {
         const item = await repository.findRoomTypeById(propertyId, roomTypeId);
@@ -1437,7 +1470,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.calendar.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       const range = toCalendarRange(request.query);
       if ("error" in range) return sendPmsOperationsError(reply, range.error);
@@ -1478,7 +1520,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.calendar.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
 
       const range = toOptionalDateRange(request.query);
       if ("error" in range) return sendPmsOperationsError(reply, range.error);
@@ -1621,7 +1672,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.settings.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       try {
         const acceptanceMode =
           await options.bookingAcceptanceSettings?.findAcceptanceMode(propertyId);
@@ -1820,7 +1880,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.inbox.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       return sendPmsOperationsError(
         reply,
         readModelUnavailable("PMS messaging unread count read model is unavailable."),
@@ -1840,9 +1909,17 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      const context = await enforcePmsPropertyReadPolicy(
+        request,
+        reply,
+        propertyId,
+        "pms.reservation.read",
+        options.propertyAccessRepository,
+      );
+      if (!context) return reply;
+      const canReadGuestContact = hasPermission(context, "pms.guest_contact.read");
 
-      const filters = toReservationFilters(request.query);
+      const filters = toReservationFilters(request.query, canReadGuestContact);
       if ("error" in filters) return sendPmsOperationsError(reply, filters.error);
       const stayRange = toReservationStayRange(request.query);
       if ("error" in stayRange) return sendPmsOperationsError(reply, stayRange.error);
@@ -1857,6 +1934,7 @@ export async function registerPmsOperationsRoutes(
                 repository,
                 propertyId,
                 stayRange.value,
+                canReadGuestContact,
               ),
               filters.value.limit,
               filters.value.offset,
@@ -1865,7 +1943,9 @@ export async function registerPmsOperationsRoutes(
         return {
           contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
           propertyId,
-          items: result.items,
+          items: canReadGuestContact
+            ? result.items
+            : result.items.map(redactReservationGuestContact),
           pagination: {
             total: result.total,
             limit: filters.value.limit,
@@ -1894,10 +1974,22 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId, guestBookingId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      const context = await enforcePmsPropertyReadPolicy(
+        request,
+        reply,
+        propertyId,
+        "pms.reservation.read",
+        options.propertyAccessRepository,
+      );
+      if (!context) return reply;
+      const canReadGuestContact = hasPermission(context, "pms.guest_contact.read");
 
       try {
-        const item = await repository.findReservationByGuestBookingId(propertyId, guestBookingId);
+        const item = await repository.findReservationByGuestBookingId(
+          propertyId,
+          guestBookingId,
+          canReadGuestContact,
+        );
         if (!item) {
           return sendPmsOperationsError(reply, {
             statusCode: 404,
@@ -1915,6 +2007,7 @@ export async function registerPmsOperationsRoutes(
             bookingGuestPiiPort,
             propertyId,
             guestBookingId,
+            canReadGuestContact,
           ),
           sourceFreshness: {},
         } satisfies PmsReservationDetailResponse;
@@ -1986,6 +2079,7 @@ export async function registerPmsOperationsRoutes(
         const projection = await bookingGuestPiiPort.listGuestPiiForPmsOperations({
           propertyId,
           guestBookingId,
+          canReadGuestContact: true,
         });
         if (!projection) {
           return sendPmsOperationsError(reply, {
@@ -3022,9 +3116,13 @@ async function listCalendarReservationsOverlappingStayRange(
   repository: PmsOperationsReadRepository,
   propertyId: string,
   range: { from: string; to: string },
+  canReadGuestContact: boolean,
 ) {
   if (repository.listReservationsOverlappingStayRangeByPropertyId) {
-    return repository.listReservationsOverlappingStayRangeByPropertyId(propertyId, range);
+    return repository.listReservationsOverlappingStayRangeByPropertyId(propertyId, {
+      ...range,
+      canReadGuestContact,
+    });
   }
 
   return repository.listReservationsByPropertyId(propertyId, {
@@ -3032,6 +3130,7 @@ async function listCalendarReservationsOverlappingStayRange(
     arrivalFrom: range.from,
     arrivalTo: range.to,
     search: undefined,
+    canReadGuestContact,
     limit: PMS_RESERVATION_LIST_MAX_LIMIT,
     offset: 0,
   });
@@ -3079,6 +3178,37 @@ function enforcePmsOperationsReadPolicy(
     if (!contractError) throw error;
     sendPmsOperationsError(reply, contractError);
     return false;
+  }
+}
+
+async function enforcePmsPropertyReadPolicy(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  propertyId: string,
+  permission: PermissionKey,
+  repository: PropertyAccessRepository | undefined,
+): Promise<RequestContext | null> {
+  try {
+    if (!repository) throw new Error("PMS property access repository is unavailable");
+    return await enforcePmsPropertyRoutePolicy(
+      request,
+      {
+        propertyId,
+        permission,
+        allowedRelationships: ["owner", "operator", "front_desk"],
+      },
+      repository,
+    );
+  } catch (error) {
+    const accessError = toPmsOperationsAccessError(error, request, propertyId);
+    if (!accessError) {
+      request.log.error({ err: error, propertyId }, "PMS property access check failed");
+    }
+    sendPmsOperationsError(
+      reply,
+      accessError ?? readModelUnavailable("PMS property access is unavailable."),
+    );
+    return null;
   }
 }
 
@@ -4301,13 +4431,16 @@ async function withAdditionalGuestProjection(
   bookingGuestPiiPort: BookingGuestPiiPort | undefined,
   propertyId: string,
   guestBookingId: string,
+  canReadGuestContact: boolean,
 ): Promise<PmsOperationalReservationDetail> {
-  if (!bookingGuestPiiPort) return applyAdditionalGuestProjection(reservation, null);
+  if (!bookingGuestPiiPort)
+    return applyAdditionalGuestProjection(reservation, null, canReadGuestContact);
   const projection = await bookingGuestPiiPort.listGuestPiiForPmsOperations({
     propertyId,
     guestBookingId,
+    canReadGuestContact,
   });
-  return applyAdditionalGuestProjection(reservation, projection);
+  return applyAdditionalGuestProjection(reservation, projection, canReadGuestContact);
 }
 
 async function reservationWithAdditionalGuestProjection(
@@ -4316,35 +4449,60 @@ async function reservationWithAdditionalGuestProjection(
   guestBookingId: string,
   projection: BookingGuestPiiProjection,
 ): Promise<PmsOperationalReservationDetail | null> {
-  const reservation = await repository.findReservationByGuestBookingId(propertyId, guestBookingId);
-  return reservation ? applyAdditionalGuestProjection(reservation, projection) : null;
+  const reservation = await repository.findReservationByGuestBookingId(
+    propertyId,
+    guestBookingId,
+    true,
+  );
+  return reservation ? applyAdditionalGuestProjection(reservation, projection, true) : null;
 }
 
 function applyAdditionalGuestProjection(
   reservation: PmsOperationalReservation,
   projection: BookingGuestPiiProjection | null,
+  canReadGuestContact: boolean,
 ): PmsOperationalReservationDetail {
   const primaryGuest = projection?.primaryGuest;
+  const canExposeGuestContact =
+    canReadGuestContact &&
+    reservation.primaryGuest.email !== HIDDEN_GUEST_CONTACT &&
+    reservation.primaryGuest.phone !== HIDDEN_GUEST_CONTACT;
+  const visiblePrimaryGuest = canExposeGuestContact
+    ? (primaryGuest ?? reservation.primaryGuest)
+    : redactGuestContact(primaryGuest ?? reservation.primaryGuest);
   return {
     ...reservation,
     primaryGuest: primaryGuest
       ? {
-          displayName: primaryGuest.displayName,
-          email: primaryGuest.email,
-          phone: primaryGuest.phone,
-          countryCode: primaryGuest.countryCode,
-          specialRequests: primaryGuest.specialRequests,
+          displayName: visiblePrimaryGuest.displayName,
+          email: visiblePrimaryGuest.email,
+          phone: visiblePrimaryGuest.phone,
+          countryCode: visiblePrimaryGuest.countryCode,
+          specialRequests: visiblePrimaryGuest.specialRequests,
           countryCodeRaw: primaryGuest.countryCodeRaw,
           countryCodeReviewRequired: primaryGuest.countryCodeReviewRequired,
         }
       : {
-          ...reservation.primaryGuest,
+          ...visiblePrimaryGuest,
           countryCodeRaw: null,
           countryCodeReviewRequired: false,
         },
     additionalGuestCount: projection?.additionalGuests.length ?? reservation.additionalGuestCount,
-    additionalGuests: projection?.additionalGuests ?? [],
+    additionalGuests:
+      projection?.additionalGuests.map((guest) =>
+        canExposeGuestContact ? guest : redactGuestContact(guest),
+      ) ?? [],
   };
+}
+
+function redactReservationGuestContact(
+  reservation: PmsOperationalReservation,
+): PmsOperationalReservation {
+  return { ...reservation, primaryGuest: redactGuestContact(reservation.primaryGuest) };
+}
+
+function redactGuestContact<T extends { email: string | null; phone: string | null }>(guest: T): T {
+  return { ...guest, email: HIDDEN_GUEST_CONTACT, phone: HIDDEN_GUEST_CONTACT };
 }
 
 function readModelUnavailable(message: string): PmsOperationsError {
@@ -4504,6 +4662,7 @@ function invalidDateRangeError(): PmsOperationsError {
 
 function toReservationFilters(
   query: PmsReservationListQuery,
+  canReadGuestContact: boolean,
 ): { value: PmsReservationListFilters } | { error: PmsOperationsError } {
   const arrivalFrom = query.arrivalFrom?.trim() || undefined;
   const arrivalTo = query.arrivalTo?.trim() || undefined;
@@ -4524,6 +4683,7 @@ function toReservationFilters(
       arrivalFrom,
       arrivalTo,
       search: query.search?.trim() || undefined,
+      canReadGuestContact,
       limit: clampInteger(
         query.limit,
         PMS_RESERVATION_LIST_DEFAULT_LIMIT,
@@ -4594,6 +4754,8 @@ function toAssignmentCommand(
   const position = optionalPositiveInteger(raw.position);
   const targetPosition = optionalPositiveInteger(raw.targetPosition);
   const roomId = nullableStringField(raw.roomId);
+  const hasRatePolicy = Object.hasOwn(raw, "ratePolicy");
+  const ratePolicy = raw.ratePolicy;
 
   for (const [field, value] of [
     ["assignmentId", assignmentId],
@@ -4607,6 +4769,14 @@ function toAssignmentCommand(
 
   if ((inferredAction === "assign" || inferredAction === "move") && !roomId) {
     return { error: invalidAssignmentBodyError("Assign and move commands require roomId.") };
+  }
+  if (
+    hasRatePolicy &&
+    (inferredAction !== "move" ||
+      typeof ratePolicy !== "string" ||
+      !["preserve", "target_base"].includes(ratePolicy))
+  ) {
+    return { error: invalidAssignmentBodyError("ratePolicy is invalid for this command.") };
   }
   if (inferredAction === "unassign" && roomId !== null) {
     return { error: invalidAssignmentBodyError("Unassign commands must not include roomId.") };
@@ -4632,6 +4802,7 @@ function toAssignmentCommand(
       roomId,
       targetAssignmentId,
       targetPosition,
+      ...(inferredAction === "move" && ratePolicy === "target_base" ? { ratePolicy } : {}),
     },
   };
 }

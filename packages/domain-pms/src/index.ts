@@ -1,3 +1,5 @@
+import type { PmsInventoryReservationReceipt } from "./inventoryReservationLifecycle.js";
+
 export * from "./roomFacts.js";
 export * from "./roomAmenities.js";
 export * from "./roomMedia.js";
@@ -158,6 +160,8 @@ export type CreatePmsReservationCommand = {
     source: "direct_booking";
     locale: string;
   };
+  /** Exact PMS-owned hold to adopt atomically with local assignment creation. */
+  inventoryReservation?: PmsInventoryReservationReceipt;
   stay: {
     checkInDate: PmsDate;
     checkOutDate: PmsDate;
@@ -215,6 +219,8 @@ export type UpdatePmsReservationCommand = {
     guestBookingId: string;
     bookingReference: string;
   };
+  /** New exact PMS-owned hold to adopt with a stay or room-type update. */
+  inventoryReservation?: PmsInventoryReservationReceipt;
   changes: {
     stay?: Partial<CreatePmsReservationCommand["stay"]>;
     guests?: Partial<CreatePmsReservationCommand["guests"]>;
@@ -377,13 +383,8 @@ export type PmsOperationalReservationReadPort = {
   ): Promise<PmsOperationalReservationListResult>;
 };
 
-export type CanonicalJsonValue =
-  | null
-  | boolean
-  | string
-  | number
-  | CanonicalJsonValue[]
-  | { [key: string]: CanonicalJsonValue };
+// prettier-ignore
+export type CanonicalJsonValue = null | boolean | string | number | CanonicalJsonValue[] | { [key: string]: CanonicalJsonValue };
 
 export type CanonicalizePayloadForIdempotency = (command: unknown) => string;
 

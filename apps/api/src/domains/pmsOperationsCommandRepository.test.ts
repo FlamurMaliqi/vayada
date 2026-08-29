@@ -170,7 +170,8 @@ const readRepository: PmsOperationsReadRepository = {
   async listReservationsByPropertyId() {
     return { items: [], total: 0 };
   },
-  async findReservationByGuestBookingId() {
+  async findReservationByGuestBookingId(_propertyId, _guestBookingId, canReadGuestContact) {
+    expect(canReadGuestContact).toBe(true);
     return structuredClone(baseReservation);
   },
 };
@@ -444,13 +445,34 @@ function manualNoShowHandler(failEvidence = false): QueryHandler {
   };
 }
 
-function successfulAssignmentHandler(): QueryHandler {
-  return (text) => {
+function successfulAssignmentHandler(
+  targetRoomTypeId = assignmentRows()[0]!.roomTypeId as string,
+): QueryHandler {
+  return (text, values) => {
     if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK") return ok();
     if (text.includes("FROM platform.idempotency_keys")) return ok();
     if (text.includes("INSERT INTO platform.idempotency_keys")) return ok([{ id: "idem" }], 1);
     if (text.includes('SELECT room_type_id::text AS "roomTypeId"')) {
       return ok([{ roomTypeId: assignmentRows()[0]!.roomTypeId }]);
+    }
+    if (text.includes('AS "expectedAssignedCount"')) {
+      const targetDays = JSON.parse(String(values[1] ?? "[]")) as Array<{
+        roomTypeId: string;
+        stayDate: string;
+      }>;
+      return ok(
+        targetDays.map(({ roomTypeId: targetType, stayDate }) => ({
+          roomTypeId: targetType,
+          stayDate,
+          totalCount: 1,
+          blockedCount: 0,
+          assignedCount: targetType === roomTypeId ? 1 : 0,
+          effectiveSellableLimitCount: 1,
+          status: "open",
+          expectedAssignedCount: targetType === targetRoomTypeId ? 1 : 0,
+          linkedStopSell: false,
+        })),
+      );
     }
     if (text.includes("FROM pms.operational_booking_assignments assignment")) {
       return ok([assignmentRows()[0]!]);
@@ -458,16 +480,17 @@ function successfulAssignmentHandler(): QueryHandler {
     if (text.includes("pg_advisory_xact_lock")) return ok([{ locked: true }]);
     if (text.includes("FROM pms.linked_inventory_groups")) return ok();
     if (text.includes("room_type_id = $2::uuid") && text.includes("FOR UPDATE")) return ok();
-    if (text.includes("status = 'available'") && text.includes("FROM pms.rooms")) {
+    if (text.includes('id::text AS "roomId"') && text.includes("status = 'available'")) {
       return ok([
         {
           roomId: "f6855100-0000-0000-0000-000000000003",
-          roomTypeId: assignmentRows()[0]!.roomTypeId,
+          roomTypeId: targetRoomTypeId,
           status: "available",
         },
       ]);
     }
     if (text.includes("WITH stay_dates AS")) return ok([{ eligible: 1 }]);
+    if (text.includes("UPDATE pms.inventory_days")) return ok([], 1);
     if (text.includes("UPDATE pms.operational_booking_assignments")) return ok([], 1);
     if (text.includes("INSERT INTO platform.domain_events")) {
       return ok([{ eventId: "f6855900-0000-0000-0000-000000000001" }], 1);
@@ -1186,8 +1209,9 @@ describe("target PMS operations command repository", () => {
           text.includes("FROM pms.operational_booking_assignments assignment") &&
           text.includes("FOR UPDATE OF assignment"),
       );
-      const eligibilityIndex = client.calls.findIndex(
-        ({ text }) => text.includes("status = 'available'") && text.includes("FROM pms.rooms"),
+      const eligibilityIndex = client.calls.findLastIndex(
+        ({ text }) =>
+          text.includes('id::text AS "roomId"') && text.includes("status = 'available'"),
       );
       expect(advisoryLockIndex).toBeGreaterThan(-1);
       expect(advisoryLockIndex).toBeLessThan(roomLockIndex);
@@ -1198,6 +1222,97 @@ describe("target PMS operations command repository", () => {
       );
     },
   );
+
+  it("moves exactly one assignment across room types and transfers its inventory", async () => {
+    const targetRoomTypeId = "f6855000-0000-0000-0000-000000000099";
+    const { client, repository } = createRepository(successfulAssignmentHandler(targetRoomTypeId));
+
+    const result = await repository.executeAssignmentCommand(
+      baseAssignmentCommand({
+        action: "move",
+        commandId: "cmd-move-cross-room-type",
+        idempotencyKey: "key-move-cross-room-type",
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    const roomTypeLocks = client.calls
+      .filter(({ text }) => text.includes("room_type_id = $2::uuid") && text.includes("FOR UPDATE"))
+      .map(({ values }) => values[1]);
+    expect(roomTypeLocks).toEqual([roomTypeId, targetRoomTypeId].sort());
+
+    const occupiedInventory = requiredCall(client, 'AS "expectedAssignedCount"');
+    const targetDays = JSON.parse(String(occupiedInventory.values[1])) as Array<{
+      roomTypeId: string;
+      stayDate: string;
+    }>;
+    expect(new Set(targetDays.map(({ roomTypeId }) => roomTypeId))).toEqual(
+      new Set([roomTypeId, targetRoomTypeId]),
+    );
+    expect(new Set(targetDays.map(({ stayDate }) => stayDate))).toEqual(
+      new Set(["2026-08-15", "2026-08-16", "2026-08-17"]),
+    );
+    const inventoryTransfers = client.calls.filter(({ text }) =>
+      text.includes("UPDATE pms.inventory_days"),
+    );
+    expect(inventoryTransfers).toHaveLength(6);
+
+    const assignmentUpdate = requiredCall(client, "UPDATE pms.operational_booking_assignments");
+    expect(assignmentUpdate.values[1]).toBe(assignmentOneId);
+    expect(assignmentUpdate.text).toContain(
+      "rate_plan_id = CASE WHEN room_type_id = $6::uuid THEN rate_plan_id ELSE NULL END",
+    );
+    expect(assignmentUpdate.text).toContain("WHEN assignment_status IN ('checked_in', 'in_house')");
+    const assignmentRead = requiredCall(
+      client,
+      "FROM pms.operational_booking_assignments assignment",
+    );
+    expect(assignmentRead.text).toContain("COALESCE(assignment.check_in, booking.check_in)");
+    const reconcilerIndex = client.calls.findIndex(({ text }) =>
+      text.includes("FROM pms.linked_inventory_groups"),
+    );
+    expect(reconcilerIndex).toBeLessThan(client.calls.indexOf(occupiedInventory));
+    const eligibility = requiredCall(client, "canonical_inventory_unavailable");
+    expect(eligibility.text).toContain(
+      "COALESCE(other_assignment.check_in, other_booking.check_in)",
+    );
+    expect(eligibility.text).toContain("cause.id<>$3::uuid");
+    expect(eligibility.text).toContain("inventory.effective_sellable_limit_count");
+    expect(eligibility.text).toContain("CASE WHEN $6::uuid=$7::uuid THEN 1 ELSE 0 END");
+    expect(eligibility.values[6]).toBe(roomTypeId);
+    const ariTransfers = client.calls.filter(({ text }) =>
+      text.includes("'pms.inventory.ari_changed'::text"),
+    );
+    expect(ariTransfers.map(({ values }) => values[2])).toEqual([roomTypeId, targetRoomTypeId]);
+    expect(ariTransfers[0]!.values[5]).toContain('"from":"2026-08-15","to":"2026-08-17"');
+  });
+
+  it("rejects a move when the requested room changes type before its lock is acquired", async () => {
+    const targetRoomTypeId = "f6855000-0000-0000-0000-000000000099";
+    const changedRoomTypeId = "f6855000-0000-0000-0000-000000000100";
+    const fallback = successfulAssignmentHandler(targetRoomTypeId);
+    let roomLookup = 0;
+    const { client, repository } = createRepository((text, values) => {
+      if (text.includes('id::text AS "roomId"') && text.includes("status = 'available'")) {
+        roomLookup += 1;
+        return ok([
+          {
+            roomId: "f6855100-0000-0000-0000-000000000003",
+            roomTypeId: roomLookup === 1 ? targetRoomTypeId : changedRoomTypeId,
+            status: "available",
+          },
+        ]);
+      }
+      return fallback(text, values);
+    });
+
+    const result = await repository.executeAssignmentCommand(
+      baseAssignmentCommand({ action: "move" }),
+    );
+
+    expect(result).toMatchObject({ ok: false, code: "assignment_conflict" });
+    expect(client.calls.some(({ text }) => text.includes("UPDATE pms.inventory_days"))).toBe(false);
+  });
 
   it.each(["assign", "move"] as const)(
     "rejects %s to an unlabeled or unverified physical unit",
@@ -1214,7 +1329,7 @@ describe("target PMS operations command repository", () => {
           return ok([assignmentRows()[0]!]);
         }
         if (text.includes("room_type_id = $2::uuid") && text.includes("FOR UPDATE")) return ok();
-        if (text.includes("status = 'available'") && text.includes("FROM pms.rooms")) {
+        if (text.includes('id::text AS "roomId"') && text.includes("status = 'available'")) {
           expect(text).toContain("operational_label_status = 'verified'");
           expect(text).toContain("room_number IS NOT NULL");
           return ok();

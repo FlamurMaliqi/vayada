@@ -14,17 +14,20 @@ import {
   VayadaPmsDuplicateReservationError,
   createVayadaPmsReservationAdapter,
   type VayadaPmsConnection,
+  type VayadaPmsCreateReservationInput,
   type VayadaPmsIdempotencyRecord,
   type VayadaPmsOfferMapping,
   type VayadaPmsReservationRepository,
+  type VayadaPmsUpdateReservationInput,
 } from "./index.js";
 
 describe("@vayada/pms-vayada-adapter", () => {
   it("creates an operational reservation through the PMS contract without leaking storage details", async () => {
     const repository = new InMemoryVayadaPmsRepository();
     const adapter = createVayadaPmsReservationAdapter(repository);
+    const inventoryReservation = inventoryReceipt("C9FCCEC2-EB4C-4C35-BFD3-02A748C2E117");
 
-    const result = await adapter.createReservation(createCommand());
+    const result = await adapter.createReservation(createCommand({ inventoryReservation }));
 
     expect(result).toMatchObject({
       contractVersion: PMS_RESERVATION_CONTRACT_VERSION,
@@ -39,17 +42,24 @@ describe("@vayada/pms-vayada-adapter", () => {
     });
     expect(result.pmsReservationRef).not.toContain("bookings");
     expect(result.pmsReservationRef).not.toContain("booking_rooms");
+    // prettier-ignore
+    expect(repository.lastAssignmentPayloadPatch).toEqual({ inventoryReservation: inventoryReceipt("c9fccec2-eb4c-4c35-bfd3-02a748c2e117") });
   });
 
   it("replays a matching idempotency key without creating a second operational reservation", async () => {
     const repository = new InMemoryVayadaPmsRepository();
     const adapter = createVayadaPmsReservationAdapter(repository);
-    const command = createCommand();
+    const command = createCommand({
+      inventoryReservation: inventoryReceipt("C9FCCEC2-EB4C-4C35-BFD3-02A748C2E117"),
+    });
 
     await expect(adapter.createReservation(command)).resolves.toMatchObject({
       outcome: "succeeded",
     });
-    await expect(adapter.createReservation(command)).resolves.toMatchObject({
+    const lowercaseRetry = createCommand({
+      inventoryReservation: inventoryReceipt("c9fccec2-eb4c-4c35-bfd3-02a748c2e117"),
+    });
+    await expect(adapter.createReservation(lowercaseRetry)).resolves.toMatchObject({
       outcome: "duplicate_replayed",
       pmsReservationRef: "vayada-pms-res-book_123",
       auditEventId: "audit_2",
@@ -86,16 +96,14 @@ describe("@vayada/pms-vayada-adapter", () => {
   it("rejects idempotency-key reuse with a different command payload", async () => {
     const repository = new InMemoryVayadaPmsRepository();
     const adapter = createVayadaPmsReservationAdapter(repository);
-    await adapter.createReservation(createCommand());
+    await adapter.createReservation(
+      createCommand({
+        inventoryReservation: inventoryReceipt("c9fccec2-eb4c-4c35-bfd3-02a748c2e117"),
+      }),
+    );
 
     const conflicting = createCommand({
-      stay: {
-        checkInDate: "2026-10-02",
-        checkOutDate: "2026-10-05",
-        adults: 2,
-        children: 0,
-        numberOfRooms: 1,
-      },
+      inventoryReservation: inventoryReceipt("d9fccec2-eb4c-4c35-bfd3-02a748c2e117"),
     });
 
     await expect(adapter.createReservation(conflicting)).resolves.toMatchObject({
@@ -233,6 +241,10 @@ describe("@vayada/pms-vayada-adapter", () => {
       status: "modified",
       providerVersion: "v2",
     });
+    // prettier-ignore
+    expect(repository.lastUpdatePayloadPatch?.inventoryReservation?.receiptId).toBe("c9fccec2-eb4c-4c35-bfd3-02a748c2e117");
+    // prettier-ignore
+    await expect(adapter.updateReservation({ ...updateCommand(), inventoryReservation: inventoryReceipt("d9fccec2-eb4c-4c35-bfd3-02a748c2e117") })).resolves.toMatchObject({ outcome: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
     await expect(adapter.cancelReservation(cancelCommand())).resolves.toMatchObject({
       outcome: "succeeded",
       status: "cancelled",
@@ -332,7 +344,7 @@ describe("@vayada/pms-vayada-adapter", () => {
         ...updateCommand(),
         changes: {
           pricing: {
-            grandTotal: { amountDecimal: "12.00", currency: "eur" },
+            grandTotal: { amountDecimal: "12.00", currency: "EUR" },
           },
         },
       }),
@@ -370,6 +382,9 @@ class InMemoryVayadaPmsRepository implements VayadaPmsReservationRepository {
   createCount = 0;
   updateCount = 0;
   cancelCount = 0;
+  lastUpdatePayloadPatch: VayadaPmsUpdateReservationInput["assignmentPayloadPatch"] | null = null;
+  lastAssignmentPayloadPatch: VayadaPmsCreateReservationInput["assignmentPayloadPatch"] | null =
+    null;
   private auditCount = 0;
 
   constructor(
@@ -422,13 +437,13 @@ class InMemoryVayadaPmsRepository implements VayadaPmsReservationRepository {
     return this.mapping;
   }
 
-  async createOperationalReservation(input: {
-    command: CreatePmsReservationCommand;
-    mapping: VayadaPmsOfferMapping;
-  }): Promise<PmsOperationalReservationReadModel> {
+  async createOperationalReservation(
+    input: VayadaPmsCreateReservationInput,
+  ): Promise<PmsOperationalReservationReadModel> {
     if (this.failCreates) {
       throw new Error("write unavailable");
     }
+    this.lastAssignmentPayloadPatch = input.assignmentPayloadPatch;
     const { command, mapping } = input;
     if (
       this.byGuestBooking.has(`${command.target.propertyId}:${command.guestBooking.guestBookingId}`)
@@ -445,10 +460,12 @@ class InMemoryVayadaPmsRepository implements VayadaPmsReservationRepository {
     return reservation;
   }
 
-  async updateOperationalReservation(
-    command: UpdatePmsReservationCommand,
-  ): Promise<PmsOperationalReservationReadModel | null> {
+  async updateOperationalReservation({
+    command,
+    assignmentPayloadPatch,
+  }: VayadaPmsUpdateReservationInput): Promise<PmsOperationalReservationReadModel | null> {
     this.updateCount += 1;
+    this.lastUpdatePayloadPatch = assignmentPayloadPatch;
     const existing = this.reservations.get(command.target.pmsReservationRef);
     if (!existing) {
       return null;
@@ -654,6 +671,14 @@ function createCommand(
   };
 }
 
+function inventoryReceipt(receiptId: string) {
+  return {
+    contractVersion: "pms-inventory-reservation-lifecycle.v1" as const,
+    owner: "pms" as const,
+    receiptId,
+  };
+}
+
 function updateCommand(): UpdatePmsReservationCommand {
   return {
     contractVersion: PMS_RESERVATION_CONTRACT_VERSION,
@@ -679,6 +704,7 @@ function updateCommand(): UpdatePmsReservationCommand {
       guestBookingId: "book_123",
       bookingReference: "VAY-2026-0001",
     },
+    inventoryReservation: inventoryReceipt("C9FCCEC2-EB4C-4C35-BFD3-02A748C2E117"),
     changes: {
       stay: {
         checkOutDate: "2026-09-16",

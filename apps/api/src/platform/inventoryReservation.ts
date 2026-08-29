@@ -1,5 +1,7 @@
 import {
   PMS_INVENTORY_RESERVATION_MARKER_VERSION,
+  parsePmsInventoryReservationReceipt,
+  type PmsInventoryReservationReceipt,
   type PmsInventoryReservationMarker,
 } from "@vayada/domain-pms";
 import type { QueryResult, QueryResultRow } from "pg";
@@ -11,7 +13,8 @@ export type InventoryReservationTransaction = {
   ): Promise<Pick<QueryResult<T>, "rows">>;
 };
 
-export type InventoryReservationReceipt = PmsInventoryReservationMarker;
+export type InventoryReservationReceipt =
+  PmsInventoryReservationReceipt | PmsInventoryReservationMarker;
 
 export type DirectBookingInventoryReservationPort = {
   reserve(input: {
@@ -32,6 +35,16 @@ export type DirectBookingInventoryReservationPort = {
     reservation: InventoryReservationReceipt;
     occurredAt: Date;
   }): Promise<void>;
+  availabilityCredit?(input: {
+    transaction: InventoryReservationTransaction;
+    propertyId: string;
+    reservation: PmsInventoryReservationReceipt;
+    roomTypeId: string;
+    publicOfferKey: string;
+    checkIn: string;
+    checkOut: string;
+    roomCount: number;
+  }): Promise<{ checkIn: string; checkOut: string; roomCount: number } | null>;
 };
 
 export function inventoryReservationReceiptFromBookingMetadata(
@@ -39,6 +52,8 @@ export function inventoryReservationReceiptFromBookingMetadata(
   expectedPropertyId: string,
 ): InventoryReservationReceipt | null {
   const marker = objectValue(objectValue(bookingMetadata)["inventoryReservation"]);
+  const receipt = parsePmsInventoryReservationReceipt(marker);
+  if (receipt) return receipt;
   if (
     marker["contractVersion"] !== PMS_INVENTORY_RESERVATION_MARKER_VERSION ||
     marker["owner"] !== "pms" ||

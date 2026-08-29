@@ -1,11 +1,13 @@
 import {
   PMS_RESERVATION_CONTRACT_VERSION,
+  parsePmsInventoryReservationReceipt,
   type CancelPmsReservationCommand,
   type CreatePmsReservationCommand,
   type ListPmsOperationalReservationsQuery,
   type PmsCapability,
   type PmsConnectionStatus,
   type PmsExternalReference,
+  type PmsInventoryReservationReceipt,
   type PmsOperationalReservationListResult,
   type PmsOperationalReservationReadModel,
   type PmsOperationalReservationReadPort,
@@ -35,7 +37,13 @@ export type VayadaPmsOfferMapping = {
 export type VayadaPmsCreateReservationInput = {
   command: CreatePmsReservationCommand;
   mapping: VayadaPmsOfferMapping;
+  assignmentPayloadPatch: {
+    inventoryReservation?: PmsInventoryReservationReceipt;
+  };
 };
+
+// prettier-ignore
+export type VayadaPmsUpdateReservationInput = { command: UpdatePmsReservationCommand; assignmentPayloadPatch: VayadaPmsCreateReservationInput["assignmentPayloadPatch"] };
 
 export type VayadaPmsIdempotencyRecord = {
   idempotencyKey: string;
@@ -68,7 +76,7 @@ export type VayadaPmsReservationRepository = {
     input: VayadaPmsCreateReservationInput,
   ): Promise<PmsOperationalReservationReadModel>;
   updateOperationalReservation(
-    command: UpdatePmsReservationCommand,
+    input: VayadaPmsUpdateReservationInput,
   ): Promise<PmsOperationalReservationReadModel | null>;
   cancelOperationalReservation(
     command: CancelPmsReservationCommand,
@@ -108,6 +116,8 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
     if (validationError) {
       return this.persistResultOrFailure(command, this.failed(command, validationError));
     }
+    const inventoryReservation = parsePmsInventoryReservationReceipt(command.inventoryReservation);
+    if (inventoryReservation) command = { ...command, inventoryReservation };
 
     const replay = await this.idempotencyReplay(command);
     if (replay) {
@@ -125,7 +135,14 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
     }
 
     try {
-      const reservation = await this.repository.createOperationalReservation({ command, mapping });
+      const assignmentPayloadPatch = command.inventoryReservation
+        ? { inventoryReservation: command.inventoryReservation }
+        : {};
+      const reservation = await this.repository.createOperationalReservation({
+        command,
+        mapping,
+        assignmentPayloadPatch,
+      });
       return await this.persistResultOrFailure(
         command,
         await this.succeeded(command, reservation, "succeeded"),
@@ -151,6 +168,8 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
     if (validationError) {
       return this.persistResultOrFailure(command, this.failed(command, validationError));
     }
+    const inventoryReservation = parsePmsInventoryReservationReceipt(command.inventoryReservation);
+    if (inventoryReservation) command = { ...command, inventoryReservation };
 
     const replay = await this.idempotencyReplay(command);
     if (replay) {
@@ -166,7 +185,13 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
     }
 
     try {
-      const reservation = await this.repository.updateOperationalReservation(command);
+      const assignmentPayloadPatch = command.inventoryReservation
+        ? { inventoryReservation: command.inventoryReservation }
+        : {};
+      const reservation = await this.repository.updateOperationalReservation({
+        command,
+        assignmentPayloadPatch,
+      });
       if (!reservation) {
         return this.persistResultOrFailure(command, this.failed(command, mappingMissingError()));
       }
@@ -247,9 +272,7 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
 
   private async idempotencyReplay(
     command:
-      | CreatePmsReservationCommand
-      | UpdatePmsReservationCommand
-      | CancelPmsReservationCommand,
+      CreatePmsReservationCommand | UpdatePmsReservationCommand | CancelPmsReservationCommand,
   ): Promise<PmsReservationHandoffResult | null> {
     const existing = await this.repository.getIdempotencyRecord(command.idempotencyKey);
     if (!existing) {
@@ -289,9 +312,7 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
 
   private async connectionFailure(
     command:
-      | CreatePmsReservationCommand
-      | UpdatePmsReservationCommand
-      | CancelPmsReservationCommand,
+      CreatePmsReservationCommand | UpdatePmsReservationCommand | CancelPmsReservationCommand,
     requiredCapabilities: PmsCapability[],
   ): Promise<PmsReservationHandoffResult | null> {
     if (command.target.provider !== "vayada_pms") {
@@ -330,9 +351,7 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
 
   private async succeeded(
     command:
-      | CreatePmsReservationCommand
-      | UpdatePmsReservationCommand
-      | CancelPmsReservationCommand,
+      CreatePmsReservationCommand | UpdatePmsReservationCommand | CancelPmsReservationCommand,
     reservation: PmsOperationalReservationReadModel,
     outcome: Exclude<PmsReservationHandoffResult["outcome"], "failed">,
   ): Promise<PmsReservationHandoffResult> {
@@ -363,9 +382,7 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
 
   private failed(
     command:
-      | CreatePmsReservationCommand
-      | UpdatePmsReservationCommand
-      | CancelPmsReservationCommand,
+      CreatePmsReservationCommand | UpdatePmsReservationCommand | CancelPmsReservationCommand,
     error: PmsReservationError,
   ): PmsReservationHandoffResult {
     return {
@@ -382,9 +399,7 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
 
   private async auditOnlyFailure(
     command:
-      | CreatePmsReservationCommand
-      | UpdatePmsReservationCommand
-      | CancelPmsReservationCommand,
+      CreatePmsReservationCommand | UpdatePmsReservationCommand | CancelPmsReservationCommand,
     error: PmsReservationError,
   ): Promise<PmsReservationHandoffResult> {
     const result = this.failed(command, error);
@@ -406,9 +421,7 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
 
   private async persistResult(
     command:
-      | CreatePmsReservationCommand
-      | UpdatePmsReservationCommand
-      | CancelPmsReservationCommand,
+      CreatePmsReservationCommand | UpdatePmsReservationCommand | CancelPmsReservationCommand,
     result: PmsReservationHandoffResult,
   ): Promise<PmsReservationHandoffResult> {
     const resultWithAudit =
@@ -439,9 +452,7 @@ class DefaultVayadaPmsReservationAdapter implements VayadaPmsReservationAdapter 
 
   private async persistResultOrFailure(
     command:
-      | CreatePmsReservationCommand
-      | UpdatePmsReservationCommand
-      | CancelPmsReservationCommand,
+      CreatePmsReservationCommand | UpdatePmsReservationCommand | CancelPmsReservationCommand,
     result: PmsReservationHandoffResult,
   ): Promise<PmsReservationHandoffResult> {
     try {
@@ -476,6 +487,12 @@ function validateCommand(
 
   if (isCreateCommand(command)) {
     if (
+      command.inventoryReservation !== undefined &&
+      !parsePmsInventoryReservationReceipt(command.inventoryReservation)
+    ) {
+      return validationError("Inventory reservation receipt is invalid.");
+    }
+    if (
       !isIsoDate(command.stay.checkInDate) ||
       !isIsoDate(command.stay.checkOutDate) ||
       !isUtcDateTime(command.guestBooking.createdAt)
@@ -500,6 +517,14 @@ function validateCommand(
   }
 
   if (isUpdateCommand(command)) {
+    if (
+      command.inventoryReservation !== undefined &&
+      !parsePmsInventoryReservationReceipt(command.inventoryReservation)
+    ) {
+      return validationError("Inventory reservation receipt is invalid.");
+    }
+    // prettier-ignore
+    if (command.inventoryReservation !== undefined && Object.keys(command.changes.stay ?? {}).length === 0 && command.changes.bookedOffer?.roomTypeId === undefined) return validationError("Inventory reservation receipt requires a stay or room-type update.");
     const stay = command.changes.stay;
     if (
       (stay?.checkInDate !== undefined && !isIsoDate(stay.checkInDate)) ||
@@ -552,6 +577,7 @@ function canonicalIdempotencyPayload(command: unknown): unknown {
       contractVersion: command.contractVersion,
       target: command.target,
       guestBooking: command.guestBooking,
+      inventoryReservation: command.inventoryReservation,
       stay: command.stay,
       guests: command.guests,
       bookedOffer: command.bookedOffer,
@@ -565,6 +591,7 @@ function canonicalIdempotencyPayload(command: unknown): unknown {
       contractVersion: command.contractVersion,
       target: command.target,
       guestBooking: command.guestBooking,
+      inventoryReservation: command.inventoryReservation,
       changes: command.changes,
       expectedPreviousVersion: command.expectedPreviousVersion,
     });

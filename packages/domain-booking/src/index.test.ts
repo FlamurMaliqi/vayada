@@ -48,6 +48,9 @@ describe("@vayada/domain-booking PMS reservation handoff", () => {
         status: "confirmed",
         source: "direct_booking",
       },
+      inventoryReservation: {
+        receiptId: "c9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+      },
       stay: {
         checkInDate: "2026-09-12",
         checkOutDate: "2026-09-15",
@@ -255,6 +258,11 @@ function handoffInput(): BookingPmsReservationHandoffInput {
       organizationId: "org_hotel_alpenrose",
       createdAt: "2026-09-01T09:59:30.000Z",
       locale: "en",
+      inventoryReservation: {
+        contractVersion: "pms-inventory-reservation-lifecycle.v1",
+        owner: "pms",
+        receiptId: "c9fccec2-eb4c-4c35-bfd3-02a748c2e117",
+      },
       stay: {
         checkInDate: "2026-09-12",
         checkOutDate: "2026-09-15",
