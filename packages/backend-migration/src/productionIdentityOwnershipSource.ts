@@ -9,6 +9,49 @@ export type OrganizationKind =
   | "creator_workspace"
   | "affiliate_partner";
 export type OrganizationStatus = "active" | "suspended" | "archived";
+export type MembershipStatus = "active" | "pending" | "suspended" | "inactive";
+
+export type ExistingOrganization = {
+  id: string;
+  kind: OrganizationKind;
+  name: string;
+  slug: string;
+  status: OrganizationStatus;
+  updatedAt: string;
+};
+export type ExistingMembership = {
+  organizationId: string;
+  userId: string;
+  status: MembershipStatus;
+  roleKey: string;
+  propertyAccessMode: "all" | "assigned";
+  accessOrigin: "agency" | "external_owner";
+  updatedAt: string;
+};
+export type ExistingResourceLink = {
+  organizationId: string;
+  product: string;
+  resourceType: string;
+  resourceId: string;
+  relationship: string;
+  status: OrganizationStatus;
+  updatedAt: string;
+};
+export type ExistingOwnershipState = {
+  organizations: ExistingOrganization[];
+  memberships: ExistingMembership[];
+  resourceLinks: ExistingResourceLink[];
+};
+export type PlannedOrganization = ExistingOrganization & { createdAt: string };
+export type PlannedMembership = ExistingMembership & { createdAt: string };
+export type PlannedResourceLink = ExistingResourceLink & { createdAt: string };
+
+export type IdentityOwnershipPlan = {
+  organizations: PlannedOrganization[];
+  memberships: PlannedMembership[];
+  resourceLinks: PlannedResourceLink[];
+  blockers: IdentityMigrationBlocker[];
+};
 
 export type IdentityOwnershipSource = {
   source: string;
