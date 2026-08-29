@@ -36,13 +36,17 @@ post-merge migration fixture coverage as accepted:
 
 ```bash
 TARGET_DATABASE_URL=<local scratch target database> \
-  npm --workspace @vayada/backend-migration run target:fixtures:smoke
+  npm --workspace @vayada/backend-migration run target:fixtures:smoke -- \
+  --confirm-database <scratch database name>
 ```
 
 The command runs every fixture case registered in `src/cases/registry.ts`. For
 each case it drops and recreates the target schemas, applies all reviewed target
 migrations, loads that fixture, runs its transform when one is registered, and
 then runs parity checks against `expected-target.json`.
+
+Destructive rebuild commands require `--confirm-database` and verify that exact
+name against PostgreSQL `current_database()` before dropping any schema.
 
 `target:fixtures:smoke` intentionally does not accept `--fixtures`; it is the
 full accepted fixture matrix. Use `target:rebuild` and `target:parity` directly

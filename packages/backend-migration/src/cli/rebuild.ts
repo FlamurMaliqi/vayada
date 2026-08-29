@@ -18,6 +18,7 @@ function parseArgs(argv: string[]): {
   fixturesDir: string;
   fixtures: string | null;
   schemas: string[];
+  confirmedDatabaseName: string;
 } {
   const args = argv.slice(2);
   let env: MigrationEnvironment = "local";
@@ -26,6 +27,7 @@ function parseArgs(argv: string[]): {
   let fixturesDir = DEFAULT_FIXTURES_DIR;
   let fixtures: string | null = null;
   let schemas: string[] = [...DEFAULT_REBUILD_SCHEMAS];
+  let confirmedDatabaseName = "";
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--env" && args[i + 1]) {
@@ -43,6 +45,8 @@ function parseArgs(argv: string[]): {
         .split(",")
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
+    } else if (args[i] === "--confirm-database" && args[i + 1]) {
+      confirmedDatabaseName = args[++i];
     }
   }
 
@@ -50,13 +54,33 @@ function parseArgs(argv: string[]): {
     console.error("Error: --schemas must specify at least one schema name.");
     process.exit(1);
   }
+  if (!confirmedDatabaseName) {
+    console.error(
+      "Error: --confirm-database <database name> is required for destructive rebuilds.",
+    );
+    process.exit(1);
+  }
 
-  return { env, connectionString, migrationsDir, fixturesDir, fixtures, schemas };
+  return {
+    env,
+    connectionString,
+    migrationsDir,
+    fixturesDir,
+    fixtures,
+    schemas,
+    confirmedDatabaseName,
+  };
 }
 
-const { env, connectionString, migrationsDir, fixturesDir, fixtures, schemas } = parseArgs(
-  process.argv,
-);
+const {
+  env,
+  connectionString,
+  migrationsDir,
+  fixturesDir,
+  fixtures,
+  schemas,
+  confirmedDatabaseName,
+} = parseArgs(process.argv);
 
 if (!connectionString) {
   console.error("Error: TARGET_DATABASE_URL or --connection-string is required.");
@@ -70,6 +94,7 @@ const result = await rebuild({
   migrationsDir,
   environment: env,
   schemas,
+  confirmedDatabaseName,
   fixtureCase: fixtures ?? undefined,
   fixturesDir: fixtures ? fixturesDir : undefined,
 });

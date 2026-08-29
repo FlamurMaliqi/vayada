@@ -19,6 +19,7 @@ function parseArgs(argv: string[]): {
   migrationsDir: string;
   fixturesDir: string;
   schemas: string[];
+  confirmedDatabaseName: string;
 } {
   const args = argv.slice(2);
   let env: MigrationEnvironment = "local";
@@ -26,6 +27,7 @@ function parseArgs(argv: string[]): {
   let migrationsDir = DEFAULT_MIGRATIONS_DIR;
   let fixturesDir = DEFAULT_FIXTURES_DIR;
   let schemas: string[] = [...DEFAULT_REBUILD_SCHEMAS];
+  let confirmedDatabaseName = "";
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--env" && args[i + 1]) {
@@ -41,6 +43,8 @@ function parseArgs(argv: string[]): {
         .split(",")
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
+    } else if (args[i] === "--confirm-database" && args[i + 1]) {
+      confirmedDatabaseName = args[++i];
     } else if (args[i] === "--fixtures") {
       console.error(
         "Error: target:fixtures:smoke always runs every registered fixture case. " +
@@ -57,8 +61,14 @@ function parseArgs(argv: string[]): {
     console.error("Error: --schemas must specify at least one schema name.");
     process.exit(1);
   }
+  if (!confirmedDatabaseName) {
+    console.error(
+      "Error: --confirm-database <database name> is required for destructive rebuilds.",
+    );
+    process.exit(1);
+  }
 
-  return { env, connectionString, migrationsDir, fixturesDir, schemas };
+  return { env, connectionString, migrationsDir, fixturesDir, schemas, confirmedDatabaseName };
 }
 
 function printParityFindings(result: ParityReport): void {
@@ -74,7 +84,8 @@ function printParityFindings(result: ParityReport): void {
   }
 }
 
-const { env, connectionString, migrationsDir, fixturesDir, schemas } = parseArgs(process.argv);
+const { env, connectionString, migrationsDir, fixturesDir, schemas, confirmedDatabaseName } =
+  parseArgs(process.argv);
 
 if (!connectionString) {
   console.error("Error: TARGET_DATABASE_URL or --connection-string is required.");
@@ -99,6 +110,7 @@ for (const [index, fixtureCase] of fixtureCases.entries()) {
     migrationsDir,
     environment: env,
     schemas,
+    confirmedDatabaseName,
     fixtureCase,
     fixturesDir,
   });

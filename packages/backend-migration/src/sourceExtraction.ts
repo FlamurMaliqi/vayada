@@ -563,8 +563,8 @@ async function extractTable(
 
 export async function runSourceExtraction(
   config: SourceExtractionConfig,
-  target: QueryClient,
-  sources: Record<SourceDatabase, QueryClient>,
+  target: pg.Client,
+  sources: Record<SourceDatabase, pg.Client>,
 ): Promise<SourceExtractionReport> {
   validateSourceExtractionConfig(config);
   const now = config.now ?? Date.now;

@@ -61,15 +61,15 @@ packages/backend-migration
 
 Root npm scripts should delegate to package commands:
 
-| Command                                                                  | Purpose                                                                                                    | Environment                           |
-| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| `npm run target:migrate -- --env local`                                  | Apply pending reviewed SQL migrations to an existing local target database.                                | Local                                 |
-| `npm run target:rebuild -- --fixtures representative-hotel`              | Drop/recreate the local target schema, apply all migrations, load fixture source records, transform, test. | Local                                 |
-| `npm run target:parity -- --fixtures representative-hotel --report json` | Run parity checks against the local target schema without rebuilding it.                                   | Local                                 |
-| `npm run target:rehearse:staging -- --snapshot <snapshot-id>`            | Rebuild a staging target schema from production-like source snapshots and emit a go/no-go report.          | Staging only                          |
-| `npm run target:migration-status -- --env staging`                       | Print applied SQL migrations, checksums, and latest rehearsal status.                                      | Local against staging or staging      |
-| `npm run target:cutover:dry-run -- --snapshot <snapshot-id>`             | Run the production command sequence against an isolated target namespace without switching traffic.        | Staging/pre-production rehearsal      |
-| `npm run target:cutover -- --snapshot <snapshot-id> --approved-run <id>` | Final explicit cutover command after backups, write freeze/queue, and human approval.                      | Production operation, never app start |
+| Command                                                                                        | Purpose                                                                                                                         | Environment                           |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `npm run target:migrate -- --env local`                                                        | Apply pending reviewed SQL migrations to an existing local target database.                                                     | Local                                 |
+| `npm run target:rebuild -- --fixtures representative-hotel --confirm-database <database-name>` | Drop/recreate the explicitly confirmed local target schema, apply all migrations, load fixture source records, transform, test. | Local                                 |
+| `npm run target:parity -- --fixtures representative-hotel --report json`                       | Run parity checks against the local target schema without rebuilding it.                                                        | Local                                 |
+| `npm run target:rehearse:staging -- --snapshot <snapshot-id>`                                  | Rebuild a staging target schema from production-like source snapshots and emit a go/no-go report.                               | Staging only                          |
+| `npm run target:migration-status -- --env staging`                                             | Print applied SQL migrations, checksums, and latest rehearsal status.                                                           | Local against staging or staging      |
+| `npm run target:cutover:dry-run -- --snapshot <snapshot-id>`                                   | Run the production command sequence against an isolated target namespace without switching traffic.                             | Staging/pre-production rehearsal      |
+| `npm run target:cutover -- --snapshot <snapshot-id> --approved-run <id>`                       | Final explicit cutover command after backups, write freeze/queue, and human approval.                                           | Production operation, never app start |
 
 Required connection variables:
 

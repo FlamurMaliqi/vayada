@@ -100,11 +100,6 @@ BEGIN
        )',
       staging_schema
     );
-    EXECUTE format(
-      'CREATE INDEX %I ON %I.snapshot_rows (run_id, source_table, row_checksum_sha256)',
-      'idx_' || staging_schema || '_snapshot_rows_checksum',
-      staging_schema
-    );
   END LOOP;
 END;
 $$;
