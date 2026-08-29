@@ -305,6 +305,7 @@ describe("target booking guest PII contact access", () => {
     const projection = await port.listGuestPiiForPmsOperations({
       propertyId: "d3000000-0000-0000-0000-000000000682",
       guestBookingId: "e3000000-0000-0000-0000-000000000682",
+      canReadGuestContact: false,
     });
 
     expect(projection?.primaryGuest).toMatchObject({
@@ -321,6 +322,8 @@ describe("target booking guest PII contact access", () => {
     });
     expect(queries.join("\n")).toContain("'guest_booking.accepted'");
     expect(queries.join("\n")).not.toContain("contact_event.actor_type = 'property_user'");
+    expect(queries.join("\n")).not.toContain("guest.email");
+    expect(queries.join("\n")).not.toContain("guest.phone");
   });
 
   it.each([
@@ -336,6 +339,7 @@ describe("target booking guest PII contact access", () => {
     const projection = await port.listGuestPiiForPmsOperations({
       propertyId: "d3000000-0000-0000-0000-000000000682",
       guestBookingId: "e3000000-0000-0000-0000-000000000682",
+      canReadGuestContact: true,
     });
 
     expect(projection?.primaryGuest?.email).toBe("ada@example.com");

@@ -244,6 +244,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target manual-booking PostgreSQL transactio
     const projection = await readRepository.findReservationByGuestBookingId(
       propertyId,
       created.guestBookingId,
+      true,
     );
     expect(projection).toMatchObject({
       stay: { checkIn: "2027-01-01", checkOut: "2027-01-04", adults: 3, children: 0 },

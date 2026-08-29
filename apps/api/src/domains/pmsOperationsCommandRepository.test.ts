@@ -170,7 +170,8 @@ const readRepository: PmsOperationsReadRepository = {
   async listReservationsByPropertyId() {
     return { items: [], total: 0 };
   },
-  async findReservationByGuestBookingId() {
+  async findReservationByGuestBookingId(_propertyId, _guestBookingId, canReadGuestContact) {
+    expect(canReadGuestContact).toBe(true);
     return structuredClone(baseReservation);
   },
 };

@@ -206,11 +206,39 @@ describe("target PMS reservation stay dates", () => {
 
     const result = await repository.listReservationsByPropertyId("property-1", {
       search: "Ada",
+      canReadGuestContact: false,
       limit: 25,
       offset: 0,
     });
+    const allowedResult = await repository.listReservationsByPropertyId("property-1", {
+      search: "ada@example.com",
+      canReadGuestContact: true,
+      limit: 25,
+      offset: 0,
+    });
+    const deniedOverlap = await repository.listReservationsOverlappingStayRangeByPropertyId!(
+      "property-1",
+      { from: "2026-07-23", to: "2026-07-24", canReadGuestContact: false },
+    );
+    const deniedDetail = await repository.findReservationByGuestBookingId(
+      "property-1",
+      "booking-1",
+      false,
+    );
 
-    const listQuery = queries.find((query) => query.includes('AS "guestContactAccepted"'));
+    const listQuery = queries.find(
+      (query) => query.includes('NULL::text AS "primaryGuestEmail"') && query.includes("LIMIT $"),
+    );
+    const allowedListQuery = queries.find(
+      (query) =>
+        query.includes('primary_guest.email AS "primaryGuestEmail"') && query.includes("LIMIT $"),
+    );
+    const deniedOverlapQuery = queries.find((query) => query.includes("booking.check_in < $2"));
+    const countQueries = queries.filter((query) =>
+      query.includes("SELECT COUNT(*)::text AS total"),
+    );
+    const detailQuery = queries.find((query) => query.includes("booking.id = $2"));
+    const deniedSql = [listQuery, countQueries[0], deniedOverlapQuery, detailQuery].join("\n");
     expect(listQuery).toContain('booking.check_in::text AS "checkIn"');
     expect(listQuery).toContain('booking.check_out::text AS "checkOut"');
     expect(listQuery).toContain("quote.selected_offer_snapshot ->> 'roomName'");
@@ -225,6 +253,12 @@ describe("target PMS reservation stay dates", () => {
     expect(listQuery).toContain("FROM booking.nightly_revenue_evidence evidence");
     expect(listQuery).toContain("payment.payment_metadata ->> 'chargeType' = 'direct'");
     expect(listQuery).toContain("payment.processor_fee_breakdown ->> 'status' = 'available'");
+    expect(deniedSql).not.toContain("guest.email");
+    expect(deniedSql).not.toContain("guest.phone");
+    expect(allowedListQuery).toContain("guest.email");
+    expect(allowedListQuery).toContain("guest.phone");
+    expect(countQueries[1]).toContain("guest.email");
+    expect(countQueries[1]).toContain("guest.phone");
     expect(result.items[0]?.stay).toEqual({
       checkIn: "2026-07-23",
       checkOut: "2026-07-24",
@@ -260,6 +294,18 @@ describe("target PMS reservation stay dates", () => {
           netPayout: { amountDecimal: "91.80", currency: "EUR" },
         },
       },
+    });
+    expect(allowedResult.items[0]?.primaryGuest).toMatchObject({
+      email: "Hidden until you accept",
+      phone: "Hidden until you accept",
+    });
+    expect(deniedOverlap.items[0]?.primaryGuest).toMatchObject({
+      email: "Hidden until you accept",
+      phone: "Hidden until you accept",
+    });
+    expect(deniedDetail?.primaryGuest).toMatchObject({
+      email: "Hidden until you accept",
+      phone: "Hidden until you accept",
     });
   });
 
@@ -319,10 +365,15 @@ describe("target PMS reservation stay dates", () => {
       });
 
       const [listed, overlapping, found] = await Promise.all([
-        repository.listReservationsByPropertyId("property-1", { limit: 25, offset: 0 }),
+        repository.listReservationsByPropertyId("property-1", {
+          canReadGuestContact: true,
+          limit: 25,
+          offset: 0,
+        }),
         repository.listReservationsOverlappingStayRangeByPropertyId!("property-1", {
           from: "2026-07-23",
           to: "2026-07-24",
+          canReadGuestContact: true,
         }),
         repository.findReservationByGuestBookingId("property-1", "booking-1"),
       ]);
@@ -330,6 +381,7 @@ describe("target PMS reservation stay dates", () => {
       expect(listed.items[0]).not.toHaveProperty("bookedOffer");
       expect(overlapping.items[0]).not.toHaveProperty("bookedOffer");
       expect(found).not.toHaveProperty("bookedOffer");
+      expect(found?.primaryGuest.email).toBe("Hidden until you accept");
     },
   );
 });

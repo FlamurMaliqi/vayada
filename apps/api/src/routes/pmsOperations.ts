@@ -33,6 +33,7 @@ import {
   isBookingAcceptanceMode,
   type BookingAcceptanceSettingsPort,
 } from "../domains/bookingAcceptanceSettings.js";
+import { HIDDEN_GUEST_CONTACT } from "../domains/bookingGuestContactAccess.js";
 import type {
   PmsCalendarDay,
   PmsLinkedInventoryGroup,
@@ -45,8 +46,8 @@ import type {
   PmsRoomType,
   PmsSourceFreshness,
 } from "../domains/pmsOperationsReadModel.js";
-import type { RequestActor } from "@vayada/backend-auth";
-import type { PropertyAccessRepository } from "@vayada/backend-authorization";
+import type { RequestActor, RequestContext } from "@vayada/backend-auth";
+import { hasPermission, type PropertyAccessRepository } from "@vayada/backend-authorization";
 import { enforceRoutePolicy } from "./policy.js";
 import { enforcePmsPropertyRoutePolicy } from "./pmsPropertyPolicy.js";
 
@@ -1843,17 +1844,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (
-        !(await enforcePmsReservationReadPolicy(
-          request,
-          reply,
-          propertyId,
-          options.propertyAccessRepository,
-        ))
-      )
-        return reply;
+      const context = await enforcePmsReservationReadPolicy(
+        request,
+        reply,
+        propertyId,
+        options.propertyAccessRepository,
+      );
+      if (!context) return reply;
+      const canReadGuestContact = hasPermission(context, "pms.guest_contact.read");
 
-      const filters = toReservationFilters(request.query);
+      const filters = toReservationFilters(request.query, canReadGuestContact);
       if ("error" in filters) return sendPmsOperationsError(reply, filters.error);
       const stayRange = toReservationStayRange(request.query);
       if ("error" in stayRange) return sendPmsOperationsError(reply, stayRange.error);
@@ -1868,6 +1868,7 @@ export async function registerPmsOperationsRoutes(
                 repository,
                 propertyId,
                 stayRange.value,
+                canReadGuestContact,
               ),
               filters.value.limit,
               filters.value.offset,
@@ -1876,7 +1877,9 @@ export async function registerPmsOperationsRoutes(
         return {
           contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
           propertyId,
-          items: result.items,
+          items: canReadGuestContact
+            ? result.items
+            : result.items.map(redactReservationGuestContact),
           pagination: {
             total: result.total,
             limit: filters.value.limit,
@@ -1905,18 +1908,21 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId, guestBookingId } = request.params;
-      if (
-        !(await enforcePmsReservationReadPolicy(
-          request,
-          reply,
-          propertyId,
-          options.propertyAccessRepository,
-        ))
-      )
-        return reply;
+      const context = await enforcePmsReservationReadPolicy(
+        request,
+        reply,
+        propertyId,
+        options.propertyAccessRepository,
+      );
+      if (!context) return reply;
+      const canReadGuestContact = hasPermission(context, "pms.guest_contact.read");
 
       try {
-        const item = await repository.findReservationByGuestBookingId(propertyId, guestBookingId);
+        const item = await repository.findReservationByGuestBookingId(
+          propertyId,
+          guestBookingId,
+          canReadGuestContact,
+        );
         if (!item) {
           return sendPmsOperationsError(reply, {
             statusCode: 404,
@@ -1934,6 +1940,7 @@ export async function registerPmsOperationsRoutes(
             bookingGuestPiiPort,
             propertyId,
             guestBookingId,
+            canReadGuestContact,
           ),
           sourceFreshness: {},
         } satisfies PmsReservationDetailResponse;
@@ -2005,6 +2012,7 @@ export async function registerPmsOperationsRoutes(
         const projection = await bookingGuestPiiPort.listGuestPiiForPmsOperations({
           propertyId,
           guestBookingId,
+          canReadGuestContact: true,
         });
         if (!projection) {
           return sendPmsOperationsError(reply, {
@@ -3041,9 +3049,13 @@ async function listCalendarReservationsOverlappingStayRange(
   repository: PmsOperationsReadRepository,
   propertyId: string,
   range: { from: string; to: string },
+  canReadGuestContact: boolean,
 ) {
   if (repository.listReservationsOverlappingStayRangeByPropertyId) {
-    return repository.listReservationsOverlappingStayRangeByPropertyId(propertyId, range);
+    return repository.listReservationsOverlappingStayRangeByPropertyId(propertyId, {
+      ...range,
+      canReadGuestContact,
+    });
   }
 
   return repository.listReservationsByPropertyId(propertyId, {
@@ -3051,6 +3063,7 @@ async function listCalendarReservationsOverlappingStayRange(
     arrivalFrom: range.from,
     arrivalTo: range.to,
     search: undefined,
+    canReadGuestContact,
     limit: PMS_RESERVATION_LIST_MAX_LIMIT,
     offset: 0,
   });
@@ -3106,10 +3119,10 @@ async function enforcePmsReservationReadPolicy(
   reply: FastifyReply,
   propertyId: string,
   repository: PropertyAccessRepository | undefined,
-): Promise<boolean> {
+): Promise<RequestContext | null> {
   try {
     if (!repository) throw new Error("PMS property access repository is unavailable");
-    await enforcePmsPropertyRoutePolicy(
+    return await enforcePmsPropertyRoutePolicy(
       request,
       {
         propertyId,
@@ -3118,7 +3131,6 @@ async function enforcePmsReservationReadPolicy(
       },
       repository,
     );
-    return true;
   } catch (error) {
     const accessError = toPmsOperationsAccessError(error, request, propertyId);
     if (!accessError) {
@@ -3128,7 +3140,7 @@ async function enforcePmsReservationReadPolicy(
       reply,
       accessError ?? readModelUnavailable("PMS property access is unavailable."),
     );
-    return false;
+    return null;
   }
 }
 
@@ -4351,13 +4363,16 @@ async function withAdditionalGuestProjection(
   bookingGuestPiiPort: BookingGuestPiiPort | undefined,
   propertyId: string,
   guestBookingId: string,
+  canReadGuestContact: boolean,
 ): Promise<PmsOperationalReservationDetail> {
-  if (!bookingGuestPiiPort) return applyAdditionalGuestProjection(reservation, null);
+  if (!bookingGuestPiiPort)
+    return applyAdditionalGuestProjection(reservation, null, canReadGuestContact);
   const projection = await bookingGuestPiiPort.listGuestPiiForPmsOperations({
     propertyId,
     guestBookingId,
+    canReadGuestContact,
   });
-  return applyAdditionalGuestProjection(reservation, projection);
+  return applyAdditionalGuestProjection(reservation, projection, canReadGuestContact);
 }
 
 async function reservationWithAdditionalGuestProjection(
@@ -4366,35 +4381,60 @@ async function reservationWithAdditionalGuestProjection(
   guestBookingId: string,
   projection: BookingGuestPiiProjection,
 ): Promise<PmsOperationalReservationDetail | null> {
-  const reservation = await repository.findReservationByGuestBookingId(propertyId, guestBookingId);
-  return reservation ? applyAdditionalGuestProjection(reservation, projection) : null;
+  const reservation = await repository.findReservationByGuestBookingId(
+    propertyId,
+    guestBookingId,
+    true,
+  );
+  return reservation ? applyAdditionalGuestProjection(reservation, projection, true) : null;
 }
 
 function applyAdditionalGuestProjection(
   reservation: PmsOperationalReservation,
   projection: BookingGuestPiiProjection | null,
+  canReadGuestContact: boolean,
 ): PmsOperationalReservationDetail {
   const primaryGuest = projection?.primaryGuest;
+  const canExposeGuestContact =
+    canReadGuestContact &&
+    reservation.primaryGuest.email !== HIDDEN_GUEST_CONTACT &&
+    reservation.primaryGuest.phone !== HIDDEN_GUEST_CONTACT;
+  const visiblePrimaryGuest = canExposeGuestContact
+    ? (primaryGuest ?? reservation.primaryGuest)
+    : redactGuestContact(primaryGuest ?? reservation.primaryGuest);
   return {
     ...reservation,
     primaryGuest: primaryGuest
       ? {
-          displayName: primaryGuest.displayName,
-          email: primaryGuest.email,
-          phone: primaryGuest.phone,
-          countryCode: primaryGuest.countryCode,
-          specialRequests: primaryGuest.specialRequests,
+          displayName: visiblePrimaryGuest.displayName,
+          email: visiblePrimaryGuest.email,
+          phone: visiblePrimaryGuest.phone,
+          countryCode: visiblePrimaryGuest.countryCode,
+          specialRequests: visiblePrimaryGuest.specialRequests,
           countryCodeRaw: primaryGuest.countryCodeRaw,
           countryCodeReviewRequired: primaryGuest.countryCodeReviewRequired,
         }
       : {
-          ...reservation.primaryGuest,
+          ...visiblePrimaryGuest,
           countryCodeRaw: null,
           countryCodeReviewRequired: false,
         },
     additionalGuestCount: projection?.additionalGuests.length ?? reservation.additionalGuestCount,
-    additionalGuests: projection?.additionalGuests ?? [],
+    additionalGuests:
+      projection?.additionalGuests.map((guest) =>
+        canExposeGuestContact ? guest : redactGuestContact(guest),
+      ) ?? [],
   };
+}
+
+function redactReservationGuestContact(
+  reservation: PmsOperationalReservation,
+): PmsOperationalReservation {
+  return { ...reservation, primaryGuest: redactGuestContact(reservation.primaryGuest) };
+}
+
+function redactGuestContact<T extends { email: string | null; phone: string | null }>(guest: T): T {
+  return { ...guest, email: HIDDEN_GUEST_CONTACT, phone: HIDDEN_GUEST_CONTACT };
 }
 
 function readModelUnavailable(message: string): PmsOperationsError {
@@ -4554,6 +4594,7 @@ function invalidDateRangeError(): PmsOperationsError {
 
 function toReservationFilters(
   query: PmsReservationListQuery,
+  canReadGuestContact: boolean,
 ): { value: PmsReservationListFilters } | { error: PmsOperationsError } {
   const arrivalFrom = query.arrivalFrom?.trim() || undefined;
   const arrivalTo = query.arrivalTo?.trim() || undefined;
@@ -4574,6 +4615,7 @@ function toReservationFilters(
       arrivalFrom,
       arrivalTo,
       search: query.search?.trim() || undefined,
+      canReadGuestContact,
       limit: clampInteger(
         query.limit,
         PMS_RESERVATION_LIST_DEFAULT_LIMIT,
