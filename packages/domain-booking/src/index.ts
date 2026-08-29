@@ -233,6 +233,7 @@ export type BookingReservationListResult = {
 export type BookingReservationListFilters = {
   status?: string;
   search?: string;
+  canReadGuestContact: boolean;
   limit: number;
   offset: number;
 };

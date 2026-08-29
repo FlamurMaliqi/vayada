@@ -1,5 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { AuthorizationError, type PropertyAccessRepository } from "@vayada/backend-authorization";
+import {
+  AuthorizationError,
+  hasPermission,
+  type PropertyAccessRepository,
+} from "@vayada/backend-authorization";
 import type { HttpRouteContract } from "@vayada/backend-http";
 import type {
   BookingAssignedRoom,
@@ -9,6 +13,7 @@ import type {
   BookingReservationsReadRepository,
 } from "@vayada/domain-booking";
 
+import { HIDDEN_GUEST_CONTACT } from "../domains/bookingGuestContactAccess.js";
 import { enforcePropertyRoutePolicy, enforceRoutePolicy } from "./policy.js";
 
 export const BOOKING_RESERVATION_LIST_CONTRACT = {
@@ -127,6 +132,7 @@ export async function registerBookingReservationRoutes(
     const { hotelId } = request.params;
     let propertyId: string;
     let entitlementResourceId = hotelId;
+    let canReadGuestContact = false;
 
     try {
       enforceRoutePolicy(request, { permission: "booking.reservation.read" });
@@ -134,7 +140,7 @@ export async function registerBookingReservationRoutes(
       if (!resolvedPropertyId) throw new AuthorizationError();
       propertyId = resolvedPropertyId;
       entitlementResourceId = propertyId;
-      await enforcePropertyRoutePolicy(
+      const context = await enforcePropertyRoutePolicy(
         request,
         {
           permission: "booking.reservation.read",
@@ -160,6 +166,7 @@ export async function registerBookingReservationRoutes(
         },
         propertyAccessRepository,
       );
+      canReadGuestContact = hasPermission(context, "pms.guest_contact.read");
     } catch (error) {
       const contractError = toBookingReservationListAccessError(
         error,
@@ -178,7 +185,7 @@ export async function registerBookingReservationRoutes(
       });
     }
 
-    const filters = toReservationFilters(request.query);
+    const filters = toReservationFilters(request.query, canReadGuestContact);
     let result: BookingReservationListResult;
     try {
       result = await repository.listReservationsByPropertyId(propertyId, filters);
@@ -192,7 +199,13 @@ export async function registerBookingReservationRoutes(
     }
 
     return {
-      bookings: result.reservations.map(toReservationResponse),
+      bookings: canReadGuestContact
+        ? result.reservations
+        : result.reservations.map((reservation) => ({
+            ...reservation,
+            guestEmail: HIDDEN_GUEST_CONTACT,
+            guestPhone: HIDDEN_GUEST_CONTACT,
+          })),
       total: result.total,
       limit: filters.limit,
       offset: filters.offset,
@@ -298,16 +311,14 @@ function isStatusError(error: unknown): error is Error & { statusCode: number } 
   );
 }
 
-export function toReservationResponse(
-  reservation: BookingReservationReadModel,
-): BookingReservationResponse {
-  return reservation;
-}
-
-function toReservationFilters(query: BookingReservationListQuery): BookingReservationListFilters {
+function toReservationFilters(
+  query: BookingReservationListQuery,
+  canReadGuestContact: boolean,
+): BookingReservationListFilters {
   return {
     status: query.status?.trim() || undefined,
     search: query.search?.trim() || undefined,
+    canReadGuestContact,
     limit: clampInteger(
       query.limit,
       BOOKING_RESERVATION_LIST_DEFAULT_LIMIT,

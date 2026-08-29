@@ -1,6 +1,7 @@
 import type { QueryResult, QueryResultRow } from "pg";
 import { describe, expect, it } from "vitest";
 
+import { HIDDEN_GUEST_CONTACT } from "../domains/bookingGuestContactAccess.js";
 import { createTargetBookingReservationsReadRepository } from "./bookingReservations.js";
 
 type TargetRepositoryConfig = Parameters<typeof createTargetBookingReservationsReadRepository>[0];
@@ -12,6 +13,7 @@ type CapturedQuery = {
 };
 
 const defaultFilters = {
+  canReadGuestContact: true,
   limit: 50,
   offset: 0,
 };
@@ -135,6 +137,7 @@ describe("target Booking reservations property scope", () => {
     const result = await harness.repository.listReservationsByPropertyId(propertyId, {
       status: "confirmed",
       search: "Ada",
+      canReadGuestContact: true,
       limit: 25,
       offset: 5,
     });
@@ -156,6 +159,78 @@ describe("target Booking reservations property scope", () => {
 
     await harness.repository.close?.();
     expect(harness.wasClosed()).toBe(true);
+  });
+
+  it("gates guest-contact reads and search before applying plan rules", async () => {
+    const propertyId = "7a9333c2-f275-4571-8078-6a334e0fc28d";
+    const queries: CapturedQuery[] = [];
+    let plan: "fixed" | "commission" = "fixed";
+    const pool: BookingReservationsReadPool = {
+      async query<T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: readonly unknown[],
+      ): Promise<Pick<QueryResult<T>, "rows">> {
+        queries.push({ text, values });
+        if (text.includes("SELECT plan_key AS plan")) {
+          return { rows: [{ plan }] as unknown as T[] };
+        }
+        if (text.includes("SELECT COUNT(*)::text AS total")) {
+          return { rows: [{ total: "1" }] as unknown as T[] };
+        }
+        return {
+          rows: [
+            {
+              id: "reservation-1",
+              propertyId,
+              guestEmail: "guest@example.com",
+              guestPhone: "+4912345",
+              guestContactAccepted: false,
+            },
+          ] as unknown as T[],
+        };
+      },
+      async end() {},
+    };
+    const repository = createTargetBookingReservationsReadRepository({
+      connectionString: "postgresql://target-db",
+      pool,
+    });
+
+    const deniedByPermission = await repository.listReservationsByPropertyId(propertyId, {
+      search: "guest@example.com",
+      canReadGuestContact: false,
+      limit: 50,
+      offset: 0,
+    });
+
+    expect(deniedByPermission.reservations[0]).toMatchObject({
+      guestEmail: HIDDEN_GUEST_CONTACT,
+      guestPhone: HIDDEN_GUEST_CONTACT,
+    });
+    for (const query of queries.slice(0, 2)) {
+      expect(query.text).not.toContain("SELECT guest.*");
+      expect(query.text).not.toContain("guest.email");
+      expect(query.text).not.toContain("guest.phone");
+      expect(query.text).not.toContain("booker.email");
+      expect(query.text).not.toContain("booker.phone");
+    }
+
+    queries.length = 0;
+    plan = "commission";
+    const deniedByPlan = await repository.listReservationsByPropertyId(propertyId, {
+      search: "guest@example.com",
+      canReadGuestContact: true,
+      limit: 50,
+      offset: 0,
+    });
+
+    expect(deniedByPlan.reservations[0]).toMatchObject({
+      guestEmail: HIDDEN_GUEST_CONTACT,
+      guestPhone: HIDDEN_GUEST_CONTACT,
+    });
+    expect(queries[0]?.text).toContain("COALESCE(booker.email, '')");
+    expect(queries[0]?.text).toContain("guest.email, guest.phone");
+    expect(queries[0]?.text).toContain("guest.email ILIKE");
   });
 
   it("reads stay dates as date-only text so local time zones cannot shift them", async () => {
