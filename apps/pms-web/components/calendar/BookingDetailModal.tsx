@@ -96,6 +96,7 @@ export default function BookingDetailModal({
   const [moveError, setMoveError] = useState<string | null>(null);
   const [movedToRoomNumber, setMovedToRoomNumber] = useState<string>("");
   const [movedToRoomTypeName, setMovedToRoomTypeName] = useState<string>("");
+  const [ratePolicy, setRatePolicy] = useState<"preserve" | "target_base">("preserve");
   const [editForm, setEditForm] = useState({
     checkIn: "",
     checkOut: "",
@@ -306,14 +307,51 @@ export default function BookingDetailModal({
     setPickerSelectedRoomId("");
     setPendingSwap(null);
     setPendingUnassign(null);
+    setRatePolicy("preserve");
     setView("roomPicker");
   };
 
   const selectedCandidate = pickerSelectedRoomId
     ? (candidates.find((c) => c.room.id === pickerSelectedRoomId) ?? null)
     : null;
+  const isCrossType = Boolean(
+    selectedCandidate && selectedCandidate.room.roomTypeId !== activeRoomTypeId,
+  );
+  const moveNights =
+    movingStay?.checkIn && movingStay.checkOut
+      ? Math.round(
+          (Date.parse(`${movingStay.checkOut}T00:00:00Z`) -
+            Date.parse(`${movingStay.checkIn}T00:00:00Z`)) /
+            86_400_000,
+        )
+      : null;
+  const hasCompleteRateEvidence = Boolean(
+    booking &&
+    movingStay &&
+    moveNights !== null &&
+    moveNights > 0 &&
+    movingStay.nightly.length === moveNights &&
+    movingStay.nightly.every(
+      (night) =>
+        night.evidenceQuality !== "missing" &&
+        night.appliedAmount !== null &&
+        night.currency === booking.currency,
+    ),
+  );
+  const originalNightlyRate =
+    hasCompleteRateEvidence && movingStay && moveNights
+      ? movingStay.nightly.reduce((sum, night) => sum + (night.appliedAmount ?? 0), 0) / moveNights
+      : null;
   const channelKey = normalizeChannelKey(booking?.channel);
   const isOtaMove = !["direct", "manual"].includes(channelKey);
+  const targetRateCompatible = Boolean(
+    channelKey === "manual" &&
+    hasCompleteRateEvidence &&
+    booking &&
+    selectedCandidate &&
+    booking.currency === selectedCandidate.room.currency &&
+    selectedCandidate.room.baseRate > 0,
+  );
 
   const handlePickerContinue = () => {
     if (!booking || !selectedCandidate) return;
@@ -369,6 +407,7 @@ export default function BookingDetailModal({
         bookingId,
         pickerSelectedRoomId,
         sourceAssignmentSelector,
+        isCrossType && targetRateCompatible ? ratePolicy : "preserve",
       );
       const target = rooms.find((r) => r.id === pickerSelectedRoomId);
       setMovedToRoomNumber(target?.roomNumber || updated.roomNumber || "");
@@ -555,7 +594,10 @@ export default function BookingDetailModal({
                       {groupHeading}
                       <button
                         type="button"
-                        onClick={() => setPickerSelectedRoomId(room.id)}
+                        onClick={() => {
+                          setPickerSelectedRoomId(room.id);
+                          setRatePolicy("preserve");
+                        }}
                         className={`w-full flex items-center justify-between px-3 py-2.5 border rounded-lg transition-colors text-left ${
                           isSelected
                             ? "bg-primary-50 border-primary-400"
@@ -669,6 +711,72 @@ export default function BookingDetailModal({
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {isCrossType && selectedCandidate && (
+            <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
+              <p className="font-medium text-gray-900">Rate comparison</p>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-gray-600">
+                <p>
+                  Original:{" "}
+                  {originalNightlyRate === null || moveNights === null
+                    ? "Unavailable"
+                    : `${formatCurrency(originalNightlyRate, booking.currency)}/night · ${formatCurrency(originalNightlyRate * moveNights, booking.currency)} total`}
+                </p>
+                <p>
+                  New:{" "}
+                  {formatCurrency(selectedCandidate.room.baseRate, selectedCandidate.room.currency)}
+                  /night ·{" "}
+                  {moveNights !== null && moveNights > 0
+                    ? `${formatCurrency(selectedCandidate.room.baseRate * moveNights, selectedCandidate.room.currency)} total`
+                    : "total unavailable"}
+                </p>
+              </div>
+              <p className="mt-1 text-xs text-gray-600">
+                {originalNightlyRate === null || moveNights === null
+                  ? "Difference unavailable because this stay does not have complete nightly rates."
+                  : booking.currency !== selectedCandidate.room.currency
+                    ? "Difference unavailable because the room rates use different currencies."
+                    : `Difference: ${selectedCandidate.room.baseRate - originalNightlyRate >= 0 ? "+" : ""}${formatCurrency((selectedCandidate.room.baseRate - originalNightlyRate) * moveNights, booking.currency)}`}
+              </p>
+              <div className="mt-3 space-y-2">
+                <label className="flex items-start gap-2">
+                  <input
+                    type="radio"
+                    checked={ratePolicy === "preserve"}
+                    onChange={() => setRatePolicy("preserve")}
+                  />
+                  <span>
+                    <span className="block font-medium text-gray-800">Keep original rate</span>
+                    <span className="text-xs text-gray-500">The guest pays the same.</span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2">
+                  <input
+                    type="radio"
+                    checked={ratePolicy === "target_base"}
+                    disabled={!targetRateCompatible}
+                    onChange={() => setRatePolicy("target_base")}
+                  />
+                  <span>
+                    <span className="block font-medium text-gray-800">Update to new rate</span>
+                    <span className="text-xs text-gray-500">
+                      {channelKey !== "manual"
+                        ? isOtaMove
+                          ? "Available for manually entered bookings; OTA payments remain unchanged."
+                          : "Available only for manually entered PMS bookings; the original rate will be preserved."
+                        : !hasCompleteRateEvidence
+                          ? "Unavailable because this stay does not have complete nightly rates."
+                          : booking.currency !== selectedCandidate.room.currency
+                            ? "Unavailable when the original and target rates use different currencies."
+                            : selectedCandidate.room.baseRate <= 0
+                              ? "Unavailable because the target room type has no base rate."
+                              : "Recalculates this manual booking using the target base rate."}
+                    </span>
+                  </span>
+                </label>
+              </div>
             </div>
           )}
 
