@@ -1202,7 +1202,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyAccessPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.operations.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       if (!options.propertyPlanReadRepository) {
         return sendPmsOperationsError(
           reply,
