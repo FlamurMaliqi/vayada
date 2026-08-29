@@ -93,7 +93,14 @@ export async function registerBookingRoutes(
   }
 
   if (options.customDomainRepository) {
-    await registerBookingCustomDomainRoutes(app, options.customDomainRepository);
+    if (!options.propertyAccessRepository) {
+      throw new Error("Booking property access repository is required with custom domains");
+    }
+    await registerBookingCustomDomainRoutes(
+      app,
+      options.customDomainRepository,
+      options.propertyAccessRepository,
+    );
   }
 
   if (options.changeRequestRepository) {

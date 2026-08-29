@@ -1,8 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { AuthorizationError, type PropertyAccessRepository } from "@vayada/backend-authorization";
 import pg from "pg";
 import type { QueryResult, QueryResultRow } from "pg";
 
-import { enforceRoutePolicy } from "./policy.js";
+import { enforcePropertyRoutePolicy, enforceRoutePolicy } from "./policy.js";
 
 export type BookingCustomDomainStatus = "not_configured" | "pending" | "verified" | "failed";
 export type BookingCustomDomainSslStatus = "not_configured" | "pending" | "active" | "failed";
@@ -41,12 +42,10 @@ export type UpsertBookingCustomDomainBody = {
 };
 
 export type BookingCustomDomainRepository = {
-  findByBookingHotelId(hotelId: string): Promise<BookingCustomDomainState | null>;
-  upsertForBookingHotelId(
-    hotelId: string,
-    domain: string,
-  ): Promise<BookingCustomDomainState | null>;
-  deleteForBookingHotelId(hotelId: string): Promise<boolean>;
+  resolveCanonicalPropertyId(hotelId: string): Promise<string | null>;
+  findByPropertyId(propertyId: string): Promise<BookingCustomDomainState | null>;
+  upsertForPropertyId(propertyId: string, domain: string): Promise<BookingCustomDomainState | null>;
+  deleteForPropertyId(propertyId: string): Promise<boolean>;
   close?(): Promise<void>;
 };
 
@@ -80,7 +79,6 @@ type BookingCustomDomainError = {
 };
 
 type TargetCustomDomainRow = {
-  hotelId?: string | null;
   propertyId: string;
   domain: string | null;
   verificationStatus: "pending" | "verified" | "failed" | "disabled" | null;
@@ -89,23 +87,27 @@ type TargetCustomDomainRow = {
 };
 
 const TARGET_BOOKING_CUSTOM_DOMAIN_SCOPED_PROPERTY_CTE = `scoped_property_candidates AS (
-  SELECT property_id, 0 AS priority
+  SELECT property_id
   FROM hotel_catalog.property_source_links
   WHERE source_system = 'booking'
     AND source_table = 'booking_hotels'
     AND source_id = $1
     AND relationship = 'canonical_input'
     AND status = 'active'
-  UNION ALL
-  SELECT property.id AS property_id, 1 AS priority
+  UNION
+  SELECT property.id AS property_id
   FROM hotel_catalog.properties property
   WHERE property.id::text = $1
 ),
 scoped_property AS (
-  SELECT property_id
+  SELECT min(property_id::text)::uuid AS property_id
   FROM scoped_property_candidates
-  ORDER BY priority
-  LIMIT 1
+  HAVING count(*) = 1
+)`;
+
+const TARGET_BOOKING_CUSTOM_DOMAIN_CANONICAL_PROPERTY_CTE = `scoped_property AS (
+  SELECT property.id AS property_id FROM hotel_catalog.properties property
+  WHERE property.id = $1::uuid
 )`;
 
 class BookingCustomDomainConflictError extends Error {
@@ -133,11 +135,13 @@ export function createTargetBookingCustomDomainRepository(config: {
     });
 
   return {
-    async findByBookingHotelId(hotelId) {
+    async resolveCanonicalPropertyId(hotelId) {
+      return findPropertyIdByBookingHotelId(pool, hotelId);
+    },
+    async findByPropertyId(propertyId) {
       const result = await pool.query<TargetCustomDomainRow>(
-        `WITH ${TARGET_BOOKING_CUSTOM_DOMAIN_SCOPED_PROPERTY_CTE}
+        `WITH ${TARGET_BOOKING_CUSTOM_DOMAIN_CANONICAL_PROPERTY_CTE}
          SELECT
-           $1::text AS "hotelId",
            scoped_property.property_id::text AS "propertyId",
            domain.hostname AS "domain",
            domain.verification_status AS "verificationStatus",
@@ -152,19 +156,18 @@ export function createTargetBookingCustomDomainRepository(config: {
            ORDER BY canonical_when_verified DESC, updated_at DESC
            LIMIT 1
          ) domain ON TRUE`,
-        [hotelId],
+        [propertyId],
       );
 
-      return result.rows[0] ? toState(hotelId, result.rows[0]) : null;
+      return result.rows[0] ? toState(propertyId, result.rows[0]) : null;
     },
-    async upsertForBookingHotelId(hotelId, domain) {
+    async upsertForPropertyId(propertyId, domain) {
       const normalizedDomain = normalizeDomain(domain);
       if (!normalizedDomain) {
         throw new Error("Domain must be normalized before persistence.");
       }
 
-      const propertyId = await findPropertyIdByBookingHotelId(pool, hotelId);
-      if (!propertyId) return null;
+      if (!(await findCanonicalPropertyId(pool, propertyId))) return null;
 
       const existing = await pool.query<{ propertyId: string }>(
         `SELECT property_id::text AS "propertyId"
@@ -207,24 +210,23 @@ export function createTargetBookingCustomDomainRepository(config: {
                 updated_at = now()
           WHERE hotel_catalog.property_domains.property_id = EXCLUDED.property_id
          RETURNING
-           $3::text AS "hotelId",
            property_id::text AS "propertyId",
            hostname AS "domain",
            verification_status AS "verificationStatus",
            verified_at AS "verifiedAt",
            updated_at AS "updatedAt"`,
-        [propertyId, normalizedDomain, hotelId],
+        [propertyId, normalizedDomain],
       );
 
       if (!result.rows[0]) {
         throw new BookingCustomDomainConflictError();
       }
 
-      return toState(hotelId, result.rows[0]);
+      return toState(propertyId, result.rows[0]);
     },
-    async deleteForBookingHotelId(hotelId) {
+    async deleteForPropertyId(propertyId) {
       const result = await pool.query<{ propertyId: string }>(
-        `WITH ${TARGET_BOOKING_CUSTOM_DOMAIN_SCOPED_PROPERTY_CTE},
+        `WITH ${TARGET_BOOKING_CUSTOM_DOMAIN_CANONICAL_PROPERTY_CTE},
          clear_public_profile AS (
            UPDATE hotel_catalog.property_public_profile_read_model profile
               SET property_domain_id = NULL,
@@ -240,7 +242,7 @@ export function createTargetBookingCustomDomainRepository(config: {
          )
          SELECT property_id::text AS "propertyId"
          FROM scoped_property`,
-        [hotelId],
+        [propertyId],
       );
 
       return Boolean(result.rows[0]);
@@ -256,21 +258,38 @@ export function createTargetBookingCustomDomainRepository(config: {
 export async function registerBookingCustomDomainRoutes(
   app: FastifyInstance,
   repository: BookingCustomDomainRepository,
+  propertyAccessRepository: PropertyAccessRepository,
 ): Promise<void> {
+  const authorizedPropertyIds = new WeakMap<FastifyRequest, string>();
+  const authorize = async (request: FastifyRequest, reply: FastifyReply) => {
+    const { hotelId } = request.params as BookingHotelParams;
+    const propertyId = await enforceBookingCustomDomainAccess(
+      request,
+      hotelId,
+      repository,
+      propertyAccessRepository,
+    );
+    if (typeof propertyId !== "string") {
+      sendBookingCustomDomainError(reply, propertyId);
+      return;
+    }
+    authorizedPropertyIds.set(request, propertyId);
+  };
+
   app.addHook("onClose", async () => {
     await repository.close?.();
   });
 
   app.get<{ Params: BookingHotelParams }>(
     "/hotels/:hotelId/custom-domain",
+    { onRequest: authorize },
     async (request, reply) => {
       const { hotelId } = request.params;
-      const accessError = enforceBookingCustomDomainAccess(request, hotelId);
-      if (accessError) return sendBookingCustomDomainError(reply, accessError);
+      const propertyId = authorizedPropertyIds.get(request)!;
 
       let state: BookingCustomDomainState | null;
       try {
-        state = await repository.findByBookingHotelId(hotelId);
+        state = await repository.findByPropertyId(propertyId);
       } catch {
         return sendBookingCustomDomainError(reply, {
           statusCode: 500,
@@ -289,16 +308,16 @@ export async function registerBookingCustomDomainRoutes(
         });
       }
 
-      return toBookingCustomDomainResponse(state);
+      return toBookingCustomDomainResponse({ ...state, hotelId });
     },
   );
 
   app.put<{ Params: BookingHotelParams; Body: unknown }>(
     "/hotels/:hotelId/custom-domain",
+    { onRequest: authorize },
     async (request, reply) => {
       const { hotelId } = request.params;
-      const accessError = enforceBookingCustomDomainAccess(request, hotelId);
-      if (accessError) return sendBookingCustomDomainError(reply, accessError);
+      const propertyId = authorizedPropertyIds.get(request)!;
 
       const parsed = parseUpsertBookingCustomDomainBody(request.body);
       if (!parsed.ok) {
@@ -313,7 +332,7 @@ export async function registerBookingCustomDomainRoutes(
 
       let state: BookingCustomDomainState | null;
       try {
-        state = await repository.upsertForBookingHotelId(hotelId, parsed.value.domain);
+        state = await repository.upsertForPropertyId(propertyId, parsed.value.domain);
       } catch (error) {
         if (error instanceof BookingCustomDomainConflictError) {
           return sendBookingCustomDomainError(reply, {
@@ -342,20 +361,20 @@ export async function registerBookingCustomDomainRoutes(
         });
       }
 
-      return toBookingCustomDomainResponse(state);
+      return toBookingCustomDomainResponse({ ...state, hotelId });
     },
   );
 
   app.delete<{ Params: BookingHotelParams }>(
     "/hotels/:hotelId/custom-domain",
+    { onRequest: authorize },
     async (request, reply) => {
       const { hotelId } = request.params;
-      const accessError = enforceBookingCustomDomainAccess(request, hotelId);
-      if (accessError) return sendBookingCustomDomainError(reply, accessError);
+      const propertyId = authorizedPropertyIds.get(request)!;
 
       let deleted: boolean;
       try {
-        deleted = await repository.deleteForBookingHotelId(hotelId);
+        deleted = await repository.deleteForPropertyId(propertyId);
       } catch {
         return sendBookingCustomDomainError(reply, {
           statusCode: 500,
@@ -393,36 +412,66 @@ async function findPropertyIdByBookingHotelId(
   return result.rows[0]?.propertyId ?? null;
 }
 
-function enforceBookingCustomDomainAccess(
+async function findCanonicalPropertyId(
+  pool: BookingCustomDomainPool,
+  propertyId: string,
+): Promise<string | null> {
+  const result = await pool.query<{ propertyId: string }>(
+    `SELECT property.id::text AS "propertyId" FROM hotel_catalog.properties property WHERE property.id = $1::uuid`,
+    [propertyId],
+  );
+
+  return result.rows[0]?.propertyId ?? null;
+}
+
+async function enforceBookingCustomDomainAccess(
   request: FastifyRequest,
   hotelId: string,
-): BookingCustomDomainError | null {
+  repository: BookingCustomDomainRepository,
+  propertyAccessRepository: PropertyAccessRepository,
+): Promise<BookingCustomDomainError | string> {
   try {
-    enforceRoutePolicy(request, {
-      permission: "booking.settings.manage",
-      entitlement: {
-        product: "booking",
-        key: "booking-engine",
+    enforceRoutePolicy(request, { permission: "booking.settings.manage" });
+    const propertyId = await repository.resolveCanonicalPropertyId(hotelId);
+    if (!propertyId) throw new AuthorizationError();
+    await enforcePropertyRoutePolicy(
+      request,
+      {
+        permission: "booking.settings.manage",
+        property: {
+          propertyId,
+          targetResource: { product: "booking", resourceType: "booking_hotel" },
+        },
+        entitlement: {
+          product: "booking",
+          key: "booking-engine",
+          resource: {
+            product: "booking",
+            resourceType: "booking_hotel",
+            resourceId: hotelId,
+          },
+        },
         resource: {
           product: "booking",
           resourceType: "booking_hotel",
           resourceId: hotelId,
+          allowedRelationships: ["owner", "operator"],
         },
       },
-      resource: {
-        product: "booking",
-        resourceType: "booking_hotel",
-        resourceId: hotelId,
-        allowedRelationships: ["owner", "operator"],
-      },
-    });
+      propertyAccessRepository,
+    );
+    return propertyId;
   } catch (error) {
     const contractError = toBookingCustomDomainAccessError(error, request, hotelId);
     if (contractError) return contractError;
-    throw error;
+    request.log.error({ err: error }, "Booking custom-domain property access read failed");
+    return {
+      statusCode: 500,
+      code: "read_model_unavailable",
+      category: "read_model",
+      message: "Booking custom-domain access is unavailable.",
+    };
   }
-
-  return null;
 }
 
 function toBookingCustomDomainAccessError(
@@ -570,7 +619,7 @@ function toBookingCustomDomainResponse(
 
 function toState(hotelId: string, row: TargetCustomDomainRow): BookingCustomDomainState {
   return {
-    hotelId: row.hotelId ?? hotelId,
+    hotelId,
     propertyId: row.propertyId,
     domain: row.domain,
     verificationStatus: row.verificationStatus,

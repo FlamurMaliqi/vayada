@@ -755,10 +755,13 @@ const bookingSettingsWriteRepository: BookingSettingsWriteRepository = {
 };
 
 const bookingCustomDomainRepository: BookingCustomDomainRepository = {
-  async findByBookingHotelId(hotelId) {
-    if (hotelId !== "booking_hotel_alpenrose") return null;
+  async resolveCanonicalPropertyId(hotelId) {
+    return hotelId === "booking_hotel_alpenrose" ? "f6853000-0000-0000-0000-000000000001" : null;
+  },
+  async findByPropertyId(propertyId) {
+    if (propertyId !== "f6853000-0000-0000-0000-000000000001") return null;
     return {
-      hotelId,
+      hotelId: propertyId,
       propertyId: "f6853000-0000-0000-0000-000000000001",
       domain: "book.alpenrose.example",
       verificationStatus: "verified",
@@ -766,10 +769,10 @@ const bookingCustomDomainRepository: BookingCustomDomainRepository = {
       updatedAt: "2026-06-22T10:00:00.000Z",
     };
   },
-  async upsertForBookingHotelId(hotelId, domain) {
-    if (hotelId !== "booking_hotel_alpenrose") return null;
+  async upsertForPropertyId(propertyId, domain) {
+    if (propertyId !== "f6853000-0000-0000-0000-000000000001") return null;
     return {
-      hotelId,
+      hotelId: propertyId,
       propertyId: "f6853000-0000-0000-0000-000000000001",
       domain,
       verificationStatus: "pending",
@@ -777,8 +780,8 @@ const bookingCustomDomainRepository: BookingCustomDomainRepository = {
       updatedAt: "2026-06-22T10:00:00.000Z",
     };
   },
-  async deleteForBookingHotelId(hotelId) {
-    return hotelId === "booking_hotel_alpenrose";
+  async deleteForPropertyId(propertyId) {
+    return propertyId === "f6853000-0000-0000-0000-000000000001";
   },
 };
 
@@ -2556,6 +2559,13 @@ function identityRepositoryWithResources(
         resources.push({
           product: "booking",
           resourceType: "booking_hotel",
+          resourceId: pmsPropertyId,
+          relationship: "owner",
+          status: "active",
+        });
+        resources.push({
+          product: "booking",
+          resourceType: "booking_hotel",
           resourceId: hotelId,
           relationship: "owner",
           status: "active",
@@ -2628,6 +2638,16 @@ function buildAuthenticatedApp(
     propertyAccessRepository?: PropertyAccessRepository;
   } = {},
 ): ReturnType<typeof buildApp> {
+  const propertyAccessRepository =
+    options.propertyAccessRepository ??
+    (options.propertyScope === undefined
+      ? agencyPropertyAccessRepository
+      : {
+          async findMembershipPropertyScope() {
+            return options.propertyScope ?? null;
+          },
+        });
+
   return buildApp({
     logger: false,
     browserAllowedOrigins: options.browserAllowedOrigins,
@@ -2652,6 +2672,7 @@ function buildAuthenticatedApp(
     publicBookabilityPublisher: options.publicBookabilityPublisher,
     pmsInventoryPublicOfferProjector: options.pmsInventoryPublicOfferProjector,
     bookingCustomDomainRepository: options.customDomainRepository ?? bookingCustomDomainRepository,
+    bookingPropertyAccessRepository: propertyAccessRepository,
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepositoryWithResources(
@@ -2662,15 +2683,7 @@ function buildAuthenticatedApp(
         options.additionalPmsPropertyId,
         options.membershipStatus,
       ),
-      propertyAccessRepository:
-        options.propertyAccessRepository ??
-        (options.propertyScope === undefined
-          ? agencyPropertyAccessRepository
-          : {
-              async findMembershipPropertyScope() {
-                return options.propertyScope ?? null;
-              },
-            }),
+      propertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["booking.settings.manage", "booking.reservation.read"];
@@ -5021,8 +5034,15 @@ describe("vayada-api", () => {
     });
   });
 
-  it("returns booking custom-domain verification state with auth, policy, and property linkage", async () => {
-    app = buildAuthenticatedApp();
+  it("returns booking custom-domain state for an explicitly assigned canonical property", async () => {
+    app = buildAuthenticatedApp({
+      propertyScope: {
+        mode: "assigned",
+        roleKey: "hotel_owner",
+        accessOrigin: "agency",
+        assignedPropertyIds: [pmsPropertyId],
+      },
+    });
 
     const response = await injectJson(app, {
       method: "GET",
@@ -5054,15 +5074,140 @@ describe("vayada-api", () => {
     });
   });
 
+  it("fails closed across the custom-domain denial matrix", async () => {
+    type AppOptions = NonNullable<Parameters<typeof buildAuthenticatedApp>[0]>;
+    const foreignPropertyId = "f6853000-0000-0000-0000-000000000099";
+    const scope = (mode: string, assignedPropertyIds: readonly string[]) => ({
+      mode,
+      roleKey: "hotel_owner",
+      accessOrigin: "agency",
+      assignedPropertyIds,
+    });
+    const resolving = (result: string | null | Error): BookingCustomDomainRepository => ({
+      ...bookingCustomDomainRepository,
+      async resolveCanonicalPropertyId() {
+        if (result instanceof Error) throw result;
+        return result;
+      },
+    });
+    const testCase = (
+      name: string,
+      appOptions: AppOptions,
+      statusCode: number,
+      code?: string,
+      requests?: "all" | "malformed",
+      authorization?: string | null,
+    ) => [name, appOptions, authorization, requests, statusCode, code] as const;
+    const cases = [
+      testCase("missing authentication", {}, 401, "unauthenticated", "malformed", null),
+      testCase("missing permission", { permissions: [] }, 403, "missing_permission", "malformed"),
+      testCase("inactive membership", { membershipStatus: "inactive" }, 401, "unauthenticated"),
+      testCase("suspended membership", { membershipStatus: "suspended" }, 401, "unauthenticated"),
+      testCase("missing entitlement", { entitlements: [] }, 403, "missing_entitlement"),
+      testCase(
+        "unknown scope",
+        { propertyScope: scope("unknown", [pmsPropertyId]) },
+        403,
+        "missing_permission",
+      ),
+      testCase(
+        "unassigned property",
+        { propertyScope: scope("assigned", []) },
+        403,
+        "missing_resource_access",
+        "all",
+      ),
+      testCase(
+        "unresolved alias",
+        { customDomainRepository: resolving(null) },
+        403,
+        "missing_resource_access",
+      ),
+      testCase(
+        "cross-tenant property",
+        { customDomainRepository: resolving(foreignPropertyId) },
+        403,
+        "missing_resource_access",
+        "all",
+      ),
+      testCase(
+        "alias lookup failure",
+        { customDomainRepository: resolving(new Error("sensitive alias failure")) },
+        500,
+        "read_model_unavailable",
+      ),
+      testCase(
+        "scope second-read failure",
+        { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
+        500,
+        "read_model_unavailable",
+      ),
+      testCase("authorized malformed JSON", {}, 400, undefined, "malformed"),
+    ];
+    const requests = {
+      get: { method: "GET" as const },
+      put: { method: "PUT" as const, payload: { domain: "book.alpenrose.example" } },
+      malformed: { method: "PUT" as const, payload: "{not-json" },
+      delete: { method: "DELETE" as const },
+    };
+
+    for (const [name, appOptions, authorization, requestSet, statusCode, code] of cases) {
+      let operationCount = 0;
+      const candidateRepository =
+        appOptions.customDomainRepository ?? bookingCustomDomainRepository;
+      app = buildAuthenticatedApp({
+        ...appOptions,
+        customDomainRepository: {
+          ...candidateRepository,
+          async findByPropertyId(propertyId) {
+            operationCount += 1;
+            return candidateRepository.findByPropertyId(propertyId);
+          },
+          async upsertForPropertyId(propertyId, domain) {
+            operationCount += 1;
+            return candidateRepository.upsertForPropertyId(propertyId, domain);
+          },
+          async deleteForPropertyId(propertyId) {
+            operationCount += 1;
+            return candidateRepository.deleteForPropertyId(propertyId);
+          },
+        },
+      });
+      const requestSpecs =
+        requestSet === "all"
+          ? Object.values(requests)
+          : [requestSet === "malformed" ? requests.malformed : requests.get];
+
+      for (const requestSpec of requestSpecs) {
+        const response = await injectJson(app, {
+          ...requestSpec,
+          url: "/api/booking/hotels/booking_hotel_alpenrose/custom-domain",
+          headers: {
+            ...(authorization === null
+              ? {}
+              : { authorization: authorization ?? "Bearer valid-token" }),
+            ...(requestSpec === requests.malformed ? { "content-type": "application/json" } : {}),
+          },
+        });
+        expect(response.statusCode, name).toBe(statusCode);
+        if (code) expect(response.body, name).toMatchObject({ code });
+        expect(JSON.stringify(response.body), name).not.toMatch(/sensitive|000000000099/);
+      }
+      expect(operationCount, name).toBe(0);
+      await app.close();
+      app = null;
+    }
+  });
+
   it("connects booking custom-domain through the typed write contract", async () => {
     const writes: Array<{ hotelId: string; domain: string }> = [];
     app = buildAuthenticatedApp({
       customDomainRepository: {
         ...bookingCustomDomainRepository,
-        async upsertForBookingHotelId(hotelId, domain) {
-          writes.push({ hotelId, domain });
+        async upsertForPropertyId(propertyId, domain) {
+          writes.push({ hotelId: propertyId, domain });
           return {
-            hotelId,
+            hotelId: propertyId,
             propertyId: "f6853000-0000-0000-0000-000000000001",
             domain,
             verificationStatus: "pending",
@@ -5087,7 +5232,7 @@ describe("vayada-api", () => {
     expect(response.statusCode).toBe(200);
     expect(writes).toEqual([
       {
-        hotelId: "booking_hotel_alpenrose",
+        hotelId: pmsPropertyId,
         domain: "book.alpenrose.example",
       },
     ]);
@@ -5159,8 +5304,8 @@ describe("vayada-api", () => {
     app = buildAuthenticatedApp({
       customDomainRepository: {
         ...bookingCustomDomainRepository,
-        async deleteForBookingHotelId(hotelId) {
-          deletes.push(hotelId);
+        async deleteForPropertyId(propertyId) {
+          deletes.push(propertyId);
           return true;
         },
       },
@@ -5175,10 +5320,10 @@ describe("vayada-api", () => {
     });
 
     expect(response.statusCode).toBe(204);
-    expect(deletes).toEqual(["booking_hotel_alpenrose"]);
+    expect(deletes).toEqual([pmsPropertyId]);
   });
 
-  it("resolves booking custom-domain target property ids through property_source_links", async () => {
+  it("resolves unambiguous Booking aliases once, then reads by canonical property UUID", async () => {
     const queries: Array<{ text: string; values?: readonly unknown[] }> = [];
     const pool: BookingCustomDomainPool = {
       async query<T extends QueryResultRow = QueryResultRow>(
@@ -5189,7 +5334,7 @@ describe("vayada-api", () => {
         return {
           rows: [
             {
-              hotelId: "booking_hotel_alpenrose",
+              hotelId: undefined,
               propertyId: "f6853000-0000-0000-0000-000000000001",
               domain: null,
               verificationStatus: null,
@@ -5206,18 +5351,25 @@ describe("vayada-api", () => {
       pool,
     });
 
-    await expect(repository.findByBookingHotelId("booking_hotel_alpenrose")).resolves.toMatchObject(
-      {
-        hotelId: "booking_hotel_alpenrose",
-        propertyId: "f6853000-0000-0000-0000-000000000001",
-        domain: null,
-      },
+    await expect(repository.resolveCanonicalPropertyId("booking_hotel_alpenrose")).resolves.toBe(
+      pmsPropertyId,
     );
+    await expect(repository.resolveCanonicalPropertyId(pmsPropertyId)).resolves.toBe(pmsPropertyId);
+    await expect(repository.findByPropertyId(pmsPropertyId)).resolves.toMatchObject({
+      hotelId: pmsPropertyId,
+      propertyId: pmsPropertyId,
+      domain: null,
+    });
 
-    expect(queries).toHaveLength(1);
+    expect(queries).toHaveLength(3);
     expect(queries[0]!.text).toContain("hotel_catalog.property_source_links");
     expect(queries[0]!.text).toContain("source_table = 'booking_hotels'");
+    expect(queries[0]!.text).toContain("HAVING count(*) = 1");
     expect(queries[0]!.values).toEqual(["booking_hotel_alpenrose"]);
+    expect(queries[1]!.values).toEqual([pmsPropertyId]);
+    expect(queries[2]!.text).not.toContain("property_source_links");
+    expect(queries[2]!.text).toContain("property.id = $1::uuid");
+    expect(queries[2]!.values).toEqual([pmsPropertyId]);
   });
 
   it("resolves booking custom-domain target property ids from direct property UUIDs", async () => {
@@ -5249,7 +5401,7 @@ describe("vayada-api", () => {
       pool,
     });
 
-    await expect(repository.findByBookingHotelId(propertyId)).resolves.toMatchObject({
+    await expect(repository.findByPropertyId(propertyId)).resolves.toMatchObject({
       hotelId: propertyId,
       propertyId,
       domain: null,
@@ -5257,7 +5409,7 @@ describe("vayada-api", () => {
 
     expect(queries).toHaveLength(1);
     expect(queries[0]!.text).toContain("hotel_catalog.properties");
-    expect(queries[0]!.text).toContain("property.id::text = $1");
+    expect(queries[0]!.text).toContain("property.id = $1::uuid");
     expect(queries[0]!.values).toEqual([propertyId]);
   });
 
