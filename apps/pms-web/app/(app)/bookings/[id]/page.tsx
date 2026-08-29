@@ -23,6 +23,7 @@ import {
   BookingNote,
   BookingAdditionalGuest,
   BookingAdditionalGuestPayload,
+  AssignmentSelector,
   CancellationPolicy,
 } from "@/services/bookings";
 import { individualRoomsService, Room } from "@/services/rooms";
@@ -1146,7 +1147,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   const [allRooms, setAllRooms] = useState<Room[]>([]);
   const [moveTarget, setMoveTarget] = useState<{
     assignmentId: string | null;
-    fromRoomId: string | null;
+    position: number;
     fromRoomNumber: string | null;
   } | null>(null);
   const [assignTarget, setAssignTarget] = useState<{
@@ -1493,17 +1494,11 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
 
   const handleMoveRoom = async (
     assignmentId: string | null,
-    fromRoomId: string | null,
+    position: number,
     toRoomId: string,
   ) => {
-    // The backend can move the primary or any extra; primary is identified
-    // by omitting from_room_id. Pass it through unconditionally if we have it
-    // so multi-room cases are unambiguous.
-    const updated = await bookingsService.moveRoom(
-      id,
-      toRoomId,
-      assignmentId || fromRoomId || undefined,
-    );
+    const selector: AssignmentSelector = assignmentId ? { assignmentId } : { position };
+    const updated = await bookingsService.moveRoom(id, toRoomId, selector);
     setBooking(updated);
   };
 
@@ -1899,7 +1894,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
                     onClick={() =>
                       setMoveTarget({
                         assignmentId: row.assignmentId,
-                        fromRoomId: row.roomId,
+                        position: row.position,
                         fromRoomNumber: row.roomNumber,
                       })
                     }
@@ -2842,7 +2837,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
           candidates={moveCandidates}
           onClose={() => setMoveTarget(null)}
           onMove={(toRoomId) =>
-            handleMoveRoom(moveTarget.assignmentId, moveTarget.fromRoomId, toRoomId)
+            handleMoveRoom(moveTarget.assignmentId, moveTarget.position, toRoomId)
           }
         />
       )}

@@ -179,6 +179,7 @@ describe("calendarService manual-booking rates", () => {
               roomTypeId: "room-type-1",
               name: "Suite",
               category: null,
+              attributes: { size: { value: 38, unit: "sqm" } },
               occupancyLimits: { adults: 2, children: 0, total: 2 },
               baseRate: { amountDecimal: "100.00", currency: "EUR" },
               roomCount: 1,
@@ -204,7 +205,60 @@ describe("calendarService manual-booking rates", () => {
           ],
         };
       if (route.includes("/reservations?"))
-        return { items: [], pagination: { total: 0, limit: 500, offset: 0 } };
+        return {
+          items: [
+            {
+              guestBookingId: "manual-booking",
+              bookingReference: "MAN-1",
+              status: "confirmed",
+              source: "manual",
+              stay: { checkIn: "2026-08-20", checkOut: "2026-08-22" },
+              primaryGuest: { displayName: "Manual Guest" },
+              assignments: [
+                {
+                  assignmentId: "manual-assignment",
+                  roomTypeId: "room-type-1",
+                  roomId: "room-1",
+                  roomNumber: "101",
+                  position: 1,
+                  channel: "direct",
+                },
+              ],
+            },
+            {
+              guestBookingId: "ota-booking",
+              bookingReference: "OTA-1",
+              status: "confirmed",
+              source: "channel",
+              stay: { checkIn: "2026-08-22", checkOut: "2026-08-24" },
+              primaryGuest: { displayName: "OTA Guest" },
+              assignments: [
+                {
+                  assignmentId: "ota-assignment",
+                  roomTypeId: "room-type-1",
+                  roomId: "room-1",
+                  roomNumber: "101",
+                  position: 1,
+                  channel: "booking.com",
+                },
+              ],
+            },
+          ],
+          pagination: { total: 2, limit: 500, offset: 0 },
+        };
+      if (route.endsWith("/rooms"))
+        return {
+          items: [
+            {
+              roomId: "room-1",
+              roomTypeId: "room-type-1",
+              roomNumber: "101",
+              floor: "1",
+              status: "available",
+            },
+          ],
+          orderVersion: "room-order-v1",
+        };
       return { items: [] };
     });
   });
@@ -219,6 +273,11 @@ describe("calendarService manual-booking rates", () => {
         rateType: "flexible",
         baseRate: 150,
       },
+    ]);
+    expect(result.rooms[0]?.size).toBe(38);
+    expect(result.bookings.map(({ id, channel }) => ({ id, channel }))).toEqual([
+      { id: "manual-booking", channel: "manual" },
+      { id: "ota-booking", channel: "booking.com" },
     ]);
   });
 });

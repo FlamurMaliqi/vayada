@@ -10,7 +10,10 @@ export interface AssignedRoom {
   roomId: string | null;
   roomNumber: string | null;
   position: number;
+  roomTypeId: string;
 }
+
+export type AssignmentSelector = { assignmentId: string } | { position: number };
 
 // prettier-ignore
 export type BookingExpectedPaymentMethod = "unknown" | "pay_at_property" | "bank_transfer" | "manual_card" | "cash" | "other";
@@ -27,6 +30,7 @@ export interface BookingStay {
   nightly: Array<{
     appliedAmount: number | null;
     currency: string | null;
+    evidenceQuality: "exact" | "inferred" | "missing";
   }>;
 }
 
@@ -203,6 +207,16 @@ function normalizeBookingChangeRequest(
 
 async function refreshBooking(guestBookingId: string): Promise<Booking> {
   return pmsOperationsBookingsReadService.get(guestBookingId);
+}
+
+function findAssignedRoom(
+  assignedRooms: AssignedRoom[],
+  selector?: AssignmentSelector,
+): AssignedRoom | undefined {
+  if (!selector) return assignedRooms[0];
+  return "assignmentId" in selector
+    ? assignedRooms.find((assignment) => assignment.assignmentId === selector.assignmentId)
+    : assignedRooms.find((assignment) => assignment.position === selector.position);
 }
 
 function toCheckoutCharge(charge: PmsCheckoutCharge, bookingId: string): CheckoutCharge {
@@ -722,16 +736,15 @@ export const bookingsService = {
     return refreshBooking(id);
   },
 
-  moveRoom: async (id: string, roomId: string, sourceAssignmentRef?: string) => {
+  moveRoom: async (
+    id: string,
+    roomId: string,
+    sourceAssignmentSelector?: AssignmentSelector,
+    ratePolicy: "preserve" | "target_base" = "preserve",
+  ) => {
     const booking = await refreshBooking(id);
-    const sourceAssignment = sourceAssignmentRef
-      ? booking.assignedRooms.find(
-          (assignment) =>
-            assignment.assignmentId === sourceAssignmentRef ||
-            assignment.roomId === sourceAssignmentRef,
-        )
-      : booking.assignedRooms[0];
-    if (sourceAssignmentRef && !sourceAssignment) {
+    const sourceAssignment = findAssignedRoom(booking.assignedRooms, sourceAssignmentSelector);
+    if (sourceAssignmentSelector && !sourceAssignment) {
       return unsupportedPmsNextStackFeature<Booking>(
         "Multi-room moves without assignment identity",
       );
@@ -743,9 +756,12 @@ export const bookingsService = {
         ...commandMetadata("pms.assignment.move"),
         action: "move",
         roomId,
-        ...(sourceAssignment?.assignmentId
-          ? { assignmentId: sourceAssignment.assignmentId }
-          : { position: sourceAssignment?.position ?? 0 }),
+        ...(sourceAssignment
+          ? sourceAssignment.assignmentId
+            ? { assignmentId: sourceAssignment.assignmentId }
+            : { position: sourceAssignment.position + 1 }
+          : {}),
+        ...(ratePolicy === "target_base" ? { ratePolicy } : {}),
       },
       pmsOperationsRequestOptions,
     );
@@ -755,10 +771,26 @@ export const bookingsService = {
   swapRoom: (_id: string, _partnerBookingId: string, _partnerDestinationRoomId?: string) =>
     unsupportedPmsNextStackFeature<Booking>("Room swaps"),
 
-  unassignRoom: async (id: string) => {
+  unassignRoom: async (id: string, sourceAssignmentSelector?: AssignmentSelector) => {
+    const booking = await refreshBooking(id);
+    const sourceAssignment = findAssignedRoom(booking.assignedRooms, sourceAssignmentSelector);
+    if (sourceAssignmentSelector && !sourceAssignment) {
+      return unsupportedPmsNextStackFeature<Booking>(
+        "Multi-room unassign without assignment identity",
+      );
+    }
     await pmsOperationsClient.patch<PmsOperationsCommandResponse>(
       await reservationEndpoint(id, "/assignments"),
-      { ...commandMetadata("pms.assignment.unassign"), action: "unassign", roomId: null },
+      {
+        ...commandMetadata("pms.assignment.unassign"),
+        action: "unassign",
+        roomId: null,
+        ...(sourceAssignment
+          ? sourceAssignment.assignmentId
+            ? { assignmentId: sourceAssignment.assignmentId }
+            : { position: sourceAssignment.position + 1 }
+          : {}),
+      },
       pmsOperationsRequestOptions,
     );
     return refreshBooking(id);
@@ -1048,6 +1080,7 @@ function toBooking(
       roomId: assignment.roomId,
       roomNumber: assignment.roomNumber,
       position: Math.max(assignment.position - 1, 0),
+      roomTypeId: assignment.roomTypeId,
     })),
     stays: reservation.assignments.map((assignment) => {
       const assignmentRoomType = roomTypesById.get(assignment.roomTypeId);
@@ -1066,10 +1099,14 @@ function toBooking(
         nightly: (assignment.nightly ?? []).map((night) => ({
           appliedAmount: night.applied ? moneyAmount(night.applied) : null,
           currency: night.applied?.currency ?? null,
+          evidenceQuality: night.evidenceQuality,
         })),
       };
     }),
-    channel: primaryAssignment?.channel ?? reservationSource(reservation.source),
+    channel:
+      reservation.source === "manual"
+        ? "manual"
+        : (primaryAssignment?.channel ?? reservationSource(reservation.source)),
     paymentMethod: reservation.payment?.method ?? null,
     expectedPaymentMethod: reservation.payment?.expectedMethod ?? "unknown",
     paymentStatus: reservation.payment?.status ?? null,
