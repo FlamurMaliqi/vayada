@@ -1871,7 +1871,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.inbox.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       return sendPmsOperationsError(
         reply,
         readModelUnavailable("PMS messaging unread count read model is unavailable."),

@@ -10475,7 +10475,7 @@ describe("vayada-api", () => {
 
   it("returns explicit unavailable errors for retired PMS Web placeholder facades", async () => {
     app = buildAuthenticatedApp({
-      permissions: ["pms.operations.read", "pms.operations.manage"],
+      permissions: ["pms.operations.read", "pms.operations.manage", "pms.inbox.read"],
       entitlements: [
         {
           product: "pms",
@@ -10583,7 +10583,7 @@ describe("vayada-api", () => {
 
   it("rejects PMS Web target property facades when the PMS property is not linked", async () => {
     app = buildAuthenticatedApp({
-      permissions: ["pms.operations.read"],
+      permissions: ["pms.inbox.read"],
       entitlements: [
         {
           product: "pms",
@@ -10610,6 +10610,241 @@ describe("vayada-api", () => {
       code: "missing_resource_access",
       category: "authorization",
     });
+  });
+
+  it("allows the PMS inbox placeholder for an assigned front-desk membership", async () => {
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      roleKey: "front_desk",
+      linkedPmsRelationship: "front_desk",
+      propertyScope: {
+        mode: "assigned",
+        roleKey: "front_desk",
+        accessOrigin: "agency",
+        assignedPropertyIds: [pmsPropertyId],
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/messaging/unread-count`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toMatchObject({
+      message: "PMS messaging unread count read model is unavailable.",
+    });
+  });
+
+  it("fails closed across the PMS inbox read denial matrix", async () => {
+    type AuthenticatedAppOptions = Parameters<typeof buildAuthenticatedApp>[0];
+    const entitlement: ProductEntitlement = {
+      product: "pms",
+      key: "property-management",
+      status: "active",
+    };
+    const unassignedPropertyId = "f6853000-0000-0000-0000-000000000098";
+    const foreignPropertyId = "f6853000-0000-0000-0000-000000000099";
+    const placeholderMessage = "PMS messaging unread count read model is unavailable.";
+    const cases: Array<{
+      name: string;
+      appOptions?: AuthenticatedAppOptions;
+      authorization?: string | null;
+      propertyId?: string;
+      statusCode: number;
+      code?: string;
+      message?: string;
+      hiddenProperty?: boolean;
+    }> = [
+      {
+        name: "missing authentication",
+        authorization: null,
+        statusCode: 401,
+        code: "unauthenticated",
+      },
+      {
+        name: "invalid authentication",
+        authorization: "Bearer invalid-token",
+        statusCode: 401,
+        code: "unauthenticated",
+      },
+      {
+        name: "missing permission",
+        appOptions: { permissions: [] },
+        statusCode: 403,
+        code: "missing_permission",
+      },
+      {
+        name: "compatibility read permission",
+        appOptions: { permissions: ["pms.operations.read"] },
+        statusCode: 403,
+        code: "missing_permission",
+      },
+      {
+        name: "compatibility manage permission",
+        appOptions: { permissions: ["pms.operations.manage"] },
+        statusCode: 403,
+        code: "missing_permission",
+      },
+      {
+        name: "inbox reply permission without read",
+        appOptions: { permissions: ["pms.inbox.reply"] },
+        statusCode: 403,
+        code: "missing_permission",
+      },
+      {
+        name: "missing entitlement",
+        appOptions: { entitlements: [] },
+        statusCode: 403,
+        code: "missing_entitlement",
+      },
+      {
+        name: "suspended entitlement",
+        appOptions: { entitlements: [{ ...entitlement, status: "suspended" }] },
+        statusCode: 403,
+        code: "inactive_entitlement",
+      },
+      {
+        name: "missing target PMS resource",
+        appOptions: { linkedPmsPropertyId: null },
+        statusCode: 403,
+        code: "missing_resource_access",
+        hiddenProperty: true,
+      },
+      {
+        name: "disallowed resource relationship",
+        appOptions: { linkedPmsRelationship: "finance_manager" },
+        statusCode: 403,
+        code: "missing_resource_access",
+      },
+      {
+        name: "empty assigned scope",
+        appOptions: {
+          propertyScope: {
+            mode: "assigned",
+            roleKey: "hotel_owner",
+            accessOrigin: "agency",
+            assignedPropertyIds: [],
+          },
+        },
+        statusCode: 403,
+        code: "missing_resource_access",
+      },
+      {
+        name: "unassigned direct URL",
+        appOptions: {
+          additionalPmsPropertyId: unassignedPropertyId,
+          propertyScope: {
+            mode: "assigned",
+            roleKey: "hotel_owner",
+            accessOrigin: "agency",
+            assignedPropertyIds: [pmsPropertyId],
+          },
+        },
+        propertyId: unassignedPropertyId,
+        statusCode: 403,
+        code: "missing_resource_access",
+        hiddenProperty: true,
+      },
+      {
+        name: "missing membership scope",
+        appOptions: { propertyScope: null },
+        statusCode: 403,
+        code: "missing_permission",
+      },
+      {
+        name: "unknown membership scope",
+        appOptions: {
+          propertyScope: {
+            mode: "unknown",
+            roleKey: "hotel_owner",
+            accessOrigin: "agency",
+            assignedPropertyIds: [pmsPropertyId],
+          },
+        },
+        statusCode: 403,
+        code: "missing_permission",
+      },
+      {
+        name: "cross-tenant direct URL",
+        propertyId: foreignPropertyId,
+        statusCode: 403,
+        code: "missing_resource_access",
+        hiddenProperty: true,
+      },
+      {
+        name: "inactive membership",
+        appOptions: { membershipStatus: "inactive" },
+        statusCode: 401,
+        code: "unauthenticated",
+      },
+      {
+        name: "suspended membership",
+        appOptions: { membershipStatus: "suspended" },
+        statusCode: 401,
+        code: "unauthenticated",
+      },
+      {
+        name: "authorization property storage failure",
+        appOptions: {
+          propertyAccessRepository: {
+            async findMembershipPropertyScope() {
+              throw new Error("sensitive property access failure");
+            },
+          },
+        },
+        statusCode: 500,
+        message: "Authentication service is temporarily unavailable.",
+      },
+      {
+        name: "route property storage failure",
+        appOptions: { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
+        statusCode: 500,
+        code: "read_model_unavailable",
+        message: "PMS property access is unavailable.",
+      },
+    ];
+    const hiddenPropertyDenials = new Set<string>();
+
+    for (const candidate of cases) {
+      app = buildAuthenticatedApp({
+        permissions: ["pms.inbox.read"],
+        entitlements: [entitlement],
+        ...candidate.appOptions,
+      });
+      const propertyId = candidate.propertyId ?? pmsPropertyId;
+      const response = await injectJson(app, {
+        method: "GET",
+        url: `/api/pms/properties/${propertyId}/messaging/unread-count`,
+        headers:
+          candidate.authorization === null
+            ? undefined
+            : {
+                authorization: candidate.authorization ?? "Bearer valid-token",
+                "x-hotel-id": pmsPropertyId,
+              },
+      });
+
+      expect(response.statusCode, candidate.name).toBe(candidate.statusCode);
+      if (candidate.code) {
+        expect(response.body, candidate.name).toMatchObject({ code: candidate.code });
+      }
+      if (candidate.message) {
+        expect(response.body, candidate.name).toMatchObject({ message: candidate.message });
+      }
+      expect(response.body, candidate.name).not.toMatchObject({ message: placeholderMessage });
+      expect(JSON.stringify(response.body), candidate.name).not.toContain(
+        "sensitive property access failure",
+      );
+      if (candidate.hiddenProperty) hiddenPropertyDenials.add(JSON.stringify(response.body));
+
+      await app.close();
+      app = null;
+    }
+
+    expect(hiddenPropertyDenials.size).toBe(1);
   });
 
   it("does not expose retired Channex placeholder routes", async () => {
