@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 
-import { AuthError, UnauthorizedError } from "./errors.js";
+import { AuthError, AuthorizationResolutionError, UnauthorizedError } from "./errors.js";
 import { type IdentityRepository } from "./repository.js";
 import { type AuthorizationResolver, resolveRequestContext } from "./resolve.js";
 import { type RequestContext } from "./types.js";
@@ -67,6 +67,7 @@ const backendAuthPluginFn: FastifyPluginAsync<BackendAuthPluginOptions> = async 
       });
       request.authContext = context;
     } catch (error) {
+      if (error instanceof AuthorizationResolutionError) throw error;
       if (!(error instanceof AuthError)) throw new AuthInfrastructureError(error);
       // AuthError means the token or identity is invalid/missing.
       // authContext stays null and requireAuthContext surfaces the 401.

@@ -31,3 +31,13 @@ export class UnauthorizedError extends Error {
     this.name = "UnauthorizedError";
   }
 }
+
+export class AuthorizationResolutionError extends Error {
+  readonly statusCode = 403;
+  readonly code = "invalid_permission_override";
+
+  constructor() {
+    super("The authenticated user is not authorized for this resource.");
+    this.name = "AuthorizationResolutionError";
+  }
+}

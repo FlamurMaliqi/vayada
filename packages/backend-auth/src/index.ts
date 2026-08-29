@@ -28,9 +28,11 @@ export {
   hasValidStaffPermissionHierarchy,
   hotelStaffRoleKeys,
   membershipPropertyAccessModeForProvisioning,
+  parseStaffPermissionOverrides,
   staffAccessPermissionKeys,
   staffRoleDefaultPermissions,
   validateStaffInviteAccess,
+  validateStaffPermissionOverrides,
   type ConsentCommandInput,
   type CreateAffiliateInviteCommand,
   type CreateAffiliateInvitePayload,
@@ -94,7 +96,12 @@ export {
 } from "./lifecycle.js";
 
 // Errors
-export { AuthError, UnauthorizedError, type AuthErrorCode } from "./errors.js";
+export {
+  AuthError,
+  AuthorizationResolutionError,
+  UnauthorizedError,
+  type AuthErrorCode,
+} from "./errors.js";
 
 // Token verification
 export {

@@ -3912,12 +3912,29 @@ describe("vayada-api", () => {
   });
 
   it("wires authorization into authenticated API context resolution", async () => {
+    let permissionOverrides: unknown = null;
+    let auditFailure: Error | undefined;
+    const invalidOverrideAudits: string[][] = [];
     app = buildApp({
       logger: false,
       auth: {
         verifier: createFakeVerifier(new Map([["valid-token", session]])),
         repository: identityRepository,
-        propertyAccessRepository: agencyPropertyAccessRepository,
+        propertyAccessRepository: {
+          async findMembershipPropertyScope(context) {
+            return {
+              mode: "all",
+              roleKey: context.membership.roleKey,
+              accessOrigin: "agency",
+              assignedPropertyIds: [],
+              permissionOverrides,
+            };
+          },
+          async recordInvalidPermissionOverride(_context, issueCodes) {
+            if (auditFailure) throw auditFailure;
+            invalidOverrideAudits.push([...issueCodes]);
+          },
+        },
         rolePermissionRepository: {
           async findPermissionsForRole(kind, roleKey) {
             expect(kind).toBe("hotel_group");
@@ -3940,7 +3957,9 @@ describe("vayada-api", () => {
       },
     });
 
+    let handlerCalls = 0;
     app.get("/protected-context", async (request) => {
+      handlerCalls += 1;
       const context = requireAuthContext(request);
       return {
         userId: context.actor.internalUserId,
@@ -3973,6 +3992,29 @@ describe("vayada-api", () => {
         },
       ],
     });
+
+    permissionOverrides = { grant: ["unknown.permission"], deny: [] };
+    const invalidResponse = await injectJson<{ code: string }>(app, {
+      method: "GET",
+      url: "/protected-context",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(invalidResponse.statusCode).toBe(403);
+    expect(invalidResponse.body.code).toBe("invalid_permission_override");
+    expect(invalidOverrideAudits).toHaveLength(1);
+    expect(handlerCalls).toBe(1);
+
+    auditFailure = Object.assign(new Error("sensitive audit storage failure"), { code: "57P03" });
+    const auditFailureResponse = await injectJson<unknown>(app, {
+      method: "GET",
+      url: "/protected-context",
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(auditFailureResponse.statusCode).toBe(500);
+    expect(JSON.stringify(auditFailureResponse.body)).not.toContain(
+      "sensitive audit storage failure",
+    );
   });
 
   it("returns unavailable data instead of shifting quote dates for an invalid timezone", () => {
