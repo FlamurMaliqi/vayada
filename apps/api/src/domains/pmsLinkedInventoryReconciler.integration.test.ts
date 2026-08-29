@@ -65,6 +65,47 @@ describe.skipIf(!URL)("PostgreSQL linked inventory reconciliation", () => {
       { stayDate: "2026-09-05", stopped: false, available: 1 },
     ]);
 
+    const sharedBeforeMove = await client.query<{ blockId: string }>(
+      `SELECT id::text AS "blockId" FROM pms.room_blocks
+       WHERE source_assignment_id=$1 AND room_type_id=$2 AND status='active'`,
+      [ASSIGNMENT, ROOM_TYPES[2]],
+    );
+    await client.query("SET LOCAL session_replication_role=replica");
+    await client.query(
+      `UPDATE pms.operational_booking_assignments SET room_type_id=$2 WHERE id=$1`,
+      [ASSIGNMENT, ROOM_TYPES[0]],
+    );
+    await client.query("SET LOCAL session_replication_role=origin");
+    await reconcilePmsLinkedInventory(client, PROPERTY, CHANGED_AT);
+    const blocksAfterMove = await client.query<{
+      blockId: string;
+      sourceRoomTypeId: string;
+      targetRoomTypeId: string;
+      status: string;
+    }>(
+      `SELECT id::text AS "blockId",source_room_type_id::text AS "sourceRoomTypeId",
+              room_type_id::text AS "targetRoomTypeId",status
+       FROM pms.room_blocks WHERE source_assignment_id=$1 ORDER BY room_type_id`,
+      [ASSIGNMENT],
+    );
+    expect(blocksAfterMove.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ targetRoomTypeId: ROOM_TYPES[0], status: "released" }),
+        expect.objectContaining({
+          sourceRoomTypeId: ROOM_TYPES[0],
+          targetRoomTypeId: ROOM_TYPES[1],
+          status: "active",
+        }),
+        expect.objectContaining({
+          blockId: sharedBeforeMove.rows[0]?.blockId,
+          sourceRoomTypeId: ROOM_TYPES[0],
+          targetRoomTypeId: ROOM_TYPES[2],
+          status: "active",
+        }),
+      ]),
+    );
+    await expect(reconcilePmsLinkedInventory(client, PROPERTY, CHANGED_AT)).resolves.toEqual([]);
+
     await client.query(
       `UPDATE pms.inventory_reservation_statuses
        SET lifecycle_state='handed_off', lifecycle_revision=2, handed_off_at=$2
