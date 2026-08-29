@@ -340,8 +340,7 @@ export async function reconcileStripeProviderAccount(
   }
   await applyStripeProviderAccountSnapshot(client, {
     snapshot: canonical,
-    cardPaymentsReady:
-      canonical.cardPaymentsStatus === null || canonical.cardPaymentsStatus === "active",
+    cardPaymentsReady: canonical.cardPaymentsStatus === "active",
     metadata: { lastStripeEventId: payload["rawEventId"] ?? null },
   });
 }

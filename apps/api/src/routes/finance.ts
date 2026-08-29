@@ -2401,7 +2401,8 @@ async function recordStripeProviderAccountReconciliationAudit(
        $10::jsonb,
        'financial',
        'confidential'
-     )`,
+     )
+     ON CONFLICT (product, audit_key) DO NOTHING`,
     [
       `finance.provider-account.stripe.reconcile.property.${command.propertyId}.key.${keyHash}.v1`,
       command.audit.requestedAt,

@@ -3,7 +3,7 @@ import type {
   ReconcileStripePropertyAccountCommand,
   StripeConnectProviderAccountSnapshot,
 } from "@vayada/domain-finance";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -175,6 +175,52 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
     );
   });
 
+  it("tolerates a pre-existing deterministic audit key without duplicate effects", async () => {
+    const suffix = "audit-conflict";
+    const keyHash = createHash("sha256").update(`key-${suffix}`).digest("hex");
+    const auditKey = `finance.provider-account.stripe.reconcile.property.${propertyId}.key.${keyHash}.v1`;
+    await admin.query(
+      `INSERT INTO platform.product_audit_events (
+         audit_key, product, action, occurred_at, tenant_scope, property_id,
+         actor_type, target_resource_product, target_resource_type, target_resource_id
+       ) VALUES (
+         $1, 'finance', 'finance.provider_account.stripe.reconciled', now(),
+         'property', $2::uuid, 'system', 'finance', 'payment_provider_account', $3
+       )`,
+      [auditKey, propertyId, providerAccountId],
+    );
+    snapshot = activeSnapshot();
+    retrieveCount = 0;
+
+    await expect(
+      repository.reconcileStripeProviderAccount!(command(suffix)),
+    ).resolves.toMatchObject({
+      ok: true,
+      status: "reconciled",
+      response: { providerAccount: { ready: true } },
+    });
+    const firstProjection = await projection();
+    await expect(
+      repository.reconcileStripeProviderAccount!(command(suffix)),
+    ).resolves.toMatchObject({
+      ok: true,
+      status: "idempotent_replay",
+    });
+    expect((await projection()).projectedAt).toEqual(firstProjection.projectedAt);
+    expect(retrieveCount).toBe(1);
+    const evidence = await admin.query<{ audits: number; keys: number }>(
+      `SELECT
+         (SELECT count(*)::int FROM platform.product_audit_events
+          WHERE product = 'finance' AND audit_key = $1) AS audits,
+         (SELECT count(*)::int FROM platform.idempotency_keys
+          WHERE operation_scope = 'finance'
+            AND operation = 'stripe_provider_account_reconcile'
+            AND key_hash = $2) AS keys`,
+      [auditKey, keyHash],
+    );
+    expect(evidence.rows[0]).toEqual({ audits: 1, keys: 1 });
+  });
+
   it("serializes same-key retries and different-key snapshots on the configured binding", async () => {
     snapshot = activeSnapshot();
     retrieveCount = 0;
@@ -295,14 +341,19 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
       releaseProvider = resolve;
     });
     retrieveAccount = async (requestedRef) => {
-      expect(requestedRef).toBe(providerAccountRef);
       markProviderStarted();
+      expect(requestedRef).toBe(providerAccountRef);
       await providerRelease;
       return activeSnapshot();
     };
 
     const reconciliation = repository.reconcileStripeProviderAccount!(command("binding-lock"));
-    await providerStarted;
+    await Promise.race([
+      providerStarted,
+      reconciliation.then(() => {
+        throw new Error("Reconciliation completed before provider retrieval started.");
+      }),
+    ]);
     const rebindClient = new pg.Client({ connectionString: TEST_DATABASE_URL! });
     await rebindClient.connect();
     let rebindFinished = false;
@@ -315,28 +366,33 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
       .then(() => {
         rebindFinished = true;
       });
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    expect(rebindFinished).toBe(false);
-    releaseProvider();
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(rebindFinished).toBe(false);
+      releaseProvider();
 
-    await expect(reconciliation).resolves.toMatchObject({
-      ok: true,
-      response: { providerAccount: { ready: true } },
-    });
-    await rebind;
-    await rebindClient.end();
-    expect(rebindFinished).toBe(true);
-    const binding = await admin.query<{ providerAccountId: string }>(
-      `SELECT provider_account_id::text AS "providerAccountId"
-       FROM finance.payment_settings WHERE property_id = $1::uuid`,
-      [propertyId],
-    );
-    expect(binding.rows[0]?.providerAccountId).toBe(replacementProviderAccountId);
-    await expect(providerAccount(replacementProviderAccountId)).resolves.toMatchObject({
-      status: "setup_incomplete",
-      chargesEnabled: false,
-      payoutsEnabled: false,
-    });
+      await expect(reconciliation).resolves.toMatchObject({
+        ok: true,
+        response: { providerAccount: { ready: true } },
+      });
+      await rebind;
+      expect(rebindFinished).toBe(true);
+      const binding = await admin.query<{ providerAccountId: string }>(
+        `SELECT provider_account_id::text AS "providerAccountId"
+         FROM finance.payment_settings WHERE property_id = $1::uuid`,
+        [propertyId],
+      );
+      expect(binding.rows[0]?.providerAccountId).toBe(replacementProviderAccountId);
+      await expect(providerAccount(replacementProviderAccountId)).resolves.toMatchObject({
+        status: "setup_incomplete",
+        chargesEnabled: false,
+        payoutsEnabled: false,
+      });
+    } finally {
+      releaseProvider();
+      await Promise.allSettled([reconciliation, rebind]);
+      await rebindClient.end();
+    }
   });
 
   it("serializes webhook retrieval before a manual readiness-loss reconciliation", async () => {
@@ -363,6 +419,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
     const webhookClient = new pg.Client({ connectionString: TEST_DATABASE_URL! });
     await webhookClient.connect();
     await webhookClient.query("BEGIN");
+    let webhookCommitted = false;
     const webhook = reconcileStripeProviderAccountWebhook(
       webhookClient,
       {
@@ -386,41 +443,54 @@ describe.skipIf(!TEST_DATABASE_URL)("Stripe provider-account reconciliation Post
       },
       {
         async retrieveAccount({ providerAccountRef: requestedRef }) {
-          expect(requestedRef).toBe(providerAccountRef);
           markWebhookStarted();
+          expect(requestedRef).toBe(providerAccountRef);
           await webhookRelease;
           return activeSnapshot();
         },
       },
     ).then(async () => {
       await webhookClient.query("COMMIT");
+      webhookCommitted = true;
+    });
+    let manual: Promise<unknown> | undefined;
+    try {
+      await Promise.race([
+        webhookStarted,
+        webhook.then(() => {
+          throw new Error("Webhook reconciliation completed before provider retrieval started.");
+        }),
+      ]);
+      let manualFinished = false;
+      manual = repository.reconcileStripeProviderAccount!(command("webhook-race-loss")).then(
+        (result) => {
+          manualFinished = true;
+          return result;
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(manualFinished).toBe(false);
+      expect(retrieveCount).toBe(0);
+      releaseWebhook();
+
+      await webhook;
+      await expect(manual).resolves.toMatchObject({
+        ok: true,
+        response: { providerAccount: { ready: false } },
+      });
+      expect(retrieveCount).toBe(1);
+      await expect(providerAccount()).resolves.toMatchObject({
+        status: "setup_incomplete",
+        payoutsEnabled: false,
+        cardPaymentsStatus: null,
+      });
+    } finally {
+      releaseWebhook();
+      await Promise.allSettled([webhook]);
+      if (!webhookCommitted) await webhookClient.query("ROLLBACK");
+      if (manual) await Promise.allSettled([manual]);
       await webhookClient.end();
-    });
-
-    await webhookStarted;
-    let manualFinished = false;
-    const manual = repository.reconcileStripeProviderAccount!(command("webhook-race-loss")).then(
-      (result) => {
-        manualFinished = true;
-        return result;
-      },
-    );
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    expect(manualFinished).toBe(false);
-    expect(retrieveCount).toBe(0);
-    releaseWebhook();
-
-    await webhook;
-    await expect(manual).resolves.toMatchObject({
-      ok: true,
-      response: { providerAccount: { ready: false } },
-    });
-    expect(retrieveCount).toBe(1);
-    await expect(providerAccount()).resolves.toMatchObject({
-      status: "setup_incomplete",
-      payoutsEnabled: false,
-      cardPaymentsStatus: null,
-    });
+    }
   });
 
   function command(suffix: string): ReconcileStripePropertyAccountCommand {
