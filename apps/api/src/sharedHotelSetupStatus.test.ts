@@ -833,6 +833,73 @@ describe("shared hotel setup status route", () => {
     );
   });
 
+  it.each([
+    ["booking", "booking.analytics.read", "booking_hotel"],
+    ["booking", "booking.reservation.read", "booking_hotel"],
+    ["booking", "booking.design.read", "booking_hotel"],
+    ["booking", "booking.flow.read", "booking_hotel"],
+    ["booking", "booking.settings.read", "booking_hotel"],
+    ["pms", "pms.operations.read", "pms_property"],
+    ["pms", "pms.dashboard.read", "pms_property"],
+    ["pms", "pms.calendar.read", "pms_property"],
+    ["pms", "pms.reservation.read", "pms_property"],
+    ["pms", "pms.inbox.read", "pms_property"],
+    ["pms", "pms.room_status.read", "pms_property"],
+    ["pms", "pms.rooms_rates.read", "pms_property"],
+    ["pms", "pms.channel_manager.read", "pms_property"],
+    ["pms", "pms.finance.read", "pms_property"],
+    ["pms", "pms.settings.read", "pms_property"],
+  ] as const)(
+    "enters %s with the granular %s workspace permission",
+    async (entryProduct, permission, resourceType) => {
+      app = buildSharedSetupApp({
+        permissions: [permission],
+        linkedResources: [
+          propertyLink(propertyId),
+          productLink(entryProduct, resourceType, propertyId),
+        ],
+        repository: repositoryWith([adaptiveProperty(propertyId)]),
+        trackCommandRepository: trackRepository(["hotel_operations"]),
+      });
+
+      const response = await injectJson<AdaptiveHotelSetupStatus>(app, {
+        method: "GET",
+        url: `/api/hotel-setup/status?entryProduct=${entryProduct}`,
+        headers: { authorization: "Bearer valid-token" },
+      });
+
+      expect(response.body.entryDecision).toMatchObject({
+        requestedProduct: entryProduct,
+        propertyId,
+        decision: "enter",
+        reasonCode: null,
+      });
+    },
+  );
+
+  it("does not treat guest contact visibility as PMS workspace access", async () => {
+    app = buildSharedSetupApp({
+      permissions: ["pms.guest_contact.read"],
+      linkedResources: [propertyLink(propertyId), productLink("pms", "pms_property", propertyId)],
+      repository: repositoryWith([adaptiveProperty(propertyId)]),
+      trackCommandRepository: trackRepository(["hotel_operations"]),
+    });
+
+    const response = await injectJson<AdaptiveHotelSetupStatus>(app, {
+      method: "GET",
+      url: "/api/hotel-setup/status?entryProduct=pms",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.body.entryDecision).toEqual({
+      requestedProduct: "pms",
+      propertyId,
+      decision: "unavailable",
+      destinationRouteKey: null,
+      reasonCode: "workspace_permission_missing",
+    });
+  });
+
   it("keeps an active product usable when another Operations component is blocked", async () => {
     const trackCommandRepository: HotelSetupTrackCommandRepository = {
       async updateTracks() {

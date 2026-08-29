@@ -203,7 +203,11 @@ async function loadLinkedBookingHotel(
   try {
     propertyId = (await getBookingHotelPropertyLink({ hotelId })).propertyId;
   } catch (error) {
-    if (error instanceof BookingPropertyLinkClientError && error.statusCode === 404) return null;
+    if (
+      error instanceof BookingPropertyLinkClientError &&
+      (error.statusCode === 403 || error.statusCode === 404)
+    )
+      return null;
     throw error;
   }
 
@@ -214,7 +218,7 @@ async function loadLinkedBookingHotel(
       omitHotelContext,
     );
   } catch (error) {
-    if (error instanceof ApiErrorResponse && error.status === 404) {
+    if (error instanceof ApiErrorResponse && (error.status === 403 || error.status === 404)) {
       settings = null;
     } else {
       throw error;

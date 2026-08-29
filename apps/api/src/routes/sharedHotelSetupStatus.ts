@@ -1716,10 +1716,30 @@ const SETUP_TASK_REGISTRY: readonly SetupTaskDefinition[] = [
   },
 ];
 
-const ENTRY_PRODUCT_WORKSPACE_PERMISSIONS: Record<SharedHotelSetupEntryProduct, PermissionKey> = {
-  booking: "booking.analytics.read",
-  pms: "pms.operations.read",
-  marketplace: "marketplace.collaboration.read",
+const ENTRY_PRODUCT_WORKSPACE_PERMISSIONS: Record<
+  SharedHotelSetupEntryProduct,
+  readonly PermissionKey[]
+> = {
+  booking: [
+    "booking.analytics.read",
+    "booking.reservation.read",
+    "booking.design.read",
+    "booking.flow.read",
+    "booking.settings.read",
+  ],
+  pms: [
+    "pms.operations.read",
+    "pms.dashboard.read",
+    "pms.calendar.read",
+    "pms.reservation.read",
+    "pms.inbox.read",
+    "pms.room_status.read",
+    "pms.rooms_rates.read",
+    "pms.channel_manager.read",
+    "pms.finance.read",
+    "pms.settings.read",
+  ],
+  marketplace: ["marketplace.collaboration.read"],
 };
 
 function entryDecision(input: {
@@ -1756,7 +1776,11 @@ function entryDecision(input: {
     component?.access === "active" &&
     hasProductPropertyAccess(context, entryProduct, propertyId)
   ) {
-    if (!hasPermission(context, ENTRY_PRODUCT_WORKSPACE_PERMISSIONS[entryProduct])) {
+    if (
+      !ENTRY_PRODUCT_WORKSPACE_PERMISSIONS[entryProduct].some((permission) =>
+        hasPermission(context, permission),
+      )
+    ) {
       return {
         requestedProduct: entryProduct,
         propertyId,
