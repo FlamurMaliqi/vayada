@@ -10,6 +10,9 @@ import { DEFAULT_REBUILD_SCHEMAS } from "./targetSchemas.js";
 import { assertSafeTestDatabase } from "./testUtils.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
+const TEST_DATABASE_NAME = TEST_DATABASE_URL
+  ? decodeURIComponent(new URL(TEST_DATABASE_URL).pathname.replace(/^\//, ""))
+  : "";
 
 const FIXTURES_DIR = join(import.meta.dirname, "../fixtures");
 const MIGRATIONS_DIR = join(import.meta.dirname, "../migrations");
@@ -229,6 +232,7 @@ describe.skipIf(!TEST_DATABASE_URL)("runParityChecks (integration)", () => {
       migrationsDir: MIGRATIONS_DIR,
       environment: "local",
       schemas: [...DEFAULT_REBUILD_SCHEMAS],
+      confirmedDatabaseName: TEST_DATABASE_NAME,
       fixtureCase: "identity-organization-links",
       fixturesDir: FIXTURES_DIR,
     });
@@ -463,12 +467,52 @@ describe.skipIf(!TEST_DATABASE_URL)("rebuild with fixture loading (integration)"
     await dropTargetSchemas();
   });
 
+  it("checks the confirmed database name before dropping schemas", async () => {
+    assertSafeTestDatabase(TEST_DATABASE_URL!);
+    const client = new pg.Client({ connectionString: TEST_DATABASE_URL });
+    await client.connect();
+    try {
+      await client.query(`CREATE SCHEMA rebuild_confirmation_guard`);
+
+      await expect(
+        rebuild({
+          connectionString: TEST_DATABASE_URL!,
+          migrationsDir: MIGRATIONS_DIR,
+          environment: "local",
+          schemas: ["rebuild_confirmation_guard"],
+          confirmedDatabaseName: `${TEST_DATABASE_NAME}_wrong`,
+        }),
+      ).rejects.toThrow(/does not match confirmed database/);
+
+      await expect(
+        rebuild({
+          connectionString: TEST_DATABASE_URL!,
+          migrationsDir: MIGRATIONS_DIR,
+          environment: "local",
+          schemas: ["rebuild_confirmation_guard", "invalid-name"],
+          confirmedDatabaseName: TEST_DATABASE_NAME,
+        }),
+      ).rejects.toThrow(/Unsafe schema identifier/);
+
+      const { rows } = await client.query<{ exists: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = 'rebuild_confirmation_guard'
+         ) AS exists`,
+      );
+      expect(rows[0]?.exists).toBe(true);
+    } finally {
+      await client.query(`DROP SCHEMA IF EXISTS rebuild_confirmation_guard CASCADE`);
+      await client.end();
+    }
+  });
+
   it("applies target migrations and loads the identity fixture without error", async () => {
     const result = await rebuild({
       connectionString: TEST_DATABASE_URL!,
       migrationsDir: MIGRATIONS_DIR,
       environment: "local",
       schemas: [...DEFAULT_REBUILD_SCHEMAS],
+      confirmedDatabaseName: TEST_DATABASE_NAME,
       fixtureCase: "identity-organization-links",
       fixturesDir: FIXTURES_DIR,
     });
@@ -542,6 +586,7 @@ describe.skipIf(!TEST_DATABASE_URL)("rebuild with fixture loading (integration)"
       migrationsDir: MIGRATIONS_DIR,
       environment: "local",
       schemas: [...DEFAULT_REBUILD_SCHEMAS],
+      confirmedDatabaseName: TEST_DATABASE_NAME,
       fixtureCase: "booking-checkout",
       fixturesDir: FIXTURES_DIR,
     });

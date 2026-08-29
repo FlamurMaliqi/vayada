@@ -13,6 +13,7 @@ import { transformFixtureCase } from "./transform.js";
 
 export type RebuildConfig = RunnerConfig & {
   schemas: string[];
+  confirmedDatabaseName: string;
   fixtureCase?: string;
   fixturesDir?: string;
 };
@@ -36,6 +37,9 @@ export async function rebuild(config: RebuildConfig): Promise<RunResult> {
   if (hasFixtureCase !== hasFixturesDir) {
     throw new Error("fixtureCase and fixturesDir must both be provided or both omitted.");
   }
+  for (const schema of config.schemas) {
+    assertSafeIdentifier(schema);
+  }
 
   const client = new pg.Client({
     connectionString: normalizePgConnectionString(config.connectionString),
@@ -43,12 +47,22 @@ export async function rebuild(config: RebuildConfig): Promise<RunResult> {
   await client.connect();
 
   try {
+    const databaseResult = await client.query<{ database_name: string }>(
+      "SELECT current_database() AS database_name",
+    );
+    const actualDatabaseName = databaseResult.rows[0]?.database_name;
+    if (actualDatabaseName !== config.confirmedDatabaseName) {
+      throw new Error(
+        `Refusing destructive rebuild: connected database "${actualDatabaseName ?? "unknown"}" ` +
+          `does not match confirmed database "${config.confirmedDatabaseName}".`,
+      );
+    }
+
     // Hold the advisory lock across drops, migrations, and fixture loading so
     // concurrent rebuild/migrate calls cannot interleave.
     await acquireAdvisoryLock(client);
 
     for (const schema of config.schemas) {
-      assertSafeIdentifier(schema);
       await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
     }
 
