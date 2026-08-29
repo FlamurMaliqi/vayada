@@ -38,6 +38,46 @@ describe("production identity ownership planning", () => {
     );
   });
 
+  it("blocks membership and resource state disagreement at equal freshness", () => {
+    const existing = equalTimeState();
+    const plan = planIdentityOwnership([bookingOwner()], [hotelUser()], existing);
+
+    expect(plan.blockers.map((item) => item.code)).toEqual(
+      expect.arrayContaining(["MEMBERSHIP_STATE_CONFLICT", "RESOURCE_STATE_CONFLICT"]),
+    );
+  });
+
+  it("does not let unrelated resource freshness reactivate access", () => {
+    const user = { ...hotelUser(), updatedAt: "2026-01-01T00:00:00.000Z" };
+    const owner = bookingOwner();
+    owner.data["updated_at"] = "2026-03-01T00:00:00.000Z";
+    const existing = existingState("2026-02-01T00:00:00.000Z");
+    existing.memberships[0] = {
+      ...existing.memberships[0]!,
+      roleKey: "hotel_owner",
+      propertyAccessMode: "all",
+      accessOrigin: "agency",
+    };
+    existing.resourceLinks[0] = {
+      ...existing.resourceLinks[0]!,
+      relationship: "owner",
+      status: "active",
+    };
+
+    const plan = planIdentityOwnership([owner], [user], existing);
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.organizations[0]).toMatchObject({
+      name: "Current group",
+      status: "suspended",
+      updatedAt: "2026-02-01T00:00:00.000Z",
+    });
+    expect(plan.memberships[0]).toMatchObject({
+      status: "inactive",
+      updatedAt: "2026-02-01T00:00:00.000Z",
+    });
+  });
+
   it("blocks ambiguous tenants, orphan owners, and owner type mismatches", () => {
     const ambiguous = existingState();
     const otherOrganization = { ...ambiguous.organizations[0]!, id: RESOURCE_ID };
@@ -116,6 +156,43 @@ function existingState(updatedAt = TARGET_TIME): ExistingOwnershipState {
         relationship: "operator",
         status: "archived",
         updatedAt,
+      },
+    ],
+  };
+}
+
+function equalTimeState(): ExistingOwnershipState {
+  return {
+    organizations: [
+      {
+        id: ORG_ID,
+        kind: "hotel_group",
+        name: "Legacy Hotel",
+        slug: `legacy-hotel-group-${USER_ID}`,
+        status: "active",
+        updatedAt: "2026-02-01T00:00:00+00:00",
+      },
+    ],
+    memberships: [
+      {
+        organizationId: ORG_ID,
+        userId: USER_ID,
+        status: "inactive",
+        roleKey: "front_desk",
+        propertyAccessMode: "assigned",
+        accessOrigin: "agency",
+        updatedAt: "2026-02-01T00:00:00+00:00",
+      },
+    ],
+    resourceLinks: [
+      {
+        organizationId: ORG_ID,
+        product: "booking",
+        resourceType: "booking_hotel",
+        resourceId: RESOURCE_ID,
+        relationship: "owner",
+        status: "archived",
+        updatedAt: "2026-02-01T00:00:00+00:00",
       },
     ],
   };

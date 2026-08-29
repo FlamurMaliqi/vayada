@@ -58,6 +58,27 @@ describe("production identity privacy/audit writer", () => {
     );
   });
 
+  it("batches large audit writes and verifies every batch", async () => {
+    const client = new RecordingClient();
+    const plan = emptyPlan();
+    const event = populatedPlan().auditEvents[0]!;
+    plan.auditEvents = Array.from({ length: 1_001 }, (_, index) => ({
+      ...event,
+      auditKey: `${event.auditKey}:${index}`,
+    }));
+
+    await writeProductionIdentityPrivacyAudit(client as never, plan);
+
+    const auditInserts = client.calls.filter((call) =>
+      call.sql.startsWith("INSERT INTO platform.product_audit_events"),
+    );
+    const auditVerifications = client.calls.filter((call) =>
+      call.sql.includes("JOIN platform.product_audit_events"),
+    );
+    expect(auditInserts.map(batchLength)).toEqual([500, 500, 1]);
+    expect(auditVerifications.map(batchLength)).toEqual([500, 500, 1]);
+  });
+
   it("skips empty table batches", async () => {
     const client = new RecordingClient();
     await writeProductionIdentityPrivacyAudit(client as never, emptyPlan());
@@ -187,4 +208,8 @@ function populatedPlan(): PrivacyAuditIdentityWritePlan {
 
 function table(sql: string): string {
   return /INSERT INTO ([a-z_.]+)/.exec(sql)?.[1] ?? "";
+}
+
+function batchLength(call: { values: unknown[] }): number {
+  return (JSON.parse(call.values[0] as string) as unknown[]).length;
 }

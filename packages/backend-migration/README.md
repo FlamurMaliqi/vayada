@@ -127,6 +127,9 @@ TARGET_DATABASE_URL=<target database> npm run target:identity:migrate -- \
   --confirm production-identity:vay1351-<same 24 lowercase hex characters>
 ```
 
+Apply locks every reconciled target table and fails within five seconds if live
+writes prevent the lock. Keep the external write freeze active through commit.
+
 Rerun dry-run and apply with the same run ID and confirm the checksum and counts
 are unchanged. Apply is transactional and idempotent; append-only conflicts or
 post-write mismatch roll back. Keep the legacy systems available through the

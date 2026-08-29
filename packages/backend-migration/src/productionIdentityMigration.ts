@@ -69,6 +69,17 @@ export async function runProductionIdentityTransaction(
   let transactionFinished = false;
   await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
   try {
+    if (input.mode === "apply") {
+      await client.query("SET LOCAL lock_timeout = '5s'");
+      await client.query(
+        `LOCK TABLE identity.users, identity.external_identities, identity.organizations,
+                  identity.organization_memberships, identity.organization_resource_links,
+                  identity.product_entitlements, identity.user_consent_status,
+                  identity.cookie_consents, identity.consent_history, identity.gdpr_requests,
+                  platform.product_audit_events
+       IN SHARE ROW EXCLUSIVE MODE`,
+      );
+    }
     const rows = await services.readSnapshot(client, input.sourceRunId);
     const existing = await services.readTarget(client, rows);
     const plan = services.buildPlan(rows, existing);

@@ -164,6 +164,7 @@ export async function writeProductionIdentityPrivacyAudit(
                source."correlationId", source."causationId", source."redactedPayload",
                source."privatePayload", source."auditMetadata", source."retentionClass",
                source."privacyScope", source."aiVisible")`,
+    500,
   );
 }
 
@@ -177,11 +178,15 @@ async function writeImmutable(
   rows: unknown[],
   insertSql: string,
   verificationSql: string,
+  batchSize = rows.length,
 ): Promise<void> {
   if (rows.length === 0) return;
-  const values = [JSON.stringify(rows)];
-  await client.query(insertSql, values);
-  const result = await client.query<{ matchingCount: number }>(verificationSql, values);
-  if (result.rows[0]?.matchingCount !== rows.length)
-    throw new Error("Immutable identity rows do not match the migration plan");
+  for (let offset = 0; offset < rows.length; offset += batchSize) {
+    const batch = rows.slice(offset, offset + batchSize);
+    const values = [JSON.stringify(batch)];
+    await client.query(insertSql, values);
+    const result = await client.query<{ matchingCount: number }>(verificationSql, values);
+    if (result.rows[0]?.matchingCount !== batch.length)
+      throw new Error("Immutable identity rows do not match the migration plan");
+  }
 }

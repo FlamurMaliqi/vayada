@@ -56,7 +56,7 @@ describe("production identity migration transaction", () => {
     );
 
     expect(result).toMatchObject({ applied: false, blockers: blocked.blockers });
-    expect(log).toEqual(["BEGIN", "snapshot", "target", "plan", "ROLLBACK"]);
+    expect(log).toEqual(["BEGIN", "SET", "LOCK", "snapshot", "target", "plan", "ROLLBACK"]);
   });
 
   it("commits only after both writers and a matching post-write replan", async () => {
@@ -72,6 +72,8 @@ describe("production identity migration transaction", () => {
     expect(result).toMatchObject({ applied: true, checksum: expected.checksum });
     expect(log).toEqual([
       "BEGIN",
+      "SET",
+      "LOCK",
       "snapshot",
       "target",
       "plan",

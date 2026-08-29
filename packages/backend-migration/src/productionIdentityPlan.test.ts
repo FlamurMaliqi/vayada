@@ -11,6 +11,7 @@ const HOTEL = "22222222-2222-4222-8222-222222222222";
 const AUDIT = "33333333-3333-4333-8333-333333333333";
 const JAN = "2026-01-01T00:00:00.000Z";
 const FEB = "2026-02-01T00:00:00.000Z";
+const MAR = "2026-03-01T00:00:00.000Z";
 
 describe("production identity plan", () => {
   it("assembles a deterministic cross-domain plan and checksum", () => {
@@ -98,6 +99,43 @@ describe("production identity plan", () => {
     expect(buildProductionIdentityPlan(validRows(), existing).blockers).toEqual(
       expect.arrayContaining([expect.objectContaining({ code: "USER_EQUAL_TIME_CONFLICT" })]),
     );
+  });
+
+  it("lets newer user retirement close stale target access and entitlements", () => {
+    const rows = validRows();
+    rows[0] = {
+      ...rows[0]!,
+      data: { ...rows[0]!.data, status: "rejected", updated_at: MAR },
+    };
+    rows[1] = {
+      ...rows[1]!,
+      data: { ...rows[1]!.data, updated_at: JAN },
+    };
+    const generated = buildProductionIdentityPlan(rows);
+    const sourceEntitlement = generated.entitlements[0]!;
+    const existing = emptyProductionIdentityState();
+    existing.ownership.resourceLinks = [
+      {
+        ...generated.resourceLinks[0]!,
+        status: "active",
+        updatedAt: FEB,
+      },
+    ];
+    existing.entitlements = [
+      {
+        ...sourceEntitlement,
+        status: "active",
+        expiresAt: null,
+        updatedAt: FEB,
+      },
+    ];
+
+    const plan = buildProductionIdentityPlan(rows, existing);
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.memberships[0]).toMatchObject({ status: "inactive", updatedAt: MAR });
+    expect(plan.resourceLinks[0]).toMatchObject({ status: "archived", updatedAt: MAR });
+    expect(plan.entitlements[0]).toMatchObject({ status: "expired", updatedAt: MAR });
   });
 });
 

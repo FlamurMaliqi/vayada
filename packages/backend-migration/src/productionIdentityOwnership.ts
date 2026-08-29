@@ -120,7 +120,7 @@ export function planIdentityOwnership(
       continue;
     }
     const createdAt = oldest([user.createdAt, ...owners.map((row) => row.createdAt)]);
-    const updatedAt = newest([user.updatedAt, ...owners.map((row) => row.updatedAt)]);
+    const updatedAt = newest([user.updatedAt]);
     const generatedOrganization: PlannedOrganization = {
       id: organizationId,
       kind,
@@ -184,9 +184,28 @@ export function planIdentityOwnership(
         `${organizationId}:${userId}`,
         "External-owner membership cannot be rewritten as legacy agency ownership",
       );
+    if (
+      currentMembership &&
+      sameInstant(currentMembership.updatedAt, generatedMembership.updatedAt) &&
+      (currentMembership.status !== generatedMembership.status ||
+        currentMembership.roleKey !== generatedMembership.roleKey ||
+        currentMembership.propertyAccessMode !== generatedMembership.propertyAccessMode)
+    )
+      block(
+        blockers,
+        "MEMBERSHIP_STATE_CONFLICT",
+        "identity.organization_memberships",
+        `${organizationId}:${userId}`,
+        "Target and source membership states conflict at equal freshness",
+      );
     memberships.push(
       currentMembership && isNewer(currentMembership, generatedMembership)
-        ? { ...generatedMembership, ...currentMembership, createdAt }
+        ? {
+            ...generatedMembership,
+            ...currentMembership,
+            createdAt,
+            updatedAt: newest([currentMembership.updatedAt]),
+          }
         : generatedMembership,
     );
 
@@ -214,7 +233,7 @@ export function planIdentityOwnership(
         relationship: owner.relationship,
         status: combinedResourceStatus(owner.status, user.status),
         createdAt: owner.createdAt,
-        updatedAt: owner.updatedAt,
+        updatedAt: newest([owner.updatedAt, user.updatedAt]),
       };
       const current = matches[0];
       if (
@@ -231,9 +250,28 @@ export function planIdentityOwnership(
         );
         continue;
       }
+      if (
+        current &&
+        sameInstant(current.updatedAt, generated.updatedAt) &&
+        current.status !== generated.status
+      ) {
+        block(
+          blockers,
+          "RESOURCE_STATE_CONFLICT",
+          owner.source,
+          owner.sourceId,
+          "Target and source resource-link states conflict at equal freshness",
+        );
+        continue;
+      }
       resourceLinks.push(
         current && isNewer(current, generated)
-          ? { ...generated, ...current, createdAt: owner.createdAt }
+          ? {
+              ...generated,
+              ...current,
+              createdAt: owner.createdAt,
+              updatedAt: newest([current.updatedAt]),
+            }
           : generated,
       );
     }
@@ -245,6 +283,8 @@ export function planIdentityOwnership(
     blockers: sortedBy(blockers, (row) => `${row.code}:${row.source}:${row.sourceId}`),
   };
 }
+
+const sameInstant = (left: string, right: string) => Date.parse(left) === Date.parse(right);
 
 function append<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   map.set(key, [...(map.get(key) ?? []), value]);
