@@ -10,6 +10,15 @@ import { type TokenVerifier, extractBearerToken } from "./verify.js";
 
 const CONTEXT_DECORATION = "authContext";
 
+class AuthInfrastructureError extends Error {
+  readonly statusCode = 500;
+
+  constructor(cause: unknown) {
+    super("Authentication service is temporarily unavailable.", { cause });
+    this.name = "AuthInfrastructureError";
+  }
+}
+
 export type BackendAuthPluginOptions = {
   verifier: TokenVerifier;
   repository: IdentityRepository;
@@ -31,8 +40,8 @@ declare module "fastify" {
  * Fastify plugin that resolves a WorkOS access token into a RequestContext
  * and attaches it to every request as `request.authContext`.
  *
- * Only AuthErrors are swallowed — infrastructure failures (DB, network) are
- * re-thrown so Fastify's error handler can return a 500, not a misleading 401.
+ * Only AuthErrors are swallowed. Infrastructure failures (DB, network) become
+ * sanitized 500s rather than leaking storage or provider details.
  * Routes call requireAuthContext(request) to enforce authentication.
  */
 const backendAuthPluginFn: FastifyPluginAsync<BackendAuthPluginOptions> = async (
@@ -58,7 +67,7 @@ const backendAuthPluginFn: FastifyPluginAsync<BackendAuthPluginOptions> = async 
       });
       request.authContext = context;
     } catch (error) {
-      if (!(error instanceof AuthError)) throw error;
+      if (!(error instanceof AuthError)) throw new AuthInfrastructureError(error);
       // AuthError means the token or identity is invalid/missing.
       // authContext stays null and requireAuthContext surfaces the 401.
     }
