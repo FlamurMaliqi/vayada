@@ -97,7 +97,7 @@ export default function CalendarPage() {
     eventId: string;
     bookingCount: number;
   } | null>(null);
-  const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
+  const [selectedBooking, setSelectedBooking] = useState<CalendarBooking | null>(null);
   const [selectedBlock, setSelectedBlock] = useState<CalendarBlock | null>(null);
   // Mobile-only: the date range selected in MobileCalendar before opening
   // either modal. `startDate` and `endDate` follow the desktop convention
@@ -639,7 +639,7 @@ export default function CalendarPage() {
             loading={loading}
             loadError={loadError}
             onMonthChange={handleMobileMonthChange}
-            onSelectBooking={(id) => setSelectedBookingId(id)}
+            onSelectBooking={setSelectedBooking}
             onNewBooking={handleMobileNewBooking}
             onBlockRoom={handleMobileBlockRoom}
             onSelectBlock={(bl) => setSelectedBlock(bl)}
@@ -914,7 +914,7 @@ export default function CalendarPage() {
             blocksByRoom={blocksByRoom}
             legacyBlocksByRoomType={legacyBlocksByRoomType}
             roomIndexInType={roomIndexInType}
-            onSelectBooking={(id) => setSelectedBookingId(id)}
+            onSelectBooking={setSelectedBooking}
             onSelectBlock={(bl) => setSelectedBlock(bl)}
           />
         ) : (
@@ -1155,7 +1155,7 @@ export default function CalendarPage() {
                                 }`}
                                 style={style}
                                 title={`${b.guestFirstName} ${b.guestLastName} (${b.status})\n${b.checkIn} → ${b.checkOut}\nChannel: ${b.channel}${multiRoomTitle}`}
-                                onClick={() => setSelectedBookingId(b.id)}
+                                onClick={() => setSelectedBooking(b)}
                               >
                                 <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[9px] font-bold flex-shrink-0">
                                   {getInitials(b.guestFirstName, b.guestLastName)}
@@ -1227,7 +1227,7 @@ export default function CalendarPage() {
                             className={`absolute top-1.5 h-8 rounded-md px-2 text-[11px] font-medium leading-8 truncate cursor-pointer z-[1] text-white ${channelColor} hover:brightness-110 transition-all flex items-center gap-1.5 opacity-75`}
                             style={{ ...style, top: `${calendarLaneTop(index)}px` }}
                             title={`${b.guestFirstName} ${b.guestLastName} (${b.status}) - Unassigned${stayLabel}\n${b.checkIn} → ${b.checkOut}`}
-                            onClick={() => setSelectedBookingId(b.id)}
+                            onClick={() => setSelectedBooking(b)}
                           >
                             <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[9px] font-bold flex-shrink-0">
                               {getInitials(b.guestFirstName, b.guestLastName)}
@@ -1378,10 +1378,17 @@ export default function CalendarPage() {
       )}
 
       {/* Booking Detail Modal */}
-      {selectedBookingId && (
+      {selectedBooking && (
         <BookingDetailModal
-          bookingId={selectedBookingId}
-          onClose={() => setSelectedBookingId(null)}
+          bookingId={selectedBooking.id}
+          sourceAssignmentSelector={
+            selectedBooking.assignmentId
+              ? { assignmentId: selectedBooking.assignmentId }
+              : selectedBooking.roomTypeId
+                ? { position: selectedBooking.roomPosition }
+                : undefined
+          }
+          onClose={() => setSelectedBooking(null)}
           onStatusChange={fetchData}
           rooms={data?.rooms}
           bookings={data?.bookings}

@@ -28,7 +28,7 @@ interface MobileCalendarProps {
   loading?: boolean;
   loadError?: boolean;
   onMonthChange: (month: Date) => void;
-  onSelectBooking: (id: string) => void;
+  onSelectBooking: (booking: CalendarBooking) => void;
   // Both dates are yyyy-MM-dd. endDate is the exclusive checkout (last selected
   // day + 1), matching desktop drag-select semantics.
   onNewBooking: (startDate?: string, endDate?: string) => void;
@@ -562,7 +562,7 @@ export default function MobileCalendar({
                 return (
                   <button
                     key={`${b.id}:${b.roomPosition}`}
-                    onClick={() => onSelectBooking(b.id)}
+                    onClick={() => onSelectBooking(b)}
                     className="w-full bg-white rounded-lg border border-gray-200 p-3 text-left hover:border-gray-300 transition-colors"
                   >
                     <div className="flex items-center gap-2.5">
