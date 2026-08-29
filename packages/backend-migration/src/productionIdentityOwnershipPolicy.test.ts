@@ -4,9 +4,13 @@ import {
   combinedResourceStatus,
   mergePlannedOrganizations,
   oldest,
+  organizationCandidates,
   organizationStatus,
 } from "./productionIdentityOwnershipPolicy.js";
-import type { PlannedOrganization } from "./productionIdentityOwnershipSource.js";
+import type {
+  ExistingOwnershipState,
+  PlannedOrganization,
+} from "./productionIdentityOwnershipSource.js";
 
 const ORG_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -55,6 +59,39 @@ describe("production ownership freshness policy", () => {
     expect(organizationStatus("deleted")).toBe("archived");
     expect(combinedResourceStatus("active", "suspended")).toBe("suspended");
     expect(combinedResourceStatus("archived", "active")).toBe("archived");
+  });
+
+  it("does not treat delegated membership as ownership evidence", () => {
+    const existing: ExistingOwnershipState = {
+      organizations: [
+        {
+          id: ORG_ID,
+          kind: "hotel_group",
+          name: "Group",
+          slug: "group",
+          status: "active",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+      memberships: [
+        {
+          organizationId: ORG_ID,
+          userId: "user",
+          status: "active",
+          roleKey: "hotel_owner",
+          propertyAccessMode: "all",
+          accessOrigin: "external_owner",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+      resourceLinks: [],
+    };
+    expect(organizationCandidates("user", "hotel_group", [], existing)).toEqual(new Set());
+    existing.memberships[0]!.accessOrigin = "agency";
+    existing.memberships[0]!.roleKey = "front_desk";
+    expect(organizationCandidates("user", "hotel_group", [], existing)).toEqual(new Set());
+    existing.memberships[0]!.roleKey = "hotel_owner";
+    expect(organizationCandidates("user", "hotel_group", [], existing)).toEqual(new Set([ORG_ID]));
   });
 });
 

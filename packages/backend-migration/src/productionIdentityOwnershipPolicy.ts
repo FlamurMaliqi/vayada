@@ -1,10 +1,23 @@
-import type { TargetIdentityUserStatus } from "./productionIdentityDisposition.js";
 import type {
+  PlannedIdentityUser,
+  TargetIdentityUserStatus,
+} from "./productionIdentityDisposition.js";
+import type {
+  ExistingOwnershipState,
+  IdentityOwnershipSource,
   MembershipStatus,
+  OrganizationKind,
   OrganizationStatus,
   PlannedOrganization,
   PlannedResourceLink,
 } from "./productionIdentityOwnershipSource.js";
+
+export const OWNER_ROLE: Record<OrganizationKind, string> = {
+  platform: "platform_admin",
+  hotel_group: "hotel_owner",
+  creator_workspace: "creator_owner",
+  affiliate_partner: "affiliate_owner",
+};
 
 export function mergePlannedOrganizations(
   left: PlannedOrganization,
@@ -25,6 +38,47 @@ export function mergePlannedOrganizations(
     createdAt: oldest([left.createdAt, right.createdAt]),
     updatedAt: new Date(Math.max(leftTime, rightTime)).toISOString(),
   };
+}
+
+export function organizationCandidates(
+  userId: string,
+  kind: OrganizationKind,
+  owners: IdentityOwnershipSource[],
+  existing: ExistingOwnershipState,
+): Set<string> {
+  const organizations = new Map(existing.organizations.map((row) => [row.id, row]));
+  const result = new Set(
+    existing.memberships
+      .filter(
+        (row) =>
+          row.userId === userId &&
+          row.accessOrigin === "agency" &&
+          row.roleKey === OWNER_ROLE[kind] &&
+          organizations.get(row.organizationId)?.kind === kind,
+      )
+      .map((row) => row.organizationId),
+  );
+  for (const owner of owners)
+    for (const link of existing.resourceLinks.filter(
+      (row) => resourceIdentity(row) === resourceIdentity(owner),
+    ))
+      result.add(link.organizationId);
+  if (kind === "platform")
+    for (const organization of existing.organizations.filter((row) => row.kind === kind))
+      result.add(organization.id);
+  return result;
+}
+
+export function organizationName(
+  user: PlannedIdentityUser,
+  kind: OrganizationKind,
+  owners: IdentityOwnershipSource[],
+): string {
+  if (kind === "platform") return "Vayada Platform";
+  const names = [
+    ...new Set(owners.map((row) => row.name).filter((name): name is string => Boolean(name))),
+  ];
+  return names.length === 1 ? names[0]! : `${user.name ?? user.email} ${kind.replaceAll("_", " ")}`;
 }
 
 export function organizationStatus(status: TargetIdentityUserStatus): OrganizationStatus {
