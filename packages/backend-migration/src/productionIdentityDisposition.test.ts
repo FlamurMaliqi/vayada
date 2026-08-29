@@ -55,6 +55,25 @@ describe("production identity user disposition", () => {
     });
   });
 
+  it("blocks differing user state at equal freshness", () => {
+    const plan = planIdentityUserDisposition(
+      [userRow()],
+      [
+        {
+          id: USER_ID,
+          email: "current@example.com",
+          name: "Current",
+          status: "suspended",
+          updatedAt: "2026-02-01T00:00:00+00:00",
+        },
+      ],
+    );
+
+    expect(plan.blockers).toEqual([
+      expect.objectContaining({ code: "USER_EQUAL_TIME_CONFLICT", sourceId: USER_ID }),
+    ]);
+  });
+
   it("fails closed on unknown states, duplicate emails, and ambiguous provider IDs", () => {
     const duplicate = userRow({ id: OTHER_USER_ID, email: "other@example.com" });
     const unknown = userRow({ id: "33333333-3333-4333-8333-333333333333", status: "mystery" });

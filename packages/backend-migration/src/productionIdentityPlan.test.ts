@@ -82,6 +82,23 @@ describe("production identity plan", () => {
       }),
     ).toEqual(plan);
   });
+
+  it("keeps equal-time target disagreement out of an applicable plan", () => {
+    const existing = emptyProductionIdentityState();
+    existing.users = [
+      {
+        id: USER,
+        email: "current@example.com",
+        name: "Current",
+        status: "suspended",
+        updatedAt: "2026-02-01T00:00:00+00:00",
+      },
+    ];
+
+    expect(buildProductionIdentityPlan(validRows(), existing).blockers).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "USER_EQUAL_TIME_CONFLICT" })]),
+    );
+  });
 });
 
 function validRows(): IdentitySourceRow[] {

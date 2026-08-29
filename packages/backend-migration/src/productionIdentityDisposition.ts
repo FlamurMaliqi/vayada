@@ -97,12 +97,26 @@ export function planIdentityUserDisposition(
   const currentById = new Map(existingUsers.map((user) => [user.id, user]));
   for (const user of users) {
     const current = currentById.get(user.id);
-    if (current && Date.parse(current.updatedAt) > Date.parse(user.updatedAt)) {
-      user.email = current.email.trim().toLowerCase();
+    if (!current) continue;
+    const currentUpdatedAt = isoDate(current.updatedAt, "existing updatedAt");
+    const currentEmail = current.email.trim().toLowerCase();
+    if (Date.parse(currentUpdatedAt) > Date.parse(user.updatedAt)) {
+      user.email = currentEmail;
       user.name = current.name;
       user.status = current.status;
-      user.updatedAt = isoDate(current.updatedAt, "existing updatedAt");
+      user.updatedAt = currentUpdatedAt;
       user.disposition = "preserve_newer_target";
+    } else if (
+      currentUpdatedAt === user.updatedAt &&
+      (currentEmail !== user.email || current.name !== user.name || current.status !== user.status)
+    ) {
+      addBlocker(
+        blockers,
+        "USER_EQUAL_TIME_CONFLICT",
+        "identity.users",
+        user.id,
+        "Source and target user state disagrees at equal freshness",
+      );
     }
   }
 
