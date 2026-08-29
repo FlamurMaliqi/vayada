@@ -61,6 +61,7 @@ export type TargetPropertyResource =
 export type PropertyAccessRequirement = {
   propertyId: string;
   targetResource: TargetPropertyResource;
+  allowedRelationships?: readonly ResourceRelationship[];
 };
 
 export type ResourceRequirement = {
@@ -349,6 +350,7 @@ export function hasActiveLinkedResource(
 export async function resolveEffectivePropertyAccess(
   context: RequestContext,
   repository: PropertyAccessRepository,
+  allowedRelationships: readonly ResourceRelationship[] = ["owner", "operator"],
 ): Promise<EffectivePropertyAccess | null> {
   if (
     context.actor.status !== "active" ||
@@ -375,7 +377,7 @@ export async function resolveEffectivePropertyAccess(
           resource.status === "active" &&
           resource.product === "hotel_catalog" &&
           resource.resourceType === "property" &&
-          (resource.relationship === "owner" || resource.relationship === "operator"),
+          allowedRelationships.includes(resource.relationship),
       )
       .map((resource) => resource.resourceId),
   );
@@ -483,11 +485,12 @@ export async function requirePropertyAccess(
   repository: PropertyAccessRepository,
   requirement: PropertyAccessRequirement,
 ): Promise<RequestContext> {
-  const access = await resolveEffectivePropertyAccess(context, repository);
+  const allowedRelationships = requirement.allowedRelationships ?? ["owner", "operator"];
+  const access = await resolveEffectivePropertyAccess(context, repository, allowedRelationships);
   const hasTargetResource = hasActiveLinkedResource(context, {
     ...requirement.targetResource,
     resourceId: requirement.propertyId,
-    allowedRelationships: ["owner", "operator"],
+    allowedRelationships,
   });
   if (!access?.propertyIds.includes(requirement.propertyId) || !hasTargetResource) {
     throw new AuthorizationError();
