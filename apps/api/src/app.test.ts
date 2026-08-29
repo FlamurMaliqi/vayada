@@ -11119,8 +11119,8 @@ describe("vayada-api", () => {
     expect(historyPages).toHaveLength(2);
   });
 
-  it("reads room-packing settings for an assigned operator", async () => {
-    let readCount = 0;
+  it("reads room-packing settings and history for an assigned operator", async () => {
+    const reads = { settings: 0, history: 0 };
     app = buildAuthenticatedApp({
       permissions: ["pms.operations.manage"],
       entitlements: [{ product: "pms", key: "property-management", status: "active" }],
@@ -11134,27 +11134,65 @@ describe("vayada-api", () => {
       },
       pmsRoomAssignmentSettings: {
         async find(propertyId) {
-          readCount += 1;
+          reads.settings += 1;
           return { propertyId, autoRearrangeEnabled: true, updatedAt: null };
         },
         async update() {
           throw new Error("room-packing settings write must not run");
         },
       },
+      pmsRoomAssignmentHistory: {
+        async list() {
+          reads.history += 1;
+          return { items: [], nextCursor: null };
+        },
+      },
     });
 
-    const response = await injectJson(app, {
+    const settings = await injectJson(app, {
       method: "GET",
       url: `/api/pms/properties/${pmsPropertyId}/calendar-settings`,
       headers: { authorization: "Bearer valid-token" },
     });
+    const history = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-shuffles`,
+      headers: { authorization: "Bearer valid-token" },
+    });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toMatchObject({ autoRearrangeEnabled: true, updatedAt: null });
-    expect(readCount).toBe(1);
+    expect(settings.statusCode).toBe(200);
+    expect(settings.body).toMatchObject({ autoRearrangeEnabled: true, updatedAt: null });
+    expect(history.statusCode).toBe(200);
+    expect(history.body).toMatchObject({ items: [], nextCursor: null });
+    expect(reads).toEqual({ settings: 1, history: 1 });
   });
 
-  it("fails closed across the PMS calendar settings read denial matrix", async () => {
+  it("sanitizes PMS room shuffle history storage failures", async () => {
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsRoomAssignmentHistory: {
+        async list() {
+          throw new Error("sensitive room shuffle history failure");
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/calendar-shuffles`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toMatchObject({
+      code: "read_model_unavailable",
+      message: "PMS room shuffle history is unavailable.",
+    });
+    expect(JSON.stringify(response.body)).not.toContain("sensitive room shuffle history failure");
+  });
+
+  it("fails closed across the PMS room-packing read denial matrix", async () => {
     type AuthenticatedAppOptions = Parameters<typeof buildAuthenticatedApp>[0];
     const entitlement: ProductEntitlement = {
       product: "pms",
@@ -11354,48 +11392,61 @@ describe("vayada-api", () => {
     const hiddenPropertyDenials = new Set<string>();
 
     for (const candidate of cases) {
-      let readCount = 0;
+      const reads = { settings: 0, history: 0 };
       app = buildAuthenticatedApp({
         permissions: ["pms.operations.manage"],
         entitlements: [entitlement],
         ...candidate.appOptions,
         pmsRoomAssignmentSettings: {
           async find() {
-            readCount += 1;
+            reads.settings += 1;
             throw new Error("room-packing settings read must not run");
           },
           async update() {
             throw new Error("room-packing settings write must not run");
           },
         },
+        pmsRoomAssignmentHistory: {
+          async list() {
+            reads.history += 1;
+            throw new Error("room-packing history read must not run");
+          },
+        },
       });
       const propertyId = candidate.propertyId ?? pmsPropertyId;
-      const response = await injectJson(app, {
-        method: "GET",
-        url: `/api/pms/properties/${propertyId}/calendar-settings`,
-        headers:
-          candidate.authorization === null
-            ? undefined
-            : {
-                authorization: candidate.authorization ?? "Bearer valid-token",
-                "x-hotel-id": pmsPropertyId,
-              },
-      });
+      for (const route of [
+        "calendar-settings",
+        "calendar-shuffles",
+        "calendar-shuffles?cursor=invalid",
+      ]) {
+        const assertionName = `${candidate.name}: ${route}`;
+        const response = await injectJson(app, {
+          method: "GET",
+          url: `/api/pms/properties/${propertyId}/${route}`,
+          headers:
+            candidate.authorization === null
+              ? undefined
+              : {
+                  authorization: candidate.authorization ?? "Bearer valid-token",
+                  "x-hotel-id": pmsPropertyId,
+                },
+        });
 
-      expect(response.statusCode, candidate.name).toBe(candidate.statusCode);
-      if (candidate.code) {
-        expect(response.body, candidate.name).toMatchObject({ code: candidate.code });
+        expect(response.statusCode, assertionName).toBe(candidate.statusCode);
+        if (candidate.code) {
+          expect(response.body, assertionName).toMatchObject({ code: candidate.code });
+        }
+        if (candidate.message) {
+          expect(response.body, assertionName).toMatchObject({ message: candidate.message });
+        }
+        const serializedBody = JSON.stringify(response.body);
+        expect(serializedBody, assertionName).not.toContain("sensitive property access failure");
+        if (candidate.hiddenProperty) {
+          expect(serializedBody, assertionName).not.toContain(propertyId);
+          hiddenPropertyDenials.add(serializedBody);
+        }
       }
-      if (candidate.message) {
-        expect(response.body, candidate.name).toMatchObject({ message: candidate.message });
-      }
-      const serializedBody = JSON.stringify(response.body);
-      expect(serializedBody, candidate.name).not.toContain("sensitive property access failure");
-      if (candidate.hiddenProperty) {
-        expect(serializedBody, candidate.name).not.toContain(propertyId);
-        hiddenPropertyDenials.add(serializedBody);
-      }
-      expect(readCount, candidate.name).toBe(0);
+      expect(reads, candidate.name).toEqual({ settings: 0, history: 0 });
 
       await app.close();
       app = null;
