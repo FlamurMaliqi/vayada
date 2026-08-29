@@ -1672,7 +1672,16 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsReadPolicy(request, reply, propertyId)) return reply;
+      if (
+        !(await enforcePmsPropertyReadPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.settings.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
       try {
         const acceptanceMode =
           await options.bookingAcceptanceSettings?.findAcceptanceMode(propertyId);
