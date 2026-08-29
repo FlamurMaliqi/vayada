@@ -4,7 +4,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { reconcilePmsLinkedInventory } from "./pmsLinkedInventoryReconciler.js";
 import { reconcilePmsOccupiedInventory } from "./pmsOccupiedInventory.js";
 import { createTargetPmsOperationsCommandRepository } from "./pmsOperationsCommandRepository.js";
-import type { PmsOperationsReadRepository } from "./pmsOperationsReadModel.js";
+import {
+  createTargetPmsOperationsReadRepository,
+  type PmsOperationsReadRepository,
+} from "./pmsOperationsReadModel.js";
 
 const DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const id = (suffix: number) => `13390000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
@@ -28,10 +31,14 @@ const I = {
   receipt: id(24),
   manualBlock: id(25),
 };
-const acceptedAt = "2026-09-01T12:00:00.000Z";
+const acceptedAt = "2026-08-31T12:30:00.000Z";
 
 describe.skipIf(!DATABASE_URL)("PostgreSQL cross-room-type assignment moves", () => {
   const pool = new pg.Pool({ connectionString: DATABASE_URL ?? "postgresql://disabled" });
+  const readRepository = createTargetPmsOperationsReadRepository({
+    connectionString: DATABASE_URL ?? "postgresql://disabled",
+    pool,
+  });
   const repository = createTargetPmsOperationsCommandRepository({
     connectionString: DATABASE_URL ?? "postgresql://disabled",
     pool,
@@ -144,6 +151,89 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL cross-room-type assignment moves", ()
   );
 
   it.each([
+    ["preserve", undefined, "100.0000"],
+    ["target base", "target_base", "120.0000"],
+  ] as const)("applies the %s rate policy atomically", async (_label, ratePolicy, amount) => {
+    await addManualPriceEvidence();
+    await expect(move(`rate-${ratePolicy ?? "preserve"}`, ratePolicy)).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(nightlyAmounts()).resolves.toEqual([{ amount }, { amount }]);
+    const reservation = await readRepository.findReservationByGuestBookingId(I.property, I.booking);
+    expect(
+      reservation?.assignments[0]?.nightly?.map((night) => night.applied?.amountDecimal),
+    ).toEqual([Number(amount).toFixed(2), Number(amount).toFixed(2)]);
+    const corrections = await pool.query<{ recognizedOn: string }>(
+      `SELECT recognized_on::text AS "recognizedOn" FROM booking.nightly_revenue_evidence
+       WHERE guest_booking_id=$1 AND economic_event='correction' ORDER BY stay_date`,
+      [I.booking],
+    );
+    expect(corrections.rows).toEqual(
+      ratePolicy ? [{ recognizedOn: "2026-09-03" }, { recognizedOn: "2026-09-03" }] : [],
+    );
+  });
+
+  it("moves without a correction when the selected target rate is unchanged", async () => {
+    await addManualPriceEvidence();
+    await fixture(`UPDATE pms.room_types SET base_rate_amount=100 WHERE id='${I.targetType}'`);
+    await expect(move("same-rate", "target_base")).resolves.toMatchObject({ ok: true });
+    await expect(correctionCount()).resolves.toBe(0);
+  });
+
+  it("corrects each night when the aggregate already matches the target total", async () => {
+    await addManualPriceEvidence();
+    await fixture(`UPDATE pms.room_types SET base_rate_amount=100 WHERE id='${I.targetType}';
+      UPDATE booking.nightly_revenue_evidence SET gross_room_amount=
+        CASE stay_date WHEN '2026-09-02' THEN 80 ELSE 120 END
+      WHERE guest_booking_id='${I.booking}' AND line_position=1`);
+    await expect(move("uneven-rate", "target_base")).resolves.toMatchObject({ ok: true });
+    await expect(nightlyAmounts()).resolves.toEqual([
+      { amount: "100.0000" },
+      { amount: "100.0000" },
+    ]);
+    await expect(correctionCount()).resolves.toBe(2);
+  });
+
+  it("rejects a target rate when exact nightly price coverage is incomplete", async () => {
+    await addManualPriceEvidence();
+    await fixture(`DELETE FROM booking.nightly_revenue_evidence
+      WHERE guest_booking_id='${I.booking}' AND line_position=1 AND stay_date='2026-09-03'`);
+    await expectRateConflict("incomplete-rate");
+  });
+
+  it("rejects a target rate when a nightly price is explicitly missing", async () => {
+    await addManualPriceEvidence();
+    await fixture(`UPDATE booking.nightly_revenue_evidence
+      SET gross_room_amount=NULL,evidence_quality='missing'
+      WHERE guest_booking_id='${I.booking}' AND line_position=1 AND stay_date='2026-09-03'`);
+    await expectRateConflict("missing-nightly-price");
+  });
+
+  it("rejects a target rate when the target room type has no published base rate", async () => {
+    await addManualPriceEvidence();
+    await fixture(
+      `UPDATE pms.room_types SET base_rate_amount=NULL,currency=NULL WHERE id='${I.targetType}'`,
+    );
+    await expectRateConflict("missing-rate");
+  });
+
+  it("rejects an unchanged numeric target rate in a different currency", async () => {
+    await addManualPriceEvidence();
+    await fixture(
+      `UPDATE pms.room_types SET base_rate_amount=100,currency='USD' WHERE id='${I.targetType}'`,
+    );
+    await expectRateConflict("currency-mismatch");
+  });
+
+  it("rejects a target rate when the property timezone is unknown", async () => {
+    await addManualPriceEvidence();
+    await fixture(
+      `UPDATE hotel_catalog.property_locations SET timezone='Foo/Bar' WHERE property_id='${I.property}'`,
+    );
+    await expectRateConflict("unknown-timezone");
+  });
+
+  it.each([
     ["assignment", I.sourceType],
     ["assignment", I.targetType],
     ["receipt", I.sourceType],
@@ -178,9 +268,11 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL cross-room-type assignment moves", ()
     await fixture(`INSERT INTO pms.rooms
       (id,property_id,room_type_id,room_number,operational_label_status)
       VALUES ('${I.spareSourceRoom}','${I.property}','${I.sourceType}','102','verified')`);
-    await expect(move("same-type-sell-limit", I.spareSourceRoom)).resolves.toMatchObject({
-      ok: true,
-    });
+    await expect(move("same-type-sell-limit", undefined, I.spareSourceRoom)).resolves.toMatchObject(
+      {
+        ok: true,
+      },
+    );
     await expect(
       pool.query(`SELECT room_id::text AS room FROM pms.operational_booking_assignments
       WHERE id='${I.assignment}'`),
@@ -202,8 +294,65 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL cross-room-type assignment moves", ()
     expect((await inventory()).map(({ type, assigned }) => ({ type, assigned }))).toEqual(moved);
   });
 
-  // prettier-ignore
-  async function move(suffix: string, roomId = I.targetRoom) { return repository.executeAssignmentCommand({ propertyId: I.property, guestBookingId: I.booking, commandId: `move-${suffix}`, idempotencyKey: `move-${suffix}`, action: "move", assignmentId: I.assignment, roomId }); }
+  async function move(suffix: string, ratePolicy?: "target_base", roomId = I.targetRoom) {
+    return repository.executeAssignmentCommand({
+      propertyId: I.property,
+      guestBookingId: I.booking,
+      commandId: `move-${suffix}`,
+      idempotencyKey: `move-${suffix}`,
+      action: "move",
+      assignmentId: I.assignment,
+      roomId,
+      ...(ratePolicy ? { ratePolicy } : {}),
+    });
+  }
+
+  async function addManualPriceEvidence() {
+    await fixture(`INSERT INTO hotel_catalog.property_locations (property_id,timezone)
+      VALUES ('${I.property}','Pacific/Kiritimati');
+      UPDATE booking.guest_bookings SET room_count=2,
+        booking_metadata='{"contractVersion":"pms-manual-booking.v1"}'
+      WHERE id='${I.booking}';
+      INSERT INTO booking.nightly_revenue_room_scopes VALUES ('${I.property}','${I.sourceType}');
+      INSERT INTO booking.nightly_revenue_evidence
+        (property_id,guest_booking_id,room_type_id,stay_date,recognized_on,currency,
+         gross_room_amount,occupied_room_nights,economic_event,lifecycle_state,source_kind,
+         evidence_quality,source_revision,line_position,command_key)
+      SELECT '${I.property}','${I.booking}','${I.sourceType}',day,day,'EUR',
+        CASE position WHEN 1 THEN 100 ELSE 999 END,1,'room_night','confirmed','manual','exact',
+        1,position,CASE position WHEN 1 THEN 'rate-' ELSE 'decoy-' END||day::text
+      FROM generate_series('2026-09-02'::date,'2026-09-03','1 day') day
+      CROSS JOIN generate_series(1,2) position;`);
+  }
+
+  async function nightlyAmounts() {
+    return (
+      await pool.query<{ amount: string }>(
+        `SELECT SUM(gross_room_amount)::text AS amount FROM booking.nightly_revenue_evidence
+         WHERE guest_booking_id=$1 AND line_position=1 GROUP BY stay_date ORDER BY stay_date`,
+        [I.booking],
+      )
+    ).rows;
+  }
+
+  async function correctionCount() {
+    const result = await pool.query<{ count: number }>(
+      `SELECT count(*)::int count FROM booking.nightly_revenue_evidence
+       WHERE guest_booking_id=$1 AND economic_event='correction'`,
+      [I.booking],
+    );
+    return result.rows[0]!.count;
+  }
+
+  async function expectRateConflict(suffix: string) {
+    const before = await state();
+    await expect(move(suffix, "target_base")).resolves.toMatchObject({
+      ok: false,
+      code: "assignment_conflict",
+    });
+    await expect(state()).resolves.toEqual(before);
+    await expect(correctionCount()).resolves.toBe(0);
+  }
 
   async function seed(durableReceipt: boolean) {
     await fixture(`
@@ -383,6 +532,8 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL cross-room-type assignment moves", ()
       DELETE FROM platform.idempotency_keys WHERE property_id='${I.property}';
       DELETE FROM pms.room_blocks WHERE property_id='${I.property}';
       DELETE FROM pms.operational_booking_assignments WHERE property_id='${I.property}';
+      DELETE FROM booking.nightly_revenue_evidence WHERE property_id='${I.property}';
+      DELETE FROM booking.nightly_revenue_room_scopes WHERE property_id='${I.property}';
       DELETE FROM booking.guest_bookings WHERE property_id='${I.property}';
       DELETE FROM pms.inventory_reservation_statuses WHERE property_id='${I.property}';
       DELETE FROM pms.inventory_reservation_receipts WHERE property_id='${I.property}';
@@ -393,6 +544,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL cross-room-type assignment moves", ()
       DELETE FROM pms.rate_plans WHERE property_id='${I.property}';
       DELETE FROM pms.room_types WHERE property_id='${I.property}';
       DELETE FROM pms.linked_inventory_groups WHERE property_id='${I.property}';
+      DELETE FROM hotel_catalog.property_locations WHERE property_id='${I.property}';
       DELETE FROM hotel_catalog.properties WHERE id='${I.property}';
     `);
   }

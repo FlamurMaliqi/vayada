@@ -13733,12 +13733,59 @@ describe("vayada-api", () => {
       );
     }
 
+    const moveCase = pmsAssignmentCommandCases["assignment-command-move"]!;
+    const targetRate = await injectJson(app, {
+      method: moveCase.request.method ?? "PATCH",
+      url: moveCase.request.path,
+      payload: {
+        ...moveCase.request.body,
+        commandId: "cmd-assignment-move-target-rate",
+        idempotencyKey: "pms-assignment-move-target-rate-001",
+        ratePolicy: "target_base",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const invalidRate = await injectJson(app, {
+      method: moveCase.request.method ?? "PATCH",
+      url: moveCase.request.path,
+      payload: { ...moveCase.request.body, ratePolicy: "unknown" },
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const preserveRate = await injectJson(app, {
+      method: moveCase.request.method ?? "PATCH",
+      url: moveCase.request.path,
+      payload: {
+        ...moveCase.request.body,
+        commandId: "cmd-assignment-move-preserve-rate",
+        idempotencyKey: "pms-assignment-move-preserve-rate-001",
+        ratePolicy: "preserve",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const invalidAction = await injectJson(app, {
+      method: "PATCH",
+      url: moveCase.request.path,
+      payload: {
+        ...pmsAssignmentCommandCases["assignment-command-assign"]!.request.body,
+        ratePolicy: "target_base",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(targetRate.statusCode).toBe(200);
+    expect(invalidRate.statusCode).toBe(400);
+    expect(preserveRate.statusCode).toBe(200);
+    expect(invalidAction.statusCode).toBe(400);
+    expect(commandRepository.commands[1]).not.toHaveProperty("ratePolicy");
+    expect(commandRepository.commands[4]).toMatchObject({ ratePolicy: "target_base" });
+    expect(commandRepository.commands[5]).not.toHaveProperty("ratePolicy");
+
     expect(
       commandRepository.commands
         .filter((command): command is PmsAssignmentCommand => "action" in command)
         .map((command) => command.action),
-    ).toEqual(["assign", "move", "unassign", "swap"]);
-    expect(commandRepository.outboxEnqueues).toHaveLength(4);
+    ).toEqual(["assign", "move", "unassign", "swap", "move", "move"]);
+    expect(commandRepository.outboxEnqueues).toHaveLength(6);
   });
 
   it("maps PMS assignment command conflicts without queueing side effects", async () => {

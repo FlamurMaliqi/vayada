@@ -1056,7 +1056,6 @@ LEFT JOIN LATERAL (
       FROM booking.nightly_revenue_evidence evidence
       WHERE evidence.property_id = assignment.property_id
         AND evidence.guest_booking_id = assignment.guest_booking_id
-        AND evidence.room_type_id = assignment.room_type_id
         AND evidence.line_position = assignment.position
         AND evidence.economic_event NOT IN ('refund','retained_charge')
         AND (assignment.stay_evidence_kind <> 'exact' OR
