@@ -104,7 +104,8 @@ function report(
   applied: boolean,
 ): ProductionIdentityMigrationReport {
   return {
-    ...input,
+    sourceRunId: input.sourceRunId,
+    mode: input.mode,
     applied,
     checksum: plan.checksum,
     counts: plan.counts,

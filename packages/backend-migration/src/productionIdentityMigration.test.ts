@@ -30,11 +30,17 @@ describe("production identity migration transaction", () => {
 
     const result = await runProductionIdentityTransaction(
       client as never,
-      { sourceRunId: RUN, mode: "dry-run" },
+      {
+        sourceRunId: RUN,
+        mode: "dry-run",
+        connectionString: "postgresql://user:secret@host/db",
+      } as never,
       services(log, plan()),
     );
 
     expect(result.applied).toBe(false);
+    expect(result).not.toHaveProperty("connectionString");
+    expect(JSON.stringify(result)).not.toContain("secret");
     expect(log).toEqual(["BEGIN", "snapshot", "target", "plan", "ROLLBACK"]);
   });
 
