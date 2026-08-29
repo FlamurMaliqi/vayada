@@ -26,11 +26,22 @@ export type PlannedIdentityAuditEvent = {
   occurredAt: string;
   recordedAt: string;
   tenantScope: "migration";
+  organizationId: string | null;
+  propertyId: string | null;
   actorType: "user" | "system";
   actorUserId: string | null;
   targetResourceProduct: "identity";
   targetResourceType: "user" | "login_attempt";
   targetResourceId: string;
+  secondaryResourceProduct: string | null;
+  secondaryResourceType: string | null;
+  secondaryResourceId: string | null;
+  domainEventId: string | null;
+  externalWebhookEventId: string | null;
+  jobId: string | null;
+  idempotencyKeyId: string | null;
+  correlationId: string | null;
+  causationId: string | null;
   redactedPayload: Record<string, unknown>;
   privatePayload: Record<string, unknown>;
   auditMetadata: { source: "auth.login_audit_log" };
@@ -71,11 +82,22 @@ export function planIdentityAudit(
         occurredAt,
         recordedAt: occurredAt,
         tenantScope: "migration" as const,
+        organizationId: null,
+        propertyId: null,
         actorType: actorUserId ? ("user" as const) : ("system" as const),
         actorUserId,
         targetResourceProduct: "identity" as const,
         targetResourceType: actorUserId ? ("user" as const) : ("login_attempt" as const),
         targetResourceId: actorUserId ?? id,
+        secondaryResourceProduct: null,
+        secondaryResourceType: null,
+        secondaryResourceId: null,
+        domainEventId: null,
+        externalWebhookEventId: null,
+        jobId: null,
+        idempotencyKeyId: null,
+        correlationId: null,
+        causationId: null,
         redactedPayload: compact({
           success,
           authMethod,

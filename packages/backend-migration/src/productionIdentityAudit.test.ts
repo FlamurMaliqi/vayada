@@ -48,7 +48,7 @@ describe("production identity audit", () => {
     };
     expect(planIdentityAudit([login(EVENT)], [USER], [exactTarget]).blockers).toEqual([]);
 
-    const conflictingTarget = { ...accepted, action: "auth.login.failed" as const };
+    const conflictingTarget = { ...accepted, correlationId: "unexpected-target-lineage" };
     const reusedId = { id: OTHER_EVENT, product: "booking", auditKey: "another-event" };
     const plan = planIdentityAudit(
       [

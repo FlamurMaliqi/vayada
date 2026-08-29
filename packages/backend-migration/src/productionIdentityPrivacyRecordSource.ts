@@ -20,11 +20,11 @@ import {
 export type PlannedConsentHistory = {
   id: string;
   userId: string | null;
-  visitorId: null;
+  visitorId: string | null;
   consentType: string;
   consentGiven: boolean;
   version: string | null;
-  metadata: Record<string, string>;
+  metadata: Record<string, unknown>;
   createdAt: string;
 };
 export type PlannedGdprRequest = {
@@ -37,7 +37,7 @@ export type PlannedGdprRequest = {
   processedAt: string | null;
   expiresAt: string | null;
   ipAddress: string | null;
-  metadata: Record<string, string>;
+  metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 };
