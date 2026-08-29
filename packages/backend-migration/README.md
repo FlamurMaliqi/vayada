@@ -52,6 +52,46 @@ The unit tests compare fixture manifests, registry entries, and the smoke case
 list. Adding a fixture manifest without registering it, or changing the smoke
 path so it omits a registered case, fails `npm test`.
 
+## Immutable Source Extraction
+
+VAY-1351 stages the four reviewed legacy snapshots without giving normal
+application code source-database access. The reviewed manifest contains each
+snapshot identifier, database name, and VAY-1350 schema fingerprint; connection
+URLs stay in environment variables and never appear in the report.
+
+```bash
+npm --workspace @vayada/backend-migration run target:source:extract -- \
+  --manifest <reviewed-manifest.json> \
+  --source-schema-revision 1a8ab060c9fb31d3f88bcfe934b51b5319e7e544 \
+  --auth-snapshot-arn <arn> \
+  --booking-snapshot-arn <arn> \
+  --marketplace-snapshot-arn <arn> \
+  --pms-snapshot-arn <arn> \
+  --dry-run
+```
+
+Remove `--dry-run` only in isolated local, staging, or pre-production targets
+after applying migration `0120`. Supply `TARGET_DATABASE_URL` plus
+`AUTH_SOURCE_DATABASE_URL`, `BOOKING_SOURCE_DATABASE_URL`,
+`MARKETPLACE_SOURCE_DATABASE_URL`, and `PMS_SOURCE_DATABASE_URL`. Source roles
+must have direct `SELECT` grants, no role memberships, no write privileges, and
+no access to non-system `SECURITY DEFINER` routines. A mutable source tag additionally requires a
+reviewed `cutoverFreezeProofSha256` in the manifest and the matching
+`--cutover-freeze-proof-sha256` argument.
+
+Before opening the read-only extractor connections, attest each restored source
+with database-level settings applied by its administrator. The extractor reads
+the settings from `pg_db_role_setting`, so session parameters cannot impersonate
+another snapshot:
+
+```sql
+ALTER DATABASE <source_database>
+  SET vayada.source_snapshot_identifier TO '<reviewed-snapshot-identifier>';
+-- Required when the manifest carries a cutover freeze proof:
+ALTER DATABASE <source_database>
+  SET vayada.cutover_freeze_proof_sha256 TO '<reviewed-sha256>';
+```
+
 ## Platform Media Parity
 
 `platform-media` is a target-only fixture that pins the registry contract before

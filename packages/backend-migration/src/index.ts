@@ -61,6 +61,22 @@ export {
 } from "./sourceInventory.js";
 
 export {
+  buildSourceExtractionPlan,
+  parseSourceExtractionManifest,
+  runSourceExtraction,
+  SOURCE_EXTRACTION_BATCH_SIZE,
+  SOURCE_EXTRACTION_LOCK_ID,
+  SOURCE_PROVENANCE_SQL,
+  SOURCE_WRITABLE_PRIVILEGES_SQL,
+  SourceExtractionError,
+  validateSourceExtractionConfig,
+  VAY_1350_INVENTORY_REVISION,
+  type SourceExtractionConfig,
+  type SourceExtractionManifest,
+  type SourceExtractionReport,
+} from "./sourceExtraction.js";
+
+export {
   runParityChecks,
   type ParityCheckSeverity,
   type ParityConfig,
