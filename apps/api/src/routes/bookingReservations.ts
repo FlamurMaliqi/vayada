@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { AuthorizationError, type PropertyAccessRepository } from "@vayada/backend-authorization";
 import type { HttpRouteContract } from "@vayada/backend-http";
 import type {
   BookingAssignedRoom,
@@ -8,7 +9,7 @@ import type {
   BookingReservationsReadRepository,
 } from "@vayada/domain-booking";
 
-import { enforceRoutePolicy } from "./policy.js";
+import { enforcePropertyRoutePolicy, enforceRoutePolicy } from "./policy.js";
 
 export const BOOKING_RESERVATION_LIST_CONTRACT = {
   method: "GET",
@@ -113,6 +114,7 @@ export type BookingReservationListContract = HttpRouteContract<
 export async function registerBookingReservationRoutes(
   app: FastifyInstance,
   repository: BookingReservationsReadRepository,
+  propertyAccessRepository: PropertyAccessRepository,
 ): Promise<void> {
   app.addHook("onClose", async () => {
     await repository.close?.();
@@ -123,38 +125,63 @@ export async function registerBookingReservationRoutes(
     Querystring: BookingReservationListQuery;
   }>("/hotels/:hotelId/reservations", async (request, reply) => {
     const { hotelId } = request.params;
+    let propertyId: string;
+    let entitlementResourceId = hotelId;
 
     try {
-      enforceRoutePolicy(request, {
-        permission: "booking.reservation.read",
-        entitlement: {
-          product: "booking",
-          key: "booking-engine",
+      enforceRoutePolicy(request, { permission: "booking.reservation.read" });
+      const resolvedPropertyId = await repository.resolveCanonicalPropertyId(hotelId);
+      if (!resolvedPropertyId) throw new AuthorizationError();
+      propertyId = resolvedPropertyId;
+      entitlementResourceId = propertyId;
+      await enforcePropertyRoutePolicy(
+        request,
+        {
+          permission: "booking.reservation.read",
+          property: {
+            propertyId,
+            targetResource: { product: "booking", resourceType: "booking_hotel" },
+          },
+          entitlement: {
+            product: "booking",
+            key: "booking-engine",
+            resource: {
+              product: "booking",
+              resourceType: "booking_hotel",
+              resourceId: propertyId,
+            },
+          },
           resource: {
             product: "booking",
             resourceType: "booking_hotel",
-            resourceId: hotelId,
+            resourceId: propertyId,
+            allowedRelationships: ["owner", "operator"],
           },
         },
-        resource: {
-          product: "booking",
-          resourceType: "booking_hotel",
-          resourceId: hotelId,
-          allowedRelationships: ["owner", "operator"],
-        },
-      });
+        propertyAccessRepository,
+      );
     } catch (error) {
-      const contractError = toBookingReservationListAccessError(error, request, hotelId);
+      const contractError = toBookingReservationListAccessError(
+        error,
+        request,
+        entitlementResourceId,
+      );
       if (contractError) {
         return sendBookingReservationListError(reply, contractError);
       }
-      throw error;
+      request.log.error({ err: error }, "Booking reservation property access read failed");
+      return sendBookingReservationListError(reply, {
+        statusCode: 500,
+        code: "read_model_unavailable",
+        category: "read_model",
+        message: "Booking reservations are unavailable.",
+      });
     }
 
     const filters = toReservationFilters(request.query);
     let result: BookingReservationListResult;
     try {
-      result = await repository.listReservationsByHotelId(hotelId, filters);
+      result = await repository.listReservationsByPropertyId(propertyId, filters);
     } catch {
       return sendBookingReservationListError(reply, {
         statusCode: 500,

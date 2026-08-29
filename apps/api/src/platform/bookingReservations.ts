@@ -56,20 +56,28 @@ export function createTargetBookingReservationsReadRepository(config: {
     });
 
   return {
-    async listReservationsByHotelId(hotelId, filters) {
-      if (!hotelId.trim()) {
+    async resolveCanonicalPropertyId(hotelId) {
+      if (!hotelId.trim()) return null;
+      const result = await pool.query<{ propertyId: string }>(
+        `${bookingScopedPropertyCte()}
+         SELECT property_id::text AS "propertyId" FROM scoped_property`,
+        [hotelId],
+      );
+      return result.rows[0]?.propertyId ?? null;
+    },
+    async listReservationsByPropertyId(propertyId, filters) {
+      if (!propertyId.trim()) {
         return { reservations: [], total: 0 };
       }
 
-      const { whereSql, params } = toTargetReservationWhere(hotelId, filters);
+      const { whereSql, params } = toTargetReservationWhere(propertyId, filters);
       const listParams = [...params, filters.limit, filters.offset];
       const limitParam = params.length + 1;
       const offsetParam = params.length + 2;
 
       const [reservationResult, countResult] = await Promise.all([
         pool.query<TargetBookingReservationRow>(
-          `${bookingScopedPropertyCte()}
-           SELECT
+          `SELECT
              booking.id::text AS "id",
              booking.property_id::text AS "propertyId",
              booking.public_reference AS "bookingReference",
@@ -164,7 +172,6 @@ export function createTargetBookingReservationsReadRepository(config: {
              booking.created_at AS "createdAt",
              booking.updated_at AS "updatedAt"
            FROM booking.guest_bookings booking
-           JOIN scoped_property scoped ON scoped.property_id = booking.property_id
            LEFT JOIN booking.checkout_contexts checkout
              ON checkout.id = booking.checkout_context_id
             AND checkout.property_id = booking.property_id
@@ -310,10 +317,8 @@ export function createTargetBookingReservationsReadRepository(config: {
           listParams,
         ),
         pool.query<{ total: string }>(
-          `${bookingScopedPropertyCte()}
-           SELECT COUNT(*)::text AS total
+          `SELECT COUNT(*)::text AS total
            FROM booking.guest_bookings booking
-           JOIN scoped_property scoped ON scoped.property_id = booking.property_id
            LEFT JOIN LATERAL (
              SELECT assignment.*
              FROM pms.operational_booking_assignments assignment
@@ -355,11 +360,11 @@ export function createTargetBookingReservationsReadRepository(config: {
 }
 
 function toTargetReservationWhere(
-  hotelId: string,
+  propertyId: string,
   filters: BookingReservationListFilters,
 ): { whereSql: string; params: unknown[] } {
-  const params: unknown[] = [hotelId];
-  const conditions = ["booking.property_id = scoped.property_id"];
+  const params: unknown[] = [propertyId];
+  const conditions = ["booking.property_id = $1::uuid"];
 
   if (filters.status) {
     params.push(filters.status);

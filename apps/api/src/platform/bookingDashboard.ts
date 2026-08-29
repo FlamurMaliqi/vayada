@@ -230,11 +230,11 @@ export function createTargetBookingDashboardMetricsReadPort(config: {
 
 export function bookingScopedPropertyCte(): string {
   return `WITH scoped_property_candidates AS (
-    SELECT property.id AS property_id, 0 AS precedence
+    SELECT property.id AS property_id
     FROM hotel_catalog.properties property
     WHERE property.id::text = $1
-    UNION ALL
-    SELECT source.property_id, 1 AS precedence
+    UNION
+    SELECT source.property_id
     FROM hotel_catalog.property_source_links source
     WHERE source.source_system = 'booking'
       AND source.source_table = 'booking_hotels'
@@ -243,10 +243,9 @@ export function bookingScopedPropertyCte(): string {
       AND source.status = 'active'
   ),
   scoped_property AS (
-    SELECT property_id
+    SELECT MIN(property_id::text)::uuid AS property_id
     FROM scoped_property_candidates
-    ORDER BY precedence
-    LIMIT 1
+    HAVING COUNT(*) = 1
   )`;
 }
 

@@ -20,22 +20,24 @@ types. The domain read model and repository port live in
 | Route adapter          | `registerBookingReservationRoutes`                        |
 | Frontend client target | `getBookingReservations(input) -> BookingReservationList` |
 
-`hotelId` is the Booking product hotel id. It is the resource scope for the
-request and for every reservation returned by the endpoint.
+`hotelId` is a Booking product alias. It must resolve to exactly one canonical
+`hotel_catalog.properties.id`; unmapped or ambiguous aliases fail closed. The
+canonical property id scopes authorization and every returned reservation.
 
 ## Authorization
 
-The route is protected and must use `enforceRoutePolicy` at the route boundary.
+The route is protected and must use `enforcePropertyRoutePolicy` at the route boundary.
 
 Required checks:
 
-| Check                 | Contract value                              |
-| --------------------- | ------------------------------------------- |
-| Permission            | `booking.reservation.read`                  |
-| Entitlement           | active `booking:booking-engine`             |
-| Entitlement resource  | `booking_hotel` with `resourceId = hotelId` |
-| Linked resource       | `booking_hotel` with `resourceId = hotelId` |
-| Allowed relationships | `owner`, `operator`                         |
+| Check                 | Contract value                                      |
+| --------------------- | --------------------------------------------------- |
+| Permission            | `booking.reservation.read`                          |
+| Entitlement           | active `booking:booking-engine`                     |
+| Entitlement resource  | `booking_hotel` with the canonical property id      |
+| Linked resource       | `booking_hotel` with the canonical property id      |
+| Property scope        | effective active membership scope includes property |
+| Allowed relationships | `owner`, `operator`                                 |
 
 Authentication failures return `401`. Permission, entitlement, inactive
 entitlement, or linked-resource failures return `403`. An authorized hotel with
@@ -81,7 +83,7 @@ type BookingReservationList = {
 };
 ```
 
-`bookings` contains only reservations scoped to `hotelId`. `total` is the total
+`bookings` contains only reservations scoped to the canonical property id. `total` is the total
 number of matching rows available to the list, not just the number returned in
 the current page. `limit` and `offset` echo the effective pagination values
 after defaults and clamping.
