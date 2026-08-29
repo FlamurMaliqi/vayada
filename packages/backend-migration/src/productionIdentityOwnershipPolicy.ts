@@ -161,6 +161,6 @@ function extreme(values: string[], pick: (...values: number[]) => number): strin
 
 function epoch(value: string): number {
   const result = Date.parse(value);
-  if (Number.isNaN(result)) throw new Error(`Invalid timestamp ${value}`);
+  if (Number.isNaN(result)) throw new Error("Invalid timestamp");
   return result;
 }

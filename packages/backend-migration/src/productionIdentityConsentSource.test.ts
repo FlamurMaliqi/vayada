@@ -27,7 +27,7 @@ describe("production identity consent source", () => {
       }),
       cookie(OLD_COOKIE, JAN, false),
       cookie(NEW_COOKIE, FEB, true),
-      source("password_reset_tokens", { id: OTHER }),
+      { ...source("password_reset_tokens", {}), rowOrdinal: 0, rowCountOnly: 500 },
       source("totp_secrets", { id: OTHER }),
     ];
 
@@ -38,7 +38,7 @@ describe("production identity consent source", () => {
     expect(plan.cookieConsents).toEqual([
       expect.objectContaining({ id: NEW_COOKIE, analytics: true }),
     ]);
-    expect(plan.retiredAuthRows).toMatchObject({ password_reset_tokens: 1, totp_secrets: 1 });
+    expect(plan.retiredAuthRows).toMatchObject({ password_reset_tokens: 500, totp_secrets: 1 });
     expect(planIdentityConsentSource([...rows].reverse(), [USER])).toEqual(plan);
   });
 

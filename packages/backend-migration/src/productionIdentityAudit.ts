@@ -72,7 +72,7 @@ export function planIdentityAudit(
       const occurredAt = date(row.data["created_at"], "created_at");
       const authMethod = optionalText(row.data["auth_method"], "auth_method");
       if (authMethod && !AUTH_METHODS.has(authMethod))
-        throw new Error(`auth_method ${authMethod} is unsupported`);
+        throw new Error("auth_method is unsupported");
       return {
         id,
         auditKey: `legacy-auth-login:${id}`,

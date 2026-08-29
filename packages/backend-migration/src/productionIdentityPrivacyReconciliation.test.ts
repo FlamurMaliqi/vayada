@@ -78,6 +78,7 @@ describe("production identity privacy reconciliation", () => {
         "GDPR_TARGET_TOKEN_CONFLICT",
       ]),
     );
+    expect(JSON.stringify(plan.blockers)).not.toContain("duplicate-token");
     expect(
       reconcileIdentityPrivacy(
         {

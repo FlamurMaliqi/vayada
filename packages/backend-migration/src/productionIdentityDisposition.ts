@@ -5,6 +5,7 @@ export type IdentitySourceRow = {
   sourceTable: string;
   rowOrdinal: number;
   data: Record<string, unknown>;
+  rowCountOnly?: number;
 };
 
 export type TargetIdentityUserStatus = "active" | "pending" | "suspended" | "deleted";
@@ -150,9 +151,9 @@ export function planIdentityUserDisposition(
 function parseUser(row: IdentitySourceRow): PlannedIdentityUser {
   const sourceStatus = text(row.data["status"], "status");
   const status = mapProductionLegacyUserStatus(sourceStatus);
-  if (!status) throw new Error(`status ${sourceStatus} is unsupported`);
+  if (!status) throw new Error("status is unsupported");
   const type = text(row.data["type"], "type") as LegacyIdentityUserType;
-  if (!USER_TYPES.has(type)) throw new Error(`type ${type} is unsupported`);
+  if (!USER_TYPES.has(type)) throw new Error("type is unsupported");
   return {
     id: uuid(row.data["id"], "id"),
     email: text(row.data["email"], "email").trim().toLowerCase(),

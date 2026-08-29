@@ -1,6 +1,7 @@
 import pg from "pg";
 
 import { normalizePgConnectionString } from "./pgConnection.js";
+import { readProductionIdentitySnapshot } from "./productionIdentitySnapshotReader.js";
 
 export type WorkosBackfillMode = "dry-run" | "apply";
 
@@ -46,14 +47,6 @@ export type LegacyAuthBackfillRow = {
   id: string;
   emailVerified: boolean | null;
   passwordHash: string | null;
-};
-
-export type AuthSnapshotEvidence = {
-  runStatus: string | null;
-  sourceStatus: string | null;
-  tableStatus: string | null;
-  expectedRows: number | null;
-  actualRows: number;
 };
 
 export type WorkosBackfillCohort = {
@@ -796,62 +789,41 @@ async function attachSnapshotAuthFields(
   pool: pg.Pool,
   sourceRunId: string,
 ): Promise<WorkosBackfillUser[]> {
-  if (!/^vay1351-[0-9a-f]{24}$/.test(sourceRunId)) {
-    throw new Error("WorkOS backfill source run must be an immutable VAY-1351 extraction run ID.");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const snapshot = await readProductionIdentitySnapshot(client, sourceRunId);
+    const acceptedUserIds = new Set(users.map((user) => user.id));
+    const legacyRows = snapshot
+      .filter(
+        (row) =>
+          row.sourceDatabase === "auth" &&
+          row.sourceTable === "users" &&
+          typeof row.data["id"] === "string" &&
+          acceptedUserIds.has(row.data["id"]),
+      )
+      .map(snapshotAuthUser);
+    await client.query("COMMIT");
+    return mergeLegacyAuthBackfillFields(users, legacyRows);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
   }
-  const evidence = await pool.query<AuthSnapshotEvidence>(
-    `SELECT
-       (SELECT status FROM platform.source_extraction_runs WHERE run_id = $1) AS "runStatus",
-       (SELECT status FROM platform.source_extraction_sources
-        WHERE run_id = $1 AND source_database = 'auth') AS "sourceStatus",
-       (SELECT status FROM platform.source_extraction_tables
-        WHERE run_id = $1 AND source_database = 'auth'
-          AND source_schema = 'public' AND source_table = 'users') AS "tableStatus",
-       (SELECT row_count::integer FROM platform.source_extraction_tables
-        WHERE run_id = $1 AND source_database = 'auth'
-          AND source_schema = 'public' AND source_table = 'users') AS "expectedRows",
-       (SELECT count(*)::integer FROM migration_source_auth.snapshot_rows
-        WHERE run_id = $1 AND source_schema = 'public' AND source_table = 'users') AS "actualRows"`,
-    [sourceRunId],
-  );
-  assertCompletedAuthSnapshotEvidence(evidence.rows[0]!);
-  if (users.length === 0) return users;
-  const { rows } = await pool.query<LegacyAuthBackfillRow>(
-    `SELECT
-       snapshot.row_data ->> 'id' AS id,
-       (snapshot.row_data ->> 'email_verified')::boolean AS "emailVerified",
-       CASE
-         WHEN snapshot.row_data ->> 'password_hash' LIKE '$2a$%'
-           OR snapshot.row_data ->> 'password_hash' LIKE '$2b$%'
-           OR snapshot.row_data ->> 'password_hash' LIKE '$2y$%'
-         THEN snapshot.row_data ->> 'password_hash'
-         ELSE NULL
-       END AS "passwordHash"
-     FROM migration_source_auth.snapshot_rows snapshot
-     JOIN platform.source_extraction_runs run
-       ON run.run_id = snapshot.run_id AND run.status = 'completed'
-     WHERE snapshot.run_id = $1
-       AND snapshot.source_schema = 'public'
-       AND snapshot.source_table = 'users'
-       AND snapshot.row_data ->> 'id' = ANY($2::text[])`,
-    [sourceRunId, users.map((user) => user.id)],
-  );
-  return mergeLegacyAuthBackfillFields(users, rows);
 }
 
-export function assertCompletedAuthSnapshotEvidence(evidence: AuthSnapshotEvidence): void {
-  if (
-    evidence.runStatus !== "completed" ||
-    evidence.sourceStatus !== "completed" ||
-    evidence.tableStatus !== "completed"
-  ) {
-    throw new Error("WorkOS backfill requires a completed immutable auth users snapshot.");
-  }
-  if (evidence.expectedRows === null || evidence.expectedRows !== evidence.actualRows) {
-    throw new Error(
-      `WorkOS backfill auth users snapshot row count mismatch: expected ${evidence.expectedRows ?? "missing"}, found ${evidence.actualRows}.`,
-    );
-  }
+function snapshotAuthUser(row: { data: Record<string, unknown> }): LegacyAuthBackfillRow {
+  const id = row.data["id"];
+  const emailVerified = row.data["email_verified"];
+  if (typeof id !== "string" || typeof emailVerified !== "boolean")
+    throw new Error("Immutable auth user credentials have an unsupported shape.");
+  const rawPasswordHash = row.data["password_hash"];
+  const passwordHash =
+    typeof rawPasswordHash === "string" && /^\$2[aby]\$/.test(rawPasswordHash)
+      ? rawPasswordHash
+      : null;
+  return { id, emailVerified, passwordHash };
 }
 
 async function attachLegacyAuthFields(

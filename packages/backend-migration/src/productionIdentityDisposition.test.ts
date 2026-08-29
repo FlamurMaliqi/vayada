@@ -97,7 +97,7 @@ describe("production identity user disposition", () => {
     expect(plan.blockers.map((item) => item.code)).toEqual(
       expect.arrayContaining(["DUPLICATE_EMAIL", "INVALID_PROVIDER_LINK", "INVALID_SOURCE_ROW"]),
     );
-    expect(plan.blockers.some((item) => item.message.includes("mystery"))).toBe(true);
+    expect(JSON.stringify(plan.blockers)).not.toContain("mystery");
   });
 });
 

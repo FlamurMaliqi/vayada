@@ -139,6 +139,7 @@ export function planIdentityPrivacyRecordSource(
     "auth.gdpr_requests",
     "GDPR_TOKEN_CONFLICT",
     blockers,
+    (_token, owners) => owners.join(","),
   );
   return {
     consentHistory,
@@ -149,7 +150,7 @@ export function planIdentityPrivacyRecordSource(
 
 function allowed(value: unknown, field: string, values: Set<string>): string {
   const result = text(value, field);
-  if (!values.has(result)) throw new Error(`${field} ${result} is unsupported`);
+  if (!values.has(result)) throw new Error(`${field} is unsupported`);
   return result;
 }
 function compact(values: Record<string, string | null>): Record<string, string> {

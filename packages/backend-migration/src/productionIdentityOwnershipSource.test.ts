@@ -103,9 +103,10 @@ describe("production ownership source mapping", () => {
       expect.objectContaining({
         code: "INVALID_SOURCE_ROW",
         source: "marketplace.hotel_profiles",
-        message: "status mystery is unsupported",
+        message: "status is unsupported",
       }),
     ]);
+    expect(JSON.stringify(result.blockers)).not.toContain("mystery");
   });
 });
 

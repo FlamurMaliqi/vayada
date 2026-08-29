@@ -54,12 +54,22 @@ export function addDuplicateValueBlockers<T>(
   source: string,
   code: string,
   blockers: IdentityMigrationBlocker[],
+  blockerId: (value: string, owners: string[]) => string = (value) => value,
 ): void {
   const groups = new Map<string, Set<string>>();
   for (const row of rows)
     groups.set(value(row), new Set([...(groups.get(value(row)) ?? []), owner(row)]));
-  for (const [item, owners] of groups)
-    if (owners.size > 1) addBlocker(blockers, code, source, item, "Value belongs to multiple rows");
+  for (const [item, owners] of groups) {
+    const sortedOwners = [...owners].sort();
+    if (sortedOwners.length > 1)
+      addBlocker(
+        blockers,
+        code,
+        source,
+        blockerId(item, sortedOwners),
+        "Value belongs to multiple rows",
+      );
+  }
 }
 
 export const addBlocker = (

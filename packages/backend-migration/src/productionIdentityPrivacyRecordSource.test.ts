@@ -12,6 +12,7 @@ const BAD_LIFECYCLE = "66666666-6666-4666-8666-666666666666";
 const JAN = "2026-01-01T00:00:00.000Z";
 const FEB = "2026-02-01T00:00:00.000Z";
 const MAR = "2026-03-01T00:00:00.000Z";
+const SECRET_TOKEN = "super-secret-download-token";
 
 describe("production identity privacy record source", () => {
   it("maps immutable consent and uses conservative GDPR lifecycle freshness", () => {
@@ -43,11 +44,11 @@ describe("production identity privacy record source", () => {
 
   it("blocks invalid lifecycle state, unknown users, conflicting IDs, and duplicate tokens", () => {
     const rows = [
-      gdpr({ id: GDPR, status: "completed", processed_at: null, download_token: "same" }),
+      gdpr({ id: GDPR, status: "completed", processed_at: null, download_token: SECRET_TOKEN }),
       gdpr({ id: BAD_LIFECYCLE, status: "pending", processed_at: MAR }),
-      gdpr({ id: OTHER, status: "pending", download_token: "same" }),
-      gdpr({ id: OTHER, status: "processing", download_token: "same" }),
-      gdpr({ id: TOKEN_OTHER, status: "pending", download_token: "same" }),
+      gdpr({ id: OTHER, status: "pending", download_token: SECRET_TOKEN }),
+      gdpr({ id: OTHER, status: "processing", download_token: SECRET_TOKEN }),
+      gdpr({ id: TOKEN_OTHER, status: "pending", download_token: SECRET_TOKEN }),
       source("consent_history", {
         id: CONSENT,
         user_id: USER,
@@ -78,6 +79,7 @@ describe("production identity privacy record source", () => {
         "GDPR_TOKEN_CONFLICT",
       ]),
     );
+    expect(JSON.stringify(plan.blockers)).not.toContain(SECRET_TOKEN);
     expect(plan.blockers.filter((row) => row.code === "INVALID_SOURCE_ROW")).toHaveLength(4);
   });
 });

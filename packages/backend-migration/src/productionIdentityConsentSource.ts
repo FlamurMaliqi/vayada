@@ -149,7 +149,9 @@ export function planIdentityConsentSource(
     retiredAuthRows: Object.fromEntries(
       RETIRED_AUTH_TABLES.map((table) => [
         table,
-        rows.filter((row) => row.sourceDatabase === "auth" && row.sourceTable === table).length,
+        rows
+          .filter((row) => row.sourceDatabase === "auth" && row.sourceTable === table)
+          .reduce((count, row) => count + (row.rowCountOnly ?? 1), 0),
       ]),
     ),
     blockers: sortedBy(blockers, (row) => `${row.code}:${row.source}:${row.sourceId}`),

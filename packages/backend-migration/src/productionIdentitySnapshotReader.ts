@@ -26,14 +26,7 @@ type TableEvidence = {
 };
 
 export const PRODUCTION_IDENTITY_SOURCE_TABLES: Record<SourceDatabase, readonly string[]> = {
-  auth: [
-    "users",
-    "cookie_consent",
-    "consent_history",
-    "gdpr_requests",
-    "login_audit_log",
-    ...RETIRED_AUTH_TABLES,
-  ],
+  auth: ["users", "cookie_consent", "consent_history", "gdpr_requests", "login_audit_log"],
   booking: ["booking_hotels"],
   marketplace: ["creators", "hotel_profiles"],
   pms: ["affiliates", "hotels", "property_module_activations"],
@@ -197,6 +190,45 @@ export async function readProductionIdentitySnapshot(
   }
   if (evidence.size !== Object.values(VAY_1350_ACTIVE_SOURCE_TABLES).flat().length)
     throw new Error(`Source extraction ${runId} has an unexpected table ledger set`);
+  const retiredResult = await client.query<{
+    sourceTable: string;
+    rowCount: string;
+    snapshotMatches: boolean;
+    ordinalsValid: boolean;
+    rowsValid: boolean;
+    tableChecksum: string;
+  }>(
+    `SELECT source_table AS "sourceTable", count(*)::text AS "rowCount",
+            bool_and(snapshot_identifier = $3) AS "snapshotMatches",
+            min(row_ordinal) = 1 AND max(row_ordinal) = count(*) AS "ordinalsValid",
+            bool_and(row_checksum_sha256 = encode(sha256(convert_to(row_data::text, 'UTF8')), 'hex'))
+              AS "rowsValid",
+            encode(sha256(convert_to(
+              string_agg(row_checksum_sha256 || E'\\n', '' ORDER BY row_ordinal),
+              'UTF8'
+            )), 'hex') AS "tableChecksum"
+     FROM migration_source_auth.snapshot_rows
+     WHERE run_id = $1 AND source_schema = 'public' AND source_table = ANY($2::text[])
+     GROUP BY source_table ORDER BY source_table`,
+    [runId, RETIRED_AUTH_TABLES, sources.get("auth")!.snapshotIdentifier],
+  );
+  const retiredCounts = new Map(retiredResult.rows.map((row) => [row.sourceTable, row]));
+  for (const table of RETIRED_AUTH_TABLES) {
+    const actual = retiredCounts.get(table);
+    const expected = evidence.get(`auth:public.${table}`)!;
+    const expectedCount = Number(expected.rowCount);
+    if (
+      Number(actual?.rowCount ?? 0) !== expectedCount ||
+      (expectedCount === 0 && expected.checksum !== createHash("sha256").digest("hex")) ||
+      (actual !== undefined &&
+        (actual.snapshotMatches !== true ||
+          actual.ordinalsValid !== true ||
+          actual.rowsValid !== true ||
+          actual.tableChecksum !== expected.checksum))
+    )
+      throw new Error(`Source extraction ${runId} mismatches count-only auth.${table}`);
+  }
+
   const loaded: IdentitySourceRow[] = [];
   for (const database of databases()) {
     const tables = PRODUCTION_IDENTITY_SOURCE_TABLES[database];
@@ -249,6 +281,17 @@ export async function readProductionIdentitySnapshot(
       )
         throw new Error(`Source extraction ${runId} mismatches ${database}.${table} ledger`);
     }
+  }
+  for (const table of RETIRED_AUTH_TABLES) {
+    const rowCountOnly = Number(retiredCounts.get(table)?.rowCount ?? 0);
+    if (rowCountOnly > 0)
+      loaded.push({
+        sourceDatabase: "auth",
+        sourceTable: table,
+        rowOrdinal: 0,
+        data: {},
+        rowCountOnly,
+      });
   }
   return loaded;
 }

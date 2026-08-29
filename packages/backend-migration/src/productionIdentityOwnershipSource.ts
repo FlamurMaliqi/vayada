@@ -153,7 +153,7 @@ export function parseIdentityOwnershipRows(sourceRows: IdentitySourceRow[]): {
           ? requiredText(row.data[spec.statusField], spec.statusField)
           : null;
         const status = mapOwnershipStatus(source, rawStatus);
-        if (!status) throw new Error(`status ${rawStatus} is unsupported`);
+        if (!status) throw new Error("status is unsupported");
         const createdAt = requiredDate(row.data["created_at"], "created_at");
         owners.push({
           source,

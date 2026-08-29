@@ -126,6 +126,7 @@ export function reconcileIdentityPrivacy(
     "identity.gdpr_requests",
     "GDPR_TARGET_TOKEN_CONFLICT",
     blockers,
+    (_token, owners) => owners.join(","),
   );
 
   return {

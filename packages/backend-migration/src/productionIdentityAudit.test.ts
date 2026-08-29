@@ -71,6 +71,7 @@ describe("production identity audit", () => {
       ]),
     );
     expect(plan.blockers.filter((row) => row.code === "INVALID_SOURCE_ROW")).toHaveLength(2);
+    expect(JSON.stringify(plan.blockers)).not.toContain("owner@example.com");
   });
 });
 

@@ -16,12 +16,15 @@ describe("production identity snapshot reader", () => {
 
     const rows = await readProductionIdentitySnapshot(fixture as never, RUN);
 
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     expect(rows.map((row) => `${row.sourceDatabase}.${row.sourceTable}`)).toEqual([
       "auth.users",
       "booking.booking_hotels",
+      "auth.password_reset_tokens",
     ]);
     expect(rows[0]?.data["id"]).toBe(USER);
+    expect(rows[2]).toMatchObject({ data: {}, rowCountOnly: 1 });
+    expect(JSON.stringify(rows)).not.toContain("reset-secret");
   });
 
   it("rejects a completed ledger whose staged content is corrupt", async () => {
@@ -30,6 +33,25 @@ describe("production identity snapshot reader", () => {
 
     await expect(readProductionIdentitySnapshot(fixture as never, RUN)).rejects.toThrow(
       "corrupt auth.users rows",
+    );
+  });
+
+  it("rejects same-count retired auth mutation without returning its secret data", async () => {
+    const fixture = new SnapshotFixture();
+    fixture.snapshots.auth[1]!.rowData = JSON.stringify({ token: "changed-reset-secret" });
+
+    await expect(readProductionIdentitySnapshot(fixture as never, RUN)).rejects.toThrow(
+      "mismatches count-only auth.password_reset_tokens",
+    );
+  });
+
+  it("pins an absent retired table to the empty checksum", async () => {
+    const fixture = new SnapshotFixture();
+    fixture.tables.find((row) => row.sourceTable === "totp_secrets")!.checksum = "f".repeat(64);
+    fixture.rebuildSources();
+
+    await expect(readProductionIdentitySnapshot(fixture as never, RUN)).rejects.toThrow(
+      "mismatches count-only auth.totp_secrets",
     );
   });
 
@@ -69,7 +91,10 @@ describe("production identity snapshot reader", () => {
 class SnapshotFixture {
   revision = VAY_1350_INVENTORY_REVISION;
   snapshots: Record<string, SnapshotRow[]> = {
-    auth: [snapshotRow("auth", "users", { id: USER })],
+    auth: [
+      snapshotRow("auth", "users", { id: USER }),
+      snapshotRow("auth", "password_reset_tokens", { token: "reset-secret" }),
+    ],
     booking: [snapshotRow("booking", "booking_hotels", { id: USER })],
     marketplace: [],
     pms: [],
@@ -108,11 +133,44 @@ class SnapshotFixture {
     };
   });
 
+  rebuildSources(): void {
+    this.sources = Object.keys(VAY_1350_ACTIVE_SOURCE_TABLES).map((sourceDatabase) => {
+      const tables = this.tables.filter((row) => row.sourceDatabase === sourceDatabase);
+      const checksum = createHash("sha256");
+      for (const table of tables)
+        checksum.update(
+          `${table.sourceSchema}.${table.sourceTable}|${table.rowCount}|${table.checksum}\n`,
+        );
+      return {
+        sourceDatabase,
+        snapshotIdentifier: `snapshot-${sourceDatabase}`,
+        expectedFingerprint: "a".repeat(32),
+        actualFingerprint: "a".repeat(32),
+        status: "completed",
+        rowCount: String(tables.reduce((sum, table) => sum + Number(table.rowCount), 0)),
+        checksum: checksum.digest("hex"),
+      };
+    });
+  }
+
   async query<T>(sql: string): Promise<{ rows: T[] }> {
     if (sql.includes("source_extraction_runs"))
       return { rows: [{ status: "completed", revision: this.revision }] as T[] };
     if (sql.includes("source_extraction_sources")) return { rows: this.sources as T[] };
     if (sql.includes("source_extraction_tables")) return { rows: this.tables as T[] };
+    if (sql.includes("FROM migration_source_auth.snapshot_rows") && sql.includes("count(*)"))
+      return {
+        rows: this.snapshots.auth
+          .filter((row) => row.sourceTable === "password_reset_tokens")
+          .map((row) => ({
+            sourceTable: row.sourceTable,
+            rowCount: "1",
+            snapshotMatches: row.snapshotIdentifier === "snapshot-auth",
+            ordinalsValid: row.rowOrdinal === "1",
+            rowsValid: row.rowChecksum === createHash("sha256").update(row.rowData).digest("hex"),
+            tableChecksum: createHash("sha256").update(`${row.rowChecksum}\n`).digest("hex"),
+          })) as T[],
+      };
     const database = /migration_source_(auth|booking|marketplace|pms)/.exec(sql)?.[1];
     return { rows: (database ? this.snapshots[database] : []) as T[] };
   }
