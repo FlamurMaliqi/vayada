@@ -526,6 +526,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       prefix: "/api/hotel-setup",
       repository: options.sharedHotelSetupStatusRepository,
       trackCommandRepository: options.hotelSetupTrackCommandRepository,
+      propertyAccessRepository: options.auth?.propertyAccessRepository,
       launchSettingsRepository: options.propertyLaunchSettingsRepository,
     });
   }

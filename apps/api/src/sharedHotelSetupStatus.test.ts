@@ -10,6 +10,10 @@ import {
   type RequestContext,
   type VerifiedSession,
 } from "@vayada/backend-auth";
+import type {
+  MembershipPropertyScope,
+  PropertyAccessRepository,
+} from "@vayada/backend-authorization";
 import { injectJson } from "@vayada/backend-test";
 import type {
   AdaptiveHotelSetupStatus,
@@ -214,13 +218,17 @@ describe("shared hotel setup status route", () => {
   });
 
   it("selects one property, requires selection for multiple, and filters unlinked rows", async () => {
+    const statusCalls: Array<{ organizationId: string; propertyIds: string[] }> = [];
     app = buildSharedSetupApp({
       linkedResources: [propertyLink(propertyId), propertyLink(secondPropertyId)],
-      repository: repositoryWith([
-        adaptiveProperty(propertyId),
-        adaptiveProperty(unrelatedPropertyId),
-        adaptiveProperty(secondPropertyId),
-      ]),
+      repository: repositoryWith(
+        [
+          adaptiveProperty(propertyId),
+          adaptiveProperty(unrelatedPropertyId),
+          adaptiveProperty(secondPropertyId),
+        ],
+        (input) => statusCalls.push(input),
+      ),
     });
 
     const response = await injectJson<AdaptiveHotelSetupStatus>(app, {
@@ -237,6 +245,7 @@ describe("shared hotel setup status route", () => {
     expect(
       response.body.propertySelection.availableProperties.map((property) => property.propertyId),
     ).toEqual([propertyId, secondPropertyId]);
+    expect(statusCalls).toEqual([{ organizationId, propertyIds: [propertyId, secondPropertyId] }]);
     expect(response.body.setupPlan).toBeNull();
 
     await app.close();
@@ -250,6 +259,146 @@ describe("shared hotel setup status route", () => {
       state: "single_property",
       selectedPropertyId: propertyId,
     });
+  });
+
+  it("returns only assigned properties and applies removal on the next request", async () => {
+    let assignedPropertyIds = [secondPropertyId, unrelatedPropertyId];
+    const statusCalls: Array<{ organizationId: string; propertyIds: string[] }> = [];
+    app = buildSharedSetupApp({
+      linkedResources: [propertyLink(propertyId), propertyLink(secondPropertyId)],
+      propertyAccessRepository: {
+        async findMembershipPropertyScope() {
+          return agencyScope({ mode: "assigned", assignedPropertyIds });
+        },
+      },
+      repository: repositoryWith(
+        [adaptiveProperty(propertyId), adaptiveProperty(secondPropertyId)],
+        (input) => statusCalls.push(input),
+      ),
+    });
+
+    const list = await getSharedSetupStatus(app);
+    const selected = await getSharedSetupStatus(app, secondPropertyId);
+    assignedPropertyIds = [];
+    const afterRemoval = await getSharedSetupStatus(app);
+
+    expect(list.statusCode).toBe(200);
+    expect(
+      list.body.propertySelection.availableProperties.map((property) => property.propertyId),
+    ).toEqual([secondPropertyId]);
+    expect(selected.statusCode).toBe(200);
+    expect(selected.body.propertySelection.selectedPropertyId).toBe(secondPropertyId);
+    expect(afterRemoval.statusCode).toBe(200);
+    expect(afterRemoval.body.propertySelection).toEqual({
+      state: "no_property",
+      selectedPropertyId: null,
+      availableProperties: [],
+    });
+    expect(statusCalls.map(({ propertyIds }) => propertyIds)).toEqual([
+      [secondPropertyId],
+      [secondPropertyId],
+      [],
+    ]);
+  });
+
+  it("returns the same denial for an unassigned or cross-tenant property before data reads", async () => {
+    const repository = repositoryWith([]);
+    const getHotelSetupStatus = vi.spyOn(repository, "getHotelSetupStatus");
+    const tracks = trackRepository([]);
+    const getTrackStatus = vi.spyOn(tracks, "getTrackStatus");
+    app = buildSharedSetupApp({
+      linkedResources: [propertyLink(propertyId), propertyLink(secondPropertyId)],
+      propertyAccessRepository: propertyScopeRepository(
+        agencyScope({ mode: "assigned", assignedPropertyIds: [propertyId] }),
+      ),
+      repository,
+      trackCommandRepository: tracks,
+    });
+
+    const responses = await Promise.all(
+      [secondPropertyId, unrelatedPropertyId].map((requestedPropertyId) =>
+        getSharedSetupStatus(app!, requestedPropertyId),
+      ),
+    );
+
+    expect(responses.map(({ statusCode }) => statusCode)).toEqual([403, 403]);
+    expect(responses[0]!.body).toEqual(responses[1]!.body);
+    expect(responses[0]!.body).toEqual({
+      code: "property_access_denied",
+      detail: "Property access is not available.",
+    });
+    expect(getHotelSetupStatus).not.toHaveBeenCalled();
+    expect(getTrackStatus).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing", null],
+    ["unknown mode", agencyScope({ mode: "unknown" })],
+    [
+      "malformed assignments",
+      agencyScope({
+        mode: "assigned",
+        assignedPropertyIds: [42] as unknown as string[],
+      }),
+    ],
+  ] as const)("fails closed for %s membership property scope", async (_name, scope) => {
+    const repository = repositoryWith([]);
+    const getHotelSetupStatus = vi.spyOn(repository, "getHotelSetupStatus");
+    app = buildSharedSetupApp({
+      propertyAccessRepository: propertyScopeRepository(scope),
+      repository,
+    });
+
+    const response = await getSharedSetupStatus(app);
+
+    expect(response.statusCode).toBe(403);
+    expect(getHotelSetupStatus).not.toHaveBeenCalled();
+  });
+
+  it.each(["inactive", "suspended"] as const)(
+    "denies a %s membership before resolving property scope",
+    async (membershipStatus) => {
+      const findMembershipPropertyScope = vi.fn(async () => agencyScope());
+      const repository = repositoryWith([]);
+      const getHotelSetupStatus = vi.spyOn(repository, "getHotelSetupStatus");
+      app = buildSharedSetupApp({
+        membershipStatus,
+        propertyAccessRepository: { findMembershipPropertyScope },
+        repository,
+      });
+
+      const response = await getSharedSetupStatus(app);
+
+      expect(response.statusCode).toBe(401);
+      expect(findMembershipPropertyScope).not.toHaveBeenCalled();
+      expect(getHotelSetupStatus).not.toHaveBeenCalled();
+    },
+  );
+
+  it("fails closed without leaking a property-scope repository error", async () => {
+    let propertyScopeReads = 0;
+    const repository = repositoryWith([]);
+    const getHotelSetupStatus = vi.spyOn(repository, "getHotelSetupStatus");
+    app = buildSharedSetupApp({
+      propertyAccessRepository: {
+        async findMembershipPropertyScope() {
+          propertyScopeReads += 1;
+          if (propertyScopeReads === 1) return agencyScope();
+          throw new Error("secret property scope failure");
+        },
+      },
+      repository,
+    });
+
+    const response = await getSharedSetupStatus(app);
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body).toEqual({
+      code: "property_access_unavailable",
+      detail: "Property access is temporarily unavailable.",
+    });
+    expect(JSON.stringify(response.body)).not.toContain("secret property scope failure");
+    expect(getHotelSetupStatus).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -2928,9 +3077,11 @@ function buildSharedSetupApp(options: {
   repository: SharedHotelSetupStatusRepository;
   launchSettingsRepository?: SharedPropertyLaunchSettingsRepository;
   trackCommandRepository?: HotelSetupTrackCommandRepository;
+  propertyAccessRepository?: PropertyAccessRepository;
   permissions?: PermissionKey[];
   linkedResources?: LinkedResource[];
   organizationKind?: "hotel_group" | "creator_workspace" | "affiliate_partner" | "platform";
+  membershipStatus?: RequestContext["membership"]["status"];
 }): FastifyInstance {
   return buildApp({
     logger: false,
@@ -2941,13 +3092,22 @@ function buildSharedSetupApp(options: {
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepository(options),
-      propertyAccessRepository: agencyPropertyAccessRepository,
+      propertyAccessRepository: options.propertyAccessRepository ?? agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
           return options.permissions ?? ["hotel_catalog.setup.read"];
         },
       },
     },
+  });
+}
+
+function getSharedSetupStatus(target: FastifyInstance, requestedPropertyId?: string) {
+  const suffix = requestedPropertyId ? `?propertyId=${requestedPropertyId}` : "";
+  return injectJson<AdaptiveHotelSetupStatus>(target, {
+    method: "GET",
+    url: `/api/hotel-setup/status${suffix}`,
+    headers: { authorization: "Bearer valid-token" },
   });
 }
 
@@ -3003,6 +3163,7 @@ function unusedTrackCommandRepository(): HotelSetupTrackCommandRepository {
 function identityRepository(options: {
   linkedResources?: LinkedResource[];
   organizationKind?: "hotel_group" | "creator_workspace" | "affiliate_partner" | "platform";
+  membershipStatus?: RequestContext["membership"]["status"];
 }): IdentityRepository {
   return {
     async findUserByProviderUserId() {
@@ -3023,7 +3184,7 @@ function identityRepository(options: {
     async findActiveMembership() {
       return {
         membershipId: "membership_hotel_owner",
-        status: "active",
+        status: options.membershipStatus ?? "active",
         roleKey: "hotel_owner",
         workosMembershipId: "om_hotel_owner",
         workosRoleSlugs: ["hotel_owner"],
@@ -3052,15 +3213,35 @@ function unusedStatusMethods(): Pick<SharedHotelSetupStatusRepository, "getHotel
 
 function repositoryWith(
   properties: AdaptivePropertySetupFacts[],
+  onGet?: (input: { organizationId: string; propertyIds: string[] }) => void,
 ): SharedHotelSetupStatusRepository {
   return {
     ...unusedPropertyProfileMethods(),
-    async getHotelSetupStatus() {
+    async getHotelSetupStatus(input) {
+      onGet?.(input);
       return {
         hotelGroupDisplayName: "Alpenrose Hotel Group",
         hotelGroupWebsiteUrl: null,
         properties,
       };
+    },
+  };
+}
+
+function agencyScope(overrides: Partial<MembershipPropertyScope> = {}): MembershipPropertyScope {
+  return {
+    mode: "all",
+    roleKey: "hotel_owner",
+    accessOrigin: "agency",
+    assignedPropertyIds: [],
+    ...overrides,
+  };
+}
+
+function propertyScopeRepository(scope: MembershipPropertyScope | null): PropertyAccessRepository {
+  return {
+    async findMembershipPropertyScope() {
+      return scope;
     },
   };
 }
