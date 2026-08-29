@@ -1284,7 +1284,7 @@ export async function registerPmsOperationsRoutes(
       }
       const { propertyId } = request.params;
       if (
-        !(await enforcePmsPropertyReadPolicy(
+        !(await enforcePmsPropertyAccessPolicy(
           request,
           reply,
           propertyId,
@@ -1351,7 +1351,7 @@ export async function registerPmsOperationsRoutes(
       }
       const { propertyId } = request.params;
       if (
-        !(await enforcePmsPropertyReadPolicy(
+        !(await enforcePmsPropertyAccessPolicy(
           request,
           reply,
           propertyId,
@@ -1391,7 +1391,7 @@ export async function registerPmsOperationsRoutes(
       }
       const { propertyId, roomTypeId } = request.params;
       if (
-        !(await enforcePmsPropertyReadPolicy(
+        !(await enforcePmsPropertyAccessPolicy(
           request,
           reply,
           propertyId,
@@ -1471,7 +1471,7 @@ export async function registerPmsOperationsRoutes(
       }
       const { propertyId } = request.params;
       if (
-        !(await enforcePmsPropertyReadPolicy(
+        !(await enforcePmsPropertyAccessPolicy(
           request,
           reply,
           propertyId,
@@ -1521,7 +1521,7 @@ export async function registerPmsOperationsRoutes(
       }
       const { propertyId } = request.params;
       if (
-        !(await enforcePmsPropertyReadPolicy(
+        !(await enforcePmsPropertyAccessPolicy(
           request,
           reply,
           propertyId,
@@ -1673,7 +1673,7 @@ export async function registerPmsOperationsRoutes(
       }
       const { propertyId } = request.params;
       if (
-        !(await enforcePmsPropertyReadPolicy(
+        !(await enforcePmsPropertyAccessPolicy(
           request,
           reply,
           propertyId,
@@ -1705,17 +1705,23 @@ export async function registerPmsOperationsRoutes(
 
   app.put<{ Params: PmsPropertyParams; Body: unknown }>(
     "/properties/:propertyId/booking-acceptance",
+    {
+      onRequest: async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          sendPmsOperationsError(reply, originNotAllowed());
+          return;
+        }
+        await enforcePmsPropertyAccessPolicy(
+          request,
+          reply,
+          request.params.propertyId,
+          "pms.settings.manage",
+          options.propertyAccessRepository,
+        );
+      },
+    },
     async (request, reply) => {
-      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
-        return sendPmsOperationsError(reply, {
-          statusCode: 403,
-          code: "missing_permission",
-          category: "authorization",
-          message: "PMS operations origin is not allowed.",
-        });
-      }
       const { propertyId } = request.params;
-      if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
       const body = request.body;
       if (
         !body ||
@@ -1881,7 +1887,7 @@ export async function registerPmsOperationsRoutes(
       }
       const { propertyId } = request.params;
       if (
-        !(await enforcePmsPropertyReadPolicy(
+        !(await enforcePmsPropertyAccessPolicy(
           request,
           reply,
           propertyId,
@@ -1909,7 +1915,7 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId } = request.params;
-      const context = await enforcePmsPropertyReadPolicy(
+      const context = await enforcePmsPropertyAccessPolicy(
         request,
         reply,
         propertyId,
@@ -1974,7 +1980,7 @@ export async function registerPmsOperationsRoutes(
         });
       }
       const { propertyId, guestBookingId } = request.params;
-      const context = await enforcePmsPropertyReadPolicy(
+      const context = await enforcePmsPropertyAccessPolicy(
         request,
         reply,
         propertyId,
@@ -3181,7 +3187,7 @@ function enforcePmsOperationsReadPolicy(
   }
 }
 
-async function enforcePmsPropertyReadPolicy(
+async function enforcePmsPropertyAccessPolicy(
   request: FastifyRequest,
   reply: FastifyReply,
   propertyId: string,

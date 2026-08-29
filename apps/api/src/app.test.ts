@@ -10033,7 +10033,7 @@ describe("vayada-api", () => {
     let acceptanceMode: "instant" | "request" = "request";
     const published: string[] = [];
     app = buildAuthenticatedApp({
-      permissions: ["pms.settings.read", "pms.operations.manage"],
+      permissions: ["pms.settings.read", "pms.settings.manage"],
       entitlements: [
         {
           product: "pms",
@@ -10123,6 +10123,57 @@ describe("vayada-api", () => {
       instantBook: false,
     });
     expect(readCount).toBe(1);
+  });
+
+  it("updates Booking-owned acceptance mode for an assigned manager", async () => {
+    let updateCount = 0;
+    let publishCount = 0;
+    app = buildAuthenticatedApp({
+      permissions: ["pms.settings.read", "pms.settings.manage"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      roleKey: "hotel_manager",
+      linkedPmsRelationship: "operator",
+      propertyScope: {
+        mode: "assigned",
+        roleKey: "hotel_manager",
+        accessOrigin: "agency",
+        assignedPropertyIds: [pmsPropertyId],
+      },
+      bookingAcceptanceSettings: {
+        async findAcceptanceMode() {
+          throw new Error("booking acceptance read must not run");
+        },
+        async updateAcceptanceMode(propertyId, acceptanceMode) {
+          expect(propertyId).toBe(pmsPropertyId);
+          updateCount += 1;
+          return acceptanceMode;
+        },
+      },
+      publicBookabilityPublisher: {
+        async publish({ propertyId }) {
+          expect(propertyId).toBe(pmsPropertyId);
+          publishCount += 1;
+          return null;
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "PUT",
+      url: `/api/pms/properties/${pmsPropertyId}/booking-acceptance`,
+      payload: { acceptanceMode: "instant" },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toEqual({
+      contractVersion: "booking-acceptance.v1",
+      propertyId: pmsPropertyId,
+      acceptanceMode: "instant",
+      instantBook: true,
+    });
+    expect(updateCount).toBe(1);
+    expect(publishCount).toBe(1);
   });
 
   it("fails closed across the PMS booking acceptance read denial matrix", async () => {
@@ -10354,6 +10405,293 @@ describe("vayada-api", () => {
         expect(response.body, candidate.name).toMatchObject({ message: candidate.message });
       }
       expect(readCount, candidate.name).toBe(0);
+      const serializedBody = JSON.stringify(response.body);
+      expect(serializedBody, candidate.name).not.toContain("sensitive property access failure");
+      if (candidate.hiddenProperty) {
+        expect(serializedBody, candidate.name).not.toContain(propertyId);
+        hiddenPropertyDenials.add(serializedBody);
+      }
+
+      await app.close();
+      app = null;
+    }
+
+    expect(hiddenPropertyDenials.size).toBe(1);
+  });
+
+  it("fails closed across the PMS booking acceptance write denial matrix", async () => {
+    type AuthenticatedAppOptions = Parameters<typeof buildAuthenticatedApp>[0];
+    const entitlement: ProductEntitlement = {
+      product: "pms",
+      key: "property-management",
+      status: "active",
+    };
+    const unassignedPropertyId = "f6853000-0000-0000-0000-000000000098";
+    const foreignPropertyId = "f6853000-0000-0000-0000-000000000099";
+    const cases: Array<{
+      name: string;
+      appOptions?: AuthenticatedAppOptions;
+      authorization?: string | null;
+      propertyId?: string;
+      payload?: unknown;
+      malformedJson?: boolean;
+      statusCode: number;
+      code?: string;
+      message?: string;
+      hiddenProperty?: boolean;
+    }> = [
+      {
+        name: "missing authentication",
+        authorization: null,
+        payload: "{not-json",
+        malformedJson: true,
+        statusCode: 401,
+        code: "unauthenticated",
+      },
+      {
+        name: "authorized malformed JSON",
+        payload: "{not-json",
+        malformedJson: true,
+        statusCode: 400,
+      },
+      {
+        name: "invalid authentication",
+        authorization: "Bearer invalid-token",
+        statusCode: 401,
+        code: "unauthenticated",
+      },
+      {
+        name: "missing permission",
+        appOptions: { permissions: [] },
+        statusCode: 403,
+        code: "missing_permission",
+      },
+      {
+        name: "missing permission precedes malformed JSON parsing",
+        appOptions: { permissions: [] },
+        payload: "{not-json",
+        malformedJson: true,
+        statusCode: 403,
+        code: "missing_permission",
+      },
+      {
+        name: "malformed assigned property IDs",
+        appOptions: {
+          propertyScope: {
+            mode: "assigned",
+            roleKey: "hotel_owner",
+            accessOrigin: "agency",
+            assignedPropertyIds: [pmsPropertyId, null as never],
+          },
+        },
+        statusCode: 403,
+        code: "missing_resource_access",
+      },
+      {
+        name: "settings read permission",
+        appOptions: { permissions: ["pms.settings.read"] },
+        statusCode: 403,
+        code: "missing_permission",
+      },
+      {
+        name: "compatibility read permission",
+        appOptions: { permissions: ["pms.operations.read"] },
+        statusCode: 403,
+        code: "missing_permission",
+      },
+      {
+        name: "compatibility manage permission",
+        appOptions: { permissions: ["pms.operations.manage"] },
+        statusCode: 403,
+        code: "missing_permission",
+      },
+      {
+        name: "Booking settings permissions",
+        appOptions: { permissions: ["booking.settings.read", "booking.settings.manage"] },
+        statusCode: 403,
+        code: "missing_permission",
+      },
+      {
+        name: "missing entitlement",
+        appOptions: { entitlements: [] },
+        statusCode: 403,
+        code: "missing_entitlement",
+      },
+      {
+        name: "suspended entitlement",
+        appOptions: { entitlements: [{ ...entitlement, status: "suspended" }] },
+        statusCode: 403,
+        code: "inactive_entitlement",
+      },
+      {
+        name: "different property entitlement",
+        appOptions: {
+          entitlements: [
+            {
+              ...entitlement,
+              resource: {
+                product: "pms",
+                resourceType: "pms_property",
+                resourceId: unassignedPropertyId,
+              },
+            },
+          ],
+        },
+        statusCode: 403,
+        code: "missing_entitlement",
+      },
+      {
+        name: "missing target PMS resource",
+        appOptions: { linkedPmsPropertyId: null },
+        statusCode: 403,
+        code: "missing_resource_access",
+        hiddenProperty: true,
+      },
+      {
+        name: "disallowed resource relationship",
+        appOptions: { linkedPmsRelationship: "finance_manager" },
+        statusCode: 403,
+        code: "missing_resource_access",
+      },
+      {
+        name: "empty assigned scope",
+        appOptions: {
+          propertyScope: {
+            mode: "assigned",
+            roleKey: "hotel_owner",
+            accessOrigin: "agency",
+            assignedPropertyIds: [],
+          },
+        },
+        statusCode: 403,
+        code: "missing_resource_access",
+      },
+      {
+        name: "unassigned direct URL",
+        appOptions: {
+          additionalPmsPropertyId: unassignedPropertyId,
+          propertyScope: {
+            mode: "assigned",
+            roleKey: "hotel_owner",
+            accessOrigin: "agency",
+            assignedPropertyIds: [pmsPropertyId],
+          },
+        },
+        propertyId: unassignedPropertyId,
+        statusCode: 403,
+        code: "missing_resource_access",
+        hiddenProperty: true,
+      },
+      {
+        name: "missing membership scope",
+        appOptions: { propertyScope: null },
+        statusCode: 403,
+        code: "missing_permission",
+      },
+      {
+        name: "unknown membership scope",
+        appOptions: {
+          propertyScope: {
+            mode: "unknown",
+            roleKey: "hotel_owner",
+            accessOrigin: "agency",
+            assignedPropertyIds: [pmsPropertyId],
+          },
+        },
+        statusCode: 403,
+        code: "missing_permission",
+      },
+      {
+        name: "cross-tenant direct URL",
+        propertyId: foreignPropertyId,
+        payload: "{not-json",
+        malformedJson: true,
+        statusCode: 403,
+        code: "missing_resource_access",
+        hiddenProperty: true,
+      },
+      {
+        name: "inactive membership",
+        appOptions: { membershipStatus: "inactive" },
+        statusCode: 401,
+        code: "unauthenticated",
+      },
+      {
+        name: "suspended membership",
+        appOptions: { membershipStatus: "suspended" },
+        statusCode: 401,
+        code: "unauthenticated",
+      },
+      {
+        name: "authorization property storage failure",
+        appOptions: {
+          propertyAccessRepository: {
+            async findMembershipPropertyScope() {
+              throw new Error("sensitive property access failure");
+            },
+          },
+        },
+        statusCode: 500,
+        message: "Authentication service is temporarily unavailable.",
+      },
+      {
+        name: "route property storage failure",
+        appOptions: { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
+        statusCode: 500,
+        code: "read_model_unavailable",
+        message: "PMS property access is unavailable.",
+      },
+    ];
+    const hiddenPropertyDenials = new Set<string>();
+
+    for (const candidate of cases) {
+      let updateCount = 0;
+      let publishCount = 0;
+      app = buildAuthenticatedApp({
+        permissions: ["pms.settings.manage"],
+        entitlements: [entitlement],
+        ...candidate.appOptions,
+        bookingAcceptanceSettings: {
+          async findAcceptanceMode() {
+            throw new Error("booking acceptance read must not run");
+          },
+          async updateAcceptanceMode() {
+            updateCount += 1;
+            throw new Error("booking acceptance write must not run");
+          },
+        },
+        publicBookabilityPublisher: {
+          async publish() {
+            publishCount += 1;
+            throw new Error("bookability publication must not run");
+          },
+        },
+      });
+      const propertyId = candidate.propertyId ?? pmsPropertyId;
+      const response = await injectJson(app, {
+        method: "PUT",
+        url: `/api/pms/properties/${propertyId}/booking-acceptance`,
+        payload: candidate.payload ?? { acceptanceMode: "instant" },
+        headers: {
+          ...(candidate.authorization === null
+            ? {}
+            : {
+                authorization: candidate.authorization ?? "Bearer valid-token",
+                "x-hotel-id": pmsPropertyId,
+              }),
+          ...(candidate.malformedJson ? { "content-type": "application/json" } : {}),
+        },
+      });
+
+      expect(response.statusCode, candidate.name).toBe(candidate.statusCode);
+      if (candidate.code) {
+        expect(response.body, candidate.name).toMatchObject({ code: candidate.code });
+      }
+      if (candidate.message) {
+        expect(response.body, candidate.name).toMatchObject({ message: candidate.message });
+      }
+      expect(updateCount, candidate.name).toBe(0);
+      expect(publishCount, candidate.name).toBe(0);
       const serializedBody = JSON.stringify(response.body);
       expect(serializedBody, candidate.name).not.toContain("sensitive property access failure");
       if (candidate.hiddenProperty) {
