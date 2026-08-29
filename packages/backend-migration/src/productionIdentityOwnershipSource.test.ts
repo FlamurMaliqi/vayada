@@ -4,6 +4,7 @@ import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
 import {
   mapOwnershipStatus,
   parseIdentityOwnershipRows,
+  stableOrganizationId,
 } from "./productionIdentityOwnershipSource.js";
 
 const USER_ID = "11111111-1111-4111-8111-111111111111";
@@ -11,6 +12,12 @@ const RESOURCE_ID = "22222222-2222-4222-8222-222222222222";
 const CREATED = "2026-01-01T00:00:00.000Z";
 
 describe("production ownership source mapping", () => {
+  it("derives stable organization UUIDs without source-table IDs", () => {
+    expect(stableOrganizationId(USER_ID, "hotel_group")).toBe(
+      "dcaad57f-4290-5899-ba7b-786d4a38e4bb",
+    );
+  });
+
   it.each([
     ["booking.booking_hotels", "live", "active"],
     ["marketplace.hotel_profiles", "pending", "suspended"],
