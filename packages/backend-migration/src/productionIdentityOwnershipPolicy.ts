@@ -4,6 +4,7 @@ import type {
 } from "./productionIdentityDisposition.js";
 import type {
   ExistingOwnershipState,
+  ExistingOrganization,
   IdentityOwnershipSource,
   MembershipStatus,
   OrganizationKind,
@@ -37,6 +38,29 @@ export function mergePlannedOrganizations(
     status: moreAvailable(left.status, right.status),
     createdAt: oldest([left.createdAt, right.createdAt]),
     updatedAt: new Date(Math.max(leftTime, rightTime)).toISOString(),
+  };
+}
+
+export function selectTargetOrSourceOrganization(
+  target: ExistingOrganization,
+  source: PlannedOrganization,
+): PlannedOrganization | null {
+  if (target.id !== source.id || target.kind !== source.kind) return null;
+  if (isNewer(target, source))
+    return {
+      ...source,
+      ...target,
+      createdAt: source.createdAt,
+      updatedAt: newest([target.updatedAt]),
+    };
+  if (isNewer(source, target)) return { ...source, updatedAt: newest([source.updatedAt]) };
+  if (target.name !== source.name || target.slug !== source.slug || target.status !== source.status)
+    return null;
+  return {
+    ...source,
+    ...target,
+    createdAt: source.createdAt,
+    updatedAt: newest([target.updatedAt]),
   };
 }
 

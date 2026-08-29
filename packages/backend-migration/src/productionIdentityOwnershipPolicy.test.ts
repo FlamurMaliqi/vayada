@@ -6,6 +6,7 @@ import {
   oldest,
   organizationCandidates,
   organizationStatus,
+  selectTargetOrSourceOrganization,
 } from "./productionIdentityOwnershipPolicy.js";
 import type {
   ExistingOwnershipState,
@@ -47,6 +48,12 @@ describe("production ownership freshness policy", () => {
     const right = { ...equivalent, name: "Two" };
     expect(mergePlannedOrganizations(left, right)).toBeNull();
     expect(mergePlannedOrganizations(right, left)).toBeNull();
+  });
+
+  it("fails closed when equal-instant target and source state disagree", () => {
+    const source = organization({ name: "Source" });
+    const target = { ...source, name: "Target", updatedAt: "2026-02-01T00:00:00+00:00" };
+    expect(selectTargetOrSourceOrganization(target, source)).toBeNull();
   });
 
   it("orders timestamp offsets by instant rather than text", () => {
