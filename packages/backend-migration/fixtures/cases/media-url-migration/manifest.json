@@ -1,5 +1,28 @@
 {
   "caseId": "media-url-migration",
-  "sourceDatabases": ["booking", "marketplace", "pms"],
-  "description": "One-time media URL migration fixture covering Booking hero/images, Marketplace listing/profile/chat URLs, PMS room images/imports, and PMS message attachments."
+  "sourceDatabases": ["auth", "booking", "marketplace", "pms"],
+  "description": "One-time media URL migration fixture covering Booking hero/images, Marketplace listing/profile/chat URLs, PMS room images/imports, and PMS message attachments. Known active gaps remain assigned to VAY-1055.",
+  "sourceReferences": [
+    "booking:public.booking_hotels.hero_image",
+    "booking:public.booking_hotels.images",
+    "marketplace:public.hotel_profiles.picture",
+    "marketplace:public.hotel_listings.images",
+    "marketplace:public.creators.profile_picture",
+    "marketplace:public.chat_messages.content",
+    "pms:public.room_types.images",
+    "pms:external.room_image_imports.source_url",
+    "pms:public.message_attachments.s3_key",
+    "pms:public.message_attachments.source_url",
+    "pms:platform.media_objects.bucket",
+    "pms:platform.media_objects.storage_key",
+    "pms:platform.media_objects.source_url",
+    "pms:platform.media_variants.storage_key",
+    "pms:platform.media_variants.public_cdn_url"
+  ],
+  "knownCoverageGaps": [
+    "auth:public.users.avatar",
+    "booking:public.booking_addons.image",
+    "booking:public.booking_hotels.branding_favicon_url",
+    "booking:public.booking_hotels.branding_logo_url"
+  ]
 }

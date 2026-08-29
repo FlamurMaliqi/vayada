@@ -42,6 +42,25 @@ export { transformFixtureCase, type TransformConfig } from "./transform.js";
 export { normalizePgConnectionString } from "./pgConnection.js";
 
 export {
+  buildSourceRowCountQueries,
+  parseSourceInventory,
+  REQUIRED_SOURCE_REVISION_ARGUMENT,
+  REQUIRED_SOURCE_SNAPSHOT_ARGUMENTS,
+  RETENTION_POLICIES,
+  SOURCE_DATABASES,
+  SOURCE_INVENTORY_HEADERS,
+  SOURCE_READ_ONLY_TRANSACTION_SQL,
+  SOURCE_SCHEMA_FINGERPRINT_SQL,
+  type SourceDatabase,
+  type SourceDisposition,
+  type SourceInventoryEntry,
+  type SourceLifecycle,
+  type SourceObjectType,
+  type RetentionPolicy,
+  type TargetOwner,
+} from "./sourceInventory.js";
+
+export {
   runParityChecks,
   type ParityCheckSeverity,
   type ParityConfig,
