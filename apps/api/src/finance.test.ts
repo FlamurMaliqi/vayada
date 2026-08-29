@@ -23,9 +23,11 @@ import type {
   FinanceReconciliationViewQuery,
   FinancePropertyReadRepository,
   FinanceProviderAccountCommandResult,
+  FinanceStripeProviderAccountReconciliationResult,
   FinanceStripeConnectProvider,
   CreateStripeProviderAccountCommand,
   IssueStripeOnboardingLinkCommand,
+  ReconcileStripePropertyAccountCommand,
   FinanceXenditPayoutReconciliationCommand,
   FinanceXenditPayoutReconciliationResult,
 } from "@vayada/domain-finance";
@@ -38,6 +40,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "./app.js";
 import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import type { PublicHotelProfileRepository } from "./routes/aiHotels.js";
+import { unusedBookingWebCheckoutAdapter } from "./routes/bookingWebPublic.fixtures.js";
 import {
   createTargetFinancePropertySettingsRepository,
   type FinanceXenditBankValidator,
@@ -504,6 +507,145 @@ describe("finance route contracts", () => {
     }
   });
 
+  it("reconciles only the authorized property's stored Stripe account with a no-store result", async () => {
+    const contractCase = financeContractCases.cases.find(
+      ({ caseId }) => caseId === "stripe-property-post-return-reconciliation",
+    );
+    expect(contractCase).toBeDefined();
+    const commands: ReconcileStripePropertyAccountCommand[] = [];
+    app = buildFinanceApp({
+      permissions: financeManagePermissions(),
+      repository: {
+        ...financeRepository,
+        async reconcileStripeProviderAccount(command) {
+          commands.push(command);
+          return stripeProviderAccountReconciliationResult(command);
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: contractCase!.request.path,
+      payload: {
+        ...contractCase!.request.body,
+        providerAccountRef: "acct_foreign_must_be_ignored",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    const responseBody = response.json<Record<string, unknown>>();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(responseBody).toMatchObject({
+      propertyId,
+      providerAccount: { provider: "stripe", ready: true },
+      commandMeta: { commandId: "cmd-stripe-reconcile-001" },
+    });
+    assertIncludes(responseBody, contractCase!.expected.mustInclude ?? [], contractCase!.caseId);
+    assertExcludes(responseBody, contractCase!.expected.mustExclude ?? [], contractCase!.caseId);
+    expect(JSON.stringify(responseBody)).not.toMatch(/acct_|secret|rawPayload/i);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({ propertyId, payload: {} });
+    expect(commands[0]).not.toHaveProperty("providerAccountRef");
+  });
+
+  it("denies Stripe reconciliation before the repository for every property boundary failure", async () => {
+    const foreignPropertyId = "f3000000-0000-0000-0000-000000000999";
+    const cases: Array<{
+      name: string;
+      auth?: string;
+      permissions?: PermissionKey[];
+      entitlements?: ProductEntitlement[];
+      linkedPropertyId?: string | null;
+      requestedPropertyId?: string;
+      expectedStatus: number;
+      expectedCode: string;
+    }> = [
+      {
+        name: "missing auth",
+        expectedStatus: 401,
+        expectedCode: "unauthenticated",
+      },
+      {
+        name: "invalid auth",
+        auth: "Bearer invalid-token",
+        expectedStatus: 401,
+        expectedCode: "unauthenticated",
+      },
+      {
+        name: "missing permission",
+        auth: "Bearer valid-token",
+        permissions: ["pms.finance.read"],
+        expectedStatus: 403,
+        expectedCode: "missing_permission",
+      },
+      {
+        name: "missing entitlement",
+        auth: "Bearer valid-token",
+        permissions: financeManagePermissions(),
+        entitlements: [],
+        expectedStatus: 403,
+        expectedCode: "missing_entitlement",
+      },
+      {
+        name: "inactive entitlement",
+        auth: "Bearer valid-token",
+        permissions: financeManagePermissions(),
+        entitlements: [{ ...pmsFinanceEntitlement(), status: "suspended" }],
+        expectedStatus: 403,
+        expectedCode: "inactive_entitlement",
+      },
+      {
+        name: "foreign property",
+        auth: "Bearer valid-token",
+        permissions: financeManagePermissions(),
+        entitlements: [
+          {
+            ...pmsFinanceEntitlement(),
+            resource: {
+              product: "pms",
+              resourceType: "pms_property",
+              resourceId: foreignPropertyId,
+            },
+          },
+        ],
+        requestedPropertyId: foreignPropertyId,
+        expectedStatus: 403,
+        expectedCode: "missing_resource_access",
+      },
+    ];
+
+    for (const matrixCase of cases) {
+      let called = false;
+      app = buildFinanceApp({
+        permissions: matrixCase.permissions,
+        entitlements: matrixCase.entitlements,
+        linkedPropertyId: matrixCase.linkedPropertyId,
+        repository: {
+          ...financeRepository,
+          async reconcileStripeProviderAccount(command) {
+            called = true;
+            return stripeProviderAccountReconciliationResult(command);
+          },
+        },
+      });
+      const response = await injectJson<Record<string, unknown>>(app, {
+        method: "POST",
+        url: `/api/finance/properties/${matrixCase.requestedPropertyId ?? propertyId}/provider-accounts/stripe/reconcile`,
+        payload: { commandId: "cmd-denied", idempotencyKey: "key-denied" },
+        headers: matrixCase.auth ? { authorization: matrixCase.auth } : {},
+      });
+      await app.close();
+      app = null;
+
+      expect(response.statusCode, matrixCase.name).toBe(matrixCase.expectedStatus);
+      expect(response.body.code, matrixCase.name).toBe(matrixCase.expectedCode);
+      expect(called, matrixCase.name).toBe(false);
+    }
+  });
+
   it("rate-limits Stripe dashboard links per authorized user and property", async () => {
     let issued = 0;
     app = buildFinanceApp({
@@ -699,6 +841,130 @@ describe("finance route contracts", () => {
       message: "Finance provider account was not found.",
     });
     expect(JSON.stringify(result)).not.toContain("acct_disconnected");
+  });
+
+  it("reconciles Stripe readiness gain and loss without duplicate audit or projection effects", async () => {
+    const target = targetStripeReconciliationPool();
+    const provider = fakeStripeConnectProvider();
+    let snapshot = {
+      providerAccountRef: "acct_target_property_686",
+      chargesEnabled: true,
+      payoutsEnabled: true,
+      detailsSubmitted: true,
+      cardPaymentsStatus: "active",
+      defaultCurrency: "eur",
+    };
+    let retrieveCount = 0;
+    provider.retrieveAccount = async ({ providerAccountRef }) => {
+      retrieveCount += 1;
+      expect(providerAccountRef).toBe("acct_target_property_686");
+      return snapshot;
+    };
+    const repository = createTargetFinancePropertySettingsRepository({
+      connectionString: "postgresql://finance-target",
+      pool: target.pool,
+      stripeConnectProvider: provider,
+    });
+
+    const first = await repository.reconcileStripeProviderAccount!(
+      stripePropertyReconciliationTargetCommand(),
+    );
+    const replay = await repository.reconcileStripeProviderAccount!(
+      stripePropertyReconciliationTargetCommand(),
+    );
+
+    expect(first).toMatchObject({
+      ok: true,
+      status: "reconciled",
+      response: { providerAccount: { status: "active", ready: true } },
+    });
+    expect(replay).toMatchObject({ ok: true, status: "idempotent_replay" });
+    expect(target.auditCount).toBe(1);
+    expect(target.projectionCount).toBe(1);
+
+    snapshot = {
+      ...snapshot,
+      payoutsEnabled: false,
+      cardPaymentsStatus: "inactive",
+    };
+    const loss = await repository.reconcileStripeProviderAccount!(
+      stripePropertyReconciliationTargetCommand({
+        commandId: "cmd-stripe-reconcile-loss",
+        idempotencyKey: "finance-stripe-reconcile-loss",
+      }),
+    );
+
+    expect(loss).toMatchObject({
+      ok: true,
+      status: "reconciled",
+      response: {
+        providerAccount: {
+          status: "setup_incomplete",
+          payoutsEnabled: false,
+          cardPaymentsStatus: "inactive",
+          ready: false,
+        },
+      },
+    });
+    expect(retrieveCount).toBe(2);
+    expect(target.auditCount).toBe(2);
+    expect(target.projectionCount).toBe(2);
+    expect(
+      target.requiredCall("UPDATE finance.payment_provider_accounts").values?.slice(7),
+    ).toEqual([propertyId, "f7000000-0000-0000-0000-000000000686"]);
+    expect(JSON.stringify(loss)).not.toMatch(/acct_|secret|rawPayload/i);
+  });
+
+  it("maps missing and failed Stripe reconciliation without starting target writes", async () => {
+    const missing = targetStripeReconciliationPool({ account: null });
+    const missingProvider = fakeStripeConnectProvider();
+    let missingRetrieveCount = 0;
+    missingProvider.retrieveAccount = async () => {
+      missingRetrieveCount += 1;
+      throw new Error("should not run");
+    };
+    const missingRepository = createTargetFinancePropertySettingsRepository({
+      connectionString: "postgresql://finance-target",
+      pool: missing.pool,
+      stripeConnectProvider: missingProvider,
+    });
+    await expect(
+      missingRepository.reconcileStripeProviderAccount!(
+        stripePropertyReconciliationTargetCommand(),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      statusCode: 404,
+      code: "provider_account_not_found",
+    });
+    expect(missingRetrieveCount).toBe(0);
+    expect(missing.calls.map(({ text }) => text)).toEqual(
+      expect.arrayContaining(["BEGIN", "ROLLBACK"]),
+    );
+
+    const failed = targetStripeReconciliationPool();
+    const failedProvider = fakeStripeConnectProvider();
+    failedProvider.retrieveAccount = async () => {
+      throw new Error("Stripe raw failure for acct_target_property_686");
+    };
+    const failedRepository = createTargetFinancePropertySettingsRepository({
+      connectionString: "postgresql://finance-target",
+      pool: failed.pool,
+      stripeConnectProvider: failedProvider,
+    });
+    const result = await failedRepository.reconcileStripeProviderAccount!(
+      stripePropertyReconciliationTargetCommand(),
+    );
+    expect(result).toEqual({
+      ok: false,
+      statusCode: 502,
+      code: "provider_unavailable",
+      message: "Stripe account status is unavailable.",
+    });
+    expect(JSON.stringify(result)).not.toContain("acct_target_property_686");
+    expect(failed.calls.map(({ text }) => text)).toEqual(
+      expect.arrayContaining(["BEGIN", "ROLLBACK"]),
+    );
   });
 
   it("passes F1i affiliate payout settings and payout ledger fixtures in target mode", async () => {
@@ -2553,6 +2819,181 @@ function targetStripeProviderAccountPool(options: { failInsert?: boolean } = {})
   return result;
 }
 
+function targetStripeReconciliationPool(
+  options: {
+    account?: {
+      providerAccountId: string;
+      providerAccountRef: string;
+      propertyId: string;
+      status: "active" | "setup_incomplete";
+      onboardingStatus: "completed" | "invited";
+      chargesEnabled: boolean;
+      payoutsEnabled: boolean;
+      detailsSubmitted: boolean;
+      cardPaymentsStatus: string | null;
+    } | null;
+  } = {},
+): {
+  calls: QueryCall[];
+  auditCount: number;
+  projectionCount: number;
+  pool: {
+    connect(): Promise<{
+      query<T extends QueryResultRow = QueryResultRow>(
+        text: string,
+        values?: readonly unknown[],
+      ): Promise<{ rows: T[]; rowCount: number }>;
+      release(): void;
+    }>;
+    query<T extends QueryResultRow = QueryResultRow>(
+      text: string,
+      values?: readonly unknown[],
+    ): Promise<{ rows: T[]; rowCount: number }>;
+    end(): Promise<void>;
+  };
+  requiredCall(fragment: string): QueryCall;
+} {
+  const defaultAccount = {
+    providerAccountId: "f7000000-0000-0000-0000-000000000686",
+    providerAccountRef: "acct_target_property_686",
+    propertyId,
+    status: "setup_incomplete" as const,
+    onboardingStatus: "invited" as const,
+    chargesEnabled: false,
+    payoutsEnabled: false,
+    detailsSubmitted: false,
+    cardPaymentsStatus: null,
+  };
+  const state = {
+    calls: [] as QueryCall[],
+    account: options.account === undefined ? defaultAccount : options.account,
+    idempotency: new Map<string, { status: string; requestFingerprintHash: string }>(),
+    auditCount: 0,
+    projectionCount: 0,
+    transactionKeys: new Set<string>(),
+  };
+
+  const query = async <T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values?: readonly unknown[],
+  ): Promise<{ rows: T[]; rowCount: number }> => {
+    state.calls.push({ text, values });
+    if (text === "BEGIN") {
+      return { rows: [], rowCount: 0 };
+    }
+    if (text === "COMMIT") {
+      state.transactionKeys.clear();
+      return { rows: [], rowCount: 0 };
+    }
+    if (text === "ROLLBACK") {
+      for (const keyHash of state.transactionKeys) state.idempotency.delete(keyHash);
+      state.transactionKeys.clear();
+      return { rows: [], rowCount: 0 };
+    }
+    if (
+      text.includes("FROM finance.payment_provider_accounts account") &&
+      text.includes("JOIN finance.payment_settings settings")
+    ) {
+      const rows = state.account ? [state.account as unknown as T] : [];
+      return { rows, rowCount: rows.length };
+    }
+    if (text.includes("INSERT INTO platform.idempotency_keys")) {
+      const keyHash = String(values?.[0]);
+      if (state.idempotency.has(keyHash)) return { rows: [], rowCount: 0 };
+      const record = {
+        status: "in_progress",
+        requestFingerprintHash: String(values?.[1]),
+      };
+      state.idempotency.set(keyHash, record);
+      state.transactionKeys.add(keyHash);
+      return { rows: [record as unknown as T], rowCount: 1 };
+    }
+    if (text.includes("FROM platform.idempotency_keys")) {
+      const record = state.idempotency.get(String(values?.[0]));
+      const rows = record ? [record as unknown as T] : [];
+      return { rows, rowCount: rows.length };
+    }
+    if (text.includes("UPDATE finance.payment_provider_accounts")) {
+      if (
+        !state.account ||
+        values?.[0] !== state.account.providerAccountRef ||
+        values?.[7] !== state.account.propertyId ||
+        values?.[8] !== state.account.providerAccountId
+      ) {
+        return { rows: [], rowCount: 0 };
+      }
+      state.account = {
+        ...state.account,
+        status:
+          values?.[1] === true &&
+          values?.[2] === true &&
+          values?.[3] === true &&
+          values?.[6] === true
+            ? "active"
+            : "setup_incomplete",
+        onboardingStatus: values?.[3] === true ? "completed" : "invited",
+        chargesEnabled: values?.[1] === true,
+        payoutsEnabled: values?.[2] === true,
+        detailsSubmitted: values?.[3] === true,
+        cardPaymentsStatus:
+          (JSON.parse(String(values?.[5])) as { cardPaymentsStatus?: string }).cardPaymentsStatus ??
+          null,
+      };
+      return { rows: [state.account as unknown as T], rowCount: 1 };
+    }
+    if (text.includes("FROM distribution.public_hotel_bookability_profiles")) {
+      return {
+        rows: [
+          {
+            canonicalUrl: "https://hotel.example.test",
+            bookingBaseUrl: "https://book.example.test",
+          } as unknown as T,
+        ],
+        rowCount: 1,
+      };
+    }
+    if (text.includes("INSERT INTO distribution.public_hotel_bookability_profiles")) {
+      state.projectionCount += 1;
+      return { rows: [], rowCount: 1 };
+    }
+    if (text.includes("INSERT INTO platform.product_audit_events")) {
+      state.auditCount += 1;
+      return { rows: [], rowCount: 1 };
+    }
+    if (text.includes("UPDATE platform.idempotency_keys")) {
+      const record = state.idempotency.get(String(values?.[5]));
+      if (record) record.status = "completed";
+      return { rows: [], rowCount: record ? 1 : 0 };
+    }
+    throw new Error(`Unexpected SQL: ${text}`);
+  };
+
+  const client = { query, release() {} };
+  return {
+    get calls() {
+      return state.calls;
+    },
+    get auditCount() {
+      return state.auditCount;
+    },
+    get projectionCount() {
+      return state.projectionCount;
+    },
+    pool: {
+      async connect() {
+        return client;
+      },
+      query,
+      async end() {},
+    },
+    requiredCall(fragment: string) {
+      const call = state.calls.find((candidate) => candidate.text.includes(fragment));
+      expect(call, fragment).toBeDefined();
+      return call!;
+    },
+  };
+}
+
 type FinanceProviderAccountRowFixture = {
   providerAccountId: string;
   providerAccountRef: string;
@@ -2653,6 +3094,29 @@ function stripePropertyOnboardingLinkTargetCommand(
       requestedAt: "2026-06-12T12:00:00.000Z",
     },
     payload: { providerAccountId },
+  };
+}
+
+function stripePropertyReconciliationTargetCommand(
+  options: { commandId?: string; idempotencyKey?: string } = {},
+): ReconcileStripePropertyAccountCommand {
+  return {
+    commandType: "finance.provider_account.stripe.reconcile",
+    commandId: options.commandId ?? "cmd-stripe-reconcile-target",
+    idempotencyKey: options.idempotencyKey ?? "finance-stripe-reconcile-target",
+    propertyId,
+    audit: {
+      actor: {
+        kind: "user",
+        userId: "f1000000-0000-0000-0000-000000000686",
+        organizationId: affiliateOrganizationId,
+      },
+      requestId: "req_stripe_reconcile_target",
+      correlationId: "corr_stripe_reconcile_target",
+      reason: "Stripe property reconciliation target test",
+      requestedAt: "2026-06-12T12:00:00.000Z",
+    },
+    payload: {},
   };
 }
 
@@ -2827,6 +3291,7 @@ function buildFinanceApp(
     financePublicHotelPropertyResolver: options.financePublicHotelPropertyResolver,
     financeRepository: options.repository ?? financeRepository,
     financeXenditBankValidator: options.xenditBankValidator,
+    bookingWebCheckoutAdapter: unusedBookingWebCheckoutAdapter,
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
       repository: identityRepository({
@@ -3113,6 +3578,36 @@ function stripeProviderAccountCommandMeta(
     sideEffects: ["audit_event", "reconciliation_job"],
     outboxEvents: [],
     jobs: [],
+  };
+}
+
+function stripeProviderAccountReconciliationResult(
+  command: ReconcileStripePropertyAccountCommand,
+): FinanceStripeProviderAccountReconciliationResult & { ok: true } {
+  return {
+    ok: true,
+    status: "reconciled",
+    response: {
+      contractVersion: "finance-route-contracts.v1",
+      propertyId: command.propertyId,
+      providerAccount: {
+        provider: "stripe",
+        status: "active",
+        onboardingStatus: "completed",
+        chargesEnabled: true,
+        payoutsEnabled: true,
+        detailsSubmitted: true,
+        cardPaymentsStatus: "active",
+        ready: true,
+      },
+      commandMeta: {
+        commandId: command.commandId,
+        idempotencyKey: command.idempotencyKey,
+        sideEffects: ["provider_validation", "audit_event"],
+        outboxEvents: [],
+        jobs: [],
+      },
+    },
   };
 }
 

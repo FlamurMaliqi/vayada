@@ -112,7 +112,10 @@ describe("provider webhook booking settlement", () => {
   });
 
   it("promotes a completed Stripe account.updated event into canonical provider readiness", async () => {
-    const query = vi.fn(async (sql: string) => {
+    const query = vi.fn(async (sql: string, _values?: readonly unknown[]) => {
+      if (sql.includes("FOR UPDATE")) {
+        return { rows: [{ id: "provider-account-1" }] };
+      }
       if (sql.includes("UPDATE finance.payment_provider_accounts")) {
         return { rows: [{ propertyId: "property-1" }], rowCount: 1 };
       }
@@ -148,6 +151,7 @@ describe("provider webhook booking settlement", () => {
           chargesEnabled: true,
           payoutsEnabled: true,
           detailsSubmitted: true,
+          cardPaymentsStatus: "active",
           defaultCurrency: "eur",
           rawEventId: "evt_account",
         },
@@ -158,26 +162,78 @@ describe("provider webhook booking settlement", () => {
       expect.stringContaining("onboarding_status = CASE"),
       expect.arrayContaining(["acct_1", true, true, true, "eur"]),
     );
+    const update = query.mock.calls.find(([sql]) =>
+      sql.includes("UPDATE finance.payment_provider_accounts"),
+    );
+    expect(update?.[1]?.[6]).toBe(true);
     expect(query.mock.calls.some(([sql]) => sql.includes("public_payment_methods"))).toBe(true);
+  });
+
+  it("keeps Stripe readiness incomplete when card-payments capability is missing", async () => {
+    let updateValues: readonly unknown[] | undefined;
+    const query = vi.fn(async (sql: string, values?: readonly unknown[]) => {
+      if (sql.includes("FOR UPDATE")) return { rows: [{ id: "provider-account-1" }] };
+      if (sql.includes("UPDATE finance.payment_provider_accounts")) {
+        updateValues = values;
+        return { rows: [{ propertyId: "property-1" }], rowCount: 1 };
+      }
+      return { rows: [] };
+    });
+    await reconcileStripeProviderAccount({ query } as never, {
+      provider: "stripe",
+      receiptId: "receipt-account-missing-capability",
+      receiptKey: "webhook:stripe:evt_account_missing_capability",
+      receiptKeyHash: "hash",
+      payloadHash: "payload-hash",
+      rawPayload: {},
+      normalizedPreview: {
+        domainEventKey: "finance.provider-account.updated:stripe:acct_1:missing-capability:v1",
+        domainEventType: "finance.provider-account.updated",
+        resourceProduct: "finance",
+        resourceType: "provider_account",
+        resourceId: "acct_1",
+        jobKey: "finance.reconcile-provider-account:acct_1:missing-capability:v1",
+        queueName: "finance.webhooks",
+        jobType: "finance.reconcile-provider-account",
+        payload: {
+          chargesEnabled: true,
+          payoutsEnabled: true,
+          detailsSubmitted: true,
+          defaultCurrency: "eur",
+          rawEventId: "evt_account_missing_capability",
+        },
+      },
+    });
+
+    expect(updateValues?.slice(1, 4)).toEqual([true, true, true]);
+    expect(updateValues?.[6]).toBe(false);
   });
 
   it("uses canonical Stripe account state when an older incomplete webhook arrives last", async () => {
     const updateValues: Array<readonly unknown[]> = [];
+    const executionOrder: string[] = [];
     const query = vi.fn(async (sql: string, values?: readonly unknown[]) => {
+      if (sql.includes("FOR UPDATE")) {
+        executionOrder.push("lock");
+        return { rows: [{ id: "provider-account-1" }] };
+      }
       if (sql.includes("UPDATE finance.payment_provider_accounts")) {
         updateValues.push(values ?? []);
         return { rows: [{ propertyId: "property-1" }], rowCount: 1 };
       }
       return { rows: [] };
     });
-    const retrieveAccount = vi.fn(async () => ({
-      providerAccountRef: "acct_1",
-      chargesEnabled: true,
-      payoutsEnabled: true,
-      detailsSubmitted: true,
-      cardPaymentsStatus: "active",
-      defaultCurrency: "eur",
-    }));
+    const retrieveAccount = vi.fn(async () => {
+      executionOrder.push("retrieve");
+      return {
+        providerAccountRef: "acct_1",
+        chargesEnabled: true,
+        payoutsEnabled: true,
+        detailsSubmitted: true,
+        cardPaymentsStatus: "active",
+        defaultCurrency: "eur",
+      };
+    });
 
     for (const fixture of [
       { event: "evt_new", charges: true },
@@ -214,6 +270,7 @@ describe("provider webhook booking settlement", () => {
     }
 
     expect(retrieveAccount).toHaveBeenCalledTimes(2);
+    expect(executionOrder).toEqual(["lock", "retrieve", "lock", "retrieve"]);
     expect(updateValues).toHaveLength(2);
     for (const values of updateValues) {
       expect(values.slice(1, 4)).toEqual([true, true, true]);

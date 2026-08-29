@@ -279,6 +279,29 @@
       }
     },
     {
+      "caseId": "stripe-property-post-return-reconciliation",
+      "description": "An authorized property command refreshes only the stored Stripe account from canonical provider state and returns normalized readiness.",
+      "request": {
+        "path": "/api/finance/properties/f3000000-0000-0000-0000-000000000686/provider-accounts/stripe/reconcile",
+        "method": "POST",
+        "body": {
+          "commandId": "cmd-stripe-reconcile-001",
+          "idempotencyKey": "finance-stripe-reconcile-f300686"
+        }
+      },
+      "expected": {
+        "status": 200,
+        "duplicateBehavior": "no second Stripe retrieval, audit event, or public projection update",
+        "mustInclude": [
+          "propertyId",
+          "providerAccount.status",
+          "providerAccount.ready",
+          "commandMeta"
+        ],
+        "mustExclude": ["providerAccountRef", "stripeSecretKey", "rawPayload", "authorization"]
+      }
+    },
+    {
       "caseId": "xendit-bank-validation",
       "description": "Xendit bank validation returns provider validation status and masked destination data without saving raw account numbers in route responses.",
       "request": {

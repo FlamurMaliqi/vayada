@@ -578,6 +578,44 @@ export type IssueStripeOnboardingLinkCommand =
   | IssueStripePropertyOnboardingLinkCommand
   | IssueStripeAffiliateOnboardingLinkCommand;
 
+export type ReconcileStripePropertyAccountCommand = FinanceCommandBase<
+  "finance.provider_account.stripe.reconcile",
+  Record<string, never>
+>;
+
+export type FinanceStripeProviderAccountReconciliationResponse = {
+  contractVersion: FinanceContractVersion;
+  propertyId: FinancePropertyId;
+  providerAccount: {
+    provider: "stripe";
+    status: "active" | "setup_incomplete";
+    onboardingStatus: "completed" | "invited";
+    chargesEnabled: boolean;
+    payoutsEnabled: boolean;
+    detailsSubmitted: boolean;
+    cardPaymentsStatus: string | null;
+    ready: boolean;
+  };
+  commandMeta: FinanceCommandMeta;
+};
+
+export type FinanceStripeProviderAccountReconciliationResult =
+  | {
+      ok: true;
+      status: "reconciled" | "idempotent_replay";
+      response: FinanceStripeProviderAccountReconciliationResponse;
+    }
+  | {
+      ok: false;
+      statusCode: 404 | 409 | 500 | 502;
+      code:
+        | "provider_account_not_found"
+        | "idempotency_conflict"
+        | "write_unavailable"
+        | "provider_unavailable";
+      message: string;
+    };
+
 export type FinanceProviderAccountCommandResponse = {
   contractVersion: FinanceContractVersion;
   providerAccountId: string;
@@ -1015,6 +1053,9 @@ export type FinancePropertyCommandRepository = {
   issueStripeDashboardLoginLink(
     propertyId: FinancePropertyId,
   ): Promise<FinanceStripeDashboardLoginLinkResult>;
+  reconcileStripeProviderAccount(
+    command: ReconcileStripePropertyAccountCommand,
+  ): Promise<FinanceStripeProviderAccountReconciliationResult>;
   enqueueXenditPayoutReconciliation(
     command: FinanceXenditPayoutReconciliationCommand,
   ): Promise<FinanceXenditPayoutReconciliationResult>;

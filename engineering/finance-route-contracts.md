@@ -123,6 +123,7 @@ facades must call the Finance-owned route/service contract.
 | Platform affiliate mark paid      | `POST`      | `/api/finance/platform/affiliate-payouts/:affiliateId/mark-paid`                            | Platform Admin only; target Finance command                                                        |
 | Stripe Connect property account   | `POST`      | `/api/finance/properties/:propertyId/provider-accounts/stripe`                              | legacy `/admin/stripe/connect-account` facade                                                      |
 | Stripe Connect onboarding link    | `POST`      | `/api/finance/properties/:propertyId/provider-accounts/:providerAccountId/onboarding-link`  | legacy GET facade may call this command                                                            |
+| Stripe post-return reconciliation | `POST`      | `/api/finance/properties/:propertyId/provider-accounts/stripe/reconcile`                    | target-only repair command; production callback ownership remains with legacy until VAY-947        |
 | Xendit bank validation            | `POST`      | `/api/finance/properties/:propertyId/provider-accounts/xendit/bank-validation`              | legacy `/admin/xendit/validate-bank-account` facade                                                |
 | Xendit payout reconciliation      | `POST`      | `/api/finance/properties/:propertyId/reconciliation/xendit-payouts`                         | legacy manual reconcile facade                                                                     |
 | Reconciliation views              | `GET`       | `/api/finance/properties/:propertyId/reconciliation/*`                                      | none required before F1 reads                                                                      |
@@ -529,7 +530,40 @@ type ProviderAccountCommandResponse = {
   onboardingStatus: "not_started" | "invited" | "in_review" | "completed" | "requires_action";
   commandMeta: FinanceCommandMeta;
 };
+
+type ReconcileStripePropertyAccountRequest = {
+  commandId: string;
+  idempotencyKey: string;
+};
+
+type ReconcileStripePropertyAccountResponse = {
+  contractVersion: "finance-route-contracts.v1";
+  propertyId: string;
+  providerAccount: {
+    provider: "stripe";
+    status: "active" | "setup_incomplete";
+    onboardingStatus: "completed" | "invited";
+    chargesEnabled: boolean;
+    payoutsEnabled: boolean;
+    detailsSubmitted: boolean;
+    cardPaymentsStatus: string | null;
+    ready: boolean;
+  };
+  commandMeta: FinanceCommandMeta;
+};
 ```
+
+Post-return reconciliation resolves the configured provider account from the
+authorized property; it does not accept a Stripe account reference from the
+browser. It retrieves canonical Stripe state and marks the account active only
+when charges, payouts, submitted details, and the card-payments capability are
+all ready. Provider state, audit evidence, and an existing public bookability
+projection update in one transaction. Exact replay does not call Stripe again
+or duplicate audit/projection effects. The response contains normalized
+readiness only, never a provider account reference, secret, or raw payload.
+
+This command is target-only. It does not move the production Stripe callback
+from legacy Python; VAY-947 owns callback switching and rollback.
 
 Affiliate Stripe Connect uses the same finance provider-account contract after
 Marketplace/affiliate resolves and authorizes the affiliate resource. Booking
@@ -689,6 +723,8 @@ The fixture set must cover:
   export disposition;
 - property and affiliate payout reads without sensitive destination fields;
 - Stripe property and affiliate onboarding idempotency;
+- Stripe property post-return reconciliation, readiness gain/loss, and exact
+  replay without provider identifiers;
 - Xendit bank validation and payout reconciliation job enqueue;
 - reconciliation views over payments, payouts, provider accounts, receipts,
   jobs, and dead letters;

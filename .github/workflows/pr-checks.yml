@@ -167,6 +167,7 @@ jobs:
           src/domains/financeFolioReadRepository.integration.test.ts
           src/domains/financeProviderFeeEvidence.integration.test.ts
           src/domains/financeProviderFeeExpenseProjection.integration.test.ts
+          src/domains/stripeProviderAccountReconciliation.integration.test.ts
           src/domains/financeGeneratedExpenseRepository.integration.test.ts
           src/domains/financeOtaCommissionExpenseProjection.integration.test.ts
           src/jobs/financeExpenseGeneration.integration.test.ts
