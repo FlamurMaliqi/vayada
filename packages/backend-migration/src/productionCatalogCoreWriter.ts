@@ -47,7 +47,11 @@ export async function writeProductionCatalogCore(
      FROM jsonb_to_recordset($1::jsonb) AS source(
        "propertyId" uuid, "sourceSystem" text, "sourceTable" text, "sourceId" text,
        relationship text)
-     ON CONFLICT (source_system, source_table, source_id) DO NOTHING`,
+     ON CONFLICT (source_system, source_table, source_id) DO UPDATE SET
+       metadata = hotel_catalog.property_source_links.metadata
+         || jsonb_build_object('migrationRunId', $2::text)
+     WHERE hotel_catalog.property_source_links.property_id = EXCLUDED.property_id
+       AND hotel_catalog.property_source_links.relationship = EXCLUDED.relationship`,
     [JSON.stringify(sourceLinks), runId],
   );
   const slugs = await client.query(
