@@ -188,7 +188,7 @@ export default function NewBookingModal({
         setRoomId((current) => {
           const currentRoom = rooms.find((room) => room.id === current);
           if (currentRoom && !unavailable.has(currentRoom.roomTypeId)) return current;
-          return rooms.find((room) => !unavailable.has(room.roomTypeId))?.id || "";
+          return "";
         });
       })
       .catch(() => {
@@ -418,7 +418,7 @@ export default function NewBookingModal({
             <button
               type="submit"
               form="new-booking-form"
-              disabled={submitting}
+              disabled={submitting || linkedAvailabilityLoading || !roomId}
               className="px-4 py-2 text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {submitting ? "Creating…" : "Create Booking"}
@@ -466,6 +466,11 @@ export default function NewBookingModal({
                 disabled={linkedAvailabilityLoading || selectableRooms.length === 0}
                 required
               >
+                {!roomId && selectableRooms.length > 0 && (
+                  <option value="" disabled>
+                    Select an available room
+                  </option>
+                )}
                 {selectableRooms.length === 0 && <option value="">No rooms available</option>}
                 {roomTypes.map((rt) => {
                   const typeRooms = roomsByType[rt.id] || [];
