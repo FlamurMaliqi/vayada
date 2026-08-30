@@ -1,4 +1,4 @@
--- Migration: 0121_hotel_property_manifest_permission
+-- Migration: 0123_hotel_property_manifest_permission
 -- Owner: domain-identity (backend-auth, backend-authorization)
 -- See: engineering/staff-access-authorization-contract.md, VAY-1085
 
