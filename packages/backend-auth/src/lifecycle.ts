@@ -181,6 +181,25 @@ export type StaffInviteAccessValidationIssue =
   | "missing_required_permission"
   | "forbidden_permission";
 
+export function parseStaffPermissionOverrides(
+  value: unknown,
+): { grant: string[]; deny: string[] } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const grant = record["grant"];
+  const deny = record["deny"];
+  if (
+    Object.keys(record).some((key) => key !== "grant" && key !== "deny") ||
+    !Array.isArray(grant) ||
+    !grant.every((key) => typeof key === "string") ||
+    !Array.isArray(deny) ||
+    !deny.every((key) => typeof key === "string")
+  ) {
+    return null;
+  }
+  return { grant, deny };
+}
+
 const requiredLowerPermissions: Partial<
   Record<StaffAccessPermissionKey, readonly StaffAccessPermissionKey[]>
 > = {
@@ -209,26 +228,13 @@ export function hasValidStaffPermissionHierarchy(permissionKeys: ReadonlySet<str
   return true;
 }
 
-export function validateStaffInviteAccess(input: {
+export function validateStaffPermissionOverrides(input: {
   roleKey: string;
-  propertyAccessMode: string;
-  propertyIds: readonly string[];
   permissionOverrides: { grant: readonly string[]; deny: readonly string[] };
+  rolePermissions?: readonly string[];
 }): readonly StaffInviteAccessValidationIssue[] {
   const issues = new Set<StaffInviteAccessValidationIssue>();
   if (!hotelStaffRoleKeys.includes(input.roleKey as HotelStaffRoleKey)) issues.add("invalid_role");
-  if (input.propertyAccessMode !== "assigned") issues.add("invalid_property_access_mode");
-  if (input.propertyAccessMode === "assigned" && input.propertyIds.length === 0) {
-    issues.add("missing_property_assignment");
-  }
-
-  const propertyIds = new Set<string>();
-  for (const propertyId of input.propertyIds) {
-    if (!canonicalPropertyId.test(propertyId)) issues.add("invalid_property_id");
-    const normalizedPropertyId = propertyId.toLowerCase();
-    if (propertyIds.has(normalizedPropertyId)) issues.add("duplicate_property_id");
-    propertyIds.add(normalizedPropertyId);
-  }
 
   const knownPermissions = new Set<string>(staffAccessPermissionKeys);
   const grant = new Set<string>();
@@ -245,23 +251,49 @@ export function validateStaffInviteAccess(input: {
   }
 
   if ([...grant].some((key) => deny.has(key))) issues.add("conflicting_permission_override");
-  if (grant.has("identity.staff.manage") || grant.has("finance.billing.manage")) {
-    issues.add("forbidden_permission");
-  }
-  if (input.roleKey === "housekeeping" && grant.has("pms.guest_contact.read")) {
-    issues.add("forbidden_permission");
-  }
   const roleKey = input.roleKey as HotelStaffRoleKey;
-  const effectivePermissions = new Set<StaffAccessPermissionKey>(
-    hotelStaffRoleKeys.includes(roleKey) ? staffRoleDefaultPermissions[roleKey] : [],
+  const effectivePermissions = new Set<string>(
+    input.rolePermissions ??
+      (hotelStaffRoleKeys.includes(roleKey) ? staffRoleDefaultPermissions[roleKey] : []),
   );
   for (const key of grant) {
-    if (knownPermissions.has(key)) effectivePermissions.add(key as StaffAccessPermissionKey);
+    if (knownPermissions.has(key)) effectivePermissions.add(key);
   }
-  for (const key of deny) effectivePermissions.delete(key as StaffAccessPermissionKey);
+  for (const key of deny) effectivePermissions.delete(key);
+  if (
+    effectivePermissions.has("identity.staff.manage") ||
+    effectivePermissions.has("finance.billing.manage") ||
+    (input.roleKey === "housekeeping" && effectivePermissions.has("pms.guest_contact.read"))
+  ) {
+    issues.add("forbidden_permission");
+  }
   if (!hasValidStaffPermissionHierarchy(effectivePermissions)) {
     issues.add("missing_required_permission");
   }
+  return [...issues];
+}
+
+export function validateStaffInviteAccess(input: {
+  roleKey: string;
+  propertyAccessMode: string;
+  propertyIds: readonly string[];
+  permissionOverrides: { grant: readonly string[]; deny: readonly string[] };
+}): readonly StaffInviteAccessValidationIssue[] {
+  const issues = new Set<StaffInviteAccessValidationIssue>();
+  if (input.propertyAccessMode !== "assigned") issues.add("invalid_property_access_mode");
+  if (input.propertyAccessMode === "assigned" && input.propertyIds.length === 0) {
+    issues.add("missing_property_assignment");
+  }
+
+  const propertyIds = new Set<string>();
+  for (const propertyId of input.propertyIds) {
+    if (!canonicalPropertyId.test(propertyId)) issues.add("invalid_property_id");
+    const normalizedPropertyId = propertyId.toLowerCase();
+    if (propertyIds.has(normalizedPropertyId)) issues.add("duplicate_property_id");
+    propertyIds.add(normalizedPropertyId);
+  }
+
+  for (const issue of validateStaffPermissionOverrides(input)) issues.add(issue);
   return [...issues];
 }
 

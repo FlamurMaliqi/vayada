@@ -11,6 +11,7 @@ import type {
   RequestContext,
   ResourceType,
 } from "@vayada/backend-auth";
+import { AuthorizationResolutionError } from "@vayada/backend-auth";
 
 import {
   AuthorizationError,
@@ -202,6 +203,7 @@ function propertyScope(overrides: Partial<MembershipPropertyScope> = {}): Member
     roleKey: "hotel_owner",
     accessOrigin: "agency",
     assignedPropertyIds: [],
+    permissionOverrides: null,
     ...overrides,
   };
 }
@@ -260,6 +262,83 @@ describe("createAuthorizationResolver", () => {
 
     expect(resolution.permissions).toEqual(["booking.settings.manage"]);
     expect(resolution.entitlements).toEqual([entitlement("active")]);
+  });
+
+  it.each([
+    ["empty", "front_desk", ["pms.calendar.read"], { grant: [], deny: [] }],
+    [
+      "explicit deny removes a role default",
+      "front_desk",
+      ["pms.calendar.read", "pms.calendar.manage"],
+      { grant: [], deny: ["pms.calendar.manage"] },
+    ],
+    ["grant", "hotel_custom", [], { grant: ["pms.calendar.read"], deny: [] }],
+  ] as const)("applies %s", async (_name, roleKey, rolePermissions, permissionOverrides) => {
+    const resolution = await createAuthorizationResolver(
+      { findPermissionsForRole: async () => [...rolePermissions] as PermissionKey[] },
+      undefined,
+      propertyScopeRepository(propertyScope({ roleKey, permissionOverrides })),
+    )(contextFor({ roleKey }));
+
+    expect(resolution.permissions).toEqual(["pms.calendar.read"]);
+  });
+
+  it.each([
+    ["non-string key", { grant: [42], deny: [] }, "malformed_permission_override"],
+    [
+      "duplicate key",
+      { grant: ["pms.calendar.read", "pms.calendar.read"], deny: [] },
+      "duplicate_permission_key",
+    ],
+    [
+      "grant and deny overlap",
+      { grant: ["pms.calendar.read"], deny: ["pms.calendar.read"] },
+      "conflicting_permission_override",
+    ],
+    [
+      "missing lower permission",
+      { grant: ["pms.reservation.cancel"], deny: [] },
+      "missing_required_permission",
+    ],
+    [
+      "housekeeping contact grant",
+      { grant: ["pms.guest_contact.read"], deny: [] },
+      "forbidden_permission",
+      "housekeeping",
+    ],
+  ] as const)(
+    "rejects and audits $0",
+    async (_name, permissionOverrides, expectedIssue, roleKey: string = "hotel_custom") => {
+      const recordInvalidPermissionOverride = vi.fn(async () => undefined);
+      const findEntitlementsForContext = vi.fn(async () => [entitlement("active")]);
+      const repository: PropertyAccessRepository = {
+        findMembershipPropertyScope: async () => propertyScope({ roleKey, permissionOverrides }),
+        recordInvalidPermissionOverride,
+      };
+
+      await expect(
+        createAuthorizationResolver(
+          { findPermissionsForRole: async () => [] },
+          { findEntitlementsForContext },
+          repository,
+        )(contextFor({ roleKey })),
+      ).rejects.toBeInstanceOf(AuthorizationResolutionError);
+      expect(recordInvalidPermissionOverride).toHaveBeenCalledWith(
+        expect.objectContaining({ membership: expect.objectContaining({ roleKey }) }),
+        expect.arrayContaining([expectedIssue]),
+      );
+      expect(findEntitlementsForContext).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps invalid overrides closed when security audit storage fails", async () => {
+    await expect(
+      createAuthorizationResolver({ findPermissionsForRole: async () => [] }, undefined, {
+        findMembershipPropertyScope: async () =>
+          propertyScope({ roleKey: "hotel_custom", permissionOverrides: {} }),
+        recordInvalidPermissionOverride: async () => Promise.reject(new Error("storage details")),
+      })(contextFor({ roleKey: "hotel_custom" })),
+    ).rejects.toThrow("Permission override audit is unavailable");
   });
 
   it("returns no authorization for delegated or malformed hotel memberships", async () => {
@@ -443,12 +522,16 @@ describe.skipIf(!TEST_DATABASE_URL)("createPgPropertyAccessRepository", () => {
     await client.connect();
     const repository = createPgPropertyAccessRepository({ connectionString: TEST_DATABASE_URL! });
     const cleanup = `
+      BEGIN;
+      SET LOCAL session_replication_role = replica;
+      DELETE FROM platform.product_audit_events WHERE organization_id = '${DB_ORGANIZATION}';
       DELETE FROM identity.membership_property_assignments WHERE membership_id = '${DB_MEMBERSHIP}';
       DELETE FROM identity.organization_memberships WHERE id = '${DB_MEMBERSHIP}';
       DELETE FROM identity.organization_resource_links WHERE organization_id = '${DB_ORGANIZATION}';
       DELETE FROM identity.organizations WHERE id = '${DB_ORGANIZATION}';
       DELETE FROM hotel_catalog.properties WHERE id = '${DB_PROPERTY}';
-      DELETE FROM identity.users WHERE id = '${DB_USER}';`;
+      DELETE FROM identity.users WHERE id = '${DB_USER}';
+      COMMIT;`;
     const dbContext = {
       ...propertyContext(),
       actor: { ...propertyContext().actor, internalUserId: DB_USER },
@@ -470,7 +553,7 @@ describe.skipIf(!TEST_DATABASE_URL)("createPgPropertyAccessRepository", () => {
         INSERT INTO identity.organizations (id, kind, name, slug) VALUES ('${DB_ORGANIZATION}', 'hotel_group', 'Property Access Test', 'property-access-test');
         INSERT INTO hotel_catalog.properties (id, public_id, display_name) VALUES ('${DB_PROPERTY}', 'property-access-test', 'Property Access Test');
         INSERT INTO identity.organization_resource_links (organization_id, product, resource_type, resource_id, relationship) VALUES ('${DB_ORGANIZATION}', 'hotel_catalog', 'property', '${DB_PROPERTY}', 'operator');
-        INSERT INTO identity.organization_memberships (id, organization_id, user_id, status, role_key, property_access_mode, access_origin) VALUES ('${DB_MEMBERSHIP}', '${DB_ORGANIZATION}', '${DB_USER}', 'active', 'front_desk', 'assigned', 'agency');
+        INSERT INTO identity.organization_memberships (id, organization_id, user_id, status, role_key, permission_overrides, property_access_mode, access_origin) VALUES ('${DB_MEMBERSHIP}', '${DB_ORGANIZATION}', '${DB_USER}', 'active', 'front_desk', '{"grant":["booking.analytics.read"],"deny":["pms.calendar.manage"]}', 'assigned', 'agency');
         INSERT INTO identity.membership_property_assignments VALUES ('${DB_MEMBERSHIP}', '${DB_PROPERTY}');`);
 
       await expect(repository.findMembershipPropertyScope(dbContext)).resolves.toEqual({
@@ -478,22 +561,66 @@ describe.skipIf(!TEST_DATABASE_URL)("createPgPropertyAccessRepository", () => {
         roleKey: "front_desk",
         accessOrigin: "agency",
         assignedPropertyIds: [DB_PROPERTY],
+        permissionOverrides: {
+          grant: ["booking.analytics.read"],
+          deny: ["pms.calendar.manage"],
+        },
       });
       await expect(
         createAuthorizationResolver(
-          { findPermissionsForRole: async () => ["pms.operations.read"] },
+          {
+            findPermissionsForRole: async () => ["pms.calendar.read", "pms.calendar.manage"],
+          },
           undefined,
           repository,
         )(dbContext),
-      ).resolves.toMatchObject({ permissions: ["pms.operations.read"] });
+      ).resolves.toMatchObject({
+        permissions: ["pms.calendar.read", "booking.analytics.read"],
+      });
+      await client.query(
+        `UPDATE identity.organization_memberships
+         SET permission_overrides = '{"grant":["pms.reservation.cancel"],"deny":[]}'
+         WHERE id = $1`,
+        [DB_MEMBERSHIP],
+      );
       await expect(
-        repository.findMembershipPropertyScope({
+        createAuthorizationResolver(
+          { findPermissionsForRole: async () => [] },
+          undefined,
+          repository,
+        )(dbContext),
+      ).rejects.toBeInstanceOf(AuthorizationResolutionError);
+      const audit = await client.query<{ action: string; redacted_payload: unknown }>(
+        `SELECT action, redacted_payload
+         FROM platform.product_audit_events
+         WHERE organization_id = $1 AND target_resource_id = $2`,
+        [DB_ORGANIZATION, DB_MEMBERSHIP],
+      );
+      expect(audit.rows).toEqual([
+        {
+          action: "identity.staff.permission_override.rejected",
+          redacted_payload: {
+            outcome: "denied",
+            code: "invalid_permission_override",
+            issueCodes: ["missing_required_permission"],
+          },
+        },
+      ]);
+      for (const mismatchedContext of [
+        { ...dbContext, actor: { ...dbContext.actor, internalUserId: PROPERTY_B } },
+        { ...dbContext, membership: { ...dbContext.membership, membershipId: PROPERTY_B } },
+        {
           ...dbContext,
           selectedOrganization: { ...dbContext.selectedOrganization, organizationId: PROPERTY_B },
-        }),
-      ).resolves.toBeNull();
+        },
+      ]) {
+        await expect(repository.findMembershipPropertyScope(mismatchedContext)).resolves.toBeNull();
+      }
+      await client.query(`UPDATE identity.users SET status = 'suspended' WHERE id = '${DB_USER}'`);
+      await expect(repository.findMembershipPropertyScope(dbContext)).resolves.toBeNull();
       await client.query(
-        `UPDATE identity.organization_memberships SET status = 'suspended' WHERE id = '${DB_MEMBERSHIP}'`,
+        `UPDATE identity.users SET status = 'active' WHERE id = '${DB_USER}';
+         UPDATE identity.organization_memberships SET status = 'suspended' WHERE id = '${DB_MEMBERSHIP}'`,
       );
       await expect(repository.findMembershipPropertyScope(dbContext)).resolves.toBeNull();
     } finally {

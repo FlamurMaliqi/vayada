@@ -11,6 +11,11 @@ import type {
   ResourceType,
   Product,
 } from "@vayada/backend-auth";
+import {
+  AuthorizationResolutionError,
+  parseStaffPermissionOverrides,
+  validateStaffPermissionOverrides,
+} from "@vayada/backend-auth";
 
 export type RolePermissionRepository = {
   findPermissionsForRole(
@@ -42,10 +47,15 @@ export type MembershipPropertyScope = {
   roleKey: string;
   accessOrigin: string;
   assignedPropertyIds: readonly string[];
+  permissionOverrides?: unknown;
 };
 
 export type PropertyAccessRepository = {
   findMembershipPropertyScope(context: RequestContext): Promise<MembershipPropertyScope | null>;
+  recordInvalidPermissionOverride?(
+    context: RequestContext,
+    issueCodes: readonly string[],
+  ): Promise<void>;
   close?(): Promise<void>;
 };
 
@@ -96,6 +106,7 @@ type MembershipPropertyScopeRow = {
   role_key: string;
   access_origin: string;
   assigned_property_ids: string[];
+  permission_overrides: unknown;
 };
 
 function resourceScopeKey(
@@ -250,6 +261,7 @@ export function createPgPropertyAccessRepository(
            membership.property_access_mode,
            membership.role_key,
            membership.access_origin,
+           membership.permission_overrides,
            ARRAY(
              SELECT assignment.property_id::text
              FROM identity.membership_property_assignments assignment
@@ -259,6 +271,8 @@ export function createPgPropertyAccessRepository(
          FROM identity.organization_memberships membership
          JOIN identity.organizations organization
            ON organization.id = membership.organization_id
+         JOIN identity.users actor
+           ON actor.id = membership.user_id AND actor.status = 'active'
          WHERE membership.id = $1
            AND membership.user_id = $2
            AND membership.organization_id = $3
@@ -279,8 +293,36 @@ export function createPgPropertyAccessRepository(
             roleKey: row.role_key,
             accessOrigin: row.access_origin,
             assignedPropertyIds: row.assigned_property_ids,
+            permissionOverrides: row.permission_overrides,
           }
         : null;
+    },
+    async recordInvalidPermissionOverride(context, issueCodes) {
+      await pool.query(
+        `INSERT INTO platform.product_audit_events
+           (audit_key, product, action, occurred_at, tenant_scope, organization_id,
+            actor_type, actor_user_id, target_resource_product, target_resource_type,
+            target_resource_id, correlation_id, redacted_payload, audit_metadata,
+            retention_class, privacy_scope)
+         VALUES ($1, 'identity', 'identity.staff.permission_override.rejected', $2,
+                 'organization', $3, 'user', $4, 'identity', 'organization_membership',
+                 $5, $6, $7::jsonb, $8::jsonb, 'security', 'confidential')
+         ON CONFLICT (product, audit_key) DO NOTHING`,
+        [
+          `staff.permission_override.rejected:${context.audit.requestId}`,
+          context.audit.receivedAt,
+          context.selectedOrganization.organizationId,
+          context.actor.internalUserId,
+          context.membership.membershipId,
+          context.audit.correlationId ?? context.audit.requestId,
+          JSON.stringify({
+            outcome: "denied",
+            code: "invalid_permission_override",
+            issueCodes: [...new Set(issueCodes)].sort(),
+          }),
+          JSON.stringify({ requestId: context.audit.requestId, source: context.audit.source }),
+        ],
+      );
     },
     async close() {
       await pool.end();
@@ -294,20 +336,52 @@ export function createAuthorizationResolver(
   propertyAccessRepository: PropertyAccessRepository | undefined,
 ): AuthorizationResolver {
   return async (context) => {
+    let membershipScope: MembershipPropertyScope | undefined;
     if (context.selectedOrganization.kind === "hotel_group") {
       const scope = await propertyAccessRepository?.findMembershipPropertyScope(context);
       if (!isAgencyMembershipScope(context, scope)) {
         return { permissions: [], entitlements: [] };
       }
+      membershipScope = scope;
     }
 
-    const [permissions, entitlements] = await Promise.all([
-      rolePermissionRepository.findPermissionsForRole(
-        context.selectedOrganization.kind,
-        context.membership.roleKey,
-      ),
-      entitlementRepository?.findEntitlementsForContext(context),
-    ]);
+    const rolePermissions = await rolePermissionRepository.findPermissionsForRole(
+      context.selectedOrganization.kind,
+      context.membership.roleKey,
+    );
+    let permissions = rolePermissions;
+    const permissionOverrides = membershipScope?.permissionOverrides;
+    if (permissionOverrides !== null && permissionOverrides !== undefined) {
+      const overrides = parseStaffPermissionOverrides(permissionOverrides);
+      const issueCodes = overrides
+        ? validateStaffPermissionOverrides({
+            roleKey: context.membership.roleKey,
+            rolePermissions,
+            permissionOverrides: overrides,
+          })
+        : ["malformed_permission_override"];
+      if (!overrides || issueCodes.length) {
+        if (!propertyAccessRepository?.recordInvalidPermissionOverride) {
+          throw new Error("Permission override audit sink is unavailable");
+        }
+        try {
+          await propertyAccessRepository.recordInvalidPermissionOverride(context, issueCodes);
+        } catch {
+          throw new Error("Permission override audit is unavailable");
+        }
+        throw new AuthorizationResolutionError();
+      }
+      const effectivePermissions = new Set<PermissionKey>(rolePermissions);
+      for (const permission of overrides.grant) {
+        effectivePermissions.add(permission as PermissionKey);
+      }
+      for (const permission of overrides.deny) {
+        effectivePermissions.delete(permission as PermissionKey);
+      }
+      permissions = [...effectivePermissions];
+    }
+
+    const entitlements = await entitlementRepository?.findEntitlementsForContext(context);
 
     return {
       permissions,

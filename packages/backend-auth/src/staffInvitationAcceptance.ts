@@ -1,6 +1,6 @@
 import pg from "pg";
 
-import { validateStaffInviteAccess } from "./lifecycle.js";
+import { parseStaffPermissionOverrides, validateStaffInviteAccess } from "./lifecycle.js";
 import type { RepositoryConfig } from "./repository.js";
 
 export type StaffInvitationAcceptanceEvent = {
@@ -155,7 +155,7 @@ export function createPgStaffInvitationAcceptanceRepository(config: RepositoryCo
           return reject("provider_identity_mismatch", identity);
         }
 
-        const overrides = parseOverrides(invitation.permission_overrides);
+        const overrides = parseStaffPermissionOverrides(invitation.permission_overrides);
         if (
           !overrides ||
           validateStaffInviteAccess({
@@ -254,22 +254,6 @@ function normalizeEvent(
     providerOrganizationId: event.providerOrganizationId.trim(),
     invitationEmail: event.invitationEmail.trim().toLowerCase(),
   };
-}
-
-function parseOverrides(value: unknown): { grant: string[]; deny: string[] } | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const grant = record["grant"];
-  const deny = record["deny"];
-  if (
-    Object.keys(record).some((key) => key !== "grant" && key !== "deny") ||
-    !Array.isArray(grant) ||
-    !grant.every((key) => typeof key === "string") ||
-    !Array.isArray(deny) ||
-    !deny.every((key) => typeof key === "string")
-  )
-    return null;
-  return { grant, deny };
 }
 
 async function audit(
