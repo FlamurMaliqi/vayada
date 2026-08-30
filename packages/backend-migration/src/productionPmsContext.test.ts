@@ -76,6 +76,36 @@ describe("production PMS context", () => {
       "ORPHAN_LINKED_INVENTORY_MEMBER",
     ]);
   });
+
+  it("blocks one external Channex property owned by multiple hotels", () => {
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: [
+        row("channex_connections", {
+          id: "one",
+          hotel_id: "hotel-one",
+          channex_property_id: "external",
+        }),
+        row("channex_connections", {
+          id: "two",
+          hotel_id: "hotel-two",
+          channex_property_id: "external",
+        }),
+      ],
+      target: {
+        propertyLinks: [],
+        bookings: [],
+        userIds: [],
+        mediaIds: [],
+        records: [],
+        provenance: [],
+      },
+    });
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({ code: "DUPLICATE_EXTERNAL_PROPERTY_ID", sourceId: "external" }),
+    );
+  });
 });
 
 function row(sourceTable: string, data: Record<string, unknown>): IdentitySourceRow {

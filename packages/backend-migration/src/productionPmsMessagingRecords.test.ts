@@ -32,6 +32,10 @@ describe("production PMS messaging", () => {
       senderType: "guest",
       piiRetentionUntil: "2027-09-03",
     });
+    expect(records.find((record) => record.targetTable === "messages")).toMatchObject({
+      mutable: true,
+      sourceUpdatedAt: "2026-09-01T12:01:00.000Z",
+    });
     expect(
       records.find((record) => record.targetTable === "message_attachments")?.row,
     ).toMatchObject({ platformMediaObjectId: MEDIA, propertyId: PROPERTY });
@@ -81,6 +85,7 @@ function rows(): IdentitySourceRow[] {
       body: "Hello",
       sent_at: "2026-09-01T11:59:00Z",
       received_at: "2026-09-01T12:00:00Z",
+      read_at: "2026-09-01T12:01:00Z",
       raw_payload: {},
     }),
     row("message_attachments", {

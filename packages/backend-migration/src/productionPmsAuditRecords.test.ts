@@ -76,6 +76,26 @@ describe("production PMS audit records", () => {
       }),
     );
   });
+
+  it("versions mutable channel markup audit history", () => {
+    const firstRows = rows(true);
+    const secondRows = rows(true);
+    secondRows.find((entry) => entry.sourceTable === "channex_channel_markups")!.data[
+      "updated_at"
+    ] = "2026-08-29T02:00:00Z";
+    const build = (sourceRows: IdentitySourceRow[]) => {
+      const context = createProductionPmsContext({
+        sourceRunId: "run",
+        completedAt: "2026-08-30T00:00:00Z",
+        rows: sourceRows,
+        target: target(),
+      });
+      return buildPmsAuditRecords(context).find(
+        (record) => record.row["action"] === "pms.legacy_channel_markup.migrated",
+      )!;
+    };
+    expect(build(firstRows).targetId).not.toBe(build(secondRows).targetId);
+  });
 });
 
 function rows(processedOk: boolean): IdentitySourceRow[] {

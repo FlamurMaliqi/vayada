@@ -110,10 +110,10 @@ function channelMarkup(context: PmsBuildContext, source: IdentitySourceRow): Pms
   const channel = requiredText(data["channel"], "channel").toLowerCase();
   const markupPercent = percentage(data["markup_pct"], "markup_pct");
   const occurredAt = iso(data["updated_at"], "updated_at");
-  const id = deterministicUuid("production-pms", "channel-markup-audit", sourceId);
+  const id = deterministicUuid("production-pms", "channel-markup-audit", sourceId, occurredAt);
   return [
     auditRecord(context, source, id, occurredAt, {
-      auditKey: `legacy-pms-channel-markup:${sourceId}`,
+      auditKey: `legacy-pms-channel-markup:${sourceId}:${occurredAt}`,
       action: "pms.legacy_channel_markup.migrated",
       propertyId,
       actorType: "migration",

@@ -49,6 +49,7 @@ export function createProductionPmsContext(input: {
     rowsByTable.get("channex_connections") ?? [],
     blockers,
   );
+  validateExternalConnectionOwnership(rowsByTable.get("channex_connections") ?? [], blockers);
   const linkedGroupByRoomType = linkedMemberships(
     rowsByTable.get("linked_inventory_group_members") ?? [],
     maps.get("linked_inventory_groups")!,
@@ -186,6 +187,27 @@ function uniqueConnectionByHotel(
     else result.set(hotelId, row);
   }
   return result;
+}
+
+function validateExternalConnectionOwnership(
+  rows: IdentitySourceRow[],
+  blockers: PmsBuildContext["blockers"],
+): void {
+  const owners = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const externalId = String(row.data["channex_property_id"] ?? "").toLowerCase();
+    const hotelId = String(row.data["hotel_id"] ?? "").toLowerCase();
+    if (!externalId || !hotelId) continue;
+    owners.set(externalId, new Set([...(owners.get(externalId) ?? []), hotelId]));
+  }
+  for (const [externalId, hotels] of owners)
+    if (hotels.size > 1)
+      blockers.push({
+        code: "DUPLICATE_EXTERNAL_PROPERTY_ID",
+        source: "pms.channex_connections",
+        sourceId: externalId,
+        message: "External Channex property ID is owned by more than one legacy hotel",
+      });
 }
 
 function linkedMemberships(

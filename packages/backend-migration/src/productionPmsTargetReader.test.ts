@@ -33,6 +33,7 @@ describe("production PMS target reader", () => {
                   id: "10000000-0000-4000-a000-000000000001",
                   property_id: "20000000-0000-4000-a000-000000000001",
                   source_system: "pms",
+                  room_attributes: { legacy_key: "unchanged" },
                 }),
               },
             ],
@@ -76,7 +77,11 @@ describe("production PMS target reader", () => {
     });
     expect(target.records[0]).toMatchObject({
       targetTable: "room_types",
-      row: { propertyId: "20000000-0000-4000-a000-000000000001", sourceSystem: "pms" },
+      row: {
+        propertyId: "20000000-0000-4000-a000-000000000001",
+        sourceSystem: "pms",
+        roomAttributes: { legacy_key: "unchanged" },
+      },
     });
     expect(target.provenance[0]).toMatchObject({
       sourceUpdatedAt: "2026-08-30T00:00:00.000Z",

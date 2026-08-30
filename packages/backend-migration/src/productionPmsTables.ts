@@ -285,7 +285,7 @@ export const PRODUCTION_PMS_TABLES: Record<string, PmsTableDefinition> = {
   ]),
   messages: table(
     "pms.messages",
-    false,
+    true,
     [
       id,
       property,
@@ -302,7 +302,7 @@ export const PRODUCTION_PMS_TABLES: Record<string, PmsTableDefinition> = {
       c("rawPayload", "raw_payload", "jsonb"),
       c("piiRetentionUntil", "pii_retention_until", "date"),
     ],
-    "received_at",
+    "COALESCE(read_at, received_at)",
   ),
   message_attachments: table(
     "pms.message_attachments",
