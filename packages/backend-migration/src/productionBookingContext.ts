@@ -13,7 +13,7 @@ export function createProductionBookingContext(input: {
   rows: IdentitySourceRow[];
   target: ProductionBookingTargetState;
 }): BookingBuildContext {
-  const blockers: IdentityMigrationBlocker[] = [];
+  const blockers: IdentityMigrationBlocker[] = [...(input.target.blockers ?? [])];
   const propertyBySource = propertySourceMap(input.target.propertyLinks, blockers);
   const propertyBySlug = propertySlugMap(input.target.propertySlugs, blockers);
   const bookings = input.rows.filter(

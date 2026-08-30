@@ -54,6 +54,7 @@ export type ProductionBookingTargetState = {
   propertySlugs: BookingPropertySlug[];
   records: ExistingBookingTargetRecord[];
   provenance: ProductionMigrationSourceLink[];
+  blockers?: IdentityMigrationBlocker[];
 };
 
 export type ProductionBookingPlan = {

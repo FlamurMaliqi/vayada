@@ -1,5 +1,6 @@
 import type pg from "pg";
 
+import type { IdentityMigrationBlocker } from "./productionIdentityDisposition.js";
 import type {
   BookingPropertyLink,
   BookingPropertySlug,
@@ -117,6 +118,67 @@ export async function readProductionBookingTargetState(
         [JSON.stringify(requestedLinks)],
       )
     : { rows: [] as ProductionMigrationSourceLink[] };
+  const collisionRows = candidates.map((candidate) => ({
+    targetTable: candidate.targetTable,
+    targetId: candidate.targetId,
+    ...candidate.row,
+  }));
+  const collisions = collisionRows.length
+    ? await client.query<IdentityMigrationBlocker>(
+        `WITH requested AS (
+           SELECT * FROM jsonb_to_recordset($1::jsonb) AS source(
+             "targetTable" text, "targetId" text, "publicReference" text,
+             "sourceSystem" text, "sourceBookingId" text, "guestBookingId" uuid,
+             "guestRole" text, "sourceAddonId" text, "propertyId" uuid,
+             code text, "auditKey" text
+           )
+         )
+         SELECT 'TARGET_UNIQUE_CONFLICT' AS code, 'booking.guest_bookings' AS source,
+                booking.id::text AS "sourceId", 'Public reference or source booking identity is already owned by another target row' AS message
+         FROM requested JOIN booking.guest_bookings booking
+           ON requested."targetTable" = 'guest_bookings' AND booking.id::text <> requested."targetId"
+          AND (booking.public_reference = requested."publicReference"
+               OR (booking.source_system = requested."sourceSystem"
+                   AND booking.source_booking_id = requested."sourceBookingId"))
+         UNION ALL
+         SELECT 'TARGET_UNIQUE_CONFLICT', 'booking.booking_guests', guest.id::text,
+                'A different target booker already exists for this booking'
+         FROM requested JOIN booking.booking_guests guest
+           ON requested."targetTable" = 'booking_guests' AND requested."guestRole" = 'booker'
+          AND guest.guest_booking_id = requested."guestBookingId" AND guest.guest_role = 'booker'
+          AND guest.id::text <> requested."targetId"
+         UNION ALL
+         SELECT 'TARGET_UNIQUE_CONFLICT', 'booking.promo_applications', application.id::text,
+                'A different target promo application already exists for this booking'
+         FROM requested JOIN booking.promo_applications application
+           ON requested."targetTable" = 'promo_applications'
+          AND application.guest_booking_id = requested."guestBookingId"
+          AND application.id::text <> requested."targetId"
+         UNION ALL
+         SELECT 'TARGET_UNIQUE_CONFLICT', 'booking.addon_definitions', addon.id::text,
+                'A different target add-on owns this source add-on identity'
+         FROM requested JOIN booking.addon_definitions addon
+           ON requested."targetTable" = 'addon_definitions'
+          AND addon.source_system = requested."sourceSystem"
+          AND addon.source_addon_id = requested."sourceAddonId"
+          AND addon.id::text <> requested."targetId"
+         UNION ALL
+         SELECT 'TARGET_UNIQUE_CONFLICT', 'booking.promo_definitions', promo.id::text,
+                'A different active target promo owns this property code'
+         FROM requested JOIN booking.promo_definitions promo
+           ON requested."targetTable" = 'promo_definitions'
+          AND promo.property_id = requested."propertyId" AND upper(promo.code) = upper(requested.code)
+          AND promo.status <> 'retired' AND promo.id::text <> requested."targetId"
+         UNION ALL
+         SELECT 'TARGET_UNIQUE_CONFLICT', 'platform.product_audit_events', audit.id::text,
+                'A different target audit row owns this Booking audit key'
+         FROM requested JOIN platform.product_audit_events audit
+           ON requested."targetTable" = 'product_audit_events' AND audit.product = 'booking'
+          AND audit.audit_key = requested."auditKey" AND audit.id::text <> requested."targetId"
+         ORDER BY source, "sourceId"`,
+        [JSON.stringify(collisionRows)],
+      )
+    : { rows: [] as IdentityMigrationBlocker[] };
   return {
     ...ownership,
     records,
@@ -125,6 +187,7 @@ export async function readProductionBookingTargetState(
       sourceUpdatedAt: row.sourceUpdatedAt ? new Date(row.sourceUpdatedAt).toISOString() : null,
       lastMigratedAt: new Date(row.lastMigratedAt).toISOString(),
     })),
+    blockers: collisions.rows,
   };
 }
 
