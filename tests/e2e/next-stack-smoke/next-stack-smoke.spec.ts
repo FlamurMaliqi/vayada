@@ -256,34 +256,6 @@ async function runHotelFlow(
       const propertyId = stringField(property, "propertyId");
       registerHotel({ api, propertyId });
 
-      const secondaryProperty = await api.json<Record<string, unknown>>(
-        "POST",
-        "/api/hotel-setup/properties",
-        {
-          displayName: `QA Restricted Hotel ${environment.runId}`,
-          propertyType: "hotel",
-          location: {
-            streetAddress: "Unter den Linden 1",
-            postalCode: "10117",
-            city: "Berlin",
-            countryCode: "DE",
-            timezone: "Europe/Berlin",
-            latitude: null,
-            longitude: null,
-            localityPublic: false,
-            geoPublic: false,
-            mapDisplayMode: "hidden",
-          },
-          contacts: [
-            { channelType: "email", value: user.email, purpose: "general", isPublic: false },
-            { channelType: "phone", value: "+49 30 5550104", purpose: "general", isPublic: false },
-          ],
-        },
-        { "Idempotency-Key": `next-smoke:${environment.runId}:restricted-property` },
-      );
-      const secondaryPropertyId = stringField(secondaryProperty, "propertyId");
-      registerHotel({ api, propertyId: secondaryPropertyId });
-
       await api.json("PUT", `/api/hotel-setup/properties/${propertyId}/launch-settings`, {
         defaultCurrency: "EUR",
         supportedCurrencies: ["EUR"],
@@ -359,7 +331,7 @@ async function runHotelFlow(
         terms_text: "Guests agree to the QA smoke terms. No real payment is collected.",
         cancellation_policy_text: "Free cancellation follows the selected flexible rate terms.",
       });
-      return { propertyId, roomTypeId, secondaryPropertyId };
+      return { propertyId, roomTypeId };
     });
 
   const stay = futureStay();
@@ -457,12 +429,44 @@ async function runHotelFlow(
     );
   });
 
+  const secondaryPropertyId =
+    await test.step("create a replacement property for restricted staff", async () => {
+      const property = await api.json<Record<string, unknown>>(
+        "POST",
+        "/api/hotel-setup/properties",
+        {
+          displayName: `QA Restricted Hotel ${environment.runId}`,
+          propertyType: "hotel",
+          location: {
+            streetAddress: "Unter den Linden 1",
+            postalCode: "10117",
+            city: "Berlin",
+            countryCode: "DE",
+            timezone: "Europe/Berlin",
+            latitude: null,
+            longitude: null,
+            localityPublic: false,
+            geoPublic: false,
+            mapDisplayMode: "hidden",
+          },
+          contacts: [
+            { channelType: "email", value: user.email, purpose: "general", isPublic: false },
+            { channelType: "phone", value: "+49 30 5550104", purpose: "general", isPublic: false },
+          ],
+        },
+        { "Idempotency-Key": `next-smoke:${environment.runId}:restricted-property` },
+      );
+      const propertyId = stringField(property, "propertyId");
+      registerHotel({ api, propertyId });
+      return propertyId;
+    });
+
   const resource = {
     api,
     addonItemIds: [] as string[],
     ownerWorkosUserId: user.id,
     propertyId: setup.propertyId,
-    secondaryPropertyId: setup.secondaryPropertyId,
+    secondaryPropertyId,
     slug: publication.slug,
     stay,
     workosOrganizationId: session.workosOrganizationId,
@@ -627,11 +631,17 @@ async function assertMarketplaceHandoff(
   expectedOrigin: string,
   hotelName: string,
 ) {
-  await expect(page).toHaveURL(new RegExp(`^${escapeRegExp(NEXT_STACK_ORIGINS.marketplace)}`));
-  await page
+  await expect(page).toHaveURL(`${NEXT_STACK_ORIGINS.marketplace}/marketplace`);
+  const switcher = page
     .locator("aside")
-    .getByRole("button", { name: /^(?:Switch app|Marketplace Creator collaborations)$/ })
-    .click();
+    .getByRole("button", { name: /^(?:Switch app|Marketplace Creator collaborations)$/ });
+  try {
+    await switcher.click();
+  } catch (error) {
+    throw new Error(`Marketplace app switcher is unavailable at ${new URL(page.url()).pathname}.`, {
+      cause: error,
+    });
+  }
   await page.getByRole("link", { name: new RegExp(label) }).click();
   await page.waitForURL((url) => url.origin === expectedOrigin && url.pathname === "/dashboard", {
     timeout: 45_000,
@@ -644,10 +654,6 @@ async function assertMarketplaceHandoff(
 async function acceptNecessaryCookies(page: Page): Promise<void> {
   const button = page.getByRole("button", { name: "Necessary only" });
   if (await button.isVisible()) await button.click();
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function errorMessage(error: unknown): string {
