@@ -7,7 +7,10 @@ import {
   readProductionBookingTargetState,
 } from "./productionBookingTargetReader.js";
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
-import { writeProductionBookingRecords, writeProductionMigrationProvenance } from "./productionBookingWriter.js";
+import {
+  writeProductionBookingRecords,
+  writeProductionMigrationProvenance,
+} from "./productionBookingWriter.js";
 import { assertSafeTestDatabase } from "./testUtils.js";
 
 const URL = process.env["TEST_DATABASE_URL"];
@@ -106,7 +109,7 @@ async function seedCatalog(client: pg.Client): Promise<void> {
        (property_id, source_system, source_table, source_id, relationship)
        VALUES
          ($1, 'booking', 'booking_hotels', $2, 'canonical_input'),
-         ($1, 'pms', 'hotels', $3, 'canonical_input')`,
+         ($1, 'pms', 'hotels', $3, 'operational_input')`,
     [PROPERTY, BOOKING_HOTEL, PMS_HOTEL],
   );
   await client.query(

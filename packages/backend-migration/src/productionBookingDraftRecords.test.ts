@@ -97,7 +97,7 @@ function input(rows: IdentitySourceRow[]) {
           sourceTable: "hotels",
           sourceId: HOTEL,
           propertyId: PROPERTY,
-          relationship: "canonical_input",
+          relationship: "operational_input",
           status: "active",
         },
       ],

@@ -1,4 +1,7 @@
-import type { IdentityMigrationBlocker, IdentitySourceRow } from "./productionIdentityDisposition.js";
+import type {
+  IdentityMigrationBlocker,
+  IdentitySourceRow,
+} from "./productionIdentityDisposition.js";
 import type {
   BookingBuildContext,
   BookingPropertyLink,
@@ -37,7 +40,16 @@ export function createProductionBookingContext(input: {
 
   validateRequiredProperties(input.rows, propertyBySource, propertyBySlug, blockers);
   validateUnsupportedSensitiveFields(input.rows, blockers);
-  return { ...input, blockers, propertyBySource, propertyBySlug, bookingById, bookingByReference, addonById, promoById };
+  return {
+    ...input,
+    blockers,
+    propertyBySource,
+    propertyBySlug,
+    bookingById,
+    bookingByReference,
+    addonById,
+    promoById,
+  };
 }
 
 export function propertyFor(
@@ -48,7 +60,8 @@ export function propertyFor(
 ): string {
   const id = requiredText(sourceValue, `${table}.id`).toLowerCase();
   const propertyId = context.propertyBySource.get(`${system}:${table}:${id}`);
-  if (!propertyId) throw new Error(`no active canonical property link for ${system}.${table} ${id}`);
+  if (!propertyId)
+    throw new Error(`no active canonical property link for ${system}.${table} ${id}`);
   return propertyId;
 }
 
@@ -68,7 +81,13 @@ function propertySourceMap(
 ): Map<string, string> {
   const grouped = new Map<string, Set<string>>();
   for (const link of links) {
-    if (link.status !== "active" || link.relationship !== "canonical_input") continue;
+    const expectedRelationship =
+      link.sourceSystem === "booking"
+        ? "canonical_input"
+        : link.sourceSystem === "pms"
+          ? "operational_input"
+          : null;
+    if (link.status !== "active" || link.relationship !== expectedRelationship) continue;
     const key = `${link.sourceSystem}:${link.sourceTable}:${link.sourceId.toLowerCase()}`;
     grouped.set(key, new Set([...(grouped.get(key) ?? []), link.propertyId]));
   }
@@ -123,7 +142,13 @@ function uniqueMap(
     try {
       const id = requiredText(row.data[field], field).toLowerCase();
       if (result.has(id))
-        addBookingBlocker(blockers, code, `${row.sourceDatabase}.${row.sourceTable}`, id, `${field} is duplicated`);
+        addBookingBlocker(
+          blockers,
+          code,
+          `${row.sourceDatabase}.${row.sourceTable}`,
+          id,
+          `${field} is duplicated`,
+        );
       else result.set(id, row);
     } catch (error) {
       addBookingBlocker(
@@ -153,14 +178,31 @@ function validateRequiredProperties(
       ["booking_addons", "booking_promo_codes"].includes(row.sourceTable)
     )
       key = `booking:booking_hotels:${String(row.data["hotel_id"] ?? "").toLowerCase()}`;
-    else if (row.sourceDatabase === "pms" && ["bookings", "booking_drafts"].includes(row.sourceTable))
+    else if (
+      row.sourceDatabase === "pms" &&
+      ["bookings", "booking_drafts"].includes(row.sourceTable)
+    )
       key = `pms:hotels:${String(row.data["hotel_id"] ?? "").toLowerCase()}`;
     if (key && !bySource.has(key))
-      addBookingBlocker(blockers, "UNRESOLVED_PROPERTY", `${row.sourceDatabase}.${row.sourceTable}`, safeId(row), `No active catalog source link for ${key}`);
+      addBookingBlocker(
+        blockers,
+        "UNRESOLVED_PROPERTY",
+        `${row.sourceDatabase}.${row.sourceTable}`,
+        safeId(row),
+        `No active catalog source link for ${key}`,
+      );
     if (row.sourceDatabase === "booking" && row.sourceTable === "booking_events") {
-      const slug = String(row.data["hotel_slug"] ?? "").trim().toLowerCase();
+      const slug = String(row.data["hotel_slug"] ?? "")
+        .trim()
+        .toLowerCase();
       if (!slug || !bySlug.has(slug))
-        addBookingBlocker(blockers, "UNRESOLVED_EVENT_PROPERTY", "booking.booking_events", safeId(row), "Event hotel_slug has no unique active target property");
+        addBookingBlocker(
+          blockers,
+          "UNRESOLVED_EVENT_PROPERTY",
+          "booking.booking_events",
+          safeId(row),
+          "Event hotel_slug has no unique active target property",
+        );
     }
   }
 }
@@ -171,7 +213,8 @@ function validateUnsupportedSensitiveFields(
 ): void {
   for (const row of rows.filter((item) => item.sourceTable === "booking_additional_guests")) {
     const unsupported = ["gender", "date_of_birth", "passport_number", "room_position"].filter(
-      (field) => row.data[field] !== null && row.data[field] !== undefined && row.data[field] !== "",
+      (field) =>
+        row.data[field] !== null && row.data[field] !== undefined && row.data[field] !== "",
     );
     if (unsupported.length)
       addBookingBlocker(
@@ -195,7 +238,10 @@ function validateUnsupportedSensitiveFields(
 
 function safeId(row: IdentitySourceRow): string {
   try {
-    return sourceId(row, row.sourceTable === "booking_promo_usage_state" ? "booking_reference" : "id");
+    return sourceId(
+      row,
+      row.sourceTable === "booking_promo_usage_state" ? "booking_reference" : "id",
+    );
   } catch {
     return String(row.rowOrdinal);
   }
