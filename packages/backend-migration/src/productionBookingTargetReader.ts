@@ -12,25 +12,65 @@ import type {
 
 type QueryClient = Pick<pg.ClientBase, "query">;
 
-const TABLES: Record<string, { product: "booking" | "platform"; table: string; freshness: string; id?: string }> = {
-  booking_settings: { product: "booking", table: "booking.booking_settings", freshness: "updated_at", id: "property_id" },
-  addon_definitions: { product: "booking", table: "booking.addon_definitions", freshness: "updated_at" },
-  promo_definitions: { product: "booking", table: "booking.promo_definitions", freshness: "updated_at" },
+const TABLES: Record<
+  string,
+  { product: "booking" | "platform"; table: string; freshness: string; id?: string }
+> = {
+  booking_settings: {
+    product: "booking",
+    table: "booking.booking_settings",
+    freshness: "updated_at",
+    id: "property_id",
+  },
+  addon_definitions: {
+    product: "booking",
+    table: "booking.addon_definitions",
+    freshness: "updated_at",
+  },
+  promo_definitions: {
+    product: "booking",
+    table: "booking.promo_definitions",
+    freshness: "updated_at",
+  },
   quote_sessions: { product: "booking", table: "booking.quote_sessions", freshness: "updated_at" },
-  checkout_contexts: { product: "booking", table: "booking.checkout_contexts", freshness: "updated_at" },
+  checkout_contexts: {
+    product: "booking",
+    table: "booking.checkout_contexts",
+    freshness: "updated_at",
+  },
   guest_bookings: { product: "booking", table: "booking.guest_bookings", freshness: "updated_at" },
   booking_guests: { product: "booking", table: "booking.booking_guests", freshness: "updated_at" },
-  booking_addon_selections: { product: "booking", table: "booking.booking_addon_selections", freshness: "created_at" },
-  promo_applications: { product: "booking", table: "booking.promo_applications", freshness: "created_at" },
-  booking_status_events: { product: "booking", table: "booking.booking_status_events", freshness: "occurred_at" },
-  booking_change_requests: { product: "booking", table: "booking.booking_change_requests", freshness: "updated_at" },
+  booking_addon_selections: {
+    product: "booking",
+    table: "booking.booking_addon_selections",
+    freshness: "created_at",
+  },
+  promo_applications: {
+    product: "booking",
+    table: "booking.promo_applications",
+    freshness: "created_at",
+  },
+  booking_status_events: {
+    product: "booking",
+    table: "booking.booking_status_events",
+    freshness: "occurred_at",
+  },
+  booking_change_requests: {
+    product: "booking",
+    table: "booking.booking_change_requests",
+    freshness: "updated_at",
+  },
   direct_booking_summary_read_model: {
     product: "booking",
     table: "booking.direct_booking_summary_read_model",
     freshness: "projected_at",
     id: "guest_booking_id",
   },
-  product_audit_events: { product: "platform", table: "platform.product_audit_events", freshness: "occurred_at" },
+  product_audit_events: {
+    product: "platform",
+    table: "platform.product_audit_events",
+    freshness: "occurred_at",
+  },
 };
 
 export async function readProductionBookingOwnership(client: QueryClient): Promise<{
@@ -69,7 +109,11 @@ export async function readProductionBookingTargetState(
   for (const [targetTable, ids] of grouped) {
     const definition = TABLES[targetTable];
     if (!definition) throw new Error(`Unsupported Booking target table ${targetTable}`);
-    const result = await client.query<{ targetId: string; updatedAt: string | null; rowData: string }>(
+    const result = await client.query<{
+      targetId: string;
+      updatedAt: string | null;
+      rowData: string;
+    }>(
       `SELECT ${definition.id ?? "id"}::text AS "targetId", ${definition.freshness}::text AS "updatedAt",
               to_jsonb(target_row)::text AS "rowData"
        FROM ${definition.table} AS target_row
@@ -128,6 +172,7 @@ export async function readProductionBookingTargetState(
         `WITH requested AS (
            SELECT * FROM jsonb_to_recordset($1::jsonb) AS source(
              "targetTable" text, "targetId" text, "publicReference" text,
+             "publicQuoteReference" text, "checkoutContextId" uuid,
              "sourceSystem" text, "sourceBookingId" text, "guestBookingId" uuid,
              "guestRole" text, "sourceAddonId" text, "propertyId" uuid,
              code text, "auditKey" text
@@ -140,6 +185,21 @@ export async function readProductionBookingTargetState(
           AND (booking.public_reference = requested."publicReference"
                OR (booking.source_system = requested."sourceSystem"
                    AND booking.source_booking_id = requested."sourceBookingId"))
+         UNION ALL
+         SELECT 'TARGET_UNIQUE_CONFLICT', 'booking.guest_bookings', booking.id::text,
+                'A different target booking already owns this checkout context'
+         FROM requested JOIN booking.guest_bookings booking
+           ON requested."targetTable" = 'guest_bookings'
+          AND requested."checkoutContextId" IS NOT NULL
+          AND booking.checkout_context_id = requested."checkoutContextId"
+          AND booking.id::text <> requested."targetId"
+         UNION ALL
+         SELECT 'TARGET_UNIQUE_CONFLICT', 'booking.quote_sessions', quote.id::text,
+                'A different target quote already owns this public quote reference'
+         FROM requested JOIN booking.quote_sessions quote
+           ON requested."targetTable" = 'quote_sessions'
+          AND quote.public_quote_reference = requested."publicQuoteReference"
+          AND quote.id::text <> requested."targetId"
          UNION ALL
          SELECT 'TARGET_UNIQUE_CONFLICT', 'booking.booking_guests', guest.id::text,
                 'A different target booker already exists for this booking'
@@ -197,7 +257,9 @@ function camelize(value: unknown): Record<string, unknown> {
     Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
       key.replace(/_([a-z])/g, (_, character: string) => character.toUpperCase()),
       Array.isArray(entry)
-        ? entry.map((item) => (item && typeof item === "object" && !Array.isArray(item) ? camelize(item) : item))
+        ? entry.map((item) =>
+            item && typeof item === "object" && !Array.isArray(item) ? camelize(item) : item,
+          )
         : entry && typeof entry === "object"
           ? camelize(entry)
           : entry,

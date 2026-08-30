@@ -11,14 +11,20 @@ describe("production Booking target reader", () => {
     const client = new TargetFixture();
     const ownership = await readProductionBookingOwnership(client as never);
     const target = await readProductionBookingTargetState(client as never, candidates(), ownership);
-    expect(ownership.propertyLinks[0]).toMatchObject({ sourceSystem: "pms", propertyId: "property-1" });
+    expect(ownership.propertyLinks[0]).toMatchObject({
+      sourceSystem: "pms",
+      propertyId: "property-1",
+    });
     expect(target.records).toEqual([
       {
         targetProduct: "booking",
         targetTable: "booking_settings",
         targetId: "13550000-0000-4000-8000-000000000051",
         updatedAt: "2026-08-30T01:00:00.000Z",
-        row: { propertyId: "13550000-0000-4000-8000-000000000051", sourceFreshness: { migrationRunId: "run" } },
+        row: {
+          propertyId: "13550000-0000-4000-8000-000000000051",
+          sourceFreshness: { migrationRunId: "run" },
+        },
       },
       {
         targetProduct: "booking",
@@ -63,7 +69,8 @@ class TargetFixture {
           {
             targetId: "13550000-0000-4000-8000-000000000051",
             updatedAt: "2026-08-30 01:00:00+00",
-            rowData: '{"property_id":"13550000-0000-4000-8000-000000000051","source_freshness":{"migrationRunId":"run"}}',
+            rowData:
+              '{"property_id":"13550000-0000-4000-8000-000000000051","source_freshness":{"migrationRunId":"run"}}',
           },
         ] as T[],
       };
@@ -110,6 +117,10 @@ function candidates(): BookingTargetRecord[] {
   };
   return [
     { ...base, targetTable: "booking_settings", targetId: "13550000-0000-4000-8000-000000000051" },
-    { ...base, targetTable: "direct_booking_summary_read_model", targetId: "13550000-0000-4000-8000-000000000052" },
+    {
+      ...base,
+      targetTable: "direct_booking_summary_read_model",
+      targetId: "13550000-0000-4000-8000-000000000052",
+    },
   ];
 }

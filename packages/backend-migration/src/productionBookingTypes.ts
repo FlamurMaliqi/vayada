@@ -1,4 +1,7 @@
-import type { IdentityMigrationBlocker, IdentitySourceRow } from "./productionIdentityDisposition.js";
+import type {
+  IdentityMigrationBlocker,
+  IdentitySourceRow,
+} from "./productionIdentityDisposition.js";
 
 export type BookingTargetRecord = {
   targetProduct: "booking" | "platform";
