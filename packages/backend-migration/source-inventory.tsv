@@ -86,6 +86,8 @@ pms	table	public.checkout_inspection_templates	active	migrate	pms	pms-operations
 pms	table	public.conversations	dropped	snapshot_only	none	none	retired-sources	pii	rollback-window	none	VAY-1351
 pms	table	public.hotel_payment_settings	active	transform	finance	finance	finance-payments	pii	pii-lifecycle	apps/api:finance	VAY-1358
 pms	table	public.hotels	active	transform	hotel_catalog	property-catalog-public-profiles	property-catalog	pii	pii-lifecycle	apps/api:hotel-catalog	VAY-1354
+pms	table	public.linked_inventory_group_members	active	transform	pms	pms-operations	pms-inventory	private	domain-record	apps/api:pms	VAY-1356
+pms	table	public.linked_inventory_groups	active	migrate	pms	pms-operations	pms-inventory	private	domain-record	apps/api:pms	VAY-1356
 pms	table	public.message_attachments	active	migrate	pms	pms-operations	pms-messaging	private	domain-record	apps/api:pms	VAY-1356
 pms	table	public.message_sync_state	dropped	snapshot_only	none	none	retired-sources	private	rollback-window	none	VAY-1351
 pms	table	public.message_threads	active	migrate	pms	pms-operations	pms-messaging	pii	pii-lifecycle	apps/api:pms	VAY-1356
