@@ -104,8 +104,6 @@ export function reconcileProductionCatalog(
       "starRating",
       "defaultLocale",
       "supportedLocales",
-      "profileStatus",
-      "completenessReasons",
     ]),
     slugs: reconcile("property_slugs", sourceSlugs, target.slugs, by("slug"), [
       "propertyId",

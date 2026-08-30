@@ -27,6 +27,8 @@ describe("production catalog core writer", () => {
       sql.includes("INSERT INTO hotel_catalog.properties"),
     )!;
     expect(properties).toContain("properties.updated_at < EXCLUDED.updated_at");
+    expect(properties).not.toContain("profile_status = EXCLUDED");
+    expect(properties).not.toContain("completeness_reasons = EXCLUDED");
     const links = fixture.sql.find((sql) => sql.includes("property_source_links"))!;
     expect(links).toContain("DO NOTHING");
     expect(links).not.toContain("property_id = EXCLUDED.property_id");

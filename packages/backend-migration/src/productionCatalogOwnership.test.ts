@@ -130,4 +130,21 @@ describe("planCatalogOwnership", () => {
       "CATALOG_SOURCE_RELATIONSHIP_CONFLICT",
     ]);
   });
+
+  it("blocks an inactive existing source link", () => {
+    const plan = planCatalogOwnership(
+      [booking()],
+      [
+        {
+          propertyId: ID.booking,
+          sourceSystem: "booking",
+          sourceTable: "booking_hotels",
+          sourceId: ID.booking,
+          relationship: "canonical_input",
+          status: "superseded",
+        },
+      ],
+    );
+    expect(plan.blockers.map((blocker) => blocker.code)).toEqual(["CATALOG_SOURCE_LINK_INACTIVE"]);
+  });
 });

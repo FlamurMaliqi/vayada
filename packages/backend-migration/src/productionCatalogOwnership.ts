@@ -19,6 +19,7 @@ export type ExistingCatalogSourceLink = {
   sourceTable: string;
   sourceId: string;
   relationship?: CatalogSourceRelationship;
+  status?: "active" | "superseded" | "ignored";
   migrationRunId?: string | null;
 };
 export type PlannedCatalogSourceLink = ExistingCatalogSourceLink & {
@@ -148,6 +149,14 @@ function validateRelationship(
   planned: PlannedCatalogSourceLink,
   blockers: IdentityMigrationBlocker[],
 ): void {
+  if (target?.status && target.status !== "active")
+    addBlocker(
+      blockers,
+      "CATALOG_SOURCE_LINK_INACTIVE",
+      `${planned.sourceSystem}.${planned.sourceTable}`,
+      planned.sourceId,
+      `Existing source link has status ${target.status}`,
+    );
   if (target?.relationship && target.relationship !== planned.relationship)
     addBlocker(
       blockers,

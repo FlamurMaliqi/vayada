@@ -74,6 +74,18 @@ describe("production catalog reconciliation", () => {
     expect(plan.writes.slugs).toHaveLength(1);
   });
 
+  it("treats target publication status as target-owned", () => {
+    const core = emptyCore();
+    core.properties.push(property(NEW, "Hotel"));
+    const target = emptyTarget();
+    target.properties.push({ ...property(NEW, "Hotel"), profileStatus: "private" });
+
+    const plan = reconcileProductionCatalog(core, emptyContent(), emptyPresentation(), target);
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.writes.properties).toEqual([]);
+  });
+
   it("blocks rather than replacing a target canonical slug", () => {
     const core = emptyCore();
     core.slugs.push({

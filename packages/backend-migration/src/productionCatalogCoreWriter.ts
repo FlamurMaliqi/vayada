@@ -35,8 +35,6 @@ export async function writeProductionCatalogCore(
        property_type = EXCLUDED.property_type, category = EXCLUDED.category,
        star_rating = EXCLUDED.star_rating, default_locale = EXCLUDED.default_locale,
        supported_locales = EXCLUDED.supported_locales,
-       profile_status = EXCLUDED.profile_status,
-       completeness_reasons = EXCLUDED.completeness_reasons,
        updated_at = EXCLUDED.updated_at
      WHERE hotel_catalog.properties.updated_at < EXCLUDED.updated_at`,
     [JSON.stringify(writes.properties)],
