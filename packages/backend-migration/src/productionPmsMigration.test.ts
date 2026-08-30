@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  runProductionPmsMigration,
   runProductionPmsTransaction,
   type ProductionPmsMigrationServices,
 } from "./productionPmsMigration.js";
@@ -9,6 +10,16 @@ import type { ProductionPmsPlan } from "./productionPmsTypes.js";
 const RUN = "vay1351-0123456789abcdef01234567";
 
 describe("production PMS migration transaction", () => {
+  it("rejects programmatic apply without explicit run-bound confirmation", async () => {
+    await expect(
+      runProductionPmsMigration({
+        connectionString: "postgresql://unused/unused",
+        sourceRunId: RUN,
+        mode: "apply",
+      }),
+    ).rejects.toThrow(`confirmation production-pms:${RUN}`);
+  });
+
   it("always rolls a dry-run back without writing", async () => {
     const client = new TransactionFixture();
     const services = serviceFixture();
@@ -19,6 +30,9 @@ describe("production PMS migration transaction", () => {
     );
     expect(report.applied).toBe(false);
     expect(client.sql).toEqual(["BEGIN ISOLATION LEVEL REPEATABLE READ", "ROLLBACK"]);
+    expect(services.buildPlan).toHaveBeenCalledWith(
+      expect.objectContaining({ snapshotAt: "2026-08-29T23:59:00.000Z" }),
+    );
     expect(services.writeRecords).not.toHaveBeenCalled();
     expect(services.writeProvenance).not.toHaveBeenCalled();
   });
@@ -44,11 +58,7 @@ describe("production PMS migration transaction", () => {
     const services = serviceFixture();
     services.writeRecords = vi.fn(async () => ({ room_types: 0 }));
     await expect(
-      runProductionPmsTransaction(
-        client as never,
-        { sourceRunId: RUN, mode: "apply" },
-        services,
-      ),
+      runProductionPmsTransaction(client as never, { sourceRunId: RUN, mode: "apply" }, services),
     ).rejects.toThrow("applied 0 of 1");
     expect(client.sql.at(-1)).toBe("ROLLBACK");
   });
@@ -81,7 +91,11 @@ class TransactionFixture {
 
 function serviceFixture(): ProductionPmsMigrationServices {
   return {
-    readSnapshot: vi.fn(async () => ({ rows: [], completedAt: "2026-08-30T00:00:00.000Z" })),
+    readSnapshot: vi.fn(async () => ({
+      rows: [],
+      snapshotAt: "2026-08-29T23:59:00.000Z",
+      completedAt: "2026-08-30T00:00:00.000Z",
+    })),
     readPrerequisites: vi.fn(async () => ({
       propertyLinks: [],
       bookings: [],

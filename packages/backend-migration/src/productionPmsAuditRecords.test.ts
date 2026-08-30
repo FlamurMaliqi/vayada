@@ -23,25 +23,25 @@ describe("production PMS audit records", () => {
     const records = buildPmsAuditRecords(context);
 
     expect(context.blockers).toEqual([]);
-    expect(records.filter((record) => record.targetTable === "product_audit_events"))
-      .toHaveLength(3);
+    expect(records.filter((record) => record.targetTable === "product_audit_events")).toHaveLength(
+      3,
+    );
     expect(
-      records.find(
-        (record) => record.row["action"] === "pms.legacy_notification.delivered",
-      )?.row,
+      records.find((record) => record.row["action"] === "pms.legacy_notification.delivered")?.row,
     ).toMatchObject({
       targetResourceId: BOOKING,
       privatePayload: { recipientEmail: "guest@example.test" },
       auditMetadata: { historicalReceipt: true, replayProhibited: true },
     });
-    expect(records.find((record) => record.targetTable === "external_webhook_events")?.row)
-      .toMatchObject({
-        id: WEBHOOK,
-        deliveryStatus: "observed",
-        normalizedDomainEventId: null,
-        propertyId: PROPERTY,
-        signatureVerified: false,
-      });
+    expect(
+      records.find((record) => record.targetTable === "external_webhook_events")?.row,
+    ).toMatchObject({
+      id: WEBHOOK,
+      deliveryStatus: "observed",
+      normalizedDomainEventId: null,
+      propertyId: PROPERTY,
+      signatureVerified: false,
+    });
   });
 
   it("retains a legacy webhook failure as failed evidence", () => {
@@ -52,8 +52,9 @@ describe("production PMS audit records", () => {
       target: target(),
     });
     const records = buildPmsAuditRecords(context);
-    expect(records.find((record) => record.targetTable === "external_webhook_events")?.row)
-      .toMatchObject({ deliveryStatus: "failed", failureReason: "legacy failure" });
+    expect(
+      records.find((record) => record.targetTable === "external_webhook_events")?.row,
+    ).toMatchObject({ deliveryStatus: "failed", failureReason: "legacy failure" });
   });
 
   it("blocks a webhook whose external property has no canonical ownership", () => {
@@ -75,11 +76,42 @@ describe("production PMS audit records", () => {
       }),
     );
   });
+
+  it("versions mutable channel markup audit history", () => {
+    const firstRows = rows(true);
+    const secondRows = rows(true);
+    secondRows.find((entry) => entry.sourceTable === "channex_channel_markups")!.data[
+      "updated_at"
+    ] = "2026-08-29T02:00:00Z";
+    const build = (sourceRows: IdentitySourceRow[]) => {
+      const context = createProductionPmsContext({
+        sourceRunId: "run",
+        completedAt: "2026-08-30T00:00:00Z",
+        rows: sourceRows,
+        target: target(),
+      });
+      return buildPmsAuditRecords(context).find(
+        (record) => record.row["action"] === "pms.legacy_channel_markup.migrated",
+      )!;
+    };
+    expect(build(firstRows).targetId).not.toBe(build(secondRows).targetId);
+  });
 });
 
 function rows(processedOk: boolean): IdentitySourceRow[] {
   return [
-    row("bookings", { id: BOOKING, hotel_id: HOTEL }),
+    row("bookings", {
+      id: BOOKING,
+      hotel_id: HOTEL,
+      check_in: "2026-09-01",
+      check_out: "2026-09-03",
+      adults: 2,
+      children: 0,
+      number_of_rooms: 1,
+      currency: "EUR",
+      status: "confirmed",
+      updated_at: "2026-08-02T00:00:00Z",
+    }),
     row("booking_events", {
       id: "90000000-0000-4000-a000-000000000001",
       booking_id: BOOKING,
@@ -122,7 +154,13 @@ function rows(processedOk: boolean): IdentitySourceRow[] {
 function target() {
   return {
     propertyLinks: [
-      { sourceId: HOTEL, propertyId: PROPERTY, relationship: "operational_input", status: "active" },
+      {
+        sourceId: HOTEL,
+        propertyId: PROPERTY,
+        relationship: "operational_input",
+        status: "active",
+        migrationRunId: "run",
+      },
     ],
     bookings: [
       {
@@ -132,9 +170,11 @@ function target() {
         checkOut: "2026-09-03",
         adults: 2,
         children: 0,
+        roomCount: 1,
         currency: "EUR",
         lifecycleStatus: "confirmed",
         updatedAt: "2026-08-02T00:00:00Z",
+        migrationRunId: "run",
       },
     ],
     userIds: [ACTOR],

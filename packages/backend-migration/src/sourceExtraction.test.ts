@@ -7,6 +7,7 @@ import {
   runSourceExtraction,
   SOURCE_EXTRACTION_LOCK_ID,
   SOURCE_PROVENANCE_SQL,
+  SOURCE_SNAPSHOT_TIME_SQL,
   SOURCE_WRITABLE_PRIVILEGES_SQL,
   validateSourceExtractionConfig,
   VAY_1350_INVENTORY_REVISION,
@@ -118,6 +119,8 @@ class FakeSource {
     if (sql === "SHOW transaction_read_only") {
       return result([{ transaction_read_only: this.readOnly ? "on" : "off" }]);
     }
+    if (sql === SOURCE_SNAPSHOT_TIME_SQL)
+      return result([{ source_snapshot_at: "2026-08-30T00:00:00.000Z" }]);
     if (sql === SOURCE_PROVENANCE_SQL) {
       return result([
         {
@@ -434,6 +437,7 @@ describe("immutable source extraction", () => {
     const stagedAfterSecondRun = target.staged.size;
     const third = await runSourceExtraction(makeConfig(), target as never, sources as never);
 
+    expect(sources.auth.queries).toContain(SOURCE_SNAPSHOT_TIME_SQL);
     expect(stagedAfterSecondRun).toBe(6);
     expect(target.staged.size).toBe(stagedAfterSecondRun);
     expect(

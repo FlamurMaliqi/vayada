@@ -32,9 +32,13 @@ describe("production PMS messaging", () => {
       senderType: "guest",
       piiRetentionUntil: "2027-09-03",
     });
-    expect(records.find((record) => record.targetTable === "message_attachments")?.row).toMatchObject(
-      { platformMediaObjectId: MEDIA, propertyId: PROPERTY },
-    );
+    expect(records.find((record) => record.targetTable === "messages")).toMatchObject({
+      mutable: true,
+      sourceUpdatedAt: "2026-09-01T12:01:00.000Z",
+    });
+    expect(
+      records.find((record) => record.targetTable === "message_attachments")?.row,
+    ).toMatchObject({ platformMediaObjectId: MEDIA, propertyId: PROPERTY });
   });
 
   it("blocks attachments until their Platform Media object exists", () => {
@@ -53,7 +57,18 @@ describe("production PMS messaging", () => {
 
 function rows(): IdentitySourceRow[] {
   return [
-    row("bookings", { id: BOOKING, hotel_id: HOTEL }),
+    row("bookings", {
+      id: BOOKING,
+      hotel_id: HOTEL,
+      check_in: "2026-09-01",
+      check_out: "2026-09-03",
+      adults: 2,
+      children: 0,
+      number_of_rooms: 1,
+      currency: "EUR",
+      status: "confirmed",
+      updated_at: "2026-09-01T00:00:00Z",
+    }),
     row("message_threads", {
       id: THREAD,
       hotel_id: HOTEL,
@@ -81,6 +96,7 @@ function rows(): IdentitySourceRow[] {
       body: "Hello",
       sent_at: "2026-09-01T11:59:00Z",
       received_at: "2026-09-01T12:00:00Z",
+      read_at: "2026-09-01T12:01:00Z",
       raw_payload: {},
     }),
     row("message_attachments", {
@@ -105,6 +121,7 @@ function target(mediaIds: string[]) {
         propertyId: PROPERTY,
         relationship: "operational_input",
         status: "active",
+        migrationRunId: "run",
       },
     ],
     bookings: [
@@ -115,9 +132,11 @@ function target(mediaIds: string[]) {
         checkOut: "2026-09-03",
         adults: 2,
         children: 0,
+        roomCount: 1,
         currency: "EUR",
         lifecycleStatus: "confirmed",
         updatedAt: "2026-09-01T00:00:00Z",
+        migrationRunId: "run",
       },
     ],
     userIds: [],

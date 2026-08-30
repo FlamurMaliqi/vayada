@@ -32,32 +32,37 @@ describe("production PMS channels", () => {
     const records = buildPmsChannelRecords(context, rooms, assignments);
 
     expect(context.blockers).toEqual([]);
-    expect(records.find((record) => record.targetTable === "channel_connections")?.row).toMatchObject(
-      {
-        id: CONNECTION,
-        externalPropertyId: EXTERNAL_PROPERTY,
-        connectionStatus: "connected",
-        capabilities: ["booking", "ari", "message"],
-        connectionMetadata: {
-          channelMarkups: [{ id: expect.any(String), channel: "booking.com", markupPercent: "12.5000" }],
-        },
+    expect(
+      records.find((record) => record.targetTable === "channel_connections")?.row,
+    ).toMatchObject({
+      id: CONNECTION,
+      externalPropertyId: EXTERNAL_PROPERTY,
+      connectionStatus: "connected",
+      capabilities: ["booking", "ari", "message"],
+      connectionMetadata: {
+        channelMarkups: [
+          { id: expect.any(String), channel: "booking.com", markupPercent: "12.5000" },
+        ],
       },
+    });
+    expect(
+      records.find((record) => record.targetTable === "channel_rate_plan_mappings")?.row,
+    ).toMatchObject({
+      externalRoomTypeId: EXTERNAL_ROOM,
+      externalRatePlanId: EXTERNAL_RATE,
+      markupPercent: "12.5000",
+    });
+    expect(
+      records.find((record) => record.targetTable === "channel_booking_mappings")?.row,
+    ).toMatchObject({
+      guestBookingId: BOOKING,
+      assignmentId: assignments.assignmentByBookingPosition.get(`${BOOKING}:1`),
+      externalBookingId: EXTERNAL_BOOKING,
+      channelRoomIndex: 0,
+    });
+    expect(records.filter((record) => record.targetTable === "channel_sync_status")).toHaveLength(
+      3,
     );
-    expect(records.find((record) => record.targetTable === "channel_rate_plan_mappings")?.row)
-      .toMatchObject({
-        externalRoomTypeId: EXTERNAL_ROOM,
-        externalRatePlanId: EXTERNAL_RATE,
-        markupPercent: "12.5000",
-      });
-    expect(records.find((record) => record.targetTable === "channel_booking_mappings")?.row)
-      .toMatchObject({
-        guestBookingId: BOOKING,
-        assignmentId: assignments.assignmentByBookingPosition.get(`${BOOKING}:1`),
-        externalBookingId: EXTERNAL_BOOKING,
-        channelRoomIndex: 0,
-      });
-    expect(records.filter((record) => record.targetTable === "channel_sync_status"))
-      .toHaveLength(3);
     expect(
       records
         .filter((record) => record.targetTable === "channel_sync_status")
@@ -173,7 +178,13 @@ function rows(): IdentitySourceRow[] {
 function target() {
   return {
     propertyLinks: [
-      { sourceId: HOTEL, propertyId: PROPERTY, relationship: "operational_input", status: "active" },
+      {
+        sourceId: HOTEL,
+        propertyId: PROPERTY,
+        relationship: "operational_input",
+        status: "active",
+        migrationRunId: "run",
+      },
     ],
     bookings: [
       {
@@ -183,9 +194,11 @@ function target() {
         checkOut: "2026-09-03",
         adults: 2,
         children: 0,
+        roomCount: 1,
         currency: "EUR",
         lifecycleStatus: "confirmed",
         updatedAt: "2026-08-02T00:00:00Z",
+        migrationRunId: "run",
       },
     ],
     userIds: [],

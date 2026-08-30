@@ -21,6 +21,7 @@ const ID_TABLES = [
   "channex_rate_plan_mappings",
   "channex_room_type_mappings",
   "channex_webhook_events",
+  "hotels",
   "linked_inventory_groups",
   "message_attachments",
   "message_threads",
@@ -32,6 +33,7 @@ const ID_TABLES = [
 
 export function createProductionPmsContext(input: {
   sourceRunId: string;
+  snapshotAt?: string;
   completedAt: string;
   rows: IdentitySourceRow[];
   target: ProductionPmsTargetState;
@@ -49,6 +51,7 @@ export function createProductionPmsContext(input: {
     rowsByTable.get("channex_connections") ?? [],
     blockers,
   );
+  validateExternalConnectionOwnership(rowsByTable.get("channex_connections") ?? [], blockers);
   const linkedGroupByRoomType = linkedMemberships(
     rowsByTable.get("linked_inventory_group_members") ?? [],
     maps.get("linked_inventory_groups")!,
@@ -57,9 +60,11 @@ export function createProductionPmsContext(input: {
   );
   return {
     ...input,
+    snapshotAt: input.snapshotAt ?? input.completedAt,
     blockers,
     rowsByTable,
     propertyByHotel,
+    hotelById: maps.get("hotels")!,
     bookingById: maps.get("bookings")!,
     targetBookingById,
     roomTypeById: maps.get("room_types")!,
@@ -186,6 +191,27 @@ function uniqueConnectionByHotel(
     else result.set(hotelId, row);
   }
   return result;
+}
+
+function validateExternalConnectionOwnership(
+  rows: IdentitySourceRow[],
+  blockers: PmsBuildContext["blockers"],
+): void {
+  const owners = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const externalId = String(row.data["channex_property_id"] ?? "").toLowerCase();
+    const hotelId = String(row.data["hotel_id"] ?? "").toLowerCase();
+    if (!externalId || !hotelId) continue;
+    owners.set(externalId, new Set([...(owners.get(externalId) ?? []), hotelId]));
+  }
+  for (const [externalId, hotels] of owners)
+    if (hotels.size > 1)
+      blockers.push({
+        code: "DUPLICATE_EXTERNAL_PROPERTY_ID",
+        source: "pms.channex_connections",
+        sourceId: externalId,
+        message: "External Channex property ID is owned by more than one legacy hotel",
+      });
 }
 
 function linkedMemberships(

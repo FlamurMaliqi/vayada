@@ -25,14 +25,13 @@ describe("production PMS room records", () => {
       "linked_inventory_groups",
       "rate_plans",
       "rate_plans",
+      "rate_plans",
       "rate_rules",
       "rate_rules",
       "room_types",
       "rooms",
     ]);
-    expect(
-      built.records.find((record) => record.targetTable === "room_types")?.row,
-    ).toMatchObject({
+    expect(built.records.find((record) => record.targetTable === "room_types")?.row).toMatchObject({
       propertyId: PROPERTY,
       linkedInventoryGroupId: GROUP,
       occupancyLimits: { maxOccupancy: 3, maxAdults: 2, maxChildren: 1 },
@@ -41,6 +40,12 @@ describe("production PMS room records", () => {
     expect(built.channelPlanByMapping.get(MAPPING)).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/,
     );
+    expect(
+      built.records.find(
+        (record) =>
+          record.targetTable === "rate_plans" && record.row["rateType"] === "non_refundable",
+      )?.row,
+    ).toMatchObject({ depositPolicy: { kind: "percentage", value: 30 } });
   });
 
   it("blocks malformed pricing instead of silently dropping it", () => {
@@ -102,11 +107,13 @@ function sourceRows(): IdentitySourceRow[] {
       min_stay: 2,
       max_stay: 7,
       non_refundable_rate: null,
-      non_refundable_enabled: false,
+      non_refundable_enabled: true,
       flexible_rate_enabled: true,
       partial_refund_tiers: [],
       rate_payment_methods: {},
-      rate_deposit_settings: {},
+      rate_deposit_settings: {
+        nonrefundable: { kind: "percentage", value: 30 },
+      },
       meal_plans: [],
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-02-01T00:00:00Z",
@@ -143,6 +150,7 @@ function target() {
         propertyId: PROPERTY,
         relationship: "operational_input",
         status: "active",
+        migrationRunId: "run",
       },
     ],
     bookings: [],

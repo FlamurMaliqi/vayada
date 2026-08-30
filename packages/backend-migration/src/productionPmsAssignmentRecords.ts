@@ -8,6 +8,7 @@ import type {
   PmsTargetRecord,
 } from "./productionPmsTypes.js";
 import {
+  bookingLifecycle,
   date,
   deterministicUuid,
   integer,
@@ -31,8 +32,7 @@ export function buildPmsAssignmentRecords(
     try {
       const built = assignments(context, source, rooms, extrasByBooking);
       records.push(...built.records);
-      for (const [key, id] of built.assignmentByPosition)
-        assignmentByBookingPosition.set(key, id);
+      for (const [key, id] of built.assignmentByPosition) assignmentByBookingPosition.set(key, id);
     } catch (error) {
       addPmsBlocker(
         context,
@@ -80,6 +80,25 @@ export function targetBooking(
   const propertyId = propertyForHotel(context, source.data["hotel_id"]);
   if (target.propertyId !== propertyId)
     throw new Error(`booking ${bookingId} target property does not match its PMS hotel`);
+  const expected = {
+    checkIn: date(source.data["check_in"], "check_in"),
+    checkOut: date(source.data["check_out"], "check_out"),
+    adults: integer(source.data["adults"], "adults", 1),
+    children: integer(source.data["children"], "children", 0),
+    roomCount: integer(source.data["number_of_rooms"], "number_of_rooms", 1),
+    currency: requiredText(source.data["currency"] ?? "EUR", "currency").toUpperCase(),
+    lifecycleStatus: bookingLifecycle(source.data["status"]),
+    updatedAt: iso(source.data["updated_at"], "updated_at"),
+  };
+  if (target.migrationRunId !== context.sourceRunId)
+    throw new Error(`booking ${bookingId} was not migrated from extraction ${context.sourceRunId}`);
+  for (const [field, value] of Object.entries(expected))
+    if (
+      field === "updatedAt"
+        ? !target.updatedAt || Date.parse(target.updatedAt) !== Date.parse(String(value))
+        : target[field as keyof typeof expected] !== value
+    )
+      throw new Error(`booking ${bookingId} target ${field} differs from the PMS snapshot`);
   return { source, target, propertyId };
 }
 
@@ -137,9 +156,10 @@ function assignments(
           pmsReservationRef: optionalText(data["booking_reference"], "booking_reference"),
           externalReservationId: externalBookingId(context, bookingId),
           channel: normalizedChannel(data["channel"]),
-          source: assignmentSource(data["channel"]),
+          source: "migration",
           assignmentPayload: {
             migrationRunId: context.sourceRunId,
+            legacySource: assignmentSource(data["channel"]),
             legacyBookingRoomId: extra?.data["id"] ?? null,
             legacyPosition: extra?.data["position"] ?? 0,
           },
@@ -202,9 +222,7 @@ function roomBlock(context: PmsBuildContext, source: IdentitySourceRow): PmsTarg
   ];
 }
 
-function extraRooms(
-  context: PmsBuildContext,
-): Map<string, Map<number, IdentitySourceRow>> {
+function extraRooms(context: PmsBuildContext): Map<string, Map<number, IdentitySourceRow>> {
   const result = new Map<string, Map<number, IdentitySourceRow>>();
   for (const row of context.rowsByTable.get("booking_rooms") ?? []) {
     try {
@@ -285,7 +303,9 @@ function externalBookingId(context: PmsBuildContext, bookingId: string): string 
     (row) => String(row.data["booking_id"] ?? "").toLowerCase() === bookingId,
   );
   if (!mappings.length) return null;
-  const ids = new Set(mappings.map((row) => requiredText(row.data["channex_booking_id"], "channex_booking_id")));
+  const ids = new Set(
+    mappings.map((row) => requiredText(row.data["channex_booking_id"], "channex_booking_id")),
+  );
   if (ids.size !== 1) throw new Error("booking has conflicting external reservation IDs");
   return [...ids][0]!;
 }

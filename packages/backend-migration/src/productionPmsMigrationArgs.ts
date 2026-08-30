@@ -4,6 +4,7 @@ export type ProductionPmsMigrationArgs = {
   connectionString: string;
   sourceRunId: string;
   mode: ProductionPmsMigrationMode;
+  applyConfirmation?: string;
 };
 
 export function parseProductionPmsMigrationArgs(
@@ -34,7 +35,12 @@ export function parseProductionPmsMigrationArgs(
   const expected = `production-pms:${sourceRunId}`;
   if (mode === "apply" && confirm !== expected)
     throw new Error(`--apply requires --confirm ${expected}`);
-  return { connectionString, sourceRunId, mode };
+  return {
+    connectionString,
+    sourceRunId,
+    mode,
+    ...(mode === "apply" ? { applyConfirmation: confirm } : {}),
+  };
 }
 
 function value(args: string[], index: number, argument: string): string {

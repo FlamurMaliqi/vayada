@@ -30,6 +30,7 @@ export type PmsPropertyLink = {
   propertyId: string;
   relationship: string;
   status: string;
+  migrationRunId: string | null;
 };
 
 export type PmsTargetBooking = {
@@ -39,9 +40,11 @@ export type PmsTargetBooking = {
   checkOut: string;
   adults: number;
   children: number;
+  roomCount: number;
   currency: string;
   lifecycleStatus: string;
   updatedAt: string | null;
+  migrationRunId: string | null;
 };
 
 export type ProductionPmsTargetState = {
@@ -56,12 +59,14 @@ export type ProductionPmsTargetState = {
 
 export type PmsBuildContext = {
   sourceRunId: string;
+  snapshotAt: string;
   completedAt: string;
   rows: IdentitySourceRow[];
   target: ProductionPmsTargetState;
   blockers: IdentityMigrationBlocker[];
   rowsByTable: Map<string, IdentitySourceRow[]>;
   propertyByHotel: Map<string, string>;
+  hotelById: Map<string, IdentitySourceRow>;
   bookingById: Map<string, IdentitySourceRow>;
   targetBookingById: Map<string, PmsTargetBooking>;
   roomTypeById: Map<string, IdentitySourceRow>;

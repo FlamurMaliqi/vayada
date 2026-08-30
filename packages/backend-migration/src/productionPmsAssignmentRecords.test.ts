@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { buildPmsAssignmentRecords } from "./productionPmsAssignmentRecords.js";
 import { createProductionPmsContext } from "./productionPmsContext.js";
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
+import type { ProductionPmsTargetState } from "./productionPmsTypes.js";
 
 const HOTEL = "10000000-0000-4000-a000-000000000001";
 const PROPERTY = "20000000-0000-4000-a000-000000000001";
@@ -61,6 +62,28 @@ describe("production PMS assignments", () => {
       }),
     );
   });
+
+  it("blocks assignments when target booking freshness is missing", () => {
+    const targetState = target();
+    targetState.bookings[0]!.updatedAt = null;
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: rows(),
+      target: targetState,
+    });
+    buildPmsAssignmentRecords(context, {
+      records: [],
+      flexiblePlanByRoomType: new Map([[TYPE, PLAN]]),
+      channelPlanByMapping: new Map(),
+    });
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({
+        code: "INVALID_SOURCE_ROW",
+        message: expect.stringContaining("target updatedAt differs"),
+      }),
+    );
+  });
 });
 
 function rows(): IdentitySourceRow[] {
@@ -105,7 +128,7 @@ function rows(): IdentitySourceRow[] {
   ];
 }
 
-function target() {
+function target(): ProductionPmsTargetState {
   return {
     propertyLinks: [
       {
@@ -113,6 +136,7 @@ function target() {
         propertyId: PROPERTY,
         relationship: "operational_input",
         status: "active",
+        migrationRunId: "run",
       },
     ],
     bookings: [
@@ -123,9 +147,11 @@ function target() {
         checkOut: "2026-09-03",
         adults: 2,
         children: 1,
+        roomCount: 2,
         currency: "EUR",
         lifecycleStatus: "confirmed",
         updatedAt: "2026-08-20T00:00:00Z",
+        migrationRunId: "run",
       },
     ],
     userIds: [],

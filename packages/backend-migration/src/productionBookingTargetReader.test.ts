@@ -23,7 +23,7 @@ describe("production Booking target reader", () => {
         updatedAt: "2026-08-30T01:00:00.000Z",
         row: {
           propertyId: "13550000-0000-4000-8000-000000000051",
-          sourceFreshness: { migrationRunId: "run" },
+          sourceFreshness: { migrationRunId: "run", legacy_key: "preserved" },
         },
       },
       {
@@ -70,7 +70,7 @@ class TargetFixture {
             targetId: "13550000-0000-4000-8000-000000000051",
             updatedAt: "2026-08-30 01:00:00+00",
             rowData:
-              '{"property_id":"13550000-0000-4000-8000-000000000051","source_freshness":{"migrationRunId":"run"}}',
+              '{"property_id":"13550000-0000-4000-8000-000000000051","source_freshness":{"migrationRunId":"run","legacy_key":"preserved"}}',
           },
         ] as T[],
       };

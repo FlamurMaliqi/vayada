@@ -30,8 +30,9 @@ describe("production catalog core writer", () => {
     expect(properties).not.toContain("profile_status = EXCLUDED");
     expect(properties).not.toContain("completeness_reasons = EXCLUDED");
     const links = fixture.sql.find((sql) => sql.includes("property_source_links"))!;
-    expect(links).toContain("DO NOTHING");
-    expect(links).not.toContain("property_id = EXCLUDED.property_id");
+    expect(links).toContain("metadata = hotel_catalog.property_source_links.metadata");
+    expect(links).toContain("property_id = EXCLUDED.property_id");
+    expect(links).toContain("relationship = EXCLUDED.relationship");
     const locations = fixture.sql.find((sql) => sql.includes("property_locations"))!;
     expect(locations).toContain("property_owner_revisions");
     expect(locations).not.toMatch(/address_public\s*=|geo_public\s*=|map_display_mode\s*=/);

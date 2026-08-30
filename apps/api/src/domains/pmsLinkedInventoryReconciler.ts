@@ -70,7 +70,7 @@ export async function reconcilePmsLinkedInventory(
     [propertyId],
   );
   const linkedRoomTypeIds = new Set(linkedRoomTypes.rows.map(({ roomTypeId }) => roomTypeId));
-  const legacy = await client.query(
+  const unsupportedLegacy = await client.query(
     `SELECT 1
      FROM pms.inventory_days inventory
      JOIN pms.room_types room_type
@@ -79,10 +79,15 @@ export async function reconcilePmsLinkedInventory(
      WHERE inventory.property_id = $1::uuid
        AND room_type.linked_inventory_group_id IS NOT NULL
        AND inventory.calendar_revision IS NULL
+       AND NOT COALESCE(
+         inventory.source_freshness ->> 'migrationRunId' ~ '^vay1351-[0-9a-f]{24}$'
+           AND jsonb_typeof(inventory.source_freshness -> 'legacy') = 'object',
+         false
+       )
      LIMIT 1`,
     [propertyId],
   );
-  if (legacy.rows.length > 0) {
+  if (unsupportedLegacy.rows.length > 0) {
     const work = await client.query(
       `SELECT 1 FROM (
          SELECT block.room_type_id FROM pms.room_blocks block
@@ -242,10 +247,15 @@ export async function reconcilePmsLinkedInventory(
      UPDATE pms.inventory_days inventory
      SET blocked_count = desired.blocked_count,
          linked_stop_sell = desired.linked_stop_sell,
-         available_count = CASE WHEN inventory.status = 'closed' OR desired.linked_stop_sell
-           THEN 0 ELSE GREATEST(0, inventory.effective_sellable_limit_count
-             - inventory.assigned_count - desired.blocked_count) END,
-         inventory_revision = inventory.inventory_revision + 1,
+         available_count = CASE
+           WHEN inventory.status = 'closed' OR desired.linked_stop_sell THEN 0
+           WHEN inventory.calendar_revision IS NULL THEN
+             GREATEST(0, inventory.total_count - inventory.assigned_count - desired.blocked_count)
+           ELSE GREATEST(0, inventory.effective_sellable_limit_count
+             - inventory.assigned_count - desired.blocked_count)
+         END,
+         inventory_revision = CASE WHEN inventory.calendar_revision IS NULL
+           THEN NULL ELSE inventory.inventory_revision + 1 END,
          linked_source_revision = inventory.linked_source_revision + 1,
          block_source_revision = inventory.block_source_revision
            + CASE WHEN inventory.blocked_count IS DISTINCT FROM desired.blocked_count THEN 1 ELSE 0 END,

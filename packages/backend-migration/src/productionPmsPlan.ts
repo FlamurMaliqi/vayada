@@ -16,9 +16,11 @@ import type {
 } from "./productionPmsTypes.js";
 import type { ProductionMigrationSourceLink } from "./productionBookingTypes.js";
 import { sha256 } from "./productionBookingValues.js";
+import { sourceIdentity } from "./productionPmsValues.js";
 
 export function buildProductionPmsPlan(input: {
   sourceRunId: string;
+  snapshotAt: string;
   completedAt: string;
   rows: IdentitySourceRow[];
   target: ProductionPmsTargetState;
@@ -35,7 +37,53 @@ export function buildProductionPmsPlan(input: {
     ...buildPmsChannelRecords(context, rooms, assignments),
     ...buildPmsAuditRecords(context),
   ].sort((left, right) => recordKey(left).localeCompare(recordKey(right)));
+  enforceSourceCoverage(context, records);
   return reconcileProductionPmsRecords(context, records);
+}
+
+function enforceSourceCoverage(context: PmsBuildContext, records: PmsTargetRecord[]): void {
+  const covered = new Set(records.map((record) => `${record.sourceTable}:${record.sourceId}`));
+  for (const source of context.rows) {
+    let sourceId: string;
+    try {
+      sourceId = sourceIdentity(source);
+    } catch (error) {
+      context.blockers.push({
+        code: "INVALID_SOURCE_ROW",
+        source: `pms.${source.sourceTable}`,
+        sourceId: String(source.rowOrdinal),
+        message: error instanceof Error ? error.message : "Source identity is invalid",
+      });
+      continue;
+    }
+    if (covered.has(`${source.sourceTable}:${sourceId}`)) continue;
+    if (source.sourceTable === "hotels") {
+      try {
+        propertyForHotel(context, source.data["id"]);
+      } catch (error) {
+        context.blockers.push({
+          code: "INVALID_SOURCE_ROW",
+          source: "pms.hotels",
+          sourceId,
+          message: error instanceof Error ? error.message : "Hotel prerequisite is invalid",
+        });
+      }
+      continue;
+    }
+    if (
+      context.blockers.some(
+        (blocker) =>
+          blocker.source === `pms.${source.sourceTable}` && blocker.sourceId === sourceId,
+      )
+    )
+      continue;
+    context.blockers.push({
+      code: "UNMAPPED_SOURCE_ROW",
+      source: `pms.${source.sourceTable}`,
+      sourceId,
+      message: "In-scope source row has no target provenance or explicit blocking disposition",
+    });
+  }
 }
 
 export function reconcileProductionPmsRecords(
@@ -167,6 +215,7 @@ function summarizeParity(
 
 function sourceProperty(context: PmsBuildContext, row: IdentitySourceRow): string {
   try {
+    if (row.sourceTable === "hotels") return propertyForHotel(context, row.data["id"]);
     if (row.data["hotel_id"]) return propertyForHotel(context, row.data["hotel_id"]);
     const bookingId = String(row.data["booking_id"] ?? "").toLowerCase();
     if (bookingId) {
@@ -269,7 +318,15 @@ function reconcile(
   }
   const sourceTime = Date.parse(candidate.sourceUpdatedAt);
   const targetTime = Date.parse(current.updatedAt);
-  if (targetTime > sourceTime) return "preserve_newer";
+  if (targetTime > sourceTime) {
+    blocker(
+      context,
+      "TARGET_NEWER_WITHOUT_PROVENANCE",
+      candidate,
+      "Newer target has no durable migration disposition; review ownership before cutover",
+    );
+    return "block";
+  }
   if (targetTime === sourceTime) {
     blocker(context, "TARGET_EQUAL_TIME_CONFLICT", candidate, "Rows disagree at equal freshness");
     return "block";

@@ -34,9 +34,9 @@ describe("production PMS guest operations", () => {
     expect(
       records.find((record) => record.targetTable === "booking_checkout_charges")?.row,
     ).toMatchObject({ assignmentId: ASSIGNMENT, currency: "EUR", status: "paid" });
-    expect(records.find((record) => record.targetTable === "booking_notes_private")?.row).toMatchObject(
-      { body: "Internal note", source: "pms", authorUserId: USER },
-    );
+    expect(
+      records.find((record) => record.targetTable === "booking_notes_private")?.row,
+    ).toMatchObject({ body: "Internal note", source: "pms", authorUserId: USER });
   });
 
   it("blocks missing target users", () => {
@@ -52,15 +52,26 @@ describe("production PMS guest operations", () => {
       records: [],
       assignmentByBookingPosition: new Map([[`${BOOKING}:1`, ASSIGNMENT]]),
     });
-    expect(context.blockers.some((blocker) => blocker.message.includes("missing target user"))).toBe(
-      true,
-    );
+    expect(
+      context.blockers.some((blocker) => blocker.message.includes("missing target user")),
+    ).toBe(true);
   });
 });
 
 function rows(): IdentitySourceRow[] {
   return [
-    row("bookings", { id: BOOKING, hotel_id: HOTEL }),
+    row("bookings", {
+      id: BOOKING,
+      hotel_id: HOTEL,
+      check_in: "2026-09-01",
+      check_out: "2026-09-03",
+      adults: 2,
+      children: 0,
+      number_of_rooms: 1,
+      currency: "EUR",
+      status: "checked_out",
+      updated_at: "2026-09-03T11:00:00Z",
+    }),
     row("checkin_checklist_templates", {
       hotel_id: HOTEL,
       steps: [{ key: "id" }],
@@ -124,6 +135,7 @@ function target() {
         propertyId: PROPERTY,
         relationship: "operational_input",
         status: "active",
+        migrationRunId: "run",
       },
     ],
     bookings: [
@@ -134,9 +146,11 @@ function target() {
         checkOut: "2026-09-03",
         adults: 2,
         children: 0,
+        roomCount: 1,
         currency: "EUR",
         lifecycleStatus: "completed",
         updatedAt: "2026-09-03T11:00:00Z",
+        migrationRunId: "run",
       },
     ],
     userIds: [USER],

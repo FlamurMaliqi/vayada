@@ -23,6 +23,7 @@ describe("production PMS inventory", () => {
             propertyId: PROPERTY,
             relationship: "operational_input",
             status: "active",
+            migrationRunId: "run",
           },
         ],
         bookings: [],
@@ -38,13 +39,17 @@ describe("production PMS inventory", () => {
     expect(day(records, TYPE_A, "2026-09-01")).toMatchObject({
       assignedCount: 1,
       availableCount: 0,
-      status: "closed",
+      status: "open",
+      linkedStopSell: true,
+      linkedSourceRevision: 1,
       sourceFreshness: { legacy: { linkedStopSell: true } },
     });
     expect(day(records, TYPE_B, "2026-09-01")).toMatchObject({
       assignedCount: 0,
       availableCount: 0,
-      status: "closed",
+      status: "open",
+      linkedStopSell: true,
+      linkedSourceRevision: 1,
       sourceFreshness: { legacy: { linkedStopSell: true } },
     });
     expect(day(records, TYPE_A, "2026-09-04")).toMatchObject({
@@ -68,6 +73,7 @@ describe("production PMS inventory", () => {
             propertyId: PROPERTY,
             relationship: "operational_input",
             status: "active",
+            migrationRunId: "run",
           },
         ],
         bookings: [],
@@ -85,6 +91,105 @@ describe("production PMS inventory", () => {
       }),
     );
   });
+
+  it("blocks active legacy holds that have no target release lifecycle", () => {
+    const source = rows();
+    source.push(
+      row("booking_drafts", {
+        id: "60000000-0000-4000-a000-000000000001",
+        hotel_id: HOTEL,
+        room_type_id: TYPE_A,
+        materialized_booking_id: null,
+        number_of_rooms: 1,
+        check_in: "2026-09-01",
+        check_out: "2026-09-03",
+        expires_at: "2026-08-30T00:10:00Z",
+      }),
+    );
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: source,
+      target: {
+        propertyLinks: [
+          {
+            sourceId: HOTEL,
+            propertyId: PROPERTY,
+            relationship: "operational_input",
+            status: "active",
+            migrationRunId: "run",
+          },
+        ],
+        bookings: [],
+        userIds: [],
+        mediaIds: [],
+        records: [],
+        provenance: [],
+      },
+    });
+    buildPmsInventoryRecords(context);
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({
+        code: "ACTIVE_BOOKING_DRAFT",
+        sourceId: "60000000-0000-4000-a000-000000000001",
+      }),
+    );
+  });
+
+  it("matches hotel auto-open, property-local cutoff, and positive-rate sellability", () => {
+    const source = rows();
+    const hotel = source.find((row) => row.sourceTable === "hotels")!;
+    hotel.data["timezone"] = "Asia/Taipei";
+    hotel.data["same_day_booking_cutoff_time"] = "18:00";
+    hotel.data["calendar_auto_open_enabled"] = true;
+    hotel.data["calendar_auto_open_through"] = "2026-09-30";
+    const zeroRate = source.find(
+      (row) => row.sourceTable === "room_types" && row.data["id"] === TYPE_B,
+    )!;
+    zeroRate.data["base_rate"] = "0.00";
+
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      snapshotAt: "2026-08-30T10:30:01Z",
+      completedAt: "2026-08-30T10:31:00Z",
+      rows: source,
+      target: {
+        propertyLinks: [
+          {
+            sourceId: HOTEL,
+            propertyId: PROPERTY,
+            relationship: "operational_input",
+            status: "active",
+            migrationRunId: "run",
+          },
+        ],
+        bookings: [],
+        userIds: [],
+        mediaIds: [],
+        records: [],
+        provenance: [],
+      },
+    });
+    const records = buildPmsInventoryRecords(context);
+    expect(context.blockers).toEqual([]);
+    expect(day(records, TYPE_A, "2026-08-30")).toMatchObject({
+      status: "closed",
+      availableCount: 0,
+      sourceFreshness: { legacy: { calendarOpen: false } },
+    });
+    expect(day(records, TYPE_A, "2026-09-30")).toMatchObject({
+      status: "open",
+      availableCount: 2,
+    });
+    expect(day(records, TYPE_A, "2026-10-01")).toMatchObject({
+      status: "closed",
+      availableCount: 0,
+    });
+    expect(day(records, TYPE_B, "2026-08-31")).toMatchObject({
+      status: "closed",
+      availableCount: 0,
+    });
+  });
 });
 
 function day(records: ReturnType<typeof buildPmsInventoryRecords>, type: string, date: string) {
@@ -95,6 +200,14 @@ function day(records: ReturnType<typeof buildPmsInventoryRecords>, type: string,
 
 function rows(): IdentitySourceRow[] {
   return [
+    row("hotels", {
+      id: HOTEL,
+      timezone: "UTC",
+      same_day_bookings_enabled: true,
+      same_day_booking_cutoff_time: null,
+      calendar_auto_open_enabled: false,
+      calendar_auto_open_through: null,
+    }),
     row("linked_inventory_groups", {
       id: GROUP,
       hotel_id: HOTEL,
@@ -127,6 +240,9 @@ function roomType(id: string): IdentitySourceRow {
     total_rooms: 2,
     operating_periods: [],
     minimum_advance_days: 0,
+    base_rate: "100.00",
+    daily_rates: {},
+    seasons: [],
     updated_at: "2026-08-20T00:00:00Z",
   });
 }

@@ -23,7 +23,115 @@ export function buildPmsAuditRecords(context: PmsBuildContext): PmsTargetRecord[
     append(context, source, records, () => channelMarkup(context, source));
   for (const source of context.rowsByTable.get("channex_webhook_events") ?? [])
     append(context, source, records, () => webhookEvent(context, source));
+  for (const source of context.rowsByTable.get("linked_inventory_group_members") ?? [])
+    append(context, source, records, () => linkedMembership(context, source));
+  for (const source of context.rowsByTable.get("cancellation_policies") ?? [])
+    append(context, source, records, () => cancellationPolicySnapshot(context, source));
+  for (const source of context.rowsByTable.get("booking_drafts") ?? [])
+    append(context, source, records, () => bookingDraftDisposition(context, source));
   return records;
+}
+
+function bookingDraftDisposition(
+  context: PmsBuildContext,
+  source: IdentitySourceRow,
+): PmsTargetRecord[] {
+  const sourceId = uuid(source.data["id"], "id");
+  const propertyId = propertyForHotel(context, source.data["hotel_id"]);
+  const id = deterministicUuid(
+    "production-pms",
+    "booking-draft-disposition",
+    context.sourceRunId,
+    sourceId,
+  );
+  const materializedBookingId = optionalText(
+    source.data["materialized_booking_id"],
+    "materialized_booking_id",
+  );
+  const expiresAt = optionalText(source.data["expires_at"], "expires_at");
+  const disposition = materializedBookingId
+    ? "materialized"
+    : expiresAt && Date.parse(expiresAt) > Date.parse(context.completedAt)
+      ? "active_cutover_blocker"
+      : "expired";
+  return [
+    auditRecord(context, source, id, context.completedAt, {
+      auditKey: `legacy-pms-booking-draft:${context.sourceRunId}:${sourceId}`,
+      action: "pms.legacy_booking_draft.disposition_recorded",
+      propertyId,
+      actorType: "migration",
+      actorUserId: null,
+      targetResourceType: "booking_draft_disposition",
+      targetResourceId: sourceId,
+      correlationId: materializedBookingId ?? sourceId,
+      redactedPayload: { disposition, materializedBookingId, expiresAt },
+      privatePayload: source.data,
+      auditMetadata: { migrationRunId: context.sourceRunId, sourceTable: source.sourceTable },
+      retentionClass: "guest_pii",
+    }),
+  ];
+}
+
+function linkedMembership(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetRecord[] {
+  const groupId = uuid(source.data["group_id"], "group_id");
+  const roomTypeId = uuid(source.data["room_type_id"], "room_type_id");
+  const roomType = context.roomTypeById.get(roomTypeId);
+  if (!roomType || context.linkedGroupByRoomType.get(roomTypeId) !== groupId)
+    throw new Error("linked inventory membership has not passed ownership validation");
+  const propertyId = propertyForHotel(context, roomType.data["hotel_id"]);
+  const id = deterministicUuid(
+    "production-pms",
+    "linked-membership-snapshot",
+    context.sourceRunId,
+    groupId,
+    roomTypeId,
+  );
+  return [
+    auditRecord(context, source, id, context.completedAt, {
+      auditKey: `legacy-pms-linked-membership:${context.sourceRunId}:${groupId}:${roomTypeId}`,
+      action: "pms.legacy_linked_inventory_membership.migrated",
+      propertyId,
+      actorType: "migration",
+      actorUserId: null,
+      targetResourceType: "linked_inventory_group",
+      targetResourceId: groupId,
+      correlationId: groupId,
+      redactedPayload: { roomTypeId },
+      privatePayload: source.data,
+      auditMetadata: { migrationRunId: context.sourceRunId, sourceTable: source.sourceTable },
+      retentionClass: "standard",
+    }),
+  ];
+}
+
+function cancellationPolicySnapshot(
+  context: PmsBuildContext,
+  source: IdentitySourceRow,
+): PmsTargetRecord[] {
+  const sourceId = uuid(source.data["id"], "id");
+  const propertyId = propertyForHotel(context, source.data["hotel_id"]);
+  const id = deterministicUuid(
+    "production-pms",
+    "cancellation-policy-snapshot",
+    context.sourceRunId,
+    sourceId,
+  );
+  return [
+    auditRecord(context, source, id, context.completedAt, {
+      auditKey: `legacy-pms-cancellation-policy:${context.sourceRunId}:${sourceId}`,
+      action: "pms.legacy_cancellation_policy.migrated",
+      propertyId,
+      actorType: "migration",
+      actorUserId: null,
+      targetResourceType: "cancellation_policy_snapshot",
+      targetResourceId: sourceId,
+      correlationId: sourceId,
+      redactedPayload: source.data,
+      privatePayload: source.data,
+      auditMetadata: { migrationRunId: context.sourceRunId, sourceTable: source.sourceTable },
+      retentionClass: "standard",
+    }),
+  ];
 }
 
 function bookingEvent(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetRecord[] {
@@ -110,10 +218,10 @@ function channelMarkup(context: PmsBuildContext, source: IdentitySourceRow): Pms
   const channel = requiredText(data["channel"], "channel").toLowerCase();
   const markupPercent = percentage(data["markup_pct"], "markup_pct");
   const occurredAt = iso(data["updated_at"], "updated_at");
-  const id = deterministicUuid("production-pms", "channel-markup-audit", sourceId);
+  const id = deterministicUuid("production-pms", "channel-markup-audit", sourceId, occurredAt);
   return [
     auditRecord(context, source, id, occurredAt, {
-      auditKey: `legacy-pms-channel-markup:${sourceId}`,
+      auditKey: `legacy-pms-channel-markup:${sourceId}:${occurredAt}`,
       action: "pms.legacy_channel_markup.migrated",
       propertyId,
       actorType: "migration",
@@ -135,7 +243,8 @@ function channelMarkup(context: PmsBuildContext, source: IdentitySourceRow): Pms
 function webhookEvent(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetRecord[] {
   const data = source.data;
   const id = uuid(data["id"], "id");
-  const externalPropertyId = optionalText(data["property_id"], "property_id")?.toLowerCase() ?? null;
+  const externalPropertyId =
+    optionalText(data["property_id"], "property_id")?.toLowerCase() ?? null;
   const connections = externalPropertyId
     ? (context.rowsByTable.get("channex_connections") ?? []).filter(
         (row) => String(row.data["channex_property_id"] ?? "").toLowerCase() === externalPropertyId,
@@ -180,7 +289,7 @@ function webhookEvent(context: PmsBuildContext, source: IdentitySourceRow): PmsT
         rawHeaders: {},
         rawPayload,
         failureReason:
-          processedOk === false ? error ?? "Legacy processor recorded failure" : null,
+          processedOk === false ? (error ?? "Legacy processor recorded failure") : null,
         privacyScope: "restricted",
         aiVisible: false,
       },
@@ -207,7 +316,7 @@ function auditRecord(
     redactedPayload: unknown;
     privatePayload: unknown;
     auditMetadata: Record<string, unknown>;
-    retentionClass: "guest_pii" | "provider_receipt";
+    retentionClass: "standard" | "guest_pii" | "provider_receipt";
   },
 ): PmsTargetRecord {
   return pmsRecord(
@@ -282,7 +391,10 @@ function append(
       context,
       "INVALID_SOURCE_ROW",
       `pms.${source.sourceTable}`,
-      safePmsSourceId(source, source.sourceTable === "booking_notification_deliveries" ? "booking_id" : "id"),
+      safePmsSourceId(
+        source,
+        source.sourceTable === "booking_notification_deliveries" ? "booking_id" : "id",
+      ),
       error instanceof Error ? error.message : "Invalid PMS audit source",
     );
   }

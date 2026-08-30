@@ -14,8 +14,27 @@ describe("production PMS target reader", () => {
         return { rows: [] };
       },
     };
-    const prerequisites = await readProductionPmsPrerequisites(client as never);
+    const prerequisites = await readProductionPmsPrerequisites(client as never, "vay1351-run");
     expect(prerequisites.bookings[0]?.updatedAt).toBeNull();
+  });
+
+  it("gates catalog and booking prerequisites to the same extraction run", async () => {
+    const calls: Array<{ sql: string; values: unknown[] | undefined }> = [];
+    const client = {
+      async query(sql: string, values?: unknown[]) {
+        calls.push({ sql, values });
+        if (sql.includes("property_source_links")) return { rows: [] };
+        if (sql.includes("guest_bookings")) return { rows: [] };
+        return { rows: [] };
+      },
+    };
+    await readProductionPmsPrerequisites(client as never, "vay1351-run");
+    expect(calls[0]?.sql).toContain("metadata ->> 'migrationRunId' = $1");
+    expect(calls[1]?.sql).toContain("provenance.last_run_id = $1");
+    expect(calls.slice(0, 2).map((call) => call.values)).toEqual([
+      ["vay1351-run"],
+      ["vay1351-run"],
+    ]);
   });
 
   it("loads UUID and composite target rows, provenance, and unique collisions", async () => {
@@ -33,6 +52,7 @@ describe("production PMS target reader", () => {
                   id: "10000000-0000-4000-a000-000000000001",
                   property_id: "20000000-0000-4000-a000-000000000001",
                   source_system: "pms",
+                  room_attributes: { legacy_key: "unchanged" },
                 }),
               },
             ],
@@ -76,7 +96,11 @@ describe("production PMS target reader", () => {
     });
     expect(target.records[0]).toMatchObject({
       targetTable: "room_types",
-      row: { propertyId: "20000000-0000-4000-a000-000000000001", sourceSystem: "pms" },
+      row: {
+        propertyId: "20000000-0000-4000-a000-000000000001",
+        sourceSystem: "pms",
+        roomAttributes: { legacy_key: "unchanged" },
+      },
     });
     expect(target.provenance[0]).toMatchObject({
       sourceUpdatedAt: "2026-08-30T00:00:00.000Z",
@@ -84,6 +108,50 @@ describe("production PMS target reader", () => {
     });
     expect(target.blockers).toHaveLength(1);
     expect(calls.some((sql) => sql.includes("stay_date::text"))).toBe(true);
+    expect(calls.find((sql) => sql.includes("WITH requested AS"))).toContain(
+      "target.external_property_id",
+    );
+  });
+
+  it("blocks mutable migration-owned targets whose source row disappeared", async () => {
+    const client = {
+      async query(sql: string) {
+        if (sql.includes("FROM pms.room_types")) return { rows: [] };
+        if (sql.includes("FROM pms.inventory_days")) return { rows: [] };
+        if (sql.includes("FROM pms.rooms")) return { rows: [{ targetId: "stale-room" }] };
+        if (sql.includes("FROM platform.production_migration_source_links"))
+          return {
+            rows: [
+              {
+                sourceDatabase: "pms",
+                sourceTable: "rooms",
+                sourceId: "legacy-room",
+                targetProduct: "pms",
+                targetTable: "rooms",
+                targetId: "stale-room",
+                sourceChecksum: "a".repeat(64),
+                sourceUpdatedAt: "2026-08-01T00:00:00Z",
+                lastMigratedAt: "2026-08-02T00:00:00Z",
+              },
+            ],
+          };
+        if (sql.includes("WITH requested AS")) return { rows: [] };
+        throw new Error(`Unexpected SQL: ${sql}`);
+      },
+    };
+    const target = await readProductionPmsTargetState(client as never, candidates(), {
+      propertyLinks: [],
+      bookings: [],
+      userIds: [],
+      mediaIds: [],
+    });
+    expect(target.blockers).toContainEqual(
+      expect.objectContaining({
+        code: "SOURCE_ABSENT_MIGRATED_TARGET",
+        source: "pms.rooms",
+        sourceId: "legacy-room",
+      }),
+    );
   });
 });
 

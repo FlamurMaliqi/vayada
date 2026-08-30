@@ -74,8 +74,9 @@ function message(context: PmsBuildContext, source: IdentitySourceRow): PmsTarget
     throw new Error(`message direction ${direction} is unsupported`);
   const sentAt = iso(data["sent_at"], "sent_at");
   const receivedAt = iso(data["received_at"], "received_at");
+  const readAt = optionalIso(data["read_at"], "read_at");
   return [
-    pmsRecord(source, "messages", id, receivedAt, false, {
+    pmsRecord(source, "messages", id, readAt ?? receivedAt, true, {
       id,
       propertyId,
       threadId,
@@ -87,7 +88,7 @@ function message(context: PmsBuildContext, source: IdentitySourceRow): PmsTarget
       body: typeof data["body"] === "string" ? data["body"] : "",
       sentAt,
       receivedAt,
-      readAt: optionalIso(data["read_at"], "read_at"),
+      readAt,
       rawPayload: jsonMap(data["raw_payload"], "raw_payload"),
       piiRetentionUntil: retentionDate(context, parent, receivedAt),
     }),

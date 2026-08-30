@@ -14,20 +14,34 @@ type QueryClient = Pick<pg.ClientBase, "query">;
 
 export async function readProductionPmsPrerequisites(
   client: QueryClient,
+  sourceRunId: string,
 ): Promise<Omit<ProductionPmsTargetState, "records" | "provenance" | "blockers">> {
   const links = await client.query<PmsPropertyLink>(
-    `SELECT source_id AS "sourceId", property_id::text AS "propertyId", relationship, status
+    `SELECT source_id AS "sourceId", property_id::text AS "propertyId", relationship, status,
+            metadata ->> 'migrationRunId' AS "migrationRunId"
      FROM hotel_catalog.property_source_links
      WHERE source_system = 'pms' AND source_table = 'hotels'
+       AND metadata ->> 'migrationRunId' = $1
      ORDER BY source_id, property_id`,
+    [sourceRunId],
   );
   const bookings = await client.query<ProductionPmsTargetState["bookings"][number]>(
     `SELECT id::text, property_id::text AS "propertyId", check_in::text AS "checkIn",
-            check_out::text AS "checkOut", adults, children, currency,
-            lifecycle_status AS "lifecycleStatus", updated_at::text AS "updatedAt"
-     FROM booking.guest_bookings
-     WHERE source_system = 'pms'
-     ORDER BY id`,
+            check_out::text AS "checkOut", adults, children, room_count AS "roomCount", currency,
+            lifecycle_status AS "lifecycleStatus", updated_at::text AS "updatedAt",
+            provenance.last_run_id AS "migrationRunId"
+     FROM booking.guest_bookings booking
+     JOIN platform.production_migration_source_links provenance
+       ON provenance.source_database = 'pms'
+      AND provenance.source_table = 'bookings'
+      AND provenance.source_id = booking.id::text
+      AND provenance.target_product = 'booking'
+      AND provenance.target_table = 'guest_bookings'
+      AND provenance.target_id = booking.id::text
+      AND provenance.last_run_id = $1
+     WHERE booking.source_system = 'pms'
+     ORDER BY booking.id`,
+    [sourceRunId],
   );
   const users = await client.query<{ id: string }>(
     `SELECT id::text FROM identity.users ORDER BY id`,
@@ -101,40 +115,92 @@ export async function readProductionPmsTargetState(
       }),
     ).values(),
   ];
-  const provenance = requestedLinks.length
-    ? await client.query<ProductionMigrationSourceLink>(
-        `SELECT link.source_database AS "sourceDatabase", link.source_table AS "sourceTable",
-                link.source_id AS "sourceId", link.target_product AS "targetProduct",
-                link.target_table AS "targetTable", link.target_id AS "targetId",
-                link.source_checksum AS "sourceChecksum",
-                link.source_updated_at::text AS "sourceUpdatedAt",
-                link.last_migrated_at::text AS "lastMigratedAt"
-         FROM platform.production_migration_source_links link
-         JOIN jsonb_to_recordset($1::jsonb) requested(
-           "sourceDatabase" text, "sourceTable" text, "sourceId" text,
-           "targetProduct" text, "targetTable" text, "targetId" text
-         ) ON link.source_database = requested."sourceDatabase"
-            AND link.source_table = requested."sourceTable"
-            AND link.source_id = requested."sourceId"
-            AND link.target_product = requested."targetProduct"
-            AND link.target_table = requested."targetTable"
-            AND link.target_id = requested."targetId"
-         ORDER BY link.source_database, link.source_table, link.source_id,
-                  link.target_product, link.target_table, link.target_id`,
-        [JSON.stringify(requestedLinks)],
-      )
-    : { rows: [] as ProductionMigrationSourceLink[] };
-  const collisions = await readCollisions(client, candidates);
+  const cohort = await client.query<ProductionMigrationSourceLink>(
+    `SELECT link.source_database AS "sourceDatabase", link.source_table AS "sourceTable",
+            link.source_id AS "sourceId", link.target_product AS "targetProduct",
+            link.target_table AS "targetTable", link.target_id AS "targetId",
+            link.source_checksum AS "sourceChecksum",
+            link.source_updated_at::text AS "sourceUpdatedAt",
+            link.last_migrated_at::text AS "lastMigratedAt"
+     FROM platform.production_migration_source_links link
+     WHERE link.source_database = 'pms'
+       AND link.target_table = ANY($1::text[])
+     ORDER BY link.source_database, link.source_table, link.source_id,
+              link.target_product, link.target_table, link.target_id`,
+    [Object.keys(PRODUCTION_PMS_TABLES)],
+  );
+  const normalizedCohort = cohort.rows.map((row) => ({
+    ...row,
+    sourceUpdatedAt: normalizeTimestamp(row.sourceUpdatedAt, "source_updated_at"),
+    lastMigratedAt: requiredTimestamp(row.lastMigratedAt, "last_migrated_at"),
+  }));
+  const requestedKeys = new Set(requestedLinks.map(provenanceIdentity));
+  const provenance = normalizedCohort.filter((row) => requestedKeys.has(provenanceIdentity(row)));
+  const stale = normalizedCohort.filter((row) => !requestedKeys.has(provenanceIdentity(row)));
+  const collisions = [
+    ...(await readCollisions(client, candidates)),
+    ...(await readStaleTargetBlockers(client, stale)),
+  ];
   return {
     ...prerequisites,
     records,
-    provenance: provenance.rows.map((row) => ({
-      ...row,
-      sourceUpdatedAt: normalizeTimestamp(row.sourceUpdatedAt, "source_updated_at"),
-      lastMigratedAt: requiredTimestamp(row.lastMigratedAt, "last_migrated_at"),
-    })),
+    provenance,
     blockers: collisions,
   };
+}
+
+async function readStaleTargetBlockers(
+  client: QueryClient,
+  stale: ProductionMigrationSourceLink[],
+): Promise<IdentityMigrationBlocker[]> {
+  const blockers: IdentityMigrationBlocker[] = [];
+  const grouped = new Map<string, ProductionMigrationSourceLink[]>();
+  for (const link of stale) {
+    const definition = PRODUCTION_PMS_TABLES[link.targetTable];
+    if (!definition?.mutable || definition.product !== link.targetProduct) continue;
+    const links = grouped.get(link.targetTable);
+    if (links) links.push(link);
+    else grouped.set(link.targetTable, [link]);
+  }
+  for (const [targetTable, links] of grouped) {
+    const definition = PRODUCTION_PMS_TABLES[targetTable]!;
+    const targetId = targetIdExpression(targetTable, definition.key);
+    const result = await client.query<{ targetId: string }>(
+      `SELECT ${targetId} AS "targetId"
+       FROM ${definition.table}
+       WHERE ${targetId} = ANY($1::text[])
+       ORDER BY ${targetId}`,
+      [[...new Set(links.map((link) => link.targetId))]],
+    );
+    const existing = new Set(result.rows.map((row) => row.targetId));
+    for (const link of links)
+      if (existing.has(link.targetId))
+        blockers.push({
+          code: "SOURCE_ABSENT_MIGRATED_TARGET",
+          source: `${link.sourceDatabase}.${link.sourceTable}`,
+          sourceId: link.sourceId,
+          message: `${link.targetProduct}.${link.targetTable} ${link.targetId} remains active but its authoritative source row is absent`,
+        });
+  }
+  return blockers;
+}
+
+function provenanceIdentity(value: {
+  sourceDatabase: string;
+  sourceTable: string;
+  sourceId: string;
+  targetProduct: string;
+  targetTable: string;
+  targetId: string;
+}): string {
+  return [
+    value.sourceDatabase,
+    value.sourceTable,
+    value.sourceId,
+    value.targetProduct,
+    value.targetTable,
+    value.targetId,
+  ].join(":");
 }
 
 async function readCollisions(
@@ -155,6 +221,7 @@ async function readCollisions(
          "roomNumber" text, "roomTypeId" uuid, code text,
          "guestBookingId" uuid, position integer, source text, "sourceThreadId" text,
          "threadId" uuid, "sourceMessageId" text, provider text, "connectionId" uuid,
+         "externalPropertyId" text,
          "externalRoomTypeId" text, "ratePlanId" uuid, channel text,
          "externalRatePlanId" text, "externalBookingId" text, "channelRoomIndex" integer,
          "syncDomain" text, "auditKey" text, "webhookKeyHash" text
@@ -204,6 +271,14 @@ async function readCollisions(
      FROM requested JOIN pms.channel_connections target
       ON requested."targetTable" = 'channel_connections' AND target.id::text <> requested."targetId"
       AND target.property_id = requested."propertyId" AND target.provider = requested.provider
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.channel_connections', target.id::text,
+            'Another channel connection owns this provider external property ID'
+     FROM requested JOIN pms.channel_connections target
+      ON requested."targetTable" = 'channel_connections' AND target.id::text <> requested."targetId"
+      AND requested."externalPropertyId" IS NOT NULL
+      AND target.provider = requested.provider
+      AND target.external_property_id = requested."externalPropertyId"
      UNION ALL
      SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.channel_room_type_mappings', target.id::text,
             'Another channel room mapping owns the external or internal room type'
@@ -277,13 +352,7 @@ function camelize(value: unknown): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
       key.replace(/_([a-z])/g, (_, character: string) => character.toUpperCase()),
-      Array.isArray(entry)
-        ? entry.map((item) =>
-            item && typeof item === "object" && !Array.isArray(item) ? camelize(item) : item,
-          )
-        : entry && typeof entry === "object"
-          ? camelize(entry)
-          : entry,
+      entry,
     ]),
   );
 }

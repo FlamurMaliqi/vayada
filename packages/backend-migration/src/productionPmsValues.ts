@@ -85,11 +85,7 @@ export function jsonMap(value: unknown, field: string): Record<string, unknown> 
   return optionalObject(parsed);
 }
 
-export function optionalActor(
-  value: unknown,
-  field: string,
-  userIds: Set<string>,
-): string | null {
+export function optionalActor(value: unknown, field: string, userIds: Set<string>): string | null {
   const id = optionalText(value, field)?.toLowerCase() ?? null;
   if (id && !userIds.has(id)) throw new Error(`${field} references a missing target user`);
   return id;
@@ -125,11 +121,7 @@ export function dates(from: string, through: string): string[] {
   return result;
 }
 
-export function dateOverlaps(
-  startsOn: string,
-  endsOn: string,
-  stayDate: string,
-): boolean {
+export function dateOverlaps(startsOn: string, endsOn: string, stayDate: string): boolean {
   return startsOn <= stayDate && endsOn > stayDate;
 }
 
