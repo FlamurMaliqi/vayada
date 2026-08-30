@@ -132,23 +132,31 @@ function roomType(
   );
   const flexiblePlanId = deterministicUuid("production-pms", "rate-plan", id, "flexible");
   const plans = [
-    pmsRecord(source, "rate_plans", flexiblePlanId, updatedAt, true, {
-      id: flexiblePlanId,
-      propertyId,
-      roomTypeId: id,
-      code: "LEGACY-FLEX",
-      name: "Legacy flexible rate",
-      rateType: "flexible",
-      mealPlan: null,
-      paymentPolicy: jsonMap(data["rate_payment_methods"], "rate_payment_methods"),
-      depositPolicy: ratePolicy(data, "flexible"),
-      cancellationPolicySnapshot: flexibleCancellation,
-      baseRateAmount: baseRate,
-      currency: roomCurrency,
-      active: bool(data["flexible_rate_enabled"], "flexible_rate_enabled", true),
-      createdAt,
+    pmsRecord(
+      source,
+      "rate_plans",
+      flexiblePlanId,
       updatedAt,
-    }, { roomType: data, cancellationPolicy: flexibleCancellation }),
+      true,
+      {
+        id: flexiblePlanId,
+        propertyId,
+        roomTypeId: id,
+        code: "LEGACY-FLEX",
+        name: "Legacy flexible rate",
+        rateType: "flexible",
+        mealPlan: null,
+        paymentPolicy: jsonMap(data["rate_payment_methods"], "rate_payment_methods"),
+        depositPolicy: ratePolicy(data, "flexible"),
+        cancellationPolicySnapshot: flexibleCancellation,
+        baseRateAmount: baseRate,
+        currency: roomCurrency,
+        active: bool(data["flexible_rate_enabled"], "flexible_rate_enabled", true),
+        createdAt,
+        updatedAt,
+      },
+      { roomType: data, cancellationPolicy: flexibleCancellation },
+    ),
   ];
   if (
     bool(data["non_refundable_enabled"], "non_refundable_enabled", false) ||
@@ -157,23 +165,31 @@ function roomType(
     const planId = deterministicUuid("production-pms", "rate-plan", id, "non-refundable");
     const nonRefundableCancellation = cancellationPolicy(context, data, "non_refundable");
     plans.push(
-      pmsRecord(source, "rate_plans", planId, updatedAt, true, {
-        id: planId,
-        propertyId,
-        roomTypeId: id,
-        code: "LEGACY-NRF",
-        name: "Legacy non-refundable rate",
-        rateType: "non_refundable",
-        mealPlan: null,
-        paymentPolicy: jsonMap(data["rate_payment_methods"], "rate_payment_methods"),
-        depositPolicy: ratePolicy(data, "non_refundable"),
-        cancellationPolicySnapshot: nonRefundableCancellation,
-        baseRateAmount: nonRefundableRate(data, baseRate),
-        currency: roomCurrency,
-        active: bool(data["non_refundable_enabled"], "non_refundable_enabled", false),
-        createdAt,
+      pmsRecord(
+        source,
+        "rate_plans",
+        planId,
         updatedAt,
-      }, { roomType: data, cancellationPolicy: nonRefundableCancellation }),
+        true,
+        {
+          id: planId,
+          propertyId,
+          roomTypeId: id,
+          code: "LEGACY-NRF",
+          name: "Legacy non-refundable rate",
+          rateType: "non_refundable",
+          mealPlan: null,
+          paymentPolicy: jsonMap(data["rate_payment_methods"], "rate_payment_methods"),
+          depositPolicy: ratePolicy(data, "non_refundable"),
+          cancellationPolicySnapshot: nonRefundableCancellation,
+          baseRateAmount: nonRefundableRate(data, baseRate),
+          currency: roomCurrency,
+          active: bool(data["non_refundable_enabled"], "non_refundable_enabled", false),
+          createdAt,
+          updatedAt,
+        },
+        { roomType: data, cancellationPolicy: nonRefundableCancellation },
+      ),
     );
   }
   return {
@@ -269,20 +285,27 @@ function rateRules(
   const result: PmsTargetRecord[] = [];
   const add = (suffix: string, row: Record<string, unknown>) =>
     result.push(
-      pmsRecord(source, "rate_rules", deterministicUuid("production-pms", "rate-rule", roomTypeId, suffix), updatedAt, true, {
-        id: deterministicUuid("production-pms", "rate-rule", roomTypeId, suffix),
-        propertyId,
-        roomTypeId,
-        ratePlanId: flexiblePlanId,
-        daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
-        closedToArrival: false,
-        closedToDeparture: false,
-        priceDeltaAmount: null,
-        priceDeltaPercent: null,
-        ...row,
-        createdAt: iso(data["created_at"], "created_at"),
+      pmsRecord(
+        source,
+        "rate_rules",
+        deterministicUuid("production-pms", "rate-rule", roomTypeId, suffix),
         updatedAt,
-      }),
+        true,
+        {
+          id: deterministicUuid("production-pms", "rate-rule", roomTypeId, suffix),
+          propertyId,
+          roomTypeId,
+          ratePlanId: flexiblePlanId,
+          daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+          closedToArrival: false,
+          closedToDeparture: false,
+          priceDeltaAmount: null,
+          priceDeltaPercent: null,
+          ...row,
+          createdAt: iso(data["created_at"], "created_at"),
+          updatedAt,
+        },
+      ),
     );
   add("legacy-contract", {
     ruleType: "stay_restriction",
@@ -310,7 +333,11 @@ function rateRules(
     if (!season || typeof season !== "object" || Array.isArray(season))
       throw new Error(`seasons[${index}] must be an object`);
     const value = season as Record<string, unknown>;
-    for (const [occurrence, range] of recurringDateRanges(value["from"], value["to"], bounded).entries())
+    for (const [occurrence, range] of recurringDateRanges(
+      value["from"],
+      value["to"],
+      bounded,
+    ).entries())
       add(`season:${index}:${occurrence}`, {
         ruleType: "season",
         startsOn: range.startsOn,
@@ -391,8 +418,8 @@ function cancellationPolicy(
     kind,
     text:
       kind === "flexible"
-        ? roomType["cancellation_policy"] ?? null
-        : roomType["non_refundable_cancellation_policy"] ?? null,
+        ? (roomType["cancellation_policy"] ?? null)
+        : (roomType["non_refundable_cancellation_policy"] ?? null),
     flexibleCancellationType: roomType["flexible_cancellation_type"] ?? null,
     partialRefundCancelWindowDays: roomType["partial_refund_cancel_window_days"] ?? null,
     partialRefundAmountPercent: roomType["partial_refund_amount_percent"] ?? null,
@@ -434,7 +461,10 @@ function nullableNumber(value: unknown, field: string): number | null {
 }
 
 function parseWeekend(value: unknown): number {
-  const text = String(value ?? "").trim().replace("+", "").replace("%", "");
+  const text = String(value ?? "")
+    .trim()
+    .replace("+", "")
+    .replace("%", "");
   if (!text) return 0;
   const parsed = Number(text);
   if (!Number.isFinite(parsed)) throw new Error("weekend_surcharge is unsupported");

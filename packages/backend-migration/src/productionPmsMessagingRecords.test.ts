@@ -32,9 +32,9 @@ describe("production PMS messaging", () => {
       senderType: "guest",
       piiRetentionUntil: "2027-09-03",
     });
-    expect(records.find((record) => record.targetTable === "message_attachments")?.row).toMatchObject(
-      { platformMediaObjectId: MEDIA, propertyId: PROPERTY },
-    );
+    expect(
+      records.find((record) => record.targetTable === "message_attachments")?.row,
+    ).toMatchObject({ platformMediaObjectId: MEDIA, propertyId: PROPERTY });
   });
 
   it("blocks attachments until their Platform Media object exists", () => {

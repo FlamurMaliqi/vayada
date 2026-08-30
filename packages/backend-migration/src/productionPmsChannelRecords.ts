@@ -205,7 +205,7 @@ function rateMapping(
     throw new Error("channel rate and room mappings disagree on external room type");
   const channel = requiredText(data["channel"] ?? "direct", "channel").toLowerCase();
   const sellMode = requiredText(data["sell_mode"] ?? "per_room", "sell_mode").toLowerCase();
-  if (!['per_room', 'per_person'].includes(sellMode))
+  if (!["per_room", "per_person"].includes(sellMode))
     throw new Error(`channel sell mode ${sellMode} is unsupported`);
   const markups = channelMarkups(context, hotelId).filter(
     (row) => requiredText(row.data["channel"], "markup.channel").toLowerCase() === channel,

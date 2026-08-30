@@ -31,8 +31,7 @@ export function buildPmsAssignmentRecords(
     try {
       const built = assignments(context, source, rooms, extrasByBooking);
       records.push(...built.records);
-      for (const [key, id] of built.assignmentByPosition)
-        assignmentByBookingPosition.set(key, id);
+      for (const [key, id] of built.assignmentByPosition) assignmentByBookingPosition.set(key, id);
     } catch (error) {
       addPmsBlocker(
         context,
@@ -202,9 +201,7 @@ function roomBlock(context: PmsBuildContext, source: IdentitySourceRow): PmsTarg
   ];
 }
 
-function extraRooms(
-  context: PmsBuildContext,
-): Map<string, Map<number, IdentitySourceRow>> {
+function extraRooms(context: PmsBuildContext): Map<string, Map<number, IdentitySourceRow>> {
   const result = new Map<string, Map<number, IdentitySourceRow>>();
   for (const row of context.rowsByTable.get("booking_rooms") ?? []) {
     try {
@@ -285,7 +282,9 @@ function externalBookingId(context: PmsBuildContext, bookingId: string): string 
     (row) => String(row.data["booking_id"] ?? "").toLowerCase() === bookingId,
   );
   if (!mappings.length) return null;
-  const ids = new Set(mappings.map((row) => requiredText(row.data["channex_booking_id"], "channex_booking_id")));
+  const ids = new Set(
+    mappings.map((row) => requiredText(row.data["channex_booking_id"], "channex_booking_id")),
+  );
   if (ids.size !== 1) throw new Error("booking has conflicting external reservation IDs");
   return [...ids][0]!;
 }

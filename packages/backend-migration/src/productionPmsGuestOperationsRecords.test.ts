@@ -34,9 +34,9 @@ describe("production PMS guest operations", () => {
     expect(
       records.find((record) => record.targetTable === "booking_checkout_charges")?.row,
     ).toMatchObject({ assignmentId: ASSIGNMENT, currency: "EUR", status: "paid" });
-    expect(records.find((record) => record.targetTable === "booking_notes_private")?.row).toMatchObject(
-      { body: "Internal note", source: "pms", authorUserId: USER },
-    );
+    expect(
+      records.find((record) => record.targetTable === "booking_notes_private")?.row,
+    ).toMatchObject({ body: "Internal note", source: "pms", authorUserId: USER });
   });
 
   it("blocks missing target users", () => {
@@ -52,9 +52,9 @@ describe("production PMS guest operations", () => {
       records: [],
       assignmentByBookingPosition: new Map([[`${BOOKING}:1`, ASSIGNMENT]]),
     });
-    expect(context.blockers.some((blocker) => blocker.message.includes("missing target user"))).toBe(
-      true,
-    );
+    expect(
+      context.blockers.some((blocker) => blocker.message.includes("missing target user")),
+    ).toBe(true);
   });
 });
 

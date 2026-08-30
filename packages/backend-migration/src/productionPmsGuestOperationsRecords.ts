@@ -18,10 +18,7 @@ export function buildPmsGuestOperationsRecords(
   assignments: PmsAssignmentBuild,
 ): PmsTargetRecord[] {
   const records: PmsTargetRecord[] = [];
-  const builders: Record<
-    string,
-    (source: IdentitySourceRow) => PmsTargetRecord[]
-  > = {
+  const builders: Record<string, (source: IdentitySourceRow) => PmsTargetRecord[]> = {
     checkin_checklist_templates: (source) => checklist(context, source, "checkin"),
     checkout_inspection_templates: (source) => checklist(context, source, "checkout"),
     booking_checkin_records: (source) => checkin(context, assignments, source),
@@ -52,7 +49,8 @@ function checklist(
 ): PmsTargetRecord[] {
   const propertyId = propertyForHotel(context, source.data["hotel_id"]);
   const updatedAt = iso(source.data["updated_at"], "updated_at");
-  const table = kind === "checkin" ? "checkin_checklist_templates" : "checkout_inspection_templates";
+  const table =
+    kind === "checkin" ? "checkin_checklist_templates" : "checkout_inspection_templates";
   return [
     pmsRecord(source, table, propertyId, updatedAt, true, {
       propertyId,

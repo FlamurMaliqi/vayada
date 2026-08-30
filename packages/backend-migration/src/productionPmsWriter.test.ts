@@ -13,7 +13,11 @@ describe("production PMS writer", () => {
       },
     };
     const counts = await writeProductionPmsRecords(client as never, [
-      record("inventory_days", { propertyId: "property", roomTypeId: "room", stayDate: "2026-08-30" }),
+      record("inventory_days", {
+        propertyId: "property",
+        roomTypeId: "room",
+        stayDate: "2026-08-30",
+      }),
       record("room_types", { id: "room", propertyId: "property" }),
     ]);
     expect(counts).toEqual({ room_types: 1, inventory_days: 1 });

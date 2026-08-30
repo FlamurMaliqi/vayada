@@ -30,9 +30,7 @@ describe("production PMS room records", () => {
       "room_types",
       "rooms",
     ]);
-    expect(
-      built.records.find((record) => record.targetTable === "room_types")?.row,
-    ).toMatchObject({
+    expect(built.records.find((record) => record.targetTable === "room_types")?.row).toMatchObject({
       propertyId: PROPERTY,
       linkedInventoryGroupId: GROUP,
       occupancyLimits: { maxOccupancy: 3, maxAdults: 2, maxChildren: 1 },

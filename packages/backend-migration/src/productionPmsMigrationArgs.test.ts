@@ -25,15 +25,7 @@ describe("production PMS migration CLI arguments", () => {
     ).toThrow(`--confirm production-pms:${RUN}`);
     expect(
       parseProductionPmsMigrationArgs(
-        [
-          "node",
-          "cli",
-          "--source-run-id",
-          RUN,
-          "--apply",
-          "--confirm",
-          `production-pms:${RUN}`,
-        ],
+        ["node", "cli", "--source-run-id", RUN, "--apply", "--confirm", `production-pms:${RUN}`],
         { TARGET_DATABASE_URL: "postgresql://target/db" },
       ).mode,
     ).toBe("apply");

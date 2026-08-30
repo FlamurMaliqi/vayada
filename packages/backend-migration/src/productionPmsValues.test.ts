@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  dates,
-  horizon,
-  jsonArray,
-  jsonMap,
-  recurringDateRanges,
-} from "./productionPmsValues.js";
+import { dates, horizon, jsonArray, jsonMap, recurringDateRanges } from "./productionPmsValues.js";
 
 describe("production PMS values", () => {
   it("builds the exact 366-day migration horizon", () => {

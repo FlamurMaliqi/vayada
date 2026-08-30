@@ -23,25 +23,25 @@ describe("production PMS audit records", () => {
     const records = buildPmsAuditRecords(context);
 
     expect(context.blockers).toEqual([]);
-    expect(records.filter((record) => record.targetTable === "product_audit_events"))
-      .toHaveLength(3);
+    expect(records.filter((record) => record.targetTable === "product_audit_events")).toHaveLength(
+      3,
+    );
     expect(
-      records.find(
-        (record) => record.row["action"] === "pms.legacy_notification.delivered",
-      )?.row,
+      records.find((record) => record.row["action"] === "pms.legacy_notification.delivered")?.row,
     ).toMatchObject({
       targetResourceId: BOOKING,
       privatePayload: { recipientEmail: "guest@example.test" },
       auditMetadata: { historicalReceipt: true, replayProhibited: true },
     });
-    expect(records.find((record) => record.targetTable === "external_webhook_events")?.row)
-      .toMatchObject({
-        id: WEBHOOK,
-        deliveryStatus: "observed",
-        normalizedDomainEventId: null,
-        propertyId: PROPERTY,
-        signatureVerified: false,
-      });
+    expect(
+      records.find((record) => record.targetTable === "external_webhook_events")?.row,
+    ).toMatchObject({
+      id: WEBHOOK,
+      deliveryStatus: "observed",
+      normalizedDomainEventId: null,
+      propertyId: PROPERTY,
+      signatureVerified: false,
+    });
   });
 
   it("retains a legacy webhook failure as failed evidence", () => {
@@ -52,8 +52,9 @@ describe("production PMS audit records", () => {
       target: target(),
     });
     const records = buildPmsAuditRecords(context);
-    expect(records.find((record) => record.targetTable === "external_webhook_events")?.row)
-      .toMatchObject({ deliveryStatus: "failed", failureReason: "legacy failure" });
+    expect(
+      records.find((record) => record.targetTable === "external_webhook_events")?.row,
+    ).toMatchObject({ deliveryStatus: "failed", failureReason: "legacy failure" });
   });
 
   it("blocks a webhook whose external property has no canonical ownership", () => {
@@ -122,7 +123,12 @@ function rows(processedOk: boolean): IdentitySourceRow[] {
 function target() {
   return {
     propertyLinks: [
-      { sourceId: HOTEL, propertyId: PROPERTY, relationship: "operational_input", status: "active" },
+      {
+        sourceId: HOTEL,
+        propertyId: PROPERTY,
+        relationship: "operational_input",
+        status: "active",
+      },
     ],
     bookings: [
       {

@@ -100,8 +100,11 @@ export async function readProductionPmsSnapshot(
      ORDER BY source_table, row_ordinal`,
     [runId, PRODUCTION_PMS_SOURCE_TABLES],
   );
-  const grouped = new Map(PRODUCTION_PMS_SOURCE_TABLES.map((table) => [table, [] as SnapshotRow[]]));
-  for (const row of snapshot.rows) grouped.get(row.sourceTable as (typeof PRODUCTION_PMS_SOURCE_TABLES)[number])?.push(row);
+  const grouped = new Map(
+    PRODUCTION_PMS_SOURCE_TABLES.map((table) => [table, [] as SnapshotRow[]]),
+  );
+  for (const row of snapshot.rows)
+    grouped.get(row.sourceTable as (typeof PRODUCTION_PMS_SOURCE_TABLES)[number])?.push(row);
 
   const loaded: IdentitySourceRow[] = [];
   for (const table of PRODUCTION_PMS_SOURCE_TABLES) {

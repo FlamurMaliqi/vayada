@@ -135,7 +135,8 @@ function channelMarkup(context: PmsBuildContext, source: IdentitySourceRow): Pms
 function webhookEvent(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetRecord[] {
   const data = source.data;
   const id = uuid(data["id"], "id");
-  const externalPropertyId = optionalText(data["property_id"], "property_id")?.toLowerCase() ?? null;
+  const externalPropertyId =
+    optionalText(data["property_id"], "property_id")?.toLowerCase() ?? null;
   const connections = externalPropertyId
     ? (context.rowsByTable.get("channex_connections") ?? []).filter(
         (row) => String(row.data["channex_property_id"] ?? "").toLowerCase() === externalPropertyId,
@@ -180,7 +181,7 @@ function webhookEvent(context: PmsBuildContext, source: IdentitySourceRow): PmsT
         rawHeaders: {},
         rawPayload,
         failureReason:
-          processedOk === false ? error ?? "Legacy processor recorded failure" : null,
+          processedOk === false ? (error ?? "Legacy processor recorded failure") : null,
         privacyScope: "restricted",
         aiVisible: false,
       },
@@ -282,7 +283,10 @@ function append(
       context,
       "INVALID_SOURCE_ROW",
       `pms.${source.sourceTable}`,
-      safePmsSourceId(source, source.sourceTable === "booking_notification_deliveries" ? "booking_id" : "id"),
+      safePmsSourceId(
+        source,
+        source.sourceTable === "booking_notification_deliveries" ? "booking_id" : "id",
+      ),
       error instanceof Error ? error.message : "Invalid PMS audit source",
     );
   }

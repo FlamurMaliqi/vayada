@@ -44,11 +44,7 @@ describe("production PMS migration transaction", () => {
     const services = serviceFixture();
     services.writeRecords = vi.fn(async () => ({ room_types: 0 }));
     await expect(
-      runProductionPmsTransaction(
-        client as never,
-        { sourceRunId: RUN, mode: "apply" },
-        services,
-      ),
+      runProductionPmsTransaction(client as never, { sourceRunId: RUN, mode: "apply" }, services),
     ).rejects.toThrow("applied 0 of 1");
     expect(client.sql.at(-1)).toBe("ROLLBACK");
   });

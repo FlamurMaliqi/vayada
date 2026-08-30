@@ -1,21 +1,8 @@
 import { addPmsBlocker, propertyForHotel, safePmsSourceId } from "./productionPmsContext.js";
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
 import type { PmsBuildContext, PmsTargetRecord } from "./productionPmsTypes.js";
-import {
-  date,
-  integer,
-  iso,
-  optionalIso,
-  optionalText,
-  uuid,
-} from "./productionBookingValues.js";
-import {
-  dateOverlaps,
-  dates,
-  horizon,
-  jsonArray,
-  pmsRecord,
-} from "./productionPmsValues.js";
+import { date, integer, iso, optionalIso, optionalText, uuid } from "./productionBookingValues.js";
+import { dateOverlaps, dates, horizon, jsonArray, pmsRecord } from "./productionPmsValues.js";
 
 const INVENTORY_STATUSES = new Set(["pending", "confirmed", "checked_in", "in_house"]);
 
@@ -26,7 +13,8 @@ export function buildPmsInventoryRecords(context: PmsBuildContext): PmsTargetRec
   for (const source of context.rowsByTable.get("room_types") ?? []) {
     try {
       const facts = inventoryFacts(context, source);
-      for (const stayDate of stayDates) records.push(inventoryDay(context, source, facts, stayDate));
+      for (const stayDate of stayDates)
+        records.push(inventoryDay(context, source, facts, stayDate));
     } catch (error) {
       addPmsBlocker(
         context,
@@ -101,19 +89,13 @@ function inventoryDay(
 ): PmsTargetRecord {
   const assignedCount = facts.bookings
     .filter((row) => activeBooking(context, row, stayDate))
-    .reduce(
-      (sum, row) => sum + integer(row.data["number_of_rooms"], "number_of_rooms", 1),
-      0,
-    );
+    .reduce((sum, row) => sum + integer(row.data["number_of_rooms"], "number_of_rooms", 1), 0);
   const blockedCount = facts.blocks
     .filter((row) => activeBlock(row, stayDate))
     .reduce((sum, row) => sum + integer(row.data["blocked_count"], "blocked_count", 1), 0);
   const softHeldCount = facts.drafts
     .filter((row) => activeDraft(context, row, stayDate))
-    .reduce(
-      (sum, row) => sum + integer(row.data["number_of_rooms"], "number_of_rooms", 1),
-      0,
-    );
+    .reduce((sum, row) => sum + integer(row.data["number_of_rooms"], "number_of_rooms", 1), 0);
   const linkedStopSell = facts.linkedActivity.some((row) => {
     if (row.sourceTable === "bookings") return activeBooking(context, row, stayDate);
     if (row.sourceTable === "booking_drafts") return activeDraft(context, row, stayDate);
@@ -211,12 +193,11 @@ function activeBooking(
   );
 }
 
-function activeDraft(
-  context: PmsBuildContext,
-  row: IdentitySourceRow,
-  stayDate: string,
-): boolean {
-  if (row.data["materialized_booking_id"] !== null && row.data["materialized_booking_id"] !== undefined)
+function activeDraft(context: PmsBuildContext, row: IdentitySourceRow, stayDate: string): boolean {
+  if (
+    row.data["materialized_booking_id"] !== null &&
+    row.data["materialized_booking_id"] !== undefined
+  )
     return false;
   const expiresAt = optionalIso(row.data["expires_at"], "expires_at");
   if (!expiresAt || Date.parse(expiresAt) <= Date.parse(context.completedAt)) return false;
