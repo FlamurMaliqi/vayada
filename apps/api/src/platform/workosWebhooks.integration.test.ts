@@ -642,6 +642,42 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
       await store.upsertWorkosMembership({
         ...acceptedProviderMembership,
         workosMembershipId: replacementWorkosMembershipId,
+        status: "active",
+      });
+      expect(
+        (
+          await admin.query<{ status: string; workosMembershipId: string }>(
+            `SELECT status, workos_membership_id AS "workosMembershipId"
+             FROM identity.organization_memberships
+             WHERE organization_id = $1 AND user_id = $2`,
+            [organizationId, invitedUserId],
+          )
+        ).rows[0],
+      ).toEqual({ status: "pending", workosMembershipId: replacementWorkosMembershipId });
+
+      await store.upsertWorkosMembership({ ...acceptedProviderMembership, status: "pending" });
+      await store.upsertWorkosMembership({ ...acceptedProviderMembership, status: "active" });
+      await store.deactivateWorkosMembership(acceptedProviderMembership.workosMembershipId);
+      expect(
+        (
+          await admin.query<{ status: string; workosMembershipId: string }>(
+            `SELECT status, workos_membership_id AS "workosMembershipId"
+             FROM identity.organization_memberships
+             WHERE organization_id = $1 AND user_id = $2`,
+            [organizationId, invitedUserId],
+          )
+        ).rows[0],
+      ).toEqual({ status: "pending", workosMembershipId: replacementWorkosMembershipId });
+
+      await admin.query(
+        `UPDATE identity.organization_memberships
+         SET status = 'active', workos_membership_id = $3
+         WHERE organization_id = $1 AND user_id = $2`,
+        [organizationId, invitedUserId, acceptedProviderMembership.workosMembershipId],
+      );
+      await store.upsertWorkosMembership({
+        ...acceptedProviderMembership,
+        workosMembershipId: replacementWorkosMembershipId,
         status: "pending",
       });
       await store.upsertWorkosMembership({ ...acceptedProviderMembership, status: "pending" });

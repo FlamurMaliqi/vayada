@@ -669,6 +669,12 @@ async function upsertWorkosMembership(
          WHEN identity.organization_memberships.status IN ('inactive', 'suspended')
           AND $9 IN ('active', 'pending')
          THEN identity.organization_memberships.status
+         WHEN $11 AND identity.organization_memberships.status = 'active' AND $9 = 'active'
+          AND identity.organization_memberships.role_key IN
+            ('hotel_manager', 'front_desk', 'housekeeping', 'hotel_custom')
+          AND identity.organization_memberships.workos_membership_id IS NOT NULL
+          AND identity.organization_memberships.workos_membership_id IS DISTINCT FROM $7
+         THEN 'pending'
          WHEN $11 AND identity.organization_memberships.status = 'active' AND $9 = 'pending'
           AND (
             identity.organization_memberships.workos_membership_id = $7
