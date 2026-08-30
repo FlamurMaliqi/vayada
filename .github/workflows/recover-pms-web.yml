@@ -28,7 +28,7 @@ env:
   ECR_REPOSITORY: vayada-pms-frontend
   AWS_ACCOUNT_ID: 269416271598
   APP_DIR: apps/pms-web
-  APPROVED_SOURCE_REF: ca16f7db5231105ef7d54342903d8523abef93ab
+  APPROVED_SOURCE_REF: fb60794e6e409e8b0debbfe4ea55bcb7e4a07fc1
   IMAGE_TAG: ${{ inputs.image_tag }}
   CUTOVER_JUSTIFICATION: ${{ inputs.cutover_justification }}
   ROLLBACK_IMAGE: ${{ inputs.rollback_image }}
