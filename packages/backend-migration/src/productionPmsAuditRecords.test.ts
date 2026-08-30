@@ -100,7 +100,18 @@ describe("production PMS audit records", () => {
 
 function rows(processedOk: boolean): IdentitySourceRow[] {
   return [
-    row("bookings", { id: BOOKING, hotel_id: HOTEL }),
+    row("bookings", {
+      id: BOOKING,
+      hotel_id: HOTEL,
+      check_in: "2026-09-01",
+      check_out: "2026-09-03",
+      adults: 2,
+      children: 0,
+      number_of_rooms: 1,
+      currency: "EUR",
+      status: "confirmed",
+      updated_at: "2026-08-02T00:00:00Z",
+    }),
     row("booking_events", {
       id: "90000000-0000-4000-a000-000000000001",
       booking_id: BOOKING,
@@ -148,6 +159,7 @@ function target() {
         propertyId: PROPERTY,
         relationship: "operational_input",
         status: "active",
+        migrationRunId: "run",
       },
     ],
     bookings: [
@@ -158,9 +170,11 @@ function target() {
         checkOut: "2026-09-03",
         adults: 2,
         children: 0,
+        roomCount: 1,
         currency: "EUR",
         lifecycleStatus: "confirmed",
         updatedAt: "2026-08-02T00:00:00Z",
+        migrationRunId: "run",
       },
     ],
     userIds: [ACTOR],

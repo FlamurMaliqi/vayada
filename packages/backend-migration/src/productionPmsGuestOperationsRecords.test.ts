@@ -60,7 +60,18 @@ describe("production PMS guest operations", () => {
 
 function rows(): IdentitySourceRow[] {
   return [
-    row("bookings", { id: BOOKING, hotel_id: HOTEL }),
+    row("bookings", {
+      id: BOOKING,
+      hotel_id: HOTEL,
+      check_in: "2026-09-01",
+      check_out: "2026-09-03",
+      adults: 2,
+      children: 0,
+      number_of_rooms: 1,
+      currency: "EUR",
+      status: "checked_out",
+      updated_at: "2026-09-03T11:00:00Z",
+    }),
     row("checkin_checklist_templates", {
       hotel_id: HOTEL,
       steps: [{ key: "id" }],
@@ -124,6 +135,7 @@ function target() {
         propertyId: PROPERTY,
         relationship: "operational_input",
         status: "active",
+        migrationRunId: "run",
       },
     ],
     bookings: [
@@ -134,9 +146,11 @@ function target() {
         checkOut: "2026-09-03",
         adults: 2,
         children: 0,
+        roomCount: 1,
         currency: "EUR",
         lifecycleStatus: "completed",
         updatedAt: "2026-09-03T11:00:00Z",
+        migrationRunId: "run",
       },
     ],
     userIds: [USER],

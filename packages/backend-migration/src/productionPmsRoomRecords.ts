@@ -430,7 +430,7 @@ function cancellationPolicy(
 
 function ratePolicy(data: Record<string, unknown>, kind: string): Record<string, unknown> {
   const settings = jsonMap(data["rate_deposit_settings"], "rate_deposit_settings");
-  const value = settings[kind];
+  const value = settings[kind === "non_refundable" ? "nonrefundable" : kind];
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};

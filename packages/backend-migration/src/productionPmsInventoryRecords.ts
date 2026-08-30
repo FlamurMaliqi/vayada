@@ -9,12 +9,18 @@ const INVENTORY_STATUSES = new Set(["pending", "confirmed", "checked_in", "in_ho
 export function buildPmsInventoryRecords(context: PmsBuildContext): PmsTargetRecord[] {
   const records: PmsTargetRecord[] = [];
   const bounded = horizon(context.completedAt);
+  blockActiveDrafts(context, bounded);
   const stayDates = dates(bounded.from, bounded.through);
+  const existingInventory = new Map(
+    context.target.records
+      .filter((record) => record.targetTable === "inventory_days")
+      .map((record) => [record.targetId, record]),
+  );
   for (const source of context.rowsByTable.get("room_types") ?? []) {
     try {
       const facts = inventoryFacts(context, source);
       for (const stayDate of stayDates)
-        records.push(inventoryDay(context, source, facts, stayDate));
+        records.push(inventoryDay(context, source, facts, stayDate, existingInventory));
     } catch (error) {
       addPmsBlocker(
         context,
@@ -86,6 +92,7 @@ function inventoryDay(
   source: IdentitySourceRow,
   facts: InventoryFacts,
   stayDate: string,
+  existingInventory: Map<string, PmsBuildContext["target"]["records"][number]>,
 ): PmsTargetRecord {
   const assignedCount = facts.bookings
     .filter((row) => activeBooking(context, row, stayDate))
@@ -110,13 +117,12 @@ function inventoryDay(
     calendarOpen && !linkedStopSell
       ? Math.max(0, facts.totalCount - assignedCount - blockedCount - softHeldCount)
       : 0;
-  const status =
-    !calendarOpen || linkedStopSell
-      ? "closed"
-      : availableCount === facts.totalCount
-        ? "open"
-        : "limited";
+  const status = calendarOpen ? "open" : "closed";
   const targetId = `${facts.propertyId}:${facts.roomTypeId}:${stayDate}`;
+  const linkedSourceRevision = nextLinkedSourceRevision(
+    existingInventory.get(targetId),
+    linkedStopSell,
+  );
   return pmsRecord(
     source,
     "inventory_days",
@@ -155,11 +161,58 @@ function inventoryDay(
       manualSourceRevision: null,
       blockSourceRevision: null,
       bookingSourceRevision: null,
-      linkedStopSell: false,
-      linkedSourceRevision: 0,
+      linkedStopSell,
+      linkedSourceRevision,
     },
     { inventory: facts.checksumInput, stayDate },
   );
+}
+
+function nextLinkedSourceRevision(
+  current: PmsBuildContext["target"]["records"][number] | undefined,
+  linkedStopSell: boolean,
+): number {
+  if (!current) return linkedStopSell ? 1 : 0;
+  const previous = current.row["linkedStopSell"] === true;
+  const revision = integer(current.row["linkedSourceRevision"], "linked_source_revision", 0);
+  if (previous === linkedStopSell) return revision;
+  if (revision >= 2_147_483_647) throw new Error("linked_source_revision is exhausted");
+  return revision + 1;
+}
+
+function blockActiveDrafts(
+  context: PmsBuildContext,
+  bounded: { from: string; through: string },
+): void {
+  for (const draft of context.rowsByTable.get("booking_drafts") ?? []) {
+    try {
+      if (
+        draft.data["materialized_booking_id"] !== null &&
+        draft.data["materialized_booking_id"] !== undefined
+      )
+        continue;
+      const expiresAt = optionalIso(draft.data["expires_at"], "expires_at");
+      if (!expiresAt || Date.parse(expiresAt) <= Date.parse(context.completedAt)) continue;
+      const checkIn = date(draft.data["check_in"], "check_in");
+      const checkOut = date(draft.data["check_out"], "check_out");
+      if (checkOut <= bounded.from || checkIn > bounded.through) continue;
+      addPmsBlocker(
+        context,
+        "ACTIVE_BOOKING_DRAFT",
+        "pms.booking_drafts",
+        safePmsSourceId(draft),
+        "Active legacy inventory hold must expire or materialize before cutover extraction",
+      );
+    } catch (error) {
+      addPmsBlocker(
+        context,
+        "INVALID_SOURCE_ROW",
+        "pms.booking_drafts",
+        safePmsSourceId(draft),
+        error instanceof Error ? error.message : "Invalid booking draft hold",
+      );
+    }
+  }
 }
 
 function rowsForRoomType(

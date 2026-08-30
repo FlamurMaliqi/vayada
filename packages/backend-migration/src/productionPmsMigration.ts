@@ -48,9 +48,15 @@ export async function runProductionPmsMigration(config: {
   connectionString: string;
   sourceRunId: string;
   mode: ProductionPmsMigrationMode;
+  applyConfirmation?: string;
   max?: number;
 }): Promise<ProductionPmsMigrationReport> {
   assertMode(config.mode);
+  if (
+    config.mode === "apply" &&
+    config.applyConfirmation !== `production-pms:${config.sourceRunId}`
+  )
+    throw new Error(`PMS apply requires confirmation production-pms:${config.sourceRunId}`);
   const pool = new pg.Pool({
     connectionString: normalizePgConnectionString(config.connectionString),
     max: config.max ?? 1,
@@ -76,7 +82,7 @@ export async function runProductionPmsTransaction(
   try {
     if (input.mode === "apply") await lockPmsTargets(client);
     const snapshot = await services.readSnapshot(client, input.sourceRunId);
-    const prerequisites = await services.readPrerequisites(client);
+    const prerequisites = await services.readPrerequisites(client, input.sourceRunId);
     const emptyTarget: ProductionPmsTargetState = {
       ...prerequisites,
       records: [],

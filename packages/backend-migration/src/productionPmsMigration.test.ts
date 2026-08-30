@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  runProductionPmsMigration,
   runProductionPmsTransaction,
   type ProductionPmsMigrationServices,
 } from "./productionPmsMigration.js";
@@ -9,6 +10,16 @@ import type { ProductionPmsPlan } from "./productionPmsTypes.js";
 const RUN = "vay1351-0123456789abcdef01234567";
 
 describe("production PMS migration transaction", () => {
+  it("rejects programmatic apply without explicit run-bound confirmation", async () => {
+    await expect(
+      runProductionPmsMigration({
+        connectionString: "postgresql://unused/unused",
+        sourceRunId: RUN,
+        mode: "apply",
+      }),
+    ).rejects.toThrow(`confirmation production-pms:${RUN}`);
+  });
+
   it("always rolls a dry-run back without writing", async () => {
     const client = new TransactionFixture();
     const services = serviceFixture();

@@ -64,8 +64,8 @@ export async function readProductionPmsSnapshot(
 ): Promise<ProductionPmsSnapshot> {
   await services.validateRun(client, runId);
   const run = await client.query<{ completedAt: string | null }>(
-    `SELECT completed_at::text AS "completedAt"
-     FROM platform.source_extraction_runs WHERE id = $1`,
+    `SELECT finished_at::text AS "completedAt"
+     FROM platform.source_extraction_runs WHERE run_id = $1`,
     [runId],
   );
   if (!run.rows[0]?.completedAt)

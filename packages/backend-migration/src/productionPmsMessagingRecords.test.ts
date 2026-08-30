@@ -57,7 +57,18 @@ describe("production PMS messaging", () => {
 
 function rows(): IdentitySourceRow[] {
   return [
-    row("bookings", { id: BOOKING, hotel_id: HOTEL }),
+    row("bookings", {
+      id: BOOKING,
+      hotel_id: HOTEL,
+      check_in: "2026-09-01",
+      check_out: "2026-09-03",
+      adults: 2,
+      children: 0,
+      number_of_rooms: 1,
+      currency: "EUR",
+      status: "confirmed",
+      updated_at: "2026-09-01T00:00:00Z",
+    }),
     row("message_threads", {
       id: THREAD,
       hotel_id: HOTEL,
@@ -110,6 +121,7 @@ function target(mediaIds: string[]) {
         propertyId: PROPERTY,
         relationship: "operational_input",
         status: "active",
+        migrationRunId: "run",
       },
     ],
     bookings: [
@@ -120,9 +132,11 @@ function target(mediaIds: string[]) {
         checkOut: "2026-09-03",
         adults: 2,
         children: 0,
+        roomCount: 1,
         currency: "EUR",
         lifecycleStatus: "confirmed",
         updatedAt: "2026-09-01T00:00:00Z",
+        migrationRunId: "run",
       },
     ],
     userIds: [],

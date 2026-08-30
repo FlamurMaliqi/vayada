@@ -16,6 +16,7 @@ import type {
 } from "./productionPmsTypes.js";
 import type { ProductionMigrationSourceLink } from "./productionBookingTypes.js";
 import { sha256 } from "./productionBookingValues.js";
+import { sourceIdentity } from "./productionPmsValues.js";
 
 export function buildProductionPmsPlan(input: {
   sourceRunId: string;
@@ -35,7 +36,40 @@ export function buildProductionPmsPlan(input: {
     ...buildPmsChannelRecords(context, rooms, assignments),
     ...buildPmsAuditRecords(context),
   ].sort((left, right) => recordKey(left).localeCompare(recordKey(right)));
+  enforceSourceCoverage(context, records);
   return reconcileProductionPmsRecords(context, records);
+}
+
+function enforceSourceCoverage(context: PmsBuildContext, records: PmsTargetRecord[]): void {
+  const covered = new Set(records.map((record) => `${record.sourceTable}:${record.sourceId}`));
+  for (const source of context.rows) {
+    let sourceId: string;
+    try {
+      sourceId = sourceIdentity(source);
+    } catch (error) {
+      context.blockers.push({
+        code: "INVALID_SOURCE_ROW",
+        source: `pms.${source.sourceTable}`,
+        sourceId: String(source.rowOrdinal),
+        message: error instanceof Error ? error.message : "Source identity is invalid",
+      });
+      continue;
+    }
+    if (covered.has(`${source.sourceTable}:${sourceId}`)) continue;
+    if (
+      context.blockers.some(
+        (blocker) =>
+          blocker.source === `pms.${source.sourceTable}` && blocker.sourceId === sourceId,
+      )
+    )
+      continue;
+    context.blockers.push({
+      code: "UNMAPPED_SOURCE_ROW",
+      source: `pms.${source.sourceTable}`,
+      sourceId,
+      message: "In-scope source row has no target provenance or explicit blocking disposition",
+    });
+  }
 }
 
 export function reconcileProductionPmsRecords(

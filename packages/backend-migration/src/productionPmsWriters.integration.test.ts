@@ -37,7 +37,7 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
     await client.query("BEGIN");
     try {
       await seedPrerequisites(client);
-      const prerequisites = await readProductionPmsPrerequisites(client);
+      const prerequisites = await readProductionPmsPrerequisites(client, RUN);
       const source = sourceRows();
       const plan = buildProductionPmsPlan({
         sourceRunId: RUN,
@@ -92,6 +92,70 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       await client.query("ROLLBACK");
     }
   });
+
+  it("commits exact migration reservations before physical rooms are assigned", async () => {
+    const propertyId = "13560000-0000-4000-8000-000000000181";
+    const roomTypeId = "13560000-0000-4000-8000-000000000182";
+    const bookingId = "13560000-0000-4000-8000-000000000183";
+    let committed = false;
+    await client.query("BEGIN");
+    try {
+      await client.query(
+        `INSERT INTO hotel_catalog.properties(id, public_id, display_name)
+         VALUES ($1, 'pms-unassigned-integration', 'PMS Unassigned Integration')`,
+        [propertyId],
+      );
+      await client.query(
+        `INSERT INTO pms.room_types(id, property_id, name, base_rate_amount, currency)
+         VALUES ($1, $2, 'Unassigned', 100, 'EUR')`,
+        [roomTypeId, propertyId],
+      );
+      await client.query(
+        `INSERT INTO booking.guest_bookings
+           (id, property_id, public_reference, lifecycle_status, check_in, check_out,
+            adults, children, room_count, currency)
+         VALUES ($1, $2, 'PMS-UNASSIGNED', 'confirmed', '2026-09-01', '2026-09-03',
+                 2, 0, 2, 'EUR')`,
+        [bookingId, propertyId],
+      );
+      await client.query(
+        `INSERT INTO pms.operational_booking_assignments
+           (property_id, guest_booking_id, room_type_id, room_id, position,
+            assignment_status, source, assignment_payload, stay_evidence_kind,
+            check_in, check_out, adults, children)
+         SELECT $1, $2, $3, NULL, position, 'pending', 'migration', $4::jsonb,
+                'exact', '2026-09-01', '2026-09-03', 1, 0
+         FROM unnest(ARRAY[1, 2]) position`,
+        [propertyId, bookingId, roomTypeId, JSON.stringify({ migrationRunId: RUN })],
+      );
+      await client.query("COMMIT");
+      committed = true;
+      await expect(
+        client.query<{ count: number }>(
+          `SELECT count(*)::int AS count
+           FROM pms.operational_booking_assignments
+           WHERE guest_booking_id=$1 AND room_id IS NULL AND stay_evidence_kind='exact'`,
+          [bookingId],
+        ),
+      ).resolves.toMatchObject({ rows: [{ count: 2 }] });
+    } finally {
+      if (!committed) await client.query("ROLLBACK").catch(() => undefined);
+      await client.query("BEGIN");
+      try {
+        await client.query(
+          "DELETE FROM pms.operational_booking_assignments WHERE guest_booking_id=$1",
+          [bookingId],
+        );
+        await client.query("DELETE FROM booking.guest_bookings WHERE id=$1", [bookingId]);
+        await client.query("DELETE FROM pms.room_types WHERE id=$1", [roomTypeId]);
+        await client.query("DELETE FROM hotel_catalog.properties WHERE id=$1", [propertyId]);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+    }
+  });
 });
 
 async function seedPrerequisites(client: pg.Client): Promise<void> {
@@ -102,9 +166,9 @@ async function seedPrerequisites(client: pg.Client): Promise<void> {
   );
   await client.query(
     `INSERT INTO hotel_catalog.property_source_links
-       (property_id, source_system, source_table, source_id, relationship)
-       VALUES ($1, 'pms', 'hotels', $2, 'operational_input')`,
-    [PROPERTY, HOTEL],
+       (property_id, source_system, source_table, source_id, relationship, metadata)
+       VALUES ($1, 'pms', 'hotels', $2, 'operational_input', $3::jsonb)`,
+    [PROPERTY, HOTEL, JSON.stringify({ migrationRunId: RUN })],
   );
   await client.query(
     `INSERT INTO booking.guest_bookings
@@ -116,6 +180,14 @@ async function seedPrerequisites(client: pg.Client): Promise<void> {
              '2026-09-01', '2026-09-03', 2, 0, 1, 'EUR', 200, 0, 'booking_com',
              '2026-08-01T00:00:00Z', '2026-08-29T00:00:00Z')`,
     [BOOKING, PROPERTY],
+  );
+  await client.query(
+    `INSERT INTO platform.production_migration_source_links
+       (source_database, source_table, source_id, target_product, target_table, target_id,
+        first_run_id, last_run_id, source_checksum, source_updated_at)
+     VALUES ('pms', 'bookings', $1, 'booking', 'guest_bookings', $1,
+             $2, $2, $3, '2026-08-29T00:00:00Z')`,
+    [BOOKING, RUN, "a".repeat(64)],
   );
 }
 

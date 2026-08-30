@@ -23,6 +23,7 @@ describe("production PMS inventory", () => {
             propertyId: PROPERTY,
             relationship: "operational_input",
             status: "active",
+            migrationRunId: "run",
           },
         ],
         bookings: [],
@@ -38,13 +39,17 @@ describe("production PMS inventory", () => {
     expect(day(records, TYPE_A, "2026-09-01")).toMatchObject({
       assignedCount: 1,
       availableCount: 0,
-      status: "closed",
+      status: "open",
+      linkedStopSell: true,
+      linkedSourceRevision: 1,
       sourceFreshness: { legacy: { linkedStopSell: true } },
     });
     expect(day(records, TYPE_B, "2026-09-01")).toMatchObject({
       assignedCount: 0,
       availableCount: 0,
-      status: "closed",
+      status: "open",
+      linkedStopSell: true,
+      linkedSourceRevision: 1,
       sourceFreshness: { legacy: { linkedStopSell: true } },
     });
     expect(day(records, TYPE_A, "2026-09-04")).toMatchObject({
@@ -68,6 +73,7 @@ describe("production PMS inventory", () => {
             propertyId: PROPERTY,
             relationship: "operational_input",
             status: "active",
+            migrationRunId: "run",
           },
         ],
         bookings: [],
@@ -82,6 +88,50 @@ describe("production PMS inventory", () => {
       expect.objectContaining({
         code: "INVALID_SOURCE_ROW",
         message: expect.stringContaining("exceeds total_rooms"),
+      }),
+    );
+  });
+
+  it("blocks active legacy holds that have no target release lifecycle", () => {
+    const source = rows();
+    source.push(
+      row("booking_drafts", {
+        id: "60000000-0000-4000-a000-000000000001",
+        hotel_id: HOTEL,
+        room_type_id: TYPE_A,
+        materialized_booking_id: null,
+        number_of_rooms: 1,
+        check_in: "2026-09-01",
+        check_out: "2026-09-03",
+        expires_at: "2026-08-30T00:10:00Z",
+      }),
+    );
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: source,
+      target: {
+        propertyLinks: [
+          {
+            sourceId: HOTEL,
+            propertyId: PROPERTY,
+            relationship: "operational_input",
+            status: "active",
+            migrationRunId: "run",
+          },
+        ],
+        bookings: [],
+        userIds: [],
+        mediaIds: [],
+        records: [],
+        provenance: [],
+      },
+    });
+    buildPmsInventoryRecords(context);
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({
+        code: "ACTIVE_BOOKING_DRAFT",
+        sourceId: "60000000-0000-4000-a000-000000000001",
       }),
     );
   });

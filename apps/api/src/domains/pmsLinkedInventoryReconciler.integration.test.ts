@@ -38,6 +38,61 @@ describe.skipIf(!URL)("PostgreSQL linked inventory reconciliation", () => {
   afterEach(async () => client.query("ROLLBACK"));
   afterAll(async () => client.end());
 
+  it("releases a migrated legacy-envelope linked stop-sell after its final cause", async () => {
+    await client.query("BEGIN");
+    await seed(client);
+    await client.query("SET LOCAL session_replication_role=replica");
+    await client.query(
+      `UPDATE pms.inventory_days SET
+         calendar_revision=NULL, inventory_revision=NULL,
+         generated_sellable_limit_count=NULL, channel_sellable_limit_count=NULL,
+         manual_sellable_limit_count=NULL, effective_sellable_limit_count=NULL,
+         generated_source_revision=NULL, channel_source_revision=NULL,
+         manual_source_revision=NULL, block_source_revision=NULL, booking_source_revision=NULL,
+         source_freshness=$4::jsonb, linked_stop_sell=TRUE, linked_source_revision=1,
+         available_count=0
+       WHERE property_id=$1 AND room_type_id=$2 AND stay_date=$3`,
+      [
+        PROPERTY,
+        ROOM_TYPES[0],
+        "2026-09-01",
+        JSON.stringify({
+          migrationRunId: "vay1351-0123456789abcdef01234567",
+          legacy: { linkedStopSell: true },
+        }),
+      ],
+    );
+    await client.query("SET LOCAL session_replication_role=origin");
+
+    await reconcilePmsLinkedInventory(client, PROPERTY, CHANGED_AT);
+    await client.query(
+      `UPDATE pms.inventory_reservation_statuses
+       SET lifecycle_state='handed_off', lifecycle_revision=2, handed_off_at=$2
+       WHERE receipt_id=$1`,
+      [RECEIPT, CHANGED_AT],
+    );
+    await reconcilePmsLinkedInventory(client, PROPERTY, CHANGED_AT);
+
+    await expect(
+      client.query(
+        `SELECT calendar_revision AS "calendarRevision", linked_stop_sell AS stopped,
+                linked_source_revision AS revision, available_count AS available
+         FROM pms.inventory_days
+         WHERE property_id=$1 AND room_type_id=$2 AND stay_date='2026-09-01'`,
+        [PROPERTY, ROOM_TYPES[0]],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          calendarRevision: null,
+          stopped: false,
+          revision: 3,
+          available: 1,
+        },
+      ],
+    });
+  });
+
   it("reconciles causes, handoffs, date changes, and releases idempotently", async () => {
     await client.query("BEGIN");
     await seed(client);
