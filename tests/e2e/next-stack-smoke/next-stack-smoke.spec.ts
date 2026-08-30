@@ -628,7 +628,10 @@ async function assertMarketplaceHandoff(
   hotelName: string,
 ) {
   await expect(page).toHaveURL(new RegExp(`^${escapeRegExp(NEXT_STACK_ORIGINS.marketplace)}`));
-  await page.getByTitle("Switch app").click();
+  await page
+    .locator("aside")
+    .getByRole("button", { name: /^(?:Switch app|Marketplace Creator collaborations)$/ })
+    .click();
   await page.getByRole("link", { name: new RegExp(label) }).click();
   await page.waitForURL((url) => url.origin === expectedOrigin && url.pathname === "/dashboard", {
     timeout: 45_000,
