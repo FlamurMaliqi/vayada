@@ -7,6 +7,7 @@ import {
   identityLifecycleEventTypes,
   identityLifecycleIdempotencyScope,
   membershipPropertyAccessModeForProvisioning,
+  staffAccessPermissionKeys,
   validateStaffInviteAccess,
   type CreateAffiliateInviteCommand,
   type CreateCustomerInviteCommand,
@@ -112,6 +113,18 @@ describe("identity lifecycle command contract", () => {
       payload: command.payload,
     };
     expect(event.audit.actor.organizationId).toBe("org_001");
+  });
+
+  it("keeps the property manifest baseline outside editable staff permissions", () => {
+    expect(staffAccessPermissionKeys).not.toContain("hotel_catalog.property_manifest.read");
+    expect(
+      validateStaffInviteAccess({
+        roleKey: "hotel_custom",
+        propertyAccessMode: "assigned",
+        propertyIds: ["11111111-1111-4111-8111-111111111111"],
+        permissionOverrides: { grant: ["hotel_catalog.property_manifest.read"], deny: [] },
+      }),
+    ).toContain("unknown_permission_key");
   });
 
   it.each([

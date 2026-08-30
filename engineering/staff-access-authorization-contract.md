@@ -58,6 +58,12 @@ keys; runtime policy infers no hidden hierarchy.
 Hidden stores no key. The editor stores role differences in existing membership
 `permission_overrides`: `{ "grant": ["…"], "deny": ["…"] }`.
 
+`hotel_catalog.property_manifest.read` is a non-editable baseline granted to
+every hotel role so authenticated members can load only their effective
+property list. It authorizes `GET /api/hotel-setup/status` but not property
+profiles, property types, or setup commands, which retain their existing
+`hotel_catalog.setup.read` or manage permissions.
+
 Unknown/repeated keys, grant/deny overlap, and stronger levels missing required
 lower keys are rejected on write and revalidated per request. A malformed
 override empties permissions, emits a security audit, and returns generic `403`

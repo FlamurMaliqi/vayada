@@ -265,10 +265,16 @@ describe("shared hotel setup status route", () => {
     let assignedPropertyIds = [secondPropertyId, unrelatedPropertyId];
     const statusCalls: Array<{ organizationId: string; propertyIds: string[] }> = [];
     app = buildSharedSetupApp({
+      roleKey: "hotel_custom",
+      permissions: [],
       linkedResources: [propertyLink(propertyId), propertyLink(secondPropertyId)],
       propertyAccessRepository: {
         async findMembershipPropertyScope() {
-          return agencyScope({ mode: "assigned", assignedPropertyIds });
+          return agencyScope({
+            mode: "assigned",
+            roleKey: "hotel_custom",
+            assignedPropertyIds,
+          });
         },
       },
       repository: repositoryWith(
@@ -301,15 +307,53 @@ describe("shared hotel setup status route", () => {
     ]);
   });
 
+  it("denies the status manifest without its baseline permission before data reads", async () => {
+    const repository = repositoryWith([adaptiveProperty(propertyId)]);
+    const getHotelSetupStatus = vi.spyOn(repository, "getHotelSetupStatus");
+    app = buildSharedSetupApp({
+      includePropertyManifestPermission: false,
+      permissions: ["hotel_catalog.setup.read"],
+      repository,
+    });
+
+    const response = await getSharedSetupStatus(app);
+
+    expect(response.statusCode).toBe(403);
+    expect(getHotelSetupStatus).not.toHaveBeenCalled();
+  });
+
+  it("does not let the property manifest baseline read a property profile", async () => {
+    app = buildSharedSetupApp({
+      permissions: [],
+      repository: repositoryWith([adaptiveProperty(propertyId)]),
+    });
+
+    const status = await getSharedSetupStatus(app);
+    const profile = await injectJson(app, {
+      method: "GET",
+      url: `/api/hotel-setup/properties/${propertyId}/profile`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(status.statusCode).toBe(200);
+    expect(profile.statusCode).toBe(403);
+  });
+
   it("returns the same denial for an unassigned or cross-tenant property before data reads", async () => {
     const repository = repositoryWith([]);
     const getHotelSetupStatus = vi.spyOn(repository, "getHotelSetupStatus");
     const tracks = trackRepository([]);
     const getTrackStatus = vi.spyOn(tracks, "getTrackStatus");
     app = buildSharedSetupApp({
+      roleKey: "hotel_custom",
+      permissions: [],
       linkedResources: [propertyLink(propertyId), propertyLink(secondPropertyId)],
       propertyAccessRepository: propertyScopeRepository(
-        agencyScope({ mode: "assigned", assignedPropertyIds: [propertyId] }),
+        agencyScope({
+          mode: "assigned",
+          roleKey: "hotel_custom",
+          assignedPropertyIds: [propertyId],
+        }),
       ),
       repository,
       trackCommandRepository: tracks,
@@ -3082,6 +3126,8 @@ function buildSharedSetupApp(options: {
   linkedResources?: LinkedResource[];
   organizationKind?: "hotel_group" | "creator_workspace" | "affiliate_partner" | "platform";
   membershipStatus?: RequestContext["membership"]["status"];
+  roleKey?: string;
+  includePropertyManifestPermission?: boolean;
 }): FastifyInstance {
   return buildApp({
     logger: false,
@@ -3095,7 +3141,11 @@ function buildSharedSetupApp(options: {
       propertyAccessRepository: options.propertyAccessRepository ?? agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
-          return options.permissions ?? ["hotel_catalog.setup.read"];
+          const permissions = options.permissions ?? ["hotel_catalog.setup.read"];
+          return options.includePropertyManifestPermission === false ||
+            permissions.includes("hotel_catalog.property_manifest.read")
+            ? permissions
+            : [...permissions, "hotel_catalog.property_manifest.read"];
         },
       },
     },
@@ -3164,6 +3214,7 @@ function identityRepository(options: {
   linkedResources?: LinkedResource[];
   organizationKind?: "hotel_group" | "creator_workspace" | "affiliate_partner" | "platform";
   membershipStatus?: RequestContext["membership"]["status"];
+  roleKey?: string;
 }): IdentityRepository {
   return {
     async findUserByProviderUserId() {
@@ -3185,7 +3236,7 @@ function identityRepository(options: {
       return {
         membershipId: "membership_hotel_owner",
         status: options.membershipStatus ?? "active",
-        roleKey: "hotel_owner",
+        roleKey: options.roleKey ?? "hotel_owner",
         workosMembershipId: "om_hotel_owner",
         workosRoleSlugs: ["hotel_owner"],
       };

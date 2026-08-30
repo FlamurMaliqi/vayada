@@ -956,7 +956,12 @@ async function resolveSharedSetupStatusAccess(
   requestedPropertyId: string | null,
   propertyAccessRepository: PropertyAccessRepository | undefined,
 ): Promise<ReturnType<typeof resolveSharedSetupAccess>> {
-  const access = resolveSharedSetupAccess(request, reply, null);
+  const access = resolveSharedSetupAccess(
+    request,
+    reply,
+    null,
+    "hotel_catalog.property_manifest.read",
+  );
   if (!access) return null;
   if (!propertyAccessRepository) {
     request.log.error("Shared hotel setup property access repository is unavailable");
