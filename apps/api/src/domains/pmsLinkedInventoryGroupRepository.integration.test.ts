@@ -1,5 +1,5 @@
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createPgPmsLinkedInventoryGroupCommandRepository } from "./pmsLinkedInventoryGroupRepository.js";
 
@@ -28,12 +28,14 @@ describe.skipIf(!URL)("PostgreSQL linked inventory group management", () => {
 
   beforeAll(async () => {
     await control.connect();
+  });
+  beforeEach(async () => {
     await cleanup();
     await seed();
   });
+  afterEach(cleanup);
   afterAll(async () => {
     await repository.close();
-    await cleanup();
     await control.end();
   });
 
@@ -115,6 +117,48 @@ describe.skipIf(!URL)("PostgreSQL linked inventory group management", () => {
         }),
       ),
     ).resolves.toMatchObject({ ok: false, code: "linked_inventory_overlap_conflict" });
+  });
+
+  it("creates a group with no inventory causes before canonical materialization", async () => {
+    await control.query("DELETE FROM pms.room_blocks WHERE property_id=$1::uuid", [PROPERTY]);
+    await control.query("SET session_replication_role=replica");
+    try {
+      await control.query(
+        `UPDATE pms.inventory_days SET
+           calendar_revision=NULL,inventory_revision=NULL,
+           generated_sellable_limit_count=NULL,channel_sellable_limit_count=NULL,
+           manual_sellable_limit_count=NULL,effective_sellable_limit_count=NULL,
+           generated_source_revision=NULL,channel_source_revision=NULL,
+           manual_source_revision=NULL,block_source_revision=NULL,
+           booking_source_revision=NULL,source_freshness=jsonb_build_object(
+             'pms',jsonb_build_object(
+               'status','fresh','generatedAt',$2::timestamptz,'horizonDays',366
+             )
+           )
+         WHERE property_id=$1::uuid`,
+        [PROPERTY, AT],
+      );
+    } finally {
+      await control.query("SET session_replication_role=origin");
+    }
+
+    await expect(
+      repository.create(
+        command("legacy-no-causes", {
+          name: "Convertible rooms",
+          memberRoomTypeIds: TYPES.slice(0, 2),
+        }),
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      group: { groupId: GROUP, revision: 1, memberRoomTypeIds: TYPES.slice(0, 2) },
+    });
+    await expect(linkedState()).resolves.toMatchObject({
+      activeBlocks: 0,
+      stoppedDays: 0,
+      ariIntents: 0,
+      distributionIntents: 0,
+    });
   });
 
   function command(
