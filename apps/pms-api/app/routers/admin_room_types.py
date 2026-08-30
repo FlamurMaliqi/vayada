@@ -15,6 +15,7 @@ from app.models.room_type import (
     RoomTypeUpdate,
 )
 from app.repositories.channex_mapping_repo import ChannexConnectionRepository
+from app.repositories.linked_inventory_group_repo import LinkedInventoryGroupRepository
 from app.repositories.room_repo import RoomRepository
 from app.repositories.room_type_repo import RoomTypeRepository
 from app.services import fixed_plan_billing
@@ -520,6 +521,11 @@ async def delete_room_type(
     existing = await RoomTypeRepository.get_by_id(room_type_id)
     if not existing or str(existing["hotel_id"]) != hotel_id:
         raise HTTPException(status_code=404, detail="Room type not found")
+    if await LinkedInventoryGroupRepository.list_member_ids_for_room_type(room_type_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Remove this room type from linked inventory before deleting it",
+        )
 
     try:
         await RoomTypeRepository.delete(room_type_id)

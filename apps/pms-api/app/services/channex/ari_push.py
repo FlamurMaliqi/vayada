@@ -15,6 +15,7 @@ from app.repositories.channex_mapping_repo import (
     ChannexRoomTypeMappingRepository,
 )
 from app.repositories.hotel_repo import HotelRepository
+from app.repositories.linked_inventory_group_repo import LinkedInventoryGroupRepository
 from app.repositories.room_type_repo import RoomTypeRepository
 from app.services import channex_service
 from app.services.availability_service import compute_non_refundable_rate
@@ -42,7 +43,7 @@ def _push_error_summary(prefix: str, exc: Exception) -> str:
 # ── Availability ─────────────────────────────────────────────────────
 
 
-async def push_availability_for_room_type(
+async def _push_availability_for_room_type(
     hotel_id: str,
     room_type_id: str,
     start_date: date | None = None,
@@ -80,8 +81,16 @@ async def push_availability_for_room_type(
 
     while current <= end_date:
         next_day = current + timedelta(days=1)
-        if not is_date_auto_open(calendar_settings, current) or not has_sellable_rate_on_date(
-            room_type, current
+        linked_stopped = await LinkedInventoryGroupRepository.has_activity(
+            room_type_id,
+            current,
+            next_day,
+            include_soft_holds=False,
+        )
+        if (
+            linked_stopped
+            or not is_date_auto_open(calendar_settings, current)
+            or not has_sellable_rate_on_date(room_type, current)
         ):
             available = 0
         else:
@@ -138,6 +147,28 @@ async def push_availability_for_room_type(
             exc_info=True,
         )
         return AriPushResult(False, error)
+
+
+async def push_availability_for_room_type(
+    hotel_id: str,
+    room_type_id: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> AriPushResult:
+    """Push one room type, or every member when it uses linked inventory."""
+    member_ids = await LinkedInventoryGroupRepository.list_member_ids_for_room_type(room_type_id)
+    targets = member_ids or [room_type_id]
+    errors = []
+    for target_id in targets:
+        result = await _push_availability_for_room_type(
+            hotel_id,
+            target_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if not result:
+            errors.append(result.error or f"availability push failed for room type {target_id}")
+    return AriPushResult(not errors, "; ".join(errors) or None)
 
 
 # ── Restrictions (rates + rules) ─────────────────────────────────────

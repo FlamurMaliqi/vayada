@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from app.repositories.booking_draft_repo import BookingDraftRepository
+from app.repositories.linked_inventory_group_repo import LinkedInventoryGroupRepository
 from app.repositories.room_type_repo import RoomTypeRepository
 from app.services.calendar_auto_open_service import has_sellable_rate_on_date, is_date_auto_open
 from app.services.same_day_booking import is_same_day_booking_closed, property_today
@@ -235,6 +236,9 @@ async def _aggregate_remaining_for_stay(
     check_in: date,
     check_out: date,
 ) -> int:
+    if await LinkedInventoryGroupRepository.has_activity(room_type_id, check_in, check_out):
+        return 0
+
     remaining = total_rooms
     current = check_in
     while current < check_out:

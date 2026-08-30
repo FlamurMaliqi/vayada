@@ -6,7 +6,7 @@ on:
       image_tag:
         description: Immutable production recovery tag
         required: true
-        default: prod-recovery-ff3121a-pms-web
+        default: prod-recovery-e525334-pms-web
       cutover_justification:
         description: Why this production recovery is required
         required: true
@@ -28,7 +28,7 @@ env:
   ECR_REPOSITORY: vayada-pms-frontend
   AWS_ACCOUNT_ID: 269416271598
   APP_DIR: apps/pms-web
-  APPROVED_SOURCE_REF: ff3121aec772403c3ffea374f0aa9931f0e90735
+  APPROVED_SOURCE_REF: e525334c70dc0e0b95b947507d475c8f5b7578a7
   IMAGE_TAG: ${{ inputs.image_tag }}
   CUTOVER_JUSTIFICATION: ${{ inputs.cutover_justification }}
   ROLLBACK_IMAGE: ${{ inputs.rollback_image }}
