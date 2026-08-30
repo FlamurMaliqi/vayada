@@ -1,4 +1,4 @@
--- Migration: 0122_repair_hotel_member_roles
+-- Migration: 0124_repair_hotel_member_roles
 -- Owner: domain-identity; see engineering/staff-access-authorization-contract.md, VAY-1085
 -- Serialize with identity writers so the safety inventory and repair observe
 -- one stable set of rows until the migration transaction commits. Organization
