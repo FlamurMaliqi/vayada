@@ -23,6 +23,7 @@
     "target:catalog:migrate": "tsx src/cli/productionCatalogMigration.ts",
     "target:booking:migrate": "tsx src/cli/productionBookingMigration.ts",
     "target:pms:migrate": "tsx src/cli/productionPmsMigration.ts",
+    "target:marketplace:migrate": "tsx src/cli/productionMarketplaceMigration.ts",
     "target:parity": "tsx src/cli/parity.ts",
     "target:c1-rehearsal:checks": "tsx src/cli/c1RehearsalChecks.ts",
     "target:manual-booking:readiness": "tsx src/cli/manualBookingReadiness.ts",
@@ -38,6 +39,7 @@
     "target:catalog:migrate:dist": "node dist/cli/productionCatalogMigration.js",
     "target:booking:migrate:dist": "node dist/cli/productionBookingMigration.js",
     "target:pms:migrate:dist": "node dist/cli/productionPmsMigration.js",
+    "target:marketplace:migrate:dist": "node dist/cli/productionMarketplaceMigration.js",
     "target:c1-rehearsal:checks:dist": "node dist/cli/c1RehearsalChecks.js",
     "target:manual-booking:readiness:dist": "node dist/cli/manualBookingReadiness.js",
     "target:platform-identity:bootstrap:dist": "node dist/cli/platformIdentityBootstrap.js",
@@ -47,6 +49,7 @@
     "target:booking-public-bookability:backfill:dist": "node dist/cli/bookingPublicBookabilityBackfill.js"
   },
   "dependencies": {
+    "@vayada/domain-marketplace": "*",
     "@vayada/locale-constants": "*",
     "@workos-inc/node": "^10.2.0",
     "pg": "^8.16.3"

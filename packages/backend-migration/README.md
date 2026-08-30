@@ -260,6 +260,41 @@ the target before commit. Rerun the same dry run and require unchanged parity.
 PMS success does not authorize legacy shutdown: VAY-1357 through VAY-1363,
 the rollback window, and the final human cutover approval remain mandatory.
 
+## Production Marketplace Migration
+
+VAY-1357 consumes creators, offers, collaborations, deliverables, chat, trips,
+notifications, invites, and newsletter preferences from the immutable VAY-1351
+run. It resolves ownership only through the accepted Identity and Hotel Catalog
+links. Every legacy Marketplace image must already resolve to an active VAY-1055
+Platform Media object; unresolved or ambiguous media blocks the run.
+Legacy offer settings are reported as deterministic, presentation-only hotel
+preference drafts. They never write canonical preferences because legacy offers
+cannot prove the required content-type answer.
+
+Run the exact production dry run:
+
+```bash
+TARGET_DATABASE_URL=<target database> npm run target:marketplace:migrate -- \
+  --source-run-id vay1351-<24 lowercase hex characters> --dry-run
+```
+
+The dry run always rolls back. Review every blocker, source/target table count,
+property-scoped count, preserved newer target row, preserved target deletion,
+ownership link, and rewritten media reference.
+
+After backup, source write freeze/queue, a blocker-free reviewed dry run, and
+human go/no-go approval, apply the exact reviewed run:
+
+```bash
+TARGET_DATABASE_URL=<target database> npm run target:marketplace:migrate -- \
+  --source-run-id vay1351-<24 lowercase hex characters> --apply \
+  --confirm production-marketplace:vay1351-<same 24 lowercase hex characters>
+```
+
+Apply is transactional and verifies the target before commit. Marketplace
+success does not authorize legacy shutdown: Finance, VAY-1359 through VAY-1363,
+the rollback window, and the final human cutover approval remain mandatory.
+
 ## Platform Media Parity
 
 `platform-media` is a target-only fixture that pins the registry contract before

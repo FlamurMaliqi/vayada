@@ -72,6 +72,7 @@
     "target:catalog:migrate": "npm --workspace @vayada/backend-migration run target:catalog:migrate --",
     "target:booking:migrate": "npm --workspace @vayada/backend-migration run target:booking:migrate --",
     "target:pms:migrate": "npm --workspace @vayada/backend-migration run target:pms:migrate --",
+    "target:marketplace:migrate": "npm --workspace @vayada/backend-migration run target:marketplace:migrate --",
     "target:parity": "npm --workspace @vayada/backend-migration run target:parity --",
     "prepare": "husky"
   },
