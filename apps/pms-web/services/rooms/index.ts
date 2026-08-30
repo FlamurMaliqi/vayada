@@ -156,6 +156,12 @@ export interface Room {
   updatedAt: string;
 }
 
+export interface LinkedInventoryGroup {
+  groupId: string;
+  name: string;
+  memberRoomTypeIds: string[];
+}
+
 export interface RoomCreate {
   roomTypeId: string;
   roomNumber: string;
@@ -208,4 +214,22 @@ export const roomsService = {
   delete: (id: string) => pmsClient.delete(`/admin/room-types/${id}`),
 
   duplicate: (id: string) => pmsClient.post<RoomType>(`/admin/room-types/${id}/duplicate`),
+};
+
+export const linkedInventoryGroupsService = {
+  list: () => pmsClient.get<LinkedInventoryGroup[]>("/admin/linked-inventory-groups"),
+
+  create: (name: string, memberRoomTypeIds: string[]) =>
+    pmsClient.post<LinkedInventoryGroup>("/admin/linked-inventory-groups", {
+      name,
+      memberRoomTypeIds,
+    }),
+
+  update: (groupId: string, name: string, memberRoomTypeIds: string[]) =>
+    pmsClient.put<LinkedInventoryGroup>(`/admin/linked-inventory-groups/${groupId}`, {
+      name,
+      memberRoomTypeIds,
+    }),
+
+  delete: (groupId: string) => pmsClient.delete<void>(`/admin/linked-inventory-groups/${groupId}`),
 };
