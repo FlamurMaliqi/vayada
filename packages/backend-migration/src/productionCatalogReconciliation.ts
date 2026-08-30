@@ -62,6 +62,7 @@ export function reconcileProductionCatalog(
   const revisions = new Map(
     target.ownerRevisions.map((row) => [`${row.propertyId}:${row.ownerKey}`, Number(row.revision)]),
   );
+  const sourceSlugs = protectCanonicalSlugs(core.slugs, target.slugs, blockers);
   const reconcile = <T extends { updatedAt: string }>(
     entity: string,
     source: T[],
@@ -94,7 +95,7 @@ export function reconcileProductionCatalog(
       "profileStatus",
       "completenessReasons",
     ]),
-    slugs: reconcile("property_slugs", core.slugs, target.slugs, by("slug"), [
+    slugs: reconcile("property_slugs", sourceSlugs, target.slugs, by("slug"), [
       "propertyId",
       "purpose",
       "status",
@@ -169,6 +170,30 @@ export function reconcileProductionCatalog(
     blockers: sortedBy(blockers, (row) => `${row.code}:${row.source}:${row.sourceId}`),
   };
   return { ...result, checksum: createHash("sha256").update(stableJson(result)).digest("hex") };
+}
+
+function protectCanonicalSlugs(
+  source: PlannedCatalogSlug[],
+  target: CatalogTargetRow[],
+  blockers: IdentityMigrationBlocker[],
+): PlannedCatalogSlug[] {
+  const canonical = new Map(
+    target
+      .filter((row) => row.purpose === "canonical" && row.status === "active")
+      .map((row) => [String(row.propertyId), String(row.slug)]),
+  );
+  return source.filter((row) => {
+    const current = row.purpose === "canonical" ? canonical.get(row.propertyId) : undefined;
+    if (!current || current === row.slug) return true;
+    addBlocker(
+      blockers,
+      "CATALOG_CANONICAL_SLUG_CONFLICT",
+      "hotel_catalog.property_slugs",
+      row.propertyId,
+      `Target canonical slug ${current} differs from legacy slug ${row.slug}`,
+    );
+    return false;
+  });
 }
 
 function reconcileRows<T extends { updatedAt: string }>(

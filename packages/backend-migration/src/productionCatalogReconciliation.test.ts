@@ -72,6 +72,32 @@ describe("production catalog reconciliation", () => {
     expect(plan.writes.properties).toEqual([]);
     expect(plan.writes.slugs).toHaveLength(1);
   });
+
+  it("blocks rather than replacing a target canonical slug", () => {
+    const core = emptyCore();
+    core.slugs.push({
+      id: PROPERTY,
+      propertyId: PROPERTY,
+      slug: "legacy",
+      purpose: "canonical",
+      status: "active",
+      redirectsToId: null,
+      updatedAt: NEW,
+    });
+    const target = emptyTarget();
+    target.slugs.push({
+      propertyId: PROPERTY,
+      slug: "target",
+      purpose: "canonical",
+      status: "active",
+      updatedAt: OLD,
+    });
+
+    const plan = reconcileProductionCatalog(core, emptyContent(), emptyPresentation(), target);
+
+    expect(plan.blockers.map((row) => row.code)).toContain("CATALOG_CANONICAL_SLUG_CONFLICT");
+    expect(plan.writes.slugs).toEqual([]);
+  });
 });
 
 function property(updatedAt: string, displayName: string) {
