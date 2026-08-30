@@ -208,6 +208,15 @@ type AuthSignupMembershipContext = {
   status?: MembershipStatus;
 };
 
+type PasswordSignupVerificationState = {
+  kind: "password-signup";
+  pendingAuthenticationToken: string;
+  workosUserId: string;
+  email: string;
+  surface: AuthSurface;
+  intent?: AuthSignupIntent;
+};
+
 type AuthOrganizationCandidate = {
   organizationId: string;
   workosOrganizationId: string;
@@ -583,9 +592,9 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     }
 
     const surfacePolicy = getSurfacePolicy(parsed.surface, options);
-    let createdUser = false;
+    let createdUser: AuthKitUser | null = null;
     try {
-      await options.authKitClient.createUser({
+      createdUser = await options.authKitClient.createUser({
         email: parsed.email,
         password: parsed.password,
         ipAddress: request.ip,
@@ -596,7 +605,6 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
           ...(parsed.intent ? { signup_intent: parsed.intent } : {}),
         },
       });
-      createdUser = true;
     } catch (error) {
       if (isConflictError(error)) {
         return reply.code(409).send({
@@ -620,6 +628,19 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       });
     } catch (error) {
       const mapped = mapWorkOSAuthError(error);
+      if (
+        createdUser &&
+        mapped.state === "email_verification_required" &&
+        mapped.pendingAuthenticationToken
+      ) {
+        mapped.pendingAuthenticationToken = createPasswordSignupVerificationState(options, {
+          pendingAuthenticationToken: mapped.pendingAuthenticationToken,
+          workosUserId: createdUser.id,
+          email: createdUser.email,
+          surface: parsed.surface,
+          intent: parsed.intent,
+        });
+      }
       return reply
         .code(mapped.state === "invalid_credentials" && !createdUser ? 401 : 403)
         .send(mapped);
@@ -729,16 +750,54 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
     }
 
     const surfacePolicy = getSurfacePolicy(parsed.surface, options);
+    const signupVerification =
+      parsed.flow === "signup"
+        ? readPasswordSignupVerificationState(parsed.pendingAuthenticationToken, options)
+        : null;
+    if (
+      parsed.flow === "signup" &&
+      (!signupVerification ||
+        signupVerification.surface !== parsed.surface ||
+        signupVerification.intent !== parsed.intent)
+    ) {
+      return reply.code(400).send({
+        state: "auth_failed",
+        message: "Invalid or expired signup verification. Please create your account again.",
+      });
+    }
     let verifiedSession: AuthKitSession;
     try {
       verifiedSession = await options.authKitClient.authenticateWithEmailVerification({
-        pendingAuthenticationToken: parsed.pendingAuthenticationToken,
+        pendingAuthenticationToken:
+          signupVerification?.pendingAuthenticationToken ?? parsed.pendingAuthenticationToken,
         code: parsed.code,
         ipAddress: request.ip,
         userAgent: request.headers["user-agent"],
       });
     } catch (error) {
       return reply.code(400).send(toEmailVerificationError(error));
+    }
+    if (
+      signupVerification &&
+      (verifiedSession.user.id !== signupVerification.workosUserId ||
+        verifiedSession.user.email.trim().toLowerCase() !== signupVerification.email)
+    ) {
+      return reply.code(403).send({
+        state: "auth_failed",
+        message: "Signup verification does not match the created account.",
+      });
+    }
+    const existingSignupUser = signupVerification
+      ? await options.identityRepository.findUserByProviderUserId(
+          "workos",
+          signupVerification.workosUserId,
+        )
+      : null;
+    if (existingSignupUser && !isMatchingSignupIdentity(existingSignupUser, verifiedSession.user)) {
+      return reply.code(403).send({
+        state: "auth_failed",
+        message: "Signup verification conflicts with the existing account.",
+      });
     }
 
     let signupContext: AuthSignupContext | undefined;
@@ -1999,30 +2058,56 @@ function createOAuthState(
     nonce,
     issuedAt: Date.now(),
   };
-  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const signature = createHmac("sha256", options.oauthStateSecret)
-    .update(encoded)
-    .digest("base64url");
-  return { value: `${encoded}.${signature}`, nonce };
+  return { value: signAuthState(payload, options.oauthStateSecret), nonce };
 }
 
 function readOAuthState(
   value: string,
   options: AuthSessionRouteOptions,
 ): { ok: true; value: GoogleOAuthState } | { ok: false } {
+  const parsed = readAuthState(value, options.oauthStateSecret);
+  if (!isGoogleOAuthState(parsed)) return { ok: false };
+  if (Date.now() - parsed.issuedAt > OAUTH_STATE_MAX_AGE_SECONDS * 1000) return { ok: false };
+  return { ok: true, value: parsed };
+}
+
+function createPasswordSignupVerificationState(
+  options: AuthSessionRouteOptions,
+  input: Omit<PasswordSignupVerificationState, "kind">,
+): string {
+  return signAuthState(
+    {
+      ...input,
+      kind: "password-signup",
+      email: input.email.trim().toLowerCase(),
+    },
+    options.oauthStateSecret,
+  );
+}
+
+function readPasswordSignupVerificationState(
+  value: string,
+  options: AuthSessionRouteOptions,
+): PasswordSignupVerificationState | null {
+  const parsed = readAuthState(value, options.oauthStateSecret);
+  return isPasswordSignupVerificationState(parsed) ? parsed : null;
+}
+
+function signAuthState(value: unknown, secret: string): string {
+  const encoded = Buffer.from(JSON.stringify(value)).toString("base64url");
+  const signature = createHmac("sha256", secret).update(encoded).digest("base64url");
+  return `${encoded}.${signature}`;
+}
+
+function readAuthState(value: string, secret: string): unknown {
   const [encoded, signature] = value.split(".");
-  if (!encoded || !signature) return { ok: false };
-  const expected = createHmac("sha256", options.oauthStateSecret)
-    .update(encoded)
-    .digest("base64url");
-  if (!safeEqual(signature, expected)) return { ok: false };
+  if (!encoded || !signature) return null;
+  const expected = createHmac("sha256", secret).update(encoded).digest("base64url");
+  if (!safeEqual(signature, expected)) return null;
   try {
-    const parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
-    if (!isGoogleOAuthState(parsed)) return { ok: false };
-    if (Date.now() - parsed.issuedAt > OAUTH_STATE_MAX_AGE_SECONDS * 1000) return { ok: false };
-    return { ok: true, value: parsed };
+    return JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
   } catch {
-    return { ok: false };
+    return null;
   }
 }
 
@@ -2043,6 +2128,21 @@ function isGoogleOAuthState(value: unknown): value is GoogleOAuthState {
     typeof state.errorReturnTo === "string" &&
     typeof state.nonce === "string" &&
     typeof state.issuedAt === "number"
+  );
+}
+
+function isPasswordSignupVerificationState(
+  value: unknown,
+): value is PasswordSignupVerificationState {
+  if (!value || typeof value !== "object") return false;
+  const state = value as Partial<PasswordSignupVerificationState>;
+  return (
+    state.kind === "password-signup" &&
+    typeof state.pendingAuthenticationToken === "string" &&
+    typeof state.workosUserId === "string" &&
+    typeof state.email === "string" &&
+    typeof state.surface === "string" &&
+    (state.intent === undefined || typeof state.intent === "string")
   );
 }
 
@@ -2774,6 +2874,7 @@ async function resolveOrCreateIdentity(
   signupContext?: AuthSignupContext,
 ): Promise<IdentityResolution> {
   let user = await options.identityRepository.findUserByProviderUserId("workos", session.user.id);
+  const shouldSyncExternalId = !user || Boolean(signupContext);
   if (!user) {
     const result = await options.lifecycleCommandBus.execute({
       commandType: "identity.user.create",
@@ -2794,25 +2895,6 @@ async function resolveOrCreateIdentity(
         ...(signupContext
           ? {
               legacyUserType: signupContext.intent,
-              organization: {
-                kind: signupContext.organization.kind,
-                name: signupContext.organization.name,
-                workosOrgId: signupContext.organization.workosOrganizationId,
-                workosExternalId: signupContext.organization.workosExternalId,
-              },
-              membership: {
-                status: signupContext.membership?.status,
-                roleKey: signupContext.organization.roleKey,
-                propertyAccessMode: membershipPropertyAccessModeForProvisioning(
-                  signupContext.organization.kind,
-                  signupContext.organization.roleKey,
-                ),
-                permissionKeys: hostedSignupPermissionKeys(signupContext),
-                workosMembershipId: signupContext.membership?.workosMembershipId,
-                workosRoleSlugs: signupContext.membership?.workosRoleSlugs ?? [
-                  signupContext.organization.roleKey,
-                ],
-              },
             }
           : {}),
         providerIdentity: {
@@ -2822,13 +2904,42 @@ async function resolveOrCreateIdentity(
         },
       },
     });
-    user = await findUserAfterLifecycle(options.identityRepository, session, result);
+    if (signupContext) {
+      user = await options.identityRepository.findUserByProviderUserId("workos", session.user.id);
+      if (!user) {
+        throw new Error("Identity lifecycle command did not create a resolvable signup user");
+      }
+    } else {
+      user = await findUserAfterLifecycle(options.identityRepository, session, result);
+    }
+  }
+  if (signupContext) {
+    if (!isMatchingSignupIdentity(user, session.user)) {
+      throw new Error("Signup identity conflicts with the existing account.");
+    }
+    await options.lifecycleCommandBus.execute({
+      commandType: "identity.access.grant",
+      commandId: randomUUID(),
+      idempotencyKey: `workos-signup-access:${session.user.id}:${signupContext.organization.workosOrganizationId}`,
+      audit: {
+        actor: { kind: "system", service: "apps/api-authkit" },
+        source: "web",
+        requestId: request.id,
+        correlationId: session.sessionId,
+        reason: "Complete signup after WorkOS identity webhook arrival",
+        requestedAt: new Date().toISOString(),
+      },
+      payload: {
+        userId: user.userId,
+        ...hostedSignupAccessPayload(signupContext),
+      },
+    });
+  }
+  if (shouldSyncExternalId) {
     await options.authKitClient.updateUserExternalId({
       workosUserId: session.user.id,
       externalId: user.userId,
     });
-  } else if (signupContext) {
-    throw new Error("This email already has a Vayada account. Sign in instead.");
   }
   const access = await resolveOrganizationAccess(
     session,
@@ -2838,6 +2949,37 @@ async function resolveOrCreateIdentity(
     accessOptions,
   );
   return { user, ...access };
+}
+
+function isMatchingSignupIdentity(user: IdentityUser, workosUser: AuthKitUser): boolean {
+  return (
+    user.status === "active" &&
+    user.email.trim().toLowerCase() === workosUser.email.trim().toLowerCase()
+  );
+}
+
+function hostedSignupAccessPayload(signupContext: AuthSignupContext) {
+  return {
+    organization: {
+      kind: signupContext.organization.kind,
+      name: signupContext.organization.name,
+      workosOrgId: signupContext.organization.workosOrganizationId,
+      workosExternalId: signupContext.organization.workosExternalId,
+    },
+    membership: {
+      status: signupContext.membership?.status,
+      roleKey: signupContext.organization.roleKey,
+      propertyAccessMode: membershipPropertyAccessModeForProvisioning(
+        signupContext.organization.kind,
+        signupContext.organization.roleKey,
+      ),
+      permissionKeys: hostedSignupPermissionKeys(signupContext),
+      workosMembershipId: signupContext.membership?.workosMembershipId,
+      workosRoleSlugs: signupContext.membership?.workosRoleSlugs ?? [
+        signupContext.organization.roleKey,
+      ],
+    },
+  };
 }
 
 function hostedSignupPermissionKeys(signupContext: AuthSignupContext): PermissionKey[] | undefined {
