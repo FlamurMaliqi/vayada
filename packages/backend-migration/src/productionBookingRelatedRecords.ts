@@ -256,7 +256,7 @@ function addonSelections(
   const bookingId = uuid(data["id"], "id");
   const propertyId = propertyFor(context, "pms", "hotels", data["hotel_id"]);
   const updatedAt = iso(data["updated_at"], "updated_at");
-  return ids.map((rawId, index) => {
+  const selections = ids.map((rawId, index) => {
     const addonId = uuid(rawId, `addon_ids[${index}]`);
     const addon = context.addonById.get(addonId);
     if (!addon) throw new Error(`addon ${addonId} has no source definition`);
@@ -287,6 +287,15 @@ function addonSelections(
       createdAt: iso(data["created_at"], "created_at"),
     });
   });
+  if (data["addon_total"] !== null && data["addon_total"] !== undefined) {
+    const expected = money(data["addon_total"], "addon_total");
+    const actual = selections
+      .reduce((sum, selection) => sum + Number(selection.row["totalAmount"]), 0)
+      .toFixed(2);
+    if (actual !== expected)
+      throw new Error(`addon_total ${expected} does not match selection total ${actual}`);
+  }
+  return selections;
 }
 
 function sourceBooking(
@@ -328,19 +337,17 @@ function promoCodeMap(context: BookingBuildContext): Map<string, IdentitySourceR
 }
 function changeStatus(value: unknown): string {
   const status = requiredText(value, "status").toLowerCase();
-  return (
-    (
-      {
-        approved: "accepted",
-        accepted: "accepted",
-        declined: "declined",
-        pending: "pending",
-        canceled: "canceled",
-        cancelled: "canceled",
-        expired: "expired",
-      } as Record<string, string>
-    )[status] ?? "pending"
-  );
+  const mapped = {
+    approved: "accepted",
+    accepted: "accepted",
+    declined: "declined",
+    pending: "pending",
+    canceled: "canceled",
+    cancelled: "canceled",
+    expired: "expired",
+  } as Record<string, string>;
+  if (!mapped[status]) throw new Error(`change request status ${status} is unsupported`);
+  return mapped[status];
 }
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)

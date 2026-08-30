@@ -112,6 +112,14 @@ function plan(withWrite: boolean): ProductionBookingPlan {
       },
     ],
     blockers: [],
+    parity: {
+      sourceTableCounts: { "pms.bookings": 1 },
+      targetTableCounts: { "booking.guest_bookings": 1 },
+      sourceBookingStatuses: { confirmed: 1 },
+      plannedBookingLifecycleStatuses: { confirmed: 1 },
+      sourceDraftMaterialization: {},
+      plannedDraftStatuses: {},
+    },
     counts: {
       sourceRows: 1,
       plannedRecords: 1,

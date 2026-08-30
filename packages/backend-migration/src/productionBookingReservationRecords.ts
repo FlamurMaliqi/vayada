@@ -97,7 +97,7 @@ function reservation(
     cancellationReason: lifecycleStatus === "canceled" ? "legacy_canceled" : null,
     bookingMetadata: bookingMetadata(context, data),
     expectedPaymentMethod: expectedPaymentMethod(data["payment_method"]),
-    billingPlanSnapshot: data["billing_plan_at_creation"] === "fixed" ? "fixed" : "commission",
+    billingPlanSnapshot: billingPlan(data["billing_plan_at_creation"]),
     commissionTermsSnapshot: commissionTerms(data),
     financeTermsCapturedAt: createdAt,
     bookingChannel: bookingChannel(data["channel"]),
@@ -188,6 +188,7 @@ function bookingMetadata(context: BookingBuildContext, data: Record<string, unkn
     addonQuantities: data["addon_quantities"] ?? {},
     addonDates: data["addon_dates"] ?? {},
     addonTotal: data["addon_total"] ?? 0,
+    sourcePaymentStatus: data["payment_status"] ?? "unpaid",
     promoCode: data["promo_code"] ?? null,
     promoDiscount: data["promo_discount"] ?? 0,
     lastMinuteDiscountPercent: data["last_minute_discount_percent"] ?? 0,
@@ -224,6 +225,13 @@ function expectedPaymentMethod(value: unknown): string {
   return "unknown";
 }
 
+function billingPlan(value: unknown): string {
+  const plan = requiredText(value ?? "commission", "billing_plan_at_creation").toLowerCase();
+  if (plan !== "fixed" && plan !== "commission")
+    throw new Error(`billing_plan_at_creation ${plan} is unsupported`);
+  return plan;
+}
+
 function bookingChannel(value: unknown): string {
   const channel = String(value ?? "").toLowerCase();
   const mapped: Record<string, string> = {
@@ -236,7 +244,9 @@ function bookingChannel(value: unknown): string {
     expedia: "expedia",
     agoda: "agoda",
   };
-  return mapped[channel] ?? (channel && channel !== "manual" ? "other_ota" : "unknown");
+  if (!channel || channel === "manual") return "unknown";
+  if (!mapped[channel]) throw new Error(`channel ${channel} is unsupported`);
+  return mapped[channel];
 }
 
 function directBookingSource(data: Record<string, unknown>): string | null {

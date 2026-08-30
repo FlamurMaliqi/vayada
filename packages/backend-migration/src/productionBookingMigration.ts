@@ -25,6 +25,7 @@ export type ProductionBookingMigrationReport = {
   applied: boolean;
   checksum: string;
   counts: ProductionBookingPlan["counts"];
+  parity: ProductionBookingPlan["parity"];
   blockers: ProductionBookingPlan["blockers"];
 };
 export type ProductionBookingMigrationServices = {
@@ -171,6 +172,7 @@ function report(
     applied,
     checksum: plan.checksum,
     counts: plan.counts,
+    parity: plan.parity,
     blockers: plan.blockers,
   };
 }

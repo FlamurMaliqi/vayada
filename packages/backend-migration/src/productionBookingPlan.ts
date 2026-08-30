@@ -67,7 +67,8 @@ export function reconcileProductionBookingRecords(
     const action = reconcile(candidate, current, prior, context);
     if (action === "block") continue;
     accepted.push(candidate);
-    links.push(linkFor(candidate, prior, context));
+    if (action === "insert" || action === "update" || action === "unchanged")
+      links.push(linkFor(candidate, prior, context));
     if (action === "insert" || action === "update") writes.push(candidate);
     if (action === "insert") counts.inserts += 1;
     else if (action === "update") counts.updates += 1;
@@ -76,6 +77,7 @@ export function reconcileProductionBookingRecords(
     else counts.preservedTargetDeletions += 1;
   }
   counts.plannedRecords = accepted.length;
+  const parity = summarizeParity(context, accepted);
   const sortedBlockers = context.blockers.sort((left, right) =>
     `${left.code}:${left.source}:${left.sourceId}`.localeCompare(
       `${right.code}:${right.source}:${right.sourceId}`,
@@ -90,13 +92,59 @@ export function reconcileProductionBookingRecords(
         row: record.row,
       })),
       blockers: sortedBlockers,
+      parity,
     }),
     records: accepted,
     writes,
     provenance: links,
     blockers: sortedBlockers,
+    parity,
     counts,
   };
+}
+
+function summarizeParity(
+  context: BookingBuildContext,
+  records: BookingTargetRecord[],
+): ProductionBookingPlan["parity"] {
+  const bookings = context.rows.filter(
+    (row) => row.sourceDatabase === "pms" && row.sourceTable === "bookings",
+  );
+  const drafts = context.rows.filter(
+    (row) => row.sourceDatabase === "pms" && row.sourceTable === "booking_drafts",
+  );
+  return {
+    sourceTableCounts: countBy(context.rows, (row) => `${row.sourceDatabase}.${row.sourceTable}`),
+    targetTableCounts: countBy(
+      records,
+      (record) => `${record.targetProduct}.${record.targetTable}`,
+    ),
+    sourceBookingStatuses: countBy(bookings, (row) => normalizedLabel(row.data["status"])),
+    plannedBookingLifecycleStatuses: countBy(
+      records.filter((record) => record.targetTable === "guest_bookings"),
+      (record) => normalizedLabel(record.row["lifecycleStatus"]),
+    ),
+    sourceDraftMaterialization: countBy(drafts, (row) =>
+      row.data["materialized_booking_id"] ? "materialized" : "unmaterialized",
+    ),
+    plannedDraftStatuses: countBy(
+      records.filter((record) => record.targetTable === "quote_sessions"),
+      (record) => normalizedLabel(record.row["status"]),
+    ),
+  };
+}
+
+function countBy<T>(values: T[], key: (value: T) => string): Record<string, number> {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    const label = key(value);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return Object.fromEntries([...counts].sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function normalizedLabel(value: unknown): string {
+  return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : "<missing>";
 }
 
 type Action = "insert" | "update" | "unchanged" | "preserve_newer" | "preserve_deletion" | "block";
@@ -109,7 +157,18 @@ function reconcile(
 ): Action {
   if (prior) {
     if (!current) return "preserve_deletion";
-    if (prior.sourceChecksum === candidate.sourceChecksum) return "unchanged";
+    if (prior.sourceChecksum === candidate.sourceChecksum) {
+      if (sameRecord(candidate.row, current.row)) return "unchanged";
+      if (current.updatedAt && Date.parse(current.updatedAt) > Date.parse(prior.lastMigratedAt))
+        return "preserve_newer";
+      blocker(
+        context,
+        candidate.mutable ? "TARGET_PROVENANCE_MISMATCH" : "TARGET_IMMUTABLE_CONFLICT",
+        candidate,
+        "Target row differs from unchanged source provenance without a newer target timestamp",
+      );
+      return "block";
+    }
     if (!candidate.mutable) {
       blocker(
         context,

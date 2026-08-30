@@ -13,6 +13,7 @@ describe("production Booking reconciliation", () => {
     const inserted = reconcileProductionBookingRecords(context(), [candidate]);
     expect(inserted.counts).toMatchObject({ inserts: 1, updates: 0 });
     expect(inserted.writes).toEqual([candidate]);
+    expect(inserted.parity.targetTableCounts).toEqual({ "booking.guest_bookings": 1 });
 
     const adopted = reconcileProductionBookingRecords(
       context({ records: [existing(candidate.row, "2026-08-01T00:00:00Z")] }),
@@ -31,6 +32,7 @@ describe("production Booking reconciliation", () => {
     );
     expect(plan.counts.preservedNewerTarget).toBe(1);
     expect(plan.writes).toEqual([]);
+    expect(plan.provenance).toEqual([]);
     expect(plan.blockers).toEqual([]);
   });
 
@@ -73,6 +75,29 @@ describe("production Booking reconciliation", () => {
     );
     expect(plan.counts.preservedNewerTarget).toBe(1);
     expect(plan.writes).toEqual([]);
+    expect(plan.provenance).toEqual([]);
+  });
+
+  it("does not trust unchanged provenance when the target row differs", () => {
+    const candidate = record();
+    const stale = reconcileProductionBookingRecords(
+      context({
+        records: [existing({ value: "unexpected" }, "2026-08-03T00:00:00Z")],
+        provenance: [provenance(candidate)],
+      }),
+      [candidate],
+    );
+    expect(stale.blockers[0]?.code).toBe("TARGET_PROVENANCE_MISMATCH");
+
+    const newer = reconcileProductionBookingRecords(
+      context({
+        records: [existing({ value: "target-edit" }, "2026-08-04T00:00:00Z")],
+        provenance: [provenance(candidate)],
+      }),
+      [candidate],
+    );
+    expect(newer.counts.preservedNewerTarget).toBe(1);
+    expect(newer.provenance).toEqual([]);
   });
 });
 

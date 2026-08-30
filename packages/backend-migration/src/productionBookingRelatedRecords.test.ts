@@ -60,6 +60,28 @@ describe("production Booking related records", () => {
       }),
     );
   });
+
+  it("blocks economic drift and unknown change-request states", () => {
+    const rows = allRows();
+    const booking = rows.find((row) => row.sourceTable === "bookings")!;
+    booking.data["addon_total"] = "29.99";
+    const change = rows.find((row) => row.sourceTable === "booking_change_requests")!;
+    change.data["status"] = "mystery";
+    const context = createProductionBookingContext(input(rows));
+    buildBookingRelatedRecords(context);
+    expect(context.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "INVALID_SOURCE_ROW",
+          message: "addon_total 29.99 does not match selection total 30.00",
+        }),
+        expect.objectContaining({
+          code: "INVALID_SOURCE_ROW",
+          message: "change request status mystery is unsupported",
+        }),
+      ]),
+    );
+  });
 });
 
 function allRows(): IdentitySourceRow[] {

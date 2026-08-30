@@ -67,6 +67,14 @@ export type ProductionBookingPlan = {
   writes: BookingTargetRecord[];
   provenance: ProductionMigrationSourceLink[];
   blockers: IdentityMigrationBlocker[];
+  parity: {
+    sourceTableCounts: Record<string, number>;
+    targetTableCounts: Record<string, number>;
+    sourceBookingStatuses: Record<string, number>;
+    plannedBookingLifecycleStatuses: Record<string, number>;
+    sourceDraftMaterialization: Record<string, number>;
+    plannedDraftStatuses: Record<string, number>;
+  };
   counts: {
     sourceRows: number;
     plannedRecords: number;

@@ -29,6 +29,7 @@ describe("production Booking reservation records", () => {
       balanceAmount: "0.00",
       bookingChannel: "direct",
       expectedPaymentMethod: "manual_card",
+      bookingMetadata: { sourcePaymentStatus: "captured" },
     });
     expect(records[1]!.row).toMatchObject({
       guestRole: "booker",
@@ -64,6 +65,19 @@ describe("production Booking reservation records", () => {
     const context = createProductionBookingContext(input([source]));
     expect(buildBookingReservationRecords(context)).toEqual([]);
     expect(context.blockers[0]).toMatchObject({ code: "INVALID_SOURCE_ROW", sourceId: BOOKING });
+  });
+
+  it("blocks unknown channels and billing plans instead of guessing", () => {
+    for (const [field, value] of [
+      ["channel", "mystery-channel"],
+      ["billing_plan_at_creation", "mystery-plan"],
+    ] as const) {
+      const source = booking();
+      source.data[field] = value;
+      const context = createProductionBookingContext(input([source]));
+      expect(buildBookingReservationRecords(context)).toEqual([]);
+      expect(context.blockers[0]).toMatchObject({ code: "INVALID_SOURCE_ROW", sourceId: BOOKING });
+    }
   });
 });
 
