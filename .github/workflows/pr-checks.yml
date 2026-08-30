@@ -141,6 +141,11 @@ jobs:
         env:
           TARGET_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
 
+      - name: Verify hotel member role repair
+        run: npm --workspace @vayada/backend-migration run test -- --no-file-parallelism src/hotelMemberRoleRepair.test.ts
+        env:
+          TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
+
       - name: Verify effective property access
         run: npm --workspace @vayada/backend-authorization run test -- --no-file-parallelism src/index.test.ts -t createPgPropertyAccessRepository
         env:
@@ -204,7 +209,6 @@ jobs:
           npm --workspace @vayada/backend-migration run test --
           --no-file-parallelism src/membershipPropertyScope.test.ts
           src/membershipDelegations.test.ts
-          src/hotelMemberRoleRepair.test.ts
         env:
           TEST_DATABASE_URL: postgresql://vayada_test:vayada_test@localhost:5432/vayada_api_test
 

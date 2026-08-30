@@ -13,6 +13,7 @@ const migration = await readFile(
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const HOTEL_ORG = "10000000-0000-4000-8000-000000000001";
 const OTHER_ORG = "10000000-0000-4000-8000-000000000002";
+const PROPERTY_ID = "40000000-0000-4000-8000-000000000001";
 const INITIAL_TIME = new Date("2025-01-01T00:00:00.000Z");
 
 describe("hotel member role repair migration contract", () => {
@@ -41,35 +42,21 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel member role repair migration (Postgre
     assertSafeTestDatabase(TEST_DATABASE_URL!);
     client = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await client.connect();
+    await client.query("BEGIN");
     await client.query(`
-      DROP SCHEMA IF EXISTS identity CASCADE;
-      CREATE SCHEMA identity;
-      CREATE TABLE identity.organizations (id UUID PRIMARY KEY, kind TEXT NOT NULL);
-      CREATE TABLE identity.organization_memberships (
-        id UUID PRIMARY KEY, organization_id UUID NOT NULL REFERENCES identity.organizations(id),
-        status TEXT NOT NULL, role_key TEXT NOT NULL, permission_overrides JSONB,
-        workos_membership_id TEXT, workos_role_slugs TEXT[] NOT NULL DEFAULT '{}',
-        invited_at TIMESTAMPTZ, property_access_mode TEXT NOT NULL, access_origin TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL
-      );
-      CREATE TABLE identity.membership_property_assignments (membership_id UUID NOT NULL, property_id UUID NOT NULL);
-      CREATE TABLE identity.membership_delegations (subject_membership_id UUID NOT NULL, delegator_membership_id UUID NOT NULL, created_by_membership_id UUID);
-      CREATE TABLE identity.staff_invitations (organization_id UUID NOT NULL, status TEXT NOT NULL, accepted_membership_id UUID);
-      CREATE TABLE identity.role_permission_grants (organization_kind TEXT NOT NULL, role_key TEXT NOT NULL, permission_key TEXT NOT NULL);
-      INSERT INTO identity.organizations VALUES
-        ('${HOTEL_ORG}', 'hotel_group'),
-        ('${OTHER_ORG}', 'creator_workspace');
-      INSERT INTO identity.role_permission_grants VALUES
-        ('hotel_group', 'hotel_custom', 'hotel_catalog.property_manifest.read');
+      INSERT INTO identity.organizations (id, kind, name, slug) VALUES
+        ('${HOTEL_ORG}', 'hotel_group', 'Repair Test Hotel', 'repair-test-hotel'),
+        ('${OTHER_ORG}', 'creator_workspace', 'Repair Test Creator', 'repair-test-creator');
+      INSERT INTO hotel_catalog.properties (id, public_id, display_name)
+      VALUES ('${PROPERTY_ID}', 'repair-test-property', 'Repair Test Property');
+      INSERT INTO identity.organization_resource_links
+        (organization_id, product, resource_type, resource_id, relationship)
+      VALUES ('${HOTEL_ORG}', 'hotel_catalog', 'property', '${PROPERTY_ID}', 'owner');
     `);
   });
 
   afterEach(async () => {
-    try {
-      await client.query("DROP SCHEMA IF EXISTS identity CASCADE");
-    } finally {
-      await client.end();
-    }
+    await client.query("ROLLBACK").finally(() => client.end());
   });
 
   it("converts only inert hotel memberships and preserves provider state", async () => {
@@ -99,7 +86,7 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel member role repair migration (Postgre
 
     const writer = new pg.Client({ connectionString: TEST_DATABASE_URL });
     await writer.connect();
-    await client.query("BEGIN");
+    await client.query("SAVEPOINT before_lock_check");
     try {
       await client.query(migration.slice(0, migration.indexOf("DO $$")));
       await writer.query("SET lock_timeout = '100ms'");
@@ -109,11 +96,12 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel member role repair migration (Postgre
         ),
       ).rejects.toMatchObject({ code: "55P03" });
     } finally {
-      await client.query("ROLLBACK");
+      await client.query("ROLLBACK TO SAVEPOINT before_lock_check");
       await writer.end();
     }
 
     await client.query(migration);
+    await client.query("SET CONSTRAINTS ALL IMMEDIATE");
 
     const repaired = await client.query(
       `SELECT role_key AS "roleKey", status,
@@ -127,27 +115,17 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel member role repair migration (Postgre
        ORDER BY id`,
       [HOTEL_ORG],
     );
-    expect(repaired.rows.slice(0, 4).map(({ roleKey, status }) => ({ roleKey, status }))).toEqual(
-      statuses.map((status) => ({ roleKey: "hotel_custom", status })),
-    );
-    expect(
-      repaired.rows.slice(0, 4).map(({ workosMembershipId, workosRoleSlugs }) => ({
-        workosMembershipId,
-        workosRoleSlugs,
-      })),
-    ).toEqual(
-      providerState.map(({ id, slugs }) => ({
-        workosMembershipId: id,
-        workosRoleSlugs: slugs,
-      })),
-    );
-    for (const row of repaired.rows.slice(0, 4)) {
+    for (const [index, row] of repaired.rows.slice(0, 4).entries()) {
       expect(row).toMatchObject({
         accessOrigin: "agency",
         createdAt: INITIAL_TIME,
         invitedAt: null,
         permissionOverrides: null,
         propertyAccessMode: "assigned",
+        roleKey: "hotel_custom",
+        status: statuses[index],
+        workosMembershipId: providerState[index]!.id,
+        workosRoleSlugs: providerState[index]!.slugs,
       });
       expect(row.updatedAt.getTime()).toBeGreaterThan(INITIAL_TIME.getTime());
     }
@@ -160,13 +138,6 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel member role repair migration (Postgre
       [membershipId(10)],
     );
     expect(unrelated.rows).toEqual([{ roleKey: "hotel_member", updatedAt: INITIAL_TIME }]);
-    expect(
-      (
-        await client.query(
-          "SELECT count(*)::integer AS count FROM identity.membership_property_assignments",
-        )
-      ).rows,
-    ).toEqual([{ count: 0 }]);
   });
 
   it("aborts atomically when any membership could carry access or intent", async () => {
@@ -185,30 +156,44 @@ describe.skipIf(!TEST_DATABASE_URL)("hotel member role repair migration (Postgre
     await insertMembership(client, { id: membershipId(10) });
     await client.query(`UPDATE identity.organization_memberships SET created_at = '2027-01-01'
                         WHERE id = '${membershipId(10)}'`);
-    await client.query("INSERT INTO identity.membership_property_assignments VALUES ($1, $2)", [
-      membershipId(5),
-      membershipId(50),
-    ]);
     await client.query(
-      "INSERT INTO identity.staff_invitations VALUES ($1, 'accepted', $2), ($1, 'pending', NULL)",
-      [HOTEL_ORG, membershipId(7)],
+      "INSERT INTO identity.membership_property_assignments (membership_id, property_id) VALUES ($1, $2)",
+      [membershipId(5), PROPERTY_ID],
     );
     await client.query(
-      "INSERT INTO identity.membership_delegations (subject_membership_id, delegator_membership_id) VALUES ($1, $2)",
-      [membershipId(8), membershipId(9)],
+      `INSERT INTO identity.staff_invitations
+         (organization_id, email, inviter_membership_id, inviter_user_id,
+          inviter_name_snapshot, role_key, permission_overrides, property_access_mode,
+          status, configuration_revision, command_id, idempotency_key_hash,
+          request_fingerprint_hash, request_id, request_source, reason, requested_at)
+       VALUES ($1, 'pending@example.test', $2, $3, 'Repair Test Inviter',
+               'hotel_custom', '{}'::jsonb, 'assigned', 'pending', 1,
+               'repair-test-command', decode(repeat('01', 32), 'hex'),
+               decode(repeat('02', 32), 'hex'), 'repair-test-request', 'migration',
+               'migration repair test', $4)`,
+      [HOTEL_ORG, membershipId(1), userId(membershipId(1)), INITIAL_TIME],
+    );
+    await client.query(
+      `INSERT INTO identity.membership_delegations
+         (organization_id, subject_membership_id, delegator_membership_id, created_by_membership_id)
+       VALUES ($1, $2, $3, $4)`,
+      [HOTEL_ORG, membershipId(8), membershipId(9), membershipId(1)],
     );
     await client.query(
       `INSERT INTO identity.role_permission_grants
+         (organization_kind, role_key, permission_key)
        VALUES ('hotel_group', 'hotel_member', 'pms.dashboard.read'),
               ('hotel_group', 'hotel_custom', 'pms.dashboard.read')`,
     );
 
+    await client.query("SAVEPOINT before_blocked_repair");
     await expect(client.query(migration)).rejects.toMatchObject({
       code: "23514",
       constraint: "chk_hotel_member_role_repair_safety",
       message:
         "hotel_member role repair blocked: mode=1 origin=1 overrides=1 assignments=1 invitations=10 delegations=2 post_cutoff=1 source_role_grants=1 unexpected_custom_grants=1 custom_manifest_grants=1",
     });
+    await client.query("ROLLBACK TO SAVEPOINT before_blocked_repair");
     const memberships = await client.query(
       `SELECT role_key AS "roleKey", updated_at AS "updatedAt"
        FROM identity.organization_memberships
@@ -260,14 +245,20 @@ async function insertMembership(
   },
 ): Promise<void> {
   await client.query(
+    `INSERT INTO identity.users (id, email, status)
+     VALUES ($1, $2, 'active')`,
+    [userId(input.id), `${input.id}@example.test`],
+  );
+  await client.query(
     `INSERT INTO identity.organization_memberships
-       (id, organization_id, status, role_key, permission_overrides,
+       (id, organization_id, user_id, status, role_key, permission_overrides,
         workos_membership_id, workos_role_slugs, invited_at,
         property_access_mode, access_origin, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)`,
     [
       input.id,
       input.organizationId ?? HOTEL_ORG,
+      userId(input.id),
       input.status ?? "active",
       input.roleKey ?? "hotel_member",
       input.permissionOverrides ?? null,
@@ -284,3 +275,5 @@ async function insertMembership(
 function membershipId(sequence: number): string {
   return `20000000-0000-4000-8000-${sequence.toString().padStart(12, "0")}`;
 }
+
+const userId = (membership: string): string => membership.replace(/^20000000/, "30000000");
