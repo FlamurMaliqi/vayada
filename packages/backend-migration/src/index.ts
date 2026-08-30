@@ -97,9 +97,7 @@ export {
   type ProductionBookingMigrationMode,
   type ProductionBookingMigrationReport,
 } from "./productionBookingMigration.js";
-export {
-  buildProductionBookingPlan,
-} from "./productionBookingPlan.js";
+export { buildProductionBookingPlan } from "./productionBookingPlan.js";
 export type {
   ProductionBookingPlan,
   ProductionBookingTargetState,
