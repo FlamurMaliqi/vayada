@@ -223,6 +223,43 @@ retention deadline. Rerun the dry run with the same ID after apply and require u
 checksums/counts. Booking success still does not authorize legacy shutdown:
 VAY-1356 through VAY-1363 and the rollback window remain mandatory gates.
 
+## Production PMS Migration
+
+VAY-1356 consumes PMS rooms and rate configuration, exact 366-day inventory,
+operational assignments and blocks, guest operations, messages, Channex
+mappings, and historical receipts from the same immutable VAY-1351 run. Apply
+VAY-1354 and VAY-1355 first so every hotel and booking has canonical target
+ownership. Platform Media references must already pass VAY-1055.
+
+Run the exact production dry run:
+
+```bash
+TARGET_DATABASE_URL=<target database> npm run target:pms:migrate -- \
+  --source-run-id vay1351-<24 lowercase hex characters> --dry-run
+```
+
+The dry run always rolls back. Review the checksum, per-property source/target
+counts, 366-day inventory totals, preserved newer target rows, preserved target
+deletions, and every blocker. Equal-time conflicts, orphaned bookings, missing
+media, duplicate provider IDs, and unsupported legacy state block apply. Raw
+webhook rows are inert receipts: successful legacy processing becomes
+`observed`, never a replayable provider job.
+
+After backup, source write freeze/queue, a blocker-free reviewed dry run, and
+human go/no-go approval, apply the exact reviewed run:
+
+```bash
+TARGET_DATABASE_URL=<target database> npm run target:pms:migrate -- \
+  --source-run-id vay1351-<24 lowercase hex characters> --apply \
+  --confirm production-pms:vay1351-<same 24 lowercase hex characters>
+```
+
+Apply locks every PMS target table, writes in dependency order inside one
+repeatable-read transaction, verifies exact write/provenance counts, and rereads
+the target before commit. Rerun the same dry run and require unchanged parity.
+PMS success does not authorize legacy shutdown: VAY-1357 through VAY-1363,
+the rollback window, and the final human cutover approval remain mandatory.
+
 ## Platform Media Parity
 
 `platform-media` is a target-only fixture that pins the registry contract before
