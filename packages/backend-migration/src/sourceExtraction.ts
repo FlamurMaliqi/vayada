@@ -11,7 +11,7 @@ import {
   type SourceInventoryEntry,
 } from "./sourceInventory.js";
 
-export const VAY_1350_INVENTORY_REVISION = "1a8ab060c9fb31d3f88bcfe934b51b5319e7e544";
+export const VAY_1350_INVENTORY_REVISION = "2d7fe21080646cb1931aac4054a5648bac9b8227";
 export const SOURCE_EXTRACTION_BATCH_SIZE = 500;
 export const SOURCE_EXTRACTION_LOCK_ID = ADVISORY_LOCK_ID;
 

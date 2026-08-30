@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { getRegisteredFixtureCases } from "./cases/registry.js";
+import { VAY_1350_ACTIVE_SOURCE_TABLES } from "./productionIdentitySnapshotReader.js";
 import {
   buildSourceRowCountQueries,
   parseSourceInventory,
@@ -158,6 +159,22 @@ describe("legacy production source inventory", () => {
       expect.objectContaining({ retentionPolicy: "cutover-control" }),
     );
     expect(RETENTION_POLICIES["rollback-window"].deleteRule).toContain("destroy");
+  });
+
+  it("keeps immutable extraction validation aligned with every active source table", () => {
+    for (const sourceDatabase of Object.keys(VAY_1350_ACTIVE_SOURCE_TABLES) as SourceDatabase[]) {
+      expect([...VAY_1350_ACTIVE_SOURCE_TABLES[sourceDatabase]].sort()).toEqual(
+        inventory
+          .filter(
+            (entry) =>
+              entry.sourceDatabase === sourceDatabase &&
+              entry.objectType === "table" &&
+              entry.lifecycle === "active",
+          )
+          .map((entry) => entry.objectName)
+          .sort(),
+      );
+    }
   });
 
   it.each(Object.entries(migrationDirectories) as Array<[SourceDatabase, string]>)(

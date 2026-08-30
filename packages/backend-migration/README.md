@@ -66,7 +66,7 @@ URLs stay in environment variables and never appear in the report.
 ```bash
 npm --workspace @vayada/backend-migration run target:source:extract -- \
   --manifest <reviewed-manifest.json> \
-  --source-schema-revision 1a8ab060c9fb31d3f88bcfe934b51b5319e7e544 \
+  --source-schema-revision 2d7fe21080646cb1931aac4054a5648bac9b8227 \
   --auth-snapshot-arn <arn> \
   --booking-snapshot-arn <arn> \
   --marketplace-snapshot-arn <arn> \
@@ -177,6 +177,51 @@ Rerun the dry run with the same run ID and confirm the checksum and counts are
 unchanged. Keep the legacy systems available throughout the rollback window.
 Catalog success does not authorize shutdown: VAY-1355 through VAY-1358,
 VAY-1359 full parity, and all remaining cutover and retirement gates must pass.
+
+## Production Booking Migration
+
+VAY-1355 consumes Booking settings, add-ons, funnel events and promo tables plus
+PMS bookings, drafts, additional guests, change requests, and promo usage from
+the same completed immutable VAY-1351 run. Apply VAY-1354 first so every legacy
+Booking/PMS hotel ID resolves through an active canonical Catalog source link.
+
+Run the exact production dry run:
+
+```bash
+TARGET_DATABASE_URL=<target database> npm run target:booking:migrate -- \
+  --source-run-id vay1351-<24 lowercase hex characters> --dry-run
+```
+
+The command runs in a repeatable-read transaction and always rolls back. Review
+the checksum, source/planned/write counts, preserved newer target rows, preserved
+target deletions, and every blocker. A previous provenance link with no target
+row is treated as an intentional target-side deletion and is never recreated
+from a later legacy snapshot.
+
+Apply is blocked by ambiguous property ownership, orphaned relationships,
+unknown lifecycle/payment states, equal-time conflicts, pending promo
+reconciliation, unresolved legacy add-on media, and sensitive additional-guest
+fields that lack an approved encrypted target contract. Raw legacy media URLs
+are never copied. Funnel event PII is private and its audit projection is
+redacted with `ai_visible = false`.
+
+After backup, source write freeze/queue, a blocker-free reviewed dry run, and
+human go/no-go approval, apply the exact reviewed run:
+
+```bash
+TARGET_DATABASE_URL=<target database> npm run target:booking:migrate -- \
+  --source-run-id vay1351-<24 lowercase hex characters> --apply \
+  --confirm production-booking:vay1351-<same 24 lowercase hex characters>
+```
+
+Apply locks the Booking, audit, and provenance tables, writes in dependency
+order, and rereads the target before committing. Unmaterialized drafts remain
+quote/checkout history; materialized drafts link through the normal guest
+booking path. Private guest input never enters the direct-booking summary read
+model. Checkout guest input receives the immutable draft expiry date as its PII
+retention deadline. Rerun the dry run with the same ID after apply and require unchanged
+checksums/counts. Booking success still does not authorize legacy shutdown:
+VAY-1356 through VAY-1363 and the rollback window remain mandatory gates.
 
 ## Platform Media Parity
 
