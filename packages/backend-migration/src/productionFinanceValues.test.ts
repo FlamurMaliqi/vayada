@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { exactMoney, exactRate, subtractMoney } from "./productionFinanceValues.js";
+import {
+  exactMoney,
+  exactRate,
+  minorUnits,
+  subtractMoney,
+  sumMoney,
+} from "./productionFinanceValues.js";
 
 describe("production Finance exact values", () => {
   it("keeps monetary arithmetic decimal exact", () => {
@@ -11,6 +17,9 @@ describe("production Finance exact values", () => {
 
   it("rejects precision loss and invalid totals", () => {
     expect(() => exactMoney("1.001", "amount")).toThrow("at most 2 decimals");
+    expect(() => exactMoney(null, "amount", "1.001")).toThrow("at most 2 decimals");
+    expect(() => minorUnits("1.1.2")).toThrow("at most 2 decimals");
+    expect(() => sumMoney(["1.001"])).toThrow("at most 2 decimals");
     expect(() => exactMoney("10000000000000.00", "amount")).toThrow("target precision");
     expect(() => subtractMoney("1.00", "1.01", "fee")).toThrow("exceeds amount");
     expect(() => exactRate("100.0001", "rate")).toThrow("between 0 and 100");

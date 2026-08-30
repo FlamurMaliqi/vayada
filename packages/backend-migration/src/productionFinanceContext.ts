@@ -33,10 +33,17 @@ export function createProductionFinanceContext(input: {
   );
   context.pmsBookingById = indexRows(context, "pms", "bookings");
   context.pmsAffiliateById = indexRows(context, "pms", "affiliates");
-  context.pmsAffiliatesByUserId = groupBy(
-    [...context.pmsAffiliateById.values()].filter((row) => row.data["user_id"]),
-    (row) => uuid(row.data["user_id"], "user_id"),
-  );
+  for (const row of context.pmsAffiliateById.values()) {
+    if (!row.data["user_id"]) continue;
+    try {
+      const userId = uuid(row.data["user_id"], "user_id");
+      const affiliates = context.pmsAffiliatesByUserId.get(userId);
+      if (affiliates) affiliates.push(row);
+      else context.pmsAffiliatesByUserId.set(userId, [row]);
+    } catch (error) {
+      blockRow(context, row, error);
+    }
+  }
   for (const row of context.rowsBySource.get("pms:hotel_payment_settings") ?? []) {
     try {
       const propertyId = propertyFor(context, "pms", "hotels", row.data["hotel_id"]);

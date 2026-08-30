@@ -73,10 +73,19 @@ export async function runProductionFinanceMigration(config: {
 
 export async function runProductionFinanceTransaction(
   client: QueryClient,
-  input: { sourceRunId: string; mode: ProductionFinanceMigrationMode },
+  input: {
+    sourceRunId: string;
+    mode: ProductionFinanceMigrationMode;
+    applyConfirmation?: string;
+  },
   services: ProductionFinanceMigrationServices = productionServices,
 ): Promise<ProductionFinanceMigrationReport> {
   assertMode(input.mode);
+  if (
+    input.mode === "apply" &&
+    input.applyConfirmation !== `production-finance:${input.sourceRunId}`
+  )
+    throw new Error(`Finance apply requires confirmation production-finance:${input.sourceRunId}`);
   let finished = false;
   await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
   try {

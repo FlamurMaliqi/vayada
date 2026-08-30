@@ -8,6 +8,7 @@ import {
 import type { ProductionFinancePlan } from "./productionFinanceTypes.js";
 
 const RUN = "vay1351-0123456789abcdef01234567";
+const APPLY = `production-finance:${RUN}`;
 
 describe("production Finance migration transaction", () => {
   it("rejects programmatic apply without a run-bound confirmation", async () => {
@@ -34,6 +35,18 @@ describe("production Finance migration transaction", () => {
     expect(services.writeProvenance).not.toHaveBeenCalled();
   });
 
+  it("rejects direct transaction apply without the run-bound confirmation", async () => {
+    const client = new TransactionFixture();
+    await expect(
+      runProductionFinanceTransaction(
+        client as never,
+        { sourceRunId: RUN, mode: "apply" },
+        serviceFixture(),
+      ),
+    ).rejects.toThrow(`confirmation production-finance:${RUN}`);
+    expect(client.sql).toEqual([]);
+  });
+
   it("locks, writes, verifies, and commits only a blocker-free apply", async () => {
     const client = new TransactionFixture();
     const services = serviceFixture();
@@ -41,7 +54,7 @@ describe("production Finance migration transaction", () => {
     services.buildPlan = vi.fn(() => (++builds === 3 ? plan(false) : plan(true)));
     const report = await runProductionFinanceTransaction(
       client as never,
-      { sourceRunId: RUN, mode: "apply" },
+      { sourceRunId: RUN, mode: "apply", applyConfirmation: APPLY },
       services,
     );
     expect(report.applied).toBe(true);
@@ -60,7 +73,7 @@ describe("production Finance migration transaction", () => {
     }));
     const report = await runProductionFinanceTransaction(
       blockedClient as never,
-      { sourceRunId: RUN, mode: "apply" },
+      { sourceRunId: RUN, mode: "apply", applyConfirmation: APPLY },
       blocked,
     );
     expect(report.applied).toBe(false);
@@ -71,7 +84,7 @@ describe("production Finance migration transaction", () => {
     await expect(
       runProductionFinanceTransaction(
         mismatchClient as never,
-        { sourceRunId: RUN, mode: "apply" },
+        { sourceRunId: RUN, mode: "apply", applyConfirmation: APPLY },
         mismatch,
       ),
     ).rejects.toThrow("applied 0 of 1");

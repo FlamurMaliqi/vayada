@@ -286,6 +286,26 @@ describe("production Finance plan", () => {
     expect(plan.blockers.map((row) => row.code)).toContain("INVALID_FINANCE_SOURCE_ROW");
   });
 
+  it("reports malformed affiliate user identities as source blockers", () => {
+    const rows = sourceRows();
+    rows.push(
+      source("pms", "affiliates", {
+        id: "a1000000-0000-4000-8000-000000000001",
+        user_id: "not-a-uuid",
+        stripe_connect_account_id: null,
+      }),
+    );
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: target(),
+    });
+
+    expect(plan.blockers.map((row) => row.code)).toContain("INVALID_FINANCE_SOURCE_ROW");
+  });
+
   it("never infers a Stripe payment account from current settings", () => {
     const rows = sourceRows();
     delete rows.find((row) => row.sourceTable === "payments")!.data["stripe_account_id"];
@@ -607,6 +627,88 @@ describe("production Finance plan", () => {
       propertyProviderAccountId: null,
       organizationProviderAccountId: null,
     });
+  });
+
+  it("blocks a Stripe account reference shared across properties", () => {
+    const hotelTwo = "11000000-0000-4000-8000-000000000001";
+    const propertyTwo = "21000000-0000-4000-8000-000000000001";
+    const organizationTwo = "31000000-0000-4000-8000-000000000002";
+    const bookingTwo = "41000000-0000-4000-8000-000000000001";
+    const targetBookingTwo = "51000000-0000-4000-8000-000000000001";
+    const paymentTwo = "61000000-0000-4000-8000-000000000001";
+    const rows = sourceRows().filter((row) => row.sourceTable !== "payouts");
+    const bookingHotel = rows.find((row) => row.sourceTable === "booking_hotels")!;
+    const settings = rows.find((row) => row.sourceTable === "hotel_payment_settings")!;
+    const booking = rows.find((row) => row.sourceTable === "bookings")!;
+    const payment = rows.find((row) => row.sourceTable === "payments")!;
+    payment.data["stripe_account_id"] = "acct_shared";
+    rows.push(
+      { ...bookingHotel, rowOrdinal: 2, data: { ...bookingHotel.data, id: hotelTwo } },
+      {
+        ...settings,
+        rowOrdinal: 2,
+        data: {
+          ...settings.data,
+          id: "b1000000-0000-4000-8000-000000000001",
+          hotel_id: hotelTwo,
+          stripe_connect_account_id: "acct_second",
+        },
+      },
+      {
+        ...booking,
+        rowOrdinal: 2,
+        data: { ...booking.data, id: bookingTwo, hotel_id: hotelTwo },
+      },
+      {
+        ...payment,
+        rowOrdinal: 2,
+        data: {
+          ...payment.data,
+          id: paymentTwo,
+          booking_id: bookingTwo,
+          stripe_payment_intent_id: "pi_shared_second",
+        },
+      },
+    );
+    const state = target();
+    state.propertyLinks.push(
+      { ...state.propertyLinks[0]!, sourceId: hotelTwo, propertyId: propertyTwo },
+      { ...state.propertyLinks[1]!, sourceId: hotelTwo, propertyId: propertyTwo },
+    );
+    state.resourceLinks.push(
+      {
+        ...state.resourceLinks[0]!,
+        organizationId: organizationTwo,
+        resourceId: hotelTwo,
+      },
+      {
+        ...state.resourceLinks[1]!,
+        organizationId: organizationTwo,
+        resourceId: hotelTwo,
+      },
+    );
+    state.guestBookings.push({
+      id: targetBookingTwo,
+      propertyId: propertyTwo,
+      sourceBookingId: bookingTwo,
+      currency: "EUR",
+    });
+
+    const plan = buildProductionFinancePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows,
+      target: state,
+    });
+
+    expect(plan.blockers.map((row) => row.code)).toContain(
+      "SHARED_PAYMENT_PROVIDER_ACCOUNT_REFERENCE",
+    );
+    expect(
+      plan.records
+        .filter((row) => row.targetTable === "payments")
+        .map((row) => row.row["providerAccountId"]),
+    ).toEqual([null, null]);
   });
 });
 

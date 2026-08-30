@@ -588,14 +588,27 @@ function paymentRecords(
       id,
       "Historical provider transaction has no immutable provider account identity and cannot be bound to current settings",
     );
-  const providerAccountId = stripeReference
-    ? propertyProviderAccountId(propertyId, "stripe", stripeReference)
-    : null;
+  const sharedStripeReference = stripeReference
+    ? stripeReferenceIsSharedAcrossProperties(context, stripeReference)
+    : false;
+  if (sharedStripeReference)
+    block(
+      context,
+      "SHARED_PAYMENT_PROVIDER_ACCOUNT_REFERENCE",
+      "pms.payments",
+      id,
+      "Stripe account reference appears on payments owned by multiple properties and cannot be mapped to a property-scoped provider account",
+    );
+  const providerAccountId =
+    stripeReference && !sharedStripeReference
+      ? propertyProviderAccountId(propertyId, "stripe", stripeReference)
+      : null;
   const configuredStripeReference = settings
     ? optionalText(settings.data["stripe_connect_account_id"], "stripe_connect_account_id")
     : null;
   const historicalAccount =
     stripeReference &&
+    providerAccountId &&
     stripeReference !== configuredStripeReference &&
     firstPaymentForStripeAccount(context, stripeReference) === id
       ? record(row, "payment_provider_accounts", providerAccountId!, {
@@ -1267,6 +1280,27 @@ function firstPaymentForStripeAccount(
     (payment) => optionalText(payment.data["stripe_account_id"], "stripe_account_id") === reference,
   );
   return first ? sourceId(first) : null;
+}
+
+function stripeReferenceIsSharedAcrossProperties(
+  context: FinanceBuildContext,
+  reference: string,
+): boolean {
+  const properties = new Set<string>();
+  for (const payment of sourceRows(context, "pms", "payments")) {
+    if (optionalText(payment.data["stripe_account_id"], "stripe_account_id") !== reference)
+      continue;
+    try {
+      const bookingId = uuid(payment.data["booking_id"], "booking_id");
+      const booking = context.pmsBookingById.get(bookingId);
+      if (!booking) continue;
+      const hotelId = uuid(booking.data["hotel_id"], "hotel_id");
+      properties.add(propertyFor(context, "pms", "hotels", hotelId));
+    } catch {
+      // The payment transform records the source-row blocker.
+    }
+  }
+  return properties.size > 1;
 }
 
 function affiliateProviderId(organizationId: string, reference: string): string {

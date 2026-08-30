@@ -6,7 +6,7 @@ const SUPPORTED_CURRENCIES = new Set(CURRENCY_OPTIONS.map(({ code }) => code));
 
 export function exactMoney(value: unknown, field: string, fallback?: string): string {
   if ((value === null || value === undefined || value === "") && fallback !== undefined)
-    return fallback;
+    return exactMoney(fallback, field);
   const text = typeof value === "number" || typeof value === "string" ? String(value) : "";
   const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(text);
   if (!match) throw new Error(`${field} must be non-negative money with at most 2 decimals`);
@@ -66,6 +66,7 @@ export function supportedCurrency(value: unknown, field = "currency"): string {
 }
 
 function toMinor(value: string): bigint {
-  const [whole, fraction = ""] = value.split(".");
-  return BigInt(whole!) * 100n + BigInt(fraction.padEnd(2, "0"));
+  const normalized = exactMoney(value, "money");
+  const [whole, fraction = ""] = normalized.split(".");
+  return BigInt(whole!) * 100n + BigInt(fraction);
 }
