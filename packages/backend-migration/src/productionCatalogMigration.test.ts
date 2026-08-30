@@ -1,0 +1,171 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  runProductionCatalogTransaction,
+  type ProductionCatalogMigrationServices,
+} from "./productionCatalogMigration.js";
+import type { ProductionCatalogPlan } from "./productionCatalogPlan.js";
+
+const RUN = "vay1351-0123456789abcdef01234567";
+
+describe("production catalog migration transaction", () => {
+  it("always rolls a dry run back without invoking writers", async () => {
+    const log: string[] = [];
+    const result = await runProductionCatalogTransaction(
+      new TransactionClient(log) as never,
+      { sourceRunId: RUN, mode: "dry-run" },
+      services(log, plan()),
+    );
+    expect(result).toMatchObject({ applied: false, sourceRunId: RUN });
+    expect(log).toEqual(["BEGIN", "snapshot", "target", "plan", "ROLLBACK"]);
+  });
+
+  it("rolls a blocked apply back before invoking writers", async () => {
+    const log: string[] = [];
+    const blocked = plan();
+    blocked.blockers.push({ code: "STALE", source: "catalog", sourceId: "x", message: "x" });
+    const result = await runProductionCatalogTransaction(
+      new TransactionClient(log) as never,
+      { sourceRunId: RUN, mode: "apply" },
+      services(log, blocked),
+    );
+    expect(result.applied).toBe(false);
+    expect(log).toEqual(["BEGIN", "SET", "LOCK", "snapshot", "target", "plan", "ROLLBACK"]);
+  });
+
+  it("commits only after guarded writes, target replan, and public projection", async () => {
+    const log: string[] = [];
+    const expected = plan();
+    const result = await runProductionCatalogTransaction(
+      new TransactionClient(log) as never,
+      { sourceRunId: RUN, mode: "apply" },
+      services(log, expected),
+    );
+    expect(result.applied).toBe(true);
+    expect(log).toEqual([
+      "BEGIN",
+      "SET",
+      "LOCK",
+      "snapshot",
+      "target",
+      "plan",
+      "core",
+      "content",
+      "presentation",
+      "target",
+      "plan",
+      "projection",
+      "COMMIT",
+    ]);
+  });
+
+  it("rolls back when stored state does not reproduce the plan", async () => {
+    const log: string[] = [];
+    const expected = plan();
+    const mismatched = { ...expected, checksum: "b".repeat(64) };
+    await expect(
+      runProductionCatalogTransaction(
+        new TransactionClient(log) as never,
+        { sourceRunId: RUN, mode: "apply" },
+        services(log, expected, mismatched),
+      ),
+    ).rejects.toThrow("Post-write catalog verification");
+    expect(log.at(-1)).toBe("ROLLBACK");
+    expect(log).not.toContain("projection");
+  });
+});
+
+class TransactionClient {
+  constructor(private readonly log: string[]) {}
+  async query(sql: string): Promise<{ rows: never[] }> {
+    this.log.push(sql.split(" ")[0]!);
+    return { rows: [] };
+  }
+}
+function services(
+  log: string[],
+  first: ProductionCatalogPlan,
+  verified = { ...first, counts: { ...first.counts, writes: 0 } },
+): ProductionCatalogMigrationServices {
+  let builds = 0;
+  return {
+    readSnapshot: async () => {
+      log.push("snapshot");
+      return [];
+    },
+    readTarget: async () => {
+      log.push("target");
+      return emptyTarget();
+    },
+    buildPlan: () => {
+      log.push("plan");
+      return builds++ === 0 ? first : verified;
+    },
+    writeCore: async () => {
+      log.push("core");
+      return { properties: 0, sourceLinks: 0, slugs: 0, locations: 0 };
+    },
+    writeContent: async () => {
+      log.push("content");
+      return { profiles: 0, amenities: 0, contacts: 0, policies: 0 };
+    },
+    writePresentation: async () => {
+      log.push("presentation");
+      return { domains: 0, media: 0 };
+    },
+    rebuildPublicProjection: async () => {
+      log.push("projection");
+      return 0;
+    },
+  };
+}
+function plan(): ProductionCatalogPlan {
+  return {
+    sourceLinks: [],
+    propertyIds: [],
+    writes: {
+      properties: [],
+      slugs: [],
+      domains: [],
+      locations: [],
+      profiles: [],
+      amenities: [],
+      contacts: [],
+      policies: [],
+      media: [],
+    },
+    preservedTarget: [],
+    blockers: [],
+    counts: {
+      properties: 0,
+      sourceLinks: 0,
+      slugs: 0,
+      domains: 0,
+      locations: 0,
+      profiles: 0,
+      amenities: 0,
+      contacts: 0,
+      policies: 0,
+      media: 0,
+      writes: 0,
+      preservedTarget: 0,
+    },
+    checksum: "a".repeat(64),
+  };
+}
+function emptyTarget() {
+  return {
+    properties: [],
+    sourceLinks: [],
+    slugs: [],
+    domains: [],
+    locations: [],
+    profiles: [],
+    amenities: [],
+    contacts: [],
+    policies: [],
+    media: [],
+    mediaObjects: [],
+    ownerRevisions: [],
+  };
+}
