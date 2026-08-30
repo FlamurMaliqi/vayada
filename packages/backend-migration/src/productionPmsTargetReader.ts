@@ -277,13 +277,7 @@ function camelize(value: unknown): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
       key.replace(/_([a-z])/g, (_, character: string) => character.toUpperCase()),
-      Array.isArray(entry)
-        ? entry.map((item) =>
-            item && typeof item === "object" && !Array.isArray(item) ? camelize(item) : item,
-          )
-        : entry && typeof entry === "object"
-          ? camelize(entry)
-          : entry,
+      entry,
     ]),
   );
 }

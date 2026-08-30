@@ -1,0 +1,336 @@
+import pg from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { writeProductionMigrationProvenance } from "./productionBookingWriter.js";
+import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
+import { buildProductionPmsPlan } from "./productionPmsPlan.js";
+import {
+  readProductionPmsPrerequisites,
+  readProductionPmsTargetState,
+} from "./productionPmsTargetReader.js";
+import { writeProductionPmsRecords } from "./productionPmsWriter.js";
+import { assertSafeTestDatabase } from "./testUtils.js";
+
+const URL = process.env["TEST_DATABASE_URL"];
+const RUN = "vay1351-0123456789abcdef01234567";
+const PROPERTY = "13560000-0000-4000-8000-000000000081";
+const HOTEL = "13560000-0000-4000-8000-000000000082";
+const ROOM_TYPE = "13560000-0000-4000-8000-000000000083";
+const ROOM = "13560000-0000-4000-8000-000000000084";
+const BOOKING = "13560000-0000-4000-8000-000000000085";
+const CONNECTION = "13560000-0000-4000-8000-000000000086";
+const EXTERNAL_PROPERTY = "13560000-0000-4000-8000-000000000087";
+const EXTERNAL_ROOM = "13560000-0000-4000-8000-000000000088";
+const EXTERNAL_RATE = "13560000-0000-4000-8000-000000000089";
+const EXTERNAL_BOOKING = "13560000-0000-4000-8000-000000000090";
+
+describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
+  let client: pg.Client;
+  beforeAll(async () => {
+    assertSafeTestDatabase(URL!);
+    client = new pg.Client({ connectionString: URL });
+    await client.connect();
+  });
+  afterAll(async () => client.end());
+
+  it("writes and verifies a complete inert PMS migration flow", async () => {
+    await client.query("BEGIN");
+    try {
+      await seedPrerequisites(client);
+      const prerequisites = await readProductionPmsPrerequisites(client);
+      const source = sourceRows();
+      const plan = buildProductionPmsPlan({
+        sourceRunId: RUN,
+        completedAt: "2026-08-30T00:00:00Z",
+        rows: source,
+        target: { ...prerequisites, records: [], provenance: [] },
+      });
+      expect(plan.blockers).toEqual([]);
+      const expectedCounts = Object.fromEntries(
+        [...new Set(plan.writes.map((row) => row.targetTable))].map((table) => [
+          table,
+          plan.writes.filter((row) => row.targetTable === table).length,
+        ]),
+      );
+      expect(await writeProductionPmsRecords(client, plan.writes)).toEqual(expectedCounts);
+      expect(await writeProductionMigrationProvenance(client, plan.provenance, RUN)).toBe(
+        plan.provenance.length,
+      );
+
+      const target = await readProductionPmsTargetState(client, plan.records, prerequisites);
+      const verified = buildProductionPmsPlan({
+        sourceRunId: RUN,
+        completedAt: "2026-08-30T00:00:00Z",
+        rows: source,
+        target,
+      });
+      expect(verified.blockers).toEqual([]);
+      expect(verified.writes).toEqual([]);
+      expect(verified.checksum).toBe(plan.checksum);
+
+      const stored = await client.query(
+        `SELECT
+           (SELECT count(*)::int FROM pms.inventory_days WHERE property_id = $1) AS inventory,
+           (SELECT count(*)::int FROM pms.operational_booking_assignments WHERE guest_booking_id = $2) AS assignments,
+           (SELECT count(*)::int FROM pms.channel_booking_mappings WHERE guest_booking_id = $2) AS mappings,
+           (SELECT delivery_status FROM platform.external_webhook_events WHERE provider = 'channex' LIMIT 1) AS webhook_status,
+           (SELECT normalized_domain_event_id FROM platform.external_webhook_events WHERE provider = 'channex' LIMIT 1) AS domain_event,
+           (SELECT count(*)::int FROM platform.outbox_events) AS outbox_count,
+           (SELECT count(*)::int FROM platform.jobs) AS job_count`,
+        [PROPERTY, BOOKING],
+      );
+      expect(stored.rows[0]).toMatchObject({
+        inventory: 366,
+        assignments: 1,
+        mappings: 1,
+        webhook_status: "observed",
+        domain_event: null,
+        outbox_count: 0,
+        job_count: 0,
+      });
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
+});
+
+async function seedPrerequisites(client: pg.Client): Promise<void> {
+  await client.query(
+    `INSERT INTO hotel_catalog.properties(id, public_id, display_name)
+       VALUES ($1, 'pms-integration', 'PMS Integration')`,
+    [PROPERTY],
+  );
+  await client.query(
+    `INSERT INTO hotel_catalog.property_source_links
+       (property_id, source_system, source_table, source_id, relationship)
+       VALUES ($1, 'pms', 'hotels', $2, 'operational_input')`,
+    [PROPERTY, HOTEL],
+  );
+  await client.query(
+    `INSERT INTO booking.guest_bookings
+       (id, property_id, public_reference, source_system, source_booking_id,
+        lifecycle_status, payment_status, check_in, check_out, adults, children,
+        room_count, currency, total_amount, balance_amount, booking_channel,
+        created_at, updated_at)
+     VALUES ($1::uuid, $2, 'PMS-INTEGRATION', 'pms', ($1::uuid)::text, 'confirmed', 'paid',
+             '2026-09-01', '2026-09-03', 2, 0, 1, 'EUR', 200, 0, 'booking_com',
+             '2026-08-01T00:00:00Z', '2026-08-29T00:00:00Z')`,
+    [BOOKING, PROPERTY],
+  );
+}
+
+function sourceRows(): IdentitySourceRow[] {
+  return [
+    row("room_types", {
+      id: ROOM_TYPE,
+      hotel_id: HOTEL,
+      name: "Double",
+      total_rooms: 1,
+      base_rate: "100.00",
+      currency: "EUR",
+      is_active: true,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-08-29T00:00:00Z",
+    }),
+    row("rooms", {
+      id: ROOM,
+      hotel_id: HOTEL,
+      room_type_id: ROOM_TYPE,
+      room_number: "101",
+      status: "available",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-08-29T00:00:00Z",
+    }),
+    row("bookings", {
+      id: BOOKING,
+      hotel_id: HOTEL,
+      room_type_id: ROOM_TYPE,
+      room_id: ROOM,
+      booking_reference: "PMS-INTEGRATION",
+      number_of_rooms: 1,
+      status: "confirmed",
+      payment_status: "paid",
+      channel: "booking.com",
+      check_in: "2026-09-01",
+      check_out: "2026-09-03",
+      adults: 2,
+      children: 0,
+      created_at: "2026-08-01T00:00:00Z",
+      updated_at: "2026-08-29T00:00:00Z",
+    }),
+    row("room_blocks", {
+      id: "13560000-0000-4000-8000-000000000091",
+      hotel_id: HOTEL,
+      room_type_id: ROOM_TYPE,
+      start_date: "2027-10-01",
+      end_date: "2027-10-02",
+      blocked_count: 1,
+      reason: "maintenance",
+      created_at: "2026-08-20T00:00:00Z",
+    }),
+    row("checkin_checklist_templates", {
+      hotel_id: HOTEL,
+      steps: [{ id: "identity", label: "Verify identity" }],
+      updated_at: "2026-08-20T00:00:00Z",
+    }),
+    row("checkout_inspection_templates", {
+      hotel_id: HOTEL,
+      steps: [{ id: "keys", label: "Return keys" }],
+      updated_at: "2026-08-20T00:00:00Z",
+    }),
+    row("booking_checkin_records", {
+      id: "13560000-0000-4000-8000-000000000092",
+      booking_id: BOOKING,
+      completed_at: "2026-09-01T12:00:00Z",
+      step_results: [],
+      pending_flags: [],
+    }),
+    row("booking_checkout_charges", {
+      id: "13560000-0000-4000-8000-000000000093",
+      hotel_id: HOTEL,
+      booking_id: BOOKING,
+      label: "Minibar",
+      amount: "5.00",
+      original_amount: "5.00",
+      status: "paid",
+      created_at: "2026-09-03T09:00:00Z",
+      settled_at: "2026-09-03T09:05:00Z",
+    }),
+    row("booking_checkout_records", {
+      id: "13560000-0000-4000-8000-000000000094",
+      booking_id: BOOKING,
+      completed_at: "2026-09-03T10:00:00Z",
+      inspection_results: [],
+      charges_settled: [],
+      pending_flags: [],
+    }),
+    row("booking_notes", {
+      id: "13560000-0000-4000-8000-000000000095",
+      hotel_id: HOTEL,
+      booking_id: BOOKING,
+      author_name: "Host",
+      body: "Quiet room requested",
+      created_at: "2026-08-20T00:00:00Z",
+    }),
+    ...channelRows(),
+    ...messageRows(),
+    row("booking_events", {
+      id: "13560000-0000-4000-8000-000000000096",
+      booking_id: BOOKING,
+      hotel_id: HOTEL,
+      event_type: "room_moved",
+      payload: { source: "host" },
+      created_at: "2026-08-28T00:00:00Z",
+    }),
+    row("booking_notification_deliveries", {
+      booking_id: BOOKING,
+      notification_type: "guest_confirmation",
+      recipient_email: "guest@example.test",
+      delivered_at: "2026-08-28T01:00:00Z",
+    }),
+    row("channex_webhook_events", {
+      id: "13560000-0000-4000-8000-000000000097",
+      event_type: "booking_revision",
+      property_id: EXTERNAL_PROPERTY,
+      received_at: "2026-08-28T02:00:00Z",
+      processed_ok: true,
+      payload: { booking_id: EXTERNAL_BOOKING },
+    }),
+  ];
+}
+
+function channelRows(): IdentitySourceRow[] {
+  return [
+    row("channex_connections", {
+      id: CONNECTION,
+      hotel_id: HOTEL,
+      channex_property_id: EXTERNAL_PROPERTY,
+      is_active: true,
+      last_booking_sync_at: "2026-08-28T00:00:00Z",
+      last_ari_sync_at: "2026-08-28T00:00:00Z",
+      messaging_app_installed: true,
+      last_message_sync_at: "2026-08-28T00:00:00Z",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-08-28T00:00:00Z",
+    }),
+    row("channex_room_type_mappings", {
+      id: "13560000-0000-4000-8000-000000000098",
+      hotel_id: HOTEL,
+      room_type_id: ROOM_TYPE,
+      channex_room_type_id: EXTERNAL_ROOM,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-08-28T00:00:00Z",
+    }),
+    row("channex_rate_plan_mappings", {
+      id: "13560000-0000-4000-8000-000000000099",
+      hotel_id: HOTEL,
+      room_type_id: ROOM_TYPE,
+      channex_rate_plan_id: EXTERNAL_RATE,
+      channex_room_type_id: EXTERNAL_ROOM,
+      sell_mode: "per_room",
+      plan_name: "Flexible",
+      channel: "booking.com",
+      meal_plan_code: 0,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-08-28T00:00:00Z",
+    }),
+    row("channex_booking_mappings", {
+      id: "13560000-0000-4000-8000-000000000100",
+      hotel_id: HOTEL,
+      booking_id: BOOKING,
+      channex_booking_id: EXTERNAL_BOOKING,
+      channel_source: "booking.com",
+      channex_room_index: 0,
+      last_synced_at: "2026-08-28T00:00:00Z",
+      created_at: "2026-08-01T00:00:00Z",
+      updated_at: "2026-08-28T00:00:00Z",
+    }),
+    row("channex_channel_markups", {
+      id: "13560000-0000-4000-8000-000000000101",
+      hotel_id: HOTEL,
+      channel: "booking.com",
+      markup_pct: "12.5",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-08-28T00:00:00Z",
+    }),
+  ];
+}
+
+function messageRows(): IdentitySourceRow[] {
+  const thread = "13560000-0000-4000-8000-000000000102";
+  const message = "13560000-0000-4000-8000-000000000103";
+  return [
+    row("message_threads", {
+      id: thread,
+      hotel_id: HOTEL,
+      source: "channex",
+      source_thread_id: "thread-ext",
+      booking_id: BOOKING,
+      status: "open",
+      unread_count: 1,
+      created_at: "2026-08-20T00:00:00Z",
+      updated_at: "2026-08-28T00:00:00Z",
+    }),
+    row("messages", {
+      id: message,
+      thread_id: thread,
+      source_message_id: "message-ext",
+      direction: "inbound",
+      body: "Hello",
+      sent_at: "2026-08-28T00:00:00Z",
+      received_at: "2026-08-28T00:00:01Z",
+      raw_payload: {},
+    }),
+    row("message_attachments", {
+      id: "13560000-0000-4000-8000-000000000104",
+      message_id: message,
+      s3_key: "legacy/messages/file.pdf",
+      filename: "file.pdf",
+      created_at: "2026-08-28T00:00:02Z",
+    }),
+  ];
+}
+
+function row(sourceTable: string, data: Record<string, unknown>): IdentitySourceRow {
+  return { sourceDatabase: "pms", sourceTable, rowOrdinal: 1, data };
+}
