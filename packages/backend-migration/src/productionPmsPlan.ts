@@ -47,7 +47,20 @@ export function reconcileProductionPmsRecords(
   const accepted: PmsTargetRecord[] = [];
   const writes: PmsTargetRecord[] = [];
   const links: ProductionMigrationSourceLink[] = [];
-  const seen = new Set<string>();
+  const duplicateKeys = new Set<string>();
+  const firstByKey = new Map<string, PmsTargetRecord>();
+  for (const candidate of candidates) {
+    const key = recordKey(candidate);
+    if (firstByKey.has(key)) duplicateKeys.add(key);
+    else firstByKey.set(key, candidate);
+  }
+  for (const key of duplicateKeys)
+    blocker(
+      context,
+      "DUPLICATE_TARGET_RECORD",
+      firstByKey.get(key)!,
+      "More than one source maps here",
+    );
   const counts = {
     sourceRows: context.rows.length,
     plannedRecords: 0,
@@ -60,18 +73,14 @@ export function reconcileProductionPmsRecords(
 
   for (const candidate of candidates) {
     const key = recordKey(candidate);
-    if (seen.has(key)) {
-      blocker(context, "DUPLICATE_TARGET_RECORD", candidate, "More than one source maps here");
-      continue;
-    }
-    seen.add(key);
+    if (duplicateKeys.has(key)) continue;
     const current = existing.get(key);
     const prior = provenance.get(provenanceKey(candidate));
     const action = reconcile(candidate, current, prior, context);
     if (action === "block") continue;
     accepted.push(candidate);
     if (action === "insert" || action === "update" || action === "unchanged")
-      links.push(linkFor(candidate, prior, context));
+      links.push(linkFor(candidate, prior, context, action));
     if (action === "insert" || action === "update") writes.push(candidate);
     if (action === "insert") counts.inserts += 1;
     else if (action === "update") counts.updates += 1;
@@ -111,7 +120,8 @@ function summarizeParity(
   records: PmsTargetRecord[],
 ): ProductionPmsPlan["parity"] {
   const sourceCountsByProperty: Record<string, Record<string, number>> = {};
-  for (const row of context.rows) incrementNested(sourceCountsByProperty, sourceProperty(context, row), row.sourceTable);
+  for (const row of context.rows)
+    incrementNested(sourceCountsByProperty, sourceProperty(context, row), row.sourceTable);
   const targetCountsByProperty: Record<string, Record<string, number>> = {};
   for (const record of records)
     incrementNested(
@@ -141,11 +151,16 @@ function summarizeParity(
   }
   return {
     sourceTableCounts: countBy(context.rows, (row) => `pms.${row.sourceTable}`),
-    targetTableCounts: countBy(records, (record) => `${record.targetProduct}.${record.targetTable}`),
+    targetTableCounts: countBy(
+      records,
+      (record) => `${record.targetProduct}.${record.targetTable}`,
+    ),
     sourceCountsByProperty: sortNested(sourceCountsByProperty),
     targetCountsByProperty: sortNested(targetCountsByProperty),
     futureInventoryByProperty: Object.fromEntries(
-      Object.entries(futureInventoryByProperty).sort(([left], [right]) => left.localeCompare(right)),
+      Object.entries(futureInventoryByProperty).sort(([left], [right]) =>
+        left.localeCompare(right),
+      ),
     ),
   };
 }
@@ -235,11 +250,21 @@ function reconcile(
   if (!current) return "insert";
   if (sameRecord(candidate.row, current.row)) return "unchanged";
   if (!candidate.mutable) {
-    blocker(context, "TARGET_IMMUTABLE_CONFLICT", candidate, "Immutable target differs from source");
+    blocker(
+      context,
+      "TARGET_IMMUTABLE_CONFLICT",
+      candidate,
+      "Immutable target differs from source",
+    );
     return "block";
   }
   if (!candidate.sourceUpdatedAt || !current.updatedAt) {
-    blocker(context, "TARGET_FRESHNESS_UNKNOWN", candidate, "Cannot safely order source and target");
+    blocker(
+      context,
+      "TARGET_FRESHNESS_UNKNOWN",
+      candidate,
+      "Cannot safely order source and target",
+    );
     return "block";
   }
   const sourceTime = Date.parse(candidate.sourceUpdatedAt);
@@ -256,6 +281,7 @@ function linkFor(
   record: PmsTargetRecord,
   prior: ProductionMigrationSourceLink | undefined,
   context: PmsBuildContext,
+  action: Action,
 ): ProductionMigrationSourceLink {
   return {
     sourceDatabase: record.sourceDatabase,
@@ -266,7 +292,8 @@ function linkFor(
     targetId: record.targetId,
     sourceChecksum: record.sourceChecksum,
     sourceUpdatedAt: record.sourceUpdatedAt,
-    lastMigratedAt: prior?.lastMigratedAt ?? context.completedAt,
+    lastMigratedAt:
+      action === "update" ? context.completedAt : (prior?.lastMigratedAt ?? context.completedAt),
   };
 }
 
@@ -312,7 +339,11 @@ function countBy<T>(values: T[], key: (value: T) => string): Record<string, numb
   return Object.fromEntries([...counts].sort(([left], [right]) => left.localeCompare(right)));
 }
 
-function incrementNested(target: Record<string, Record<string, number>>, outer: string, inner: string) {
+function incrementNested(
+  target: Record<string, Record<string, number>>,
+  outer: string,
+  inner: string,
+) {
   const values = target[outer] ?? {};
   values[inner] = (values[inner] ?? 0) + 1;
   target[outer] = values;

@@ -41,7 +41,7 @@ export async function readProductionPmsPrerequisites(
     propertyLinks: links.rows,
     bookings: bookings.rows.map((booking) => ({
       ...booking,
-      updatedAt: new Date(booking.updatedAt).toISOString(),
+      updatedAt: normalizeTimestamp(booking.updatedAt, "booking.guest_bookings.updated_at"),
     })),
     userIds: users.rows.map((row) => row.id),
     mediaIds: media.rows.map((row) => row.id),
@@ -55,11 +55,11 @@ export async function readProductionPmsTargetState(
 ): Promise<ProductionPmsTargetState> {
   const records: ExistingPmsTargetRecord[] = [];
   const grouped = new Map<string, string[]>();
-  for (const candidate of candidates)
-    grouped.set(candidate.targetTable, [
-      ...(grouped.get(candidate.targetTable) ?? []),
-      candidate.targetId,
-    ]);
+  for (const candidate of candidates) {
+    const ids = grouped.get(candidate.targetTable);
+    if (ids) ids.push(candidate.targetId);
+    else grouped.set(candidate.targetTable, [candidate.targetId]);
+  }
   for (const [targetTable, ids] of grouped) {
     const definition = PRODUCTION_PMS_TABLES[targetTable];
     if (!definition) throw new Error(`Unsupported PMS target table ${targetTable}`);
@@ -81,19 +81,26 @@ export async function readProductionPmsTargetState(
         targetProduct: definition.product,
         targetTable,
         targetId: row.targetId,
-        updatedAt: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
+        updatedAt: normalizeTimestamp(row.updatedAt, `${definition.table}.${definition.freshness}`),
         row: camelize(JSON.parse(row.rowData) as Record<string, unknown>),
       })),
     );
   }
-  const requestedLinks = candidates.map((row) => ({
-    sourceDatabase: row.sourceDatabase,
-    sourceTable: row.sourceTable,
-    sourceId: row.sourceId,
-    targetProduct: row.targetProduct,
-    targetTable: row.targetTable,
-    targetId: row.targetId,
-  }));
+  const requestedLinks = [
+    ...new Map(
+      candidates.map((row) => {
+        const link = {
+          sourceDatabase: row.sourceDatabase,
+          sourceTable: row.sourceTable,
+          sourceId: row.sourceId,
+          targetProduct: row.targetProduct,
+          targetTable: row.targetTable,
+          targetId: row.targetId,
+        };
+        return [JSON.stringify(link), link] as const;
+      }),
+    ).values(),
+  ];
   const provenance = requestedLinks.length
     ? await client.query<ProductionMigrationSourceLink>(
         `SELECT link.source_database AS "sourceDatabase", link.source_table AS "sourceTable",
@@ -123,8 +130,8 @@ export async function readProductionPmsTargetState(
     records,
     provenance: provenance.rows.map((row) => ({
       ...row,
-      sourceUpdatedAt: row.sourceUpdatedAt ? new Date(row.sourceUpdatedAt).toISOString() : null,
-      lastMigratedAt: new Date(row.lastMigratedAt).toISOString(),
+      sourceUpdatedAt: normalizeTimestamp(row.sourceUpdatedAt, "source_updated_at"),
+      lastMigratedAt: requiredTimestamp(row.lastMigratedAt, "last_migrated_at"),
     })),
     blockers: collisions,
   };
@@ -250,6 +257,19 @@ function targetIdExpression(targetTable: string, key: readonly string[]): string
   if (targetTable === "inventory_days")
     return "property_id::text || ':' || room_type_id::text || ':' || stay_date::text";
   return `${key[0]}::text`;
+}
+
+function normalizeTimestamp(value: string | null | undefined, field: string): string | null {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) throw new Error(`Invalid ${field} timestamp: ${value}`);
+  return new Date(timestamp).toISOString();
+}
+
+function requiredTimestamp(value: string | null | undefined, field: string): string {
+  const normalized = normalizeTimestamp(value, field);
+  if (!normalized) throw new Error(`Missing required ${field} timestamp`);
+  return normalized;
 }
 
 function camelize(value: unknown): Record<string, unknown> {

@@ -1,10 +1,7 @@
 import type pg from "pg";
 
 import type { PmsTargetRecord } from "./productionPmsTypes.js";
-import {
-  PRODUCTION_PMS_TABLES,
-  PRODUCTION_PMS_WRITE_ORDER,
-} from "./productionPmsTables.js";
+import { PRODUCTION_PMS_TABLES, PRODUCTION_PMS_WRITE_ORDER } from "./productionPmsTables.js";
 
 type QueryClient = Pick<pg.ClientBase, "query">;
 
@@ -13,8 +10,11 @@ export async function writeProductionPmsRecords(
   records: PmsTargetRecord[],
 ): Promise<Record<string, number>> {
   const grouped = new Map<string, PmsTargetRecord[]>();
-  for (const record of records)
-    grouped.set(record.targetTable, [...(grouped.get(record.targetTable) ?? []), record]);
+  for (const record of records) {
+    const rows = grouped.get(record.targetTable);
+    if (rows) rows.push(record);
+    else grouped.set(record.targetTable, [record]);
+  }
   const counts: Record<string, number> = {};
   for (const [targetTable, rows] of [...grouped].sort(
     ([left], [right]) => order(left) - order(right),
@@ -27,9 +27,7 @@ export async function writeProductionPmsRecords(
     const names = definition.columns.map(([, sqlName]) => sqlName).join(", ");
     const values = definition.columns.map(([jsonKey]) => `source."${jsonKey}"`).join(", ");
     const updates = definition.columns
-      .filter(
-        ([, sqlName]) => !definition.key.includes(sqlName) && sqlName !== "created_at",
-      )
+      .filter(([, sqlName]) => !definition.key.includes(sqlName) && sqlName !== "created_at")
       .map(([, sqlName]) => `${sqlName} = EXCLUDED.${sqlName}`)
       .join(", ");
     const conflict = definition.mutable
