@@ -377,11 +377,13 @@ const pmsOperationsCalendarReadService = {
       ),
       listCalendarReservations(propertyId, start, end),
     ]);
-    return toCalendarData(roomTypes.items, rooms.items, blocks.items, reservations, {
-      start,
-      end,
-      roomOrderVersion: rooms.orderVersion,
-    });
+    return expandProtectedLinkedBlocks(
+      toCalendarData(roomTypes.items, rooms.items, blocks.items, reservations, {
+        start,
+        end,
+        roomOrderVersion: rooms.orderVersion,
+      }),
+    );
   },
 };
 
@@ -586,4 +588,20 @@ function toCalendarBlock(block: PmsOperationsRoomBlock, roomNumber: string | nul
     sourceSummary: block.sourceSummary ?? null,
     protected: block.protected ?? block.kind?.startsWith("linked_") ?? false,
   };
+}
+
+function expandProtectedLinkedBlocks(data: CalendarData): CalendarData {
+  const roomTypeById = new Map(data.roomTypes.map((roomType) => [roomType.id, roomType]));
+  const blocks = data.blocks.map((block) =>
+    block.protected && !block.roomId
+      ? {
+          ...block,
+          blockedCount: Math.max(
+            block.blockedCount,
+            roomTypeById.get(block.roomTypeId)?.totalRooms ?? 0,
+          ),
+        }
+      : block,
+  );
+  return { ...data, blocks };
 }
