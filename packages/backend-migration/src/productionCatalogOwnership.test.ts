@@ -73,9 +73,7 @@ describe("planCatalogOwnership", () => {
       }),
     ]);
 
-    expect(plan.blockers.map((blocker) => blocker.code)).toContain(
-      "AMBIGUOUS_CANONICAL_PROPERTY",
-    );
+    expect(plan.blockers.map((blocker) => blocker.code)).toContain("AMBIGUOUS_CANONICAL_PROPERTY");
   });
 
   it("blocks stale target source-link reassignment and duplicate slugs", () => {
@@ -112,6 +110,24 @@ describe("planCatalogOwnership", () => {
     expect(plan.blockers.map((blocker) => blocker.code)).toEqual([
       "INVALID_CATALOG_SOURCE_ROW",
       "MISSING_CANONICAL_PROPERTY",
+    ]);
+  });
+
+  it("blocks an existing source link with the wrong relationship", () => {
+    const plan = planCatalogOwnership(
+      [booking()],
+      [
+        {
+          propertyId: ID.booking,
+          sourceSystem: "booking",
+          sourceTable: "booking_hotels",
+          sourceId: ID.booking,
+          relationship: "profile_input",
+        },
+      ],
+    );
+    expect(plan.blockers.map((blocker) => blocker.code)).toEqual([
+      "CATALOG_SOURCE_RELATIONSHIP_CONFLICT",
     ]);
   });
 });

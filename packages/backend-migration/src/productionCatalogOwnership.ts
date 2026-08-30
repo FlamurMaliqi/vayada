@@ -12,14 +12,17 @@ import {
 } from "./productionIdentitySourceValidation.js";
 
 export type CatalogSourceSystem = "booking" | "pms" | "marketplace";
+export type CatalogSourceRelationship = "canonical_input" | "operational_input" | "profile_input";
 export type ExistingCatalogSourceLink = {
   propertyId: string;
   sourceSystem: CatalogSourceSystem;
   sourceTable: string;
   sourceId: string;
+  relationship?: CatalogSourceRelationship;
+  migrationRunId?: string | null;
 };
 export type PlannedCatalogSourceLink = ExistingCatalogSourceLink & {
-  relationship: "canonical_input" | "operational_input" | "profile_input";
+  relationship: CatalogSourceRelationship;
 };
 export type CatalogPropertySource = {
   sourceSystem: CatalogSourceSystem;
@@ -62,7 +65,7 @@ export function planCatalogOwnership(
   const marketplace = parse(rows, "marketplace", blockers);
   const anchors = new Map(booking.map((row) => [row.sourceId, row]));
   const anchorsByUser = groupBy(booking, (row) => row.userId);
-  const existing = new Map(existingLinks.map((link) => [sourceKey(link), link.propertyId]));
+  const existing = new Map(existingLinks.map((link) => [sourceKey(link), link]));
   const groups = new Map(
     booking.map((row) => [
       row.sourceId,
@@ -73,15 +76,17 @@ export function planCatalogOwnership(
 
   for (const row of booking) {
     const target = existing.get(sourceKey(row));
-    if (target && target !== row.sourceId)
+    const planned = link(row, row.sourceId);
+    if (target && target.propertyId !== row.sourceId)
       addBlocker(
         blockers,
         "CATALOG_SOURCE_LINK_CONFLICT",
         "booking.booking_hotels",
         row.sourceId,
-        `Existing source link points to property ${target}`,
+        `Existing source link points to property ${target.propertyId}`,
       );
-    sourceLinks.push(link(row, row.sourceId));
+    validateRelationship(target, planned, blockers);
+    sourceLinks.push(planned);
   }
 
   for (const row of [...pms, ...marketplace]) {
@@ -100,13 +105,15 @@ export function planCatalogOwnership(
     if (direct) candidates.add(row.sourceId);
     for (const anchor of anchorsByUser.get(row.userId) ?? []) candidates.add(anchor.sourceId);
     const target = existing.get(sourceKey(row));
-    if (target) candidates.add(target);
+    if (target) candidates.add(target.propertyId);
     const propertyId = onlyCandidate(row, candidates, anchors, blockers);
     if (!propertyId) continue;
     const group = groups.get(propertyId)!;
     if (row.sourceSystem === "pms") group.pms.push(row);
     else group.marketplace.push(row);
-    sourceLinks.push(link(row, propertyId));
+    const planned = link(row, propertyId);
+    validateRelationship(target, planned, blockers);
+    sourceLinks.push(planned);
   }
 
   for (const group of groups.values()) {
@@ -134,6 +141,21 @@ export function planCatalogOwnership(
     sourceLinks: sortedBy(sourceLinks, sourceKey),
     blockers: sortedBy(blockers, (row) => `${row.code}:${row.source}:${row.sourceId}`),
   };
+}
+
+function validateRelationship(
+  target: ExistingCatalogSourceLink | undefined,
+  planned: PlannedCatalogSourceLink,
+  blockers: IdentityMigrationBlocker[],
+): void {
+  if (target?.relationship && target.relationship !== planned.relationship)
+    addBlocker(
+      blockers,
+      "CATALOG_SOURCE_RELATIONSHIP_CONFLICT",
+      `${planned.sourceSystem}.${planned.sourceTable}`,
+      planned.sourceId,
+      `Existing relationship ${target.relationship} differs from ${planned.relationship}`,
+    );
 }
 
 function parse(

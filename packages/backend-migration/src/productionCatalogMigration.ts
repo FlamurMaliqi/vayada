@@ -155,11 +155,14 @@ function assertSourceLinks(
   const links = new Map(
     existing.map((row) => [
       `${row.sourceSystem}:${row.sourceTable}:${row.sourceId}`,
-      row.propertyId,
+      `${row.propertyId}:${row.relationship ?? ""}`,
     ]),
   );
   for (const row of plan.sourceLinks)
-    if (links.get(`${row.sourceSystem}:${row.sourceTable}:${row.sourceId}`) !== row.propertyId)
+    if (
+      links.get(`${row.sourceSystem}:${row.sourceTable}:${row.sourceId}`) !==
+      `${row.propertyId}:${row.relationship}`
+    )
       throw new Error("Post-write catalog source-link verification failed");
 }
 function assertMode(mode: unknown): asserts mode is ProductionCatalogMigrationMode {

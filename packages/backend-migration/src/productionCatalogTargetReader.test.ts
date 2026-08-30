@@ -20,6 +20,9 @@ describe("production catalog target reader", () => {
     expect(
       fixture.calls.find((call) => call.sql.includes("platform.media_objects"))?.sql,
     ).toContain("source_row_id");
+    expect(fixture.calls.find((call) => call.sql.includes("property_source_links"))?.sql).toContain(
+      "migrationRunId",
+    );
   });
 });
 

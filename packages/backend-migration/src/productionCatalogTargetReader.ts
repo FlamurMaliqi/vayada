@@ -33,7 +33,8 @@ export async function readProductionCatalogSourceLinks(
 ): Promise<ExistingCatalogSourceLink[]> {
   const result = await client.query<ExistingCatalogSourceLink>(
     `SELECT property_id::text AS "propertyId", source_system AS "sourceSystem",
-            source_table AS "sourceTable", source_id AS "sourceId"
+            source_table AS "sourceTable", source_id AS "sourceId", relationship,
+            metadata ->> 'migrationRunId' AS "migrationRunId"
      FROM hotel_catalog.property_source_links
      WHERE source_system IN ('booking', 'pms', 'marketplace')
      ORDER BY source_system, source_table, source_id`,
