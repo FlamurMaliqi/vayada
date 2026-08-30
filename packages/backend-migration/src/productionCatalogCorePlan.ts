@@ -245,7 +245,7 @@ function parseTranslationLocales(
   return result;
 }
 
-function stableCatalogId(kind: string, value: string): string {
+export function stableCatalogId(kind: string, value: string): string {
   const bytes = Buffer.from(
     createHash("sha1").update(`vayada:catalog:${kind}:${value}`).digest().subarray(0, 16),
   );
