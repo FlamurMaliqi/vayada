@@ -93,6 +93,19 @@ export {
 } from "./productionIdentityDisposition.js";
 
 export {
+  runProductionBookingMigration,
+  type ProductionBookingMigrationMode,
+  type ProductionBookingMigrationReport,
+} from "./productionBookingMigration.js";
+export {
+  buildProductionBookingPlan,
+} from "./productionBookingPlan.js";
+export type {
+  ProductionBookingPlan,
+  ProductionBookingTargetState,
+} from "./productionBookingTypes.js";
+
+export {
   runParityChecks,
   type ParityCheckSeverity,
   type ParityConfig,
