@@ -669,6 +669,15 @@ async function upsertWorkosMembership(
          WHEN identity.organization_memberships.status IN ('inactive', 'suspended')
           AND $9 IN ('active', 'pending')
          THEN identity.organization_memberships.status
+         WHEN $11 AND identity.organization_memberships.status = 'active' AND $9 = 'pending'
+          AND (
+            identity.organization_memberships.workos_membership_id = $7
+            OR (
+              identity.organization_memberships.workos_membership_id IS NULL
+              AND identity.organization_memberships.invited_at IS NOT NULL
+            )
+          )
+         THEN identity.organization_memberships.status
          WHEN $10 AND $9 = 'active' THEN identity.organization_memberships.status
          WHEN $11 AND $9 = 'active'
           AND identity.organization_memberships.status = 'pending'

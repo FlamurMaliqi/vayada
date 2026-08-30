@@ -295,7 +295,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
       UPDATE identity.users SET status = 'active' WHERE id = '${staffUser}';
       UPDATE identity.organization_memberships
       SET status = 'active', role_key = 'housekeeping', permission_overrides = NULL,
-          property_access_mode = 'assigned', workos_membership_id = 'om_staff_acceptance'
+          property_access_mode = 'assigned', workos_membership_id = 'om_staff_acceptance',
+          invited_at = NULL
       WHERE id = '${staffMembership}';
       UPDATE identity.organization_memberships
       SET status = 'active', role_key = 'hotel_owner', property_access_mode = 'all'
@@ -1212,7 +1213,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
         await client.query(
           `SELECT membership.status, membership.role_key, membership.permission_overrides,
               membership.property_access_mode, membership.access_origin,
-              membership.workos_membership_id,
+              membership.workos_membership_id, membership.invited_at,
               ARRAY(SELECT property_id::text FROM identity.membership_property_assignments
                     WHERE membership_id = membership.id ORDER BY property_id) AS properties
        FROM identity.organization_memberships membership WHERE membership.id = $1`,
@@ -1226,6 +1227,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL staff invitation repository", ()
       property_access_mode: "assigned",
       access_origin: "agency",
       workos_membership_id: "om_staff_acceptance",
+      invited_at: expect.any(Date),
       properties: [property],
     });
     await client.query(

@@ -192,7 +192,9 @@ export function createPgStaffInvitationAcceptanceRepository(config: RepositoryCo
              ON CONFLICT (organization_id, user_id) DO UPDATE SET
                status = 'active', role_key = EXCLUDED.role_key,
                permission_overrides = EXCLUDED.permission_overrides,
-               property_access_mode = 'assigned', updated_at = now()
+               property_access_mode = 'assigned',
+               invited_at = COALESCE(identity.organization_memberships.invited_at, EXCLUDED.invited_at),
+               updated_at = now()
              WHERE identity.organization_memberships.status <> 'suspended'
                AND identity.organization_memberships.access_origin = 'agency'
                AND identity.organization_memberships.role_key NOT IN ('hotel_owner', 'owner', 'operator')

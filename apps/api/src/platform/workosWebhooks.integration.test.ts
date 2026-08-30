@@ -456,7 +456,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
     ).toEqual({ recoveryStatus: "resolved", normalizedCount: "1" });
   });
 
-  it("holds accepted WorkOS membership events behind pending Vayada invitation access", async () => {
+  it("keeps invitation activation monotonic across out-of-order WorkOS events", async () => {
     const organizationId = randomUUID();
     const propertyId = randomUUID();
     const ownerUserId = randomUUID();
@@ -592,6 +592,69 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
         accessOrigin: "agency",
         assignmentCount: 0,
       });
+
+      const invitedMembershipId = (
+        await admin.query<{ id: string }>(
+          "UPDATE identity.organization_memberships SET status = 'active', workos_membership_id = NULL, invited_at = now() WHERE organization_id = $1 AND user_id = $2 RETURNING id",
+          [organizationId, invitedUserId],
+        )
+      ).rows[0]!.id;
+      await admin.query(
+        `UPDATE identity.staff_invitations
+         SET status = 'accepted', accepted_user_id = $2, accepted_membership_id = $3
+         WHERE id = $1`,
+        [invitationId, invitedUserId, invitedMembershipId],
+      );
+      const acceptedProviderMembership = {
+        workosMembershipId: "om_invited_delayed_" + randomUUID(),
+        workosUserId: invitedWorkosUserId,
+        workosOrgId,
+        roleKey: "hotel_member" as const,
+        workosRoleSlugs: ["hotel_member"],
+      };
+      await store.upsertWorkosMembership({ ...acceptedProviderMembership, status: "pending" });
+      expect(
+        (
+          await admin.query<{ status: string; workosMembershipId: string }>(
+            `SELECT status, workos_membership_id AS "workosMembershipId"
+             FROM identity.organization_memberships
+             WHERE organization_id = $1 AND user_id = $2`,
+            [organizationId, invitedUserId],
+          )
+        ).rows[0],
+      ).toEqual({
+        status: "active",
+        workosMembershipId: acceptedProviderMembership.workosMembershipId,
+      });
+
+      await store.upsertWorkosMembership({ ...acceptedProviderMembership, status: "active" });
+      await store.upsertWorkosMembership({ ...acceptedProviderMembership, status: "pending" });
+      expect(
+        (
+          await admin.query<{ status: string }>(
+            "SELECT status FROM identity.organization_memberships WHERE organization_id = $1 AND user_id = $2",
+            [organizationId, invitedUserId],
+          )
+        ).rows[0],
+      ).toEqual({ status: "active" });
+
+      const replacementWorkosMembershipId = "om_invited_replacement_" + randomUUID();
+      await store.upsertWorkosMembership({
+        ...acceptedProviderMembership,
+        workosMembershipId: replacementWorkosMembershipId,
+        status: "pending",
+      });
+      await store.deactivateWorkosMembership(acceptedProviderMembership.workosMembershipId);
+      expect(
+        (
+          await admin.query<{ status: string; workosMembershipId: string }>(
+            `SELECT status, workos_membership_id AS "workosMembershipId"
+             FROM identity.organization_memberships
+             WHERE organization_id = $1 AND user_id = $2`,
+            [organizationId, invitedUserId],
+          )
+        ).rows[0],
+      ).toEqual({ status: "pending", workosMembershipId: replacementWorkosMembershipId });
     } finally {
       await admin.query("DELETE FROM identity.staff_invitations WHERE organization_id = $1", [
         organizationId,
