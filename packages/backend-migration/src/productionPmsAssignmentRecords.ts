@@ -95,7 +95,7 @@ export function targetBooking(
   for (const [field, value] of Object.entries(expected))
     if (
       field === "updatedAt"
-        ? Date.parse(target.updatedAt) !== Date.parse(String(value))
+        ? !target.updatedAt || Date.parse(target.updatedAt) !== Date.parse(String(value))
         : target[field as keyof typeof expected] !== value
     )
       throw new Error(`booking ${bookingId} target ${field} differs from the PMS snapshot`);
