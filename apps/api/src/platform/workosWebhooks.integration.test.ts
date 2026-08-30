@@ -189,16 +189,22 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
       const memberships = await admin.query<{
         propertyAccessMode: string;
         roleKey: string;
+        workosRoleSlugs: string[];
       }>(
-        `SELECT role_key AS "roleKey", property_access_mode AS "propertyAccessMode"
+        `SELECT role_key AS "roleKey", property_access_mode AS "propertyAccessMode",
+                workos_role_slugs AS "workosRoleSlugs"
          FROM identity.organization_memberships
          WHERE organization_id = $1
          ORDER BY role_key`,
         [organizationId],
       );
       expect(memberships.rows).toEqual([
-        { roleKey: "hotel_member", propertyAccessMode: "assigned" },
-        { roleKey: "hotel_owner", propertyAccessMode: "all" },
+        {
+          roleKey: "hotel_custom",
+          propertyAccessMode: "assigned",
+          workosRoleSlugs: ["hotel_member"],
+        },
+        { roleKey: "hotel_owner", propertyAccessMode: "all", workosRoleSlugs: ["admin"] },
       ]);
 
       await store.upsertWorkosMembership({
@@ -221,7 +227,9 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
       expect(
         (
           await admin.query(
-            `SELECT user_id AS "userId", role_key AS "roleKey", property_access_mode AS "propertyAccessMode"
+            `SELECT user_id AS "userId", role_key AS "roleKey",
+                    property_access_mode AS "propertyAccessMode",
+                    workos_role_slugs AS "workosRoleSlugs"
              FROM identity.organization_memberships
              WHERE organization_id = $1
              ORDER BY user_id`,
@@ -230,8 +238,18 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
         ).rows,
       ).toEqual(
         [
-          { userId: ownerUserId, roleKey: "hotel_owner", propertyAccessMode: "all" },
-          { userId: staffUserId, roleKey: "hotel_member", propertyAccessMode: "assigned" },
+          {
+            userId: ownerUserId,
+            roleKey: "hotel_owner",
+            propertyAccessMode: "all",
+            workosRoleSlugs: ["hotel_member"],
+          },
+          {
+            userId: staffUserId,
+            roleKey: "hotel_custom",
+            propertyAccessMode: "assigned",
+            workosRoleSlugs: ["admin"],
+          },
         ].sort((left, right) => left.userId.localeCompare(right.userId)),
       );
       const membershipIds = await admin.query<{ id: string; userId: string }>(
@@ -534,8 +552,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
         workosMembershipId: `om_invited_${randomUUID()}`,
         workosUserId: invitedWorkosUserId,
         workosOrgId,
-        roleKey: "admin",
-        workosRoleSlugs: ["admin"],
+        roleKey: "hotel_member",
+        workosRoleSlugs: ["hotel_member"],
         status: "active",
       });
       await admin.query("UPDATE identity.staff_invitations SET status = 'revoked' WHERE id = $1", [
@@ -545,8 +563,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
         workosMembershipId: `om_invited_update_${randomUUID()}`,
         workosUserId: invitedWorkosUserId,
         workosOrgId,
-        roleKey: "admin",
-        workosRoleSlugs: ["admin"],
+        roleKey: "hotel_member",
+        workosRoleSlugs: ["hotel_member"],
         status: "active",
       });
 

@@ -640,39 +640,25 @@ describe("WorkOS webhook routes", () => {
     await app.close();
   });
 
-  it("maps WorkOS admin memberships back to internal owner roles", () => {
-    expect(
-      mapWorkosMembershipRoleKey({
-        organizationKind: "platform",
-        roleKey: "admin",
-      }),
-    ).toBe("platform_admin");
-    expect(
-      mapWorkosMembershipRoleKey({
-        organizationKind: "hotel_group",
-        roleKey: "admin",
-      }),
-    ).toBe("hotel_owner");
-    expect(
-      mapWorkosMembershipRoleKey({
-        organizationKind: "hotel_group",
-        roleKey: "admin",
-        existingRoleKey: "owner",
-      }),
-    ).toBe("owner");
-    expect(
-      mapWorkosMembershipRoleKey({
-        organizationKind: "creator_workspace",
-        roleKey: "admin",
-      }),
-    ).toBe("admin");
-    expect(
-      mapWorkosMembershipRoleKey({
-        organizationKind: "platform",
-        roleKey: "member",
-      }),
-    ).toBe("member");
-  });
+  it.each([
+    ["platform admin", "platform", "admin", null, "platform_admin"],
+    ["hotel admin", "hotel_group", "admin", null, "hotel_owner"],
+    ["existing owner alias", "hotel_group", "admin", "owner", "owner"],
+    ["creator admin", "creator_workspace", "admin", null, "admin"],
+    ["generic member", "platform", "member", null, "member"],
+    ["hotel member", "hotel_group", "hotel_member", null, "hotel_custom"],
+    ["non-hotel member", "creator_workspace", "hotel_member", null, "hotel_member"],
+    ["hotel manager claim", "hotel_group", "hotel_admin", null, "hotel_admin"],
+    ["invitation role", "hotel_group", "front_desk", null, "front_desk"],
+    ["hotel owner", "hotel_group", "hotel_owner", null, "hotel_owner"],
+  ] as const)(
+    "maps %s to its internal role",
+    (_name, organizationKind, roleKey, existingRoleKey, expected) => {
+      expect(mapWorkosMembershipRoleKey({ organizationKind, roleKey, existingRoleKey })).toBe(
+        expected,
+      );
+    },
+  );
 });
 
 function verifierFor(event: WorkosWebhookEvent) {

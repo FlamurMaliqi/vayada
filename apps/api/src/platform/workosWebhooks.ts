@@ -30,6 +30,9 @@ export function mapWorkosMembershipRoleKey(input: {
   roleKey: string;
   existingRoleKey?: string | null;
 }): string {
+  if (input.organizationKind === "hotel_group" && input.roleKey === "hotel_member") {
+    return "hotel_custom";
+  }
   if (input.roleKey !== "admin") return input.roleKey;
   if (
     input.existingRoleKey === "platform_admin" ||
