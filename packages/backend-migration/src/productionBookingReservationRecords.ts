@@ -229,9 +229,7 @@ function bookingChannel(value: unknown): string {
 }
 
 function directBookingSource(data: Record<string, unknown>): string | null {
-  return bookingChannel(data["channel"]) === "direct"
-    ? optionalText(data["referral_code"], "referral_code") ?? "booking_engine"
-    : null;
+  return bookingChannel(data["channel"]) === "direct" ? "booking_engine" : null;
 }
 
 function retentionDate(checkOut: string): string {
