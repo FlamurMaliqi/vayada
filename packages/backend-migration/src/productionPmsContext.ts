@@ -1,0 +1,218 @@
+import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
+import type {
+  PmsBuildContext,
+  PmsPropertyLink,
+  ProductionPmsTargetState,
+} from "./productionPmsTypes.js";
+import { requiredText, sourceId } from "./productionBookingValues.js";
+
+const ID_TABLES = [
+  "booking_checkin_records",
+  "booking_checkout_charges",
+  "booking_checkout_records",
+  "booking_events",
+  "booking_notes",
+  "booking_rooms",
+  "bookings",
+  "cancellation_policies",
+  "channex_booking_mappings",
+  "channex_channel_markups",
+  "channex_connections",
+  "channex_rate_plan_mappings",
+  "channex_room_type_mappings",
+  "channex_webhook_events",
+  "linked_inventory_groups",
+  "message_attachments",
+  "message_threads",
+  "messages",
+  "room_blocks",
+  "room_types",
+  "rooms",
+] as const;
+
+export function createProductionPmsContext(input: {
+  sourceRunId: string;
+  completedAt: string;
+  rows: IdentitySourceRow[];
+  target: ProductionPmsTargetState;
+}): PmsBuildContext {
+  const blockers = [...(input.target.blockers ?? [])];
+  const rowsByTable = new Map<string, IdentitySourceRow[]>();
+  for (const row of input.rows)
+    rowsByTable.set(row.sourceTable, [...(rowsByTable.get(row.sourceTable) ?? []), row]);
+  const maps = new Map<string, Map<string, IdentitySourceRow>>();
+  for (const table of ID_TABLES)
+    maps.set(table, uniqueRows(rowsByTable.get(table) ?? [], table, blockers));
+  const propertyByHotel = propertyMap(input.target.propertyLinks, blockers);
+  const targetBookingById = uniqueTargetBookings(input.target, blockers);
+  const connectionByHotel = uniqueConnectionByHotel(
+    rowsByTable.get("channex_connections") ?? [],
+    blockers,
+  );
+  const linkedGroupByRoomType = linkedMemberships(
+    rowsByTable.get("linked_inventory_group_members") ?? [],
+    maps.get("linked_inventory_groups")!,
+    maps.get("room_types")!,
+    blockers,
+  );
+  return {
+    ...input,
+    blockers,
+    rowsByTable,
+    propertyByHotel,
+    bookingById: maps.get("bookings")!,
+    targetBookingById,
+    roomTypeById: maps.get("room_types")!,
+    roomById: maps.get("rooms")!,
+    connectionByHotel,
+    linkedGroupByRoomType,
+    userIds: new Set(input.target.userIds.map((id) => id.toLowerCase())),
+    mediaIds: new Set(input.target.mediaIds.map((id) => id.toLowerCase())),
+  };
+}
+
+export function propertyForHotel(context: PmsBuildContext, value: unknown): string {
+  const hotelId = requiredText(value, "hotel_id").toLowerCase();
+  const propertyId = context.propertyByHotel.get(hotelId);
+  if (!propertyId) throw new Error(`no active canonical property link for pms.hotels ${hotelId}`);
+  return propertyId;
+}
+
+export function addPmsBlocker(
+  context: Pick<PmsBuildContext, "blockers">,
+  code: string,
+  source: string,
+  sourceRowId: string,
+  message: string,
+): void {
+  context.blockers.push({ code, source, sourceId: sourceRowId, message });
+}
+
+export function safePmsSourceId(row: IdentitySourceRow, fallbackField = "id"): string {
+  try {
+    return sourceId(row, fallbackField);
+  } catch {
+    return String(row.rowOrdinal);
+  }
+}
+
+function propertyMap(
+  links: PmsPropertyLink[],
+  blockers: PmsBuildContext["blockers"],
+): Map<string, string> {
+  const grouped = new Map<string, Set<string>>();
+  for (const link of links) {
+    if (link.status !== "active" || link.relationship !== "operational_input") continue;
+    const key = link.sourceId.toLowerCase();
+    grouped.set(key, new Set([...(grouped.get(key) ?? []), link.propertyId]));
+  }
+  const result = new Map<string, string>();
+  for (const [source, properties] of grouped) {
+    if (properties.size === 1) result.set(source, [...properties][0]!);
+    else
+      blockers.push({
+        code: "AMBIGUOUS_PROPERTY_SOURCE_LINK",
+        source: "hotel_catalog.property_source_links",
+        sourceId: source,
+        message: "PMS hotel resolves to more than one target property",
+      });
+  }
+  return result;
+}
+
+function uniqueRows(
+  rows: IdentitySourceRow[],
+  table: string,
+  blockers: PmsBuildContext["blockers"],
+): Map<string, IdentitySourceRow> {
+  const result = new Map<string, IdentitySourceRow>();
+  for (const row of rows) {
+    try {
+      const id = requiredText(row.data["id"], "id").toLowerCase();
+      if (result.has(id))
+        blockers.push({
+          code: "DUPLICATE_SOURCE_ID",
+          source: `pms.${table}`,
+          sourceId: id,
+          message: "Source ID is duplicated",
+        });
+      else result.set(id, row);
+    } catch (error) {
+      blockers.push({
+        code: "INVALID_SOURCE_ROW",
+        source: `pms.${table}`,
+        sourceId: String(row.rowOrdinal),
+        message: error instanceof Error ? error.message : "Invalid source ID",
+      });
+    }
+  }
+  return result;
+}
+
+function uniqueTargetBookings(
+  target: ProductionPmsTargetState,
+  blockers: PmsBuildContext["blockers"],
+): PmsBuildContext["targetBookingById"] {
+  const result = new Map<string, (typeof target.bookings)[number]>();
+  for (const booking of target.bookings) {
+    const id = booking.id.toLowerCase();
+    if (result.has(id))
+      blockers.push({
+        code: "DUPLICATE_TARGET_BOOKING",
+        source: "booking.guest_bookings",
+        sourceId: id,
+        message: "Target Booking identity is duplicated",
+      });
+    else result.set(id, booking);
+  }
+  return result;
+}
+
+function uniqueConnectionByHotel(
+  rows: IdentitySourceRow[],
+  blockers: PmsBuildContext["blockers"],
+): Map<string, IdentitySourceRow> {
+  const result = new Map<string, IdentitySourceRow>();
+  for (const row of rows) {
+    const hotelId = String(row.data["hotel_id"] ?? "").toLowerCase();
+    if (!hotelId) continue;
+    if (result.has(hotelId))
+      blockers.push({
+        code: "DUPLICATE_CHANNEL_CONNECTION",
+        source: "pms.channex_connections",
+        sourceId: hotelId,
+        message: "More than one legacy Channex connection exists for a hotel",
+      });
+    else result.set(hotelId, row);
+  }
+  return result;
+}
+
+function linkedMemberships(
+  rows: IdentitySourceRow[],
+  groups: Map<string, IdentitySourceRow>,
+  roomTypes: Map<string, IdentitySourceRow>,
+  blockers: PmsBuildContext["blockers"],
+): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const row of rows) {
+    const groupId = String(row.data["group_id"] ?? "").toLowerCase();
+    const roomTypeId = String(row.data["room_type_id"] ?? "").toLowerCase();
+    if (!groups.has(groupId) || !roomTypes.has(roomTypeId)) {
+      blockers.push({
+        code: "ORPHAN_LINKED_INVENTORY_MEMBER",
+        source: "pms.linked_inventory_group_members",
+        sourceId: `${groupId}:${roomTypeId}`,
+        message: "Linked inventory member references a missing group or room type",
+      });
+    } else if (result.has(roomTypeId)) {
+      blockers.push({
+        code: "DUPLICATE_LINKED_INVENTORY_MEMBERSHIP",
+        source: "pms.linked_inventory_group_members",
+        sourceId: roomTypeId,
+        message: "Room type belongs to more than one linked inventory group",
+      });
+    } else result.set(roomTypeId, groupId);
+  }
+  return result;
+}
