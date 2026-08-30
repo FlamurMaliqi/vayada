@@ -104,6 +104,14 @@ export type {
 } from "./productionBookingTypes.js";
 
 export {
+  runProductionPmsMigration,
+  type ProductionPmsMigrationMode,
+  type ProductionPmsMigrationReport,
+} from "./productionPmsMigration.js";
+export { buildProductionPmsPlan } from "./productionPmsPlan.js";
+export type { ProductionPmsPlan, ProductionPmsTargetState } from "./productionPmsTypes.js";
+
+export {
   runParityChecks,
   type ParityCheckSeverity,
   type ParityConfig,
