@@ -41,6 +41,7 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       const source = sourceRows();
       const plan = buildProductionPmsPlan({
         sourceRunId: RUN,
+        snapshotAt: "2026-08-30T00:00:00Z",
         completedAt: "2026-08-30T00:00:00Z",
         rows: source,
         target: { ...prerequisites, records: [], provenance: [] },
@@ -60,6 +61,7 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       const target = await readProductionPmsTargetState(client, plan.records, prerequisites);
       const verified = buildProductionPmsPlan({
         sourceRunId: RUN,
+        snapshotAt: "2026-08-30T00:00:00Z",
         completedAt: "2026-08-30T00:00:00Z",
         rows: source,
         target,
@@ -222,6 +224,14 @@ async function seedPrerequisites(client: pg.Client): Promise<void> {
 
 function sourceRows(): IdentitySourceRow[] {
   return [
+    row("hotels", {
+      id: HOTEL,
+      timezone: "UTC",
+      same_day_bookings_enabled: true,
+      same_day_booking_cutoff_time: null,
+      calendar_auto_open_enabled: false,
+      calendar_auto_open_through: null,
+    }),
     row("room_types", {
       id: ROOM_TYPE,
       hotel_id: HOTEL,

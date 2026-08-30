@@ -30,6 +30,9 @@ describe("production PMS migration transaction", () => {
     );
     expect(report.applied).toBe(false);
     expect(client.sql).toEqual(["BEGIN ISOLATION LEVEL REPEATABLE READ", "ROLLBACK"]);
+    expect(services.buildPlan).toHaveBeenCalledWith(
+      expect.objectContaining({ snapshotAt: "2026-08-29T23:59:00.000Z" }),
+    );
     expect(services.writeRecords).not.toHaveBeenCalled();
     expect(services.writeProvenance).not.toHaveBeenCalled();
   });
@@ -88,7 +91,11 @@ class TransactionFixture {
 
 function serviceFixture(): ProductionPmsMigrationServices {
   return {
-    readSnapshot: vi.fn(async () => ({ rows: [], completedAt: "2026-08-30T00:00:00.000Z" })),
+    readSnapshot: vi.fn(async () => ({
+      rows: [],
+      snapshotAt: "2026-08-29T23:59:00.000Z",
+      completedAt: "2026-08-30T00:00:00.000Z",
+    })),
     readPrerequisites: vi.fn(async () => ({
       propertyLinks: [],
       bookings: [],

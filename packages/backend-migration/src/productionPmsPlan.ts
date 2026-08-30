@@ -20,6 +20,7 @@ import { sourceIdentity } from "./productionPmsValues.js";
 
 export function buildProductionPmsPlan(input: {
   sourceRunId: string;
+  snapshotAt: string;
   completedAt: string;
   rows: IdentitySourceRow[];
   target: ProductionPmsTargetState;
@@ -56,6 +57,19 @@ function enforceSourceCoverage(context: PmsBuildContext, records: PmsTargetRecor
       continue;
     }
     if (covered.has(`${source.sourceTable}:${sourceId}`)) continue;
+    if (source.sourceTable === "hotels") {
+      try {
+        propertyForHotel(context, source.data["id"]);
+      } catch (error) {
+        context.blockers.push({
+          code: "INVALID_SOURCE_ROW",
+          source: "pms.hotels",
+          sourceId,
+          message: error instanceof Error ? error.message : "Hotel prerequisite is invalid",
+        });
+      }
+      continue;
+    }
     if (
       context.blockers.some(
         (blocker) =>
@@ -201,6 +215,7 @@ function summarizeParity(
 
 function sourceProperty(context: PmsBuildContext, row: IdentitySourceRow): string {
   try {
+    if (row.sourceTable === "hotels") return propertyForHotel(context, row.data["id"]);
     if (row.data["hotel_id"]) return propertyForHotel(context, row.data["hotel_id"]);
     const bookingId = String(row.data["booking_id"] ?? "").toLowerCase();
     if (bookingId) {
@@ -303,7 +318,15 @@ function reconcile(
   }
   const sourceTime = Date.parse(candidate.sourceUpdatedAt);
   const targetTime = Date.parse(current.updatedAt);
-  if (targetTime > sourceTime) return "preserve_newer";
+  if (targetTime > sourceTime) {
+    blocker(
+      context,
+      "TARGET_NEWER_WITHOUT_PROVENANCE",
+      candidate,
+      "Newer target has no durable migration disposition; review ownership before cutover",
+    );
+    return "block";
+  }
   if (targetTime === sourceTime) {
     blocker(context, "TARGET_EQUAL_TIME_CONFLICT", candidate, "Rows disagree at equal freshness");
     return "block";

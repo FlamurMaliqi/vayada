@@ -39,6 +39,28 @@ describe("production PMS reconciliation", () => {
     expect(plan.counts.preservedTargetDeletions).toBe(1);
   });
 
+  it("blocks a first-run newer target until ownership has a durable disposition", () => {
+    const candidate = record(true);
+    const context = buildContext({
+      records: [
+        {
+          targetProduct: "pms",
+          targetTable: "room_types",
+          targetId: "target",
+          updatedAt: "2026-09-02T00:00:00Z",
+          row: { id: "target", name: "Target-owned name" },
+        },
+      ],
+      provenance: [],
+    });
+    const plan = reconcileProductionPmsRecords(context, [candidate]);
+    expect(plan.blockers).toContainEqual(
+      expect.objectContaining({ code: "TARGET_NEWER_WITHOUT_PROVENANCE" }),
+    );
+    expect(plan.writes).toEqual([]);
+    expect(plan.provenance).toEqual([]);
+  });
+
   it("blocks an immutable conflict instead of accepting ambiguous history", () => {
     const candidate = record(false);
     const context = buildContext({

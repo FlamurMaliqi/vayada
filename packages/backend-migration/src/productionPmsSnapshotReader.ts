@@ -8,6 +8,7 @@ type QueryClient = Pick<pg.ClientBase, "query">;
 type SourceEvidence = {
   sourceDatabase: "pms";
   snapshotIdentifier: string;
+  snapshotAt: string;
   status: string;
 };
 type TableEvidence = {
@@ -24,7 +25,11 @@ type SnapshotRow = {
   rowData: string;
 };
 
-export type ProductionPmsSnapshot = { rows: IdentitySourceRow[]; completedAt: string };
+export type ProductionPmsSnapshot = {
+  rows: IdentitySourceRow[];
+  snapshotAt: string;
+  completedAt: string;
+};
 
 export const PRODUCTION_PMS_SOURCE_TABLES = [
   "booking_checkin_records",
@@ -45,6 +50,7 @@ export const PRODUCTION_PMS_SOURCE_TABLES = [
   "channex_webhook_events",
   "checkin_checklist_templates",
   "checkout_inspection_templates",
+  "hotels",
   "linked_inventory_group_members",
   "linked_inventory_groups",
   "message_attachments",
@@ -72,7 +78,8 @@ export async function readProductionPmsSnapshot(
     throw new Error(`Source extraction ${runId} has no completion time`);
 
   const sourceResult = await client.query<SourceEvidence>(
-    `SELECT source_database AS "sourceDatabase", snapshot_identifier AS "snapshotIdentifier", status
+    `SELECT source_database AS "sourceDatabase", snapshot_identifier AS "snapshotIdentifier",
+            source_snapshot_at::text AS "snapshotAt", status
      FROM platform.source_extraction_sources
      WHERE run_id = $1 AND source_database = 'pms'`,
     [runId],
@@ -80,6 +87,9 @@ export async function readProductionPmsSnapshot(
   const source = sourceResult.rows[0];
   if (sourceResult.rows.length !== 1 || source?.status !== "completed")
     throw new Error(`Source extraction ${runId} has incomplete PMS source evidence`);
+  const snapshotAt = new Date(source.snapshotAt);
+  if (!Number.isFinite(snapshotAt.valueOf()))
+    throw new Error(`Source extraction ${runId} has invalid PMS snapshot time`);
 
   const tableResult = await client.query<TableEvidence>(
     `SELECT source_table AS "sourceTable", status,
@@ -143,5 +153,9 @@ export async function readProductionPmsSnapshot(
     if (checksum.digest("hex") !== ledger.checksum)
       throw new Error(`Source extraction ${runId} mismatches pms.${table} checksum`);
   }
-  return { rows: loaded, completedAt: new Date(run.rows[0].completedAt).toISOString() };
+  return {
+    rows: loaded,
+    snapshotAt: snapshotAt.toISOString(),
+    completedAt: new Date(run.rows[0].completedAt).toISOString(),
+  };
 }

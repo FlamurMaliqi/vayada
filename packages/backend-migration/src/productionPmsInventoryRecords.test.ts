@@ -135,6 +135,61 @@ describe("production PMS inventory", () => {
       }),
     );
   });
+
+  it("matches hotel auto-open, property-local cutoff, and positive-rate sellability", () => {
+    const source = rows();
+    const hotel = source.find((row) => row.sourceTable === "hotels")!;
+    hotel.data["timezone"] = "Asia/Taipei";
+    hotel.data["same_day_booking_cutoff_time"] = "18:00";
+    hotel.data["calendar_auto_open_enabled"] = true;
+    hotel.data["calendar_auto_open_through"] = "2026-09-30";
+    const zeroRate = source.find(
+      (row) => row.sourceTable === "room_types" && row.data["id"] === TYPE_B,
+    )!;
+    zeroRate.data["base_rate"] = "0.00";
+
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      snapshotAt: "2026-08-30T10:30:01Z",
+      completedAt: "2026-08-30T10:31:00Z",
+      rows: source,
+      target: {
+        propertyLinks: [
+          {
+            sourceId: HOTEL,
+            propertyId: PROPERTY,
+            relationship: "operational_input",
+            status: "active",
+            migrationRunId: "run",
+          },
+        ],
+        bookings: [],
+        userIds: [],
+        mediaIds: [],
+        records: [],
+        provenance: [],
+      },
+    });
+    const records = buildPmsInventoryRecords(context);
+    expect(context.blockers).toEqual([]);
+    expect(day(records, TYPE_A, "2026-08-30")).toMatchObject({
+      status: "closed",
+      availableCount: 0,
+      sourceFreshness: { legacy: { calendarOpen: false } },
+    });
+    expect(day(records, TYPE_A, "2026-09-30")).toMatchObject({
+      status: "open",
+      availableCount: 2,
+    });
+    expect(day(records, TYPE_A, "2026-10-01")).toMatchObject({
+      status: "closed",
+      availableCount: 0,
+    });
+    expect(day(records, TYPE_B, "2026-08-31")).toMatchObject({
+      status: "closed",
+      availableCount: 0,
+    });
+  });
 });
 
 function day(records: ReturnType<typeof buildPmsInventoryRecords>, type: string, date: string) {
@@ -145,6 +200,14 @@ function day(records: ReturnType<typeof buildPmsInventoryRecords>, type: string,
 
 function rows(): IdentitySourceRow[] {
   return [
+    row("hotels", {
+      id: HOTEL,
+      timezone: "UTC",
+      same_day_bookings_enabled: true,
+      same_day_booking_cutoff_time: null,
+      calendar_auto_open_enabled: false,
+      calendar_auto_open_through: null,
+    }),
     row("linked_inventory_groups", {
       id: GROUP,
       hotel_id: HOTEL,
@@ -177,6 +240,9 @@ function roomType(id: string): IdentitySourceRow {
     total_rooms: 2,
     operating_periods: [],
     minimum_advance_days: 0,
+    base_rate: "100.00",
+    daily_rates: {},
+    seasons: [],
     updated_at: "2026-08-20T00:00:00Z",
   });
 }

@@ -36,9 +36,9 @@ describe.skipIf(!URL)("production PMS snapshot reader (PostgreSQL)", () => {
         `INSERT INTO platform.source_extraction_sources
            (run_id, source_database, snapshot_identifier, expected_database_name,
             expected_schema_fingerprint, actual_schema_fingerprint, status, row_count,
-            checksum_sha256, started_at, finished_at, duration_ms)
+            checksum_sha256, source_snapshot_at, started_at, finished_at, duration_ms)
          VALUES ($1, 'pms', 'snapshot-pms', 'pms', $2, $2, 'completed', 0, $3,
-                 $4, $4, 0)`,
+                 $4, $4, $4, 0)`,
         [RUN, "2".repeat(32), emptyChecksum, "2026-08-30T01:02:03Z"],
       );
       await client.query(
@@ -53,7 +53,11 @@ describe.skipIf(!URL)("production PMS snapshot reader (PostgreSQL)", () => {
       const snapshot = await readProductionPmsSnapshot(client, RUN, {
         validateRun: async () => [],
       });
-      expect(snapshot).toEqual({ rows: [], completedAt: "2026-08-30T01:02:03.000Z" });
+      expect(snapshot).toEqual({
+        rows: [],
+        snapshotAt: "2026-08-30T01:02:03.000Z",
+        completedAt: "2026-08-30T01:02:03.000Z",
+      });
     } finally {
       await client.query("ROLLBACK");
     }

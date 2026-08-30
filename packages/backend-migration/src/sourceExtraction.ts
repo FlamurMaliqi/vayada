@@ -14,6 +14,8 @@ import {
 export const VAY_1350_INVENTORY_REVISION = "2d7fe21080646cb1931aac4054a5648bac9b8227";
 export const SOURCE_EXTRACTION_BATCH_SIZE = 500;
 export const SOURCE_EXTRACTION_LOCK_ID = ADVISORY_LOCK_ID;
+export const SOURCE_SNAPSHOT_TIME_SQL =
+  "SELECT transaction_timestamp()::text AS source_snapshot_at";
 
 export const SOURCE_WRITABLE_PRIVILEGES_SQL = `
 WITH RECURSIVE role_memberships(role_oid) AS (
@@ -654,7 +656,16 @@ export async function runSourceExtraction(
             `${sourceDatabase} transaction is not read-only`,
           );
         }
-
+        const snapshotClock = await source.query<{ source_snapshot_at: string }>(
+          SOURCE_SNAPSHOT_TIME_SQL,
+        );
+        const sourceSnapshotAt = snapshotClock.rows[0]?.source_snapshot_at;
+        if (!sourceSnapshotAt || !Number.isFinite(Date.parse(sourceSnapshotAt))) {
+          throw new SourceExtractionError(
+            "INVALID_SOURCE_SNAPSHOT_TIME",
+            `${sourceDatabase} source snapshot time is invalid`,
+          );
+        }
         const provenance = await source.query<{
           source_database: string;
           snapshot_identifier: string | null;
@@ -703,6 +714,12 @@ export async function runSourceExtraction(
             `${sourceDatabase} schema fingerprint differs from the reviewed manifest`,
           );
         }
+        await target.query(
+          `UPDATE platform.source_extraction_sources
+           SET source_snapshot_at = COALESCE(source_snapshot_at, $3::timestamptz)
+           WHERE run_id = $1 AND source_database = $2`,
+          [runId, sourceDatabase, sourceSnapshotAt],
+        );
 
         const sourceChecksum = createHash("sha256");
         let sourceRowCount = 0;

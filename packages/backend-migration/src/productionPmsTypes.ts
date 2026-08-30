@@ -59,12 +59,14 @@ export type ProductionPmsTargetState = {
 
 export type PmsBuildContext = {
   sourceRunId: string;
+  snapshotAt: string;
   completedAt: string;
   rows: IdentitySourceRow[];
   target: ProductionPmsTargetState;
   blockers: IdentityMigrationBlocker[];
   rowsByTable: Map<string, IdentitySourceRow[]>;
   propertyByHotel: Map<string, string>;
+  hotelById: Map<string, IdentitySourceRow>;
   bookingById: Map<string, IdentitySourceRow>;
   targetBookingById: Map<string, PmsTargetBooking>;
   roomTypeById: Map<string, IdentitySourceRow>;

@@ -90,6 +90,7 @@ export async function runProductionPmsTransaction(
     };
     const preliminary = services.buildPlan({
       sourceRunId: input.sourceRunId,
+      snapshotAt: snapshot.snapshotAt,
       completedAt: snapshot.completedAt,
       rows: snapshot.rows,
       target: emptyTarget,
@@ -97,6 +98,7 @@ export async function runProductionPmsTransaction(
     const target = await services.readTarget(client, preliminary.records, prerequisites);
     const plan = services.buildPlan({
       sourceRunId: input.sourceRunId,
+      snapshotAt: snapshot.snapshotAt,
       completedAt: snapshot.completedAt,
       rows: snapshot.rows,
       target,
@@ -120,6 +122,7 @@ export async function runProductionPmsTransaction(
     const verifiedTarget = await services.readTarget(client, plan.records, prerequisites);
     const verified = services.buildPlan({
       sourceRunId: input.sourceRunId,
+      snapshotAt: snapshot.snapshotAt,
       completedAt: snapshot.completedAt,
       rows: snapshot.rows,
       target: verifiedTarget,

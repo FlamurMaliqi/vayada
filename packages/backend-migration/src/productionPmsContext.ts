@@ -21,6 +21,7 @@ const ID_TABLES = [
   "channex_rate_plan_mappings",
   "channex_room_type_mappings",
   "channex_webhook_events",
+  "hotels",
   "linked_inventory_groups",
   "message_attachments",
   "message_threads",
@@ -32,6 +33,7 @@ const ID_TABLES = [
 
 export function createProductionPmsContext(input: {
   sourceRunId: string;
+  snapshotAt?: string;
   completedAt: string;
   rows: IdentitySourceRow[];
   target: ProductionPmsTargetState;
@@ -58,9 +60,11 @@ export function createProductionPmsContext(input: {
   );
   return {
     ...input,
+    snapshotAt: input.snapshotAt ?? input.completedAt,
     blockers,
     rowsByTable,
     propertyByHotel,
+    hotelById: maps.get("hotels")!,
     bookingById: maps.get("bookings")!,
     targetBookingById,
     roomTypeById: maps.get("room_types")!,

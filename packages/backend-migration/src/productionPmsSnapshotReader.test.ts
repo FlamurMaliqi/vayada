@@ -15,12 +15,13 @@ describe("production PMS snapshot reader", () => {
       validateRun: async () => [],
     });
     expect(result.completedAt).toBe("2026-08-30T01:02:03.000Z");
-    expect(result.rows.map((row) => row.sourceTable)).toEqual(["room_types"]);
+    expect(result.snapshotAt).toBe("2026-08-30T00:02:03.000Z");
+    expect(result.rows.map((row) => row.sourceTable)).toEqual(["hotels", "room_types"]);
   });
 
   it("rejects corrupt staged rows", async () => {
     const fixture = new PmsFixture();
-    fixture.snapshots[0]!.rowChecksum = "f".repeat(64);
+    fixture.snapshots.find((row) => row.sourceTable === "room_types")!.rowChecksum = "f".repeat(64);
     await expect(
       readProductionPmsSnapshot(fixture as never, RUN, { validateRun: async () => [] }),
     ).rejects.toThrow("corrupt pms.room_types rows");
@@ -36,7 +37,7 @@ describe("production PMS snapshot reader", () => {
 });
 
 class PmsFixture {
-  snapshots = [snapshot("room_types", { id: "room-type" })];
+  snapshots = [snapshot("hotels", { id: "hotel" }), snapshot("room_types", { id: "room-type" })];
   tables = PRODUCTION_PMS_SOURCE_TABLES.map((sourceTable) => {
     const rows = this.snapshots.filter((row) => row.sourceTable === sourceTable);
     const checksum = createHash("sha256");
@@ -58,6 +59,7 @@ class PmsFixture {
           {
             sourceDatabase: "pms",
             snapshotIdentifier: "snapshot-pms",
+            snapshotAt: "2026-08-30 00:02:03+00",
             status: "completed",
           },
         ] as T[],
