@@ -29,9 +29,9 @@ import type {
 export type PreservedCatalogTarget = {
   entity: string;
   key: string;
-  reason: "identical" | "target_newer" | "target_owner_revision";
+  reason: "identical" | "target_newer" | "target_owner_revision" | "target_removed";
   sourceUpdatedAt: string;
-  targetUpdatedAt: string;
+  targetUpdatedAt: string | null;
 };
 export type ReconciledCatalogWrites = {
   properties: PlannedCatalogProperty[];
@@ -62,6 +62,17 @@ export function reconcileProductionCatalog(
   const revisions = new Map(
     target.ownerRevisions.map((row) => [`${row.propertyId}:${row.ownerKey}`, Number(row.revision)]),
   );
+  const migratedProperties = new Set(
+    target.sourceLinks
+      .filter(
+        (row) =>
+          row.sourceSystem === "booking" &&
+          row.sourceTable === "booking_hotels" &&
+          row.propertyId === row.sourceId &&
+          VAY1351_RUN.test(row.migrationRunId ?? ""),
+      )
+      .map((row) => row.propertyId),
+  );
   const sourceSlugs = protectCanonicalSlugs(core.slugs, target.slugs, blockers);
   const reconcile = <T extends { updatedAt: string }>(
     entity: string,
@@ -79,6 +90,7 @@ export function reconcileProductionCatalog(
       fields,
       ownerKey,
       revisions,
+      migratedProperties,
       preservedTarget,
       blockers,
     );
@@ -204,6 +216,7 @@ function reconcileRows<T extends { updatedAt: string }>(
   fields: string[],
   ownerKey: "hotel_catalog.location" | "hotel_catalog.policy" | undefined,
   revisions: Map<string, number>,
+  migratedProperties: Set<string>,
   preserved: PreservedCatalogTarget[],
   blockers: IdentityMigrationBlocker[],
 ): T[] {
@@ -214,6 +227,30 @@ function reconcileRows<T extends { updatedAt: string }>(
     const rowKey = key(sourceRecord);
     const existing = current.get(rowKey);
     if (!existing) {
+      const propertyId = typeof sourceRecord.propertyId === "string" ? sourceRecord.propertyId : "";
+      if (migratedProperties.has(propertyId)) {
+        if (
+          entity === "property_slugs" &&
+          sourceRecord.purpose === "canonical" &&
+          sourceRecord.status === "active"
+        )
+          addBlocker(
+            blockers,
+            "CATALOG_REQUIRED_TARGET_ROW_REMOVED",
+            `hotel_catalog.${entity}`,
+            rowKey,
+            "Previously migrated canonical target row is now absent",
+          );
+        else
+          preserved.push({
+            entity,
+            key: rowKey,
+            reason: "target_removed",
+            sourceUpdatedAt: row.updatedAt,
+            targetUpdatedAt: null,
+          });
+        continue;
+      }
       writes.push(row);
       continue;
     }
@@ -289,3 +326,5 @@ function by(field: string): (row: Record<string, unknown>) => string {
 function compound(...fields: string[]): (row: Record<string, unknown>) => string {
   return (row) => fields.map((field) => String(row[field])).join(":");
 }
+
+const VAY1351_RUN = /^vay1351-[0-9a-f]{24}$/;

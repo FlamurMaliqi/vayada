@@ -9,6 +9,7 @@ import type { ProductionCatalogTargetState } from "./productionCatalogTargetRead
 const PROPERTY = "11111111-1111-4111-8111-111111111111";
 const OLD = "2026-08-01T00:00:00Z";
 const NEW = "2026-08-02T00:00:00Z";
+const RUN = "vay1351-0123456789abcdef01234567";
 
 describe("production catalog reconciliation", () => {
   it("preserves newer and target-owned state without copying stale legacy values", () => {
@@ -97,6 +98,38 @@ describe("production catalog reconciliation", () => {
 
     expect(plan.blockers.map((row) => row.code)).toContain("CATALOG_CANONICAL_SLUG_CONFLICT");
     expect(plan.writes.slugs).toEqual([]);
+  });
+
+  it("preserves child-row deletions on reruns of the same immutable source", () => {
+    const content = emptyContent();
+    content.contacts.push({
+      propertyId: PROPERTY,
+      channelType: "phone",
+      value: "+1",
+      purpose: "general",
+      isPublic: false,
+      sourceSystem: "booking",
+      updatedAt: NEW,
+    });
+    const target = emptyTarget();
+    target.sourceLinks.push({
+      propertyId: PROPERTY,
+      sourceSystem: "booking",
+      sourceTable: "booking_hotels",
+      sourceId: PROPERTY,
+      relationship: "canonical_input",
+      migrationRunId: RUN,
+    });
+
+    const plan = reconcileProductionCatalog(emptyCore(), content, emptyPresentation(), target);
+
+    expect(plan.writes.contacts).toEqual([]);
+    expect(plan.preservedTarget).toEqual([
+      expect.objectContaining({
+        entity: "property_contact_channels",
+        reason: "target_removed",
+      }),
+    ]);
   });
 });
 
