@@ -69,6 +69,7 @@ export async function reconcilePmsLinkedInventory(
      FOR UPDATE`,
     [propertyId],
   );
+  const linkedRoomTypeIds = new Set(linkedRoomTypes.rows.map(({ roomTypeId }) => roomTypeId));
   const legacy = await client.query(
     `SELECT 1
      FROM pms.inventory_days inventory
@@ -82,6 +83,41 @@ export async function reconcilePmsLinkedInventory(
     [propertyId],
   );
   if (legacy.rows.length > 0) {
+    const work = await client.query(
+      `SELECT 1 FROM (
+         SELECT block.room_type_id FROM pms.room_blocks block
+         WHERE block.property_id=$1::uuid AND block.block_kind<>'manual'
+           AND block.status='active'
+         UNION ALL
+         SELECT block.room_type_id FROM pms.room_blocks block
+         JOIN pms.room_types room_type
+           ON room_type.id=block.room_type_id AND room_type.property_id=block.property_id
+         WHERE block.property_id=$1::uuid AND block.block_kind='manual'
+           AND block.status='active' AND room_type.linked_inventory_group_id IS NOT NULL
+         UNION ALL
+         SELECT receipt.room_type_id FROM pms.inventory_reservation_receipts receipt
+         JOIN pms.inventory_reservation_statuses status USING (receipt_id)
+         JOIN pms.room_types room_type
+           ON room_type.id=receipt.room_type_id AND room_type.property_id=receipt.property_id
+         WHERE receipt.property_id=$1::uuid AND status.lifecycle_state='reserved'
+           AND room_type.linked_inventory_group_id IS NOT NULL
+         UNION ALL
+         SELECT assignment.room_type_id FROM pms.operational_booking_assignments assignment
+         JOIN pms.room_types room_type
+           ON room_type.id=assignment.room_type_id
+          AND room_type.property_id=assignment.property_id
+         WHERE assignment.property_id=$1::uuid AND assignment.stay_evidence_kind='exact'
+           AND assignment.assignment_status NOT IN ('canceled','released')
+           AND room_type.linked_inventory_group_id IS NOT NULL
+       ) linked_work LIMIT 1`,
+      [propertyId],
+    );
+    if (
+      work.rows.length === 0 &&
+      !requestedRanges.some(({ roomTypeId }) => linkedRoomTypeIds.has(roomTypeId))
+    ) {
+      return [];
+    }
     throw new PmsLinkedInventoryNotCanonicalError(
       "Linked inventory requires canonical inventory materialization.",
     );
@@ -115,7 +151,6 @@ export async function reconcilePmsLinkedInventory(
     const old = oldById.get(range.blockId);
     return old ? [old, range] : [range];
   });
-  const linkedRoomTypeIds = new Set(linkedRoomTypes.rows.map(({ roomTypeId }) => roomTypeId));
   dirtyRanges.push(
     ...requestedRanges
       .filter((range) => linkedRoomTypeIds.has(range.roomTypeId))
