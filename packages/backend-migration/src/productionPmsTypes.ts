@@ -41,7 +41,7 @@ export type PmsTargetBooking = {
   children: number;
   currency: string;
   lifecycleStatus: string;
-  updatedAt: string;
+  updatedAt: string | null;
 };
 
 export type ProductionPmsTargetState = {
