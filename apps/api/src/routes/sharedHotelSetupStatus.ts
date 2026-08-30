@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 
 import { UnauthorizedError, type PermissionKey } from "@vayada/backend-auth";
-import { AuthorizationError, hasPermission } from "@vayada/backend-authorization";
+import {
+  AuthorizationError,
+  hasPermission,
+  resolveEffectivePropertyAccess,
+  type PropertyAccessRepository,
+} from "@vayada/backend-authorization";
 import {
   ADAPTIVE_HOTEL_SETUP_CONTRACT_VERSION,
   isSetupTaskLaunchable,
@@ -132,6 +137,7 @@ export type SharedHotelSetupStatusRepository = {
 type SharedHotelSetupStatusRoutesOptions = {
   repository: SharedHotelSetupStatusRepository;
   trackCommandRepository: HotelSetupTrackCommandRepository;
+  propertyAccessRepository?: PropertyAccessRepository;
   launchSettingsRepository?: SharedPropertyLaunchSettingsRepository;
   now?: () => Date;
 };
@@ -170,6 +176,7 @@ export async function registerSharedHotelSetupStatusRoutes(
   const {
     repository,
     trackCommandRepository,
+    propertyAccessRepository,
     launchSettingsRepository,
     now = () => new Date(),
   } = options;
@@ -196,7 +203,12 @@ export async function registerSharedHotelSetupStatusRoutes(
     const requestedPropertyId = parsePropertyId(query.propertyId, reply);
     if (requestedPropertyId === false) return reply;
 
-    const access = resolveSharedSetupAccess(request, reply, requestedPropertyId);
+    const access = await resolveSharedSetupStatusAccess(
+      request,
+      reply,
+      requestedPropertyId,
+      propertyAccessRepository,
+    );
     if (!access) return reply;
 
     const status = await repository.getHotelSetupStatus({
@@ -936,6 +948,55 @@ function resolveSharedSetupAccess(
     }
     throw error;
   }
+}
+
+async function resolveSharedSetupStatusAccess(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  requestedPropertyId: string | null,
+  propertyAccessRepository: PropertyAccessRepository | undefined,
+): Promise<ReturnType<typeof resolveSharedSetupAccess>> {
+  const access = resolveSharedSetupAccess(request, reply, null);
+  if (!access) return null;
+  if (!propertyAccessRepository) {
+    request.log.error("Shared hotel setup property access repository is unavailable");
+    return sharedSetupPropertyAccessUnavailable(reply);
+  }
+
+  try {
+    const effectiveAccess = await resolveEffectivePropertyAccess(
+      access.context,
+      propertyAccessRepository,
+    );
+    if (!effectiveAccess) return sharedSetupPropertyAccessDenied(reply);
+
+    const effectivePropertyIds = new Set(effectiveAccess.propertyIds);
+    const propertyIds = access.propertyIds.filter((id) => effectivePropertyIds.has(id));
+    if (requestedPropertyId && !propertyIds.includes(requestedPropertyId)) {
+      return sharedSetupPropertyAccessDenied(reply);
+    }
+
+    return { ...access, propertyIds };
+  } catch (error) {
+    request.log.error({ err: error }, "Shared hotel setup property access check failed");
+    return sharedSetupPropertyAccessUnavailable(reply);
+  }
+}
+
+function sharedSetupPropertyAccessDenied(reply: FastifyReply): null {
+  reply.status(403).send({
+    code: "property_access_denied",
+    detail: "Property access is not available.",
+  });
+  return null;
+}
+
+function sharedSetupPropertyAccessUnavailable(reply: FastifyReply): null {
+  reply.status(503).send({
+    code: "property_access_unavailable",
+    detail: "Property access is temporarily unavailable.",
+  });
+  return null;
 }
 
 function parseEntryProduct(
