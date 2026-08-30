@@ -156,6 +156,35 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       }
     }
   });
+
+  it("rejects linked stop-sell without canonical or immutable migration evidence", async () => {
+    const propertyId = "13560000-0000-4000-8000-000000000281";
+    const roomTypeId = "13560000-0000-4000-8000-000000000282";
+    await client.query("BEGIN");
+    try {
+      await client.query(
+        `INSERT INTO hotel_catalog.properties(id, public_id, display_name)
+         VALUES ($1, 'pms-linked-constraint', 'PMS Linked Constraint')`,
+        [propertyId],
+      );
+      await client.query(
+        `INSERT INTO pms.room_types(id, property_id, name, base_rate_amount, currency)
+         VALUES ($1, $2, 'Linked constraint', 100, 'EUR')`,
+        [roomTypeId, propertyId],
+      );
+      await expect(
+        client.query(
+          `INSERT INTO pms.inventory_days
+             (property_id, room_type_id, stay_date, total_count, available_count,
+              linked_stop_sell, linked_source_revision, source_freshness)
+           VALUES ($1, $2, '2026-09-01', 1, 0, true, 1, '{}'::jsonb)`,
+          [propertyId, roomTypeId],
+        ),
+      ).rejects.toMatchObject({ constraint: "chk_pms_inventory_days_linked_requires_revision" });
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
 });
 
 async function seedPrerequisites(client: pg.Client): Promise<void> {

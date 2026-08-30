@@ -43,7 +43,20 @@ $$;
 ALTER TABLE pms.inventory_days
   DROP CONSTRAINT chk_pms_inventory_days_linked_requires_canonical,
   ADD CONSTRAINT chk_pms_inventory_days_linked_requires_revision
-    CHECK (NOT linked_stop_sell OR linked_source_revision > 0);
+    CHECK (
+      NOT linked_stop_sell
+      OR (
+        linked_source_revision > 0
+        AND (
+          calendar_revision IS NOT NULL
+          OR COALESCE(
+            source_freshness ->> 'migrationRunId' ~ '^vay1351-[0-9a-f]{24}$'
+              AND jsonb_typeof(source_freshness -> 'legacy') = 'object',
+            FALSE
+          )
+        )
+      )
+    );
 
 -- Provider property ownership must be globally unambiguous for webhook routing.
 CREATE UNIQUE INDEX uq_pms_channel_connections_provider_external_property
@@ -52,4 +65,4 @@ CREATE UNIQUE INDEX uq_pms_channel_connections_provider_external_property
 
 COMMENT ON CONSTRAINT chk_pms_inventory_days_linked_requires_revision
   ON pms.inventory_days IS
-  'Legacy and canonical inventory may carry linked stop-sell only with a causal revision.';
+  'Canonical and immutable VAY-1351 inventory may carry linked stop-sell only with a causal revision.';

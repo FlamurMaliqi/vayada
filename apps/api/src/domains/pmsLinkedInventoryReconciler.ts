@@ -79,9 +79,10 @@ export async function reconcilePmsLinkedInventory(
      WHERE inventory.property_id = $1::uuid
        AND room_type.linked_inventory_group_id IS NOT NULL
        AND inventory.calendar_revision IS NULL
-       AND NOT (
+       AND NOT COALESCE(
          inventory.source_freshness ->> 'migrationRunId' ~ '^vay1351-[0-9a-f]{24}$'
-         AND inventory.source_freshness -> 'legacy' IS NOT NULL
+           AND jsonb_typeof(inventory.source_freshness -> 'legacy') = 'object',
+         false
        )
      LIMIT 1`,
     [propertyId],
