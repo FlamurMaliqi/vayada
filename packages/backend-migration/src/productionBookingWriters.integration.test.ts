@@ -75,6 +75,7 @@ describe.skipIf(!URL)("production Booking writers (PostgreSQL)", () => {
            (SELECT count(*)::int FROM booking.booking_addon_selections WHERE guest_booking_id = $1) AS addons,
            (SELECT count(*)::int FROM booking.promo_applications WHERE guest_booking_id = $1) AS promos,
            (SELECT status FROM booking.checkout_contexts WHERE id = $2) AS draft_status,
+           (SELECT pii_retention_until::text FROM booking.checkout_contexts WHERE id = $2) AS draft_pii_retention,
            (SELECT to_jsonb(summary) FROM booking.direct_booking_summary_read_model summary
              WHERE guest_booking_id = $1) AS summary,
            (SELECT redacted_payload FROM platform.product_audit_events
@@ -87,6 +88,7 @@ describe.skipIf(!URL)("production Booking writers (PostgreSQL)", () => {
         addons: 1,
         promos: 1,
         draft_status: "converted",
+        draft_pii_retention: "2026-08-30",
         audit: { page: "checkout" },
       });
       const publicSummary = JSON.stringify(stored.rows[0].summary);

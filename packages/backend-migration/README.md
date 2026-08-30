@@ -66,7 +66,7 @@ URLs stay in environment variables and never appear in the report.
 ```bash
 npm --workspace @vayada/backend-migration run target:source:extract -- \
   --manifest <reviewed-manifest.json> \
-  --source-schema-revision 1a8ab060c9fb31d3f88bcfe934b51b5319e7e544 \
+  --source-schema-revision 2d7fe21080646cb1931aac4054a5648bac9b8227 \
   --auth-snapshot-arn <arn> \
   --booking-snapshot-arn <arn> \
   --marketplace-snapshot-arn <arn> \
@@ -218,7 +218,8 @@ Apply locks the Booking, audit, and provenance tables, writes in dependency
 order, and rereads the target before committing. Unmaterialized drafts remain
 quote/checkout history; materialized drafts link through the normal guest
 booking path. Private guest input never enters the direct-booking summary read
-model. Rerun the dry run with the same ID after apply and require unchanged
+model. Checkout guest input receives the immutable draft expiry date as its PII
+retention deadline. Rerun the dry run with the same ID after apply and require unchanged
 checksums/counts. Booking success still does not authorize legacy shutdown:
 VAY-1356 through VAY-1363 and the rollback window remain mandatory gates.
 

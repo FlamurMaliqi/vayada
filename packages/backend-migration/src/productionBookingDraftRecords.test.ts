@@ -26,6 +26,7 @@ describe("production Booking draft records", () => {
     expect(records[1]!.row).toMatchObject({
       id: DRAFT,
       status: "active",
+      piiRetentionUntil: "2026-08-30",
       guestInput: { email: "private@example.test" },
     });
     const quote = JSON.stringify(records[0]!.row);

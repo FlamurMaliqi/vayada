@@ -122,6 +122,7 @@ function draftRecords(
       code: payload["promo_code"] ?? null,
       discount: payload["promo_discount"] ?? 0,
     },
+    piiRetentionUntil: expiresAt.slice(0, 10),
     expiresAt,
     createdAt,
     updatedAt: createdAt,

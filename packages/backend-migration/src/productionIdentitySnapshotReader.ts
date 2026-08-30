@@ -103,6 +103,8 @@ export const VAY_1350_ACTIVE_SOURCE_TABLES: Record<SourceDatabase, readonly stri
     "public.checkout_inspection_templates",
     "public.hotel_payment_settings",
     "public.hotels",
+    "public.linked_inventory_group_members",
+    "public.linked_inventory_groups",
     "public.message_attachments",
     "public.message_threads",
     "public.messages",

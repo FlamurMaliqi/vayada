@@ -153,6 +153,7 @@ const WRITERS: Record<string, WriterDefinition> = {
       c("selectedAddons", "selected_addons", "jsonb"),
       c("paymentContext", "payment_context", "jsonb"),
       c("promoContext", "promo_context", "jsonb"),
+      c("piiRetentionUntil", "pii_retention_until", "date"),
       c("expiresAt", "expires_at", "timestamptz"),
       ...commonTimes,
     ],
