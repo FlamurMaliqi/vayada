@@ -26,13 +26,20 @@ export function buildBookingReservationRecords(
   for (const draft of context.rows.filter(
     (row) => row.sourceDatabase === "pms" && row.sourceTable === "booking_drafts",
   )) {
-    const bookingId = optionalText(draft.data["materialized_booking_id"], "materialized_booking_id");
+    const bookingId = optionalText(
+      draft.data["materialized_booking_id"],
+      "materialized_booking_id",
+    );
     if (bookingId) materializedDraft.set(bookingId.toLowerCase(), draft);
   }
   return context.rows.flatMap((source) => {
     if (source.sourceDatabase !== "pms" || source.sourceTable !== "bookings") return [];
     try {
-      return reservation(context, source, materializedDraft.get(String(source.data["id"]).toLowerCase()));
+      return reservation(
+        context,
+        source,
+        materializedDraft.get(String(source.data["id"]).toLowerCase()),
+      );
     } catch (error) {
       context.blockers.push({
         code: "INVALID_SOURCE_ROW",
@@ -66,7 +73,9 @@ function reservation(
   const balanceAmount = money(data["balance_amount"], "balance_amount", totalAmount);
   const roomCount = integer(data["number_of_rooms"], "number_of_rooms", 1);
   const draftId = draft ? uuid(draft.data["id"], "draft.id") : null;
-  const quoteSessionId = draftId ? deterministicUuid("production-booking", "draft-quote", draftId) : null;
+  const quoteSessionId = draftId
+    ? deterministicUuid("production-booking", "draft-quote", draftId)
+    : null;
   const bookingRow = {
     id,
     propertyId,
@@ -219,6 +228,8 @@ function bookingChannel(value: unknown): string {
   const channel = String(value ?? "").toLowerCase();
   const mapped: Record<string, string> = {
     direct: "direct",
+    website: "direct",
+    booking_engine: "direct",
     booking_com: "booking_com",
     "booking.com": "booking_com",
     airbnb: "airbnb",
@@ -239,7 +250,9 @@ function retentionDate(checkOut: string): string {
 }
 
 function nights(checkIn: string, checkOut: string): number {
-  return Math.round((Date.parse(`${checkOut}T00:00:00Z`) - Date.parse(`${checkIn}T00:00:00Z`)) / 86_400_000);
+  return Math.round(
+    (Date.parse(`${checkOut}T00:00:00Z`) - Date.parse(`${checkIn}T00:00:00Z`)) / 86_400_000,
+  );
 }
 
 function record(

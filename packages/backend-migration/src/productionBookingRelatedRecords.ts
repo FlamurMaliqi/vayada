@@ -21,7 +21,9 @@ export function buildBookingRelatedRecords(context: BookingBuildContext): Bookin
   const promoByCode = promoCodeMap(context);
   const usageReferences = new Set(
     context.rows
-      .filter((row) => row.sourceDatabase === "pms" && row.sourceTable === "booking_promo_usage_state")
+      .filter(
+        (row) => row.sourceDatabase === "pms" && row.sourceTable === "booking_promo_usage_state",
+      )
       .map((row) => String(row.data["booking_reference"] ?? "").toLowerCase()),
   );
   return context.rows.flatMap((source) => {
@@ -34,10 +36,13 @@ export function buildBookingRelatedRecords(context: BookingBuildContext): Bookin
         return [promoUsage(context, source, promoByCode)];
       if (
         source.sourceDatabase === "booking" &&
-        source.sourceTable === "booking_promo_redemptions" &&
-        !usageReferences.has(String(source.data["redemption_key"] ?? "").toLowerCase())
-      )
-        return [promoRedemption(context, source)];
+        source.sourceTable === "booking_promo_redemptions"
+      ) {
+        const reference = redemptionBookingReference(context, source);
+        return usageReferences.has(reference.toLowerCase())
+          ? []
+          : [promoRedemption(context, source, reference)];
+      }
       if (source.sourceDatabase === "pms" && source.sourceTable === "bookings")
         return addonSelections(context, source);
       return [];
@@ -53,7 +58,10 @@ export function buildBookingRelatedRecords(context: BookingBuildContext): Bookin
   });
 }
 
-function additionalGuest(context: BookingBuildContext, source: IdentitySourceRow): BookingTargetRecord {
+function additionalGuest(
+  context: BookingBuildContext,
+  source: IdentitySourceRow,
+): BookingTargetRecord {
   const data = source.data;
   const id = uuid(data["id"], "id");
   const booking = sourceBooking(context, data["booking_id"], "booking_id");
@@ -81,7 +89,10 @@ function additionalGuest(context: BookingBuildContext, source: IdentitySourceRow
   });
 }
 
-function changeRequest(context: BookingBuildContext, source: IdentitySourceRow): BookingTargetRecord {
+function changeRequest(
+  context: BookingBuildContext,
+  source: IdentitySourceRow,
+): BookingTargetRecord {
   const data = source.data;
   const id = uuid(data["id"], "id");
   const booking = sourceBooking(context, data["booking_id"], "booking_id");
@@ -169,9 +180,12 @@ function promoUsage(
   );
 }
 
-function promoRedemption(context: BookingBuildContext, source: IdentitySourceRow): BookingTargetRecord {
+function promoRedemption(
+  context: BookingBuildContext,
+  source: IdentitySourceRow,
+  reference: string,
+): BookingTargetRecord {
   const data = source.data;
-  const reference = requiredText(data["redemption_key"], "redemption_key");
   const booking = bookingByReference(context, reference);
   const promoId = uuid(data["promo_id"], "promo_id");
   if (!context.promoById.has(promoId)) throw new Error("promo_id has no source definition");
@@ -185,6 +199,21 @@ function promoRedemption(context: BookingBuildContext, source: IdentitySourceRow
     status === "reversed" ? "reversed" : "applied",
     { reversedAt: optionalIso(data["reversed_at"], "reversed_at") },
   );
+}
+
+function redemptionBookingReference(
+  context: BookingBuildContext,
+  source: IdentitySourceRow,
+): string {
+  const promoId = uuid(source.data["promo_id"], "promo_id");
+  const promo = context.promoById.get(promoId);
+  if (!promo) throw new Error("promo_id has no source definition");
+  const hotelId = uuid(promo.data["hotel_id"], "promo.hotel_id");
+  const key = requiredText(source.data["redemption_key"], "redemption_key");
+  const prefix = `${hotelId}:`;
+  if (!key.toLowerCase().startsWith(prefix))
+    throw new Error("redemption_key does not match its promo hotel");
+  return requiredText(key.slice(prefix.length), "redemption booking reference");
 }
 
 function promoApplication(
@@ -204,7 +233,10 @@ function promoApplication(
     quoteSessionId: null,
     guestBookingId: uuid(booking.data["id"], "booking.id"),
     promoDefinitionId: promoId,
-    promoCode: requiredText(source.data["promo_code"] ?? context.promoById.get(promoId)!.data["code"], "promo_code").toUpperCase(),
+    promoCode: requiredText(
+      source.data["promo_code"] ?? context.promoById.get(promoId)!.data["code"],
+      "promo_code",
+    ).toUpperCase(),
     applicationStatus: status,
     discountAmount: money(booking.data["promo_discount"], "promo_discount", "0.00"),
     currency: currency(booking.data["currency"] ?? "EUR"),
@@ -213,7 +245,10 @@ function promoApplication(
   });
 }
 
-function addonSelections(context: BookingBuildContext, source: IdentitySourceRow): BookingTargetRecord[] {
+function addonSelections(
+  context: BookingBuildContext,
+  source: IdentitySourceRow,
+): BookingTargetRecord[] {
   const data = source.data;
   const ids = Array.isArray(data["addon_ids"]) ? data["addon_ids"] : [];
   const quantities = object(data["addon_quantities"]);
@@ -227,7 +262,13 @@ function addonSelections(context: BookingBuildContext, source: IdentitySourceRow
     if (!addon) throw new Error(`addon ${addonId} has no source definition`);
     const quantity = integer(quantities[addonId], "addon quantity", 1);
     const amount = Number(money(addon.data["price"], "addon.price", "0.00")) * quantity;
-    const id = deterministicUuid("production-booking", "addon-selection", bookingId, addonId, String(index));
+    const id = deterministicUuid(
+      "production-booking",
+      "addon-selection",
+      bookingId,
+      addonId,
+      String(index),
+    );
     return record(source, "booking_addon_selections", id, updatedAt, false, {
       id,
       propertyId,
@@ -248,7 +289,11 @@ function addonSelections(context: BookingBuildContext, source: IdentitySourceRow
   });
 }
 
-function sourceBooking(context: BookingBuildContext, value: unknown, field: string): IdentitySourceRow {
+function sourceBooking(
+  context: BookingBuildContext,
+  value: unknown,
+  field: string,
+): IdentitySourceRow {
   const id = requiredText(value, field).toLowerCase();
   const booking = context.bookingById.get(id);
   if (!booking) throw new Error(`${field} does not resolve to a source booking`);
@@ -283,7 +328,19 @@ function promoCodeMap(context: BookingBuildContext): Map<string, IdentitySourceR
 }
 function changeStatus(value: unknown): string {
   const status = requiredText(value, "status").toLowerCase();
-  return ({ approved: "accepted", accepted: "accepted", declined: "declined", pending: "pending", canceled: "canceled", cancelled: "canceled", expired: "expired" } as Record<string, string>)[status] ?? "pending";
+  return (
+    (
+      {
+        approved: "accepted",
+        accepted: "accepted",
+        declined: "declined",
+        pending: "pending",
+        canceled: "canceled",
+        cancelled: "canceled",
+        expired: "expired",
+      } as Record<string, string>
+    )[status] ?? "pending"
+  );
 }
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -295,8 +352,26 @@ function retentionDate(checkOut: string): string {
   value.setUTCFullYear(value.getUTCFullYear() + 1);
   return value.toISOString().slice(0, 10);
 }
-function record(source: IdentitySourceRow, targetTable: string, targetId: string, sourceUpdatedAt: string, mutable: boolean, row: Record<string, unknown>): BookingTargetRecord {
-  return { targetProduct: "booking", targetTable, targetId, sourceDatabase: source.sourceDatabase as "booking" | "pms", sourceTable: source.sourceTable, sourceId: sourceIdentifier(source), sourceChecksum: sha256(source.data), sourceUpdatedAt, mutable, row };
+function record(
+  source: IdentitySourceRow,
+  targetTable: string,
+  targetId: string,
+  sourceUpdatedAt: string,
+  mutable: boolean,
+  row: Record<string, unknown>,
+): BookingTargetRecord {
+  return {
+    targetProduct: "booking",
+    targetTable,
+    targetId,
+    sourceDatabase: source.sourceDatabase as "booking" | "pms",
+    sourceTable: source.sourceTable,
+    sourceId: sourceIdentifier(source),
+    sourceChecksum: sha256(source.data),
+    sourceUpdatedAt,
+    mutable,
+    row,
+  };
 }
 function sourceIdentifier(row: IdentitySourceRow): string {
   const field = row.sourceTable === "booking_promo_usage_state" ? "booking_reference" : "id";

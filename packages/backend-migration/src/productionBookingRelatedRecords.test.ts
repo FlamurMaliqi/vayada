@@ -50,9 +50,14 @@ describe("production Booking related records", () => {
     guest.data["booking_id"] = "13550000-0000-4000-8000-000000000099";
     const context = createProductionBookingContext(input(rows));
     buildBookingRelatedRecords(context);
-    expect(context.blockers.map((blocker) => blocker.code)).toContain("PROMO_RECONCILIATION_PENDING");
+    expect(context.blockers.map((blocker) => blocker.code)).toContain(
+      "PROMO_RECONCILIATION_PENDING",
+    );
     expect(context.blockers).toContainEqual(
-      expect.objectContaining({ code: "INVALID_SOURCE_ROW", source: "pms.booking_additional_guests" }),
+      expect.objectContaining({
+        code: "INVALID_SOURCE_ROW",
+        source: "pms.booking_additional_guests",
+      }),
     );
   });
 });
@@ -86,6 +91,13 @@ function allRows(): IdentitySourceRow[] {
       id: PROMO,
       hotel_id: BOOKING_HOTEL,
       code: "SUMMER",
+    }),
+    row("booking", "booking_promo_redemptions", {
+      id: "13550000-0000-4000-8000-000000000039",
+      promo_id: PROMO,
+      redemption_key: `${BOOKING_HOTEL}:VAY-RELATED`,
+      status: "active",
+      created_at: "2026-08-01T00:00:00Z",
     }),
     row("pms", "booking_additional_guests", {
       id: "13550000-0000-4000-8000-000000000037",
@@ -139,7 +151,7 @@ function input(rows: IdentitySourceRow[]) {
           sourceTable: "hotels",
           sourceId: PMS_HOTEL,
           propertyId: PROPERTY,
-          relationship: "canonical_input",
+          relationship: "operational_input",
           status: "active",
         },
         {
