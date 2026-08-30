@@ -1,0 +1,269 @@
+import type pg from "pg";
+
+import type { IdentityMigrationBlocker } from "./productionIdentityDisposition.js";
+import type { ProductionMigrationSourceLink } from "./productionBookingTypes.js";
+import type {
+  ExistingPmsTargetRecord,
+  PmsPropertyLink,
+  PmsTargetRecord,
+  ProductionPmsTargetState,
+} from "./productionPmsTypes.js";
+import { PRODUCTION_PMS_TABLES } from "./productionPmsTables.js";
+
+type QueryClient = Pick<pg.ClientBase, "query">;
+
+export async function readProductionPmsPrerequisites(
+  client: QueryClient,
+): Promise<Omit<ProductionPmsTargetState, "records" | "provenance" | "blockers">> {
+  const links = await client.query<PmsPropertyLink>(
+    `SELECT source_id AS "sourceId", property_id::text AS "propertyId", relationship, status
+     FROM hotel_catalog.property_source_links
+     WHERE source_system = 'pms' AND source_table = 'hotels'
+     ORDER BY source_id, property_id`,
+  );
+  const bookings = await client.query<ProductionPmsTargetState["bookings"][number]>(
+    `SELECT id::text, property_id::text AS "propertyId", check_in::text AS "checkIn",
+            check_out::text AS "checkOut", adults, children, currency,
+            lifecycle_status AS "lifecycleStatus", updated_at::text AS "updatedAt"
+     FROM booking.guest_bookings
+     WHERE source_system = 'pms'
+     ORDER BY id`,
+  );
+  const users = await client.query<{ id: string }>(
+    `SELECT id::text FROM identity.users ORDER BY id`,
+  );
+  const media = await client.query<{ id: string }>(
+    `SELECT id::text FROM platform.media_objects
+     WHERE lifecycle_status NOT IN ('deleted', 'rejected')
+     ORDER BY id`,
+  );
+  return {
+    propertyLinks: links.rows,
+    bookings: bookings.rows.map((booking) => ({
+      ...booking,
+      updatedAt: new Date(booking.updatedAt).toISOString(),
+    })),
+    userIds: users.rows.map((row) => row.id),
+    mediaIds: media.rows.map((row) => row.id),
+  };
+}
+
+export async function readProductionPmsTargetState(
+  client: QueryClient,
+  candidates: PmsTargetRecord[],
+  prerequisites: Awaited<ReturnType<typeof readProductionPmsPrerequisites>>,
+): Promise<ProductionPmsTargetState> {
+  const records: ExistingPmsTargetRecord[] = [];
+  const grouped = new Map<string, string[]>();
+  for (const candidate of candidates)
+    grouped.set(candidate.targetTable, [
+      ...(grouped.get(candidate.targetTable) ?? []),
+      candidate.targetId,
+    ]);
+  for (const [targetTable, ids] of grouped) {
+    const definition = PRODUCTION_PMS_TABLES[targetTable];
+    if (!definition) throw new Error(`Unsupported PMS target table ${targetTable}`);
+    const targetId = targetIdExpression(targetTable, definition.key);
+    const result = await client.query<{
+      targetId: string;
+      updatedAt: string | null;
+      rowData: string;
+    }>(
+      `SELECT ${targetId} AS "targetId", (${definition.freshness})::text AS "updatedAt",
+              to_jsonb(target_row)::text AS "rowData"
+       FROM ${definition.table} AS target_row
+       WHERE ${targetId} = ANY($1::text[])
+       ORDER BY ${targetId}`,
+      [[...new Set(ids)]],
+    );
+    records.push(
+      ...result.rows.map((row) => ({
+        targetProduct: definition.product,
+        targetTable,
+        targetId: row.targetId,
+        updatedAt: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
+        row: camelize(JSON.parse(row.rowData) as Record<string, unknown>),
+      })),
+    );
+  }
+  const requestedLinks = candidates.map((row) => ({
+    sourceDatabase: row.sourceDatabase,
+    sourceTable: row.sourceTable,
+    sourceId: row.sourceId,
+    targetProduct: row.targetProduct,
+    targetTable: row.targetTable,
+    targetId: row.targetId,
+  }));
+  const provenance = requestedLinks.length
+    ? await client.query<ProductionMigrationSourceLink>(
+        `SELECT link.source_database AS "sourceDatabase", link.source_table AS "sourceTable",
+                link.source_id AS "sourceId", link.target_product AS "targetProduct",
+                link.target_table AS "targetTable", link.target_id AS "targetId",
+                link.source_checksum AS "sourceChecksum",
+                link.source_updated_at::text AS "sourceUpdatedAt",
+                link.last_migrated_at::text AS "lastMigratedAt"
+         FROM platform.production_migration_source_links link
+         JOIN jsonb_to_recordset($1::jsonb) requested(
+           "sourceDatabase" text, "sourceTable" text, "sourceId" text,
+           "targetProduct" text, "targetTable" text, "targetId" text
+         ) ON link.source_database = requested."sourceDatabase"
+            AND link.source_table = requested."sourceTable"
+            AND link.source_id = requested."sourceId"
+            AND link.target_product = requested."targetProduct"
+            AND link.target_table = requested."targetTable"
+            AND link.target_id = requested."targetId"
+         ORDER BY link.source_database, link.source_table, link.source_id,
+                  link.target_product, link.target_table, link.target_id`,
+        [JSON.stringify(requestedLinks)],
+      )
+    : { rows: [] as ProductionMigrationSourceLink[] };
+  const collisions = await readCollisions(client, candidates);
+  return {
+    ...prerequisites,
+    records,
+    provenance: provenance.rows.map((row) => ({
+      ...row,
+      sourceUpdatedAt: row.sourceUpdatedAt ? new Date(row.sourceUpdatedAt).toISOString() : null,
+      lastMigratedAt: new Date(row.lastMigratedAt).toISOString(),
+    })),
+    blockers: collisions,
+  };
+}
+
+async function readCollisions(
+  client: QueryClient,
+  candidates: PmsTargetRecord[],
+): Promise<IdentityMigrationBlocker[]> {
+  if (!candidates.length) return [];
+  const rows = candidates.map((candidate) => ({
+    targetTable: candidate.targetTable,
+    targetId: candidate.targetId,
+    ...candidate.row,
+  }));
+  const result = await client.query<IdentityMigrationBlocker>(
+    `WITH requested AS (
+       SELECT * FROM jsonb_to_recordset($1::jsonb) AS source(
+         "targetTable" text, "targetId" text, "propertyId" uuid,
+         "sourceSystem" text, "sourceRoomTypeId" text, "sourceRoomId" text,
+         "roomNumber" text, "roomTypeId" uuid, code text,
+         "guestBookingId" uuid, position integer, source text, "sourceThreadId" text,
+         "threadId" uuid, "sourceMessageId" text, provider text, "connectionId" uuid,
+         "externalRoomTypeId" text, "ratePlanId" uuid, channel text,
+         "externalRatePlanId" text, "externalBookingId" text, "channelRoomIndex" integer,
+         "syncDomain" text, "auditKey" text, "webhookKeyHash" text
+       )
+     )
+     SELECT 'TARGET_UNIQUE_CONFLICT' AS code, 'pms.room_types' AS source,
+            target.id::text AS "sourceId", 'Another room type owns this legacy source identity' AS message
+     FROM requested JOIN pms.room_types target ON requested."targetTable" = 'room_types'
+      AND target.id::text <> requested."targetId" AND target.property_id = requested."propertyId"
+      AND target.source_system = requested."sourceSystem"
+      AND target.source_room_type_id = requested."sourceRoomTypeId"
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.rooms', target.id::text,
+            'Another room owns this legacy identity or property room number'
+     FROM requested JOIN pms.rooms target ON requested."targetTable" = 'rooms'
+      AND target.id::text <> requested."targetId" AND target.property_id = requested."propertyId"
+      AND ((target.source_system = requested."sourceSystem" AND target.source_room_id = requested."sourceRoomId")
+           OR target.room_number = requested."roomNumber")
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.rate_plans', target.id::text,
+            'Another rate plan owns this property, room, and code'
+     FROM requested JOIN pms.rate_plans target ON requested."targetTable" = 'rate_plans'
+      AND target.id::text <> requested."targetId" AND target.property_id = requested."propertyId"
+      AND target.room_type_id = requested."roomTypeId" AND target.code = requested.code
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.operational_booking_assignments', target.id::text,
+            'Another assignment owns this booking position'
+     FROM requested JOIN pms.operational_booking_assignments target
+      ON requested."targetTable" = 'operational_booking_assignments'
+      AND target.id::text <> requested."targetId"
+      AND target.guest_booking_id = requested."guestBookingId" AND target.position = requested.position
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.message_threads', target.id::text,
+            'Another message thread owns this provider thread identity'
+     FROM requested JOIN pms.message_threads target ON requested."targetTable" = 'message_threads'
+      AND target.id::text <> requested."targetId" AND target.property_id = requested."propertyId"
+      AND target.source = requested.source AND target.source_thread_id = requested."sourceThreadId"
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.messages', target.id::text,
+            'Another message owns this provider message identity'
+     FROM requested JOIN pms.messages target ON requested."targetTable" = 'messages'
+      AND target.id::text <> requested."targetId" AND target.thread_id = requested."threadId"
+      AND target.source_message_id = requested."sourceMessageId"
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.channel_connections', target.id::text,
+            'Another channel connection owns this property/provider pair'
+     FROM requested JOIN pms.channel_connections target
+      ON requested."targetTable" = 'channel_connections' AND target.id::text <> requested."targetId"
+      AND target.property_id = requested."propertyId" AND target.provider = requested.provider
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.channel_room_type_mappings', target.id::text,
+            'Another channel room mapping owns the external or internal room type'
+     FROM requested JOIN pms.channel_room_type_mappings target
+      ON requested."targetTable" = 'channel_room_type_mappings'
+      AND target.id::text <> requested."targetId" AND target.connection_id = requested."connectionId"
+      AND (target.external_room_type_id = requested."externalRoomTypeId"
+           OR target.room_type_id = requested."roomTypeId")
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.channel_rate_plan_mappings', target.id::text,
+            'Another channel rate mapping owns the external rate or internal rate/channel'
+     FROM requested JOIN pms.channel_rate_plan_mappings target
+      ON requested."targetTable" = 'channel_rate_plan_mappings'
+      AND target.id::text <> requested."targetId" AND target.connection_id = requested."connectionId"
+      AND (target.external_rate_plan_id = requested."externalRatePlanId"
+           OR (target.rate_plan_id = requested."ratePlanId" AND target.channel = requested.channel))
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.channel_booking_mappings', target.id::text,
+            'Another channel booking mapping owns this external booking slot'
+     FROM requested JOIN pms.channel_booking_mappings target
+      ON requested."targetTable" = 'channel_booking_mappings'
+      AND target.id::text <> requested."targetId" AND target.connection_id = requested."connectionId"
+      AND target.external_booking_id = requested."externalBookingId"
+      AND target.channel_room_index = requested."channelRoomIndex"
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.channel_sync_status', target.id::text,
+            'Another sync status owns this connection domain'
+     FROM requested JOIN pms.channel_sync_status target
+      ON requested."targetTable" = 'channel_sync_status' AND target.id::text <> requested."targetId"
+      AND target.connection_id = requested."connectionId" AND target.sync_domain = requested."syncDomain"
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'platform.product_audit_events', target.id::text,
+            'Another PMS audit event owns this audit key'
+     FROM requested JOIN platform.product_audit_events target
+      ON requested."targetTable" = 'product_audit_events' AND target.id::text <> requested."targetId"
+      AND target.product = 'pms' AND target.audit_key = requested."auditKey"
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'platform.external_webhook_events', target.id::text,
+            'Another Channex receipt owns this webhook dedupe key'
+     FROM requested JOIN platform.external_webhook_events target
+      ON requested."targetTable" = 'external_webhook_events'
+      AND target.id::text <> requested."targetId" AND target.provider = 'channex'
+      AND target.webhook_key_hash = requested."webhookKeyHash"
+     ORDER BY source, "sourceId"`,
+    [JSON.stringify(rows)],
+  );
+  return result.rows;
+}
+
+function targetIdExpression(targetTable: string, key: readonly string[]): string {
+  if (targetTable === "inventory_days")
+    return "property_id::text || ':' || room_type_id::text || ':' || stay_date::text";
+  return `${key[0]}::text`;
+}
+
+function camelize(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+      key.replace(/_([a-z])/g, (_, character: string) => character.toUpperCase()),
+      Array.isArray(entry)
+        ? entry.map((item) =>
+            item && typeof item === "object" && !Array.isArray(item) ? camelize(item) : item,
+          )
+        : entry && typeof entry === "object"
+          ? camelize(entry)
+          : entry,
+    ]),
+  );
+}
