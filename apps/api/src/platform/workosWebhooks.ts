@@ -674,7 +674,15 @@ async function upsertWorkosMembership(
             identity.organization_memberships.workos_membership_id = $7
             OR (
               identity.organization_memberships.workos_membership_id IS NULL
-              AND identity.organization_memberships.invited_at IS NOT NULL
+              AND (
+                identity.organization_memberships.invited_at IS NOT NULL
+                OR EXISTS (
+                  SELECT 1
+                  FROM identity.staff_invitations invitation
+                  WHERE invitation.accepted_membership_id = identity.organization_memberships.id
+                    AND invitation.status = 'accepted'
+                )
+              )
             )
           )
          THEN identity.organization_memberships.status
@@ -698,7 +706,26 @@ async function upsertWorkosMembership(
        END,
        workos_membership_id = EXCLUDED.workos_membership_id,
        workos_role_slugs = EXCLUDED.workos_role_slugs,
-       updated_at = now()`,
+       updated_at = now()
+     WHERE NOT (
+       $11
+       AND identity.organization_memberships.workos_membership_id IS DISTINCT FROM $7
+       AND (
+         identity.organization_memberships.status IN ('inactive', 'suspended')
+         OR (
+           identity.organization_memberships.status = 'pending'
+           AND (
+             identity.organization_memberships.invited_at IS NOT NULL
+             OR EXISTS (
+               SELECT 1
+               FROM identity.staff_invitations invitation
+               WHERE invitation.accepted_membership_id = identity.organization_memberships.id
+                 AND invitation.status = 'accepted'
+             )
+           )
+         )
+       )
+     )`,
     [
       organization.id,
       userId,

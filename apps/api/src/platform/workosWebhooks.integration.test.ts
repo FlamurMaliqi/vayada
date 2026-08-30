@@ -595,7 +595,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
 
       const invitedMembershipId = (
         await admin.query<{ id: string }>(
-          "UPDATE identity.organization_memberships SET status = 'active', workos_membership_id = NULL, invited_at = now() WHERE organization_id = $1 AND user_id = $2 RETURNING id",
+          "UPDATE identity.organization_memberships SET status = 'active', workos_membership_id = NULL, invited_at = NULL WHERE organization_id = $1 AND user_id = $2 RETURNING id",
           [organizationId, invitedUserId],
         )
       ).rows[0]!.id;
@@ -644,6 +644,8 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
         workosMembershipId: replacementWorkosMembershipId,
         status: "pending",
       });
+      await store.upsertWorkosMembership({ ...acceptedProviderMembership, status: "pending" });
+      await store.upsertWorkosMembership({ ...acceptedProviderMembership, status: "active" });
       await store.deactivateWorkosMembership(acceptedProviderMembership.workosMembershipId);
       expect(
         (
@@ -655,6 +657,25 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
           )
         ).rows[0],
       ).toEqual({ status: "pending", workosMembershipId: replacementWorkosMembershipId });
+
+      for (const status of ["suspended", "inactive"] as const) {
+        await admin.query(
+          "UPDATE identity.organization_memberships SET status = $3 WHERE organization_id = $1 AND user_id = $2",
+          [organizationId, invitedUserId, status],
+        );
+        await store.upsertWorkosMembership({ ...acceptedProviderMembership, status: "active" });
+        await store.deactivateWorkosMembership(acceptedProviderMembership.workosMembershipId);
+        expect(
+          (
+            await admin.query<{ status: string; workosMembershipId: string }>(
+              `SELECT status, workos_membership_id AS "workosMembershipId"
+               FROM identity.organization_memberships
+               WHERE organization_id = $1 AND user_id = $2`,
+              [organizationId, invitedUserId],
+            )
+          ).rows[0],
+        ).toEqual({ status, workosMembershipId: replacementWorkosMembershipId });
+      }
     } finally {
       await admin.query("DELETE FROM identity.staff_invitations WHERE organization_id = $1", [
         organizationId,
