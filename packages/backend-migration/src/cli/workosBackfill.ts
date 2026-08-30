@@ -18,6 +18,7 @@ function parseArgs(argv: string[]): {
   mode: WorkosBackfillMode;
   connectionString: string;
   legacyAuthConnectionString: string;
+  sourceRunId: string;
   workosApiKey: string;
   cohortManifestPath?: string;
   email?: string;
@@ -29,6 +30,7 @@ function parseArgs(argv: string[]): {
   let mode: WorkosBackfillMode = "dry-run";
   let connectionString = process.env["TARGET_DATABASE_URL"] ?? "";
   let legacyAuthConnectionString = process.env["WORKOS_BACKFILL_LEGACY_AUTH_DATABASE_URL"] ?? "";
+  let sourceRunId = process.env["WORKOS_BACKFILL_SOURCE_RUN_ID"] ?? "";
   let workosApiKey = process.env["WORKOS_API_KEY"] ?? "";
   let cohortManifestPath = "";
   let email = "";
@@ -46,6 +48,8 @@ function parseArgs(argv: string[]): {
       connectionString = args[++i];
     } else if (arg === "--legacy-auth-connection-string" && args[i + 1]) {
       legacyAuthConnectionString = args[++i];
+    } else if (arg === "--source-run-id" && args[i + 1]) {
+      sourceRunId = args[++i];
     } else if (arg === "--cohort-manifest" && args[i + 1]) {
       cohortManifestPath = args[++i];
     } else if (arg === "--email" && args[i + 1]) {
@@ -63,6 +67,7 @@ function parseArgs(argv: string[]): {
     mode,
     connectionString,
     legacyAuthConnectionString,
+    sourceRunId,
     workosApiKey,
     cohortManifestPath: cohortManifestPath || undefined,
     email: email || undefined,
@@ -76,6 +81,7 @@ const {
   mode,
   connectionString,
   legacyAuthConnectionString,
+  sourceRunId,
   workosApiKey,
   cohortManifestPath,
   email,
@@ -86,6 +92,10 @@ const {
 
 if (!connectionString) {
   console.error("Error: TARGET_DATABASE_URL or --connection-string is required.");
+  process.exit(1);
+}
+if (legacyAuthConnectionString && sourceRunId) {
+  console.error("Error: use either --source-run-id or --legacy-auth-connection-string, not both.");
   process.exit(1);
 }
 const cohortSourceCount = [cohortManifestPath, email, organizationKind].filter(Boolean).length;
@@ -109,6 +119,7 @@ if (mode === "apply" && !workosApiKey) {
 const repository = createPgWorkosBackfillRepository({
   connectionString,
   legacyAuthConnectionString,
+  sourceRunId,
 });
 try {
   const source = cohortManifestPath ? null : await repository.loadSource();
@@ -126,6 +137,7 @@ try {
     if (legacyAuthConnectionString) {
       console.log(`Legacy auth DB host: ${safeDatabaseTarget(legacyAuthConnectionString)}`);
     }
+    if (sourceRunId) console.log(`Immutable auth source run: ${sourceRunId}`);
 
     const summary = await runWorkosBackfill({
       mode,

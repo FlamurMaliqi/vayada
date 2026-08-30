@@ -104,7 +104,7 @@ export function mapLegacyUserStatus(status: string): LegacyUserStatus {
     case "deleted":
       return "deleted";
     default:
-      return "pending";
+      throw new Error(`Unsupported legacy user status ${status}.`);
   }
 }
 

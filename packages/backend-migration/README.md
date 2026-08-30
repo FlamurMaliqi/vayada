@@ -96,6 +96,47 @@ ALTER DATABASE <source_database>
   SET vayada.cutover_freeze_proof_sha256 TO '<reviewed-sha256>';
 ```
 
+## Production Identity Migration
+
+VAY-1352 consumes one completed, immutable VAY-1351 extraction run. It maps
+legacy users and current consent, ownership, entitlement, and login-audit data
+into the target identity model. Password hashes, reset/email tokens, TOTP
+secrets/recovery codes, and login-rate-limit rows are reported by count and are
+never copied. Existing WorkOS links are validated and preserved; this command
+does not call WorkOS or create provider credentials.
+
+Run and review a dry run first. It executes the complete read and reconciliation
+inside a repeatable-read transaction, then always rolls back:
+
+```bash
+TARGET_DATABASE_URL=<target database> npm run target:identity:migrate -- \
+  --source-run-id vay1351-<24 lowercase hex characters> --dry-run
+```
+
+The report must have no blockers. Review its checksum, counts,
+`preservedNewerUsers`, WorkOS identity count, and retired-auth counts against the
+approved extraction evidence. Newer target state is preserved; equal-time
+disagreement and ambiguous ownership block the apply.
+
+After the reviewed backup, write freeze/queue, dry-run report, and go/no-go
+approval, apply that exact run ID with confirmation bound to it:
+
+```bash
+TARGET_DATABASE_URL=<target database> npm run target:identity:migrate -- \
+  --source-run-id vay1351-<24 lowercase hex characters> --apply \
+  --confirm production-identity:vay1351-<same 24 lowercase hex characters>
+```
+
+Apply locks every reconciled target table and fails within five seconds if live
+writes prevent the lock. Keep the external write freeze active through commit.
+
+Rerun dry-run and apply with the same run ID and confirm the checksum and counts
+are unchanged. Apply is transactional and idempotent; append-only conflicts or
+post-write mismatch roll back. Keep the legacy systems available through the
+approved rollback window. Identity success alone does not authorize shutdown:
+the remaining domain migrations, full VAY-1359 parity, VAY-1360 cutover checks,
+and VAY-1363 retirement evidence must also pass.
+
 ## Platform Media Parity
 
 `platform-media` is a target-only fixture that pins the registry contract before
@@ -171,7 +212,7 @@ Use `--email` for one-user migration smoke tests:
 
 ```bash
 TARGET_DATABASE_URL=<target database url> \
-  WORKOS_BACKFILL_LEGACY_AUTH_DATABASE_URL=<legacy auth database url> \
+  WORKOS_BACKFILL_SOURCE_RUN_ID=<completed VAY-1351 run id> \
   WORKOS_API_KEY=<workos api key> \
   npm --workspace @vayada/backend-migration run target:workos:backfill:dist -- \
     --email user@example.com \
@@ -182,7 +223,7 @@ Apply mode requires the printed cohort key as a confirmation guard:
 
 ```bash
 TARGET_DATABASE_URL=<target database url> \
-  WORKOS_BACKFILL_LEGACY_AUTH_DATABASE_URL=<legacy auth database url> \
+  WORKOS_BACKFILL_SOURCE_RUN_ID=<completed VAY-1351 run id> \
   WORKOS_API_KEY=<workos api key> \
   npm --workspace @vayada/backend-migration run target:workos:backfill:dist -- \
     --email user@example.com \
@@ -190,9 +231,13 @@ TARGET_DATABASE_URL=<target database url> \
     --confirm email:user@example.com
 ```
 
-Use `--cohort-manifest <path>` for reviewed batch cohorts.
-Omit `WORKOS_BACKFILL_LEGACY_AUTH_DATABASE_URL` to migrate identities without
-importing legacy bcrypt password hashes.
+Use `--cohort-manifest <path>` for reviewed batch cohorts. The immutable source
+run supplies only the legacy bcrypt hash and verified-email flag needed for the
+one-time WorkOS handoff; reset, verification, rate-limit, and MFA state is never
+loaded into live target tables. Omit both source options to migrate identities
+without importing legacy bcrypt password hashes. The direct legacy auth
+connection remains available for pre-VAY-1351 recovery only and cannot be
+combined with `--source-run-id`.
 
 ## Next Stack Smoke Backfill
 

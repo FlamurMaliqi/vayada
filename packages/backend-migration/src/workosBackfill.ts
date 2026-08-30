@@ -1,6 +1,7 @@
 import pg from "pg";
 
 import { normalizePgConnectionString } from "./pgConnection.js";
+import { readProductionIdentitySnapshot } from "./productionIdentitySnapshotReader.js";
 
 export type WorkosBackfillMode = "dry-run" | "apply";
 
@@ -470,8 +471,12 @@ export function createWorkosBackfillCohortForOrganizationKind(
 export function createPgWorkosBackfillRepository(config: {
   connectionString: string;
   legacyAuthConnectionString?: string;
+  sourceRunId?: string;
   max?: number;
 }): WorkosBackfillRepository {
+  if (config.legacyAuthConnectionString && config.sourceRunId) {
+    throw new Error("Use either a legacy auth connection or an immutable source run, not both.");
+  }
   const pool = new pg.Pool({
     connectionString: normalizePgConnectionString(config.connectionString),
     max: config.max,
@@ -548,7 +553,9 @@ export function createPgWorkosBackfillRepository(config: {
       ]);
 
       return {
-        users: await attachLegacyAuthFields(users.rows, legacyAuthPool),
+        users: config.sourceRunId
+          ? await attachSnapshotAuthFields(users.rows, pool, config.sourceRunId)
+          : await attachLegacyAuthFields(users.rows, legacyAuthPool),
         organizations: organizations.rows,
         memberships: memberships.rows,
       };
@@ -775,6 +782,48 @@ export function createPgWorkosBackfillRepository(config: {
       });
     },
   };
+}
+
+async function attachSnapshotAuthFields(
+  users: WorkosBackfillUser[],
+  pool: pg.Pool,
+  sourceRunId: string,
+): Promise<WorkosBackfillUser[]> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const snapshot = await readProductionIdentitySnapshot(client, sourceRunId);
+    const acceptedUserIds = new Set(users.map((user) => user.id));
+    const legacyRows = snapshot
+      .filter(
+        (row) =>
+          row.sourceDatabase === "auth" &&
+          row.sourceTable === "users" &&
+          typeof row.data["id"] === "string" &&
+          acceptedUserIds.has(row.data["id"]),
+      )
+      .map(snapshotAuthUser);
+    await client.query("COMMIT");
+    return mergeLegacyAuthBackfillFields(users, legacyRows);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+function snapshotAuthUser(row: { data: Record<string, unknown> }): LegacyAuthBackfillRow {
+  const id = row.data["id"];
+  const emailVerified = row.data["email_verified"];
+  if (typeof id !== "string" || typeof emailVerified !== "boolean")
+    throw new Error("Immutable auth user credentials have an unsupported shape.");
+  const rawPasswordHash = row.data["password_hash"];
+  const passwordHash =
+    typeof rawPasswordHash === "string" && /^\$2[aby]\$/.test(rawPasswordHash)
+      ? rawPasswordHash
+      : null;
+  return { id, emailVerified, passwordHash };
 }
 
 async function attachLegacyAuthFields(

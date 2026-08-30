@@ -17,6 +17,16 @@ const TEST_BCRYPT_HASH = "$2b$12$abcdefghijklmnopqrstuuJ/lL7AGas7gSUzwl3hBRMaGQJ
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 
 describe("runWorkosBackfill", () => {
+  it("does not allow mutable and immutable credential sources together", () => {
+    expect(() =>
+      createPgWorkosBackfillRepository({
+        connectionString: "postgresql://target",
+        legacyAuthConnectionString: "postgresql://legacy",
+        sourceRunId: "vay1351-0123456789abcdef01234567",
+      }),
+    ).toThrow("Use either a legacy auth connection or an immutable source run, not both.");
+  });
+
   it("builds a one-user cohort from email and includes that user's memberships", () => {
     const source = {
       users: [

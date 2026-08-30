@@ -12,7 +12,7 @@ export async function transformIdentityOrganizationLinks(client: pg.Client): Pro
         WHEN 'pending' THEN 'pending'
         WHEN 'suspended' THEN 'suspended'
         WHEN 'rejected' THEN 'deleted'
-        ELSE 'active'
+        ELSE NULL
       END AS status,
       users.created_at,
       users.updated_at

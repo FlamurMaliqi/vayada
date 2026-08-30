@@ -76,8 +76,13 @@ describe("mapLegacyUserStatus", () => {
     ["suspended", "suspended"],
     ["rejected", "deleted"],
     ["deleted", "deleted"],
-    ["surprise", "pending"],
   ] as const)("maps %s to %s", (legacy, target) => {
     expect(mapLegacyUserStatus(legacy)).toBe(target);
+  });
+
+  it("rejects unknown legacy states", () => {
+    expect(() => mapLegacyUserStatus("surprise")).toThrow(
+      "Unsupported legacy user status surprise.",
+    );
   });
 });
