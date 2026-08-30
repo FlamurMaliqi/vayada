@@ -39,6 +39,7 @@ export type PlannedCatalogMediaAssignment = {
   sortOrder: number;
   sourceSystem: CatalogSourceSystem;
   publicApproved: boolean;
+  updatedAt: string;
 };
 export type ProductionCatalogPresentationPlan = {
   domains: PlannedCatalogDomain[];
@@ -131,7 +132,12 @@ export function planProductionCatalogPresentation(
 
     let references: MediaReference[] = [];
     try {
-      references = mediaReferences(booking.data, group.marketplace[0]?.data);
+      references = mediaReferences(
+        booking.data,
+        booking.updatedAt,
+        group.marketplace[0]?.data,
+        group.marketplace[0]?.updatedAt,
+      );
     } catch (error) {
       addBlocker(
         blockers,
@@ -191,6 +197,7 @@ export function planProductionCatalogPresentation(
           object.visibility === "public" &&
           object.lifecycleStatus === "active" &&
           object.publicApproved,
+        updatedAt: reference.updatedAt,
       });
     }
   }
@@ -210,10 +217,13 @@ type MediaReference = {
   purpose: ExistingCatalogMediaObject["purpose"];
   mediaType: PlannedCatalogMediaAssignment["mediaType"];
   sortOrder: number;
+  updatedAt: string;
 };
 function mediaReferences(
   booking: Record<string, unknown>,
+  bookingUpdatedAt: string,
   marketplace: Record<string, unknown> | undefined,
+  marketplaceUpdatedAt: string | undefined,
 ): MediaReference[] {
   const bookingId = String(booking["id"]);
   const result: MediaReference[] = [];
@@ -225,6 +235,7 @@ function mediaReferences(
       purpose: "property.hero_image",
       mediaType: "hero_image",
       sortOrder: 0,
+      updatedAt: bookingUpdatedAt,
     });
   const images = booking["images"];
   if (images != null && (!Array.isArray(images) || images.some((url) => typeof url !== "string")))
@@ -238,6 +249,7 @@ function mediaReferences(
         purpose: "property.gallery_image",
         mediaType: "gallery_image",
         sortOrder: index,
+        updatedAt: bookingUpdatedAt,
       });
   if (optionalText(booking["branding_logo_url"], "branding_logo_url"))
     result.push({
@@ -247,6 +259,7 @@ function mediaReferences(
       purpose: "property.logo",
       mediaType: "logo",
       sortOrder: 0,
+      updatedAt: bookingUpdatedAt,
     });
   if (marketplace && optionalText(marketplace["picture"], "picture")) {
     const profileId = String(marketplace["id"]);
@@ -257,6 +270,7 @@ function mediaReferences(
       purpose: "property.logo",
       mediaType: "logo",
       sortOrder: 1,
+      updatedAt: marketplaceUpdatedAt!,
     });
   }
   return result;

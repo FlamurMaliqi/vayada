@@ -28,6 +28,7 @@ export type PlannedCatalogAmenity = {
   amenityKey: string;
   label: string;
   sourceSystem: CatalogSourceSystem;
+  publicSafe: false;
   updatedAt: string;
 };
 export type PlannedCatalogContact = {
@@ -237,7 +238,14 @@ function addAmenities(
     if (!amenityKey) continue;
     const key = `${propertyId}:${amenityKey}`;
     if (!target.has(key))
-      target.set(key, { propertyId, amenityKey, label: label.trim(), sourceSystem, updatedAt });
+      target.set(key, {
+        propertyId,
+        amenityKey,
+        label: label.trim(),
+        sourceSystem,
+        publicSafe: false,
+        updatedAt,
+      });
   }
 }
 
