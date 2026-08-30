@@ -137,6 +137,47 @@ approved rollback window. Identity success alone does not authorize shutdown:
 the remaining domain migrations, full VAY-1359 parity, VAY-1360 cutover checks,
 and VAY-1363 retirement evidence must also pass.
 
+## Production Hotel Catalog Migration
+
+VAY-1354 consumes the Booking hotel, Booking hotel-translation, PMS hotel, and
+Marketplace hotel-profile tables from the same completed, immutable VAY-1351
+run. Do not use an older snapshot as a substitute for a fresh extraction and
+reviewed freeze proof.
+
+Run this exact dry-run command first:
+
+```bash
+TARGET_DATABASE_URL=<target database> npm run target:catalog:migrate -- \
+  --source-run-id vay1351-<24 lowercase hex characters> --dry-run
+```
+
+The dry run always rolls back. The report must have no blockers. Review its
+checksum, counts, write count, and every `preservedTarget` row. Newer target
+rows and target-owned location or policy revisions are preserved; equal-time,
+ownership, canonical-slug, verified-domain, unresolved-media, and malformed
+source conflicts block apply. The migration never deletes target-only rows.
+
+After the reviewed backup, source write freeze/queue, dry-run report, and
+go/no-go approval, apply that exact run ID:
+
+```bash
+TARGET_DATABASE_URL=<target database> npm run target:catalog:migrate -- \
+  --source-run-id vay1351-<24 lowercase hex characters> --apply \
+  --confirm production-catalog:vay1351-<same 24 lowercase hex characters>
+```
+
+Apply locks the catalog and Platform Media tables, rechecks target freshness,
+writes in one repeatable-read transaction, verifies the stored plan, and then
+rebuilds the scoped public projection. Migrated contacts and amenities remain
+private until explicitly approved in the target. Public media comes only from
+an active, approved Platform Media `original_safe` variant; raw legacy URLs and
+free-form Marketplace locations are not projected.
+
+Rerun the dry run with the same run ID and confirm the checksum and counts are
+unchanged. Keep the legacy systems available throughout the rollback window.
+Catalog success does not authorize shutdown: VAY-1355 through VAY-1358,
+VAY-1359 full parity, and all remaining cutover and retirement gates must pass.
+
 ## Platform Media Parity
 
 `platform-media` is a target-only fixture that pins the registry contract before
