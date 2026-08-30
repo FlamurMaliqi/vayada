@@ -139,7 +139,7 @@ function discoverMediaReferences(sourceDatabase: SourceDatabase, source: string)
 
 describe("legacy production source inventory", () => {
   it("gives every object one complete authoritative contract", () => {
-    expect(inventory).toHaveLength(160);
+    expect(inventory).toHaveLength(162);
     expect(
       new Set(
         inventory.map(
