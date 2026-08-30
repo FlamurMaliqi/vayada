@@ -311,9 +311,11 @@ type AdaptiveHotelSetupStatus = {
 ```
 
 `setupPlan` is null until a directly linked property is selected. Active access
-plus an authorized product resource link returns `enter`; unfinished payment,
-publication, or optional work may affect launch readiness but does not block an
-otherwise authorized configuration workspace.
+plus an authorized product resource link and any read-level page permission for
+the requested product returns `enter`; unfinished payment, publication, or
+optional work may affect launch readiness but does not block an otherwise
+authorized configuration workspace. Direct product routes continue to require
+their exact page permission.
 
 The track request is:
 

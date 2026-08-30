@@ -64,6 +64,11 @@ property list. It authorizes `GET /api/hotel-setup/status` but not property
 profiles, property types, or setup commands, which retain their existing
 `hotel_catalog.setup.read` or manage permissions.
 
+Product entry accepts any read-level page permission for that product; the PMS
+compatibility key `pms.operations.read` remains accepted. Field-only guest
+contact permission does not open the PMS. Direct product routes still enforce
+their exact permission, entitlement, and assigned-property policy.
+
 Unknown/repeated keys, grant/deny overlap, and stronger levels missing required
 lower keys are rejected on write and revalidated per request. A malformed
 override empties permissions, emits a security audit, and returns generic `403`

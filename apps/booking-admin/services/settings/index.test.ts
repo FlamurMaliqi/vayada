@@ -8,10 +8,12 @@ const originalCompatibilityFlag = process.env.NEXT_PUBLIC_AUTHKIT_COMPATIBILITY_
 const originalApiUrl = process.env.NEXT_PUBLIC_API_URL;
 
 describe("settingsService next-stack bootstrap data", () => {
+  let propertyLinkFailure: number | null;
   let propertySettingsFailure: number | Error | null;
   let acceptanceMode: "instant" | "request";
 
   beforeEach(() => {
+    propertyLinkFailure = null;
     propertySettingsFailure = null;
     acceptanceMode = "request";
     const storage = createMemoryStorage();
@@ -44,6 +46,12 @@ describe("settingsService next-stack bootstrap data", () => {
             ),
             { headers: { "content-type": "application/json" } },
           );
+        }
+        if (href.endsWith("/property-link") && propertyLinkFailure !== null) {
+          return new Response(JSON.stringify({ detail: "Booking property link unavailable." }), {
+            status: propertyLinkFailure,
+            headers: { "content-type": "application/json" },
+          });
         }
         if (href.endsWith("/api/booking/hotels/booking_hotel_alpenrose/property-link")) {
           return new Response(
@@ -80,9 +88,7 @@ describe("settingsService next-stack bootstrap data", () => {
           });
         }
         if (
-          href.endsWith(
-            "/api/booking/hotels/booking_hotel_alpenrose/settings/booking-acceptance",
-          )
+          href.endsWith("/api/booking/hotels/booking_hotel_alpenrose/settings/booking-acceptance")
         ) {
           if (init?.method === "PUT") {
             acceptanceMode = JSON.parse(String(init.body)).acceptanceMode;
@@ -250,6 +256,50 @@ describe("settingsService next-stack bootstrap data", () => {
       instantBook: true,
     });
   });
+
+  it("falls back to the assigned property manifest when Booking metadata is forbidden", async () => {
+    propertyLinkFailure = 403;
+
+    await expect(settingsService.listHotels()).resolves.toEqual([
+      {
+        id: "property_alpenrose",
+        propertyId: "property_alpenrose",
+        bookingHotelId: undefined,
+        name: "Hotel Alpenrose",
+        slug: "",
+        location: "Innsbruck, AT",
+        country: "",
+      },
+    ]);
+    expect(
+      vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/settings/property")),
+    ).toBe(false);
+  });
+
+  it("keeps the linked Booking id when only optional property settings are forbidden", async () => {
+    propertySettingsFailure = 403;
+
+    await expect(settingsService.listHotels()).resolves.toEqual([
+      {
+        id: "booking_hotel_alpenrose",
+        propertyId: "property_alpenrose",
+        bookingHotelId: "booking_hotel_alpenrose",
+        name: "Hotel Alpenrose",
+        slug: "",
+        location: "Innsbruck, AT",
+        country: "",
+      },
+    ]);
+  });
+
+  it.each([401, 500])(
+    "does not hide a %i response from a Booking property link",
+    async (status) => {
+      propertyLinkFailure = status;
+
+      await expect(settingsService.listHotels()).rejects.toMatchObject({ statusCode: status });
+    },
+  );
 
   it("loads and saves the design model for an explicit Booking hotel", async () => {
     await expect(settingsService.getDesignSettings(" booking_hotel_alpenrose ")).resolves.toEqual({
