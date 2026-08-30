@@ -380,6 +380,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerAuthSessionRoutes, {
       prefix: "/auth",
       ...options.authSession,
+      propertyAccessRepository:
+        options.authSession.propertyAccessRepository ?? options.auth?.propertyAccessRepository,
       profileImageMediaRepository:
         options.authSession.profileImageMediaRepository ??
         options.marketplaceCreatorProfileMediaRepository,

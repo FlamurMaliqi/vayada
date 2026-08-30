@@ -5,6 +5,10 @@ import type {
   IdentityUser,
   TokenVerifier,
 } from "@vayada/backend-auth";
+import type {
+  MembershipPropertyScope,
+  PropertyAccessRepository,
+} from "@vayada/backend-authorization";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
@@ -3077,7 +3081,7 @@ describe("AuthKit session routes", () => {
       },
     });
     expect(response.json().organizationSelectionRequired).toBeUndefined();
-    expect(response.json().resources).toBeUndefined();
+    expect(response.json().resources).toEqual({ "pms:pms_property": [] });
   });
 
   it("returns a PMS organization selector filtered to active hotel groups", async () => {
@@ -3766,6 +3770,13 @@ describe("AuthKit session routes", () => {
         }),
         linkedResources: async () => [
           {
+            product: "hotel_catalog",
+            resourceType: "property",
+            resourceId: "booking_hotel_alpenrose",
+            relationship: "owner",
+            status: "active",
+          },
+          {
             product: "booking",
             resourceType: "booking_hotel",
             resourceId: "booking_hotel_alpenrose",
@@ -3824,7 +3835,7 @@ describe("AuthKit session routes", () => {
     );
   });
 
-  it("returns booking resource scope on normal AuthKit session reads", async () => {
+  it("recomputes assigned booking properties and fails closed on invalid access state", async () => {
     const hotelSession: AuthKitSession = {
       ...session,
       organizationId: "org_workos_hotel_group",
@@ -3834,6 +3845,22 @@ describe("AuthKit session routes", () => {
         email: "hotel@example.com",
       },
     };
+    let userStatus: IdentityUser["status"] = "active";
+    let propertyScope: MembershipPropertyScope | null = {
+      mode: "assigned",
+      roleKey: "hotel_owner",
+      accessOrigin: "agency",
+      assignedPropertyIds: [
+        "booking_hotel_bergwald",
+        "booking_hotel_alpenrose",
+        "foreign_property",
+      ],
+    };
+    let propertyScopeError: Error | undefined;
+    const findMembershipPropertyScope = vi.fn(async () => {
+      if (propertyScopeError) throw propertyScopeError;
+      return propertyScope;
+    });
     app = buildAuthSessionApp({
       allowedOrigins: ["https://admin.booking.localhost"],
       authKitClient: createAuthKitClient({
@@ -3846,7 +3873,7 @@ describe("AuthKit session routes", () => {
         userByProviderUserId: async () => ({
           userId: "user_hotel_admin",
           email: "hotel@example.com",
-          status: "active",
+          status: userStatus,
         }),
         organizationByWorkosOrgId: async () => ({
           organizationId: "org_hotel_group",
@@ -3864,14 +3891,36 @@ describe("AuthKit session routes", () => {
         }),
         linkedResources: async () => [
           {
+            product: "hotel_catalog",
+            resourceType: "property",
+            resourceId: "booking_hotel_alpenrose",
+            relationship: "owner",
+            status: "active",
+          },
+          {
+            product: "hotel_catalog",
+            resourceType: "property",
+            resourceId: "booking_hotel_bergwald",
+            relationship: "operator",
+            status: "active",
+          },
+          {
             product: "booking",
             resourceType: "booking_hotel",
             resourceId: "booking_hotel_alpenrose",
             relationship: "owner",
             status: "active",
           },
+          {
+            product: "booking",
+            resourceType: "booking_hotel",
+            resourceId: "booking_hotel_bergwald",
+            relationship: "front_desk",
+            status: "active",
+          },
         ],
       }),
+      propertyAccessRepository: { findMembershipPropertyScope },
       surfacePolicies: {
         "booking-admin": {
           requiredOrganizationKind: "hotel_group",
@@ -3904,9 +3953,61 @@ describe("AuthKit session routes", () => {
         email: "hotel@example.com",
       },
     });
+
+    propertyScope = { ...propertyScope, assignedPropertyIds: [] };
+    const emptyResponse = await app.inject({
+      method: "GET",
+      url: "/auth/session?surface=booking-admin",
+      headers: {
+        cookie: "vayada_workos_session=sealed-session; vayada_auth_csrf=csrf-token",
+        origin: "https://admin.booking.localhost",
+      },
+    });
+    expect(emptyResponse.statusCode).toBe(200);
+    expect(emptyResponse.json().resources).toEqual({ "booking:booking_hotel": [] });
+
+    propertyScope = { ...propertyScope, mode: "unknown" };
+    const invalidResponse = await app.inject({
+      method: "GET",
+      url: "/auth/session?surface=booking-admin",
+      headers: {
+        cookie: "vayada_workos_session=sealed-session",
+        origin: "https://admin.booking.localhost",
+      },
+    });
+    expect(invalidResponse.statusCode).toBe(403);
+
+    propertyScopeError = new Error("database password leaked");
+    const failureResponse = await app.inject({
+      method: "GET",
+      url: "/auth/session?surface=booking-admin",
+      headers: {
+        cookie: "vayada_workos_session=sealed-session",
+        origin: "https://admin.booking.localhost",
+      },
+    });
+    expect(failureResponse.statusCode).toBe(403);
+    expect(failureResponse.json()).toEqual({
+      error: "auth_session_rejected",
+      message: "AuthKit session was rejected.",
+    });
+
+    propertyScopeError = undefined;
+    userStatus = "suspended";
+    const scopeCalls = findMembershipPropertyScope.mock.calls.length;
+    const suspendedResponse = await app.inject({
+      method: "GET",
+      url: "/auth/session?surface=booking-admin",
+      headers: {
+        cookie: "vayada_workos_session=sealed-session",
+        origin: "https://admin.booking.localhost",
+      },
+    });
+    expect(suspendedResponse.statusCode).toBe(403);
+    expect(findMembershipPropertyScope).toHaveBeenCalledTimes(scopeCalls);
   });
 
-  it("allows normal PMS session reads before a PMS product resource link exists", async () => {
+  it("returns an explicit empty PMS scope before a PMS product resource link exists", async () => {
     const pmsSession: AuthKitSession = {
       ...session,
       organizationId: "org_workos_hotel_group",
@@ -3974,10 +4075,10 @@ describe("AuthKit session routes", () => {
         email: "hotel@example.com",
       },
     });
-    expect(response.json().resources).toBeUndefined();
+    expect(response.json().resources).toEqual({ "pms:pms_property": [] });
   });
 
-  it("rejects hotel-admin compatibility tokens when resource links are missing", async () => {
+  it("rejects hotel-admin compatibility tokens when no properties are assigned", async () => {
     const hotelSession: AuthKitSession = {
       ...session,
       organizationId: "org_workos_hotel_group",
@@ -4005,8 +4106,33 @@ describe("AuthKit session routes", () => {
           workosMembershipId: "om_hotel",
           workosRoleSlugs: ["hotel_owner"],
         }),
-        linkedResources: async () => [],
+        linkedResources: async () => [
+          {
+            product: "hotel_catalog",
+            resourceType: "property",
+            resourceId: "booking_hotel_alpenrose",
+            relationship: "owner",
+            status: "active",
+          },
+          {
+            product: "booking",
+            resourceType: "booking_hotel",
+            resourceId: "booking_hotel_alpenrose",
+            relationship: "owner",
+            status: "active",
+          },
+        ],
       }),
+      propertyAccessRepository: {
+        async findMembershipPropertyScope() {
+          return {
+            mode: "assigned",
+            roleKey: "hotel_owner",
+            accessOrigin: "agency",
+            assignedPropertyIds: [],
+          };
+        },
+      },
       surfacePolicies: {
         "booking-admin": {
           requiredOrganizationKind: "hotel_group",
@@ -4061,6 +4187,13 @@ describe("AuthKit session routes", () => {
           workosRoleSlugs: ["hotel_owner"],
         }),
         linkedResources: async () => [
+          {
+            product: "hotel_catalog",
+            resourceType: "property",
+            resourceId: "property_alpenrose",
+            relationship: "operator",
+            status: "active",
+          },
           {
             product: "pms",
             resourceType: "pms_property",
@@ -4957,6 +5090,7 @@ function buildAuthSessionApp(
     profileImageMediaRepository?: ApprovedPublicProfileImageRepository;
     hotelAccountInviteOnboarding?: Pick<HotelAccountInviteRepository, "resolveForOnboarding">;
     handoffRepository?: AuthSessionHandoffRepository;
+    propertyAccessRepository?: PropertyAccessRepository;
   } = {},
 ) {
   const compatibilityCallbackOrigin =
@@ -4988,6 +5122,16 @@ function buildAuthSessionApp(
       profileImageMediaRepository: options.profileImageMediaRepository,
       hotelAccountInviteOnboarding: options.hotelAccountInviteOnboarding,
       handoffRepository: options.handoffRepository,
+      propertyAccessRepository: options.propertyAccessRepository ?? {
+        async findMembershipPropertyScope(context) {
+          return {
+            mode: "all",
+            roleKey: context.membership.roleKey,
+            accessOrigin: "agency",
+            assignedPropertyIds: [],
+          };
+        },
+      },
     },
   });
 }
