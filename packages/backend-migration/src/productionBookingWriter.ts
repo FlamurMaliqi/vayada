@@ -12,6 +12,12 @@ type WriterDefinition = {
 };
 const c = (jsonKey: string, sqlName: string, type: string): Column => [jsonKey, sqlName, type];
 const commonTimes = [c("createdAt", "created_at", "timestamptz"), c("updatedAt", "updated_at", "timestamptz")] as const;
+const WRITE_ORDER = [
+  "booking_settings", "addon_definitions", "promo_definitions", "quote_sessions",
+  "checkout_contexts", "guest_bookings", "booking_guests", "booking_addon_selections",
+  "promo_applications", "booking_status_events", "booking_change_requests",
+  "direct_booking_summary_read_model", "product_audit_events",
+];
 
 const WRITERS: Record<string, WriterDefinition> = {
   booking_settings: {
@@ -76,7 +82,9 @@ export async function writeProductionBookingRecords(
   for (const record of records)
     grouped.set(record.targetTable, [...(grouped.get(record.targetTable) ?? []), record]);
   const counts: Record<string, number> = {};
-  for (const [targetTable, rows] of grouped) {
+  for (const [targetTable, rows] of [...grouped].sort(
+    ([left], [right]) => WRITE_ORDER.indexOf(left) - WRITE_ORDER.indexOf(right),
+  )) {
     const definition = WRITERS[targetTable];
     if (!definition) throw new Error(`Unsupported Booking writer ${targetTable}`);
     const aliases = definition.columns.map(([jsonKey, , type]) => `"${jsonKey}" ${type}`).join(", ");
