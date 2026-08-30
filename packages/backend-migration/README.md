@@ -295,6 +295,47 @@ Apply is transactional and verifies the target before commit. Marketplace
 success does not authorize legacy shutdown: Finance, VAY-1359 through VAY-1363,
 the rollback window, and the final human cutover approval remain mandatory.
 
+## Production Finance Migration
+
+VAY-1358 consumes the exact Booking and PMS Finance rows from the immutable
+VAY-1351 extraction. It resolves property, organization, affiliate, and booking
+ownership only through accepted earlier migration links. Monetary parity uses
+exact decimal arithmetic. The migration never invokes a payment provider and
+never turns configuration flags into online-card execution evidence.
+
+Run the exact production dry run:
+
+```bash
+TARGET_DATABASE_URL=<target database> npm run target:finance:migrate -- \
+  --source-run-id vay1351-<24 lowercase hex characters> --dry-run
+```
+
+Any ambiguous owner, duplicate provider identity, invalid amount, newer target
+economic fact, unattributed webhook, checkout row lacking encrypted folio
+recipient evidence, or payout destination lacking an approved secrets-store
+reference is a hard blocker. Resolve every blocker and rerun the same immutable
+source run. The legacy extraction has no standalone expense rows and does not
+contain the encrypted recipient revisions, invoice identity, or immutable
+affiliate-payout command evidence required by the target. The migration never
+fabricates those records: affected checkout and completed affiliate-payout rows
+remain explicit blockers until reviewed canonical evidence is supplied. Legacy
+fixed-plan Stripe subscriptions also remain suspended and block migration until
+a reviewed provider cutover rebinds them to the target canonical tiered price
+and target property/organization metadata. After
+backup, source write freeze/queue, a reviewed blocker-free dry
+run, and explicit human go/no-go approval, apply with the run-bound guard:
+
+```bash
+TARGET_DATABASE_URL=<target database> npm run target:finance:migrate -- \
+  --source-run-id vay1351-<24 lowercase hex characters> --apply \
+  --confirm production-finance:vay1351-<same 24 lowercase hex characters>
+```
+
+Apply is transactional, locks Finance and its prerequisites, verifies exact
+write and provenance counts, then rereads the target before commit. Finance
+success does not authorize legacy shutdown: VAY-1359 through VAY-1363, the
+rollback window, and final human approval remain mandatory.
+
 ## Platform Media Parity
 
 `platform-media` is a target-only fixture that pins the registry contract before
