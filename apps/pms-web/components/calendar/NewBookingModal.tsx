@@ -159,9 +159,48 @@ export default function NewBookingModal({
   const [addonNotice, setAddonNotice] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [unavailableLinkedRoomTypeIds, setUnavailableLinkedRoomTypeIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [linkedAvailabilityLoading, setLinkedAvailabilityLoading] = useState(false);
 
   const selectedRoom = rooms.find((r) => r.id === roomId);
   const selectedRoomType = roomTypes.find((rt) => rt.id === selectedRoom?.roomTypeId);
+  const selectableRooms = rooms.filter(
+    (room) => !unavailableLinkedRoomTypeIds.has(room.roomTypeId),
+  );
+
+  useEffect(() => {
+    if (!checkIn || !checkOut || checkOut <= checkIn) {
+      setUnavailableLinkedRoomTypeIds(new Set());
+      setLinkedAvailabilityLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLinkedAvailabilityLoading(true);
+    calendarService
+      .getUnavailableLinkedRoomTypeIds(checkIn, checkOut)
+      .then((ids) => {
+        if (cancelled) return;
+        const unavailable = new Set(ids);
+        setUnavailableLinkedRoomTypeIds(unavailable);
+        setRoomId((current) => {
+          const currentRoom = rooms.find((room) => room.id === current);
+          if (currentRoom && !unavailable.has(currentRoom.roomTypeId)) return current;
+          return rooms.find((room) => !unavailable.has(room.roomTypeId))?.id || "";
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setUnavailableLinkedRoomTypeIds(new Set());
+      })
+      .finally(() => {
+        if (!cancelled) setLinkedAvailabilityLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [checkIn, checkOut, rooms]);
 
   // Fetch the booking-engine resolved rate whenever the room type or check-in
   // date changes. Falls back silently to the room type's baseRate on failure.
@@ -245,7 +284,7 @@ export default function NewBookingModal({
 
   // Group rooms by room type for the dropdown
   const roomsByType: Record<string, CalendarRoom[]> = {};
-  for (const r of rooms) {
+  for (const r of selectableRooms) {
     if (!roomsByType[r.roomTypeId]) roomsByType[r.roomTypeId] = [];
     roomsByType[r.roomTypeId].push(r);
   }
@@ -424,8 +463,10 @@ export default function NewBookingModal({
                 value={roomId}
                 onChange={(e) => handleRoomChange(e.target.value)}
                 className={inputCls}
+                disabled={linkedAvailabilityLoading || selectableRooms.length === 0}
                 required
               >
+                {selectableRooms.length === 0 && <option value="">No rooms available</option>}
                 {roomTypes.map((rt) => {
                   const typeRooms = roomsByType[rt.id] || [];
                   if (typeRooms.length === 0) return null;

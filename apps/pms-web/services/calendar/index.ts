@@ -122,6 +122,11 @@ export const calendarService = {
 
   createAdminBooking: (data: CreateAdminBookingPayload) => pmsClient.post("/admin/bookings", data),
 
+  getUnavailableLinkedRoomTypeIds: (checkIn: string, checkOut: string) =>
+    pmsClient.get<string[]>(
+      `/admin/linked-inventory-groups/unavailable-room-type-ids?check_in=${checkIn}&check_out=${checkOut}`,
+    ),
+
   listAvailableAddons: (roomId: string) =>
     pmsClient.get<BookingAddon[]>(`/admin/bookings/addons/available?room_id=${roomId}`),
 
