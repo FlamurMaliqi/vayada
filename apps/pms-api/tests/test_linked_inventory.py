@@ -83,12 +83,8 @@ class TestLinkedInventoryGroups:
     ):
         user = await create_test_user()
         hotel = await create_test_hotel(str(user["id"]))
-        first = await create_test_room_type(
-            str(hotel["id"]), name="One bedroom", total_rooms=2
-        )
-        second = await create_test_room_type(
-            str(hotel["id"]), name="Two bedrooms", total_rooms=2
-        )
+        first = await create_test_room_type(str(hotel["id"]), name="One bedroom", total_rooms=2)
+        second = await create_test_room_type(str(hotel["id"]), name="Two bedrooms", total_rooms=2)
         created = await create_group(
             client,
             user,
@@ -116,12 +112,19 @@ class TestLinkedInventoryGroups:
             f"/api/hotels/{hotel['slug']}/rooms",
             params={"check_in": "2026-10-01", "check_out": "2026-10-03"},
         )
+        unavailable = await client.get(
+            "/admin/linked-inventory-groups/unavailable-room-type-ids",
+            params={"check_in": "2026-10-01", "check_out": "2026-10-03"},
+            headers=get_auth_headers(user["token"]),
+        )
 
         assert response.status_code == 200
         assert {room["name"]: room["remainingRooms"] for room in response.json()} == {
             "One bedroom": 0,
             "Two bedrooms": 0,
         }
+        assert unavailable.status_code == 200
+        assert unavailable.json() == [str(first["id"]), str(second["id"])]
 
         with patch(
             "app.routers.admin_linked_inventory.push_ari_for_hotel",

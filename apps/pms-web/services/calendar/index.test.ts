@@ -167,6 +167,69 @@ describe("calendarService room order command", () => {
   });
 });
 
+describe("calendarService linked inventory blocks", () => {
+  it("visually blocks every room represented by a canonical linked block", async () => {
+    vi.clearAllMocks();
+    mocks.resolvePropertyId.mockResolvedValue("property-1");
+    mocks.get.mockImplementation(async (route: string) => {
+      if (route.endsWith("/room-types"))
+        return {
+          items: [
+            {
+              roomTypeId: "room-type-target",
+              name: "Double Room",
+              category: null,
+              attributes: {},
+              occupancyLimits: { total: 2 },
+              baseRate: { amountDecimal: "100", currency: "EUR" },
+              roomCount: 2,
+              ratePlans: [],
+            },
+          ],
+        };
+      if (route.endsWith("/rooms")) return { items: [], orderVersion: "room-order-v1" };
+      if (route.endsWith("/room-blocks?from=2026-09-03&to=2026-09-08"))
+        return {
+          items: [
+            {
+              ...targetBlock,
+              roomTypeId: "room-type-target",
+              roomId: null,
+              startsOn: "2026-09-03",
+              endsOn: "2026-09-07",
+              blockedCount: 1,
+              kind: "linked_manual_block",
+              sourceRoomTypeId: "room-type-source",
+              sourceRoomTypeName: "Superior King",
+              sourceSummary: "Block: Maintenance · Superior King",
+              protected: true,
+            },
+          ],
+        };
+      if (route.includes("/reservations?"))
+        return { items: [], pagination: { total: 0, limit: 500, offset: 0 } };
+      return { items: [] };
+    });
+
+    const result = await calendarService.getCalendarData("2026-09-03", "2026-09-08");
+
+    expect(result.blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          roomTypeId: "room-type-target",
+          startDate: "2026-09-03",
+          endDate: "2026-09-08",
+          blockedCount: 2,
+          kind: "linked_manual_block",
+          sourceRoomTypeName: "Superior King",
+          sourceSummary: "Block: Maintenance · Superior King",
+          protected: true,
+        }),
+      ]),
+    );
+  });
+});
+
 describe("calendarService manual-booking rates", () => {
   beforeEach(() => {
     vi.clearAllMocks();

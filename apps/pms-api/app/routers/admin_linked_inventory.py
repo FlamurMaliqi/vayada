@@ -1,6 +1,7 @@
 import asyncio
+from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from app.dependencies import require_hotel_admin
 from app.models.linked_inventory import (
@@ -21,6 +22,24 @@ router = APIRouter(prefix="/admin/linked-inventory-groups", tags=["admin-linked-
 async def list_linked_inventory_groups(user_id: str = Depends(require_hotel_admin)):
     hotel_id = await get_hotel_id(user_id)
     return await LinkedInventoryGroupRepository.list_by_hotel_id(hotel_id)
+
+
+@router.get("/unavailable-room-type-ids", response_model=list[str])
+async def list_unavailable_linked_room_type_ids(
+    check_in: date = Query(...),
+    check_out: date = Query(...),
+    user_id: str = Depends(require_hotel_admin),
+):
+    if check_out <= check_in:
+        raise HTTPException(status_code=422, detail="Check-out must be after check-in")
+
+    hotel_id = await get_hotel_id(user_id)
+    unavailable: list[str] = []
+    for group in await LinkedInventoryGroupRepository.list_by_hotel_id(hotel_id):
+        member_ids = group["member_room_type_ids"]
+        if await LinkedInventoryGroupRepository.has_activity(member_ids[0], check_in, check_out):
+            unavailable.extend(member_ids)
+    return unavailable
 
 
 @router.post("", response_model=LinkedInventoryGroupResponse, status_code=201)
