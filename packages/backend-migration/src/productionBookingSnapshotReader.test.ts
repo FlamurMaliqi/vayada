@@ -80,7 +80,11 @@ type SnapshotRow = {
   rowChecksum: string;
   rowData: string;
 };
-function snapshot(database: string, sourceTable: string, data: Record<string, unknown>): SnapshotRow {
+function snapshot(
+  database: string,
+  sourceTable: string,
+  data: Record<string, unknown>,
+): SnapshotRow {
   const rowData = JSON.stringify(data);
   return {
     snapshotIdentifier: `snapshot-${database}`,

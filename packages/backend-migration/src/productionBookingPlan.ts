@@ -53,7 +53,12 @@ export function reconcileProductionBookingRecords(
   for (const candidate of candidates) {
     const key = recordKey(candidate);
     if (seen.has(key)) {
-      blocker(context, "DUPLICATE_TARGET_RECORD", candidate, "More than one source mapping targets this row");
+      blocker(
+        context,
+        "DUPLICATE_TARGET_RECORD",
+        candidate,
+        "More than one source mapping targets this row",
+      );
       continue;
     }
     seen.add(key);
@@ -79,7 +84,11 @@ export function reconcileProductionBookingRecords(
   return {
     sourceRunId: context.sourceRunId,
     checksum: sha256({
-      records: accepted.map((record) => ({ key: recordKey(record), checksum: record.sourceChecksum, row: record.row })),
+      records: accepted.map((record) => ({
+        key: recordKey(record),
+        checksum: record.sourceChecksum,
+        row: record.row,
+      })),
       blockers: sortedBlockers,
     }),
     records: accepted,
@@ -102,7 +111,12 @@ function reconcile(
     if (!current) return "preserve_deletion";
     if (prior.sourceChecksum === candidate.sourceChecksum) return "unchanged";
     if (!candidate.mutable) {
-      blocker(context, "IMMUTABLE_SOURCE_CHANGED", candidate, "Legacy source changed after an immutable target row was migrated");
+      blocker(
+        context,
+        "IMMUTABLE_SOURCE_CHANGED",
+        candidate,
+        "Legacy source changed after an immutable target row was migrated",
+      );
       return "block";
     }
     if (current.updatedAt && Date.parse(current.updatedAt) > Date.parse(prior.lastMigratedAt))
@@ -112,18 +126,33 @@ function reconcile(
   if (!current) return "insert";
   if (sameRecord(candidate.row, current.row)) return "unchanged";
   if (!candidate.mutable) {
-    blocker(context, "TARGET_IMMUTABLE_CONFLICT", candidate, "Existing immutable target row differs from the source mapping");
+    blocker(
+      context,
+      "TARGET_IMMUTABLE_CONFLICT",
+      candidate,
+      "Existing immutable target row differs from the source mapping",
+    );
     return "block";
   }
   if (!candidate.sourceUpdatedAt || !current.updatedAt) {
-    blocker(context, "TARGET_FRESHNESS_UNKNOWN", candidate, "Cannot order source and target freshness safely");
+    blocker(
+      context,
+      "TARGET_FRESHNESS_UNKNOWN",
+      candidate,
+      "Cannot order source and target freshness safely",
+    );
     return "block";
   }
   const sourceTime = Date.parse(candidate.sourceUpdatedAt);
   const targetTime = Date.parse(current.updatedAt);
   if (targetTime > sourceTime) return "preserve_newer";
   if (targetTime === sourceTime) {
-    blocker(context, "TARGET_EQUAL_TIME_CONFLICT", candidate, "Source and target disagree at equal freshness");
+    blocker(
+      context,
+      "TARGET_EQUAL_TIME_CONFLICT",
+      candidate,
+      "Source and target disagree at equal freshness",
+    );
     return "block";
   }
   return "update";

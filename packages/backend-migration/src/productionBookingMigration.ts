@@ -133,10 +133,7 @@ export async function runProductionBookingTransaction(
   }
 }
 
-function assertWriteCounts(
-  planned: BookingTargetRecord[],
-  actual: Record<string, number>,
-): void {
+function assertWriteCounts(planned: BookingTargetRecord[], actual: Record<string, number>): void {
   const expected = new Map<string, number>();
   for (const row of planned)
     expected.set(row.targetTable, (expected.get(row.targetTable) ?? 0) + 1);

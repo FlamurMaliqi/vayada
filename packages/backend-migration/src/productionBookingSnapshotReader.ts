@@ -6,7 +6,11 @@ import { readProductionIdentitySnapshot } from "./productionIdentitySnapshotRead
 
 type QueryClient = Pick<pg.ClientBase, "query">;
 type BookingDatabase = "booking" | "pms";
-type SourceEvidence = { sourceDatabase: BookingDatabase; snapshotIdentifier: string; status: string };
+type SourceEvidence = {
+  sourceDatabase: BookingDatabase;
+  snapshotIdentifier: string;
+  status: string;
+};
 type TableEvidence = {
   sourceDatabase: BookingDatabase;
   sourceTable: string;
@@ -55,7 +59,8 @@ export async function readProductionBookingSnapshot(
     `SELECT completed_at::text AS "completedAt" FROM platform.source_extraction_runs WHERE id = $1`,
     [runId],
   );
-  if (!run.rows[0]?.completedAt) throw new Error(`Source extraction ${runId} has no completion time`);
+  if (!run.rows[0]?.completedAt)
+    throw new Error(`Source extraction ${runId} has no completion time`);
   const sourceResult = await client.query<SourceEvidence>(
     `SELECT source_database AS "sourceDatabase", snapshot_identifier AS "snapshotIdentifier", status
      FROM platform.source_extraction_sources

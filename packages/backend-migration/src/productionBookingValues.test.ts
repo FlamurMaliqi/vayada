@@ -12,16 +12,10 @@ import {
 
 describe("production Booking value mapping", () => {
   it("is deterministic across JSON key order", () => {
-    expect(stableJson({ b: 2, a: { d: 4, c: 3 } })).toBe(
-      stableJson({ a: { c: 3, d: 4 }, b: 2 }),
-    );
+    expect(stableJson({ b: 2, a: { d: 4, c: 3 } })).toBe(stableJson({ a: { c: 3, d: 4 }, b: 2 }));
     expect(sha256({ b: 2, a: 1 })).toBe(sha256({ a: 1, b: 2 }));
-    expect(deterministicUuid("booking", "one")).toBe(
-      deterministicUuid("booking", "one"),
-    );
-    expect(deterministicUuid("booking", "one")).not.toBe(
-      deterministicUuid("booking", "two"),
-    );
+    expect(deterministicUuid("booking", "one")).toBe(deterministicUuid("booking", "one"));
+    expect(deterministicUuid("booking", "one")).not.toBe(deterministicUuid("booking", "two"));
   });
 
   it("maps legacy lifecycle and payment states explicitly", () => {

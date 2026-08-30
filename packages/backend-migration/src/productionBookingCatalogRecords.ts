@@ -51,7 +51,11 @@ function settings(context: BookingBuildContext, source: IdentitySourceRow): Book
     propertyId,
     showAddonsStep: bool(data["show_addons_step"], "show_addons_step", true),
     groupAddonsByCategory: bool(data["group_addons_by_category"], "group_addons_by_category", true),
-    specialRequestsEnabled: bool(data["special_requests_enabled"], "special_requests_enabled", true),
+    specialRequestsEnabled: bool(
+      data["special_requests_enabled"],
+      "special_requests_enabled",
+      true,
+    ),
     arrivalTimeEnabled: bool(data["arrival_time_enabled"], "arrival_time_enabled", false),
     guestCountEnabled: bool(data["guest_count_enabled"], "guest_count_enabled", false),
     phoneRequired: bool(data["phone_required"], "phone_required", true),
@@ -194,7 +198,10 @@ function textArray(value: unknown, fallback: string[] = []): string[] {
 }
 
 function fontPairing(value: unknown): string {
-  const key = String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const key = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-");
   const mapped: Record<string, string> = {
     "modern-minimalist": "modern-minimalist",
     "inter-inter": "modern-minimalist",

@@ -146,16 +146,18 @@ function guestInput(payload: Record<string, unknown>) {
 }
 
 function quantity(value: unknown, addonId: unknown): number {
-  const object = value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+  const object =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
   return integer(object[String(addonId)], "addon quantity", 1);
 }
 
 function serviceDate(value: unknown, addonId: unknown): unknown {
-  const object = value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+  const object =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
   return object[String(addonId)] ?? null;
 }
 

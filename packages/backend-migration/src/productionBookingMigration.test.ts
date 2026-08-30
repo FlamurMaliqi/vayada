@@ -38,11 +38,7 @@ describe("production Booking migration transaction", () => {
     expect(client.sql[2]).toContain("LOCK TABLE booking.booking_settings");
     expect(client.sql.at(-1)).toBe("COMMIT");
     expect(services.writeRecords).toHaveBeenCalledTimes(1);
-    expect(services.writeProvenance).toHaveBeenCalledWith(
-      client,
-      expect.any(Array),
-      RUN,
-    );
+    expect(services.writeProvenance).toHaveBeenCalledWith(client, expect.any(Array), RUN);
   });
 
   it("rolls back when a writer count disagrees with the plan", async () => {

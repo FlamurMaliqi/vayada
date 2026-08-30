@@ -29,7 +29,8 @@ export function sourceId(row: IdentitySourceRow, fallbackField = "id"): string {
 }
 
 export function requiredText(value: unknown, field: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`${field} must be non-empty text`);
+  if (typeof value !== "string" || !value.trim())
+    throw new Error(`${field} must be non-empty text`);
   return value.trim();
 }
 
@@ -89,7 +90,8 @@ export function money(value: unknown, field: string, fallback?: string): string 
   if ((value === null || value === undefined || value === "") && fallback !== undefined)
     return fallback;
   const parsed = typeof value === "number" || typeof value === "string" ? Number(value) : NaN;
-  if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${field} must be non-negative money`);
+  if (!Number.isFinite(parsed) || parsed < 0)
+    throw new Error(`${field} must be non-negative money`);
   return parsed.toFixed(2);
 }
 
