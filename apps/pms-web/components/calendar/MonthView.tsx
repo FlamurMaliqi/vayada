@@ -134,8 +134,12 @@ export default function MonthView({
                               key={`block-${bl.id}-${day.toISOString()}`}
                               type="button"
                               onClick={() => onSelectBlock(bl)}
-                              title={`Blocked: ${bl.reason || "No reason"}\n${bl.startDate} → ${bl.endDate}`}
-                              className="w-full flex items-center gap-1 px-1 py-0.5 rounded text-[10px] font-medium bg-red-100 border border-red-300 border-dashed text-red-700 hover:bg-red-200 transition-colors truncate"
+                              title={`${bl.protected ? "Linked" : "Blocked"}: ${bl.sourceSummary || bl.reason || "No reason"}\n${bl.startDate} → ${bl.endDate}`}
+                              className={`w-full flex items-center gap-1 px-1 py-0.5 rounded text-[10px] font-medium border border-dashed transition-colors truncate ${
+                                bl.protected
+                                  ? "bg-amber-100 border-amber-300 text-amber-700 hover:bg-amber-200"
+                                  : "bg-red-100 border-red-300 text-red-700 hover:bg-red-200"
+                              }`}
                             >
                               <svg
                                 className="w-2.5 h-2.5 flex-shrink-0"
@@ -150,7 +154,9 @@ export default function MonthView({
                                   d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
                                 />
                               </svg>
-                              <span className="truncate">{bl.reason || "Blocked"}</span>
+                              <span className="truncate">
+                                {bl.protected ? "Linked" : bl.reason || "Blocked"}
+                              </span>
                             </button>
                           ))}
                           {dayBookings.map((b) => {

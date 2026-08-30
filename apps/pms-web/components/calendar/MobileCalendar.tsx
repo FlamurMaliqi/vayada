@@ -101,10 +101,7 @@ export default function MobileCalendar({
       const dayAt = findDayUnderPointer(ev.clientX, ev.clientY);
       const nextCurrent = dayAt ?? d.current;
       if (moved && ev.cancelable) ev.preventDefault();
-      if (
-        moved === d.moved &&
-        nextCurrent.getTime() === d.current.getTime()
-      ) {
+      if (moved === d.moved && nextCurrent.getTime() === d.current.getTime()) {
         return;
       }
       setDrag({ start: d.start, current: nextCurrent, moved });
@@ -471,10 +468,18 @@ export default function MobileCalendar({
                   <button
                     key={`block-${bl.id}`}
                     onClick={() => onSelectBlock(bl)}
-                    className="w-full bg-red-50 rounded-lg border border-dashed border-red-200 p-3 text-left hover:bg-red-100 transition-colors"
+                    className={`w-full rounded-lg border border-dashed p-3 text-left transition-colors ${
+                      bl.protected
+                        ? "bg-amber-50 border-amber-200 hover:bg-amber-100"
+                        : "bg-red-50 border-red-200 hover:bg-red-100"
+                    }`}
                   >
                     <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0">
+                      <div
+                        className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+                          bl.protected ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-600"
+                        }`}
+                      >
                         <svg
                           className="w-4 h-4"
                           fill="none"
@@ -490,19 +495,26 @@ export default function MobileCalendar({
                         </svg>
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="text-[13px] font-semibold text-red-700 truncate">
-                          {bl.reason || "Blocked"}
+                        <div
+                          className={`text-[13px] font-semibold truncate ${bl.protected ? "text-amber-700" : "text-red-700"}`}
+                        >
+                          {bl.protected ? "Linked inventory" : bl.reason || "Blocked"}
                         </div>
                         <div className="text-[11px] text-red-500">
                           {bl.startDate} → {bl.endDate}
                         </div>
                       </div>
                       <div className="text-right shrink-0">
-                        <span className="inline-flex px-1.5 py-0.5 rounded text-[9px] font-medium bg-red-100 text-red-700">
-                          Blocked
+                        <span
+                          className={`inline-flex px-1.5 py-0.5 rounded text-[9px] font-medium ${
+                            bl.protected ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
+                          }`}
+                        >
+                          {bl.protected ? "Linked" : "Blocked"}
                         </span>
                         <div className="text-[10px] text-red-400 mt-0.5 truncate max-w-[90px]">
-                          {bl.roomId ? `#${bl.roomNumber ?? ""}` : rt?.name || ""}
+                          {bl.sourceSummary ||
+                            (bl.roomId ? `#${bl.roomNumber ?? ""}` : rt?.name || "")}
                         </div>
                       </div>
                     </div>

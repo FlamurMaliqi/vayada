@@ -59,6 +59,11 @@ export interface CalendarBlock {
   blockedCount: number;
   reason: string;
   createdAt: string;
+  kind?: "manual" | "linked_booking" | "linked_manual_block";
+  sourceRoomTypeId?: string | null;
+  sourceRoomTypeName?: string | null;
+  sourceSummary?: string | null;
+  protected?: boolean;
 }
 
 export interface CalendarOccupancyDay {
@@ -76,6 +81,12 @@ export interface CalendarData {
   blocks: CalendarBlock[];
   occupancyDays?: CalendarOccupancyDay[];
 }
+
+type LinkedInventoryGroup = {
+  groupId: string;
+  name: string;
+  memberRoomTypeIds: string[];
+};
 
 export interface CreateRoomBlockPayload {
   roomTypeId: string;
@@ -109,8 +120,13 @@ export interface CreateAdminBookingPayload {
 }
 
 export const calendarService = {
-  getCalendarData: (start: string, end: string) =>
-    pmsClient.get<CalendarData>(`/admin/calendar?start=${start}&end=${end}`),
+  getCalendarData: async (start: string, end: string) => {
+    const [data, groups] = await Promise.all([
+      pmsClient.get<CalendarData>(`/admin/calendar?start=${start}&end=${end}`),
+      pmsClient.get<LinkedInventoryGroup[]>("/admin/linked-inventory-groups"),
+    ]);
+    return projectLinkedInventoryBlocks(data, groups);
+  },
 
   createRoomBlock: (data: CreateRoomBlockPayload) =>
     pmsClient.post<CalendarBlock[]>("/admin/room-blocks", data),
@@ -143,3 +159,114 @@ export const calendarService = {
   reorderRooms: (orderedRoomIds: string[]) =>
     pmsClient.patch("/admin/rooms/reorder", { orderedRoomIds }),
 };
+
+function projectLinkedInventoryBlocks(
+  data: CalendarData,
+  groups: LinkedInventoryGroup[],
+): CalendarData {
+  const groupByRoomType = new Map(
+    groups.flatMap((group) =>
+      group.memberRoomTypeIds.map((roomTypeId) => [roomTypeId, group] as const),
+    ),
+  );
+  const roomTypeById = new Map(data.roomTypes.map((roomType) => [roomType.id, roomType]));
+  const blocks = data.blocks.map((block) => {
+    const protectedBlock = block.protected ?? block.kind?.startsWith("linked_") ?? false;
+    return {
+      ...block,
+      protected: protectedBlock,
+      blockedCount:
+        protectedBlock && !block.roomId
+          ? Math.max(block.blockedCount, roomTypeById.get(block.roomTypeId)?.totalRooms ?? 0)
+          : block.blockedCount,
+    };
+  });
+  if (groupByRoomType.size === 0) return { ...data, blocks };
+  const projected = new Set(
+    blocks
+      .filter((block) => block.protected)
+      .map((block) =>
+        linkedBlockKey(
+          block.kind,
+          block.roomTypeId,
+          block.sourceRoomTypeId,
+          block.startDate,
+          block.endDate,
+        ),
+      ),
+  );
+
+  const add = (
+    sourceId: string,
+    sourceRoomTypeId: string,
+    startDate: string,
+    endDate: string,
+    kind: "linked_booking" | "linked_manual_block",
+    sourceSummary: string,
+    createdAt: string,
+  ) => {
+    const group = groupByRoomType.get(sourceRoomTypeId);
+    if (!group) return;
+    const sourceRoomTypeName = roomTypeById.get(sourceRoomTypeId)?.name ?? null;
+    for (const targetRoomTypeId of group.memberRoomTypeIds) {
+      if (targetRoomTypeId === sourceRoomTypeId) continue;
+      const key = linkedBlockKey(kind, targetRoomTypeId, sourceRoomTypeId, startDate, endDate);
+      if (projected.has(key)) continue;
+      projected.add(key);
+      blocks.push({
+        id: `linked-${kind}-${sourceId}-${targetRoomTypeId}`,
+        roomTypeId: targetRoomTypeId,
+        roomId: null,
+        roomNumber: null,
+        startDate,
+        endDate,
+        blockedCount: Math.max(roomTypeById.get(targetRoomTypeId)?.totalRooms ?? 0, 1),
+        reason: "Linked inventory",
+        createdAt,
+        kind,
+        sourceRoomTypeId,
+        sourceRoomTypeName,
+        sourceSummary,
+        protected: true,
+      });
+    }
+  };
+
+  for (const booking of data.bookings) {
+    const sourceRoomTypeName = roomTypeById.get(booking.roomTypeId)?.name ?? booking.roomName;
+    add(
+      `${booking.id}-${booking.roomPosition}-${booking.checkIn}-${booking.checkOut}`,
+      booking.roomTypeId,
+      booking.checkIn,
+      booking.checkOut,
+      "linked_booking",
+      [`Booking ${booking.bookingReference}`, sourceRoomTypeName].filter(Boolean).join(" · "),
+      `${booking.checkIn}T00:00:00.000Z`,
+    );
+  }
+  for (const block of blocks) {
+    if (block.protected) continue;
+    const sourceRoomTypeName = roomTypeById.get(block.roomTypeId)?.name ?? "";
+    add(
+      block.id,
+      block.roomTypeId,
+      block.startDate,
+      block.endDate,
+      "linked_manual_block",
+      [`Block: ${block.reason}`, sourceRoomTypeName].filter(Boolean).join(" · "),
+      block.createdAt,
+    );
+  }
+
+  return { ...data, blocks };
+}
+
+function linkedBlockKey(
+  kind: CalendarBlock["kind"],
+  roomTypeId: string,
+  sourceRoomTypeId: string | null | undefined,
+  startDate: string,
+  endDate: string,
+): string {
+  return [kind, roomTypeId, sourceRoomTypeId, startDate, endDate].join(":");
+}
