@@ -32,6 +32,7 @@ from datetime import date
 from app.database import Database
 from app.repositories.booking_change_request_repo import BookingChangeRequestRepository
 from app.repositories.booking_repo import BookingRepository
+from app.repositories.linked_inventory_group_repo import LinkedInventoryGroupRepository
 from app.repositories.room_type_repo import RoomTypeRepository
 from app.services.availability_service import compute_stay_pricing
 from app.services.booking_service import _compute_addon_total
@@ -167,6 +168,13 @@ async def _validate_and_price_change(
 
     rooms_needed = int(booking.get("number_of_rooms") or 1)
 
+    linked_stopped = await LinkedInventoryGroupRepository.has_activity(
+        str(booking["room_type_id"]),
+        payload_check_in,
+        payload_check_out,
+        exclude_booking_id=str(booking["id"]),
+    )
+
     # Availability — only the "extra" nights matter for room availability,
     # but the simplest correct implementation is: availability of the new
     # window minus the rooms this booking already holds in the overlap.
@@ -192,7 +200,7 @@ async def _validate_and_price_change(
     self_share = rooms_needed if self_overlaps else 0
     effective_booked = max(0, booked_others - self_share)
     remaining = max(0, room_type["total_rooms"] - effective_booked - blocked)
-    available = remaining >= rooms_needed
+    available = not linked_stopped and remaining >= rooms_needed
 
     (
         new_total,
@@ -406,6 +414,12 @@ async def approve_change(change_request_id: str, *, hotel_id: str | None = None)
     if room_type:
         from app.repositories.room_type_repo import RoomTypeRepository as RTR
 
+        linked_stopped = await LinkedInventoryGroupRepository.has_activity(
+            str(booking["room_type_id"]),
+            cr["requested_check_in"],
+            cr["requested_check_out"],
+            exclude_booking_id=str(booking["id"]),
+        )
         booked_others = await RTR.count_booked(
             str(booking["room_type_id"]),
             cr["requested_check_in"],
@@ -422,7 +436,7 @@ async def approve_change(change_request_id: str, *, hotel_id: str | None = None)
         self_share = rooms_needed if overlap_start < overlap_end else 0
         effective_booked = max(0, booked_others - self_share)
         remaining = max(0, room_type["total_rooms"] - effective_booked - blocked)
-        if remaining < rooms_needed:
+        if linked_stopped or remaining < rooms_needed:
             raise ValueError(
                 "Requested dates are no longer available — please decline this "
                 "request and ask the guest to pick different dates."

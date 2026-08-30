@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.database import Database
 from app.models.room_type import RoomTypeResponse, UnavailableDatesResponse
 from app.repositories.hotel_repo import HotelRepository
+from app.repositories.linked_inventory_group_repo import LinkedInventoryGroupRepository
 from app.repositories.room_type_repo import RoomTypeRepository
 from app.services.calendar_auto_open_service import has_sellable_rate_on_date, is_date_auto_open
 from app.services.room_type_service import get_hotel_id_by_slug, get_rooms_for_guest
@@ -96,6 +97,10 @@ async def get_unavailable_dates(
             min_advance = room.get("minimum_advance_days") or 0
             if min_advance > 0 and days_until < min_advance:
                 continue  # too soon for this room type, skip
+            if await LinkedInventoryGroupRepository.has_activity(
+                str(room["id"]), current, next_day
+            ):
+                continue
             booked = await RoomTypeRepository.count_booked(str(room["id"]), current, next_day)
             blocked = await RoomTypeRepository.count_blocked(str(room["id"]), current, next_day)
             remaining = total - booked - blocked

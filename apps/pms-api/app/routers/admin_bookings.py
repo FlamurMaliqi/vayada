@@ -34,6 +34,7 @@ from app.repositories.booking_note_repo import BookingNoteRepository
 from app.repositories.booking_repo import BookingRepository
 from app.repositories.booking_room_repo import BookingRoomRepository
 from app.repositories.checkin_checklist_repo import CheckinChecklistRepository
+from app.repositories.linked_inventory_group_repo import LinkedInventoryGroupRepository
 from app.repositories.payment_repo import PaymentRepository
 from app.repositories.payout_repo import PayoutRepository
 from app.repositories.room_repo import RoomRepository
@@ -297,6 +298,10 @@ async def create_admin_booking(
         raise HTTPException(status_code=400, detail="check_out must be after check_in")
 
     # Check room availability
+    if await LinkedInventoryGroupRepository.has_activity(
+        str(room["room_type_id"]), data.check_in, data.check_out
+    ):
+        raise HTTPException(status_code=409, detail="Linked inventory is unavailable")
     available = await BookingRepository.is_room_available(
         data.room_id, data.check_in, data.check_out
     )
@@ -478,6 +483,18 @@ async def update_booking_details(
             raise HTTPException(status_code=400, detail="check_out must be after check_in")
         room_type = await RoomTypeRepository.get_by_id(str(booking["room_type_id"]))
         _validate_max_stay(room_type, next_check_in, next_check_out)
+        if booking["status"] in (
+            "pending",
+            "confirmed",
+            "checked_in",
+            "in_house",
+        ) and await LinkedInventoryGroupRepository.has_activity(
+            str(booking["room_type_id"]),
+            next_check_in,
+            next_check_out,
+            exclude_booking_id=booking_id,
+        ):
+            raise HTTPException(status_code=409, detail="Linked inventory is unavailable")
     if should_reprice_addons and next_addon_ids:
         check_in = _as_date(updates.get("check_in", booking["check_in"]))
         check_out = _as_date(updates.get("check_out", booking["check_out"]))
@@ -595,6 +612,13 @@ async def update_booking_status(
         raise HTTPException(status_code=404, detail="Booking not found")
     if await PaymentRepository.has_active_stripe_refund(booking_id):
         raise HTTPException(status_code=409, detail="A refund is still processing")
+    if data.status == "confirmed" and await LinkedInventoryGroupRepository.has_activity(
+        str(booking["room_type_id"]),
+        booking["check_in"],
+        booking["check_out"],
+        exclude_booking_id=booking_id,
+    ):
+        raise HTTPException(status_code=409, detail="Linked inventory is unavailable")
 
     updated_status = (
         await BookingRepository.cancel_with_promo_reversal(booking_id)

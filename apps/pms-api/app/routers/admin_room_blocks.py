@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.database import Database
 from app.dependencies import require_hotel_admin
 from app.models.room_block import RoomBlockCreate, RoomBlockResponse, RoomBlockUpdate
+from app.repositories.linked_inventory_group_repo import LinkedInventoryGroupRepository
 from app.repositories.room_block_repo import RoomBlockRepository
 from app.repositories.room_repo import RoomRepository
 from app.repositories.room_type_repo import RoomTypeRepository
@@ -32,6 +33,16 @@ async def _check_block_availability(
     current = start_date
     while current < end_date:
         next_day = current + timedelta(days=1)
+        if await LinkedInventoryGroupRepository.has_activity(
+            room_type_id,
+            current,
+            next_day,
+            exclude_block_id=exclude_block_id,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Linked inventory is already stopped on {current.isoformat()}",
+            )
         booked = await RoomTypeRepository.count_booked(room_type_id, current, next_day)
         # Sum blocks overlapping this day, optionally excluding one block (for updates)
         if exclude_block_id:

@@ -136,6 +136,10 @@ async def cleanup_database(init_database):
             test_hotel_ids,
         )
         await Database.execute(
+            "DELETE FROM linked_inventory_groups WHERE hotel_id = ANY($1::uuid[])",
+            test_hotel_ids,
+        )
+        await Database.execute(
             "DELETE FROM room_types WHERE hotel_id = ANY($1::uuid[])",
             test_hotel_ids,
         )
