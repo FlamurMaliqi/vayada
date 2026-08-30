@@ -58,6 +58,20 @@ describe.skipIf(!URL)("production PMS snapshot reader (PostgreSQL)", () => {
         snapshotAt: "2026-08-30T01:02:03.000Z",
         completedAt: "2026-08-30T01:02:03.000Z",
       });
+
+      await client.query(
+        `ALTER TABLE platform.source_extraction_sources
+         DROP CONSTRAINT chk_source_extraction_source_snapshot_time`,
+      );
+      await client.query(
+        `UPDATE platform.source_extraction_sources
+         SET source_snapshot_at = NULL
+         WHERE run_id = $1 AND source_database = 'pms'`,
+        [RUN],
+      );
+      await expect(
+        readProductionPmsSnapshot(client, RUN, { validateRun: async () => [] }),
+      ).rejects.toThrow("invalid PMS snapshot time");
     } finally {
       await client.query("ROLLBACK");
     }

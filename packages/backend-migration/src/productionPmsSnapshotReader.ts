@@ -8,7 +8,7 @@ type QueryClient = Pick<pg.ClientBase, "query">;
 type SourceEvidence = {
   sourceDatabase: "pms";
   snapshotIdentifier: string;
-  snapshotAt: string;
+  snapshotAt: string | null;
   status: string;
 };
 type TableEvidence = {
@@ -87,6 +87,8 @@ export async function readProductionPmsSnapshot(
   const source = sourceResult.rows[0];
   if (sourceResult.rows.length !== 1 || source?.status !== "completed")
     throw new Error(`Source extraction ${runId} has incomplete PMS source evidence`);
+  if (!source.snapshotAt?.trim())
+    throw new Error(`Source extraction ${runId} has invalid PMS snapshot time`);
   const snapshotAt = new Date(source.snapshotAt);
   if (!Number.isFinite(snapshotAt.valueOf()))
     throw new Error(`Source extraction ${runId} has invalid PMS snapshot time`);
