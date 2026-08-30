@@ -11,6 +11,7 @@ import { buildApp } from "./app.js";
 import type {
   AuthKitClient,
   AuthKitSession,
+  AuthSurface,
   AuthSurfacePolicy,
   ProductAuditEvent,
 } from "./routes/authSession.js";
@@ -899,6 +900,7 @@ describe("AuthKit session routes", () => {
   it("signs up a hotel account through Google OAuth and provisions the hotel organization", async () => {
     const commands: IdentityLifecycleCommand[] = [];
     const auditEvents: ProductAuditEvent[] = [];
+    let identityCreated = false;
     let state = "";
     let signupOrganizationId = "";
     const googleSession: AuthKitSession = {
@@ -911,6 +913,12 @@ describe("AuthKit session routes", () => {
         id: "user_workos_google_hotel",
         email: "hotel-owner@example.test",
       },
+    };
+    const canonicalUser: IdentityUser = {
+      userId: "user_google_hotel",
+      email: googleSession.user.email,
+      name: googleSession.user.name,
+      status: "active",
     };
     app = buildAuthSessionApp({
       allowedOrigins: ["https://admin.booking.localhost"],
@@ -954,7 +962,7 @@ describe("AuthKit session routes", () => {
         },
       }),
       identityRepository: createIdentityRepository({
-        userByProviderUserId: async () => null,
+        userByProviderUserId: async () => (identityCreated ? canonicalUser : null),
         organizationByWorkosOrgId: async () => ({
           organizationId: "org_google_hotel",
           workosOrgId: signupOrganizationId,
@@ -973,11 +981,12 @@ describe("AuthKit session routes", () => {
       lifecycleCommandBus: {
         async execute(command) {
           commands.push(command);
+          identityCreated ||= command.commandType === "identity.user.create";
           return {
             status: "accepted",
             commandId: command.commandId,
             idempotencyKey: command.idempotencyKey,
-            userId: "user_google_hotel",
+            userId: canonicalUser.userId,
             events: [],
           };
         },
@@ -1023,6 +1032,12 @@ describe("AuthKit session routes", () => {
         commandType: "identity.user.create",
         payload: expect.objectContaining({
           legacyUserType: "hotel",
+        }),
+      }),
+      expect.objectContaining({
+        commandType: "identity.access.grant",
+        payload: expect.objectContaining({
+          userId: canonicalUser.userId,
           organization: expect.objectContaining({
             kind: "hotel_group",
             workosOrgId: signupOrganizationId,
@@ -1399,10 +1414,19 @@ describe("AuthKit session routes", () => {
     app = buildAuthSessionApp({
       allowedOrigins: ["https://marketplace.localhost"],
       authKitClient: createAuthKitClient({
+        async createUser() {
+          return { ...verifiedSession.user, emailVerified: false };
+        },
+        async authenticateWithPassword() {
+          throw {
+            code: "email_verification_required",
+            pending_authentication_token: "pending-creator-signup",
+          };
+        },
         async authenticateWithEmailVerification(input) {
           workosCalls.push("verify");
           expect(input).toMatchObject({
-            pendingAuthenticationToken: "pending-email-token",
+            pendingAuthenticationToken: "pending-creator-signup",
             code: "123456",
             userAgent: "vitest",
             ipAddress: expect.any(String),
@@ -1442,6 +1466,11 @@ describe("AuthKit session routes", () => {
       },
     });
 
+    const pendingAuthenticationToken = await beginPasswordSignup(app, {
+      email: verifiedSession.user.email,
+      surface: "marketplace-web",
+    });
+
     const response = await app.inject({
       method: "POST",
       url: "/auth/email-verification/confirm",
@@ -1450,7 +1479,7 @@ describe("AuthKit session routes", () => {
         "user-agent": "vitest",
       },
       payload: {
-        pendingAuthenticationToken: "pending-email-token",
+        pendingAuthenticationToken,
         code: "123456",
         flow: "signup",
         surface: "marketplace-web",
@@ -1484,109 +1513,131 @@ describe("AuthKit session routes", () => {
     expect(workosCalls).toEqual(["verify"]);
   });
 
-  it("creates a hotel group after PMS signup email verification", async () => {
+  it("completes PMS signup when the WorkOS user webhook arrives before verification", async () => {
     const commands: IdentityLifecycleCommand[] = [];
     const workosCalls: string[] = [];
+    let accessGranted = false;
+    let webhookArrived = false;
+    let signupPending = true;
+    const webhookUser: IdentityUser = {
+      userId: "user_webhook_first_hotel",
+      email: "webhook-first-hotel@example.test",
+      name: "Webhook First Hotel",
+      status: "active",
+    };
     const verifiedSession: AuthKitSession = {
       ...session,
       organizationId: undefined,
-      sealedSession: "verified-pms-unselected-session",
+      sealedSession: "webhook-first-unselected-session",
       user: {
-        id: "user_workos_verified_hotel",
-        email: "verified-hotel@example.test",
+        id: "user_workos_webhook_first_hotel",
+        email: webhookUser.email,
         emailVerified: true,
-        name: "Verified Hotel",
+        name: webhookUser.name,
       },
     };
     const selectedSession: AuthKitSession = {
       ...verifiedSession,
-      organizationId: "org_workos_signup_hotel",
-      sealedSession: "verified-pms-selected-session",
+      organizationId: "org_workos_webhook_first_hotel",
+      sealedSession: "webhook-first-selected-session",
     };
     app = buildAuthSessionApp({
       allowedOrigins: ["https://pms.localhost"],
       authKitClient: createAuthKitClient({
+        async createUser() {
+          return { ...verifiedSession.user, emailVerified: false };
+        },
+        async authenticateWithPassword() {
+          if (signupPending) {
+            signupPending = false;
+            throw {
+              code: "email_verification_required",
+              pending_authentication_token: "pending-webhook-first-token",
+            };
+          }
+          workosCalls.push("login");
+          return selectedSession;
+        },
         async authenticateWithEmailVerification() {
           workosCalls.push("verify");
           return verifiedSession;
         },
-        async createSignupOrganization(input) {
+        async createSignupOrganization() {
           workosCalls.push("create-org");
-          expect(input.metadata).toMatchObject({
-            surface: "pms-web",
-            signup_intent: "hotel",
-            organization_kind: "hotel_group",
-            role_key: "hotel_owner",
-          });
-          return { organizationId: "org_workos_signup_hotel" };
+          return { organizationId: "org_workos_webhook_first_hotel" };
         },
-        async ensureSignupOrganizationMembership(input) {
+        async ensureSignupOrganizationMembership() {
           workosCalls.push("member");
-          expect(input).toMatchObject({
-            workosUserId: "user_workos_verified_hotel",
-            workosOrganizationId: "org_workos_signup_hotel",
-            roleKey: "hotel_owner",
-          });
           return {
-            membershipId: "om_signup_hotel_owner",
+            membershipId: "om_webhook_first_hotel_owner",
             roleSlugs: ["hotel_owner"],
             status: "active",
           };
         },
-        async refreshSession(input) {
+        async refreshSession() {
           workosCalls.push("select-org");
-          expect(input).toEqual({
-            sealedSession: "verified-pms-unselected-session",
-            organizationId: "org_workos_signup_hotel",
-          });
           return selectedSession;
+        },
+        async updateUserExternalId(input) {
+          workosCalls.push("external-id");
+          expect(input).toEqual({
+            workosUserId: "user_workos_webhook_first_hotel",
+            externalId: webhookUser.userId,
+          });
         },
       }),
       identityRepository: createIdentityRepository({
-        userByProviderUserId: async () => null,
+        userByProviderUserId: async () => (webhookArrived ? webhookUser : null),
         organizationByWorkosOrgId: async () => ({
-          organizationId: "org_hotel_group",
-          workosOrgId: "org_workos_signup_hotel",
-          name: "Verified Hotel Hotel Group",
+          organizationId: "org_webhook_first_hotel",
+          workosOrgId: "org_workos_webhook_first_hotel",
+          name: "Webhook First Hotel Hotel Group",
           kind: "hotel_group",
           status: "active",
         }),
-        activeMembership: async () => ({
-          membershipId: "membership_hotel_owner",
-          status: "active",
-          roleKey: "hotel_owner",
-          workosMembershipId: "om_signup_hotel_owner",
-          workosRoleSlugs: ["hotel_owner"],
-        }),
+        activeMembership: async () =>
+          accessGranted
+            ? {
+                membershipId: "membership_webhook_first_hotel_owner",
+                status: "active",
+                roleKey: "hotel_owner",
+                workosMembershipId: "om_webhook_first_hotel_owner",
+                workosRoleSlugs: ["hotel_owner"],
+              }
+            : null,
       }),
       lifecycleCommandBus: {
         async execute(command) {
           commands.push(command);
+          webhookArrived ||= command.commandType === "identity.user.create";
+          accessGranted ||= command.commandType === "identity.access.grant";
           return {
             status: "accepted",
             commandId: command.commandId,
             idempotencyKey: command.idempotencyKey,
-            userId: "user_verified_hotel",
+            userId: webhookUser.userId,
+            organizationId: "org_webhook_first_hotel",
             events: [],
           };
         },
       },
       surfacePolicies: {
-        "pms-web": {
-          requiredOrganizationKind: "hotel_group",
-        },
+        "pms-web": { requiredOrganizationKind: "hotel_group" },
       },
     });
 
-    const response = await app.inject({
+    const pendingAuthenticationToken = await beginPasswordSignup(app, {
+      email: webhookUser.email,
+      surface: "pms-web",
+      type: "hotel",
+    });
+
+    const verification = await app.inject({
       method: "POST",
       url: "/auth/email-verification/confirm",
-      headers: {
-        origin: "https://pms.localhost",
-        "user-agent": "vitest",
-      },
+      headers: { origin: "https://pms.localhost" },
       payload: {
-        pendingAuthenticationToken: "pending-email-token",
+        pendingAuthenticationToken,
         code: "123456",
         flow: "signup",
         intent: "hotel",
@@ -1594,34 +1645,95 @@ describe("AuthKit session routes", () => {
       },
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      organizationId: "org_hotel_group",
-      workosOrganizationId: "org_workos_signup_hotel",
-      organizationKind: "hotel_group",
-      user: {
-        id: "user_verified_hotel",
-        email: "verified-hotel@example.test",
-        workosUserId: "user_workos_verified_hotel",
-      },
+    expect(verification.statusCode).toBe(200);
+    expect(verification.json()).toMatchObject({
+      organizationId: "org_webhook_first_hotel",
+      user: { id: webhookUser.userId },
     });
     expect(commands).toEqual([
       expect.objectContaining({
         commandType: "identity.user.create",
+        payload: expect.objectContaining({ legacyUserType: "hotel" }),
+      }),
+      expect.objectContaining({
+        commandType: "identity.access.grant",
+        idempotencyKey:
+          "workos-signup-access:user_workos_webhook_first_hotel:org_workos_webhook_first_hotel",
         payload: expect.objectContaining({
-          legacyUserType: "hotel",
+          userId: webhookUser.userId,
           organization: expect.objectContaining({
-            kind: "hotel_group",
-            workosOrgId: "org_workos_signup_hotel",
+            workosOrgId: "org_workos_webhook_first_hotel",
           }),
           membership: expect.objectContaining({
             roleKey: "hotel_owner",
-            permissionKeys: ["hotel_catalog.setup.read", "hotel_catalog.setup.manage"],
+            workosMembershipId: "om_webhook_first_hotel_owner",
           }),
         }),
       }),
     ]);
-    expect(workosCalls).toEqual(["verify", "create-org", "member", "select-org"]);
+    const login = await app.inject({
+      method: "POST",
+      url: "/auth/password/login",
+      headers: { origin: "https://pms.localhost" },
+      payload: {
+        email: webhookUser.email,
+        password: "correct-password",
+        surface: "pms-web",
+      },
+    });
+
+    expect(login.statusCode).toBe(200);
+    expect(login.json()).toMatchObject({
+      organizationId: "org_webhook_first_hotel",
+      user: { id: webhookUser.userId },
+    });
+    expect(workosCalls).toEqual([
+      "verify",
+      "create-org",
+      "member",
+      "select-org",
+      "external-id",
+      "login",
+    ]);
+
+    const relabeledLogin = await app.inject({
+      method: "POST",
+      url: "/auth/email-verification/confirm",
+      headers: { origin: "https://pms.localhost" },
+      payload: {
+        pendingAuthenticationToken: "pending-login-token",
+        code: "123456",
+        flow: "signup",
+        intent: "hotel",
+        surface: "pms-web",
+      },
+    });
+    expect(relabeledLogin.statusCode).toBe(400);
+
+    webhookUser.email = "conflicting-canonical-email@example.test";
+    const conflictingIdentity = await app.inject({
+      method: "POST",
+      url: "/auth/email-verification/confirm",
+      headers: { origin: "https://pms.localhost" },
+      payload: {
+        pendingAuthenticationToken,
+        code: "123456",
+        flow: "signup",
+        intent: "hotel",
+        surface: "pms-web",
+      },
+    });
+    expect(conflictingIdentity.statusCode).toBe(403);
+    expect(commands).toHaveLength(2);
+    expect(workosCalls).toEqual([
+      "verify",
+      "create-org",
+      "member",
+      "select-org",
+      "external-id",
+      "login",
+      "verify",
+    ]);
   });
 
   it("returns a controlled error for invalid WorkOS verification state", async () => {
@@ -1866,6 +1978,7 @@ describe("AuthKit session routes", () => {
   ])("keeps hotel organization provisioning for $surface password signup", async (scenario) => {
     const commands: IdentityLifecycleCommand[] = [];
     const workosCalls: string[] = [];
+    let identityCreated = false;
     const unsignedSession: AuthKitSession = {
       ...session,
       organizationId: undefined,
@@ -1876,6 +1989,12 @@ describe("AuthKit session routes", () => {
         emailVerified: true,
         name: "Hotel Signup",
       },
+    };
+    const canonicalUser: IdentityUser = {
+      userId: `user_${scenario.surface}`,
+      email: scenario.email,
+      name: unsignedSession.user.name,
+      status: "active",
     };
     app = buildAuthSessionApp({
       allowedOrigins: [
@@ -1944,7 +2063,7 @@ describe("AuthKit session routes", () => {
         },
       }),
       identityRepository: createIdentityRepository({
-        userByProviderUserId: async () => null,
+        userByProviderUserId: async () => (identityCreated ? canonicalUser : null),
         organizationByWorkosOrgId: async () => ({
           organizationId: scenario.organizationId,
           workosOrgId: scenario.workosOrgId,
@@ -1963,11 +2082,12 @@ describe("AuthKit session routes", () => {
       lifecycleCommandBus: {
         async execute(command) {
           commands.push(command);
+          identityCreated ||= command.commandType === "identity.user.create";
           return {
             status: "accepted",
             commandId: command.commandId,
             idempotencyKey: command.idempotencyKey,
-            userId: `user_${scenario.surface}`,
+            userId: canonicalUser.userId,
             events: [],
           };
         },
@@ -2015,6 +2135,12 @@ describe("AuthKit session routes", () => {
         commandType: "identity.user.create",
         payload: expect.objectContaining({
           legacyUserType: "hotel",
+        }),
+      }),
+      expect.objectContaining({
+        commandType: "identity.access.grant",
+        payload: expect.objectContaining({
+          userId: canonicalUser.userId,
           organization: expect.objectContaining({
             kind: "hotel_group",
             workosOrgId: scenario.workosOrgId,
@@ -2026,6 +2152,8 @@ describe("AuthKit session routes", () => {
         }),
       }),
     ]);
+    expect(commands[0]?.payload).not.toHaveProperty("organization");
+    expect(commands[0]?.payload).not.toHaveProperty("membership");
     expect(workosCalls).toEqual(["user", "password", "organization", "membership", "refresh"]);
   });
 
@@ -2135,9 +2263,10 @@ describe("AuthKit session routes", () => {
     expect(response.statusCode).toBe(403);
     expect(response.json()).toMatchObject({
       state: "email_verification_required",
-      pendingAuthenticationToken: "pending_email",
+      pendingAuthenticationToken: expect.any(String),
       emailVerificationId: "email_verification_signup",
     });
+    expect(response.json().pendingAuthenticationToken).not.toBe("pending_email");
     expect(resendCalled).toBe(false);
     expect(commands).toEqual([]);
   });
@@ -4788,6 +4917,23 @@ function createMemoryHandoffRepository(): {
       },
     },
   };
+}
+
+async function beginPasswordSignup(
+  app: ReturnType<typeof buildAuthSessionApp>,
+  input: { email: string; surface: AuthSurface; type?: "hotel" },
+): Promise<string> {
+  const response = await app.inject({
+    method: "POST",
+    url: "/auth/password/signup",
+    headers: { origin: `https://${input.surface === "pms-web" ? "pms" : "marketplace"}.localhost` },
+    payload: { ...input, password: "correct-password" },
+  });
+  const body = response.json() as { state?: string; pendingAuthenticationToken?: string };
+  expect(response.statusCode).toBe(403);
+  expect(body.state).toBe("email_verification_required");
+  expect(body.pendingAuthenticationToken).toEqual(expect.any(String));
+  return body.pendingAuthenticationToken!;
 }
 
 function buildAuthSessionApp(
