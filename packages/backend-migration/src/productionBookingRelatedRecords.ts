@@ -74,8 +74,8 @@ function additionalGuest(
     id,
     guestBookingId: bookingId,
     guestRole: "additional_guest",
-    firstName: String(data["first_name"] ?? ""),
-    lastName: String(data["last_name"] ?? ""),
+    firstName: requiredText(data["first_name"], "first_name"),
+    lastName: requiredText(data["last_name"], "last_name"),
     email: optionalText(data["email"], "email"),
     phone: optionalText(data["phone"], "phone"),
     countryCode: nationality.countryCodes[0] ?? null,
@@ -190,6 +190,8 @@ function promoRedemption(
   const promoId = uuid(data["promo_id"], "promo_id");
   if (!context.promoById.has(promoId)) throw new Error("promo_id has no source definition");
   const status = requiredText(data["status"], "status");
+  if (status !== "active" && status !== "reversed")
+    throw new Error(`promo redemption status ${status} is unsupported`);
   return promoApplication(
     context,
     source,

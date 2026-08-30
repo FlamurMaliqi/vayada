@@ -99,6 +99,37 @@ describe("production Booking reconciliation", () => {
     expect(newer.counts.preservedNewerTarget).toBe(1);
     expect(newer.provenance).toEqual([]);
   });
+
+  it("compares mapped columns using PostgreSQL JSON normalization", () => {
+    const candidate = {
+      ...record(),
+      row: {
+        amount: "12.50",
+        occurredAt: "2026-08-02T00:00:00.000Z",
+        optionalValue: undefined,
+        nested: { count: 2 },
+      },
+    };
+    const plan = reconcileProductionBookingRecords(
+      context({
+        records: [
+          existing(
+            {
+              amount: 12.5,
+              occurredAt: "2026-08-02T00:00:00+00:00",
+              optionalValue: null,
+              nested: { count: 2, databaseDefault: true },
+              databaseDefault: true,
+            },
+            "2026-08-02T00:00:00Z",
+          ),
+        ],
+      }),
+      [candidate],
+    );
+    expect(plan.counts.unchanged).toBe(1);
+    expect(plan.blockers).toEqual([]);
+  });
 });
 
 function record(): BookingTargetRecord {

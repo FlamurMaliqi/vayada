@@ -106,6 +106,7 @@ function booking(): IdentitySourceRow {
     payment_status: "captured",
     payment_method: "card",
     channel: "direct",
+    billing_plan_at_creation: "commission",
     rate_type: "flexible",
     created_at: "2026-08-01T00:00:00Z",
     updated_at: "2026-09-04T12:00:00Z",

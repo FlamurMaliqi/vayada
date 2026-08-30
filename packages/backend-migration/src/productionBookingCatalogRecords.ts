@@ -70,7 +70,7 @@ function settings(context: BookingBuildContext, source: IdentitySourceRow): Book
     customFilters: optionalObject(data["custom_filters"]),
     filterRooms: optionalObject(data["filter_rooms"]),
     sourceFreshness: { migrationRunId: context.sourceRunId, sourceUpdatedAt: updatedAt },
-    primaryColor: /^#[0-9a-f]{6}$/i.test(primaryColor) ? primaryColor.toUpperCase() : "#4F46E5",
+    primaryColor: primaryColorValue(primaryColor),
     fontPairing: fontPairing(data["branding_font_pairing"]),
     acceptanceMode: bool(data["instant_book"], "instant_book", false) ? "instant" : "request",
     updatedAt,
@@ -124,7 +124,7 @@ function promo(context: BookingBuildContext, source: IdentitySourceRow): Booking
     validUntil: optionalDate(data["valid_until"], "valid_until"),
     isActive: bool(data["is_active"], "is_active", true),
     maxUses: integer(data["max_uses"], "max_uses", 1),
-    useCount: integer(data["current_uses"] ?? data["use_count"], "current_uses", 0),
+    currentUses: integer(data["current_uses"] ?? data["use_count"], "current_uses", 0),
     status: bool(data["is_active"], "is_active", true) ? "active" : "retired",
     minBookingValue: data["min_booking_value"] ?? null,
     applicableRoomIds: data["applicable_room_ids"] ?? null,
@@ -214,7 +214,15 @@ function fontPairing(value: unknown): string {
     "italiana-serif": "italiana-serif",
     "italiana-source-sans-pro": "italiana-serif",
   };
-  return mapped[key] ?? "high-end-serif";
+  if (!key) return "high-end-serif";
+  if (!mapped[key]) throw new Error(`branding_font_pairing ${key} is unsupported`);
+  return mapped[key];
+}
+
+function primaryColorValue(value: string): string {
+  if (!value) return "#4F46E5";
+  if (!/^#[0-9a-f]{6}$/i.test(value)) throw new Error("branding_primary_color is invalid");
+  return value.toUpperCase();
 }
 
 function safeSourceId(row: IdentitySourceRow): string {

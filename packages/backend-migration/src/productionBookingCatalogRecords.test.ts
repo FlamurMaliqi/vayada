@@ -71,7 +71,11 @@ describe("production Booking catalog records", () => {
         hotel_slug: "hotel-one",
         event_type: "checkout_started",
         session_id: "session-1",
-        metadata: { page: "checkout", guestEmail: "private@example.test" },
+        metadata: {
+          page: "checkout",
+          guestEmail: "private@example.test",
+          context: { value: "private@example.test" },
+        },
         created_at: "2026-08-29T12:00:00Z",
       }),
     ];
@@ -91,8 +95,28 @@ describe("production Booking catalog records", () => {
     expect(audit["privatePayload"]).toEqual({
       page: "checkout",
       guestEmail: "private@example.test",
+      context: { value: "private@example.test" },
     });
     expect(audit["aiVisible"]).toBe(false);
+  });
+
+  it("blocks invalid branding instead of replacing source settings", () => {
+    for (const data of [
+      { branding_primary_color: "not-a-color" },
+      { branding_font_pairing: "unknown-fonts" },
+    ]) {
+      const context = createProductionBookingContext(
+        input([
+          row("booking_hotels", {
+            id: HOTEL,
+            updated_at: "2026-08-29T12:00:00Z",
+            ...data,
+          }),
+        ]),
+      );
+      expect(buildBookingCatalogRecords(context)).toEqual([]);
+      expect(context.blockers[0]).toMatchObject({ code: "INVALID_SOURCE_ROW" });
+    }
   });
 });
 

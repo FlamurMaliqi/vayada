@@ -101,7 +101,7 @@ const WRITERS: Record<string, WriterDefinition> = {
       c("validUntil", "valid_until", "date"),
       c("isActive", "is_active", "boolean"),
       c("maxUses", "max_uses", "integer"),
-      c("useCount", "current_uses", "integer"),
+      c("currentUses", "current_uses", "integer"),
       c("status", "status", "text"),
       c("minBookingValue", "min_booking_value", "numeric"),
       c("applicableRoomIds", "applicable_room_ids", "uuid[]"),

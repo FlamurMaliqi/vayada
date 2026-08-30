@@ -12,7 +12,7 @@ import type {
   ProductionBookingTargetState,
   ProductionMigrationSourceLink,
 } from "./productionBookingTypes.js";
-import { sha256, stableJson } from "./productionBookingValues.js";
+import { sha256 } from "./productionBookingValues.js";
 
 export function buildProductionBookingPlan(input: {
   sourceRunId: string;
@@ -236,7 +236,34 @@ function linkFor(
 }
 
 function sameRecord(expected: Record<string, unknown>, actual: Record<string, unknown>): boolean {
-  return stableJson(expected) === stableJson(actual);
+  return Object.entries(expected).every(([key, value]) => sameValue(value, actual[key]));
+}
+function sameValue(expected: unknown, actual: unknown): boolean {
+  if (expected === actual) return true;
+  if ((expected === undefined || expected === null) && actual === null) return true;
+  if (Array.isArray(expected))
+    return (
+      Array.isArray(actual) &&
+      expected.length === actual.length &&
+      expected.every((value, index) => sameValue(value, actual[index]))
+    );
+  if (expected && typeof expected === "object")
+    return (
+      !!actual &&
+      typeof actual === "object" &&
+      !Array.isArray(actual) &&
+      Object.entries(expected as Record<string, unknown>).every(([key, value]) =>
+        sameValue(value, (actual as Record<string, unknown>)[key]),
+      )
+    );
+  if (typeof expected === "string" && typeof actual === "number")
+    return expected.trim() !== "" && Number(expected) === actual;
+  if (typeof expected === "string" && typeof actual === "string" && isTimestamp(expected))
+    return isTimestamp(actual) && Date.parse(expected) === Date.parse(actual);
+  return false;
+}
+function isTimestamp(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value));
 }
 function targetKey(row: { targetProduct: string; targetTable: string; targetId: string }): string {
   return `${row.targetProduct}:${row.targetTable}:${row.targetId}`;

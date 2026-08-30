@@ -155,12 +155,34 @@ export function bookingPayment(value: unknown): string {
 }
 
 export function redactPrivate(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactPrivate);
-  if (!value || typeof value !== "object") return value;
-  const blocked = /email|phone|name|address|passport|birth|request|guest|token|secret/i;
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .filter(([key]) => !blocked.test(key))
-      .map(([key, entry]) => [key, redactPrivate(entry)]),
-  );
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const allowed = new Set([
+    "browser",
+    "campaign",
+    "count",
+    "currency",
+    "device",
+    "duration",
+    "event",
+    "language",
+    "medium",
+    "page",
+    "path",
+    "route",
+    "screen",
+    "source",
+    "step",
+  ]);
+  const result: Record<string, string | number | boolean> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (!allowed.has(key) || !isPublicMetadataValue(entry)) continue;
+    result[key] = entry;
+  }
+  return result;
+}
+
+function isPublicMetadataValue(value: unknown): value is string | number | boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "boolean") return true;
+  return typeof value === "string" && /^[a-z0-9_./:-]{1,120}$/i.test(value);
 }

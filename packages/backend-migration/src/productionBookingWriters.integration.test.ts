@@ -239,6 +239,7 @@ function booking(): IdentitySourceRow {
     payment_status: "captured",
     payment_method: "card",
     channel: "direct",
+    billing_plan_at_creation: "commission",
     addon_ids: [ADDON],
     addon_quantities: { [ADDON]: 1 },
     promo_code: "SUMMER",

@@ -41,6 +41,6 @@ describe("production Booking value mapping", () => {
         nested: { phone: "+1", count: 2 },
         accessToken: "secret",
       }),
-    ).toEqual({ page: "checkout", nested: { count: 2 } });
+    ).toEqual({ page: "checkout" });
   });
 });

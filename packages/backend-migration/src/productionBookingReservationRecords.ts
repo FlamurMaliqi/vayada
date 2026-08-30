@@ -226,7 +226,7 @@ function expectedPaymentMethod(value: unknown): string {
 }
 
 function billingPlan(value: unknown): string {
-  const plan = requiredText(value ?? "commission", "billing_plan_at_creation").toLowerCase();
+  const plan = requiredText(value, "billing_plan_at_creation").toLowerCase();
   if (plan !== "fixed" && plan !== "commission")
     throw new Error(`billing_plan_at_creation ${plan} is unsupported`);
   return plan;
