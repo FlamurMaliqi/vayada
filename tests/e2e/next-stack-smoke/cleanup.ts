@@ -2,11 +2,14 @@ import type { APIRequestContext } from "@playwright/test";
 
 import { waitForNoPublicOffer, type BookingResource, type Stay } from "./booking-lifecycle";
 import {
+  arrayField,
   authenticateSyntheticPlatformAdmin,
   createSyntheticPlatformAdmin,
   numberField,
   publicApi,
+  record,
   smokeRecoveryReceipt,
+  stringField,
   targetApi,
   workosApi,
   workosMembershipIdsForUser,
@@ -22,9 +25,11 @@ import {
 export type HotelResource = {
   api: JsonApi;
   addonItemIds?: string[];
+  ownerWorkosUserId?: string;
   propertyId: string;
   slug?: string;
   stay?: Stay;
+  workosOrganizationId?: string;
 };
 
 export async function cleanupSmokeResources(
@@ -34,6 +39,7 @@ export async function cleanupSmokeResources(
   bookings: BookingResource[],
   hotel?: HotelResource,
   platformAdmin?: SyntheticPlatformAdmin,
+  retirementPropertyIds: string[] = [],
 ): Promise<unknown[]> {
   const errors: unknown[] = [];
   const publicClient = publicApi(request);
@@ -103,43 +109,105 @@ export async function cleanupSmokeResources(
     }
   }
 
-  if (hotel) {
+  for (const propertyId of new Set(retirementPropertyIds)) {
     try {
       if (!platformAdmin) throw new Error("Synthetic Platform Admin was not created.");
-      await retireSmokeProperty(request, environment, platformAdmin, hotel.propertyId);
+      await retireSmokeProperty(request, environment, platformAdmin, propertyId);
     } catch (error) {
       errors.push(error);
       errors.push(
         new Error(
-          `Recovery required: recovery_run_id=${environment.runId} recovery_property_id=${hotel.propertyId} recovery_receipt=${smokeRecoveryReceipt(environment, environment.runId, hotel.propertyId)}`,
+          `Recovery required: recovery_run_id=${environment.runId} recovery_property_id=${propertyId} recovery_receipt=${smokeRecoveryReceipt(environment, environment.runId, propertyId)}`,
         ),
       );
     }
   }
 
   const workos = workosApi(request, environment.workosApiKey);
-  const userIds = new Set(users.map(({ id }) => id));
   const userRoles = new Map(users.map(({ id, role }) => [id, role]));
   for (const [role, qualifier] of [
     ["hotel", ""],
     ["hotel", "foreign-"],
     ["creator", ""],
+    ["staff", ""],
   ] as const) {
     try {
       const email = `qa-next-${qualifier}${role}-${environment.runId}@${environment.emailDomain}`;
       for (const userId of await workosUserIdsForEmail(request, environment.workosApiKey, email)) {
-        userIds.add(userId);
         userRoles.set(userId, role);
       }
     } catch (error) {
       errors.push(error);
     }
   }
-  const organizations = new Map<string, { role: "hotel" | "creator"; userId: string }>();
-  for (const userId of userIds) {
+  const staffUserIds = [...userRoles]
+    .filter(([, role]) => role === "staff")
+    .map(([userId]) => userId);
+  if (staffUserIds.length > 1) {
+    errors.push(new Error("Refusing to delete duplicate synthetic staff users."));
+    for (const userId of staffUserIds) userRoles.delete(userId);
+  }
+  for (const userId of staffUserIds.length === 1 ? staffUserIds : []) {
     try {
-      const role = userRoles.get(userId);
-      if (!role) throw new Error(`Synthetic WorkOS user ${userId} has no expected role.`);
+      if (!hotel?.workosOrganizationId || !hotel.ownerWorkosUserId) {
+        throw new Error("Synthetic staff organization ownership could not be proven.");
+      }
+      const email = `qa-next-staff-${environment.runId}@${environment.emailDomain}`;
+      const invitationResponse = await workos.json<Record<string, unknown>>(
+        "GET",
+        `/user_management/invitations?email=${encodeURIComponent(email)}&organization_id=${encodeURIComponent(hotel.workosOrganizationId)}&limit=100`,
+      );
+      const invitations = arrayField(invitationResponse, "data").map(record);
+      if (
+        invitations.length > 1 ||
+        invitations.some(
+          (invitation) =>
+            invitation.email !== email ||
+            invitation.organization_id !== hotel.workosOrganizationId ||
+            invitation.inviter_user_id !== hotel.ownerWorkosUserId ||
+            invitation.role_slug !== "hotel_member",
+        )
+      ) {
+        throw new Error("Refusing to revoke an unexpected synthetic staff invitation.");
+      }
+      const pendingInvitation = invitations.find(({ state }) => state === "pending");
+      if (pendingInvitation) {
+        const revoked = await workos.json<Record<string, unknown>>(
+          "POST",
+          `/user_management/invitations/${encodeURIComponent(stringField(pendingInvitation, "id"))}/revoke`,
+          null,
+        );
+        if (revoked.state !== "revoked") throw new Error("Staff invitation revocation failed.");
+      }
+      const membershipResponse = await workos.json<Record<string, unknown>>(
+        "GET",
+        `/user_management/organization_memberships?user_id=${encodeURIComponent(userId)}&statuses=active,pending,inactive&limit=100`,
+      );
+      const memberships = arrayField(membershipResponse, "data").map(record);
+      if (
+        memberships.length > 1 ||
+        memberships.some(
+          (membership) =>
+            membership.user_id !== userId ||
+            membership.organization_id !== hotel.workosOrganizationId,
+        )
+      ) {
+        throw new Error("Refusing to delete an unexpected synthetic staff membership.");
+      }
+      for (const membership of memberships) {
+        await workos.deleteIfPresent(
+          `/user_management/organization_memberships/${encodeURIComponent(stringField(membership, "id"))}`,
+        );
+      }
+    } catch (error) {
+      errors.push(error);
+      userRoles.delete(userId);
+    }
+  }
+  const organizations = new Map<string, { role: "hotel" | "creator"; userId: string }>();
+  for (const [userId, role] of userRoles) {
+    if (role === "staff") continue;
+    try {
       for (const organizationId of await workosOrganizationsForUser(
         request,
         environment.workosApiKey,
@@ -192,7 +260,7 @@ export async function cleanupSmokeResources(
   } catch (error) {
     errors.push(error);
   }
-  for (const userId of [...userIds].reverse()) {
+  for (const userId of [...userRoles.keys()].reverse()) {
     try {
       await workos.deleteIfPresent(`/user_management/users/${encodeURIComponent(userId)}`);
     } catch (error) {
@@ -255,7 +323,7 @@ async function retireSmokeProperty(
       confirmation: "RETIRE",
       reason: "Retire the isolated next-stack smoke property",
     },
-    { "Idempotency-Key": `next-smoke:${environment.runId}:property-retired` },
+    { "Idempotency-Key": `next-smoke:${environment.runId}:property-retired:${propertyId}` },
   );
   if (retirement.lifecycleStatus !== "retired") {
     throw new Error("Synthetic property retirement was not confirmed.");

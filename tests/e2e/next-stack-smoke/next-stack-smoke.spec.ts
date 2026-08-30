@@ -10,6 +10,7 @@ import {
 } from "@playwright/test";
 
 import {
+  JsonApi,
   NEXT_STACK_ORIGINS,
   arrayField,
   createSyntheticPlatformAdmin,
@@ -27,68 +28,141 @@ import {
   type SmokeEnvironment,
   type SyntheticPlatformAdmin,
   type SyntheticUser,
-  type JsonApi,
 } from "./support";
 import { runQuoteLifecycle, waitForOffer, type BookingResource } from "./booking-lifecycle";
 import { cleanupSmokeResources, recoverSmokeProperty, type HotelResource } from "./cleanup";
 import { configureGuestPolicyForManualBooking } from "./guest-policy";
 import { runManualBookingAcceptance } from "./manual-booking";
+import { expectPms, runRestrictedStaffAcceptance } from "./restricted-staff";
 import { runRoomShuffleAcceptance } from "./room-shuffle";
 
-test("fresh hotel and creator onboarding reaches every next-stack handoff and safe checkout", async ({
-  browser,
-  request,
-}, testInfo) => {
-  test.skip(
-    process.env.E2E_NEXT_STACK_SMOKE !== "1",
-    "This live smoke must be acknowledged with E2E_NEXT_STACK_SMOKE=1.",
-  );
-  test.setTimeout(15 * 60_000);
+type ForeignHotelResource = { accessToken: string; propertyId: string };
+type HotelFlowResource = HotelResource & {
+  ownerWorkosUserId: string;
+  secondaryPropertyId: string;
+  workosOrganizationId: string;
+};
+type SmokeResources = {
+  bookings: BookingResource[];
+  environment?: SmokeEnvironment;
+  hotel?: HotelResource;
+  platformAdmin?: SyntheticPlatformAdmin;
+  retirementPropertyIds: string[];
+  users: SyntheticUser[];
+};
 
-  const environment = loadSmokeEnvironment();
-  const { recoveryRunId, recoveryPropertyId, recoveryReceipt } = environment;
-  if (recoveryRunId && recoveryPropertyId && recoveryReceipt) {
-    await test.step("recover a failed synthetic property cleanup", () =>
-      recoverSmokeProperty(request, environment, recoveryRunId, recoveryPropertyId));
-    return;
-  }
-  const users: SyntheticUser[] = [];
-  const bookings: BookingResource[] = [];
-  let hotel: HotelResource | undefined;
-  let platformAdmin: SyntheticPlatformAdmin | undefined;
-  let primaryError: unknown;
+const smokeTest = test.extend<{ smokeResources: SmokeResources }>({
+  smokeResources: [
+    async ({ request }, use) => {
+      const resources: SmokeResources = {
+        bookings: [],
+        retirementPropertyIds: [],
+        users: [],
+      };
+      await use(resources);
+      if (!resources.environment) return;
 
-  try {
-    platformAdmin = await test.step("create temporary platform lifecycle approver", () =>
-      createSyntheticPlatformAdmin(request, environment));
-    const foreignHotelContext = await browser.newContext();
-    let foreignAccessToken: string;
-    try {
-      foreignAccessToken = await runForeignHotelFlow(
-        foreignHotelContext,
+      const errors = await cleanupSmokeResources(
         request,
-        environment,
-        users,
+        resources.environment,
+        resources.users,
+        resources.bookings,
+        resources.hotel,
+        resources.platformAdmin,
+        resources.retirementPropertyIds,
       );
+      if (errors.length) {
+        throw new AggregateError(
+          errors,
+          `Next-stack smoke cleanup failed: ${errors.map(errorMessage).join(" | ")}`,
+        );
+      }
+    },
+    { timeout: 5 * 60_000 },
+  ],
+});
+
+test("API transport failures do not expose authorization", async () => {
+  const secret = ["sk", "test", "FAKESECRET"].join("_");
+  const failure = new Error(`authorization: Bearer ${secret}`);
+  const fail = () => Promise.reject(failure);
+  const request = { fetch: fail } as unknown as APIRequestContext;
+  const api = new JsonApi(request, "https://example.test", `Bearer ${secret}`, fail);
+
+  await expect(api.json("GET", "/resource")).rejects.toThrow(/^GET \/resource request failed\.$/);
+  await expect(api.deleteIfPresent("/resource")).rejects.toThrow(
+    /^DELETE \/resource request failed\.$/,
+  );
+  await expect(expectPms(secret, "/resource", 200, undefined, fail)).rejects.toThrow(
+    /^GET \/resource request failed\.$/,
+  );
+});
+
+smokeTest(
+  "fresh hotel and creator onboarding reaches every next-stack handoff and safe checkout",
+  async ({ browser, request, smokeResources }, testInfo) => {
+    smokeTest.skip(
+      process.env.E2E_NEXT_STACK_SMOKE !== "1",
+      "This live smoke must be acknowledged with E2E_NEXT_STACK_SMOKE=1.",
+    );
+    smokeTest.setTimeout(15 * 60_000);
+
+    const environment = loadSmokeEnvironment();
+    const { recoveryRunId, recoveryPropertyId, recoveryReceipt } = environment;
+    if (recoveryRunId && recoveryPropertyId && recoveryReceipt) {
+      await test.step("recover a failed synthetic property cleanup", () =>
+        recoverSmokeProperty(request, environment, recoveryRunId, recoveryPropertyId));
+      return;
+    }
+    smokeResources.environment = environment;
+    const { users, bookings, retirementPropertyIds } = smokeResources;
+
+    const platformAdmin = await test.step("create temporary platform lifecycle approver", () =>
+      createSyntheticPlatformAdmin(request, environment));
+    smokeResources.platformAdmin = platformAdmin;
+    const foreignHotelContext = await browser.newContext();
+    let foreignHotel: ForeignHotelResource;
+    try {
+      foreignHotel = await runForeignHotelFlow(foreignHotelContext, request, environment, users);
     } finally {
       await foreignHotelContext.close();
     }
+    retirementPropertyIds.push(foreignHotel.propertyId);
+    const registerHotel = (resource: HotelResource): void => {
+      smokeResources.hotel = resource;
+      retirementPropertyIds.push(resource.propertyId);
+    };
 
     const hotelContext = await browser.newContext();
     try {
-      hotel = await runHotelFlow(
+      const completedHotel = await runHotelFlow(
         hotelContext,
         request,
         environment,
         users,
         bookings,
-        foreignAccessToken,
+        foreignHotel.accessToken,
         platformAdmin,
         testInfo,
-        (resource) => {
-          hotel = resource;
-        },
+        registerHotel,
       );
+      const staff = await test.step("create a unique verified staff identity", async () => {
+        const created = await createSyntheticUser(request, environment, "staff");
+        users.push(created);
+        return created;
+      });
+      await runRestrictedStaffAcceptance({
+        assignedPropertyId: completedHotel.propertyId,
+        browser,
+        environment,
+        foreignPropertyId: foreignHotel.propertyId,
+        ownerApi: completedHotel.api,
+        ownerWorkosOrganizationId: completedHotel.workosOrganizationId,
+        ownerWorkosUserId: completedHotel.ownerWorkosUserId,
+        replacementPropertyId: completedHotel.secondaryPropertyId,
+        request,
+        staff,
+      });
     } finally {
       await hotelContext.close();
     }
@@ -99,29 +173,8 @@ test("fresh hotel and creator onboarding reaches every next-stack handoff and sa
     } finally {
       await creatorContext.close();
     }
-  } catch (error) {
-    primaryError = error;
-  }
-
-  const cleanupErrors = await cleanupSmokeResources(
-    request,
-    environment,
-    users,
-    bookings,
-    hotel,
-    platformAdmin,
-  );
-  if (primaryError && cleanupErrors.length === 0) throw primaryError;
-  if (cleanupErrors.length) {
-    const failures = [primaryError, ...cleanupErrors].filter((error): error is unknown =>
-      Boolean(error),
-    );
-    throw new AggregateError(
-      failures,
-      `Next-stack smoke failed; cleanup failures: ${cleanupErrors.length}; ${failures.map(errorMessage).join(" | ")}`,
-    );
-  }
-});
+  },
+);
 
 async function runHotelFlow(
   context: BrowserContext,
@@ -133,7 +186,7 @@ async function runHotelFlow(
   platformAdmin: SyntheticPlatformAdmin,
   testInfo: TestInfo,
   registerHotel: (resource: HotelResource) => void,
-): Promise<HotelResource> {
+): Promise<HotelFlowResource> {
   const page = await context.newPage();
   const user = await test.step("create a unique verified hotel identity", async () => {
     const created = await createSyntheticUser(request, environment, "hotel");
@@ -202,6 +255,34 @@ async function runHotelFlow(
       );
       const propertyId = stringField(property, "propertyId");
       registerHotel({ api, propertyId });
+
+      const secondaryProperty = await api.json<Record<string, unknown>>(
+        "POST",
+        "/api/hotel-setup/properties",
+        {
+          displayName: `QA Restricted Hotel ${environment.runId}`,
+          propertyType: "hotel",
+          location: {
+            streetAddress: "Unter den Linden 1",
+            postalCode: "10117",
+            city: "Berlin",
+            countryCode: "DE",
+            timezone: "Europe/Berlin",
+            latitude: null,
+            longitude: null,
+            localityPublic: false,
+            geoPublic: false,
+            mapDisplayMode: "hidden",
+          },
+          contacts: [
+            { channelType: "email", value: user.email, purpose: "general", isPublic: false },
+            { channelType: "phone", value: "+49 30 5550104", purpose: "general", isPublic: false },
+          ],
+        },
+        { "Idempotency-Key": `next-smoke:${environment.runId}:restricted-property` },
+      );
+      const secondaryPropertyId = stringField(secondaryProperty, "propertyId");
+      registerHotel({ api, propertyId: secondaryPropertyId });
 
       await api.json("PUT", `/api/hotel-setup/properties/${propertyId}/launch-settings`, {
         defaultCurrency: "EUR",
@@ -278,7 +359,7 @@ async function runHotelFlow(
         terms_text: "Guests agree to the QA smoke terms. No real payment is collected.",
         cancellation_policy_text: "Free cancellation follows the selected flexible rate terms.",
       });
-      return { propertyId, roomTypeId };
+      return { propertyId, roomTypeId, secondaryPropertyId };
     });
 
   const stay = futureStay();
@@ -349,7 +430,12 @@ async function runHotelFlow(
         canonicalUrl: stringField(result, "canonicalUrl"),
         slug: stringField(result, "canonicalSlug"),
       };
-      registerHotel({ api, propertyId: setup.propertyId, slug: published.slug, stay });
+      registerHotel({
+        api,
+        propertyId: setup.propertyId,
+        slug: published.slug,
+        stay,
+      });
       return published;
     });
 
@@ -374,9 +460,12 @@ async function runHotelFlow(
   const resource = {
     api,
     addonItemIds: [] as string[],
+    ownerWorkosUserId: user.id,
     propertyId: setup.propertyId,
+    secondaryPropertyId: setup.secondaryPropertyId,
     slug: publication.slug,
     stay,
+    workosOrganizationId: session.workosOrganizationId,
   };
   registerHotel(resource);
   await configureGuestPolicyForManualBooking({
@@ -429,7 +518,7 @@ async function runForeignHotelFlow(
   request: APIRequestContext,
   environment: SmokeEnvironment,
   users: SyntheticUser[],
-): Promise<string> {
+): Promise<ForeignHotelResource> {
   const page = await context.newPage();
   const user = await createSyntheticUser(request, environment, "hotel", "foreign");
   users.push(user);
@@ -453,7 +542,7 @@ async function runForeignHotelFlow(
     { selectedTracks: ["hotel_operations"], expectedRevision: 0 },
     { "Idempotency-Key": `next-smoke:${environment.runId}:foreign-tracks` },
   );
-  await api.json(
+  const property = await api.json<Record<string, unknown>>(
     "POST",
     "/api/hotel-setup/properties",
     {
@@ -478,7 +567,7 @@ async function runForeignHotelFlow(
     },
     { "Idempotency-Key": `next-smoke:${environment.runId}:foreign-property` },
   );
-  return session.accessToken;
+  return { accessToken: session.accessToken, propertyId: stringField(property, "propertyId") };
 }
 
 async function runCreatorFlow(

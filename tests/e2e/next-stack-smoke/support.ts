@@ -30,6 +30,7 @@ export type AuthSession = {
   organizationId: string;
   workosOrganizationId: string;
   organizationKind: "creator_workspace" | "hotel_group";
+  resources?: Record<string, string[]>;
   user: { id: string; email: string; workosUserId?: string };
 };
 
@@ -38,7 +39,7 @@ export type SyntheticUser = {
   email: string;
   firstName: string;
   lastName: string;
-  role: "hotel" | "creator";
+  role: "hotel" | "creator" | "staff";
 };
 
 export type SyntheticPlatformAdmin = {
@@ -57,6 +58,7 @@ export class JsonApi {
     private readonly request: APIRequestContext,
     private readonly origin: string,
     private readonly authorization?: string,
+    private readonly nativeFetch: typeof globalThis.fetch = globalThis.fetch,
   ) {}
 
   async json<T>(
@@ -66,18 +68,10 @@ export class JsonApi {
     headers: Record<string, string> = {},
     timeout?: number,
   ): Promise<T> {
-    const response = await this.request.fetch(new URL(route, this.origin).toString(), {
-      method,
-      ...(timeout === undefined ? {} : { timeout }),
-      headers: {
-        ...(this.authorization ? { authorization: this.authorization } : {}),
-        ...headers,
-      },
-      ...(body === undefined ? {} : { data: body }),
-    });
+    const response = await this.send(method, route, body, headers, timeout);
     const text = await response.text();
-    if (!response.ok()) {
-      throw new Error(`${method} ${route} returned ${response.status()}: ${safeError(text)}`);
+    if (!response.ok) {
+      throw new Error(`${method} ${route} returned ${response.status}: ${safeError(text)}`);
     }
     if (!text) return undefined as T;
     try {
@@ -88,13 +82,48 @@ export class JsonApi {
   }
 
   async deleteIfPresent(route: string): Promise<void> {
-    const response = await this.request.delete(new URL(route, this.origin).toString(), {
-      headers: this.authorization ? { authorization: this.authorization } : {},
-    });
-    if (!response.ok() && response.status() !== 404) {
+    const response = await this.send("DELETE", route);
+    if (!response.ok && response.status !== 404) {
       throw new Error(
-        `DELETE ${route} returned ${response.status()}: ${safeError(await response.text())}`,
+        `DELETE ${route} returned ${response.status}: ${safeError(await response.text())}`,
       );
+    }
+  }
+
+  private async send(
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    route: string,
+    body?: unknown,
+    headers: Record<string, string> = {},
+    timeout?: number,
+  ): Promise<{ ok: boolean; status: number; text(): Promise<string> }> {
+    const url = new URL(route, this.origin).toString();
+    try {
+      if (this.authorization) {
+        return await this.nativeFetch(url, {
+          method,
+          ...(timeout === 0 ? {} : { signal: AbortSignal.timeout(timeout ?? 30_000) }),
+          headers: {
+            ...(body === undefined ? {} : { "content-type": "application/json" }),
+            authorization: this.authorization,
+            ...headers,
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+      }
+      const response = await this.request.fetch(url, {
+        method,
+        ...(timeout === undefined ? {} : { timeout }),
+        headers,
+        ...(body === undefined ? {} : { data: body }),
+      });
+      return {
+        ok: response.ok(),
+        status: response.status(),
+        text: () => response.text(),
+      };
+    } catch {
+      throw new Error(`${method} ${route} request failed.`);
     }
   }
 }
@@ -201,10 +230,10 @@ export function syntheticPlatformAdminEmail(
 export async function createSyntheticUser(
   request: APIRequestContext,
   environment: SmokeEnvironment,
-  role: "hotel" | "creator",
+  role: SyntheticUser["role"],
   qualifier = "",
 ): Promise<SyntheticUser> {
-  const firstName = role === "hotel" ? "Harper" : "Casey";
+  const firstName = role === "hotel" ? "Harper" : role === "creator" ? "Casey" : "Sam";
   const lastName = `Smoke ${environment.runId.slice(-8)}`;
   const email = `qa-next-${qualifier ? `${qualifier}-` : ""}${role}-${environment.runId}@${environment.emailDomain}`;
   const api = workosApi(request, environment.workosApiKey);
@@ -307,15 +336,33 @@ export async function login(page: Page, user: SyntheticUser, password: string): 
   }
 }
 
-export async function readAuthSession(page: Page): Promise<AuthSession> {
-  const result = await page.evaluate(async () => {
-    const response = await fetch("/auth/session?surface=marketplace-web", {
+export async function loginPms(page: Page, user: SyntheticUser, password: string): Promise<void> {
+  const response = await page
+    .context()
+    .request.post(`${NEXT_STACK_ORIGINS.pms}/auth/password/login`, {
+      headers: { origin: NEXT_STACK_ORIGINS.pms },
+      data: { email: user.email, password, surface: "pms-web" },
+    });
+  if (!response.ok()) {
+    throw new Error(
+      `PMS password login returned ${response.status()}: ${safeError(await response.text())}`,
+    );
+  }
+  await page.goto(`${NEXT_STACK_ORIGINS.pms}/login`);
+}
+
+export async function readAuthSession(
+  page: Page,
+  surface: "marketplace-web" | "pms-web" = "marketplace-web",
+): Promise<AuthSession> {
+  const result = await page.evaluate(async (requestedSurface) => {
+    const response = await fetch(`/auth/session?surface=${requestedSurface}`, {
       credentials: "include",
     });
     return { status: response.status, body: await response.text() };
-  });
+  }, surface);
   if (result.status !== 200) {
-    throw new Error(`Marketplace session returned ${result.status}: ${safeError(result.body)}`);
+    throw new Error(`${surface} session returned ${result.status}: ${safeError(result.body)}`);
   }
   const session = JSON.parse(result.body) as Partial<AuthSession>;
   for (const field of [
@@ -330,7 +377,7 @@ export async function readAuthSession(page: Page): Promise<AuthSession> {
     session.organizationKind !== "hotel_group" &&
     session.organizationKind !== "creator_workspace"
   ) {
-    throw new Error("Marketplace session has the wrong organization kind.");
+    throw new Error(`${surface} session has the wrong organization kind.`);
   }
   return session as AuthSession;
 }

@@ -27,7 +27,7 @@ jobs:
   smoke:
     name: Verify deployed next stack
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     environment: next-smoke
     env:
       CI: "true"
