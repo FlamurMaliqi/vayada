@@ -34,7 +34,7 @@ import { cleanupSmokeResources, recoverSmokeProperty, type HotelResource } from 
 import { configureGuestPolicyForManualBooking } from "./guest-policy";
 import { runManualBookingAcceptance } from "./manual-booking";
 import { expectPms, runRestrictedStaffAcceptance } from "./restricted-staff";
-import { runRoomShuffleAcceptance } from "./room-shuffle";
+import { replayAmbiguousUiBooking, runRoomShuffleAcceptance } from "./room-shuffle";
 
 type ForeignHotelResource = { accessToken: string; propertyId: string };
 type HotelFlowResource = HotelResource & {
@@ -96,6 +96,62 @@ test("API transport failures do not expose authorization", async () => {
   await expect(expectPms(secret, "/resource", 200, undefined, fail)).rejects.toThrow(
     /^GET \/resource request failed\.$/,
   );
+});
+
+test("ambiguous UI booking replay registers the exact request for cleanup", async () => {
+  const originalError = new Error("browser response timed out"),
+    body = { commandId: "same-command", idempotencyKey: "same-key" },
+    bookings: BookingResource[] = [];
+  let replayedBody: unknown;
+  const api = {
+    async json(_method: string, _path: string, requestBody: unknown) {
+      replayedBody = requestBody;
+      return { guestBookingId: "booking-1" };
+    },
+  } as unknown as JsonApi;
+
+  await expect(
+    replayAmbiguousUiBooking(
+      { api, bookings, slug: "synthetic-hotel" },
+      "/api/pms/properties/property-1/manual-bookings",
+      body,
+      "synthetic@example.test",
+      originalError,
+    ),
+  ).rejects.toBe(originalError);
+  expect(replayedBody).toBe(body);
+  expect(bookings).toEqual([
+    {
+      bookingId: "booking-1",
+      email: "synthetic@example.test",
+      mode: "instant",
+      resolved: false,
+      slug: "synthetic-hotel",
+    },
+  ]);
+});
+
+test("ambiguous UI booking replay exposes recovery failure without false registration", async () => {
+  const originalError = new Error("browser response timed out"),
+    replayError = new Error("idempotent replay failed"),
+    bookings: BookingResource[] = [],
+    api = {
+      async json() {
+        throw replayError;
+      },
+    } as unknown as JsonApi;
+
+  const failure = await replayAmbiguousUiBooking(
+    { api, bookings, slug: "synthetic-hotel" },
+    "/api/pms/properties/property-1/manual-bookings",
+    { commandId: "same-command", idempotencyKey: "same-key" },
+    "synthetic@example.test",
+    originalError,
+  ).catch((error: unknown) => error);
+
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect((failure as AggregateError).errors).toEqual([originalError, replayError]);
+  expect(bookings).toEqual([]);
 });
 
 smokeTest(

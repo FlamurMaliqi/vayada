@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type Page, type Request, type TestInfo } from "@playwright/test";
 
 import type { BookingResource } from "./booking-lifecycle";
 import {
@@ -439,18 +439,60 @@ async function createUiBooking(
   const submit = dialog.getByRole("button", { name: "Create booking" });
   await expect(submit).toBeEnabled({ timeout: 15_000 });
   if (observeToast) await startToastObservation(page);
+  const bookingPath = `/api/pms/properties/${propertyId}/manual-bookings`;
+  let submittedRequest: Request | undefined;
+  let resource: BookingResource | undefined;
+  const captureSubmission = (request: Request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === bookingPath) {
+      submittedRequest = request;
+    }
+  };
+  page.on("request", captureSubmission);
   const responsePromise = page.waitForResponse(
     (response) =>
-      response.request().method() === "POST" &&
-      new URL(response.url()).pathname === `/api/pms/properties/${propertyId}/manual-bookings`,
+      response.request().method() === "POST" && new URL(response.url()).pathname === bookingPath,
+    { timeout: 45_000 },
   );
-  await submit.click();
-  const response = await responsePromise;
-  expect(response.status(), await response.text()).toBe(201);
-  const result = record(await response.json()),
+  try {
+    const [, response] = await Promise.all([submit.click(), responsePromise]);
+    expect(response.status(), await response.text()).toBe(201);
+    const result = record(await response.json());
     resource = registerBooking(args, result, email);
-  await expect(dialog).toBeHidden();
-  return { result, resource, assignment: await assignment(args, resource.bookingId) };
+    await expect(dialog).toBeHidden();
+    return { result, resource, assignment: await assignment(args, resource.bookingId) };
+  } catch (error) {
+    if (!submittedRequest || resource) throw error;
+    return replayAmbiguousUiBooking(
+      args,
+      bookingPath,
+      submittedRequest.postDataJSON(),
+      email,
+      error,
+    );
+  } finally {
+    page.off("request", captureSubmission);
+  }
+}
+
+export async function replayAmbiguousUiBooking(
+  args: Pick<Args, "api" | "bookings" | "slug">,
+  bookingPath: string,
+  requestBody: unknown,
+  email: string,
+  originalError: unknown,
+): Promise<never> {
+  try {
+    const replayed = record(
+      await args.api.json("POST", bookingPath, record(requestBody), {}, 45_000),
+    );
+    registerBooking(args, replayed, email);
+  } catch (replayError) {
+    throw new AggregateError(
+      [originalError, replayError],
+      "UI booking failed and its idempotent cleanup registration failed.",
+    );
+  }
+  throw originalError;
 }
 
 async function startToastObservation(page: Page): Promise<void> {
@@ -587,7 +629,7 @@ async function assignment(args: Args, bookingId: string): Promise<Record<string,
 }
 
 function registerBooking(
-  args: Args,
+  args: Pick<Args, "bookings" | "slug">,
   result: Record<string, unknown>,
   email: string,
 ): BookingResource {
