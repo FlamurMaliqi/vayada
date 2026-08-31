@@ -171,6 +171,7 @@ import {
 import {
   registerPlatformAdminDashboardRoutes,
   type PlatformAdminDashboardRepository,
+  type PlatformAdminDashboardRoutesOptions,
 } from "./routes/platform/admin/dashboard/bookingCompatible.js";
 import {
   registerPlatformPropertyLifecycleRoutes,
@@ -313,6 +314,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   staffInvitations?: StaffInvitationRoutesOptions;
   platformContactIntake?: PlatformContactIntakeRoutesOptions;
   platformAdminDashboardRepository?: PlatformAdminDashboardRepository;
+  platformAdminSmokeRecovery?: PlatformAdminDashboardRoutesOptions["smokeRecovery"];
   platformPropertyLifecycle?: PlatformPropertyLifecycleRoutesOptions;
   marketplaceDiscoveryAllowedOrigins?: string[];
   identityPrivacyAllowedOrigins?: string[];
@@ -764,6 +766,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.register(registerPlatformAdminDashboardRoutes, {
     prefix: "/api/platform/admin",
     repository: options.platformAdminDashboardRepository,
+    smokeRecovery: options.platformAdminSmokeRecovery,
   });
   if (options.platformPropertyLifecycle) {
     app.register(registerPlatformPropertyLifecycleRoutes, {

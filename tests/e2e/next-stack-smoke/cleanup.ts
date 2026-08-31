@@ -282,6 +282,17 @@ export async function recoverSmokeProperty(
   try {
     await deleteSyntheticPlatformAdmin(request, environment, workos, failedRunId);
     recoveryAdmin = await createSyntheticPlatformAdmin(request, environment, failedRunId);
+    if (!environment.recoveryReceipt) throw new Error("Synthetic recovery receipt is missing.");
+    await targetApi(request, recoveryAdmin.accessToken).json(
+      "POST",
+      "/api/platform/admin/bookings/recover-next-stack-smoke",
+      {
+        emailDomain: environment.emailDomain,
+        propertyId,
+        recoveryReceipt: environment.recoveryReceipt,
+        runId: failedRunId,
+      },
+    );
     await retireSmokeProperty(request, environment, recoveryAdmin, propertyId);
   } catch (error) {
     errors.push(error);

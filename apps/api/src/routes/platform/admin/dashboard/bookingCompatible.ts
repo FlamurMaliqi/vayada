@@ -1,8 +1,14 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 import type { PlatformPropertyLifecycleStatus } from "@vayada/domain-hotels";
 
 import { enforceRoutePolicy } from "../../../policy.js";
+import type {
+  PmsManualCancellationCommand,
+  PmsOperationsCommandRepository,
+} from "../../../pmsOperations.js";
 
 export type PlatformAdminBookingStatus = "pending" | "accepted" | "rejected" | "withdrawn";
 export type PlatformAdminPropertyStatus = "live" | "demo" | "test";
@@ -64,12 +70,32 @@ export type PlatformAdminDashboardRepository = {
     limit: number;
     offset: number;
   }): Promise<PlatformAdminBookingRow[]>;
+  findSmokeRecoveryBookings?(input: {
+    emailDomain: string;
+    propertyId: string;
+    runId: string;
+  }): Promise<PlatformAdminSmokeRecoveryBooking[]>;
   listGrowthProperties(input: { excludeTestData: boolean }): Promise<PlatformAdminProperty[]>;
   close?(): Promise<void>;
 };
 
 export type PlatformAdminDashboardRoutesOptions = {
   repository?: PlatformAdminDashboardRepository;
+  smokeRecovery?: {
+    commandRepository: Pick<PmsOperationsCommandRepository, "cancelManualBooking">;
+    receiptSecret: string;
+  };
+};
+
+export type PlatformAdminSmokeRecoveryBooking = {
+  commandId: string | null;
+  contractVersion: string | null;
+  guestEmail: string;
+  id: string;
+  lifecycleStatus: string;
+  propertyId: string;
+  sourceBookingId: string | null;
+  sourceSystem: string | null;
 };
 
 export type PlatformAdminDashboardPool = {
@@ -132,6 +158,72 @@ export async function registerPlatformAdminDashboardRoutes(
     return { bookings };
   });
 
+  if (
+    options.repository?.findSmokeRecoveryBookings &&
+    options.smokeRecovery?.commandRepository.cancelManualBooking
+  ) {
+    app.post<{ Body: unknown }>("/bookings/recover-next-stack-smoke", async (request, reply) => {
+      requirePlatformAdminManage(request);
+      const input = parseSmokeRecovery(request.body);
+      if (!input || !validSmokeRecoveryReceipt(options.smokeRecovery!.receiptSecret, input)) {
+        return reply.status(400).send({ code: "invalid_smoke_recovery" });
+      }
+      const bookings = await options.repository!.findSmokeRecoveryBookings!({
+        emailDomain: input.emailDomain,
+        propertyId: input.propertyId,
+        runId: input.runId,
+      });
+      if (
+        new Set(bookings.map(({ id }) => id)).size !== bookings.length ||
+        bookings.some((booking) => !isProvenSmokeBooking(booking, input))
+      ) {
+        return reply.status(409).send({ code: "smoke_recovery_ownership_unproven" });
+      }
+      if (
+        bookings.some(
+          ({ lifecycleStatus }) =>
+            !["confirmed", "canceled", "completed", "no_show"].includes(lifecycleStatus),
+        )
+      ) {
+        return reply.status(409).send({ code: "smoke_recovery_booking_not_cancellable" });
+      }
+
+      const resolvedBookingIds: string[] = [];
+      for (const booking of bookings.filter(
+        ({ lifecycleStatus }) => lifecycleStatus === "confirmed",
+      )) {
+        const commandId = `next-smoke:${input.runId}:recover:${booking.id}`;
+        const result = await options.smokeRecovery!.commandRepository.cancelManualBooking!({
+          propertyId: input.propertyId,
+          guestBookingId: booking.id,
+          commandId,
+          idempotencyKey: commandId,
+          reason: "Recover an interrupted next-stack synthetic booking",
+          accountingDate: null,
+          retainedCharges: [],
+          audit: smokeRecoveryAudit(request, commandId),
+        });
+        if (!result.ok) {
+          return reply
+            .status(result.statusCode)
+            .send({ code: result.code, detail: result.message });
+        }
+        resolvedBookingIds.push(booking.id);
+      }
+
+      return {
+        outcome:
+          bookings.length === 0
+            ? "not_found"
+            : resolvedBookingIds.length
+              ? "resolved"
+              : "already_resolved",
+        bookingIds: bookings.map(({ id }) => id),
+        resolvedBookingIds,
+      };
+    });
+  }
+
   app.get<{ Querystring: GrowthQuery }>("/growth", async (request) => {
     requirePlatformAdminRead(request);
     const query = parseGrowthQuery(request.query);
@@ -169,6 +261,13 @@ export function createTargetPlatformAdminDashboardRepository(config: {
       ]);
       return result.rows.map(mapBookingRow);
     },
+    async findSmokeRecoveryBookings(input) {
+      const result = await pool.query<PlatformAdminSmokeRecoveryBooking>(
+        TARGET_SMOKE_RECOVERY_BOOKINGS_SQL,
+        [input.propertyId, input.runId, input.emailDomain],
+      );
+      return result.rows;
+    },
     async listGrowthProperties(input) {
       const result = await pool.query<PlatformAdminPropertyDbRow>(TARGET_PLATFORM_PROPERTIES_SQL, [
         input.excludeTestData,
@@ -190,6 +289,83 @@ function requirePlatformAdminRead(request: FastifyRequest): void {
     permission: "platform.admin.read",
     resource: PLATFORM_ADMIN_RESOURCE,
   });
+}
+
+function requirePlatformAdminManage(request: FastifyRequest): void {
+  enforceRoutePolicy(request, {
+    permission: "platform.property.status.manage",
+    resource: PLATFORM_ADMIN_RESOURCE,
+  });
+}
+
+type SmokeRecoveryInput = {
+  emailDomain: string;
+  propertyId: string;
+  recoveryReceipt: string;
+  runId: string;
+};
+
+function parseSmokeRecovery(value: unknown): SmokeRecoveryInput | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  if (
+    Object.keys(input).some(
+      (key) => !["emailDomain", "propertyId", "recoveryReceipt", "runId"].includes(key),
+    ) ||
+    typeof input.runId !== "string" ||
+    !/^\d{14}-[a-f0-9]{8}$/.test(input.runId) ||
+    typeof input.propertyId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      input.propertyId,
+    ) ||
+    typeof input.emailDomain !== "string" ||
+    !/^[a-z0-9.-]+\.test$/.test(input.emailDomain) ||
+    typeof input.recoveryReceipt !== "string" ||
+    !/^[a-f0-9]{64}$/.test(input.recoveryReceipt)
+  ) {
+    return null;
+  }
+  return input as SmokeRecoveryInput;
+}
+
+function validSmokeRecoveryReceipt(secret: string, input: SmokeRecoveryInput): boolean {
+  const expected = createHmac("sha256", secret)
+    .update(`vayada-next-smoke-recovery:v1:${input.runId}:${input.propertyId}`)
+    .digest();
+  return timingSafeEqual(expected, Buffer.from(input.recoveryReceipt, "hex"));
+}
+
+function isProvenSmokeBooking(
+  booking: PlatformAdminSmokeRecoveryBooking,
+  input: SmokeRecoveryInput,
+): boolean {
+  return (
+    booking.propertyId === input.propertyId &&
+    booking.guestEmail.startsWith("qa-next-") &&
+    booking.guestEmail.endsWith(`-${input.runId}@${input.emailDomain}`) &&
+    booking.sourceSystem === "pms" &&
+    booking.contractVersion === "pms-manual-booking.v1" &&
+    Boolean(booking.commandId) &&
+    booking.commandId === booking.sourceBookingId
+  );
+}
+
+function smokeRecoveryAudit(
+  request: FastifyRequest,
+  commandId: string,
+): PmsManualCancellationCommand["audit"] {
+  const context = request.authContext!;
+  return {
+    actor: {
+      kind: "user",
+      userId: context.actor.internalUserId,
+      organizationId: context.selectedOrganization.organizationId,
+    },
+    requestId: context.audit.requestId,
+    ...(context.audit.correlationId ? { correlationId: context.audit.correlationId } : {}),
+    reason: "Recover an interrupted next-stack synthetic booking",
+    requestedAt: context.audit.receivedAt,
+  };
 }
 
 function parseBookingQuery(query: BookingListQuery): {
@@ -377,6 +553,25 @@ FROM booking_rows
 WHERE ($1::text IS NULL OR status = $1)
 ORDER BY "requestedAt" DESC, id
 LIMIT $2 OFFSET $3`;
+
+const TARGET_SMOKE_RECOVERY_BOOKINGS_SQL = `SELECT
+  booking.id::text AS id,
+  booking.property_id::text AS "propertyId",
+  booker.email AS "guestEmail",
+  booking.lifecycle_status AS "lifecycleStatus",
+  booking.source_system AS "sourceSystem",
+  booking.source_booking_id AS "sourceBookingId",
+  booking.booking_metadata ->> 'contractVersion' AS "contractVersion",
+  booking.booking_metadata ->> 'commandId' AS "commandId"
+FROM booking.guest_bookings booking
+JOIN booking.booking_guests booker
+  ON booker.guest_booking_id = booking.id AND booker.guest_role = 'booker'
+WHERE booking.property_id = $1::uuid
+  AND booker.email LIKE 'qa-next-%-' || $2::text || '@' || $3::text
+  AND booking.source_system = 'pms'
+  AND booking.booking_metadata ->> 'contractVersion' = 'pms-manual-booking.v1'
+  AND booking.source_booking_id = booking.booking_metadata ->> 'commandId'
+ORDER BY booking.created_at, booking.id`;
 
 const TARGET_PLATFORM_PROPERTIES_SQL = `SELECT
   property.id::text AS id,
