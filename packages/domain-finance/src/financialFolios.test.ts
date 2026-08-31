@@ -8,6 +8,8 @@ import {
   FINANCE_FOLIO_VIEW_STATES,
   parseFinanceFolioExportSnapshot,
   parseFinanceFolioQuery,
+  parseFinanceFolioRevisionCommand,
+  parseFinanceFolioWrite,
   type FinanceFolio,
 } from "./financialFolios.js";
 
@@ -73,6 +75,95 @@ describe("Financials folio read contract", () => {
     { provider: "xero" },
   ])("rejects invalid, official-invoice, or provider query input", (query) => {
     expect(parseFinanceFolioQuery(query)).toBeNull();
+  });
+
+  it("normalizes a strict correction payload without accepting client-derived evidence", () => {
+    const parsed = parseFinanceFolioWrite(folioWrite(), "correct");
+
+    expect(parsed).toMatchObject({
+      expectedRevision: 2,
+      bookingId: "11320000-0000-4000-8000-000000000004",
+      lines: [
+        { position: 1, quantity: "2.0000", unitAmount: { amount: "-1.5000" } },
+        { position: 2, quantity: "1.0000", unitAmount: { amount: "12.0000" } },
+      ],
+      paymentRefs: [
+        { paymentId: "11320000-0000-4000-8000-000000000006", amount: { amount: "2.0000" } },
+        { paymentId: "11320000-0000-4000-8000-000000000007", amount: { amount: "10.0000" } },
+      ],
+    });
+    expect(parsed!.lines[0]).not.toHaveProperty("lineId");
+    expect(parsed!.lines[0]).not.toHaveProperty("total");
+  });
+
+  it("separates create and immutable revision commands", () => {
+    const { expectedRevision: _expectedRevision, ...create } = folioWrite();
+    expect(parseFinanceFolioWrite(create, "create")).not.toBeNull();
+    expect(parseFinanceFolioWrite(folioWrite(), "create")).toBeNull();
+    expect(parseFinanceFolioWrite(create, "correct")).toBeNull();
+    expect(
+      parseFinanceFolioRevisionCommand({
+        commandId: "11320000-0000-4000-8000-000000000010",
+        idempotencyKey: "ready-1",
+        expectedRevision: 2,
+      }),
+    ).toEqual({
+      commandId: "11320000-0000-4000-8000-000000000010",
+      idempotencyKey: "ready-1",
+      expectedRevision: 2,
+    });
+    expect(
+      parseFinanceFolioRevisionCommand({
+        commandId: "11320000-0000-4000-8000-000000000010",
+        idempotencyKey: "ready-1",
+        expectedRevision: 2,
+        recipient: { name: "leak", email: null },
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    [
+      "client total",
+      (value: any) => (value.lines[0].total = { amount: "12.0000", currency: "EUR" }),
+    ],
+    [
+      "client line id",
+      (value: any) => (value.lines[0].lineId = "11320000-0000-4000-8000-000000000099"),
+    ],
+    ["mixed currency", (value: any) => (value.paymentRefs[0].amount.currency = "USD")],
+    ["service interval", (value: any) => (value.lines[0].serviceOn = "2026-08-22")],
+    ["source", (value: any) => (value.lines[0].source.id = "bad source")],
+    ["decimal scale", (value: any) => (value.lines[0].quantity = "1.00001")],
+    [
+      "line total overflow",
+      (value: any) => {
+        value.lines[0].quantity = "999999999999999";
+        value.lines[0].unitAmount.amount = "999999999999999";
+      },
+    ],
+    ["negative folio total", (value: any) => (value.lines[1].unitAmount.amount = "-13")],
+    [
+      "folio total overflow",
+      (value: any) => {
+        value.lines[0].quantity = "1";
+        value.lines[0].unitAmount.amount = "600000000000000";
+        value.lines[1].quantity = "1";
+        value.lines[1].unitAmount.amount = "600000000000000";
+      },
+    ],
+    ["duplicate line position", (value: any) => (value.lines[0].position = 1)],
+    [
+      "duplicate payment",
+      (value: any) => (value.paymentRefs[0].paymentId = value.paymentRefs[1].paymentId),
+    ],
+    ["recipient shape", (value: any) => (value.recipient.version = 1)],
+    ["recipient byte limit", (value: any) => (value.recipient.name = "é".repeat(3_000))],
+    ["official invoice field", (value: any) => (value.invoiceNumber = "INV-1")],
+  ])("rejects unsafe %s evidence", (_label, change) => {
+    const value = folioWrite();
+    change(value);
+    expect(parseFinanceFolioWrite(value, "correct")).toBeNull();
   });
 
   it("builds the stable ready-folio CSV without provider or uncontracted fields", () => {
@@ -244,4 +335,46 @@ function folioFixture(): FinanceFolio {
     createdAt: "2026-08-20T10:00:00.000Z",
     providerSecret: "must-not-export",
   } as FinanceFolio;
+}
+
+function folioWrite() {
+  return {
+    commandId: "11320000-0000-4000-8000-000000000010",
+    idempotencyKey: "folio-correction-1",
+    expectedRevision: 2,
+    bookingId: "11320000-0000-4000-8000-000000000004",
+    recipient: { name: "Ada Lovelace", email: "ada@example.com" },
+    serviceFrom: "2026-08-20",
+    serviceTo: "2026-08-21",
+    lines: [
+      {
+        position: 2,
+        kind: "room",
+        description: "Room stay",
+        quantity: "1",
+        unitAmount: { amount: "12", currency: "EUR" },
+        serviceOn: "2026-08-20",
+        source: { type: "booking_night", id: "booking:1", revision: 3 },
+      },
+      {
+        position: 1,
+        kind: "adjustment",
+        description: "Correction",
+        quantity: "2.0",
+        unitAmount: { amount: "-1.5", currency: "EUR" },
+        serviceOn: "2026-08-21",
+        source: { type: "finance_adjustment", id: "adjustment:1", revision: 1 },
+      },
+    ],
+    paymentRefs: [
+      {
+        paymentId: "11320000-0000-4000-8000-000000000007",
+        amount: { amount: "10", currency: "EUR" },
+      },
+      {
+        paymentId: "11320000-0000-4000-8000-000000000006",
+        amount: { amount: "2", currency: "EUR" },
+      },
+    ],
+  };
 }
