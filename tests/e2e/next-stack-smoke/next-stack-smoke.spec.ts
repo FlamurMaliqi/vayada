@@ -128,9 +128,9 @@ smokeTest(
       await foreignHotelContext.close();
     }
     retirementPropertyIds.push(foreignHotel.propertyId);
-    const registerHotel = (resource: HotelResource): void => {
+    const registerHotel = (resource: HotelResource, retirementPropertyId = resource.propertyId) => {
       smokeResources.hotel = resource;
-      retirementPropertyIds.push(resource.propertyId);
+      retirementPropertyIds.push(retirementPropertyId);
     };
 
     const hotelContext = await browser.newContext();
@@ -185,7 +185,7 @@ async function runHotelFlow(
   foreignAccessToken: string,
   platformAdmin: SyntheticPlatformAdmin,
   testInfo: TestInfo,
-  registerHotel: (resource: HotelResource) => void,
+  registerHotel: (resource: HotelResource, retirementPropertyId?: string) => void,
 ): Promise<HotelFlowResource> {
   const page = await context.newPage();
   const user = await test.step("create a unique verified hotel identity", async () => {
@@ -429,44 +429,11 @@ async function runHotelFlow(
     );
   });
 
-  const secondaryPropertyId =
-    await test.step("create a replacement property for restricted staff", async () => {
-      const property = await api.json<Record<string, unknown>>(
-        "POST",
-        "/api/hotel-setup/properties",
-        {
-          displayName: `QA Restricted Hotel ${environment.runId}`,
-          propertyType: "hotel",
-          location: {
-            streetAddress: "Unter den Linden 1",
-            postalCode: "10117",
-            city: "Berlin",
-            countryCode: "DE",
-            timezone: "Europe/Berlin",
-            latitude: null,
-            longitude: null,
-            localityPublic: false,
-            geoPublic: false,
-            mapDisplayMode: "hidden",
-          },
-          contacts: [
-            { channelType: "email", value: user.email, purpose: "general", isPublic: false },
-            { channelType: "phone", value: "+49 30 5550104", purpose: "general", isPublic: false },
-          ],
-        },
-        { "Idempotency-Key": `next-smoke:${environment.runId}:restricted-property` },
-      );
-      const propertyId = stringField(property, "propertyId");
-      registerHotel({ api, propertyId });
-      return propertyId;
-    });
-
   const resource = {
     api,
     addonItemIds: [] as string[],
     ownerWorkosUserId: user.id,
     propertyId: setup.propertyId,
-    secondaryPropertyId,
     slug: publication.slug,
     stay,
     workosOrganizationId: session.workosOrganizationId,
@@ -514,7 +481,39 @@ async function runHotelFlow(
     }
   });
 
-  return resource;
+  const completedResource =
+    await test.step("create a replacement property for restricted staff", async () => {
+      const property = await api.json<Record<string, unknown>>(
+        "POST",
+        "/api/hotel-setup/properties",
+        {
+          displayName: `QA Restricted Hotel ${environment.runId}`,
+          propertyType: "hotel",
+          location: {
+            streetAddress: "Unter den Linden 1",
+            postalCode: "10117",
+            city: "Berlin",
+            countryCode: "DE",
+            timezone: "Europe/Berlin",
+            latitude: null,
+            longitude: null,
+            localityPublic: false,
+            geoPublic: false,
+            mapDisplayMode: "hidden",
+          },
+          contacts: [
+            { channelType: "email", value: user.email, purpose: "general", isPublic: false },
+            { channelType: "phone", value: "+49 30 5550104", purpose: "general", isPublic: false },
+          ],
+        },
+        { "Idempotency-Key": `next-smoke:${environment.runId}:restricted-property` },
+      );
+      const secondaryPropertyId = stringField(property, "propertyId");
+      const completed = { ...resource, secondaryPropertyId };
+      registerHotel(completed, secondaryPropertyId);
+      return completed;
+    });
+  return completedResource;
 }
 
 async function runForeignHotelFlow(
