@@ -40,7 +40,9 @@ COPY --from=build /app/engineering/fixtures/c1-staging-rehearsal-replay ./engine
 COPY --from=build /app/scripts/c1-rehearsal-replay-fixtures.mjs ./scripts/c1-rehearsal-replay-fixtures.mjs
 COPY --from=build /app/scripts/start-next-api.sh ./scripts/start-next-api.sh
 COPY --from=build /app/apps/api/package.json ./apps/api/package.json
+COPY --from=build /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=build /app/apps/api/dist ./apps/api/dist
+RUN cd apps/api && node --input-type=module --eval "await import('./dist/domains/financeFolioKms.js')"
 
 EXPOSE 8003
 
