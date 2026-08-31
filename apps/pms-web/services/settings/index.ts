@@ -35,6 +35,18 @@ export interface BookingAcceptanceSettings {
   instantBook: boolean;
 }
 
+export interface SameDayBookingSettings {
+  contractVersion: "same-day-booking-policy.v1";
+  propertyId: string;
+  propertyTimeZone: string;
+  enabled: boolean;
+  cutoffLocalTime: string | null;
+  revision: number;
+  updatedAt: string | null;
+  replayed?: boolean;
+  channexOperationId?: string | null;
+}
+
 export type CheckinStepType = "checkbox" | "text" | "amount";
 export type CheckinChecklistStepType = CheckinStepType;
 
@@ -181,6 +193,24 @@ export const settingsService = {
     return pmsOperationsClient.put<BookingAcceptanceSettings>(
       propertyTemplateEndpoint(propertyId, "booking-acceptance"),
       { acceptanceMode },
+      pmsOperationsRequestOptions,
+    );
+  },
+
+  getSameDayBooking: async () => {
+    const propertyId = await resolveSelectedPmsPropertyId("loading same-day booking settings");
+    return pmsOperationsClient.get<SameDayBookingSettings>(
+      propertyTemplateEndpoint(propertyId, "same-day-booking"),
+      pmsOperationsRequestOptions,
+    );
+  },
+
+  updateSameDayBooking: async (enabled: boolean, cutoffLocalTime: string | null) => {
+    const propertyId = await resolveSelectedPmsPropertyId("saving same-day booking settings");
+    const id = commandId("pms.same-day-booking");
+    return pmsOperationsClient.put<SameDayBookingSettings>(
+      propertyTemplateEndpoint(propertyId, "same-day-booking"),
+      { commandId: id, idempotencyKey: id, enabled, cutoffLocalTime },
       pmsOperationsRequestOptions,
     );
   },
