@@ -14,7 +14,7 @@ describe("Stripe Connect provider", () => {
     const provider = createStripeConnectProvider({
       secretKey: "sk_test",
       returnBaseUrls: {
-        marketplace: "https://marketplace.test",
+        marketplace: "https://marketplace.test/untrusted?propertyId=foreign-property",
         bookingAdmin: "https://admin.booking.test",
       },
       fetch: async (input, init) => {
@@ -66,7 +66,12 @@ describe("Stripe Connect provider", () => {
     });
     expect(calls[0]?.body.get("type")).toBe("express");
     expect(calls[0]?.body.get("capabilities[card_payments][requested]")).toBe("true");
-    expect(calls[1]?.body.get("return_url")).toBe("https://marketplace.test/setup?stripe=return");
+    expect(calls[1]?.body.get("return_url")).toBe(
+      "https://marketplace.test/setup?propertyId=property-1&step=payments&stripe=return",
+    );
+    expect(calls[1]?.body.get("refresh_url")).toBe(
+      "https://marketplace.test/setup?propertyId=property-1&step=payments&stripe=refresh",
+    );
 
     await provider.createOnboardingLink({
       owner: { ownerScope: "property", propertyId: "property-1", organizationId: "org-1" },

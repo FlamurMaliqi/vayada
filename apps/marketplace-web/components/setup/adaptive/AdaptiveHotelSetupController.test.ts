@@ -75,6 +75,72 @@ describe("AdaptiveHotelSetupController", () => {
     vi.unstubAllGlobals();
   });
 
+  it.each(["return", "refresh"] as const)(
+    "loads an authorized Stripe %s on the exact property's Payments step",
+    async (stripe) => {
+      const StepForm = vi.fn(() => null);
+      mocks.getRoute.mockResolvedValueOnce(operationsRoute("payments"));
+      mocks.searchParams = new URLSearchParams({ propertyId, step: "payments", stripe });
+
+      let renderer: ReactTestRenderer | undefined;
+      await act(async () => {
+        renderer = create(
+          createElement(AdaptiveHotelSetupController, {
+            propertyId,
+            requestedStepId: "payments",
+            onExit: vi.fn(),
+            StepForm,
+          }),
+        );
+      });
+
+      expect(mocks.getRoute).toHaveBeenCalledWith(propertyId, {
+        signal: expect.any(AbortSignal),
+        cache: "no-store",
+      });
+      expect(StepForm).toHaveBeenCalled();
+
+      renderer?.unmount();
+    },
+  );
+
+  it.each(["return", "refresh"] as const)(
+    "denies a foreign Stripe %s property before rendering payment setup",
+    async (stripe) => {
+      const StepForm = vi.fn(() => null);
+      const foreignPropertyId = "99999999-9999-4999-8999-999999999999";
+      mocks.getRoute.mockRejectedValueOnce(
+        new ApiErrorResponse(403, { code: "missing_resource_access" }),
+      );
+      mocks.searchParams = new URLSearchParams({
+        propertyId: foreignPropertyId,
+        step: "payments",
+        stripe,
+      });
+
+      let renderer: ReactTestRenderer | undefined;
+      await act(async () => {
+        renderer = create(
+          createElement(AdaptiveHotelSetupController, {
+            propertyId: foreignPropertyId,
+            requestedStepId: "payments",
+            onExit: vi.fn(),
+            StepForm,
+          }),
+        );
+      });
+
+      expect(mocks.getRoute).toHaveBeenCalledWith(foreignPropertyId, {
+        signal: expect.any(AbortSignal),
+        cache: "no-store",
+      });
+      expect(StepForm).not.toHaveBeenCalled();
+      expect(currentShell().routeError).not.toContain(foreignPropertyId);
+
+      renderer?.unmount();
+    },
+  );
+
   it("restores a failed browser-history transition and retries its step and URL together", async () => {
     const beforeLeave = vi
       .fn<() => Promise<void>>()
@@ -349,7 +415,7 @@ function setupSearchParams(stepId: string): URLSearchParams {
   });
 }
 
-function operationsRoute(resumeStepId: "pricing") {
+function operationsRoute(resumeStepId: "pricing" | "payments") {
   return {
     ...buildPropertySetupRoute({
       organizationId,
