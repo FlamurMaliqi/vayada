@@ -1,6 +1,10 @@
 import pg from "pg";
+import Fastify from "fastify";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { createTargetPublicHotelProfileRepository } from "../routes/aiHotels.js";
+import { registerBookingWebPublicRoutes } from "../routes/bookingWebPublic.js";
+import { unusedBookingWebCheckoutAdapter } from "../routes/bookingWebPublic.fixtures.js";
 import {
   createTargetPublicBookabilityPublicationCommandPort,
   PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE,
@@ -449,6 +453,7 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical public location projection", () =
   });
 
   it("publishes an operations-only profile when hero subtext replaces the retired description", async () => {
+    await client.query(PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE, [publicLocationPropertyId]);
     await client.query(
       `INSERT INTO booking.booking_settings (property_id, hero_subtext)
        VALUES ($1::uuid, 'Book direct for a memorable stay.')
@@ -488,6 +493,35 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical public location projection", () =
     });
     expect(result.rows[0]?.missing).not.toContain("profile");
 
+    const repository = createTargetPublicHotelProfileRepository({
+      connectionString: TEST_DATABASE_URL!,
+      pool: client,
+    });
+    const app = Fastify({ logger: false });
+    await app.register(registerBookingWebPublicRoutes, {
+      profileRepository: repository,
+      checkoutAdapter: unusedBookingWebCheckoutAdapter,
+    });
+    const hostResponse = await app.inject({
+      method: "GET",
+      url: "/hosts/public-location-privacy-hotel-970.next-booking.vayada.com",
+    });
+    const profileResponse = await app.inject({
+      method: "GET",
+      url: "/hotels/public-location-privacy-hotel-970",
+    });
+    expect(hostResponse.statusCode).toBe(200);
+    expect(hostResponse.json()).toMatchObject({
+      slug: "public-location-privacy-hotel-970",
+      hotel: { name: "Public Location Privacy Hotel" },
+    });
+    expect(profileResponse.statusCode).toBe(200);
+    expect(profileResponse.json()).toMatchObject({
+      hotel: {
+        slug: "public-location-privacy-hotel-970",
+        summary: "Book direct for a memorable stay.",
+      },
+    });
     await client.query(
       `UPDATE hotel_catalog.property_public_profile_read_model
        SET completeness_reasons = ARRAY['description', 'media']::text[]
@@ -507,6 +541,12 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical public location projection", () =
     );
     expect(incomplete.rows[0]?.profileStatus).toBe("incomplete");
     expect(incomplete.rows[0]?.missing).toContain("profile");
+    const incompleteHostResponse = await app.inject({
+      method: "GET",
+      url: "/hosts/public-location-privacy-hotel-970.next-booking.vayada.com",
+    });
+    expect(incompleteHostResponse.statusCode).toBe(404);
+    await app.close();
   });
 
   it("keeps payment-ready settings non-bookable until a billing plan is selected", async () => {
