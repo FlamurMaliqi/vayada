@@ -385,7 +385,7 @@ function sameDayClosed(
   if (!cutoff) return false;
   if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(cutoff))
     throw new Error("same_day_booking_cutoff_time must be HH:MM");
-  return clock.time > `${cutoff}:00`;
+  return clock.time >= `${cutoff}:00`;
 }
 
 function resolvedRate(source: IdentitySourceRow, stayDate: string): number {

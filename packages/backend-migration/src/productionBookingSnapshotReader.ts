@@ -42,6 +42,7 @@ export const PRODUCTION_BOOKING_SOURCE_TABLES: Record<BookingDatabase, readonly 
     "booking_drafts",
     "booking_promo_usage_state",
     "bookings",
+    "hotels",
   ],
 };
 

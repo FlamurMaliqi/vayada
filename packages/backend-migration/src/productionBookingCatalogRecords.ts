@@ -28,6 +28,8 @@ export function buildBookingCatalogRecords(context: BookingBuildContext): Bookin
     try {
       if (row.sourceDatabase === "booking" && row.sourceTable === "booking_hotels")
         return [settings(context, row)];
+      if (row.sourceDatabase === "pms" && row.sourceTable === "hotels")
+        return [sameDayPolicy(context, row)];
       if (row.sourceDatabase === "booking" && row.sourceTable === "booking_addons")
         return [addon(context, row)];
       if (row.sourceDatabase === "booking" && row.sourceTable === "booking_promo_codes")
@@ -44,6 +46,30 @@ export function buildBookingCatalogRecords(context: BookingBuildContext): Bookin
       });
       return [];
     }
+  });
+}
+
+function sameDayPolicy(
+  context: BookingBuildContext,
+  source: IdentitySourceRow,
+): BookingTargetRecord {
+  const data = source.data;
+  const propertyId = propertyFor(context, "pms", "hotels", data["id"]);
+  const updatedAt = iso(data["updated_at"], "updated_at");
+  const sourceCutoff = data["same_day_booking_cutoff_time"];
+  const cutoffLocalTime =
+    sourceCutoff === null || sourceCutoff === ""
+      ? null
+      : requiredText(sourceCutoff ?? "18:00", "same_day_booking_cutoff_time");
+  if (cutoffLocalTime !== null && !/^(?:[01]\d|2[0-3]):(?:00|30)$/.test(cutoffLocalTime))
+    throw new Error("same_day_booking_cutoff_time must be HH:mm on a 30-minute boundary");
+  return record(source, "booking", "same_day_booking_policies", propertyId, updatedAt, true, {
+    propertyId,
+    enabled: bool(data["same_day_bookings_enabled"], "same_day_bookings_enabled", true),
+    cutoffLocalTime,
+    revision: 1,
+    sourceFreshness: { migrationRunId: context.sourceRunId, sourceUpdatedAt: updatedAt },
+    updatedAt,
   });
 }
 

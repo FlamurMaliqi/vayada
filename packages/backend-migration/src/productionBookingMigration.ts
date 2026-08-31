@@ -148,7 +148,8 @@ function assertWriteCounts(planned: BookingTargetRecord[], actual: Record<string
 async function lockBookingTargets(client: QueryClient): Promise<void> {
   await client.query("SET LOCAL lock_timeout = '5s'");
   await client.query(
-    `LOCK TABLE booking.booking_settings, booking.quote_sessions, booking.checkout_contexts,
+    `LOCK TABLE booking.booking_settings, booking.same_day_booking_policies,
+                booking.quote_sessions, booking.checkout_contexts,
                 booking.guest_bookings, booking.booking_guests, booking.addon_definitions,
                 booking.booking_addon_selections, booking.promo_definitions,
                 booking.promo_applications, booking.booking_status_events,
