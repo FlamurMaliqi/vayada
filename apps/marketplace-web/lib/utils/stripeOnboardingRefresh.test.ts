@@ -157,6 +157,37 @@ describe("refreshStripeAfterOnboarding", () => {
     expect(refresh.mock.calls.map((call) => call[1])).toEqual(["reconcile", "reconcile"]);
     stop();
   });
+
+  it.each([
+    { result: "returns false", firstRefresh: async () => false },
+    {
+      result: "rejects",
+      firstRefresh: async () => {
+        throw new Error("Finance unavailable");
+      },
+    },
+  ])("restores and retries a marked flow when refresh $result", async ({ firstRefresh }) => {
+    const store = markerStore();
+    const target = focusTarget();
+    const refresh = vi.fn().mockImplementationOnce(firstRefresh).mockResolvedValueOnce(true);
+    markStripeOnboardingStarted("property-1", store);
+    const stop = watchStripeOnboardingRefresh({
+      propertyId: "property-1",
+      isStripeReturn: false,
+      target,
+      store,
+      onRefresh: refresh,
+    });
+
+    target.focus();
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(store.value()).toMatch(/^stripe-onboarding-/));
+    target.focus();
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(store.value()).toMatch(/^settled:/));
+
+    stop();
+  });
 });
 
 function markerStore() {

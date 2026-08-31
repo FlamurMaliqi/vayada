@@ -332,11 +332,17 @@ export function PaymentSetupForm({
             </p>
             <p>Stripe must confirm onboarding and enable charges before card payments go live.</p>
             <div className="flex flex-wrap gap-3">
-              {stripeOnboardingUrl ? (
+              {stripeOnboardingUrl && !checkingStripe ? (
                 <a
                   className="inline-flex min-h-10 items-center rounded-full bg-primary-600 px-4 py-2 font-semibold text-white hover:bg-primary-700"
                   href={stripeOnboardingUrl}
-                  onClick={() => markStripeOnboardingStarted(propertyId, window.localStorage)}
+                  onClick={(event) => {
+                    if (stripeRefreshAbort.current) {
+                      event.preventDefault();
+                      return;
+                    }
+                    markStripeOnboardingStarted(propertyId, window.localStorage);
+                  }}
                   rel="noreferrer"
                   target="_blank"
                 >

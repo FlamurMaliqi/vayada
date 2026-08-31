@@ -44,10 +44,21 @@ export function watchStripeOnboardingRefresh(input: {
         handledFlowId = flowId;
         const claimed = marker?.state === "started";
         if (claimed) safeWrite(input.store, key, `${REFRESHING_PREFIX}${flowId}`);
-        const completed = await input.onRefresh(
-          flowId,
-          marker && marker.state !== "started" ? "reload" : "reconcile",
-        );
+        let completed = false;
+        try {
+          completed = await input.onRefresh(
+            flowId,
+            marker && marker.state !== "started" ? "reload" : "reconcile",
+          );
+        } finally {
+          if (!completed) {
+            handledFlowId = null;
+            const current = readMarker(safeRead(input.store, key));
+            if (claimed && current?.flowId === flowId && current.state === "refreshing") {
+              safeWrite(input.store, key, flowId);
+            }
+          }
+        }
         if (!claimed) return;
         const current = readMarker(safeRead(input.store, key));
         if (current?.flowId !== flowId || current.state !== "refreshing") return;

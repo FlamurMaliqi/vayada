@@ -182,6 +182,44 @@ describe("PaymentSetupForm Stripe refresh", () => {
     expect(button(renderer!.root, "Check Stripe status")).toBeDefined();
     await act(async () => renderer?.unmount());
   });
+
+  it("hides an issued Stripe link while its focus refresh is running", async () => {
+    const browser = browserWindow(`?propertyId=${propertyId}&step=payments`);
+    vi.stubGlobal("window", browser.window);
+    const reconciliation = deferred<{
+      propertyId: string;
+      providerAccount: { ready: boolean };
+    }>();
+    mocks.getPaymentSettings
+      .mockResolvedValueOnce(paymentSettings(false))
+      .mockResolvedValueOnce(paymentSettings(true));
+    mocks.updatePaymentSettings.mockResolvedValue(paymentSettings(false));
+    mocks.startStripeOnboarding.mockResolvedValue({
+      providerAccountId: "stripe-account-1",
+      onboardingUrl: "https://connect.stripe.test/onboarding",
+      status: "setup_incomplete",
+      onboardingStatus: "invited",
+    });
+    mocks.reconcileStripeProviderAccount.mockReturnValueOnce(reconciliation.promise);
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(createElement(PaymentSetupForm, props(vi.fn(async () => undefined))));
+    });
+    await vi.waitFor(() => expect(renderer!.root.findAllByType("form")).toHaveLength(1));
+    await act(async () => {
+      await renderer!.root.findByType("form").props.onSubmit({ preventDefault: vi.fn() });
+    });
+    await vi.waitFor(() => expect(link(renderer!.root, "Open Stripe")).toBeDefined());
+
+    await act(async () => browser.focus());
+    await vi.waitFor(() => expect(mocks.reconcileStripeProviderAccount).toHaveBeenCalledOnce());
+    expect(link(renderer!.root, "Open Stripe")).toBeUndefined();
+
+    reconciliation.resolve({ propertyId, providerAccount: { ready: true } });
+    await vi.waitFor(() => expect(textOf(renderer!.root)).toContain("Stripe is connected."));
+    await act(async () => renderer?.unmount());
+  });
 });
 
 function props(onCompleted: () => Promise<void>) {
@@ -242,6 +280,10 @@ function textOf(node: ReactTestInstance): string {
 
 function button(root: ReactTestInstance, label: string): ReactTestInstance {
   return root.findAllByType("button").find((node) => textOf(node) === label)!;
+}
+
+function link(root: ReactTestInstance, label: string): ReactTestInstance | undefined {
+  return root.findAllByType("a").find((node) => textOf(node) === label);
 }
 
 function deferred<T>() {
