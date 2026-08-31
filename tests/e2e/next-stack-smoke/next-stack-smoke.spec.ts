@@ -22,6 +22,7 @@ import {
   readAuthSession,
   record,
   recordField,
+  smokeRecoveryReceipt,
   stringField,
   targetApi,
   uploadPropertyCover,
@@ -242,6 +243,111 @@ test("ambiguous primary manual booking exposes replay failure", async () => {
 
   expect(failure).toBeInstanceOf(AggregateError);
   expect((failure as AggregateError).errors).toEqual([originalError, replayError]);
+});
+
+test("ordinary cleanup reconciles an untracked synthetic booking before retirement", async () => {
+  const runId = "20260831123456-deadbeef";
+  const propertyId = "11111111-1111-4111-8111-111111111111";
+  const environment: SmokeEnvironment = {
+    emailDomain: "example.test",
+    password: "synthetic-password",
+    runId,
+    workosApiKey: "sk_test_synthetic",
+  };
+  const platformAdmin: SyntheticPlatformAdmin = {
+    accessToken: "initial-token",
+    email: `qa-next-platform-${runId}@example.test`,
+    membershipId: "membership-platform",
+    userId: "user-platform",
+  };
+  const calls: string[] = [];
+  const bookings: BookingResource[] = [];
+  let platformAdminDeleted = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+    );
+    const method = init?.method ?? "GET";
+    if (url.pathname === "/api/platform/admin/bookings/recover-next-stack-smoke") {
+      calls.push(`recover:${String(init?.body)}`);
+      return jsonResponse({ outcome: "resolved", bookings: ["untracked-booking"] });
+    }
+    if (url.pathname === `/api/platform/admin/properties/${propertyId}/retirement-impact`) {
+      calls.push("retirement-impact");
+      return jsonResponse({ lifecycleRevision: 7, lifecycleStatus: "active" });
+    }
+    if (url.pathname === `/api/platform/admin/properties/${propertyId}/retire`) {
+      calls.push("retire");
+      return jsonResponse({ lifecycleStatus: "retired" });
+    }
+    if (url.pathname === "/user_management/users" && method === "GET") {
+      const isPlatformAdmin = url.searchParams.get("email") === platformAdmin.email;
+      return jsonResponse({
+        data:
+          isPlatformAdmin && !platformAdminDeleted
+            ? [{ email: platformAdmin.email, id: platformAdmin.userId }]
+            : [],
+      });
+    }
+    if (url.pathname === "/user_management/organization_memberships" && method === "GET") {
+      return jsonResponse({ data: [] });
+    }
+    if (url.pathname === `/user_management/users/${platformAdmin.userId}` && method === "DELETE") {
+      platformAdminDeleted = true;
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`Unexpected test request: ${method} ${url}`);
+  }) as typeof globalThis.fetch;
+  const request = {
+    async post() {
+      return {
+        ok: () => true,
+        status: () => 200,
+        text: async () => JSON.stringify({ accessToken: "fresh-token" }),
+      };
+    },
+  } as unknown as APIRequestContext;
+
+  try {
+    const replayFailure = await replayAmbiguousManualBooking(
+      {
+        async json() {
+          throw new Error("replay response also timed out");
+        },
+      } as unknown as JsonApi,
+      `/api/pms/properties/${propertyId}/manual-bookings`,
+      { commandId: "same-command", idempotencyKey: "same-key" },
+      new Error("browser response timed out after commit"),
+    ).catch((error: unknown) => error);
+    expect(replayFailure).toBeInstanceOf(AggregateError);
+    expect(bookings).toEqual([]);
+
+    const errors = await cleanupSmokeResources(
+      request,
+      environment,
+      [],
+      bookings,
+      undefined,
+      platformAdmin,
+      [propertyId],
+    );
+    expect(errors).toEqual([]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  expect(calls.map((call) => call.split(":", 1)[0])).toEqual([
+    "recover",
+    "retirement-impact",
+    "retire",
+  ]);
+  expect(JSON.parse(calls[0]!.slice("recover:".length))).toEqual({
+    emailDomain: environment.emailDomain,
+    propertyId,
+    recoveryReceipt: smokeRecoveryReceipt(environment, runId, propertyId),
+    runId,
+  });
 });
 
 smokeTest(
@@ -806,4 +912,11 @@ function errorMessage(error: unknown): string {
     return [...error.errors].map(errorMessage).join(" + ");
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
 }
