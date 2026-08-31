@@ -127,6 +127,21 @@ export interface FinanceStripeDashboardLinkResponse {
   url: string;
 }
 
+export interface FinanceStripeProviderAccountReconciliationResponse {
+  contractVersion: string;
+  propertyId: string;
+  providerAccount: {
+    provider: "stripe";
+    status: "active" | "setup_incomplete";
+    onboardingStatus: "completed" | "invited";
+    chargesEnabled: boolean;
+    payoutsEnabled: boolean;
+    detailsSubmitted: boolean;
+    cardPaymentsStatus: string | null;
+    ready: boolean;
+  };
+}
+
 export class FinancePaymentSettingsClientError extends Error {
   statusCode: number;
   code: string;
@@ -249,6 +264,24 @@ export async function createFinanceStripeDashboardLink(
     return await client.post<FinanceStripeDashboardLinkResponse>(
       `${buildFinancePaymentSettingsBaseEndpoint(input)}/provider-accounts/stripe/dashboard-link`,
       undefined,
+      omitHotelContext,
+    );
+  } catch (error) {
+    throw toFinancePaymentSettingsClientError(error);
+  }
+}
+
+export async function reconcileFinanceStripeProviderAccount(
+  input: { propertyId: string; commandId?: string; commandPrefix?: string },
+  client: FinanceProviderAccountApiClient = apiClient,
+): Promise<FinanceStripeProviderAccountReconciliationResponse> {
+  const commandId =
+    input.commandId?.trim() ||
+    newFinanceCommandId(input.commandPrefix ?? "finance-stripe-reconcile");
+  try {
+    return await client.post<FinanceStripeProviderAccountReconciliationResponse>(
+      `${buildFinancePaymentSettingsBaseEndpoint(input)}/provider-accounts/stripe/reconcile`,
+      { commandId, idempotencyKey: commandId },
       omitHotelContext,
     );
   } catch (error) {
