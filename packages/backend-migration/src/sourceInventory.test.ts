@@ -367,6 +367,8 @@ describe("legacy production source inventory", () => {
     expect(SOURCE_SCHEMA_FINGERPRINT_SQL).toContain("pg_catalog.pg_get_viewdef");
     expect(SOURCE_SCHEMA_FINGERPRINT_SQL).toContain("pg_catalog.pg_sequence");
     expect(SOURCE_SCHEMA_FINGERPRINT_SQL).toContain("pg_catalog.pg_enum");
+    expect(SOURCE_SCHEMA_FINGERPRINT_SQL).toContain("vayada_migration_evidence");
+    expect(SOURCE_SCHEMA_FINGERPRINT_SQL.match(/vayada_migration_evidence/g)).toHaveLength(7);
     expect(SOURCE_SCHEMA_FINGERPRINT_SQL).not.toMatch(/\b(?:DELETE|DROP|INSERT|UPDATE)\b/i);
 
     const authCounts = buildSourceRowCountQueries(inventory, "auth");

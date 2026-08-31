@@ -3,6 +3,11 @@ import type pg from "pg";
 
 import { ADVISORY_LOCK_ID } from "./runner.js";
 import {
+  DatabaseAttestationError,
+  readDatabaseAttestationTable,
+  resolveDatabaseAttestation,
+} from "./databaseAttestation.js";
+import {
   buildSourceRowCountQueries,
   SOURCE_DATABASES,
   SOURCE_READ_ONLY_TRANSACTION_SQL,
@@ -28,7 +33,8 @@ WITH RECURSIVE role_memberships(role_oid) AS (
   JOIN role_memberships inherited ON inherited.role_oid = membership.member
 )
 SELECT (
-  role.rolsuper OR role.rolcreatedb OR role.rolcreaterole
+  session_user <> current_user
+  OR role.rolsuper OR role.rolcreatedb OR role.rolcreaterole
   OR role.rolreplication OR role.rolbypassrls
   OR EXISTS (
     SELECT 1
@@ -102,6 +108,9 @@ SELECT current_database() AS source_database,
          FILTER (WHERE setting LIKE 'vayada.cutover_freeze_proof_sha256=%') AS cutover_freeze_proof_sha256
 FROM database_settings`;
 
+const SOURCE_SNAPSHOT_ATTESTATION_KEY = "vayada.source_snapshot_identifier";
+const SOURCE_FREEZE_ATTESTATION_KEY = "vayada.cutover_freeze_proof_sha256";
+
 type ExtractionEnvironment = "local" | "staging" | "preprod";
 type QueryClient = Pick<pg.ClientBase, "query">;
 
@@ -152,6 +161,41 @@ export class SourceExtractionError extends Error {
   ) {
     super(message);
     this.name = "SourceExtractionError";
+  }
+}
+
+async function readSourceProvenance(client: QueryClient) {
+  const result = await client.query<{
+    source_database: string;
+    snapshot_identifier: string | null;
+    cutover_freeze_proof_sha256: string | null;
+  }>(SOURCE_PROVENANCE_SQL);
+  const settings = result.rows[0];
+  try {
+    const table = await readDatabaseAttestationTable(client);
+    const resolved = resolveDatabaseAttestation(
+      {
+        [SOURCE_SNAPSHOT_ATTESTATION_KEY]: settings?.snapshot_identifier ?? null,
+        [SOURCE_FREEZE_ATTESTATION_KEY]: settings?.cutover_freeze_proof_sha256 ?? null,
+      },
+      table,
+      [SOURCE_SNAPSHOT_ATTESTATION_KEY, SOURCE_FREEZE_ATTESTATION_KEY],
+    );
+    return {
+      source_database: settings?.source_database,
+      snapshot_identifier: resolved[SOURCE_SNAPSHOT_ATTESTATION_KEY] ?? null,
+      cutover_freeze_proof_sha256: resolved[SOURCE_FREEZE_ATTESTATION_KEY] ?? null,
+    };
+  } catch (error) {
+    if (error instanceof DatabaseAttestationError) {
+      throw new SourceExtractionError(
+        error.code === "DISAGREEMENT"
+          ? "SOURCE_ATTESTATION_DISAGREEMENT"
+          : "UNTRUSTED_SOURCE_ATTESTATION",
+        "Source database attestation is not trustworthy",
+      );
+    }
+    throw error;
   }
 }
 
@@ -666,12 +710,7 @@ export async function runSourceExtraction(
             `${sourceDatabase} source snapshot time is invalid`,
           );
         }
-        const provenance = await source.query<{
-          source_database: string;
-          snapshot_identifier: string | null;
-          cutover_freeze_proof_sha256: string | null;
-        }>(SOURCE_PROVENANCE_SQL);
-        const attested = provenance.rows[0];
+        const attested = await readSourceProvenance(source);
         if (
           !attested ||
           attested.source_database !== approved.expectedDatabaseName ||

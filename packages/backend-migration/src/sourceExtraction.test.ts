@@ -2,6 +2,10 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
+  DATABASE_ATTESTATION_TABLE_STATE_SQL,
+  DATABASE_ATTESTATION_VALUES_SQL,
+} from "./databaseAttestation.js";
+import {
   buildSourceExtractionPlan,
   parseSourceExtractionManifest,
   runSourceExtraction,
@@ -98,8 +102,10 @@ class FakeSource {
   writable = false;
   readOnly = true;
   fingerprint: string;
-  attestedSnapshotIdentifier: string;
+  attestedSnapshotIdentifier: string | null;
   attestedFreezeProof: string | null = null;
+  attestationTable: Map<string, string> | null = null;
+  attestationTableTrusted = true;
   failTableOnce: string | null = null;
   private failed = false;
   private currentTable = "";
@@ -129,6 +135,21 @@ class FakeSource {
           cutover_freeze_proof_sha256: this.attestedFreezeProof,
         },
       ]);
+    }
+    if (sql === DATABASE_ATTESTATION_TABLE_STATE_SQL) {
+      return result([
+        {
+          present: this.attestationTable !== null,
+          trusted: this.attestationTable !== null && this.attestationTableTrusted,
+        },
+      ]);
+    }
+    if (sql === DATABASE_ATTESTATION_VALUES_SQL) {
+      return result(
+        [...(this.attestationTable ?? new Map()).entries()].map(
+          ([attestation_key, attestation_value]) => ({ attestation_key, attestation_value }),
+        ),
+      );
     }
     if (sql.includes("WITH schema_items AS")) {
       return result([
@@ -407,6 +428,34 @@ describe("immutable source extraction", () => {
     expect(driftedSources.auth.queries.some((query) => query.startsWith("DECLARE"))).toBe(false);
   });
 
+  it("accepts trusted RDS table evidence and rejects conflicting or writable evidence", async () => {
+    const tableSources = makeSources();
+    tableSources.auth.attestedSnapshotIdentifier = null;
+    tableSources.auth.attestationTable = new Map([
+      ["vayada.source_snapshot_identifier", "fixture:auth-snapshot"],
+    ]);
+    await expect(
+      runSourceExtraction(makeConfig(), new FakeTarget() as never, tableSources as never),
+    ).resolves.toMatchObject({ status: "completed" });
+
+    const conflictingSources = makeSources();
+    conflictingSources.auth.attestationTable = new Map([
+      ["vayada.source_snapshot_identifier", "fixture:other-snapshot"],
+    ]);
+    await expect(
+      runSourceExtraction(makeConfig(), new FakeTarget() as never, conflictingSources as never),
+    ).rejects.toMatchObject({ code: "SOURCE_ATTESTATION_DISAGREEMENT" });
+
+    const untrustedSources = makeSources();
+    untrustedSources.auth.attestationTable = new Map([
+      ["vayada.source_snapshot_identifier", "fixture:auth-snapshot"],
+    ]);
+    untrustedSources.auth.attestationTableTrusted = false;
+    await expect(
+      runSourceExtraction(makeConfig(), new FakeTarget() as never, untrustedSources as never),
+    ).rejects.toMatchObject({ code: "UNTRUSTED_SOURCE_ATTESTATION" });
+  });
+
   it("enforces a read-only transaction and redacts unexpected failures", async () => {
     const sources = makeSources();
     sources.auth.readOnly = false;
@@ -417,6 +466,7 @@ describe("immutable source extraction", () => {
     expect(error).toMatchObject({ code: "READ_ONLY_ENFORCEMENT_FAILED" });
     expect((error as Error).message).not.toMatch(/never-log-this|private@example\.com/);
     expect(sources.auth.queries).toContain("SET LOCAL TIME ZONE 'UTC'");
+    expect(SOURCE_WRITABLE_PRIVILEGES_SQL).toContain("session_user <> current_user");
   });
 
   it("resumes a partial run and repeats with identical counts and no duplicates", async () => {
