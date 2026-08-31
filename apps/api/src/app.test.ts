@@ -7089,6 +7089,13 @@ describe("vayada-api", () => {
     const pool: PublicHotelQuoteReadPool = {
       async query<T extends QueryResultRow>(text: string, values?: readonly unknown[]) {
         queries.push({ text, values });
+        if (text.includes("same_day_booking_policies")) {
+          return {
+            rows: [
+              { timezone: "Europe/Vienna", enabled: true, cutoffLocalTime: "18:00" },
+            ] as unknown as T[],
+          };
+        }
         return {
           rows: [
             {
@@ -7213,12 +7220,12 @@ describe("vayada-api", () => {
         status: "fresh",
       },
     });
-    expect(queries[0]?.text).toContain("distribution.public_quote_read_models");
-    expect(queries[0]?.text).toContain("read_model.expires_at > $11::timestamptz");
-    expect(queries[0]?.text).toContain("profile.profile_status = 'public'");
-    expect(queries[0]?.text).toContain("profile.expires_at IS NULL");
-    expect(queries[0]?.text).toContain("read_model.freshness_status = 'fresh'");
-    expect(queries[0]?.text).not.toContain("PMS_PUBLIC_API_URL");
+    expect(queries[1]?.text).toContain("distribution.public_quote_read_models");
+    expect(queries[1]?.text).toContain("read_model.expires_at > $11::timestamptz");
+    expect(queries[1]?.text).toContain("profile.profile_status = 'public'");
+    expect(queries[1]?.text).toContain("profile.expires_at IS NULL");
+    expect(queries[1]?.text).toContain("read_model.freshness_status = 'fresh'");
+    expect(queries[1]?.text).not.toContain("PMS_PUBLIC_API_URL");
     expect(findForbiddenPublicBookabilityKeys(quote)).toEqual([]);
   });
 
@@ -7227,7 +7234,14 @@ describe("vayada-api", () => {
     const pool: PublicHotelQuoteReadPool = {
       async query<T extends QueryResultRow>(text: string, values?: readonly unknown[]) {
         queries.push({ text, values });
-        if (queries.length === 1) {
+        if (text.includes("same_day_booking_policies")) {
+          return {
+            rows: [
+              { timezone: "Europe/Vienna", enabled: true, cutoffLocalTime: "18:00" },
+            ] as unknown as T[],
+          };
+        }
+        if (text.includes("public_quote_read_models")) {
           return { rows: [] as unknown as T[] };
         }
         return {
@@ -7304,18 +7318,18 @@ describe("vayada-api", () => {
         status: "fresh",
       },
     });
-    expect(queries).toHaveLength(2);
-    expect(queries[0]?.text).toContain("distribution.public_quote_read_models");
-    expect(queries[1]?.text).toContain("distribution.public_room_offer_snapshots");
-    expect(queries[1]?.text).toContain(
+    expect(queries).toHaveLength(3);
+    expect(queries[1]?.text).toContain("distribution.public_quote_read_models");
+    expect(queries[2]?.text).toContain("distribution.public_room_offer_snapshots");
+    expect(queries[2]?.text).toContain(
       "jsonb_agg(offer.payment_options ORDER BY offer.stay_date)->0",
     );
-    expect(queries[1]?.text).not.toContain("array_agg(offer.payment_options");
-    expect(queries[1]?.text).toContain("offer.sellable_publicly = TRUE");
-    expect(queries[1]?.text).toContain("offer.availability_status IN ('available', 'limited')");
-    expect(queries[1]?.text).toContain("offer.available_rooms > 0");
-    expect(queries[1]?.text).toContain("offer.freshness_status = 'fresh'");
-    expect(queries[1]?.values).toEqual([
+    expect(queries[2]?.text).not.toContain("array_agg(offer.payment_options");
+    expect(queries[2]?.text).toContain("offer.sellable_publicly = TRUE");
+    expect(queries[2]?.text).toContain("offer.availability_status IN ('available', 'limited')");
+    expect(queries[2]?.text).toContain("offer.available_rooms > 0");
+    expect(queries[2]?.text).toContain("offer.freshness_status = 'fresh'");
+    expect(queries[2]?.values).toEqual([
       "hotel-alpenrose",
       "2026-09-12",
       "2026-09-15",
@@ -7390,7 +7404,14 @@ describe("vayada-api", () => {
         },
       },
       pool: {
-        async query<T extends QueryResultRow>() {
+        async query<T extends QueryResultRow>(text: string) {
+          if (text.includes("same_day_booking_policies")) {
+            return {
+              rows: [
+                { timezone: "Europe/Vienna", enabled: true, cutoffLocalTime: "18:00" },
+              ] as unknown as T[],
+            };
+          }
           return {
             rows: [
               {
@@ -7473,7 +7494,14 @@ describe("vayada-api", () => {
       connectionString: "postgresql://target-db",
       profileRepository: publicHotelProfileRepository,
       pool: {
-        async query<T extends QueryResultRow>() {
+        async query<T extends QueryResultRow>(text: string) {
+          if (text.includes("same_day_booking_policies")) {
+            return {
+              rows: [
+                { timezone: "Europe/Vienna", enabled: true, cutoffLocalTime: "18:00" },
+              ] as unknown as T[],
+            };
+          }
           return {
             rows: [
               {
@@ -7539,7 +7567,14 @@ describe("vayada-api", () => {
       },
     };
     const pool: PublicHotelQuoteReadPool = {
-      async query<T extends QueryResultRow>() {
+      async query<T extends QueryResultRow>(text: string) {
+        if (text.includes("same_day_booking_policies")) {
+          return {
+            rows: [
+              { timezone: "Europe/Vienna", enabled: true, cutoffLocalTime: "18:00" },
+            ] as unknown as T[],
+          };
+        }
         return {
           rows: [
             {
@@ -7617,7 +7652,14 @@ describe("vayada-api", () => {
 
   it("preserves public detail for target unavailable quote reasons", async () => {
     const pool: PublicHotelQuoteReadPool = {
-      async query<T extends QueryResultRow>() {
+      async query<T extends QueryResultRow>(text: string) {
+        if (text.includes("same_day_booking_policies")) {
+          return {
+            rows: [
+              { timezone: "Europe/Vienna", enabled: true, cutoffLocalTime: "18:00" },
+            ] as unknown as T[],
+          };
+        }
         return {
           rows: [
             {
@@ -7777,6 +7819,7 @@ describe("vayada-api", () => {
     const repository = createTargetBookingWebCalendarRepository({
       connectionString: "postgresql://target-db",
       pool,
+      now: () => new Date("2026-06-09T09:00:00.000Z"),
     });
 
     const calendar = await repository.findCalendarByHotel(seededPublicProfile.hotel, {
@@ -7804,13 +7847,56 @@ describe("vayada-api", () => {
     expect(queries[0]?.text).toContain("profile.profile_status = 'public'");
     expect(queries[0]?.text).toContain("profile.expires_at IS NULL");
     expect(queries[0]?.text).toContain("offer.freshness_status = 'fresh'");
+    expect(queries[0]?.text).toContain("hotel_catalog.property_locations");
+    expect(queries[0]?.text).toContain("booking.same_day_booking_policies");
+    expect(queries[0]?.text).toContain("AT TIME ZONE location.timezone");
     expect(queries[0]?.values).toEqual([
       seededPublicProfile.hotel.propertyId,
       "hotel-alpenrose",
       "2026-09-12",
       "2026-09-15",
+      "2026-06-09T09:00:00.000Z",
+      true,
+      "18:00",
     ]);
     expect(findForbiddenPublicBookabilityKeys(calendar)).toEqual([]);
+  });
+
+  it("closes the same-day Booking Web calendar at the exact property-local cutoff", async () => {
+    const queries: Array<{ text: string; values?: readonly unknown[] }> = [];
+    const pool: BookingWebCalendarReadPool = {
+      async query<T extends QueryResultRow>(text: string, values?: readonly unknown[]) {
+        queries.push({ text, values });
+        return {
+          rows: [
+            {
+              stayDate: "2026-09-12",
+              hasAvailability: false,
+              hasUnavailableState: false,
+              sourceFreshnessValues: [],
+              freshnessStatuses: ["fresh"],
+              dataSources: ["pms", "distribution"],
+              generatedAt: "2026-09-12T16:00:00.000Z",
+            },
+          ] as unknown as T[],
+        };
+      },
+      async end() {},
+    };
+    const repository = createTargetBookingWebCalendarRepository({
+      connectionString: "postgresql://target-db",
+      pool,
+      now: () => new Date("2026-09-12T16:00:00.000Z"),
+    });
+
+    const calendar = await repository.findCalendarByHotel(seededPublicProfile.hotel, {
+      start: "2026-09-12",
+      end: "2026-09-13",
+    });
+
+    expect(calendar.calendar.unavailableDates).toEqual(["2026-09-12"]);
+    expect(queries[0]?.text).toContain("< (CASE WHEN policy.property_id IS NULL");
+    expect(queries[0]?.values?.slice(4)).toEqual(["2026-09-12T16:00:00.000Z", true, "18:00"]);
   });
 
   it("returns unavailable target Booking Web calendar when the read model query fails", async () => {

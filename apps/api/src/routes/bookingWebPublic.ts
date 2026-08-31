@@ -10,8 +10,13 @@ import {
   type PublicBookabilityProfileProjection,
   type PublicBookabilityQuoteProjection,
 } from "@vayada/domain-distribution";
-import { parseAddonEconomicTerms, type AddonEconomicTerms } from "@vayada/domain-booking";
-import { parseBookingFlexibleCancellationTerms } from "@vayada/domain-booking";
+import {
+  evaluateSameDayBooking,
+  parseAddonEconomicTerms,
+  parseBookingFlexibleCancellationTerms,
+  SAME_DAY_BOOKING_POLICY_DEFAULTS,
+  type AddonEconomicTerms,
+} from "@vayada/domain-booking";
 import type { BillingConfigReadModel, BillingConfigReadPort } from "@vayada/domain-finance";
 import { normalizeNationalityCode } from "@vayada/locale-constants";
 import { createHash, randomBytes } from "node:crypto";
@@ -1008,7 +1013,9 @@ export function createTargetBookingWebCalendarRepository(config: {
   connectionString: string;
   max?: number;
   pool?: BookingWebCalendarReadPool;
+  now?: () => Date;
 }): BookingWebCalendarRepository {
+  const now = config.now ?? (() => new Date());
   const pool =
     config.pool ??
     new pg.Pool({
@@ -1018,7 +1025,8 @@ export function createTargetBookingWebCalendarRepository(config: {
 
   return {
     async findCalendarByHotel(hotel, query) {
-      const generatedAt = new Date().toISOString();
+      const requestedAt = now();
+      const generatedAt = requestedAt.toISOString();
       const start = normalizeDateOnly(query.start);
       const end = normalizeDateOnly(query.end);
       if (
@@ -1034,7 +1042,25 @@ export function createTargetBookingWebCalendarRepository(config: {
         const result = await pool.query<TargetBookingWebCalendarRow>(
           `SELECT
            offer.stay_date::text AS "stayDate",
-           BOOL_OR(offer.sellable_publicly AND offer.availability_status IN ('available', 'limited') AND offer.available_rooms > 0 AND offer.freshness_status = 'fresh') AS "hasAvailability",
+           BOOL_OR(
+             offer.sellable_publicly
+             AND offer.availability_status IN ('available', 'limited')
+             AND offer.available_rooms > 0
+             AND offer.freshness_status = 'fresh'
+             AND (
+               offer.stay_date <> ($5::timestamptz AT TIME ZONE location.timezone)::date
+               OR (
+                 COALESCE(policy.enabled, $6::boolean)
+                 AND (
+                   CASE WHEN policy.property_id IS NULL THEN $7::text
+                     ELSE policy.cutoff_local_time END IS NULL
+                   OR ($5::timestamptz AT TIME ZONE location.timezone)::time
+                     < (CASE WHEN policy.property_id IS NULL THEN $7::text
+                       ELSE policy.cutoff_local_time END)::time
+                 )
+               )
+             )
+           ) AS "hasAvailability",
            BOOL_OR(offer.availability_status IN ('sold_out', 'closed', 'unavailable')) AS "hasUnavailableState",
            MIN(COALESCE(NULLIF(offer.rate_summary ->> 'minStayNights', '')::integer, 1)) AS "minStayNights",
            CASE
@@ -1048,6 +1074,10 @@ export function createTargetBookingWebCalendarRepository(config: {
          FROM distribution.public_room_offer_snapshots offer
          JOIN distribution.public_hotel_bookability_profiles profile
            ON profile.property_id = offer.property_id
+         JOIN hotel_catalog.property_locations location
+           ON location.property_id = offer.property_id
+         LEFT JOIN booking.same_day_booking_policies policy
+           ON policy.property_id = offer.property_id
          LEFT JOIN LATERAL unnest(offer.data_sources) AS source(owner) ON true
          WHERE (profile.property_id::text = $1 OR profile.canonical_slug = $2)
            AND profile.public_visibility = 'public_safe'
@@ -1061,7 +1091,15 @@ export function createTargetBookingWebCalendarRepository(config: {
            AND (offer.expires_at IS NULL OR offer.expires_at > now())
          GROUP BY offer.stay_date
          ORDER BY offer.stay_date ASC`,
-          [hotel.propertyId, hotel.slug, start, end],
+          [
+            hotel.propertyId,
+            hotel.slug,
+            start,
+            end,
+            requestedAt.toISOString(),
+            SAME_DAY_BOOKING_POLICY_DEFAULTS.enabled,
+            SAME_DAY_BOOKING_POLICY_DEFAULTS.cutoffLocalTime,
+          ],
         );
 
         if (result.rows.length === 0) {
@@ -1138,6 +1176,8 @@ type TargetCheckoutPropertyRow = QueryResultRow & {
   displayName: string;
   defaultLocale: string;
   timezone: string;
+  sameDayBookingsEnabled?: boolean;
+  sameDayBookingCutoffTime?: string | null;
 };
 
 type TargetCheckoutConfigRow = QueryResultRow & {
@@ -1347,6 +1387,7 @@ type PgTargetBookingWebCheckoutAdapterConfig = {
   stripePaymentProvider?: StripeBookingPaymentProvider;
   max?: number;
   pool?: pg.Pool;
+  now?: () => Date;
 };
 
 const TARGET_CHECKOUT_SUPPORTED_PAYMENT_METHODS = [
@@ -1728,6 +1769,7 @@ export function createTargetBookingWebCheckoutAdapter(
         const checkoutConfig = await loadTargetCheckoutConfig(client, property.propertyId);
         assertTargetCheckoutConfigMatchesQuote(checkoutConfig, quote);
         resolveTargetCheckoutAmountSnapshot(request, quote);
+        assertTargetSameDayBookingOpen(property, quote.checkIn, config.now?.() ?? new Date());
         const booking = await createTargetGuestBooking(
           client,
           config.inventoryReservationPort,
@@ -2349,11 +2391,17 @@ async function resolveTargetCheckoutProperty(
        p.id::text AS "propertyId",
        p.display_name AS "displayName",
        p.default_locale AS "defaultLocale",
-       profile.timezone
+       location.timezone,
+       COALESCE(same_day.enabled, $2::boolean) AS "sameDayBookingsEnabled",
+       CASE WHEN same_day.property_id IS NULL THEN $3::text
+         ELSE same_day.cutoff_local_time END AS "sameDayBookingCutoffTime"
      FROM hotel_catalog.property_slugs s
      JOIN hotel_catalog.properties p ON p.id = s.property_id
+     JOIN hotel_catalog.property_locations location ON location.property_id = p.id
      JOIN distribution.public_hotel_bookability_profiles profile
        ON profile.property_id = p.id
+     LEFT JOIN booking.same_day_booking_policies same_day
+       ON same_day.property_id = p.id
      WHERE s.slug = $1
        AND s.purpose = 'canonical'
        AND s.status = 'active'
@@ -2363,7 +2411,11 @@ async function resolveTargetCheckoutProperty(
        ${bookabilityPredicate}
      LIMIT 1
      ${requireBookable ? "FOR SHARE OF p" : ""}`,
-    [slug],
+    [
+      slug,
+      SAME_DAY_BOOKING_POLICY_DEFAULTS.enabled,
+      SAME_DAY_BOOKING_POLICY_DEFAULTS.cutoffLocalTime,
+    ],
   );
   const property = result.rows[0];
   if (!property) {
@@ -2510,6 +2562,7 @@ async function createTargetCheckoutQuote(
   if (checkIn < targetPropertyDateOnly(property.timezone, requestedAt)) {
     throw createHttpError(400, "checkIn cannot be in the past.");
   }
+  assertTargetSameDayBookingOpen(property, checkIn, requestedAt);
   const roomTypeId = stringField(request, "roomTypeId");
   if (!roomTypeId) {
     throw createHttpError(400, "roomTypeId is required for target checkout quotes.");
@@ -6533,6 +6586,28 @@ function targetPropertyDateOnly(timezone: string | undefined, instant: Date): st
   const month = parts.find((part) => part.type === "month")?.value ?? "01";
   const day = parts.find((part) => part.type === "day")?.value ?? "01";
   return `${year}-${month}-${day}`;
+}
+
+function assertTargetSameDayBookingOpen(
+  property: TargetCheckoutPropertyRow,
+  checkIn: string,
+  requestedAt: Date,
+): void {
+  const decision = evaluateSameDayBooking({
+    checkIn,
+    policy: {
+      enabled: property.sameDayBookingsEnabled ?? SAME_DAY_BOOKING_POLICY_DEFAULTS.enabled,
+      cutoffLocalTime:
+        property.sameDayBookingCutoffTime === undefined
+          ? SAME_DAY_BOOKING_POLICY_DEFAULTS.cutoffLocalTime
+          : property.sameDayBookingCutoffTime,
+    },
+    propertyTimeZone: property.timezone,
+    now: requestedAt,
+  });
+  if (!decision.eligible) {
+    throw createHttpError(409, "Same-day booking is no longer available for this property.");
+  }
 }
 
 function canonicalTargetCheckoutRateType(value: string | null | undefined): string {

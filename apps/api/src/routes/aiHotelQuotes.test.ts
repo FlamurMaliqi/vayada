@@ -43,12 +43,17 @@ function snapshotOffer(
   };
 }
 
-function targetRepository(rows: QueryResultRow[]) {
+function targetRepository(
+  rows: QueryResultRow[],
+  policy: QueryResultRow = { timezone: "Etc/UTC", enabled: true, cutoffLocalTime: null },
+) {
   const queries: Array<{ text: string; values?: readonly unknown[] }> = [];
   const pool: PublicHotelQuoteReadPool = {
     async query<T extends QueryResultRow>(text: string, values?: readonly unknown[]) {
       queries.push({ text, values });
-      return { rows: (queries.length === 1 ? [] : rows) as T[] };
+      if (text.includes("same_day_booking_policies")) return { rows: [policy] as T[] };
+      if (text.includes("public_quote_read_models")) return { rows: [] };
+      return { rows: rows as T[] };
     },
     async end() {},
   };
@@ -64,9 +69,14 @@ function targetRepository(rows: QueryResultRow[]) {
   };
 }
 
-function cachedTargetRepository(offers: Record<string, unknown>[], hotelProfile = profile) {
+function cachedTargetRepository(
+  offers: Record<string, unknown>[],
+  hotelProfile = profile,
+  policy: QueryResultRow = { timezone: "Etc/UTC", enabled: true, cutoffLocalTime: null },
+) {
   const pool: PublicHotelQuoteReadPool = {
-    async query<T extends QueryResultRow>() {
+    async query<T extends QueryResultRow>(text: string) {
+      if (text.includes("same_day_booking_policies")) return { rows: [policy] as T[] };
       return {
         rows: [
           {
@@ -202,10 +212,33 @@ describe("target public hotel quote stay restrictions", () => {
       },
     });
     expect(quote?.quote?.offers).toHaveLength(1);
-    expect(queries[1]?.text).toContain(
+    expect(queries[2]?.text).toContain(
       "(array_agg(offer.rate_summary ORDER BY offer.stay_date))[1]",
     );
-    expect(queries[1]?.values?.[7]).toBe(3);
+    expect(queries[2]?.values?.[7]).toBe(3);
+  });
+
+  it("rejects a same-day quote at the exact property-local cutoff", async () => {
+    const { repository, queries } = targetRepository([snapshotOffer("same-day", {})], {
+      timezone: "Etc/UTC",
+      enabled: true,
+      cutoffLocalTime: "10:00",
+    });
+
+    const quote = await repository.findQuoteBySlug("hotel-alpenrose", {
+      check_in: "2026-07-22",
+      check_out: "2026-07-23",
+      adults: "2",
+      rooms: "1",
+      currency: "EUR",
+      locale: "en",
+    });
+
+    expect(quote).toMatchObject({
+      status: "unavailable",
+      unavailableReasons: [{ code: "same_day_cutoff_passed" }],
+    });
+    expect(queries).toHaveLength(1);
   });
 });
 

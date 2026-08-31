@@ -18,6 +18,7 @@ import {
   type PublicBookabilityStatus,
   type PublicBookabilityUnavailableReason,
 } from "@vayada/domain-distribution";
+import { evaluateSameDayBooking, SAME_DAY_BOOKING_POLICY_DEFAULTS } from "@vayada/domain-booking";
 import type { FastifyInstance } from "fastify";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
 
@@ -86,6 +87,12 @@ type TargetRoomOfferSnapshotQuoteRow = {
   discounts: string | number;
   currency: string;
   generatedAt: Date | string | null;
+};
+
+type TargetSameDayBookingPolicyRow = {
+  timezone: string;
+  enabled: boolean;
+  cutoffLocalTime: string | null;
 };
 
 type PublicHotelQuoteParams = {
@@ -165,6 +172,21 @@ export function createTargetPublicHotelQuoteRepository(config: {
       }
 
       try {
+        const sameDayPolicy = await loadTargetSameDayBookingPolicy(pool, profile.hotel.propertyId);
+        const sameDayDecision = evaluateSameDayBooking({
+          checkIn: parsed.request.checkIn,
+          policy: {
+            enabled: sameDayPolicy.enabled,
+            cutoffLocalTime: sameDayPolicy.cutoffLocalTime,
+          },
+          propertyTimeZone: sameDayPolicy.timezone,
+          now: requestedAt,
+        });
+        if (!sameDayDecision.eligible) {
+          return toUnavailablePublicHotelQuoteProjection(profile.hotel, query, requestedAt, [
+            { code: "same_day_cutoff_passed" },
+          ]);
+        }
         const result = await pool.query<TargetPublicHotelQuoteRow>(
           `SELECT
            read_model.quote_session_id::text AS "quoteSessionId",
@@ -238,6 +260,32 @@ export function createTargetPublicHotelQuoteRepository(config: {
       await pool.end();
     },
   };
+}
+
+async function loadTargetSameDayBookingPolicy(
+  pool: PublicHotelQuoteReadPool,
+  propertyId: string,
+): Promise<TargetSameDayBookingPolicyRow> {
+  const result = await pool.query<TargetSameDayBookingPolicyRow>(
+    `SELECT
+       location.timezone,
+       COALESCE(policy.enabled, $2::boolean) AS enabled,
+       CASE WHEN policy.property_id IS NULL THEN $3::text
+         ELSE policy.cutoff_local_time END AS "cutoffLocalTime"
+     FROM hotel_catalog.properties property
+     JOIN hotel_catalog.property_locations location ON location.property_id = property.id
+     LEFT JOIN booking.same_day_booking_policies policy ON policy.property_id = property.id
+     WHERE property.id = $1::uuid
+     LIMIT 1`,
+    [
+      propertyId,
+      SAME_DAY_BOOKING_POLICY_DEFAULTS.enabled,
+      SAME_DAY_BOOKING_POLICY_DEFAULTS.cutoffLocalTime,
+    ],
+  );
+  const policy = result.rows[0];
+  if (!policy) throw new Error("Target same-day booking policy is unavailable");
+  return policy;
 }
 
 async function quoteFromTargetOfferSnapshots(
