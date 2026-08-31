@@ -134,6 +134,32 @@ export {
 } from "./productionParity.js";
 
 export {
+  abortProductionCutover,
+  PRODUCTION_CUTOVER_STEPS,
+  ProductionCutoverError,
+  productionCutoverExitCode,
+  readProductionCutoverStatus,
+  runProductionCutover,
+  validateProductionCutoverConfig,
+  type ProductionCutoverConfig,
+  type ProductionCutoverApprovalReport,
+  type ProductionCutoverMode,
+  type ProductionCutoverReport,
+  type ProductionCutoverServices,
+  type ProductionCutoverSmokeReport,
+  type ProductionCutoverStatus,
+  type ProductionCutoverStep,
+  type ProductionMigrationStatusReport,
+} from "./productionCutover.js";
+export {
+  parseProductionCutoverArgs,
+  PRODUCTION_CUTOVER_COMMANDS,
+  ProductionCutoverArgsError,
+  type ParsedProductionCutoverArgs,
+  type ProductionCutoverCommand,
+} from "./productionCutoverArgs.js";
+
+export {
   createPgWorkosBackfillRepository,
   runWorkosBackfill,
   type BackfillCounter,
