@@ -24,6 +24,7 @@ export type BookingAddonItem = {
   currency: string;
   category: "dining" | "experience" | "transport" | "wellness" | "other";
   imageUrl: string | null;
+  imageMediaObjectId: string | null;
   duration: string | null;
   pricingModel: BookingAddonPricingModel;
   publicVisible: boolean;
@@ -39,7 +40,7 @@ export type CreateBookingAddonItemBody = {
   price: string;
   currency: string;
   category: BookingAddonItem["category"];
-  imageUrl: string | null;
+  imageMediaObjectId: string | null;
   duration: string | null;
   pricingModel: BookingAddonPricingModel;
   publicVisible: boolean;
@@ -130,6 +131,8 @@ type BookingAddonItemsError = {
 
 type ValidationResult<T> = { ok: true; value: T } | { ok: false; details: string[] };
 
+class BookingAddonImageInvalidError extends Error {}
+
 export async function registerBookingAddonItemRoutes(
   app: FastifyInstance,
   repository: BookingAddonItemsRepository,
@@ -169,7 +172,9 @@ export async function registerBookingAddonItemRoutes(
           return sendAddonItemsError(reply, addonLimitError(result));
         }
         return reply.status(201).send(result.addonItem);
-      } catch {
+      } catch (error) {
+        if (error instanceof BookingAddonImageInvalidError)
+          return sendInvalidPayload(reply, [error.message]);
         return sendAddonItemsError(reply, writeUnavailableError());
       }
     },
@@ -193,7 +198,9 @@ export async function registerBookingAddonItemRoutes(
         );
         if (!addonItem) return sendAddonItemsError(reply, writeNotFoundError());
         return addonItem;
-      } catch {
+      } catch (error) {
+        if (error instanceof BookingAddonImageInvalidError)
+          return sendInvalidPayload(reply, [error.message]);
         return sendAddonItemsError(reply, writeUnavailableError());
       }
     },
@@ -313,6 +320,7 @@ export function createPgTargetBookingAddonItemsRepository(config: {
           await client.query("COMMIT");
           return { outcome: "plan_limit_reached", currentCount, propertyPlan };
         }
+        const image = await resolveAddonImage(client, propertyId, body.imageMediaObjectId);
         const insertResult = await client.query<{ addonItemId: string }>(
           `INSERT INTO booking.addon_definitions (
              property_id, name, description, category, pricing_model,
@@ -333,7 +341,7 @@ export function createPgTargetBookingAddonItemsRepository(config: {
             body.status,
             body.ownershipKind,
             body.partnerCommissionRate,
-            JSON.stringify(metadataFromBody(body)),
+            JSON.stringify(metadataFromBody(body, image)),
           ],
         );
         const addonItemId = insertResult.rows[0]?.addonItemId;
@@ -364,6 +372,7 @@ export function createPgTargetBookingAddonItemsRepository(config: {
       }
       const propertyId = await resolvePropertyId(pool, hotelId);
       if (!propertyId) return null;
+      const image = await resolveAddonImage(pool, propertyId, body.imageMediaObjectId);
       const values: unknown[] = [propertyId, addonItemId];
       const sets: string[] = [];
       addSet(sets, values, "name", body.name);
@@ -378,7 +387,7 @@ export function createPgTargetBookingAddonItemsRepository(config: {
         addSet(sets, values, "ownership_kind", body.ownershipKind);
         addSet(sets, values, "partner_commission_rate", body.partnerCommissionRate, "::numeric");
       }
-      const metadata = metadataFromBody(body);
+      const metadata = metadataFromBody(body, image);
       if (Object.keys(metadata).length > 0) {
         values.push(JSON.stringify(metadata));
         sets.push(`metadata = metadata || $${values.length}::jsonb`);
@@ -468,11 +477,56 @@ function addSet(
   sets.push(`${column} = $${values.length}${cast}`);
 }
 
+async function resolveAddonImage(
+  queryable: BookingAddonItemsQueryable,
+  propertyId: string,
+  mediaObjectId: string | null | undefined,
+): Promise<{ mediaObjectId: string; imageUrl: string } | null | undefined> {
+  if (mediaObjectId === undefined) return undefined;
+  if (mediaObjectId === null) return null;
+  const result = await queryable.query<{ mediaObjectId: string; imageUrl: string }>(
+    `SELECT media.id::text AS "mediaObjectId", variant.public_cdn_url AS "imageUrl"
+       FROM platform.media_objects media
+       JOIN platform.media_variants variant
+         ON variant.media_object_id = media.id
+        AND variant.variant_name = 'original_safe'
+        AND variant.visibility = 'public'
+      WHERE media.id = $1::uuid
+        AND media.property_id = $2::uuid
+        AND media.purpose = 'booking.addon.image'
+        AND media.resource_product = 'booking'
+        AND media.storage_kind = 'vayada_managed'
+        AND media.storage_key LIKE
+              'public/media/' || media.id::text || '/original_safe/%'
+        AND media.visibility = 'public'
+        AND media.public_approved = TRUE
+        AND media.lifecycle_status = 'active'
+        AND media.deleted_at IS NULL
+        AND variant.storage_key = media.storage_key
+        AND variant.storage_key LIKE
+              'public/media/' || media.id::text || '/original_safe/%'
+        AND variant.public_cdn_url IS NOT NULL
+        AND variant.public_cdn_url !~* '^https://(?:[a-z0-9.-]+\\.)?s3(?:[.-][a-z0-9-]+)?\\.amazonaws\\.com(?::[0-9]+)?/'
+        AND substring(
+              variant.public_cdn_url
+              FROM '^https://[a-z0-9.-]+(?::[0-9]+)?(/[^?#]*)$'
+            ) = '/' || substring(variant.storage_key FROM 8)`,
+    [mediaObjectId, propertyId],
+  );
+  const image = result.rows[0];
+  if (!image)
+    throw new BookingAddonImageInvalidError(
+      "imageMediaObjectId must reference an active approved add-on image for this property.",
+    );
+  return image;
+}
+
 function toAddonItem(row: AddonItemRow, hotelId: string): BookingAddonItem {
   const metadata = isRecord(row.metadata) ? row.metadata : {};
   const economicTerms = parseAddonEconomicTerms(row);
   if (!economicTerms) throw new Error("Stored add-on economics are invalid");
   const imageUrl = nullableString(metadata.imageUrl);
+  const imageMediaObjectId = nullableString(metadata.mediaObjectId);
   const duration = nullableString(metadata.duration);
   const sortOrder = typeof metadata.sortOrder === "number" ? metadata.sortOrder : 0;
   return {
@@ -485,6 +539,7 @@ function toAddonItem(row: AddonItemRow, hotelId: string): BookingAddonItem {
     currency: row.currency,
     category: normalizeAddonCategory(row.category),
     imageUrl,
+    imageMediaObjectId,
     duration,
     pricingModel: row.pricingModel,
     publicVisible: row.publicVisible,
@@ -496,9 +551,15 @@ function toAddonItem(row: AddonItemRow, hotelId: string): BookingAddonItem {
   };
 }
 
-function metadataFromBody(body: Partial<CreateBookingAddonItemBody>): Record<string, unknown> {
+function metadataFromBody(
+  body: Partial<CreateBookingAddonItemBody>,
+  image: { mediaObjectId: string; imageUrl: string } | null | undefined,
+): Record<string, unknown> {
   const metadata: Record<string, unknown> = {};
-  if ("imageUrl" in body) metadata.imageUrl = body.imageUrl ?? null;
+  if (image !== undefined) {
+    metadata.imageUrl = image?.imageUrl ?? null;
+    metadata.mediaObjectId = image?.mediaObjectId ?? null;
+  }
   if ("duration" in body) metadata.duration = body.duration ?? null;
   if ("sortOrder" in body) metadata.sortOrder = body.sortOrder ?? 0;
   return metadata;
@@ -514,7 +575,7 @@ function parseCreateBody(body: unknown): ValidationResult<CreateBookingAddonItem
   const price = requiredPrice(input, details);
   const currency = requiredCurrency(input, details);
   const category = requiredEnum(input, "category", ADDON_CATEGORIES, details);
-  const imageUrl = optionalNullableString(input, "imageUrl", details);
+  const imageMediaObjectId = optionalNullableUuid(input, "imageMediaObjectId", details);
   const duration = optionalNullableString(input, "duration", details);
   const pricingModel = optionalEnum(input, "pricingModel", PRICING_MODELS, details) ?? "per_stay";
   const publicVisible = optionalBoolean(input, "publicVisible", details) ?? true;
@@ -533,7 +594,7 @@ function parseCreateBody(body: unknown): ValidationResult<CreateBookingAddonItem
       price,
       currency,
       category: category as CreateBookingAddonItemBody["category"],
-      imageUrl,
+      imageMediaObjectId,
       duration,
       pricingModel: pricingModel as BookingAddonPricingModel,
       publicVisible,
@@ -564,7 +625,8 @@ function parseUpdateBody(body: unknown): ValidationResult<UpdateBookingAddonItem
       details,
     ) as CreateBookingAddonItemBody["category"];
   }
-  if ("imageUrl" in input) value.imageUrl = optionalNullableString(input, "imageUrl", details);
+  if ("imageMediaObjectId" in input)
+    value.imageMediaObjectId = optionalNullableUuid(input, "imageMediaObjectId", details);
   if ("duration" in input) value.duration = optionalNullableString(input, "duration", details);
   if ("pricingModel" in input) {
     value.pricingModel = requiredEnum(
@@ -597,7 +659,7 @@ const KNOWN_FIELDS = new Set([
   "price",
   "currency",
   "category",
-  "imageUrl",
+  "imageMediaObjectId",
   "duration",
   "pricingModel",
   "publicVisible",
@@ -665,6 +727,20 @@ function optionalNullableString(
 ): string | null {
   if (!(key in input) || input[key] === null) return null;
   return optionalString(input, key, details) ?? null;
+}
+
+function optionalNullableUuid(
+  input: Record<string, unknown>,
+  key: string,
+  details: string[],
+): string | null {
+  const value = optionalNullableString(input, key, details);
+  if (
+    value &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+  )
+    details.push(`${key} must be a UUID or null.`);
+  return value;
 }
 
 function requiredPrice(input: Record<string, unknown>, details: string[]): string {

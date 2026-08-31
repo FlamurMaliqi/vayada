@@ -29,6 +29,9 @@ export type ProductionCatalogMigrationReport = {
   preservedTarget: ProductionCatalogPlan["preservedTarget"];
   blockers: IdentityMigrationBlocker[];
 };
+export type ProductionCatalogPrerequisiteReport = ProductionCatalogMigrationReport & {
+  remainingMediaBlockers: IdentityMigrationBlocker[];
+};
 export type ProductionCatalogMigrationServices = {
   readSnapshot: typeof readProductionCatalogSnapshot;
   readTarget: typeof readProductionCatalogTargetState;
@@ -70,6 +73,96 @@ export async function runProductionCatalogMigration(config: {
   }
 }
 
+export async function runProductionCatalogPrerequisites(config: {
+  connectionString: string;
+  sourceRunId: string;
+  mode: ProductionCatalogMigrationMode;
+  max?: number;
+}): Promise<ProductionCatalogPrerequisiteReport> {
+  assertMode(config.mode);
+  const pool = new pg.Pool({
+    connectionString: normalizePgConnectionString(config.connectionString),
+    max: config.max ?? 1,
+  });
+  let client: pg.PoolClient | undefined;
+  try {
+    client = await pool.connect();
+    return await runProductionCatalogPrerequisiteTransaction(client, config);
+  } finally {
+    client?.release();
+    await pool.end();
+  }
+}
+
+export async function runProductionCatalogPrerequisiteTransaction(
+  client: QueryClient,
+  input: { sourceRunId: string; mode: ProductionCatalogMigrationMode },
+  services: ProductionCatalogMigrationServices = productionServices,
+): Promise<ProductionCatalogPrerequisiteReport> {
+  assertMode(input.mode);
+  let finished = false;
+  await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+  try {
+    if (input.mode === "apply") {
+      await client.query("SET LOCAL lock_timeout = '5s'");
+      await client.query(
+        `LOCK TABLE hotel_catalog.properties, hotel_catalog.property_source_links,
+                    hotel_catalog.property_slugs, hotel_catalog.property_locations,
+                    hotel_catalog.property_profiles, hotel_catalog.property_amenities,
+                    hotel_catalog.property_contact_channels,
+                    hotel_catalog.property_policy_summaries,
+                    hotel_catalog.property_owner_revisions
+         IN SHARE ROW EXCLUSIVE MODE`,
+      );
+    }
+    const rows = await services.readSnapshot(client, input.sourceRunId);
+    const target = await services.readTarget(client, catalogPropertyIds(rows), input.sourceRunId);
+    const plan = services.buildPlan(rows, target);
+    const remainingMediaBlockers = plan.blockers.filter(isMediaPrerequisiteBlocker);
+    const blocking = plan.blockers.filter((blocker) => !isMediaPrerequisiteBlocker(blocker));
+    if (input.mode === "dry-run" || blocking.length > 0) {
+      await client.query("ROLLBACK");
+      finished = true;
+      return { ...report(input, plan, false), blockers: blocking, remainingMediaBlockers };
+    }
+
+    const core = await services.writeCore(
+      client,
+      plan.writes,
+      plan.sourceLinks,
+      input.sourceRunId,
+      "prerequisites",
+    );
+    const content = await services.writeContent(client, plan.writes);
+    assertPrerequisiteWriteCounts(plan, { ...core, ...content });
+    const verifiedTarget = await services.readTarget(client, plan.propertyIds, input.sourceRunId);
+    assertSourceLinks(plan, verifiedTarget.sourceLinks);
+    const verified = services.buildPlan(rows, verifiedTarget);
+    const verifiedBlocking = verified.blockers.filter(
+      (blocker) => !isMediaPrerequisiteBlocker(blocker),
+    );
+    if (
+      verifiedBlocking.length > 0 ||
+      verified.checksum !== plan.checksum ||
+      prerequisiteWriteCount(verified) > 0
+    )
+      throw new Error(
+        "Post-write catalog prerequisite verification does not match the migration plan",
+      );
+
+    await client.query("COMMIT");
+    finished = true;
+    return {
+      ...report(input, plan, true),
+      blockers: [],
+      remainingMediaBlockers: verified.blockers.filter(isMediaPrerequisiteBlocker),
+    };
+  } catch (error) {
+    if (!finished) await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  }
+}
+
 export async function runProductionCatalogTransaction(
   client: QueryClient,
   input: { sourceRunId: string; mode: ProductionCatalogMigrationMode },
@@ -95,7 +188,7 @@ export async function runProductionCatalogTransaction(
       );
     }
     const rows = await services.readSnapshot(client, input.sourceRunId);
-    const target = await services.readTarget(client, catalogPropertyIds(rows));
+    const target = await services.readTarget(client, catalogPropertyIds(rows), input.sourceRunId);
     const plan = services.buildPlan(rows, target);
     if (input.mode === "dry-run" || plan.blockers.length > 0) {
       await client.query("ROLLBACK");
@@ -107,7 +200,7 @@ export async function runProductionCatalogTransaction(
     const content = await services.writeContent(client, plan.writes);
     const presentation = await services.writePresentation(client, plan.writes);
     assertWriteCounts(plan, { ...core, ...content, ...presentation });
-    const verifiedTarget = await services.readTarget(client, plan.propertyIds);
+    const verifiedTarget = await services.readTarget(client, plan.propertyIds, input.sourceRunId);
     assertSourceLinks(plan, verifiedTarget.sourceLinks);
     const verified = services.buildPlan(rows, verifiedTarget);
     if (
@@ -147,6 +240,40 @@ function assertWriteCounts(plan: ProductionCatalogPlan, actual: Record<string, n
       throw new Error(
         `Catalog ${entity} writer applied ${actual[entity] ?? 0} of ${rows.length} planned rows`,
       );
+}
+function assertPrerequisiteWriteCounts(
+  plan: ProductionCatalogPlan,
+  actual: Record<string, number>,
+): void {
+  const expected: Record<string, number> = {
+    properties: plan.writes.properties.length,
+    sourceLinks: plan.sourceLinks.length,
+    slugs: plan.writes.slugs.length,
+    locations: plan.writes.locations.length,
+    profiles: plan.writes.profiles.length,
+    amenities: plan.writes.amenities.length,
+    contacts: plan.writes.contacts.length,
+    policies: plan.writes.policies.length,
+  };
+  for (const [entity, count] of Object.entries(expected))
+    if (actual[entity] !== count)
+      throw new Error(
+        `Catalog prerequisite ${entity} writer applied ${actual[entity] ?? 0} of ${count} planned rows`,
+      );
+}
+function prerequisiteWriteCount(plan: ProductionCatalogPlan): number {
+  return [
+    plan.writes.properties,
+    plan.writes.slugs,
+    plan.writes.locations,
+    plan.writes.profiles,
+    plan.writes.amenities,
+    plan.writes.contacts,
+    plan.writes.policies,
+  ].reduce((count, rows) => count + rows.length, 0);
+}
+function isMediaPrerequisiteBlocker(blocker: IdentityMigrationBlocker): boolean {
+  return blocker.code === "UNRESOLVED_MEDIA_REFERENCE" || blocker.code === "MEDIA_NOT_READY";
 }
 function assertSourceLinks(
   plan: ProductionCatalogPlan,

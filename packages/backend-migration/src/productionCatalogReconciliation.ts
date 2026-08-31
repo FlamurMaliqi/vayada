@@ -69,6 +69,7 @@ export function reconcileProductionCatalog(
           row.sourceSystem === "booking" &&
           row.sourceTable === "booking_hotels" &&
           row.propertyId === row.sourceId &&
+          row.migrationPhase !== "prerequisites" &&
           VAY1351_RUN.test(row.migrationRunId ?? ""),
       )
       .map((row) => row.propertyId),

@@ -9,7 +9,10 @@ import type { BookingTargetRecord } from "./productionBookingTypes.js";
 describe("production Booking target reader", () => {
   it("reads canonical ownership, exact target IDs, and durable provenance", async () => {
     const client = new TargetFixture();
-    const ownership = await readProductionBookingOwnership(client as never);
+    const ownership = await readProductionBookingOwnership(
+      client as never,
+      "vay1351-0123456789abcdef01234567",
+    );
     const target = await readProductionBookingTargetState(client as never, candidates(), ownership);
     expect(ownership.propertyLinks[0]).toMatchObject({
       sourceSystem: "pms",
@@ -56,6 +59,8 @@ describe("production Booking target reader", () => {
     expect(client.sql.join("\n")).toContain("WHERE property_id = ANY");
     expect(client.sql.join("\n")).toContain("WHERE guest_booking_id = ANY");
     expect(client.sql.join("\n")).toContain("jsonb_to_recordset");
+    expect(client.sql.join("\n")).toContain("metadata ->> 'migrationRunId' = $1");
+    expect(client.sql.join("\n")).toContain("booking.header_logo");
   });
 });
 

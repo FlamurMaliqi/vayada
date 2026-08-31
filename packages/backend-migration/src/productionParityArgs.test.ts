@@ -75,6 +75,8 @@ describe("production parity arguments", () => {
       {
         TARGET_DATABASE_URL: "postgresql://target",
         APPLICATION_RELEASE: "b".repeat(40),
+        PLATFORM_MEDIA_BUCKET: "platform-media-test",
+        PLATFORM_MEDIA_CDN_BASE_URL: "https://media.example.test",
       },
     );
 
@@ -86,6 +88,8 @@ describe("production parity arguments", () => {
       report: "json",
       migrationsDir: "/migrations",
       runtimeApplicationRelease: "b".repeat(40),
+      targetMediaBucket: "platform-media-test",
+      mediaCdnBaseUrl: "https://media.example.test",
       sourceTags: {
         auth: "arn:auth",
         booking: "arn:booking",

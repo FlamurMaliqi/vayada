@@ -7,7 +7,11 @@ const PROPERTY = "11111111-1111-4111-8111-111111111111";
 describe("production catalog target reader", () => {
   it("scopes mutable catalog state and retains freshness, privacy, and ownership evidence", async () => {
     const fixture = new TargetFixture();
-    const state = await readProductionCatalogTargetState(fixture as never, [PROPERTY, PROPERTY]);
+    const state = await readProductionCatalogTargetState(
+      fixture as never,
+      [PROPERTY, PROPERTY],
+      "vay1351-0123456789abcdef01234567",
+    );
 
     expect(
       fixture.calls.filter((call) => call.values).every((call) => call.values?.[0]?.length === 1),
@@ -20,6 +24,9 @@ describe("production catalog target reader", () => {
     expect(
       fixture.calls.find((call) => call.sql.includes("platform.media_objects"))?.sql,
     ).toContain("source_row_id");
+    expect(
+      fixture.calls.find((call) => call.sql.includes("platform.media_objects"))?.sql,
+    ).toContain("source_metadata ->> 'migrationRunId' = $2");
     expect(fixture.calls.find((call) => call.sql.includes("property_source_links"))?.sql).toContain(
       "migrationRunId",
     );

@@ -138,6 +138,12 @@ export function reconcileProductionPmsRecords(
   }
   counts.plannedRecords = accepted.length;
   const parity = summarizeParity(context, accepted);
+  const {
+    actualActiveRoomTypesByProperty: _actualRoomTypes,
+    futureInventoryByProperty: _futureInventory,
+    futureInventoryByRoomType: _futureRoomInventory,
+    ...stableParity
+  } = parity;
   const blockers = context.blockers.sort((left, right) =>
     `${left.code}:${left.source}:${left.sourceId}`.localeCompare(
       `${right.code}:${right.source}:${right.sourceId}`,
@@ -152,7 +158,7 @@ export function reconcileProductionPmsRecords(
         row: record.row,
       })),
       blockers,
-      parity,
+      parity: stableParity,
     }),
     records: accepted,
     writes,

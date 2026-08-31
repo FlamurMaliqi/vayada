@@ -47,10 +47,26 @@ export type PmsTargetBooking = {
   migrationRunId: string | null;
 };
 
+export type PmsMediaReference = {
+  mediaObjectId: string;
+  propertyId: string | null;
+  sourceTable: string;
+  sourceRowId: string;
+  sourceUrl: string;
+  purpose: "pms.room_type.media" | "pms.messaging.attachment";
+  visibility: "public" | "private";
+  lifecycleStatus: string;
+  publicApproved: boolean;
+  publicUrl: string | null;
+  storageKey: string;
+};
+
 export type ProductionPmsTargetState = {
   propertyLinks: PmsPropertyLink[];
   bookings: PmsTargetBooking[];
   userIds: string[];
+  media?: PmsMediaReference[];
+  /** @deprecated Retained for older plan fixtures; media gates use source-bound references. */
   mediaIds: string[];
   records: ExistingPmsTargetRecord[];
   provenance: ProductionMigrationSourceLink[];
@@ -75,6 +91,7 @@ export type PmsBuildContext = {
   linkedGroupByRoomType: Map<string, string>;
   userIds: Set<string>;
   mediaIds: Set<string>;
+  mediaBySource: Map<string, PmsMediaReference>;
 };
 
 export type PmsRoomBuild = {

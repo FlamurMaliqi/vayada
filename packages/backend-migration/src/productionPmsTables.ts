@@ -17,6 +17,7 @@ const updated = c("updatedAt", "updated_at", "timestamptz");
 export const PRODUCTION_PMS_WRITE_ORDER = [
   "linked_inventory_groups",
   "room_types",
+  "room_type_media",
   "rooms",
   "rate_plans",
   "rate_rules",
@@ -71,6 +72,18 @@ export const PRODUCTION_PMS_TABLES: Record<string, PmsTableDefinition> = {
     created,
     updated,
   ]),
+  room_type_media: {
+    ...table("pms.room_type_media", true, [
+      property,
+      c("roomTypeId", "room_type_id", "uuid"),
+      c("platformMediaObjectId", "platform_media_object_id", "uuid"),
+      c("altText", "alt_text", "text"),
+      c("sortOrder", "sort_order", "integer"),
+      created,
+      updated,
+    ]),
+    key: ["room_type_id", "platform_media_object_id"],
+  },
   rooms: table("pms.rooms", true, [
     id,
     property,

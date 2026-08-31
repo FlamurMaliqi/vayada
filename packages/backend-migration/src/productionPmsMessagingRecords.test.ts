@@ -38,7 +38,12 @@ describe("production PMS messaging", () => {
     });
     expect(
       records.find((record) => record.targetTable === "message_attachments")?.row,
-    ).toMatchObject({ platformMediaObjectId: MEDIA, propertyId: PROPERTY });
+    ).toMatchObject({
+      platformMediaObjectId: MEDIA,
+      propertyId: PROPERTY,
+      s3Key: `private/media/${MEDIA}/provider_original/sha256-file.pdf`,
+      sourceUrl: null,
+    });
   });
 
   it("blocks attachments until their Platform Media object exists", () => {
@@ -140,6 +145,19 @@ function target(mediaIds: string[]) {
       },
     ],
     userIds: [],
+    media: mediaIds.map((mediaObjectId) => ({
+      mediaObjectId,
+      propertyId: PROPERTY,
+      sourceTable: "message_attachments",
+      sourceRowId: `${ATTACHMENT}:s3_key`,
+      sourceUrl: "https://legacy-media-test.s3.amazonaws.com/messages/file.pdf",
+      purpose: "pms.messaging.attachment" as const,
+      visibility: "private" as const,
+      lifecycleStatus: "active",
+      publicApproved: false,
+      publicUrl: null,
+      storageKey: `private/media/${mediaObjectId}/provider_original/sha256-file.pdf`,
+    })),
     mediaIds,
     records: [],
     provenance: [],

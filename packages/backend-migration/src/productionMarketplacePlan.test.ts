@@ -184,6 +184,45 @@ describe("production Marketplace plan", () => {
     ).toBe(false);
   });
 
+  it("preserves listing image positions when the legacy URL is repeated", () => {
+    const rows = representativeRows();
+    const listing = rows.find((row) => row.sourceTable === "hotel_listings")!;
+    const legacyUrl = "https://legacy-marketplace.s3.amazonaws.com/repeated.jpg";
+    listing.data["images"] = [legacyUrl, legacyUrl];
+    const target = prerequisites();
+    target.media.push(
+      ...[0, 1].map((index) => ({
+        mediaObjectId: id(30 + index),
+        sourceUrl: legacyUrl,
+        sourceTable: "hotel_listings",
+        sourceRowId: `${OFFER}:images:${index + 1}`,
+        sourceField: `images[${index}]`,
+        visibility: "public",
+        purpose: "marketplace.offer.media",
+        lifecycleStatus: "active",
+        publicApproved: true,
+        publicUrl: `https://media.example.test/listing-${index + 1}.webp`,
+        resourceType: "marketplace_offer",
+        resourceId: OFFER,
+      })),
+    );
+
+    const plan = buildProductionMarketplacePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-03T00:00:00.000Z",
+      rows,
+      target,
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(
+      plan.records.find((record) => record.targetTable === "marketplace_offers")?.row["imageUrls"],
+    ).toEqual([
+      "https://media.example.test/listing-1.webp",
+      "https://media.example.test/listing-2.webp",
+    ]);
+  });
+
   it("replaces image-message metadata with the private media object reference", () => {
     const rows = representativeRows();
     const message = rows.find((row) => row.sourceTable === "chat_messages")!;
@@ -200,8 +239,8 @@ describe("production Marketplace plan", () => {
       mediaObjectId: id(23),
       sourceUrl: legacyUrl,
       sourceTable: "chat_messages",
-      sourceRowId: id(15),
-      sourceField: "content",
+      sourceRowId: `${id(15)}:image`,
+      sourceField: "image",
       visibility: "private",
       purpose: "marketplace.collaboration_chat.attachment",
       lifecycleStatus: "active",
@@ -225,6 +264,38 @@ describe("production Marketplace plan", () => {
     expect(migrated?.row["messageMetadata"]).toEqual({
       mediaObjectId: id(23),
       attachmentSource: "platform_media_migration",
+    });
+    expect(JSON.stringify(migrated?.row)).not.toContain(legacyUrl);
+  });
+
+  it("tombstones an image message whose retention expired before extraction", () => {
+    const rows = representativeRows();
+    const message = rows.find((row) => row.sourceTable === "chat_messages")!;
+    const legacyUrl = "https://legacy-marketplace.s3.amazonaws.com/expired-message.jpg";
+    message.data["content"] = legacyUrl;
+    message.data["message_type"] = "image";
+    message.data["metadata"] = { url: legacyUrl };
+    message.data["created_at"] = "2023-08-01T00:00:00.000Z";
+    message.data["updated_at"] = "2023-08-02T00:00:00.000Z";
+
+    const plan = buildProductionMarketplacePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-03T00:00:00.000Z",
+      rows,
+      target: prerequisites(),
+    });
+
+    expect(plan.blockers).toEqual([]);
+    const migrated = plan.records.find(
+      (record) => record.targetTable === "marketplace_chat_messages",
+    );
+    expect(migrated?.row).toMatchObject({
+      senderUserId: null,
+      senderType: "migration",
+      messageType: "system",
+      body: "[expired legacy image attachment omitted]",
+      messageMetadata: { attachmentSource: "legacy_retention_expired" },
+      piiRetentionUntil: "2025-08-01",
     });
     expect(JSON.stringify(migrated?.row)).not.toContain(legacyUrl);
   });

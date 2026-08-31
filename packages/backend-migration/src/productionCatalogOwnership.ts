@@ -21,6 +21,7 @@ export type ExistingCatalogSourceLink = {
   relationship?: CatalogSourceRelationship;
   status?: "active" | "superseded" | "ignored";
   migrationRunId?: string | null;
+  migrationPhase?: "prerequisites" | "complete" | null;
 };
 export type PlannedCatalogSourceLink = ExistingCatalogSourceLink & {
   relationship: CatalogSourceRelationship;

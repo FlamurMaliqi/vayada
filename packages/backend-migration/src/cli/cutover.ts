@@ -128,6 +128,7 @@ try {
       resume: parsed.resume,
       sourceExtraction,
       sourceConnectionStrings,
+      media: mediaConfig(),
     };
     const report = await runProductionCutover(config);
     print(report, parsed.report);
@@ -142,6 +143,28 @@ try {
         : new ProductionCutoverError("CUTOVER_COMMAND_FAILED", "Cutover command failed");
   console.error(`${safe.code}: ${safe.message}`);
   process.exitCode = 1;
+}
+
+function mediaConfig(): ProductionCutoverConfig["media"] {
+  const targetBucket = process.env["PLATFORM_MEDIA_BUCKET"]?.trim();
+  const cdnBaseUrl = process.env["PLATFORM_MEDIA_CDN_BASE_URL"]?.trim();
+  const legacyPmsBucket = process.env["LEGACY_PMS_MEDIA_BUCKET"]?.trim();
+  const allowedLegacyBuckets = process.env["LEGACY_MEDIA_BUCKET_ALLOWLIST"]
+    ?.split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (!targetBucket || !cdnBaseUrl || !legacyPmsBucket || !allowedLegacyBuckets?.length)
+    throw new ProductionCutoverError(
+      "MISSING_MEDIA_CONFIGURATION",
+      "PLATFORM_MEDIA_BUCKET, PLATFORM_MEDIA_CDN_BASE_URL, LEGACY_PMS_MEDIA_BUCKET, and LEGACY_MEDIA_BUCKET_ALLOWLIST are required",
+    );
+  return {
+    targetBucket,
+    cdnBaseUrl,
+    legacyPmsBucket,
+    allowedLegacyBuckets,
+    region: process.env["AWS_REGION"]?.trim() || undefined,
+  };
 }
 
 function print(

@@ -32,6 +32,7 @@ const addonItem: BookingAddonItem = {
   currency: "EUR",
   category: "transport",
   imageUrl: null,
+  imageMediaObjectId: null,
   duration: "45 min",
   pricingModel: "per_stay",
   publicVisible: true,

@@ -11,7 +11,11 @@ const PLATFORM_MEDIA_API_BASE_URL =
 export const MAX_PROPERTY_GALLERY_PHOTOS = 10;
 const GALLERY_UPLOAD_TIMEOUT_MS = 30_000;
 
-type BookingMediaPurpose = "property.hero_image" | "property.gallery_image" | "booking.header_logo";
+type BookingMediaPurpose =
+  | "property.hero_image"
+  | "property.gallery_image"
+  | "booking.header_logo"
+  | "booking.addon.image";
 
 type UploadTarget = {
   uploadTargetId: string;

@@ -26,6 +26,8 @@ export interface AddonItemFormValues {
   currency: string;
   category: AddonItemCategory;
   image: string;
+  imageMediaObjectId: string | null;
+  imageFile: File | null;
   duration: string;
   perPerson: boolean;
   perNight: boolean;
@@ -57,6 +59,8 @@ function emptyDraft(currency: string): AddonItemFormValues {
     currency,
     category: "experience",
     image: "",
+    imageMediaObjectId: null,
+    imageFile: null,
     duration: "",
     perPerson: false,
     perNight: false,
@@ -79,6 +83,8 @@ function toDraft(addon: AddonItem, fallbackCurrency: string): AddonItemFormValue
     currency: addon.currency || fallbackCurrency,
     category: toAddonCategory(addon.category),
     image: addon.image,
+    imageMediaObjectId: addon.imageMediaObjectId ?? null,
+    imageFile: null,
     duration: addon.duration ?? "",
     perPerson: addon.perPerson === true,
     perNight: addon.perNight === true,
@@ -195,7 +201,6 @@ export default function AddonsTab({
       description: draft.description.trim(),
       price: price.toFixed(2),
       currency: draft.currency.trim().toUpperCase(),
-      image: draft.image.trim(),
       duration: draft.duration.trim(),
       partnerCommissionRate: draft.ownershipKind === "partner" ? partnerCommissionRate : "",
     };
@@ -615,15 +620,35 @@ export default function AddonsTab({
                 </label>
               )}
               <label className="sm:col-span-2 text-[12px] font-medium text-gray-700">
-                Image URL
+                Image
                 <input
-                  value={draft.image}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, image: event.target.value }))
-                  }
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null;
+                    setDraft((current) => ({ ...current, imageFile: file }));
+                  }}
                   className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-[13px] text-gray-900 outline-none focus:border-gray-900"
-                  placeholder="https://"
                 />
+                {(draft.imageFile || draft.image) && (
+                  <span className="mt-1 flex items-center justify-between text-[11px] font-normal text-gray-500">
+                    {draft.imageFile?.name ?? "Current uploaded image"}
+                    <button
+                      type="button"
+                      className="text-red-600 hover:text-red-700"
+                      onClick={() =>
+                        setDraft((current) => ({
+                          ...current,
+                          image: "",
+                          imageMediaObjectId: null,
+                          imageFile: null,
+                        }))
+                      }
+                    >
+                      Remove
+                    </button>
+                  </span>
+                )}
               </label>
             </div>
 

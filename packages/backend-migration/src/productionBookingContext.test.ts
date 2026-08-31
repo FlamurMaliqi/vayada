@@ -47,7 +47,7 @@ describe("production Booking mapping context", () => {
     ]);
   });
 
-  it("blocks unsupported sensitive guest fields and raw legacy media", () => {
+  it("blocks unsupported sensitive guest fields and unresolved property scope", () => {
     const context = createProductionBookingContext({
       sourceRunId: "vay1351-0123456789abcdef01234567",
       completedAt: "2026-08-30T00:00:00.000Z",
@@ -64,7 +64,6 @@ describe("production Booking mapping context", () => {
     expect(context.blockers.map((blocker) => blocker.code)).toEqual([
       "UNRESOLVED_PROPERTY",
       "UNSUPPORTED_SENSITIVE_GUEST_FIELDS",
-      "UNRESOLVED_LEGACY_MEDIA",
     ]);
   });
 });

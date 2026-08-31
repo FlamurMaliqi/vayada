@@ -246,6 +246,7 @@ export function toPublicHotelProfileProjection(
     },
     booking: {
       branding: {
+        logoUrl: null,
         heroImage: heroImage || null,
         heroHeading: row.name || null,
         heroSubtext: row.description || null,

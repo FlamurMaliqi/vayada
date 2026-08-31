@@ -77,7 +77,7 @@ export async function runProductionBookingTransaction(
   try {
     if (input.mode === "apply") await lockBookingTargets(client);
     const snapshot = await services.readSnapshot(client, input.sourceRunId);
-    const ownership = await services.readOwnership(client);
+    const ownership = await services.readOwnership(client, input.sourceRunId);
     const emptyTarget: ProductionBookingTargetState = {
       ...ownership,
       records: [],

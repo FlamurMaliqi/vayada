@@ -8,13 +8,26 @@ The canonical Python-backed PMS frontend remains frozen on `POST /upload/images`
 That compatibility route must stay registered in `pms-api` until the canonical
 frontend is migrated or retired. Target/next PMS uploads still use platform media.
 
-| Legacy route or path                                  | Disposition                                                            | Replacement                                                                                                                             |
-| ----------------------------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Booking API `POST /admin/upload/images`               | Retired. The Booking-to-PMS proxy route is no longer registered.       | Booking Admin calls `POST /api/media/upload-sessions` directly with `property.hero_image` or `property.gallery_image`.                  |
-| Booking Admin direct PMS `POST /upload/images` helper | Retired. Browser uploads no longer target PMS API.                     | Booking Admin direct-to-platform upload session and finalize flow.                                                                      |
-| PMS API `POST /upload/images`                         | Compatibility route required by the canonical legacy PMS frontend.     | Target PMS Web calls `POST /api/media/upload-sessions` with `pms.room_type.media`; remove the legacy route only after canonical cutover. |
-| PMS API `POST /admin/import/images`                   | Retired with the PMS listing import feature.                           | None.                                                                                                                                   |
-| PMS import confirm background image download          | Retired with the PMS listing import feature.                           | None.                                                                                                                                   |
+| Legacy route or path                                  | Disposition                                                        | Replacement                                                                                                                              |
+| ----------------------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Booking API `POST /admin/upload/images`               | Retired. The Booking-to-PMS proxy route is no longer registered.   | Booking Admin calls `POST /api/media/upload-sessions` directly with `property.hero_image` or `property.gallery_image`.                   |
+| Booking Admin direct PMS `POST /upload/images` helper | Retired. Browser uploads no longer target PMS API.                 | Booking Admin direct-to-platform upload session and finalize flow.                                                                       |
+| PMS API `POST /upload/images`                         | Compatibility route required by the canonical legacy PMS frontend. | Target PMS Web calls `POST /api/media/upload-sessions` with `pms.room_type.media`; remove the legacy route only after canonical cutover. |
+| PMS API `POST /admin/import/images`                   | Retired with the PMS listing import feature.                       | None.                                                                                                                                    |
+| PMS import confirm background image download          | Retired with the PMS listing import feature.                       | None.                                                                                                                                    |
 
 Out of scope: PMS messaging attachments stay on the existing PMS/Channex command
 surface until VAY-827.
+
+## Legacy `rooms/*` production data
+
+VAY-1055 migrates the immutable VAY-1351 media inventory into managed Platform
+Media objects before Booking and PMS projections are written. Public consumers
+must resolve approved CDN variants; private attachments remain private. The
+VAY-1359 raw-reference query is the zero-reference gate for legacy S3 URLs.
+
+Do not remove the temporary `rooms/*` public-read policy during the data import.
+After a completed production cutover, zero-reference evidence, and representative
+Booking/PMS/profile browser smoke, remove the exception in the separate
+`vayada-platform` Terraform repository and repeat the smoke test. Only then may
+the legacy upload route and bucket compatibility path be retired.

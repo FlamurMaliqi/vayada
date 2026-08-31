@@ -1,5 +1,10 @@
 import { targetBooking } from "./productionPmsAssignmentRecords.js";
-import { addPmsBlocker, propertyForHotel, safePmsSourceId } from "./productionPmsContext.js";
+import {
+  addPmsBlocker,
+  pmsMediaForSource,
+  propertyForHotel,
+  safePmsSourceId,
+} from "./productionPmsContext.js";
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
 import type { PmsBuildContext, PmsTargetRecord } from "./productionPmsTypes.js";
 import {
@@ -102,22 +107,27 @@ function attachment(context: PmsBuildContext, source: IdentitySourceRow): PmsTar
   const message = find(context, "messages", messageId);
   const thread = find(context, "message_threads", uuid(message.data["thread_id"], "thread_id"));
   const propertyId = propertyForHotel(context, thread.data["hotel_id"]);
-  const mediaId = optionalUuid(data["platform_media_object_id"], "platform_media_object_id");
-  if (mediaId && !context.mediaIds.has(mediaId))
-    throw new Error(`platform media object ${mediaId} has not passed the VAY-1055 gate`);
-  const s3Key = optionalText(data["s3_key"], "s3_key");
-  const sourceUrl = optionalText(data["source_url"], "source_url");
-  if (!mediaId && !s3Key && !sourceUrl)
-    throw new Error("message attachment has no retained media identity or source reference");
+  const legacyS3Key = optionalText(data["s3_key"], "s3_key");
+  const legacySourceUrl = optionalText(data["source_url"], "source_url");
+  if (!legacyS3Key && !legacySourceUrl)
+    throw new Error("message attachment has no source reference for the VAY-1055 gate");
+  const sourceField = legacyS3Key ? "s3_key" : "source_url";
+  const media = pmsMediaForSource(context, {
+    sourceTable: "message_attachments",
+    sourceRowId: `${id}:${sourceField}`,
+    purpose: "pms.messaging.attachment",
+    propertyId,
+    visibility: "private",
+  });
   const createdAt = iso(data["created_at"], "created_at");
   return [
     pmsRecord(source, "message_attachments", id, createdAt, false, {
       id,
       propertyId,
       messageId,
-      platformMediaObjectId: mediaId,
-      s3Key,
-      sourceUrl,
+      platformMediaObjectId: media.mediaObjectId,
+      s3Key: media.storageKey,
+      sourceUrl: null,
       filename: optionalText(data["filename"], "filename"),
       contentType: optionalText(data["content_type"], "content_type"),
       sizeBytes: nullableNonNegativeInteger(data["size_bytes"], "size_bytes"),

@@ -34,7 +34,8 @@ export async function readProductionCatalogSourceLinks(
   const result = await client.query<ExistingCatalogSourceLink>(
     `SELECT property_id::text AS "propertyId", source_system AS "sourceSystem",
             source_table AS "sourceTable", source_id AS "sourceId", relationship, status,
-            metadata ->> 'migrationRunId' AS "migrationRunId"
+            metadata ->> 'migrationRunId' AS "migrationRunId",
+            metadata ->> 'migrationPhase' AS "migrationPhase"
      FROM hotel_catalog.property_source_links
      WHERE source_system IN ('booking', 'pms', 'marketplace')
      ORDER BY source_system, source_table, source_id`,
@@ -45,6 +46,7 @@ export async function readProductionCatalogSourceLinks(
 export async function readProductionCatalogTargetState(
   client: QueryClient,
   propertyIds: string[],
+  sourceRunId: string,
 ): Promise<ProductionCatalogTargetState> {
   const ids = [...new Set(propertyIds)].sort();
   const values = [ids];
@@ -132,7 +134,9 @@ export async function readProductionCatalogTargetState(
      FROM platform.media_objects
      WHERE source_system IN ('booking', 'marketplace')
        AND source_table IN ('booking_hotels', 'hotel_profiles')
+       AND source_metadata ->> 'migrationRunId' = $2
      ORDER BY source_system, source_table, source_row_id, purpose`,
+    [ids, sourceRunId],
   );
   const ownerRevisions = await client.query<CatalogOwnerRevision>(
     `SELECT property_id::text AS "propertyId", owner_key AS "ownerKey", revision::text

@@ -4,6 +4,7 @@ import type { IdentityMigrationBlocker } from "./productionIdentityDisposition.j
 import type {
   BookingPropertyLink,
   BookingPropertySlug,
+  BookingMediaReference,
   BookingTargetRecord,
   ExistingBookingTargetRecord,
   ProductionBookingTargetState,
@@ -73,17 +74,25 @@ const TABLES: Record<
   },
 };
 
-export async function readProductionBookingOwnership(client: QueryClient): Promise<{
+export async function readProductionBookingOwnership(
+  client: QueryClient,
+  sourceRunId: string,
+): Promise<{
   propertyLinks: BookingPropertyLink[];
   propertySlugs: BookingPropertySlug[];
+  media: BookingMediaReference[];
 }> {
   const links = await client.query<BookingPropertyLink>(
     `SELECT source_system AS "sourceSystem", source_table AS "sourceTable",
             source_id AS "sourceId", property_id::text AS "propertyId", relationship, status
      FROM hotel_catalog.property_source_links
-     WHERE (source_system = 'booking' AND source_table = 'booking_hotels')
-        OR (source_system = 'pms' AND source_table = 'hotels')
+     WHERE (
+       (source_system = 'booking' AND source_table = 'booking_hotels')
+       OR (source_system = 'pms' AND source_table = 'hotels')
+     )
+       AND metadata ->> 'migrationRunId' = $1
      ORDER BY source_system, source_table, source_id, property_id`,
+    [sourceRunId],
   );
   const slugs = await client.query<BookingPropertySlug>(
     `SELECT slug, property_id::text AS "propertyId", purpose, status
@@ -91,7 +100,27 @@ export async function readProductionBookingOwnership(client: QueryClient): Promi
      WHERE status = 'active'
      ORDER BY slug, property_id`,
   );
-  return { propertyLinks: links.rows, propertySlugs: slugs.rows };
+  const media = await client.query<BookingMediaReference>(
+    `SELECT media.id::text AS "mediaObjectId", media.property_id::text AS "propertyId",
+            media.source_url AS "sourceUrl", media.source_table AS "sourceTable",
+            media.source_row_id AS "sourceRowId", media.purpose, media.visibility,
+            media.lifecycle_status AS "lifecycleStatus",
+            media.public_approved AS "publicApproved", variant.public_cdn_url AS "publicUrl",
+            media.bucket, media.storage_kind AS "storageKind", media.storage_key AS "storageKey",
+            variant.storage_key AS "variantStorageKey",
+            media.source_metadata ->> 'migrationRunId' AS "migrationRunId"
+       FROM platform.media_objects media
+       LEFT JOIN platform.media_variants variant
+         ON variant.media_object_id = media.id
+        AND variant.variant_name = 'original_safe'
+        AND variant.visibility = 'public'
+      WHERE media.source_system = 'booking'
+        AND media.source_metadata ->> 'migrationRunId' = $1
+        AND media.purpose IN ('booking.addon.image', 'booking.header_logo', 'property.hero_image')
+      ORDER BY media.source_table, media.source_row_id, media.id`,
+    [sourceRunId],
+  );
+  return { propertyLinks: links.rows, propertySlugs: slugs.rows, media: media.rows };
 }
 
 export async function readProductionBookingTargetState(

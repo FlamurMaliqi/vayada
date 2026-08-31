@@ -59,6 +59,7 @@ import {
 } from "@/services/api/bookingFlowSettingsLoader";
 import { apiClient } from "@/services/api/client";
 import { FeedbackAlert } from "@/components/ui";
+import { uploadSingleImageWithMediaReference } from "@/lib/utils/uploadImage";
 import { SettingsLayout, type SettingsNavSection } from "@vayada/settings-ui";
 import { DEFAULT_LAST_MINUTE_TIERS } from "@vayada/product-onboarding";
 
@@ -149,6 +150,7 @@ function toSettingsAddonItem(item: BookingAddonItem): AddonItem {
     currency: item.currency,
     category: item.category,
     image: item.imageUrl ?? "",
+    imageMediaObjectId: item.imageMediaObjectId,
     duration: item.duration ?? undefined,
     perPerson: item.pricingModel === "per_guest" || item.pricingModel === "per_guest_night",
     perNight: item.pricingModel === "per_night" || item.pricingModel === "per_guest_night",
@@ -172,7 +174,6 @@ function toAddonWritableFields(values: AddonItemFormValues) {
     price: values.price,
     currency: values.currency,
     category: values.category,
-    imageUrl: values.image || null,
     duration: values.duration || null,
     pricingModel: toAddonPricingModel(values) as BookingAddonPricingModel,
   };
@@ -187,6 +188,19 @@ function toAddonWritableFields(values: AddonItemFormValues) {
         ownershipKind: "property" as const,
         partnerCommissionRate: null,
       };
+}
+
+async function addonImageMediaObjectId(
+  values: AddonItemFormValues,
+  bookingHotelId: string,
+): Promise<string | null> {
+  if (!values.imageFile) return values.imageMediaObjectId;
+  const uploaded = await uploadSingleImageWithMediaReference(
+    values.imageFile,
+    "booking.addon.image",
+    bookingHotelId,
+  );
+  return uploaded.mediaObjectId;
 }
 
 function toAddonCreateBody(
@@ -449,9 +463,13 @@ export default function BookingFlowPage() {
 
   const handleCreateAddon = async (values: AddonItemFormValues) => {
     try {
+      const hotelId = getBookingHotelIdForSave();
       const saved = await createBookingAddonItem({
-        hotelId: getBookingHotelIdForSave(),
-        body: toAddonCreateBody(values, nextAddonSortOrder(addons)),
+        hotelId,
+        body: {
+          ...toAddonCreateBody(values, nextAddonSortOrder(addons)),
+          imageMediaObjectId: await addonImageMediaObjectId(values, hotelId),
+        },
       });
       setAddons((current) => orderAddons([...current, toSettingsAddonItem(saved)]));
       showFeedback("success", t("bookingFlow.addons.feedback.createSuccess"));
@@ -478,10 +496,14 @@ export default function BookingFlowPage() {
 
   const handleUpdateAddon = async (addonId: string, values: AddonItemFormValues) => {
     try {
+      const hotelId = getBookingHotelIdForSave();
       const saved = await updateBookingAddonItem({
-        hotelId: getBookingHotelIdForSave(),
+        hotelId,
         addonItemId: addonId,
-        body: toAddonWritableFields(values),
+        body: {
+          ...toAddonWritableFields(values),
+          imageMediaObjectId: await addonImageMediaObjectId(values, hotelId),
+        },
       });
       setAddons((current) =>
         orderAddons(

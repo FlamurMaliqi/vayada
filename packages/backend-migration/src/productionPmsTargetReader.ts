@@ -5,6 +5,7 @@ import type { ProductionMigrationSourceLink } from "./productionBookingTypes.js"
 import type {
   ExistingPmsTargetRecord,
   PmsPropertyLink,
+  PmsMediaReference,
   PmsTargetRecord,
   ProductionPmsTargetState,
 } from "./productionPmsTypes.js";
@@ -51,6 +52,24 @@ export async function readProductionPmsPrerequisites(
      WHERE lifecycle_status NOT IN ('deleted', 'rejected')
      ORDER BY id`,
   );
+  const mediaReferences = await client.query<PmsMediaReference>(
+    `SELECT media.id::text AS "mediaObjectId", media.property_id::text AS "propertyId",
+            media.source_table AS "sourceTable", media.source_row_id AS "sourceRowId",
+            media.source_url AS "sourceUrl", media.purpose, media.visibility,
+            media.lifecycle_status AS "lifecycleStatus",
+            media.public_approved AS "publicApproved",
+            original.public_cdn_url AS "publicUrl", media.storage_key AS "storageKey"
+       FROM platform.media_objects media
+       LEFT JOIN platform.media_variants original
+         ON original.media_object_id = media.id
+        AND original.variant_name = 'original_safe'
+        AND original.visibility = 'public'
+      WHERE media.source_system = 'pms'
+        AND media.source_metadata ->> 'migrationRunId' = $1
+        AND media.purpose IN ('pms.room_type.media', 'pms.messaging.attachment')
+      ORDER BY media.source_table, media.source_row_id, media.purpose, media.id`,
+    [sourceRunId],
+  );
   return {
     propertyLinks: links.rows,
     bookings: bookings.rows.map((booking) => ({
@@ -58,6 +77,7 @@ export async function readProductionPmsPrerequisites(
       updatedAt: normalizeTimestamp(booking.updatedAt, "booking.guest_bookings.updated_at"),
     })),
     userIds: users.rows.map((row) => row.id),
+    media: mediaReferences.rows,
     mediaIds: media.rows.map((row) => row.id),
   };
 }
@@ -379,9 +399,7 @@ async function readCollisions(
 }
 
 function targetIdExpression(targetTable: string, key: readonly string[]): string {
-  if (targetTable === "inventory_days")
-    return "property_id::text || ':' || room_type_id::text || ':' || stay_date::text";
-  return `${key[0]}::text`;
+  return key.map((column) => `${column}::text`).join(" || ':' || ");
 }
 
 function normalizeTimestamp(value: string | null | undefined, field: string): string | null {

@@ -4,6 +4,7 @@ import type {
 } from "./productionIdentityDisposition.js";
 import type {
   BookingBuildContext,
+  BookingMediaReference,
   BookingPropertyLink,
   BookingPropertySlug,
   ProductionBookingTargetState,
@@ -37,6 +38,9 @@ export function createProductionBookingContext(input: {
   );
   const addonById = uniqueMap(addons, "id", "DUPLICATE_ADDON_ID", blockers);
   const promoById = uniqueMap(promos, "id", "DUPLICATE_PROMO_ID", blockers);
+  const mediaBySource = new Map(
+    (input.target.media ?? []).map((media) => [`${media.sourceTable}:${media.sourceRowId}`, media]),
+  );
 
   validateRequiredProperties(input.rows, propertyBySource, propertyBySlug, blockers);
   validateUnsupportedSensitiveFields(input.rows, blockers);
@@ -49,7 +53,108 @@ export function createProductionBookingContext(input: {
     bookingByReference,
     addonById,
     promoById,
+    mediaBySource,
   };
+}
+
+export function bookingAddonMediaFor(
+  context: BookingBuildContext,
+  source: IdentitySourceRow,
+  propertyId: string,
+): { mediaObjectId: string; publicUrl: string } | null {
+  const sourceUrl = optionalText(source.data["image"], "image");
+  if (!sourceUrl) return null;
+  const id = requiredText(source.data["id"], "id").toLowerCase();
+  const media = context.mediaBySource.get(`booking_addons:${id}:image`);
+  if (
+    !media ||
+    media.sourceUrl !== sourceUrl ||
+    media.propertyId !== propertyId ||
+    media.purpose !== "booking.addon.image" ||
+    media.migrationRunId !== context.sourceRunId ||
+    !isApprovedBookingMedia(media)
+  )
+    throw new Error("add-on image has no approved active VAY-1055 CDN media object");
+  return { mediaObjectId: media.mediaObjectId, publicUrl: media.publicUrl };
+}
+
+export function bookingHeaderLogoMediaFor(
+  context: BookingBuildContext,
+  source: IdentitySourceRow,
+  propertyId: string,
+): string | null {
+  const sourceUrl = optionalText(source.data["branding_logo_url"], "branding_logo_url");
+  if (!sourceUrl) return null;
+  const id = requiredText(source.data["id"], "id").toLowerCase();
+  const media = context.mediaBySource.get(`booking_hotels:${id}:branding_logo_url:booking_header`);
+  if (
+    !media ||
+    media.sourceUrl !== sourceUrl ||
+    media.propertyId !== propertyId ||
+    media.purpose !== "booking.header_logo" ||
+    media.migrationRunId !== context.sourceRunId ||
+    !isApprovedBookingMedia(media)
+  )
+    throw new Error("Booking logo has no approved active VAY-1055 CDN media object");
+  return media.mediaObjectId;
+}
+
+export function bookingHeroMediaFor(
+  context: BookingBuildContext,
+  source: IdentitySourceRow,
+  propertyId: string,
+): string | null {
+  const sourceUrl = optionalText(source.data["hero_image"], "hero_image");
+  if (!sourceUrl) return null;
+  const id = requiredText(source.data["id"], "id").toLowerCase();
+  const media = context.mediaBySource.get(`booking_hotels:${id}:hero_image`);
+  if (
+    !media ||
+    media.sourceUrl !== sourceUrl ||
+    media.propertyId !== propertyId ||
+    media.purpose !== "property.hero_image" ||
+    media.migrationRunId !== context.sourceRunId ||
+    !isApprovedBookingMedia(media)
+  )
+    throw new Error("Booking hero has no approved active VAY-1055 CDN media object");
+  return media.publicUrl;
+}
+
+function isApprovedBookingMedia(media: BookingMediaReference): media is BookingMediaReference & {
+  publicUrl: string;
+  variantStorageKey: string;
+} {
+  if (
+    media.visibility !== "public" ||
+    media.lifecycleStatus !== "active" ||
+    !media.publicApproved ||
+    !media.publicUrl ||
+    !media.bucket.trim() ||
+    media.storageKind !== "vayada_managed" ||
+    !media.variantStorageKey
+  )
+    return false;
+  const prefix = `public/media/${media.mediaObjectId}/original_safe/`;
+  if (
+    !media.storageKey.startsWith(prefix) ||
+    !media.variantStorageKey.startsWith(prefix) ||
+    media.storageKey !== media.variantStorageKey
+  )
+    return false;
+  try {
+    const url = new URL(media.publicUrl);
+    return (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      !/(^|\.)s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com$/i.test(url.hostname) &&
+      url.pathname === `/${media.variantStorageKey.slice("public/".length)}`
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function propertyFor(
@@ -225,15 +330,6 @@ function validateUnsupportedSensitiveFields(
         `Encrypted target contract required for: ${unsupported.join(", ")}`,
       );
   }
-  for (const row of rows.filter((item) => item.sourceTable === "booking_addons"))
-    if (optionalText(row.data["image"], "image"))
-      addBookingBlocker(
-        blockers,
-        "UNRESOLVED_LEGACY_MEDIA",
-        "booking.booking_addons",
-        safeId(row),
-        "Add-on image must resolve through VAY-1055 Platform Media before migration",
-      );
 }
 
 function safeId(row: IdentitySourceRow): string {

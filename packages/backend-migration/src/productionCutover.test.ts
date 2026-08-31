@@ -196,6 +196,12 @@ function config(): ProductionCutoverConfig {
       marketplace: "postgresql://source.test/marketplace",
       pms: "postgresql://source.test/pms",
     },
+    media: {
+      targetBucket: "platform-media-test",
+      cdnBaseUrl: "https://media.example.test",
+      allowedLegacyBuckets: ["legacy-media-test"],
+      legacyPmsBucket: "legacy-media-test",
+    },
   };
 }
 

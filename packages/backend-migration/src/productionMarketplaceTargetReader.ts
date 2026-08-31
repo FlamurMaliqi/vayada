@@ -59,8 +59,11 @@ export async function readProductionMarketplacePrerequisites(
        ON variant.media_object_id = media.id
       AND variant.visibility = 'public'
       AND variant.variant_name = 'original_safe'
-     WHERE media.source_system = 'marketplace' AND media.source_url IS NOT NULL
+     WHERE media.source_system = 'marketplace'
+       AND media.source_metadata ->> 'migrationRunId' = $1
+       AND media.source_url IS NOT NULL
      ORDER BY media.source_url, media.source_table, media.source_row_id, media.id`,
+    [sourceRunId],
   );
   const hotelPreferences = await client.query<
     ProductionMarketplacePrerequisites["hotelPreferences"][number]

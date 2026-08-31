@@ -1,6 +1,10 @@
-import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
+import type {
+  IdentityMigrationBlocker,
+  IdentitySourceRow,
+} from "./productionIdentityDisposition.js";
 import type {
   PmsBuildContext,
+  PmsMediaReference,
   PmsPropertyLink,
   ProductionPmsTargetState,
 } from "./productionPmsTypes.js";
@@ -58,6 +62,7 @@ export function createProductionPmsContext(input: {
     maps.get("room_types")!,
     blockers,
   );
+  const mediaBySource = uniqueMedia(input.target.media ?? [], blockers);
   return {
     ...input,
     snapshotAt: input.snapshotAt ?? input.completedAt,
@@ -73,7 +78,81 @@ export function createProductionPmsContext(input: {
     linkedGroupByRoomType,
     userIds: new Set(input.target.userIds.map((id) => id.toLowerCase())),
     mediaIds: new Set(input.target.mediaIds.map((id) => id.toLowerCase())),
+    mediaBySource,
   };
+}
+
+export function pmsMediaForSource(
+  context: PmsBuildContext,
+  input: {
+    sourceTable: string;
+    sourceRowId: string;
+    purpose: PmsMediaReference["purpose"];
+    propertyId: string;
+    visibility: PmsMediaReference["visibility"];
+  },
+): PmsMediaReference {
+  const media = context.mediaBySource.get(mediaSourceKey(input));
+  if (!media)
+    throw new Error(
+      `media ${input.sourceTable}:${input.sourceRowId} has not passed the VAY-1055 gate`,
+    );
+  if (
+    media.propertyId !== input.propertyId ||
+    media.purpose !== input.purpose ||
+    media.visibility !== input.visibility ||
+    media.lifecycleStatus !== "active"
+  )
+    throw new Error(
+      `media ${media.mediaObjectId} does not match the active property-scoped VAY-1055 contract`,
+    );
+  if (input.visibility === "public") {
+    if (!media.publicApproved || !media.publicUrl || rawS3Url(media.publicUrl))
+      throw new Error(`public media ${media.mediaObjectId} has no approved CDN variant`);
+  } else if (
+    media.publicApproved ||
+    media.publicUrl ||
+    !media.storageKey.startsWith("private/media/")
+  ) {
+    throw new Error(`private media ${media.mediaObjectId} is not private Vayada-managed storage`);
+  }
+  return media;
+}
+
+function uniqueMedia(
+  rows: PmsMediaReference[],
+  blockers: IdentityMigrationBlocker[],
+): Map<string, PmsMediaReference> {
+  const result = new Map<string, PmsMediaReference>();
+  for (const row of rows) {
+    const key = mediaSourceKey(row);
+    if (result.has(key)) {
+      blockers.push({
+        code: "AMBIGUOUS_MEDIA_REFERENCE",
+        source: `pms.${row.sourceTable}`,
+        sourceId: row.sourceRowId,
+        message: "More than one target media object owns this source reference",
+      });
+      result.delete(key);
+    } else result.set(key, row);
+  }
+  return result;
+}
+
+function mediaSourceKey(value: {
+  sourceTable: string;
+  sourceRowId: string;
+  purpose: string;
+}): string {
+  return `${value.sourceTable}:${value.sourceRowId}:${value.purpose}`;
+}
+
+function rawS3Url(value: string): boolean {
+  try {
+    return /(^|\.)s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com$/i.test(new URL(value).hostname);
+  } catch {
+    return true;
+  }
 }
 
 export function propertyForHotel(context: PmsBuildContext, value: unknown): string {

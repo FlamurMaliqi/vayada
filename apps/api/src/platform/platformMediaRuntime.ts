@@ -83,6 +83,7 @@ export function composePlatformMediaRuntime(
   const enabledPurposes: PlatformMediaRoutesOptions["enabledPurposes"] = [
     "identity.user.profile_image",
     "booking.header_logo",
+    "booking.addon.image",
     "property.hero_image",
     "property.gallery_image",
     "marketplace.creator.profile_image",

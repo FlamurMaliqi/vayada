@@ -798,6 +798,7 @@ const bookingAddonItem: BookingAddonItem = {
   currency: "EUR",
   category: "transport",
   imageUrl: null,
+  imageMediaObjectId: null,
   duration: "45 min",
   pricingModel: "per_stay",
   publicVisible: true,
@@ -839,7 +840,13 @@ function addonItemFromBody(
     price: body.price ?? bookingAddonItem.price,
     currency: body.currency ?? bookingAddonItem.currency,
     category: body.category ?? bookingAddonItem.category,
-    imageUrl: body.imageUrl ?? bookingAddonItem.imageUrl,
+    imageUrl:
+      body.imageMediaObjectId === undefined
+        ? bookingAddonItem.imageUrl
+        : body.imageMediaObjectId
+          ? "https://images.example/spa.jpg"
+          : null,
+    imageMediaObjectId: body.imageMediaObjectId ?? bookingAddonItem.imageMediaObjectId,
     duration: body.duration ?? bookingAddonItem.duration,
     pricingModel: body.pricingModel ?? bookingAddonItem.pricingModel,
     publicVisible: body.publicVisible ?? bookingAddonItem.publicVisible,
@@ -5733,7 +5740,7 @@ describe("vayada-api", () => {
         price: "125.50",
         currency: "EUR",
         category: "wellness",
-        imageUrl: "https://images.example/spa.jpg",
+        imageMediaObjectId: "0f840001-0000-4000-8000-000000000099",
         duration: "90 min",
         pricingModel: "per_guest",
         publicVisible: false,
@@ -5755,6 +5762,7 @@ describe("vayada-api", () => {
       currency: "EUR",
       category: "wellness",
       imageUrl: "https://images.example/spa.jpg",
+      imageMediaObjectId: "0f840001-0000-4000-8000-000000000099",
       duration: "90 min",
       pricingModel: "per_guest",
       publicVisible: false,
@@ -5763,6 +5771,26 @@ describe("vayada-api", () => {
       ownershipKind: "partner",
       partnerCommissionRate: "18.7500",
     });
+  });
+
+  it("rejects raw add-on image URLs", async () => {
+    app = buildAuthenticatedApp();
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/addon-items",
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        name: "Unsafe image",
+        price: "10.00",
+        currency: "EUR",
+        category: "other",
+        imageUrl: "https://legacy.example.test/addon.jpg",
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body).toMatchObject({ code: "invalid_payload" });
   });
 
   it("rejects add-on creation when the property plan limit is reached", async () => {
@@ -8871,6 +8899,7 @@ describe("vayada-api", () => {
           currency: "EUR",
           category: "dining",
           imageUrl: null,
+          imageMediaObjectId: null,
           duration: null,
           pricingModel: "per_stay",
           publicVisible: true,
@@ -8903,7 +8932,7 @@ describe("vayada-api", () => {
       price: "50.00",
       currency: "EUR",
       category: "transport",
-      imageUrl: null,
+      imageMediaObjectId: null,
       duration: null,
       pricingModel: "per_stay",
       publicVisible: true,

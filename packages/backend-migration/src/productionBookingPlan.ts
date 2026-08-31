@@ -78,6 +78,7 @@ export function reconcileProductionBookingRecords(
   }
   counts.plannedRecords = accepted.length;
   const parity = summarizeParity(context, accepted);
+  const { activeFutureTargetBookings: _targetParity, ...stableParity } = parity;
   const sortedBlockers = context.blockers.sort((left, right) =>
     `${left.code}:${left.source}:${left.sourceId}`.localeCompare(
       `${right.code}:${right.source}:${right.sourceId}`,
@@ -92,7 +93,7 @@ export function reconcileProductionBookingRecords(
         row: record.row,
       })),
       blockers: sortedBlockers,
-      parity,
+      parity: stableParity,
     }),
     records: accepted,
     writes,

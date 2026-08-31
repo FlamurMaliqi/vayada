@@ -28,6 +28,8 @@ export function parseProductionParityArgs(
   let operator = environment["CUTOVER_OPERATOR"] ?? environment["USER"] ?? "";
   let warningBudget = 0;
   const migrationsDir = defaultMigrationsDir;
+  const targetMediaBucket = environment["PLATFORM_MEDIA_BUCKET"] ?? "";
+  const mediaCdnBaseUrl = environment["PLATFORM_MEDIA_CDN_BASE_URL"] ?? "";
   let report: "json" | "text" = "text";
   const sourceTags = {} as Record<SourceDatabase, string>;
 
@@ -86,6 +88,8 @@ export function parseProductionParityArgs(
       "Non-local application release must match APPLICATION_RELEASE or GIT_SHA deployment metadata",
     );
   if (!operator) throw new Error("CUTOVER_OPERATOR, USER, or --operator is required");
+  if (!targetMediaBucket || !mediaCdnBaseUrl)
+    throw new Error("PLATFORM_MEDIA_BUCKET and PLATFORM_MEDIA_CDN_BASE_URL are required");
 
   return {
     connectionString,
@@ -98,6 +102,8 @@ export function parseProductionParityArgs(
     operator,
     warningBudget,
     migrationsDir,
+    targetMediaBucket,
+    mediaCdnBaseUrl,
     report,
   };
 }

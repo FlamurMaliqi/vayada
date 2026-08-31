@@ -27,6 +27,7 @@ export interface BookingAddonItem {
   currency: string;
   category: "dining" | "experience" | "transport" | "wellness" | "other";
   imageUrl: string | null;
+  imageMediaObjectId: string | null;
   duration: string | null;
   pricingModel: BookingAddonPricingModel;
   publicVisible: boolean;
@@ -59,7 +60,7 @@ type BookingAddonItemWriteFields = {
   price: string;
   currency: string;
   category: BookingAddonItem["category"];
-  imageUrl?: string | null;
+  imageMediaObjectId?: string | null;
   duration?: string | null;
   pricingModel?: BookingAddonPricingModel;
   publicVisible?: boolean;
