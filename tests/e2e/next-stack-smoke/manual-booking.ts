@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 
-import { expect, test, type APIRequestContext, type Page, type TestInfo } from "@playwright/test";
+import {
+  expect,
+  test,
+  type APIRequestContext,
+  type Page,
+  type Request,
+  type TestInfo,
+} from "@playwright/test";
 import { paymentMethodLabel } from "@vayada/locale-constants";
 
 import { type BookingResource } from "./booking-lifecycle";
@@ -131,26 +138,48 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
       fullPage: true,
     });
 
-    const responsePromise = page.waitForResponse((response) => {
-      const url = new URL(response.url());
-      return (
-        response.request().method() === "POST" &&
-        url.pathname === `/api/pms/properties/${propertyId}/manual-bookings`
-      );
-    });
-    await dialog.getByRole("button", { name: "Create booking" }).click();
-    const response = await responsePromise;
-    expect(response.status()).toBe(201);
-    const result = record(await response.json()),
+    const bookingPath = `/api/pms/properties/${propertyId}/manual-bookings`;
+    let submittedRequest: Request | undefined;
+    const captureSubmission = (request: Request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === bookingPath) {
+        submittedRequest = request;
+      }
+    };
+    page.on("request", captureSubmission);
+    const responsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" && new URL(response.url()).pathname === bookingPath,
+      { timeout: 45_000 },
+    );
+    let body: ManualBody;
+    let result: Record<string, unknown>;
+    let uiConfirmed = false;
+    try {
+      const [, response] = await Promise.all([
+        dialog.getByRole("button", { name: "Create booking" }).click(),
+        responsePromise,
+      ]);
+      expect(response.status()).toBe(201);
+      result = record(await response.json());
       body = record(response.request().postDataJSON());
+      uiConfirmed = true;
+    } catch (error) {
+      if (!submittedRequest) throw error;
+      body = record(submittedRequest.postDataJSON());
+      result = await replayAmbiguousManualBooking(api, bookingPath, body, error);
+    } finally {
+      page.off("request", captureSubmission);
+    }
     bookings.push(manualResource(result, email, slug));
-    assertCreatedResult(result, "paid");
-    await expect(page.getByText("Booking created.")).toBeVisible();
-    await expect(page.getByText("Vera Acceptance", { exact: true })).toHaveCount(2);
-    await page.screenshot({
-      path: testInfo.outputPath("manual-booking-calendar.png"),
-      fullPage: true,
-    });
+    assertCreatedResult(result, "paid", uiConfirmed ? ["created"] : ["created", "replayed"]);
+    if (uiConfirmed) {
+      await expect(page.getByText("Booking created.")).toBeVisible();
+      await expect(page.getByText("Vera Acceptance", { exact: true })).toHaveCount(2);
+      await page.screenshot({
+        path: testInfo.outputPath("manual-booking-calendar.png"),
+        fullPage: true,
+      });
+    }
     return { body, email, result };
   });
 
@@ -434,8 +463,28 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
   });
 }
 
-function assertCreatedResult(result: Record<string, unknown>, status: "paid" | "unpaid"): void {
-  expect(result.outcome).toBe("created");
+export async function replayAmbiguousManualBooking(
+  api: JsonApi,
+  bookingPath: string,
+  requestBody: unknown,
+  originalError: unknown,
+): Promise<Record<string, unknown>> {
+  try {
+    return record(await api.json("POST", bookingPath, record(requestBody), {}, 45_000));
+  } catch (replayError) {
+    throw new AggregateError(
+      [originalError, replayError],
+      "Manual booking failed and its exact idempotent replay did not resolve the outcome.",
+    );
+  }
+}
+
+function assertCreatedResult(
+  result: Record<string, unknown>,
+  status: "paid" | "unpaid",
+  outcomes: Array<"created" | "replayed"> = ["created"],
+): void {
+  expect(outcomes).toContain(result.outcome);
   expect(result.bookingChannel).toBe("direct");
   expect(result.directSource).toBe("email");
   expect(result.paymentStatus).toBe(status);

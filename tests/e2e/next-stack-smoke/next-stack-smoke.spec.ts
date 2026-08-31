@@ -32,7 +32,7 @@ import {
 import { runQuoteLifecycle, waitForOffer, type BookingResource } from "./booking-lifecycle";
 import { cleanupSmokeResources, recoverSmokeProperty, type HotelResource } from "./cleanup";
 import { configureGuestPolicyForManualBooking } from "./guest-policy";
-import { runManualBookingAcceptance } from "./manual-booking";
+import { replayAmbiguousManualBooking, runManualBookingAcceptance } from "./manual-booking";
 import {
   confirmStaffInvitationDelivery,
   expectPms,
@@ -201,6 +201,47 @@ test("staff delivery rejects non-delivery outcomes", () => {
       providerInvitationId: "invitation_exact",
     }),
   ).toThrow("Unexpected staff invitation delivery outcome: not_ready");
+});
+
+test("ambiguous primary manual booking returns the exact idempotent replay", async () => {
+  const body = { commandId: "same-command", idempotencyKey: "same-key" };
+  let replayedBody: unknown;
+  const api = {
+    async json(_method: string, _path: string, requestBody: unknown) {
+      replayedBody = requestBody;
+      return { guestBookingId: "booking-1", outcome: "replayed" };
+    },
+  } as unknown as JsonApi;
+
+  await expect(
+    replayAmbiguousManualBooking(
+      api,
+      "/api/pms/properties/property-1/manual-bookings",
+      body,
+      new Error("browser response timed out"),
+    ),
+  ).resolves.toEqual({ guestBookingId: "booking-1", outcome: "replayed" });
+  expect(replayedBody).toBe(body);
+});
+
+test("ambiguous primary manual booking exposes replay failure", async () => {
+  const originalError = new Error("browser response timed out");
+  const replayError = new Error("idempotent replay failed");
+  const api = {
+    async json() {
+      throw replayError;
+    },
+  } as unknown as JsonApi;
+
+  const failure = await replayAmbiguousManualBooking(
+    api,
+    "/api/pms/properties/property-1/manual-bookings",
+    { commandId: "same-command", idempotencyKey: "same-key" },
+    originalError,
+  ).catch((error: unknown) => error);
+
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect((failure as AggregateError).errors).toEqual([originalError, replayError]);
 });
 
 smokeTest(
