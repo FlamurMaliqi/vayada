@@ -28,7 +28,7 @@ export function evaluateSameDayBooking(input: {
   if (cutoff !== null && !halfHourTime(cutoff))
     throw new Error("cutoffLocalTime must be HH:mm on a 30-minute boundary or null");
 
-  const local = propertyClock(input.now, input.propertyTimeZone);
+  const local = propertyLocalClock(input.now, input.propertyTimeZone);
   if (input.checkIn !== local.date) return decision(true, "not_same_day", local.date, local.time);
   if (!input.policy.enabled) return decision(false, "same_day_disabled", local.date, local.time);
   if (cutoff === null || local.time < cutoff)
@@ -36,7 +36,7 @@ export function evaluateSameDayBooking(input: {
   return decision(false, "cutoff_passed", local.date, local.time);
 }
 
-function propertyClock(now: Date, timeZone: string): { date: string; time: string } {
+export function propertyLocalClock(now: Date, timeZone: string): { date: string; time: string } {
   let parts: Intl.DateTimeFormatPart[];
   try {
     parts = new Intl.DateTimeFormat("en-CA", {
