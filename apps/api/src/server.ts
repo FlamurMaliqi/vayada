@@ -956,6 +956,10 @@ const staffInvitationRuntime =
       })()
     : undefined;
 
+const platformAdminDashboardRepository = createTargetPlatformAdminDashboardRepository({
+  connectionString: targetDatabaseUrl,
+});
+
 const app = buildApp({
   trustProxy: ["loopback", "linklocal", "uniquelocal"],
   auth: buildAuthOptions(config.auth),
@@ -1207,9 +1211,14 @@ const app = buildApp({
     }),
     allowedOrigins: config.marketplaceDiscoveryAllowedOrigins,
   },
-  platformAdminDashboardRepository: createTargetPlatformAdminDashboardRepository({
-    connectionString: targetDatabaseUrl,
-  }),
+  platformAdminDashboardRepository,
+  platformAdminSmokeRecovery:
+    config.authSession && pmsOperationsCommandRepository?.cancelManualBooking
+      ? {
+          commandRepository: pmsOperationsCommandRepository,
+          receiptSecret: config.authSession.workosApiKey,
+        }
+      : undefined,
   platformPropertyLifecycle: {
     impactRepository: createPgPlatformPropertyLifecycleImpactRepository({
       connectionString: targetDatabaseUrl,

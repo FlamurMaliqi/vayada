@@ -35,7 +35,7 @@ import {
   type CancellationPolicy,
   type FinancePropertyReadRepository,
 } from "@vayada/domain-finance";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import Fastify from "fastify";
 import type { QueryResult, QueryResultRow } from "pg";
@@ -97,6 +97,7 @@ import {
 import { unusedBookingWebCheckoutAdapter } from "./routes/bookingWebPublic.fixtures.js";
 import type {
   PlatformAdminDashboardRepository,
+  PlatformAdminDashboardRoutesOptions,
   PlatformAdminGrowthDashboard,
 } from "./routes/platform/admin/dashboard/bookingCompatible.js";
 import {
@@ -502,11 +503,13 @@ function buildPlatformAdminApp(
     permissions?: PermissionKey[];
     repository?: PlatformAdminDashboardRepository;
     resourceAccess?: boolean;
+    smokeRecovery?: PlatformAdminDashboardRoutesOptions["smokeRecovery"];
   } = {},
 ): ReturnType<typeof buildApp> {
   return buildApp({
     logger: false,
     platformAdminDashboardRepository: options.repository,
+    platformAdminSmokeRecovery: options.smokeRecovery,
     auth: {
       verifier: createFakeVerifier(new Map([["platform-token", platformSession]])),
       repository:
@@ -2993,6 +2996,179 @@ describe("vayada-api", () => {
     });
 
     expect(response.statusCode).toBe(403);
+  });
+
+  it("recovers an exact signed synthetic booking idempotently", async () => {
+    const propertyId = "11111111-1111-4111-8111-111111111111";
+    const runId = "20260831094116-4a8ebf3c";
+    const emailDomain = "smoke.example.test";
+    const receiptSecret = "sk_test_smoke_recovery";
+    const bookingId = "22222222-2222-4222-8222-222222222222";
+    const commands: unknown[] = [];
+    let lifecycleStatus = "confirmed";
+    const repository: PlatformAdminDashboardRepository = {
+      async listBookings() {
+        return [];
+      },
+      async listGrowthProperties() {
+        return [];
+      },
+      async findSmokeRecoveryBookings(input) {
+        expect(input).toEqual({ emailDomain, propertyId, runId });
+        return [
+          {
+            commandId: "manual-command",
+            contractVersion: "pms-manual-booking.v1",
+            guestEmail: `qa-next-manual-${runId}@${emailDomain}`,
+            id: bookingId,
+            lifecycleStatus,
+            propertyId,
+            sourceBookingId: "manual-command",
+            sourceSystem: "pms",
+          },
+        ];
+      },
+    };
+    const smokeRecovery: NonNullable<PlatformAdminDashboardRoutesOptions["smokeRecovery"]> = {
+      receiptSecret,
+      commandRepository: {
+        async cancelManualBooking(command) {
+          commands.push(command);
+          lifecycleStatus = "canceled";
+          return {
+            ok: true,
+            reservation: {} as never,
+            commandMeta: {
+              contractVersion: "pms-operations.v1",
+              commandId: command.commandId,
+              idempotencyKey: command.idempotencyKey,
+              acceptedAt: "2026-08-31T10:00:00.000Z",
+              sideEffects: ["audit_event"],
+            },
+          };
+        },
+      },
+    };
+    app = buildPlatformAdminApp({
+      permissions: ["platform.property.status.manage"],
+      repository,
+      smokeRecovery,
+    });
+    const payload = {
+      emailDomain,
+      propertyId,
+      recoveryReceipt: createHmac("sha256", receiptSecret)
+        .update(`vayada-next-smoke-recovery:v1:${runId}:${propertyId}`)
+        .digest("hex"),
+      runId,
+    };
+
+    const first = await injectJson(app, {
+      method: "POST",
+      url: "/api/platform/admin/bookings/recover-next-stack-smoke",
+      headers: { authorization: "Bearer platform-token" },
+      payload,
+    });
+    const replay = await injectJson(app, {
+      method: "POST",
+      url: "/api/platform/admin/bookings/recover-next-stack-smoke",
+      headers: { authorization: "Bearer platform-token" },
+      payload,
+    });
+
+    expect(first.statusCode, JSON.stringify(first.body)).toBe(200);
+    expect(first.body).toEqual({
+      outcome: "resolved",
+      bookingIds: [bookingId],
+      resolvedBookingIds: [bookingId],
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.body).toEqual({
+      outcome: "already_resolved",
+      bookingIds: [bookingId],
+      resolvedBookingIds: [],
+    });
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      propertyId,
+      guestBookingId: bookingId,
+      accountingDate: null,
+      retainedCharges: [],
+      audit: {
+        actor: { kind: "user", userId: "user_platform_admin", organizationId: "org_platform" },
+      },
+    });
+  });
+
+  it("refuses a signed recovery when booking ownership is not synthetic", async () => {
+    const propertyId = "11111111-1111-4111-8111-111111111111";
+    const runId = "20260831094116-4a8ebf3c";
+    const receiptSecret = "sk_test_smoke_recovery";
+    let cancellationCalls = 0;
+    app = buildPlatformAdminApp({
+      permissions: ["platform.property.status.manage"],
+      repository: {
+        async listBookings() {
+          return [];
+        },
+        async listGrowthProperties() {
+          return [];
+        },
+        async findSmokeRecoveryBookings() {
+          return [
+            {
+              commandId: "manual-command",
+              contractVersion: "pms-manual-booking.v1",
+              guestEmail: "customer@example.com",
+              id: "22222222-2222-4222-8222-222222222222",
+              lifecycleStatus: "confirmed",
+              propertyId,
+              sourceBookingId: "manual-command",
+              sourceSystem: "pms",
+            },
+          ];
+        },
+      },
+      smokeRecovery: {
+        receiptSecret,
+        commandRepository: {
+          async cancelManualBooking() {
+            cancellationCalls += 1;
+            throw new Error("must not cancel");
+          },
+        },
+      },
+    });
+
+    const invalidReceipt = await injectJson(app, {
+      method: "POST",
+      url: "/api/platform/admin/bookings/recover-next-stack-smoke",
+      headers: { authorization: "Bearer platform-token" },
+      payload: {
+        emailDomain: "smoke.example.test",
+        propertyId,
+        recoveryReceipt: "0".repeat(64),
+        runId,
+      },
+    });
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/platform/admin/bookings/recover-next-stack-smoke",
+      headers: { authorization: "Bearer platform-token" },
+      payload: {
+        emailDomain: "smoke.example.test",
+        propertyId,
+        recoveryReceipt: createHmac("sha256", receiptSecret)
+          .update(`vayada-next-smoke-recovery:v1:${runId}:${propertyId}`)
+          .digest("hex"),
+        runId,
+      },
+    });
+
+    expect(invalidReceipt.statusCode).toBe(400);
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toEqual({ code: "smoke_recovery_ownership_unproven" });
+    expect(cancellationCalls).toBe(0);
   });
 
   it("does not expose booking addon settings until a read model is configured", async () => {
