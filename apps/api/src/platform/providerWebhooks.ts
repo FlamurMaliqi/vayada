@@ -80,9 +80,13 @@ async function recordReceipt(
            signature_verified,
            payload_hash,
            raw_headers,
-           raw_payload
+           raw_payload,
+           payload_retention_until
          )
-       VALUES ($1, $2, $3, $4, 'observed', TRUE, $5, $6, $7)
+       VALUES (
+         $1, $2, $3, $4, 'observed', TRUE, $5, $6, $7,
+         CASE WHEN $1 = 'stripe' THEN now() + INTERVAL '30 days' END
+       )
        ON CONFLICT (provider, provider_event_id) DO NOTHING
        RETURNING id, delivery_status`,
       [

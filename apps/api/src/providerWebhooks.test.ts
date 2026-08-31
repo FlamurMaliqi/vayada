@@ -133,7 +133,7 @@ describe("target provider webhook routes", () => {
     await app.close();
   });
 
-  it("removes Stripe client secrets before receipt, event, and job persistence", async () => {
+  it("persists only allowlisted Stripe receipt fields", async () => {
     const store = createMemoryProviderWebhookStore();
     const app = buildApp({
       providerWebhooks: {
@@ -143,17 +143,61 @@ describe("target provider webhook routes", () => {
         now: () => fixedNow,
       },
     });
-    const payload = providerFixture("stripe").payload;
-    const object = (payload.data as { object: Record<string, unknown> }).object;
-    object.client_secret = "pi_secret_must_not_persist";
+    const payload = {
+      id: "evt_stripe_minimized",
+      type: "payment_intent.succeeded",
+      created: 1_788_177_600,
+      account: "acct_minimized",
+      request: { id: "req_future_field", idempotency_key: "fixture-idempotency" },
+      data: {
+        object: {
+          id: "pi_minimized",
+          amount_received: 42_000,
+          currency: "eur",
+          status: "succeeded",
+          client_secret: "fixture-client-secret",
+          receipt_email: "fixture@example.test",
+          billing_details: { name: "Fixture Person", phone: "+10000000000" },
+          metadata: { arbitrary: "fixture-metadata", access_token: "fixture-access-token" },
+          latest_payment_error: { message: "fixture-error", doc_url: "https://example.test" },
+          future_unknown: { nested_secret: "fixture-unknown" },
+        },
+      },
+    };
 
-    const response = await postProviderPayload(app, "stripe", payload);
+    const response = await app.inject({
+      method: "POST",
+      url: "/webhooks/stripe",
+      headers: {
+        ...fixtureHeaders("stripe", payload),
+        authorization: "Bearer fixture-authorization",
+        cookie: "fixture-cookie",
+        "x-forwarded-for": "192.0.2.1",
+      },
+      payload: JSON.stringify(payload),
+    });
 
     expect(response.statusCode).toBe(200);
-    expect(JSON.stringify(store.receipts)).not.toContain("pi_secret_must_not_persist");
-    expect(JSON.stringify(store.domainEvents)).not.toContain("pi_secret_must_not_persist");
-    expect(JSON.stringify(store.jobs)).not.toContain("pi_secret_must_not_persist");
-    expect(JSON.stringify(store.receipts)).not.toContain("client_secret");
+    expect(store.receipts[0]?.rawHeaders).toEqual({});
+    expect(store.receipts[0]?.rawPayload).toEqual({
+      receipt_version: 1,
+      id: "evt_stripe_minimized",
+      type: "payment_intent.succeeded",
+      created: 1_788_177_600,
+      account: "acct_minimized",
+      data: {
+        object: {
+          id: "pi_minimized",
+          amount_received: 42_000,
+          currency: "eur",
+          status: "succeeded",
+        },
+      },
+    });
+    const persisted = JSON.stringify([store.receipts, store.domainEvents, store.jobs]);
+    expect(persisted).not.toMatch(
+      /fixture-client-secret|fixture@example|Fixture Person|10000000000|fixture-metadata|fixture-access-token|example\.test|fixture-unknown|fixture-authorization|fixture-cookie|192\.0\.2\.1/,
+    );
     await app.close();
   });
 

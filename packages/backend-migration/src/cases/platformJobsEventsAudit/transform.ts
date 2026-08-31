@@ -152,7 +152,9 @@ export async function transformPlatformJobsEventsAudit(client: pg.Client): Promi
         raw_payload,
         failure_reason,
         privacy_scope,
-        ai_visible
+        ai_visible,
+        payload_retention_until,
+        payload_purged_at
       )
     SELECT
       id,
@@ -170,11 +172,16 @@ export async function transformPlatformJobsEventsAudit(client: pg.Client): Promi
       normalized_domain_event_id,
       correlation_id,
       payload_hash,
-      raw_headers,
-      raw_payload,
+      CASE WHEN provider = 'stripe' THEN '{}'::jsonb ELSE raw_headers END,
+      CASE WHEN provider = 'stripe' THEN '{}'::jsonb ELSE raw_payload END,
       failure_reason,
       privacy_scope,
-      ai_visible
+      ai_visible,
+      CASE
+        WHEN provider = 'stripe'
+        THEN LEAST(received_at + INTERVAL '30 days', CURRENT_TIMESTAMP)
+      END,
+      CASE WHEN provider = 'stripe' THEN CURRENT_TIMESTAMP END
     FROM migration_source_platform.external_webhook_events
   `);
 
@@ -500,7 +507,14 @@ export async function transformPlatformJobsEventsAudit(client: pg.Client): Promi
       correlation_id,
       causation_id,
       redacted_payload,
-      private_payload,
+      CASE
+        WHEN external_webhook_event_id IN (
+          SELECT id
+          FROM migration_source_platform.external_webhook_events
+          WHERE provider = 'stripe'
+        ) THEN '{}'::jsonb
+        ELSE private_payload
+      END,
       audit_metadata,
       retention_class,
       privacy_scope,

@@ -986,6 +986,18 @@ describe.skipIf(!TEST_DATABASE_URL)("Online-card execution evidence PostgreSQL",
         jobKey: `finance.reconcile-provider-account:provider_account:${providerAccountHash}:${stripeAccountUpdatedEventId}:v1`,
       });
       expect(JSON.stringify(durable.rows[0])).not.toContain(providerAccountRef);
+      const receipt = await pool.query<{
+        rawHeaders: Record<string, unknown>;
+        payloadRetentionUntil: Date;
+      }>(
+        `SELECT raw_headers AS "rawHeaders",
+                payload_retention_until AS "payloadRetentionUntil"
+         FROM platform.external_webhook_events
+         WHERE provider = 'stripe' AND provider_event_id = $1`,
+        [`webhook:stripe:${stripeAccountUpdatedEventId}`],
+      );
+      expect(receipt.rows[0]?.rawHeaders).toEqual({});
+      expect(receipt.rows[0]?.payloadRetentionUntil).toBeInstanceOf(Date);
     } finally {
       await app.close();
       await store.close?.();

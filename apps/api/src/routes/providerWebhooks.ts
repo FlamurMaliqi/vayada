@@ -137,7 +137,7 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
     const eventId = requiredString(payload.value, "id", "Stripe event");
     const eventType = requiredString(payload.value, "type", "Stripe event");
     const receiptKey = `webhook:stripe:${eventId}`;
-    const persistedPayload = redactStripeWebhookPayload(payload.value);
+    const persistedPayload = minimizeStripeWebhookPayload(payload.value);
     return handleAuthenticatedProviderWebhook({
       provider: "stripe",
       eventType,
@@ -146,6 +146,7 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
       reply,
       request,
       rawPayload: persistedPayload,
+      payloadHash: stripePayloadHash(payload.value),
       store: options.store,
       normalizedPreview: previewStripeEvent(
         persistedPayload,
@@ -303,7 +304,7 @@ async function handleAuthenticatedProviderWebhook(input: {
     providerEventId: input.receiptKey,
     eventType: input.eventType,
     payloadHash,
-    rawHeaders: redactedHeaders(input.request),
+    rawHeaders: receiptHeaders(input.provider, input.request),
     rawPayload: input.rawPayload,
     mode: input.mode,
     normalizedPreview: input.normalizedPreview,
@@ -380,23 +381,129 @@ async function handleAuthenticatedProviderWebhook(input: {
   });
 }
 
-export function redactStripeWebhookPayload(
+export function minimizeStripeWebhookPayload(
   value: Record<string, unknown>,
 ): Record<string, unknown> {
-  return redactSensitiveStripeValue(value) as Record<string, unknown>;
+  const eventType = requiredString(value, "type", "Stripe event");
+  const dataObject = optionalRecord(optionalRecord(value, "data"), "object") ?? {};
+  return definedObject({
+    receipt_version: 1,
+    id: requiredString(value, "id", "Stripe event"),
+    type: eventType,
+    created: optionalNumber(value, "created"),
+    account: optionalString(value, "account"),
+    data: { object: minimizedStripeObject(eventType, dataObject) },
+  });
 }
 
-function redactSensitiveStripeValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactSensitiveStripeValue);
-  if (!value || typeof value !== "object") return value;
+function minimizedStripeObject(
+  eventType: string,
+  object: Record<string, unknown>,
+): Record<string, unknown> {
+  if (eventType === "account.updated") {
+    return definedObject({
+      id: optionalString(object, "id"),
+      charges_enabled: optionalBoolean(object, "charges_enabled"),
+      payouts_enabled: optionalBoolean(object, "payouts_enabled"),
+      details_submitted: optionalBoolean(object, "details_submitted"),
+      capabilities: definedObject({
+        card_payments: optionalString(optionalRecord(object, "capabilities"), "card_payments"),
+      }),
+      default_currency: optionalString(object, "default_currency"),
+    });
+  }
+  if (eventType.startsWith("payment_intent.")) {
+    return definedObject({
+      id: optionalString(object, "id"),
+      amount: optionalNumber(object, "amount"),
+      amount_received: optionalNumber(object, "amount_received"),
+      currency: optionalString(object, "currency"),
+      status: optionalString(object, "status"),
+    });
+  }
+  if (eventType === "charge.updated") {
+    return definedObject({
+      id: optionalString(object, "id"),
+      payment_intent: stripeReference(object["payment_intent"]),
+      balance_transaction: stripeReference(object["balance_transaction"]),
+      amount: optionalNumber(object, "amount"),
+      currency: optionalString(object, "currency"),
+    });
+  }
+  if (eventType.startsWith("payout.")) {
+    return definedObject({
+      id: optionalString(object, "id"),
+      status: optionalString(object, "status"),
+      amount: optionalNumber(object, "amount"),
+      currency: optionalString(object, "currency"),
+    });
+  }
+  if (STRIPE_SUBSCRIPTION_EVENT_TYPES.has(eventType)) {
+    const details =
+      optionalRecord(optionalRecord(object, "parent"), "subscription_details") ??
+      optionalRecord(object, "subscription_details");
+    return definedObject({
+      id: optionalString(object, "id"),
+      subscription: stripeReference(object["subscription"]),
+      subscription_details: definedObject({
+        subscription: stripeReference(details?.["subscription"]),
+        metadata: internalStripeMetadata(optionalRecord(details, "metadata")),
+      }),
+      client_reference_id: optionalString(object, "client_reference_id"),
+      customer: stripeReference(object["customer"]),
+      metadata: internalStripeMetadata(optionalRecord(object, "metadata")),
+    });
+  }
+  return definedObject({ id: optionalString(object, "id") });
+}
+
+function internalStripeMetadata(metadata: Record<string, unknown> | undefined) {
+  return definedObject({
+    vayada_property_id: optionalString(metadata, "vayada_property_id"),
+    vayada_organization_id: optionalString(metadata, "vayada_organization_id"),
+  });
+}
+
+function stripeReference(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? optionalString(value as Record<string, unknown>, "id")
+    : undefined;
+}
+
+function definedObject(input: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .filter(([key]) => !STRIPE_SECRET_FIELDS.has(key.toLowerCase()))
-      .map(([key, nested]) => [key, redactSensitiveStripeValue(nested)]),
+    Object.entries(input).filter(
+      ([, value]) =>
+        value !== undefined &&
+        (!value ||
+          typeof value !== "object" ||
+          Array.isArray(value) ||
+          Object.keys(value).length > 0),
+    ),
   );
 }
 
-const STRIPE_SECRET_FIELDS = new Set(["client_secret", "secret", "access_token", "refresh_token"]);
+function stripePayloadHash(value: Record<string, unknown>): string {
+  return sha256(stableStringify(canonicalPayload(redactLegacyStripeHashFields(value))));
+}
+
+function redactLegacyStripeHashFields(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactLegacyStripeHashFields);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !LEGACY_STRIPE_HASH_DENYLIST.has(key.toLowerCase()))
+      .map(([key, nested]) => [key, redactLegacyStripeHashFields(nested)]),
+  );
+}
+
+const LEGACY_STRIPE_HASH_DENYLIST = new Set([
+  "client_secret",
+  "secret",
+  "access_token",
+  "refresh_token",
+]);
 
 function modeFor(options: ProviderWebhookRoutesOptions, provider: ProviderWebhookProvider) {
   return options.modes?.[provider] ?? "observe_only";
@@ -1026,7 +1133,10 @@ function previewChannexEvent(
 function paymentPreview(input: {
   provider: "stripe" | "xendit";
   domainEventType:
-    "payment.authorized" | "payment.captured" | "payment.terminal" | "payment.fee_updated";
+    | "payment.authorized"
+    | "payment.captured"
+    | "payment.terminal"
+    | "payment.fee_updated";
   semanticAction: string;
   paymentId: string;
   amount: number;
@@ -1069,7 +1179,13 @@ function payoutPreview(input: {
   payoutId: string;
   providerStatus: string;
   financeStatus:
-    "pending" | "scheduled" | "processing" | "paid" | "failed" | "canceled" | "reversed";
+    | "pending"
+    | "scheduled"
+    | "processing"
+    | "paid"
+    | "failed"
+    | "canceled"
+    | "reversed";
   rawPayload: Record<string, unknown>;
 }): ProviderWebhookNormalizedPreview {
   return {
@@ -1162,7 +1278,11 @@ function parseJsonPayload(
   }
 }
 
-function redactedHeaders(request: FastifyRequest): Record<string, string> {
+function receiptHeaders(
+  provider: ProviderWebhookProvider,
+  request: FastifyRequest,
+): Record<string, string> {
+  if (provider === "stripe") return {};
   const sensitive = new Set(["stripe-signature", "x-callback-token", "x-vayada-webhook-token"]);
   const headers: Record<string, string> = {};
   for (const [key, value] of Object.entries(request.headers)) {
