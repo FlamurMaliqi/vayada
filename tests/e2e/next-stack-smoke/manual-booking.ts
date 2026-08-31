@@ -511,7 +511,11 @@ async function post(
 ) {
   return request.post(
     `${NEXT_STACK_ORIGINS.api}/api/pms/properties/${propertyId}/manual-bookings`,
-    { headers: accessToken ? { authorization: `Bearer ${accessToken}` } : {}, data: body },
+    {
+      headers: accessToken ? { authorization: `Bearer ${accessToken}` } : {},
+      data: body,
+      timeout: 45_000,
+    },
   );
 }
 
