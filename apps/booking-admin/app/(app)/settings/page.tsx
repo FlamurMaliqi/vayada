@@ -521,19 +521,12 @@ export default function SettingsPage() {
         setPaymentError("Select a hotel and create a Stripe account before onboarding.");
         return;
       }
-      const link = await continueStripeAfterSavingSettings({
-        saveSettings: () => savePaymentProviderSettings(),
-        continueStripe: (propertyId) =>
-          issueFinanceStripeOnboardingLink({
-            propertyId,
-            providerAccountId: stripeAccountId,
-            commandPrefix: `settings-stripe-onboarding-${hotelId}`,
-          }),
+      const propertyLink = await getBookingHotelPropertyLink({ hotelId });
+      const link = await issueFinanceStripeOnboardingLink({
+        propertyId: propertyLink.propertyId,
+        providerAccountId: stripeAccountId,
+        commandPrefix: `settings-stripe-onboarding-${hotelId}`,
       });
-      if (!link) {
-        stripeTab.close();
-        return;
-      }
       stripeTab.location.assign(link.onboardingUrl);
     } catch {
       stripeTab.close();

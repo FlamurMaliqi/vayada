@@ -554,4 +554,190 @@ test.describe("booking-admin settings no-legacy guard", () => {
 
     await assertHealthy();
   });
+
+  test("persists Stripe before account creation and stops after a failed save", async ({
+    page,
+  }) => {
+    test.skip(
+      !PROD,
+      "Requires a production booking-admin build so the authenticated shell hydrates.",
+    );
+    await mockBookingAdminAuthenticatedSession(page);
+    await mockBookingAdminShellRoutes(page);
+
+    let persistedProvider: "vayada" | "stripe" = "vayada";
+    let failSave = false;
+    let accountCreates = 0;
+    const order: string[] = [];
+    await page.route(`**${BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH}`, async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          json: {
+            contractVersion: "finance-route-contracts.v1",
+            propertyId: BOOKING_ADMIN_PROPERTY_ID,
+            paymentSettings: {
+              paymentsEnabled: true,
+              paymentProvider: persistedProvider,
+              acceptedMethods: ["card"],
+              defaultCurrency: "EUR",
+              supportedCurrencies: ["EUR"],
+              requiresManualReview: false,
+              providerAccount: {
+                providerAccountId: null,
+                provider: null,
+                status: "not_configured",
+                onboardingStatus: "not_started",
+                chargesEnabled: false,
+                payoutsEnabled: false,
+                capabilities: [],
+              },
+            },
+          },
+        });
+        return;
+      }
+
+      order.push("save");
+      const body = route.request().postDataJSON() as {
+        paymentSettings: { paymentProvider: string };
+      };
+      expect(body.paymentSettings.paymentProvider).toBe("stripe");
+      if (failSave) {
+        await route.fulfill({ status: 503, json: { error: "write unavailable" } });
+        return;
+      }
+      persistedProvider = "stripe";
+      await route.fulfill({
+        json: {
+          contractVersion: "finance-route-contracts.v1",
+          propertyId: BOOKING_ADMIN_PROPERTY_ID,
+          paymentSettings: body.paymentSettings,
+        },
+      });
+    });
+    await page.route(
+      `**/api/finance/properties/${BOOKING_ADMIN_PROPERTY_ID}/provider-accounts/stripe`,
+      async (route) => {
+        order.push("create");
+        accountCreates += 1;
+        await route.fulfill({
+          json: {
+            contractVersion: "finance-route-contracts.v1",
+            providerAccountId: "provider_account_e2e",
+            provider: "stripe",
+            providerAccountRef: "acct_e2e",
+            status: "setup_incomplete",
+            onboardingStatus: "invited",
+            onboardingUrl: "about:blank#stripe-onboarding",
+          },
+        });
+      },
+    );
+
+    await page.goto("/settings?section=payments");
+    await page.getByRole("button", { name: /Stripe Connect/ }).click();
+    const firstPopup = page.waitForEvent("popup");
+    await page.getByRole("button", { name: "Connect Payment Account" }).click();
+    const onboarding = await firstPopup;
+    await onboarding.waitForURL("about:blank#stripe-onboarding");
+    expect(order).toEqual(["save", "create"]);
+    await onboarding.close();
+
+    await page.reload();
+    await expect(page.getByRole("button", { name: /Stripe Connect/ })).toHaveClass(
+      /border-primary-500/,
+    );
+    await expect(page.getByRole("button", { name: "Connect Payment Account" })).toBeVisible();
+
+    persistedProvider = "vayada";
+    failSave = true;
+    order.length = 0;
+    await page.reload();
+    await page.getByRole("button", { name: /Stripe Connect/ }).click();
+    const failedPopup = page.waitForEvent("popup");
+    await page.getByRole("button", { name: "Connect Payment Account" }).click();
+    const closedPopup = await failedPopup;
+    await closedPopup.waitForEvent("close");
+
+    expect(order).toEqual(["save"]);
+    expect(accountCreates).toBe(1);
+    await expect(page.getByText("Failed to save")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Payments", exact: true })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+
+  test("relinks a persisted Stripe account without rewriting payment settings", async ({
+    page,
+  }) => {
+    test.skip(
+      !PROD,
+      "Requires a production booking-admin build so the authenticated shell hydrates.",
+    );
+    await mockBookingAdminAuthenticatedSession(page);
+    await mockBookingAdminShellRoutes(page);
+
+    let settingsWrites = 0;
+    await page.route(`**${BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH}`, async (route) => {
+      if (route.request().method() !== "GET") {
+        settingsWrites += 1;
+        await route.fulfill({ status: 500, json: { error: "unexpected settings write" } });
+        return;
+      }
+      await route.fulfill({
+        json: {
+          contractVersion: "finance-route-contracts.v1",
+          propertyId: BOOKING_ADMIN_PROPERTY_ID,
+          paymentSettings: {
+            paymentsEnabled: true,
+            paymentProvider: "stripe",
+            acceptedMethods: ["card", "bank_transfer"],
+            defaultCurrency: "EUR",
+            supportedCurrencies: ["EUR"],
+            depositPolicy: {},
+            requiresManualReview: false,
+            providerAccount: {
+              providerAccountId: "provider_account_e2e",
+              provider: "stripe",
+              status: "setup_incomplete",
+              onboardingStatus: "invited",
+              chargesEnabled: false,
+              payoutsEnabled: false,
+              capabilities: [],
+            },
+          },
+        },
+      });
+    });
+
+    let onboardingLinks = 0;
+    await page.route(
+      `**/api/finance/properties/${BOOKING_ADMIN_PROPERTY_ID}/provider-accounts/provider_account_e2e/onboarding-link`,
+      async (route) => {
+        onboardingLinks += 1;
+        await route.fulfill({
+          json: {
+            contractVersion: "finance-route-contracts.v1",
+            providerAccountId: "provider_account_e2e",
+            provider: "stripe",
+            providerAccountRef: "acct_e2e",
+            status: "setup_incomplete",
+            onboardingStatus: "invited",
+            onboardingUrl: "about:blank#stripe-relink",
+          },
+        });
+      },
+    );
+
+    await page.goto("/settings?section=payments");
+    const popup = page.waitForEvent("popup");
+    await page.getByRole("button", { name: "Complete Onboarding" }).click();
+    const onboarding = await popup;
+    await onboarding.waitForURL("about:blank#stripe-relink");
+
+    expect(settingsWrites).toBe(0);
+    expect(onboardingLinks).toBe(1);
+    await onboarding.close();
+  });
 });
