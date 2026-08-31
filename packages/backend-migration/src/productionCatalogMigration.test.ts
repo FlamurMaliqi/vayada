@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  runProductionCatalogPrerequisiteTransaction,
   runProductionCatalogTransaction,
   type ProductionCatalogMigrationServices,
 } from "./productionCatalogMigration.js";
@@ -49,7 +50,7 @@ describe("production catalog migration transaction", () => {
       "snapshot",
       "target",
       "plan",
-      "core",
+      "core:complete",
       "content",
       "presentation",
       "target",
@@ -57,6 +58,42 @@ describe("production catalog migration transaction", () => {
       "projection",
       "COMMIT",
     ]);
+  });
+
+  it("writes only catalog prerequisites while media blockers remain", async () => {
+    const log: string[] = [];
+    const expected = plan();
+    expected.blockers.push({
+      code: "UNRESOLVED_MEDIA_REFERENCE",
+      source: "booking.booking_hotels",
+      sourceId: "hotel-1",
+      message: "media must be imported first",
+    });
+    const verified = { ...expected, counts: { ...expected.counts, writes: 0 } };
+
+    const result = await runProductionCatalogPrerequisiteTransaction(
+      new TransactionClient(log) as never,
+      { sourceRunId: RUN, mode: "apply" },
+      services(log, expected, verified),
+    );
+
+    expect(result).toMatchObject({ applied: true, blockers: [] });
+    expect(result.remainingMediaBlockers).toEqual(expected.blockers);
+    expect(log).toEqual([
+      "BEGIN",
+      "SET",
+      "LOCK",
+      "snapshot",
+      "target",
+      "plan",
+      "core:prerequisites",
+      "content",
+      "target",
+      "plan",
+      "COMMIT",
+    ]);
+    expect(log).not.toContain("presentation");
+    expect(log).not.toContain("projection");
   });
 
   it("rolls back when stored state does not reproduce the plan", async () => {
@@ -101,8 +138,8 @@ function services(
       log.push("plan");
       return builds++ === 0 ? first : verified;
     },
-    writeCore: async () => {
-      log.push("core");
+    writeCore: async (_client, _writes, _links, _runId, phase) => {
+      log.push(`core:${phase ?? "complete"}`);
       return { properties: 0, sourceLinks: 0, slugs: 0, locations: 0 };
     },
     writeContent: async () => {

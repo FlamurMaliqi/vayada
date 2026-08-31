@@ -376,6 +376,68 @@ describe("PostgreSQL platform media repository", () => {
     ]);
   });
 
+  it("resolves an add-on upload to the Booking hotel's canonical property", async () => {
+    const query = vi.fn(async () => ({ rows: [{ propertyId: PROPERTY_ID }] }));
+    const repository = createPgPlatformMediaRepository({
+      connectionString: "postgresql://target.test/vayada",
+      publicCdnBaseUrl: "https://cdn.example.com",
+      pool: { query, connect: vi.fn(), end: vi.fn() } as never,
+    });
+
+    await expect(
+      repository.resolveTarget({
+        request: {
+          purpose: "booking.addon.image",
+          visibility: "public",
+          resource: {
+            product: "booking",
+            resourceType: "booking_hotel",
+            resourceId: "booking_hotel_alpenrose",
+          },
+          files: [],
+        },
+        policy: {
+          targetResourceProduct: "booking",
+          targetResourceType: "booking_hotel",
+        } as never,
+        context: {} as never,
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      target: {
+        resourceProduct: "booking",
+        resourceType: "booking_hotel",
+        resourceId: "booking_hotel_alpenrose",
+        propertyId: PROPERTY_ID,
+      },
+    });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("property_source_links"), [
+      "booking_hotel_alpenrose",
+    ]);
+  });
+
+  it("creates and finalizes persistent Booking add-on media", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    const session = await createSession(repository, "booking.addon.image");
+
+    const completed = await repository.completeUploadSession(completionInput(session));
+
+    expect(completed.mediaObjects[0]).toMatchObject({
+      purpose: "booking.addon.image",
+      propertyId: PROPERTY_ID,
+      resourceProduct: "booking",
+      resourceType: "booking_hotel",
+      resourceId: "booking_hotel_alpenrose",
+      visibility: "public",
+      approvalStatus: "approved",
+      lifecycleStatus: "active",
+      variants: expect.arrayContaining([
+        expect.objectContaining({ variantName: "original_safe", visibility: "public" }),
+      ]),
+    });
+  });
+
   it.each([
     ["property.hero_image", null],
     ["property.gallery_image", null],
@@ -647,6 +709,7 @@ async function createSession(
     | "identity.user.profile_image"
     | "marketplace.offer.media"
     | "marketplace.collaboration_chat.attachment"
+    | "booking.addon.image"
     | "property.hero_image"
     | "property.gallery_image"
     | "property.logo"
@@ -657,6 +720,7 @@ async function createSession(
   const isProfile = purpose === "identity.user.profile_image";
   const isOffer = purpose === "marketplace.offer.media";
   const isChat = purpose === "marketplace.collaboration_chat.attachment";
+  const isBookingAddon = purpose === "booking.addon.image";
   const isPropertyMedia = [
     "property.hero_image",
     "property.gallery_image",
@@ -664,26 +728,38 @@ async function createSession(
     "pms.room_type.media",
   ].includes(purpose);
   const isRoomMedia = purpose === "pms.room_type.media";
-  const product = isProfile ? "platform" : isOffer || isChat ? "marketplace" : "hotel_catalog";
+  const product = isProfile
+    ? "platform"
+    : isOffer || isChat
+      ? "marketplace"
+      : isBookingAddon
+        ? "booking"
+        : "hotel_catalog";
   const resourceType = isProfile
     ? "user_profile"
     : isOffer
       ? "marketplace_offer"
       : isChat
         ? "creator_profile"
-        : "property";
+        : isBookingAddon
+          ? "booking_hotel"
+          : "property";
   const resourceId = isProfile
     ? "00000000-0000-4000-8000-000000000001"
     : isOffer || isChat
       ? "00000000-0000-4000-8000-000000000020"
-      : PROPERTY_ID;
+      : isBookingAddon
+        ? "booking_hotel_alpenrose"
+        : PROPERTY_ID;
   const filename = isProfile
     ? "profile.jpg"
     : isOffer
       ? "offer.jpg"
       : isChat
         ? "chat.jpg"
-        : "property.jpg";
+        : isBookingAddon
+          ? "addon.jpg"
+          : "property.jpg";
   return repository.createUploadSession({
     sessionId: "00000000-0000-4000-8000-000000000010",
     uploadSessionKey: "media.upload_session:session-1",
@@ -715,7 +791,7 @@ async function createSession(
     },
     policy: {
       purpose,
-      autoApprovePublicOnFinalize: isProfile || isRoomMedia ? true : undefined,
+      autoApprovePublicOnFinalize: isProfile || isRoomMedia || isBookingAddon ? true : undefined,
       privateOnly: (isPropertyMedia && !isRoomMedia) || isChat,
     } as never,
     target: {
@@ -723,26 +799,31 @@ async function createSession(
         ? "platform"
         : isOffer || isChat
           ? "marketplace"
-          : isRoomMedia
-            ? "pms"
-            : "hotel_catalog",
+          : isBookingAddon
+            ? "booking"
+            : isRoomMedia
+              ? "pms"
+              : "hotel_catalog",
       resourceType: isProfile
         ? "user_profile"
         : isOffer
           ? "marketplace_offer"
           : isChat
             ? "collaboration"
-            : isRoomMedia
-              ? "room_type"
-              : "property",
+            : isBookingAddon
+              ? "booking_hotel"
+              : isRoomMedia
+                ? "room_type"
+                : "property",
       resourceId: isChat
         ? "collaboration-target-001"
-        : isProfile || isOffer
+        : isProfile || isOffer || isBookingAddon
           ? resourceId
           : isRoomMedia
             ? ROOM_TYPE_ID
             : PROPERTY_ID,
-      propertyId: isChat ? PROPERTY_ID : isProfile || isOffer ? undefined : PROPERTY_ID,
+      propertyId:
+        isChat || isBookingAddon ? PROPERTY_ID : isProfile || isOffer ? undefined : PROPERTY_ID,
     },
     uploadTargets: [
       {
@@ -774,15 +855,17 @@ function completionInput(session: PlatformMediaSessionRecord) {
   const isPrivate = session.effectiveVisibility === "private";
   const isChat = session.purpose === "marketplace.collaboration_chat.attachment";
   const isFinance = session.purpose === "finance.expense.receipt";
+  const isBookingAddon = session.purpose === "booking.addon.image";
   const isPropertyMedia = [
     "property.hero_image",
     "property.gallery_image",
     "property.logo",
     "pms.room_type.media",
   ].includes(session.purpose);
-  const variantNames = isPropertyMedia
-    ? PROPERTY_MEDIA_PUBLIC_VARIANTS
-    : [isChat || isFinance ? ("provider_original" as const) : ("original_safe" as const)];
+  const variantNames =
+    isPropertyMedia || isBookingAddon
+      ? PROPERTY_MEDIA_PUBLIC_VARIANTS
+      : [isChat || isFinance ? ("provider_original" as const) : ("original_safe" as const)];
   return {
     session,
     files: [
@@ -801,11 +884,12 @@ function completionInput(session: PlatformMediaSessionRecord) {
     variantSets: [
       variantNames.map((variantName, index) => {
         const checksumSha256 = String.fromCharCode(98 + index).repeat(64);
-        const storageKey = isPropertyMedia
-          ? `${isPrivate ? "private" : "public"}/media/${session.files[0]!.mediaId}/${variantName}/sha256-${checksumSha256}.webp`
-          : isPrivate
-            ? "private/media/offer/original-safe.webp"
-            : "media/profile/original-safe.webp";
+        const storageKey =
+          isPropertyMedia || isBookingAddon
+            ? `${isPrivate ? "private" : "public"}/media/${session.files[0]!.mediaId}/${variantName}/sha256-${checksumSha256}.webp`
+            : isPrivate
+              ? "private/media/offer/original-safe.webp"
+              : "media/profile/original-safe.webp";
         const dimensions =
           variantName === "blur_preview"
             ? { widthPx: 32, heightPx: 18 }

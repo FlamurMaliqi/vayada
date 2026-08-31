@@ -279,6 +279,8 @@ function config(): ProductionParityConfig {
     operator: "cutover-operator",
     warningBudget: 0,
     migrationsDir: "/migrations",
+    targetMediaBucket: "platform-media-test",
+    mediaCdnBaseUrl: "https://media.example.test",
   };
 }
 

@@ -52,9 +52,28 @@ export type BookingPropertySlug = {
   status: string;
 };
 
+export type BookingMediaReference = {
+  mediaObjectId: string;
+  propertyId: string;
+  sourceUrl: string;
+  sourceTable: string;
+  sourceRowId: string;
+  purpose: string;
+  visibility: string;
+  lifecycleStatus: string;
+  publicApproved: boolean;
+  publicUrl: string | null;
+  bucket: string;
+  storageKind: string;
+  storageKey: string;
+  variantStorageKey: string | null;
+  migrationRunId: string | null;
+};
+
 export type ProductionBookingTargetState = {
   propertyLinks: BookingPropertyLink[];
   propertySlugs: BookingPropertySlug[];
+  media?: BookingMediaReference[];
   records: ExistingBookingTargetRecord[];
   provenance: ProductionMigrationSourceLink[];
   blockers?: IdentityMigrationBlocker[];
@@ -106,4 +125,5 @@ export type BookingBuildContext = {
   bookingByReference: Map<string, IdentitySourceRow>;
   addonById: Map<string, IdentitySourceRow>;
   promoById: Map<string, IdentitySourceRow>;
+  mediaBySource: Map<string, BookingMediaReference>;
 };

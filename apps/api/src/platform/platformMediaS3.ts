@@ -26,6 +26,7 @@ import type { PrivateDownloadPolicy } from "./mediaServing.js";
 const SUPPORTED_IMAGE_PURPOSES = new Set<PlatformMediaPurpose>([
   "identity.user.profile_image",
   "booking.header_logo",
+  "booking.addon.image",
   "property.hero_image",
   "property.gallery_image",
   "property.logo",

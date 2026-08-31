@@ -23,6 +23,11 @@ const EXTERNAL_PROPERTY = "13560000-0000-4000-8000-000000000087";
 const EXTERNAL_ROOM = "13560000-0000-4000-8000-000000000088";
 const EXTERNAL_RATE = "13560000-0000-4000-8000-000000000089";
 const EXTERNAL_BOOKING = "13560000-0000-4000-8000-000000000090";
+const ATTACHMENT = "13560000-0000-4000-8000-000000000104";
+const ATTACHMENT_MEDIA = "13560000-0000-4000-8000-000000000105";
+const ROOM_MEDIA = "13560000-0000-4000-8000-000000000106";
+const ROOM_SOURCE_IMAGE = "https://legacy-media-test.s3.amazonaws.com/rooms/double.jpg";
+const ROOM_CDN_IMAGE = `https://media.example.test/media/${ROOM_MEDIA}/original-safe.webp`;
 
 describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
   let client: pg.Client;
@@ -75,16 +80,28 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
            (SELECT count(*)::int FROM pms.inventory_days WHERE property_id = $1) AS inventory,
            (SELECT count(*)::int FROM pms.operational_booking_assignments WHERE guest_booking_id = $2) AS assignments,
            (SELECT count(*)::int FROM pms.channel_booking_mappings WHERE guest_booking_id = $2) AS mappings,
+           (SELECT count(*)::int FROM pms.room_type_media WHERE room_type_id = $3) AS room_media,
+           (SELECT media_snapshot FROM pms.room_types WHERE id = $3) AS media_snapshot,
            (SELECT delivery_status FROM platform.external_webhook_events WHERE provider = 'channex' LIMIT 1) AS webhook_status,
            (SELECT normalized_domain_event_id FROM platform.external_webhook_events WHERE provider = 'channex' LIMIT 1) AS domain_event,
            (SELECT count(*)::int FROM platform.outbox_events) AS outbox_count,
            (SELECT count(*)::int FROM platform.jobs) AS job_count`,
-        [PROPERTY, BOOKING],
+        [PROPERTY, BOOKING, ROOM_TYPE],
       );
       expect(stored.rows[0]).toMatchObject({
         inventory: 366,
         assignments: 1,
         mappings: 1,
+        room_media: 1,
+        media_snapshot: [
+          {
+            mediaObjectId: ROOM_MEDIA,
+            url: ROOM_CDN_IMAGE,
+            source: "pms",
+            sourceTable: "room_types",
+            publicApproved: true,
+          },
+        ],
         webhook_status: "observed",
         domain_event: null,
         outbox_count: 0,
@@ -196,6 +213,38 @@ async function seedPrerequisites(client: pg.Client): Promise<void> {
     [PROPERTY],
   );
   await client.query(
+    `INSERT INTO platform.media_objects
+       (id, bucket, storage_key, storage_kind, visibility, purpose, property_id,
+        resource_product, resource_type, resource_id, lifecycle_status, content_type,
+        size_bytes, checksum_sha256, width_px, height_px, original_filename, source_url,
+        source_system, source_table, source_row_id, source_metadata, public_approved)
+     VALUES ($1, 'platform-media-test', $2, 'vayada_managed', 'public',
+             'pms.room_type.media', $3, 'pms', 'room_type', $4, 'active', 'image/webp',
+             100, $5, 100, 80, 'double.jpg', $6, 'pms', 'room_types', $7, $8::jsonb, TRUE)`,
+    [
+      ROOM_MEDIA,
+      `public/media/${ROOM_MEDIA}/original_safe/sha256-${"c".repeat(64)}.webp`,
+      PROPERTY,
+      ROOM_TYPE,
+      "c".repeat(64),
+      ROOM_SOURCE_IMAGE,
+      `${ROOM_TYPE}:images:1`,
+      JSON.stringify({ migrationRunId: RUN, migrationTicket: "VAY-1055" }),
+    ],
+  );
+  await client.query(
+    `INSERT INTO platform.media_variants
+       (media_object_id, variant_name, visibility, storage_key, content_type,
+        width_px, height_px, size_bytes, checksum_sha256, public_cdn_url)
+     VALUES ($1, 'original_safe', 'public', $2, 'image/webp', 100, 80, 100, $3, $4)`,
+    [
+      ROOM_MEDIA,
+      `public/media/${ROOM_MEDIA}/original_safe/sha256-${"c".repeat(64)}.webp`,
+      "c".repeat(64),
+      ROOM_CDN_IMAGE,
+    ],
+  );
+  await client.query(
     `INSERT INTO hotel_catalog.property_source_links
        (property_id, source_system, source_table, source_id, relationship, metadata)
        VALUES ($1, 'pms', 'hotels', $2, 'operational_input', $3::jsonb)`,
@@ -220,6 +269,27 @@ async function seedPrerequisites(client: pg.Client): Promise<void> {
              $2, $2, $3, '2026-08-29T00:00:00Z')`,
     [BOOKING, RUN, "a".repeat(64)],
   );
+  await client.query(
+    `INSERT INTO platform.media_objects
+       (id, bucket, storage_key, storage_kind, visibility, purpose, property_id,
+        resource_product, resource_type, resource_id, lifecycle_status, content_type,
+        size_bytes, checksum_sha256, original_filename, source_url, source_system,
+        source_table, source_row_id, source_metadata, public_approved)
+     VALUES ($1, 'platform-media-test', $2, 'vayada_managed', 'private',
+             'pms.messaging.attachment', $3, 'pms', 'message_attachment', $4,
+             'active', 'application/pdf', 123, $5, 'file.pdf',
+             'https://legacy-media-test.s3.amazonaws.com/legacy/messages/file.pdf',
+             'pms', 'message_attachments', $6, $7::jsonb, FALSE)`,
+    [
+      ATTACHMENT_MEDIA,
+      `private/media/${ATTACHMENT_MEDIA}/provider_original/sha256-${"b".repeat(64)}.pdf`,
+      PROPERTY,
+      ATTACHMENT,
+      "b".repeat(64),
+      `${ATTACHMENT}:s3_key`,
+      JSON.stringify({ migrationRunId: RUN, migrationTicket: "VAY-1055" }),
+    ],
+  );
 }
 
 function sourceRows(): IdentitySourceRow[] {
@@ -240,6 +310,7 @@ function sourceRows(): IdentitySourceRow[] {
       base_rate: "100.00",
       currency: "EUR",
       is_active: true,
+      images: [ROOM_SOURCE_IMAGE],
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-08-29T00:00:00Z",
     }),
@@ -433,7 +504,7 @@ function messageRows(): IdentitySourceRow[] {
       raw_payload: {},
     }),
     row("message_attachments", {
-      id: "13560000-0000-4000-8000-000000000104",
+      id: ATTACHMENT,
       message_id: message,
       s3_key: "legacy/messages/file.pdf",
       filename: "file.pdf",

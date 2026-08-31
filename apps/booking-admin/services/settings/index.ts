@@ -303,6 +303,7 @@ export interface AddonItem {
   currency: string;
   category: string;
   image: string;
+  imageMediaObjectId?: string | null;
   duration?: string;
   perPerson?: boolean;
   perNight?: boolean;

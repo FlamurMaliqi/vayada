@@ -156,7 +156,7 @@ function assertWriteCounts(planned: PmsTargetRecord[], actual: Record<string, nu
 async function lockPmsTargets(client: QueryClient): Promise<void> {
   await client.query("SET LOCAL lock_timeout = '5s'");
   await client.query(
-    `LOCK TABLE pms.linked_inventory_groups, pms.room_types, pms.rooms,
+    `LOCK TABLE pms.linked_inventory_groups, pms.room_types, pms.room_type_media, pms.rooms,
                 pms.rate_plans, pms.rate_rules, pms.operational_booking_assignments,
                 pms.room_blocks, pms.inventory_days, pms.checkin_checklist_templates,
                 pms.checkout_inspection_templates, pms.booking_checkin_records,

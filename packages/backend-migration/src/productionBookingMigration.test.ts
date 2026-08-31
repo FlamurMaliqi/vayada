@@ -67,10 +67,11 @@ class TransactionFixture {
 function serviceFixture(): ProductionBookingMigrationServices {
   return {
     readSnapshot: vi.fn(async () => ({ rows: [], completedAt: "2026-08-30T00:00:00.000Z" })),
-    readOwnership: vi.fn(async () => ({ propertyLinks: [], propertySlugs: [] })),
+    readOwnership: vi.fn(async () => ({ propertyLinks: [], propertySlugs: [], media: [] })),
     readTarget: vi.fn(async () => ({
       propertyLinks: [],
       propertySlugs: [],
+      media: [],
       records: [],
       provenance: [],
     })),

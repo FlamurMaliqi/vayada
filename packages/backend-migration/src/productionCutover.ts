@@ -8,9 +8,14 @@ import {
   type ProductionBookingMigrationReport,
 } from "./productionBookingMigration.js";
 import {
+  runProductionCatalogPrerequisites,
   runProductionCatalogMigration,
   type ProductionCatalogMigrationReport,
 } from "./productionCatalogMigration.js";
+import {
+  runProductionMediaMigration,
+  type ProductionMediaMigrationConfig,
+} from "./productionMediaMigration.js";
 import {
   runProductionFinanceMigration,
   type ProductionFinanceMigrationReport,
@@ -91,6 +96,7 @@ export type ProductionCutoverConfig = {
   resume?: boolean;
   sourceExtraction: SourceExtractionConfig;
   sourceConnectionStrings: Record<SourceDatabase, string>;
+  media: Omit<ProductionMediaMigrationConfig, "connectionString" | "sourceRunId" | "mode">;
 };
 
 type DomainReport =
@@ -359,13 +365,52 @@ const defaultServices: ProductionCutoverServices = {
       sourceRunId: config.sourceRunId,
       mode: "apply" as const,
     };
-    const runners: Record<typeof domain, () => Promise<DomainReport>> = {
+    if (domain === "catalog") {
+      const prerequisite = await runProductionCatalogPrerequisites(input);
+      if (!prerequisite.applied || prerequisite.blockers.length > 0)
+        throw new ProductionCutoverError(
+          "DOMAIN_MIGRATION_BLOCKED",
+          "catalog prerequisite migration did not apply",
+        );
+      const media = await runProductionMediaMigration({
+        ...config.media,
+        ...input,
+      });
+      if (!media.applied || media.blockers.length > 0)
+        throw new ProductionCutoverError(
+          "DOMAIN_MIGRATION_BLOCKED",
+          "media migration did not apply",
+        );
+      const catalog = await runProductionCatalogMigration(input);
+      if (!catalog.applied || catalog.blockers.length > 0)
+        throw new ProductionCutoverError(
+          "DOMAIN_MIGRATION_BLOCKED",
+          "catalog migration did not apply",
+        );
+      return checkedResult({
+        prerequisiteChecksum: prerequisite.checksum,
+        mediaChecksum: media.checksum,
+        catalogChecksum: catalog.checksum,
+      });
+    }
+    const runners: Record<Exclude<typeof domain, "catalog">, () => Promise<DomainReport>> = {
       identity: () => runProductionIdentityMigration(input),
-      catalog: () => runProductionCatalogMigration(input),
       booking: () => runProductionBookingMigration(input),
-      pms: () => runProductionPmsMigration(input),
-      marketplace: () => runProductionMarketplaceMigration(input),
-      finance: () => runProductionFinanceMigration(input),
+      pms: () =>
+        runProductionPmsMigration({
+          ...input,
+          applyConfirmation: `production-pms:${config.sourceRunId}`,
+        }),
+      marketplace: () =>
+        runProductionMarketplaceMigration({
+          ...input,
+          applyConfirmation: `production-marketplace:${config.sourceRunId}`,
+        }),
+      finance: () =>
+        runProductionFinanceMigration({
+          ...input,
+          applyConfirmation: `production-finance:${config.sourceRunId}`,
+        }),
     };
     const report = await runners[domain]();
     if (!report.applied || report.blockers.length > 0)
@@ -387,6 +432,8 @@ const defaultServices: ProductionCutoverServices = {
       operator: config.operator,
       warningBudget: 0,
       migrationsDir: config.migrationsDir,
+      targetMediaBucket: config.media.targetBucket,
+      mediaCdnBaseUrl: config.media.cdnBaseUrl,
     });
     if (report.decision !== "go")
       throw new ProductionCutoverError("PARITY_NOT_GO", "Migration parity did not return GO");
@@ -429,6 +476,7 @@ export function validateProductionCutoverConfig(config: ProductionCutoverConfig)
     );
   if (!config.operator.trim())
     throw new ProductionCutoverError("MISSING_OPERATOR", "Operator is required");
+  validateMediaConfig(config.media);
   if (!isSha256(config.targetCleanProofSha256))
     throw new ProductionCutoverError(
       "MISSING_TARGET_CLEAN_PROOF",
@@ -475,6 +523,43 @@ export function validateProductionCutoverConfig(config: ProductionCutoverConfig)
     const approvedRunEvidenceSha256 = validateApprovedRunReport(config);
     validateApprovalReport(config, approvedRunEvidenceSha256);
   }
+}
+
+function validateMediaConfig(config: ProductionCutoverConfig["media"]): void {
+  const validBucket = (value: unknown) =>
+    typeof value === "string" && /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(value);
+  if (!config || typeof config !== "object")
+    throw new ProductionCutoverError(
+      "INVALID_MEDIA_CONFIGURATION",
+      "Platform media bucket, CDN, and reviewed legacy bucket allowlist are required",
+    );
+  let validCdn = false;
+  try {
+    const cdn = new URL(config.cdnBaseUrl);
+    validCdn =
+      cdn.protocol === "https:" &&
+      !cdn.username &&
+      !cdn.password &&
+      cdn.pathname === "/" &&
+      !cdn.search &&
+      !cdn.hash &&
+      !/(^|\.)s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com$/i.test(cdn.hostname);
+  } catch {
+    validCdn = false;
+  }
+  if (
+    !validBucket(config.targetBucket) ||
+    !validBucket(config.legacyPmsBucket) ||
+    !Array.isArray(config.allowedLegacyBuckets) ||
+    config.allowedLegacyBuckets.length === 0 ||
+    config.allowedLegacyBuckets.some((bucket) => !validBucket(bucket)) ||
+    !config.allowedLegacyBuckets.includes(config.legacyPmsBucket) ||
+    !validCdn
+  )
+    throw new ProductionCutoverError(
+      "INVALID_MEDIA_CONFIGURATION",
+      "Platform media bucket, CDN, and reviewed legacy bucket allowlist are required",
+    );
 }
 
 function validateSourceEvidence(config: ProductionCutoverConfig): void {
@@ -985,6 +1070,7 @@ async function initializeRun(
       approvedRunEvidenceSha256,
       approvedParityDecision: config.approvedParityDecision ?? null,
       approvalProofSha256: config.approvalProofSha256 ?? null,
+      mediaConfigSha256: sha256(stableJson(config.media)),
     }),
   );
   await client.query("BEGIN");

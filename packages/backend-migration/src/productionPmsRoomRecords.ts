@@ -1,4 +1,9 @@
-import { addPmsBlocker, propertyForHotel, safePmsSourceId } from "./productionPmsContext.js";
+import {
+  addPmsBlocker,
+  pmsMediaForSource,
+  propertyForHotel,
+  safePmsSourceId,
+} from "./productionPmsContext.js";
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
 import type { PmsBuildContext, PmsRoomBuild, PmsTargetRecord } from "./productionPmsTypes.js";
 import {
@@ -84,6 +89,38 @@ function roomType(
   const baseRate = money(data["base_rate"] ?? 0, "base_rate");
   const legacyPricing = pricingSnapshot(data);
   const flexibleCancellation = cancellationPolicy(context, data, "flexible");
+  const legacyImages = jsonArray(data["images"], "images");
+  if (legacyImages.some((value) => typeof value !== "string"))
+    throw new Error("images must contain only URL strings");
+  if (legacyImages.length > 20) throw new Error("images exceeds the 20-image target limit");
+  const media = legacyImages.map((_, index) =>
+    pmsMediaForSource(context, {
+      sourceTable: "room_types",
+      sourceRowId: `${id}:images:${index + 1}`,
+      purpose: "pms.room_type.media",
+      propertyId,
+      visibility: "public",
+    }),
+  );
+  const mediaAssignments = media.map((item, index) =>
+    pmsRecord(
+      source,
+      "room_type_media",
+      `${id}:${item.mediaObjectId}`,
+      updatedAt,
+      true,
+      {
+        propertyId,
+        roomTypeId: id,
+        platformMediaObjectId: item.mediaObjectId,
+        altText: null,
+        sortOrder: index,
+        createdAt,
+        updatedAt,
+      },
+      { row: data, mediaObjectId: item.mediaObjectId, sortOrder: index },
+    ),
+  );
   const roomRecord = pmsRecord(
     source,
     "room_types",
@@ -114,7 +151,13 @@ function roomType(
         legacyPricing,
       },
       amenitiesSnapshot: jsonArray(data["amenities"], "amenities"),
-      mediaSnapshot: jsonArray(data["images"], "images"),
+      mediaSnapshot: media.map((item) => ({
+        mediaObjectId: item.mediaObjectId,
+        url: item.publicUrl,
+        source: "pms",
+        sourceTable: "room_types",
+        publicApproved: true,
+      })),
       baseRateAmount: baseRate,
       currency: roomCurrency,
       active: bool(data["is_active"], "is_active", true),
@@ -195,7 +238,12 @@ function roomType(
   return {
     roomTypeId: id,
     flexiblePlanId,
-    records: [roomRecord, ...plans, ...rateRules(context, source, flexiblePlanId, baseRate)],
+    records: [
+      roomRecord,
+      ...mediaAssignments,
+      ...plans,
+      ...rateRules(context, source, flexiblePlanId, baseRate),
+    ],
   };
 }
 

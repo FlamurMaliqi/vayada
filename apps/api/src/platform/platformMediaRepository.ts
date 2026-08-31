@@ -55,6 +55,7 @@ type CollaborationTargetRow = { collaborationId: string; propertyId: string };
 const supportedPurposes = new Set([
   "identity.user.profile_image",
   "booking.header_logo",
+  "booking.addon.image",
   "property.hero_image",
   "property.gallery_image",
   "property.logo",
@@ -387,6 +388,43 @@ async function resolveTarget(
         resourceType: input.policy.targetResourceType,
         resourceId: input.request.purpose === "pms.room_type.media" ? roomTypeId! : propertyId,
         propertyId,
+      },
+    };
+  }
+
+  if (
+    input.request.purpose === "booking.header_logo" ||
+    input.request.purpose === "booking.addon.image"
+  ) {
+    const bookingHotelId = input.request.resource.resourceId;
+    const result = await queryable.query<PropertyTargetRow>(
+      `WITH direct_property AS (
+         SELECT property.id::text AS "propertyId"
+           FROM hotel_catalog.properties property
+          WHERE property.id::text = $1
+       ), linked_property AS (
+         SELECT link.property_id::text AS "propertyId"
+           FROM hotel_catalog.property_source_links link
+          WHERE link.source_system = 'booking'
+            AND link.source_table = 'booking_hotels'
+            AND link.source_id = $1
+            AND link.relationship = 'canonical_input'
+            AND link.status = 'active'
+            AND NOT EXISTS (SELECT 1 FROM direct_property)
+       )
+       SELECT "propertyId" FROM direct_property
+       UNION ALL
+       SELECT "propertyId" FROM linked_property`,
+      [bookingHotelId],
+    );
+    if (result.rows.length !== 1) return propertyMediaTargetForbidden();
+    return {
+      ok: true,
+      target: {
+        resourceProduct: "booking",
+        resourceType: "booking_hotel",
+        resourceId: bookingHotelId,
+        propertyId: result.rows[0]!.propertyId,
       },
     };
   }

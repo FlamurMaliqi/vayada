@@ -58,6 +58,8 @@ const WRITERS: Record<string, WriterDefinition> = {
       c("customFilters", "custom_filters", "jsonb"),
       c("filterRooms", "filter_rooms", "jsonb"),
       c("sourceFreshness", "source_freshness", "jsonb"),
+      c("headerLogoMediaObjectId", "header_logo_media_object_id", "uuid"),
+      c("heroImageUrl", "hero_image_url", "text"),
       c("primaryColor", "primary_color", "text"),
       c("fontPairing", "font_pairing", "text"),
       c("acceptanceMode", "acceptance_mode", "text"),

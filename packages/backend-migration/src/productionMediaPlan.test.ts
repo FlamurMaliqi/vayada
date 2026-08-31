@@ -1,0 +1,372 @@
+import { describe, expect, it } from "vitest";
+
+import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
+import {
+  buildProductionMediaPlan,
+  type ProductionMediaTargetState,
+} from "./productionMediaPlan.js";
+
+const RUN = "vay1351-0123456789abcdef01234567";
+const HOTEL = "10550000-0000-4000-a000-000000000001";
+const PROPERTY = "10550000-0000-4000-a000-000000000002";
+const ORGANIZATION = "10550000-0000-4000-a000-000000000003";
+const HERO = "https://legacy-media-test.s3.amazonaws.com/hotels/My%20Hero.jpg";
+const LOGO = "https://legacy-media-test.s3.amazonaws.com/rooms/logo.png";
+const CREATOR = "10550000-0000-4000-a000-000000000010";
+const CREATOR_USER = "10550000-0000-4000-a000-000000000011";
+const HOTEL_USER = "10550000-0000-4000-a000-000000000012";
+const CREATOR_ORGANIZATION = "10550000-0000-4000-a000-000000000013";
+const COLLABORATION = "10550000-0000-4000-a000-000000000014";
+const MESSAGE = "10550000-0000-4000-a000-000000000015";
+
+describe("production media plan", () => {
+  it("plans only attested current references with stable source identities", () => {
+    const input = fixture();
+    const first = buildProductionMediaPlan(input);
+    const repeated = buildProductionMediaPlan(input);
+
+    expect(first.blockers).toEqual([]);
+    expect(first.counts).toEqual({ planned: 1, pending: 1, reused: 0, public: 1, private: 0 });
+    expect(first.references[0]).toMatchObject({
+      sourceSystem: "booking",
+      sourceTable: "booking_hotels",
+      sourceRowId: `${HOTEL}:hero_image`,
+      sourceUrl: HERO,
+      purpose: "property.hero_image",
+      propertyId: PROPERTY,
+      ownerOrganizationId: ORGANIZATION,
+    });
+    expect(repeated.checksum).toBe(first.checksum);
+    expect(repeated.references[0]!.mediaObjectId).toBe(first.references[0]!.mediaObjectId);
+  });
+
+  it("preserves conflicting target state and blocks a different migration run", () => {
+    const input = fixture();
+    const reference = buildProductionMediaPlan(input).references[0]!;
+    input.target.mediaObjects.push({
+      id: reference.mediaObjectId,
+      sourceSystem: reference.sourceSystem,
+      sourceTable: reference.sourceTable,
+      sourceRowId: reference.sourceRowId,
+      sourceUrl: reference.sourceUrl,
+      purpose: reference.purpose,
+      lifecycleStatus: "active",
+      visibility: "public",
+      publicApproved: true,
+      migrationRunId: "vay1351-ffffffffffffffffffffffff",
+      checksumSha256: "a".repeat(64),
+      bucket: "platform-media-test",
+      storageKind: "vayada_managed",
+      storageKey: `public/media/${reference.mediaObjectId}/original_safe/original.webp`,
+      propertyId: reference.propertyId,
+      ownerOrganizationId: reference.ownerOrganizationId,
+      resourceProduct: reference.resourceProduct,
+      resourceType: reference.resourceType,
+      resourceId: reference.resourceId,
+      retainedUntil: reference.retainedUntil,
+      migrationCase: null,
+      variants: ["blur_preview", "large", "original_safe", "thumbnail"].map((name) => ({
+        name,
+        visibility: "public",
+        storageKey: `public/media/${reference.mediaObjectId}/${name}/variant.webp`,
+        publicCdnUrl: `https://media.example.test/media/${reference.mediaObjectId}/${name}/variant.webp`,
+      })),
+    });
+
+    const plan = buildProductionMediaPlan(input);
+    expect(plan.pending).toEqual([]);
+    expect(plan.reused).toEqual([]);
+    expect(plan.blockers).toContainEqual(
+      expect.objectContaining({ code: "MEDIA_TARGET_CONFLICT", sourceId: reference.mediaObjectId }),
+    );
+  });
+
+  it("reuses only the configured managed bucket and CDN variants", () => {
+    const input = fixture();
+    const reference = buildProductionMediaPlan(input).references[0]!;
+    const existing = {
+      id: reference.mediaObjectId,
+      sourceSystem: reference.sourceSystem,
+      sourceTable: reference.sourceTable,
+      sourceRowId: reference.sourceRowId,
+      sourceUrl: reference.sourceUrl,
+      purpose: reference.purpose,
+      lifecycleStatus: "active",
+      visibility: "public",
+      publicApproved: true,
+      migrationRunId: RUN,
+      checksumSha256: "a".repeat(64),
+      bucket: "platform-media-test",
+      storageKind: "vayada_managed",
+      storageKey: `public/media/${reference.mediaObjectId}/original_safe/original.webp`,
+      propertyId: reference.propertyId,
+      ownerOrganizationId: reference.ownerOrganizationId,
+      resourceProduct: reference.resourceProduct,
+      resourceType: reference.resourceType,
+      resourceId: reference.resourceId,
+      retainedUntil: reference.retainedUntil,
+      migrationCase: null,
+      variants: ["blur_preview", "large", "original_safe", "thumbnail"].map((name) => ({
+        name,
+        visibility: "public",
+        storageKey: `public/media/${reference.mediaObjectId}/${name}/variant.webp`,
+        publicCdnUrl: `https://media.example.test/media/${reference.mediaObjectId}/${name}/variant.webp`,
+      })),
+    };
+    input.target.mediaObjects = [existing];
+    expect(buildProductionMediaPlan(input).reused).toEqual([reference]);
+
+    existing.variants[0]!.publicCdnUrl =
+      "https://platform-media-test.s3.us-east-1.amazonaws.com/media/object/blur_preview";
+    const rawS3 = buildProductionMediaPlan(input);
+    expect(rawS3.reused).toEqual([]);
+    expect(rawS3.blockers).toContainEqual(
+      expect.objectContaining({ code: "MEDIA_TARGET_CONFLICT" }),
+    );
+
+    existing.variants[0]!.storageKey =
+      "public/media/10550000-0000-4000-a000-000000000099/blur_preview/variant.webp";
+    existing.variants[0]!.publicCdnUrl =
+      "https://media.example.test/media/10550000-0000-4000-a000-000000000099/blur_preview/variant.webp";
+    const crossObjectPath = buildProductionMediaPlan(input);
+    expect(crossObjectPath.reused).toEqual([]);
+    expect(crossObjectPath.blockers).toContainEqual(
+      expect.objectContaining({ code: "MEDIA_TARGET_CONFLICT" }),
+    );
+  });
+
+  it("creates distinct catalog and Booking assignments for the legacy Booking logo", () => {
+    const input = fixture();
+    input.rows[0]!.data["branding_logo_url"] = LOGO;
+
+    const logos = buildProductionMediaPlan(input).references.filter(
+      (reference) => reference.sourceField === "branding_logo_url",
+    );
+    expect(logos).toHaveLength(2);
+    expect(logos).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceRowId: `${HOTEL}:branding_logo_url`,
+          purpose: "property.logo",
+          resourceProduct: "hotel_catalog",
+          resourceId: PROPERTY,
+        }),
+        expect.objectContaining({
+          sourceRowId: `${HOTEL}:branding_logo_url:booking_header`,
+          purpose: "booking.header_logo",
+          resourceProduct: "booking",
+          resourceType: "booking_hotel",
+          resourceId: HOTEL,
+        }),
+      ]),
+    );
+  });
+
+  it("reports a bad reference without aborting the inventory scan", () => {
+    const input = fixture();
+    input.rows.push(
+      row("booking_addons", {
+        id: "10550000-0000-4000-a000-000000000004",
+        hotel_id: HOTEL,
+        image: "http://legacy-media-test.s3.amazonaws.com/addons/unsafe.jpg",
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-30T00:00:00Z",
+      }),
+    );
+
+    const plan = buildProductionMediaPlan(input);
+    expect(plan.references).toHaveLength(1);
+    expect(plan.blockers).toContainEqual(
+      expect.objectContaining({
+        code: "INVALID_MEDIA_SOURCE_ROW",
+        source: "booking.booking_addons",
+      }),
+    );
+  });
+
+  it.each([
+    ["creator", CREATOR_USER, CREATOR_ORGANIZATION],
+    ["hotel", HOTEL_USER, ORGANIZATION],
+  ])(
+    "owns a %s chat image by its sender and preserves its retention",
+    (_side, senderId, ownerId) => {
+      const input = fixture();
+      input.rows = [
+        marketplaceRow("hotel_profiles", { id: HOTEL, user_id: HOTEL_USER }),
+        marketplaceRow("creators", { id: CREATOR, user_id: CREATOR_USER }),
+        marketplaceRow("collaborations", {
+          id: COLLABORATION,
+          hotel_id: HOTEL,
+          creator_id: CREATOR,
+        }),
+        marketplaceRow("chat_messages", {
+          id: MESSAGE,
+          collaboration_id: COLLABORATION,
+          sender_id: senderId,
+          message_type: "image",
+          content: "https://legacy-media-test.s3.amazonaws.com/chat/private.jpg",
+          metadata: {},
+          created_at: "2026-08-01T00:00:00Z",
+          updated_at: "2026-08-02T00:00:00Z",
+        }),
+      ];
+      input.target.propertyLinks = [
+        {
+          sourceSystem: "marketplace",
+          sourceTable: "hotel_profiles",
+          sourceId: HOTEL,
+          propertyId: PROPERTY,
+          relationship: "profile_input",
+          status: "active",
+          migrationRunId: RUN,
+        },
+      ];
+      input.target.resourceLinks = [
+        {
+          organizationId: ORGANIZATION,
+          product: "marketplace",
+          resourceType: "hotel_profile",
+          resourceId: HOTEL,
+          relationship: "owner",
+          status: "active",
+        },
+        {
+          organizationId: CREATOR_ORGANIZATION,
+          product: "marketplace",
+          resourceType: "creator_profile",
+          resourceId: CREATOR,
+          relationship: "owner",
+          status: "active",
+        },
+      ];
+
+      const plan = buildProductionMediaPlan(input);
+
+      expect(plan.blockers).toEqual([]);
+      expect(plan.references).toEqual([
+        expect.objectContaining({
+          purpose: "marketplace.collaboration_chat.attachment",
+          ownerOrganizationId: ownerId,
+          retainedUntil: "2028-08-01T00:00:00.000Z",
+          visibility: "private",
+        }),
+      ]);
+    },
+  );
+
+  it("does not copy a Marketplace chat image whose retention already expired", () => {
+    const input = fixture();
+    input.rows = [
+      marketplaceRow("hotel_profiles", { id: HOTEL, user_id: HOTEL_USER }),
+      marketplaceRow("creators", { id: CREATOR, user_id: CREATOR_USER }),
+      marketplaceRow("collaborations", {
+        id: COLLABORATION,
+        hotel_id: HOTEL,
+        creator_id: CREATOR,
+      }),
+      marketplaceRow("chat_messages", {
+        id: MESSAGE,
+        collaboration_id: COLLABORATION,
+        sender_id: CREATOR_USER,
+        message_type: "image",
+        content: "https://legacy-media-test.s3.amazonaws.com/chat/expired.jpg",
+        metadata: {},
+        created_at: "2023-08-01T00:00:00Z",
+        updated_at: "2023-08-02T00:00:00Z",
+      }),
+    ];
+    input.target.propertyLinks = [
+      {
+        sourceSystem: "marketplace",
+        sourceTable: "hotel_profiles",
+        sourceId: HOTEL,
+        propertyId: PROPERTY,
+        relationship: "profile_input",
+        status: "active",
+        migrationRunId: RUN,
+      },
+    ];
+    input.target.resourceLinks = [
+      {
+        organizationId: ORGANIZATION,
+        product: "marketplace",
+        resourceType: "hotel_profile",
+        resourceId: HOTEL,
+        relationship: "owner",
+        status: "active",
+      },
+      {
+        organizationId: CREATOR_ORGANIZATION,
+        product: "marketplace",
+        resourceType: "creator_profile",
+        resourceId: CREATOR,
+        relationship: "owner",
+        status: "active",
+      },
+    ];
+
+    const plan = buildProductionMediaPlan(input);
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.references).toEqual([]);
+  });
+});
+
+function fixture(): {
+  sourceRunId: string;
+  completedAt: string;
+  rows: IdentitySourceRow[];
+  target: ProductionMediaTargetState;
+  legacyPmsBucket: string;
+  targetBucket: string;
+  cdnBaseUrl: string;
+} {
+  return {
+    sourceRunId: RUN,
+    completedAt: "2026-08-30T00:00:00.000Z",
+    rows: [
+      row("booking_hotels", {
+        id: HOTEL,
+        hero_image: HERO,
+        images: [],
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-30T00:00:00Z",
+      }),
+    ],
+    target: {
+      propertyLinks: [
+        {
+          sourceSystem: "booking",
+          sourceTable: "booking_hotels",
+          sourceId: HOTEL,
+          propertyId: PROPERTY,
+          relationship: "canonical_input",
+          status: "active",
+          migrationRunId: RUN,
+        },
+      ],
+      resourceLinks: [
+        {
+          organizationId: ORGANIZATION,
+          product: "booking",
+          resourceType: "booking_hotel",
+          resourceId: HOTEL,
+          relationship: "owner",
+          status: "active",
+        },
+      ],
+      mediaObjects: [],
+    },
+    legacyPmsBucket: "legacy-media-test",
+    targetBucket: "platform-media-test",
+    cdnBaseUrl: "https://media.example.test",
+  };
+}
+
+function row(sourceTable: string, data: Record<string, unknown>): IdentitySourceRow {
+  return { sourceDatabase: "booking", sourceTable, rowOrdinal: 1, data };
+}
+
+function marketplaceRow(sourceTable: string, data: Record<string, unknown>): IdentitySourceRow {
+  return { sourceDatabase: "marketplace", sourceTable, rowOrdinal: 1, data };
+}

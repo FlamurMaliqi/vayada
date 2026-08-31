@@ -178,6 +178,58 @@ unchanged. Keep the legacy systems available throughout the rollback window.
 Catalog success does not authorize shutdown: VAY-1355 through VAY-1358,
 VAY-1359 full parity, and all remaining cutover and retirement gates must pass.
 
+## Production Legacy Media Migration
+
+VAY-1055 imports only media URLs present in the same completed, immutable
+VAY-1351 extraction used by the domain migrations. It never inventories live
+legacy tables independently and never copies a target assignment from an older
+run. The guarded cutover command is the canonical path: its `catalog` checkpoint
+first writes the current-run property/organization prerequisites, then imports
+media, and only then writes the complete Catalog presentation.
+
+For a read-only plan or an explicit retry on a target where those prerequisites
+already exist, provide the reviewed source and destination buckets plus the
+managed CloudFront origin:
+
+```bash
+TARGET_DATABASE_URL=<target database> \
+PLATFORM_MEDIA_BUCKET=<private platform media bucket> \
+PLATFORM_MEDIA_CDN_BASE_URL=https://<managed CloudFront host> \
+LEGACY_PMS_MEDIA_BUCKET=vayada-uploads-prod \
+LEGACY_MEDIA_BUCKET_ALLOWLIST=<reviewed comma-separated source buckets> \
+npm run target:media:migrate -- \
+  --source-run-id vay1351-<24 lowercase hex characters> --dry-run
+```
+
+The report inventories hero, gallery, catalog logo, Booking header logo, room,
+add-on, Marketplace, and private attachment references with stable source
+identities. Missing, corrupt, oversized, unsafe, or unavailable source objects
+are recorded individually while the remaining inventory continues. Public
+objects receive `original_safe`, `large`, `thumbnail`, and `blur_preview` WebP
+variants under `public/media/*`; private attachments receive only a private
+`provider_original` object. Raw S3 endpoints are rejected as CDN configuration.
+
+Apply only the same reviewed run and configuration:
+
+```bash
+TARGET_DATABASE_URL=<target database> \
+PLATFORM_MEDIA_BUCKET=<private platform media bucket> \
+PLATFORM_MEDIA_CDN_BASE_URL=https://<managed CloudFront host> \
+LEGACY_PMS_MEDIA_BUCKET=vayada-uploads-prod \
+LEGACY_MEDIA_BUCKET_ALLOWLIST=<reviewed comma-separated source buckets> \
+npm run target:media:migrate -- \
+  --source-run-id vay1351-<24 lowercase hex characters> --apply \
+  --confirm production-media:vay1351-<same 24 lowercase hex characters>
+```
+
+The durable run/item registry makes retries idempotent and preserves the old
+URL, content checksum, destination object, attempt count, and failure evidence.
+A run cannot complete while any planned item is missing, corrupt, failed, or
+blocked. VAY-1359 must then report zero raw legacy media references. Removing
+the temporary `rooms/*` public-read exception is a separate reviewed Terraform
+change in `vayada-platform`, followed by deployed browser smoke; this repository
+contains no infrastructure policy to remove.
+
 ## Production Booking Migration
 
 VAY-1355 consumes Booking settings, add-ons, funnel events and promo tables plus
@@ -349,6 +401,8 @@ Run it only with the exact immutable tags recorded for the extraction:
 ```bash
 TARGET_DATABASE_URL=<target database> \
 APPLICATION_RELEASE=<deployed exact 40-character Git SHA> \
+PLATFORM_MEDIA_BUCKET=<managed platform media bucket> \
+PLATFORM_MEDIA_CDN_BASE_URL=https://<managed non-S3 CDN host> \
 npm run target:parity -- \
   --source-run-id vay1351-<24 lowercase hex characters> \
   --source-env <local|staging|preprod> \
@@ -370,6 +424,10 @@ means `NO-GO`; exit code `3` means human review is still required. Missing
 domain results, schema drift, tag mismatch, stale provenance, active booking or
 366-day inventory variance, financial variance, PII exposure, and raw legacy
 media references are hard failures.
+
+The media bucket and CDN variables bind parity to the exact managed serving
+path. A public variant in another bucket, outside `public/media/`, or on any raw
+S3 origin is a hard failure even when its URL appears in the media registry.
 
 `--source-env` names the environment recorded by the immutable extraction;
 `--env` names the target database. They are deliberately separate because a
@@ -402,7 +460,8 @@ VAY-1360 composes the reviewed schema, immutable extraction, six domain apply,
 full-parity, and smoke-evidence gates in this fixed order:
 
 ```text
-schema_migrations -> source_extraction -> identity -> catalog -> booking ->
+schema_migrations -> source_extraction -> identity ->
+catalog(prerequisites -> media -> complete) -> booking ->
 pms -> marketplace -> finance -> parity -> smoke_evidence
 ```
 
@@ -434,6 +493,11 @@ and `TARGET_DATABASE_URL`:
 --pms-source-tag <exact immutable tag>
 --confirmation <mode-bound value>
 ```
+
+They also require `PLATFORM_MEDIA_BUCKET`, `PLATFORM_MEDIA_CDN_BASE_URL`,
+`LEGACY_PMS_MEDIA_BUCKET`, and `LEGACY_MEDIA_BUCKET_ALLOWLIST`. The media
+configuration is included in the immutable orchestration configuration hash, so
+a resumed run cannot silently change source buckets, destination bucket, or CDN.
 
 The trusted runtime `APPLICATION_RELEASE` or `GIT_SHA` must exactly equal
 `--application-release`. Environment pairs are fixed: staging rehearsal uses

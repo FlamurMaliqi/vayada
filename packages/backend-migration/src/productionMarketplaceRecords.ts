@@ -476,6 +476,23 @@ function buildChatMessage(
   const messageType = requiredText(source.data["message_type"], "message_type").toLowerCase();
   if (!["text", "image", "system"].includes(messageType))
     throw new Error("message_type is unsupported");
+  const retainedUntil = retentionTimestamp(createdAt);
+  if (messageType === "image" && Date.parse(retainedUntil) <= Date.parse(context.completedAt))
+    return [
+      record(source, "marketplace_chat_messages", id, readAt ?? createdAt, {
+        id,
+        collaborationId: uuid(source.data["collaboration_id"], "collaboration_id"),
+        propertyId: scope.propertyId,
+        senderUserId: null,
+        senderType: "migration",
+        messageType: "system",
+        body: "[expired legacy image attachment omitted]",
+        messageMetadata: { attachmentSource: "legacy_retention_expired" },
+        readAt,
+        piiRetentionUntil: retainedUntil.slice(0, 10),
+        createdAt,
+      }),
+    ];
   const sender = senderForMessage(context, scope, source.data["sender_id"], messageType);
   const sourceMetadata = { ...optionalObject(source.data["metadata"]) };
   let metadata = sourceMetadata;
@@ -500,7 +517,7 @@ function buildChatMessage(
       body,
       messageMetadata: metadata,
       readAt,
-      piiRetentionUntil: retentionDate(createdAt),
+      piiRetentionUntil: retainedUntil.slice(0, 10),
       createdAt,
     }),
   ];
@@ -698,7 +715,7 @@ function resolvePrivateMedia(
   sourceTable: string,
   sourceId: string,
 ): MarketplaceMediaReference {
-  const media = resolveMedia(context, sourceUrl, sourceTable, sourceId, "message attachment");
+  const media = resolveMedia(context, sourceUrl, sourceTable, sourceId, "image");
   if (media.visibility !== "private" || media.lifecycleStatus !== "active")
     throw new Error("image message has no active private VAY-1055 media object");
   if (
@@ -718,14 +735,22 @@ function resolveMedia(
   field: string,
 ): MarketplaceMediaReference {
   if (!looksUrl(sourceUrl)) throw new Error(`${field} is not a URL`);
+  const expectedSourceRowId = mediaSourceRowId(sourceId, field);
   const matches = (context.mediaBySourceUrl.get(sourceUrl) ?? []).filter(
     (media) =>
       media.sourceTable === sourceTable &&
-      (media.sourceRowId === sourceId || media.sourceRowId.startsWith(`${sourceId}:`)),
+      media.sourceRowId === expectedSourceRowId &&
+      media.sourceField === field,
   );
   if (matches.length !== 1)
     throw new Error(`${field} resolves to ${matches.length} VAY-1055 media objects`);
   return matches[0]!;
+}
+
+function mediaSourceRowId(sourceId: string, field: string): string {
+  const indexed = /^images\[(\d+)]$/.exec(field);
+  if (indexed) return `${sourceId}:images:${Number(indexed[1]) + 1}`;
+  return `${sourceId}:${field}`;
 }
 
 function senderForMessage(
@@ -792,9 +817,13 @@ function timestamp(source: IdentitySourceRow): string {
 }
 
 function retentionDate(value: string): string {
+  return retentionTimestamp(value).slice(0, 10);
+}
+
+function retentionTimestamp(value: string): string {
   const retained = new Date(iso(value, "retention timestamp"));
   retained.setUTCFullYear(retained.getUTCFullYear() + 2);
-  return retained.toISOString().slice(0, 10);
+  return retained.toISOString();
 }
 
 function mapCreatorType(value: unknown): string {

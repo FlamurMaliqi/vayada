@@ -1,4 +1,9 @@
-import { propertyFor } from "./productionBookingContext.js";
+import {
+  bookingAddonMediaFor,
+  bookingHeaderLogoMediaFor,
+  bookingHeroMediaFor,
+  propertyFor,
+} from "./productionBookingContext.js";
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
 import type { BookingBuildContext, BookingTargetRecord } from "./productionBookingTypes.js";
 import {
@@ -47,6 +52,8 @@ function settings(context: BookingBuildContext, source: IdentitySourceRow): Book
   const propertyId = propertyFor(context, "booking", "booking_hotels", data["id"]);
   const updatedAt = iso(data["updated_at"], "updated_at");
   const primaryColor = String(data["branding_primary_color"] ?? "").trim();
+  const headerLogoMediaObjectId = bookingHeaderLogoMediaFor(context, source, propertyId);
+  const heroImageUrl = bookingHeroMediaFor(context, source, propertyId);
   return record(source, "booking", "booking_settings", propertyId, updatedAt, true, {
     propertyId,
     showAddonsStep: bool(data["show_addons_step"], "show_addons_step", true),
@@ -70,6 +77,8 @@ function settings(context: BookingBuildContext, source: IdentitySourceRow): Book
     customFilters: optionalObject(data["custom_filters"]),
     filterRooms: optionalObject(data["filter_rooms"]),
     sourceFreshness: { migrationRunId: context.sourceRunId, sourceUpdatedAt: updatedAt },
+    headerLogoMediaObjectId,
+    heroImageUrl,
     primaryColor: primaryColorValue(primaryColor),
     fontPairing: fontPairing(data["branding_font_pairing"]),
     acceptanceMode: bool(data["instant_book"], "instant_book", false) ? "instant" : "request",
@@ -81,6 +90,7 @@ function addon(context: BookingBuildContext, source: IdentitySourceRow): Booking
   const data = source.data;
   const id = uuid(data["id"], "id");
   const propertyId = propertyFor(context, "booking", "booking_hotels", data["hotel_id"]);
+  const media = bookingAddonMediaFor(context, source, propertyId);
   const updatedAt = iso(data["updated_at"], "updated_at");
   return record(source, "booking", "addon_definitions", id, updatedAt, true, {
     id,
@@ -97,6 +107,8 @@ function addon(context: BookingBuildContext, source: IdentitySourceRow): Booking
     status: "active",
     metadata: {
       migrationRunId: context.sourceRunId,
+      imageUrl: media?.publicUrl ?? null,
+      mediaObjectId: media?.mediaObjectId ?? null,
       duration: optionalText(data["duration"], "duration"),
       sortOrder: integer(data["sort_order"], "sort_order", 0),
     },

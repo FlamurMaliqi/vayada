@@ -182,6 +182,8 @@ export type ProductionParityConfig = {
   operator: string;
   warningBudget: number;
   migrationsDir: string;
+  targetMediaBucket: string;
+  mediaCdnBaseUrl: string;
 };
 
 export type ProductionParityServices = {
@@ -484,7 +486,10 @@ export async function readProductionParityEvidence(
             ORDER BY version, applied_at DESC, id DESC`,
     );
     const piiResult = await client.query<CountRow>(PII_EXPOSURE_QUERY);
-    const mediaResult = await client.query<CountRow>(RAW_LEGACY_MEDIA_QUERY);
+    const mediaResult = await client.query<CountRow>(RAW_LEGACY_MEDIA_QUERY, [
+      config.targetMediaBucket,
+      cdnPrefix(config.mediaCdnBaseUrl),
+    ]);
     const staleResult = await client.query<CountRow>(
       `SELECT count(*)::text AS count
          FROM (
@@ -1262,8 +1267,26 @@ function assertProductionParityConfig(config: ProductionParityConfig): void {
       "applicationRelease must match trusted APPLICATION_RELEASE or GIT_SHA deployment metadata",
     );
   if (!config.operator.trim()) throw new Error("operator is required");
+  if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(config.targetMediaBucket))
+    throw new Error("targetMediaBucket is invalid");
+  cdnPrefix(config.mediaCdnBaseUrl);
   for (const database of SOURCE_DATABASES)
     if (!config.sourceTags[database]?.trim()) throw new Error(`${database} source tag is required`);
+}
+
+function cdnPrefix(value: string): string {
+  const url = new URL(value);
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    url.pathname !== "/" ||
+    /(^|\.)s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com$/i.test(url.hostname)
+  )
+    throw new Error("mediaCdnBaseUrl must be a non-S3 HTTPS origin");
+  return `${url.origin}/`;
 }
 
 async function domainDryRun<T extends DomainReport>(
@@ -1348,12 +1371,19 @@ const PII_EXPOSURE_QUERY = `
 
 const RAW_LEGACY_MEDIA_QUERY = `
   WITH approved_media_variant AS (
-    SELECT media.id AS media_object_id, variant.public_cdn_url AS url
+    SELECT media.id AS media_object_id, variant.variant_name, variant.storage_key,
+           variant.public_cdn_url AS url
       FROM platform.media_variants variant
       JOIN platform.media_objects media ON media.id = variant.media_object_id
      WHERE variant.visibility = 'public'
        AND variant.public_cdn_url IS NOT NULL
+       AND variant.public_cdn_url = $2 || substring(variant.storage_key FROM 8)
+       AND variant.storage_key LIKE
+             'public/media/' || media.id::text || '/' || variant.variant_name || '/%'
        AND media.visibility = 'public'
+       AND media.bucket = $1
+       AND media.storage_kind = 'vayada_managed'
+       AND media.storage_key LIKE 'public/media/' || media.id::text || '/original_safe/%'
        AND media.public_approved = TRUE
        AND media.lifecycle_status = 'active'
        AND media.deleted_at IS NULL
@@ -1376,6 +1406,157 @@ const RAW_LEGACY_MEDIA_QUERY = `
             FROM approved_media_variant approved
            WHERE approved.media_object_id = assignment.platform_media_object_id
         )
+  ), invalid_room_assignment AS (
+    SELECT assignment.room_type_id
+      FROM pms.room_type_media assignment
+      LEFT JOIN platform.media_objects media
+        ON media.id = assignment.platform_media_object_id
+       AND media.property_id = assignment.property_id
+     WHERE media.id IS NULL
+        OR media.visibility <> 'public'
+        OR media.public_approved IS NOT TRUE
+        OR media.lifecycle_status <> 'active'
+        OR media.deleted_at IS NOT NULL
+        OR NOT EXISTS (
+          SELECT 1
+            FROM approved_media_variant approved
+           WHERE approved.media_object_id = assignment.platform_media_object_id
+        )
+  ), invalid_booking_header_logo AS (
+    SELECT settings.property_id
+      FROM booking.booking_settings settings
+      LEFT JOIN platform.media_objects media
+        ON media.id = settings.header_logo_media_object_id
+       AND media.property_id = settings.property_id
+     WHERE settings.header_logo_media_object_id IS NOT NULL
+       AND (
+         media.id IS NULL
+         OR media.purpose <> 'booking.header_logo'
+         OR media.visibility <> 'public'
+         OR media.public_approved IS NOT TRUE
+         OR media.lifecycle_status <> 'active'
+         OR media.deleted_at IS NOT NULL
+         OR NOT EXISTS (
+           SELECT 1
+             FROM approved_media_variant approved
+            WHERE approved.media_object_id = settings.header_logo_media_object_id
+              AND approved.variant_name = 'original_safe'
+              AND approved.storage_key = media.storage_key
+         )
+       )
+  ), invalid_booking_addon_assignment AS (
+    SELECT addon.id
+      FROM booking.addon_definitions addon
+      LEFT JOIN platform.media_objects media
+        ON media.id::text = addon.metadata ->> 'mediaObjectId'
+       AND media.property_id = addon.property_id
+     WHERE (
+         addon.metadata ->> 'imageUrl' IS NOT NULL
+         OR addon.metadata ->> 'mediaObjectId' IS NOT NULL
+       )
+       AND (
+         addon.metadata ->> 'imageUrl' IS NULL
+         OR media.id IS NULL
+         OR media.purpose <> 'booking.addon.image'
+         OR media.visibility <> 'public'
+         OR media.public_approved IS NOT TRUE
+         OR media.lifecycle_status <> 'active'
+         OR media.deleted_at IS NOT NULL
+         OR NOT EXISTS (
+           SELECT 1
+             FROM approved_media_variant approved
+           WHERE approved.media_object_id = media.id
+              AND approved.variant_name = 'original_safe'
+              AND approved.storage_key = media.storage_key
+              AND approved.url = addon.metadata ->> 'imageUrl'
+         )
+       )
+  ), invalid_marketplace_private_attachment AS (
+    SELECT message.id
+      FROM marketplace.marketplace_chat_messages message
+      JOIN marketplace.collaborations collaboration
+        ON collaboration.id = message.collaboration_id
+       AND collaboration.property_id = message.property_id
+      LEFT JOIN platform.media_objects media
+        ON media.id::text = message.message_metadata ->> 'mediaObjectId'
+       AND media.property_id = message.property_id
+     WHERE message.message_type = 'image'
+       AND (
+         message.body ~* 'https?://'
+         OR message.message_metadata::text ~* 'https?://'
+         OR media.id IS NULL
+         OR media.purpose <> 'marketplace.collaboration_chat.attachment'
+         OR media.visibility <> 'private'
+         OR media.public_approved IS TRUE
+         OR media.lifecycle_status <> 'active'
+         OR media.deleted_at IS NOT NULL
+         OR media.storage_kind <> 'vayada_managed'
+         OR media.storage_key NOT LIKE
+              'private/media/' || media.id::text || '/provider_original/%'
+         OR media.resource_product <> 'marketplace'
+         OR media.owner_organization_id IS DISTINCT FROM CASE message.sender_type
+              WHEN 'creator' THEN collaboration.creator_organization_id
+              WHEN 'hotel' THEN collaboration.hotel_organization_id
+              ELSE NULL
+            END
+         OR media.retained_until IS NULL
+         OR media.retained_until <= now()
+         OR NOT EXISTS (
+           SELECT 1
+             FROM platform.media_variants variant
+            WHERE variant.media_object_id = media.id
+              AND variant.variant_name = 'provider_original'
+              AND variant.visibility = 'private'
+              AND variant.public_cdn_url IS NULL
+              AND variant.storage_key = media.storage_key
+              AND variant.storage_key LIKE
+                    'private/media/' || media.id::text || '/provider_original/%'
+         )
+         OR (
+           (
+             message.message_metadata ->> 'attachmentSource' = 'platform_media_migration'
+             AND media.source_metadata ->> 'migrationCase' = 'media-url-migration'
+             AND media.resource_type = 'collaboration_chat_message'
+             AND media.resource_id = message.id::text
+           )
+           OR (
+             media.resource_type = 'collaboration'
+             AND media.resource_id = message.collaboration_id::text
+             AND media.source_metadata ->> 'attachmentState' = 'claimed'
+             AND media.source_metadata ->> 'claimedByMessageId' = message.id::text
+           )
+         ) IS NOT TRUE
+       )
+  ), invalid_private_attachment AS (
+    SELECT attachment.id
+      FROM pms.message_attachments attachment
+      LEFT JOIN platform.media_objects media
+        ON media.id = attachment.platform_media_object_id
+       AND media.property_id = attachment.property_id
+     WHERE attachment.platform_media_object_id IS NULL
+        OR attachment.source_url IS NOT NULL
+        OR media.id IS NULL
+        OR media.visibility <> 'private'
+        OR media.purpose <> 'pms.messaging.attachment'
+        OR media.public_approved IS TRUE
+        OR media.lifecycle_status <> 'active'
+        OR media.deleted_at IS NOT NULL
+        OR media.storage_kind <> 'vayada_managed'
+        OR media.resource_product <> 'pms'
+        OR media.resource_type <> 'message_attachment'
+        OR media.resource_id <> attachment.id::text
+        OR attachment.s3_key IS DISTINCT FROM media.storage_key
+        OR attachment.s3_key NOT LIKE
+             'private/media/' || media.id::text || '/provider_original/%'
+        OR NOT EXISTS (
+          SELECT 1
+            FROM platform.media_variants variant
+           WHERE variant.media_object_id = media.id
+             AND variant.variant_name = 'provider_original'
+             AND variant.visibility = 'private'
+             AND variant.public_cdn_url IS NULL
+             AND variant.storage_key = media.storage_key
+        )
   ), referenced_url AS (
     SELECT 'identity.users' AS source, id::text AS id, profile_picture_url AS url
       FROM identity.users
@@ -1388,6 +1569,10 @@ const RAW_LEGACY_MEDIA_QUERY = `
     SELECT 'booking.booking_settings', property_id::text, hero_image_url
       FROM booking.booking_settings
      WHERE hero_image_url IS NOT NULL
+    UNION ALL
+    SELECT 'booking.addon_definitions', id::text, metadata ->> 'imageUrl'
+      FROM booking.addon_definitions
+     WHERE metadata ->> 'imageUrl' IS NOT NULL
     UNION ALL
     SELECT 'marketplace.creator_profiles', id::text, profile_picture_url
       FROM marketplace.creator_profiles
@@ -1436,6 +1621,16 @@ const RAW_LEGACY_MEDIA_QUERY = `
   )
   SELECT (
     (SELECT count(*) FROM invalid_catalog_assignment)
+    +
+    (SELECT count(*) FROM invalid_room_assignment)
+    +
+    (SELECT count(*) FROM invalid_booking_header_logo)
+    +
+    (SELECT count(*) FROM invalid_booking_addon_assignment)
+    +
+    (SELECT count(*) FROM invalid_marketplace_private_attachment)
+    +
+    (SELECT count(*) FROM invalid_private_attachment)
     +
     (SELECT count(*)
        FROM referenced_url reference

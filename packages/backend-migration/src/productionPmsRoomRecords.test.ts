@@ -10,6 +10,9 @@ const ROOM_TYPE = "30000000-0000-4000-a000-000000000001";
 const ROOM = "40000000-0000-4000-a000-000000000001";
 const GROUP = "50000000-0000-4000-a000-000000000001";
 const MAPPING = "60000000-0000-4000-a000-000000000001";
+const MEDIA = "a0000000-0000-4000-a000-000000000001";
+const SOURCE_IMAGE = "https://legacy-media-test.s3.amazonaws.com/rooms/suite.jpg";
+const CDN_IMAGE = `https://media.example.test/media/${MEDIA}/original-safe.webp`;
 
 describe("production PMS room records", () => {
   it("preserves room facts, linked inventory, pricing, and channel plans", () => {
@@ -28,6 +31,7 @@ describe("production PMS room records", () => {
       "rate_plans",
       "rate_rules",
       "rate_rules",
+      "room_type_media",
       "room_types",
       "rooms",
     ]);
@@ -36,6 +40,23 @@ describe("production PMS room records", () => {
       linkedInventoryGroupId: GROUP,
       occupancyLimits: { maxOccupancy: 3, maxAdults: 2, maxChildren: 1 },
       roomAttributes: { legacyPricing: { weekendSurcharge: "+12%" } },
+      mediaSnapshot: [
+        {
+          mediaObjectId: MEDIA,
+          url: CDN_IMAGE,
+          source: "pms",
+          sourceTable: "room_types",
+          publicApproved: true,
+        },
+      ],
+    });
+    expect(
+      built.records.find((record) => record.targetTable === "room_type_media")?.row,
+    ).toMatchObject({
+      propertyId: PROPERTY,
+      roomTypeId: ROOM_TYPE,
+      platformMediaObjectId: MEDIA,
+      sortOrder: 0,
     });
     expect(built.channelPlanByMapping.get(MAPPING)).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/,
@@ -96,7 +117,7 @@ function sourceRows(): IdentitySourceRow[] {
       is_active: true,
       sort_order: 1,
       amenities: ["wifi"],
-      images: [],
+      images: [SOURCE_IMAGE],
       features: ["balcony"],
       benefits: [],
       monthly_rates: {},
@@ -155,6 +176,21 @@ function target() {
     ],
     bookings: [],
     userIds: [],
+    media: [
+      {
+        mediaObjectId: MEDIA,
+        propertyId: PROPERTY,
+        sourceTable: "room_types",
+        sourceRowId: `${ROOM_TYPE}:images:1`,
+        sourceUrl: SOURCE_IMAGE,
+        purpose: "pms.room_type.media" as const,
+        visibility: "public" as const,
+        lifecycleStatus: "active",
+        publicApproved: true,
+        publicUrl: CDN_IMAGE,
+        storageKey: `public/media/${MEDIA}/original_safe/file.webp`,
+      },
+    ],
     mediaIds: [],
     records: [],
     provenance: [],

@@ -35,6 +35,7 @@ export const PLATFORM_MEDIA_IMPORT_CONTRACT_VERSION = "platform-media-import.v1"
 export type PlatformMediaPurpose =
   | "identity.user.profile_image"
   | "booking.header_logo"
+  | "booking.addon.image"
   | "property.hero_image"
   | "property.gallery_image"
   | "property.logo"
@@ -508,6 +509,7 @@ export function isAutoApprovedPublicMediaPurpose(purpose: PlatformMediaPurpose):
   return (
     purpose === "identity.user.profile_image" ||
     purpose === "booking.header_logo" ||
+    purpose === "booking.addon.image" ||
     purpose === "marketplace.creator.profile_image" ||
     purpose === "pms.room_type.media"
   );
@@ -541,6 +543,22 @@ const targetPurposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePo
     maxFileCount: 1,
     maxImagePixels: defaultMaxImagePixels,
     autoApprovePublicOnFinalize: isAutoApprovedPublicMediaPurpose("booking.header_logo"),
+    privateOnly: false,
+    targetResourceProduct: "booking",
+    targetResourceType: "booking_hotel",
+    requiredVariants: publicImageVariants,
+  },
+  "booking.addon.image": {
+    purpose: "booking.addon.image",
+    permission: "booking.settings.manage",
+    allowedRelationships: ["owner", "operator"],
+    allowedResources: [{ product: "booking", resourceType: "booking_hotel" }],
+    allowedContentTypes: imageContentTypes,
+    allowedExtensions: imageExtensions,
+    maxFileSizeBytes: 10 * 1024 * 1024,
+    maxFileCount: 1,
+    maxImagePixels: defaultMaxImagePixels,
+    autoApprovePublicOnFinalize: isAutoApprovedPublicMediaPurpose("booking.addon.image"),
     privateOnly: false,
     targetResourceProduct: "booking",
     targetResourceType: "booking_hotel",

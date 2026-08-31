@@ -16,6 +16,7 @@ export async function writeProductionCatalogCore(
   writes: ReconciledCatalogWrites,
   sourceLinks: PlannedCatalogSourceLink[],
   runId: string,
+  migrationPhase: "prerequisites" | "complete" = "complete",
 ): Promise<CatalogCoreWriteCounts> {
   const properties = await client.query(
     `INSERT INTO hotel_catalog.properties
@@ -43,16 +44,19 @@ export async function writeProductionCatalogCore(
     `INSERT INTO hotel_catalog.property_source_links
        (property_id, source_system, source_table, source_id, relationship, metadata)
      SELECT source."propertyId", source."sourceSystem", source."sourceTable", source."sourceId",
-            source.relationship, jsonb_build_object('migrationRunId', $2::text)
+            source.relationship, jsonb_build_object(
+              'migrationRunId', $2::text,
+              'migrationPhase', $3::text
+            )
      FROM jsonb_to_recordset($1::jsonb) AS source(
        "propertyId" uuid, "sourceSystem" text, "sourceTable" text, "sourceId" text,
        relationship text)
      ON CONFLICT (source_system, source_table, source_id) DO UPDATE SET
        metadata = hotel_catalog.property_source_links.metadata
-         || jsonb_build_object('migrationRunId', $2::text)
+         || jsonb_build_object('migrationRunId', $2::text, 'migrationPhase', $3::text)
      WHERE hotel_catalog.property_source_links.property_id = EXCLUDED.property_id
        AND hotel_catalog.property_source_links.relationship = EXCLUDED.relationship`,
-    [JSON.stringify(sourceLinks), runId],
+    [JSON.stringify(sourceLinks), runId, migrationPhase],
   );
   const slugs = await client.query(
     `INSERT INTO hotel_catalog.property_slugs
