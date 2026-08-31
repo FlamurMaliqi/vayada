@@ -55,37 +55,45 @@ export async function runRestrictedStaffAcceptance(args: RestrictedStaffArgs): P
           },
           { "Idempotency-Key": `next-smoke:${environment.runId}:staff-invite` },
         );
-        expect(invitation.delivery).toBe("delivered");
-
         const workos = workosApi(request, environment.workosApiKey);
         let providerInvitationId = "";
-        await expect
-          .poll(
-            async () => {
-              const listed = await workos.json<Record<string, unknown>>(
-                "GET",
-                `/user_management/invitations?email=${encodeURIComponent(staff.email)}&organization_id=${encodeURIComponent(args.ownerWorkosOrganizationId)}&limit=100`,
-              );
-              const matches = arrayField(listed, "data")
-                .map(record)
-                .filter(
-                  (candidate) =>
-                    candidate.email === staff.email &&
-                    candidate.organization_id === args.ownerWorkosOrganizationId &&
-                    candidate.inviter_user_id === args.ownerWorkosUserId &&
-                    candidate.role_slug === "hotel_member" &&
-                    candidate.state === "pending" &&
-                    candidate.accepted_user_id === null &&
-                    typeof candidate.expires_at === "string" &&
-                    Math.abs(Date.parse(candidate.expires_at) - invitedAt - 7 * 86_400_000) <=
-                      120_000,
+        let providerLookupError: unknown;
+        try {
+          await expect
+            .poll(
+              async () => {
+                const listed = await workos.json<Record<string, unknown>>(
+                  "GET",
+                  `/user_management/invitations?email=${encodeURIComponent(staff.email)}&organization_id=${encodeURIComponent(args.ownerWorkosOrganizationId)}&limit=100`,
                 );
-              providerInvitationId = matches.length === 1 ? stringField(matches[0]!, "id") : "";
-              return matches.length;
-            },
-            { timeout: 60_000 },
-          )
-          .toBe(1);
+                const matches = arrayField(listed, "data")
+                  .map(record)
+                  .filter(
+                    (candidate) =>
+                      candidate.email === staff.email &&
+                      candidate.organization_id === args.ownerWorkosOrganizationId &&
+                      candidate.inviter_user_id === args.ownerWorkosUserId &&
+                      candidate.role_slug === "hotel_member" &&
+                      candidate.state === "pending" &&
+                      candidate.accepted_user_id === null &&
+                      typeof candidate.expires_at === "string" &&
+                      Math.abs(Date.parse(candidate.expires_at) - invitedAt - 7 * 86_400_000) <=
+                        120_000,
+                  );
+                providerInvitationId = matches.length === 1 ? stringField(matches[0]!, "id") : "";
+                return matches.length;
+              },
+              { timeout: 60_000 },
+            )
+            .toBe(1);
+        } catch (error) {
+          providerLookupError = error;
+        }
+        providerInvitationId = confirmStaffInvitationDelivery({
+          delivery: invitation.delivery,
+          providerInvitationId,
+          providerLookupError,
+        });
 
         const accepted = await workos.json<Record<string, unknown>>(
           "POST",
@@ -162,6 +170,23 @@ export async function runRestrictedStaffAcceptance(args: RestrictedStaffArgs): P
   } finally {
     await context.close();
   }
+}
+
+export function confirmStaffInvitationDelivery(input: {
+  delivery: unknown;
+  providerInvitationId: string;
+  providerLookupError?: unknown;
+}): string {
+  if (input.delivery !== "delivered" && input.delivery !== "unknown") {
+    throw new Error(`Unexpected staff invitation delivery outcome: ${String(input.delivery)}`);
+  }
+  if (!input.providerInvitationId) {
+    throw new AggregateError(
+      input.providerLookupError ? [input.providerLookupError] : [],
+      `WorkOS did not confirm the staff invitation after the API reported ${input.delivery}.`,
+    );
+  }
+  return input.providerInvitationId;
 }
 
 async function rosterMembers(ownerApi: JsonApi, email: string) {

@@ -33,7 +33,11 @@ import { runQuoteLifecycle, waitForOffer, type BookingResource } from "./booking
 import { cleanupSmokeResources, recoverSmokeProperty, type HotelResource } from "./cleanup";
 import { configureGuestPolicyForManualBooking } from "./guest-policy";
 import { runManualBookingAcceptance } from "./manual-booking";
-import { expectPms, runRestrictedStaffAcceptance } from "./restricted-staff";
+import {
+  confirmStaffInvitationDelivery,
+  expectPms,
+  runRestrictedStaffAcceptance,
+} from "./restricted-staff";
 import { replayAmbiguousUiBooking, runRoomShuffleAcceptance } from "./room-shuffle";
 
 type ForeignHotelResource = { accessToken: string; propertyId: string };
@@ -152,6 +156,51 @@ test("ambiguous UI booking replay exposes recovery failure without false registr
   expect(failure).toBeInstanceOf(AggregateError);
   expect((failure as AggregateError).errors).toEqual([originalError, replayError]);
   expect(bookings).toEqual([]);
+});
+
+test("staff delivery accepts an exact provider-confirmed delivered invitation", () => {
+  expect(
+    confirmStaffInvitationDelivery({
+      delivery: "delivered",
+      providerInvitationId: "invitation_exact",
+    }),
+  ).toBe("invitation_exact");
+});
+
+test("staff delivery resolves an ambiguous API outcome from exact provider evidence", () => {
+  expect(
+    confirmStaffInvitationDelivery({
+      delivery: "unknown",
+      providerInvitationId: "invitation_exact",
+    }),
+  ).toBe("invitation_exact");
+});
+
+test("staff delivery fails when provider confirmation errors", () => {
+  const providerError = new Error("provider unavailable");
+  const failure = (() => {
+    try {
+      confirmStaffInvitationDelivery({
+        delivery: "unknown",
+        providerInvitationId: "",
+        providerLookupError: providerError,
+      });
+    } catch (error) {
+      return error;
+    }
+  })();
+
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect((failure as AggregateError).errors).toEqual([providerError]);
+});
+
+test("staff delivery rejects non-delivery outcomes", () => {
+  expect(() =>
+    confirmStaffInvitationDelivery({
+      delivery: "not_ready",
+      providerInvitationId: "invitation_exact",
+    }),
+  ).toThrow("Unexpected staff invitation delivery outcome: not_ready");
 });
 
 smokeTest(
