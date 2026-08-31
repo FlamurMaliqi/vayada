@@ -105,6 +105,7 @@ import {
   type PmsOperationsReadPool,
 } from "./domains/pmsOperationsReadModel.js";
 import type { BookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
+import type { SameDayBookingSettingsPort } from "./domains/sameDayBookingSettings.js";
 import type { PmsRoomAssignmentSettingsPort } from "./domains/pmsRoomAssignmentSettings.js";
 import type { PmsRoomAssignmentOptimizationHistoryPort } from "./domains/pmsRoomAssignmentOptimizationHistory.js";
 import {
@@ -2662,6 +2663,7 @@ function buildAuthenticatedApp(
     pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
     pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
     bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
+    sameDayBookingSettings?: SameDayBookingSettingsPort;
     pmsRoomAssignmentSettings?: PmsRoomAssignmentSettingsPort;
     pmsRoomAssignmentHistory?: PmsRoomAssignmentOptimizationHistoryPort;
     bookingGuestPiiPort?: BookingGuestPiiPort;
@@ -2699,6 +2701,7 @@ function buildAuthenticatedApp(
     pmsCheckoutChargeMarkPaidFreezeEnabled: options.pmsCheckoutChargeMarkPaidFreezeEnabled,
     pmsOperationsCommandRepository: options.pmsOperationsCommandRepository,
     bookingAcceptanceSettings: options.bookingAcceptanceSettings,
+    sameDayBookingSettings: options.sameDayBookingSettings,
     pmsRoomAssignmentSettings: options.pmsRoomAssignmentSettings,
     pmsRoomAssignmentHistory: options.pmsRoomAssignmentHistory,
     bookingGuestPiiPort: options.bookingGuestPiiPort,
@@ -10703,6 +10706,132 @@ describe("vayada-api", () => {
     expect(update.statusCode).toBe(200);
     expect(update.body).toMatchObject({ acceptanceMode: "instant", instantBook: true });
     expect(published).toEqual([pmsPropertyId]);
+  });
+
+  it("reads and idempotently updates the Booking-owned same-day policy through PMS", async () => {
+    let enabled = true;
+    let cutoffLocalTime: string | null = "18:00";
+    app = buildAuthenticatedApp({
+      permissions: ["pms.settings.read", "pms.settings.manage"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      sameDayBookingSettings: {
+        async find(propertyId) {
+          expect(propertyId).toBe(pmsPropertyId);
+          return {
+            propertyId,
+            propertyTimeZone: "Europe/Vienna",
+            enabled,
+            cutoffLocalTime,
+            revision: 2,
+            updatedAt: "2026-08-31T10:00:00.000Z",
+          };
+        },
+        async update(_context, propertyId, input) {
+          expect(propertyId).toBe(pmsPropertyId);
+          expect(input).toMatchObject({ commandId: "command-1", idempotencyKey: "key-1" });
+          enabled = input.enabled;
+          cutoffLocalTime = input.cutoffLocalTime;
+          return {
+            ok: true,
+            replayed: false,
+            settings: {
+              propertyId,
+              propertyTimeZone: "Europe/Vienna",
+              enabled,
+              cutoffLocalTime,
+              revision: 3,
+              updatedAt: "2026-08-31T10:01:00.000Z",
+            },
+          };
+        },
+      },
+    });
+
+    const read = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/same-day-booking`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const update = await injectJson(app, {
+      method: "PUT",
+      url: `/api/pms/properties/${pmsPropertyId}/same-day-booking`,
+      payload: {
+        commandId: "command-1",
+        idempotencyKey: "key-1",
+        enabled: false,
+        cutoffLocalTime: "12:30",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(read.statusCode).toBe(200);
+    expect(read.body).toMatchObject({
+      contractVersion: "same-day-booking-policy.v1",
+      propertyTimeZone: "Europe/Vienna",
+      enabled: true,
+      cutoffLocalTime: "18:00",
+    });
+    expect(update.statusCode).toBe(200);
+    expect(update.body).toMatchObject({
+      enabled: false,
+      cutoffLocalTime: "12:30",
+      revision: 3,
+      replayed: false,
+    });
+  });
+
+  it("does not run a same-day policy write without property settings permission", async () => {
+    let updates = 0;
+    app = buildAuthenticatedApp({
+      permissions: ["pms.settings.read"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      sameDayBookingSettings: {
+        async find() {
+          return null;
+        },
+        async update() {
+          updates += 1;
+          throw new Error("unauthorized same-day write must not run");
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "PUT",
+      url: `/api/pms/properties/${pmsPropertyId}/same-day-booking`,
+      payload: {
+        commandId: "command-denied",
+        idempotencyKey: "key-denied",
+        enabled: false,
+        cutoffLocalTime: "12:30",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(updates).toBe(0);
   });
 
   it("reads Booking-owned acceptance mode for assigned front desk with explicit access", async () => {

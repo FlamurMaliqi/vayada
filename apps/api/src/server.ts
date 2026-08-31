@@ -71,6 +71,7 @@ import { createPublicRuntimeRepositories } from "./publicRuntime.js";
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
 import { createPgPmsLinkedInventoryGroupCommandRepository } from "./domains/pmsLinkedInventoryGroupRepository.js";
 import { createTargetBookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
+import { createTargetSameDayBookingSettingsPort } from "./domains/sameDayBookingSettings.js";
 import { createTargetPmsInventoryPublicOfferProjection } from "./domains/pmsInventoryPublicOfferProjection.js";
 import { createTargetPmsInventoryReservationPort } from "./domains/pmsInventoryReservation.js";
 import { createTargetPmsRoomInventoryReadPort } from "./domains/pmsRoomInventoryReadModel.js";
@@ -386,6 +387,9 @@ const pmsLinkedInventoryGroupCommandRepository = pmsOperationsRepository
   : undefined;
 
 const bookingAcceptanceSettings = createTargetBookingAcceptanceSettingsPort({
+  connectionString: targetDatabaseUrl,
+});
+const sameDayBookingSettings = createTargetSameDayBookingSettingsPort({
   connectionString: targetDatabaseUrl,
 });
 
@@ -1172,6 +1176,7 @@ const app = buildApp({
   pmsOperationsCommandRepository,
   pmsLinkedInventoryGroupCommandRepository,
   bookingAcceptanceSettings,
+  sameDayBookingSettings,
   pmsRoomAssignmentSettings,
   pmsRoomAssignmentHistory,
   pmsRoomPublication: pmsRoomPublicationRuntime
