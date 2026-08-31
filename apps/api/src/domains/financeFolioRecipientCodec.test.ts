@@ -1,14 +1,18 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  createKmsFinanceFolioRecipientEncoder,
   createKmsFinanceFolioRecipientDecoder,
   FinanceFolioRecipientCodecError,
   type FinanceFolioKmsDecryptPort,
+  type FinanceFolioKmsWritePort,
   type FinanceFolioRecipientDecoderInput,
 } from "./financeFolioRecipientCodec.js";
 
 const KEY = "arn:aws:kms:eu-west-1:123456789012:key/11111111-2222-3333-4444-555555555555";
 const OTHER_KEY = "arn:aws:kms:eu-west-1:123456789012:key/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+const MAC_KEY = "arn:aws:kms:eu-west-1:123456789012:key/99999999-8888-7777-6666-555555555555";
 const PROPERTY = "11320000-0000-4000-8000-000000000001";
 const FOLIO = "11320000-0000-4000-8000-000000000004";
 const payload = Buffer.from(
@@ -22,6 +26,159 @@ const input: FinanceFolioRecipientDecoderInput = {
   encryptionScheme: "envelope_aead_v1",
   keyVersion: KEY,
 };
+
+describe("KMS Finance folio recipient encoder", () => {
+  it("encrypts exact revision evidence and creates a property-scoped keyed fingerprint", async () => {
+    const encrypt = vi.fn(async () => ({ CiphertextBlob: Buffer.alloc(64, 1), KeyId: KEY }));
+    const generateMac = vi.fn(async () => ({
+      Mac: Buffer.alloc(32, 2),
+      KeyId: MAC_KEY,
+      MacAlgorithm: "HMAC_SHA_256",
+    }));
+    const encoder = createKmsFinanceFolioRecipientEncoder({
+      kms: { encrypt, generateMac },
+      currentKeyArn: KEY,
+      currentFingerprintKeyArn: MAC_KEY,
+    });
+
+    await expect(
+      encoder.encode({
+        propertyId: PROPERTY,
+        folioId: FOLIO,
+        revision: 2,
+        recipient: { name: "Ada Lovelace", email: "ada@example.com" },
+      }),
+    ).resolves.toEqual({
+      ciphertext: Buffer.alloc(64, 1),
+      encryptionScheme: "envelope_aead_v1",
+      keyVersion: KEY,
+      fingerprint: "02".repeat(32),
+      fingerprintKeyVersion: MAC_KEY,
+    });
+    expect(encrypt).toHaveBeenCalledWith({
+      Plaintext: payload,
+      KeyId: KEY,
+      EncryptionAlgorithm: "SYMMETRIC_DEFAULT",
+      EncryptionContext: {
+        purpose: "finance-folio-recipient-v1",
+        propertyId: PROPERTY,
+        folioId: FOLIO,
+        revision: "2",
+      },
+    });
+    expect(generateMac).toHaveBeenCalledWith({
+      Message: fingerprintDigest({ name: "Ada Lovelace", email: "ada@example.com" }),
+      KeyId: MAC_KEY,
+      MacAlgorithm: "HMAC_SHA_256",
+    });
+  });
+
+  it("fingerprints only the canonical recipient and keeps the KMS message fixed-size", async () => {
+    const kms = writePort();
+    const encoder = createKmsFinanceFolioRecipientEncoder({
+      kms,
+      currentKeyArn: KEY,
+      currentFingerprintKeyArn: MAC_KEY,
+    });
+    await encoder.encode({
+      propertyId: PROPERTY,
+      folioId: FOLIO,
+      revision: 2,
+      recipient: {
+        email: "ada@example.com",
+        name: "Ada Lovelace",
+        taxId: "must-not-reach-kms",
+      } as never,
+    });
+    const call = kms.generateMac.mock.calls[0]![0];
+    expect(call.Message).toEqual(
+      fingerprintDigest({
+        name: "Ada Lovelace",
+        email: "ada@example.com",
+      }),
+    );
+    expect(call.Message).toHaveLength(32);
+    await encoder.encode({
+      propertyId: PROPERTY,
+      folioId: FOLIO,
+      revision: 3,
+      recipient: { name: "a".repeat(4_000), email: null },
+    });
+    expect(kms.generateMac.mock.calls[1]![0].Message).toHaveLength(32);
+  });
+
+  it.each([
+    ["invalid scope", { propertyId: "not-a-property" }],
+    ["untrimmed recipient", { recipient: { name: " Ada", email: null } }],
+    ["oversized recipient", { recipient: { name: "é".repeat(3_000), email: null } }],
+  ])("rejects %s before KMS", async (_label, change) => {
+    const kms = writePort();
+    const encoder = createKmsFinanceFolioRecipientEncoder({
+      kms,
+      currentKeyArn: KEY,
+      currentFingerprintKeyArn: MAC_KEY,
+    });
+    await expect(
+      encoder.encode({
+        propertyId: PROPERTY,
+        folioId: FOLIO,
+        revision: 2,
+        recipient: { name: "Ada", email: null },
+        ...change,
+      }),
+    ).rejects.toBeInstanceOf(FinanceFolioRecipientCodecError);
+    expect(kms.encrypt).not.toHaveBeenCalled();
+    expect(kms.generateMac).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on invalid key configuration or malformed KMS evidence", async () => {
+    expect(() =>
+      createKmsFinanceFolioRecipientEncoder({
+        kms: writePort(),
+        currentKeyArn: KEY,
+        currentFingerprintKeyArn: KEY,
+      }),
+    ).toThrow(FinanceFolioRecipientCodecError);
+    const kms = writePort({
+      mac: { Mac: Buffer.alloc(31), KeyId: MAC_KEY, MacAlgorithm: "HMAC_SHA_256" },
+    });
+    const encoder = createKmsFinanceFolioRecipientEncoder({
+      kms,
+      currentKeyArn: KEY,
+      currentFingerprintKeyArn: MAC_KEY,
+    });
+    await expect(
+      encoder.encode({
+        propertyId: PROPERTY,
+        folioId: FOLIO,
+        revision: 2,
+        recipient: { name: "Ada", email: null },
+      }),
+    ).rejects.toMatchObject({ code: "recipient_evidence_unavailable" });
+  });
+
+  it.each([
+    ["ciphertext", { encrypted: { CiphertextBlob: "x".repeat(64) as never, KeyId: KEY } }],
+    [
+      "MAC",
+      { mac: { Mac: "x".repeat(32) as never, KeyId: MAC_KEY, MacAlgorithm: "HMAC_SHA_256" } },
+    ],
+  ])("rejects non-binary %s evidence", async (_label, result) => {
+    const encoder = createKmsFinanceFolioRecipientEncoder({
+      kms: writePort(result),
+      currentKeyArn: KEY,
+      currentFingerprintKeyArn: MAC_KEY,
+    });
+    await expect(
+      encoder.encode({
+        propertyId: PROPERTY,
+        folioId: FOLIO,
+        revision: 2,
+        recipient: { name: "Ada", email: null },
+      }),
+    ).rejects.toBeInstanceOf(FinanceFolioRecipientCodecError);
+  });
+});
 
 describe("KMS Finance folio recipient decoder", () => {
   it("decrypts the opaque blob with exact scope context and a configured immutable key ARN", async () => {
@@ -46,6 +203,7 @@ describe("KMS Finance folio recipient decoder", () => {
         folioId: FOLIO,
         revision: "2",
       },
+      EncryptionAlgorithm: "SYMMETRIC_DEFAULT",
     });
   });
 
@@ -117,3 +275,34 @@ describe("KMS Finance folio recipient decoder", () => {
     });
   });
 });
+
+function writePort(
+  result: {
+    encrypted?: { CiphertextBlob: Uint8Array; KeyId: string };
+    mac?: { Mac: Uint8Array; KeyId: string; MacAlgorithm: string };
+  } = {},
+) {
+  return {
+    encrypt: vi.fn(
+      async (_input: Parameters<FinanceFolioKmsWritePort["encrypt"]>[0]) =>
+        result.encrypted ?? { CiphertextBlob: Buffer.alloc(64), KeyId: KEY },
+    ),
+    generateMac: vi.fn(
+      async (_input: Parameters<FinanceFolioKmsWritePort["generateMac"]>[0]) =>
+        result.mac ?? { Mac: Buffer.alloc(32), KeyId: MAC_KEY, MacAlgorithm: "HMAC_SHA_256" },
+    ),
+  } satisfies FinanceFolioKmsWritePort;
+}
+
+function fingerprintDigest(recipient: { name: string; email: string | null }) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        v: 1,
+        purpose: "finance-folio-recipient-fingerprint-v1",
+        propertyId: PROPERTY,
+        recipient,
+      }),
+    )
+    .digest();
+}
