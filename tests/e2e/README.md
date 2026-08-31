@@ -88,6 +88,21 @@ Real card payments are intentionally outside this command. Stripe coverage must
 use a separate test-mode-only environment and test payment methods; do not add a
 live Stripe key or card-capable payment method to this workflow.
 
+The next-stack Playwright project disables traces, automatic screenshots, and
+video because its browser and API flows handle live smoke credentials. Secret
+form values use a non-value-bearing Playwright step, and the workflow inspects
+the completed HTML report and test-results payload for the configured smoke
+password and WorkOS key before allowing upload. Non-secret step names, errors,
+and explicit acceptance screenshots remain available. Evidence is retained for
+7 days.
+
+Retention changes only affect new artifacts. Existing
+`next-stack-smoke-evidence` artifacts created before VAY-1302 are not rewritten;
+delete them from the repository's Actions artifacts page or with the GitHub
+Actions Artifacts API. Rotate `NEXT_STACK_SMOKE_PASSWORD` after removing those
+artifacts, and rotate the WorkOS key too if inspection ever finds it in retained
+evidence.
+
 ## Deployed Booking Public Canary
 
 `npm run e2e:booking-public-canary` is the unmocked public Booking verification.
