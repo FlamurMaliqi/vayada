@@ -75,6 +75,11 @@
     "target:marketplace:migrate": "npm --workspace @vayada/backend-migration run target:marketplace:migrate --",
     "target:finance:migrate": "npm --workspace @vayada/backend-migration run target:finance:migrate --",
     "target:parity": "npm --workspace @vayada/backend-migration run target:parity --",
+    "target:rehearse:staging": "npm --workspace @vayada/backend-migration run target:rehearse:staging --",
+    "target:migration-status": "npm --workspace @vayada/backend-migration run target:migration-status --",
+    "target:cutover:dry-run": "npm --workspace @vayada/backend-migration run target:cutover:dry-run --",
+    "target:cutover": "npm --workspace @vayada/backend-migration run target:cutover --",
+    "target:cutover:abort": "npm --workspace @vayada/backend-migration run target:cutover:abort --",
     "prepare": "husky"
   },
   "overrides": {

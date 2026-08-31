@@ -396,6 +396,163 @@ states. Run it only inside the approved cutover write-freeze window. It aborts
 rather than waiting indefinitely when those locks cannot be acquired within five
 seconds.
 
+## Guarded Rehearsal and Cutover Orchestration
+
+VAY-1360 composes the reviewed schema, immutable extraction, six domain apply,
+full-parity, and smoke-evidence gates in this fixed order:
+
+```text
+schema_migrations -> source_extraction -> identity -> catalog -> booking ->
+pms -> marketplace -> finance -> parity -> smoke_evidence
+```
+
+The command stores each attempt and evidence checksum in
+`platform.production_cutover_runs` and `platform.production_cutover_steps`.
+Every completed step is an explicit safe checkpoint because the underlying
+schema, extraction, and domain commands are transactional and idempotent. A
+failed or interrupted run requires `--resume`; completed steps are not executed
+again. The run ID and all guard inputs are immutable, and a PostgreSQL advisory
+lock excludes concurrent orchestration.
+
+All run modes require these inputs in addition to the four source database URLs
+and `TARGET_DATABASE_URL`:
+
+```text
+--run-id vay1360-<24 lowercase hex characters>
+--source-run-id vay1351-<24 lowercase hex characters>
+--source-env <staging|preprod>
+--env <staging|preprod|production>
+--manifest <reviewed VAY-1351 manifest.json>
+--source-schema-revision <reviewed full Git SHA>
+--application-release <deployed full Git SHA>
+--operator <operator identity>
+--target-clean-proof-sha256 <reviewed clean-target evidence SHA-256>
+--freeze-proof-sha256 <reviewed source freeze evidence SHA-256>
+--auth-source-tag <exact immutable tag>
+--booking-source-tag <exact immutable tag>
+--marketplace-source-tag <exact immutable tag>
+--pms-source-tag <exact immutable tag>
+--confirmation <mode-bound value>
+```
+
+The trusted runtime `APPLICATION_RELEASE` or `GIT_SHA` must exactly equal
+`--application-release`. Environment pairs are fixed: staging rehearsal uses
+staging/staging, dry-run uses preprod/preprod, and production uses
+production/preprod.
+
+Before a run, a database administrator must bind the target itself with
+database-level settings. The command reads these only from
+`pg_catalog.pg_db_role_setting` for the current database and role `0`; session
+options cannot spoof them:
+
+```sql
+ALTER DATABASE <target_database> SET vayada.target_environment TO '<environment>';
+ALTER DATABASE <target_database> SET vayada.target_identity_sha256 TO '<stable target SHA-256>';
+ALTER DATABASE <target_database> SET vayada.target_clean_run_id TO '<vay1360 run ID>';
+ALTER DATABASE <target_database> SET vayada.target_clean_proof_sha256 TO '<clean-target evidence SHA-256>';
+ALTER DATABASE <target_database> SET vayada.target_application_release TO '<deployed full Git SHA>';
+```
+
+Production additionally requires
+`vayada.target_backup_proof_sha256` to equal the reviewed
+`--backup-proof-sha256`. A wrong database, environment, run, release, clean
+proof, or production backup proof fails before the advisory lock or any
+migration service runs.
+
+Run staging and the isolated pre-production dry-run with confirmations bound to
+the exact orchestration and source run IDs:
+
+```bash
+npm run target:rehearse:staging -- <common arguments> \
+  --confirmation STAGING_REHEARSAL:<vay1360-run-id>:<vay1351-source-run-id>
+
+npm run target:cutover:dry-run -- <common arguments> \
+  --confirmation CUTOVER_DRY_RUN:<vay1360-run-id>:<vay1351-source-run-id>
+```
+
+Each initial command stops after the `GO` parity checkpoint with status
+`AWAITING_SMOKE` and exit code `4`. This is an incomplete, safe state: legacy
+remains authoritative and the command has not claimed success. Run the deployed
+target API/browser smoke job, save its structured
+`production-cutover-smoke.v1` artifact, then resume the same immutable run:
+
+```bash
+npm run <same orchestration command> -- <same arguments> \
+  --resume \
+  --smoke-report <reviewed smoke-report.json>
+```
+
+The smoke artifact must bind the run ID, target identity, environment, release,
+source run and hashed tags, parity checksum, passed checks, and its recomputed
+evidence checksum. Only that second phase can complete `smoke_evidence` and the
+orchestration record.
+
+Production additionally requires a reviewed backup, an approved earlier run,
+the checksum and explicit `go` decision of that run's parity report, and a
+separate approval record:
+
+```bash
+npm run target:cutover -- <common arguments> \
+  --backup-proof-sha256 <sha256> \
+  --approved-run-id <different vay1360 run ID> \
+  --approved-run-report <completed preprod dry-run report.json> \
+  --approved-report-checksum-sha256 <sha256> \
+  --approved-decision go \
+  --approval-proof-sha256 <sha256> \
+  --approval-report <reviewed approval-report.json> \
+  --confirmation PRODUCTION_CUTOVER:<vay1360-run-id>:<vay1351-source-run-id>
+```
+
+Before opening a production database connection, the command recomputes the
+approved dry-run artifact's evidence checksum and requires its exact run ID,
+completed status, `GO` parity decision/checksum, immutable source run/tags,
+preprod environment, application release, freeze proof, and completed safe-step
+sequence to match the production request. Supplying `--approved-decision go`
+without that matching artifact cannot pass the gate.
+
+The separate `production-cutover-approval.v1` artifact binds the approved run
+artifact checksum, parity checksum, `GO` decision, the exact production run and
+target identity, backup proof, release, source run/tags, freeze proof, hashed
+approver identity, and canonical approval time. Its checksum is recomputed and
+must equal `--approval-proof-sha256`; a database uniqueness constraint permits
+that approval artifact to authorize only one production run. The production
+backup proof is independently bound to the target database setting, so neither
+approval nor backup can be supplied as an unverified arbitrary hash.
+
+The orchestration deliberately does not drop target schemas. This is the
+reviewed safety deviation from the harness's example rebuild command: an
+operator must provide the checksum of separately reviewed evidence that the
+isolated target was freshly rebuilt and is clean. This avoids putting a broad,
+destructive schema-drop operation inside the production-capable command. The
+immutable source tags, freshness-preserving domain reconciliation, and final
+zero-warning VAY-1359 parity gate prevent an old legacy state from silently
+overwriting newer target state.
+
+Application smoke remains a separate target-dependent job, as required by the
+migration harness contract. The structured `--smoke-report` links its immutable
+result to the exact paused orchestration; this command does not substitute the
+destructive local fixture smoke for deployed application smoke.
+
+Inspect SQL checksums and the latest rehearsal without changing data:
+
+```bash
+npm run target:migration-status -- --env staging --report json
+```
+
+Abort a failed or interrupted run with an exact guard:
+
+```bash
+npm run target:cutover:abort -- \
+  --run-id <vay1360-run-id> \
+  --operator <operator identity> \
+  --confirmation ABORT_CUTOVER:<vay1360-run-id>
+```
+
+Abort preserves the step evidence and leaves `legacyAuthority` as `legacy`.
+None of these commands switches traffic, changes provider dashboards, deletes
+source data, or shuts down legacy services. Those actions remain separate
+VAY-1361 through VAY-1363 cutover gates.
+
 ## Platform Media Parity
 
 `platform-media` is a target-only fixture that pins the registry contract before
