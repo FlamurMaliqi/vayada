@@ -458,6 +458,13 @@ describe("hotel operations setup client", () => {
     const bodies = mocks.post.mock.calls.map((call) => call[1] as { commandId: string });
     expect(bodies[0]!.commandId).toBe(bodies[1]!.commandId);
     expect(bodies[2]!.commandId).not.toBe(bodies[0]!.commandId);
+    expect(mocks.post).toHaveBeenNthCalledWith(
+      1,
+      "/api/finance/properties/property-1/provider-accounts/provider-account-1/onboarding-link",
+      expect.objectContaining({ returnSurface: "marketplace" }),
+    );
+    expect(bodies[0]).not.toHaveProperty("propertyId");
+    expect(bodies[0]).not.toHaveProperty("returnUrl");
   });
 
   it("uses canonical property IDs for Booking guest-policy reads and writes", async () => {

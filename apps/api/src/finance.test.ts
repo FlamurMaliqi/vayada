@@ -420,6 +420,76 @@ describe("finance route contracts", () => {
     expect(affiliateRepository.providerCreateCount).toBe(1);
   });
 
+  it("authorizes the exact property before issuing Marketplace Stripe onboarding links", async () => {
+    const providerAccountId = "f7000000-0000-0000-0000-000000000686";
+    const foreignPropertyId = "f3000000-0000-0000-0000-000000000999";
+    const commands: IssueStripeOnboardingLinkCommand[] = [];
+    const repository = stripeProviderAccountRepository();
+    await repository.createStripeProviderAccount!(stripePropertyTargetCommand());
+    const issueStripeOnboardingLink = repository.issueStripeOnboardingLink!;
+    repository.issueStripeOnboardingLink = async (command) => {
+      commands.push(command);
+      return issueStripeOnboardingLink(command);
+    };
+    app = buildFinanceApp({
+      permissions: financeManagePermissions(),
+      repository,
+    });
+
+    const response = await injectJson<Record<string, unknown>>(app, {
+      method: "POST",
+      url: `/api/finance/properties/${propertyId}/provider-accounts/${providerAccountId}/onboarding-link`,
+      payload: {
+        commandId: "cmd-stripe-marketplace-return",
+        idempotencyKey: "key-stripe-marketplace-return",
+        returnSurface: "marketplace",
+        propertyId: foreignPropertyId,
+        returnUrl: "https://attacker.test/setup",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      propertyId,
+      payload: { providerAccountId, returnSurface: "marketplace" },
+    });
+    expect(commands[0]!.payload).not.toHaveProperty("propertyId");
+    expect(commands[0]!.payload).not.toHaveProperty("returnUrl");
+
+    await app.close();
+    app = buildFinanceApp({
+      permissions: financeManagePermissions(),
+      entitlements: [
+        {
+          ...pmsFinanceEntitlement(),
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: foreignPropertyId,
+          },
+        },
+      ],
+      repository,
+    });
+    const denied = await injectJson<Record<string, unknown>>(app, {
+      method: "POST",
+      url: `/api/finance/properties/${foreignPropertyId}/provider-accounts/${providerAccountId}/onboarding-link`,
+      payload: {
+        commandId: "cmd-stripe-foreign-return",
+        idempotencyKey: "key-stripe-foreign-return",
+        returnSurface: "marketplace",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(denied.statusCode).toBe(403);
+    expect(denied.body.code).toBe("missing_resource_access");
+    expect(JSON.stringify(denied.body)).not.toContain(foreignPropertyId);
+    expect(commands).toHaveLength(1);
+  });
+
   it("preserves the VAY-774 affiliate onboarding-link facade shape", async () => {
     const repository = stripeProviderAccountRepository();
     repository.seedAffiliateProviderAccount();

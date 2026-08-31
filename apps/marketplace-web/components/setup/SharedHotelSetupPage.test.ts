@@ -20,6 +20,18 @@ describe("setupPathForSelectedProperty", () => {
       ),
     ).toBe("/setup?entryProduct=pms&returnProduct=booking&propertyId=new-property");
   });
+
+  it.each(["return", "refresh"] as const)(
+    "replaces a tampered Stripe %s property without leaving Payments",
+    (stripe) => {
+      expect(
+        setupPathForSelectedProperty(
+          `propertyId=foreign-property&step=payments&stripe=${stripe}`,
+          "authorized-property",
+        ),
+      ).toBe(`/setup?propertyId=authorized-property&step=payments&stripe=${stripe}`);
+    },
+  );
 });
 
 describe("productHandoffReturnTo", () => {

@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 
 import {
   StripeConnectAccountNotFoundError,
+  type FinanceProviderAccountOwner,
   type FinanceStripeConnectProvider,
 } from "@vayada/domain-finance";
 
@@ -56,21 +57,31 @@ export function createStripeConnectProvider(config: {
   };
 
   const onboardingLink = async (
+    owner: FinanceProviderAccountOwner,
     account: string,
     idempotencyKey: string,
     returnSurface: "marketplace" | "booking_admin" = "marketplace",
   ): Promise<string> => {
-    const returnBaseUrl = returnBaseUrls[returnSurface];
     const returnPath = returnSurface === "booking_admin" ? "/settings" : "/setup";
-    const returnQuery = returnSurface === "booking_admin" ? "section=payments&stripe" : "stripe";
+    const returnUrl = (stripe: "refresh" | "return") => {
+      const url = new URL(returnPath, returnBaseUrls[returnSurface]);
+      if (returnSurface === "booking_admin") {
+        url.searchParams.set("section", "payments");
+      } else if (owner.ownerScope === "property") {
+        url.searchParams.set("propertyId", owner.propertyId);
+        url.searchParams.set("step", "payments");
+      }
+      url.searchParams.set("stripe", stripe);
+      return url.toString();
+    };
     const result = await request(
       "POST",
       "/account_links",
       [
         ["account", account],
         ["type", "account_onboarding"],
-        ["refresh_url", `${returnBaseUrl}${returnPath}?${returnQuery}=refresh`],
-        ["return_url", `${returnBaseUrl}${returnPath}?${returnQuery}=return`],
+        ["refresh_url", returnUrl("refresh")],
+        ["return_url", returnUrl("return")],
       ],
       idempotencyKey,
     );
@@ -102,6 +113,7 @@ export function createStripeConnectProvider(config: {
       return {
         providerAccountRef,
         onboardingUrl: await onboardingLink(
+          input.owner,
           providerAccountRef,
           `${input.idempotencyKey}:link`,
           input.returnSurface,
@@ -109,7 +121,12 @@ export function createStripeConnectProvider(config: {
       };
     },
     createOnboardingLink(input) {
-      return onboardingLink(input.providerAccountRef, input.idempotencyKey, input.returnSurface);
+      return onboardingLink(
+        input.owner,
+        input.providerAccountRef,
+        input.idempotencyKey,
+        input.returnSurface,
+      );
     },
     async createLoginLink(input) {
       const link = await request(
