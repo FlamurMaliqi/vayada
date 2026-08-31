@@ -27,6 +27,21 @@ export type FinanceFolioPaymentReference = {
   paymentId: string;
   amount: FinanceFolioMoney;
 };
+export type FinanceFolioLineWrite = Omit<FinanceFolioLine, "lineId" | "total">;
+export type FinanceFolioWrite = {
+  commandId: string;
+  idempotencyKey: string;
+  expectedRevision?: number;
+  bookingId?: string;
+  recipient: FinanceFolioRecipient;
+  serviceFrom: string;
+  serviceTo: string;
+  lines: FinanceFolioLineWrite[];
+  paymentRefs: FinanceFolioPaymentReference[];
+};
+export type FinanceFolioRevisionCommand = Required<
+  Pick<FinanceFolioWrite, "commandId" | "idempotencyKey" | "expectedRevision">
+>;
 export type FinanceFolio = {
   folioId: string;
   propertyId: string;
@@ -140,6 +155,95 @@ export type FinanceFolioCsvArtifact = {
 
 export class FinanceFolioCsvError extends TypeError {
   readonly code = "invalid_folio_csv_evidence";
+}
+
+const WRITE_KEYS = [
+  "commandId",
+  "idempotencyKey",
+  "expectedRevision",
+  "bookingId",
+  "recipient",
+  "serviceFrom",
+  "serviceTo",
+  "lines",
+  "paymentRefs",
+] as const;
+
+export function parseFinanceFolioWrite(
+  value: unknown,
+  action: "create" | "correct",
+): FinanceFolioWrite | null {
+  if (
+    !known(value, WRITE_KEYS) ||
+    !has(
+      value,
+      WRITE_KEYS.filter((key) => key !== "expectedRevision" && key !== "bookingId"),
+    )
+  )
+    return null;
+  const expectedRevision = value.expectedRevision;
+  if (
+    !canonicalUuid(value.commandId) ||
+    !clean(value.idempotencyKey, 1, 200) ||
+    (action === "create" ? expectedRevision !== undefined : !revision(expectedRevision)) ||
+    !(value.bookingId === undefined || canonicalUuid(value.bookingId)) ||
+    !recipient(value.recipient) ||
+    !localDate(value.serviceFrom) ||
+    !localDate(value.serviceTo) ||
+    value.serviceFrom > value.serviceTo ||
+    !Array.isArray(value.lines) ||
+    value.lines.length > 1_000 ||
+    !Array.isArray(value.paymentRefs) ||
+    value.paymentRefs.length > 1_000
+  )
+    return null;
+  const serviceFrom = value.serviceFrom as string;
+  const serviceTo = value.serviceTo as string;
+  const lines = value.lines.map((line) => parseLineWrite(line, serviceFrom, serviceTo));
+  const paymentRefs = value.paymentRefs.map(parsePaymentWrite);
+  if (lines.includes(null) || paymentRefs.includes(null)) return null;
+  const validLines = lines as FinanceFolioLineWrite[];
+  const validPayments = paymentRefs as FinanceFolioPaymentReference[];
+  const lineTotals = validLines.map(({ quantity, unitAmount }) =>
+    roundedProduct(quantity, unitAmount.amount),
+  );
+  const total = lineTotals.reduce((sum, amount) => sum + amount, 0n);
+  if (
+    new Set(validLines.map(({ position }) => position)).size !== validLines.length ||
+    new Set(validPayments.map(({ paymentId }) => paymentId)).size !== validPayments.length ||
+    lineTotals.some((amount) => amount < -MAX_NUMERIC_19_4 || amount > MAX_NUMERIC_19_4) ||
+    total < 0n ||
+    total > MAX_NUMERIC_19_4 ||
+    new Set([
+      ...validLines.map(({ unitAmount }) => unitAmount.currency),
+      ...validPayments.map(({ amount }) => amount.currency),
+    ]).size > 1
+  )
+    return null;
+  return compact({
+    commandId: value.commandId,
+    idempotencyKey: value.idempotencyKey,
+    expectedRevision: expectedRevision as number | undefined,
+    bookingId: value.bookingId as string | undefined,
+    recipient: value.recipient,
+    serviceFrom,
+    serviceTo,
+    lines: validLines.sort((left, right) => left.position - right.position),
+    paymentRefs: validPayments.sort((left, right) => left.paymentId.localeCompare(right.paymentId)),
+  });
+}
+
+export function parseFinanceFolioRevisionCommand(
+  value: unknown,
+): FinanceFolioRevisionCommand | null {
+  if (
+    !exact(value, ["commandId", "idempotencyKey", "expectedRevision"]) ||
+    !canonicalUuid(value.commandId) ||
+    !clean(value.idempotencyKey, 1, 200) ||
+    !revision(value.expectedRevision)
+  )
+    return null;
+  return value as FinanceFolioRevisionCommand;
 }
 
 export function buildFinanceFolioCsvArtifact(input: {
@@ -365,6 +469,115 @@ export function parseFinanceFolioExportSnapshot(value: unknown): FinanceFolioExp
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+function known(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return record(value) && Object.keys(value).every((key) => keys.includes(key));
+}
+function exact(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return known(value, keys) && has(value, keys);
+}
+function has(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return keys.every((key) => Object.hasOwn(value, key));
+}
+function recipient(value: unknown): value is FinanceFolioRecipient {
+  if (
+    !exact(value, ["name", "email"]) ||
+    !clean(value.name, 1, 4_000) ||
+    !(value.email === null || (trimmed(value.email, 3, 320) && value.email.includes("@")))
+  )
+    return false;
+  return (
+    new TextEncoder().encode(JSON.stringify({ v: 1, name: value.name, email: value.email }))
+      .length <= 4_096
+  );
+}
+function parseLineWrite(value: unknown, from: string, to: string): FinanceFolioLineWrite | null {
+  if (
+    !exact(value, [
+      "position",
+      "kind",
+      "description",
+      "quantity",
+      "unitAmount",
+      "serviceOn",
+      "source",
+    ]) ||
+    !Number.isSafeInteger(value.position) ||
+    Number(value.position) < 1 ||
+    Number(value.position) > 1_000 ||
+    !FINANCE_FOLIO_LINE_KINDS.includes(value.kind as FinanceFolioLineKind) ||
+    !clean(value.description, 1, 500) ||
+    !localDate(value.serviceOn) ||
+    value.serviceOn < from ||
+    value.serviceOn > to ||
+    !exact(value.unitAmount, ["amount", "currency"]) ||
+    !exact(value.source, ["type", "id", "revision"])
+  )
+    return null;
+  const quantity = writeDecimal(value.quantity, false, false);
+  const amount = writeDecimal(value.unitAmount.amount, true, true);
+  if (
+    !quantity ||
+    !amount ||
+    typeof value.unitAmount.currency !== "string" ||
+    !/^[A-Z]{3}$/.test(value.unitAmount.currency) ||
+    typeof value.source.type !== "string" ||
+    !/^[a-z][a-z0-9_.-]{0,49}$/.test(value.source.type) ||
+    typeof value.source.id !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(value.source.id) ||
+    !revision(value.source.revision)
+  )
+    return null;
+  return {
+    position: Number(value.position),
+    kind: value.kind as FinanceFolioLineKind,
+    description: value.description,
+    quantity,
+    unitAmount: { amount, currency: value.unitAmount.currency },
+    serviceOn: value.serviceOn,
+    source: {
+      type: value.source.type,
+      id: value.source.id,
+      revision: value.source.revision,
+    },
+  };
+}
+function parsePaymentWrite(value: unknown): FinanceFolioPaymentReference | null {
+  if (
+    !exact(value, ["paymentId", "amount"]) ||
+    !canonicalUuid(value.paymentId) ||
+    !exact(value.amount, ["amount", "currency"])
+  )
+    return null;
+  const amount = writeDecimal(value.amount.amount, false, false);
+  return amount &&
+    typeof value.amount.currency === "string" &&
+    /^[A-Z]{3}$/.test(value.amount.currency)
+    ? { paymentId: value.paymentId, amount: { amount, currency: value.amount.currency } }
+    : null;
+}
+function writeDecimal(value: unknown, signed: boolean, zero: boolean): string | null {
+  if (typeof value !== "string" || !/^-?(?:0|[1-9]\d{0,14})(?:\.\d{1,4})?$/.test(value))
+    return null;
+  const [whole, fraction = ""] = value.replace("-", "").split(".");
+  const normalized = `${value.startsWith("-") ? "-" : ""}${whole}.${fraction.padEnd(4, "0")}`;
+  if (!signed && normalized.startsWith("-")) return null;
+  if (scaled(normalized) === 0n) return zero ? "0.0000" : null;
+  return normalized;
+}
+function revision(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 2_147_483_647;
+}
+function trimmed(value: unknown, min: number, max: number): value is string {
+  return (
+    typeof value === "string" &&
+    value === value.trim() &&
+    value.length >= min &&
+    value.length <= max
+  );
+}
+function clean(value: unknown, min: number, max: number): value is string {
+  return trimmed(value, min, max) && !/[\p{Cc}]/u.test(value);
+}
 function oneOf<const T extends readonly string[]>(value: unknown, values: T): T[number] | null {
   return typeof value === "string" && values.includes(value) ? (value as T[number]) : null;
 }
@@ -410,6 +623,7 @@ function compact<T extends Record<string, unknown>>(value: T): T {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const MAX_NUMERIC_19_4 = 9_999_999_999_999_999_999n;
 const canonicalUuid = (value: unknown): value is string =>
   typeof value === "string" && UUID.test(value) && value === value.toLowerCase();
 const canonicalInstant = (value: unknown): value is string =>
