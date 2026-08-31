@@ -281,6 +281,10 @@ function composeRates(
         blockers.push(blocker("flexible_rate_policy_missing", room.roomTypeId));
         return [];
       }
+      if (plan.cancellationTerms.flexibleCancellationType === "partial_refund") {
+        blockers.push(blocker("pricing_source_invalid", room.roomTypeId));
+        return [];
+      }
       const flexibleSource = pmsSource(
         PMS_PRICING_SOURCE_ENTITY_TYPES.flexibleRatePlan,
         plan.flexibleRatePlanId,

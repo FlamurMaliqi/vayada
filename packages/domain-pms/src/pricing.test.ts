@@ -263,6 +263,30 @@ describe("PMS pricing command contract", () => {
     ]) {
       expect(parseFlexibleCancellationTerms(invalid)).toBeNull();
     }
+
+    const partial = parseFlexibleCancellationTerms({
+      ...cancellationTerms(),
+      text: "Partial refund by notice period",
+      flexibleCancellationType: "partial_refund",
+      partialRefundCancelWindowDays: 30,
+      partialRefundAmountPercent: 50,
+      partialRefundTiers: [
+        { minDaysBeforeCheckIn: 30, refundPercent: 50 },
+        { minDaysBeforeCheckIn: 7, refundPercent: 20 },
+      ],
+    });
+    expect(partial?.partialRefundTiers).toEqual([
+      { minDaysBeforeCheckIn: 30, refundPercent: 50 },
+      { minDaysBeforeCheckIn: 7, refundPercent: 20 },
+    ]);
+    expect(Object.isFrozen(partial?.partialRefundTiers)).toBe(true);
+    expect(
+      parseFlexibleCancellationTerms({
+        ...cancellationTerms(),
+        flexibleCancellationType: "partial_refund",
+        partialRefundTiers: [],
+      }),
+    ).toBeNull();
   });
 
   it("serializes exact full-request business fingerprints without audit metadata", () => {

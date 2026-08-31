@@ -661,7 +661,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     });
   }
   if (options.pmsPricing) {
-    app.register(registerPmsPricingRoutes, { prefix: "/api/pms", ...options.pmsPricing });
+    app.register(registerPmsPricingRoutes, {
+      prefix: "/api/pms",
+      ...options.pmsPricing,
+      inventoryPublicOfferProjector: options.pmsInventoryPublicOfferProjector,
+    });
   }
   if (options.pmsRecurringPricing) {
     app.register(registerPmsRecurringPricingRoutes, {

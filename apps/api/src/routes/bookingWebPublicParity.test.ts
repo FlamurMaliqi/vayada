@@ -2081,6 +2081,18 @@ describe("Booking Web public bootstrap parity", () => {
       },
     });
 
+    policySnapshot = {
+      type: "free_until_days_before_arrival",
+      freeCancellationDeadlineDays: 7,
+      afterDeadlinePenalty: "full_booking_amount",
+      noShowPenalty: "full_booking_amount",
+      flexibleCancellationType: "partial_refund",
+      partialRefundTiers: [{ minDaysBeforeCheckIn: 30, refundPercent: 50 }],
+    };
+    await expect(adapter.cancelPreview("hotel-alpenrose", guestBookingId, request)).rejects.toThrow(
+      "cannot be verified online",
+    );
+
     policySnapshot = {};
     await expect(adapter.cancelPreview("hotel-alpenrose", guestBookingId, request)).rejects.toThrow(
       "free-cancellation period cannot be verified",

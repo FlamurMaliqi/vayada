@@ -443,6 +443,13 @@ describe("target PMS room media compatibility", () => {
                 rateType: "flexible",
                 mealPlan: null,
                 baseRate: { amountDecimal: "100.00", currency: "EUR" },
+                cancellationPolicySnapshot: {
+                  flexibleCancellationType: "partial_refund",
+                  partialRefundTiers: [
+                    { minDaysBeforeCheckIn: 30, refundPercent: 50 },
+                    { minDaysBeforeCheckIn: 7, refundPercent: 20 },
+                  ],
+                },
                 active: true,
               },
               {
@@ -481,6 +488,17 @@ describe("target PMS room media compatibility", () => {
     const result = await repository.listRoomTypesByPropertyId("property-1");
 
     expect(roomTypeQuery).toContain("'pricingContractVersion', rate_plan.pricing_contract_version");
+    expect(roomTypeQuery).toContain("'cancellationPolicySnapshot', COALESCE(");
+    expect(roomTypeQuery).toContain(
+      "LEFT JOIN pms.flexible_rate_plan_cancellation_extensions cancellation_extension",
+    );
+    expect(result.items[0]?.ratePlans[0]?.cancellationPolicySnapshot).toMatchObject({
+      flexibleCancellationType: "partial_refund",
+      partialRefundTiers: [
+        { minDaysBeforeCheckIn: 30, refundPercent: 50 },
+        { minDaysBeforeCheckIn: 7, refundPercent: 20 },
+      ],
+    });
     expect(
       result.items[0]?.ratePlans.map(({ ratePlanId, pricingContractVersion }) => [
         ratePlanId,

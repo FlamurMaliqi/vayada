@@ -307,6 +307,20 @@ async def update_room_type(
         raise HTTPException(status_code=404, detail="Room type not found")
 
     updates = data.model_dump(exclude_unset=True)
+    if {"flexible_cancellation_type", "partial_refund_tiers"} & updates.keys():
+        cancellation_type = updates.get(
+            "flexible_cancellation_type",
+            existing.get("flexible_cancellation_type") or "free",
+        )
+        tiers = updates.get(
+            "partial_refund_tiers",
+            parse_jsonb(existing.get("partial_refund_tiers", [])),
+        )
+        if cancellation_type == "partial_refund" and not tiers:
+            raise HTTPException(
+                status_code=400,
+                detail="Partial refund requires at least one refund tier",
+            )
     # VAY-402 + VAY-406: total_rooms is a derived mirror of COUNT(rooms),
     # written only by the trg_sync_room_type_total_rooms trigger
     # (migration 074). The PATCH payload's total_rooms is treated as a

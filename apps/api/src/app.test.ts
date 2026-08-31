@@ -1735,6 +1735,7 @@ function createPmsOperationsCommandRepository(
           rateType: "flexible",
           mealPlan: null,
           baseRate: command.baseRate,
+          cancellationPolicySnapshot: command.flexibleCancellationPolicy ?? {},
           active: true,
         },
       ];
@@ -1797,6 +1798,17 @@ function createPmsOperationsCommandRepository(
         };
       }
       roomType.attributes = { ...roomType.attributes, ...command.attributes };
+      if (command.flexibleCancellationPolicy) {
+        const flexiblePlan = roomType.ratePlans.find(
+          (ratePlan) =>
+            ratePlan.active &&
+            ratePlan.rateType === "flexible" &&
+            ratePlan.pricingContractVersion == null,
+        );
+        if (flexiblePlan) {
+          flexiblePlan.cancellationPolicySnapshot = command.flexibleCancellationPolicy;
+        }
+      }
       auditEvents.push(`room_type_updated:${roomType.roomTypeId}`);
       return {
         ok: true,
@@ -13355,8 +13367,9 @@ describe("vayada-api", () => {
     });
   });
 
-  it("updates and reads back PMS room-type location through the target route", async () => {
+  it("updates and reads back PMS room-type location and every partial-refund tier", async () => {
     const roomTypes = structuredClone(pmsRoomTypes);
+    const projectedPropertyIds: string[] = [];
     const commandRepository = createPmsOperationsCommandRepository(roomTypes);
     const readRepository: PmsOperationsReadRepository = {
       ...pmsOperationsRepository,
@@ -13385,6 +13398,12 @@ describe("vayada-api", () => {
       ],
       pmsOperationsRepository: readRepository,
       pmsOperationsCommandRepository: commandRepository,
+      pmsInventoryPublicOfferProjector: {
+        async projectPending({ propertyId }) {
+          projectedPropertyIds.push(propertyId);
+          return { profileAvailable: true, pendingEvents: 1, projectedOfferDays: 2 };
+        },
+      },
     });
 
     const update = await injectJson(app, {
@@ -13396,6 +13415,14 @@ describe("vayada-api", () => {
         locationAddress: "Seestrasse 12, Innsbruck",
         latitude: 47.2692,
         longitude: 11.4041,
+        cancellationPolicy: "Partial refund by notice period",
+        flexibleCancellationType: "partial_refund",
+        partialRefundCancelWindowDays: 30,
+        partialRefundAmountPercent: 50,
+        partialRefundTiers: [
+          { minDaysBeforeCheckIn: 30, refundPercent: 50 },
+          { minDaysBeforeCheckIn: 7, refundPercent: 20 },
+        ],
         name: "Ignored by location update",
       },
       headers: { authorization: "Bearer valid-token" },
@@ -13416,6 +13443,17 @@ describe("vayada-api", () => {
           latitude: 47.2692,
           longitude: 11.4041,
         },
+        ratePlans: [
+          {
+            cancellationPolicySnapshot: {
+              flexibleCancellationType: "partial_refund",
+              partialRefundTiers: [
+                { minDaysBeforeCheckIn: 30, refundPercent: 50 },
+                { minDaysBeforeCheckIn: 7, refundPercent: 20 },
+              ],
+            },
+          },
+        ],
       },
       commandMeta: {
         commandId: "cmd-room-type-location-update",
@@ -13431,14 +13469,71 @@ describe("vayada-api", () => {
       latitude: 47.2692,
       longitude: 11.4041,
     });
+    expect(
+      (readback.body as PmsOperationsTestDetailResponse<PmsRoomType>).item.ratePlans[0]
+        ?.cancellationPolicySnapshot,
+    ).toMatchObject({
+      flexibleCancellationType: "partial_refund",
+      partialRefundTiers: [
+        { minDaysBeforeCheckIn: 30, refundPercent: 50 },
+        { minDaysBeforeCheckIn: 7, refundPercent: 20 },
+      ],
+    });
     expect(commandRepository.roomTypeUpdates).toHaveLength(1);
+    expect(projectedPropertyIds).toEqual([pmsPropertyId]);
     expect(commandRepository.roomTypeUpdates[0]).toMatchObject({
       attributes: {
         locationAddress: "Seestrasse 12, Innsbruck",
         latitude: 47.2692,
         longitude: 11.4041,
       },
+      flexibleCancellationPolicy: {
+        flexibleCancellationType: "partial_refund",
+        partialRefundTiers: [
+          { minDaysBeforeCheckIn: 30, refundPercent: 50 },
+          { minDaysBeforeCheckIn: 7, refundPercent: 20 },
+        ],
+      },
     });
+  });
+
+  it("rejects a partial-refund room-type update without tiers", async () => {
+    const commandRepository = createPmsOperationsCommandRepository();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.operations.manage"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      pmsOperationsCommandRepository: commandRepository,
+    });
+
+    const response = await injectJson(app, {
+      method: "PATCH",
+      url: `/api/pms/properties/${pmsPropertyId}/room-types/${pmsRoomTypes[0].roomTypeId}`,
+      payload: {
+        commandId: "cmd-room-type-partial-refund-empty",
+        idempotencyKey: "room-type-partial-refund-empty",
+        flexibleCancellationType: "partial_refund",
+        partialRefundTiers: [],
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toMatchObject({
+      code: "invalid_body",
+      message: "Partial refund requires at least one refund tier.",
+    });
+    expect(commandRepository.roomTypeUpdates).toHaveLength(0);
   });
 
   it("rejects invalid PMS room-type location coordinates before update", async () => {

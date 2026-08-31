@@ -83,7 +83,7 @@ function fakePool(overrides: { amountDecimal?: string } = {}) {
 
 describe("PMS pricing read model", () => {
   it("returns canonical decimal strings without JavaScript money coercion", async () => {
-    const { pool } = fakePool();
+    const { pool, calls } = fakePool();
     const read = createPgPmsPricingReadModel({ connectionString: "test", pool });
 
     await expect(read.getPropertyPricingCurrency(propertyId.toUpperCase())).resolves.toMatchObject({
@@ -97,6 +97,9 @@ describe("PMS pricing read model", () => {
       flexibleRatePlanId: planId,
       baseAmount: { amountDecimal: "1234567890123.45", currency: "EUR" },
     });
+    expect(calls.find(({ sql }) => sql.includes("FROM pms.rate_plans"))?.sql).toContain(
+      "LEFT JOIN pms.flexible_rate_plan_cancellation_extensions cancellation_extension",
+    );
   });
 
   it("captures currency and plans in one repeatable-read transaction", async () => {

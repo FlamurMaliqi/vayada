@@ -441,6 +441,8 @@ class RoomTypeCreate(BaseModel):
     @model_validator(mode="after")
     def validate_seasons_against_operating_periods(self) -> "RoomTypeCreate":
         _validate_no_season_gaps(self.seasons, self.operating_periods)
+        if self.flexible_cancellation_type == "partial_refund" and not self.partial_refund_tiers:
+            raise ValueError("partial_refund requires at least one partial_refund_tier")
         return self
 
 
@@ -596,6 +598,13 @@ class RoomTypeUpdate(BaseModel):
         return _validate_rate_deposit_settings(v)
 
 
+class PartialRefundTierResponse(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    min_days_before_check_in: int
+    refund_percent: int
+
+
 class RoomTypeResponse(BaseModel):
     """Guest-facing response — includes availability."""
 
@@ -634,7 +643,7 @@ class RoomTypeResponse(BaseModel):
     flexible_cancellation_type: str = "free"
     partial_refund_cancel_window_days: int = 30
     partial_refund_amount_percent: int = 50
-    partial_refund_tiers: list[dict] = []
+    partial_refund_tiers: list[PartialRefundTierResponse] = []
     non_refundable_cancellation_policy: str = "Non-refundable from booking"
     rate_payment_methods: dict[str, list[str]] | None = None
     rate_deposit_settings: dict[str, dict] | None = None
@@ -679,7 +688,7 @@ class RoomTypeAdminResponse(BaseModel):
     flexible_cancellation_type: str = "free"
     partial_refund_cancel_window_days: int = 30
     partial_refund_amount_percent: int = 50
-    partial_refund_tiers: list[dict] = []
+    partial_refund_tiers: list[PartialRefundTierResponse] = []
     non_refundable_enabled: bool = False
     non_refundable_discount: int = 5
     non_refundable_cancellation_policy: str = "Non-refundable from booking"

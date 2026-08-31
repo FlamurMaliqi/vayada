@@ -208,12 +208,25 @@ export interface PmsOperationsMoney {
 
 export interface PmsOperationsRatePlan {
   ratePlanId: string;
+  pricingContractVersion?: string | null;
   code: string;
   name: string;
   rateType: "flexible" | "non_refundable" | "package" | "manual";
   mealPlan: string | null;
   baseRate: PmsOperationsMoney;
+  cancellationPolicySnapshot?: Record<string, unknown>;
   active: boolean;
+}
+
+interface PmsPricingSourceResponse {
+  pricingCurrency: { pricingCurrencyRevision: number };
+  flexibleRatePlans: Array<{
+    roomTypeId: string;
+    flexibleRatePlanRevision: number;
+    sourceRoomFactsRevision: number;
+    baseAmount: PmsOperationsMoney;
+    cancellationTerms: Record<string, unknown>;
+  }>;
 }
 
 export interface PmsOperationsRateRulesSummary {
@@ -305,6 +318,35 @@ function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
+function cancellationPolicyFromRatePlans(ratePlans: PmsOperationsRatePlan[]) {
+  const flexiblePlans = ratePlans.filter((plan) => plan.active && plan.rateType === "flexible");
+  const snapshot =
+    flexiblePlans.find((plan) => plan.pricingContractVersion == null)?.cancellationPolicySnapshot ??
+    flexiblePlans[0]?.cancellationPolicySnapshot;
+  const rawTiers = Array.isArray(snapshot?.partialRefundTiers) ? snapshot.partialRefundTiers : [];
+  const partialRefundTiers = rawTiers.flatMap((tier) => {
+    if (!tier || typeof tier !== "object" || Array.isArray(tier)) return [];
+    const raw = tier as Record<string, unknown>;
+    const minDaysBeforeCheckIn = asNumber(
+      raw.minDaysBeforeCheckIn ?? raw.min_days_before_check_in,
+      NaN,
+    );
+    const refundPercent = asNumber(raw.refundPercent ?? raw.refund_percent, NaN);
+    return Number.isInteger(minDaysBeforeCheckIn) && Number.isInteger(refundPercent)
+      ? [{ minDaysBeforeCheckIn, refundPercent }]
+      : [];
+  });
+  const flexibleCancellationType =
+    snapshot?.flexibleCancellationType === "partial_refund" ? "partial_refund" : "free";
+  return {
+    cancellationPolicy: asString(snapshot?.text, "Free until 7 days before"),
+    flexibleCancellationType,
+    partialRefundCancelWindowDays: asNumber(snapshot?.partialRefundCancelWindowDays, 30),
+    partialRefundAmountPercent: asNumber(snapshot?.partialRefundAmountPercent, 50),
+    partialRefundTiers,
+  } as const;
+}
+
 function toRoom(
   response: PmsOperationsListResponse<PmsOperationsRoom>,
   room: PmsOperationsRoom,
@@ -336,6 +378,7 @@ function toRoomType(propertyId: string, roomType: PmsOperationsRoomType): RoomTy
   const nonRefundableRate = nonRefundablePlan
     ? asNumber(nonRefundablePlan.baseRate.amountDecimal)
     : null;
+  const flexibleCancellation = cancellationPolicyFromRatePlans(roomType.ratePlans);
 
   return {
     id: roomType.roomTypeId,
@@ -391,12 +434,12 @@ function toRoomType(propertyId: string, roomType: PmsOperationsRoomType): RoomTy
           ]
         : [],
     weekendSurcharge: "+0%",
-    cancellationPolicy: "Free until 7 days before",
+    cancellationPolicy: flexibleCancellation.cancellationPolicy,
     flexibleRateEnabled: true,
-    flexibleCancellationType: "free",
-    partialRefundCancelWindowDays: 30,
-    partialRefundAmountPercent: 50,
-    partialRefundTiers: [],
+    flexibleCancellationType: flexibleCancellation.flexibleCancellationType,
+    partialRefundCancelWindowDays: flexibleCancellation.partialRefundCancelWindowDays,
+    partialRefundAmountPercent: flexibleCancellation.partialRefundAmountPercent,
+    partialRefundTiers: flexibleCancellation.partialRefundTiers,
     nonRefundableEnabled: nonRefundableRate != null,
     nonRefundableDiscount:
       baseRate > 0 && nonRefundableRate != null
@@ -489,8 +532,23 @@ export const roomsService = {
 
   update: async (id: string, data: RoomTypeUpdate) => {
     const propertyId = await resolveSelectedPmsPropertyId("updating room type");
-    const response = await pmsOperationsRoomsReadService.updateRoomType(propertyId, id, data);
-    let updated = toRoomType(response.propertyId, response.item);
+    let updated: RoomType;
+    try {
+      const response = await pmsOperationsRoomsReadService.updateRoomType(propertyId, id, data);
+      updated = toRoomType(response.propertyId, response.item);
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        error.message !==
+          "Flexible cancellation is unavailable for this room type's pricing contract."
+      ) {
+        throw error;
+      }
+      await pmsOperationsRoomsReadService.updateCanonicalFlexibleCancellation(propertyId, id, data);
+      await pmsOperationsRoomsReadService.updateRoomType(propertyId, id, data, false);
+      const refreshed = await pmsOperationsRoomsReadService.getRoomType(propertyId, id);
+      updated = toRoomType(refreshed.propertyId, refreshed.item);
+    }
     if (data.images && !sameRoomImageOrder(data.images, updated.images)) {
       await replaceRoomTypeMedia(propertyId, updated, data.images);
       const refreshed = await pmsOperationsRoomsReadService.getRoomType(propertyId, id);
@@ -553,7 +611,12 @@ export const pmsOperationsRoomsReadService = {
     );
   },
 
-  updateRoomType: (propertyId: string, roomTypeId: string, data: RoomTypeUpdate) => {
+  updateRoomType: (
+    propertyId: string,
+    roomTypeId: string,
+    data: RoomTypeUpdate,
+    includeCancellation = true,
+  ) => {
     assertPmsOperationsReadModelEnabled();
     const commandId = randomCommandId("pms-room-type-update");
     return pmsOperationsClient.patch<PmsOperationsCommandResponse<PmsOperationsRoomType>>(
@@ -561,11 +624,51 @@ export const pmsOperationsRoomsReadService = {
         roomTypeId,
       )}`,
       {
-        ...roomTypeLocationPayload(data),
+        ...roomTypeUpdatePayload(data, includeCancellation),
         commandId,
         idempotencyKey: commandId,
       },
       pmsOperationsRequestOptions,
+    );
+  },
+
+  updateCanonicalFlexibleCancellation: async (
+    propertyId: string,
+    roomTypeId: string,
+    data: RoomTypeUpdate,
+  ) => {
+    const source = await pmsOperationsClient.get<PmsPricingSourceResponse>(
+      `/api/pms/properties/${encodeURIComponent(propertyId)}/pricing-source`,
+      pmsOperationsRequestOptions,
+    );
+    const plan = source.flexibleRatePlans.find((candidate) => candidate.roomTypeId === roomTypeId);
+    if (!plan) throw new Error("Flexible cancellation is unavailable for this room type.");
+    const commandId = randomCommandId("pms-flexible-cancellation-update");
+    return pmsOperationsClient.put(
+      `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(
+        roomTypeId,
+      )}/flexible-rate-plan`,
+      {
+        expectedRoomFactsRevision: plan.sourceRoomFactsRevision,
+        expectedPricingCurrencyRevision: source.pricingCurrency.pricingCurrencyRevision,
+        expectedFlexibleRatePlanRevision: plan.flexibleRatePlanRevision,
+        baseAmountDecimal: plan.baseAmount.amountDecimal,
+        cancellationTerms: {
+          ...plan.cancellationTerms,
+          text: data.cancellationPolicy || "Free until 7 days before",
+          flexibleCancellationType: data.flexibleCancellationType ?? "free",
+          partialRefundCancelWindowDays: data.partialRefundCancelWindowDays ?? 30,
+          partialRefundAmountPercent: data.partialRefundAmountPercent ?? 50,
+          partialRefundTiers: data.partialRefundTiers ?? [],
+        },
+      },
+      {
+        ...pmsOperationsRequestOptions,
+        headers: {
+          ...(pmsOperationsRequestOptions.headers as Record<string, string>),
+          "Idempotency-Key": commandId,
+        },
+      },
     );
   },
 
@@ -755,12 +858,51 @@ function sameRoomImageOrder(left: RoomImageReference[], right: RoomImageReferenc
   return JSON.stringify(keys(left)) === JSON.stringify(keys(right));
 }
 
-function roomTypeLocationPayload(data: RoomTypeUpdate) {
-  const payload: Pick<RoomTypeCreate, "locationAddress" | "latitude" | "longitude"> = {};
+function roomTypeUpdatePayload(data: RoomTypeUpdate, includeCancellation = true) {
+  const payload: RoomTypeUpdate = {};
   if (Object.hasOwn(data, "locationAddress")) payload.locationAddress = data.locationAddress;
   if (Object.hasOwn(data, "latitude")) payload.latitude = data.latitude ?? null;
   if (Object.hasOwn(data, "longitude")) payload.longitude = data.longitude ?? null;
+  if (includeCancellation) {
+    for (const key of [
+      "cancellationPolicy",
+      "flexibleCancellationType",
+      "partialRefundCancelWindowDays",
+      "partialRefundAmountPercent",
+      "partialRefundTiers",
+    ] as const) {
+      if (Object.hasOwn(data, key)) Object.assign(payload, { [key]: data[key] });
+    }
+  }
   return payload;
+}
+
+export function roomTypeUpdateForm(r: RoomType): RoomTypeUpdate {
+  return {
+    ...r,
+    category: r.category || "",
+    bedrooms: r.bedrooms ?? 1,
+    bathrooms: r.bathrooms ?? 1,
+    locationAddress: r.locationAddress || "",
+    monthlyRates: r.monthlyRates || {},
+    dailyRates: r.dailyRates || {},
+    operatingPeriods: r.operatingPeriods || [],
+    seasons: r.seasons || [],
+    weekendSurcharge: r.weekendSurcharge || "+0%",
+    cancellationPolicy: r.cancellationPolicy || "Free until 7 days before",
+    flexibleRateEnabled: r.flexibleRateEnabled ?? true,
+    flexibleCancellationType: r.flexibleCancellationType ?? "free",
+    partialRefundCancelWindowDays: r.partialRefundCancelWindowDays ?? 30,
+    partialRefundAmountPercent: r.partialRefundAmountPercent ?? 50,
+    partialRefundTiers: r.partialRefundTiers ?? [],
+    nonRefundableEnabled: r.nonRefundableEnabled ?? false,
+    nonRefundableDiscount: r.nonRefundableDiscount ?? 5,
+    nonRefundableCancellationPolicy:
+      r.nonRefundableCancellationPolicy || "Non-refundable from booking",
+    minimumAdvanceDays: r.minimumAdvanceDays ?? 0,
+    ratePaymentMethods: r.ratePaymentMethods ?? null,
+    mealPlans: r.mealPlans ?? [],
+  };
 }
 
 function randomCommandId(prefix: string): string {

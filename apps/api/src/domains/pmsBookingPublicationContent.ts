@@ -36,7 +36,10 @@ export function buildPmsBookingPublicationContent(input: {
         currency: plan.baseAmount.currency,
         baseNightlyAmount: plan.baseAmount.amountDecimal,
         refundable: true,
-        cancellation: `Free cancellation until ${plan.cancellationTerms.freeCancellationDeadlineDays} days before arrival`,
+        cancellation:
+          plan.cancellationTerms.flexibleCancellationType === "partial_refund"
+            ? "Partial refund according to notice period"
+            : `Free cancellation until ${plan.cancellationTerms.freeCancellationDeadlineDays} days before arrival`,
         paymentTiming: "pay_at_property",
       },
     ];

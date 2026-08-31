@@ -41,6 +41,7 @@ export type PmsRatePlan = {
   rateType: "flexible" | "non_refundable" | "package" | "manual";
   mealPlan: string | null;
   baseRate: PmsMoney;
+  cancellationPolicySnapshot?: PmsJsonRecord;
   active: boolean;
 };
 
@@ -1209,11 +1210,20 @@ async function listRoomTypes(
                     'amountDecimal', rate_plan.base_rate_amount::text,
                     'currency', rate_plan.currency
                   ),
+                  'cancellationPolicySnapshot', COALESCE(
+                    cancellation_extension.cancellation_terms,
+                    rate_plan.cancellation_policy_snapshot
+                  ),
                   'active', rate_plan.active
                 )
                 ORDER BY rate_plan.code ASC, rate_plan.name ASC
               ) AS items
        FROM pms.rate_plans rate_plan
+       LEFT JOIN pms.flexible_rate_plan_cancellation_extensions cancellation_extension
+         ON cancellation_extension.flexible_rate_plan_id = rate_plan.id
+        AND cancellation_extension.property_id = rate_plan.property_id
+        AND cancellation_extension.room_type_id = rate_plan.room_type_id
+        AND cancellation_extension.pricing_contract_version = rate_plan.pricing_contract_version
        WHERE rate_plan.property_id = room_type.property_id
          AND rate_plan.room_type_id = room_type.id
      ) rate_plans ON TRUE
@@ -1687,6 +1697,7 @@ function toRatePlans(value: unknown): PmsRatePlan[] {
       rateType: toRateType(item.rateType),
       mealPlan: typeof item.mealPlan === "string" ? item.mealPlan : null,
       baseRate: toMoney(item.baseRate),
+      cancellationPolicySnapshot: toJsonRecord(item.cancellationPolicySnapshot),
       active: item.active === true,
     }))
     .filter((item) => item.ratePlanId.length > 0);

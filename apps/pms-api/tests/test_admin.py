@@ -913,7 +913,7 @@ class TestAdminRoomTypes:
         assert body["partialRefundCancelWindowDays"] == 30
         assert body["partialRefundAmountPercent"] == 50
 
-    async def test_update_to_partial_refund_cancellation_type(self, client, hotel_with_rooms):
+    async def test_update_to_partial_refund_persists_every_tier(self, client, hotel_with_rooms):
         user = hotel_with_rooms["user"]
         room = hotel_with_rooms["room"]
 
@@ -923,6 +923,10 @@ class TestAdminRoomTypes:
                 "flexibleCancellationType": "partial_refund",
                 "partialRefundCancelWindowDays": 14,
                 "partialRefundAmountPercent": 75,
+                "partialRefundTiers": [
+                    {"minDaysBeforeCheckIn": 30, "refundPercent": 75},
+                    {"minDaysBeforeCheckIn": 7, "refundPercent": 25},
+                ],
             },
             headers=get_auth_headers(user["token"]),
         )
@@ -931,6 +935,31 @@ class TestAdminRoomTypes:
         assert body["flexibleCancellationType"] == "partial_refund"
         assert body["partialRefundCancelWindowDays"] == 14
         assert body["partialRefundAmountPercent"] == 75
+        assert body["partialRefundTiers"] == [
+            {"minDaysBeforeCheckIn": 30, "refundPercent": 75},
+            {"minDaysBeforeCheckIn": 7, "refundPercent": 25},
+        ]
+
+        readback = await client.get(
+            f"/admin/room-types/{room['id']}",
+            headers=get_auth_headers(user["token"]),
+        )
+        assert readback.status_code == 200
+        assert readback.json()["flexibleCancellationType"] == "partial_refund"
+        assert readback.json()["partialRefundTiers"] == body["partialRefundTiers"]
+
+    async def test_partial_refund_without_tiers_is_rejected(self, client, hotel_with_rooms):
+        user = hotel_with_rooms["user"]
+        room = hotel_with_rooms["room"]
+
+        resp = await client.patch(
+            f"/admin/room-types/{room['id']}",
+            json={"flexibleCancellationType": "partial_refund", "partialRefundTiers": []},
+            headers=get_auth_headers(user["token"]),
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Partial refund requires at least one refund tier"
 
     async def test_invalid_flexible_cancellation_type_rejected(self, client, hotel_with_rooms):
         user = hotel_with_rooms["user"]
@@ -965,7 +994,10 @@ class TestAdminRoomTypes:
         ) as push:
             resp = await client.patch(
                 f"/admin/room-types/{room['id']}",
-                json={"flexibleCancellationType": "partial_refund"},
+                json={
+                    "flexibleCancellationType": "partial_refund",
+                    "partialRefundTiers": [{"minDaysBeforeCheckIn": 30, "refundPercent": 50}],
+                },
                 headers=get_auth_headers(user["token"]),
             )
             assert resp.status_code == 200

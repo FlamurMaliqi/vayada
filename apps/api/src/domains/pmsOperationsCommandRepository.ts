@@ -214,13 +214,18 @@ type BookingPaymentLifecycleRow = QueryResultRow & {
   chargeType: string | null;
 };
 type PmsOperationalTemplateOperation =
-  "checkin_checklist_template_update" | "checkout_inspection_template_update";
+  | "checkin_checklist_template_update"
+  | "checkout_inspection_template_update";
 type PmsCheckoutChargeOperation =
-  "checkout_charge_create" | "checkout_charge_mark_paid" | "checkout_charge_waive";
+  | "checkout_charge_create"
+  | "checkout_charge_mark_paid"
+  | "checkout_charge_waive";
 type PmsRoomTypeCommandOperation = "room_type_create" | "room_type_location_update";
 type PmsRoomTypeCommand = PmsRoomTypeCreateCommand | PmsRoomTypeUpdateCommand;
 type PmsRoomBlockCommand =
-  PmsRoomBlockCreateCommand | PmsRoomBlockUpdateCommand | PmsRoomBlockReleaseCommand;
+  | PmsRoomBlockCreateCommand
+  | PmsRoomBlockUpdateCommand
+  | PmsRoomBlockReleaseCommand;
 type PmsRoomBlockOperation = "room_block_create" | "room_block_update" | "room_block_release";
 
 type PmsRoomBlockRow = {
@@ -484,7 +489,9 @@ export function createTargetPmsOperationsCommandRepository(
         commandId: command.commandId,
         idempotencyKey: command.idempotencyKey,
         acceptedAt,
-        sideEffects: ["audit_event"],
+        sideEffects: command.flexibleCancellationPolicy
+          ? ["ari_changed", "distribution_refresh", "audit_event"]
+          : ["audit_event"],
       };
 
       try {
@@ -541,11 +548,50 @@ export function createTargetPmsOperationsCommandRepository(
           await client.query("ROLLBACK");
           return roomTypeNotFound(command.roomTypeId);
         }
+        if (
+          command.flexibleCancellationPolicy &&
+          !(await updateRoomTypeFlexibleCancellation(client, command, acceptedAt))
+        ) {
+          await client.query("ROLLBACK");
+          return roomTypeInvalidBody(
+            "Flexible cancellation is unavailable for this room type's pricing contract.",
+          );
+        }
 
         const roomType = {
           ...currentRoomType,
           attributes: { ...currentRoomType.attributes, ...command.attributes },
+          ratePlans: currentRoomType.ratePlans.map((ratePlan) =>
+            command.flexibleCancellationPolicy &&
+            ratePlan.active &&
+            ratePlan.rateType === "flexible" &&
+            ratePlan.pricingContractVersion == null
+              ? {
+                  ...ratePlan,
+                  cancellationPolicySnapshot: command.flexibleCancellationPolicy,
+                }
+              : ratePlan,
+          ),
         };
+        if (command.flexibleCancellationPolicy) {
+          await enqueueInventoryChangedSideEffects(
+            client,
+            command,
+            {
+              roomTypeId: command.roomTypeId,
+              resourceType: "room_type",
+              resourceId: command.roomTypeId,
+              dateRange: {
+                from: acceptedAt.slice(0, 10),
+                to: addUtcDays(acceptedAt.slice(0, 10), PMS_ROOM_INVENTORY_HORIZON_DAYS - 1),
+              },
+              calendarRefresh: false,
+            },
+            commandMeta,
+            keyHash,
+            acceptedAt,
+          );
+        }
         await insertRoomTypeLocationUpdateAuditEvent(client, command, commandMeta, keyHash);
         await completeRoomTypeCommandIdempotency(
           client,
@@ -1830,6 +1876,30 @@ async function updateRoomTypeLocation(
   return (result.rowCount ?? 0) > 0;
 }
 
+async function updateRoomTypeFlexibleCancellation(
+  client: PmsOperationsCommandClient,
+  command: PmsRoomTypeUpdateCommand,
+  acceptedAt: string,
+): Promise<boolean> {
+  const result = await client.query(
+    `UPDATE pms.rate_plans
+     SET cancellation_policy_snapshot = $3::jsonb,
+         updated_at = $4::timestamptz
+     WHERE property_id = $1::uuid
+       AND room_type_id = $2::uuid
+       AND rate_type = 'flexible'
+       AND active = TRUE
+       AND pricing_contract_version IS NULL`,
+    [
+      command.propertyId,
+      command.roomTypeId,
+      JSON.stringify(command.flexibleCancellationPolicy),
+      acceptedAt,
+    ],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
 async function insertRoomTypeRatePlans(
   client: PmsOperationsCommandClient,
   command: PmsRoomTypeCreateCommand,
@@ -1842,6 +1912,14 @@ async function insertRoomTypeRatePlans(
       name: "Flexible",
       rateType: "flexible",
       baseRate: command.baseRate,
+      cancellationPolicySnapshot: command.flexibleCancellationPolicy ?? {
+        kind: "flexible",
+        text: "Free until 7 days before",
+        flexibleCancellationType: "free",
+        partialRefundCancelWindowDays: 30,
+        partialRefundAmountPercent: 50,
+        partialRefundTiers: [],
+      },
     }),
   ];
   if (command.nonRefundableRate) {
@@ -1851,6 +1929,7 @@ async function insertRoomTypeRatePlans(
         name: "Non-refundable",
         rateType: "non_refundable",
         baseRate: command.nonRefundableRate,
+        cancellationPolicySnapshot: {},
       }),
     );
   }
@@ -1862,7 +1941,10 @@ async function insertRoomTypeRatePlan(
   command: PmsRoomTypeCreateCommand,
   roomTypeId: string,
   acceptedAt: string,
-  ratePlan: Pick<PmsRoomType["ratePlans"][number], "code" | "name" | "rateType" | "baseRate">,
+  ratePlan: Pick<
+    PmsRoomType["ratePlans"][number],
+    "code" | "name" | "rateType" | "baseRate" | "cancellationPolicySnapshot"
+  >,
 ): Promise<PmsRoomType["ratePlans"][number]> {
   const result = await client.query<{ ratePlanId: string }>(
     `INSERT INTO pms.rate_plans (
@@ -1873,6 +1955,7 @@ async function insertRoomTypeRatePlan(
        rate_type,
        base_rate_amount,
        currency,
+       cancellation_policy_snapshot,
        active,
        created_at,
        updated_at
@@ -1885,13 +1968,15 @@ async function insertRoomTypeRatePlan(
        $5,
        $6::numeric,
        $7,
+       $8::jsonb,
        TRUE,
-       $8::timestamptz,
-       $8::timestamptz
+       $9::timestamptz,
+       $9::timestamptz
      )
      ON CONFLICT (property_id, room_type_id, code) DO UPDATE
      SET base_rate_amount = EXCLUDED.base_rate_amount,
          currency = EXCLUDED.currency,
+         cancellation_policy_snapshot = EXCLUDED.cancellation_policy_snapshot,
          updated_at = EXCLUDED.updated_at
      RETURNING id::text AS "ratePlanId"`,
     [
@@ -1902,6 +1987,7 @@ async function insertRoomTypeRatePlan(
       ratePlan.rateType,
       ratePlan.baseRate.amountDecimal,
       ratePlan.baseRate.currency,
+      JSON.stringify(ratePlan.cancellationPolicySnapshot),
       acceptedAt,
     ],
   );
@@ -1912,6 +1998,7 @@ async function insertRoomTypeRatePlan(
     rateType: ratePlan.rateType,
     mealPlan: null,
     baseRate: ratePlan.baseRate,
+    cancellationPolicySnapshot: ratePlan.cancellationPolicySnapshot,
     active: true,
   };
 }
@@ -3329,10 +3416,7 @@ async function completeRoomTypeCommandIdempotency(
 
 async function enqueueInventoryChangedSideEffects(
   client: PmsOperationsCommandClient,
-  command: Pick<
-    PmsRoomBlockCommand | PmsRoomTypeCreateCommand,
-    "propertyId" | "commandId" | "audit"
-  >,
+  command: Pick<PmsRoomBlockCommand | PmsRoomTypeCommand, "propertyId" | "commandId" | "audit">,
   resource: {
     roomTypeId: string;
     resourceType: "room_type" | "room_block";
@@ -3667,9 +3751,17 @@ async function insertRoomTypeLocationUpdateAuditEvent(
       JSON.stringify({
         propertyId: command.propertyId,
         roomTypeId: command.roomTypeId,
-        changedFields: Object.keys(command.attributes),
+        changedFields: [
+          ...Object.keys(command.attributes),
+          ...(command.flexibleCancellationPolicy ? ["flexibleCancellationPolicy"] : []),
+        ],
       }),
-      JSON.stringify({ attributes: command.attributes }),
+      JSON.stringify({
+        attributes: command.attributes,
+        ...(command.flexibleCancellationPolicy
+          ? { flexibleCancellationPolicy: command.flexibleCancellationPolicy }
+          : {}),
+      }),
       JSON.stringify({ commandMeta, idempotencyKeyHash: keyHash }),
     ],
   );
@@ -5117,7 +5209,9 @@ async function insertPrivateNoteAuditEvent(
     action: "pms.private_note.created" | "pms.private_note.edited" | "pms.private_note.deleted";
     auditKey: string;
     command:
-      PmsPrivateNoteCreateCommand | PmsPrivateNoteUpdateCommand | PmsPrivateNoteDeleteCommand;
+      | PmsPrivateNoteCreateCommand
+      | PmsPrivateNoteUpdateCommand
+      | PmsPrivateNoteDeleteCommand;
     keyHash: string;
     noteId: string;
     occurredAt: string;

@@ -9,6 +9,7 @@ import {
   serializePropertyPricingCurrencyFingerprint,
   type FlexibleRatePlanCommandError,
   type FlexibleRatePlanCommandResult,
+  type FlexibleCancellationTerms,
   type PmsPricingCommandPort,
   type PmsPricingCurrency,
   type PmsPricingCurrencyChangeBlocker,
@@ -530,7 +531,7 @@ async function upsertPlan(
         command.propertyId,
         command.roomTypeId,
         canonical.flexibleRatePlanId,
-        JSON.stringify(command.cancellationTerms),
+        JSON.stringify(canonicalCancellationTerms(command.cancellationTerms)),
         command.baseAmountDecimal,
         pricingCurrency.currency,
         roomFactsRevision,
@@ -574,7 +575,7 @@ async function upsertPlan(
         command.propertyId,
         command.roomTypeId,
         `ONB15-FLEX-${planId}`,
-        JSON.stringify(command.cancellationTerms),
+        JSON.stringify(canonicalCancellationTerms(command.cancellationTerms)),
         command.baseAmountDecimal,
         pricingCurrency.currency,
         roomFactsRevision,
@@ -587,7 +588,11 @@ async function upsertPlan(
     outcome = "created";
   }
 
-  const flexibleRatePlan = pmsFlexibleRatePlanSnapshotFromRow(planRow);
+  await persistFlexibleCancellationExtension(client, command, planRow.flexibleRatePlanId, at);
+  const flexibleRatePlan = pmsFlexibleRatePlanSnapshotFromRow({
+    ...planRow,
+    cancellationTerms: command.cancellationTerms,
+  });
   const response = {
     contractVersion: PMS_PRICING_CONTRACT_VERSION,
     outcome,
@@ -610,6 +615,57 @@ async function upsertPlan(
       },
     ),
   };
+}
+
+function canonicalCancellationTerms(terms: FlexibleCancellationTerms) {
+  return {
+    type: terms.type,
+    freeCancellationDeadlineDays: terms.freeCancellationDeadlineDays,
+    afterDeadlinePenalty: terms.afterDeadlinePenalty,
+    noShowPenalty: terms.noShowPenalty,
+  };
+}
+
+async function persistFlexibleCancellationExtension(
+  client: PmsPricingCommandClient,
+  command: UpsertFlexibleRatePlanCommand,
+  flexibleRatePlanId: string,
+  at: Date,
+): Promise<void> {
+  const hasExtension = Object.keys(command.cancellationTerms).some(
+    (key) =>
+      !["type", "freeCancellationDeadlineDays", "afterDeadlinePenalty", "noShowPenalty"].includes(
+        key,
+      ),
+  );
+  if (!hasExtension) {
+    await client.query(
+      `DELETE FROM pms.flexible_rate_plan_cancellation_extensions
+       WHERE property_id = $1::uuid
+         AND room_type_id = $2::uuid
+         AND flexible_rate_plan_id = $3::uuid`,
+      [command.propertyId, command.roomTypeId, flexibleRatePlanId],
+    );
+    return;
+  }
+  await client.query(
+    `INSERT INTO pms.flexible_rate_plan_cancellation_extensions (
+       flexible_rate_plan_id, property_id, room_type_id, cancellation_terms,
+       created_at, updated_at
+     ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::jsonb, $5::timestamptz, $5::timestamptz)
+     ON CONFLICT (flexible_rate_plan_id) DO UPDATE SET
+       cancellation_terms = EXCLUDED.cancellation_terms,
+       updated_at = EXCLUDED.updated_at
+     WHERE pms.flexible_rate_plan_cancellation_extensions.property_id = EXCLUDED.property_id
+       AND pms.flexible_rate_plan_cancellation_extensions.room_type_id = EXCLUDED.room_type_id`,
+    [
+      flexibleRatePlanId,
+      command.propertyId,
+      command.roomTypeId,
+      JSON.stringify(command.cancellationTerms),
+      at.toISOString(),
+    ],
+  );
 }
 
 function pricingChange(
@@ -1032,6 +1088,30 @@ async function enqueuePricingChange(
         command.audit.correlationId ?? command.audit.requestId,
         keyHash,
         JSON.stringify(change.event),
+        JSON.stringify({ contractVersion: PMS_PRICING_CONTRACT_VERSION, sourceReadRequired: true }),
+      ],
+    );
+  }
+  if (change.resourceType === "flexible_rate_plan" && "roomTypeId" in command) {
+    await client.query(
+      `INSERT INTO platform.outbox_events (
+         domain_event_id, outbox_key, destination, event_type, tenant_scope,
+         organization_id, property_id, resource_product, resource_type,
+         resource_id, correlation_id, idempotency_key_hash, payload, outbox_metadata
+       ) VALUES (
+         $1::uuid, $2, 'distribution.public-bookability', 'pms.inventory.changed',
+         'property', NULL, $3::uuid, 'pms', $4, $5, $6, $7, $8::jsonb, $9::jsonb
+       )
+       ON CONFLICT (destination, outbox_key) DO NOTHING`,
+      [
+        eventId,
+        `distribution.pricing_source.property.${command.propertyId}.key.${keyHash}.attempt.${reservation.attempt}.v1`,
+        command.propertyId,
+        change.resourceType,
+        change.resourceId,
+        command.audit.correlationId ?? command.audit.requestId,
+        keyHash,
+        JSON.stringify({ propertyId: command.propertyId, roomTypeId: command.roomTypeId }),
         JSON.stringify({ contractVersion: PMS_PRICING_CONTRACT_VERSION, sourceReadRequired: true }),
       ],
     );

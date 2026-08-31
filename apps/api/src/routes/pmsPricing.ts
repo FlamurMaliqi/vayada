@@ -15,6 +15,7 @@ import {
   type PmsPricingReadPort,
   type PropertyPricingCurrencyCommandError,
 } from "@vayada/domain-pms";
+import type { PmsInventoryPublicOfferProjectionPort } from "@vayada/domain-distribution";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import { enforceRoutePolicy } from "./policy.js";
@@ -30,6 +31,7 @@ export type PmsPricingRoutesOptions = {
   commandPort: PmsPricingCommandPort;
   readPort: PmsPricingReadPort;
   currencyCapabilitiesReadPort: PmsPricingCurrencyCapabilitiesReadPort;
+  inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
 };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -128,6 +130,18 @@ export async function registerPmsPricingRoutes(
               command.expectedFlexibleRatePlanRevision + 1))
       ) {
         return invalidPortResult(reply);
+      }
+      if (result.ok && options.inventoryPublicOfferProjector) {
+        try {
+          await options.inventoryPublicOfferProjector.projectPending({
+            propertyId: scope.propertyId,
+          });
+        } catch (error) {
+          request.log.error(
+            { error, propertyId: scope.propertyId, roomTypeId },
+            "PMS pricing public-offer projection remains pending",
+          );
+        }
       }
       return result.ok
         ? reply.status(result.response.outcome === "created" ? 201 : 200).send(result.response)
