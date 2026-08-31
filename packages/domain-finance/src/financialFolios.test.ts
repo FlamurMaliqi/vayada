@@ -158,7 +158,9 @@ describe("Financials folio read contract", () => {
       (value: any) => (value.paymentRefs[0].paymentId = value.paymentRefs[1].paymentId),
     ],
     ["recipient shape", (value: any) => (value.recipient.version = 1)],
+    ["recipient control character", (value: any) => (value.recipient.name = "Ada\nLovelace")],
     ["recipient byte limit", (value: any) => (value.recipient.name = "é".repeat(3_000))],
+    ["idempotency control character", (value: any) => (value.idempotencyKey = "folio\n1")],
     ["official invoice field", (value: any) => (value.invoiceNumber = "INV-1")],
   ])("rejects unsafe %s evidence", (_label, change) => {
     const value = folioWrite();

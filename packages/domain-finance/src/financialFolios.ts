@@ -184,7 +184,7 @@ export function parseFinanceFolioWrite(
   const expectedRevision = value.expectedRevision;
   if (
     !canonicalUuid(value.commandId) ||
-    !trimmed(value.idempotencyKey, 1, 200) ||
+    !clean(value.idempotencyKey, 1, 200) ||
     (action === "create" ? expectedRevision !== undefined : !revision(expectedRevision)) ||
     !(value.bookingId === undefined || canonicalUuid(value.bookingId)) ||
     !recipient(value.recipient) ||
@@ -239,7 +239,7 @@ export function parseFinanceFolioRevisionCommand(
   if (
     !exact(value, ["commandId", "idempotencyKey", "expectedRevision"]) ||
     !canonicalUuid(value.commandId) ||
-    !trimmed(value.idempotencyKey, 1, 200) ||
+    !clean(value.idempotencyKey, 1, 200) ||
     !revision(value.expectedRevision)
   )
     return null;
@@ -481,7 +481,7 @@ function has(value: Record<string, unknown>, keys: readonly string[]): boolean {
 function recipient(value: unknown): value is FinanceFolioRecipient {
   if (
     !exact(value, ["name", "email"]) ||
-    !trimmed(value.name, 1, 4_000) ||
+    !clean(value.name, 1, 4_000) ||
     !(value.email === null || (trimmed(value.email, 3, 320) && value.email.includes("@")))
   )
     return false;
@@ -505,8 +505,7 @@ function parseLineWrite(value: unknown, from: string, to: string): FinanceFolioL
     Number(value.position) < 1 ||
     Number(value.position) > 1_000 ||
     !FINANCE_FOLIO_LINE_KINDS.includes(value.kind as FinanceFolioLineKind) ||
-    !trimmed(value.description, 1, 500) ||
-    /[\p{Cc}]/u.test(value.description) ||
+    !clean(value.description, 1, 500) ||
     !localDate(value.serviceOn) ||
     value.serviceOn < from ||
     value.serviceOn > to ||
@@ -575,6 +574,9 @@ function trimmed(value: unknown, min: number, max: number): value is string {
     value.length >= min &&
     value.length <= max
   );
+}
+function clean(value: unknown, min: number, max: number): value is string {
+  return trimmed(value, min, max) && !/[\p{Cc}]/u.test(value);
 }
 function oneOf<const T extends readonly string[]>(value: unknown, values: T): T[number] | null {
   return typeof value === "string" && values.includes(value) ? (value as T[number]) : null;
