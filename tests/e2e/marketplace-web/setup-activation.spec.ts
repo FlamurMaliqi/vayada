@@ -828,6 +828,71 @@ test.describe("marketplace-web shared setup activation", () => {
     expect(paymentWrite?.paymentSettings).not.toHaveProperty("supportedCurrencies");
   });
 
+  test("refreshes canonical Stripe readiness once on the exact Marketplace return", async ({
+    page,
+    baseURL,
+  }) => {
+    await primeBrowserState(page, true);
+    await mockAuthSession(page);
+    await mockSharedSetupStatus(page, sharedRoadmapStatus("payment"));
+    let reconciled = false;
+    let reconciliationCalls = 0;
+    let paymentSettingsReads = 0;
+    let otherProviderWrites = 0;
+    await page.route(
+      new RegExp(`/api/finance/properties/${propertyId}/payment-settings$`),
+      async (route) => {
+        if (route.request().method() === "OPTIONS") {
+          await fulfillCorsPreflight(route);
+          return;
+        }
+        paymentSettingsReads += 1;
+        await route.fulfill({
+          status: 200,
+          headers: corsHeaders(route),
+          json: { paymentSettings: stripePaymentSettings(reconciled) },
+        });
+      },
+    );
+    await page.route(
+      new RegExp(`/api/finance/properties/${propertyId}/provider-accounts/`),
+      async (route) => {
+        if (route.request().method() === "OPTIONS") {
+          await fulfillCorsPreflight(route);
+          return;
+        }
+        if (!route.request().url().endsWith("/stripe/reconcile")) {
+          otherProviderWrites += 1;
+          await route.fulfill({ status: 500, headers: corsHeaders(route), json: {} });
+          return;
+        }
+        reconciliationCalls += 1;
+        const body = route.request().postDataJSON() as Record<string, unknown>;
+        expect(body).toEqual({
+          commandId: expect.stringMatching(/^stripe-onboarding-.+:attempt:1$/),
+          idempotencyKey: body.commandId,
+        });
+        expect(body).not.toHaveProperty("providerAccountId");
+        reconciled = true;
+        await route.fulfill({
+          status: 200,
+          headers: corsHeaders(route),
+          json: { propertyId, providerAccount: { ready: true } },
+        });
+      },
+    );
+
+    await page.goto(`${setupUrl(baseURL)}&propertyId=${propertyId}&step=payments&stripe=return`);
+    const currentStep = page.locator('section[aria-labelledby="current-setup-step-title"]');
+    await expect(currentStep.getByText("Stripe is connected.")).toBeVisible();
+
+    expect(reconciliationCalls).toBe(1);
+    expect(paymentSettingsReads).toBe(2);
+    expect(otherProviderWrites).toBe(0);
+    await expect(page).toHaveURL(new RegExp(`propertyId=${propertyId}.*step=payments`));
+    expect(page.url()).not.toContain("stripe=");
+  });
+
   test("inherits currency and can add another room type before continuing", async ({
     page,
     baseURL,
@@ -2568,6 +2633,26 @@ function sharedRoadmapStatus(
       reasonCode: null,
     },
   });
+}
+
+function stripePaymentSettings(ready: boolean) {
+  return {
+    paymentsEnabled: true,
+    paymentProvider: "stripe",
+    acceptedMethods: ["card"],
+    defaultCurrency: "EUR",
+    supportedCurrencies: ["EUR"],
+    depositPolicy: {},
+    requiresManualReview: false,
+    providerAccount: {
+      providerAccountId: "stripe-account-1",
+      provider: "stripe",
+      status: ready ? "active" : "setup_incomplete",
+      onboardingStatus: ready ? "completed" : "invited",
+      chargesEnabled: ready,
+      payoutsEnabled: ready,
+    },
+  };
 }
 
 function operationsOnlyStatus(
