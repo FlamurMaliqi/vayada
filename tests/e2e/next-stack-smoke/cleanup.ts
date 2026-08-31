@@ -112,6 +112,14 @@ export async function cleanupSmokeResources(
   for (const propertyId of new Set(retirementPropertyIds)) {
     try {
       if (!platformAdmin) throw new Error("Synthetic Platform Admin was not created.");
+      await recoverSyntheticSmokeBookings(
+        request,
+        environment,
+        platformAdmin,
+        environment.runId,
+        propertyId,
+        smokeRecoveryReceipt(environment, environment.runId, propertyId),
+      );
       await retireSmokeProperty(request, environment, platformAdmin, propertyId);
     } catch (error) {
       errors.push(error);
@@ -283,15 +291,13 @@ export async function recoverSmokeProperty(
     await deleteSyntheticPlatformAdmin(request, environment, workos, failedRunId);
     recoveryAdmin = await createSyntheticPlatformAdmin(request, environment, failedRunId);
     if (!environment.recoveryReceipt) throw new Error("Synthetic recovery receipt is missing.");
-    await targetApi(request, recoveryAdmin.accessToken).json(
-      "POST",
-      "/api/platform/admin/bookings/recover-next-stack-smoke",
-      {
-        emailDomain: environment.emailDomain,
-        propertyId,
-        recoveryReceipt: environment.recoveryReceipt,
-        runId: failedRunId,
-      },
+    await recoverSyntheticSmokeBookings(
+      request,
+      environment,
+      recoveryAdmin,
+      failedRunId,
+      propertyId,
+      environment.recoveryReceipt,
     );
     await retireSmokeProperty(request, environment, recoveryAdmin, propertyId);
   } catch (error) {
@@ -309,6 +315,25 @@ export async function recoverSmokeProperty(
   if (errors.length > 1) {
     throw new AggregateError(errors, `Recovery failed for synthetic property ${propertyId}.`);
   }
+}
+
+async function recoverSyntheticSmokeBookings(
+  request: APIRequestContext,
+  environment: SmokeEnvironment,
+  platformAdmin: SyntheticPlatformAdmin,
+  runId: string,
+  propertyId: string,
+  recoveryReceipt: string,
+): Promise<void> {
+  await targetApi(
+    request,
+    await authenticateSyntheticPlatformAdmin(request, platformAdmin, environment.password),
+  ).json("POST", "/api/platform/admin/bookings/recover-next-stack-smoke", {
+    emailDomain: environment.emailDomain,
+    propertyId,
+    recoveryReceipt,
+    runId,
+  });
 }
 
 async function retireSmokeProperty(
