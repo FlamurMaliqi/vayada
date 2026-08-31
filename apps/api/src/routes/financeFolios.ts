@@ -1,8 +1,11 @@
-import { UnauthorizedError } from "@vayada/backend-auth";
+import { UnauthorizedError, type RequestContext } from "@vayada/backend-auth";
 import { AuthorizationError } from "@vayada/backend-authorization";
 import {
   PMS_FINANCIALS_CONTRACT_VERSION,
   parseFinanceFolioQuery,
+  parseFinanceFolioRevisionCommand,
+  parseFinanceFolioWrite,
+  type FinanceCommandAudit,
   type FinanceFolioDetailResponse,
   type FinanceFolioListResponse,
   type FinanceFolioQuery,
@@ -10,6 +13,12 @@ import {
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
+import {
+  type FinanceFolioCommandResult,
+  type CreateFinanceFolioCommand,
+  type CorrectFinanceFolioCommand,
+  type TransitionFinanceFolioCommand,
+} from "../domains/financeFolioCommandRepository.js";
 import {
   canonicalFinanceFolioZone,
   FinanceFolioCursorError,
@@ -20,9 +29,15 @@ import {
 import { enforceRoutePolicy } from "./policy.js";
 
 type Params = { propertyId: string; folioId?: string };
-type Scope = { propertyId: string };
+type Scope = { context: RequestContext; propertyId: string };
 export type FinanceFolioRoutesOptions = {
   repository: Pick<FinanceFolioReadRepository, "list" | "detail">;
+  commands?: {
+    create(command: CreateFinanceFolioCommand): Promise<FinanceFolioCommandResult>;
+    correct(command: CorrectFinanceFolioCommand): Promise<FinanceFolioCommandResult>;
+    ready(command: TransitionFinanceFolioCommand): Promise<FinanceFolioCommandResult>;
+    archive(command: TransitionFinanceFolioCommand): Promise<FinanceFolioCommandResult>;
+  };
 };
 
 const ROOT = "/finance/properties/:propertyId/financials/folios";
@@ -33,9 +48,10 @@ export async function registerFinanceFolioRoutes(
   options: FinanceFolioRoutesOptions,
 ): Promise<void> {
   const scopes = new WeakMap<FastifyRequest, Scope>();
-  const authorize = authorization(scopes);
+  const read = authorization(scopes, "pms.finance.read");
+  const write = authorization(scopes, "pms.finance.manage");
 
-  app.get(ROOT, { onRequest: authorize }, async (request, reply) =>
+  app.get(ROOT, { onRequest: read }, async (request, reply) =>
     safe(reply, async () => {
       const query = parseFinanceFolioQuery(request.query);
       if (!query) return bad(reply);
@@ -45,7 +61,7 @@ export async function registerFinanceFolioRoutes(
     }),
   );
 
-  app.get(`${ROOT}/:folioId`, { onRequest: authorize }, async (request, reply) =>
+  app.get(`${ROOT}/:folioId`, { onRequest: read }, async (request, reply) =>
     safe(reply, async () => {
       const folioId = canonicalUuid((request.params as Params).folioId);
       if (!folioId || !empty(request.query)) return bad(reply);
@@ -54,14 +70,67 @@ export async function registerFinanceFolioRoutes(
       return value ? reply.send(detailResponse(value, propertyId)) : missing(reply);
     }),
   );
+
+  if (!options.commands) return;
+  app.post(ROOT, { onRequest: write }, async (request, reply) =>
+    safe(reply, async () => {
+      const value = parseFinanceFolioWrite(request.body, "create");
+      if (!empty(request.query) || !value || !headerMatches(request, value.idempotencyKey))
+        return bad(reply);
+      const current = scopes.get(request)!;
+      return commandResponse(
+        reply,
+        current,
+        value.commandId,
+        await options.commands!.create({
+          ...value,
+          propertyId: current.propertyId,
+          audit: audit(current, "finance.folio.create"),
+        }),
+      );
+    }),
+  );
+  app.patch(`${ROOT}/:folioId`, { onRequest: write }, async (request, reply) =>
+    safe(reply, async () => {
+      const value = parseFinanceFolioWrite(request.body, "correct");
+      const folioId = canonicalUuid((request.params as Params).folioId);
+      if (
+        !empty(request.query) ||
+        !value ||
+        !folioId ||
+        !headerMatches(request, value.idempotencyKey)
+      )
+        return bad(reply);
+      const current = scopes.get(request)!;
+      return commandResponse(
+        reply,
+        current,
+        folioId,
+        await options.commands!.correct({
+          ...value,
+          folioId,
+          propertyId: current.propertyId,
+          audit: audit(current, "finance.folio.correct"),
+        }),
+      );
+    }),
+  );
+  app.post(`${ROOT}/:folioId/ready`, { onRequest: write }, async (request, reply) =>
+    transition(request, reply, scopes, options.commands!, "ready"),
+  );
+  app.delete(`${ROOT}/:folioId`, { onRequest: write }, async (request, reply) =>
+    transition(request, reply, scopes, options.commands!, "archive"),
+  );
 }
 
-function authorization(scopes: WeakMap<FastifyRequest, Scope>) {
+function authorization(
+  scopes: WeakMap<FastifyRequest, Scope>,
+  permission: "pms.finance.read" | "pms.finance.manage",
+) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const permission = "pms.finance.read" as const;
-      const base = enforceRoutePolicy(request, { permission });
-      if (base.selectedOrganization.kind !== "hotel_group") throw new AuthorizationError();
+      let context = enforceRoutePolicy(request, { permission });
+      if (context.selectedOrganization.kind !== "hotel_group") throw new AuthorizationError();
       const propertyId = canonicalUuid((request.params as Partial<Params>).propertyId);
       if (!propertyId) return void bad(reply);
       const resource = {
@@ -70,13 +139,13 @@ function authorization(scopes: WeakMap<FastifyRequest, Scope>) {
         resourceId: propertyId,
       };
       for (const key of ["property-management", "module:financials"])
-        enforceRoutePolicy(request, {
+        context = enforceRoutePolicy(request, {
           permission,
           entitlement: { product: "pms", key, resource },
           resource: { ...resource, allowedRelationships: ["owner", "finance_manager"] },
         });
       reply.header("Cache-Control", "private, no-store").header("Vary", "Origin, Authorization");
-      scopes.set(request, { propertyId });
+      scopes.set(request, { context, propertyId });
     } catch (cause) {
       if (cause instanceof UnauthorizedError)
         return void reply.status(401).send({ code: "unauthenticated" });
@@ -85,6 +154,110 @@ function authorization(scopes: WeakMap<FastifyRequest, Scope>) {
       throw cause;
     }
   };
+}
+
+async function transition(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  scopes: WeakMap<FastifyRequest, Scope>,
+  commands: NonNullable<FinanceFolioRoutesOptions["commands"]>,
+  action: "ready" | "archive",
+) {
+  return safe(reply, async () => {
+    const value = parseFinanceFolioRevisionCommand(request.body);
+    const folioId = canonicalUuid((request.params as Params).folioId);
+    if (
+      !empty(request.query) ||
+      !value ||
+      !folioId ||
+      !headerMatches(request, value.idempotencyKey)
+    )
+      return bad(reply);
+    const current = scopes.get(request)!;
+    return commandResponse(
+      reply,
+      current,
+      folioId,
+      await commands[action]({
+        ...value,
+        folioId,
+        propertyId: current.propertyId,
+        audit: audit(current, `finance.folio.${action}`),
+      }),
+    );
+  });
+}
+
+function commandResponse(
+  reply: FastifyReply,
+  scope: Scope,
+  expectedFolioId: string,
+  value: unknown,
+) {
+  if (!record(value) || typeof value.status !== "string") return commandViolation();
+  if (value.status === "not_found")
+    return exact(value, ["status"]) ? missing(reply) : commandViolation();
+  if (value.status === "invalid_evidence")
+    return exact(value, ["status"])
+      ? reply.status(422).send({ code: "invalid_evidence" })
+      : commandViolation();
+  if (value.status === "conflict") {
+    const reasons = [
+      "revision_conflict",
+      "revision_exhausted",
+      "invalid_state",
+      "idempotency_key_reused",
+      "command_in_progress",
+    ];
+    return exact(value, ["status", "reason"]) &&
+      typeof value.reason === "string" &&
+      reasons.includes(value.reason)
+      ? reply.status(409).send({ code: value.reason })
+      : commandViolation();
+  }
+  if (
+    !["created", "updated", "replayed"].includes(value.status) ||
+    !exact(value, ["status", "folioId", "revision"]) ||
+    typeof value.folioId !== "string" ||
+    value.folioId !== expectedFolioId ||
+    typeof value.revision !== "number" ||
+    !Number.isSafeInteger(value.revision) ||
+    value.revision < 1 ||
+    value.revision > 2_147_483_647
+  )
+    throw new Error("finance_folio_port_contract_violation");
+  return reply.status(value.status === "created" ? 201 : 200).send({
+    contractVersion: PMS_FINANCIALS_CONTRACT_VERSION,
+    propertyId: scope.propertyId,
+    resourceId: value.folioId,
+    revision: value.revision,
+    outcome: value.status,
+  });
+}
+
+function commandViolation(): never {
+  throw new Error("finance_folio_port_contract_violation");
+}
+
+const audit = (scope: Scope, reason: string): FinanceCommandAudit => ({
+  actor: {
+    kind: "user",
+    userId: scope.context.actor.internalUserId,
+    organizationId: scope.context.selectedOrganization.organizationId,
+  },
+  requestId: scope.context.audit.requestId,
+  correlationId: scope.context.audit.correlationId,
+  reason,
+  requestedAt: scope.context.audit.receivedAt,
+});
+
+function headerMatches(request: FastifyRequest, key: string) {
+  const header = request.headers["idempotency-key"];
+  if (header === undefined) return true;
+  const count = request.raw.rawHeaders.filter(
+    (value, index) => index % 2 === 0 && value.toLowerCase() === "idempotency-key",
+  ).length;
+  return count === 1 && typeof header === "string" && header === key;
 }
 
 // Runtime decoding protects the HTTP boundary even when an injected repository violates its TS type.
@@ -165,6 +338,10 @@ const canonicalUuid = (value: unknown) =>
   typeof value === "string" && UUID.test(value.toLowerCase()) ? value.toLowerCase() : null;
 const empty = (value: unknown) =>
   !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0;
+const record = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const exact = (value: Record<string, unknown>, keys: readonly string[]) =>
+  Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 // prettier-ignore
 function localDate(value: string) { if (!/^[1-9]\d{3}-\d{2}-\d{2}$/.test(value)) return false; const parsed = new Date(`${value}T00:00:00Z`); return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value; }
 function trimmed(value: string) {
