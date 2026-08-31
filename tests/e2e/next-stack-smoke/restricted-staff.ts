@@ -98,7 +98,6 @@ export async function runRestrictedStaffAcceptance(args: RestrictedStaffArgs): P
         const accepted = await workos.json<Record<string, unknown>>(
           "POST",
           `/user_management/invitations/${encodeURIComponent(providerInvitationId)}/accept`,
-          null,
         );
         expect(accepted.id).toBe(providerInvitationId);
         expect(accepted.email).toBe(staff.email);

@@ -183,7 +183,6 @@ export async function cleanupSmokeResources(
         const revoked = await workos.json<Record<string, unknown>>(
           "POST",
           `/user_management/invitations/${encodeURIComponent(stringField(pendingInvitation, "id"))}/revoke`,
-          null,
         );
         if (revoked.state !== "revoked") throw new Error("Staff invitation revocation failed.");
       }
