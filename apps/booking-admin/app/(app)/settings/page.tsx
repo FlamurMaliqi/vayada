@@ -58,6 +58,7 @@ import {
   readSettingsSection,
   type SettingsSectionId,
 } from "@/lib/utils/settingsSectionUrl";
+import { continueStripeAfterSavingSettings } from "@/lib/utils/stripeOnboarding";
 
 // Audit-driven section IDs (VAY-400):
 // - "payments" separates Stripe Connect + Xendit from billing (billing = what
@@ -478,13 +479,20 @@ export default function SettingsPage() {
         setPaymentError("Select a hotel before creating a Stripe account.");
         return;
       }
-      const propertyLink = await getBookingHotelPropertyLink({ hotelId });
-      const result = await createFinanceStripeProviderAccount({
-        propertyId: propertyLink.propertyId,
-        email: connectEmail,
-        country: connectCountry,
-        commandPrefix: `settings-stripe-account-${hotelId}`,
+      const result = await continueStripeAfterSavingSettings({
+        saveSettings: () => savePaymentProviderSettings(),
+        continueStripe: (propertyId) =>
+          createFinanceStripeProviderAccount({
+            propertyId,
+            email: connectEmail,
+            country: connectCountry,
+            commandPrefix: `settings-stripe-account-${hotelId}`,
+          }),
       });
+      if (!result) {
+        stripeTab.close();
+        return;
+      }
       setStripeAccountId(result.providerAccountId);
       stripeTab.location.assign(result.onboardingUrl);
     } catch (err: unknown) {
@@ -492,7 +500,7 @@ export default function SettingsPage() {
       const msg =
         err instanceof TypeError
           ? t("settings.billing.errorPaymentServerUnreachable")
-          : errorMessage(err, t("settings.billing.errorAccountCreate"));
+          : t("settings.billing.errorAccountCreate");
       setPaymentError(msg);
     } finally {
       setCreatingAccount(false);
@@ -520,9 +528,9 @@ export default function SettingsPage() {
         commandPrefix: `settings-stripe-onboarding-${hotelId}`,
       });
       stripeTab.location.assign(link.onboardingUrl);
-    } catch (err: unknown) {
+    } catch {
       stripeTab.close();
-      setPaymentError(errorMessage(err, t("settings.billing.errorOnboardingLink")));
+      setPaymentError(t("settings.billing.errorOnboardingLink"));
     }
   };
 
@@ -558,7 +566,7 @@ export default function SettingsPage() {
     }
   };
 
-  const savePaymentProviderSettings = async (showPageFeedback = false): Promise<boolean> => {
+  const savePaymentProviderSettings = async (showPageFeedback = false): Promise<string | null> => {
     setSavingPayment(true);
     setPaymentError("");
     setPaymentSuccess("");
@@ -569,16 +577,16 @@ export default function SettingsPage() {
     try {
       if (!paymentSettingsLoaded) {
         fail("Payment settings did not load. Refresh before saving payments.");
-        return false;
+        return null;
       }
       if (paymentProvider === "xendit" || paymentProvider === "vayada") {
         fail(`${paymentProvider === "xendit" ? "Xendit" : "vayada Payments"} is coming soon.`);
-        return false;
+        return null;
       }
       const hotelId = readBookingHotelId(settings);
       if (!hotelId) {
         fail("Select a hotel before saving payment settings.");
-        return false;
+        return null;
       }
       const propertyLink = await getBookingHotelPropertyLink({ hotelId });
       await updateFinancePaymentSettings({
@@ -605,10 +613,10 @@ export default function SettingsPage() {
       const message = t("settings.billing.paymentSettingsSaved");
       setPaymentSuccess(message);
       if (showPageFeedback) setFeedback({ type: "success", message });
-      return true;
-    } catch (err: unknown) {
-      fail(err instanceof Error ? err.message : t("settings.billing.errorPaymentSaveFailed"));
-      return false;
+      return propertyLink.propertyId;
+    } catch {
+      fail(t("settings.billing.errorPaymentSaveFailed"));
+      return null;
     } finally {
       setSavingPayment(false);
     }

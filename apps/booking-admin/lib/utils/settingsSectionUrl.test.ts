@@ -26,6 +26,10 @@ describe("settings section URLs", () => {
     expect(readSettingsSection("?billing=success&section=payments")).toBe("payments");
   });
 
+  it.each(["return", "refresh"])("opens Payments after a Stripe %s", (stripe) => {
+    expect(readSettingsSection(`?section=payments&stripe=${stripe}`)).toBe("payments");
+  });
+
   it("changes only the section query parameter", () => {
     expect(
       buildSettingsSectionUrl(
