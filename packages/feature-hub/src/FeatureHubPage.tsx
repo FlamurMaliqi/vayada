@@ -82,6 +82,11 @@ export function FeatureHubPage({
       modulesForProduct(key).some((module) => supportedModuleSet.has(module.id)),
     );
   }, [initialProduct, products, supportedModuleSet]);
+  const displayedProduct = availableProducts.includes(product)
+    ? product
+    : (availableProducts[0] ?? product);
+  const waitingForInventory = loading && availableProducts.length === 0;
+  const inventoryFailed = Boolean(error) && availableProducts.length === 0;
 
   useEffect(() => {
     if (availableProducts.length > 0 && !availableProducts.includes(product)) {
@@ -96,13 +101,13 @@ export function FeatureHubPage({
   }, [notice]);
 
   const productActiveCount = useMemo(
-    () => activeModuleCount(product, activeModuleIds),
-    [product, activeModuleIds],
+    () => activeModuleCount(displayedProduct, activeModuleIds),
+    [displayedProduct, activeModuleIds],
   );
 
   const filteredModules = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return modulesForProduct(product).filter((module) => {
+    return modulesForProduct(displayedProduct).filter((module) => {
       if (!supportedModuleSet.has(module.id)) return false;
       const matchesCategory = category === "All" || module.category === category;
       const matchesSearch =
@@ -113,7 +118,7 @@ export function FeatureHubPage({
           .includes(normalized);
       return matchesCategory && matchesSearch;
     });
-  }, [category, product, query, supportedModuleSet]);
+  }, [category, displayedProduct, query, supportedModuleSet]);
 
   const toggleModule = async (module: FeatureModule, isActive: boolean) => {
     if (!isActive) {
@@ -176,7 +181,7 @@ export function FeatureHubPage({
                     onClick={() => setProduct(key)}
                     className={cx(
                       "inline-flex min-h-9 items-center justify-center rounded-md border px-3 text-[13px] font-medium transition-colors",
-                      product === key
+                      displayedProduct === key
                         ? "border-primary-600 bg-primary-600 text-white"
                         : "border-gray-200 bg-white text-gray-700 hover:border-gray-400",
                     )}
@@ -248,7 +253,15 @@ export function FeatureHubPage({
                 </div>
               </div>
 
-              {filteredModules.length === 0 ? (
+              {waitingForInventory ? (
+                <div
+                  role="status"
+                  className="flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-5 py-12 text-sm text-gray-500"
+                >
+                  <ArrowPathIcon className="h-4 w-4 animate-spin" />
+                  Loading modules...
+                </div>
+              ) : inventoryFailed ? null : filteredModules.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-gray-300 bg-white px-5 py-12 text-center">
                   <SparklesIcon className="mx-auto h-8 w-8 text-gray-400" />
                   <p className="mt-3 text-sm font-semibold text-gray-900">
@@ -284,9 +297,11 @@ export function FeatureHubPage({
               )}
             </main>
 
-            <aside className="lg:sticky lg:top-4 lg:self-start">
-              <NavigationPreview product={product} activeModuleIds={activeModuleIds} />
-            </aside>
+            {!waitingForInventory && !inventoryFailed && (
+              <aside className="lg:sticky lg:top-4 lg:self-start">
+                <NavigationPreview product={displayedProduct} activeModuleIds={activeModuleIds} />
+              </aside>
+            )}
           </div>
         </div>
       </div>
