@@ -16,6 +16,8 @@ import type {
 } from "@vayada/backend-auth";
 import pg from "pg";
 
+import { lockWorkosProviderIdentity } from "./workosIdentityLock.js";
+
 type PgIdentityLifecycleCommandBusConfig = {
   connectionString: string;
   max?: number;
@@ -23,7 +25,7 @@ type PgIdentityLifecycleCommandBusConfig = {
 
 export function createPgIdentityLifecycleCommandBus(
   config: PgIdentityLifecycleCommandBusConfig,
-): IdentityLifecycleCommandBus {
+): IdentityLifecycleCommandBus & { close(): Promise<void> } {
   const pool = new pg.Pool({
     connectionString: config.connectionString,
     max: config.max,
@@ -56,6 +58,7 @@ export function createPgIdentityLifecycleCommandBus(
           );
       }
     },
+    close: () => pool.end(),
   };
 }
 
@@ -68,6 +71,7 @@ async function createIdentityUser(
     await client.query("BEGIN");
     const existingProviderUserId = command.payload.providerIdentity?.providerUserId;
     if (existingProviderUserId) {
+      await lockWorkosProviderIdentity(client, existingProviderUserId);
       const existingIdentity = await client.query<{ user_id: string }>(
         `SELECT user_id
          FROM identity.external_identities

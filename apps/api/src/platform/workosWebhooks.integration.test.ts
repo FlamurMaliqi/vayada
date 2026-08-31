@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
+import type { CreateIdentityUserCommand } from "@vayada/backend-auth";
 
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { buildApp } from "../app.js";
 import { staffInvitationIdentityNotFoundReasonCode } from "../routes/workosWebhooks.js";
-import { grantIdentityAccessWithClient } from "./identityLifecycle.js";
+import {
+  createPgIdentityLifecycleCommandBus,
+  grantIdentityAccessWithClient,
+} from "./identityLifecycle.js";
 import { createPgWorkosWebhookStore } from "./workosWebhooks.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
@@ -28,6 +32,112 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
   afterAll(async () => {
     await store.close();
     await admin.end();
+  });
+
+  it("converges concurrent AuthKit JIT and WorkOS webhook user creation", async () => {
+    const suffix = randomUUID();
+    const workosUserId = `user_vay_1085_race_${suffix}`;
+    const email = `vay-1085-race-${suffix}@example.test`;
+    const applicationName = `vay-1085-identity-race-${suffix}`;
+    const testUrl = new URL(TEST_DATABASE_URL!);
+    testUrl.searchParams.set("application_name", applicationName);
+    const connectionString = testUrl.toString();
+    const lifecycle = createPgIdentityLifecycleCommandBus({ connectionString, max: 1 });
+    const webhook = createPgWorkosWebhookStore({ connectionString, max: 1 });
+    const gate = new pg.Client({ connectionString: TEST_DATABASE_URL! });
+    const writers: Promise<unknown>[] = [];
+    let gateOpen = false;
+
+    const command: CreateIdentityUserCommand = {
+      commandType: "identity.user.create",
+      commandId: randomUUID(),
+      idempotencyKey: `workos-jit:${workosUserId}`,
+      audit: {
+        actor: { kind: "system", service: "apps/api-authkit" },
+        source: "web",
+        requestId: randomUUID(),
+        reason: "AuthKit SSO/JIT first arrival",
+        requestedAt: new Date().toISOString(),
+      },
+      payload: {
+        email,
+        name: "VAY-1085 Race Test",
+        initialStatus: "active",
+        providerIdentity: {
+          provider: "workos",
+          providerUserId: workosUserId,
+          providerEmailVerified: true,
+        },
+      },
+    };
+
+    try {
+      await gate.connect();
+      await gate.query("BEGIN");
+      await gate.query("LOCK TABLE identity.users IN SHARE MODE");
+      gateOpen = true;
+
+      const lifecycleWrite = lifecycle.execute(command);
+      writers.push(lifecycleWrite);
+      await expect.poll(() => waitingLockCount(admin, applicationName), { timeout: 5_000 }).toBe(1);
+
+      const webhookWrite = webhook.upsertWorkosUser({
+        workosUserId,
+        email,
+        name: "VAY-1085 Race Test",
+        emailVerified: true,
+        status: "active",
+        rawProfile: { id: workosUserId },
+      });
+      writers.push(webhookWrite);
+      await expect.poll(() => waitingLockCount(admin, applicationName), { timeout: 5_000 }).toBe(2);
+
+      await gate.query("COMMIT");
+      gateOpen = false;
+
+      const [lifecycleResult, webhookUserId] = await Promise.all([lifecycleWrite, webhookWrite]);
+      expect(lifecycleResult.userId).toBe(webhookUserId);
+      expect(
+        (
+          await admin.query(
+            `SELECT users.id
+             FROM identity.users AS users
+             JOIN identity.external_identities AS external
+               ON external.user_id = users.id
+             WHERE users.email = $1
+               AND external.provider = 'workos'
+               AND external.provider_user_id = $2`,
+            [email, workosUserId],
+          )
+        ).rows,
+      ).toEqual([{ id: webhookUserId }]);
+      expect(
+        (
+          await admin.query(
+            `SELECT id
+             FROM identity.users
+             WHERE lower(btrim(email)) = lower(btrim($1))
+             ORDER BY id`,
+            [email],
+          )
+        ).rows,
+      ).toEqual([{ id: webhookUserId }]);
+    } finally {
+      if (gateOpen) await gate.query("ROLLBACK");
+      await Promise.allSettled(writers);
+      await admin.query(
+        `DELETE FROM identity.auth_reconciliation_events
+         WHERE provider = 'workos' AND provider_event_id = $1`,
+        [workosUserId],
+      );
+      await admin.query(
+        `DELETE FROM identity.external_identities
+         WHERE provider = 'workos' AND provider_user_id = $1`,
+        [workosUserId],
+      );
+      await admin.query("DELETE FROM identity.users WHERE email = $1", [email]);
+      await Promise.all([lifecycle.close(), webhook.close(), gate.end()]);
+    }
   });
 
   it("persists a failed reconciliation once and deduplicates its retry", async () => {
@@ -748,6 +858,16 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL WorkOS webhook store", () => {
     });
   }
 });
+
+async function waitingLockCount(client: pg.Client, applicationName: string): Promise<number> {
+  const result = await client.query<{ count: number }>(
+    `SELECT count(*)::int AS count
+     FROM pg_stat_activity
+     WHERE application_name = $1 AND wait_event_type = 'Lock'`,
+    [applicationName],
+  );
+  return result.rows[0]?.count ?? 0;
+}
 
 function assertSafeTestDatabase(connectionString: string): void {
   const url = new URL(connectionString);

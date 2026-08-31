@@ -14,6 +14,7 @@ import type {
   WorkosWebhookStore,
   WorkosWebhookVerifier,
 } from "../routes/workosWebhooks.js";
+import { lockWorkosProviderIdentity } from "./workosIdentityLock.js";
 
 type PgWorkosWebhookStoreConfig = {
   connectionString: string;
@@ -513,6 +514,7 @@ async function upsertWorkosUser(pool: pg.Pool, input: WorkosUserPayload): Promis
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await lockWorkosProviderIdentity(client, input.workosUserId);
     const existingUserId = await findUserIdByWorkosUserId(client, input.workosUserId);
     if (existingUserId) {
       await client.query(
