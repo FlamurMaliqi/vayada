@@ -3,55 +3,18 @@
 import { useState, useEffect, use } from "react";
 import { ArrowLeftIcon, TrashIcon } from "@heroicons/react/24/outline";
 import Link from "next/link";
-import { roomsService, RoomType, RoomTypeUpdate, type PropertyPlan } from "@/services/rooms";
+import {
+  roomsService,
+  roomTypeUpdateForm,
+  RoomType,
+  RoomTypeUpdate,
+  type PropertyPlan,
+} from "@/services/rooms";
 import RoomTypeForm from "@/components/rooms/RoomTypeForm";
 import ConfirmDialog from "@/components/ConfirmDialog";
 
 const ROOM_TYPE_MUTATIONS_UNSUPPORTED_MESSAGE =
   "Room type deletion is not available on PMS next-stack yet.";
-
-function toRoomTypeUpdateForm(r: RoomType): RoomTypeUpdate {
-  return {
-    name: r.name,
-    category: r.category || "",
-    description: r.description,
-    shortDescription: r.shortDescription,
-    maxOccupancy: r.maxOccupancy,
-    maxAdults: r.maxAdults,
-    maxChildren: r.maxChildren,
-    bedrooms: r.bedrooms ?? 1,
-    bathrooms: r.bathrooms ?? 1,
-    size: r.size,
-    baseRate: r.baseRate,
-    nonRefundableRate: r.nonRefundableRate,
-    currency: r.currency,
-    locationAddress: r.locationAddress || "",
-    latitude: r.latitude,
-    longitude: r.longitude,
-    bedType: r.bedType,
-    totalRooms: r.totalRooms,
-    amenities: r.amenities,
-    features: r.features,
-    benefits: r.benefits,
-    images: r.images,
-    isActive: r.isActive,
-    sortOrder: r.sortOrder,
-    monthlyRates: r.monthlyRates || {},
-    dailyRates: r.dailyRates || {},
-    operatingPeriods: r.operatingPeriods || [],
-    seasons: r.seasons || [],
-    weekendSurcharge: r.weekendSurcharge || "+0%",
-    cancellationPolicy: r.cancellationPolicy || "Free until 7 days before",
-    flexibleRateEnabled: r.flexibleRateEnabled ?? true,
-    nonRefundableEnabled: r.nonRefundableEnabled ?? false,
-    nonRefundableDiscount: r.nonRefundableDiscount ?? 5,
-    nonRefundableCancellationPolicy:
-      r.nonRefundableCancellationPolicy || "Non-refundable from booking",
-    minimumAdvanceDays: r.minimumAdvanceDays ?? 0,
-    ratePaymentMethods: r.ratePaymentMethods ?? null,
-    mealPlans: r.mealPlans ?? [],
-  };
-}
 
 export default function EditRoomPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -71,7 +34,7 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
       .get(id)
       .then((r) => {
         setRoom(r);
-        setForm(toRoomTypeUpdateForm(r));
+        setForm(roomTypeUpdateForm(r));
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -85,7 +48,7 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
     try {
       const updated = await roomsService.update(id, form);
       setRoom(updated);
-      setForm(toRoomTypeUpdateForm(updated));
+      setForm(roomTypeUpdateForm(updated));
       setSuccess("Room type changes saved.");
     } catch (error) {
       setError(error instanceof Error ? error.message : "Failed to save room type changes.");

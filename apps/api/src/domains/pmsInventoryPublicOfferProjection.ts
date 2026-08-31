@@ -176,11 +176,25 @@ export const PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS = `
       rate_plan.code AS rate_plan_code,
       rate_plan.name AS rate_plan_name,
       rate_plan.rate_type,
-      rate_plan.cancellation_policy_snapshot,
+      COALESCE(
+        cancellation_extension.cancellation_terms,
+        rate_plan.cancellation_policy_snapshot
+      ) AS cancellation_policy_snapshot,
       CASE
-        WHEN rate_plan.cancellation_policy_snapshot ->> 'type' = 'free_until_days_before_arrival'
+        WHEN COALESCE(
+          cancellation_extension.cancellation_terms,
+          rate_plan.cancellation_policy_snapshot
+        ) ->> 'flexibleCancellationType' = 'partial_refund'
+          THEN 'Partial refund according to notice period.'
+        WHEN COALESCE(
+          cancellation_extension.cancellation_terms,
+          rate_plan.cancellation_policy_snapshot
+        ) ->> 'type' = 'free_until_days_before_arrival'
           THEN 'Free cancellation until '
-            || (rate_plan.cancellation_policy_snapshot ->> 'freeCancellationDeadlineDays')
+            || (COALESCE(
+              cancellation_extension.cancellation_terms,
+              rate_plan.cancellation_policy_snapshot
+            ) ->> 'freeCancellationDeadlineDays')
             || ' days before arrival.'
         WHEN rate_plan.rate_type = 'non_refundable' THEN 'Non-refundable.'
         ELSE profile.policies ->> 'cancellationSummary'
@@ -210,6 +224,11 @@ export const PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS = `
     JOIN pms.rate_plans rate_plan
       ON rate_plan.room_type_id = room_type.id
      AND rate_plan.property_id = room_type.property_id
+    LEFT JOIN pms.flexible_rate_plan_cancellation_extensions cancellation_extension
+      ON cancellation_extension.flexible_rate_plan_id = rate_plan.id
+     AND cancellation_extension.property_id = rate_plan.property_id
+     AND cancellation_extension.room_type_id = rate_plan.room_type_id
+     AND cancellation_extension.pricing_contract_version = rate_plan.pricing_contract_version
     LEFT JOIN LATERAL (
       SELECT rule.price_delta_amount, rule.min_stay_nights, rule.max_stay_nights
       FROM pms.rate_rules rule

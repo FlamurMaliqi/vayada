@@ -73,6 +73,14 @@ export type FlexibleCancellationTerms = {
   readonly freeCancellationDeadlineDays: number;
   readonly afterDeadlinePenalty: "full_booking_amount";
   readonly noShowPenalty: "full_booking_amount";
+  readonly text?: string;
+  readonly flexibleCancellationType?: "free" | "partial_refund";
+  readonly partialRefundCancelWindowDays?: number;
+  readonly partialRefundAmountPercent?: number;
+  readonly partialRefundTiers?: readonly {
+    readonly minDaysBeforeCheckIn: number;
+    readonly refundPercent: number;
+  }[];
 };
 
 export type UpsertFlexibleRatePlanCommand = PmsPricingCommandContext & {
@@ -351,13 +359,23 @@ export function parsePmsDecimalAmount(value: unknown): PmsDecimalAmount | null {
 }
 
 export function parseFlexibleCancellationTerms(value: unknown): FlexibleCancellationTerms | null {
+  const requiredKeys = [
+    "type",
+    "freeCancellationDeadlineDays",
+    "afterDeadlinePenalty",
+    "noShowPenalty",
+  ];
+  const extensionKeys = [
+    "text",
+    "flexibleCancellationType",
+    "partialRefundCancelWindowDays",
+    "partialRefundAmountPercent",
+    "partialRefundTiers",
+  ];
   if (
-    !isExactRecord(value, [
-      "type",
-      "freeCancellationDeadlineDays",
-      "afterDeadlinePenalty",
-      "noShowPenalty",
-    ]) ||
+    !isRecord(value) ||
+    !requiredKeys.every((key) => Object.hasOwn(value, key)) ||
+    !Object.keys(value).every((key) => requiredKeys.includes(key) || extensionKeys.includes(key)) ||
     value["type"] !== "free_until_days_before_arrival" ||
     !isIntegerInRange(value["freeCancellationDeadlineDays"], 0, 365) ||
     value["afterDeadlinePenalty"] !== "full_booking_amount" ||
@@ -365,11 +383,56 @@ export function parseFlexibleCancellationTerms(value: unknown): FlexibleCancella
   ) {
     return null;
   }
+  const cancellationType = value["flexibleCancellationType"];
+  if (
+    cancellationType !== undefined &&
+    cancellationType !== "free" &&
+    cancellationType !== "partial_refund"
+  ) {
+    return null;
+  }
+  const text = value["text"];
+  if (text !== undefined && (typeof text !== "string" || !text.trim())) return null;
+  const windowDays = value["partialRefundCancelWindowDays"];
+  const amountPercent = value["partialRefundAmountPercent"];
+  if (windowDays !== undefined && !isIntegerInRange(windowDays, 1, 365)) return null;
+  if (amountPercent !== undefined && !isIntegerInRange(amountPercent, 1, 99)) return null;
+  const rawTiers = value["partialRefundTiers"];
+  if (rawTiers !== undefined && (!Array.isArray(rawTiers) || rawTiers.length > 10)) return null;
+  const seenDays = new Set<number>();
+  const tiers = (rawTiers ?? []).map((tier) => {
+    if (
+      !isExactRecord(tier, ["minDaysBeforeCheckIn", "refundPercent"]) ||
+      !isIntegerInRange(tier["minDaysBeforeCheckIn"], 0, 365) ||
+      !isIntegerInRange(tier["refundPercent"], 0, 100) ||
+      seenDays.has(tier["minDaysBeforeCheckIn"])
+    ) {
+      return null;
+    }
+    seenDays.add(tier["minDaysBeforeCheckIn"]);
+    return Object.freeze({
+      minDaysBeforeCheckIn: tier["minDaysBeforeCheckIn"],
+      refundPercent: tier["refundPercent"],
+    });
+  });
+  if (tiers.some((tier) => tier === null)) return null;
+  if (cancellationType === "partial_refund" && tiers.length === 0) return null;
   return Object.freeze({
     type: "free_until_days_before_arrival",
     freeCancellationDeadlineDays: value["freeCancellationDeadlineDays"],
     afterDeadlinePenalty: "full_booking_amount",
     noShowPenalty: "full_booking_amount",
+    ...(text === undefined ? {} : { text }),
+    ...(cancellationType === undefined ? {} : { flexibleCancellationType: cancellationType }),
+    ...(windowDays === undefined ? {} : { partialRefundCancelWindowDays: windowDays }),
+    ...(amountPercent === undefined ? {} : { partialRefundAmountPercent: amountPercent }),
+    ...(rawTiers === undefined
+      ? {}
+      : {
+          partialRefundTiers: Object.freeze(
+            tiers as Array<Readonly<{ minDaysBeforeCheckIn: number; refundPercent: number }>>,
+          ),
+        }),
   });
 }
 

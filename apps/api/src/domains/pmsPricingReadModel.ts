@@ -73,10 +73,16 @@ const PLAN_SELECT = `SELECT
   plan.source_room_facts_revision AS "sourceRoomFactsRevision",
   plan.base_rate_amount::text AS "amountDecimal",
   plan.currency::text AS currency,
-  plan.cancellation_policy_snapshot AS "cancellationTerms",
+  COALESCE(cancellation_extension.cancellation_terms, plan.cancellation_policy_snapshot)
+    AS "cancellationTerms",
   plan.created_at AS "createdAt",
   plan.updated_at AS "updatedAt"
-FROM pms.rate_plans plan`;
+FROM pms.rate_plans plan
+LEFT JOIN pms.flexible_rate_plan_cancellation_extensions cancellation_extension
+  ON cancellation_extension.flexible_rate_plan_id = plan.id
+ AND cancellation_extension.property_id = plan.property_id
+ AND cancellation_extension.room_type_id = plan.room_type_id
+ AND cancellation_extension.pricing_contract_version = plan.pricing_contract_version`;
 
 const PRICING_SOURCES_SELECT = `WITH pricing_currency AS (
   ${CURRENCY_SELECT}

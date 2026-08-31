@@ -485,7 +485,7 @@ function PartialRefundTiersEditor({
         ))}
         {sorted.length === 0 && (
           <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-3 py-2 text-[11px] text-gray-500">
-            No tiers — every cancellation will be non-refundable. Add a tier to grant a refund.
+            Partial refund requires at least one tier. Add a tier before saving.
           </div>
         )}
       </div>

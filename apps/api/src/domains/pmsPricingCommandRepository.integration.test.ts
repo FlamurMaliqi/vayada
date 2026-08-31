@@ -95,7 +95,16 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS pricing command repository",
     await expect(repository.upsertFlexibleRatePlan(createPlan)).resolves.toEqual(createdPlan);
 
     const updatedPlan = await repository.upsertFlexibleRatePlan(
-      planCommand("plan-update", roomTypeId, 1, "0.10"),
+      planCommand("plan-update", roomTypeId, 1, "0.10", {
+        text: "Partial refund by notice period",
+        flexibleCancellationType: "partial_refund",
+        partialRefundCancelWindowDays: 30,
+        partialRefundAmountPercent: 50,
+        partialRefundTiers: [
+          { minDaysBeforeCheckIn: 30, refundPercent: 50 },
+          { minDaysBeforeCheckIn: 7, refundPercent: 20 },
+        ],
+      }),
     );
     expect(updatedPlan).toMatchObject({
       ok: true,
@@ -121,11 +130,50 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS pricing command repository",
       flexibleRatePlanRevision: "2",
       sourceRoomFactsRevision: "1",
       sourcePricingCurrencyRevision: "1",
+      cancellationPolicySnapshot: expect.objectContaining({
+        flexibleCancellationType: "partial_refund",
+        partialRefundTiers: [
+          { minDaysBeforeCheckIn: 30, refundPercent: 50 },
+          { minDaysBeforeCheckIn: 7, refundPercent: 20 },
+        ],
+      }),
+      baseCancellationPolicySnapshot: {
+        type: "free_until_days_before_arrival",
+        freeCancellationDeadlineDays: 7,
+        afterDeadlinePenalty: "full_booking_amount",
+        noShowPenalty: "full_booking_amount",
+      },
     });
+
+    for (const malformedTerms of [
+      { ...partialCancellationTerms(), flexibleCancellationType: null },
+      { ...partialCancellationTerms(), partialRefundTiers: [{ oops: true }] },
+      {
+        ...partialCancellationTerms(),
+        partialRefundTiers: [{ minDaysBeforeCheckIn: 366, refundPercent: 50 }],
+      },
+      {
+        ...partialCancellationTerms(),
+        partialRefundTiers: [
+          { minDaysBeforeCheckIn: 30, refundPercent: 50 },
+          { minDaysBeforeCheckIn: 30, refundPercent: 20 },
+        ],
+      },
+    ]) {
+      await expect(
+        admin.query(
+          `UPDATE pms.flexible_rate_plan_cancellation_extensions
+           SET cancellation_terms = $2::jsonb
+           WHERE flexible_rate_plan_id = $1::uuid`,
+          [planId, JSON.stringify(malformedTerms)],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+    }
     await expect(auditCount("pms.pricing_currency.upsert")).resolves.toBe(1);
     await expect(auditCount("pms.flexible_rate_plan.upsert")).resolves.toBe(3);
     await expect(eventCount()).resolves.toBe(3);
     await expect(outboxCount()).resolves.toBe(6);
+    await expect(distributionOutboxCount()).resolves.toBe(2);
     const payloads = await secretSafeEventPayloads();
     expect(
       payloads.every((payload) => {
@@ -585,14 +633,24 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS pricing command repository",
 
   async function readPlan(id: string) {
     const result = await admin.query(
-      `SELECT base_rate_amount::text AS "amountDecimal", currency::text AS currency,
-              meal_plan AS "mealPlan", payment_policy AS "paymentPolicy",
-              deposit_policy AS "depositPolicy", pricing_contract_version AS "contractVersion",
-              active,
-              flexible_rate_plan_revision::text AS "flexibleRatePlanRevision",
-              source_room_facts_revision::text AS "sourceRoomFactsRevision",
-              source_pricing_currency_revision::text AS "sourcePricingCurrencyRevision"
-       FROM pms.rate_plans WHERE property_id = $1::uuid AND id = $2::uuid`,
+      `SELECT plan.base_rate_amount::text AS "amountDecimal", plan.currency::text AS currency,
+              plan.meal_plan AS "mealPlan", plan.payment_policy AS "paymentPolicy",
+              plan.deposit_policy AS "depositPolicy",
+              plan.pricing_contract_version AS "contractVersion",
+              COALESCE(extension.cancellation_terms, plan.cancellation_policy_snapshot)
+                AS "cancellationPolicySnapshot",
+              plan.cancellation_policy_snapshot AS "baseCancellationPolicySnapshot",
+              plan.active,
+              plan.flexible_rate_plan_revision::text AS "flexibleRatePlanRevision",
+              plan.source_room_facts_revision::text AS "sourceRoomFactsRevision",
+              plan.source_pricing_currency_revision::text AS "sourcePricingCurrencyRevision"
+       FROM pms.rate_plans plan
+       LEFT JOIN pms.flexible_rate_plan_cancellation_extensions extension
+         ON extension.flexible_rate_plan_id = plan.id
+        AND extension.property_id = plan.property_id
+        AND extension.room_type_id = plan.room_type_id
+        AND extension.pricing_contract_version = plan.pricing_contract_version
+       WHERE plan.property_id = $1::uuid AND plan.id = $2::uuid`,
       [propertyId, id],
     );
     return result.rows[0] ?? null;
@@ -629,6 +687,17 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS pricing command repository",
     const result = await admin.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM platform.outbox_events
        WHERE property_id = $1::uuid AND event_type = 'pms.pricing_source.changed'`,
+      [propertyId],
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
+  async function distributionOutboxCount(): Promise<number> {
+    const result = await admin.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM platform.outbox_events
+       WHERE property_id = $1::uuid
+         AND destination = 'distribution.public-bookability'
+         AND event_type = 'pms.inventory.changed'`,
       [propertyId],
     );
     return Number(result.rows[0]?.count ?? 0);
@@ -683,6 +752,7 @@ function planCommand(
   requestedRoomTypeId: string,
   expectedRevision: number,
   amount: string,
+  cancellationExtension: Record<string, unknown> = {},
 ) {
   const command = parseUpsertFlexibleRatePlanCommand({
     organizationId,
@@ -704,10 +774,28 @@ function planCommand(
       freeCancellationDeadlineDays: 7,
       afterDeadlinePenalty: "full_booking_amount",
       noShowPenalty: "full_booking_amount",
+      ...cancellationExtension,
     },
   });
   if (!command) throw new Error("Invalid flexible plan command fixture");
   return command;
+}
+
+function partialCancellationTerms() {
+  return {
+    type: "free_until_days_before_arrival",
+    freeCancellationDeadlineDays: 7,
+    afterDeadlinePenalty: "full_booking_amount",
+    noShowPenalty: "full_booking_amount",
+    text: "Partial refund by notice period",
+    flexibleCancellationType: "partial_refund",
+    partialRefundCancelWindowDays: 30,
+    partialRefundAmountPercent: 50,
+    partialRefundTiers: [
+      { minDaysBeforeCheckIn: 30, refundPercent: 50 },
+      { minDaysBeforeCheckIn: 7, refundPercent: 20 },
+    ],
+  };
 }
 
 function assertSafeTestDatabase(connectionString: string): void {

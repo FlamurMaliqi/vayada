@@ -43,6 +43,7 @@ type FakePorts = PmsPricingRoutesOptions & {
   planCalls: UpsertFlexibleRatePlanCommand[];
   reads: Array<readonly unknown[]>;
   capabilityReads: string[];
+  projectedPropertyIds: string[];
 };
 
 function currencySnapshot(requestPropertyId = propertyId, revision = 1) {
@@ -87,12 +88,20 @@ function fakePorts(
   const planCalls: UpsertFlexibleRatePlanCommand[] = [];
   const reads: Array<readonly unknown[]> = [];
   const capabilityReads: string[] = [];
+  const projectedPropertyIds: string[] = [];
   const responsePropertyId = overrides.responsePropertyId ?? propertyId;
   return {
     currencyCalls,
     planCalls,
     reads,
     capabilityReads,
+    projectedPropertyIds,
+    inventoryPublicOfferProjector: {
+      async projectPending({ propertyId: projectedPropertyId }) {
+        projectedPropertyIds.push(projectedPropertyId);
+        return { profileAvailable: true, pendingEvents: 1, projectedOfferDays: 2 };
+      },
+    },
     commandPort: {
       async upsertPropertyPricingCurrency(command) {
         currencyCalls.push(command);
@@ -226,6 +235,20 @@ function cancellationTerms() {
   };
 }
 
+function partialCancellationTerms() {
+  return {
+    ...cancellationTerms(),
+    text: "Partial refund by notice period",
+    flexibleCancellationType: "partial_refund",
+    partialRefundCancelWindowDays: 30,
+    partialRefundAmountPercent: 50,
+    partialRefundTiers: [
+      { minDaysBeforeCheckIn: 30, refundPercent: 50 },
+      { minDaysBeforeCheckIn: 7, refundPercent: 20 },
+    ],
+  } as const;
+}
+
 describe("PMS pricing routes", () => {
   let app: Awaited<ReturnType<typeof testApp>> | null = null;
   afterEach(async () => {
@@ -272,7 +295,7 @@ describe("PMS pricing routes", () => {
         expectedPricingCurrencyRevision: 1,
         expectedFlexibleRatePlanRevision: 0,
         baseAmountDecimal: "175.25",
-        cancellationTerms: cancellationTerms(),
+        cancellationTerms: partialCancellationTerms(),
       },
     });
     expect(valid.statusCode).toBe(201);
@@ -280,8 +303,9 @@ describe("PMS pricing routes", () => {
       propertyId,
       roomTypeId,
       baseAmountDecimal: "175.25",
-      cancellationTerms: cancellationTerms(),
+      cancellationTerms: partialCancellationTerms(),
     });
+    expect(ports.projectedPropertyIds).toEqual([propertyId]);
 
     const numericMoney = await injectJson(app, {
       method: "PUT",

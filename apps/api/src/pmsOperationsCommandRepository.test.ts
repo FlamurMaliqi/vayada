@@ -500,7 +500,35 @@ describe("PMS operations command repository", () => {
     });
     const created = await repository.createRoomType(roomTypeCreateCommand());
     if (!created.ok) throw new Error("room type create unexpectedly failed");
-    const command = roomTypeUpdateCommand(created.roomType.roomTypeId);
+    target.roomTypes[0]!.roomType.ratePlans.unshift({
+      ratePlanId: "f6855200-0000-0000-0000-999999999999",
+      pricingContractVersion: "pms-pricing.v1",
+      code: "ONB15-FLEX",
+      name: "Canonical flexible",
+      rateType: "flexible",
+      mealPlan: null,
+      baseRate: { amountDecimal: "150.00", currency: "EUR" },
+      cancellationPolicySnapshot: {
+        type: "free_until_days_before_arrival",
+        freeCancellationDeadlineDays: 7,
+        afterDeadlinePenalty: "full_booking_amount",
+        noShowPenalty: "full_booking_amount",
+      },
+      active: true,
+    });
+    const command = roomTypeUpdateCommand(created.roomType.roomTypeId, {
+      flexibleCancellationPolicy: {
+        kind: "flexible",
+        text: "Partial refund by notice period",
+        flexibleCancellationType: "partial_refund",
+        partialRefundCancelWindowDays: 30,
+        partialRefundAmountPercent: 50,
+        partialRefundTiers: [
+          { minDaysBeforeCheckIn: 30, refundPercent: 50 },
+          { minDaysBeforeCheckIn: 7, refundPercent: 20 },
+        ],
+      },
+    });
 
     const updated = await repository.updateRoomTypeLocation(command);
     const replayed = await repository.updateRoomTypeLocation(command);
@@ -513,8 +541,30 @@ describe("PMS operations command repository", () => {
       latitude: 47.2692,
       longitude: 11.4041,
     });
+    expect(
+      updated.roomType.ratePlans.find((ratePlan) => ratePlan.pricingContractVersion == null)
+        ?.cancellationPolicySnapshot,
+    ).toMatchObject({
+      flexibleCancellationType: "partial_refund",
+      partialRefundTiers: [
+        { minDaysBeforeCheckIn: 30, refundPercent: 50 },
+        { minDaysBeforeCheckIn: 7, refundPercent: 20 },
+      ],
+    });
+    expect(
+      updated.roomType.ratePlans.find(
+        (ratePlan) => ratePlan.pricingContractVersion === "pms-pricing.v1",
+      )?.cancellationPolicySnapshot,
+    ).toMatchObject({
+      type: "free_until_days_before_arrival",
+      freeCancellationDeadlineDays: 7,
+    });
     expect(replayed).toEqual({ ...updated, replayed: true });
-    expect(updated.commandMeta.sideEffects).toEqual(["audit_event"]);
+    expect(updated.commandMeta.sideEffects).toEqual([
+      "ari_changed",
+      "distribution_refresh",
+      "audit_event",
+    ]);
     expect(target.roomTypes[0]!.roomType.attributes).toMatchObject(updated.roomType.attributes);
     expect(target.auditEvents.map((event) => event.action)).toEqual([
       "pms.room_type.created",
@@ -528,6 +578,18 @@ describe("PMS operations command repository", () => {
     expect(target.calls.filter((call) => call.text.includes("UPDATE pms.room_types"))).toHaveLength(
       1,
     );
+    expect(target.calls.filter((call) => call.text.includes("UPDATE pms.rate_plans"))).toHaveLength(
+      1,
+    );
+    expect(
+      target.calls.find((call) => call.text.includes("UPDATE pms.rate_plans"))?.text,
+    ).toContain("pricing_contract_version IS NULL");
+    expect(
+      target.calls.filter((call) => call.text.includes("INSERT INTO platform.domain_events")),
+    ).toHaveLength(2);
+    expect(
+      target.calls.filter((call) => call.text.includes("INSERT INTO platform.outbox_events")),
+    ).toHaveLength(4);
   });
 
   it("rejects PMS room-type creates when generated room numbers collide", async () => {
@@ -865,6 +927,22 @@ function targetPrivateNotesPool(options: { generatedRoomConflicts?: number } = {
       return { rows: [] as T[], rowCount: 1 };
     }
 
+    if (text.includes("UPDATE pms.rate_plans")) {
+      const [propertyId, roomTypeId, cancellationPolicySnapshot] = values ?? [];
+      const record = roomTypes.get(String(roomTypeId));
+      const ratePlan = record?.roomType.ratePlans.find(
+        (candidate) =>
+          candidate.active &&
+          candidate.rateType === "flexible" &&
+          candidate.pricingContractVersion == null,
+      );
+      if (!record || record.propertyId !== propertyId || !ratePlan) return emptyRows<T>();
+      ratePlan.cancellationPolicySnapshot = JSON.parse(
+        String(cancellationPolicySnapshot),
+      ) as PmsRoomType["ratePlans"][number]["cancellationPolicySnapshot"];
+      return { rows: [] as T[], rowCount: 1 };
+    }
+
     if (text.includes("INSERT INTO pms.rate_plans")) {
       const ratePlanId = `f6855200-0000-0000-0000-${String(ratePlanSequence).padStart(12, "0")}`;
       ratePlanSequence += 1;
@@ -1107,6 +1185,14 @@ function roomTypeCreateCommand(
     media: [{ url: "https://cdn.example.test/deluxe.jpg", altText: "Deluxe Double" }],
     baseRate: { amountDecimal: "149.00", currency: "EUR" },
     nonRefundableRate: { amountDecimal: "129.00", currency: "EUR" },
+    flexibleCancellationPolicy: {
+      kind: "flexible",
+      text: "Free until 7 days before",
+      flexibleCancellationType: "free",
+      partialRefundCancelWindowDays: 30,
+      partialRefundAmountPercent: 50,
+      partialRefundTiers: [],
+    },
     operatingPeriods: [{ from: "01-01", to: "12-31" }],
     seasons: [
       {

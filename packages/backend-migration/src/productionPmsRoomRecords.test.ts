@@ -63,6 +63,19 @@ describe("production PMS room records", () => {
     );
     expect(
       built.records.find(
+        (record) => record.targetTable === "rate_plans" && record.row["rateType"] === "flexible",
+      )?.row,
+    ).toMatchObject({
+      cancellationPolicySnapshot: {
+        flexibleCancellationType: "partial_refund",
+        partialRefundTiers: [
+          { min_days_before_check_in: 30, refund_percent: 50 },
+          { min_days_before_check_in: 7, refund_percent: 20 },
+        ],
+      },
+    });
+    expect(
+      built.records.find(
         (record) =>
           record.targetTable === "rate_plans" && record.row["rateType"] === "non_refundable",
       )?.row,
@@ -130,7 +143,11 @@ function sourceRows(): IdentitySourceRow[] {
       non_refundable_rate: null,
       non_refundable_enabled: true,
       flexible_rate_enabled: true,
-      partial_refund_tiers: [],
+      flexible_cancellation_type: "partial_refund",
+      partial_refund_tiers: [
+        { min_days_before_check_in: 30, refund_percent: 50 },
+        { min_days_before_check_in: 7, refund_percent: 20 },
+      ],
       rate_payment_methods: {},
       rate_deposit_settings: {
         nonrefundable: { kind: "percentage", value: 30 },

@@ -36,6 +36,7 @@ import {
 import { HIDDEN_GUEST_CONTACT } from "../domains/bookingGuestContactAccess.js";
 import type {
   PmsCalendarDay,
+  PmsJsonRecord,
   PmsLinkedInventoryGroup,
   PmsOperationsReadRepository,
   PmsOperationalReservation,
@@ -434,6 +435,7 @@ export type PmsRoomTypeCreateCommand = {
   media: PmsRoomType["media"];
   baseRate: PmsMoney;
   nonRefundableRate: PmsMoney | null;
+  flexibleCancellationPolicy?: PmsJsonRecord;
   operatingPeriods: PmsRoomTypeOperatingPeriod[];
   seasons: PmsRoomTypeSeason[];
   active: boolean;
@@ -463,6 +465,7 @@ export type PmsRoomTypeUpdateCommand = {
   commandId: string;
   idempotencyKey: string;
   attributes: Record<string, string | number | boolean | null>;
+  flexibleCancellationPolicy?: PmsJsonRecord;
   audit: PmsOperationsCommandAudit;
 };
 
@@ -2477,6 +2480,17 @@ export async function registerPmsOperationsRoutes(
         const result = await commandRepository.updateRoomTypeLocation(command.value);
         if (!result.ok) return sendPmsRoomTypeCommandError(reply, result);
 
+        if (command.value.flexibleCancellationPolicy && options.inventoryPublicOfferProjector) {
+          try {
+            await options.inventoryPublicOfferProjector.projectPending({ propertyId });
+          } catch (error) {
+            request.log.error(
+              { error, propertyId, roomTypeId },
+              "PMS inventory public-offer projection remains pending",
+            );
+          }
+        }
+
         return {
           contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
           propertyId,
@@ -3708,6 +3722,8 @@ function toRoomTypeCreateCommand(
   }
   const locationAttributes = roomTypeLocationAttributes(raw, "Room type create");
   if ("error" in locationAttributes) return { error: invalidBody(locationAttributes.error) };
+  const cancellationPolicy = roomTypeFlexibleCancellationPolicy(raw, "Room type create", true);
+  if ("error" in cancellationPolicy) return { error: invalidBody(cancellationPolicy.error) };
   const attributes = roomTypeAttributes(raw);
   if (!Object.hasOwn(raw, "bathroomType")) attributes.bathroomType = "private";
   if (!Object.hasOwn(raw, "bathrooms")) attributes.bathrooms = 1;
@@ -3734,6 +3750,7 @@ function toRoomTypeCreateCommand(
       media: roomTypeMedia(raw.images),
       baseRate: { amountDecimal: baseRate, currency },
       nonRefundableRate,
+      flexibleCancellationPolicy: cancellationPolicy.value!,
       operatingPeriods: operatingPeriods.value,
       seasons: seasons.value,
       active: typeof raw.isActive === "boolean" ? raw.isActive : true,
@@ -3832,6 +3849,8 @@ function toRoomTypeUpdateCommand(
 
   const attributes = roomTypeLocationAttributes(raw, "Room type update");
   if ("error" in attributes) return { error: invalidBody(attributes.error) };
+  const cancellationPolicy = roomTypeFlexibleCancellationPolicy(raw, "Room type update", false);
+  if ("error" in cancellationPolicy) return { error: invalidBody(cancellationPolicy.error) };
 
   return {
     value: {
@@ -3840,6 +3859,7 @@ function toRoomTypeUpdateCommand(
       commandId,
       idempotencyKey,
       attributes: attributes.value,
+      ...(cancellationPolicy.value ? { flexibleCancellationPolicy: cancellationPolicy.value } : {}),
       audit: pmsOperationsCommandAudit(request, commandId, "Update room type location"),
     },
   };
@@ -3907,6 +3927,72 @@ function roomTypeAttributes(
     if (typeof raw[key] === "boolean") attributes[key] = raw[key] as boolean;
   }
   return attributes;
+}
+
+function roomTypeFlexibleCancellationPolicy(
+  raw: Record<string, unknown>,
+  action: string,
+  includeDefault: boolean,
+): { value?: PmsJsonRecord } | { error: string } {
+  const cancellationFields = [
+    "cancellationPolicy",
+    "flexibleCancellationType",
+    "partialRefundCancelWindowDays",
+    "partialRefundAmountPercent",
+    "partialRefundTiers",
+  ];
+  if (!includeDefault && !cancellationFields.some((key) => Object.hasOwn(raw, key))) {
+    return { value: undefined };
+  }
+
+  const cancellationType = raw.flexibleCancellationType ?? (includeDefault ? "free" : undefined);
+  if (cancellationType !== "free" && cancellationType !== "partial_refund") {
+    return { error: `${action} flexibleCancellationType must be free or partial_refund.` };
+  }
+
+  const tiers: Array<{ minDaysBeforeCheckIn: number; refundPercent: number }> = [];
+  const rawTiers = raw.partialRefundTiers ?? [];
+  if (!Array.isArray(rawTiers) || rawTiers.length > 10) {
+    return { error: `${action} partialRefundTiers must be an array of at most 10 tiers.` };
+  }
+  const seenDays = new Set<number>();
+  for (const [index, item] of rawTiers.entries()) {
+    const tier = objectBody(item);
+    const days = tier ? optionalNonNegativeInteger(tier.minDaysBeforeCheckIn) : undefined;
+    const percent = tier ? optionalNonNegativeInteger(tier.refundPercent) : undefined;
+    if (
+      !tier ||
+      days === undefined ||
+      days > 365 ||
+      percent === undefined ||
+      percent > 100 ||
+      seenDays.has(days)
+    ) {
+      return { error: `${action} partialRefundTiers entry ${index + 1} is invalid.` };
+    }
+    seenDays.add(days);
+    tiers.push({ minDaysBeforeCheckIn: days, refundPercent: percent });
+  }
+  tiers.sort((left, right) => right.minDaysBeforeCheckIn - left.minDaysBeforeCheckIn);
+  if (cancellationType === "partial_refund" && tiers.length === 0) {
+    return { error: "Partial refund requires at least one refund tier." };
+  }
+
+  const windowDays = optionalNonNegativeInteger(raw.partialRefundCancelWindowDays) ?? 30;
+  const amountPercent = optionalNonNegativeInteger(raw.partialRefundAmountPercent) ?? 50;
+  if (windowDays < 1 || windowDays > 365 || amountPercent < 1 || amountPercent > 99) {
+    return { error: `${action} partial-refund defaults are invalid.` };
+  }
+  return {
+    value: {
+      kind: "flexible",
+      text: optionalStringField(raw.cancellationPolicy) ?? "Free until 7 days before",
+      flexibleCancellationType: cancellationType,
+      partialRefundCancelWindowDays: windowDays,
+      partialRefundAmountPercent: amountPercent,
+      partialRefundTiers: tiers,
+    },
+  };
 }
 
 function roomTypeLocationAttributes(

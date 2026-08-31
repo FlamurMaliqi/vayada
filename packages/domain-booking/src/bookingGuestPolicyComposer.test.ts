@@ -208,6 +208,28 @@ describe("Booking guest-policy composition", () => {
             pricing: {
               ...pricing.pricing,
               flexibleRatePlans: [
+                {
+                  ...plan,
+                  cancellationTerms: {
+                    ...plan.cancellationTerms,
+                    flexibleCancellationType: "partial_refund",
+                    partialRefundTiers: [{ minDaysBeforeCheckIn: 30, refundPercent: 50 }],
+                  },
+                },
+              ],
+            },
+          };
+        }),
+        "pricing_source_invalid",
+      ],
+      [
+        withPricing((pricing) => {
+          const plan = pricing.pricing.flexibleRatePlans[0]!;
+          return {
+            ...pricing,
+            pricing: {
+              ...pricing.pricing,
+              flexibleRatePlans: [
                 plan,
                 {
                   ...plan,

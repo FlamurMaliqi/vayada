@@ -6406,12 +6406,13 @@ function resolveTargetCancellationPreview(
   }
 
   if (
-    !hasCanonicalPolicyDiscriminator &&
-    (Array.isArray(policySnapshot["tiers"]) ||
-      Array.isArray(policySnapshot["partialRefundTiers"]) ||
-      (refundValue !== null &&
-        refundValue !== undefined &&
-        !["full", "100", "100%"].includes(refundValue)))
+    policySnapshot["flexibleCancellationType"] === "partial_refund" ||
+    (!hasCanonicalPolicyDiscriminator &&
+      (Array.isArray(policySnapshot["tiers"]) ||
+        Array.isArray(policySnapshot["partialRefundTiers"]) ||
+        (refundValue !== null &&
+          refundValue !== undefined &&
+          !["full", "100", "100%"].includes(refundValue))))
   ) {
     throw createHttpError(
       409,
