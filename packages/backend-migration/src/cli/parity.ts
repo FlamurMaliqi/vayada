@@ -3,11 +3,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { runParityChecks } from "../parity.js";
+import { formatProductionParityText, runProductionParity } from "../productionParity.js";
+import { isProductionParityCommand, parseProductionParityArgs } from "../productionParityArgs.js";
 import { type MigrationEnvironment } from "../runner.js";
 import { assertValidEnvironment } from "./utils.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_FIXTURES_DIR = join(__dirname, "../../fixtures");
+const DEFAULT_MIGRATIONS_DIR = join(__dirname, "../../migrations");
 
 function parseArgs(argv: string[]): {
   env: MigrationEnvironment;
@@ -45,44 +48,66 @@ function parseArgs(argv: string[]): {
   return { env, connectionString, fixturesDir, fixtures, report };
 }
 
-const { env, connectionString, fixturesDir, fixtures, report } = parseArgs(process.argv);
-
-if (!connectionString) {
-  console.error("Error: TARGET_DATABASE_URL or --connection-string is required.");
-  process.exit(1);
-}
-
-if (!fixtures) {
-  console.error("Error: --fixtures <case> is required.");
-  process.exit(1);
-}
-
-const result = await runParityChecks({
-  connectionString,
-  fixtureCase: fixtures,
-  fixturesDir,
-  environment: env,
-});
-
-if (report === "json") {
-  console.log(JSON.stringify(result, null, 2));
+if (isProductionParityCommand(process.argv)) {
+  try {
+    const { report: output, ...config } = parseProductionParityArgs(
+      process.argv,
+      DEFAULT_MIGRATIONS_DIR,
+    );
+    const result = await runProductionParity(config);
+    console.log(
+      output === "json" ? JSON.stringify(result, null, 2) : formatProductionParityText(result),
+    );
+    if (result.decision === "no-go") process.exitCode = 2;
+    else if (result.decision === "review") process.exitCode = 3;
+  } catch (error) {
+    console.error(`Error: ${error instanceof Error ? error.message : "Production parity failed"}`);
+    process.exitCode = 1;
+  }
 } else {
-  console.log(`\nParity report: ${result.fixtureCase} (${result.environment})`);
-  console.log(`Status:   ${result.status.toUpperCase()}`);
-  console.log(`Failures: ${result.summary.failures}`);
-  console.log(`Warnings: ${result.summary.warnings}`);
-  if (result.findings.length > 0) {
-    console.log("\nFindings:");
-    for (const f of result.findings) {
-      console.log(`  [${f.severity.toUpperCase()}] ${f.code} — ${f.targetObject}`);
-      console.log(`    ${f.message}`);
-      console.log(`    Expected: ${f.expected}`);
-      console.log(`    Actual:   ${f.actual}`);
-      if (f.suggestedAction) console.log(`    Fix: ${f.suggestedAction}`);
+  await runFixtureParity();
+}
+
+async function runFixtureParity(): Promise<void> {
+  const { env, connectionString, fixturesDir, fixtures, report } = parseArgs(process.argv);
+
+  if (!connectionString) {
+    console.error("Error: TARGET_DATABASE_URL or --connection-string is required.");
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!fixtures) {
+    console.error("Error: --fixtures <case> is required.");
+    process.exitCode = 1;
+    return;
+  }
+
+  const result = await runParityChecks({
+    connectionString,
+    fixtureCase: fixtures,
+    fixturesDir,
+    environment: env,
+  });
+
+  if (report === "json") {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(`\nParity report: ${result.fixtureCase} (${result.environment})`);
+    console.log(`Status:   ${result.status.toUpperCase()}`);
+    console.log(`Failures: ${result.summary.failures}`);
+    console.log(`Warnings: ${result.summary.warnings}`);
+    if (result.findings.length > 0) {
+      console.log("\nFindings:");
+      for (const f of result.findings) {
+        console.log(`  [${f.severity.toUpperCase()}] ${f.code} — ${f.targetObject}`);
+        console.log(`    ${f.message}`);
+        console.log(`    Expected: ${f.expected}`);
+        console.log(`    Actual:   ${f.actual}`);
+        if (f.suggestedAction) console.log(`    Fix: ${f.suggestedAction}`);
+      }
     }
   }
-}
 
-if (result.status === "failed") {
-  process.exit(1);
+  if (result.status === "failed") process.exitCode = 1;
 }

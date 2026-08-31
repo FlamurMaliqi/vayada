@@ -136,6 +136,55 @@ describe("production PMS reconciliation", () => {
     expect(thirdPlan.writes).toEqual([third]);
     expect(thirdPlan.counts.preservedNewerTarget).toBe(0);
   });
+
+  it("reports an exact inventory horizon for every active room type", () => {
+    const roomTypeId = "13560000-0000-4000-8000-000000000099";
+    const propertyId = "13560000-0000-4000-8000-000000000098";
+    const roomType = record(true, {
+      targetId: roomTypeId,
+      row: { id: roomTypeId, propertyId, active: true },
+    });
+    const inventory = Array.from({ length: 366 }, (_, index) => {
+      const stayDate = new Date(Date.UTC(2026, 7, 30 + index)).toISOString().slice(0, 10);
+      return record(true, {
+        targetTable: "inventory_days",
+        targetId: `${propertyId}:${roomTypeId}:${stayDate}`,
+        row: {
+          propertyId,
+          roomTypeId,
+          stayDate,
+          assignedCount: 0,
+          blockedCount: 0,
+          availableCount: 1,
+        },
+      });
+    });
+
+    const candidates = [roomType, ...inventory];
+    const plan = reconcileProductionPmsRecords(
+      buildContext({
+        records: candidates.map((candidate) =>
+          existing(candidate, candidate.sourceUpdatedAt ?? "2026-08-30T00:00:00Z"),
+        ),
+        provenance: [],
+      }),
+      candidates,
+    );
+
+    expect(plan.parity.expectedActiveRoomTypesByProperty).toEqual({
+      [propertyId]: [roomTypeId],
+    });
+    expect(plan.parity.actualActiveRoomTypesByProperty).toEqual({
+      [propertyId]: [roomTypeId],
+    });
+    expect(plan.parity.futureInventoryByRoomType[roomTypeId]).toMatchObject({
+      propertyId,
+      firstStayDate: "2026-08-30",
+      lastStayDate: "2027-08-30",
+      distinctDays: 366,
+      rows: 366,
+    });
+  });
 });
 
 function record(mutable: boolean, overrides: Partial<PmsTargetRecord> = {}): PmsTargetRecord {

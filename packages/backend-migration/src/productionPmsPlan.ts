@@ -178,7 +178,33 @@ function summarizeParity(
       record.targetTable,
     );
   const futureInventoryByProperty: ProductionPmsPlan["parity"]["futureInventoryByProperty"] = {};
-  for (const record of records.filter((entry) => entry.targetTable === "inventory_days")) {
+  const expectedActiveRoomTypesByProperty: Record<string, string[]> = {};
+  for (const record of records.filter(
+    (entry) => entry.targetTable === "room_types" && entry.row["active"] === true,
+  )) {
+    const propertyId = String(record.row["propertyId"]);
+    (expectedActiveRoomTypesByProperty[propertyId] ??= []).push(record.targetId);
+  }
+  for (const ids of Object.values(expectedActiveRoomTypesByProperty)) ids.sort();
+  const actualActiveRoomTypesByProperty: Record<string, string[]> = {};
+  for (const record of context.target.records.filter(
+    (entry) => entry.targetTable === "room_types" && entry.row["active"] === true,
+  )) {
+    const propertyId = String(record.row["propertyId"]);
+    (actualActiveRoomTypesByProperty[propertyId] ??= []).push(record.targetId);
+  }
+  for (const ids of Object.values(actualActiveRoomTypesByProperty)) ids.sort();
+  const activeRoomTypes = new Set([
+    ...Object.values(expectedActiveRoomTypesByProperty).flat(),
+    ...Object.values(actualActiveRoomTypesByProperty).flat(),
+  ]);
+  const inventoryByRoomType = new Map<
+    string,
+    { propertyId: string; roomTypeId: string; stayDates: Set<string>; rows: number }
+  >();
+  for (const record of context.target.records.filter(
+    (entry) => entry.targetTable === "inventory_days",
+  )) {
     const propertyId = String(record.row["propertyId"]);
     const current = futureInventoryByProperty[propertyId] ?? {
       days: 0,
@@ -196,7 +222,37 @@ function summarizeParity(
       | undefined;
     if (freshness?.legacy?.linkedStopSell === true) current.stopSell += 1;
     futureInventoryByProperty[propertyId] = current;
+    const roomTypeId = String(record.row["roomTypeId"]);
+    if (activeRoomTypes.has(roomTypeId)) {
+      const currentRoomType = inventoryByRoomType.get(roomTypeId) ?? {
+        propertyId,
+        roomTypeId,
+        stayDates: new Set<string>(),
+        rows: 0,
+      };
+      currentRoomType.rows += 1;
+      currentRoomType.stayDates.add(String(record.row["stayDate"]));
+      inventoryByRoomType.set(roomTypeId, currentRoomType);
+    }
   }
+  const futureInventoryByRoomType = Object.fromEntries(
+    [...inventoryByRoomType]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([roomTypeId, inventory]) => {
+        const stayDates = [...inventory.stayDates].sort();
+        return [
+          roomTypeId,
+          {
+            propertyId: inventory.propertyId,
+            roomTypeId,
+            firstStayDate: stayDates[0] ?? "",
+            lastStayDate: stayDates.at(-1) ?? "",
+            distinctDays: stayDates.length,
+            rows: inventory.rows,
+          },
+        ];
+      }),
+  );
   return {
     sourceTableCounts: countBy(context.rows, (row) => `pms.${row.sourceTable}`),
     targetTableCounts: countBy(
@@ -210,6 +266,17 @@ function summarizeParity(
         left.localeCompare(right),
       ),
     ),
+    expectedActiveRoomTypesByProperty: Object.fromEntries(
+      Object.entries(expectedActiveRoomTypesByProperty).sort(([left], [right]) =>
+        left.localeCompare(right),
+      ),
+    ),
+    actualActiveRoomTypesByProperty: Object.fromEntries(
+      Object.entries(actualActiveRoomTypesByProperty).sort(([left], [right]) =>
+        left.localeCompare(right),
+      ),
+    ),
+    futureInventoryByRoomType,
   };
 }
 

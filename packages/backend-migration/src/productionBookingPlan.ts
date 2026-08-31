@@ -12,7 +12,7 @@ import type {
   ProductionBookingTargetState,
   ProductionMigrationSourceLink,
 } from "./productionBookingTypes.js";
-import { sha256 } from "./productionBookingValues.js";
+import { bookingLifecycle, date, sha256, uuid } from "./productionBookingValues.js";
 
 export function buildProductionBookingPlan(input: {
   sourceRunId: string;
@@ -113,6 +113,32 @@ function summarizeParity(
   const drafts = context.rows.filter(
     (row) => row.sourceDatabase === "pms" && row.sourceTable === "booking_drafts",
   );
+  const activeFutureSourceBookings = activeFutureSourceParity(bookings, context.completedAt);
+  const activeFutureTargetBookings = Object.fromEntries(
+    context.target.records
+      .filter(
+        (record) =>
+          record.targetTable === "guest_bookings" &&
+          typeof record.row["lifecycleStatus"] === "string" &&
+          !isTerminalBookingLifecycle(record.row["lifecycleStatus"]),
+      )
+      .filter(
+        (record) =>
+          typeof record.row["checkOut"] === "string" &&
+          record.row["checkOut"] >= context.completedAt.slice(0, 10),
+      )
+      .map((record) => [
+        typeof record.row["sourceBookingId"] === "string"
+          ? record.row["sourceBookingId"]
+          : record.targetId,
+        {
+          lifecycleStatus: String(record.row["lifecycleStatus"]),
+          checkIn: String(record.row["checkIn"]),
+          checkOut: String(record.row["checkOut"]),
+        },
+      ])
+      .sort(([left], [right]) => String(left).localeCompare(String(right))),
+  );
   return {
     sourceTableCounts: countBy(context.rows, (row) => `${row.sourceDatabase}.${row.sourceTable}`),
     targetTableCounts: countBy(
@@ -124,6 +150,8 @@ function summarizeParity(
       records.filter((record) => record.targetTable === "guest_bookings"),
       (record) => normalizedLabel(record.row["lifecycleStatus"]),
     ),
+    activeFutureSourceBookings,
+    activeFutureTargetBookings,
     sourceDraftMaterialization: countBy(drafts, (row) =>
       row.data["materialized_booking_id"] ? "materialized" : "unmaterialized",
     ),
@@ -132,6 +160,34 @@ function summarizeParity(
       (record) => normalizedLabel(record.row["status"]),
     ),
   };
+}
+
+function activeFutureSourceParity(
+  bookings: IdentitySourceRow[],
+  completedAt: string,
+): ProductionBookingPlan["parity"]["activeFutureSourceBookings"] {
+  const rows: Array<[string, { lifecycleStatus: string; checkIn: string; checkOut: string }]> = [];
+  for (const booking of bookings) {
+    try {
+      const lifecycleStatus = bookingLifecycle(booking.data["status"]);
+      const checkIn = date(booking.data["check_in"], "check_in");
+      const checkOut = date(booking.data["check_out"], "check_out");
+      const id = uuid(booking.data["id"], "id");
+      if (
+        id &&
+        checkOut >= completedAt.slice(0, 10) &&
+        !isTerminalBookingLifecycle(lifecycleStatus)
+      )
+        rows.push([id, { lifecycleStatus, checkIn, checkOut }]);
+    } catch {
+      // Invalid rows are already represented by a hard migration blocker.
+    }
+  }
+  return Object.fromEntries(rows.sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function isTerminalBookingLifecycle(value: unknown): boolean {
+  return new Set(["completed", "canceled", "declined", "no_show", "expired"]).has(String(value));
 }
 
 function countBy<T>(values: T[], key: (value: T) => string): Record<string, number> {

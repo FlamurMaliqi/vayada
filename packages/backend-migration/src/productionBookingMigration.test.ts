@@ -117,6 +117,8 @@ function plan(withWrite: boolean): ProductionBookingPlan {
       targetTableCounts: { "booking.guest_bookings": 1 },
       sourceBookingStatuses: { confirmed: 1 },
       plannedBookingLifecycleStatuses: { confirmed: 1 },
+      activeFutureSourceBookings: {},
+      activeFutureTargetBookings: {},
       sourceDraftMaterialization: {},
       plannedDraftStatuses: {},
     },

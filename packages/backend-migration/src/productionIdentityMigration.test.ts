@@ -156,6 +156,7 @@ function plan(): ProductionIdentityPlan {
     counts: {
       users: 0,
       preservedNewerUsers: 0,
+      pendingTargetWrites: 0,
       organizations: 0,
       memberships: 0,
       resourceLinks: 0,

@@ -42,6 +42,7 @@
     "target:pms:migrate:dist": "node dist/cli/productionPmsMigration.js",
     "target:marketplace:migrate:dist": "node dist/cli/productionMarketplaceMigration.js",
     "target:finance:migrate:dist": "node dist/cli/productionFinanceMigration.js",
+    "target:parity:dist": "node dist/cli/parity.js",
     "target:c1-rehearsal:checks:dist": "node dist/cli/c1RehearsalChecks.js",
     "target:manual-booking:readiness:dist": "node dist/cli/manualBookingReadiness.js",
     "target:platform-identity:bootstrap:dist": "node dist/cli/platformIdentityBootstrap.js",

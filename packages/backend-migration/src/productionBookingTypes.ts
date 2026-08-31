@@ -72,6 +72,14 @@ export type ProductionBookingPlan = {
     targetTableCounts: Record<string, number>;
     sourceBookingStatuses: Record<string, number>;
     plannedBookingLifecycleStatuses: Record<string, number>;
+    activeFutureSourceBookings: Record<
+      string,
+      { lifecycleStatus: string; checkIn: string; checkOut: string }
+    >;
+    activeFutureTargetBookings: Record<
+      string,
+      { lifecycleStatus: string; checkIn: string; checkOut: string }
+    >;
     sourceDraftMaterialization: Record<string, number>;
     plannedDraftStatuses: Record<string, number>;
   };

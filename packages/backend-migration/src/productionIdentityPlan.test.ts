@@ -33,6 +33,7 @@ describe("production identity plan", () => {
     expect(first.checksum).toMatch(/^[0-9a-f]{64}$/);
     expect(first.counts).toMatchObject({
       users: 1,
+      pendingTargetWrites: 7,
       organizations: 1,
       memberships: 1,
       resourceLinks: 1,
@@ -42,6 +43,26 @@ describe("production identity plan", () => {
       loginAuditEvents: 1,
       retiredAuthRows: 1,
     });
+
+    const verified = buildProductionIdentityPlan(rows, {
+      users: first.users,
+      workosIdentities: first.workosIdentities,
+      ownership: {
+        organizations: first.organizations,
+        memberships: first.memberships,
+        resourceLinks: first.resourceLinks,
+      },
+      entitlements: first.entitlements,
+      privacy: {
+        userConsents: first.userConsents,
+        cookieConsents: first.cookieConsents,
+        consentHistory: first.consentHistory,
+        gdprRequests: first.gdprRequests,
+      },
+      auditEvents: first.auditEvents,
+    });
+    expect(verified.counts.pendingTargetWrites).toBe(0);
+    expect(verified.checksum).toBe(first.checksum);
   });
 
   it("combines fail-closed blockers without losing deterministic counts", () => {

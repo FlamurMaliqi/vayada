@@ -336,6 +336,66 @@ write and provenance counts, then rereads the target before commit. Finance
 success does not authorize legacy shutdown: VAY-1359 through VAY-1363, the
 rollback window, and final human approval remain mandatory.
 
+## Production Full Parity and Go/No-Go
+
+VAY-1359 aggregates the rollback-only Identity, Hotel Catalog, Booking, PMS,
+Marketplace, and Finance dry runs for one immutable extraction. It also verifies
+the four source tags against their extraction ledger, source schema fingerprints
+and checksums, target migration checksums, target provenance, forbidden PII, and
+raw legacy media references. It never repairs data or applies a domain migration.
+
+Run it only with the exact immutable tags recorded for the extraction:
+
+```bash
+TARGET_DATABASE_URL=<target database> \
+APPLICATION_RELEASE=<deployed exact 40-character Git SHA> \
+npm run target:parity -- \
+  --source-run-id vay1351-<24 lowercase hex characters> \
+  --source-env <local|staging|preprod> \
+  --env <staging|preprod|production> \
+  --auth-source-tag <exact immutable auth snapshot identifier> \
+  --booking-source-tag <exact immutable booking snapshot identifier> \
+  --marketplace-source-tag <exact immutable Marketplace snapshot identifier> \
+  --pms-source-tag <exact immutable PMS snapshot identifier> \
+  --application-release <same deployed exact 40-character Git SHA> \
+  --operator <cutover operator> \
+  --report json
+```
+
+The report contains hashes rather than raw snapshot identifiers and has a
+deterministic checksum that excludes run timestamps. `GO` requires zero hard
+failures and zero warnings. A warning within an explicitly configured
+`--warning-budget` returns `REVIEW`, never automatic approval. Exit code `2`
+means `NO-GO`; exit code `3` means human review is still required. Missing
+domain results, schema drift, tag mismatch, stale provenance, active booking or
+366-day inventory variance, financial variance, PII exposure, and raw legacy
+media references are hard failures.
+
+`--source-env` names the environment recorded by the immutable extraction;
+`--env` names the target database. They are deliberately separate because a
+production target must consume a reviewed `preprod` extraction, while the
+extraction ledger only permits `local`, `staging`, or `preprod`. Local, staging,
+and pre-production targets require extraction evidence from their matching
+environment; a local fixture extraction can never authorize production.
+
+Outside local development, the requested application release must match trusted
+`APPLICATION_RELEASE` or `GIT_SHA` deployment metadata. Target schema identity
+is independently bound to the migration files in that release through the exact
+version set and checksums; it is not incorrectly tied to whichever older release
+first applied the latest unchanged migration. Operator identity and all
+domain-level IDs, provider references, and blocker evidence are emitted only as
+hashes.
+
+The command always discovers migrations from the directory bundled with the
+running application. Production parity does not accept a migration-directory
+override, so an operator cannot replace the trusted checksum manifest.
+
+The command acquires PostgreSQL `SHARE` locks across target and staged-source
+tables for the complete report so its seven readers cannot observe mixed target
+states. Run it only inside the approved cutover write-freeze window. It aborts
+rather than waiting indefinitely when those locks cannot be acquired within five
+seconds.
+
 ## Platform Media Parity
 
 `platform-media` is a target-only fixture that pins the registry contract before
