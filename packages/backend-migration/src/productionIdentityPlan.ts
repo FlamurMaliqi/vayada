@@ -70,6 +70,7 @@ export type ProductionIdentityPlan = {
 export type ProductionIdentityCounts = {
   users: number;
   preservedNewerUsers: number;
+  pendingTargetWrites: number;
   organizations: number;
   memberships: number;
   resourceLinks: number;
@@ -143,12 +144,13 @@ export function buildProductionIdentityPlan(
     retiredAuthRows: consentSource.retiredAuthRows,
     blockers,
   };
-  const counts = planCounts(content);
+  const counts = planCounts(content, current);
+  const { pendingTargetWrites: _pendingTargetWrites, ...stableCounts } = counts;
   return {
     ...content,
     counts,
     checksum: createHash("sha256")
-      .update(stableJson({ ...content, counts }))
+      .update(stableJson({ ...content, counts: stableCounts }))
       .digest("hex"),
   };
 }
@@ -189,11 +191,13 @@ function canonicalExisting(
 
 function planCounts(
   plan: Omit<ProductionIdentityPlan, "counts" | "checksum">,
+  current: ProductionIdentityExistingState,
 ): ProductionIdentityCounts {
   return {
     users: plan.users.length,
     preservedNewerUsers: plan.users.filter((row) => row.disposition === "preserve_newer_target")
       .length,
+    pendingTargetWrites: pendingTargetWrites(plan, current),
     organizations: plan.organizations.length,
     memberships: plan.memberships.length,
     resourceLinks: plan.resourceLinks.length,
@@ -206,4 +210,57 @@ function planCounts(
     loginAuditEvents: plan.auditEvents.length,
     retiredAuthRows: Object.values(plan.retiredAuthRows).reduce((sum, count) => sum + count, 0),
   };
+}
+
+function pendingTargetWrites(
+  plan: Omit<ProductionIdentityPlan, "counts" | "checksum">,
+  current: ProductionIdentityExistingState,
+): number {
+  return (
+    pendingMutable(plan.users, current.users, (row) => row.id) +
+    pendingMutable(plan.organizations, current.ownership.organizations, (row) => row.id) +
+    pendingMutable(
+      plan.memberships,
+      current.ownership.memberships,
+      (row) => `${row.organizationId}:${row.userId}`,
+    ) +
+    pendingMutable(
+      plan.resourceLinks,
+      current.ownership.resourceLinks,
+      (row) =>
+        `${row.organizationId}:${row.product}:${row.resourceType}:${row.resourceId}:${row.relationship}`,
+    ) +
+    pendingMutable(
+      plan.entitlements,
+      current.entitlements,
+      (row) =>
+        `${row.organizationId}:${row.product}:${row.entitlementKey}:${row.resourceProduct}:${row.resourceType}:${row.resourceId}`,
+    ) +
+    pendingMutable(plan.userConsents, current.privacy.userConsents, (row) => row.userId) +
+    pendingMutable(plan.cookieConsents, current.privacy.cookieConsents, (row) => row.visitorId) +
+    pendingImmutable(plan.consentHistory, current.privacy.consentHistory, (row) => row.id) +
+    pendingMutable(plan.gdprRequests, current.privacy.gdprRequests, (row) => row.id) +
+    pendingImmutable(
+      plan.auditEvents,
+      current.auditEvents,
+      (row) => `${row.product}:${row.auditKey}`,
+    )
+  );
+}
+
+function pendingMutable<T extends { updatedAt: string }>(
+  planned: T[],
+  existing: T[],
+  key: (row: T) => string,
+): number {
+  const current = new Map(existing.map((row) => [key(row), row]));
+  return planned.filter((row) => {
+    const target = current.get(key(row));
+    return !target || Date.parse(row.updatedAt) > Date.parse(target.updatedAt);
+  }).length;
+}
+
+function pendingImmutable<T>(planned: T[], existing: T[], key: (row: T) => string): number {
+  const current = new Set(existing.map(key));
+  return planned.filter((row) => !current.has(key(row))).length;
 }

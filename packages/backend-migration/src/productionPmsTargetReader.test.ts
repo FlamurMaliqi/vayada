@@ -42,6 +42,39 @@ describe("production PMS target reader", () => {
     const client = {
       async query(sql: string) {
         calls.push(sql);
+        if (
+          sql.includes("FROM pms.room_types AS target_row") &&
+          sql.includes("WHERE source_system = 'pms'")
+        )
+          return {
+            rows: [
+              {
+                targetId: "10000000-0000-4000-a000-000000000099",
+                updatedAt: "2026-08-30T00:00:00Z",
+                rowData: JSON.stringify({
+                  id: "10000000-0000-4000-a000-000000000099",
+                  property_id: "20000000-0000-4000-a000-000000000001",
+                  source_system: "pms",
+                  active: true,
+                }),
+              },
+            ],
+          };
+        if (sql.includes("FROM pms.inventory_days inventory"))
+          return {
+            rows: [
+              {
+                targetId:
+                  "20000000-0000-4000-a000-000000000001:10000000-0000-4000-a000-000000000099:2026-08-30",
+                updatedAt: "2026-08-30T00:00:00Z",
+                rowData: JSON.stringify({
+                  property_id: "20000000-0000-4000-a000-000000000001",
+                  room_type_id: "10000000-0000-4000-a000-000000000099",
+                  stay_date: "2026-08-30",
+                }),
+              },
+            ],
+          };
         if (sql.includes("FROM pms.room_types"))
           return {
             rows: [
@@ -102,6 +135,19 @@ describe("production PMS target reader", () => {
         roomAttributes: { legacy_key: "unchanged" },
       },
     });
+    expect(target.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          targetTable: "room_types",
+          targetId: "10000000-0000-4000-a000-000000000099",
+        }),
+        expect.objectContaining({
+          targetTable: "inventory_days",
+          targetId:
+            "20000000-0000-4000-a000-000000000001:10000000-0000-4000-a000-000000000099:2026-08-30",
+        }),
+      ]),
+    );
     expect(target.provenance[0]).toMatchObject({
       sourceUpdatedAt: "2026-08-30T00:00:00.000Z",
       lastMigratedAt: "2026-08-30T01:00:00.000Z",

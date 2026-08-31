@@ -131,6 +131,34 @@ export async function readProductionBookingTargetState(
       })),
     );
   }
+  const activeBookingCohort = await client.query<{
+    targetId: string;
+    updatedAt: string | null;
+    rowData: string;
+  }>(
+    `SELECT id::text AS "targetId", updated_at::text AS "updatedAt",
+            to_jsonb(target_row)::text AS "rowData"
+       FROM booking.guest_bookings AS target_row
+      WHERE source_system = 'pms'
+        AND lifecycle_status NOT IN ('completed', 'canceled', 'declined', 'no_show', 'expired')
+      ORDER BY id`,
+  );
+  const existingBookingIds = new Set(
+    records
+      .filter((record) => record.targetTable === "guest_bookings")
+      .map((record) => record.targetId),
+  );
+  records.push(
+    ...activeBookingCohort.rows
+      .filter((row) => !existingBookingIds.has(row.targetId))
+      .map((row) => ({
+        targetProduct: "booking" as const,
+        targetTable: "guest_bookings",
+        targetId: row.targetId,
+        updatedAt: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
+        row: camelize(JSON.parse(row.rowData) as Record<string, unknown>),
+      })),
+  );
   const requestedLinks = candidates.map((row) => ({
     sourceDatabase: row.sourceDatabase,
     sourceTable: row.sourceTable,

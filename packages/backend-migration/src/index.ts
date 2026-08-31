@@ -120,6 +120,20 @@ export {
 } from "./parity.js";
 
 export {
+  formatProductionParityText,
+  PRODUCTION_PARITY_DOMAINS,
+  runProductionParity,
+  type ProductionParityConfig,
+  type ProductionParityDecision,
+  type ProductionParityDomain,
+  type ProductionParityDomainResult,
+  type ProductionParityFinding,
+  type ProductionParityReport,
+  type ProductionParitySeverity,
+  type ProductionParityStatus,
+} from "./productionParity.js";
+
+export {
   createPgWorkosBackfillRepository,
   runWorkosBackfill,
   type BackfillCounter,

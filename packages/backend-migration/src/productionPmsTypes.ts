@@ -104,6 +104,19 @@ export type ProductionPmsPlan = {
       string,
       { days: number; assigned: number; blocked: number; available: number; stopSell: number }
     >;
+    expectedActiveRoomTypesByProperty: Record<string, string[]>;
+    actualActiveRoomTypesByProperty: Record<string, string[]>;
+    futureInventoryByRoomType: Record<
+      string,
+      {
+        propertyId: string;
+        roomTypeId: string;
+        firstStayDate: string;
+        lastStayDate: string;
+        distinctDays: number;
+        rows: number;
+      }
+    >;
   };
   counts: {
     sourceRows: number;

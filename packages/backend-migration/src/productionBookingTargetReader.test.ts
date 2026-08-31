@@ -33,6 +33,20 @@ describe("production Booking target reader", () => {
         updatedAt: "2026-08-30T02:00:00.000Z",
         row: { guestBookingId: "13550000-0000-4000-8000-000000000052" },
       },
+      {
+        targetProduct: "booking",
+        targetTable: "guest_bookings",
+        targetId: "13550000-0000-4000-8000-000000000053",
+        updatedAt: "2026-08-30T04:00:00.000Z",
+        row: {
+          id: "13550000-0000-4000-8000-000000000053",
+          sourceSystem: "pms",
+          sourceBookingId: "legacy-extra-booking",
+          lifecycleStatus: "confirmed",
+          checkIn: "2026-09-01",
+          checkOut: "2026-09-02",
+        },
+      },
     ]);
     expect(target.provenance[0]).toMatchObject({
       sourceDatabase: "pms",
@@ -81,6 +95,23 @@ class TargetFixture {
             targetId: "13550000-0000-4000-8000-000000000052",
             updatedAt: "2026-08-30 02:00:00+00",
             rowData: '{"guest_booking_id":"13550000-0000-4000-8000-000000000052"}',
+          },
+        ] as T[],
+      };
+    if (sql.includes("FROM booking.guest_bookings AS target_row"))
+      return {
+        rows: [
+          {
+            targetId: "13550000-0000-4000-8000-000000000053",
+            updatedAt: "2026-08-30 04:00:00+00",
+            rowData: JSON.stringify({
+              id: "13550000-0000-4000-8000-000000000053",
+              source_system: "pms",
+              source_booking_id: "legacy-extra-booking",
+              lifecycle_status: "confirmed",
+              check_in: "2026-09-01",
+              check_out: "2026-09-02",
+            }),
           },
         ] as T[],
       };

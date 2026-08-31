@@ -130,6 +130,39 @@ describe("production Booking reconciliation", () => {
     expect(plan.counts.unchanged).toBe(1);
     expect(plan.blockers).toEqual([]);
   });
+
+  it("reports active and future bookings by stable ID, lifecycle, and stay dates", () => {
+    const candidate = {
+      ...record(),
+      row: {
+        lifecycleStatus: "confirmed",
+        checkIn: "2026-09-01",
+        checkOut: "2026-09-03",
+      },
+    };
+    const booking = {
+      sourceDatabase: "pms" as const,
+      sourceTable: "bookings",
+      rowOrdinal: 1,
+      data: {
+        id: candidate.sourceId,
+        status: "confirmed",
+        check_in: "2026-09-01",
+        check_out: "2026-09-03",
+      },
+    };
+    const plan = reconcileProductionBookingRecords(
+      context({ records: [existing(candidate.row, candidate.sourceUpdatedAt!)] }, [booking]),
+      [candidate],
+    );
+
+    expect(plan.parity.activeFutureSourceBookings).toEqual({
+      [candidate.sourceId]: candidate.row,
+    });
+    expect(plan.parity.activeFutureTargetBookings).toEqual({
+      [candidate.targetId]: candidate.row,
+    });
+  });
 });
 
 function record(): BookingTargetRecord {
@@ -171,11 +204,14 @@ function provenance(candidate: BookingTargetRecord) {
   };
 }
 
-function context(values: Partial<ProductionBookingTargetState> = {}) {
+function context(
+  values: Partial<ProductionBookingTargetState> = {},
+  rows: Parameters<typeof createProductionBookingContext>[0]["rows"] = [],
+) {
   return createProductionBookingContext({
     sourceRunId: "vay1351-0123456789abcdef01234567",
     completedAt: "2026-08-30T00:00:00.000Z",
-    rows: [],
+    rows,
     target: { propertyLinks: [], propertySlugs: [], records: [], provenance: [], ...values },
   });
 }

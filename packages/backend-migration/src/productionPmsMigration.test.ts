@@ -154,6 +154,9 @@ function plan(withWrite: boolean): ProductionPmsPlan {
       sourceCountsByProperty: {},
       targetCountsByProperty: {},
       futureInventoryByProperty: {},
+      expectedActiveRoomTypesByProperty: {},
+      actualActiveRoomTypesByProperty: {},
+      futureInventoryByRoomType: {},
     },
     counts: {
       sourceRows: 1,

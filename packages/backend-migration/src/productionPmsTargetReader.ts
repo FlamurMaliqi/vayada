@@ -100,6 +100,35 @@ export async function readProductionPmsTargetState(
       })),
     );
   }
+  const roomTypeCohort = await client.query<{
+    targetId: string;
+    updatedAt: string | null;
+    rowData: string;
+  }>(
+    `SELECT id::text AS "targetId", updated_at::text AS "updatedAt",
+            to_jsonb(target_row)::text AS "rowData"
+       FROM pms.room_types AS target_row
+      WHERE source_system = 'pms'
+      ORDER BY id`,
+  );
+  const inventoryCohort = await client.query<{
+    targetId: string;
+    updatedAt: string | null;
+    rowData: string;
+  }>(
+    `SELECT inventory.property_id::text || ':' || inventory.room_type_id::text || ':'
+              || inventory.stay_date::text AS "targetId",
+            inventory.updated_at::text AS "updatedAt",
+            to_jsonb(inventory)::text AS "rowData"
+       FROM pms.inventory_days inventory
+       JOIN pms.room_types room_type
+         ON room_type.id = inventory.room_type_id
+        AND room_type.property_id = inventory.property_id
+      WHERE room_type.source_system = 'pms'
+      ORDER BY inventory.property_id, inventory.room_type_id, inventory.stay_date`,
+  );
+  appendMissingRecords(records, "room_types", roomTypeCohort.rows);
+  appendMissingRecords(records, "inventory_days", inventoryCohort.rows);
   const requestedLinks = [
     ...new Map(
       candidates.map((row) => {
@@ -147,6 +176,27 @@ export async function readProductionPmsTargetState(
     provenance,
     blockers: collisions,
   };
+}
+
+function appendMissingRecords(
+  records: ExistingPmsTargetRecord[],
+  targetTable: "room_types" | "inventory_days",
+  rows: Array<{ targetId: string; updatedAt: string | null; rowData: string }>,
+): void {
+  const existing = new Set(
+    records.filter((record) => record.targetTable === targetTable).map((record) => record.targetId),
+  );
+  records.push(
+    ...rows
+      .filter((row) => !existing.has(row.targetId))
+      .map((row) => ({
+        targetProduct: "pms",
+        targetTable,
+        targetId: row.targetId,
+        updatedAt: normalizeTimestamp(row.updatedAt, `pms.${targetTable}.updated_at`),
+        row: camelize(JSON.parse(row.rowData) as Record<string, unknown>),
+      })),
+  );
 }
 
 async function readStaleTargetBlockers(
