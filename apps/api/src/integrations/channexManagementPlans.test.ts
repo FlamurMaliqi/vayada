@@ -33,6 +33,8 @@ describe("target Channex management plans", () => {
     });
     expect(db.sql()).toContain("hotel_catalog.properties");
     expect(db.sql()).toContain("pms.channel_connections");
+    // prettier-ignore
+    expect(db.sql()).toMatch(/BEGIN[\s\S]*channel_binding_claims[\s\S]*channel_connections[\s\S]*COMMIT/);
 
     db = new FakePool("disconnected");
     port = createPgChannexManagementPlanPort({
@@ -175,6 +177,19 @@ describe("target Channex management plans", () => {
     });
     expect(db.sql()).not.toMatch(/external_webhook_events|legacy/i);
   });
+
+  it.each([
+    ["historical", "sync_bookings", "Channex binding claim is not active"],
+    ["retained", "enable", "A retained Channex binding claim requires audited repair"],
+  ] as const)("fails closed for %s binding evidence", async (mode, operation, message) => {
+    const port = createPgChannexManagementPlanPort({
+      connectionString: "postgresql://target",
+      pool: new FakePool(mode),
+      bookingRevisionHandoff: vi.fn(),
+    });
+
+    await expect(port.plan(job(operation))).rejects.toThrow(message);
+  });
 });
 
 type Mode =
@@ -182,6 +197,8 @@ type Mode =
   | "unicode"
   | "disconnected"
   | "connected"
+  | "historical"
+  | "retained"
   | "provision"
   | "multi_room"
   | "ari";
@@ -192,18 +209,40 @@ class FakePool {
     return this.calls.join("\n");
   }
   async end() {}
+  async connect() {
+    return { query: this.query.bind(this), release() {} };
+  }
   async query<T>(text: string) {
     this.calls.push(text);
     let rows: unknown[] = [];
-    if (text.includes("hotel_catalog.properties"))
+    if (text.includes("pms.channel_binding_claims")) {
+      if (this.mode === "historical")
+        rows = [
+          {
+            externalPropertyId: "external-1",
+            claimExternalPropertyId: "external-1",
+            claimState: "historical",
+          },
+        ];
+      else if (this.mode === "retained")
+        rows = [
+          {
+            externalPropertyId: null,
+            claimExternalPropertyId: "external-1",
+            claimState: "historical",
+          },
+        ];
+      else if (!["disconnected", "enable", "unicode"].includes(this.mode))
+        rows = [
+          {
+            externalPropertyId: "external-1",
+            claimExternalPropertyId: "external-1",
+            claimState: "active",
+          },
+        ];
+      else rows = [{ externalPropertyId: null, claimExternalPropertyId: null, claimState: null }];
+    } else if (text.includes("hotel_catalog.properties"))
       rows = [{ title: this.mode === "unicode" ? "😀".repeat(300) : "Hotel", currency: "EUR" }];
-    else if (
-      text.includes("external_property_id") &&
-      this.mode !== "disconnected" &&
-      this.mode !== "enable" &&
-      this.mode !== "unicode"
-    )
-      rows = [{ externalPropertyId: "external-1" }];
     else if (text.includes("count(unit.id)")) {
       rows = [
         {

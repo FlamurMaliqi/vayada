@@ -20,6 +20,7 @@ describe("PMS Channex management target state", () => {
       { ok: true, externalPropertyId: "channex-1" },
       now,
     );
+    if (operationType !== "disable") expect(client.sql()).toContain("pms.channel_binding_claims");
     expect(client.sql()).toContain(expectedSql);
     expect(client.sql()).not.toMatch(/webhook|callback|legacy/i);
   });
@@ -111,14 +112,32 @@ describe("PMS Channex management target state", () => {
     expect(client.sql()).toContain("pms.channel_room_type_mappings SET status = 'disabled'");
     expect(client.sql()).toContain("pms.channel_rate_plan_mappings SET status = 'disabled'");
   });
+
+  it("fails before connection state when the binding claim is not active", async () => {
+    const client = fakeClient(false);
+
+    await expect(
+      createPmsChannexManagementTargetState().succeed(
+        client,
+        job("sync_bookings"),
+        { ok: true, externalPropertyId: "channex-1" },
+        now,
+      ),
+    ).rejects.toThrow("Channex binding claim is not active");
+    expect(client.sql()).not.toContain("UPDATE pms.channel_connections");
+  });
 });
 
-function fakeClient() {
+function fakeClient(claimActive = true) {
   const calls: string[] = [];
   return {
     query: async <T>(text: string) => {
       calls.push(text);
-      return { rows: [] as T[] };
+      return {
+        rows: (text.includes("pms.channel_binding_claims") && claimActive
+          ? [{ id: "claim-1" }]
+          : []) as T[],
+      };
     },
     release() {},
     sql: () => calls.join("\n"),

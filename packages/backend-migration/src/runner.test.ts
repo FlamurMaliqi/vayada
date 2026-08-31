@@ -886,6 +886,7 @@ describe.skipIf(!TEST_DATABASE_URL)("target schema migrations (integration)", ()
         "booking_checkout_charges",
         "booking_checkout_records",
         "booking_notes_private",
+        "channel_binding_claims",
         "channel_booking_mappings",
         "channel_booking_revision_tombstones",
         "channel_connections",
