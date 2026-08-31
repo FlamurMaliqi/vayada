@@ -33,6 +33,15 @@ const completeAuthSessionEnv = {
   AUTH_MARKETPLACE_WEB_ORIGIN: "https://marketplace.localhost",
 };
 
+const financeFolioKmsEnv = {
+  FINANCE_FOLIO_RECIPIENT_KMS_CURRENT_KEY_ARN:
+    "arn:aws:kms:eu-west-1:123456789012:key/11111111-2222-3333-4444-555555555555",
+  FINANCE_FOLIO_RECIPIENT_KMS_ALLOWED_KEY_ARNS:
+    "arn:aws:kms:eu-west-1:123456789012:key/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee,arn:aws:kms:eu-west-1:123456789012:key/11111111-2222-3333-4444-555555555555",
+  FINANCE_FOLIO_RECIPIENT_KMS_FINGERPRINT_KEY_ARN:
+    "arn:aws:kms:eu-west-1:123456789012:key/99999999-8888-7777-6666-555555555555",
+};
+
 describe("api config", () => {
   it("keeps Channex management fail-closed until each capability is cut over", () => {
     expect(loadConfig({}).channexManagement).toMatchObject({
@@ -346,6 +355,7 @@ describe("api config", () => {
 
   it("loads next API runtime only with target sources", () => {
     const config = loadConfig({
+      ...financeFolioKmsEnv,
       API_RUNTIME: "next",
       TARGET_DATABASE_URL: "postgresql://target-db",
       PUBLIC_HOTEL_PROFILE_SOURCE: "target",
@@ -358,11 +368,18 @@ describe("api config", () => {
       publicHotelProfileSource: "target",
       pmsOperationsSource: "target",
       financeSource: "target",
+      financeFolioRecipientKms: {
+        currentKeyArn: financeFolioKmsEnv.FINANCE_FOLIO_RECIPIENT_KMS_CURRENT_KEY_ARN,
+        allowedKeyArns: financeFolioKmsEnv.FINANCE_FOLIO_RECIPIENT_KMS_ALLOWED_KEY_ARNS.split(","),
+        fingerprintKeyArn: financeFolioKmsEnv.FINANCE_FOLIO_RECIPIENT_KMS_FINGERPRINT_KEY_ARN,
+        region: "eu-west-1",
+      },
     });
   });
 
   it("loads next API runtime with an explicitly disabled PMS surface", () => {
     const config = loadConfig({
+      ...financeFolioKmsEnv,
       API_RUNTIME: "next",
       TARGET_DATABASE_URL: "postgresql://target-db",
       PUBLIC_HOTEL_PROFILE_SOURCE: "target",
@@ -371,6 +388,40 @@ describe("api config", () => {
     });
 
     expect(config.pmsOperationsSource).toBe("disabled");
+  });
+
+  it("fails closed when the next Finance folio KMS contract is missing or inconsistent", () => {
+    const nextFinance = {
+      API_RUNTIME: "next",
+      TARGET_DATABASE_URL: "postgresql://target-db",
+      PUBLIC_HOTEL_PROFILE_SOURCE: "target",
+      PMS_OPERATIONS_SOURCE: "disabled",
+      FINANCE_SOURCE: "target",
+    };
+    expect(() => loadConfig(nextFinance)).toThrow("Finance folio recipient KMS config is required");
+    expect(() =>
+      loadConfig({
+        ...nextFinance,
+        ...financeFolioKmsEnv,
+        FINANCE_FOLIO_RECIPIENT_KMS_ALLOWED_KEY_ARNS:
+          financeFolioKmsEnv.FINANCE_FOLIO_RECIPIENT_KMS_FINGERPRINT_KEY_ARN,
+      }),
+    ).toThrow("Finance folio recipient KMS key ARNs are invalid");
+    expect(() =>
+      loadConfig({
+        ...nextFinance,
+        ...financeFolioKmsEnv,
+        FINANCE_FOLIO_RECIPIENT_KMS_ALLOWED_KEY_ARNS: `${financeFolioKmsEnv.FINANCE_FOLIO_RECIPIENT_KMS_CURRENT_KEY_ARN},,`,
+      }),
+    ).toThrow("Finance folio recipient KMS key ARNs are invalid");
+    expect(() =>
+      loadConfig({
+        ...nextFinance,
+        ...financeFolioKmsEnv,
+        FINANCE_FOLIO_RECIPIENT_KMS_FINGERPRINT_KEY_ARN:
+          "arn:aws:kms:us-east-1:123456789012:key/99999999-8888-7777-6666-555555555555",
+      }),
+    ).toThrow("must share a partition, region, and account");
   });
 
   it("rejects removed legacy Python integration URL envs in every runtime", () => {
@@ -703,6 +754,7 @@ describe("api config", () => {
 
   it("requires the Stripe mutation and recovery runtime for checkout in production", () => {
     const complete = {
+      ...financeFolioKmsEnv,
       NODE_ENV: "production",
       API_RUNTIME: "next",
       TARGET_DATABASE_URL: "postgresql://target-db",

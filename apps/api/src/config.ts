@@ -14,11 +14,7 @@ export type ApiAuthConfig = {
 };
 
 export type ApiAuthSurface =
-  | "platform-admin"
-  | "booking-admin"
-  | "pms-web"
-  | "affiliate-dashboard"
-  | "marketplace-web";
+  "platform-admin" | "booking-admin" | "pms-web" | "affiliate-dashboard" | "marketplace-web";
 
 export type ApiAuthSessionConfig = {
   workosClientId: string;
@@ -47,6 +43,12 @@ export type PublicHotelProfileSource = "target" | "active_publication";
 export type MarketplaceAdminSource = "disabled" | "target";
 export type PmsOperationsSource = "disabled" | "target";
 export type FinanceSource = "legacy" | "target";
+export type FinanceFolioRecipientKmsConfig = {
+  currentKeyArn: string;
+  allowedKeyArns: string[];
+  fingerprintKeyArn: string;
+  region: string;
+};
 export type BookingWebEventSink = "disabled" | "target";
 export type ProviderWebhookIntakeMode = "observe_only" | "mutating" | "ack_only_with_receipt";
 export type ApiRuntime = "legacy" | "next";
@@ -138,6 +140,7 @@ export type ApiConfig = {
   marketplaceAdminLegacySuperadminFallbackEnabled: boolean;
   pmsOperationsSource: PmsOperationsSource;
   financeSource: FinanceSource;
+  financeFolioRecipientKms?: FinanceFolioRecipientKmsConfig;
   marketplaceDiscoveryAllowedOrigins: string[];
   affiliatePublicSource?: "target";
   pmsOperationsAllowedOrigins: string[];
@@ -243,6 +246,56 @@ function readOptionalCsvEnv(
         .map((entry) => entry.trim())
         .filter(Boolean)
     : defaultValue;
+}
+
+const KMS_KEY_ARN =
+  /^arn:(aws(?:-[a-z]+)?):kms:([a-z0-9-]+):(\d{12}):key\/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/;
+
+function loadFinanceFolioRecipientKmsConfig(
+  env: NodeJS.ProcessEnv,
+  required: boolean,
+): FinanceFolioRecipientKmsConfig | undefined {
+  const keys = [
+    "FINANCE_FOLIO_RECIPIENT_KMS_CURRENT_KEY_ARN",
+    "FINANCE_FOLIO_RECIPIENT_KMS_ALLOWED_KEY_ARNS",
+    "FINANCE_FOLIO_RECIPIENT_KMS_FINGERPRINT_KEY_ARN",
+  ] as const;
+  const values = Object.fromEntries(keys.map((key) => [key, readOptionalEnv(env, key)]));
+  const configured = keys.filter((key) => values[key]);
+  if (!configured.length) {
+    if (required)
+      throw new Error(`Finance folio recipient KMS config is required; missing ${keys.join(", ")}`);
+    return undefined;
+  }
+  if (configured.length !== keys.length) {
+    const missing = keys.filter((key) => !values[key]).join(", ");
+    throw new Error(`Incomplete Finance folio recipient KMS config; missing ${missing}`);
+  }
+
+  const currentKeyArn = values[keys[0]]!;
+  const allowedKeyArns = values[keys[1]]!.split(",");
+  const fingerprintKeyArn = values[keys[2]]!;
+  const parsed = [currentKeyArn, ...allowedKeyArns, fingerprintKeyArn].map((value) =>
+    KMS_KEY_ARN.exec(value),
+  );
+  if (
+    allowedKeyArns.length === 0 ||
+    allowedKeyArns.some((value) => !value || value !== value.trim()) ||
+    new Set(allowedKeyArns).size !== allowedKeyArns.length ||
+    !allowedKeyArns.includes(currentKeyArn) ||
+    allowedKeyArns.includes(fingerprintKeyArn) ||
+    currentKeyArn === fingerprintKeyArn ||
+    parsed.some((value) => !value)
+  )
+    throw new Error("Finance folio recipient KMS key ARNs are invalid");
+  const [partition, region, account] = parsed[0]!.slice(1, 4);
+  if (
+    parsed.some((value) => value![1] !== partition || value![2] !== region || value![3] !== account)
+  )
+    throw new Error(
+      "Finance folio recipient KMS key ARNs must share a partition, region, and account",
+    );
+  return { currentKeyArn, allowedKeyArns, fingerprintKeyArn, region: region! };
 }
 
 const AUTH_SURFACE_ORIGIN_KEYS = {
@@ -664,6 +717,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     "disabled",
   );
   const financeSource = readSourceEnv(env, "FINANCE_SOURCE", ["legacy", "target"], "legacy");
+  const financeFolioRecipientKms = loadFinanceFolioRecipientKmsConfig(
+    env,
+    apiRuntime === "next" && financeSource === "target",
+  );
   const bookingWebEventSink = readSourceEnv(
     env,
     "BOOKING_WEB_EVENT_SINK",
@@ -745,6 +802,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     ),
     pmsOperationsSource,
     financeSource,
+    financeFolioRecipientKms,
     marketplaceDiscoveryAllowedOrigins: readOptionalCsvEnv(
       env,
       "MARKETPLACE_DISCOVERY_ALLOWED_ORIGINS",

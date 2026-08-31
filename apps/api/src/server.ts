@@ -39,6 +39,13 @@ import { createPgFinanceManualExpenseRepository } from "./domains/financeManualE
 import { createPgFinanceRecurringExpenseRuleRepository } from "./domains/financeRecurringExpenseRuleRepository.js";
 // prettier-ignore
 import { createPgFinanceExpensePropertyContextReadPort, createPgFinanceExpenseReadModel } from "./domains/financeExpenseReadModel.js";
+import { createPgFinanceFolioCommandRepository } from "./domains/financeFolioCommandRepository.js";
+import { createAwsFinanceFolioKms } from "./domains/financeFolioKms.js";
+import { createPgFinanceFolioReadRepository } from "./domains/financeFolioReadRepository.js";
+import {
+  createKmsFinanceFolioRecipientDecoder,
+  createKmsFinanceFolioRecipientEncoder,
+} from "./domains/financeFolioRecipientCodec.js";
 import { createPgHotelMediaResolutionPort } from "./platform/hotelMediaResolver.js";
 import { createPgBookingWebEventSink } from "./platform/bookingWebEvents.js";
 import { createTargetBookingDashboardMetricsReadPort } from "./platform/bookingDashboard.js";
@@ -491,6 +498,43 @@ const financeExpenseRuntime = config.financeSource === "target" ? (() => {
   const categories = createPgFinanceExpenseCategoryRepository(targetDatabaseUrl), expenses = createPgFinanceManualExpenseRepository(targetDatabaseUrl), recurring = createPgFinanceRecurringExpenseRuleRepository(targetDatabaseUrl);
   return { routes: { read, categories, expenses, recurring }, close: () => Promise.all([read.close(), propertyContext.close(), categories.close(), expenses.close(), recurring.close()]) };
 })() : undefined;
+const financeFolioRuntime =
+  config.financeSource === "target" && config.financeFolioRecipientKms
+    ? (() => {
+        const kms = createAwsFinanceFolioKms({ region: config.financeFolioRecipientKms.region });
+        const recipientEncoder = createKmsFinanceFolioRecipientEncoder({
+          kms: kms.write,
+          currentKeyArn: config.financeFolioRecipientKms.currentKeyArn,
+          currentFingerprintKeyArn: config.financeFolioRecipientKms.fingerprintKeyArn,
+        });
+        const recipientDecoder = createKmsFinanceFolioRecipientDecoder({
+          kms: kms.decrypt,
+          allowedKeyArns: config.financeFolioRecipientKms.allowedKeyArns,
+        });
+        const propertyContext = createPgFinanceExpensePropertyContextReadPort(targetDatabaseUrl);
+        const repository = createPgFinanceFolioReadRepository({
+          connectionString: targetDatabaseUrl,
+          pricing: pmsPricingReadModel,
+          propertyContext,
+          recipientDecoder,
+        });
+        const commands = createPgFinanceFolioCommandRepository({
+          connectionString: targetDatabaseUrl,
+          recipientEncoder,
+          recipientDecoder,
+        });
+        return {
+          routes: { repository, commands },
+          async close() {
+            try {
+              await Promise.all([repository.close(), commands.close(), propertyContext.close()]);
+            } finally {
+              kms.close();
+            }
+          },
+        };
+      })()
+    : undefined;
 const financeExpenseGenerationPool =
   config.financeSource === "target"
     ? new pg.Pool({ connectionString: targetDatabaseUrl, max: 2, connectionTimeoutMillis: 5_000 })
@@ -1152,6 +1196,7 @@ const app = buildApp({
           : {}),
       }
     : undefined,
+  financeFolios: financeFolioRuntime?.routes,
   pmsFinanceCompatibilityRepository,
   financeXenditBankValidator: xenditBankValidator,
   financePublicHotelProfileRepository,
@@ -1317,6 +1362,7 @@ app.addHook("onClose", async () => {
     staffInvitationRuntime?.removalJobRepository.close(),
     financeOtaCommissionSettingsRepository?.close(),
     financeExpenseRuntime?.close(),
+    financeFolioRuntime?.close(),
     bookingDesignMediaAdapter?.close?.(),
     pmsRoomPublicationRuntime?.commandRepository.close(),
     pmsRoomPublicationRuntime?.readModel.close(),
