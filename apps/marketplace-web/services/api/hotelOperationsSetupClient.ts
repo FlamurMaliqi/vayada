@@ -164,6 +164,13 @@ type StripeProviderAccountResponse = {
   onboardingStatus: string;
 };
 
+type StripeProviderAccountReconciliationResponse = {
+  propertyId: string;
+  providerAccount: {
+    ready: boolean;
+  };
+};
+
 type BookingDesignSettingsResponse = {
   heroImage?: string;
   heroHeading?: string;
@@ -370,6 +377,17 @@ export const hotelOperationsSetupApi = {
           },
     );
   },
+
+  reconcileStripeProviderAccount: async (
+    propertyId: string,
+    commandId: string,
+    signal?: AbortSignal,
+  ): Promise<StripeProviderAccountReconciliationResponse> =>
+    targetApiClient.post<StripeProviderAccountReconciliationResponse>(
+      `/api/finance/properties/${encoded(propertyId)}/provider-accounts/stripe/reconcile`,
+      { commandId, idempotencyKey: commandId },
+      signal ? { signal } : undefined,
+    ),
 
   getDirectBookingSetup: async (
     propertyId: string,

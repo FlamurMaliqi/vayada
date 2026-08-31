@@ -467,6 +467,30 @@ describe("hotel operations setup client", () => {
     expect(bodies[0]).not.toHaveProperty("returnUrl");
   });
 
+  it("reconciles only the exact property's stored Stripe account", async () => {
+    mocks.post.mockResolvedValue({
+      propertyId: "property / one",
+      providerAccount: { ready: false },
+    });
+    const signal = new AbortController().signal;
+
+    await hotelOperationsSetupApi.reconcileStripeProviderAccount(
+      " property / one ",
+      "stripe-flow:attempt:1",
+      signal,
+    );
+
+    expect(mocks.post).toHaveBeenCalledWith(
+      "/api/finance/properties/property%20%2F%20one/provider-accounts/stripe/reconcile",
+      {
+        commandId: "stripe-flow:attempt:1",
+        idempotencyKey: "stripe-flow:attempt:1",
+      },
+      { signal },
+    );
+    expect(mocks.post.mock.calls[0]?.[1]).not.toHaveProperty("providerAccountId");
+  });
+
   it("uses canonical property IDs for Booking guest-policy reads and writes", async () => {
     mocks.get.mockResolvedValue({
       property_name: "Hotel Alpenrose",

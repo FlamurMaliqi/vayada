@@ -1,7 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 
+import {
+  coordinateStripeRefresh,
+  markStripeOnboardingStarted,
+  refreshStripeAfterOnboarding,
+  watchStripeOnboardingRefresh,
+} from "@/lib/utils/stripeOnboardingRefresh";
 import { getAuthSessionUser } from "@/services/auth/sessionStore";
 import {
   hotelOperationsErrorMessage,
@@ -60,6 +66,23 @@ export function PaymentSetupForm({
   const [error, setError] = useState("");
   const stripeLinkAttemptId = useRef(newStripeLinkAttemptId());
   const paymentSettingsAttemptId = useRef(newPaymentSettingsAttemptId());
+  const stripeRefreshAbort = useRef<AbortController | null>(null);
+  const onCompletedRef = useRef(onCompleted);
+
+  useEffect(() => {
+    onCompletedRef.current = onCompleted;
+  }, [onCompleted]);
+
+  const refreshCompletion = useCallback(async () => {
+    try {
+      await onCompletedRef.current();
+      setCompletionRefreshPending(false);
+    } catch (cause) {
+      console.warn("Payment settings saved but setup status could not refresh", cause);
+      setCompletionRefreshPending(true);
+      setError("Your payment settings were saved, but setup could not refresh. Try again.");
+    }
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -84,9 +107,111 @@ export function PaymentSetupForm({
     return () => controller.abort();
   }, [propertyId, reloadToken]);
 
+  const refreshStripeStatus = useCallback(
+    async (
+      flowId = `stripe-refresh-${crypto.randomUUID()}`,
+      mode: "reconcile" | "reload" = "reconcile",
+    ): Promise<boolean> => {
+      if (stripeRefreshAbort.current) return false;
+      const controller = new AbortController();
+      stripeRefreshAbort.current = controller;
+      setCheckingStripe(true);
+      setError("");
+      try {
+        const loadPaymentSettings = () =>
+          hotelOperationsSetupApi.getPaymentSettings(propertyId, controller.signal);
+        const updated =
+          mode === "reload"
+            ? await coordinateStripeRefresh(
+                {
+                  propertyId,
+                  signal: controller.signal,
+                  locks: navigator.locks,
+                },
+                loadPaymentSettings,
+                loadPaymentSettings,
+              )
+            : await coordinateStripeRefresh(
+                {
+                  propertyId,
+                  signal: controller.signal,
+                  locks: navigator.locks,
+                },
+                () =>
+                  refreshStripeAfterOnboarding(controller.signal, {
+                    reconcile: (attempt) =>
+                      hotelOperationsSetupApi.reconcileStripeProviderAccount(
+                        propertyId,
+                        `${flowId}:attempt:${attempt + 1}`,
+                        controller.signal,
+                      ),
+                    loadPaymentSettings,
+                  }),
+                loadPaymentSettings,
+              );
+        if (controller.signal.aborted) return false;
+        setSettings(updated);
+        if (isStripeReady(updated)) {
+          setSettingsSaved(true);
+          setStripeOnboardingUrl("");
+        } else {
+          setError("Stripe setup is still pending. Complete onboarding or check again.");
+        }
+        await refreshCompletion();
+        return true;
+      } catch (cause) {
+        if (controller.signal.aborted || (cause instanceof Error && cause.name === "AbortError")) {
+          return false;
+        }
+        setError(
+          hotelOperationsErrorMessage(
+            cause,
+            "Stripe status could not be refreshed. Check again in a moment.",
+          ),
+        );
+        return true;
+      } finally {
+        if (stripeRefreshAbort.current === controller) {
+          stripeRefreshAbort.current = null;
+          setCheckingStripe(false);
+        }
+      }
+    },
+    [propertyId, refreshCompletion],
+  );
+
+  const paymentSettingsLoaded = settings !== null;
+  useEffect(() => {
+    if (!paymentSettingsLoaded) return;
+    const search = new URLSearchParams(window.location.search);
+    const stripe = search.get("stripe");
+    const isStripeReturn = stripe === "return" || stripe === "refresh";
+    if (isStripeReturn) {
+      search.delete("stripe");
+      const query = search.toString();
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
+      );
+    }
+    const stopWatching = watchStripeOnboardingRefresh({
+      propertyId,
+      isStripeReturn,
+      target: window,
+      store: window.localStorage,
+      onRefresh: refreshStripeStatus,
+    });
+    return () => {
+      stopWatching();
+      stripeRefreshAbort.current?.abort();
+      stripeRefreshAbort.current = null;
+    };
+  }, [paymentSettingsLoaded, propertyId, refreshStripeStatus]);
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!settings) return;
+    if (!settings || stripeRefreshAbort.current) return;
     if (draft.methods.length === 0) {
       setError("Select at least one payment method so guests can complete bookings.");
       return;
@@ -132,6 +257,7 @@ export function PaymentSetupForm({
         providerAccountId: updated.providerAccount.providerAccountId,
         linkAttemptId: stripeLinkAttemptId.current,
       });
+      markStripeOnboardingStarted(propertyId, window.localStorage);
       setStripeOnboardingUrl(onboarding.onboardingUrl);
       stripeLinkAttemptId.current = newStripeLinkAttemptId();
     } catch (cause) {
@@ -156,34 +282,8 @@ export function PaymentSetupForm({
     }
   };
 
-  const refreshCompletion = async () => {
-    try {
-      await onCompleted();
-      setCompletionRefreshPending(false);
-    } catch (cause) {
-      console.warn("Payment settings saved but setup status could not refresh", cause);
-      setCompletionRefreshPending(true);
-      setError("Your payment settings were saved, but setup could not refresh. Try again.");
-    }
-  };
-
   const checkStripeStatus = async () => {
-    setCheckingStripe(true);
-    setError("");
-    try {
-      const updated = await hotelOperationsSetupApi.getPaymentSettings(propertyId);
-      setSettings(updated);
-      if (isStripeReady(updated)) {
-        setSettingsSaved(true);
-        await refreshCompletion();
-      } else {
-        setError("Stripe is not ready yet. Finish the Stripe checklist, then check again.");
-      }
-    } catch (cause) {
-      setError(hotelOperationsErrorMessage(cause, "Stripe status could not be checked."));
-    } finally {
-      setCheckingStripe(false);
-    }
+    await refreshStripeStatus();
   };
 
   const change = <K extends keyof PaymentSetupDraft>(key: K, value: PaymentSetupDraft[K]) => {
@@ -214,27 +314,41 @@ export function PaymentSetupForm({
   const stripeSelected = draft.methods.includes("online_card") && draft.onlineProvider === "stripe";
   const needsStripeAccount = stripeSelected && !settings.providerAccount.providerAccountId;
   const stripePending = stripeSelected && !isStripeReady(settings);
+  const stripeConnected = stripeSelected && settingsSaved && isStripeReady(settings);
   const readyPaymentSaved = settingsSaved && !needsStripeSetup(draft, settings);
 
   return (
     <OperationFormShell
       error={error}
       notice={
-        completionRefreshPending || readyPaymentSaved ? (
+        stripeConnected ? (
+          "Stripe is connected."
+        ) : completionRefreshPending || readyPaymentSaved ? (
           "Your payment settings are saved. Retry the setup refresh to continue."
-        ) : stripeOnboardingUrl ? (
+        ) : stripeOnboardingUrl || (stripePending && settings.providerAccount.providerAccountId) ? (
           <div className="space-y-3">
-            <p className="font-semibold">Finish connecting Stripe</p>
+            <p className="font-semibold">
+              {stripeOnboardingUrl ? "Finish connecting Stripe" : "Stripe setup is still pending"}
+            </p>
             <p>Stripe must confirm onboarding and enable charges before card payments go live.</p>
             <div className="flex flex-wrap gap-3">
-              <a
-                className="inline-flex min-h-10 items-center rounded-full bg-primary-600 px-4 py-2 font-semibold text-white hover:bg-primary-700"
-                href={stripeOnboardingUrl}
-                rel="noreferrer"
-                target="_blank"
-              >
-                Open Stripe
-              </a>
+              {stripeOnboardingUrl && !checkingStripe ? (
+                <a
+                  className="inline-flex min-h-10 items-center rounded-full bg-primary-600 px-4 py-2 font-semibold text-white hover:bg-primary-700"
+                  href={stripeOnboardingUrl}
+                  onClick={(event) => {
+                    if (stripeRefreshAbort.current) {
+                      event.preventDefault();
+                      return;
+                    }
+                    markStripeOnboardingStarted(propertyId, window.localStorage);
+                  }}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Open Stripe
+                </a>
+              ) : null}
               <button
                 className="min-h-10 rounded-full border border-primary-300 bg-white px-4 py-2 font-semibold text-primary-800 disabled:opacity-60"
                 disabled={checkingStripe}
@@ -262,10 +376,10 @@ export function PaymentSetupForm({
               : "Save and connect Stripe"
             : "Save and continue"
       }
-      submitting={submitting}
-      submittingLabel="Saving…"
+      submitting={submitting || checkingStripe}
+      submittingLabel={checkingStripe ? "Checking Stripe…" : "Saving…"}
     >
-      <fieldset className="space-y-4 sm:col-span-2">
+      <fieldset className="space-y-4 sm:col-span-2" disabled={checkingStripe}>
         <legend className="text-sm font-semibold text-gray-900">
           Choose which options to offer
         </legend>
@@ -384,7 +498,7 @@ export function PaymentSetupForm({
       </fieldset>
 
       {stripeSelected ? (
-        <div className="grid gap-4 sm:col-span-2 sm:grid-cols-2">
+        <fieldset className="grid gap-4 sm:col-span-2 sm:grid-cols-2" disabled={checkingStripe}>
           <OperationField label="Stripe account email">
             <input
               autoComplete="email"
@@ -409,7 +523,7 @@ export function PaymentSetupForm({
               value={stripeCountry}
             />
           </OperationField>
-        </div>
+        </fieldset>
       ) : null}
     </OperationFormShell>
   );
