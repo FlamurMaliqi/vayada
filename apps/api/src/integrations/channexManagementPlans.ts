@@ -13,6 +13,7 @@ type Pool = {
     text: string,
     values?: unknown[],
   ): Promise<{ rows: T[] }>;
+  connect(): Promise<Pick<Pool, "query"> & { release(): void }>;
   end(): Promise<void>;
 };
 type PropertyRow = {
@@ -58,6 +59,11 @@ type AriRow = {
   channel: string;
   markupPercent: number;
 };
+type BindingRow = {
+  externalPropertyId: string | null;
+  claimExternalPropertyId: string | null;
+  claimState: string | null;
+};
 
 export type ChannexBookingRevisionHandoff = (input: {
   propertyId: string;
@@ -85,8 +91,11 @@ async function plan(
   handoff: ChannexBookingRevisionHandoff,
   job: ChannexManagementJob,
 ): Promise<ChannexManagementActionPlan> {
-  const externalPropertyId = await connectionId(pool, job.propertyId);
+  const binding = await connectionBinding(pool, job.propertyId);
+  const externalPropertyId = activeExternalPropertyId(binding);
   if (job.input.operationType === "enable") {
+    if (!externalPropertyId && binding?.claimExternalPropertyId)
+      throw new Error("A retained Channex binding claim requires audited repair");
     return externalPropertyId ? { externalPropertyId, requests: [] } : enablePlan(pool, job);
   }
   if (job.input.operationType === "disable") {
@@ -344,8 +353,19 @@ async function ariPlan(
 }
 
 function checkpoint(pool: Pool, job: ChannexManagementJob) {
-  return (progress: Parameters<typeof applyPmsChannexManagementProgress>[2]) =>
-    applyPmsChannexManagementProgress(pool, job, progress, new Date());
+  return async (progress: Parameters<typeof applyPmsChannexManagementProgress>[2]) => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await applyPmsChannexManagementProgress(client, job, progress, new Date());
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
 }
 
 function providerTitle(title: string, identity: string) {
@@ -362,13 +382,29 @@ function providerRateTitle(rate: RateRow) {
   );
 }
 
-async function connectionId(pool: Pool, propertyId: string): Promise<string | null> {
-  const result = await pool.query<{ externalPropertyId: string | null }>(
-    `SELECT external_property_id AS "externalPropertyId" FROM pms.channel_connections
-     WHERE property_id = $1::uuid AND provider = 'channex'`,
+async function connectionBinding(pool: Pool, propertyId: string): Promise<BindingRow | null> {
+  const result = await pool.query<BindingRow>(
+    `SELECT connection.external_property_id AS "externalPropertyId",
+       claim.external_property_id AS "claimExternalPropertyId", claim.claim_state AS "claimState"
+     FROM hotel_catalog.properties property
+     LEFT JOIN pms.channel_connections connection
+       ON connection.property_id = property.id AND connection.provider = 'channex'
+     LEFT JOIN pms.channel_binding_claims claim
+       ON claim.property_id = property.id AND claim.provider = 'channex'
+     WHERE property.id = $1::uuid`,
     [propertyId],
   );
-  return result.rows[0]?.externalPropertyId ?? null;
+  return result.rows[0] ?? null;
+}
+
+function activeExternalPropertyId(binding: BindingRow | null): string | null {
+  if (!binding?.externalPropertyId) return null;
+  if (
+    binding.claimState !== "active" ||
+    binding.claimExternalPropertyId !== binding.externalPropertyId
+  )
+    throw new Error("Channex binding claim is not active");
+  return binding.externalPropertyId;
 }
 
 function compact(value: Record<string, unknown>) {

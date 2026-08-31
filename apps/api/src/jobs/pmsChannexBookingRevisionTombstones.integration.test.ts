@@ -27,7 +27,7 @@ describe.skipIf(!URL)("Channex booking revision tombstones (PostgreSQL)", () => 
     await db.end();
   });
 
-  it("rotates bindings, archives old tombstones, and governs retention", async () => {
+  it("preserves exact bindings, archives disabled tombstones, and governs retention", async () => {
     const client = await db.connect();
     try {
       await applyPmsChannexManagementProgress(
@@ -47,24 +47,15 @@ describe.skipIf(!URL)("Channex booking revision tombstones (PostgreSQL)", () => 
       );
       expect((await connection()).generation).toBe(first.generation);
 
-      await createPmsChannexManagementTargetState().succeed(
-        client,
-        job("provision"),
-        { ok: true, externalPropertyId: "external-b" },
-        NOW,
-      );
-      const rebound = await connection();
-      expect(rebound).toMatchObject({ externalPropertyId: "external-b" });
-      expect(rebound.generation).not.toBe(first.generation);
-      await insertTombstone(rebound, "booking-b");
-      expect(
-        (
-          await db.query(
-            "SELECT resolved_at IS NOT NULL AS resolved FROM pms.channel_booking_revision_tombstones WHERE connection_id=$1 AND binding_generation=$2",
-            [first.id, first.generation],
-          )
-        ).rows[0]?.resolved,
-      ).toBe(true);
+      await expect(
+        createPmsChannexManagementTargetState().succeed(
+          client,
+          job("provision"),
+          { ok: true, externalPropertyId: "external-b" },
+          NOW,
+        ),
+      ).rejects.toThrow("Channex binding claim is not active");
+      expect(await connection()).toEqual(first);
 
       await applyPmsChannexManagementProgress(
         client,
@@ -73,27 +64,18 @@ describe.skipIf(!URL)("Channex booking revision tombstones (PostgreSQL)", () => 
         NOW,
       );
       const disconnected = await connection();
-      expect(disconnected.generation).not.toBe(rebound.generation);
-      expect(await activeCount(rebound, "booking-b")).toBe(0);
-      await applyPmsChannexManagementProgress(
-        client,
-        job("enable"),
-        { ok: true, externalPropertyId: "external-a", connectionStatus: "connected" },
-        NOW,
-      );
-      const returned = await connection();
-      expect(returned.generation).not.toBe(disconnected.generation);
-      expect(await activeCount(returned, "booking-old")).toBe(0);
+      expect(disconnected.generation).not.toBe(first.generation);
+      expect(await activeCount(first, "booking-old")).toBe(0);
 
       await db.query(
         `INSERT INTO pms.channel_booking_revision_tombstones(
            connection_id,property_id,binding_generation,external_booking_id,
            authoritative_revision_id,inserted_at,created_at,retention_expires_at)
          VALUES($1,$2,$3,'expired','revision-expired',now(),now()-interval '90 days',now()-interval '1 microsecond')`,
-        [returned.id, PROPERTY_ID, returned.generation],
+        [disconnected.id, PROPERTY_ID, disconnected.generation],
       );
-      expect(await activeCount(returned, "expired")).toBe(0);
-      await insertTombstone(returned, "cleanup-probe");
+      expect(await activeCount(disconnected, "expired")).toBe(0);
+      await insertTombstone(disconnected, "cleanup-probe");
       expect(
         (
           await db.query(
@@ -107,59 +89,40 @@ describe.skipIf(!URL)("Channex booking revision tombstones (PostgreSQL)", () => 
              connection_id,property_id,binding_generation,external_booking_id,
              authoritative_revision_id,inserted_at,retention_expires_at)
            VALUES($1,$2,$3,'over-retained','revision-over-retained',now(),now()+interval '91 days')`,
-          [returned.id, PROPERTY_ID, returned.generation],
+          [disconnected.id, PROPERTY_ID, disconnected.generation],
         ),
       ).rejects.toMatchObject({ code: "23514" });
-      await insertTombstone(returned, "resolved");
+      await insertTombstone(disconnected, "resolved");
       await db.query(
         "UPDATE pms.channel_booking_revision_tombstones SET resolved_at=now(),updated_at=now() WHERE connection_id=$1 AND binding_generation=$2 AND external_booking_id='resolved'",
-        [returned.id, returned.generation],
+        [disconnected.id, disconnected.generation],
       );
-      expect(await activeCount(returned, "resolved")).toBe(0);
+      expect(await activeCount(disconnected, "resolved")).toBe(0);
     } finally {
       client.release();
     }
   });
 
-  it("fences a stale writer racing a connection rebind", async () => {
-    let stale: pg.PoolClient | undefined,
-      rebinder: pg.PoolClient | undefined,
-      insertion: Promise<unknown> | undefined;
-    try {
-      await db.query("DELETE FROM pms.channel_connections WHERE property_id=$1", [PROPERTY_ID]);
-      await db.query(
-        "INSERT INTO pms.channel_connections(property_id,provider,connection_status,external_property_id) VALUES($1,'channex','connected','race-a')",
-        [PROPERTY_ID],
-      );
-      stale = await db.connect();
-      rebinder = await db.connect();
-      const current = await connection(),
-        pid = Number((await stale.query("SELECT pg_backend_pid() pid")).rows[0]?.pid);
-      await rebinder.query("BEGIN");
-      await rebinder.query(
-        "UPDATE pms.channel_connections SET external_property_id='race-b' WHERE id=$1",
-        [current.id],
-      );
-      insertion = insertTombstone(current, "stale-race", stale).then(
-        () => undefined,
-        (error: unknown) => error,
-      );
-      await expect
-        .poll(
-          async () =>
-            (await db.query("SELECT wait_event_type FROM pg_stat_activity WHERE pid=$1", [pid]))
-              .rows[0]?.wait_event_type,
-          { timeout: 2_000 },
-        )
-        .toBe("Lock");
-      await rebinder.query("COMMIT");
-      expect(await insertion).toMatchObject({ code: "23503" });
-    } finally {
-      if (rebinder) await rebinder.query("ROLLBACK").catch(() => undefined);
-      if (insertion) await insertion;
-      stale?.release();
-      rebinder?.release();
-    }
+  it("rejects an unreviewed external-property rebind", async () => {
+    await db.query("DELETE FROM pms.channel_connections WHERE property_id=$1", [PROPERTY_ID]);
+    await db.query("DELETE FROM pms.channel_binding_claims WHERE property_id=$1", [PROPERTY_ID]);
+    await applyPmsChannexManagementProgress(
+      db,
+      job("enable"),
+      { ok: true, externalPropertyId: "race-a", connectionStatus: "connected" },
+      NOW,
+    );
+    const current = await connection();
+
+    await expect(
+      db.query("UPDATE pms.channel_connections SET external_property_id='race-b' WHERE id=$1", [
+        current.id,
+      ]),
+    ).rejects.toMatchObject({
+      code: "23505",
+      constraint: "uq_pms_channel_binding_claims_provider_external",
+    });
+    expect(await connection()).toEqual(current);
   });
 
   type Connection = { id: string; generation: string; externalPropertyId: string | null };
@@ -197,6 +160,7 @@ describe.skipIf(!URL)("Channex booking revision tombstones (PostgreSQL)", () => 
   }
   async function cleanup() {
     await db.query("DELETE FROM pms.channel_connections WHERE property_id=$1", [PROPERTY_ID]);
+    await db.query("DELETE FROM pms.channel_binding_claims WHERE property_id=$1", [PROPERTY_ID]);
     await db.query("DELETE FROM hotel_catalog.properties WHERE id=$1", [PROPERTY_ID]);
   }
 });
