@@ -614,6 +614,35 @@ async function checkPayloadRedactionBoundary(
   }
 }
 
+async function checkStripeReceiptRetentionBoundary(
+  client: pg.Client,
+  findings: ParityFinding[],
+): Promise<void> {
+  await expectRelationshipExists(
+    client,
+    findings,
+    "PLATFORM_STRIPE_RECEIPT_RETENTION_BOUNDARY_MISMATCH",
+    "platform.external_webhook_events",
+    "Expected imported pre-v1 Stripe receipt payload copies to be irreversibly scrubbed",
+    "Empty receipt headers/payload and linked audit private payload, with retained receipt identity and purge timestamps",
+    `SELECT EXISTS(
+       SELECT 1
+       FROM platform.external_webhook_events webhook
+       JOIN platform.product_audit_events audit
+         ON audit.id = $2
+        AND audit.external_webhook_event_id = webhook.id
+       WHERE webhook.id = $1
+         AND webhook.raw_headers = '{}'::jsonb
+         AND webhook.raw_payload = '{}'::jsonb
+         AND webhook.payload_retention_until IS NOT NULL
+         AND webhook.payload_purged_at IS NOT NULL
+         AND audit.private_payload = '{}'::jsonb
+     ) AS exists`,
+    [IDS.failedWebhook, IDS.webhookAudit],
+    "Scrub imported Stripe receipt payload copies while preserving receipt IDs, hashes, lifecycle, and audit links.",
+  );
+}
+
 export async function checkPlatformJobsEventsAuditParity({
   client,
   expected,
@@ -628,4 +657,5 @@ export async function checkPlatformJobsEventsAuditParity({
   await checkIdempotencyBoundaries(client, findings);
   await checkAiVisibilityBoundary(client, findings);
   await checkPayloadRedactionBoundary(client, findings);
+  await checkStripeReceiptRetentionBoundary(client, findings);
 }
