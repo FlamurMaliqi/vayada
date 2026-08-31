@@ -10745,6 +10745,7 @@ describe("vayada-api", () => {
           return {
             ok: true,
             replayed: false,
+            channexOperationId: null,
             settings: {
               propertyId,
               propertyTimeZone: "Europe/Vienna",

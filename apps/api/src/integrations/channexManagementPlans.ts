@@ -1,3 +1,8 @@
+import {
+  evaluateSameDayBooking,
+  propertyLocalClock,
+  SAME_DAY_BOOKING_POLICY_DEFAULTS,
+} from "@vayada/domain-booking";
 import pg from "pg";
 
 import type { ChannexManagementJob } from "../jobs/pmsChannexManagementWorker.js";
@@ -59,6 +64,11 @@ type AriRow = {
   channel: string;
   markupPercent: number;
 };
+type SameDayPolicyRow = {
+  timezone: string | null;
+  enabled: boolean;
+  cutoffLocalTime: string | null;
+};
 type BindingRow = {
   externalPropertyId: string | null;
   claimExternalPropertyId: string | null;
@@ -75,11 +85,12 @@ export function createPgChannexManagementPlanPort(config: {
   connectionString: string;
   bookingRevisionHandoff: ChannexBookingRevisionHandoff;
   pool?: Pool;
+  now?: () => Date;
 }): ChannexManagementPlanPort & { close(): Promise<void> } {
   const pool =
     config.pool ?? new pg.Pool({ connectionString: required(config.connectionString), max: 5 });
   return {
-    plan: (job) => plan(pool, config.bookingRevisionHandoff, job),
+    plan: (job) => plan(pool, config.bookingRevisionHandoff, job, config.now?.() ?? new Date()),
     async close() {
       await pool.end();
     },
@@ -90,6 +101,7 @@ async function plan(
   pool: Pool,
   handoff: ChannexBookingRevisionHandoff,
   job: ChannexManagementJob,
+  now: Date,
 ): Promise<ChannexManagementActionPlan> {
   const binding = await connectionBinding(pool, job.propertyId);
   const externalPropertyId = activeExternalPropertyId(binding);
@@ -112,7 +124,7 @@ async function plan(
     return provisioningPlan(pool, job, externalPropertyId);
   }
   if (job.input.operationType === "sync_ari" || job.input.operationType === "update_markups") {
-    return ariPlan(pool, job, externalPropertyId);
+    return ariPlan(pool, job, externalPropertyId, now);
   }
   if (job.input.operationType === "sync_bookings") {
     return {
@@ -296,7 +308,26 @@ async function ariPlan(
   pool: Pool,
   job: ChannexManagementJob,
   externalPropertyId: string,
+  now: Date,
 ): Promise<ChannexManagementActionPlan> {
+  const policyResult = await pool.query<SameDayPolicyRow>(
+    `SELECT location.timezone, COALESCE(policy.enabled, $2::boolean) AS enabled,
+       CASE WHEN policy.property_id IS NULL THEN $3::text ELSE policy.cutoff_local_time END
+         AS "cutoffLocalTime"
+     FROM hotel_catalog.properties property
+     LEFT JOIN hotel_catalog.property_locations location ON location.property_id = property.id
+     LEFT JOIN booking.same_day_booking_policies policy ON policy.property_id = property.id
+     WHERE property.id = $1::uuid`,
+    [
+      job.propertyId,
+      SAME_DAY_BOOKING_POLICY_DEFAULTS.enabled,
+      SAME_DAY_BOOKING_POLICY_DEFAULTS.cutoffLocalTime,
+    ],
+  );
+  const policy = policyResult.rows[0];
+  if (!policy?.timezone) throw new Error("Canonical property timezone is unavailable");
+  const from = propertyLocalClock(now, policy.timezone).date;
+  const through = addDays(from, 365);
   const result = await pool.query<AriRow>(
     `SELECT inventory.stay_date AS "stayDate", inventory.available_count AS available,
        room_mapping.external_room_type_id AS "externalRoomTypeId",
@@ -311,10 +342,10 @@ async function ariPlan(
      JOIN pms.channel_rate_plan_mappings rate_mapping
        ON rate_mapping.connection_id = connection.id AND rate_mapping.room_type_id = inventory.room_type_id
      JOIN pms.rate_plans plan ON plan.id = rate_mapping.rate_plan_id
-     WHERE inventory.property_id = $1::uuid AND inventory.stay_date BETWEEN current_date AND current_date + 365
+     WHERE inventory.property_id = $1::uuid AND inventory.stay_date BETWEEN $2::date AND $3::date
        AND room_mapping.status = 'active' AND rate_mapping.status = 'active'
      ORDER BY inventory.stay_date`,
-    [job.propertyId],
+    [job.propertyId, from, through],
   );
   const overrides = new Map(
     (job.input.markups ?? []).map((item) => [item.channel, item.markupPercent]),
@@ -328,7 +359,14 @@ async function ariPlan(
           room_type_id: row.externalRoomTypeId,
           date_from: date(row.stayDate),
           date_to: date(row.stayDate),
-          availability: row.available,
+          availability: evaluateSameDayBooking({
+            checkIn: date(row.stayDate),
+            policy,
+            propertyTimeZone: policy.timezone!,
+            now,
+          }).eligible
+            ? row.available
+            : 0,
         },
       ]),
     ).values(),
@@ -336,6 +374,13 @@ async function ariPlan(
   return {
     externalPropertyId,
     requests: [
+      channexRequests.updateProperty(externalPropertyId, {
+        settings: {
+          cut_off_time:
+            policy.enabled && policy.cutoffLocalTime ? `${policy.cutoffLocalTime}:00` : null,
+          cut_off_days: policy.enabled ? (policy.cutoffLocalTime ? 0 : null) : 1,
+        },
+      }),
       channexRequests.availability(availability),
       channexRequests.restrictions(
         result.rows.map((row) => ({
@@ -350,6 +395,12 @@ async function ariPlan(
       ),
     ],
   };
+}
+
+function addDays(value: string, days: number): string {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 function checkpoint(pool: Pool, job: ChannexManagementJob) {
