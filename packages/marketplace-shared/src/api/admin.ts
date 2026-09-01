@@ -265,9 +265,11 @@ export async function deleteMarketplaceAdminOffer(
 export async function verifyMarketplaceAdminOffer(
   hotelUserId: string,
   offerId: string,
+  mediaObjectIds?: string[],
 ): Promise<MarketplaceAdminOffer> {
   return vayadaApiClient.post<MarketplaceAdminOffer>(
     marketplaceAdminEndpoints.verifyOffer(hotelUserId, offerId),
+    mediaObjectIds ? { mediaObjectIds } : undefined,
   );
 }
 

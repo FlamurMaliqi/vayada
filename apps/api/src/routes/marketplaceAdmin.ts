@@ -219,6 +219,10 @@ export type MarketplaceAdminUpdateOfferRequest = Partial<
   creatorRequirements?: MarketplaceOfferCreatorRequirementsWrite | null;
 };
 
+export type MarketplaceAdminVerifyOfferRequest = {
+  mediaObjectIds?: string[];
+};
+
 export type MarketplaceAdminCreatorPlatformWrite = {
   platform: MarketplacePlatformName;
   handle: string;
@@ -391,6 +395,7 @@ export type MarketplaceAdminRepository = {
   verifyOfferForUser(input: {
     hotelUserId: string;
     offerId: string;
+    mediaObjectIds?: string[];
     authorizationMode: MarketplaceAdminAuthorizationMode;
   }): Promise<MarketplaceAdminOffer | null>;
   deleteOfferForUser(input: {
@@ -865,7 +870,14 @@ export function createPgMarketplaceAdminRepository(config: {
       assertMarketplaceProfileComplete(profile);
       const target = await resolveOfferForProfile(pool, profile, input.offerId);
       if (!target || !["pending", "verified"].includes(target.offerStatus)) return null;
-      if (!(await hasEligibleOfferMedia(pool, profile.organizationId, target.offerResourceId))) {
+      if (
+        !(await hasEligibleOfferMedia(
+          pool,
+          profile.organizationId,
+          target.offerResourceId,
+          input.mediaObjectIds,
+        ))
+      ) {
         throw Object.assign(
           new Error(
             "Marketplace offer verification requires at least one pending or approved photo",
@@ -881,6 +893,7 @@ export function createPgMarketplaceAdminRepository(config: {
       await config.offerMediaPromotion.promoteOfferMedia({
         organizationId: profile.organizationId,
         offerId: target.offerResourceId,
+        mediaObjectIds: input.mediaObjectIds,
       });
       return writeOffer(pool, async (client) => {
         const verifiedProfile = await client.query<{ propertyId: string }>(
@@ -1151,13 +1164,16 @@ export async function registerMarketplaceAdminRoutes(
     },
   );
 
-  app.post<{ Params: OfferParams }>(
+  app.post<{ Params: OfferParams; Body: MarketplaceAdminVerifyOfferRequest }>(
     "/admin/users/:hotelUserId/offers/:offerId/verify",
     async (request, reply) => {
       const access = await requireMarketplaceAdminAccess(request, options);
+      const mediaObjectIds = validateOfferMediaObjectIds(request.body);
+      if (typeof mediaObjectIds === "string") return sendAdminError(reply, 422, mediaObjectIds);
       const result = await repository.verifyOfferForUser({
         hotelUserId: request.params.hotelUserId,
         offerId: request.params.offerId,
+        ...(mediaObjectIds ? { mediaObjectIds } : {}),
         authorizationMode: access.authorizationMode,
       });
       if (!result) return sendAdminError(reply, 404, "offer_not_found");
@@ -1963,7 +1979,31 @@ async function hasEligibleOfferMedia(
   client: Pick<MarketplaceAdminPool, "query">,
   organizationId: string,
   offerId: string,
+  mediaObjectIds?: string[],
 ): Promise<boolean> {
+  if (mediaObjectIds) {
+    const result = await client.query<{ eligibleCount: string | number }>(
+      `SELECT count(DISTINCT media.id) AS "eligibleCount"
+       FROM platform.media_objects media
+       WHERE media.owner_organization_id = $1::uuid
+         AND media.resource_product = 'marketplace'
+         AND media.resource_type = 'marketplace_offer'
+         AND media.resource_id = $2
+         AND media.id = ANY($3::uuid[])
+         AND media.purpose = 'marketplace.offer.media'
+         AND (
+           (media.visibility = 'private'
+             AND media.public_approved = FALSE
+             AND media.lifecycle_status = 'staged')
+           OR
+           (media.visibility = 'public'
+             AND media.public_approved = TRUE
+             AND media.lifecycle_status = 'active')
+         )`,
+      [organizationId, offerId, mediaObjectIds],
+    );
+    return Number(result.rows[0]?.eligibleCount ?? 0) === mediaObjectIds.length;
+  }
   const result = await client.query<{ exists: boolean }>(
     `SELECT EXISTS (
        SELECT 1
@@ -1986,6 +2026,30 @@ async function hasEligibleOfferMedia(
     [organizationId, offerId],
   );
   return result.rows[0]?.exists === true;
+}
+
+function validateOfferMediaObjectIds(body: unknown): string[] | undefined | string {
+  if (body === undefined || body === null) return undefined;
+  if (typeof body !== "object" || Array.isArray(body)) return "invalid_verify_request";
+  const record = body as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "mediaObjectIds")) {
+    return "invalid_verify_request";
+  }
+  const value = record.mediaObjectIds;
+  if (value === undefined) return undefined;
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > 12 ||
+    !value.every(
+      (id): id is string =>
+        typeof id === "string" && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(id),
+    ) ||
+    new Set(value.map((id) => id.toLowerCase())).size !== value.length
+  ) {
+    return "invalid_mediaObjectIds";
+  }
+  return value.map((id) => id.toLowerCase());
 }
 
 async function replaceCreatorPlatforms(
