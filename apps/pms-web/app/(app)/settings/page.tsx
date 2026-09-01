@@ -373,14 +373,6 @@ export default function SettingsPage() {
         loadError={calendarLoadError}
         onToggle={(next) => void saveAutoRearrange(next)}
         onRetry={() => void loadCalendarSettings()}
-      />
-
-      <BookingEngineSection
-        instantBook={acceptanceMode === "instant"}
-        saving={savingAcceptance || loadingAcceptance}
-        loadError={acceptanceLoadError}
-        onToggle={(next) => void saveAcceptanceMode(next)}
-        onRetry={() => void loadAcceptanceMode()}
         sameDayEnabled={sameDayEnabled}
         sameDayCutoffTime={sameDayCutoffTime}
         sameDayTimeZone={sameDayTimeZone}
@@ -390,6 +382,14 @@ export default function SettingsPage() {
         onSameDayToggle={(next) => void saveSameDayBooking(next, sameDayCutoffTime)}
         onSameDayCutoffChange={(next) => void saveSameDayBooking(sameDayEnabled, next)}
         onSameDayRetry={() => void loadSameDayBooking()}
+      />
+
+      <BookingEngineSection
+        instantBook={acceptanceMode === "instant"}
+        saving={savingAcceptance || loadingAcceptance}
+        loadError={acceptanceLoadError}
+        onToggle={(next) => void saveAcceptanceMode(next)}
+        onRetry={() => void loadAcceptanceMode()}
       />
 
       <OtaCommissionSettingsSection />
