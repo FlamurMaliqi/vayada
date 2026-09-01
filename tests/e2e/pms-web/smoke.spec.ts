@@ -183,6 +183,19 @@ test.describe("pms-web smoke", () => {
       "aria-current",
       "page",
     );
+    const calendarSection = page.locator("section#calendar");
+    await expect(
+      calendarSection.getByRole("switch", { name: "Allow same-day bookings" }),
+    ).toBeVisible();
+    await expect(calendarSection.getByLabel("Same-day booking cutoff")).toHaveValue("18:00");
+    await expect(
+      calendarSection.getByText("This setting is shared between PMS and Booking Engine."),
+    ).toBeVisible();
+    await expect(
+      page
+        .locator("section#booking-engine")
+        .getByRole("switch", { name: "Allow same-day bookings" }),
+    ).toHaveCount(0);
     await expect(page.getByText("Check-in & Check-out", { exact: true })).toHaveCount(0);
     await expect(page.getByText("No settings can be changed here yet.")).toHaveCount(0);
     const checklistLinks = page.getByRole("link", { name: "Check-in checklist" });

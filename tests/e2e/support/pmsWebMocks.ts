@@ -452,6 +452,17 @@ export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
       });
     },
   );
+  await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/same-day-booking`, (route) =>
+    route.fulfill({
+      json: {
+        contractVersion: "same-day-booking-policy.v1",
+        propertyId: PMS_WEB_PROPERTY_ID,
+        enabled: true,
+        cutoffLocalTime: "18:00",
+        propertyTimeZone: "Europe/Berlin",
+      },
+    }),
+  );
   await page.route(
     `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/calendar-settings`,
     async (route) =>
