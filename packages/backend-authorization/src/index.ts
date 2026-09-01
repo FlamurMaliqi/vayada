@@ -3,6 +3,7 @@ import pg from "pg";
 import type {
   EntitlementStatus,
   LinkedResource,
+  MembershipPropertyAccess,
   OrganizationKind,
   PermissionKey,
   ResourceRelationship,
@@ -33,6 +34,7 @@ export type EntitlementRepository = {
 export type AuthorizationResolution = {
   permissions: PermissionKey[];
   entitlements?: ProductEntitlement[];
+  propertyAccess?: MembershipPropertyAccess;
 };
 
 export type AuthorizationResolver = (context: RequestContext) => Promise<AuthorizationResolution>;
@@ -56,7 +58,10 @@ export type PropertyAccessContext = {
     RequestContext["selectedOrganization"],
     "organizationId" | "kind" | "status"
   >;
-  membership: Pick<RequestContext["membership"], "membershipId" | "roleKey" | "status">;
+  membership: Pick<
+    RequestContext["membership"],
+    "membershipId" | "roleKey" | "status" | "propertyAccess"
+  >;
   linkedResources: RequestContext["linkedResources"];
 };
 
@@ -349,12 +354,19 @@ export function createAuthorizationResolver(
 ): AuthorizationResolver {
   return async (context) => {
     let membershipScope: MembershipPropertyScope | undefined;
+    let propertyAccess: MembershipPropertyAccess | undefined;
     if (context.selectedOrganization.kind === "hotel_group") {
       const scope = await propertyAccessRepository?.findMembershipPropertyScope(context);
-      if (!isAgencyMembershipScope(context, scope)) {
+      if (!isAgencyMembershipScope(context, scope) || !hasValidAssignedPropertyIds(scope)) {
         return { permissions: [], entitlements: [] };
       }
       membershipScope = scope;
+      propertyAccess = {
+        mode: scope.mode,
+        roleKey: scope.roleKey,
+        accessOrigin: scope.accessOrigin,
+        assignedPropertyIds: [...scope.assignedPropertyIds],
+      };
     }
 
     const rolePermissions = await rolePermissionRepository.findPermissionsForRole(
@@ -398,6 +410,7 @@ export function createAuthorizationResolver(
     return {
       permissions,
       entitlements,
+      ...(propertyAccess ? { propertyAccess } : {}),
     };
   };
 }
@@ -405,13 +418,25 @@ export function createAuthorizationResolver(
 function isAgencyMembershipScope(
   context: PropertyAccessContext,
   scope: MembershipPropertyScope | null | undefined,
-): scope is MembershipPropertyScope & { mode: "all" | "assigned" } {
+): scope is MembershipPropertyScope & {
+  mode: "all" | "assigned";
+  accessOrigin: "agency";
+} {
   return (
     scope != null &&
     scope.roleKey === context.membership.roleKey &&
     scope.accessOrigin === "agency" &&
     (scope.mode === "all" || scope.mode === "assigned") &&
     (scope.roleKey !== "external_owner" || scope.mode === "assigned")
+  );
+}
+
+function hasValidAssignedPropertyIds(
+  scope: Pick<MembershipPropertyScope, "assignedPropertyIds">,
+): boolean {
+  return (
+    Array.isArray(scope.assignedPropertyIds) &&
+    scope.assignedPropertyIds.every((propertyId) => typeof propertyId === "string")
   );
 }
 
@@ -447,14 +472,12 @@ export async function resolveEffectivePropertyAccess(
     return null;
   }
 
-  const scope = await repository.findMembershipPropertyScope(context);
+  const scope =
+    context.membership.propertyAccess === undefined
+      ? await repository.findMembershipPropertyScope(context)
+      : context.membership.propertyAccess;
   if (!isAgencyMembershipScope(context, scope)) return null;
-  if (
-    !Array.isArray(scope.assignedPropertyIds) ||
-    scope.assignedPropertyIds.some((propertyId) => typeof propertyId !== "string")
-  ) {
-    return null;
-  }
+  if (!hasValidAssignedPropertyIds(scope)) return null;
 
   const canonicalPropertyIds = new Set(
     context.linkedResources

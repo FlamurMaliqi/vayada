@@ -144,6 +144,12 @@ describe("resolveRequestContext", () => {
 
         return {
           permissions: ["booking.settings.manage", "pms.booking.update"],
+          propertyAccess: {
+            mode: "assigned",
+            roleKey: "hotel_owner",
+            accessOrigin: "agency",
+            assignedPropertyIds: ["property_alpenrose"],
+          },
           entitlements: [
             {
               product: "booking",
@@ -166,6 +172,12 @@ describe("resolveRequestContext", () => {
     });
 
     expect(ctx.membership.permissions).toEqual(["booking.settings.manage", "pms.booking.update"]);
+    expect(ctx.membership.propertyAccess).toEqual({
+      mode: "assigned",
+      roleKey: "hotel_owner",
+      accessOrigin: "agency",
+      assignedPropertyIds: ["property_alpenrose"],
+    });
     expect(ctx.entitlements).toEqual([
       {
         product: "booking",

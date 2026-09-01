@@ -239,6 +239,12 @@ describe("createAuthorizationResolver", () => {
 
     expect(calls).toEqual([{ kind: "hotel_group", roleKey: "hotel_owner" }]);
     expect(resolution.permissions).toEqual(["booking.settings.manage", "pms.booking.update"]);
+    expect(resolution.propertyAccess).toEqual({
+      mode: "all",
+      roleKey: "hotel_owner",
+      accessOrigin: "agency",
+      assignedPropertyIds: [],
+    });
   });
 
   it("loads entitlements separately from permissions when a repository is provided", async () => {
@@ -356,6 +362,9 @@ describe("createAuthorizationResolver", () => {
       entitlements: [],
     });
     await expect(resolve(null)).resolves.toEqual({ permissions: [], entitlements: [] });
+    await expect(
+      resolve(propertyScope({ assignedPropertyIds: [null] as unknown as string[] })),
+    ).resolves.toEqual({ permissions: [], entitlements: [] });
     await expect(
       createAuthorizationResolver({ findPermissionsForRole }, undefined, undefined)(hotelContext),
     ).resolves.toEqual({ permissions: [], entitlements: [] });
@@ -770,6 +779,54 @@ describe("authorization helpers", () => {
 });
 
 describe("effective property access", () => {
+  it("reuses a validated request snapshot without reading property scope again", async () => {
+    const context = propertyContext();
+    context.membership.propertyAccess = {
+      mode: "assigned",
+      roleKey: "hotel_owner",
+      accessOrigin: "agency",
+      assignedPropertyIds: [PROPERTY_A],
+    };
+    const findMembershipPropertyScope = vi.fn(async () => {
+      throw new Error("property scope must not be read twice");
+    });
+
+    await expect(
+      requirePropertyAccess(
+        context,
+        { findMembershipPropertyScope },
+        {
+          propertyId: PROPERTY_A,
+          targetResource: { product: "pms", resourceType: "pms_property" },
+        },
+      ),
+    ).resolves.toBe(context);
+    expect(findMembershipPropertyScope).not.toHaveBeenCalled();
+  });
+
+  it("denies a malformed request snapshot without falling back to storage", async () => {
+    const context = propertyContext();
+    context.membership.propertyAccess = {
+      mode: "assigned",
+      roleKey: "hotel_owner",
+      accessOrigin: "agency",
+      assignedPropertyIds: [null] as unknown as string[],
+    };
+    const findMembershipPropertyScope = vi.fn(async () => propertyScope({ mode: "all" }));
+
+    await expect(
+      requirePropertyAccess(
+        context,
+        { findMembershipPropertyScope },
+        {
+          propertyId: PROPERTY_A,
+          targetResource: { product: "pms", resourceType: "pms_property" },
+        },
+      ),
+    ).rejects.toBeInstanceOf(AuthorizationError);
+    expect(findMembershipPropertyScope).not.toHaveBeenCalled();
+  });
+
   it("allows all-scope and assigned-scope access only through canonical target links", async () => {
     const context = propertyContext();
 

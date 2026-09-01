@@ -264,19 +264,18 @@ describe("shared hotel setup status route", () => {
   it("returns only assigned properties and applies removal on the next request", async () => {
     let assignedPropertyIds = [secondPropertyId, unrelatedPropertyId];
     const statusCalls: Array<{ organizationId: string; propertyIds: string[] }> = [];
+    const findMembershipPropertyScope = vi.fn(async () =>
+      agencyScope({
+        mode: "assigned",
+        roleKey: "hotel_custom",
+        assignedPropertyIds,
+      }),
+    );
     app = buildSharedSetupApp({
       roleKey: "hotel_custom",
       permissions: [],
       linkedResources: [propertyLink(propertyId), propertyLink(secondPropertyId)],
-      propertyAccessRepository: {
-        async findMembershipPropertyScope() {
-          return agencyScope({
-            mode: "assigned",
-            roleKey: "hotel_custom",
-            assignedPropertyIds,
-          });
-        },
-      },
+      propertyAccessRepository: { findMembershipPropertyScope },
       repository: repositoryWith(
         [adaptiveProperty(propertyId), adaptiveProperty(secondPropertyId)],
         (input) => statusCalls.push(input),
@@ -305,6 +304,7 @@ describe("shared hotel setup status route", () => {
       [secondPropertyId],
       [],
     ]);
+    expect(findMembershipPropertyScope).toHaveBeenCalledTimes(3);
   });
 
   it("denies the status manifest without its baseline permission before data reads", async () => {
@@ -418,32 +418,6 @@ describe("shared hotel setup status route", () => {
       expect(getHotelSetupStatus).not.toHaveBeenCalled();
     },
   );
-
-  it("fails closed without leaking a property-scope repository error", async () => {
-    let propertyScopeReads = 0;
-    const repository = repositoryWith([]);
-    const getHotelSetupStatus = vi.spyOn(repository, "getHotelSetupStatus");
-    app = buildSharedSetupApp({
-      propertyAccessRepository: {
-        async findMembershipPropertyScope() {
-          propertyScopeReads += 1;
-          if (propertyScopeReads === 1) return agencyScope();
-          throw new Error("secret property scope failure");
-        },
-      },
-      repository,
-    });
-
-    const response = await getSharedSetupStatus(app);
-
-    expect(response.statusCode).toBe(503);
-    expect(response.body).toEqual({
-      code: "property_access_unavailable",
-      detail: "Property access is temporarily unavailable.",
-    });
-    expect(JSON.stringify(response.body)).not.toContain("secret property scope failure");
-    expect(getHotelSetupStatus).not.toHaveBeenCalled();
-  });
 
   it.each([
     [
