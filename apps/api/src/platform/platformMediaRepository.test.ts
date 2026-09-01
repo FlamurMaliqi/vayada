@@ -794,6 +794,7 @@ async function createSession(
       autoApprovePublicOnFinalize: isProfile || isRoomMedia || isBookingAddon ? true : undefined,
       privateOnly: (isPropertyMedia && !isRoomMedia) || isChat,
     } as never,
+    ownerOrganizationId: "00000000-0000-4000-8000-000000000002",
     target: {
       resourceProduct: isProfile
         ? "platform"

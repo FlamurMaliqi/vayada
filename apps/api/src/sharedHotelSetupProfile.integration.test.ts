@@ -433,6 +433,7 @@ describe.skipIf(!TEST_DATABASE_URL)("canonical property profile repository", () 
     });
 
     const uploadSession = await platformMediaRepository.createUploadSession({
+      ownerOrganizationId: organizationId,
       sessionId: uploadSessionId,
       uploadSessionKey: "profile-revision-platform-upload",
       stagingPrefix: "staging/profile-revision-platform-upload",

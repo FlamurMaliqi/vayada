@@ -127,6 +127,7 @@ export type PlatformMediaSessionRecord = {
   effectiveVisibility: PlatformMediaVisibility;
   actorUserId: string;
   ownerOrganizationId: string;
+  platformAdmin?: true;
   resource: PlatformMediaResourceScope;
   target: PlatformMediaResolvedTarget;
   files: Array<
@@ -302,6 +303,8 @@ export type PlatformMediaRepository = {
     request: PlatformMediaUploadSessionRequest;
     policy: PlatformMediaPurposePolicy;
     target: PlatformMediaResolvedTarget;
+    ownerOrganizationId: string;
+    platformAdmin?: boolean;
     uploadTargets: PlatformMediaUploadTarget[];
     now: string;
     expiresAt: string;
@@ -435,7 +438,7 @@ export type PlatformMediaTargetResolver = {
     request: PlatformMediaUploadSessionRequest;
     policy: PlatformMediaPurposePolicy;
   }): Promise<
-    | { ok: true; target: PlatformMediaResolvedTarget }
+    | { ok: true; target: PlatformMediaResolvedTarget; ownerOrganizationId?: string }
     | { ok: false; statusCode: 400 | 403 | 404; code: string; message: string }
   >;
 };
@@ -504,6 +507,11 @@ const heicConversionMessage =
 const publicImageVariants = ["original_safe", "large", "thumbnail", "blur_preview"] as const;
 const providerOriginalVariant = ["provider_original"] as const;
 const defaultMaxImagePixels = 60_000_000;
+const platformAdminMediaPurposes = new Set<PlatformMediaPurpose>([
+  "property.hero_image",
+  "marketplace.offer.media",
+  "marketplace.creator.profile_image",
+]);
 
 export function isAutoApprovedPublicMediaPurpose(purpose: PlatformMediaPurpose): boolean {
   return (
@@ -809,6 +817,9 @@ export async function registerPlatformMediaRoutes(
         return sendMediaError(reply, 403, "media_resource_forbidden", authorization.message);
       }
       const context = authorization.context;
+      const isPlatformAdminMedia =
+        context.selectedOrganization.kind === "platform" &&
+        platformAdminMediaPurposes.has(policy.purpose);
       if (policy.actorOwned && request.body.resource.resourceId !== context.actor.internalUserId) {
         return sendMediaError(
           reply,
@@ -885,6 +896,7 @@ export async function registerPlatformMediaRoutes(
             uploadSessionKey,
             request: normalizedRequest,
             target: existingSession.target,
+            ownerOrganizationId: existingSession.ownerOrganizationId,
           },
           signer: options.signer,
           repository: options.repository,
@@ -909,6 +921,17 @@ export async function registerPlatformMediaRoutes(
           resolvedTarget.message,
         );
       }
+      const ownerOrganizationId = isPlatformAdminMedia
+        ? resolvedTarget.ownerOrganizationId
+        : context.selectedOrganization.organizationId;
+      if (!ownerOrganizationId) {
+        return sendMediaError(
+          reply,
+          404,
+          "media_target_not_found",
+          "The requested admin media target is unavailable.",
+        );
+      }
 
       if (existingSession) {
         return sendUploadSessionReplay({
@@ -919,6 +942,7 @@ export async function registerPlatformMediaRoutes(
             uploadSessionKey,
             request: normalizedRequest,
             target: resolvedTarget.target,
+            ownerOrganizationId,
           },
           signer: options.signer,
           repository: options.repository,
@@ -960,6 +984,8 @@ export async function registerPlatformMediaRoutes(
           request: normalizedRequest,
           policy,
           target: resolvedTarget.target,
+          ownerOrganizationId,
+          platformAdmin: isPlatformAdminMedia,
           uploadTargets,
           now: createdAt,
           expiresAt,
@@ -993,6 +1019,7 @@ export async function registerPlatformMediaRoutes(
           uploadSessionKey,
           request: normalizedRequest,
           target: resolvedTarget.target,
+          ownerOrganizationId,
         })
       ) {
         return sendMediaError(
@@ -1016,6 +1043,7 @@ export async function registerPlatformMediaRoutes(
             uploadSessionKey,
             request: normalizedRequest,
             target: resolvedTarget.target,
+            ownerOrganizationId,
           },
           signer: options.signer,
           repository: options.repository,
@@ -1039,12 +1067,16 @@ export async function registerPlatformMediaRoutes(
     "/upload-sessions/:sessionId/finalize",
     async (request, reply) => {
       const authenticatedContext = requireAuthContext(request);
-      const session = await options.repository.findUploadSessionForActor({
-        sessionId: request.params.sessionId,
-        actorUserId: authenticatedContext.actor.internalUserId,
-        ownerOrganizationId: authenticatedContext.selectedOrganization.organizationId,
-      });
-      if (!session) {
+      const platformOrganizationSelected =
+        authenticatedContext.selectedOrganization.kind === "platform";
+      const session = platformOrganizationSelected
+        ? await options.repository.findUploadSession(request.params.sessionId)
+        : await options.repository.findUploadSessionForActor({
+            sessionId: request.params.sessionId,
+            actorUserId: authenticatedContext.actor.internalUserId,
+            ownerOrganizationId: authenticatedContext.selectedOrganization.organizationId,
+          });
+      if (!session || session.actorUserId !== authenticatedContext.actor.internalUserId) {
         return sendMediaError(reply, 404, "upload_session_not_found", "Upload session not found.");
       }
       const policy = policyForSession(session);
@@ -1057,6 +1089,14 @@ export async function registerPlatformMediaRoutes(
         return sendMediaError(reply, 403, "media_resource_forbidden", authorization.message);
       }
       const context = authorization.context;
+      if (session.platformAdmin && context.selectedOrganization.kind !== "platform") {
+        return sendMediaError(
+          reply,
+          403,
+          "media_resource_forbidden",
+          "Platform Admin media must be finalized from the platform organization.",
+        );
+      }
       if (policy.actorOwned && session.resource.resourceId !== context.actor.internalUserId) {
         return sendMediaError(
           reply,
@@ -1091,6 +1131,9 @@ export async function registerPlatformMediaRoutes(
       });
       if (
         !currentTarget.ok ||
+        (session.platformAdmin
+          ? currentTarget.ownerOrganizationId
+          : context.selectedOrganization.organizationId) !== session.ownerOrganizationId ||
         JSON.stringify(targetProjection(currentTarget.target)) !==
           JSON.stringify(targetProjection(session.target))
       ) {
@@ -1310,6 +1353,7 @@ type ExpectedUploadSession = {
   uploadSessionKey: string;
   request: PlatformMediaUploadSessionRequest;
   target: PlatformMediaResolvedTarget;
+  ownerOrganizationId: string;
 };
 
 function deterministicUploadSessionId(
@@ -1346,7 +1390,7 @@ function uploadSessionMatchesRequest(
   return (
     session.uploadSessionKey === expected.uploadSessionKey &&
     session.actorUserId === expected.context.actor.internalUserId &&
-    session.ownerOrganizationId === expected.context.selectedOrganization.organizationId &&
+    session.ownerOrganizationId === expected.ownerOrganizationId &&
     session.purpose === expected.request.purpose &&
     session.requestedVisibility === (expected.request.visibility ?? "private") &&
     JSON.stringify(resourceProjection(session.resource)) ===
@@ -1616,7 +1660,8 @@ export function createInMemoryPlatformMediaRepository(): PlatformMediaRepository
             ? "public"
             : "private",
         actorUserId: input.context.actor.internalUserId,
-        ownerOrganizationId: input.context.selectedOrganization.organizationId,
+        ownerOrganizationId: input.ownerOrganizationId,
+        platformAdmin: input.platformAdmin ? true : undefined,
         resource: input.request.resource,
         target: input.target,
         files: input.request.files.map((file, index) => ({
@@ -1876,8 +1921,26 @@ function authorizeMediaResource(
   policy: PlatformMediaPurposePolicy,
   resource: PlatformMediaResourceScope,
 ): { ok: true; context: RequestContext } | { ok: false; message: string } {
+  const authenticatedContext = requireAuthContext(request);
+  if (
+    authenticatedContext.selectedOrganization.kind === "platform" &&
+    platformAdminMediaPurposes.has(policy.purpose)
+  ) {
+    return {
+      ok: true,
+      context: enforceRoutePolicy(request, {
+        permission: "platform.user.suspend",
+        resource: {
+          product: "platform",
+          resourceType: "platform",
+          resourceId: "vayada",
+          allowedRelationships: ["operator"],
+        },
+      }),
+    };
+  }
   if (policy.actorOwned) {
-    return { ok: true, context: requireAuthContext(request) };
+    return { ok: true, context: authenticatedContext };
   }
   if (policy.purpose === "finance.expense.receipt") {
     const permission = permissionForResource(policy);

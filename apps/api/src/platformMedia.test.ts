@@ -1517,6 +1517,24 @@ describe("platform media upload routes", () => {
     },
   );
 
+  it("keeps actor-owned profile media available from the platform organization", async () => {
+    const response = await injectJson(
+      buildMediaApp({ organizationKind: "platform", userId: "user_media" }),
+      {
+        method: "POST",
+        url: "/api/media/upload-sessions",
+        headers: { authorization: "Bearer valid-token" },
+        payload: {
+          purpose: "identity.user.profile_image",
+          visibility: "public",
+          resource: { product: "platform", resourceType: "user_profile", resourceId: "user_media" },
+          files: [{ filename: "avatar.webp", contentType: "image/webp", sizeBytes: 1024 }],
+        },
+      },
+    );
+    expect(response.statusCode).toBe(201);
+  });
+
   it("allows canonical property owners to create private hero media sessions", async () => {
     const app = buildMediaApp({
       permissions: ["hotel_catalog.setup.manage"],
@@ -1562,6 +1580,136 @@ describe("platform media upload routes", () => {
       },
     });
   });
+
+  it.each([
+    ["marketplace.creator.profile_image", "marketplace", "creator_profile", "public"],
+    ["marketplace.offer.media", "marketplace", "marketplace_offer", "private"],
+    ["property.hero_image", "hotel_catalog", "property", "private"],
+  ] as const)(
+    "allows Platform Admin to create and finalize exact %s media owned by the target organization",
+    async (purpose, product, resourceType, visibility) => {
+      const repository = createInMemoryPlatformMediaRepository();
+      const resourceId = "00000000-0000-4000-8000-000000000984";
+      const ownerOrganizationId = "00000000-0000-4000-8000-000000000985";
+      const target = {
+        resourceProduct: product,
+        resourceType,
+        resourceId,
+        propertyId: purpose === "property.hero_image" ? resourceId : undefined,
+      };
+      const targetResolver: PlatformMediaTargetResolver = {
+        async resolveTarget({ request }) {
+          expect(request.resource.resourceId).toBe(resourceId);
+          return { ok: true, target, ownerOrganizationId };
+        },
+      };
+      const adminAccess = {
+        organizationKind: "platform" as const,
+        permissions: ["platform.user.suspend" as const],
+        resources: [
+          {
+            product: "platform" as const,
+            resourceType: "platform" as const,
+            resourceId: "vayada",
+            relationship: "operator" as const,
+          },
+        ],
+      };
+      const app = buildMediaApp({
+        ...adminAccess,
+        repository,
+        targetResolver,
+      });
+
+      const createRequest = {
+        method: "POST",
+        url: "/api/media/upload-sessions",
+        headers: { authorization: "Bearer valid-token" },
+        payload: {
+          purpose,
+          visibility,
+          resource: { product, resourceType, resourceId },
+          files: [{ filename: "admin.webp", contentType: "image/webp", sizeBytes: 1024 }],
+        },
+      } as const;
+      const create = await injectJson(app, createRequest);
+      expect(create.statusCode).toBe(201);
+      const created = create.body as MediaCreateResponse;
+      expect(repository.sessions.get(created.uploadSession.sessionId)?.ownerOrganizationId).toBe(
+        ownerOrganizationId,
+      );
+
+      const finalize = await injectJson(app, {
+        method: "POST",
+        url: `/api/media/upload-sessions/${created.uploadSession.sessionId}/finalize`,
+        headers: { authorization: "Bearer valid-token" },
+        payload: {
+          files: [
+            {
+              uploadTargetId: created.uploadTargets[0]!.uploadTargetId,
+              contentType: "image/webp",
+              sizeBytes: 1024,
+              widthPx: 800,
+              heightPx: 800,
+            },
+          ],
+        },
+      });
+      expect(finalize.statusCode).toBe(200);
+
+      if (purpose === "marketplace.creator.profile_image") {
+        const missingOwner = buildMediaApp({
+          ...adminAccess,
+          targetResolver: {
+            async resolveTarget() {
+              return { ok: true, target };
+            },
+          },
+        });
+        expect((await injectJson(missingOwner, createRequest)).statusCode).toBe(404);
+      }
+    },
+  );
+
+  it.each([
+    [
+      [],
+      [
+        {
+          product: "platform",
+          resourceType: "platform",
+          resourceId: "vayada",
+          relationship: "operator",
+        },
+      ],
+    ],
+    [["platform.user.suspend"], []],
+  ] as const)(
+    "denies Platform Admin media without both permission and exact platform scope",
+    async (permissions, resources) => {
+      const app = buildMediaApp({
+        organizationKind: "platform",
+        permissions: [...permissions],
+        resources: [...resources],
+      });
+      const response = await injectJson(app, {
+        method: "POST",
+        url: "/api/media/upload-sessions",
+        headers: { authorization: "Bearer valid-token" },
+        payload: {
+          purpose: "marketplace.offer.media",
+          visibility: "private",
+          resource: {
+            product: "marketplace",
+            resourceType: "marketplace_offer",
+            resourceId: "00000000-0000-4000-8000-000000000984",
+          },
+          files: [{ filename: "admin.webp", contentType: "image/webp", sizeBytes: 1024 }],
+        },
+      });
+      expect(response.statusCode).toBe(403);
+    },
+  );
 
   // prettier-ignore
   it("keeps Finance receipt upload private, retained, and property/entitlement bound", async () => { const payload = { purpose: "finance.expense.receipt", visibility: "private", resource: { product: "pms", resourceType: "pms_property", resourceId: financePropertyId, propertyId: financePropertyId, targetResourceId: "00000000-0000-4000-8000-000000000060" }, files: [{ filename: "receipt.webp", contentType: "image/webp", sizeBytes: 1024 }] }; const access = { permissions: ["pms.finance.manage" as const], resources: [{ product: "pms" as const, resourceType: "pms_property" as const, resourceId: financePropertyId, relationship: "finance_manager" as const }] }; const app = buildMediaApp({ ...access, entitlements: [financeEntitlement("property-management"), financeEntitlement("module:financials")], enabledPurposes: ["finance.expense.receipt"] }); const allowed = await injectJson(app, { method: "POST", url: "/api/media/upload-sessions", headers: { authorization: "Bearer valid-token" }, payload }); expect(allowed.statusCode).toBe(201); const upload = allowed.body as MediaCreateResponse; expect(upload).toMatchObject({ uploadSession: { purpose: "finance.expense.receipt", effectiveVisibility: "private" } }); const finalized = await injectJson(app, { method: "POST", url: `/api/media/upload-sessions/${upload.uploadSession.sessionId}/finalize`, headers: { authorization: "Bearer valid-token" }, payload: { files: [{ uploadTargetId: upload.uploadTargets[0]!.uploadTargetId, contentType: "image/webp", sizeBytes: 1024 }] } }); expect(finalized.statusCode).toBe(200); expect(finalized.body).toMatchObject({ mediaObject: { lifecycleStatus: "staged", retainedUntil: "2026-06-12T13:00:00.000Z" } }); const denied = await injectJson(buildMediaApp({ ...access, entitlements: [financeEntitlement("property-management")], enabledPurposes: ["finance.expense.receipt"] }), { method: "POST", url: "/api/media/upload-sessions", headers: { authorization: "Bearer valid-token" }, payload }); expect(denied.statusCode).toBe(403); const malformed = await injectJson(buildMediaApp({ ...access, entitlements: [financeEntitlement("property-management"), financeEntitlement("module:financials")], enabledPurposes: ["finance.expense.receipt"] }), { method: "POST", url: "/api/media/upload-sessions", headers: { authorization: "Bearer valid-token" }, payload: { ...payload, resource: { ...payload.resource, propertyId: "00000000-0000-4000-8000-000000000061" } } }); expect(malformed.statusCode).toBe(400); });
@@ -2476,7 +2624,7 @@ function buildMediaApp(
     organizationId?: string;
     workosOrgId?: string;
     userId?: string;
-    organizationKind?: "creator_workspace" | "hotel_group";
+    organizationKind?: "creator_workspace" | "hotel_group" | "platform";
   } = {},
 ): ReturnType<typeof buildApp> {
   const workosOrgId = options.workosOrgId ?? session.workosOrgId ?? "workos_media_org";
@@ -2587,7 +2735,7 @@ function identityRepository(
   organization: {
     organizationId: string;
     workosOrgId: string;
-    kind: "creator_workspace" | "hotel_group";
+    kind: "creator_workspace" | "hotel_group" | "platform";
   } = {
     organizationId: "org_media",
     workosOrgId: "workos_media_org",
