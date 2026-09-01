@@ -622,6 +622,40 @@ describe("marketplace creator platform connection routes", () => {
     });
   });
 
+  it("preserves the reconnect response when the stored grant is unavailable", async () => {
+    const credentialRef = "vayada/test/auth-1/account/missing";
+    const repository = connectionRepository({
+      connection: {
+        ...connectionDocument("youtube"),
+        creatorProfileId: profileId,
+        organizationId,
+        authorizationId: "auth-1",
+        externalAccountId: "youtube-account",
+        credentialRef,
+        syncLeaseId: null,
+      },
+    });
+    app = buildCreatorPlatformApp(repository, [creatorPlatformAdapter("youtube")]);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/marketplace/creators/me/platform-connections/connection-1/sync",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      code: "platform_reconnect_required",
+      detail: "Connect the platform again before syncing it.",
+    });
+    expect(repository.markConnectionError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "reconnect_required",
+        errorCode: "credential_unavailable",
+      }),
+    );
+  });
+
   it("does not start provider work while another sync lease is active", async () => {
     const connection = {
       ...connectionDocument("instagram"),
