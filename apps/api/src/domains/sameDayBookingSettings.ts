@@ -95,7 +95,7 @@ async function updateSettings(
        ) VALUES (
          'booking', $1, $2, $3, 'in_progress', 'property', $4::uuid, $5,
          $6::timestamptz + interval '15 minutes', $6::timestamptz + interval '24 hours',
-         jsonb_build_object('commandId', $7)
+         jsonb_build_object('commandId', $7::text)
        ) ON CONFLICT (operation_scope, operation, key_hash, scope_key) DO NOTHING
        RETURNING id::text AS id`,
       [
@@ -217,7 +217,14 @@ async function replay(
   };
 }
 
-function readSettings(client: Pick<Pool, "query">, propertyId: string, lock: boolean) {
+async function readSettings(client: Pick<Pool, "query">, propertyId: string, lock: boolean) {
+  if (lock) {
+    await client.query(
+      `SELECT property.id FROM hotel_catalog.properties property
+       WHERE property.id = $1::uuid FOR UPDATE OF property`,
+      [propertyId],
+    );
+  }
   return client.query<SettingsRow>(
     `SELECT property.id::text AS "propertyId", location.timezone AS "propertyTimeZone",
        policy.property_id IS NOT NULL AS configured,
@@ -228,7 +235,7 @@ function readSettings(client: Pick<Pool, "query">, propertyId: string, lock: boo
      FROM hotel_catalog.properties property
      LEFT JOIN hotel_catalog.property_locations location ON location.property_id = property.id
      LEFT JOIN booking.same_day_booking_policies policy ON policy.property_id = property.id
-     WHERE property.id = $1::uuid ${lock ? "FOR UPDATE OF property" : ""}`,
+     WHERE property.id = $1::uuid`,
     [
       propertyId,
       SAME_DAY_BOOKING_POLICY_DEFAULTS.enabled,
@@ -347,7 +354,7 @@ async function enqueueChannexSync(
        idempotency_metadata
      ) VALUES ('pms', 'channex_management', $1, $2, 'in_progress', 'property', $3::uuid,
        $4, $5::timestamptz + interval '15 minutes', $5::timestamptz + interval '24 hours',
-       jsonb_build_object('commandId', $6, 'operationType', 'sync_ari'))
+       jsonb_build_object('commandId', $6::text, 'operationType', 'sync_ari'))
      ON CONFLICT (operation_scope, operation, key_hash, scope_key) DO NOTHING`,
     [
       keyHash,

@@ -201,6 +201,13 @@ describe("target Booking public audit regressions", () => {
     expect(
       target.calls.find((call) => call.text.includes("FROM hotel_catalog.property_slugs"))?.text,
     ).toContain("FOR SHARE OF p");
+    expect(
+      target.calls.findIndex((call) =>
+        call.text.includes("FROM hotel_catalog.property_slugs policy_slug"),
+      ),
+    ).toBeGreaterThan(
+      target.calls.findIndex((call) => call.text.includes("FROM hotel_catalog.property_slugs s")),
+    );
     expect(target.calls.map((call) => call.text)).toContain("ROLLBACK");
   });
 
