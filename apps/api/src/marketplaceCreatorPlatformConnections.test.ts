@@ -1048,6 +1048,47 @@ describe.skipIf(!TEST_DATABASE_URL)("creator platform connection persistence", (
         authorizationId: claimedSyncs[0]!.authorizationId,
         syncLeaseId: claimedSyncs[0]!.syncLeaseId!,
       });
+      const scheduledLeaseId = randomUUID();
+      const scheduledClaim = await repository.claimScheduledConnectionSync({
+        connectionId: connection.connectionId,
+        leaseId: scheduledLeaseId,
+        leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      expect(scheduledClaim).toMatchObject({
+        outcome: "claimed",
+        access: {
+          actorUserId: integrationUserId,
+          organizationId: integrationOrganizationId,
+          creatorProfileId: integrationProfileId,
+        },
+      });
+      expect(
+        await repository.claimScheduledConnectionSync({
+          connectionId: connection.connectionId,
+          leaseId: randomUUID(),
+          leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        }),
+      ).toEqual({ outcome: "busy" });
+      if (scheduledClaim.outcome === "claimed") {
+        await repository.releaseConnectionSync({
+          connectionId: connection.connectionId,
+          authorizationId: scheduledClaim.connection.authorizationId,
+          syncLeaseId: scheduledLeaseId,
+        });
+      }
+      await client.query(`UPDATE identity.users SET status = 'suspended' WHERE id = $1`, [
+        integrationUserId,
+      ]);
+      expect(
+        await repository.claimScheduledConnectionSync({
+          connectionId: connection.connectionId,
+          leaseId: randomUUID(),
+          leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        }),
+      ).toEqual({ outcome: "ineligible" });
+      await client.query(`UPDATE identity.users SET status = 'active' WHERE id = $1`, [
+        integrationUserId,
+      ]);
       const nextSyncCredentialRef = `vayada/test/${authorizationId}/sync/1`;
       await repository.queueCredentialCleanup({
         authorizationId,
@@ -1490,6 +1531,15 @@ function connectionRepository(
       if ("claimConnectionSync" in overrides) return overrides.claimConnectionSync ?? null;
       return overrides.connection ? { ...overrides.connection, syncLeaseId: leaseId } : null;
     }),
+    claimScheduledConnectionSync: vi.fn(async ({ leaseId }) =>
+      overrides.connection
+        ? {
+            outcome: "claimed" as const,
+            access: { creatorProfileId: profileId, organizationId, actorUserId },
+            connection: { ...overrides.connection, syncLeaseId: leaseId },
+          }
+        : { outcome: "ineligible" as const },
+    ),
     releaseConnectionSync: vi.fn(async () => undefined),
     updateConnectionFromImport: vi.fn(async ({ connection }) => connection),
     markConnectionError: vi.fn(async () => undefined),
