@@ -6,10 +6,12 @@ import { apiClient } from "./client";
 import {
   createMarketplaceAdminOffer,
   deleteMarketplaceAdminOffer,
+  getMarketplaceAdminCreatorReview,
   getMarketplaceAdminHotelReview,
   updateMarketplaceAdminOffer,
   verifyMarketplaceAdminOffer,
   type MarketplaceAdminCreateOfferRequest,
+  type MarketplaceAdminCreatorReviewResponse,
   type MarketplaceAdminHotelReviewResponse,
   type MarketplaceAdminOffer,
   type MarketplaceAdminUpdateOfferRequest,
@@ -19,12 +21,18 @@ import {
 import type {
   CollaborationOffering,
   CreateUserRequest,
+  CreatorProfileDetail,
   CreatorRequirements,
   HotelProfileDetail,
   ListingResponse,
+  PlatformResponse,
   User,
   UserDetailResponse,
 } from "@/lib/types";
+
+type CreatorReviewPlatform = NonNullable<
+  MarketplaceAdminCreatorReviewResponse["profile"]
+>["platforms"][number];
 
 export interface UsersListResponse {
   users: User[];
@@ -92,6 +100,13 @@ export const usersService = {
   getUserById: async (userId: string): Promise<UserDetailResponse> => {
     const response = await apiClient.get<any>(`/api/identity/admin/users/${userId}`);
     const identityUser = transformSnakeToCamel(response) as UserDetailResponse;
+    if (identityUser.type === "creator") {
+      const review = await getMarketplaceAdminCreatorReview(userId);
+      return {
+        ...identityUser,
+        profile: review.profile ? toCreatorProfileDetail(identityUser, review) : null,
+      };
+    }
     if (identityUser.type !== "hotel") return identityUser;
     const review = await getMarketplaceAdminHotelReview(userId);
     return {
@@ -366,6 +381,52 @@ function toHotelProfileDetail(
   };
 }
 
+function toCreatorProfileDetail(
+  identityUser: UserDetailResponse,
+  review: MarketplaceAdminCreatorReviewResponse,
+): CreatorProfileDetail {
+  const profile = review.profile!;
+  return {
+    id: profile.creatorProfileId,
+    userId: identityUser.id,
+    location: profile.locationText,
+    shortDescription: profile.shortDescription,
+    portfolioLink: profile.portfolioUrl,
+    phone: profile.phone,
+    profilePicture: profile.profilePictureUrl,
+    profilePictureMediaObjectId: profile.profilePictureMediaObjectId,
+    profileComplete: profile.profileComplete,
+    profileCompletedAt: profile.profileCompletedAt,
+    createdAt: profile.createdAt,
+    updatedAt: profile.updatedAt,
+    platforms: profile.platforms.flatMap(toCreatorPlatformResponse),
+  };
+}
+
+function toCreatorPlatformResponse(platform: CreatorReviewPlatform): PlatformResponse[] {
+  const name = toLegacyCreatorPlatformName(platform.platform);
+  if (!name) return [];
+  return [
+    {
+      id: platform.platformId,
+      name,
+      handle: platform.handle,
+      followers: platform.followerCount,
+      engagementRate: platform.engagementRate,
+      topCountries: platform.audienceCountries ?? [],
+      topAgeGroups: platform.audienceAgeGroups ?? [],
+      genderSplit: platform.audienceGenderSplit
+        ? {
+            male: platform.audienceGenderSplit.male,
+            female: platform.audienceGenderSplit.female,
+          }
+        : null,
+      createdAt: platform.createdAt,
+      updatedAt: platform.updatedAt,
+    },
+  ];
+}
+
 function toListingResponse(offer: MarketplaceAdminOffer, location: string): ListingResponse {
   return {
     id: offer.offerId,
@@ -448,6 +509,13 @@ function toLegacyPlatformName(
     default:
       return [];
   }
+}
+
+function toLegacyCreatorPlatformName(
+  platform: CreatorReviewPlatform["platform"],
+): PlatformResponse["name"] | null {
+  const [name] = toLegacyPlatformName(platform);
+  return name ?? null;
 }
 
 function toMarketplaceAdminCreateOfferRequest(data: {
