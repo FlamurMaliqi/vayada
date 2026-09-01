@@ -178,6 +178,7 @@ import {
   registerPlatformPropertyLifecycleRoutes,
   type PlatformPropertyLifecycleRoutesOptions,
 } from "./routes/platform/admin/propertyLifecycle.js";
+import { registerPlatformPropertyMediaRoutes } from "./routes/platform/admin/propertyMedia.js";
 import { registerPmsOperationsRoutes } from "./routes/pmsOperations.js";
 import type { PmsLinkedInventoryGroupCommandRepository } from "./domains/pmsLinkedInventoryGroupRepository.js";
 import {
@@ -549,6 +550,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   if (options.propertyMediaCommandRepository) {
     app.register(registerPropertyMediaRoutes, {
       prefix: "/api/hotel-setup",
+      repository: options.propertyMediaCommandRepository,
+    });
+    app.register(registerPlatformPropertyMediaRoutes, {
+      prefix: "/api/platform/admin",
       repository: options.propertyMediaCommandRepository,
     });
   }

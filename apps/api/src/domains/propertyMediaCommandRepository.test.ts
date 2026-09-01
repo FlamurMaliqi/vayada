@@ -25,6 +25,31 @@ const serving: PlatformMediaServingConfig = {
 };
 
 describe("property media command repository", () => {
+  it("reads a canonical hero only when the active property scope is unique", async () => {
+    const row = {
+      propertyId,
+      profileRevision: 4,
+      mediaObjectId: mediaId,
+      url: "https://cdn.example.test/media/hero.webp",
+    };
+    const exact = fakeDatabase({ platformAdminHeroRows: [row] });
+    const ambiguous = fakeDatabase({ platformAdminHeroRows: [row, row] });
+
+    await expect(
+      createRepository(exact, fakePublisher()).getPlatformAdminHero(propertyId),
+    ).resolves.toEqual({
+      propertyId,
+      profileRevision: 4,
+      hero: { mediaObjectId: mediaId, url: row.url },
+    });
+    await expect(
+      createRepository(ambiguous, fakePublisher()).getPlatformAdminHero(propertyId),
+    ).resolves.toBeNull();
+    expect(exact.sql()).toContain("owner.relationship = 'owner'");
+    expect(exact.sql()).toContain("media_object.purpose = 'property.hero_image'");
+    expect(exact.sql()).toContain("variant.variant_name = 'original_safe'");
+  });
+
   it("publishes only a hero upload for the unique current owner and preserves gallery media", async () => {
     const hero = mediaRow("private", mediaId, "property.hero_image");
     const gallery = mediaRow("public", galleryMediaId, "property.gallery_image");
@@ -593,6 +618,12 @@ function fakeDatabase(options: {
   media?: MediaState[];
   assignments?: AssignmentState[];
   ownerOrganizationIdsByLock?: string[][];
+  platformAdminHeroRows?: Array<{
+    propertyId: string;
+    profileRevision: number;
+    mediaObjectId: string | null;
+    url: string | null;
+  }>;
 }) {
   const state: FakeState = {
     profileRevision: options.profileRevision ?? 1,
@@ -633,6 +664,13 @@ function fakeDatabase(options: {
         return result<T>([]);
       }
       queries.push(normalized);
+
+      if (
+        normalized.includes('property.id::text AS "propertyId"') &&
+        normalized.includes("variant.public_cdn_url AS url")
+      ) {
+        return result<T>(options.platformAdminHeroRows ?? []);
+      }
 
       if (
         normalized.startsWith("SELECT idempotency.id") &&
