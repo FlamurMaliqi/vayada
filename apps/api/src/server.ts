@@ -142,6 +142,8 @@ import {
   createResendBookingEmailDelivery,
   runBookingEmailDeliveryJobs,
 } from "./jobs/bookingEmailDelivery.js";
+import { startCreatorPlatformSyncWorker } from "./jobs/creatorPlatformSync.js";
+import { createPgCreatorPlatformSyncStore } from "./jobs/creatorPlatformSyncStore.js";
 import { runChannexReviewJobs } from "./jobs/channexReviews.js";
 import { runChannexBookingJobs } from "./jobs/channexBookings.js";
 import { createChannexManagementProvider } from "./integrations/channexManagement.js";
@@ -1340,6 +1342,26 @@ const app = buildApp({
   platformMedia: platformMediaRuntime?.routes,
 });
 
+const creatorPlatformSyncConfig = config.creatorPlatformConnections?.sync;
+const creatorPlatformSyncWorker = creatorPlatformSyncConfig?.enabled
+  ? startCreatorPlatformSyncWorker({
+      store: createPgCreatorPlatformSyncStore({ connectionString: targetDatabaseUrl }),
+      repository: createPgMarketplaceCreatorPlatformConnectionRepository({
+        connectionString: targetDatabaseUrl,
+      }),
+      credentialVault: creatorPlatformConnectionRuntime.credentialVault,
+      adapters: creatorPlatformConnectionRuntime.adapters,
+      credentialSecretPrefix: creatorPlatformConnectionRuntime.credentialSecretPrefix,
+      workerId: `creator-platform-sync:${process.pid}`,
+      pollIntervalMs: creatorPlatformSyncConfig.pollIntervalMs,
+      syncIntervalMs: creatorPlatformSyncConfig.recurringIntervalMs,
+      batchSize: creatorPlatformSyncConfig.batchSize,
+      maxAttempts: creatorPlatformSyncConfig.maxAttempts,
+      minimumSpacingMs: creatorPlatformSyncConfig.minimumSpacingMs,
+      warn: (details, message) => app.log.warn(details, message),
+    })
+  : undefined;
+
 const staffRemovalWorker = staffInvitationRuntime
   ? startStaffRemovalWorker({
       repository: staffInvitationRuntime.removalJobRepository,
@@ -1363,6 +1385,7 @@ const bookingPublicationWorker = bookingPublicationRuntime
   : undefined;
 
 app.addHook("onClose", async () => {
+  await creatorPlatformSyncWorker?.close();
   await staffRemovalWorker?.close();
   await bookingPublicationWorker?.close();
   await bookingPublicationRuntime?.close();

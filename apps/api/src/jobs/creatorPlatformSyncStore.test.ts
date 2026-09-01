@@ -25,13 +25,19 @@ describe("creator platform sync job store", () => {
     const db = new FakePool([[{ id: job.jobId }]]);
     const store = createPgCreatorPlatformSyncStore({ connectionString: "unused", pool: db });
 
-    await expect(store.schedule({ now, syncIntervalMs: 86_400_000, maxAttempts: 5 })).resolves.toBe(
-      1,
-    );
+    await expect(
+      store.schedule({
+        now,
+        syncIntervalMs: 86_400_000,
+        maxAttempts: 5,
+        platforms: ["instagram", "youtube"],
+      }),
+    ).resolves.toBe(1);
 
     const call = db.calls[0]!;
     expect(call.text).toContain("jsonb_build_object('connectionId', connection.id::text)");
     expect(call.text).toContain("status IN ('pending', 'running')");
+    expect(call.text).toContain("connection.platform = ANY($6::text[])");
     expect(call.text).toContain("ON CONFLICT (queue_name, job_key) DO NOTHING");
     expect(call.values).toEqual([
       now.toISOString(),
@@ -39,6 +45,7 @@ describe("creator platform sync job store", () => {
       5,
       CREATOR_PLATFORM_SYNC_QUEUE,
       CREATOR_PLATFORM_SYNC_JOB_TYPE,
+      ["instagram", "youtube"],
     ]);
   });
 

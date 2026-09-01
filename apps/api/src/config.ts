@@ -105,6 +105,14 @@ export function stripeSubscriptionRuntimeEnabled(
 export type CreatorPlatformConnectionsConfig = {
   callbackBaseUrl: string;
   webReturnUrl: string;
+  sync: {
+    enabled: boolean;
+    pollIntervalMs: number;
+    recurringIntervalMs: number;
+    batchSize: number;
+    maxAttempts: number;
+    minimumSpacingMs: { meta: number; tiktok: number; google: number };
+  };
   credentialVault:
     | { provider: "aws-secrets-manager"; secretPrefix: string; region?: string }
     | { provider: "memory"; secretPrefix: string };
@@ -631,6 +639,22 @@ function loadCreatorPlatformConnectionsConfig(
   return {
     callbackBaseUrl: callbackBaseUrl!.replace(/\/$/, ""),
     webReturnUrl: webReturnUrl!,
+    sync: {
+      enabled: readBooleanEnv(env, "CREATOR_PLATFORM_SYNC_ENABLED", true),
+      pollIntervalMs: readTimerIntervalEnv(env, "CREATOR_PLATFORM_SYNC_POLL_INTERVAL_MS", 60_000),
+      recurringIntervalMs: readPositiveIntegerEnv(
+        env,
+        "CREATOR_PLATFORM_SYNC_INTERVAL_MS",
+        24 * 60 * 60_000,
+      ),
+      batchSize: readPositiveIntegerEnv(env, "CREATOR_PLATFORM_SYNC_BATCH_SIZE", 10),
+      maxAttempts: readPositiveIntegerEnv(env, "CREATOR_PLATFORM_SYNC_MAX_ATTEMPTS", 5),
+      minimumSpacingMs: {
+        meta: readTimerIntervalEnv(env, "CREATOR_PLATFORM_META_MINIMUM_SPACING_MS", 1_000),
+        tiktok: readTimerIntervalEnv(env, "CREATOR_PLATFORM_TIKTOK_MINIMUM_SPACING_MS", 2_000),
+        google: readTimerIntervalEnv(env, "CREATOR_PLATFORM_GOOGLE_MINIMUM_SPACING_MS", 1_000),
+      },
+    },
     credentialVault:
       vaultProvider === "memory"
         ? { provider: "memory", secretPrefix: secretPrefix! }

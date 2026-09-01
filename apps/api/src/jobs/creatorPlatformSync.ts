@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 
-import type { CreatorPlatformProvider } from "@vayada/domain-marketplace";
+import type {
+  ConnectableCreatorPlatform,
+  CreatorPlatformProvider,
+} from "@vayada/domain-marketplace";
 
 import { CreatorPlatformRequestError } from "../integrations/creatorPlatforms/http.js";
 import type { CreatorPlatformAdapterRegistry } from "../integrations/creatorPlatforms/registry.js";
@@ -46,6 +49,7 @@ type SyncRepository = Pick<
   | "updateConnectionFromImport"
   | "markCredentialCleaned"
   | "recordCredentialCleanupFailure"
+  | "close"
 >;
 
 export type CreatorPlatformSyncCycleOptions = {
@@ -60,6 +64,7 @@ export type CreatorPlatformSyncCycleOptions = {
   syncIntervalMs?: number;
   maxAttempts?: number;
   minimumSpacingMs?: Record<CreatorPlatformProvider, number>;
+  signal?: AbortSignal;
 };
 
 export type CreatorPlatformSyncCycleResult = {
@@ -76,11 +81,13 @@ export async function runCreatorPlatformSyncCycle(
   options: CreatorPlatformSyncCycleOptions,
 ): Promise<CreatorPlatformSyncCycleResult> {
   const now = options.now ?? (() => new Date());
+  options.signal?.throwIfAborted();
   const result: CreatorPlatformSyncCycleResult = {
     scheduled: await options.store.schedule({
       now: now(),
       syncIntervalMs: options.syncIntervalMs ?? DEFAULT_SYNC_INTERVAL_MS,
       maxAttempts: options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+      platforms: configuredPlatforms(options.adapters),
     }),
     processed: 0,
     succeeded: 0,
@@ -90,6 +97,7 @@ export async function runCreatorPlatformSyncCycle(
     deadLettered: 0,
   };
   for (let index = 0; index < (options.batchSize ?? 10); index += 1) {
+    options.signal?.throwIfAborted();
     const job = await options.store.claim({
       now: now(),
       workerId: options.workerId,
@@ -100,6 +108,56 @@ export async function runCreatorPlatformSyncCycle(
     result[await processJob(options, job, now)] += 1;
   }
   return result;
+}
+
+export function startCreatorPlatformSyncWorker(
+  options: CreatorPlatformSyncCycleOptions & {
+    pollIntervalMs: number;
+    warn(details: unknown, message: string): void;
+  },
+) {
+  let active: Promise<CreatorPlatformSyncCycleResult | undefined> | undefined;
+  let closed = false;
+  const controller = new AbortController();
+  const runNow = () => {
+    if (closed) return Promise.resolve(undefined);
+    if (active) return active;
+    active = runCreatorPlatformSyncCycle({ ...options, signal: controller.signal })
+      .then((result) => {
+        if (result.deadLettered > 0) {
+          options.warn(
+            { deadLettered: result.deadLettered },
+            "Creator platform sync completed with dead-lettered jobs",
+          );
+        }
+        return result;
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return undefined;
+        options.warn(
+          { err: { name: error instanceof Error ? error.name : "Error" } },
+          "Creator platform sync worker failed",
+        );
+        return undefined;
+      })
+      .finally(() => {
+        active = undefined;
+      });
+    return active;
+  };
+  const timer = setInterval(() => void runNow(), options.pollIntervalMs);
+  timer.unref();
+  void runNow();
+  return {
+    runNow,
+    async close() {
+      closed = true;
+      clearInterval(timer);
+      controller.abort();
+      await active;
+      await Promise.all([options.store.close(), options.repository.close?.()]);
+    },
+  };
 }
 
 async function processJob(
@@ -158,10 +216,10 @@ async function processJob(
   if (!adapter) {
     await releaseConnection(options.repository, connection, leaseId);
     await requireFinalized(
-      options.store.fail(job, { now: now(), code: "provider_not_configured", retryAt: null }),
+      options.store.cancel(job, { now: now(), code: "provider_not_configured" }),
       job,
     );
-    return "deadLettered";
+    return "canceled";
   }
 
   try {
@@ -174,12 +232,17 @@ async function processJob(
       credentialSecretPrefix: options.credentialSecretPrefix,
       credentialCleanupAvailableAt: leaseExpiresAt,
       now,
+      signal: options.signal,
       cleanCredential: (credentialRef, authorizationId) =>
         cleanCredential(options, credentialRef, authorizationId, now()),
     });
     await requireFinalized(options.store.succeed(job, { now: now(), outcome: "succeeded" }), job);
     return "succeeded";
   } catch (error) {
+    if (options.signal?.aborted) {
+      await releaseConnection(options.repository, connection, leaseId);
+      throw error;
+    }
     if (
       error instanceof CreatorPlatformAuthorizationAccessRevokedError ||
       error instanceof CreatorPlatformConnectionChangedError
@@ -246,13 +309,14 @@ async function cleanCredential(
   now: Date,
 ): Promise<boolean> {
   try {
-    await options.credentialVault.delete(credentialRef);
+    await options.credentialVault.delete(credentialRef, options.signal);
     await options.repository.markCredentialCleaned({
       credentialRef,
       cleanedAt: now.toISOString(),
     });
     return true;
   } catch {
+    options.signal?.throwIfAborted();
     await options.repository
       .recordCredentialCleanupFailure({
         credentialRef,
@@ -262,6 +326,12 @@ async function cleanCredential(
       .catch(() => undefined);
     return false;
   }
+}
+
+function configuredPlatforms(
+  adapters: CreatorPlatformAdapterRegistry,
+): ConnectableCreatorPlatform[] {
+  return (Object.keys(adapters) as ConnectableCreatorPlatform[]).sort();
 }
 
 function isAuthorizationFailure(error: unknown): boolean {
@@ -274,7 +344,7 @@ function isAuthorizationFailure(error: unknown): boolean {
 function isRetryable(error: unknown): boolean {
   return (
     error instanceof CreatorPlatformCredentialReadError ||
-    error instanceof TypeError ||
+    isProviderNetworkFailure(error) ||
     (error instanceof CreatorPlatformRequestError &&
       ["rate_limit", "quota", "transient"].includes(error.category))
   );
@@ -288,7 +358,15 @@ function failureCode(error: unknown): string {
       ? "provider_authorization_invalid"
       : `provider_${error.category}`;
   }
-  return error instanceof TypeError ? "provider_network_error" : "provider_sync_failed";
+  return isProviderNetworkFailure(error) ? "provider_network_error" : "provider_sync_failed";
+}
+
+function isProviderNetworkFailure(error: unknown): boolean {
+  return (
+    error instanceof TypeError ||
+    (error instanceof DOMException &&
+      (error.name === "AbortError" || error.name === "TimeoutError"))
+  );
 }
 
 function retryDelay(
