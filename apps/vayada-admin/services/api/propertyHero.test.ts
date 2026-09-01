@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const uploadHotelProfileImage = vi.hoisted(() => vi.fn());
 
 import { apiClient } from "./client";
-import { propertyHeroService } from "./propertyHero";
+import { hasPropertyHero, propertyHeroService } from "./propertyHero";
 
 vi.mock("./client", () => ({
   apiClient: { get: vi.fn(), put: vi.fn() },
@@ -12,6 +12,12 @@ vi.mock("./upload", () => ({ uploadService: { uploadHotelProfileImage } }));
 
 describe("Platform Admin property hero client", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("treats a canonical media ID as an existing hero without a display URL", () => {
+    expect(hasPropertyHero("media-984", "")).toBe(true);
+    expect(hasPropertyHero(null, "blob:local-preview")).toBe(true);
+    expect(hasPropertyHero(null, "")).toBe(false);
+  });
 
   it("reads the exact property and replaces it with only a canonical media ID", async () => {
     vi.mocked(apiClient.get).mockResolvedValue({});
@@ -62,6 +68,20 @@ describe("Platform Admin property hero client", () => {
       expect.any(String),
       { expectedProfileRevision: 7, mediaObjectId: "media-984" },
       expect.any(Object),
+    );
+  });
+
+  it("rejects when the published hero does not match the uploaded media object", async () => {
+    const file = { name: "hero.jpg" } as File;
+    uploadHotelProfileImage.mockResolvedValue({ mediaObjectId: "media-984" });
+    vi.mocked(apiClient.put).mockResolvedValue({
+      propertyId: "property-984",
+      profileRevision: 8,
+      hero: { mediaObjectId: "media-other", url: null },
+    });
+
+    await expect(propertyHeroService.uploadAndReplace(file, "property-984", 7)).rejects.toThrow(
+      "The published hero did not match the uploaded media object.",
     );
   });
 });

@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { PhotoIcon, XMarkIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
 import { bookingSettingsService } from "@/services/booking";
 import { COLOR_PRESETS, FONT_PAIRINGS } from "@/lib/constants/booking";
-import { propertyHeroService } from "@/services/api/propertyHero";
+import { hasPropertyHero, propertyHeroService } from "@/services/api/propertyHero";
 
 const GOOGLE_FONTS_URL =
   "https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Source+Sans+Pro:wght@300;400;600;700&family=Inter:wght@300;400;500;600;700&family=Lora:ital,wght@0,400;0,700;1,400&family=Italiana&display=swap";
@@ -23,6 +23,7 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
   const [activeTab, setActiveTab] = useState<Tab>("media");
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [designSettingsReady, setDesignSettingsReady] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(
     null,
   );
@@ -57,6 +58,8 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
   useEffect(() => {
     const operation = ++mediaOperationRef.current;
     setLoading(true);
+    setFeedback(null);
+    setDesignSettingsReady(false);
     setUploading(false);
     setProfileRevision(null);
     setHeroMediaObjectId(null);
@@ -69,6 +72,7 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
         if (mediaOperationRef.current !== operation) return;
         if (design.status === "fulfilled") {
           const settings = design.value;
+          setDesignSettingsReady(true);
           if (settings.hero_heading) setHeroHeading(settings.hero_heading);
           if (settings.hero_subtext) setHeroSubtext(settings.hero_subtext);
           if (settings.primary_color) setPrimaryColor(settings.primary_color);
@@ -80,6 +84,16 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
           setProfileRevision(media.value.profileRevision);
           setHeroMediaObjectId(media.value.hero?.mediaObjectId ?? null);
           setHeroImage(media.value.hero?.url ?? "");
+        }
+        const failedLoads = [
+          design.status === "rejected" && "design settings",
+          media.status === "rejected" && "property media",
+        ].filter(Boolean);
+        if (failedLoads.length > 0) {
+          setFeedback({
+            type: "error",
+            message: `We could not load ${failedLoads.join(" or ")}. Reload to try again.`,
+          });
         }
       })
       .finally(() => {
@@ -149,7 +163,7 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
         setHeroImage(current.hero?.url ?? "");
       } catch {
         if (mediaOperationRef.current !== operation) return;
-        setHeroImage(previousImage);
+        setHeroImage(previousImage.startsWith("blob:") ? "" : previousImage);
       }
       setFeedback({ type: "error", message: "Image upload failed. Please try again." });
     } finally {
@@ -168,6 +182,7 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
       setProfileRevision(updated.profileRevision);
       setHeroMediaObjectId(null);
       setHeroImage("");
+      setFeedback({ type: "success", message: "Hero image removed successfully" });
       if (fileInputRef.current) fileInputRef.current.value = "";
       try {
         const current = await propertyHeroService.get(propertyId);
@@ -175,6 +190,12 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
         setProfileRevision(current.profileRevision);
         setHeroMediaObjectId(current.hero?.mediaObjectId ?? null);
         setHeroImage(current.hero?.url ?? "");
+        if (current.hero?.mediaObjectId !== updated.hero?.mediaObjectId) {
+          setFeedback({
+            type: "error",
+            message: "Hero changed again; showing the latest version.",
+          });
+        }
       } catch {
         // The revision-fenced clear result remains authoritative.
       }
@@ -203,6 +224,10 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
   };
 
   const handleSave = async () => {
+    if (!designSettingsReady) {
+      setFeedback({ type: "error", message: "Reload before saving design settings." });
+      return;
+    }
     try {
       setSaving(true);
       setFeedback(null);
@@ -297,11 +322,17 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
                   </h2>
                   <p className="text-[12px] text-gray-500 mt-0.5 mb-2.5">1920x1080 recommended</p>
 
-                  {heroImage ? (
+                  {hasPropertyHero(heroMediaObjectId, heroImage) ? (
                     <div className="relative rounded-lg overflow-hidden bg-gray-200">
+                      {!heroImage && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-gray-500">
+                          <PhotoIcon className="w-6 h-6" />
+                          <span className="text-[12px]">Preview unavailable</span>
+                        </div>
+                      )}
                       <img
                         key={heroMediaObjectId ?? heroImage}
-                        src={heroImage}
+                        src={heroImage || undefined}
                         alt="Hero"
                         className="w-full h-36 object-cover"
                         onError={(e) => {
@@ -310,8 +341,8 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
                       />
                       <button
                         onClick={removeHeroImage}
-                        disabled={uploading}
-                        className="absolute top-1.5 right-1.5 w-6 h-6 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center transition-colors"
+                        disabled={uploading || profileRevision === null}
+                        className="absolute top-1.5 right-1.5 w-6 h-6 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <XMarkIcon className="w-3.5 h-3.5" />
                       </button>
@@ -320,7 +351,7 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
                     <button
                       onClick={() => fileInputRef.current?.click()}
                       disabled={uploading || profileRevision === null}
-                      className="w-full h-36 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center gap-1.5 text-gray-400 hover:border-gray-400 hover:text-gray-500 transition-colors"
+                      className="w-full h-36 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center gap-1.5 text-gray-400 hover:border-gray-400 hover:text-gray-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <PhotoIcon className="w-6 h-6" />
                       <span className="text-[12px]">Click to upload</span>
@@ -335,11 +366,11 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
                     className="hidden"
                   />
 
-                  {heroImage && (
+                  {hasPropertyHero(heroMediaObjectId, heroImage) && (
                     <button
                       onClick={() => fileInputRef.current?.click()}
                       disabled={uploading || profileRevision === null}
-                      className="mt-2 w-full py-1.5 text-[12px] text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                      className="mt-2 w-full py-1.5 text-[12px] text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Replace Image
                     </button>
@@ -577,7 +608,7 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
           <div className="pt-3 shrink-0 border-t border-gray-100">
             <button
               onClick={handleSave}
-              disabled={saving || uploading}
+              disabled={saving || uploading || !designSettingsReady}
               className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-primary-500 text-white text-[13px] font-medium rounded-lg hover:bg-primary-600 disabled:opacity-50 transition-colors"
             >
               {saving ? (

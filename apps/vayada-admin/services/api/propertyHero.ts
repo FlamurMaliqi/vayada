@@ -9,6 +9,10 @@ export type PlatformAdminPropertyHero = {
   outcome?: "updated" | "idempotent_replay";
 };
 
+export function hasPropertyHero(mediaObjectId: string | null, previewUrl: string): boolean {
+  return mediaObjectId !== null || previewUrl.startsWith("blob:");
+}
+
 export const propertyHeroService = {
   get(propertyId: string): Promise<PlatformAdminPropertyHero> {
     return apiClient.get(`/api/platform/admin/properties/${propertyId}/media/hero`);
