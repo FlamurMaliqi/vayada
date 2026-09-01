@@ -5,6 +5,7 @@ import { buildPmsChannelRecords } from "./productionPmsChannelRecords.js";
 import { createProductionPmsContext } from "./productionPmsContext.js";
 import { buildPmsRoomRecords } from "./productionPmsRoomRecords.js";
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
+import type { ProductionPmsTargetState } from "./productionPmsTypes.js";
 
 const HOTEL = "10000000-0000-4000-a000-000000000001";
 const PROPERTY = "20000000-0000-4000-a000-000000000001";
@@ -167,6 +168,36 @@ describe("production PMS channels", () => {
     expect(refreshedClaim?.row).toEqual(originalClaim?.row);
     expect(refreshedClaim?.sourceChecksum).toBe(originalClaim?.sourceChecksum);
   });
+
+  it("forces a private-quarantined property's provider state offline", () => {
+    const targetState = target();
+    targetState.propertyLinks[0]!.migrationDisposition = "private_quarantine";
+    targetState.propertyLinks[0]!.ownerStatus = "active";
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: rows(),
+      target: targetState,
+    });
+    const rooms = buildPmsRoomRecords(context);
+    const assignments = buildPmsAssignmentRecords(context, rooms);
+    const records = buildPmsChannelRecords(context, rooms, assignments);
+
+    expect(context.blockers).toEqual([]);
+    expect(records.find((record) => record.targetTable === "channel_binding_claims")?.row).toEqual(
+      expect.objectContaining({ claimState: "historical" }),
+    );
+    expect(
+      records.find((record) => record.targetTable === "channel_connections")?.row,
+    ).toMatchObject({
+      connectionStatus: "disconnected",
+      externalPropertyId: null,
+      capabilities: [],
+    });
+    expect(
+      records.find((record) => record.targetTable === "channel_room_type_mappings")?.row,
+    ).toMatchObject({ status: "disabled" });
+  });
 });
 
 function rows(): IdentitySourceRow[] {
@@ -251,7 +282,7 @@ function rows(): IdentitySourceRow[] {
   ];
 }
 
-function target() {
+function target(): ProductionPmsTargetState {
   return {
     propertyLinks: [
       {

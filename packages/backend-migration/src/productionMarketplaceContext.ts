@@ -24,6 +24,7 @@ export function createProductionMarketplaceContext(input: {
     creatorOrganizationById: new Map(),
     hotelOrganizationById: new Map(),
     propertyByHotelId: new Map(),
+    privateHotelIds: new Set(),
     users: new Set(input.target.userIds.map((id) => id.toLowerCase())),
     userNameById: new Map(input.target.userNames.map((user) => [user.id.toLowerCase(), user.name])),
     publicPropertyById: new Map(
@@ -69,6 +70,7 @@ export function createProductionMarketplaceContext(input: {
       continue;
     }
     context.propertyByHotelId.set(sourceId, link.propertyId.toLowerCase());
+    if (link.migrationDisposition === "private_quarantine") context.privateHotelIds.add(sourceId);
   }
   return context;
 }
@@ -155,20 +157,35 @@ export function creatorOrganization(context: MarketplaceBuildContext, creatorId:
 export function hotelScope(
   context: MarketplaceBuildContext,
   hotelId: unknown,
-): { propertyId: string; organizationId: string } {
+): { propertyId: string; organizationId: string; privateQuarantine: boolean } {
   const id = uuid(hotelId, "hotel_profile_id");
   if (!context.hotelById.has(id)) throw new Error(`hotel profile ${id} is missing`);
   const propertyId = context.propertyByHotelId.get(id);
   const organizationId = context.hotelOrganizationById.get(id);
   if (!propertyId) throw new Error(`hotel profile ${id} has no canonical property`);
   if (!organizationId) throw new Error(`hotel profile ${id} has no accepted owner organization`);
-  return { propertyId, organizationId };
+  return { propertyId, organizationId, privateQuarantine: context.privateHotelIds.has(id) };
+}
+
+export function hotelOwnerStatus(
+  context: MarketplaceBuildContext,
+  hotelId: string,
+): "active" | "suspended" | "archived" {
+  if (context.privateHotelIds.has(hotelId)) return "archived";
+  const status = resourceLinkFor(context.target.resourceLinks, "hotel_profile", hotelId)?.status;
+  if (status === "active" || status === "suspended" || status === "archived") return status;
+  throw new Error("hotel owner link status is unsupported");
 }
 
 export function offerScope(
   context: MarketplaceBuildContext,
   offerId: unknown,
-): { offer: IdentitySourceRow; propertyId: string; organizationId: string } {
+): {
+  offer: IdentitySourceRow;
+  propertyId: string;
+  organizationId: string;
+  privateQuarantine: boolean;
+} {
   const id = uuid(offerId, "listing_id");
   const offer = context.offerById.get(id);
   if (!offer) throw new Error(`hotel listing ${id} is missing`);
@@ -185,6 +202,7 @@ export function collaborationScope(
   offerId: string;
   propertyId: string;
   hotelOrganizationId: string;
+  privateQuarantine: boolean;
 } {
   const id = uuid(collaborationId, "collaboration_id");
   const collaboration = context.collaborationById.get(id);
@@ -204,6 +222,7 @@ export function collaborationScope(
     offerId,
     propertyId: offer.propertyId,
     hotelOrganizationId: offer.organizationId,
+    privateQuarantine: offer.privateQuarantine,
   };
 }
 

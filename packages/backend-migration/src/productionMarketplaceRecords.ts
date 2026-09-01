@@ -20,6 +20,7 @@ import {
   collaborationScope,
   creatorOrganization,
   hotelScope,
+  hotelOwnerStatus,
   offerScope,
   optionalUser,
   requireUser,
@@ -152,9 +153,8 @@ function buildHotelProfile(
   const id = uuid(source.data["id"], "id");
   const { propertyId, organizationId } = hotelScope(context, id);
   requireUser(context, source.data["user_id"], "user_id");
-  const ownerStatus = mapOwnerStatus(
-    resourceLinkFor(context.target.resourceLinks, "hotel_profile", id)?.status,
-  );
+  const ownerStatus = hotelOwnerStatus(context, id);
+  const privateQuarantine = context.privateHotelIds.has(id);
   const sourceStatus = mapHotelStatus(source.data["status"]);
   const updatedAt = timestamp(source);
   return [
@@ -172,6 +172,7 @@ function buildHotelProfile(
         legacySource: "marketplace.hotel_profiles",
         legacySourceStatus: sourceStatus,
         ownerStatus,
+        migrationDisposition: privateQuarantine ? "private_quarantine" : "canonical",
         website: optionalText(source.data["website"], "website"),
         phone: optionalText(source.data["phone"], "phone"),
       },
@@ -190,13 +191,15 @@ function buildOffer(
   const { propertyId, organizationId } = hotelScope(context, hotelProfileId);
   const hotelProfile = context.hotelById.get(hotelProfileId)!;
   const hotelStatus = mapHotelStatus(hotelProfile.data["status"]);
-  const ownerStatus = mapOwnerStatus(
-    resourceLinkFor(context.target.resourceLinks, "hotel_profile", hotelProfileId)?.status,
-  );
+  const ownerStatus = hotelOwnerStatus(context, hotelProfileId);
+  const privateQuarantine = context.privateHotelIds.has(hotelProfileId);
   const updatedAt = timestamp(source);
-  const images = stringArray(source.data["images"], "images").map((url, index) =>
-    resolvePublicMedia(context, url, "hotel_listings", id, `images[${index}]`),
-  );
+  const images =
+    ownerStatus === "active"
+      ? stringArray(source.data["images"], "images").map((url, index) =>
+          resolvePublicMedia(context, url, "hotel_listings", id, `images[${index}]`),
+        )
+      : [];
   const status = mapOfferStatus(source.data["status"]);
   const offer = record(source, "marketplace_offers", id, updatedAt, {
     id,
@@ -214,6 +217,7 @@ function buildOffer(
       legacySource: "marketplace.hotel_listings",
       legacySourceStatus: status,
       ownerQuarantined: ownerStatus === "archived",
+      migrationDisposition: privateQuarantine ? "private_quarantine" : "canonical",
     },
     createdAt: iso(source.data["created_at"], "created_at"),
     updatedAt,
@@ -362,7 +366,9 @@ function buildCollaboration(
       sourceSystem: "migration",
       sourceCollaborationId: id,
       initiatorType,
-      lifecycleStatus: mapCollaborationStatus(source.data["status"]),
+      lifecycleStatus: scope.privateQuarantine
+        ? "cancelled"
+        : mapCollaborationStatus(source.data["status"]),
       compensationType: rawType === "affiliate" ? null : rawType,
       applicationMessage: optionalText(source.data["why_great_fit"], "why_great_fit"),
       negotiatedTerms: {},
@@ -400,7 +406,11 @@ function buildCollaboration(
       respondedAt: optionalIso(source.data["responded_at"], "responded_at"),
       cancelledAt: optionalIso(source.data["cancelled_at"], "cancelled_at"),
       completedAt: optionalIso(source.data["completed_at"], "completed_at"),
-      collaborationMetadata: { legacySource: "marketplace.collaborations" },
+      collaborationMetadata: {
+        legacySource: "marketplace.collaborations",
+        legacySourceStatus: mapCollaborationStatus(source.data["status"]),
+        migrationDisposition: scope.privateQuarantine ? "private_quarantine" : "canonical",
+      },
       createdAt: iso(source.data["created_at"], "created_at"),
       updatedAt,
     }),

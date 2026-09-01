@@ -32,6 +32,7 @@ export type MarketplacePropertyLink = {
   relationship: string;
   status: string;
   migrationRunId: string | null;
+  migrationDisposition?: "canonical" | "private_quarantine" | null;
 };
 
 export type MarketplaceResourceLink = {
@@ -96,6 +97,7 @@ export type MarketplaceBuildContext = {
   creatorOrganizationById: Map<string, string>;
   hotelOrganizationById: Map<string, string>;
   propertyByHotelId: Map<string, string>;
+  privateHotelIds: Set<string>;
   users: Set<string>;
   userNameById: Map<string, string | null>;
   publicPropertyById: Map<string, MarketplacePublicProperty>;

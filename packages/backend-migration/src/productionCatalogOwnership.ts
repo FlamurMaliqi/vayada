@@ -10,6 +10,7 @@ import {
   text,
   uuid,
 } from "./productionIdentitySourceValidation.js";
+import { stableCatalogId } from "./productionCatalogValues.js";
 
 export type CatalogSourceSystem = "booking" | "pms" | "marketplace";
 export type CatalogSourceRelationship = "canonical_input" | "operational_input" | "profile_input";
@@ -22,10 +23,21 @@ export type ExistingCatalogSourceLink = {
   status?: "active" | "superseded" | "ignored";
   migrationRunId?: string | null;
   migrationPhase?: "prerequisites" | "complete" | null;
+  migrationDisposition?: CatalogMigrationDisposition | null;
+  migrationDispositionReason?: CatalogQuarantineReason | null;
 };
 export type PlannedCatalogSourceLink = ExistingCatalogSourceLink & {
   relationship: CatalogSourceRelationship;
+  migrationDisposition: CatalogMigrationDisposition;
+  migrationDispositionReason: CatalogQuarantineReason | null;
 };
+export type CatalogMigrationDisposition = "canonical" | "private_quarantine";
+export type CatalogQuarantineReason =
+  | "legacy_owner_quarantined"
+  | "missing_canonical_property"
+  | "ambiguous_canonical_property"
+  | "duplicate_pms_property"
+  | "duplicate_marketplace_profile";
 export type CatalogOwnerLink = {
   organizationId: string;
   product: "booking" | "pms" | "marketplace";
@@ -50,16 +62,20 @@ export type CatalogPropertySource = {
   data: Record<string, unknown>;
 };
 export type CatalogQuarantinedSource = {
+  propertyId: string;
   sourceSystem: CatalogSourceSystem;
   sourceTable: string;
   sourceId: string;
-  reason: "legacy_owner_quarantined";
+  reason: CatalogQuarantineReason;
 };
 export type CatalogPropertyGroup = {
   propertyId: string;
-  booking: CatalogPropertySource;
+  primary: CatalogPropertySource;
+  booking: CatalogPropertySource | null;
   pms: CatalogPropertySource[];
   marketplace: CatalogPropertySource[];
+  migrationDisposition: CatalogMigrationDisposition;
+  migrationDispositionReason: CatalogQuarantineReason | null;
 };
 export type CatalogOwnershipPlan = {
   properties: CatalogPropertyGroup[];
@@ -67,12 +83,25 @@ export type CatalogOwnershipPlan = {
   quarantinedSources: CatalogQuarantinedSource[];
   blockers: IdentityMigrationBlocker[];
 };
+type CatalogCandidate = {
+  row: CatalogPropertySource;
+  propertyId: string | null;
+  strength: "strong" | "owner" | "quarantine" | "blocked";
+  reason: CatalogQuarantineReason | null;
+};
 
 const TABLES = {
   booking: "booking_hotels",
   pms: "hotels",
   marketplace: "hotel_profiles",
 } as const;
+const QUARANTINE_REASONS = new Set<CatalogQuarantineReason>([
+  "legacy_owner_quarantined",
+  "missing_canonical_property",
+  "ambiguous_canonical_property",
+  "duplicate_pms_property",
+  "duplicate_marketplace_profile",
+]);
 
 export function planCatalogOwnership(
   rows: IdentitySourceRow[],
@@ -106,7 +135,15 @@ export function planCatalogOwnership(
   const groups = new Map(
     booking.map((row) => [
       row.sourceId,
-      { propertyId: row.sourceId, booking: row, pms: [], marketplace: [] } as CatalogPropertyGroup,
+      {
+        propertyId: row.sourceId,
+        primary: row,
+        booking: row,
+        pms: [],
+        marketplace: [],
+        migrationDisposition: "canonical",
+        migrationDispositionReason: null,
+      } as CatalogPropertyGroup,
     ]),
   );
   const sourceLinks: PlannedCatalogSourceLink[] = [];
@@ -114,7 +151,7 @@ export function planCatalogOwnership(
 
   for (const row of booking) {
     const target = existing.get(sourceKey(row));
-    const planned = link(row, row.sourceId);
+    const planned = link(row, row.sourceId, "canonical", null);
     if (target && target.propertyId !== row.sourceId)
       addBlocker(
         blockers,
@@ -127,7 +164,7 @@ export function planCatalogOwnership(
     sourceLinks.push(planned);
   }
 
-  for (const row of [...pms, ...marketplace]) {
+  const candidates = [...pms, ...marketplace].map<CatalogCandidate>((row) => {
     const direct = row.sourceSystem === "pms" ? anchors.get(row.sourceId) : undefined;
     if (direct && direct.userId !== row.userId) {
       addBlocker(
@@ -137,52 +174,73 @@ export function planCatalogOwnership(
         row.sourceId,
         "Matching Booking and PMS property IDs have different owners",
       );
-      continue;
+      return { row, propertyId: null, strength: "blocked" as const, reason: null };
     }
     const target = existing.get(sourceKey(row));
-    const propertyId = resolveCandidate(
+    return {
       row,
-      direct,
-      anchorsByUser.get(row.userId) ?? [],
-      target,
-      anchors,
-      blockers,
-    );
-    if (!propertyId && row.ownershipQuarantined) {
+      ...resolveCandidate(
+        row,
+        direct,
+        anchorsByUser.get(row.userId) ?? [],
+        target,
+        anchors,
+        blockers,
+      ),
+    };
+  });
+
+  const canonicalCandidates = groupBy(
+    candidates.filter((candidate) => candidate.propertyId !== null),
+    (candidate) => `${candidate.propertyId!}:${candidate.row.sourceSystem}`,
+  );
+  for (const sameType of canonicalCandidates.values()) {
+    const strong = sameType.filter((candidate) => candidate.strength === "strong");
+    const accepted = sameType.length === 1 ? sameType : strong.length === 1 ? strong : [];
+    for (const candidate of sameType) {
+      if (accepted.includes(candidate)) continue;
+      candidate.propertyId = null;
+      candidate.reason =
+        candidate.row.sourceSystem === "pms"
+          ? "duplicate_pms_property"
+          : "duplicate_marketplace_profile";
+    }
+  }
+
+  for (const candidate of candidates) {
+    const { row } = candidate;
+    const target = existing.get(sourceKey(row));
+    if (!candidate.propertyId) {
+      if (!candidate.reason) continue;
+      const propertyId = privatePropertyId(row);
+      const group: CatalogPropertyGroup = {
+        propertyId,
+        primary: row,
+        booking: null,
+        pms: row.sourceSystem === "pms" ? [row] : [],
+        marketplace: row.sourceSystem === "marketplace" ? [row] : [],
+        migrationDisposition: "private_quarantine",
+        migrationDispositionReason: candidate.reason,
+      };
+      groups.set(propertyId, group);
       quarantinedSources.push({
+        propertyId,
         sourceSystem: row.sourceSystem,
         sourceTable: row.sourceTable,
         sourceId: row.sourceId,
-        reason: "legacy_owner_quarantined",
+        reason: candidate.reason,
       });
+      const planned = link(row, propertyId, "private_quarantine", candidate.reason);
+      validateRelationship(target, planned, blockers);
+      sourceLinks.push(planned);
       continue;
     }
-    if (!propertyId) continue;
-    const group = groups.get(propertyId)!;
+    const group = groups.get(candidate.propertyId)!;
     if (row.sourceSystem === "pms") group.pms.push(row);
     else group.marketplace.push(row);
-    const planned = link(row, propertyId);
+    const planned = link(row, candidate.propertyId, "canonical", null);
     validateRelationship(target, planned, blockers);
     sourceLinks.push(planned);
-  }
-
-  for (const group of groups.values()) {
-    if (group.pms.length > 1)
-      addBlocker(
-        blockers,
-        "DUPLICATE_PMS_PROPERTY",
-        "pms.hotels",
-        group.propertyId,
-        "Multiple PMS hotels resolve to one canonical property",
-      );
-    if (group.marketplace.length > 1)
-      addBlocker(
-        blockers,
-        "DUPLICATE_MARKETPLACE_PROFILE",
-        "marketplace.hotel_profiles",
-        group.propertyId,
-        "Multiple Marketplace profiles resolve to one canonical property",
-      );
   }
   addDuplicateSlugs(booking, blockers);
 
@@ -214,6 +272,14 @@ function validateRelationship(
       `${planned.sourceSystem}.${planned.sourceTable}`,
       planned.sourceId,
       `Existing relationship ${target.relationship} differs from ${planned.relationship}`,
+    );
+  if (target?.migrationDisposition && target.migrationDisposition !== planned.migrationDisposition)
+    addBlocker(
+      blockers,
+      "CATALOG_SOURCE_DISPOSITION_CONFLICT",
+      `${planned.sourceSystem}.${planned.sourceTable}`,
+      planned.sourceId,
+      `Existing disposition ${target.migrationDisposition} differs from ${planned.migrationDisposition}`,
     );
 }
 
@@ -314,13 +380,38 @@ function resolveCandidate(
   target: ExistingCatalogSourceLink | undefined,
   anchors: Map<string, CatalogPropertySource>,
   blockers: IdentityMigrationBlocker[],
-): string | null {
+): {
+  propertyId: string | null;
+  strength: "strong" | "owner" | "quarantine";
+  reason: CatalogQuarantineReason | null;
+} {
   const strongCandidates = new Set<string>();
   if (direct) strongCandidates.add(direct.sourceId);
+  const quarantineId = privatePropertyId(row);
+  if (target?.migrationDisposition === "private_quarantine" && target.propertyId === quarantineId) {
+    if (
+      target.migrationDispositionReason &&
+      !QUARANTINE_REASONS.has(target.migrationDispositionReason)
+    ) {
+      addBlocker(
+        blockers,
+        "CATALOG_SOURCE_DISPOSITION_CONFLICT",
+        `${row.sourceSystem}.${row.sourceTable}`,
+        row.sourceId,
+        `Existing private disposition reason ${target.migrationDispositionReason} is unsupported`,
+      );
+      return { propertyId: null, strength: "quarantine", reason: null };
+    }
+    return {
+      propertyId: null,
+      strength: "quarantine",
+      reason: target.migrationDispositionReason ?? quarantineReason(row, ownerAnchors),
+    };
+  }
   if (target) strongCandidates.add(target.propertyId);
   if (strongCandidates.size === 1) {
     const propertyId = [...strongCandidates][0]!;
-    if (anchors.has(propertyId)) return propertyId;
+    if (anchors.has(propertyId)) return { propertyId, strength: "strong", reason: null };
     addBlocker(
       blockers,
       "CATALOG_SOURCE_LINK_CONFLICT",
@@ -328,24 +419,34 @@ function resolveCandidate(
       row.sourceId,
       `Existing source link points to missing canonical property ${propertyId}`,
     );
-    return null;
+    return { propertyId: null, strength: "quarantine", reason: null };
   }
-  if (strongCandidates.size > 1) return ambiguousCandidate(row, strongCandidates, blockers);
+  if (strongCandidates.size > 1) {
+    ambiguousCandidate(row, strongCandidates, blockers);
+    return { propertyId: null, strength: "quarantine", reason: null };
+  }
 
   const candidates = new Set(ownerAnchors.map((anchor) => anchor.sourceId));
   const accepted = [...candidates].filter((candidate) => anchors.has(candidate)).sort();
-  if (accepted.length === 1 && accepted.length === candidates.size) return accepted[0]!;
-  if (row.ownershipQuarantined) return null;
-  addBlocker(
-    blockers,
-    accepted.length === 0 ? "MISSING_CANONICAL_PROPERTY" : "AMBIGUOUS_CANONICAL_PROPERTY",
-    `${row.sourceSystem}.${row.sourceTable}`,
-    row.sourceId,
-    accepted.length === 0
-      ? "No exact ID or owner link resolves to a Booking property"
-      : `Source resolves to multiple properties: ${accepted.join(", ")}`,
-  );
-  return null;
+  if (accepted.length === 1 && accepted.length === candidates.size)
+    return { propertyId: accepted[0]!, strength: "owner", reason: null };
+  return {
+    propertyId: null,
+    strength: "quarantine",
+    reason: quarantineReason(row, ownerAnchors),
+  };
+}
+
+function quarantineReason(
+  row: CatalogPropertySource,
+  ownerAnchors: CatalogPropertySource[],
+): CatalogQuarantineReason {
+  if (row.ownershipQuarantined) return "legacy_owner_quarantined";
+  return ownerAnchors.length === 0 ? "missing_canonical_property" : "ambiguous_canonical_property";
+}
+
+function privatePropertyId(row: CatalogPropertySource): string {
+  return stableCatalogId("private-property", sourceKey(row));
 }
 
 function ambiguousCandidate(
@@ -382,7 +483,12 @@ function addDuplicateSlugs(
       );
 }
 
-function link(row: CatalogPropertySource, propertyId: string): PlannedCatalogSourceLink {
+function link(
+  row: CatalogPropertySource,
+  propertyId: string,
+  migrationDisposition: CatalogMigrationDisposition,
+  migrationDispositionReason: CatalogQuarantineReason | null,
+): PlannedCatalogSourceLink {
   return {
     propertyId,
     sourceSystem: row.sourceSystem,
@@ -394,6 +500,8 @@ function link(row: CatalogPropertySource, propertyId: string): PlannedCatalogSou
         : row.sourceSystem === "pms"
           ? "operational_input"
           : "profile_input",
+    migrationDisposition,
+    migrationDispositionReason,
   };
 }
 

@@ -76,6 +76,78 @@ describe("production catalog plan", () => {
     expect(plan.writes.properties[0]).toMatchObject({ profileStatus: "private" });
   });
 
+  it("materializes a PMS-only source as a deterministic private catalog property", () => {
+    const target = emptyTarget();
+    const pmsHotel = "22222222-2222-4222-8222-222222222222";
+    const pmsUser = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    target.ownerLinks.push({
+      organizationId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      product: "pms",
+      resourceType: "pms_hotel",
+      resourceId: pmsHotel,
+      relationship: "operator",
+      status: "active",
+    });
+    const sourceRows = [
+      ...rows,
+      {
+        sourceDatabase: "pms" as const,
+        sourceTable: "hotels",
+        rowOrdinal: 1,
+        data: {
+          id: pmsHotel,
+          user_id: pmsUser,
+          name: "PMS-only hotel",
+          slug: "pms-only-hotel",
+          country: "AT",
+          city: "Vienna",
+          timezone: "Europe/Vienna",
+          created_at: "2026-08-01T00:00:00Z",
+          updated_at: UPDATED,
+        },
+      },
+    ];
+
+    const first = buildProductionCatalogPlan(sourceRows, target);
+    const repeated = buildProductionCatalogPlan(sourceRows, target);
+    const quarantined = first.quarantinedSources[0]!;
+
+    expect(first.blockers).toEqual([]);
+    expect(first.counts).toMatchObject({ properties: 2, sourceLinks: 2, quarantinedSourceRows: 1 });
+    expect(first.writes.properties).toContainEqual(
+      expect.objectContaining({ id: quarantined.propertyId, profileStatus: "private" }),
+    );
+    expect(first.sourceLinks).toContainEqual(
+      expect.objectContaining({
+        sourceSystem: "pms",
+        sourceId: pmsHotel,
+        propertyId: quarantined.propertyId,
+        migrationDisposition: "private_quarantine",
+        migrationDispositionReason: "missing_canonical_property",
+      }),
+    );
+    expect(repeated.checksum).toBe(first.checksum);
+
+    target.ownerLinks.find((link) => link.resourceId === pmsHotel)!.status = "archived";
+    target.sourceLinks = first.sourceLinks.map((link) => ({
+      ...link,
+      migrationRunId: "vay1351-0123456789abcdef01234567",
+      migrationPhase: "prerequisites",
+    }));
+    target.properties = first.writes.properties;
+    target.slugs = first.writes.slugs;
+    target.locations = first.writes.locations;
+    target.profiles = first.writes.profiles;
+    target.amenities = first.writes.amenities;
+    target.contacts = first.writes.contacts;
+    target.policies = first.writes.policies;
+    const afterPrivateAuthorityRevocation = buildProductionCatalogPlan(sourceRows, target);
+    expect(afterPrivateAuthorityRevocation.blockers).toEqual([]);
+    expect(afterPrivateAuthorityRevocation.checksum).toBe(first.checksum);
+    expect(afterPrivateAuthorityRevocation.quarantinedSources).toEqual(first.quarantinedSources);
+    expect(afterPrivateAuthorityRevocation.counts.writes).toBe(0);
+  });
+
   it("blocks an empty production catalog", () => {
     expect(buildProductionCatalogPlan([], emptyTarget()).blockers.map((row) => row.code)).toContain(
       "EMPTY_PRODUCTION_CATALOG",

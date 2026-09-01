@@ -1,5 +1,6 @@
 import {
   addPmsBlocker,
+  ownerStatusForHotel,
   pmsMediaForSource,
   propertyForHotel,
   safePmsSourceId,
@@ -75,6 +76,8 @@ function roomType(
   const data = source.data;
   const id = uuid(data["id"], "id");
   const propertyId = propertyForHotel(context, data["hotel_id"]);
+  const mediaVisibility =
+    ownerStatusForHotel(context, data["hotel_id"]) === "active" ? "public" : "private";
   const linkedGroupId = context.linkedGroupByRoomType.get(id) ?? null;
   if (linkedGroupId) {
     const group = context.rowsByTable
@@ -99,7 +102,7 @@ function roomType(
       sourceRowId: `${id}:images:${index + 1}`,
       purpose: "pms.room_type.media",
       propertyId,
-      visibility: "public",
+      visibility: mediaVisibility,
     }),
   );
   const mediaAssignments = media.map((item, index) =>
@@ -153,10 +156,10 @@ function roomType(
       amenitiesSnapshot: jsonArray(data["amenities"], "amenities"),
       mediaSnapshot: media.map((item) => ({
         mediaObjectId: item.mediaObjectId,
-        url: item.publicUrl,
+        url: mediaVisibility === "public" ? item.publicUrl : null,
         source: "pms",
         sourceTable: "room_types",
-        publicApproved: true,
+        publicApproved: mediaVisibility === "public",
       })),
       baseRateAmount: baseRate,
       currency: roomCurrency,

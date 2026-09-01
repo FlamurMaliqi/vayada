@@ -46,17 +46,62 @@ export async function writeProductionCatalogCore(
      SELECT source."propertyId", source."sourceSystem", source."sourceTable", source."sourceId",
             source.relationship, jsonb_build_object(
               'migrationRunId', $2::text,
-              'migrationPhase', $3::text
+              'migrationPhase', $3::text,
+              'migrationDisposition', source."migrationDisposition",
+              'migrationDispositionReason', source."migrationDispositionReason"
             )
      FROM jsonb_to_recordset($1::jsonb) AS source(
        "propertyId" uuid, "sourceSystem" text, "sourceTable" text, "sourceId" text,
-       relationship text)
+       relationship text, "migrationDisposition" text, "migrationDispositionReason" text)
      ON CONFLICT (source_system, source_table, source_id) DO UPDATE SET
-       metadata = hotel_catalog.property_source_links.metadata
-         || jsonb_build_object('migrationRunId', $2::text, 'migrationPhase', $3::text)
+       metadata = hotel_catalog.property_source_links.metadata || EXCLUDED.metadata
      WHERE hotel_catalog.property_source_links.property_id = EXCLUDED.property_id
        AND hotel_catalog.property_source_links.relationship = EXCLUDED.relationship`,
     [JSON.stringify(sourceLinks), runId, migrationPhase],
+  );
+  await client.query(
+    `UPDATE identity.organization_resource_links AS owner_link
+        SET status = 'archived', updated_at = now()
+       FROM jsonb_to_recordset($1::jsonb) AS source(
+         "propertyId" uuid, "sourceSystem" text, "sourceTable" text, "sourceId" text,
+         relationship text, "migrationDisposition" text, "migrationDispositionReason" text)
+      WHERE source."migrationDisposition" = 'private_quarantine'
+        AND owner_link.status <> 'archived'
+        AND (
+          (owner_link.product = 'hotel_catalog'
+            AND owner_link.resource_type = 'property'
+            AND owner_link.resource_id = source."propertyId"::text)
+          OR (
+            owner_link.product = source."sourceSystem"
+            AND owner_link.resource_id = source."sourceId"
+            AND (
+              (source."sourceSystem" = 'pms'
+                AND owner_link.resource_type = 'pms_hotel'
+                AND owner_link.relationship = 'operator')
+              OR (source."sourceSystem" = 'marketplace'
+                AND owner_link.resource_type = 'hotel_profile'
+                AND owner_link.relationship = 'owner')
+            )
+          )
+        )`,
+    [JSON.stringify(sourceLinks)],
+  );
+  await client.query(
+    `UPDATE identity.product_entitlements AS entitlement
+        SET status = 'suspended', updated_at = now()
+       FROM jsonb_to_recordset($1::jsonb) AS source(
+         "propertyId" uuid, "sourceSystem" text, "sourceTable" text, "sourceId" text,
+         relationship text, "migrationDisposition" text, "migrationDispositionReason" text)
+      WHERE source."migrationDisposition" = 'private_quarantine'
+        AND entitlement.status = 'active'
+        AND entitlement.resource_product = source."sourceSystem"
+        AND entitlement.resource_id = source."sourceId"
+        AND (
+          (source."sourceSystem" = 'pms' AND entitlement.resource_type = 'pms_hotel')
+          OR (source."sourceSystem" = 'marketplace'
+            AND entitlement.resource_type = 'hotel_profile')
+        )`,
+    [JSON.stringify(sourceLinks)],
   );
   const slugs = await client.query(
     `INSERT INTO hotel_catalog.property_slugs

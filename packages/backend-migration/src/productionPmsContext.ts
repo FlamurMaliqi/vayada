@@ -233,8 +233,10 @@ function ownerStatusMap(
       });
       continue;
     }
+    const effectiveStatus =
+      link.migrationDisposition === "private_quarantine" ? "archived" : link.ownerStatus;
     const prior = result.get(sourceId);
-    if (prior && prior !== link.ownerStatus) {
+    if (prior && prior !== effectiveStatus) {
       result.delete(sourceId);
       blockers.push({
         code: "AMBIGUOUS_PMS_OWNER_STATUS",
@@ -242,7 +244,7 @@ function ownerStatusMap(
         sourceId: link.sourceId,
         message: "PMS hotel resolves to conflicting owner dispositions",
       });
-    } else result.set(sourceId, link.ownerStatus);
+    } else result.set(sourceId, effectiveStatus);
   }
   return result;
 }
