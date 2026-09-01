@@ -11,11 +11,15 @@ describe("settingsService next-stack bootstrap data", () => {
   let propertyLinkFailure: number | null;
   let propertySettingsFailure: number | Error | null;
   let acceptanceMode: "instant" | "request";
+  let sameDayEnabled: boolean;
+  let sameDayCutoff: string | null;
 
   beforeEach(() => {
     propertyLinkFailure = null;
     propertySettingsFailure = null;
     acceptanceMode = "request";
+    sameDayEnabled = true;
+    sameDayCutoff = "18:00";
     const storage = createMemoryStorage();
     let designSettings = {
       headerLogo: "https://cdn.vayada.test/hotels/alpenrose/logo.webp",
@@ -99,6 +103,27 @@ describe("settingsService next-stack bootstrap data", () => {
               propertyId: "property_alpenrose",
               acceptanceMode,
               instantBook: acceptanceMode === "instant",
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
+        if (
+          href.endsWith("/api/booking/hotels/booking_hotel_alpenrose/settings/same-day-booking")
+        ) {
+          if (init?.method === "PUT") {
+            const body = JSON.parse(String(init.body));
+            sameDayEnabled = body.enabled;
+            sameDayCutoff = body.cutoffLocalTime;
+          }
+          return new Response(
+            JSON.stringify({
+              contractVersion: "same-day-booking-policy.v1",
+              propertyId: "property_alpenrose",
+              propertyTimeZone: "Europe/Vienna",
+              enabled: sameDayEnabled,
+              cutoffLocalTime: sameDayCutoff,
+              revision: 2,
+              updatedAt: "2026-09-01T10:00:00.000Z",
             }),
             { headers: { "content-type": "application/json" } },
           );
@@ -255,6 +280,24 @@ describe("settingsService next-stack bootstrap data", () => {
       acceptanceMode: "instant",
       instantBook: true,
     });
+    await expect(settingsService.getSameDayBooking()).resolves.toMatchObject({
+      propertyTimeZone: "Europe/Vienna",
+      enabled: true,
+      cutoffLocalTime: "18:00",
+    });
+    await expect(settingsService.updateSameDayBooking(false, "12:30")).resolves.toMatchObject({
+      enabled: false,
+      cutoffLocalTime: "12:30",
+    });
+    const sameDayWrite = vi
+      .mocked(fetch)
+      .mock.calls.findLast(
+        ([input, init]) =>
+          String(input).endsWith("/settings/same-day-booking") && init?.method === "PUT",
+      );
+    const sameDayBody = JSON.parse(String(sameDayWrite?.[1]?.body));
+    expect(sameDayBody.commandId).toMatch(/^booking\.same-day-booking:/);
+    expect(sameDayBody.idempotencyKey).toBe(sameDayBody.commandId);
   });
 
   it("falls back to the assigned property manifest when Booking metadata is forbidden", async () => {

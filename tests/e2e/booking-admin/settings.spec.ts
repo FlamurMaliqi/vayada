@@ -7,6 +7,7 @@ import {
   BOOKING_ADMIN_HOTEL_ID,
   BOOKING_ADMIN_PROPERTY_ID,
   BOOKING_ADMIN_PROPERTY_SETTINGS_PATH,
+  BOOKING_ADMIN_SAME_DAY_PATH,
   defaultBookingAdminPropertySettings,
   defaultCustomDomain,
   mockBookingAdminAuthenticatedSession,
@@ -19,6 +20,91 @@ import { watchPageHealth } from "../support/pageHealth";
 const PROD = process.env.E2E_BOOKING_ADMIN_PROD === "1";
 
 test.describe("booking-admin settings no-legacy guard", () => {
+  test("loads and saves the shared same-day booking cutoff", async ({ page }, testInfo) => {
+    test.skip(
+      !PROD,
+      "Requires a production booking-admin build so the authenticated shell hydrates.",
+    );
+    const assertNoLegacyCalls = watchNoLegacyCalls(page, testInfo, "booking-admin-settings");
+    await mockBookingAdminAuthenticatedSession(page);
+    await mockBookingAdminShellRoutes(page);
+    let failRead = true;
+    let failWrite = false;
+    await page.route(`**${BOOKING_ADMIN_SAME_DAY_PATH}*`, async (route) => {
+      if (route.request().method() === "GET" && failRead) {
+        failRead = false;
+        await route.fulfill({ status: 503, json: { message: "Same-day settings unavailable." } });
+        return;
+      }
+      if (route.request().method() === "PUT" && failWrite) {
+        await route.fulfill({
+          status: 503,
+          json: { message: "Same-day settings were not saved." },
+        });
+        return;
+      }
+      await route.fallback();
+    });
+    await page.route(`**${BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH}`, (route) =>
+      route.fulfill({
+        json: {
+          contractVersion: "finance-route-contracts.v1",
+          propertyId: BOOKING_ADMIN_PROPERTY_ID,
+          paymentSettings: {
+            paymentsEnabled: false,
+            paymentProvider: "vayada",
+            acceptedMethods: ["pay_at_property", "cash"],
+            defaultCurrency: "EUR",
+            supportedCurrencies: ["EUR"],
+            requiresManualReview: false,
+            providerAccount: {
+              providerAccountId: null,
+              provider: null,
+              status: "not_configured",
+              onboardingStatus: "not_started",
+              chargesEnabled: false,
+              payoutsEnabled: false,
+              capabilities: [],
+            },
+          },
+        },
+      }),
+    );
+
+    await page.goto("/settings?section=booking");
+
+    await expect(
+      page.getByRole("alert").filter({ hasText: "Same-day settings unavailable." }),
+    ).toBeVisible();
+    await expect(page.getByRole("switch", { name: "Allow same-day bookings" })).toHaveCount(0);
+    await expect(page.getByLabel("Same-day booking cutoff")).toHaveCount(0);
+    await page.getByRole("button", { name: "Retry" }).click();
+    await expect(page.getByRole("switch", { name: "Allow same-day bookings" })).toBeChecked();
+    const assertHealthy = watchPageHealth(page, testInfo);
+    const cutoff = page.getByLabel("Same-day booking cutoff");
+    await expect(cutoff).toHaveValue("18:00");
+    await expect(page.getByText(/property timezone \(Europe\/Vienna\)/)).toBeVisible();
+    const sameDayWrite = page.waitForRequest(
+      (request) => request.method() === "PUT" && request.url().endsWith("/same-day-booking"),
+    );
+    await cutoff.selectOption("17:30");
+    const body = (await sameDayWrite).postDataJSON();
+    expect(body).toMatchObject({ enabled: true, cutoffLocalTime: "17:30" });
+    expect(body.idempotencyKey).toBe(body.commandId);
+    const success = page.getByText("Same-day booking settings saved.");
+    await expect(success).toBeVisible();
+    await assertNoLegacyCalls();
+    await assertHealthy();
+
+    failWrite = true;
+    await cutoff.selectOption("17:00");
+    await expect(success).toHaveCount(0);
+    await expect(
+      page.getByRole("alert").filter({ hasText: "Same-day settings were not saved." }),
+    ).toBeVisible();
+    await assertNoLegacyCalls();
+  });
+
   test("shows onboarding social links in Property settings and keeps all four editable", async ({
     page,
   }, testInfo) => {

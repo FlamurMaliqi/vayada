@@ -619,6 +619,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     settingsRepository: options.bookingSettingsRepository,
     settingsWriteRepository: options.bookingSettingsWriteRepository,
     bookingAcceptanceSettings: options.bookingAcceptanceSettings,
+    sameDayBookingSettings: options.sameDayBookingSettings,
+    ownsSameDayBookingSettings: !options.pmsOperationsRepository,
     publicBookabilityPublisher: options.publicBookabilityPublisher,
     inventoryPublicOfferProjector: options.pmsInventoryPublicOfferProjector,
     customDomainRepository: options.bookingCustomDomainRepository,
