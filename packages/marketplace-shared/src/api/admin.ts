@@ -160,6 +160,42 @@ export type MarketplaceAdminHotelReviewResponse = {
   offers: MarketplaceAdminOffer[];
 };
 
+export type MarketplaceAdminCreatorReviewProfile = {
+  creatorProfileId: string;
+  displayName: string | null;
+  locationText: string | null;
+  shortDescription: string | null;
+  portfolioUrl: string | null;
+  phone: string | null;
+  profilePictureUrl: string | null;
+  profilePictureMediaObjectId: string | null;
+  profileComplete: boolean;
+  profileCompletedAt: string | null;
+  profileStatus: "pending" | "active" | "rejected" | "suspended" | "archived";
+  platforms: Array<{
+    platformId: string;
+    platform: MarketplacePlatformName;
+    handle: string;
+    profileUrl?: string | null;
+    followerCount: number;
+    engagementRate: number;
+    audienceCountries?: { country: string; percentage: number }[];
+    audienceAgeGroups?: { ageRange: string; percentage: number }[];
+    audienceGenderSplit?: { male: number; female: number; other?: number } | null;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MarketplaceAdminCreatorReviewResponse = {
+  contractVersion: MarketplaceAdminContractVersion;
+  authorizationMode: MarketplaceAdminAuthorizationMode;
+  userId: string;
+  profile: MarketplaceAdminCreatorReviewProfile | null;
+};
+
 export type MarketplaceAdminDeleteOfferResponse = {
   contractVersion: MarketplaceAdminContractVersion;
   authorizationMode: MarketplaceAdminAuthorizationMode;
@@ -180,6 +216,8 @@ export const marketplaceAdminEndpoints = {
     `/api/marketplace/admin/users/${encodeURIComponent(hotelUserId)}/offers`,
   hotelReview: (hotelUserId: string) =>
     `/api/marketplace/admin/users/${encodeURIComponent(hotelUserId)}/review`,
+  creatorReview: (userId: string) =>
+    `/api/marketplace/admin/users/${encodeURIComponent(userId)}/review/creator`,
   updateOffer: (hotelUserId: string, offerId: string) =>
     `/api/marketplace/admin/users/${encodeURIComponent(
       hotelUserId,
@@ -239,6 +277,14 @@ export async function getMarketplaceAdminHotelReview(
 ): Promise<MarketplaceAdminHotelReviewResponse> {
   return vayadaApiClient.get<MarketplaceAdminHotelReviewResponse>(
     marketplaceAdminEndpoints.hotelReview(hotelUserId),
+  );
+}
+
+export async function getMarketplaceAdminCreatorReview(
+  userId: string,
+): Promise<MarketplaceAdminCreatorReviewResponse> {
+  return vayadaApiClient.get<MarketplaceAdminCreatorReviewResponse>(
+    marketplaceAdminEndpoints.creatorReview(userId),
   );
 }
 

@@ -14,6 +14,7 @@ Contract version: `marketplace-admin.v1`.
 | Respond as hotel         | `POST`   | `/api/marketplace/admin/collaborations/{collaborationId}/respond` |
 | Approve as hotel         | `POST`   | `/api/marketplace/admin/collaborations/{collaborationId}/approve` |
 | Read hotel review        | `GET`    | `/api/marketplace/admin/users/{hotelUserId}/review`               |
+| Read creator review      | `GET`    | `/api/marketplace/admin/users/{userId}/review/creator`            |
 | Create hotel-user offer  | `POST`   | `/api/marketplace/admin/users/{hotelUserId}/offers`               |
 | Update hotel-user offer  | `PUT`    | `/api/marketplace/admin/users/{hotelUserId}/offers/{offerId}`     |
 | Archive hotel-user offer | `DELETE` | `/api/marketplace/admin/users/{hotelUserId}/offers/{offerId}`     |
@@ -40,6 +41,7 @@ This contract only covers marketplace-owned resources:
 
 - collaboration review actions that act as the hotel side;
 - the hotel review projection used to inspect the Marketplace profile and its offers;
+- the creator review projection used to inspect one exact active creator-workspace profile;
 - collaboration-offer create/update/archive for a hotel user.
 
 Identity user CRUD remains out of scope and stays on the identity admin command
@@ -61,6 +63,11 @@ plus the shared catalog name and location needed to identify the hotel. Identity
 account details remain on the identity admin route; the Vayada Admin client
 composes both owner-specific responses instead of making identity own product
 profiles.
+
+The creator review follows the same ownership boundary: it returns Marketplace
+profile fields, platform connections, and the persisted profile-image media
+object ID only when the target user resolves to exactly one active,
+non-archived creator-workspace profile.
 
 `offerId` is the target `marketplace.marketplace_offers.id`. Archive is a soft
 delete that sets `offerStatus = archived`.
