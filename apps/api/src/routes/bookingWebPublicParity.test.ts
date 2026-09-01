@@ -2082,6 +2082,37 @@ describe("Booking Web public bootstrap parity", () => {
     });
 
     policySnapshot = {
+      kind: "flexible",
+      flexibleCancellationType: "free",
+      partialRefundCancelWindowDays: 30,
+      partialRefundAmountPercent: 50,
+      partialRefundTiers: [],
+      tiers: [],
+      freeCancellationDays: 7,
+    };
+    await expect(
+      adapter.cancelPreview("hotel-alpenrose", guestBookingId, request, context),
+    ).resolves.toMatchObject({ freeCancellationDays: 7, daysUntilCheckIn: 11 });
+
+    policySnapshot = {
+      flexibleCancellationType: "free",
+      partialRefundTiers: [{ minDaysBeforeCheckIn: 30, refundPercent: 50 }],
+      freeCancellationDays: 7,
+    };
+    await expect(adapter.cancelPreview("hotel-alpenrose", guestBookingId, request)).rejects.toThrow(
+      "cannot be verified online",
+    );
+
+    policySnapshot = {
+      flexibleCancellationType: "free",
+      tiers: [{ days: 30, refundPercentage: 50 }],
+      freeCancellationDays: 7,
+    };
+    await expect(adapter.cancelPreview("hotel-alpenrose", guestBookingId, request)).rejects.toThrow(
+      "cannot be verified online",
+    );
+
+    policySnapshot = {
       type: "free_until_days_before_arrival",
       freeCancellationDeadlineDays: 7,
       afterDeadlinePenalty: "full_booking_amount",

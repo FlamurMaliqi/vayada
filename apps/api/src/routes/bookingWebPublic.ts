@@ -6408,8 +6408,9 @@ function resolveTargetCancellationPreview(
   if (
     policySnapshot["flexibleCancellationType"] === "partial_refund" ||
     (!hasCanonicalPolicyDiscriminator &&
-      (Array.isArray(policySnapshot["tiers"]) ||
-        Array.isArray(policySnapshot["partialRefundTiers"]) ||
+      ((Array.isArray(policySnapshot["tiers"]) && policySnapshot["tiers"].length > 0) ||
+        (Array.isArray(policySnapshot["partialRefundTiers"]) &&
+          policySnapshot["partialRefundTiers"].length > 0) ||
         (refundValue !== null &&
           refundValue !== undefined &&
           !["full", "100", "100%"].includes(refundValue))))
