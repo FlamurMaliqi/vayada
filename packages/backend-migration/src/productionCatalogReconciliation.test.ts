@@ -191,6 +191,7 @@ function emptyTarget(): ProductionCatalogTargetState {
   return {
     properties: [],
     sourceLinks: [],
+    ownerLinks: [],
     slugs: [],
     domains: [],
     locations: [],

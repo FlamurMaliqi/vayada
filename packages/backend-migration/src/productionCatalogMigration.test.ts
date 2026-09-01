@@ -159,6 +159,7 @@ function services(
 function plan(): ProductionCatalogPlan {
   return {
     sourceLinks: [],
+    quarantinedSources: [],
     propertyIds: [],
     writes: {
       properties: [],
@@ -176,6 +177,7 @@ function plan(): ProductionCatalogPlan {
     counts: {
       properties: 0,
       sourceLinks: 0,
+      quarantinedSourceRows: 0,
       slugs: 0,
       domains: 0,
       locations: 0,
@@ -194,6 +196,7 @@ function emptyTarget() {
   return {
     properties: [],
     sourceLinks: [],
+    ownerLinks: [],
     slugs: [],
     domains: [],
     locations: [],

@@ -794,7 +794,7 @@ async function attachSnapshotAuthFields(
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     const snapshot = await readProductionIdentitySnapshot(client, sourceRunId);
     const acceptedUserIds = new Set(users.map((user) => user.id));
-    const legacyRows = snapshot
+    const legacyRows = snapshot.rows
       .filter(
         (row) =>
           row.sourceDatabase === "auth" &&

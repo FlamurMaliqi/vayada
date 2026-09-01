@@ -26,6 +26,7 @@ export type ProductionCatalogMigrationReport = {
   applied: boolean;
   checksum: string;
   counts: ProductionCatalogCounts;
+  quarantinedSources: ProductionCatalogPlan["quarantinedSources"];
   preservedTarget: ProductionCatalogPlan["preservedTarget"];
   blockers: IdentityMigrationBlocker[];
 };
@@ -307,6 +308,7 @@ function report(
     applied,
     checksum: plan.checksum,
     counts: plan.counts,
+    quarantinedSources: plan.quarantinedSources,
     preservedTarget: plan.preservedTarget,
     blockers: plan.blockers,
   };

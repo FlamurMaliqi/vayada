@@ -77,6 +77,76 @@ describe("production Booking catalog records", () => {
     });
   });
 
+  it("preserves quarantined-owner history without reviving Booking sales state", () => {
+    const links = propertyLinks().map((link) => ({ ...link, ownerStatus: "archived" }));
+    const rows = [
+      row("booking_hotels", {
+        id: HOTEL,
+        updated_at: "2026-08-29T12:00:00Z",
+        instant_book: true,
+        show_addons_step: true,
+        hero_image: SOURCE_IMAGE,
+      }),
+      pmsRow("hotels", {
+        id: HOTEL,
+        updated_at: "2026-08-29T12:00:00Z",
+        same_day_bookings_enabled: true,
+        same_day_booking_cutoff_time: "18:00",
+      }),
+      row("booking_addons", {
+        id: ADDON,
+        hotel_id: HOTEL,
+        name: "Breakfast",
+        image: SOURCE_IMAGE,
+        price: "12.50",
+        currency: "EUR",
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-29T12:00:00Z",
+      }),
+      row("booking_promo_codes", {
+        id: PROMO,
+        hotel_id: HOTEL,
+        code: "summer",
+        discount_type: "percentage",
+        discount_value: "10",
+        is_active: true,
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-29T12:00:00Z",
+      }),
+    ];
+    const context = createProductionBookingContext({
+      ...input(rows),
+      target: { propertyLinks: links, propertySlugs: [], records: [], provenance: [] },
+    });
+    const records = buildBookingCatalogRecords(context);
+
+    expect(context.blockers).toEqual([]);
+    expect(records.find((record) => record.targetTable === "booking_settings")?.row).toMatchObject({
+      showAddonsStep: false,
+      acceptanceMode: "request",
+      headerLogoMediaObjectId: null,
+      heroImageUrl: null,
+      sourceFreshness: { ownerStatus: "archived" },
+    });
+    expect(
+      records.find((record) => record.targetTable === "same_day_booking_policies")?.row,
+    ).toMatchObject({ enabled: false, sourceFreshness: { ownerStatus: "archived" } });
+    expect(records.find((record) => record.targetTable === "addon_definitions")?.row).toMatchObject(
+      {
+        publicVisible: false,
+        status: "disabled",
+        metadata: { imageUrl: null, mediaObjectId: null, ownerStatus: "archived" },
+      },
+    );
+    expect(records.find((record) => record.targetTable === "promo_definitions")?.row).toMatchObject(
+      {
+        isActive: false,
+        status: "retired",
+        metadata: { legacyIsActive: true, ownerStatus: "archived" },
+      },
+    );
+  });
+
   it("stores funnel metadata privately and redacts the audit projection", () => {
     const rows = [
       row("booking_events", {
@@ -348,6 +418,7 @@ function propertyLinks() {
       propertyId: PROPERTY,
       relationship: "canonical_input",
       status: "active",
+      ownerStatus: "active",
     },
     {
       sourceSystem: "pms",
@@ -356,6 +427,7 @@ function propertyLinks() {
       propertyId: PROPERTY,
       relationship: "operational_input",
       status: "active",
+      ownerStatus: "active",
     },
   ];
 }

@@ -26,6 +26,14 @@ export type ExistingCatalogSourceLink = {
 export type PlannedCatalogSourceLink = ExistingCatalogSourceLink & {
   relationship: CatalogSourceRelationship;
 };
+export type CatalogOwnerLink = {
+  organizationId: string;
+  product: "booking" | "pms" | "marketplace";
+  resourceType: "booking_hotel" | "pms_hotel" | "hotel_profile";
+  resourceId: string;
+  relationship: "owner" | "operator";
+  status: "active" | "suspended" | "archived";
+};
 export type CatalogPropertySource = {
   sourceSystem: CatalogSourceSystem;
   sourceTable: string;
@@ -35,9 +43,17 @@ export type CatalogPropertySource = {
   name: string;
   slug: string | null;
   status: string;
+  ownershipQuarantined: boolean;
+  ownerPublicEligible: boolean;
   createdAt: string;
   updatedAt: string;
   data: Record<string, unknown>;
+};
+export type CatalogQuarantinedSource = {
+  sourceSystem: CatalogSourceSystem;
+  sourceTable: string;
+  sourceId: string;
+  reason: "legacy_owner_quarantined";
 };
 export type CatalogPropertyGroup = {
   propertyId: string;
@@ -48,6 +64,7 @@ export type CatalogPropertyGroup = {
 export type CatalogOwnershipPlan = {
   properties: CatalogPropertyGroup[];
   sourceLinks: PlannedCatalogSourceLink[];
+  quarantinedSources: CatalogQuarantinedSource[];
   blockers: IdentityMigrationBlocker[];
 };
 
@@ -60,11 +77,29 @@ const TABLES = {
 export function planCatalogOwnership(
   rows: IdentitySourceRow[],
   existingLinks: ExistingCatalogSourceLink[] = [],
+  authoritativeOwnerLinks?: CatalogOwnerLink[],
 ): CatalogOwnershipPlan {
   const blockers: IdentityMigrationBlocker[] = [];
-  const booking = parse(rows, "booking", blockers);
-  const pms = parse(rows, "pms", blockers);
-  const marketplace = parse(rows, "marketplace", blockers);
+  const authUsers = new Map(
+    rows
+      .filter((row) => row.sourceDatabase === "auth" && row.sourceTable === "users")
+      .flatMap((row) =>
+        typeof row.data["id"] === "string" && typeof row.data["type"] === "string"
+          ? [
+              [
+                row.data["id"].toLowerCase(),
+                { type: row.data["type"], status: String(row.data["status"] ?? "") },
+              ] as const,
+            ]
+          : [],
+      ),
+  );
+  const authoritativeOwners = authoritativeOwnerLinks
+    ? groupBy(authoritativeOwnerLinks, ownerKey)
+    : undefined;
+  const booking = parse(rows, "booking", blockers, authUsers, authoritativeOwners);
+  const pms = parse(rows, "pms", blockers, authUsers, authoritativeOwners);
+  const marketplace = parse(rows, "marketplace", blockers, authUsers, authoritativeOwners);
   const anchors = new Map(booking.map((row) => [row.sourceId, row]));
   const anchorsByUser = groupBy(booking, (row) => row.userId);
   const existing = new Map(existingLinks.map((link) => [sourceKey(link), link]));
@@ -75,6 +110,7 @@ export function planCatalogOwnership(
     ]),
   );
   const sourceLinks: PlannedCatalogSourceLink[] = [];
+  const quarantinedSources: CatalogQuarantinedSource[] = [];
 
   for (const row of booking) {
     const target = existing.get(sourceKey(row));
@@ -92,7 +128,6 @@ export function planCatalogOwnership(
   }
 
   for (const row of [...pms, ...marketplace]) {
-    const candidates = new Set<string>();
     const direct = row.sourceSystem === "pms" ? anchors.get(row.sourceId) : undefined;
     if (direct && direct.userId !== row.userId) {
       addBlocker(
@@ -104,11 +139,24 @@ export function planCatalogOwnership(
       );
       continue;
     }
-    if (direct) candidates.add(row.sourceId);
-    for (const anchor of anchorsByUser.get(row.userId) ?? []) candidates.add(anchor.sourceId);
     const target = existing.get(sourceKey(row));
-    if (target) candidates.add(target.propertyId);
-    const propertyId = onlyCandidate(row, candidates, anchors, blockers);
+    const propertyId = resolveCandidate(
+      row,
+      direct,
+      anchorsByUser.get(row.userId) ?? [],
+      target,
+      anchors,
+      blockers,
+    );
+    if (!propertyId && row.ownershipQuarantined) {
+      quarantinedSources.push({
+        sourceSystem: row.sourceSystem,
+        sourceTable: row.sourceTable,
+        sourceId: row.sourceId,
+        reason: "legacy_owner_quarantined",
+      });
+      continue;
+    }
     if (!propertyId) continue;
     const group = groups.get(propertyId)!;
     if (row.sourceSystem === "pms") group.pms.push(row);
@@ -141,6 +189,7 @@ export function planCatalogOwnership(
   return {
     properties: sortedBy([...groups.values()], (row) => row.propertyId),
     sourceLinks: sortedBy(sourceLinks, sourceKey),
+    quarantinedSources: sortedBy(quarantinedSources, sourceKey),
     blockers: sortedBy(blockers, (row) => `${row.code}:${row.source}:${row.sourceId}`),
   };
 }
@@ -172,6 +221,8 @@ function parse(
   rows: IdentitySourceRow[],
   sourceSystem: CatalogSourceSystem,
   blockers: IdentityMigrationBlocker[],
+  authUsers: ReadonlyMap<string, { type: string; status: string }>,
+  authoritativeOwners?: ReadonlyMap<string, CatalogOwnerLink[]>,
 ): CatalogPropertySource[] {
   const sourceTable = TABLES[sourceSystem];
   return rows
@@ -193,12 +244,28 @@ function parse(
         )
           throw new Error("status is unsupported");
         const createdAt = date(row.data["created_at"], "created_at");
+        const userId = uuid(row.data["user_id"], "user_id");
+        const owner = authUsers.get(userId);
+        const authoritative = authoritativeOwners?.get(ownerKey({ sourceSystem, sourceId }));
+        if (authoritativeOwners && authoritative?.length !== 1) {
+          addBlocker(
+            blockers,
+            authoritative?.length ? "AMBIGUOUS_CATALOG_OWNER" : "MISSING_CATALOG_OWNER",
+            `${sourceSystem}.${sourceTable}`,
+            sourceId,
+            authoritative?.length
+              ? "Source resolves to multiple authoritative target owners"
+              : "Source has no authoritative target owner",
+          );
+          return [];
+        }
+        const ownerStatus = authoritative?.[0]?.status;
         return [
           {
             sourceSystem,
             sourceTable,
             sourceId,
-            userId: uuid(row.data["user_id"], "user_id"),
+            userId,
             propertyId: sourceId,
             name: text(row.data["name"], "name"),
             slug:
@@ -206,6 +273,12 @@ function parse(
                 ? null
                 : text(row.data["slug"], "slug").trim().toLowerCase(),
             status,
+            ownershipQuarantined: authoritativeOwners
+              ? ownerStatus !== "active"
+              : !owner || owner.type !== "hotel",
+            ownerPublicEligible: authoritativeOwners
+              ? ownerStatus === "active"
+              : owner?.type === "hotel" && owner.status === "verified",
             createdAt,
             updatedAt: optionalDate(row.data["updated_at"], "updated_at") ?? createdAt,
             data: row.data,
@@ -224,14 +297,45 @@ function parse(
     });
 }
 
-function onlyCandidate(
+function ownerKey(
+  value: CatalogOwnerLink | { sourceSystem: CatalogSourceSystem; sourceId: string },
+): string {
+  if ("product" in value)
+    return `${value.product}:${value.resourceType}:${value.resourceId.toLowerCase()}:${value.relationship}`;
+  if (value.sourceSystem === "booking") return `booking:booking_hotel:${value.sourceId}:owner`;
+  if (value.sourceSystem === "pms") return `pms:pms_hotel:${value.sourceId}:operator`;
+  return `marketplace:hotel_profile:${value.sourceId}:owner`;
+}
+
+function resolveCandidate(
   row: CatalogPropertySource,
-  candidates: Set<string>,
+  direct: CatalogPropertySource | undefined,
+  ownerAnchors: CatalogPropertySource[],
+  target: ExistingCatalogSourceLink | undefined,
   anchors: Map<string, CatalogPropertySource>,
   blockers: IdentityMigrationBlocker[],
 ): string | null {
+  const strongCandidates = new Set<string>();
+  if (direct) strongCandidates.add(direct.sourceId);
+  if (target) strongCandidates.add(target.propertyId);
+  if (strongCandidates.size === 1) {
+    const propertyId = [...strongCandidates][0]!;
+    if (anchors.has(propertyId)) return propertyId;
+    addBlocker(
+      blockers,
+      "CATALOG_SOURCE_LINK_CONFLICT",
+      `${row.sourceSystem}.${row.sourceTable}`,
+      row.sourceId,
+      `Existing source link points to missing canonical property ${propertyId}`,
+    );
+    return null;
+  }
+  if (strongCandidates.size > 1) return ambiguousCandidate(row, strongCandidates, blockers);
+
+  const candidates = new Set(ownerAnchors.map((anchor) => anchor.sourceId));
   const accepted = [...candidates].filter((candidate) => anchors.has(candidate)).sort();
   if (accepted.length === 1 && accepted.length === candidates.size) return accepted[0]!;
+  if (row.ownershipQuarantined) return null;
   addBlocker(
     blockers,
     accepted.length === 0 ? "MISSING_CANONICAL_PROPERTY" : "AMBIGUOUS_CANONICAL_PROPERTY",
@@ -240,6 +344,21 @@ function onlyCandidate(
     accepted.length === 0
       ? "No exact ID or owner link resolves to a Booking property"
       : `Source resolves to multiple properties: ${accepted.join(", ")}`,
+  );
+  return null;
+}
+
+function ambiguousCandidate(
+  row: CatalogPropertySource,
+  candidates: Set<string>,
+  blockers: IdentityMigrationBlocker[],
+): null {
+  addBlocker(
+    blockers,
+    "AMBIGUOUS_CANONICAL_PROPERTY",
+    `${row.sourceSystem}.${row.sourceTable}`,
+    row.sourceId,
+    `Source resolves to multiple properties: ${[...candidates].sort().join(", ")}`,
   );
   return null;
 }

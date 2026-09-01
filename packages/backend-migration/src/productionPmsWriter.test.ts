@@ -24,6 +24,25 @@ describe("production PMS writer", () => {
     expect(calls[0]?.sql).toContain("INSERT INTO pms.room_types");
     expect(calls[1]?.sql).toContain("ON CONFLICT (property_id, room_type_id, stay_date)");
   });
+
+  it("writes retained binding claims before channel connections", async () => {
+    const calls: string[] = [];
+    const client = {
+      async query(sql: string, values?: unknown[]) {
+        calls.push(sql);
+        return { rowCount: JSON.parse(String(values?.[0])).length };
+      },
+    };
+    await writeProductionPmsRecords(client as never, [
+      record("channel_connections", { id: "connection", propertyId: "property" }),
+      record("channel_binding_claims", {
+        propertyId: "property",
+        provider: "channex",
+      }),
+    ]);
+    expect(calls[0]).toContain("INSERT INTO pms.channel_binding_claims");
+    expect(calls[1]).toContain("INSERT INTO pms.channel_connections");
+  });
 });
 
 function record(targetTable: string, row: Record<string, unknown>): PmsTargetRecord {

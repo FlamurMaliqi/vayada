@@ -89,11 +89,15 @@ export function planProductionCatalogCore(
       const canonicalSlug = booking.slug!;
       const canonicalSlugId = stableCatalogId("slug", `${group.propertyId}:${canonicalSlug}`);
       const completenessReasons = [
+        ...(booking.ownershipQuarantined ? ["legacy_owner_quarantined"] : []),
+        ...(!booking.ownershipQuarantined && !booking.ownerPublicEligible
+          ? ["legacy_owner_not_verified"]
+          : []),
         ...(!location.countryCode || !location.city ? ["location_unverified"] : []),
         ...(!location.timezone ? ["timezone_missing"] : []),
       ];
       const profileStatus =
-        booking.status !== "live"
+        booking.status !== "live" || !booking.ownerPublicEligible
           ? "private"
           : completenessReasons.length === 0
             ? "complete"

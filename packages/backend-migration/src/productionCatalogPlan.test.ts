@@ -9,6 +9,12 @@ const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const UPDATED = "2026-08-02T00:00:00Z";
 const rows: IdentitySourceRow[] = [
   {
+    sourceDatabase: "auth",
+    sourceTable: "users",
+    rowOrdinal: 1,
+    data: { id: USER, type: "hotel", status: "verified" },
+  },
+  {
     sourceDatabase: "booking",
     sourceTable: "booking_hotels",
     rowOrdinal: 1,
@@ -60,6 +66,16 @@ describe("production catalog plan", () => {
     expect(plan.writes.properties).toEqual([]);
   });
 
+  it("keeps a raw verified property private when target ownership is archived", () => {
+    const target = emptyTarget();
+    target.ownerLinks[0]!.status = "archived";
+
+    const plan = buildProductionCatalogPlan(rows, target);
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.writes.properties[0]).toMatchObject({ profileStatus: "private" });
+  });
+
   it("blocks an empty production catalog", () => {
     expect(buildProductionCatalogPlan([], emptyTarget()).blockers.map((row) => row.code)).toContain(
       "EMPTY_PRODUCTION_CATALOG",
@@ -71,6 +87,16 @@ function emptyTarget(): ProductionCatalogTargetState {
   return {
     properties: [],
     sourceLinks: [],
+    ownerLinks: [
+      {
+        organizationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        product: "booking",
+        resourceType: "booking_hotel",
+        resourceId: PROPERTY,
+        relationship: "owner",
+        status: "active",
+      },
+    ],
     slugs: [],
     domains: [],
     locations: [],

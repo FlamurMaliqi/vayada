@@ -15,6 +15,11 @@ type SourceEvidence = {
   status: string;
   rowCount: string | null;
   checksum: string | null;
+  sourceSnapshotAt: string | null;
+};
+export type ProductionIdentitySnapshot = {
+  rows: IdentitySourceRow[];
+  sourceHorizonAt: string;
 };
 type TableEvidence = {
   sourceDatabase: SourceDatabase;
@@ -29,7 +34,7 @@ export const PRODUCTION_IDENTITY_SOURCE_TABLES: Record<SourceDatabase, readonly 
   auth: ["users", "cookie_consent", "consent_history", "gdpr_requests", "login_audit_log"],
   booking: ["booking_hotels"],
   marketplace: ["creators", "hotel_profiles"],
-  pms: ["affiliates", "hotels", "property_module_activations"],
+  pms: ["affiliates", "bookings", "hotels", "property_module_activations"],
 };
 export const VAY_1350_ACTIVE_SOURCE_TABLES: Record<SourceDatabase, readonly string[]> = {
   auth: [
@@ -122,7 +127,7 @@ export const VAY_1350_ACTIVE_SOURCE_TABLES: Record<SourceDatabase, readonly stri
 export async function readProductionIdentitySnapshot(
   client: QueryClient,
   runId: string,
-): Promise<IdentitySourceRow[]> {
+): Promise<ProductionIdentitySnapshot> {
   if (!/^vay1351-[0-9a-f]{24}$/.test(runId))
     throw new Error("sourceRunId must be an immutable VAY-1351 extraction run ID");
   const run = await client.query<{ status: string; revision: string }>(
@@ -139,7 +144,8 @@ export async function readProductionIdentitySnapshot(
     `SELECT source_database AS "sourceDatabase", snapshot_identifier AS "snapshotIdentifier",
             expected_schema_fingerprint AS "expectedFingerprint",
             actual_schema_fingerprint AS "actualFingerprint", status,
-            row_count::text AS "rowCount", checksum_sha256 AS checksum
+            row_count::text AS "rowCount", checksum_sha256 AS checksum,
+            source_snapshot_at::text AS "sourceSnapshotAt"
      FROM platform.source_extraction_sources WHERE run_id = $1 ORDER BY source_database`,
     [runId],
   );
@@ -150,6 +156,7 @@ export async function readProductionIdentitySnapshot(
       !source ||
       source.status !== "completed" ||
       !source.snapshotIdentifier ||
+      !validTimestamp(source.sourceSnapshotAt) ||
       source.actualFingerprint !== source.expectedFingerprint ||
       !count(source.rowCount) ||
       !sha256(source.checksum)
@@ -294,7 +301,7 @@ export async function readProductionIdentitySnapshot(
         rowCountOnly,
       });
   }
-  return loaded;
+  return { rows: loaded, sourceHorizonAt: sources.get("pms")!.sourceSnapshotAt! };
 }
 
 const databases = (): SourceDatabase[] => ["auth", "booking", "marketplace", "pms"];
@@ -304,4 +311,7 @@ function count(value: string | null): value is string {
   if (value === null || !/^\d+$/.test(value)) return false;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 0;
+}
+function validTimestamp(value: string | null): value is string {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
 }

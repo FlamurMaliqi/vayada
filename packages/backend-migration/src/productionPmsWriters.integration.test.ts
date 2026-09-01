@@ -9,10 +9,12 @@ import {
   readProductionPmsTargetState,
 } from "./productionPmsTargetReader.js";
 import { writeProductionPmsRecords } from "./productionPmsWriter.js";
+import type { PmsTargetRecord } from "./productionPmsTypes.js";
 import { assertSafeTestDatabase } from "./testUtils.js";
 
 const URL = process.env["TEST_DATABASE_URL"];
 const RUN = "vay1351-0123456789abcdef01234567";
+const OWNER_ORGANIZATION = "13560000-0000-4000-8000-000000000080";
 const PROPERTY = "13560000-0000-4000-8000-000000000081";
 const HOTEL = "13560000-0000-4000-8000-000000000082";
 const ROOM_TYPE = "13560000-0000-4000-8000-000000000083";
@@ -204,9 +206,86 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       await client.query("ROLLBACK");
     }
   });
+
+  it("writes a historical Channex claim before an inert connection", async () => {
+    const propertyId = "13560000-0000-4000-8000-000000000381";
+    const connectionId = "13560000-0000-4000-8000-000000000382";
+    await client.query("BEGIN");
+    try {
+      await client.query(
+        `INSERT INTO hotel_catalog.properties(id, public_id, display_name)
+         VALUES ($1, 'pms-historical-claim', 'PMS Historical Claim')`,
+        [propertyId],
+      );
+      const records: PmsTargetRecord[] = [
+        writerRecord("channel_connections", connectionId, {
+          id: connectionId,
+          propertyId,
+          provider: "channex",
+          connectionStatus: "disconnected",
+          externalPropertyId: null,
+          capabilities: [],
+          messagingAppInstalled: false,
+          lastBookingSyncAt: null,
+          lastAriSyncAt: null,
+          lastMessageSyncAt: null,
+          connectionMetadata: {
+            migrationRunId: RUN,
+            legacyExternalPropertyId: "legacy-historical-property",
+          },
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-08-30T00:00:00Z",
+        }),
+        writerRecord("channel_binding_claims", `${propertyId}:channex`, {
+          propertyId,
+          provider: "channex",
+          externalPropertyId: "legacy-historical-property",
+          claimState: "historical",
+          claimSource: "migration",
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-08-30T00:00:00Z",
+        }),
+      ];
+
+      expect(await writeProductionPmsRecords(client, records)).toEqual({
+        channel_binding_claims: 1,
+        channel_connections: 1,
+      });
+      await expect(
+        client.query(
+          `SELECT claim.claim_state AS "claimState", claim.external_property_id AS "claimExternal",
+                  connection.connection_status AS "connectionStatus",
+                  connection.external_property_id AS "connectionExternal",
+                  connection.capabilities, connection.messaging_app_installed AS "messagingInstalled"
+             FROM pms.channel_binding_claims claim
+             JOIN pms.channel_connections connection USING (property_id, provider)
+            WHERE claim.property_id = $1`,
+          [propertyId],
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          {
+            claimState: "historical",
+            claimExternal: "legacy-historical-property",
+            connectionStatus: "disconnected",
+            connectionExternal: null,
+            capabilities: [],
+            messagingInstalled: false,
+          },
+        ],
+      });
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
 });
 
 async function seedPrerequisites(client: pg.Client): Promise<void> {
+  await client.query(
+    `INSERT INTO identity.organizations(id, kind, name, slug)
+     VALUES ($1, 'hotel_group', 'PMS migration integration', 'pms-migration-integration')`,
+    [OWNER_ORGANIZATION],
+  );
   await client.query(
     `INSERT INTO hotel_catalog.properties(id, public_id, display_name)
        VALUES ($1, 'pms-integration', 'PMS Integration')`,
@@ -249,6 +328,12 @@ async function seedPrerequisites(client: pg.Client): Promise<void> {
        (property_id, source_system, source_table, source_id, relationship, metadata)
        VALUES ($1, 'pms', 'hotels', $2, 'operational_input', $3::jsonb)`,
     [PROPERTY, HOTEL, JSON.stringify({ migrationRunId: RUN })],
+  );
+  await client.query(
+    `INSERT INTO identity.organization_resource_links
+       (organization_id, product, resource_type, resource_id, relationship, status)
+     VALUES ($1, 'pms', 'pms_hotel', $2, 'operator', 'active')`,
+    [OWNER_ORGANIZATION, HOTEL],
   );
   await client.query(
     `INSERT INTO booking.guest_bookings
@@ -515,4 +600,23 @@ function messageRows(): IdentitySourceRow[] {
 
 function row(sourceTable: string, data: Record<string, unknown>): IdentitySourceRow {
   return { sourceDatabase: "pms", sourceTable, rowOrdinal: 1, data };
+}
+
+function writerRecord(
+  targetTable: string,
+  targetId: string,
+  data: Record<string, unknown>,
+): PmsTargetRecord {
+  return {
+    targetProduct: "pms",
+    targetTable,
+    targetId,
+    sourceDatabase: "pms",
+    sourceTable: "channex_connections",
+    sourceId: CONNECTION,
+    sourceChecksum: "a".repeat(64),
+    sourceUpdatedAt: "2026-08-30T00:00:00Z",
+    mutable: targetTable !== "channel_binding_claims",
+    row: data,
+  };
 }

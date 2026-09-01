@@ -47,7 +47,7 @@ export type ProductionMarketplaceSnapshot = {
 export async function readProductionMarketplaceSnapshot(
   client: QueryClient,
   runId: string,
-  services: { validateRun: typeof readProductionIdentitySnapshot } = {
+  services: { validateRun: (client: QueryClient, runId: string) => Promise<unknown> } = {
     validateRun: readProductionIdentitySnapshot,
   },
 ): Promise<ProductionMarketplaceSnapshot> {

@@ -44,7 +44,7 @@ export type ProductionMediaSnapshot = {
 export async function readProductionMediaSnapshot(
   client: QueryClient,
   runId: string,
-  services: { validateRun: typeof readProductionIdentitySnapshot } = {
+  services: { validateRun: (client: QueryClient, runId: string) => Promise<unknown> } = {
     validateRun: readProductionIdentitySnapshot,
   },
 ): Promise<ProductionMediaSnapshot> {

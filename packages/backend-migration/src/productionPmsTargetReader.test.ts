@@ -30,6 +30,9 @@ describe("production PMS target reader", () => {
     };
     await readProductionPmsPrerequisites(client as never, "vay1351-run");
     expect(calls[0]?.sql).toContain("metadata ->> 'migrationRunId' = $1");
+    expect(calls[0]?.sql).toContain("owner.resource_type = 'pms_hotel'");
+    expect(calls[0]?.sql).toContain("owner.relationship = 'operator'");
+    expect(calls[0]?.sql).toContain("WHEN ownership.link_count > 1 THEN 'ambiguous'");
     expect(calls[1]?.sql).toContain("provenance.last_run_id = $1");
     expect(calls.slice(0, 2).map((call) => call.values)).toEqual([
       ["vay1351-run"],
@@ -156,6 +159,9 @@ describe("production PMS target reader", () => {
     expect(calls.some((sql) => sql.includes("stay_date::text"))).toBe(true);
     expect(calls.find((sql) => sql.includes("WITH requested AS"))).toContain(
       "target.external_property_id",
+    );
+    expect(calls.find((sql) => sql.includes("WITH requested AS"))).toContain(
+      "target.claim_state <> 'active'",
     );
   });
 

@@ -152,6 +152,10 @@ function buildHotelProfile(
   const id = uuid(source.data["id"], "id");
   const { propertyId, organizationId } = hotelScope(context, id);
   requireUser(context, source.data["user_id"], "user_id");
+  const ownerStatus = mapOwnerStatus(
+    resourceLinkFor(context.target.resourceLinks, "hotel_profile", id)?.status,
+  );
+  const sourceStatus = mapHotelStatus(source.data["status"]);
   const updatedAt = timestamp(source);
   return [
     record(source, "marketplace_hotel_profiles", propertyId, updatedAt, {
@@ -159,13 +163,15 @@ function buildHotelProfile(
       organizationId,
       sourceSystem: "migration",
       sourceHotelProfileId: id,
-      marketplaceProfileStatus: mapHotelStatus(source.data["status"]),
+      marketplaceProfileStatus: ownerStatus === "active" ? sourceStatus : ownerStatus,
       profileComplete: bool(source.data["profile_complete"], "profile_complete"),
       profileCompletedAt: optionalIso(source.data["profile_completed_at"], "profile_completed_at"),
       hostSummary: optionalText(source.data["about"], "about"),
       collaborationGuidelines: null,
       marketplaceMetadata: {
         legacySource: "marketplace.hotel_profiles",
+        legacySourceStatus: sourceStatus,
+        ownerStatus,
         website: optionalText(source.data["website"], "website"),
         phone: optionalText(source.data["phone"], "phone"),
       },
@@ -201,13 +207,18 @@ function buildOffer(
     title: requiredText(source.data["name"], "name"),
     offerSummary: requiredText(source.data["description"], "description"),
     accommodationType: mapAccommodation(source.data["accommodation_type"]),
-    offerStatus: status,
+    offerStatus: ownerStatus === "active" ? status : ownerStatus,
     rawLocationText: requiredText(source.data["location"], "location"),
     imageUrls: images,
-    offerMetadata: { legacySource: "marketplace.hotel_listings" },
+    offerMetadata: {
+      legacySource: "marketplace.hotel_listings",
+      legacySourceStatus: status,
+      ownerQuarantined: ownerStatus === "archived",
+    },
     createdAt: iso(source.data["created_at"], "created_at"),
     updatedAt,
   });
+  if (ownerStatus === "archived") return [offer];
   const publicProperty = context.publicPropertyById.get(propertyId);
   if (!publicProperty)
     throw new Error(`property ${propertyId} has no accepted public catalog projection`);

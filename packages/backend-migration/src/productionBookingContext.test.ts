@@ -21,6 +21,7 @@ describe("production Booking mapping context", () => {
             propertyId: "property-1",
             relationship: "operational_input",
             status: "active",
+            ownerStatus: "active",
           },
         ],
       }),

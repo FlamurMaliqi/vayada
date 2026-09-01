@@ -43,7 +43,7 @@ export type ProductionFinanceSnapshot = { rows: IdentitySourceRow[]; completedAt
 export async function readProductionFinanceSnapshot(
   client: QueryClient,
   runId: string,
-  services: { validateRun: typeof readProductionIdentitySnapshot } = {
+  services: { validateRun: (client: QueryClient, runId: string) => Promise<unknown> } = {
     validateRun: readProductionIdentitySnapshot,
   },
 ): Promise<ProductionFinanceSnapshot> {

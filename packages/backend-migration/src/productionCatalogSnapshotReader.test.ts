@@ -16,10 +16,11 @@ describe("production catalog snapshot reader", () => {
     });
 
     expect(rows.map((row) => `${row.sourceDatabase}.${row.sourceTable}`)).toEqual([
+      "auth.users",
       "booking.booking_hotel_translations",
       "booking.booking_hotels",
     ]);
-    expect(rows[1]?.data["name"]).toBe("Hotel Source");
+    expect(rows[2]?.data["name"]).toBe("Hotel Source");
   });
 
   it("rejects corrupt staged rows", async () => {
@@ -43,6 +44,7 @@ describe("production catalog snapshot reader", () => {
 
 class CatalogFixture {
   snapshots: Record<string, SnapshotRow[]> = {
+    auth: [snapshot("auth", "users", { id: "user", type: "hotel", status: "verified" })],
     booking: [
       snapshot("booking", "booking_hotel_translations", { id: "translation" }),
       snapshot("booking", "booking_hotels", { id: "hotel", name: "Hotel Source" }),
@@ -73,7 +75,7 @@ class CatalogFixture {
   async query<T>(sql: string): Promise<{ rows: T[] }> {
     if (sql.includes("source_extraction_sources")) return { rows: this.sources as T[] };
     if (sql.includes("source_extraction_tables")) return { rows: this.tables as T[] };
-    const database = /migration_source_(booking|marketplace|pms)/.exec(sql)?.[1];
+    const database = /migration_source_(auth|booking|marketplace|pms)/.exec(sql)?.[1];
     return { rows: (database ? this.snapshots[database] : []) as T[] };
   }
 }

@@ -29,12 +29,7 @@ type SnapshotRow = {
 export type ProductionBookingSnapshot = { rows: IdentitySourceRow[]; completedAt: string };
 
 export const PRODUCTION_BOOKING_SOURCE_TABLES: Record<BookingDatabase, readonly string[]> = {
-  booking: [
-    "booking_addons",
-    "booking_events",
-    "booking_hotels",
-    "booking_promo_codes",
-  ],
+  booking: ["booking_addons", "booking_events", "booking_hotels", "booking_promo_codes"],
   pms: [
     "booking_additional_guests",
     "booking_change_requests",
@@ -50,7 +45,7 @@ const databases = Object.keys(PRODUCTION_BOOKING_SOURCE_TABLES) as BookingDataba
 export async function readProductionBookingSnapshot(
   client: QueryClient,
   runId: string,
-  services: { validateRun: typeof readProductionIdentitySnapshot } = {
+  services: { validateRun: (client: QueryClient, runId: string) => Promise<unknown> } = {
     validateRun: readProductionIdentitySnapshot,
   },
 ): Promise<ProductionBookingSnapshot> {

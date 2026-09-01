@@ -7,6 +7,12 @@ const PROPERTY = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const rows = [
   {
+    sourceDatabase: "auth" as const,
+    sourceTable: "users",
+    rowOrdinal: 1,
+    data: { id: USER, type: "hotel", status: "verified" },
+  },
+  {
     sourceDatabase: "booking" as const,
     sourceTable: "booking_hotels",
     rowOrdinal: 1,
@@ -86,6 +92,28 @@ describe("planProductionCatalogCore", () => {
     expect(plan.properties[0]).toMatchObject({
       profileStatus: "incomplete",
       completenessReasons: ["location_unverified", "timezone_missing"],
+    });
+  });
+
+  it("keeps a live property private when its legacy owner is absent", () => {
+    const withoutOwner = rows.filter((row) => row.sourceDatabase !== "auth");
+    const plan = planProductionCatalogCore(withoutOwner, planCatalogOwnership(withoutOwner));
+
+    expect(plan.properties[0]).toMatchObject({
+      profileStatus: "private",
+      completenessReasons: expect.arrayContaining(["legacy_owner_quarantined"]),
+    });
+  });
+
+  it("keeps a live property private while its legacy owner remains pending", () => {
+    const pendingOwner = rows.map((row) =>
+      row.sourceDatabase === "auth" ? { ...row, data: { ...row.data, status: "pending" } } : row,
+    );
+    const plan = planProductionCatalogCore(pendingOwner, planCatalogOwnership(pendingOwner));
+
+    expect(plan.properties[0]).toMatchObject({
+      profileStatus: "private",
+      completenessReasons: expect.arrayContaining(["legacy_owner_not_verified"]),
     });
   });
 });

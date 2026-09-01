@@ -64,7 +64,7 @@ export const PRODUCTION_PMS_SOURCE_TABLES = [
 export async function readProductionPmsSnapshot(
   client: QueryClient,
   runId: string,
-  services: { validateRun: typeof readProductionIdentitySnapshot } = {
+  services: { validateRun: (client: QueryClient, runId: string) => Promise<unknown> } = {
     validateRun: readProductionIdentitySnapshot,
   },
 ): Promise<ProductionPmsSnapshot> {

@@ -10,6 +10,7 @@ import { sortedBy } from "./productionIdentityOwnershipPolicy.js";
 import { addBlocker, stableJson } from "./productionIdentitySourceValidation.js";
 import {
   planCatalogOwnership,
+  type CatalogQuarantinedSource,
   type PlannedCatalogSourceLink,
 } from "./productionCatalogOwnership.js";
 import { planProductionCatalogPresentation } from "./productionCatalogPresentationPlan.js";
@@ -23,6 +24,7 @@ import type { ProductionCatalogTargetState } from "./productionCatalogTargetRead
 export type ProductionCatalogCounts = {
   properties: number;
   sourceLinks: number;
+  quarantinedSourceRows: number;
   slugs: number;
   domains: number;
   locations: number;
@@ -36,6 +38,7 @@ export type ProductionCatalogCounts = {
 };
 export type ProductionCatalogPlan = {
   sourceLinks: PlannedCatalogSourceLink[];
+  quarantinedSources: CatalogQuarantinedSource[];
   propertyIds: string[];
   writes: ReconciledCatalogWrites;
   preservedTarget: PreservedCatalogTarget[];
@@ -52,7 +55,7 @@ export function buildProductionCatalogPlan(
     rows,
     (row) => `${row.sourceDatabase}:${row.sourceTable}:${row.rowOrdinal}:${stableJson(row.data)}`,
   );
-  const ownership = planCatalogOwnership(orderedRows, target.sourceLinks);
+  const ownership = planCatalogOwnership(orderedRows, target.sourceLinks, target.ownerLinks);
   const core = planProductionCatalogCore(orderedRows, ownership);
   const content = planProductionCatalogContent(orderedRows, ownership, core);
   const presentation = planProductionCatalogPresentation(orderedRows, ownership, content, {
@@ -71,6 +74,7 @@ export function buildProductionCatalogPlan(
     );
   const desired = {
     sourceLinks: ownership.sourceLinks,
+    quarantinedSources: ownership.quarantinedSources,
     properties: core.properties,
     slugs: core.slugs,
     domains: presentation.domains,
@@ -84,6 +88,7 @@ export function buildProductionCatalogPlan(
   const counts = countPlan(desired, reconciliation.writes, reconciliation.preservedTarget.length);
   return {
     sourceLinks: ownership.sourceLinks,
+    quarantinedSources: ownership.quarantinedSources,
     propertyIds: ownership.properties.map((row) => row.propertyId),
     writes: reconciliation.writes,
     preservedTarget: reconciliation.preservedTarget,
@@ -94,13 +99,17 @@ export function buildProductionCatalogPlan(
 }
 
 function countPlan(
-  desired: ReconciledCatalogWrites & { sourceLinks: PlannedCatalogSourceLink[] },
+  desired: ReconciledCatalogWrites & {
+    sourceLinks: PlannedCatalogSourceLink[];
+    quarantinedSources: CatalogQuarantinedSource[];
+  },
   writes: ReconciledCatalogWrites,
   preservedTarget: number,
 ): ProductionCatalogCounts {
   return {
     properties: desired.properties.length,
     sourceLinks: desired.sourceLinks.length,
+    quarantinedSourceRows: desired.quarantinedSources.length,
     slugs: desired.slugs.length,
     domains: desired.domains.length,
     locations: desired.locations.length,

@@ -50,6 +50,9 @@ describe("production PMS migration transaction", () => {
     expect(report.applied).toBe(true);
     expect(client.sql[1]).toContain("lock_timeout");
     expect(client.sql[2]).toContain("LOCK TABLE pms.linked_inventory_groups");
+    expect(client.sql[2]!.indexOf("pms.channel_binding_claims")).toBeLessThan(
+      client.sql[2]!.indexOf("pms.channel_connections"),
+    );
     expect(client.sql.at(-1)).toBe("COMMIT");
   });
 

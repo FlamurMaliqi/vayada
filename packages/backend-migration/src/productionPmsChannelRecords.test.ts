@@ -91,6 +91,82 @@ describe("production PMS channels", () => {
       }),
     );
   });
+
+  it("retains an archived owner's provider identity without reviving the connection", () => {
+    const targetState = target();
+    targetState.propertyLinks[0]!.ownerStatus = "archived";
+    targetState.propertyLinks[0]!.migrationRunId = "vay1351-0123456789abcdef01234567";
+    targetState.bookings[0]!.migrationRunId = "vay1351-0123456789abcdef01234567";
+    const context = createProductionPmsContext({
+      sourceRunId: "vay1351-0123456789abcdef01234567",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: rows(),
+      target: targetState,
+    });
+    const rooms = buildPmsRoomRecords(context);
+    const assignments = buildPmsAssignmentRecords(context, rooms);
+    const records = buildPmsChannelRecords(context, rooms, assignments);
+
+    expect(context.blockers).toEqual([]);
+    expect(records.find((record) => record.targetTable === "channel_binding_claims")?.row).toEqual({
+      propertyId: PROPERTY,
+      provider: "channex",
+      externalPropertyId: EXTERNAL_PROPERTY,
+      claimState: "historical",
+      claimSource: "migration",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    expect(
+      records.find((record) => record.targetTable === "channel_connections")?.row,
+    ).toMatchObject({
+      externalPropertyId: null,
+      connectionStatus: "disconnected",
+      capabilities: [],
+      messagingAppInstalled: false,
+      connectionMetadata: {
+        migrationRunId: "vay1351-0123456789abcdef01234567",
+        legacyExternalPropertyId: EXTERNAL_PROPERTY,
+        ownerStatus: "archived",
+        retainedClaimState: "historical",
+        legacyCapabilities: ["booking", "ari", "message"],
+      },
+    });
+    expect(
+      records.find((record) => record.targetTable === "channel_room_type_mappings")?.row,
+    ).toMatchObject({ status: "disabled" });
+    expect(
+      records.find((record) => record.targetTable === "channel_rate_plan_mappings")?.row,
+    ).toMatchObject({ status: "disabled" });
+    expect(
+      records.find((record) => record.targetTable === "channel_booking_mappings")?.row,
+    ).toMatchObject({ syncStatus: "ignored" });
+
+    const refreshedRows = rows();
+    refreshedRows.find((row) => row.sourceTable === "channex_connections")!.data[
+      "last_booking_sync_at"
+    ] = "2026-08-30T00:00:00Z";
+    refreshedRows.find((row) => row.sourceTable === "channex_connections")!.data["updated_at"] =
+      "2026-08-30T00:00:00Z";
+    refreshedRows.find((row) => row.sourceTable === "channex_channel_markups")!.data["updated_at"] =
+      "2026-08-30T00:00:00Z";
+    const refreshedContext = createProductionPmsContext({
+      sourceRunId: "vay1351-0123456789abcdef01234567",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: refreshedRows,
+      target: targetState,
+    });
+    const refreshedRooms = buildPmsRoomRecords(refreshedContext);
+    const refreshedAssignments = buildPmsAssignmentRecords(refreshedContext, refreshedRooms);
+    const refreshedClaim = buildPmsChannelRecords(
+      refreshedContext,
+      refreshedRooms,
+      refreshedAssignments,
+    ).find((record) => record.targetTable === "channel_binding_claims");
+    const originalClaim = records.find((record) => record.targetTable === "channel_binding_claims");
+    expect(refreshedClaim?.row).toEqual(originalClaim?.row);
+    expect(refreshedClaim?.sourceChecksum).toBe(originalClaim?.sourceChecksum);
+  });
 });
 
 function rows(): IdentitySourceRow[] {
@@ -184,6 +260,7 @@ function target() {
         relationship: "operational_input",
         status: "active",
         migrationRunId: "run",
+        ownerStatus: "active",
       },
     ],
     bookings: [

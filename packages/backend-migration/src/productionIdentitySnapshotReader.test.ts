@@ -14,16 +14,22 @@ describe("production identity snapshot reader", () => {
   it("accepts only ledger-matching immutable rows from all consumed tables", async () => {
     const fixture = new SnapshotFixture();
 
-    const rows = await readProductionIdentitySnapshot(fixture as never, RUN);
+    const snapshot = await readProductionIdentitySnapshot(fixture as never, RUN);
+    const rows = snapshot.rows;
 
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(4);
     expect(rows.map((row) => `${row.sourceDatabase}.${row.sourceTable}`)).toEqual([
       "auth.users",
       "booking.booking_hotels",
+      "pms.bookings",
       "auth.password_reset_tokens",
     ]);
     expect(rows[0]?.data["id"]).toBe(USER);
-    expect(rows[2]).toMatchObject({ data: {}, rowCountOnly: 1 });
+    expect(rows.find((row) => row.sourceTable === "password_reset_tokens")).toMatchObject({
+      data: {},
+      rowCountOnly: 1,
+    });
+    expect(snapshot.sourceHorizonAt).toBe("2026-08-30T00:00:00.000Z");
     expect(JSON.stringify(rows)).not.toContain("reset-secret");
   });
 
@@ -97,7 +103,7 @@ class SnapshotFixture {
     ],
     booking: [snapshotRow("booking", "booking_hotels", { id: USER })],
     marketplace: [],
-    pms: [],
+    pms: [snapshotRow("pms", "bookings", { id: "booking-1", hotel_id: USER })],
   };
   tables = Object.entries(VAY_1350_ACTIVE_SOURCE_TABLES).flatMap(([database, tables]) =>
     tables.map((qualifiedTable) => {
@@ -128,6 +134,7 @@ class SnapshotFixture {
       expectedFingerprint: "a".repeat(32),
       actualFingerprint: "a".repeat(32),
       status: "completed",
+      sourceSnapshotAt: "2026-08-30T00:00:00.000Z",
       rowCount: String(tables.reduce((sum, table) => sum + Number(table.rowCount), 0)),
       checksum: checksum.digest("hex"),
     };
@@ -147,6 +154,7 @@ class SnapshotFixture {
         expectedFingerprint: "a".repeat(32),
         actualFingerprint: "a".repeat(32),
         status: "completed",
+        sourceSnapshotAt: "2026-08-30T00:00:00.000Z",
         rowCount: String(tables.reduce((sum, table) => sum + Number(table.rowCount), 0)),
         checksum: checksum.digest("hex"),
       };

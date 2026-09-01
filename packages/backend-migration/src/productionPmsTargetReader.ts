@@ -19,8 +19,16 @@ export async function readProductionPmsPrerequisites(
 ): Promise<Omit<ProductionPmsTargetState, "records" | "provenance" | "blockers">> {
   const links = await client.query<PmsPropertyLink>(
     `SELECT source_id AS "sourceId", property_id::text AS "propertyId", relationship, status,
-            metadata ->> 'migrationRunId' AS "migrationRunId"
-     FROM hotel_catalog.property_source_links
+            metadata ->> 'migrationRunId' AS "migrationRunId",
+            CASE WHEN ownership.link_count = 1 THEN ownership.owner_status
+                 WHEN ownership.link_count > 1 THEN 'ambiguous' END AS "ownerStatus"
+     FROM hotel_catalog.property_source_links source_link
+     LEFT JOIN LATERAL (
+       SELECT count(*)::int AS link_count, min(owner.status) AS owner_status
+       FROM identity.organization_resource_links owner
+       WHERE owner.product = 'pms' AND owner.resource_type = 'pms_hotel'
+         AND owner.resource_id = source_link.source_id AND owner.relationship = 'operator'
+     ) ownership ON TRUE
      WHERE source_system = 'pms' AND source_table = 'hotels'
        AND metadata ->> 'migrationRunId' = $1
      ORDER BY source_id, property_id`,
@@ -291,7 +299,7 @@ async function readCollisions(
          "roomNumber" text, "roomTypeId" uuid, code text,
          "guestBookingId" uuid, position integer, source text, "sourceThreadId" text,
          "threadId" uuid, "sourceMessageId" text, provider text, "connectionId" uuid,
-         "externalPropertyId" text,
+         "externalPropertyId" text, "claimState" text,
          "externalRoomTypeId" text, "ratePlanId" uuid, channel text,
          "externalRatePlanId" text, "externalBookingId" text, "channelRoomIndex" integer,
          "syncDomain" text, "auditKey" text, "webhookKeyHash" text
@@ -349,6 +357,35 @@ async function readCollisions(
       AND requested."externalPropertyId" IS NOT NULL
       AND target.provider = requested.provider
       AND target.external_property_id = requested."externalPropertyId"
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.channel_binding_claims', target.id::text,
+            'Existing Channex claim does not authorize the requested active binding'
+     FROM requested JOIN pms.channel_binding_claims target
+      ON requested."targetTable" = 'channel_connections'
+      AND requested."externalPropertyId" IS NOT NULL
+      AND target.provider = requested.provider
+      AND (
+        (target.property_id = requested."propertyId" AND
+          (target.external_property_id <> requested."externalPropertyId" OR
+           target.claim_state <> 'active'))
+        OR
+        (target.external_property_id = requested."externalPropertyId" AND
+          (target.property_id <> requested."propertyId" OR target.claim_state <> 'active'))
+      )
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.channel_binding_claims', target.id::text,
+            'Retained Channex claim conflicts with the quarantined historical binding'
+     FROM requested JOIN pms.channel_binding_claims target
+      ON requested."targetTable" = 'channel_binding_claims'
+      AND target.provider = requested.provider
+      AND (
+        (target.property_id = requested."propertyId" AND
+          (target.external_property_id <> requested."externalPropertyId" OR
+           target.claim_state <> requested."claimState" OR target.claim_source <> 'migration'))
+        OR
+        (target.external_property_id = requested."externalPropertyId" AND
+         target.property_id <> requested."propertyId")
+      )
      UNION ALL
      SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.channel_room_type_mappings', target.id::text,
             'Another channel room mapping owns the external or internal room type'

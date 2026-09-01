@@ -6,10 +6,7 @@ import type {
 } from "./productionIdentityDisposition.js";
 
 export type OrganizationKind =
-  | "platform"
-  | "hotel_group"
-  | "creator_workspace"
-  | "affiliate_partner";
+  "platform" | "hotel_group" | "creator_workspace" | "affiliate_partner";
 export type OrganizationStatus = "active" | "suspended" | "archived";
 export type MembershipStatus = "active" | "pending" | "suspended" | "inactive";
 
@@ -52,6 +49,8 @@ export type IdentityOwnershipPlan = {
   organizations: PlannedOrganization[];
   memberships: PlannedMembership[];
   resourceLinks: PlannedResourceLink[];
+  quarantinedOrganizations: number;
+  quarantinedResourceLinks: number;
   blockers: IdentityMigrationBlocker[];
 };
 
@@ -83,6 +82,15 @@ type OwnershipSpec = {
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const OPERATIONAL_RESOURCE_TYPES = new Set(["booking_hotel", "pms_hotel"]);
+const TERMINAL_BOOKING_STATUSES = new Set([
+  "canceled",
+  "cancelled",
+  "checked_out",
+  "completed",
+  "no_show",
+  "rejected",
+]);
 const SPECS: OwnershipSpec[] = [
   {
     database: "booking",
@@ -206,13 +214,47 @@ export function mapOwnershipStatus(
 }
 
 export function stableOrganizationId(userId: string, kind: OrganizationKind): string {
+  return deterministicOrganizationId(`vayada:${kind}:${userId}`);
+}
+
+export function stableQuarantineOrganizationId(userId: string, kind: OrganizationKind): string {
+  return deterministicOrganizationId(`vayada:quarantine:${kind}:${userId}`);
+}
+
+export function hasFutureOperationalBooking(
+  rows: IdentitySourceRow[],
+  owner: Pick<IdentityOwnershipSource, "resourceId" | "resourceType">,
+  sourceHorizonAt?: string,
+): boolean {
+  if (!OPERATIONAL_RESOURCE_TYPES.has(owner.resourceType)) return false;
+  const sourceHorizonDay = calendarDay(sourceHorizonAt);
+  return rows.some((row) => {
+    const status = String(row.data["status"] ?? "")
+      .trim()
+      .toLowerCase();
+    if (
+      row.sourceDatabase !== "pms" ||
+      row.sourceTable !== "bookings" ||
+      String(row.data["hotel_id"] ?? "").toLowerCase() !== owner.resourceId.toLowerCase() ||
+      row.data["is_test_booking"] === true ||
+      TERMINAL_BOOKING_STATUSES.has(status)
+    )
+      return false;
+    const checkOutDay = calendarDay(row.data["check_out"]);
+    return !sourceHorizonDay || !checkOutDay || checkOutDay >= sourceHorizonDay;
+  });
+}
+
+function calendarDay(value: unknown): string | null {
+  if (typeof value !== "string" && !(value instanceof Date)) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+}
+
+function deterministicOrganizationId(input: string): string {
   const namespace = Buffer.from("6ba7b8109dad11d180b400c04fd430c8", "hex");
   const bytes = Buffer.from(
-    createHash("sha1")
-      .update(namespace)
-      .update(`vayada:${kind}:${userId}`)
-      .digest()
-      .subarray(0, 16),
+    createHash("sha1").update(namespace).update(input).digest().subarray(0, 16),
   );
   bytes[6] = (bytes[6]! & 15) | 80;
   bytes[8] = (bytes[8]! & 63) | 128;
