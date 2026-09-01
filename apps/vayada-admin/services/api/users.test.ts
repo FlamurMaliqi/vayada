@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   put: vi.fn(),
   createOffer: vi.fn(),
   deleteOffer: vi.fn(),
+  getCreatorReview: vi.fn(),
   getHotelReview: vi.fn(),
   updateOffer: vi.fn(),
   verifyOffer: vi.fn(),
@@ -21,6 +22,46 @@ const hotelIdentityUser = {
   updatedAt: "2026-06-13T10:00:00.000Z",
   profile: null,
 };
+const creatorIdentityUser = { ...hotelIdentityUser, id: "user-creator", type: "creator" };
+const creatorReview = {
+  profile: {
+    creatorProfileId: "creator-profile-801",
+    locationText: "Vienna",
+    shortDescription: null,
+    portfolioUrl: null,
+    phone: null,
+    profilePictureUrl: "https://cdn.example.test/creator.webp",
+    profilePictureMediaObjectId: "media-creator-801",
+    profileComplete: true,
+    profileCompletedAt: "2026-06-13T10:00:00.000Z",
+    createdAt: "2026-06-12T10:00:00.000Z",
+    updatedAt: "2026-06-13T10:00:00.000Z",
+    platforms: [
+      {
+        platformId: "platform-instagram",
+        platform: "instagram",
+        handle: "lina",
+        profileUrl: "https://instagram.example.test/lina",
+        followerCount: 100,
+        engagementRate: 4,
+        audienceAgeGroups: [{ ageRange: "18-24", percentage: 70 }],
+        audienceGenderSplit: { male: 30, female: 60, other: 10 },
+        createdAt: "2026-06-12T10:00:00.000Z",
+        updatedAt: "2026-06-13T10:00:00.000Z",
+      },
+      {
+        platformId: "platform-instagram-travel",
+        platform: "instagram",
+        handle: "lina-travel",
+        profileUrl: "https://instagram.example.test/lina-travel",
+        followerCount: 25,
+        engagementRate: 2,
+        createdAt: "2026-06-12T10:00:00.000Z",
+        updatedAt: "2026-06-13T10:00:00.000Z",
+      },
+    ],
+  },
+};
 
 vi.mock("./client", () => ({
   apiClient: { get: mocks.get, post: vi.fn(), patch: vi.fn(), put: mocks.put, delete: vi.fn() },
@@ -28,6 +69,7 @@ vi.mock("./client", () => ({
 vi.mock("@vayada/marketplace-shared/api/admin", () => ({
   createMarketplaceAdminOffer: mocks.createOffer,
   deleteMarketplaceAdminOffer: mocks.deleteOffer,
+  getMarketplaceAdminCreatorReview: mocks.getCreatorReview,
   getMarketplaceAdminHotelReview: mocks.getHotelReview,
   updateMarketplaceAdminOffer: mocks.updateOffer,
   verifyMarketplaceAdminOffer: mocks.verifyOffer,
@@ -69,6 +111,22 @@ describe("usersService media writes", () => {
         description: "A creator-ready stay.",
       }),
     ).resolves.toBe(offer);
+  });
+
+  it("hydrates the exact creator profile and its persisted media ID", async () => {
+    mocks.get.mockResolvedValue(creatorIdentityUser);
+    mocks.getCreatorReview.mockResolvedValue(creatorReview);
+
+    await expect(usersService.getUserById("user-creator")).resolves.toMatchObject({
+      profile: {
+        id: "creator-profile-801",
+        profilePictureMediaObjectId: "media-creator-801",
+        platforms: [
+          { id: "platform-instagram", name: "Instagram", handle: "lina" },
+          { id: "platform-instagram-travel", name: "Instagram", handle: "lina-travel" },
+        ],
+      },
+    });
   });
 
   it("retains offer media IDs and forwards only selected IDs for publication", async () => {
