@@ -1,6 +1,7 @@
 import type { PmsInventoryReservationReceipt } from "./inventoryReservationLifecycle.js";
 
 export * from "./roomFacts.js";
+export * from "./roomTypeLifecycle.js";
 export * from "./roomAmenities.js";
 export * from "./roomMedia.js";
 export * from "./roomPublication.js";

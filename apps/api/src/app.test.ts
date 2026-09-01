@@ -1051,6 +1051,7 @@ const financeRepository: FinancePropertyReadRepository = {
 const pmsRoomTypes: PmsRoomType[] = [
   {
     roomTypeId: "f6855000-0000-0000-0000-000000000001",
+    version: "room-type-facts-v1",
     name: "Alpine Suite",
     description: "Suite with mountain view.",
     category: "suite",
@@ -1083,6 +1084,7 @@ const pmsRoomTypes: PmsRoomType[] = [
   },
   {
     roomTypeId: "f6855000-0000-0000-0000-000000000002",
+    version: "room-type-facts-v1",
     name: "Garden Room",
     description: "Quiet room facing the garden.",
     category: "double",
@@ -1752,6 +1754,7 @@ function createPmsOperationsCommandRepository(
       }
       const roomType: PmsRoomType = {
         roomTypeId: "f6855000-0000-0000-0000-000000000003",
+        version: "room-type-facts-v1",
         name: command.name,
         description: command.description,
         category: command.category,
@@ -1821,6 +1824,15 @@ function createPmsOperationsCommandRepository(
           sideEffects: ["audit_event"],
         },
       };
+    },
+    async duplicateRoomType() {
+      throw new Error("Room-type duplication is not implemented by this app-test fake.");
+    },
+    async inspectRoomTypeRetirement() {
+      throw new Error("Room-type retirement is not implemented by this app-test fake.");
+    },
+    async retireRoomType() {
+      throw new Error("Room-type retirement is not implemented by this app-test fake.");
     },
     async getOperationalTemplate(propertyId, templateKind) {
       expect(propertyId).toBe(pmsPropertyId);

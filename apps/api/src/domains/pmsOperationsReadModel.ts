@@ -61,6 +61,7 @@ export type PmsRoomTypeMedia = {
 
 export type PmsRoomType = {
   roomTypeId: string;
+  version: string;
   name: string;
   description: string;
   category: string | null;
@@ -785,6 +786,7 @@ type TargetPmsRoomRow = {
 
 type TargetPmsRoomTypeRow = {
   roomTypeId: string;
+  roomFactsRevision: string | number;
   name: string;
   description: string;
   category: string | null;
@@ -1132,6 +1134,7 @@ async function listRoomTypes(
   const result = await pool.query<TargetPmsRoomTypeRow>(
     `SELECT
        room_type.id::text AS "roomTypeId",
+       room_type.room_facts_revision AS "roomFactsRevision",
        room_type.name,
        room_type.description,
        room_type.category,
@@ -1248,6 +1251,7 @@ async function listRoomTypes(
          AND room.status <> 'retired'
      ) room_counts ON TRUE
      WHERE room_type.property_id = $1
+       AND room_type.active
        ${roomTypeFilter}
      ORDER BY room_type.sort_order ASC, room_type.name ASC`,
     params,
@@ -1274,6 +1278,7 @@ function toPmsRoom(row: TargetPmsRoomRow): PmsRoom {
 function toPmsRoomType(row: TargetPmsRoomTypeRow): PmsRoomType {
   return {
     roomTypeId: row.roomTypeId,
+    version: `room-type-facts-v${toInteger(row.roomFactsRevision)}`,
     name: row.name,
     description: row.description,
     category: row.category,

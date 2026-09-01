@@ -16,6 +16,7 @@ import type {
   PmsInventoryPublicOfferProjectionPort,
   PublicBookabilityPublicationCommandPort,
 } from "@vayada/domain-distribution";
+import type { PmsRoomTypeRetirementImpact } from "@vayada/domain-pms";
 import { PROPERTY_FEATURE_LIMITS, type PropertyPlanReadModel } from "@vayada/domain-finance";
 import type { PropertyPlanReadRepository } from "../domains/propertyPlanReadModel.js";
 import {
@@ -469,6 +470,17 @@ export type PmsRoomTypeUpdateCommand = {
   audit: PmsOperationsCommandAudit;
 };
 
+export type PmsRoomTypeDuplicateCommand = {
+  propertyId: string;
+  roomTypeId: string;
+  commandId: string;
+  idempotencyKey: string;
+  expectedVersion: string;
+  audit: PmsOperationsCommandAudit;
+};
+
+export type PmsRoomTypeRetireCommand = PmsRoomTypeDuplicateCommand;
+
 export type PmsRoomBlockCreateCommand = {
   propertyId: string;
   commandId: string;
@@ -859,8 +871,29 @@ export type PmsRoomTypeCommandResult =
   | {
       ok: false;
       statusCode: 409;
-      code: "idempotency_conflict" | "room_type_conflict";
+      code: "idempotency_conflict" | "room_type_conflict" | "version_conflict";
       message: string;
+    };
+
+export type PmsRoomTypeRetireCommandResult =
+  | {
+      ok: true;
+      impact: PmsRoomTypeRetirementImpact;
+      commandMeta: PmsCommandMeta;
+      replayed?: boolean;
+    }
+  | {
+      ok: false;
+      statusCode: 404;
+      code: "room_type_not_found";
+      message: string;
+    }
+  | {
+      ok: false;
+      statusCode: 409;
+      code: "idempotency_conflict" | "version_conflict" | "room_type_retirement_blocked";
+      message: string;
+      impact?: PmsRoomTypeRetirementImpact;
     };
 
 export type PmsRoomBlockCommandResult =
@@ -904,6 +937,12 @@ export type PmsOperationsCommandRepository = {
   releaseRoomBlock?(command: PmsRoomBlockReleaseCommand): Promise<PmsRoomBlockCommandResult>;
   createRoomType(command: PmsRoomTypeCreateCommand): Promise<PmsRoomTypeCommandResult>;
   updateRoomTypeLocation(command: PmsRoomTypeUpdateCommand): Promise<PmsRoomTypeCommandResult>;
+  duplicateRoomType(command: PmsRoomTypeDuplicateCommand): Promise<PmsRoomTypeCommandResult>;
+  inspectRoomTypeRetirement(
+    propertyId: string,
+    roomTypeId: string,
+  ): Promise<PmsRoomTypeRetirementImpact | null>;
+  retireRoomType(command: PmsRoomTypeRetireCommand): Promise<PmsRoomTypeRetireCommandResult>;
   executeAssignmentCommand(command: PmsAssignmentCommand): Promise<PmsAssignmentCommandResult>;
   executeOperationalStatusCommand(
     command: PmsOperationalStatusCommand,
@@ -1071,6 +1110,7 @@ type PmsOperationsErrorCode =
   | "property_currency_conflict"
   | "room_order_conflict"
   | "room_type_conflict"
+  | "room_type_retirement_blocked"
   | "group_not_found"
   | "revision_conflict"
   | "idempotency_conflict"
@@ -1128,6 +1168,8 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/rooms/reorder",
     "/properties/:propertyId/room-types",
     "/properties/:propertyId/room-types/:roomTypeId",
+    "/properties/:propertyId/room-types/:roomTypeId/duplicate",
+    "/properties/:propertyId/room-types/:roomTypeId/retirement-impact",
     "/properties/:propertyId/linked-inventory-groups",
     "/properties/:propertyId/linked-inventory-groups/:groupId",
     "/properties/:propertyId/plan-limits",
@@ -2500,6 +2542,78 @@ export async function registerPmsOperationsRoutes(
       },
     );
 
+    app.post<{ Params: PmsRoomTypeParams; Body: unknown }>(
+      "/properties/:propertyId/room-types/:roomTypeId/duplicate",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId, roomTypeId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toRoomTypeLifecycleCommand(
+          propertyId,
+          roomTypeId,
+          request,
+          "Duplicate room type",
+        );
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await commandRepository.duplicateRoomType(command.value);
+        if (!result.ok) return sendPmsRoomTypeCommandError(reply, result);
+        return reply.code(201).send({
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          item: result.roomType,
+          commandMeta: result.commandMeta,
+        } satisfies PmsRoomTypeCommandResponse);
+      },
+    );
+
+    app.get<{ Params: PmsRoomTypeParams }>(
+      "/properties/:propertyId/room-types/:roomTypeId/retirement-impact",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId, roomTypeId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        if (!isUuid(roomTypeId))
+          return sendPmsOperationsError(reply, invalidBody("roomTypeId must be a UUID."));
+        const impact = await commandRepository.inspectRoomTypeRetirement(propertyId, roomTypeId);
+        return impact
+          ? reply.code(200).send(impact)
+          : sendPmsOperationsError(reply, {
+              statusCode: 404,
+              code: "room_type_not_found",
+              category: "not_found",
+              message: `PMS room type ${roomTypeId} was not found.`,
+            });
+      },
+    );
+
+    app.delete<{ Params: PmsRoomTypeParams; Body: unknown }>(
+      "/properties/:propertyId/room-types/:roomTypeId",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId, roomTypeId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toRoomTypeLifecycleCommand(
+          propertyId,
+          roomTypeId,
+          request,
+          "Retire room type",
+        );
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await commandRepository.retireRoomType(command.value);
+        if (!result.ok) return sendPmsRoomTypeRetireCommandError(reply, result);
+        return reply.code(200).send({
+          ...result.impact,
+          commandMeta: result.commandMeta,
+        });
+      },
+    );
+
     app.get<{ Params: PmsReservationParams }>(
       "/properties/:propertyId/reservations/:guestBookingId/checkout-charges",
       async (request, reply) => {
@@ -3414,6 +3528,19 @@ function sendPmsRoomTypeCommandError(
   });
 }
 
+function sendPmsRoomTypeRetireCommandError(
+  reply: FastifyReply,
+  result: Exclude<PmsRoomTypeRetireCommandResult, { ok: true }>,
+): FastifyReply {
+  return reply.status(result.statusCode).send({
+    statusCode: result.statusCode,
+    code: result.code,
+    category: result.statusCode === 404 ? "not_found" : "conflict",
+    message: result.message,
+    ...("impact" in result && result.impact ? { impact: result.impact } : {}),
+  });
+}
+
 function sendPmsRoomBlockCommandError(
   reply: FastifyReply,
   result: Exclude<PmsRoomBlockCommandResult, { ok: true }>,
@@ -3861,6 +3988,38 @@ function toRoomTypeUpdateCommand(
       attributes: attributes.value,
       ...(cancellationPolicy.value ? { flexibleCancellationPolicy: cancellationPolicy.value } : {}),
       audit: pmsOperationsCommandAudit(request, commandId, "Update room type location"),
+    },
+  };
+}
+
+function toRoomTypeLifecycleCommand(
+  propertyId: string,
+  roomTypeId: string,
+  request: FastifyRequest<{ Body: unknown }>,
+  reason: string,
+): { value: PmsRoomTypeDuplicateCommand } | { error: PmsOperationsError } {
+  const raw = objectBody(request.body);
+  if (!raw || !isUuid(roomTypeId)) {
+    return { error: invalidBody("Room type lifecycle command requires a roomTypeId and body.") };
+  }
+  const commandId = stringField(raw.commandId);
+  const idempotencyKey = stringField(raw.idempotencyKey);
+  const expectedVersion = stringField(raw.expectedVersion);
+  if (!commandId || !idempotencyKey || !expectedVersion) {
+    return {
+      error: invalidBody(
+        "Room type lifecycle command requires commandId, idempotencyKey, and expectedVersion.",
+      ),
+    };
+  }
+  return {
+    value: {
+      propertyId,
+      roomTypeId,
+      commandId,
+      idempotencyKey,
+      expectedVersion,
+      audit: pmsOperationsCommandAudit(request, commandId, reason),
     },
   };
 }

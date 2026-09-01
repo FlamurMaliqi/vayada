@@ -2,7 +2,7 @@ import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
-import type { PmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
+import { createTargetPmsOperationsReadRepository } from "./domains/pmsOperationsReadModel.js";
 import { pmsRoomOrderVersion } from "./domains/pmsRoomOrder.js";
 import { createPgPmsRoomFactsReadModel } from "./domains/pmsRoomFactsReadModel.js";
 import type { PmsRoomOrderCommand, PmsRoomTypeCreateCommand } from "./routes/pmsOperations.js";
@@ -12,38 +12,17 @@ const actorUserId = "95959595-9595-4595-8595-959595959501";
 const organizationId = "95959595-9595-4595-8595-959595959502";
 const propertyId = "95959595-9595-4595-8595-959595959503";
 
-const readRepository: PmsOperationsReadRepository = {
-  async listRoomsByPropertyId() {
-    return { items: [] };
-  },
-  async listRoomTypesByPropertyId() {
-    return { items: [] };
-  },
-  async findRoomTypeById() {
-    return null;
-  },
-  async listCalendarDaysByPropertyId() {
-    return { items: [] };
-  },
-  async listRoomBlocksByPropertyId() {
-    return { items: [] };
-  },
-  async listReservationsByPropertyId() {
-    return { items: [], total: 0 };
-  },
-  async findReservationByGuestBookingId() {
-    return null;
-  },
-};
-
 describe.skipIf(!TEST_DATABASE_URL)("first-run PMS room setup concurrency", () => {
   const control = new pg.Client({
+    connectionString: TEST_DATABASE_URL ?? "postgresql://integration-test-disabled",
+  });
+  const lifecycleReadRepository = createTargetPmsOperationsReadRepository({
     connectionString: TEST_DATABASE_URL ?? "postgresql://integration-test-disabled",
   });
   const repository = createTargetPmsOperationsCommandRepository({
     connectionString: TEST_DATABASE_URL ?? "postgresql://integration-test-disabled",
     max: 2,
-    readRepository,
+    readRepository: lifecycleReadRepository,
     now: () => new Date("2026-07-27T13:00:00.000Z"),
   });
 
@@ -74,6 +53,7 @@ describe.skipIf(!TEST_DATABASE_URL)("first-run PMS room setup concurrency", () =
 
   afterAll(async () => {
     await repository.close?.();
+    await lifecycleReadRepository.close?.();
     await cleanup();
     await control.end();
   });
@@ -225,6 +205,91 @@ describe.skipIf(!TEST_DATABASE_URL)("first-run PMS room setup concurrency", () =
     }
   });
 
+  it("duplicates configuration without operational state, replays, and safely retires the copy", async () => {
+    const created = await repository.createRoomType(
+      roomCommand("lifecycle-source", "Lifecycle Suite", false),
+    );
+    if (!created.ok) throw new Error("Expected lifecycle source room type");
+    const duplicateCommand = {
+      propertyId,
+      roomTypeId: created.roomType.roomTypeId,
+      commandId: "pms-room-lifecycle-duplicate",
+      idempotencyKey: "pms-room-lifecycle-duplicate",
+      expectedVersion: created.roomType.version,
+      audit: createdCommandAudit("Duplicate room type"),
+    };
+
+    const duplicated = await repository.duplicateRoomType(duplicateCommand);
+    const replay = await repository.duplicateRoomType(duplicateCommand);
+    expect(duplicated).toMatchObject({
+      ok: true,
+      roomType: { name: "Lifecycle Suite Copy", roomCount: 0, version: "room-type-facts-v1" },
+    });
+    expect(replay).toEqual({ ...duplicated, replayed: true });
+    if (!duplicated.ok) throw new Error("Expected room type duplicate");
+
+    const copiedState = await control.query<{
+      roomCount: string;
+      inventoryCount: string;
+      mappingCount: string;
+      ratePlanCount: string;
+    }>(
+      `SELECT
+         (SELECT count(*) FROM pms.rooms WHERE property_id=$1::uuid AND room_type_id=$2::uuid)::text AS "roomCount",
+         (SELECT count(*) FROM pms.inventory_days WHERE property_id=$1::uuid AND room_type_id=$2::uuid)::text AS "inventoryCount",
+         (SELECT count(*) FROM pms.channel_room_type_mappings WHERE property_id=$1::uuid AND room_type_id=$2::uuid)::text AS "mappingCount",
+         (SELECT count(*) FROM pms.rate_plans WHERE property_id=$1::uuid AND room_type_id=$2::uuid)::text AS "ratePlanCount"`,
+      [propertyId, duplicated.roomType.roomTypeId],
+    );
+    expect(copiedState.rows[0]).toEqual({
+      roomCount: "0",
+      inventoryCount: "0",
+      mappingCount: "0",
+      ratePlanCount: "1",
+    });
+
+    const impact = await repository.inspectRoomTypeRetirement(
+      propertyId,
+      duplicated.roomType.roomTypeId,
+    );
+    expect(impact).toMatchObject({ canRetire: true, blockers: [] });
+    const retireCommand = {
+      ...duplicateCommand,
+      roomTypeId: duplicated.roomType.roomTypeId,
+      commandId: "pms-room-lifecycle-retire",
+      idempotencyKey: "pms-room-lifecycle-retire",
+      expectedVersion: duplicated.roomType.version,
+      audit: createdCommandAudit("Retire room type"),
+    };
+    const retired = await repository.retireRoomType(retireCommand);
+    const retireReplay = await repository.retireRoomType(retireCommand);
+    expect(retired).toMatchObject({ ok: true, impact: { version: "room-type-facts-v2" } });
+    expect(retireReplay).toEqual({ ...retired, replayed: true });
+
+    await expect(
+      control.query<{ active: boolean; activeRatePlans: string }>(
+        `SELECT room_type.active,
+                count(rate_plan.id) FILTER (WHERE rate_plan.active)::text AS "activeRatePlans"
+         FROM pms.room_types room_type
+         LEFT JOIN pms.rate_plans rate_plan
+           ON rate_plan.property_id=room_type.property_id AND rate_plan.room_type_id=room_type.id
+         WHERE room_type.property_id=$1::uuid AND room_type.id=$2::uuid
+         GROUP BY room_type.active`,
+        [propertyId, duplicated.roomType.roomTypeId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ active: false, activeRatePlans: "0" }] });
+    await expect(
+      control.query<{ auditCount: string; outboxCount: string }>(
+        `SELECT
+           (SELECT count(*) FROM platform.product_audit_events
+            WHERE property_id=$1::uuid AND action IN ('pms.room_type.duplicated','pms.room_type.retired'))::text AS "auditCount",
+           (SELECT count(*) FROM platform.outbox_events
+            WHERE property_id=$1::uuid AND resource_id=$2::uuid::text)::text AS "outboxCount"`,
+        [propertyId, duplicated.roomType.roomTypeId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ auditCount: "2", outboxCount: "4" }] });
+  });
+
   async function waitForAdvisoryWaiters(expected: number): Promise<void> {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const result = await control.query<{ count: string }>(
@@ -366,6 +431,16 @@ function roomOrderCommand(
       reason: "Reorder rooms",
       requestedAt: "2026-07-27T13:00:00.000Z",
     },
+  };
+}
+
+function createdCommandAudit(reason: string) {
+  return {
+    actor: { kind: "user" as const, userId: actorUserId, organizationId },
+    requestId: `pms-room-lifecycle-${reason.toLowerCase().replaceAll(" ", "-")}`,
+    correlationId: "pms-room-lifecycle",
+    reason,
+    requestedAt: "2026-07-27T13:00:00.000Z",
   };
 }
 
