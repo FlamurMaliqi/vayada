@@ -140,6 +140,7 @@ describe.skipIf(!TEST_DATABASE_URL)("property hero media private staging", () =>
 
   async function createSession(sessionId: string): Promise<PlatformMediaSessionRecord> {
     return repository.createUploadSession({
+      ownerOrganizationId: organizationId,
       sessionId,
       uploadSessionKey: `media.profile-revision:${sessionId}`,
       stagingPrefix: `staging/${sessionId}`,
