@@ -16,6 +16,7 @@ import type {
   PmsInventoryPublicOfferProjectionPort,
   PublicBookabilityPublicationCommandPort,
 } from "@vayada/domain-distribution";
+import type { PmsRoomTypeRetirementImpact } from "@vayada/domain-pms";
 import { PROPERTY_FEATURE_LIMITS, type PropertyPlanReadModel } from "@vayada/domain-finance";
 import type { PropertyPlanReadRepository } from "../domains/propertyPlanReadModel.js";
 import {
@@ -24,6 +25,7 @@ import {
   type PmsLinkedInventoryGroupCommandResult,
 } from "../domains/pmsLinkedInventoryGroupRepository.js";
 import type { PmsRoomAssignmentSettingsPort } from "../domains/pmsRoomAssignmentSettings.js";
+import type { SameDayBookingSettingsPort } from "../domains/sameDayBookingSettings.js";
 import { pmsRoomOrderVersion } from "../domains/pmsRoomOrder.js";
 import type {
   PmsRoomAssignmentOptimizationHistoryItem,
@@ -469,6 +471,17 @@ export type PmsRoomTypeUpdateCommand = {
   audit: PmsOperationsCommandAudit;
 };
 
+export type PmsRoomTypeDuplicateCommand = {
+  propertyId: string;
+  roomTypeId: string;
+  commandId: string;
+  idempotencyKey: string;
+  expectedVersion: string;
+  audit: PmsOperationsCommandAudit;
+};
+
+export type PmsRoomTypeRetireCommand = PmsRoomTypeDuplicateCommand;
+
 export type PmsRoomBlockCreateCommand = {
   propertyId: string;
   commandId: string;
@@ -859,8 +872,29 @@ export type PmsRoomTypeCommandResult =
   | {
       ok: false;
       statusCode: 409;
-      code: "idempotency_conflict" | "room_type_conflict";
+      code: "idempotency_conflict" | "room_type_conflict" | "version_conflict";
       message: string;
+    };
+
+export type PmsRoomTypeRetireCommandResult =
+  | {
+      ok: true;
+      impact: PmsRoomTypeRetirementImpact;
+      commandMeta: PmsCommandMeta;
+      replayed?: boolean;
+    }
+  | {
+      ok: false;
+      statusCode: 404;
+      code: "room_type_not_found";
+      message: string;
+    }
+  | {
+      ok: false;
+      statusCode: 409;
+      code: "idempotency_conflict" | "version_conflict" | "room_type_retirement_blocked";
+      message: string;
+      impact?: PmsRoomTypeRetirementImpact;
     };
 
 export type PmsRoomBlockCommandResult =
@@ -904,6 +938,12 @@ export type PmsOperationsCommandRepository = {
   releaseRoomBlock?(command: PmsRoomBlockReleaseCommand): Promise<PmsRoomBlockCommandResult>;
   createRoomType(command: PmsRoomTypeCreateCommand): Promise<PmsRoomTypeCommandResult>;
   updateRoomTypeLocation(command: PmsRoomTypeUpdateCommand): Promise<PmsRoomTypeCommandResult>;
+  duplicateRoomType(command: PmsRoomTypeDuplicateCommand): Promise<PmsRoomTypeCommandResult>;
+  inspectRoomTypeRetirement(
+    propertyId: string,
+    roomTypeId: string,
+  ): Promise<PmsRoomTypeRetirementImpact | null>;
+  retireRoomType(command: PmsRoomTypeRetireCommand): Promise<PmsRoomTypeRetireCommandResult>;
   executeAssignmentCommand(command: PmsAssignmentCommand): Promise<PmsAssignmentCommandResult>;
   executeOperationalStatusCommand(
     command: PmsOperationalStatusCommand,
@@ -960,6 +1000,7 @@ export type PmsOperationsRoutesOptions = {
   allowedOrigins?: string[];
   propertyPlanReadRepository?: PropertyPlanReadRepository;
   bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
+  sameDayBookingSettings?: SameDayBookingSettingsPort;
   publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort;
   roomAssignmentSettings?: PmsRoomAssignmentSettingsPort;
   roomAssignmentHistory?: PmsRoomAssignmentOptimizationHistoryPort;
@@ -1071,6 +1112,7 @@ type PmsOperationsErrorCode =
   | "property_currency_conflict"
   | "room_order_conflict"
   | "room_type_conflict"
+  | "room_type_retirement_blocked"
   | "group_not_found"
   | "revision_conflict"
   | "idempotency_conflict"
@@ -1120,6 +1162,7 @@ export async function registerPmsOperationsRoutes(
     await options.propertyPlanReadRepository?.close?.();
     await options.roomAssignmentSettings?.close?.();
     await options.roomAssignmentHistory?.close?.();
+    await options.sameDayBookingSettings?.close?.();
   });
 
   for (const path of [
@@ -1128,6 +1171,8 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/rooms/reorder",
     "/properties/:propertyId/room-types",
     "/properties/:propertyId/room-types/:roomTypeId",
+    "/properties/:propertyId/room-types/:roomTypeId/duplicate",
+    "/properties/:propertyId/room-types/:roomTypeId/retirement-impact",
     "/properties/:propertyId/linked-inventory-groups",
     "/properties/:propertyId/linked-inventory-groups/:groupId",
     "/properties/:propertyId/plan-limits",
@@ -1139,6 +1184,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/calendar-settings",
     "/properties/:propertyId/calendar-shuffles",
     "/properties/:propertyId/booking-acceptance",
+    "/properties/:propertyId/same-day-booking",
     "/properties/:propertyId/messaging/unread-count",
     "/properties/:propertyId/reservations",
     "/properties/:propertyId/reservations/:guestBookingId",
@@ -1683,6 +1729,90 @@ export async function registerPmsOperationsRoutes(
         reply,
         readModelUnavailable("PMS property profile write model is unavailable."),
       );
+    },
+  );
+
+  app.get<{ Params: PmsPropertyParams }>(
+    "/properties/:propertyId/same-day-booking",
+    async (request, reply) => {
+      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? []))
+        return sendPmsOperationsError(reply, originNotAllowed());
+      const { propertyId } = request.params;
+      if (
+        !(await enforcePmsPropertyAccessPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.settings.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
+      try {
+        const result = await options.sameDayBookingSettings?.find(propertyId);
+        return result
+          ? sameDayBookingResponse(result)
+          : sendPmsOperationsError(reply, propertyNotFound(propertyId));
+      } catch {
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("Same-day booking settings are unavailable."),
+        );
+      }
+    },
+  );
+
+  app.put<{ Params: PmsPropertyParams; Body: unknown }>(
+    "/properties/:propertyId/same-day-booking",
+    async (request, reply) => {
+      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? []))
+        return sendPmsOperationsError(reply, originNotAllowed());
+      const context = await enforcePmsPropertyAccessPolicy(
+        request,
+        reply,
+        request.params.propertyId,
+        "pms.settings.manage",
+        options.propertyAccessRepository,
+      );
+      if (!context) return reply;
+      const input = sameDayBookingInput(request.body);
+      if (!input)
+        return sendPmsOperationsError(
+          reply,
+          invalidBody(
+            "Same-day booking settings require commandId, idempotencyKey, enabled, and a 30-minute cutoff or null.",
+          ),
+        );
+      try {
+        const result = await options.sameDayBookingSettings?.update(
+          context,
+          request.params.propertyId,
+          input,
+        );
+        if (!result || (!result.ok && result.code === "property_not_found"))
+          return sendPmsOperationsError(reply, propertyNotFound(request.params.propertyId));
+        if (!result.ok)
+          return sendPmsOperationsError(reply, {
+            statusCode: 409,
+            code: result.code,
+            category: "conflict",
+            message: "The idempotency key was already used for another settings update.",
+          });
+        return {
+          ...sameDayBookingResponse(result.settings),
+          replayed: result.replayed,
+          channexOperationId: result.channexOperationId,
+        };
+      } catch (error) {
+        request.log.error(
+          { err: error, propertyId: request.params.propertyId },
+          "Same-day booking settings update failed",
+        );
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("Same-day booking settings could not be saved."),
+        );
+      }
     },
   );
 
@@ -2500,6 +2630,78 @@ export async function registerPmsOperationsRoutes(
       },
     );
 
+    app.post<{ Params: PmsRoomTypeParams; Body: unknown }>(
+      "/properties/:propertyId/room-types/:roomTypeId/duplicate",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId, roomTypeId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toRoomTypeLifecycleCommand(
+          propertyId,
+          roomTypeId,
+          request,
+          "Duplicate room type",
+        );
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await commandRepository.duplicateRoomType(command.value);
+        if (!result.ok) return sendPmsRoomTypeCommandError(reply, result);
+        return reply.code(201).send({
+          contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+          propertyId,
+          item: result.roomType,
+          commandMeta: result.commandMeta,
+        } satisfies PmsRoomTypeCommandResponse);
+      },
+    );
+
+    app.get<{ Params: PmsRoomTypeParams }>(
+      "/properties/:propertyId/room-types/:roomTypeId/retirement-impact",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId, roomTypeId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        if (!isUuid(roomTypeId))
+          return sendPmsOperationsError(reply, invalidBody("roomTypeId must be a UUID."));
+        const impact = await commandRepository.inspectRoomTypeRetirement(propertyId, roomTypeId);
+        return impact
+          ? reply.code(200).send(impact)
+          : sendPmsOperationsError(reply, {
+              statusCode: 404,
+              code: "room_type_not_found",
+              category: "not_found",
+              message: `PMS room type ${roomTypeId} was not found.`,
+            });
+      },
+    );
+
+    app.delete<{ Params: PmsRoomTypeParams; Body: unknown }>(
+      "/properties/:propertyId/room-types/:roomTypeId",
+      async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          return sendPmsOperationsError(reply, originNotAllowed());
+        }
+        const { propertyId, roomTypeId } = request.params;
+        if (!enforcePmsOperationsManagePolicy(request, reply, propertyId)) return reply;
+        const command = toRoomTypeLifecycleCommand(
+          propertyId,
+          roomTypeId,
+          request,
+          "Retire room type",
+        );
+        if ("error" in command) return sendPmsOperationsError(reply, command.error);
+        const result = await commandRepository.retireRoomType(command.value);
+        if (!result.ok) return sendPmsRoomTypeRetireCommandError(reply, result);
+        return reply.code(200).send({
+          ...result.impact,
+          commandMeta: result.commandMeta,
+        });
+      },
+    );
+
     app.get<{ Params: PmsReservationParams }>(
       "/properties/:propertyId/reservations/:guestBookingId/checkout-charges",
       async (request, reply) => {
@@ -3182,6 +3384,37 @@ function bookingAcceptanceResponse(propertyId: string, acceptanceMode: "instant"
   } as const;
 }
 
+function sameDayBookingResponse(
+  settings: Awaited<ReturnType<SameDayBookingSettingsPort["find"]>> & {},
+) {
+  return { contractVersion: "same-day-booking-policy.v1", ...settings } as const;
+}
+
+function sameDayBookingInput(body: unknown) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const value = body as Record<string, unknown>;
+  if (
+    Object.keys(value).length !== 4 ||
+    typeof value.commandId !== "string" ||
+    !value.commandId.trim() ||
+    typeof value.idempotencyKey !== "string" ||
+    !value.idempotencyKey.trim() ||
+    typeof value.enabled !== "boolean" ||
+    !(
+      value.cutoffLocalTime === null ||
+      (typeof value.cutoffLocalTime === "string" &&
+        /^(?:[01]\d|2[0-3]):(?:00|30)$/.test(value.cutoffLocalTime))
+    )
+  )
+    return null;
+  return {
+    commandId: value.commandId,
+    idempotencyKey: value.idempotencyKey,
+    enabled: value.enabled,
+    cutoffLocalTime: value.cutoffLocalTime as string | null,
+  };
+}
+
 async function listCalendarReservationsOverlappingStayRange(
   repository: PmsOperationsReadRepository,
   propertyId: string,
@@ -3411,6 +3644,19 @@ function sendPmsRoomTypeCommandError(
           ? "not_found"
           : "conflict",
     message: result.message,
+  });
+}
+
+function sendPmsRoomTypeRetireCommandError(
+  reply: FastifyReply,
+  result: Exclude<PmsRoomTypeRetireCommandResult, { ok: true }>,
+): FastifyReply {
+  return reply.status(result.statusCode).send({
+    statusCode: result.statusCode,
+    code: result.code,
+    category: result.statusCode === 404 ? "not_found" : "conflict",
+    message: result.message,
+    ...("impact" in result && result.impact ? { impact: result.impact } : {}),
   });
 }
 
@@ -3861,6 +4107,38 @@ function toRoomTypeUpdateCommand(
       attributes: attributes.value,
       ...(cancellationPolicy.value ? { flexibleCancellationPolicy: cancellationPolicy.value } : {}),
       audit: pmsOperationsCommandAudit(request, commandId, "Update room type location"),
+    },
+  };
+}
+
+function toRoomTypeLifecycleCommand(
+  propertyId: string,
+  roomTypeId: string,
+  request: FastifyRequest<{ Body: unknown }>,
+  reason: string,
+): { value: PmsRoomTypeDuplicateCommand } | { error: PmsOperationsError } {
+  const raw = objectBody(request.body);
+  if (!raw || !isUuid(roomTypeId)) {
+    return { error: invalidBody("Room type lifecycle command requires a roomTypeId and body.") };
+  }
+  const commandId = stringField(raw.commandId);
+  const idempotencyKey = stringField(raw.idempotencyKey);
+  const expectedVersion = stringField(raw.expectedVersion);
+  if (!commandId || !idempotencyKey || !expectedVersion) {
+    return {
+      error: invalidBody(
+        "Room type lifecycle command requires commandId, idempotencyKey, and expectedVersion.",
+      ),
+    };
+  }
+  return {
+    value: {
+      propertyId,
+      roomTypeId,
+      commandId,
+      idempotencyKey,
+      expectedVersion,
+      audit: pmsOperationsCommandAudit(request, commandId, reason),
     },
   };
 }

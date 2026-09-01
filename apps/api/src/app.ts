@@ -21,6 +21,7 @@ import type { PropertyMediaCommandRepository } from "./domains/propertyMediaComm
 import type { PropertySetupDraftCommandRepository } from "./domains/propertySetupDraftCommandRepository.js";
 import type { PropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
 import type { BookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
+import type { SameDayBookingSettingsPort } from "./domains/sameDayBookingSettings.js";
 import type { PmsRoomAssignmentSettingsPort } from "./domains/pmsRoomAssignmentSettings.js";
 import type { PmsRoomAssignmentOptimizationHistoryPort } from "./domains/pmsRoomAssignmentOptimizationHistory.js";
 import type { PublicHotelProfileRepository } from "./routes/aiHotels.js";
@@ -256,6 +257,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   pmsOperationsAllowedOrigins?: string[];
   propertyPlanReadRepository?: PropertyPlanReadRepository;
   bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
+  sameDayBookingSettings?: SameDayBookingSettingsPort;
   pmsRoomAssignmentSettings?: PmsRoomAssignmentSettingsPort;
   pmsRoomAssignmentHistory?: PmsRoomAssignmentOptimizationHistoryPort;
   pmsRoomPublication?: PmsRoomPublicationRoutesOptions;
@@ -649,6 +651,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       allowedOrigins: options.pmsOperationsAllowedOrigins,
       propertyPlanReadRepository: options.propertyPlanReadRepository,
       bookingAcceptanceSettings: options.bookingAcceptanceSettings,
+      sameDayBookingSettings: options.sameDayBookingSettings,
       roomAssignmentSettings: options.pmsRoomAssignmentSettings,
       roomAssignmentHistory: options.pmsRoomAssignmentHistory,
       publicBookabilityPublisher: options.publicBookabilityPublisher,

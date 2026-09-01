@@ -13,6 +13,7 @@ import {
   scopes,
   string,
   unavailable,
+  withAbortSignal,
 } from "./http.js";
 import type {
   CreatorPlatformAdapter,
@@ -69,15 +70,14 @@ export function createTikTokCreatorPlatformAdapter(
       );
     },
 
-    async listAccounts(grant) {
+    async listAccounts(grant, signal) {
       assertProvider(grant, provider);
-      const user = await getUser(fetcher, grant, [
-        "open_id",
-        "display_name",
-        "username",
-        "profile_deep_link",
-        "avatar_url",
-      ]);
+      const user = await getUser(
+        fetcher,
+        grant,
+        ["open_id", "display_name", "username", "profile_deep_link", "avatar_url"],
+        signal,
+      );
       const openId = string(provider, user.open_id, "missing open_id");
       const username = optionalString(user.username);
       return {
@@ -96,7 +96,7 @@ export function createTikTokCreatorPlatformAdapter(
       };
     },
 
-    async refreshGrant(grant) {
+    async refreshGrant(grant, signal) {
       assertProvider(grant, provider);
       const body = new URLSearchParams({
         client_key: config.clientKey,
@@ -107,17 +107,25 @@ export function createTikTokCreatorPlatformAdapter(
       return tokenGrant(
         record(
           provider,
-          await fetchJson(provider, fetcher, "https://open.tiktokapis.com/v2/oauth/token/", {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body,
-          }),
+          await fetchJson(
+            provider,
+            fetcher,
+            "https://open.tiktokapis.com/v2/oauth/token/",
+            withAbortSignal(
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body,
+              },
+              signal,
+            ),
+          ),
         ),
         now,
       );
     },
 
-    async importAccount(account, grant, window) {
+    async importAccount(account, grant, window, signal) {
       assertProvider(grant, provider);
       assertAccountProvider(provider, account.provider);
       assertImportWindow(window);
@@ -125,8 +133,13 @@ export function createTikTokCreatorPlatformAdapter(
         throw new Error("TikTok account does not belong to the grant");
       }
       const [user, videos] = await Promise.all([
-        getUser(fetcher, grant, ["open_id", "follower_count", "likes_count", "video_count"]),
-        listVideos(fetcher, grant, window),
+        getUser(
+          fetcher,
+          grant,
+          ["open_id", "follower_count", "likes_count", "video_count"],
+          signal,
+        ),
+        listVideos(fetcher, grant, window, signal),
       ]);
       const totals = videos.reduce<{
         likes: number;
@@ -204,14 +217,18 @@ async function getUser(
   fetcher: typeof fetch,
   grant: TikTokCreatorPlatformGrant,
   fields: string[],
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
   const url = new URL("https://open.tiktokapis.com/v2/user/info/");
   url.searchParams.set("fields", fields.join(","));
   const root = record(
     provider,
-    await fetchJson(provider, fetcher, url, {
-      headers: { Authorization: `Bearer ${grant.accessToken}` },
-    }),
+    await fetchJson(
+      provider,
+      fetcher,
+      url,
+      withAbortSignal({ headers: { Authorization: `Bearer ${grant.accessToken}` } }, signal),
+    ),
   );
   return record(provider, record(provider, root.data, "missing user data").user, "missing user");
 }
@@ -220,6 +237,7 @@ async function listVideos(
   fetcher: typeof fetch,
   grant: TikTokCreatorPlatformGrant,
   window: { startDate: string; endDate: string },
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>[]> {
   const start = Date.parse(`${window.startDate}T00:00:00Z`) / 1_000;
   const end = Date.parse(`${window.endDate}T00:00:00Z`) / 1_000;
@@ -235,14 +253,22 @@ async function listVideos(
     const body = JSON.stringify({ max_count: 20, ...(cursor === undefined ? {} : { cursor }) });
     const root = record(
       provider,
-      await fetchJson(provider, fetcher, url, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${grant.accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body,
-      }),
+      await fetchJson(
+        provider,
+        fetcher,
+        url,
+        withAbortSignal(
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${grant.accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body,
+          },
+          signal,
+        ),
+      ),
     );
     const data = record(provider, root.data, "missing videos data");
     const pageVideos = array(provider, data.videos, "invalid videos data").map((value) =>

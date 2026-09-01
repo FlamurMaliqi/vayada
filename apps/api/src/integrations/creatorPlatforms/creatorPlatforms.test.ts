@@ -901,6 +901,27 @@ function youtubeAnalyticsFixture(
 }
 
 describe("provider response safety", () => {
+  it("bounds provider requests and preserves caller cancellation", async () => {
+    const controller = new AbortController();
+    const fixtures = fixtureFetch([
+      {
+        name: "bounded request",
+        match: (url) => url.pathname === "/bounded",
+      },
+    ]);
+
+    await fetchOptionalJson("instagram", fixtures.fetch, "https://example.test/bounded", {
+      signal: controller.signal,
+    });
+    const requestSignal = fixtures.calls[0]?.init?.signal;
+    expect(requestSignal).toBeInstanceOf(AbortSignal);
+    expect(requestSignal).not.toBe(controller.signal);
+
+    controller.abort();
+
+    expect(requestSignal?.aborted).toBe(true);
+  });
+
   it.each([400, 401, 429, 500])("does not suppress optional request status %i", async (status) => {
     const fixtures = fixtureFetch([
       {

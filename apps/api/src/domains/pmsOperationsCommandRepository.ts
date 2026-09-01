@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
 import pg, { type QueryResult, type QueryResultRow } from "pg";
+import {
+  PMS_ROOM_TYPE_DUPLICATION_COPIED_FACTS,
+  PMS_ROOM_TYPE_DUPLICATION_RESET_FACTS,
+  PMS_ROOM_TYPE_LIFECYCLE_CONTRACT_VERSION,
+  type PmsRoomTypeRetirementBlocker,
+  type PmsRoomTypeRetirementImpact,
+} from "@vayada/domain-pms";
 
 import {
   bankTransferDetailsFromPolicy,
@@ -105,6 +112,9 @@ import {
   type PmsRoomType,
   type PmsRoomTypeCommandResult,
   type PmsRoomTypeCreateCommand,
+  type PmsRoomTypeDuplicateCommand,
+  type PmsRoomTypeRetireCommand,
+  type PmsRoomTypeRetireCommandResult,
   type PmsRoomTypeUpdateCommand,
 } from "../routes/pmsOperations.js";
 
@@ -220,8 +230,33 @@ type PmsCheckoutChargeOperation =
   | "checkout_charge_create"
   | "checkout_charge_mark_paid"
   | "checkout_charge_waive";
-type PmsRoomTypeCommandOperation = "room_type_create" | "room_type_location_update";
-type PmsRoomTypeCommand = PmsRoomTypeCreateCommand | PmsRoomTypeUpdateCommand;
+type PmsRoomTypeCommandOperation =
+  | "room_type_create"
+  | "room_type_location_update"
+  | "room_type_duplicate"
+  | "room_type_retire";
+type PmsRoomTypeCommand =
+  | PmsRoomTypeCreateCommand
+  | PmsRoomTypeUpdateCommand
+  | PmsRoomTypeDuplicateCommand
+  | PmsRoomTypeRetireCommand;
+
+type PmsRoomTypeLifecycleRow = {
+  roomTypeId: string;
+  name: string;
+  roomFactsRevision: number | string;
+};
+
+type PmsLegacyRatePlanRow = {
+  ratePlanId: string;
+  code: string;
+  name: string;
+  rateType: "flexible" | "non_refundable" | "package" | "manual";
+  mealPlan: string | null;
+  baseRateAmount: string;
+  currency: string;
+  active: boolean;
+};
 type PmsRoomBlockCommand =
   | PmsRoomBlockCreateCommand
   | PmsRoomBlockUpdateCommand
@@ -609,6 +644,279 @@ export function createTargetPmsOperationsCommandRepository(
         if (isPgForeignKeyViolation(error)) {
           return roomTypeInvalidBody("Room type update references a property that does not exist.");
         }
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async duplicateRoomType(command) {
+      const client = await pool.connect();
+      const acceptedAt = now().toISOString();
+      const keyHash = sha256(command.idempotencyKey);
+      const requestFingerprintHash = sha256(stableJson(roomTypeCommandFingerprint(command)));
+      const commandMeta: PmsCommandMeta = {
+        contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+        commandId: command.commandId,
+        idempotencyKey: command.idempotencyKey,
+        acceptedAt,
+        sideEffects: ["ari_changed", "distribution_refresh", "audit_event"],
+      };
+
+      try {
+        await client.query("BEGIN");
+        const replay = await findRoomTypeCommandReplay(
+          client,
+          "room_type_duplicate",
+          command,
+          keyHash,
+          requestFingerprintHash,
+        );
+        if (replay) {
+          await client.query("ROLLBACK");
+          return replay;
+        }
+
+        const source = await lockActiveRoomTypeForLifecycle(client, command);
+        if (!source) {
+          await client.query("ROLLBACK");
+          return roomTypeNotFound(command.roomTypeId);
+        }
+        if (roomTypeVersion(source.roomFactsRevision) !== command.expectedVersion) {
+          await client.query("ROLLBACK");
+          return roomTypeConflict("version_conflict", "Room type version is stale.");
+        }
+        const sourceReadModel = await config.readRepository.findRoomTypeById(
+          command.propertyId,
+          command.roomTypeId,
+        );
+        if (!sourceReadModel) {
+          await client.query("ROLLBACK");
+          return roomTypeNotFound(command.roomTypeId);
+        }
+
+        const insertedIdempotencyKey = await recordRoomTypeCommandIdempotency(
+          client,
+          "room_type_duplicate",
+          command,
+          keyHash,
+          requestFingerprintHash,
+          acceptedAt,
+        );
+        if (!insertedIdempotencyKey) {
+          await client.query("ROLLBACK");
+          return roomTypeConflict(
+            "idempotency_conflict",
+            "Room type duplicate idempotency key could not be reserved.",
+          );
+        }
+
+        const duplicateName = await availableRoomTypeCopyName(
+          client,
+          command.propertyId,
+          source.name,
+        );
+        const duplicated = await insertDuplicatedRoomType(
+          client,
+          command,
+          duplicateName,
+          acceptedAt,
+        );
+        const copiedRatePlans = await copyLegacyRoomTypePricing(
+          client,
+          command,
+          duplicated.roomTypeId,
+          acceptedAt,
+        );
+        await copyRoomTypeMediaAssignments(client, command, duplicated.roomTypeId, acceptedAt);
+
+        const roomType: PmsRoomType = {
+          ...sourceReadModel,
+          roomTypeId: duplicated.roomTypeId,
+          version: roomTypeVersion(1),
+          name: duplicateName,
+          active: true,
+          sortOrder: duplicated.sortOrder,
+          roomMediaRevision: 1,
+          ratePlans: copiedRatePlans,
+          roomCount: 0,
+        };
+        await enqueueInventoryChangedSideEffects(
+          client,
+          command,
+          lifecycleInventoryResource(command, duplicated.roomTypeId, acceptedAt),
+          commandMeta,
+          keyHash,
+          acceptedAt,
+        );
+        await insertRoomTypeLifecycleAuditEvent(
+          client,
+          command,
+          "pms.room_type.duplicated",
+          duplicated.roomTypeId,
+          commandMeta,
+          keyHash,
+          {
+            sourceRoomTypeId: command.roomTypeId,
+            copiedFacts: PMS_ROOM_TYPE_DUPLICATION_COPIED_FACTS,
+            resetFacts: PMS_ROOM_TYPE_DUPLICATION_RESET_FACTS,
+          },
+        );
+        await completeRoomTypeCommandIdempotency(
+          client,
+          "room_type_duplicate",
+          command,
+          keyHash,
+          commandMeta,
+          acceptedAt,
+          roomType,
+        );
+        await client.query("COMMIT");
+        return { ok: true, roomType, commandMeta };
+      } catch (error) {
+        await rollbackQuietly(client);
+        if (isPgUniqueViolation(error)) {
+          return roomTypeConflict(
+            "room_type_conflict",
+            "Room type duplication conflicts with the current property state.",
+          );
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async inspectRoomTypeRetirement(propertyId, roomTypeId) {
+      const client = await pool.connect();
+      try {
+        return inspectRoomTypeRetirement(client, propertyId, roomTypeId);
+      } finally {
+        client.release();
+      }
+    },
+
+    async retireRoomType(command) {
+      const client = await pool.connect();
+      const acceptedAt = now().toISOString();
+      const keyHash = sha256(command.idempotencyKey);
+      const requestFingerprintHash = sha256(stableJson(roomTypeCommandFingerprint(command)));
+      const commandMeta: PmsCommandMeta = {
+        contractVersion: PMS_OPERATIONS_CONTRACT_VERSION,
+        commandId: command.commandId,
+        idempotencyKey: command.idempotencyKey,
+        acceptedAt,
+        sideEffects: ["ari_changed", "distribution_refresh", "audit_event"],
+      };
+      try {
+        await client.query("BEGIN");
+        const replay = await findRoomTypeRetireReplay(
+          client,
+          command,
+          keyHash,
+          requestFingerprintHash,
+        );
+        if (replay) {
+          await client.query("ROLLBACK");
+          return replay;
+        }
+        const source = await lockActiveRoomTypeForLifecycle(client, command);
+        if (!source) {
+          await client.query("ROLLBACK");
+          return roomTypeRetireNotFound(command.roomTypeId);
+        }
+        if (roomTypeVersion(source.roomFactsRevision) !== command.expectedVersion) {
+          await client.query("ROLLBACK");
+          return roomTypeRetireConflict("version_conflict", "Room type version is stale.");
+        }
+
+        await lockRoomTypeRetirementDependencies(client);
+        const impact = await inspectRoomTypeRetirement(
+          client,
+          command.propertyId,
+          command.roomTypeId,
+        );
+        if (!impact) {
+          await client.query("ROLLBACK");
+          return roomTypeRetireNotFound(command.roomTypeId);
+        }
+        if (!impact.canRetire) {
+          await client.query("ROLLBACK");
+          return {
+            ...roomTypeRetireConflict(
+              "room_type_retirement_blocked",
+              "Resolve the reported room type dependencies before retirement.",
+            ),
+            impact,
+          };
+        }
+
+        const insertedIdempotencyKey = await recordRoomTypeCommandIdempotency(
+          client,
+          "room_type_retire",
+          command,
+          keyHash,
+          requestFingerprintHash,
+          acceptedAt,
+        );
+        if (!insertedIdempotencyKey) {
+          await client.query("ROLLBACK");
+          return roomTypeRetireConflict(
+            "idempotency_conflict",
+            "Room type retirement idempotency key could not be reserved.",
+          );
+        }
+
+        await client.query(
+          `UPDATE pms.rate_plans
+           SET active = FALSE, updated_at = $3::timestamptz
+           WHERE property_id = $1::uuid AND room_type_id = $2::uuid AND active`,
+          [command.propertyId, command.roomTypeId, acceptedAt],
+        );
+        const retired = await client.query<{ roomFactsRevision: number | string }>(
+          `UPDATE pms.room_types
+           SET active = FALSE,
+               room_facts_revision = room_facts_revision + 1,
+               updated_at = $3::timestamptz
+           WHERE property_id = $1::uuid AND id = $2::uuid AND active
+           RETURNING room_facts_revision AS "roomFactsRevision"`,
+          [command.propertyId, command.roomTypeId, acceptedAt],
+        );
+        if (retired.rowCount !== 1) throw new Error("Room type retirement lost its locked row");
+        const retiredImpact: PmsRoomTypeRetirementImpact = {
+          ...impact,
+          version: roomTypeVersion(retired.rows[0]!.roomFactsRevision),
+          canRetire: false,
+        };
+        await enqueueInventoryChangedSideEffects(
+          client,
+          command,
+          lifecycleInventoryResource(command, command.roomTypeId, acceptedAt),
+          commandMeta,
+          keyHash,
+          acceptedAt,
+        );
+        await insertRoomTypeLifecycleAuditEvent(
+          client,
+          command,
+          "pms.room_type.retired",
+          command.roomTypeId,
+          commandMeta,
+          keyHash,
+          { dependencyImpact: impact },
+        );
+        await completeRoomTypeRetireIdempotency(
+          client,
+          command,
+          keyHash,
+          commandMeta,
+          acceptedAt,
+          retiredImpact,
+        );
+        await client.query("COMMIT");
+        return { ok: true, impact: retiredImpact, commandMeta };
+      } catch (error) {
+        await rollbackQuietly(client);
         throw error;
       } finally {
         client.release();
@@ -2319,6 +2627,7 @@ function roomTypeFromCommand(
 ): PmsRoomType {
   return {
     roomTypeId,
+    version: roomTypeVersion(1),
     name: command.name,
     description: command.description,
     category: command.category,
@@ -3414,6 +3723,399 @@ async function completeRoomTypeCommandIdempotency(
   );
 }
 
+async function lockActiveRoomTypeForLifecycle(
+  client: PmsOperationsCommandClient,
+  command: PmsRoomTypeDuplicateCommand | PmsRoomTypeRetireCommand,
+): Promise<PmsRoomTypeLifecycleRow | null> {
+  const result = await client.query<PmsRoomTypeLifecycleRow>(
+    `SELECT id::text AS "roomTypeId", name,
+            room_facts_revision AS "roomFactsRevision"
+     FROM pms.room_types
+     WHERE property_id = $1::uuid AND id = $2::uuid AND active
+     FOR UPDATE`,
+    [command.propertyId, command.roomTypeId],
+  );
+  return result.rows[0] ?? null;
+}
+
+function roomTypeVersion(revision: number | string): string {
+  return `room-type-facts-v${Number(revision)}`;
+}
+
+async function availableRoomTypeCopyName(
+  client: PmsOperationsCommandClient,
+  propertyId: string,
+  sourceName: string,
+): Promise<string> {
+  const names = await client.query<{ name: string }>(
+    `SELECT lower(name) AS name
+     FROM pms.room_types
+     WHERE property_id = $1::uuid AND active
+     ORDER BY lower(name)`,
+    [propertyId],
+  );
+  const existing = new Set(names.rows.map(({ name }) => name));
+  for (let copyNumber = 1; copyNumber <= 999; copyNumber += 1) {
+    const suffix = copyNumber === 1 ? " Copy" : ` Copy ${copyNumber}`;
+    const candidate = `${sourceName.slice(0, 200 - suffix.length).trimEnd()}${suffix}`;
+    if (!existing.has(candidate.toLowerCase())) return candidate;
+  }
+  throw new Error("Room type copy name space is exhausted");
+}
+
+async function insertDuplicatedRoomType(
+  client: PmsOperationsCommandClient,
+  command: PmsRoomTypeDuplicateCommand,
+  name: string,
+  acceptedAt: string,
+): Promise<{ roomTypeId: string; sortOrder: number }> {
+  const result = await client.query<{ roomTypeId: string; sortOrder: number }>(
+    `INSERT INTO pms.room_types (
+       property_id, source_system, source_room_type_id, setup_draft_room_id,
+       name, description, category, occupancy_limits, room_attributes,
+       amenities_snapshot, media_snapshot, base_rate_amount, currency, active,
+       sort_order, location_summary, room_facts_revision, room_units_revision,
+       room_media_revision, room_amenities_revision, room_amenities_reviewed_at,
+       linked_inventory_group_id, created_at, updated_at
+     )
+     SELECT
+       source.property_id, 'pms', NULL, NULL,
+       $3, source.description, source.category, source.occupancy_limits,
+       source.room_attributes, source.amenities_snapshot, source.media_snapshot,
+       source.base_rate_amount, source.currency, TRUE,
+       COALESCE((SELECT max(sort_order) + 1 FROM pms.room_types
+                 WHERE property_id = source.property_id AND active), 0),
+       source.location_summary, 1, 1, 1, 1, NULL, NULL,
+       $4::timestamptz, $4::timestamptz
+     FROM pms.room_types source
+     WHERE source.property_id = $1::uuid AND source.id = $2::uuid AND source.active
+     RETURNING id::text AS "roomTypeId", sort_order AS "sortOrder"`,
+    [command.propertyId, command.roomTypeId, name, acceptedAt],
+  );
+  const duplicated = result.rows[0];
+  if (!duplicated) throw new Error("Room type duplication lost its locked source");
+  return duplicated;
+}
+
+async function copyRoomTypeMediaAssignments(
+  client: PmsOperationsCommandClient,
+  command: PmsRoomTypeDuplicateCommand,
+  duplicatedRoomTypeId: string,
+  acceptedAt: string,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO pms.room_type_media (
+       property_id, room_type_id, platform_media_object_id, alt_text,
+       sort_order, created_at, updated_at
+     )
+     SELECT property_id, $3::uuid, platform_media_object_id, alt_text,
+            sort_order, $4::timestamptz, $4::timestamptz
+     FROM pms.room_type_media
+     WHERE property_id = $1::uuid AND room_type_id = $2::uuid
+     ORDER BY sort_order, platform_media_object_id`,
+    [command.propertyId, command.roomTypeId, duplicatedRoomTypeId, acceptedAt],
+  );
+}
+
+async function copyLegacyRoomTypePricing(
+  client: PmsOperationsCommandClient,
+  command: PmsRoomTypeDuplicateCommand,
+  duplicatedRoomTypeId: string,
+  acceptedAt: string,
+): Promise<PmsRoomType["ratePlans"]> {
+  await client.query(
+    `INSERT INTO pms.rate_plans (
+       property_id, room_type_id, code, name, rate_type, meal_plan,
+       payment_policy, deposit_policy, cancellation_policy_snapshot,
+       base_rate_amount, currency, active, created_at, updated_at
+     )
+     SELECT source.property_id, $3::uuid, source.code, source.name,
+            source.rate_type, source.meal_plan, source.payment_policy,
+            source.deposit_policy, source.cancellation_policy_snapshot,
+            source.base_rate_amount, source.currency, source.active,
+            $4::timestamptz, $4::timestamptz
+     FROM pms.rate_plans source
+     WHERE source.property_id = $1::uuid AND source.room_type_id = $2::uuid
+       AND source.pricing_contract_version IS NULL
+     ORDER BY source.code, source.id`,
+    [command.propertyId, command.roomTypeId, duplicatedRoomTypeId, acceptedAt],
+  );
+  await client.query(
+    `INSERT INTO pms.rate_rules (
+       property_id, room_type_id, rate_plan_id, rule_type, starts_on, ends_on,
+       days_of_week, min_stay_nights, max_stay_nights, closed_to_arrival,
+       closed_to_departure, price_delta_amount, price_delta_percent,
+       rule_payload, created_at, updated_at
+     )
+     SELECT rule.property_id, $3::uuid, target_plan.id, rule.rule_type,
+            rule.starts_on, rule.ends_on, rule.days_of_week, rule.min_stay_nights,
+            rule.max_stay_nights, rule.closed_to_arrival, rule.closed_to_departure,
+            rule.price_delta_amount, rule.price_delta_percent, rule.rule_payload,
+            $4::timestamptz, $4::timestamptz
+     FROM pms.rate_rules rule
+     LEFT JOIN pms.rate_plans source_plan
+       ON source_plan.id = rule.rate_plan_id
+      AND source_plan.property_id = rule.property_id
+      AND source_plan.room_type_id = rule.room_type_id
+     LEFT JOIN pms.rate_plans target_plan
+       ON target_plan.property_id = rule.property_id
+      AND target_plan.room_type_id = $3::uuid
+      AND target_plan.code = source_plan.code
+     WHERE rule.property_id = $1::uuid AND rule.room_type_id = $2::uuid
+       AND (rule.rate_plan_id IS NULL OR source_plan.pricing_contract_version IS NULL)
+       AND (rule.rate_plan_id IS NULL OR target_plan.id IS NOT NULL)
+     ORDER BY rule.starts_on, rule.ends_on, rule.id`,
+    [command.propertyId, command.roomTypeId, duplicatedRoomTypeId, acceptedAt],
+  );
+  const plans = await client.query<PmsLegacyRatePlanRow>(
+    `SELECT id::text AS "ratePlanId", code, name, rate_type AS "rateType",
+            meal_plan AS "mealPlan", base_rate_amount::text AS "baseRateAmount",
+            currency, active
+     FROM pms.rate_plans
+     WHERE property_id = $1::uuid AND room_type_id = $2::uuid
+     ORDER BY code, id`,
+    [command.propertyId, duplicatedRoomTypeId],
+  );
+  return plans.rows.map((plan) => ({
+    ratePlanId: plan.ratePlanId,
+    pricingContractVersion: null,
+    code: plan.code,
+    name: plan.name,
+    rateType: plan.rateType,
+    mealPlan: plan.mealPlan,
+    baseRate: { amountDecimal: plan.baseRateAmount, currency: plan.currency },
+    active: plan.active,
+  }));
+}
+
+type PmsRoomTypeRetirementCountsRow = {
+  reservationCount: number | string;
+  physicalUnitCount: number | string;
+  inventoryCount: number | string;
+  publicationCount: number | string;
+  roomFactsRevision: number | string;
+};
+
+async function inspectRoomTypeRetirement(
+  client: PmsOperationsCommandClient,
+  propertyId: string,
+  roomTypeId: string,
+): Promise<PmsRoomTypeRetirementImpact | null> {
+  const result = await client.query<PmsRoomTypeRetirementCountsRow>(
+    `SELECT room_type.room_facts_revision AS "roomFactsRevision",
+       ((SELECT count(*) FROM pms.operational_booking_assignments assignment
+         WHERE assignment.property_id = room_type.property_id
+           AND assignment.room_type_id = room_type.id
+           AND assignment.assignment_status IN ('pending','assigned','checked_in','in_house'))
+        +
+        (SELECT count(*) FROM pms.inventory_reservation_receipts receipt
+         JOIN pms.inventory_reservation_statuses status
+           ON status.receipt_id = receipt.receipt_id
+         WHERE receipt.property_id = room_type.property_id
+           AND receipt.room_type_id = room_type.id
+           AND status.lifecycle_state IN ('reserved','handed_off')
+           AND receipt.check_out > CURRENT_DATE))::bigint AS "reservationCount",
+       (SELECT count(*) FROM pms.rooms room
+        WHERE room.property_id = room_type.property_id
+          AND room.room_type_id = room_type.id
+          AND room.status <> 'retired')::bigint AS "physicalUnitCount",
+       ((SELECT count(*) FROM pms.inventory_days inventory
+         WHERE inventory.property_id = room_type.property_id
+           AND inventory.room_type_id = room_type.id
+           AND inventory.stay_date >= CURRENT_DATE
+           AND (inventory.status <> 'closed' OR inventory.available_count > 0
+                OR inventory.assigned_count > 0 OR inventory.blocked_count > 0))
+        +
+        (SELECT count(*) FROM pms.room_blocks block
+         WHERE block.property_id = room_type.property_id
+           AND (block.room_type_id = room_type.id OR block.source_room_type_id = room_type.id)
+           AND block.status = 'active' AND block.ends_on >= CURRENT_DATE)
+        + CASE WHEN room_type.linked_inventory_group_id IS NULL THEN 0 ELSE 1 END
+       )::bigint AS "inventoryCount",
+       ((SELECT count(*) FROM distribution.public_room_offer_snapshots offer
+         WHERE offer.property_id = room_type.property_id
+           AND offer.room_type_id = room_type.id
+           AND offer.stay_date >= CURRENT_DATE AND offer.sellable_publicly)
+        +
+        (SELECT count(*) FROM pms.channel_room_type_mappings mapping
+         WHERE mapping.property_id = room_type.property_id
+           AND mapping.room_type_id = room_type.id AND mapping.status = 'active')
+        +
+        (SELECT count(*) FROM pms.channel_rate_plan_mappings mapping
+         WHERE mapping.property_id = room_type.property_id
+           AND mapping.room_type_id = room_type.id AND mapping.status = 'active')
+        +
+        (SELECT count(*)
+         FROM distribution.active_public_booking_revision active_revision
+         JOIN distribution.public_booking_content_revisions content
+           ON content.id = active_revision.content_revision_id
+          AND content.property_id = active_revision.property_id
+         WHERE active_revision.property_id = room_type.property_id
+           AND (
+             jsonb_path_exists(
+               content.source_manifest,
+               'strict $.** ? (@ == $roomTypeId)',
+               jsonb_build_object('roomTypeId', to_jsonb(room_type.id::text))
+             )
+             OR jsonb_path_exists(
+               content.public_content,
+               'strict $.** ? (@ == $roomTypeId)',
+               jsonb_build_object('roomTypeId', to_jsonb(room_type.id::text))
+             )
+           ))
+       )::bigint AS "publicationCount"
+     FROM pms.room_types room_type
+     WHERE room_type.property_id = $1::uuid AND room_type.id = $2::uuid AND room_type.active`,
+    [propertyId, roomTypeId],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  const blockers: PmsRoomTypeRetirementBlocker[] = [];
+  const add = (
+    category: PmsRoomTypeRetirementBlocker["category"],
+    code: PmsRoomTypeRetirementBlocker["code"],
+    count: number | string,
+    action: string,
+  ) => {
+    const affectedCount = Number(count);
+    if (affectedCount > 0) blockers.push({ category, code, affectedCount, action });
+  };
+  add(
+    "reservations",
+    "active_reservations",
+    row.reservationCount,
+    "Move, cancel, check out, or release active reservations and inventory holds.",
+  );
+  add(
+    "physical_units",
+    "active_physical_units",
+    row.physicalUnitCount,
+    "Retire or move every active physical room unit assigned to this room type.",
+  );
+  add(
+    "inventory",
+    "future_inventory",
+    row.inventoryCount,
+    "Close future inventory, release room blocks, and remove linked-inventory membership.",
+  );
+  add(
+    "publication",
+    "active_publication",
+    row.publicationCount,
+    "Unpublish public offers and disable channel mappings for this room type.",
+  );
+  return {
+    contractVersion: PMS_ROOM_TYPE_LIFECYCLE_CONTRACT_VERSION,
+    propertyId,
+    roomTypeId,
+    version: roomTypeVersion(row.roomFactsRevision),
+    canRetire: blockers.length === 0,
+    blockers,
+  };
+}
+
+async function lockRoomTypeRetirementDependencies(
+  client: PmsOperationsCommandClient,
+): Promise<void> {
+  await client.query("SET LOCAL lock_timeout = '2s'");
+  await client.query("SET LOCAL statement_timeout = '5s'");
+  await client.query(
+    `LOCK TABLE pms.operational_booking_assignments,
+       pms.inventory_reservation_receipts, pms.inventory_reservation_statuses,
+       pms.rooms, pms.inventory_days, pms.room_blocks,
+       pms.rate_plans, pms.rate_rules,
+       pms.channel_room_type_mappings, pms.channel_rate_plan_mappings,
+       distribution.public_room_offer_snapshots,
+       distribution.active_public_booking_revision,
+       distribution.public_booking_content_revisions
+     IN SHARE ROW EXCLUSIVE MODE`,
+  );
+}
+
+function lifecycleInventoryResource(
+  command: PmsRoomTypeDuplicateCommand | PmsRoomTypeRetireCommand,
+  roomTypeId: string,
+  acceptedAt: string,
+) {
+  return {
+    roomTypeId,
+    resourceType: "room_type" as const,
+    resourceId: roomTypeId,
+    dateRange: {
+      from: acceptedAt.slice(0, 10),
+      to: addUtcDays(acceptedAt.slice(0, 10), PMS_ROOM_INVENTORY_HORIZON_DAYS - 1),
+    },
+    calendarRefresh: false,
+  };
+}
+
+async function findRoomTypeRetireReplay(
+  client: PmsOperationsCommandClient,
+  command: PmsRoomTypeRetireCommand,
+  keyHash: string,
+  requestFingerprintHash: string,
+): Promise<PmsRoomTypeRetireCommandResult | null> {
+  const result = await client.query<PmsIdempotencyRow>(
+    `SELECT status, request_fingerprint_hash AS "requestFingerprintHash",
+            idempotency_metadata AS "idempotencyMetadata"
+     FROM platform.idempotency_keys
+     WHERE operation_scope = 'pms' AND operation = 'room_type_retire'
+       AND key_hash = $1 AND tenant_scope = 'property' AND property_id = $2::uuid
+     FOR UPDATE`,
+    [keyHash, command.propertyId],
+  );
+  const existing = result.rows[0];
+  if (!existing) return null;
+  if (existing.requestFingerprintHash !== requestFingerprintHash) {
+    return roomTypeRetireConflict(
+      "idempotency_conflict",
+      "Idempotency key was used with a different room type retirement command.",
+    );
+  }
+  const commandMeta = existing.idempotencyMetadata?.["commandMeta"];
+  const impact = existing.idempotencyMetadata?.["impact"];
+  if (
+    existing.status !== "completed" ||
+    !isPmsCommandMeta(commandMeta) ||
+    !isPmsRoomTypeRetirementImpact(impact)
+  ) {
+    return roomTypeRetireConflict(
+      "idempotency_conflict",
+      "Room type retirement replay metadata is unavailable.",
+    );
+  }
+  return { ok: true, impact, commandMeta, replayed: true };
+}
+
+async function completeRoomTypeRetireIdempotency(
+  client: PmsOperationsCommandClient,
+  command: PmsRoomTypeRetireCommand,
+  keyHash: string,
+  commandMeta: PmsCommandMeta,
+  acceptedAt: string,
+  impact: PmsRoomTypeRetirementImpact,
+): Promise<void> {
+  const metadata = { commandMeta, impact };
+  await client.query(
+    `UPDATE platform.idempotency_keys
+     SET status = 'completed', response_status_code = 200,
+         response_resource_product = 'pms', response_resource_type = 'room_type',
+         response_resource_id = $1, response_body_hash = $2,
+         completed_at = $3::timestamptz, last_seen_at = $3::timestamptz,
+         idempotency_metadata = $4::jsonb
+     WHERE operation_scope = 'pms' AND operation = 'room_type_retire'
+       AND key_hash = $5 AND tenant_scope = 'property' AND property_id = $6::uuid`,
+    [
+      command.roomTypeId,
+      sha256(stableJson(metadata)),
+      acceptedAt,
+      JSON.stringify(metadata),
+      keyHash,
+      command.propertyId,
+    ],
+  );
+}
+
 async function enqueueInventoryChangedSideEffects(
   client: PmsOperationsCommandClient,
   command: Pick<PmsRoomBlockCommand | PmsRoomTypeCommand, "propertyId" | "commandId" | "audit">,
@@ -3761,6 +4463,48 @@ async function insertRoomTypeLocationUpdateAuditEvent(
         ...(command.flexibleCancellationPolicy
           ? { flexibleCancellationPolicy: command.flexibleCancellationPolicy }
           : {}),
+      }),
+      JSON.stringify({ commandMeta, idempotencyKeyHash: keyHash }),
+    ],
+  );
+}
+
+async function insertRoomTypeLifecycleAuditEvent(
+  client: PmsOperationsCommandClient,
+  command: PmsRoomTypeDuplicateCommand | PmsRoomTypeRetireCommand,
+  action: "pms.room_type.duplicated" | "pms.room_type.retired",
+  targetRoomTypeId: string,
+  commandMeta: PmsCommandMeta,
+  keyHash: string,
+  details: Record<string, unknown>,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO platform.product_audit_events (
+       audit_key, product, action, action_version, occurred_at, tenant_scope,
+       organization_id, property_id, actor_type, actor_user_id,
+       target_resource_product, target_resource_type, target_resource_id,
+       correlation_id, causation_id, redacted_payload, private_payload,
+       audit_metadata, retention_class, privacy_scope
+     ) VALUES (
+       $1, 'pms', $2, 1, $3::timestamptz, 'property', NULL, $4::uuid,
+       $5, $6::uuid, 'pms', 'room_type', $7, $8, $9,
+       $10::jsonb, '{}'::jsonb, $11::jsonb, 'standard', 'internal'
+     ) ON CONFLICT (product, audit_key) DO NOTHING`,
+    [
+      `${action}.property.${command.propertyId}.room_type.${targetRoomTypeId}.key.${keyHash}.v1`,
+      action,
+      commandMeta.acceptedAt,
+      command.propertyId,
+      command.audit.actor.kind,
+      roomTypeActorUserId(command),
+      targetRoomTypeId,
+      command.audit.correlationId ?? command.audit.requestId,
+      command.commandId,
+      JSON.stringify({
+        propertyId: command.propertyId,
+        roomTypeId: targetRoomTypeId,
+        expectedVersion: command.expectedVersion,
+        ...details,
       }),
       JSON.stringify({ commandMeta, idempotencyKeyHash: keyHash }),
     ],
@@ -7593,7 +8337,7 @@ function checkoutChargeConflict(
 }
 
 function roomTypeConflict(
-  code: "idempotency_conflict" | "room_type_conflict",
+  code: "idempotency_conflict" | "room_type_conflict" | "version_conflict",
   message: string,
 ): Exclude<PmsRoomTypeCommandResult, { ok: true }> {
   return {
@@ -7601,6 +8345,24 @@ function roomTypeConflict(
     statusCode: 409,
     code,
     message,
+  };
+}
+
+function roomTypeRetireConflict(
+  code: "idempotency_conflict" | "version_conflict" | "room_type_retirement_blocked",
+  message: string,
+): Exclude<PmsRoomTypeRetireCommandResult, { ok: true }> {
+  return { ok: false, statusCode: 409, code, message };
+}
+
+function roomTypeRetireNotFound(
+  roomTypeId: string,
+): Exclude<PmsRoomTypeRetireCommandResult, { ok: true }> {
+  return {
+    ok: false,
+    statusCode: 404,
+    code: "room_type_not_found",
+    message: `PMS room type ${roomTypeId} was not found.`,
   };
 }
 
@@ -7821,6 +8583,7 @@ function isPmsRoomType(value: unknown): value is PmsRoomType {
   const roomType = value as PmsRoomType;
   return (
     typeof roomType.roomTypeId === "string" &&
+    typeof roomType.version === "string" &&
     typeof roomType.name === "string" &&
     typeof roomType.description === "string" &&
     (roomType.category === null || typeof roomType.category === "string") &&
@@ -7831,6 +8594,29 @@ function isPmsRoomType(value: unknown): value is PmsRoomType {
     typeof roomType.sortOrder === "number" &&
     Array.isArray(roomType.ratePlans) &&
     typeof roomType.roomCount === "number"
+  );
+}
+
+function isPmsRoomTypeRetirementImpact(value: unknown): value is PmsRoomTypeRetirementImpact {
+  if (!value || typeof value !== "object") return false;
+  const impact = value as PmsRoomTypeRetirementImpact;
+  return (
+    impact.contractVersion === PMS_ROOM_TYPE_LIFECYCLE_CONTRACT_VERSION &&
+    typeof impact.propertyId === "string" &&
+    typeof impact.roomTypeId === "string" &&
+    typeof impact.version === "string" &&
+    typeof impact.canRetire === "boolean" &&
+    Array.isArray(impact.blockers) &&
+    impact.blockers.every(
+      (blocker) =>
+        !!blocker &&
+        typeof blocker === "object" &&
+        typeof blocker.category === "string" &&
+        typeof blocker.code === "string" &&
+        Number.isInteger(blocker.affectedCount) &&
+        blocker.affectedCount > 0 &&
+        typeof blocker.action === "string",
+    )
   );
 }
 

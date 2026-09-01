@@ -19,6 +19,7 @@ import type { BookingAddon } from "@/services/bookings";
 const SOURCES = [["call", "Call"], ["email", "Email"], ["whatsapp", "WhatsApp"], ["walk_in", "Walk-in"], ["social_media", "Social media"], ["other", "Other"]] as const;
 // prettier-ignore
 const METHODS = (["pay_at_property", "bank_transfer", "manual_card", "cash", "other"] as const).map((method) => [method, paymentMethodLabel(method)] as const);
+const PREVIEW_DEBOUNCE_MS = 250;
 
 // prettier-ignore
 type Props = { roomTypes: CalendarRoomType[]; rooms: CalendarRoom[]; onSubmit: (input: PmsManualBookingCreateInput) => Promise<PmsManualBookingCreateResult>; onClose: () => void; initialRoomId?: string; initialCheckIn?: string; initialCheckOut?: string; canRecordPaidPayment?: boolean; };
@@ -169,25 +170,28 @@ export default function TargetManualBookingModal({
     setPreviewEvidence(null);
     setStayError(null);
     setPreviewState("loading");
-    calendarService.previewManualBooking(previewInput).then(
-      (result) => {
-        if (!active) return;
-        setPreviewEvidence({ key: previewKey!, result });
-        setPreviewState("idle");
-        setMessage("");
-      },
-      (error: unknown) => {
-        if (!active) return;
-        const detail = errorDetails(error, "Could not calculate the price.", stays);
-        setPreviewEvidence(null);
-        setPreviewState("error");
-        setStayError(detail.stay ?? null);
-        setMessage(detail.stay ? "" : detail.message);
-        if (detail.stay) setFocusTarget(`${detail.stay.key}:${detail.stay.field}`);
-      },
-    );
+    const timeout = globalThis.setTimeout(() => {
+      void calendarService.previewManualBooking(previewInput).then(
+        (result) => {
+          if (!active) return;
+          setPreviewEvidence({ key: previewKey!, result });
+          setPreviewState("idle");
+          setMessage("");
+        },
+        (error: unknown) => {
+          if (!active) return;
+          const detail = errorDetails(error, "Could not calculate the price.", stays);
+          setPreviewEvidence(null);
+          setPreviewState("error");
+          setStayError(detail.stay ?? null);
+          setMessage(detail.stay ? "" : detail.message);
+          if (detail.stay) setFocusTarget(`${detail.stay.key}:${detail.stay.field}`);
+        },
+      );
+    }, PREVIEW_DEBOUNCE_MS);
     return () => {
       active = false;
+      globalThis.clearTimeout(timeout);
     };
   }, [previewInput, previewKey, stays]);
 

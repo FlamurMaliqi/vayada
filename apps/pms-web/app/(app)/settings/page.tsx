@@ -65,6 +65,12 @@ export default function SettingsPage() {
   const [acceptanceLoadError, setAcceptanceLoadError] = useState("");
   const [loadingAcceptance, setLoadingAcceptance] = useState(true);
   const [savingAcceptance, setSavingAcceptance] = useState(false);
+  const [sameDayEnabled, setSameDayEnabled] = useState(true);
+  const [sameDayCutoffTime, setSameDayCutoffTime] = useState<string | null>("18:00");
+  const [sameDayTimeZone, setSameDayTimeZone] = useState("");
+  const [sameDayLoading, setSameDayLoading] = useState(true);
+  const [sameDaySaving, setSameDaySaving] = useState(false);
+  const [sameDayLoadError, setSameDayLoadError] = useState("");
   const [autoRearrangeEnabled, setAutoRearrangeEnabled] = useState(false);
   const [calendarLoading, setCalendarLoading] = useState(true);
   const [calendarSaving, setCalendarSaving] = useState(false);
@@ -136,6 +142,23 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const loadSameDayBooking = useCallback(async () => {
+    setSameDayLoading(true);
+    setSameDayLoadError("");
+    try {
+      const settings = await settingsService.getSameDayBooking();
+      setSameDayEnabled(settings.enabled);
+      setSameDayCutoffTime(settings.cutoffLocalTime);
+      setSameDayTimeZone(settings.propertyTimeZone);
+    } catch (loadError) {
+      setSameDayLoadError(
+        humanizeApiError(loadError, "We couldn’t load same-day booking settings."),
+      );
+    } finally {
+      setSameDayLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     bookingsService
       .getPaymentSettings()
@@ -154,7 +177,8 @@ export default function SettingsPage() {
     void loadPropertyProfile();
     void loadAcceptanceMode();
     void loadCalendarSettings();
-  }, [loadAcceptanceMode, loadCalendarSettings, loadPropertyProfile]);
+    void loadSameDayBooking();
+  }, [loadAcceptanceMode, loadCalendarSettings, loadPropertyProfile, loadSameDayBooking]);
 
   const saveAcceptanceMode = async (instantBook: boolean) => {
     setSavingAcceptance(true);
@@ -185,6 +209,23 @@ export default function SettingsPage() {
       setError(humanizeApiError(saveError, "Couldn’t save calendar settings."));
     } finally {
       setCalendarSaving(false);
+    }
+  };
+
+  const saveSameDayBooking = async (enabled: boolean, cutoffLocalTime: string | null) => {
+    setSameDaySaving(true);
+    setError("");
+    setSuccess("");
+    try {
+      const saved = await settingsService.updateSameDayBooking(enabled, cutoffLocalTime);
+      setSameDayEnabled(saved.enabled);
+      setSameDayCutoffTime(saved.cutoffLocalTime);
+      setSameDayTimeZone(saved.propertyTimeZone);
+      setSuccess("Same-day booking settings saved");
+    } catch (saveError) {
+      setError(humanizeApiError(saveError, "Couldn’t save same-day booking settings."));
+    } finally {
+      setSameDaySaving(false);
     }
   };
 
@@ -340,6 +381,15 @@ export default function SettingsPage() {
         loadError={acceptanceLoadError}
         onToggle={(next) => void saveAcceptanceMode(next)}
         onRetry={() => void loadAcceptanceMode()}
+        sameDayEnabled={sameDayEnabled}
+        sameDayCutoffTime={sameDayCutoffTime}
+        sameDayTimeZone={sameDayTimeZone}
+        sameDayLoading={sameDayLoading}
+        sameDaySaving={sameDaySaving}
+        sameDayLoadError={sameDayLoadError}
+        onSameDayToggle={(next) => void saveSameDayBooking(next, sameDayCutoffTime)}
+        onSameDayCutoffChange={(next) => void saveSameDayBooking(sameDayEnabled, next)}
+        onSameDayRetry={() => void loadSameDayBooking()}
       />
 
       <OtaCommissionSettingsSection />

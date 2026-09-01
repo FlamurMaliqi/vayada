@@ -9,6 +9,10 @@ import {
 const RUN = "vay1351-0123456789abcdef01234567";
 
 describe("production Booking snapshot reader", () => {
+  it("does not require promo redemptions that are absent from the deployed legacy schema", () => {
+    expect(PRODUCTION_BOOKING_SOURCE_TABLES.booking).not.toContain("booking_promo_redemptions");
+  });
+
   it("returns only checksum-verified Booking rows and extraction time", async () => {
     const fixture = new BookingFixture();
     const result = await readProductionBookingSnapshot(fixture as never, RUN, {

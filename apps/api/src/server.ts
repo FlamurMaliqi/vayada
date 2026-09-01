@@ -71,6 +71,7 @@ import { createPublicRuntimeRepositories } from "./publicRuntime.js";
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
 import { createPgPmsLinkedInventoryGroupCommandRepository } from "./domains/pmsLinkedInventoryGroupRepository.js";
 import { createTargetBookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
+import { createTargetSameDayBookingSettingsPort } from "./domains/sameDayBookingSettings.js";
 import { createTargetPmsInventoryPublicOfferProjection } from "./domains/pmsInventoryPublicOfferProjection.js";
 import { createTargetPmsInventoryReservationPort } from "./domains/pmsInventoryReservation.js";
 import { createTargetPmsRoomInventoryReadPort } from "./domains/pmsRoomInventoryReadModel.js";
@@ -141,6 +142,8 @@ import {
   createResendBookingEmailDelivery,
   runBookingEmailDeliveryJobs,
 } from "./jobs/bookingEmailDelivery.js";
+import { startCreatorPlatformSyncWorker } from "./jobs/creatorPlatformSync.js";
+import { createPgCreatorPlatformSyncStore } from "./jobs/creatorPlatformSyncStore.js";
 import { runChannexReviewJobs } from "./jobs/channexReviews.js";
 import { runChannexBookingJobs } from "./jobs/channexBookings.js";
 import { createChannexManagementProvider } from "./integrations/channexManagement.js";
@@ -386,6 +389,9 @@ const pmsLinkedInventoryGroupCommandRepository = pmsOperationsRepository
   : undefined;
 
 const bookingAcceptanceSettings = createTargetBookingAcceptanceSettingsPort({
+  connectionString: targetDatabaseUrl,
+});
+const sameDayBookingSettings = createTargetSameDayBookingSettingsPort({
   connectionString: targetDatabaseUrl,
 });
 
@@ -1172,6 +1178,7 @@ const app = buildApp({
   pmsOperationsCommandRepository,
   pmsLinkedInventoryGroupCommandRepository,
   bookingAcceptanceSettings,
+  sameDayBookingSettings,
   pmsRoomAssignmentSettings,
   pmsRoomAssignmentHistory,
   pmsRoomPublication: pmsRoomPublicationRuntime
@@ -1335,6 +1342,26 @@ const app = buildApp({
   platformMedia: platformMediaRuntime?.routes,
 });
 
+const creatorPlatformSyncConfig = config.creatorPlatformConnections?.sync;
+const creatorPlatformSyncWorker = creatorPlatformSyncConfig?.enabled
+  ? startCreatorPlatformSyncWorker({
+      store: createPgCreatorPlatformSyncStore({ connectionString: targetDatabaseUrl }),
+      repository: createPgMarketplaceCreatorPlatformConnectionRepository({
+        connectionString: targetDatabaseUrl,
+      }),
+      credentialVault: creatorPlatformConnectionRuntime.credentialVault,
+      adapters: creatorPlatformConnectionRuntime.adapters,
+      credentialSecretPrefix: creatorPlatformConnectionRuntime.credentialSecretPrefix,
+      workerId: `creator-platform-sync:${process.pid}`,
+      pollIntervalMs: creatorPlatformSyncConfig.pollIntervalMs,
+      syncIntervalMs: creatorPlatformSyncConfig.recurringIntervalMs,
+      batchSize: creatorPlatformSyncConfig.batchSize,
+      maxAttempts: creatorPlatformSyncConfig.maxAttempts,
+      minimumSpacingMs: creatorPlatformSyncConfig.minimumSpacingMs,
+      warn: (details, message) => app.log.warn(details, message),
+    })
+  : undefined;
+
 const staffRemovalWorker = staffInvitationRuntime
   ? startStaffRemovalWorker({
       repository: staffInvitationRuntime.removalJobRepository,
@@ -1358,6 +1385,7 @@ const bookingPublicationWorker = bookingPublicationRuntime
   : undefined;
 
 app.addHook("onClose", async () => {
+  await creatorPlatformSyncWorker?.close();
   await staffRemovalWorker?.close();
   await bookingPublicationWorker?.close();
   await bookingPublicationRuntime?.close();

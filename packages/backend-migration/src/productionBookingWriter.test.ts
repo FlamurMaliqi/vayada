@@ -13,12 +13,20 @@ describe("production Booking writers", () => {
     const client = new WriterFixture();
     const counts = await writeProductionBookingRecords(client as never, [
       record("booking_settings", { propertyId: "13550000-0000-4000-8000-000000000061" }),
+      record("same_day_booking_policies", {
+        propertyId: "13550000-0000-4000-8000-000000000064",
+      }),
       record("booking_status_events", { id: "13550000-0000-4000-8000-000000000062" }),
     ]);
-    expect(counts).toEqual({ booking_settings: 1, booking_status_events: 1 });
+    expect(counts).toEqual({
+      booking_settings: 1,
+      same_day_booking_policies: 1,
+      booking_status_events: 1,
+    });
     expect(client.sql[0]).toContain("ON CONFLICT (property_id) DO UPDATE SET");
     expect(client.sql[0]).not.toContain("created_at = EXCLUDED.created_at");
-    expect(client.sql[1]).toContain("ON CONFLICT (id) DO NOTHING");
+    expect(client.sql[1]).toContain("booking.same_day_booking_policies");
+    expect(client.sql[2]).toContain("ON CONFLICT (id) DO NOTHING");
   });
 
   it("keeps first-run provenance and advances only the latest source evidence", async () => {
@@ -67,7 +75,7 @@ function record(targetTable: string, row: Record<string, unknown>): BookingTarge
     sourceId: "source-1",
     sourceChecksum: "a".repeat(64),
     sourceUpdatedAt: "2026-08-30T00:00:00.000Z",
-    mutable: targetTable === "booking_settings",
+    mutable: targetTable === "booking_settings" || targetTable === "same_day_booking_policies",
     row,
   };
 }

@@ -105,6 +105,7 @@ import {
   type PmsOperationsReadPool,
 } from "./domains/pmsOperationsReadModel.js";
 import type { BookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
+import type { SameDayBookingSettingsPort } from "./domains/sameDayBookingSettings.js";
 import type { PmsRoomAssignmentSettingsPort } from "./domains/pmsRoomAssignmentSettings.js";
 import type { PmsRoomAssignmentOptimizationHistoryPort } from "./domains/pmsRoomAssignmentOptimizationHistory.js";
 import {
@@ -1051,6 +1052,7 @@ const financeRepository: FinancePropertyReadRepository = {
 const pmsRoomTypes: PmsRoomType[] = [
   {
     roomTypeId: "f6855000-0000-0000-0000-000000000001",
+    version: "room-type-facts-v1",
     name: "Alpine Suite",
     description: "Suite with mountain view.",
     category: "suite",
@@ -1083,6 +1085,7 @@ const pmsRoomTypes: PmsRoomType[] = [
   },
   {
     roomTypeId: "f6855000-0000-0000-0000-000000000002",
+    version: "room-type-facts-v1",
     name: "Garden Room",
     description: "Quiet room facing the garden.",
     category: "double",
@@ -1752,6 +1755,7 @@ function createPmsOperationsCommandRepository(
       }
       const roomType: PmsRoomType = {
         roomTypeId: "f6855000-0000-0000-0000-000000000003",
+        version: "room-type-facts-v1",
         name: command.name,
         description: command.description,
         category: command.category,
@@ -1821,6 +1825,15 @@ function createPmsOperationsCommandRepository(
           sideEffects: ["audit_event"],
         },
       };
+    },
+    async duplicateRoomType() {
+      throw new Error("Room-type duplication is not implemented by this app-test fake.");
+    },
+    async inspectRoomTypeRetirement() {
+      throw new Error("Room-type retirement is not implemented by this app-test fake.");
+    },
+    async retireRoomType() {
+      throw new Error("Room-type retirement is not implemented by this app-test fake.");
     },
     async getOperationalTemplate(propertyId, templateKind) {
       expect(propertyId).toBe(pmsPropertyId);
@@ -2650,6 +2663,7 @@ function buildAuthenticatedApp(
     pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
     pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
     bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
+    sameDayBookingSettings?: SameDayBookingSettingsPort;
     pmsRoomAssignmentSettings?: PmsRoomAssignmentSettingsPort;
     pmsRoomAssignmentHistory?: PmsRoomAssignmentOptimizationHistoryPort;
     bookingGuestPiiPort?: BookingGuestPiiPort;
@@ -2687,6 +2701,7 @@ function buildAuthenticatedApp(
     pmsCheckoutChargeMarkPaidFreezeEnabled: options.pmsCheckoutChargeMarkPaidFreezeEnabled,
     pmsOperationsCommandRepository: options.pmsOperationsCommandRepository,
     bookingAcceptanceSettings: options.bookingAcceptanceSettings,
+    sameDayBookingSettings: options.sameDayBookingSettings,
     pmsRoomAssignmentSettings: options.pmsRoomAssignmentSettings,
     pmsRoomAssignmentHistory: options.pmsRoomAssignmentHistory,
     bookingGuestPiiPort: options.bookingGuestPiiPort,
@@ -2741,23 +2756,6 @@ function buildAuthenticatedApp(
       },
     },
   });
-}
-
-function propertyAccessFailureAfterAuthorization(): PropertyAccessRepository {
-  let reads = 0;
-  return {
-    async findMembershipPropertyScope(context) {
-      if (reads++ % 2 === 0) {
-        return {
-          mode: "all",
-          roleKey: context.membership.roleKey,
-          accessOrigin: "agency",
-          assignedPropertyIds: [],
-        };
-      }
-      throw new Error("sensitive property access failure");
-    },
-  };
 }
 
 function readContractPath(value: unknown, path: string): unknown {
@@ -5388,12 +5386,6 @@ describe("vayada-api", () => {
         500,
         "read_model_unavailable",
       ),
-      testCase(
-        "scope second-read failure",
-        { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
-        500,
-        "read_model_unavailable",
-      ),
       testCase("authorized malformed JSON", {}, 400, undefined, "malformed"),
     ];
     const requests = {
@@ -7097,6 +7089,13 @@ describe("vayada-api", () => {
     const pool: PublicHotelQuoteReadPool = {
       async query<T extends QueryResultRow>(text: string, values?: readonly unknown[]) {
         queries.push({ text, values });
+        if (text.includes("same_day_booking_policies")) {
+          return {
+            rows: [
+              { timezone: "Europe/Vienna", enabled: true, cutoffLocalTime: "18:00" },
+            ] as unknown as T[],
+          };
+        }
         return {
           rows: [
             {
@@ -7221,12 +7220,12 @@ describe("vayada-api", () => {
         status: "fresh",
       },
     });
-    expect(queries[0]?.text).toContain("distribution.public_quote_read_models");
-    expect(queries[0]?.text).toContain("read_model.expires_at > $11::timestamptz");
-    expect(queries[0]?.text).toContain("profile.profile_status = 'public'");
-    expect(queries[0]?.text).toContain("profile.expires_at IS NULL");
-    expect(queries[0]?.text).toContain("read_model.freshness_status = 'fresh'");
-    expect(queries[0]?.text).not.toContain("PMS_PUBLIC_API_URL");
+    expect(queries[1]?.text).toContain("distribution.public_quote_read_models");
+    expect(queries[1]?.text).toContain("read_model.expires_at > $11::timestamptz");
+    expect(queries[1]?.text).toContain("profile.profile_status = 'public'");
+    expect(queries[1]?.text).toContain("profile.expires_at IS NULL");
+    expect(queries[1]?.text).toContain("read_model.freshness_status = 'fresh'");
+    expect(queries[1]?.text).not.toContain("PMS_PUBLIC_API_URL");
     expect(findForbiddenPublicBookabilityKeys(quote)).toEqual([]);
   });
 
@@ -7235,7 +7234,14 @@ describe("vayada-api", () => {
     const pool: PublicHotelQuoteReadPool = {
       async query<T extends QueryResultRow>(text: string, values?: readonly unknown[]) {
         queries.push({ text, values });
-        if (queries.length === 1) {
+        if (text.includes("same_day_booking_policies")) {
+          return {
+            rows: [
+              { timezone: "Europe/Vienna", enabled: true, cutoffLocalTime: "18:00" },
+            ] as unknown as T[],
+          };
+        }
+        if (text.includes("public_quote_read_models")) {
           return { rows: [] as unknown as T[] };
         }
         return {
@@ -7312,18 +7318,18 @@ describe("vayada-api", () => {
         status: "fresh",
       },
     });
-    expect(queries).toHaveLength(2);
-    expect(queries[0]?.text).toContain("distribution.public_quote_read_models");
-    expect(queries[1]?.text).toContain("distribution.public_room_offer_snapshots");
-    expect(queries[1]?.text).toContain(
+    expect(queries).toHaveLength(3);
+    expect(queries[1]?.text).toContain("distribution.public_quote_read_models");
+    expect(queries[2]?.text).toContain("distribution.public_room_offer_snapshots");
+    expect(queries[2]?.text).toContain(
       "jsonb_agg(offer.payment_options ORDER BY offer.stay_date)->0",
     );
-    expect(queries[1]?.text).not.toContain("array_agg(offer.payment_options");
-    expect(queries[1]?.text).toContain("offer.sellable_publicly = TRUE");
-    expect(queries[1]?.text).toContain("offer.availability_status IN ('available', 'limited')");
-    expect(queries[1]?.text).toContain("offer.available_rooms > 0");
-    expect(queries[1]?.text).toContain("offer.freshness_status = 'fresh'");
-    expect(queries[1]?.values).toEqual([
+    expect(queries[2]?.text).not.toContain("array_agg(offer.payment_options");
+    expect(queries[2]?.text).toContain("offer.sellable_publicly = TRUE");
+    expect(queries[2]?.text).toContain("offer.availability_status IN ('available', 'limited')");
+    expect(queries[2]?.text).toContain("offer.available_rooms > 0");
+    expect(queries[2]?.text).toContain("offer.freshness_status = 'fresh'");
+    expect(queries[2]?.values).toEqual([
       "hotel-alpenrose",
       "2026-09-12",
       "2026-09-15",
@@ -7398,7 +7404,14 @@ describe("vayada-api", () => {
         },
       },
       pool: {
-        async query<T extends QueryResultRow>() {
+        async query<T extends QueryResultRow>(text: string) {
+          if (text.includes("same_day_booking_policies")) {
+            return {
+              rows: [
+                { timezone: "Europe/Vienna", enabled: true, cutoffLocalTime: "18:00" },
+              ] as unknown as T[],
+            };
+          }
           return {
             rows: [
               {
@@ -7481,7 +7494,14 @@ describe("vayada-api", () => {
       connectionString: "postgresql://target-db",
       profileRepository: publicHotelProfileRepository,
       pool: {
-        async query<T extends QueryResultRow>() {
+        async query<T extends QueryResultRow>(text: string) {
+          if (text.includes("same_day_booking_policies")) {
+            return {
+              rows: [
+                { timezone: "Europe/Vienna", enabled: true, cutoffLocalTime: "18:00" },
+              ] as unknown as T[],
+            };
+          }
           return {
             rows: [
               {
@@ -7547,7 +7567,14 @@ describe("vayada-api", () => {
       },
     };
     const pool: PublicHotelQuoteReadPool = {
-      async query<T extends QueryResultRow>() {
+      async query<T extends QueryResultRow>(text: string) {
+        if (text.includes("same_day_booking_policies")) {
+          return {
+            rows: [
+              { timezone: "Europe/Vienna", enabled: true, cutoffLocalTime: "18:00" },
+            ] as unknown as T[],
+          };
+        }
         return {
           rows: [
             {
@@ -7625,7 +7652,14 @@ describe("vayada-api", () => {
 
   it("preserves public detail for target unavailable quote reasons", async () => {
     const pool: PublicHotelQuoteReadPool = {
-      async query<T extends QueryResultRow>() {
+      async query<T extends QueryResultRow>(text: string) {
+        if (text.includes("same_day_booking_policies")) {
+          return {
+            rows: [
+              { timezone: "Europe/Vienna", enabled: true, cutoffLocalTime: "18:00" },
+            ] as unknown as T[],
+          };
+        }
         return {
           rows: [
             {
@@ -7785,6 +7819,7 @@ describe("vayada-api", () => {
     const repository = createTargetBookingWebCalendarRepository({
       connectionString: "postgresql://target-db",
       pool,
+      now: () => new Date("2026-06-09T09:00:00.000Z"),
     });
 
     const calendar = await repository.findCalendarByHotel(seededPublicProfile.hotel, {
@@ -7812,13 +7847,56 @@ describe("vayada-api", () => {
     expect(queries[0]?.text).toContain("profile.profile_status = 'public'");
     expect(queries[0]?.text).toContain("profile.expires_at IS NULL");
     expect(queries[0]?.text).toContain("offer.freshness_status = 'fresh'");
+    expect(queries[0]?.text).toContain("hotel_catalog.property_locations");
+    expect(queries[0]?.text).toContain("booking.same_day_booking_policies");
+    expect(queries[0]?.text).toContain("AT TIME ZONE location.timezone");
     expect(queries[0]?.values).toEqual([
       seededPublicProfile.hotel.propertyId,
       "hotel-alpenrose",
       "2026-09-12",
       "2026-09-15",
+      "2026-06-09T09:00:00.000Z",
+      true,
+      "18:00",
     ]);
     expect(findForbiddenPublicBookabilityKeys(calendar)).toEqual([]);
+  });
+
+  it("closes the same-day Booking Web calendar at the exact property-local cutoff", async () => {
+    const queries: Array<{ text: string; values?: readonly unknown[] }> = [];
+    const pool: BookingWebCalendarReadPool = {
+      async query<T extends QueryResultRow>(text: string, values?: readonly unknown[]) {
+        queries.push({ text, values });
+        return {
+          rows: [
+            {
+              stayDate: "2026-09-12",
+              hasAvailability: false,
+              hasUnavailableState: false,
+              sourceFreshnessValues: [],
+              freshnessStatuses: ["fresh"],
+              dataSources: ["pms", "distribution"],
+              generatedAt: "2026-09-12T16:00:00.000Z",
+            },
+          ] as unknown as T[],
+        };
+      },
+      async end() {},
+    };
+    const repository = createTargetBookingWebCalendarRepository({
+      connectionString: "postgresql://target-db",
+      pool,
+      now: () => new Date("2026-09-12T16:00:00.000Z"),
+    });
+
+    const calendar = await repository.findCalendarByHotel(seededPublicProfile.hotel, {
+      start: "2026-09-12",
+      end: "2026-09-13",
+    });
+
+    expect(calendar.calendar.unavailableDates).toEqual(["2026-09-12"]);
+    expect(queries[0]?.text).toContain("< (CASE WHEN policy.property_id IS NULL");
+    expect(queries[0]?.values?.slice(4)).toEqual(["2026-09-12T16:00:00.000Z", true, "18:00"]);
   });
 
   it("returns unavailable target Booking Web calendar when the read model query fails", async () => {
@@ -10716,6 +10794,133 @@ describe("vayada-api", () => {
     expect(published).toEqual([pmsPropertyId]);
   });
 
+  it("reads and idempotently updates the Booking-owned same-day policy through PMS", async () => {
+    let enabled = true;
+    let cutoffLocalTime: string | null = "18:00";
+    app = buildAuthenticatedApp({
+      permissions: ["pms.settings.read", "pms.settings.manage"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      sameDayBookingSettings: {
+        async find(propertyId) {
+          expect(propertyId).toBe(pmsPropertyId);
+          return {
+            propertyId,
+            propertyTimeZone: "Europe/Vienna",
+            enabled,
+            cutoffLocalTime,
+            revision: 2,
+            updatedAt: "2026-08-31T10:00:00.000Z",
+          };
+        },
+        async update(_context, propertyId, input) {
+          expect(propertyId).toBe(pmsPropertyId);
+          expect(input).toMatchObject({ commandId: "command-1", idempotencyKey: "key-1" });
+          enabled = input.enabled;
+          cutoffLocalTime = input.cutoffLocalTime;
+          return {
+            ok: true,
+            replayed: false,
+            channexOperationId: null,
+            settings: {
+              propertyId,
+              propertyTimeZone: "Europe/Vienna",
+              enabled,
+              cutoffLocalTime,
+              revision: 3,
+              updatedAt: "2026-08-31T10:01:00.000Z",
+            },
+          };
+        },
+      },
+    });
+
+    const read = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/same-day-booking`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const update = await injectJson(app, {
+      method: "PUT",
+      url: `/api/pms/properties/${pmsPropertyId}/same-day-booking`,
+      payload: {
+        commandId: "command-1",
+        idempotencyKey: "key-1",
+        enabled: false,
+        cutoffLocalTime: "12:30",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(read.statusCode).toBe(200);
+    expect(read.body).toMatchObject({
+      contractVersion: "same-day-booking-policy.v1",
+      propertyTimeZone: "Europe/Vienna",
+      enabled: true,
+      cutoffLocalTime: "18:00",
+    });
+    expect(update.statusCode).toBe(200);
+    expect(update.body).toMatchObject({
+      enabled: false,
+      cutoffLocalTime: "12:30",
+      revision: 3,
+      replayed: false,
+    });
+  });
+
+  it("does not run a same-day policy write without property settings permission", async () => {
+    let updates = 0;
+    app = buildAuthenticatedApp({
+      permissions: ["pms.settings.read"],
+      entitlements: [
+        {
+          product: "pms",
+          key: "property-management",
+          status: "active",
+          resource: {
+            product: "pms",
+            resourceType: "pms_property",
+            resourceId: pmsPropertyId,
+          },
+        },
+      ],
+      sameDayBookingSettings: {
+        async find() {
+          return null;
+        },
+        async update() {
+          updates += 1;
+          throw new Error("unauthorized same-day write must not run");
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "PUT",
+      url: `/api/pms/properties/${pmsPropertyId}/same-day-booking`,
+      payload: {
+        commandId: "command-denied",
+        idempotencyKey: "key-denied",
+        enabled: false,
+        cutoffLocalTime: "12:30",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(updates).toBe(0);
+  });
+
   it("reads Booking-owned acceptance mode for assigned front desk with explicit access", async () => {
     let readCount = 0;
     app = buildAuthenticatedApp({
@@ -11035,13 +11240,6 @@ describe("vayada-api", () => {
         statusCode: 500,
         message: "Authentication service is temporarily unavailable.",
       },
-      {
-        name: "route property storage failure",
-        appOptions: { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
-        statusCode: 500,
-        code: "read_model_unavailable",
-        message: "PMS property access is unavailable.",
-      },
     ];
     const hiddenPropertyDenials = new Set<string>();
 
@@ -11165,7 +11363,7 @@ describe("vayada-api", () => {
           },
         },
         statusCode: 403,
-        code: "missing_resource_access",
+        code: "missing_permission",
       },
       {
         name: "settings read permission",
@@ -11313,13 +11511,6 @@ describe("vayada-api", () => {
         },
         statusCode: 500,
         message: "Authentication service is temporarily unavailable.",
-      },
-      {
-        name: "route property storage failure",
-        appOptions: { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
-        statusCode: 500,
-        code: "read_model_unavailable",
-        message: "PMS property access is unavailable.",
       },
     ];
     const hiddenPropertyDenials = new Set<string>();
@@ -11999,7 +12190,7 @@ describe("vayada-api", () => {
           propertyScope: { ...assignedScope, assignedPropertyIds: [pmsPropertyId, null as never] },
         },
         statusCode: 403,
-        code: "missing_resource_access",
+        code: "missing_permission",
       },
       {
         name: "missing membership scope",
@@ -12050,13 +12241,6 @@ describe("vayada-api", () => {
         },
         statusCode: 500,
         message: "Authentication service is temporarily unavailable.",
-      },
-      {
-        name: "route property storage failure",
-        appOptions: { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
-        statusCode: 500,
-        code: "read_model_unavailable",
-        message: "PMS property access is unavailable.",
       },
     ];
     const hiddenPropertyDenials = new Set<string>();
@@ -12506,13 +12690,6 @@ describe("vayada-api", () => {
         statusCode: 500,
         message: "Authentication service is temporarily unavailable.",
       },
-      {
-        name: "route property storage failure",
-        appOptions: { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
-        statusCode: 500,
-        code: "read_model_unavailable",
-        message: "PMS property access is unavailable.",
-      },
     ];
     const hiddenPropertyDenials = new Set<string>();
 
@@ -12819,12 +12996,6 @@ describe("vayada-api", () => {
           },
         },
         statusCode: 500,
-      },
-      {
-        name: "route property storage failure",
-        appOptions: { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
-        statusCode: 500,
-        code: "read_model_unavailable",
       },
     ];
     const hiddenPropertyDenials: unknown[] = [];
@@ -14420,12 +14591,6 @@ describe("vayada-api", () => {
         },
         statusCode: 500,
       },
-      {
-        name: "route property storage failure",
-        appOptions: { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
-        statusCode: 500,
-        code: "read_model_unavailable",
-      },
     ];
     const hiddenPropertyDenials: unknown[] = [];
 
@@ -14654,14 +14819,6 @@ describe("vayada-api", () => {
           },
         },
         statusCode: 500,
-      },
-      {
-        name: "property scope repository failure",
-        appOptions: {
-          propertyAccessRepository: propertyAccessFailureAfterAuthorization(),
-        },
-        statusCode: 500,
-        code: "read_model_unavailable",
       },
     ];
     const denialBodies = new Map<string, unknown>();

@@ -66,7 +66,7 @@ URLs stay in environment variables and never appear in the report.
 ```bash
 npm --workspace @vayada/backend-migration run target:source:extract -- \
   --manifest <reviewed-manifest.json> \
-  --source-schema-revision 2d7fe21080646cb1931aac4054a5648bac9b8227 \
+  --source-schema-revision 215242008bb990c25f65bd5c03099d56015a29cb \
   --auth-snapshot-arn <arn> \
   --booking-snapshot-arn <arn> \
   --marketplace-snapshot-arn <arn> \

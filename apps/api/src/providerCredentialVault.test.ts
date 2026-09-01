@@ -70,4 +70,14 @@ describe("provider credential vault", () => {
     expect(await vault.get("provider/missing")).toBeNull();
     await expect(vault.delete("provider/missing")).resolves.toBeUndefined();
   });
+
+  it("passes worker cancellation to AWS Secrets Manager", async () => {
+    const send = vi.fn().mockResolvedValue({ SecretString: '{"provider":"instagram"}' });
+    const vault = createSecretsManagerProviderCredentialVault({ client: { send } as never });
+    const controller = new AbortController();
+
+    await vault.get("provider/ref", controller.signal);
+
+    expect(send.mock.calls[0]?.[1]).toEqual({ abortSignal: controller.signal });
+  });
 });

@@ -150,7 +150,7 @@ describe("production PMS inventory", () => {
 
     const context = createProductionPmsContext({
       sourceRunId: "run",
-      snapshotAt: "2026-08-30T10:30:01Z",
+      snapshotAt: "2026-08-30T10:00:00Z",
       completedAt: "2026-08-30T10:31:00Z",
       rows: source,
       target: {

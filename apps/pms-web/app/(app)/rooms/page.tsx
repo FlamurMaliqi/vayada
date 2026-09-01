@@ -120,20 +120,20 @@ function formatRateRange(min: number, max: number, currency: string): string {
 
 const ROOM_UNIT_COMMANDS_UNSUPPORTED_MESSAGE =
   "Individual room create, edit, and delete are not available on PMS next-stack yet.";
-const ROOM_TYPE_MUTATIONS_UNSUPPORTED_MESSAGE =
-  "Room type duplicate, edit, and delete are not available on PMS next-stack yet.";
 
 function RoomTypeCard({
   room,
   rooms,
   onRoomsChange,
   onDuplicate,
+  duplicating,
   linkedGroup,
 }: {
   room: RoomType;
   rooms: Room[];
   onRoomsChange: () => void;
-  onDuplicate: (id: string) => void;
+  onDuplicate: (id: string) => Promise<void>;
+  duplicating: boolean;
   linkedGroup?: LinkedInventoryGroup;
 }) {
   const { t } = useTranslation();
@@ -332,11 +332,12 @@ function RoomTypeCard({
         <button
           onClick={(e) => {
             e.stopPropagation();
-            onDuplicate(room.id);
+            void onDuplicate(room.id);
           }}
-          disabled
+          disabled={duplicating}
           className="flex items-center justify-center w-8 h-8 md:w-auto md:h-auto md:px-3 md:py-1.5 text-[12px] font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-          title={ROOM_TYPE_MUTATIONS_UNSUPPORTED_MESSAGE}
+          title={duplicating ? "Duplicating room type" : "Duplicate room type"}
+          aria-label={duplicating ? "Duplicating room type" : "Duplicate room type"}
         >
           <DocumentDuplicateIcon className="w-3.5 h-3.5" />
         </button>
@@ -564,6 +565,7 @@ export default function RoomsPage() {
   const [linkedGroups, setLinkedGroups] = useState<LinkedInventoryGroup[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [duplicatingRoomTypeIds, setDuplicatingRoomTypeIds] = useState<Set<string>>(new Set());
 
   const loadData = () => {
     Promise.allSettled([
@@ -591,11 +593,18 @@ export default function RoomsPage() {
   };
 
   const handleDuplicate = async (id: string) => {
+    setDuplicatingRoomTypeIds((current) => new Set(current).add(id));
     try {
       await roomsService.duplicate(id);
       loadData();
     } catch (err: any) {
       alert(err.message || t("rooms.failedToDuplicate"));
+    } finally {
+      setDuplicatingRoomTypeIds((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
     }
   };
 
@@ -693,6 +702,7 @@ export default function RoomsPage() {
               rooms={individualRooms}
               onRoomsChange={refreshRooms}
               onDuplicate={handleDuplicate}
+              duplicating={duplicatingRoomTypeIds.has(room.id)}
               linkedGroup={linkedGroups?.find((group) => group.memberRoomTypeIds.includes(room.id))}
             />
           ))}

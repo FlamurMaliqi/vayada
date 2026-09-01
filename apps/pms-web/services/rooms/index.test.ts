@@ -51,6 +51,7 @@ import { linkedInventoryGroupsService, roomsService, roomTypeUpdateForm } from "
 function pmsRoomTypeItem(overrides: Record<string, unknown> = {}) {
   return {
     roomTypeId: "room-type-1",
+    version: "room-type-facts-v3",
     name: "Alpine Suite",
     description: "Suite",
     category: "suite",
@@ -74,6 +75,92 @@ function pmsRoomTypeItem(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+describe("roomsService lifecycle commands", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.resolvePropertyId.mockResolvedValue("pms-property-1");
+  });
+
+  it("duplicates with the source version and reuses the command after an ambiguous failure", async () => {
+    mocks.get.mockResolvedValue({
+      propertyId: "pms-property-1",
+      item: pmsRoomTypeItem(),
+    });
+    mocks.post.mockRejectedValueOnce(new Error("network interrupted")).mockResolvedValueOnce({
+      propertyId: "pms-property-1",
+      item: pmsRoomTypeItem({
+        roomTypeId: "room-type-copy",
+        version: "room-type-facts-v1",
+        name: "Alpine Suite Copy",
+        roomCount: 0,
+      }),
+    });
+
+    await expect(roomsService.duplicate("room-type-1")).rejects.toThrow("network interrupted");
+    const duplicated = await roomsService.duplicate("room-type-1");
+
+    expect(duplicated).toMatchObject({
+      id: "room-type-copy",
+      version: "room-type-facts-v1",
+      name: "Alpine Suite Copy",
+      totalRooms: 0,
+    });
+    expect(mocks.post).toHaveBeenCalledTimes(2);
+    expect(mocks.post.mock.calls[0]![1]).toMatchObject({
+      expectedVersion: "room-type-facts-v3",
+      commandId: expect.stringMatching(/^pms-room-type-duplicate-/),
+    });
+    expect(mocks.post.mock.calls[1]![1]).toEqual(mocks.post.mock.calls[0]![1]);
+  });
+
+  it("preflights retirement and returns actionable blockers without dispatching delete", async () => {
+    mocks.get.mockResolvedValue({
+      contractVersion: "pms-room-type-lifecycle.v1",
+      propertyId: "pms-property-1",
+      roomTypeId: "room-type-1",
+      version: "room-type-facts-v3",
+      canRetire: false,
+      blockers: [
+        {
+          category: "physical_units",
+          code: "active_physical_units",
+          affectedCount: 2,
+          action: "Retire every active physical room unit.",
+        },
+      ],
+    });
+
+    await expect(roomsService.delete("room-type-1")).rejects.toThrow(
+      "2 affected: Retire every active physical room unit.",
+    );
+    expect(mocks.delete).not.toHaveBeenCalled();
+  });
+
+  it("retires with the inspected version and a durable retry key", async () => {
+    mocks.get.mockResolvedValue({
+      contractVersion: "pms-room-type-lifecycle.v1",
+      propertyId: "pms-property-1",
+      roomTypeId: "room-type-1",
+      version: "room-type-facts-v3",
+      canRetire: true,
+      blockers: [],
+    });
+    mocks.delete.mockResolvedValue({});
+
+    await roomsService.delete("room-type-1");
+
+    expect(mocks.delete).toHaveBeenCalledWith(
+      "/api/pms/properties/pms-property-1/room-types/room-type-1",
+      expect.objectContaining({
+        body: expect.stringContaining('"expectedVersion":"room-type-facts-v3"'),
+      }),
+    );
+    const payload = JSON.parse(mocks.delete.mock.calls[0]![1].body);
+    expect(payload.commandId).toMatch(/^pms-room-type-retire-/);
+    expect(payload.idempotencyKey).toBe(payload.commandId);
+  });
+});
 
 describe("roomsService.update", () => {
   beforeEach(() => {

@@ -66,11 +66,17 @@ jobs:
       - name: Run next-stack smoke
         run: npm run e2e:next-stack-smoke
 
-      - name: Upload browser evidence
+      - name: Verify browser evidence contains no configured secrets
+        id: evidence_audit
         if: always()
+        run: npm run e2e:next-stack-smoke:evidence-audit
+
+      - name: Upload browser evidence
+        if: always() && steps.evidence_audit.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: next-stack-smoke-evidence
+          retention-days: 7
           path: |
             test-results/
             playwright-report/

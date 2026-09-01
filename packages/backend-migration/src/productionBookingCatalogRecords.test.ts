@@ -43,8 +43,8 @@ describe("production Booking catalog records", () => {
         discount_type: "percentage",
         discount_value: "10",
         is_active: true,
-        max_uses: 20,
-        current_uses: 2,
+        max_uses: null,
+        use_count: 2,
         created_at: "2026-08-01T00:00:00Z",
         updated_at: "2026-08-29T12:00:00Z",
       }),
@@ -65,7 +65,16 @@ describe("production Booking catalog records", () => {
     });
     expect(records[1]!.row).toMatchObject({ pricingModel: "per_guest", priceAmount: "12.50" });
     expect(JSON.stringify(records[1]!.row)).not.toContain("http");
-    expect(records[2]!.row).toMatchObject({ code: "SUMMER", discountValue: "10.00" });
+    expect(records[2]!.row).toMatchObject({
+      code: "SUMMER",
+      discountValue: "10.00",
+      maxUses: 999,
+      currentUses: 2,
+      minBookingValue: null,
+      applicableRoomIds: null,
+      stayDateFrom: null,
+      stayDateUntil: null,
+    });
   });
 
   it("stores funnel metadata privately and redacts the audit projection", () => {
@@ -103,6 +112,35 @@ describe("production Booking catalog records", () => {
     });
     expect(audit["aiVisible"]).toBe(false);
   });
+
+  it.each([
+    [true, "18:00", true, "18:00"],
+    [false, "12:30", false, "12:30"],
+    [true, null, true, null],
+    [undefined, undefined, true, "18:00"],
+  ] as const)(
+    "preserves the effective legacy same-day policy",
+    (legacyEnabled, legacyCutoff, enabled, cutoffLocalTime) => {
+      const context = createProductionBookingContext(
+        input([
+          pmsRow("hotels", {
+            id: HOTEL,
+            updated_at: "2026-08-29T12:00:00Z",
+            same_day_bookings_enabled: legacyEnabled,
+            same_day_booking_cutoff_time: legacyCutoff,
+          }),
+        ]),
+      );
+
+      expect(buildBookingCatalogRecords(context)[0]).toMatchObject({
+        targetProduct: "booking",
+        targetTable: "same_day_booking_policies",
+        targetId: PROPERTY,
+        row: { propertyId: PROPERTY, enabled, cutoffLocalTime, revision: 1 },
+      });
+      expect(context.blockers).toEqual([]);
+    },
+  );
 
   it("requires an approved VAY-1055 object for add-on images", () => {
     const addon = row("booking_addons", {
@@ -298,6 +336,9 @@ describe("production Booking catalog records", () => {
 function row(sourceTable: string, data: Record<string, unknown>): IdentitySourceRow {
   return { sourceDatabase: "booking", sourceTable, rowOrdinal: 1, data };
 }
+function pmsRow(sourceTable: string, data: Record<string, unknown>): IdentitySourceRow {
+  return { sourceDatabase: "pms", sourceTable, rowOrdinal: 1, data };
+}
 function propertyLinks() {
   return [
     {
@@ -306,6 +347,14 @@ function propertyLinks() {
       sourceId: HOTEL,
       propertyId: PROPERTY,
       relationship: "canonical_input",
+      status: "active",
+    },
+    {
+      sourceSystem: "pms",
+      sourceTable: "hotels",
+      sourceId: HOTEL,
+      propertyId: PROPERTY,
+      relationship: "operational_input",
       status: "active",
     },
   ];

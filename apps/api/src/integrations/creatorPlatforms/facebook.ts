@@ -17,6 +17,7 @@ import {
   string,
   type CreatorPlatformOptionalResponse,
   unavailable,
+  withAbortSignal,
 } from "./http.js";
 import type {
   CreatorPlatformAdapter,
@@ -83,15 +84,20 @@ export function createFacebookCreatorPlatformAdapter(
       } satisfies FacebookCreatorPlatformGrant;
     },
 
-    async listAccounts(grant) {
+    async listAccounts(grant, signal) {
       assertProvider(grant, provider);
       const accounts = [];
       const pageAccessTokens = { ...grant.pageAccessTokens };
       const subjectUrl = new URL(`https://graph.facebook.com/${graphVersion}/me`);
       subjectUrl.searchParams.set("fields", "id");
       const [managedPages, subjectPayload] = await Promise.all([
-        listManagedPages(fetcher, grant, graphVersion),
-        fetchJson(provider, fetcher, subjectUrl, bearer(grant.accessToken)),
+        listManagedPages(fetcher, grant, graphVersion, signal),
+        fetchJson(
+          provider,
+          fetcher,
+          subjectUrl,
+          withAbortSignal(bearer(grant.accessToken), signal),
+        ),
       ]);
       const subjectId = identifier(
         provider,
@@ -135,7 +141,7 @@ export function createFacebookCreatorPlatformAdapter(
       };
     },
 
-    async importAccount(account, grant, window) {
+    async importAccount(account, grant, window, signal) {
       assertProvider(grant, provider);
       assertAccountProvider(provider, account.provider);
       assertImportWindow(window);
@@ -161,10 +167,20 @@ export function createFacebookCreatorPlatformAdapter(
 
       const pageAuthorization = bearer(pageToken);
       const [pagePayload, insightsResponse, demographicsResponse, posts] = await Promise.all([
-        fetchJson(provider, fetcher, pageUrl, pageAuthorization),
-        fetchOptionalJson(provider, fetcher, insightsUrl, pageAuthorization),
-        fetchOptionalJson(provider, fetcher, demographicsUrl, pageAuthorization),
-        listPosts(fetcher, graphVersion, account.providerAccountId, pageToken, window),
+        fetchJson(provider, fetcher, pageUrl, withAbortSignal(pageAuthorization, signal)),
+        fetchOptionalJson(
+          provider,
+          fetcher,
+          insightsUrl,
+          withAbortSignal(pageAuthorization, signal),
+        ),
+        fetchOptionalJson(
+          provider,
+          fetcher,
+          demographicsUrl,
+          withAbortSignal(pageAuthorization, signal),
+        ),
+        listPosts(fetcher, graphVersion, account.providerAccountId, pageToken, window, signal),
       ]);
       const page = record(provider, pagePayload);
       const followers = optionalNumber(page.followers_count);
@@ -218,6 +234,7 @@ async function listManagedPages(
   fetcher: typeof fetch,
   grant: FacebookCreatorPlatformGrant,
   graphVersion: string,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>[]> {
   let after: string | undefined;
   const pages: Record<string, unknown>[] = [];
@@ -229,7 +246,7 @@ async function listManagedPages(
     if (after) url.searchParams.set("after", after);
     const root = record(
       provider,
-      await fetchJson(provider, fetcher, url, bearer(grant.accessToken)),
+      await fetchJson(provider, fetcher, url, withAbortSignal(bearer(grant.accessToken), signal)),
     );
     pages.push(
       ...array(provider, root.data, "invalid pages data").map((value) =>
@@ -256,6 +273,7 @@ async function listPosts(
   pageId: string,
   accessToken: string,
   window: { startDate: string; endDate: string },
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>[]> {
   const start = Date.parse(`${window.startDate}T00:00:00Z`);
   const end = Date.parse(`${window.endDate}T00:00:00Z`);
@@ -274,7 +292,10 @@ async function listPosts(
     url.searchParams.set("until", window.endDate);
     url.searchParams.set("limit", "100");
     if (after) url.searchParams.set("after", after);
-    const root = record(provider, await fetchJson(provider, fetcher, url, bearer(accessToken)));
+    const root = record(
+      provider,
+      await fetchJson(provider, fetcher, url, withAbortSignal(bearer(accessToken), signal)),
+    );
     for (const postValue of array(provider, root.data, "invalid posts data")) {
       const post = record(provider, postValue, "invalid post");
       identifier(provider, post.id, "post missing id");

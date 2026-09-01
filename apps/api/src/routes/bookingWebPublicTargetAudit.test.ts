@@ -154,6 +154,63 @@ describe("target Booking public audit regressions", () => {
     expect(target.calls.map((call) => call.text)).toContain("ROLLBACK");
   });
 
+  it("rejects a checkout quote at the exact property-local same-day cutoff", async () => {
+    const target = quoteHarness({
+      propertyId: propertyA,
+      timezone: "Europe/Berlin",
+      sameDayBookingCutoffTime: "18:00",
+    });
+
+    await expect(
+      target.adapter.quoteBooking(
+        "hotel-a",
+        {
+          roomTypeId: "room-deluxe",
+          checkIn: "2026-07-20",
+          checkOut: "2026-07-21",
+          adults: 2,
+          numberOfRooms: 1,
+          rateType: "flexible",
+        },
+        { ...quoteContext(), occurredAt: new Date("2026-07-20T16:00:00.000Z") },
+      ),
+    ).rejects.toThrow("Same-day booking is no longer available");
+
+    expect(target.calls.some((call) => call.text.includes("public_room_offer_snapshots"))).toBe(
+      false,
+    );
+  });
+
+  it("rechecks the same-day cutoff immediately before final booking creation", async () => {
+    const target = bookingCollisionHarness(propertyA, {
+      timezone: "Europe/Berlin",
+      cutoffLocalTime: "18:00",
+      now: new Date("2026-09-12T16:00:00.000Z"),
+    });
+
+    await expect(
+      target.adapter.createBooking("hotel-a", bookingRequest(), {
+        ...bookingContext(),
+        occurredAt: new Date("2026-09-12T15:59:59.000Z"),
+      }),
+    ).rejects.toThrow("Same-day booking is no longer available");
+
+    expect(target.calls.some((call) => call.text.includes("UPDATE pms.inventory_days"))).toBe(
+      false,
+    );
+    expect(
+      target.calls.find((call) => call.text.includes("FROM hotel_catalog.property_slugs"))?.text,
+    ).toContain("FOR SHARE OF p");
+    expect(
+      target.calls.findIndex((call) =>
+        call.text.includes("FROM hotel_catalog.property_slugs policy_slug"),
+      ),
+    ).toBeGreaterThan(
+      target.calls.findIndex((call) => call.text.includes("FROM hotel_catalog.property_slugs s")),
+    );
+    expect(target.calls.map((call) => call.text)).toContain("ROLLBACK");
+  });
+
   it("applies a property-currency promo to the authoritative checkout quote", async () => {
     const target = quoteHarness({ propertyId: propertyA, promo: {} });
 
@@ -226,6 +283,8 @@ describe("target Booking public audit regressions", () => {
 function quoteHarness(options: {
   propertyId: string;
   timezone?: string;
+  sameDayBookingsEnabled?: boolean;
+  sameDayBookingCutoffTime?: string | null;
   referenceCollision?: boolean;
   promo?: Partial<{
     validUntil: string | null;
@@ -249,6 +308,8 @@ function quoteHarness(options: {
               displayName: "Hotel Audit",
               defaultLocale: "en",
               timezone: options.timezone ?? "Europe/Berlin",
+              sameDayBookingsEnabled: options.sameDayBookingsEnabled,
+              sameDayBookingCutoffTime: options.sameDayBookingCutoffTime,
             },
           ],
         };
@@ -362,7 +423,14 @@ function quoteHarness(options: {
   };
 }
 
-function bookingCollisionHarness(propertyId: string) {
+function bookingCollisionHarness(
+  propertyId: string,
+  policy: { timezone: string; cutoffLocalTime: string | null; now?: Date } = {
+    timezone: "Europe/Berlin",
+    cutoffLocalTime: "18:00",
+    now: new Date("2026-09-01T10:00:00.000Z"),
+  },
+) {
   const calls: Array<{ text: string; values?: readonly unknown[] }> = [];
   let publicBookingReference: string | undefined;
   const pool = {
@@ -375,7 +443,9 @@ function bookingCollisionHarness(propertyId: string) {
               propertyId,
               displayName: "Hotel Audit",
               defaultLocale: "en",
-              timezone: "Europe/Berlin",
+              timezone: policy.timezone,
+              sameDayBookingsEnabled: true,
+              sameDayBookingCutoffTime: policy.cutoffLocalTime,
             },
           ],
         };
@@ -418,7 +488,7 @@ function bookingCollisionHarness(propertyId: string) {
               },
               totals: { totalAmount: "270.00", balanceAmount: "270.00" },
               policySnapshot: {},
-              expiresAt: "2026-09-12T12:00:00.000Z",
+              expiresAt: "2026-09-12T23:00:00.000Z",
             },
           ],
         };
@@ -442,6 +512,7 @@ function bookingCollisionHarness(propertyId: string) {
     billingConfigReadPortFactory: () => ({
       getBillingConfig: async () => ({ propertyId }) as never,
     }),
+    now: () => policy.now ?? new Date("2026-09-01T10:00:00.000Z"),
     pool: pool as never,
   });
   return {

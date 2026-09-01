@@ -23,6 +23,12 @@ const TABLES: Record<
     freshness: "updated_at",
     id: "property_id",
   },
+  same_day_booking_policies: {
+    product: "booking",
+    table: "booking.same_day_booking_policies",
+    freshness: "updated_at",
+    id: "property_id",
+  },
   addon_definitions: {
     product: "booking",
     table: "booking.addon_definitions",

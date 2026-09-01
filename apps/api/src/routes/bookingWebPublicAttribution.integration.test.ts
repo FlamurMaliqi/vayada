@@ -5,6 +5,7 @@ import { createTargetPmsInventoryReservationPort } from "../domains/pmsInventory
 import type { DirectBookingInventoryReservationPort } from "../platform/inventoryReservation.js";
 import {
   createTargetBookingWebCheckoutAdapter,
+  resolveTargetCheckoutProperty,
   type BookingWebCheckoutCommandContext,
 } from "./bookingWebPublic.js";
 
@@ -175,6 +176,52 @@ describe.skipIf(!TEST_DATABASE_URL)(
       });
     });
 
+    it("reads the committed same-day policy after waiting for its property lock", async () => {
+      await admin.query(
+        `INSERT INTO booking.same_day_booking_policies
+           (property_id, enabled, cutoff_local_time)
+         VALUES ($1::uuid, TRUE, '18:00')
+         ON CONFLICT (property_id) DO UPDATE
+         SET enabled = EXCLUDED.enabled, cutoff_local_time = EXCLUDED.cutoff_local_time`,
+        [propertyId],
+      );
+      const settings = new pg.Client({ connectionString: TEST_DATABASE_URL! });
+      const checkout = new pg.Client({ connectionString: TEST_DATABASE_URL! });
+      await settings.connect();
+      await checkout.connect();
+      try {
+        await settings.query("BEGIN");
+        await settings.query(
+          `SELECT property.id FROM hotel_catalog.properties property
+           WHERE property.id = $1::uuid FOR UPDATE OF property`,
+          [propertyId],
+        );
+        await settings.query(
+          `UPDATE booking.same_day_booking_policies SET enabled = FALSE
+           WHERE property_id = $1::uuid`,
+          [propertyId],
+        );
+
+        await checkout.query("BEGIN");
+        const pid = await backendPid(checkout);
+        const propertyRead = resolveTargetCheckoutProperty(
+          checkout as never,
+          "vay-1188-hotel",
+          true,
+        );
+        await waitForLockWaiter(admin, pid);
+        await settings.query("COMMIT");
+
+        await expect(propertyRead).resolves.toMatchObject({ sameDayBookingsEnabled: false });
+        await checkout.query("COMMIT");
+      } finally {
+        await settings.query("ROLLBACK").catch(() => undefined);
+        await checkout.query("ROLLBACK").catch(() => undefined);
+        await settings.end();
+        await checkout.end();
+      }
+    });
+
     function createAdapter(pool: pg.Pool) {
       return createTargetBookingWebCheckoutAdapter({
         connectionString: TEST_DATABASE_URL!,
@@ -205,6 +252,11 @@ describe.skipIf(!TEST_DATABASE_URL)(
       await admin.query(
         `INSERT INTO hotel_catalog.property_slugs (property_id, slug, purpose, status)
        VALUES ($1::uuid, 'vay-1188-hotel', 'canonical', 'active')`,
+        [propertyId],
+      );
+      await admin.query(
+        `INSERT INTO hotel_catalog.property_locations (property_id, timezone)
+         VALUES ($1::uuid, 'Europe/Athens')`,
         [propertyId],
       );
       await admin.query(
@@ -349,6 +401,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
           "DELETE FROM booking.checkout_contexts WHERE property_id = $1::uuid",
           "DELETE FROM booking.quote_sessions WHERE property_id = $1::uuid",
           "DELETE FROM booking.addon_definitions WHERE property_id = $1::uuid",
+          "DELETE FROM booking.same_day_booking_policies WHERE property_id = $1::uuid",
           "DELETE FROM distribution.public_room_offer_snapshots WHERE property_id = $1::uuid",
           "DELETE FROM pms.inventory_days WHERE property_id = $1::uuid",
           "WITH b AS (DELETE FROM pms.operating_calendar_room_bindings WHERE property_id=$1::uuid) DELETE FROM pms.operating_calendar_revisions WHERE property_id=$1::uuid",
@@ -357,6 +410,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
           "DELETE FROM booking.booking_settings WHERE property_id = $1::uuid",
           "DELETE FROM finance.payment_settings WHERE property_id = $1::uuid",
           "DELETE FROM hotel_catalog.property_slugs WHERE property_id = $1::uuid",
+          "DELETE FROM hotel_catalog.property_locations WHERE property_id = $1::uuid",
           "DELETE FROM hotel_catalog.property_public_profile_read_model WHERE property_id = $1::uuid",
           "DELETE FROM hotel_catalog.properties WHERE id = $1::uuid",
         ]) {
@@ -384,6 +438,23 @@ const inventoryReservationPort: DirectBookingInventoryReservationPort = {
     await realInventoryReservationPort.release(input);
   },
 };
+
+async function backendPid(client: pg.Client): Promise<number> {
+  const result = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+  return result.rows[0]!.pid;
+}
+
+async function waitForLockWaiter(observer: pg.Pool, pid: number): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await observer.query<{ waiting: boolean }>(
+      `SELECT wait_event_type = 'Lock' AS waiting FROM pg_stat_activity WHERE pid = $1`,
+      [pid],
+    );
+    if (result.rows[0]?.waiting) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Timed out waiting for checkout to acquire the property lock");
+}
 
 function checkoutRequest(quoteId: string): Record<string, unknown> {
   return {

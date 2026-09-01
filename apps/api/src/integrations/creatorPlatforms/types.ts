@@ -3,11 +3,7 @@ export const CREATOR_PLATFORM_PROVIDERS = ["instagram", "facebook", "tiktok", "y
 export type CreatorPlatformProvider = (typeof CREATOR_PLATFORM_PROVIDERS)[number];
 
 export type CreatorPlatformUnavailableReason =
-  | "not_supported"
-  | "not_returned"
-  | "privacy_threshold"
-  | "missing_permission"
-  | "no_data";
+  "not_supported" | "not_returned" | "privacy_threshold" | "missing_permission" | "no_data";
 
 export type CreatorPlatformMetric<T> =
   | { value: T; unavailableReason?: never }
@@ -97,16 +93,20 @@ export interface CreatorPlatformAdapter {
   readonly provider: CreatorPlatformProvider;
   buildAuthorizationUrl(state: string, redirectUri: string): string;
   exchangeCode(code: string, redirectUri: string): Promise<CreatorPlatformGrant>;
-  listAccounts(grant: CreatorPlatformGrant): Promise<CreatorPlatformAccountList>;
+  listAccounts(
+    grant: CreatorPlatformGrant,
+    signal?: AbortSignal,
+  ): Promise<CreatorPlatformAccountList>;
   grantForAccount?(
     account: CreatorPlatformAccount,
     grant: CreatorPlatformGrant,
   ): CreatorPlatformGrant;
-  refreshGrant?(grant: CreatorPlatformGrant): Promise<CreatorPlatformGrant>;
+  refreshGrant?(grant: CreatorPlatformGrant, signal?: AbortSignal): Promise<CreatorPlatformGrant>;
   importAccount(
     account: CreatorPlatformAccount,
     grant: CreatorPlatformGrant,
     window: CreatorPlatformImportWindow,
+    signal?: AbortSignal,
   ): Promise<CreatorPlatformImport>;
   revoke?(grant: CreatorPlatformGrant): Promise<void>;
 }

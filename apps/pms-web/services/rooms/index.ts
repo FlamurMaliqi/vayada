@@ -39,6 +39,7 @@ export interface RateDepositSetting {
 
 export interface RoomType {
   id: string;
+  version: string;
   hotelId: string;
   name: string;
   category: string;
@@ -239,6 +240,7 @@ export interface PmsOperationsRateRulesSummary {
 
 export interface PmsOperationsRoomType {
   roomTypeId: string;
+  version: string;
   name: string;
   description: string;
   category: string | null;
@@ -292,6 +294,24 @@ export interface PmsOperationsCommandResponse<T> {
   propertyId: string;
   item: T;
   commandMeta: PmsOperationsCommandMeta;
+}
+
+export interface RoomTypeRetirementImpact {
+  contractVersion: "pms-room-type-lifecycle.v1";
+  propertyId: string;
+  roomTypeId: string;
+  version: string;
+  canRetire: boolean;
+  blockers: Array<{
+    category: "reservations" | "physical_units" | "inventory" | "publication";
+    code:
+      | "active_reservations"
+      | "active_physical_units"
+      | "future_inventory"
+      | "active_publication";
+    affectedCount: number;
+    action: string;
+  }>;
 }
 
 export interface RoomCreate {
@@ -382,6 +402,7 @@ function toRoomType(propertyId: string, roomType: PmsOperationsRoomType): RoomTy
 
   return {
     id: roomType.roomTypeId,
+    version: roomType.version,
     hotelId: propertyId,
     name: roomType.name,
     category: roomType.category ?? "",
@@ -557,10 +578,46 @@ export const roomsService = {
     return updated;
   },
 
-  delete: (_id: string) => unsupportedPmsNextStackFeature<void>("Room type deletion"),
+  delete: async (id: string) => {
+    const propertyId = await resolveSelectedPmsPropertyId("retiring room type");
+    const impact = await pmsOperationsRoomsReadService.inspectRoomTypeRetirement(propertyId, id);
+    if (!impact.canRetire) throw new RoomTypeRetirementBlockedError(impact);
+    await runRoomTypeLifecycleCommand(
+      ["retire", propertyId, id, impact.version],
+      "pms-room-type-retire",
+      (commandId) =>
+        pmsOperationsRoomsReadService.retireRoomType(propertyId, id, impact.version, commandId),
+    );
+  },
 
-  duplicate: (_id: string) => unsupportedPmsNextStackFeature<RoomType>("Room type duplication"),
+  duplicate: async (id: string) => {
+    const propertyId = await resolveSelectedPmsPropertyId("duplicating room type");
+    const current = await pmsOperationsRoomsReadService.getRoomType(propertyId, id);
+    const response = await runRoomTypeLifecycleCommand(
+      ["duplicate", propertyId, id, current.item.version],
+      "pms-room-type-duplicate",
+      (commandId) =>
+        pmsOperationsRoomsReadService.duplicateRoomType(
+          propertyId,
+          id,
+          current.item.version,
+          commandId,
+        ),
+    );
+    return toRoomType(response.propertyId, response.item);
+  },
 };
+
+export class RoomTypeRetirementBlockedError extends Error {
+  constructor(readonly impact: RoomTypeRetirementImpact) {
+    super(
+      `Room type cannot be retired yet. ${impact.blockers
+        .map(({ affectedCount, action }) => `${affectedCount} affected: ${action}`)
+        .join(" ")}`,
+    );
+    this.name = "RoomTypeRetirementBlockedError";
+  }
+}
 
 export const pmsOperationsRoomsReadService = {
   getPropertyPlan: (propertyId: string) => {
@@ -594,6 +651,54 @@ export const pmsOperationsRoomsReadService = {
         roomTypeId,
       )}`,
       pmsOperationsRequestOptions,
+    );
+  },
+
+  duplicateRoomType: (
+    propertyId: string,
+    roomTypeId: string,
+    expectedVersion: string,
+    commandId: string,
+  ) => {
+    assertPmsOperationsReadModelEnabled();
+    return pmsOperationsClient.post<PmsOperationsCommandResponse<PmsOperationsRoomType>>(
+      `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(
+        roomTypeId,
+      )}/duplicate`,
+      { commandId, idempotencyKey: commandId, expectedVersion },
+      pmsOperationsRequestOptions,
+    );
+  },
+
+  inspectRoomTypeRetirement: (propertyId: string, roomTypeId: string) => {
+    assertPmsOperationsReadModelEnabled();
+    return pmsOperationsClient.get<RoomTypeRetirementImpact>(
+      `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(
+        roomTypeId,
+      )}/retirement-impact`,
+      pmsOperationsRequestOptions,
+    );
+  },
+
+  retireRoomType: (
+    propertyId: string,
+    roomTypeId: string,
+    expectedVersion: string,
+    commandId: string,
+  ) => {
+    assertPmsOperationsReadModelEnabled();
+    return pmsOperationsClient.delete<
+      RoomTypeRetirementImpact & {
+        commandMeta: PmsOperationsCommandMeta;
+      }
+    >(
+      `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(
+        roomTypeId,
+      )}`,
+      {
+        ...pmsOperationsRequestOptions,
+        body: JSON.stringify({ commandId, idempotencyKey: commandId, expectedVersion }),
+      },
     );
   },
 
@@ -711,6 +816,20 @@ export const pmsOperationsRoomsReadService = {
 };
 
 const pendingLinkedInventoryCommands = new Map<string, string>();
+const pendingRoomTypeLifecycleCommands = new Map<string, string>();
+
+async function runRoomTypeLifecycleCommand<T>(
+  fingerprintParts: unknown[],
+  prefix: string,
+  request: (commandId: string) => Promise<T>,
+): Promise<T> {
+  const fingerprint = JSON.stringify(fingerprintParts);
+  const commandId = pendingRoomTypeLifecycleCommands.get(fingerprint) ?? randomCommandId(prefix);
+  pendingRoomTypeLifecycleCommands.set(fingerprint, commandId);
+  const response = await request(commandId);
+  pendingRoomTypeLifecycleCommands.delete(fingerprint);
+  return response;
+}
 
 export const linkedInventoryGroupsService = {
   list: async (): Promise<LinkedInventoryGroup[]> => {
