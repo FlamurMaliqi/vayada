@@ -43,6 +43,7 @@ export type BookingPropertyLink = {
   propertyId: string;
   relationship: string;
   status: string;
+  ownerStatus: string | null;
 };
 
 export type BookingPropertySlug = {
@@ -120,6 +121,7 @@ export type BookingBuildContext = {
   target: ProductionBookingTargetState;
   blockers: IdentityMigrationBlocker[];
   propertyBySource: Map<string, string>;
+  ownerStatusBySource: Map<string, "active" | "suspended" | "archived">;
   propertyBySlug: Map<string, string>;
   bookingById: Map<string, IdentitySourceRow>;
   bookingByReference: Map<string, IdentitySourceRow>;

@@ -17,6 +17,7 @@ describe("production Booking target reader", () => {
     expect(ownership.propertyLinks[0]).toMatchObject({
       sourceSystem: "pms",
       propertyId: "property-1",
+      ownerStatus: "archived",
     });
     expect(target.records).toEqual([
       {
@@ -60,6 +61,8 @@ describe("production Booking target reader", () => {
     expect(client.sql.join("\n")).toContain("WHERE guest_booking_id = ANY");
     expect(client.sql.join("\n")).toContain("jsonb_to_recordset");
     expect(client.sql.join("\n")).toContain("metadata ->> 'migrationRunId' = $1");
+    expect(client.sql.join("\n")).toContain("owner.resource_type = CASE");
+    expect(client.sql.join("\n")).toContain("WHEN ownership.link_count > 1 THEN 'ambiguous'");
     expect(client.sql.join("\n")).toContain("booking.header_logo");
   });
 });
@@ -78,6 +81,7 @@ class TargetFixture {
             propertyId: "property-1",
             relationship: "canonical_input",
             status: "active",
+            ownerStatus: "archived",
           },
         ] as T[],
       };

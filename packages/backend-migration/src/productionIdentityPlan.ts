@@ -24,6 +24,7 @@ import {
 } from "./productionIdentityEntitlements.js";
 import { planIdentityOwnership } from "./productionIdentityOwnership.js";
 import { sortedBy } from "./productionIdentityOwnershipPolicy.js";
+import { planMissingOwnerQuarantine } from "./productionIdentityQuarantine.js";
 import type {
   ExistingOwnershipState,
   PlannedMembership,
@@ -63,6 +64,8 @@ export type ProductionIdentityPlan = {
   gdprRequests: PlannedGdprRequest[];
   auditEvents: PlannedIdentityAuditEvent[];
   retiredAuthRows: Record<string, number>;
+  quarantinedOrganizations: number;
+  quarantinedResourceLinks: number;
   blockers: IdentityMigrationBlocker[];
   counts: ProductionIdentityCounts;
   checksum: string;
@@ -70,6 +73,10 @@ export type ProductionIdentityPlan = {
 export type ProductionIdentityCounts = {
   users: number;
   preservedNewerUsers: number;
+  retiredDuplicateUsers: number;
+  quarantinedUsers: number;
+  quarantinedOrganizations: number;
+  quarantinedResourceLinks: number;
   pendingTargetWrites: number;
   organizations: number;
   memberships: number;
@@ -87,6 +94,7 @@ export type ProductionIdentityCounts = {
 export function buildProductionIdentityPlan(
   rows: IdentitySourceRow[],
   existing: ProductionIdentityExistingState = emptyProductionIdentityState(),
+  sourceHorizonAt?: string,
 ): ProductionIdentityPlan {
   const orderedRows = sortedBy(
     rows,
@@ -98,13 +106,25 @@ export function buildProductionIdentityPlan(
     current.users,
     current.workosIdentities,
   );
-  const ownership = planIdentityOwnership(orderedRows, disposition.users, current.ownership);
+  const quarantine = planMissingOwnerQuarantine(
+    orderedRows,
+    disposition.users,
+    current.users,
+    sourceHorizonAt,
+  );
+  const plannedUsers = sortedBy([...disposition.users, ...quarantine.users], (user) => user.id);
+  const ownership = planIdentityOwnership(
+    orderedRows,
+    plannedUsers,
+    current.ownership,
+    sourceHorizonAt,
+  );
   const entitlements = planIdentityEntitlements(
     orderedRows,
     ownership.resourceLinks,
     current.entitlements,
   );
-  const userIds = disposition.users.map((user) => user.id);
+  const userIds = plannedUsers.map((user) => user.id);
   const consentSource = planIdentityConsentSource(orderedRows, userIds);
   const privacyRecordSource = planIdentityPrivacyRecordSource(orderedRows, userIds);
   const privacy = reconcileIdentityPrivacy(
@@ -120,6 +140,7 @@ export function buildProductionIdentityPlan(
   const blockers = sortedBy(
     [
       ...disposition.blockers,
+      ...quarantine.blockers,
       ...ownership.blockers,
       ...entitlements.blockers,
       ...consentSource.blockers,
@@ -129,8 +150,14 @@ export function buildProductionIdentityPlan(
     ],
     (row) => `${row.code}:${row.source}:${row.sourceId}`,
   );
+  const quarantinedUserIds = new Set(quarantine.users.map((user) => user.id));
+  const quarantinedOrganizationIds = new Set(
+    ownership.memberships
+      .filter((membership) => quarantinedUserIds.has(membership.userId))
+      .map((membership) => membership.organizationId),
+  );
   const content = {
-    users: disposition.users,
+    users: plannedUsers,
     workosIdentities: disposition.workosIdentities,
     organizations: ownership.organizations,
     memberships: ownership.memberships,
@@ -142,6 +169,11 @@ export function buildProductionIdentityPlan(
     gdprRequests: privacy.gdprRequests,
     auditEvents: audit.auditEvents,
     retiredAuthRows: consentSource.retiredAuthRows,
+    quarantinedOrganizations: ownership.quarantinedOrganizations + quarantinedOrganizationIds.size,
+    quarantinedResourceLinks:
+      ownership.quarantinedResourceLinks +
+      ownership.resourceLinks.filter((link) => quarantinedOrganizationIds.has(link.organizationId))
+        .length,
     blockers,
   };
   const counts = planCounts(content, current);
@@ -197,6 +229,12 @@ function planCounts(
     users: plan.users.length,
     preservedNewerUsers: plan.users.filter((row) => row.disposition === "preserve_newer_target")
       .length,
+    retiredDuplicateUsers: plan.users.filter((row) => row.disposition === "retire_duplicate_email")
+      .length,
+    quarantinedUsers: plan.users.filter((row) => row.disposition === "quarantine_missing_owner")
+      .length,
+    quarantinedOrganizations: plan.quarantinedOrganizations,
+    quarantinedResourceLinks: plan.quarantinedResourceLinks,
     pendingTargetWrites: pendingTargetWrites(plan, current),
     organizations: plan.organizations.length,
     memberships: plan.memberships.length,

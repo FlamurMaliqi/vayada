@@ -37,7 +37,11 @@ export type PlannedIdentityUser = {
   type: LegacyIdentityUserType;
   emailVerified: boolean;
   isSuperadmin: boolean;
-  disposition: "migrate" | "preserve_newer_target";
+  disposition:
+    | "migrate"
+    | "preserve_newer_target"
+    | "retire_duplicate_email"
+    | "quarantine_missing_owner";
   createdAt: string;
   updatedAt: string;
   termsAcceptedAt: string | null;
@@ -94,6 +98,7 @@ export function planIdentityUserDisposition(
   }
 
   addSourceDuplicateIdBlockers(users, blockers);
+  resolveDuplicateEmails(users, blockers);
   const sourceIds = new Set(users.map((user) => user.id));
   const currentById = new Map(existingUsers.map((user) => [user.id, user]));
   for (const user of users) {
@@ -191,6 +196,44 @@ function addSourceDuplicateIdBlockers(
         "Source user ID occurs more than once",
       );
   }
+}
+
+function resolveDuplicateEmails(
+  users: PlannedIdentityUser[],
+  blockers: IdentityMigrationBlocker[],
+): void {
+  const groups = new Map<string, PlannedIdentityUser[]>();
+  for (const user of users) groups.set(user.email, [...(groups.get(user.email) ?? []), user]);
+  for (const [email, candidates] of groups) {
+    if (candidates.length < 2) continue;
+    const ranked = [...candidates].sort(
+      (left, right) =>
+        duplicateRank(right) - duplicateRank(left) || left.id.localeCompare(right.id),
+    );
+    if (duplicateRank(ranked[0]!) === duplicateRank(ranked[1]!)) {
+      addBlocker(
+        blockers,
+        "DUPLICATE_EMAIL",
+        "auth.users",
+        hashLabel(email),
+        `Normalized email has no unique canonical user among ${ranked
+          .map((user) => user.id)
+          .sort()
+          .join(", ")}`,
+      );
+      continue;
+    }
+    for (const duplicate of ranked.slice(1)) {
+      duplicate.email = `retired-${duplicate.id}@migration.invalid`;
+      duplicate.status = "deleted";
+      duplicate.disposition = "retire_duplicate_email";
+    }
+  }
+}
+
+function duplicateRank(user: PlannedIdentityUser): number {
+  const status = { verified: 4, pending: 3, suspended: 2, rejected: 1 }[user.sourceStatus] ?? 0;
+  return status * 2 + Number(user.emailVerified);
 }
 
 function addFinalEmailBlockers(

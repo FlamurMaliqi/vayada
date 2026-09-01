@@ -28,10 +28,18 @@ const booking = (overrides: Record<string, unknown> = {}) =>
     updated_at: "2026-08-02T00:00:00Z",
     ...overrides,
   });
+const auth = (overrides: Record<string, unknown> = {}) =>
+  row("auth", "users", {
+    id: ID.user,
+    type: "hotel",
+    status: "verified",
+    ...overrides,
+  });
 
 describe("planCatalogOwnership", () => {
   it("uses exact IDs and owner IDs without name guessing", () => {
     const plan = planCatalogOwnership([
+      auth(),
       booking(),
       row("pms", "hotels", {
         id: ID.other,
@@ -61,6 +69,7 @@ describe("planCatalogOwnership", () => {
 
   it("fails closed when one owner resolves to multiple Booking properties", () => {
     const plan = planCatalogOwnership([
+      auth(),
       booking(),
       booking({ id: ID.other, slug: "other-hotel" }),
       row("marketplace", "hotel_profiles", {
@@ -95,7 +104,7 @@ describe("planCatalogOwnership", () => {
     ]);
   });
 
-  it("reports malformed or ownership-free source rows", () => {
+  it("reports malformed canonical rows and quarantines ownerless non-canonical rows", () => {
     const plan = planCatalogOwnership([
       booking({ user_id: null }),
       row("pms", "hotels", {
@@ -107,10 +116,49 @@ describe("planCatalogOwnership", () => {
       }),
     ]);
 
-    expect(plan.blockers.map((blocker) => blocker.code)).toEqual([
-      "INVALID_CATALOG_SOURCE_ROW",
-      "MISSING_CANONICAL_PROPERTY",
+    expect(plan.blockers.map((blocker) => blocker.code)).toEqual(["INVALID_CATALOG_SOURCE_ROW"]);
+    expect(plan.quarantinedSources).toEqual([
+      expect.objectContaining({
+        sourceSystem: "pms",
+        sourceId: ID.other,
+        reason: "legacy_owner_quarantined",
+      }),
     ]);
+  });
+
+  it("prefers a same-owner exact PMS ID over ambiguous owner-level matches", () => {
+    const plan = planCatalogOwnership([
+      auth({ status: "pending" }),
+      booking(),
+      booking({ id: ID.other, slug: "other-hotel" }),
+      row("pms", "hotels", {
+        id: ID.other,
+        user_id: ID.user,
+        name: "Exact PMS Hotel",
+        slug: "other-hotel",
+        created_at: "2026-08-01T00:00:00Z",
+      }),
+    ]);
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.sourceLinks.find((link) => link.sourceSystem === "pms")?.propertyId).toBe(ID.other);
+  });
+
+  it("still blocks unresolved rows owned by an existing non-verified user", () => {
+    const plan = planCatalogOwnership([
+      auth({ status: "pending" }),
+      row("marketplace", "hotel_profiles", {
+        id: ID.other,
+        user_id: ID.user,
+        name: "Pending profile",
+        status: "pending",
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-01T00:00:00Z",
+      }),
+    ]);
+
+    expect(plan.blockers.map((blocker) => blocker.code)).toEqual(["MISSING_CANONICAL_PROPERTY"]);
+    expect(plan.quarantinedSources).toEqual([]);
   });
 
   it("blocks an existing source link with the wrong relationship", () => {

@@ -5,7 +5,7 @@ import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
 import { readProductionIdentitySnapshot } from "./productionIdentitySnapshotReader.js";
 
 type QueryClient = Pick<pg.ClientBase, "query">;
-type CatalogDatabase = "booking" | "marketplace" | "pms";
+type CatalogDatabase = "auth" | "booking" | "marketplace" | "pms";
 type SourceEvidence = {
   sourceDatabase: CatalogDatabase;
   snapshotIdentifier: string;
@@ -27,6 +27,7 @@ type SnapshotRow = {
 };
 
 export const PRODUCTION_CATALOG_SOURCE_TABLES: Record<CatalogDatabase, readonly string[]> = {
+  auth: ["users"],
   booking: ["booking_hotel_translations", "booking_hotels"],
   marketplace: ["hotel_profiles"],
   pms: ["hotels"],
@@ -37,7 +38,7 @@ const databases = Object.keys(PRODUCTION_CATALOG_SOURCE_TABLES) as CatalogDataba
 export async function readProductionCatalogSnapshot(
   client: QueryClient,
   runId: string,
-  services: { validateRun: typeof readProductionIdentitySnapshot } = {
+  services: { validateRun: (client: QueryClient, runId: string) => Promise<unknown> } = {
     validateRun: readProductionIdentitySnapshot,
   },
 ): Promise<IdentitySourceRow[]> {

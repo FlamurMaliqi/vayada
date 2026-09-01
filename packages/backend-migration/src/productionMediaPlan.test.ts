@@ -162,6 +162,84 @@ describe("production media plan", () => {
     );
   });
 
+  it("retains archived hotel media as private and never public-approved", () => {
+    const input = fixture();
+    input.target.resourceLinks[0]!.status = "archived";
+
+    const plan = buildProductionMediaPlan(input);
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.references[0]).toMatchObject({ visibility: "private", publicApproved: false });
+  });
+
+  it("retains suspended creator media as private", () => {
+    const input = fixture();
+    input.rows = [
+      marketplaceRow("creators", {
+        id: CREATOR,
+        user_id: CREATOR_USER,
+        profile_picture: HERO,
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-30T00:00:00Z",
+      }),
+    ];
+    input.target.propertyLinks = [];
+    input.target.resourceLinks = [
+      {
+        organizationId: CREATOR_ORGANIZATION,
+        product: "marketplace",
+        resourceType: "creator_profile",
+        resourceId: CREATOR,
+        relationship: "owner",
+        status: "suspended",
+      },
+    ];
+
+    const plan = buildProductionMediaPlan(input);
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.references[0]).toMatchObject({ visibility: "private", publicApproved: false });
+  });
+
+  it("retains archived PMS room media as private", () => {
+    const input = fixture();
+    input.rows = [
+      pmsRow("room_types", {
+        id: CREATOR,
+        hotel_id: HOTEL,
+        images: [HERO],
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-30T00:00:00Z",
+      }),
+    ];
+    input.target.propertyLinks = [
+      {
+        sourceSystem: "pms",
+        sourceTable: "hotels",
+        sourceId: HOTEL,
+        propertyId: PROPERTY,
+        relationship: "operational_input",
+        status: "active",
+        migrationRunId: RUN,
+      },
+    ];
+    input.target.resourceLinks = [
+      {
+        organizationId: ORGANIZATION,
+        product: "pms",
+        resourceType: "pms_hotel",
+        resourceId: HOTEL,
+        relationship: "operator",
+        status: "archived",
+      },
+    ];
+
+    const plan = buildProductionMediaPlan(input);
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.references[0]).toMatchObject({ visibility: "private", publicApproved: false });
+  });
+
   it("reports a bad reference without aborting the inventory scan", () => {
     const input = fixture();
     input.rows.push(
@@ -369,4 +447,8 @@ function row(sourceTable: string, data: Record<string, unknown>): IdentitySource
 
 function marketplaceRow(sourceTable: string, data: Record<string, unknown>): IdentitySourceRow {
   return { sourceDatabase: "marketplace", sourceTable, rowOrdinal: 1, data };
+}
+
+function pmsRow(sourceTable: string, data: Record<string, unknown>): IdentitySourceRow {
+  return { sourceDatabase: "pms", sourceTable, rowOrdinal: 1, data };
 }

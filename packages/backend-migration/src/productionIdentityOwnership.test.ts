@@ -78,22 +78,86 @@ describe("production identity ownership planning", () => {
     });
   });
 
-  it("blocks ambiguous tenants, orphan owners, and owner type mismatches", () => {
+  it("blocks ambiguous tenants and quarantines non-operational owner drift", () => {
     const ambiguous = existingState();
     const otherOrganization = { ...ambiguous.organizations[0]!, id: RESOURCE_ID };
     ambiguous.organizations.push(otherOrganization);
     ambiguous.resourceLinks.push({ ...ambiguous.resourceLinks[0]!, organizationId: RESOURCE_ID });
     const orphan = bookingOwner();
     orphan.data["user_id"] = ORG_ID;
-    const wrongType = { ...hotelUser(), type: "creator" } as PlannedIdentityUser;
-    const codes = [
-      ...planIdentityOwnership([bookingOwner()], [hotelUser()], ambiguous).blockers,
-      ...planIdentityOwnership([orphan], [hotelUser()]).blockers,
-      ...planIdentityOwnership([bookingOwner()], [wrongType]).blockers,
-    ].map((item) => item.code);
-    expect(codes).toEqual(
-      expect.arrayContaining(["AMBIGUOUS_OWNER", "ORPHAN_PRODUCT_USER", "OWNER_TYPE_MISMATCH"]),
+    const wrongType = {
+      ...hotelUser(),
+      type: "creator",
+      status: "deleted",
+    } as PlannedIdentityUser;
+    expect(planIdentityOwnership([bookingOwner()], [hotelUser()], ambiguous).blockers).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "AMBIGUOUS_OWNER" })]),
     );
+    for (const plan of [
+      planIdentityOwnership([orphan], []),
+      planIdentityOwnership([bookingOwner()], [wrongType]),
+    ]) {
+      expect(plan.blockers).toEqual([]);
+      expect(plan.organizations).toEqual([expect.objectContaining({ status: "archived" })]);
+      expect(plan.memberships).toEqual([]);
+      expect(plan.resourceLinks).toEqual([expect.objectContaining({ status: "archived" })]);
+      expect(plan.quarantinedOrganizations).toBe(1);
+      expect(plan.quarantinedResourceLinks).toBe(1);
+    }
+  });
+
+  it("still blocks an orphan owner with a future operational booking", () => {
+    const orphan = bookingOwner();
+    orphan.data["user_id"] = ORG_ID;
+    const futureBooking: IdentitySourceRow = {
+      sourceDatabase: "pms",
+      sourceTable: "bookings",
+      rowOrdinal: 1,
+      data: {
+        id: "55555555-5555-4555-8555-555555555555",
+        hotel_id: RESOURCE_ID,
+        status: "confirmed",
+        is_test_booking: false,
+        check_out: "2026-04-01T00:00:00.000Z",
+        created_at: "2026-01-01T00:00:00.000Z",
+      },
+    };
+
+    expect(
+      planIdentityOwnership(
+        [orphan, futureBooking],
+        [],
+        { organizations: [], memberships: [], resourceLinks: [] },
+        "2026-03-01T00:00:00.000Z",
+      ).blockers,
+    ).toEqual([expect.objectContaining({ code: "ORPHAN_PRODUCT_USER_WITH_FUTURE_BOOKING" })]);
+  });
+
+  it("treats an unknown nonterminal booking status as operational", () => {
+    const orphan = bookingOwner();
+    orphan.data["user_id"] = ORG_ID;
+    const booking: IdentitySourceRow = {
+      sourceDatabase: "pms",
+      sourceTable: "bookings",
+      rowOrdinal: 1,
+      data: {
+        id: "55555555-5555-4555-8555-555555555555",
+        hotel_id: RESOURCE_ID,
+        status: "provider_unknown",
+        is_test_booking: false,
+        check_out: "2026-04-01T00:00:00.000Z",
+        created_at: "2026-01-01T00:00:00.000Z",
+      },
+    };
+
+    expect(
+      planIdentityOwnership(
+        [orphan, booking],
+        [],
+        { organizations: [], memberships: [], resourceLinks: [] },
+        "2026-03-01T00:00:00.000Z",
+      ).blockers,
+    ).toEqual([expect.objectContaining({ code: "ORPHAN_PRODUCT_USER_WITH_FUTURE_BOOKING" })]);
   });
 
   it("adds a separate platform membership for superadmins", () => {

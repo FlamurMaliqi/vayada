@@ -352,6 +352,10 @@ function domainReports(): {
       counts: {
         users: 1,
         preservedNewerUsers: 0,
+        retiredDuplicateUsers: 0,
+        quarantinedUsers: 0,
+        quarantinedOrganizations: 0,
+        quarantinedResourceLinks: 0,
         pendingTargetWrites: 0,
         organizations: 1,
         memberships: 1,
@@ -376,6 +380,7 @@ function domainReports(): {
       counts: {
         properties: 1,
         sourceLinks: 1,
+        quarantinedSourceRows: 0,
         slugs: 1,
         domains: 0,
         locations: 1,
@@ -387,6 +392,7 @@ function domainReports(): {
         writes: 0,
         preservedTarget: 0,
       },
+      quarantinedSources: [],
       preservedTarget: [],
       blockers: [],
     },

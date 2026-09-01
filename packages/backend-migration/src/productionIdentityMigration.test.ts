@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   runProductionIdentityTransaction,
@@ -42,6 +42,24 @@ describe("production identity migration transaction", () => {
     expect(result).not.toHaveProperty("connectionString");
     expect(JSON.stringify(result)).not.toContain("secret");
     expect(log).toEqual(["BEGIN", "snapshot", "target", "plan", "ROLLBACK"]);
+  });
+
+  it("threads the immutable source horizon from the reader into planning", async () => {
+    const log: string[] = [];
+    const active = services(log, plan());
+    active.buildPlan = vi.fn(() => plan());
+
+    await runProductionIdentityTransaction(
+      new TransactionClient(log) as never,
+      { sourceRunId: RUN, mode: "dry-run" },
+      active,
+    );
+
+    expect(active.buildPlan).toHaveBeenCalledWith(
+      [],
+      emptyProductionIdentityState(),
+      "2026-08-30T00:00:00.000Z",
+    );
   });
 
   it("rolls a blocked apply back before invoking writers", async () => {
@@ -119,7 +137,7 @@ function services(
   return {
     readSnapshot: async () => {
       log.push("snapshot");
-      return [];
+      return { rows: [], sourceHorizonAt: "2026-08-30T00:00:00.000Z" };
     },
     readTarget: async () => {
       log.push("target");
@@ -152,10 +170,16 @@ function plan(): ProductionIdentityPlan {
     gdprRequests: [],
     auditEvents: [],
     retiredAuthRows: {},
+    quarantinedOrganizations: 0,
+    quarantinedResourceLinks: 0,
     blockers: [],
     counts: {
       users: 0,
       preservedNewerUsers: 0,
+      retiredDuplicateUsers: 0,
+      quarantinedUsers: 0,
+      quarantinedOrganizations: 0,
+      quarantinedResourceLinks: 0,
       pendingTargetWrites: 0,
       organizations: 0,
       memberships: 0,

@@ -189,6 +189,7 @@ function target() {
         relationship: "operational_input",
         status: "active",
         migrationRunId: "run",
+        ownerStatus: "active",
       },
     ],
     bookings: [],

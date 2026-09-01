@@ -55,6 +55,29 @@ describe("production identity user disposition", () => {
     });
   });
 
+  it("retires a lower-trust duplicate email without changing the canonical identity", () => {
+    const pending = userRow({
+      id: OTHER_USER_ID,
+      status: "pending",
+      email_verified: false,
+      updated_at: "2026-03-01T00:00:00.000Z",
+    });
+
+    const plan = planIdentityUserDisposition([userRow(), pending]);
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.users.find((user) => user.id === USER_ID)).toMatchObject({
+      email: "owner@example.com",
+      status: "active",
+      disposition: "migrate",
+    });
+    expect(plan.users.find((user) => user.id === OTHER_USER_ID)).toMatchObject({
+      email: `retired-${OTHER_USER_ID}@migration.invalid`,
+      status: "deleted",
+      disposition: "retire_duplicate_email",
+    });
+  });
+
   it("blocks differing user state at equal freshness", () => {
     const plan = planIdentityUserDisposition(
       [userRow()],

@@ -31,6 +31,7 @@ export type PmsPropertyLink = {
   relationship: string;
   status: string;
   migrationRunId: string | null;
+  ownerStatus: string | null;
 };
 
 export type PmsTargetBooking = {
@@ -82,6 +83,7 @@ export type PmsBuildContext = {
   blockers: IdentityMigrationBlocker[];
   rowsByTable: Map<string, IdentitySourceRow[]>;
   propertyByHotel: Map<string, string>;
+  ownerStatusByHotel: Map<string, "active" | "suspended" | "archived">;
   hotelById: Map<string, IdentitySourceRow>;
   bookingById: Map<string, IdentitySourceRow>;
   targetBookingById: Map<string, PmsTargetBooking>;

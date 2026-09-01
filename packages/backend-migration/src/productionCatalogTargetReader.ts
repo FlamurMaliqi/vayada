@@ -4,7 +4,7 @@ import type {
   ExistingCatalogDomain,
   ExistingCatalogMediaObject,
 } from "./productionCatalogPresentationPlan.js";
-import type { ExistingCatalogSourceLink } from "./productionCatalogOwnership.js";
+import type { CatalogOwnerLink, ExistingCatalogSourceLink } from "./productionCatalogOwnership.js";
 
 type QueryClient = Pick<pg.ClientBase, "query">;
 export type CatalogTargetRow = Record<string, unknown> & { updatedAt: string };
@@ -16,6 +16,7 @@ export type CatalogOwnerRevision = {
 export type ProductionCatalogTargetState = {
   properties: CatalogTargetRow[];
   sourceLinks: ExistingCatalogSourceLink[];
+  ownerLinks: CatalogOwnerLink[];
   slugs: CatalogTargetRow[];
   domains: ExistingCatalogDomain[];
   locations: CatalogTargetRow[];
@@ -60,6 +61,17 @@ export async function readProductionCatalogTargetState(
     values,
   );
   const sourceLinks = await readProductionCatalogSourceLinks(client);
+  const ownerLinks = await client.query<CatalogOwnerLink>(
+    `SELECT organization_id::text AS "organizationId", product,
+            resource_type AS "resourceType", resource_id AS "resourceId", relationship, status
+       FROM identity.organization_resource_links
+      WHERE (product, resource_type, relationship) IN (
+              ('booking', 'booking_hotel', 'owner'),
+              ('pms', 'pms_hotel', 'operator'),
+              ('marketplace', 'hotel_profile', 'owner')
+            )
+      ORDER BY product, resource_type, resource_id, relationship, organization_id`,
+  );
   const slugs = await client.query<CatalogTargetRow>(
     `SELECT id::text, property_id::text AS "propertyId", slug, locale, purpose, status,
             redirects_to_id::text AS "redirectsToId", created_at::text AS "createdAt",
@@ -134,9 +146,9 @@ export async function readProductionCatalogTargetState(
      FROM platform.media_objects
      WHERE source_system IN ('booking', 'marketplace')
        AND source_table IN ('booking_hotels', 'hotel_profiles')
-       AND source_metadata ->> 'migrationRunId' = $2
+       AND source_metadata ->> 'migrationRunId' = $1::text
      ORDER BY source_system, source_table, source_row_id, purpose`,
-    [ids, sourceRunId],
+    [sourceRunId],
   );
   const ownerRevisions = await client.query<CatalogOwnerRevision>(
     `SELECT property_id::text AS "propertyId", owner_key AS "ownerKey", revision::text
@@ -147,6 +159,7 @@ export async function readProductionCatalogTargetState(
   return {
     properties: properties.rows,
     sourceLinks,
+    ownerLinks: ownerLinks.rows,
     slugs: slugs.rows,
     domains: domains.rows,
     locations: locations.rows,

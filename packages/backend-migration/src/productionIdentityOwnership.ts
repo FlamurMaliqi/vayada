@@ -12,8 +12,10 @@ import {
   type PlannedMembership,
   type PlannedOrganization,
   type PlannedResourceLink,
+  hasFutureOperationalBooking,
   parseIdentityOwnershipRows,
   stableOrganizationId,
+  stableQuarantineOrganizationId,
 } from "./productionIdentityOwnershipSource.js";
 import {
   combinedResourceStatus,
@@ -42,31 +44,37 @@ export function planIdentityOwnership(
   rows: IdentitySourceRow[],
   users: PlannedIdentityUser[],
   existing: ExistingOwnershipState = { organizations: [], memberships: [], resourceLinks: [] },
+  sourceHorizonAt?: string,
 ): IdentityOwnershipPlan {
   const parsed = parseIdentityOwnershipRows(rows);
   const blockers = [...parsed.blockers];
   const usersById = new Map(users.map((user) => [user.id, user]));
   const groups = new Map<string, IdentityOwnershipSource[]>();
+  const quarantineGroups = new Map<string, IdentityOwnershipSource[]>();
   for (const owner of parsed.owners) {
     const user = usersById.get(owner.userId);
     if (!user) {
-      block(
-        blockers,
-        "ORPHAN_PRODUCT_USER",
-        owner.source,
-        owner.sourceId,
-        `Owner ${owner.userId} is absent from auth.users`,
-      );
+      if (hasFutureOperationalBooking(rows, owner, sourceHorizonAt))
+        block(
+          blockers,
+          "ORPHAN_PRODUCT_USER_WITH_FUTURE_BOOKING",
+          owner.source,
+          owner.sourceId,
+          "Missing owner has a future operational booking and requires reviewed reassignment",
+        );
+      else append(quarantineGroups, `${owner.userId}:${owner.kind}`, owner);
       continue;
     }
     if (KIND[user.type] !== owner.kind) {
-      block(
-        blockers,
-        "OWNER_TYPE_MISMATCH",
-        owner.source,
-        owner.sourceId,
-        `User type ${user.type} cannot own ${owner.kind}`,
-      );
+      if (hasFutureOperationalBooking(rows, owner, sourceHorizonAt))
+        block(
+          blockers,
+          "OWNER_TYPE_MISMATCH_WITH_FUTURE_BOOKING",
+          owner.source,
+          owner.sourceId,
+          "Incompatible owner type has a future operational booking and requires reviewed reassignment",
+        );
+      else append(quarantineGroups, `${owner.userId}:${owner.kind}`, owner);
       continue;
     }
     append(groups, `${owner.userId}:${owner.kind}`, owner);
@@ -276,10 +284,94 @@ export function planIdentityOwnership(
       );
     }
   }
+  for (const [groupKey, owners] of sortedBy([...quarantineGroups], ([key]) => key)) {
+    const separator = groupKey.lastIndexOf(":");
+    const userId = groupKey.slice(0, separator);
+    const kind = groupKey.slice(separator + 1) as OrganizationKind;
+    const organizationId = stableQuarantineOrganizationId(userId, kind);
+    const createdAt = oldest(owners.map((row) => row.createdAt));
+    const updatedAt = newest(owners.map((row) => row.updatedAt));
+    const currentOrganization = existingOrganizations.get(organizationId);
+    if (
+      currentOrganization &&
+      (currentOrganization.kind !== kind || currentOrganization.status !== "archived")
+    )
+      block(
+        blockers,
+        "QUARANTINE_ORGANIZATION_CONFLICT",
+        "identity.organizations",
+        organizationId,
+        "Existing quarantine organization is not archived with the expected kind",
+      );
+    const generatedOrganization: PlannedOrganization = {
+      id: organizationId,
+      kind,
+      name: `Quarantined legacy ${kind.replaceAll("_", " ")}`,
+      slug: `legacy-quarantine-${kind.replaceAll("_", "-")}-${organizationId}`,
+      status: "archived",
+      createdAt,
+      updatedAt,
+    };
+    organizations.set(
+      organizationId,
+      currentOrganization && isNewer(currentOrganization, generatedOrganization)
+        ? { ...generatedOrganization, ...currentOrganization, createdAt }
+        : generatedOrganization,
+    );
+    for (const owner of owners) {
+      const generated: PlannedResourceLink = {
+        organizationId,
+        product: owner.product,
+        resourceType: owner.resourceType,
+        resourceId: owner.resourceId,
+        relationship: owner.relationship,
+        status: "archived",
+        createdAt: owner.createdAt,
+        updatedAt: owner.updatedAt,
+      };
+      const matches = existing.resourceLinks.filter(
+        (row) => resourceIdentity(row) === resourceIdentity(owner),
+      );
+      if (matches.length > 1) {
+        block(
+          blockers,
+          "AMBIGUOUS_QUARANTINE_RESOURCE_LINK",
+          owner.source,
+          owner.sourceId,
+          "Target has multiple ownership links for the quarantined resource",
+        );
+        continue;
+      }
+      const conflicting = matches.find(
+        (row) => row.organizationId !== organizationId || row.status !== "archived",
+      );
+      if (conflicting) {
+        block(
+          blockers,
+          "QUARANTINE_RESOURCE_CONFLICT",
+          owner.source,
+          owner.sourceId,
+          "Existing target ownership must be reviewed before quarantining this resource",
+        );
+        continue;
+      }
+      const current = matches[0];
+      resourceLinks.push(
+        current && isNewer(current, generated)
+          ? { ...generated, ...current, createdAt: generated.createdAt }
+          : generated,
+      );
+    }
+  }
   return {
     organizations: sortedBy([...organizations.values()], (row) => row.id),
     memberships: sortedBy(memberships, (row) => `${row.organizationId}:${row.userId}`),
     resourceLinks: sortedBy(resourceLinks, resourceKey),
+    quarantinedOrganizations: quarantineGroups.size,
+    quarantinedResourceLinks: [...quarantineGroups.values()].reduce(
+      (count, owners) => count + owners.length,
+      0,
+    ),
     blockers: sortedBy(blockers, (row) => `${row.code}:${row.source}:${row.sourceId}`),
   };
 }

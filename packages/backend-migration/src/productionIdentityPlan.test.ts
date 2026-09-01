@@ -158,6 +158,98 @@ describe("production identity plan", () => {
     expect(plan.resourceLinks[0]).toMatchObject({ status: "archived", updatedAt: MAR });
     expect(plan.entitlements[0]).toMatchObject({ status: "expired", updatedAt: MAR });
   });
+
+  it("quarantines a missing owner while preserving historical booking input", () => {
+    const rows = [validRows()[1]!];
+    rows.push(
+      source("pms", "bookings", {
+        id: "55555555-5555-4555-8555-555555555555",
+        hotel_id: HOTEL,
+        status: "confirmed",
+        is_test_booking: false,
+        check_out: JAN,
+        created_at: JAN,
+      }),
+    );
+
+    const plan = buildProductionIdentityPlan(rows, undefined, FEB);
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.users).toEqual([
+      expect.objectContaining({
+        id: USER,
+        status: "deleted",
+        disposition: "quarantine_missing_owner",
+      }),
+    ]);
+    expect(plan.memberships).toEqual([expect.objectContaining({ status: "inactive" })]);
+    expect(plan.resourceLinks).toEqual([expect.objectContaining({ status: "archived" })]);
+    expect(plan.entitlements).toEqual([expect.objectContaining({ status: "expired" })]);
+    expect(plan.counts).toMatchObject({
+      quarantinedUsers: 1,
+      quarantinedOrganizations: 1,
+      quarantinedResourceLinks: 1,
+    });
+  });
+
+  it("does not quarantine an orphan with a future operational booking", () => {
+    const rows = [validRows()[1]!];
+    rows.push(
+      source("pms", "bookings", {
+        id: "55555555-5555-4555-8555-555555555555",
+        hotel_id: HOTEL,
+        status: "confirmed",
+        is_test_booking: false,
+        check_out: MAR,
+        created_at: JAN,
+      }),
+    );
+
+    const plan = buildProductionIdentityPlan(rows, undefined, FEB);
+
+    expect(plan.users).toEqual([]);
+    expect(plan.blockers).toEqual([
+      expect.objectContaining({ code: "ORPHAN_PRODUCT_USER_WITH_FUTURE_BOOKING" }),
+    ]);
+  });
+
+  it("treats a nonterminal checkout on the snapshot calendar day as operational", () => {
+    const rows = [validRows()[1]!];
+    rows.push(
+      source("pms", "bookings", {
+        id: "55555555-5555-4555-8555-555555555555",
+        hotel_id: HOTEL,
+        status: "confirmed",
+        is_test_booking: false,
+        check_out: "2026-02-01",
+        created_at: JAN,
+      }),
+    );
+
+    const plan = buildProductionIdentityPlan(rows, undefined, "2026-02-01T05:00:00.000Z");
+
+    expect(plan.users).toEqual([]);
+    expect(plan.blockers).toEqual([
+      expect.objectContaining({ code: "ORPHAN_PRODUCT_USER_WITH_FUTURE_BOOKING" }),
+    ]);
+  });
+
+  it("blocks when a synthetic quarantine address is already owned by another identity", () => {
+    const existing = emptyProductionIdentityState();
+    existing.users = [
+      {
+        id: AUDIT,
+        email: `retired-owner-${USER}@migration.invalid`,
+        name: "Existing",
+        status: "deleted",
+        updatedAt: FEB,
+      },
+    ];
+
+    expect(buildProductionIdentityPlan([validRows()[1]!], existing).blockers).toEqual([
+      expect.objectContaining({ code: "QUARANTINE_USER_EMAIL_CONFLICT" }),
+    ]);
+  });
 });
 
 function validRows(): IdentitySourceRow[] {

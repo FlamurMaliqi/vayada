@@ -92,6 +92,36 @@ describe("production Marketplace plan", () => {
     },
   );
 
+  it("preserves an archived-owner offer without creating a public read model", () => {
+    const target = prerequisites();
+    target.resourceLinks.find((link) => link.resourceType === "hotel_profile")!.status = "archived";
+    target.publicProperties = [];
+
+    const plan = buildProductionMarketplacePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-03T00:00:00.000Z",
+      rows: representativeRows(),
+      target,
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(
+      plan.records.find((record) => record.targetTable === "marketplace_offers")?.row,
+    ).toMatchObject({
+      offerStatus: "archived",
+      offerMetadata: { legacySourceStatus: "verified", ownerQuarantined: true },
+    });
+    expect(
+      plan.records.find((record) => record.targetTable === "marketplace_hotel_profiles")?.row,
+    ).toMatchObject({
+      marketplaceProfileStatus: "archived",
+      marketplaceMetadata: { legacySourceStatus: "verified", ownerStatus: "archived" },
+    });
+    expect(
+      plan.records.some((record) => record.targetTable === "marketplace_offer_read_model"),
+    ).toBe(false);
+  });
+
   it("ignores a valid operator link when the owner is unambiguous", () => {
     const target = prerequisites();
     target.resourceLinks.push({

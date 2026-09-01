@@ -256,6 +256,10 @@ export function buildProductionMediaPlan(input: {
 }
 
 type Context = ReturnType<typeof createContext>;
+type MediaOwnerScope = {
+  organizationId: string;
+  ownerStatus: "active" | "suspended" | "archived";
+};
 
 function createContext(
   input: {
@@ -278,15 +282,13 @@ function createContext(
     blockers,
     "AMBIGUOUS_MEDIA_PROPERTY",
   );
-  const organization = uniqueMap(
+  const organization = uniqueOwnerMap(
     input.target.resourceLinks.filter(
-      (row) => row.status === "active" || row.status === "suspended",
+      (row) => row.status === "active" || row.status === "suspended" || row.status === "archived",
     ),
     (row) =>
       `${row.product}:${row.resourceType}:${row.resourceId.toLowerCase()}:${row.relationship}`,
-    (row) => row.organizationId,
     blockers,
-    "AMBIGUOUS_MEDIA_OWNER",
   );
   const byTable = new Map<string, IdentitySourceRow[]>();
   for (const row of input.rows)
@@ -431,13 +433,13 @@ function marketplaceListing(context: Context, row: IdentitySourceRow): Productio
 
 function marketplaceCreator(context: Context, row: IdentitySourceRow): ProductionMediaReference[] {
   const id = uuid(row.data["id"], "id");
-  const organizationId = owner(context, "marketplace", "creator_profile", id, "owner");
+  const ownerScope = owner(context, "marketplace", "creator_profile", id, "owner");
   const result: ProductionMediaReference[] = [];
   appendUrl(
     result,
     context,
     row,
-    { propertyId: null, organizationId },
+    { propertyId: null, ...ownerScope },
     {
       value: row.data["profile_picture"],
       field: "profile_picture",
@@ -473,13 +475,13 @@ function marketplaceChat(context: Context, row: IdentitySourceRow): ProductionMe
   const creatorUserId = uuid(creator.data["user_id"], "creator.user_id");
   const hotelProfile = find(context, "hotel_profiles", hotelId);
   const hotelUserId = uuid(hotelProfile.data["user_id"], "hotel.user_id");
-  const organizationId =
+  const ownerScope =
     senderId === creatorUserId
       ? owner(context, "marketplace", "creator_profile", creatorId, "owner")
       : senderId === hotelUserId
-        ? hotel.organizationId
+        ? { organizationId: hotel.organizationId, ownerStatus: hotel.ownerStatus }
         : null;
-  if (!organizationId)
+  if (!ownerScope)
     throw new Error("sender_id is neither the collaboration creator nor hotel owner");
   const metadata = object(row.data["metadata"]);
   const value = metadata["legacySourceUrl"] ?? metadata["url"] ?? row.data["content"];
@@ -490,7 +492,7 @@ function marketplaceChat(context: Context, row: IdentitySourceRow): ProductionMe
     result,
     context,
     row,
-    { propertyId: hotel.propertyId, organizationId },
+    { propertyId: hotel.propertyId, ...ownerScope },
     {
       value,
       field: "image",
@@ -555,7 +557,7 @@ function appendUrl(
   target: ProductionMediaReference[],
   context: Context,
   row: IdentitySourceRow,
-  scope: { propertyId: string | null; organizationId: string },
+  scope: { propertyId: string | null } & MediaOwnerScope,
   input: {
     value: unknown;
     field: string;
@@ -574,7 +576,7 @@ function appendUrl(
   const parsed = new URL(value);
   if (parsed.protocol !== "https:" || parsed.username || parsed.password)
     throw new Error(`${input.field} must be an HTTPS URL without credentials`);
-  const visibility = input.visibility ?? "public";
+  const visibility = scope.ownerStatus === "active" ? (input.visibility ?? "public") : "private";
   const material = {
     sourceSystem: row.sourceDatabase as ProductionMediaReference["sourceSystem"],
     sourceTable: row.sourceTable,
@@ -649,16 +651,13 @@ function hotelScope(
   product: string,
   resourceType: string,
   relationship: string,
-): { propertyId: string; organizationId: string } {
+): { propertyId: string } & MediaOwnerScope {
   const propertyId = context.property.get(`${sourceSystem}:${sourceTable}:${sourceId}`);
   if (!propertyId)
     throw new Error(
       `no active ${context.sourceRunId} property link for ${sourceSystem}.${sourceTable} ${sourceId}`,
     );
-  return {
-    propertyId,
-    organizationId: owner(context, product, resourceType, sourceId, relationship),
-  };
+  return { propertyId, ...owner(context, product, resourceType, sourceId, relationship) };
 }
 
 function owner(
@@ -667,11 +666,12 @@ function owner(
   resourceType: string,
   resourceId: string,
   relationship: string,
-): string {
+): MediaOwnerScope {
   const result = context.organization.get(
     `${product}:${resourceType}:${resourceId}:${relationship}`,
   );
-  if (!result) throw new Error(`no accepted owner for ${product}.${resourceType} ${resourceId}`);
+  if (!result)
+    throw new Error(`no authoritative owner for ${product}.${resourceType} ${resourceId}`);
   return result;
 }
 
@@ -714,6 +714,36 @@ function uniqueMap<T>(
   for (const [item, values] of grouped)
     if (values.size === 1) result.set(item, [...values][0]!);
     else block(blockers, code, "identity", item, "Source scope resolves to multiple target owners");
+  return result;
+}
+
+function uniqueOwnerMap(
+  rows: ProductionMediaTargetState["resourceLinks"],
+  key: (row: ProductionMediaTargetState["resourceLinks"][number]) => string,
+  blockers: IdentityMigrationBlocker[],
+): Map<string, MediaOwnerScope> {
+  const grouped = new Map<string, Map<string, MediaOwnerScope>>();
+  for (const row of rows) {
+    const item = key(row);
+    const scope = {
+      organizationId: row.organizationId,
+      ownerStatus: row.status as MediaOwnerScope["ownerStatus"],
+    };
+    const values = grouped.get(item) ?? new Map<string, MediaOwnerScope>();
+    values.set(`${scope.organizationId}:${scope.ownerStatus}`, scope);
+    grouped.set(item, values);
+  }
+  const result = new Map<string, MediaOwnerScope>();
+  for (const [item, values] of grouped)
+    if (values.size === 1) result.set(item, [...values.values()][0]!);
+    else
+      block(
+        blockers,
+        "AMBIGUOUS_MEDIA_OWNER",
+        "identity",
+        item,
+        "Source scope resolves to multiple target owners",
+      );
   return result;
 }
 

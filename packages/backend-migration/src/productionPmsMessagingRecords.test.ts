@@ -127,6 +127,7 @@ function target(mediaIds: string[]) {
         relationship: "operational_input",
         status: "active",
         migrationRunId: "run",
+        ownerStatus: "active",
       },
     ],
     bookings: [

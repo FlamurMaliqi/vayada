@@ -175,6 +175,7 @@ function input(rows: IdentitySourceRow[]) {
           propertyId: PROPERTY,
           relationship: "operational_input",
           status: "active",
+          ownerStatus: "active",
         },
         {
           sourceSystem: "booking",
@@ -183,6 +184,7 @@ function input(rows: IdentitySourceRow[]) {
           propertyId: PROPERTY,
           relationship: "canonical_input",
           status: "active",
+          ownerStatus: "active",
         },
       ],
       propertySlugs: [],

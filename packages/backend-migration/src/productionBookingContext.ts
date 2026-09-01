@@ -19,6 +19,7 @@ export function createProductionBookingContext(input: {
 }): BookingBuildContext {
   const blockers: IdentityMigrationBlocker[] = [...(input.target.blockers ?? [])];
   const propertyBySource = propertySourceMap(input.target.propertyLinks, blockers);
+  const ownerStatusBySource = ownerStatusMap(input.target.propertyLinks, blockers);
   const propertyBySlug = propertySlugMap(input.target.propertySlugs, blockers);
   const bookings = input.rows.filter(
     (row) => row.sourceDatabase === "pms" && row.sourceTable === "bookings",
@@ -48,6 +49,7 @@ export function createProductionBookingContext(input: {
     ...input,
     blockers,
     propertyBySource,
+    ownerStatusBySource,
     propertyBySlug,
     bookingById,
     bookingByReference,
@@ -170,6 +172,18 @@ export function propertyFor(
   return propertyId;
 }
 
+export function ownerStatusFor(
+  context: BookingBuildContext,
+  system: "booking" | "pms",
+  table: "booking_hotels" | "hotels",
+  sourceValue: unknown,
+): "active" | "suspended" | "archived" {
+  const id = requiredText(sourceValue, `${table}.id`).toLowerCase();
+  const status = context.ownerStatusBySource.get(`${system}:${table}:${id}`);
+  if (!status) throw new Error(`no accepted owner status for ${system}.${table} ${id}`);
+  return status;
+}
+
 export function addBookingBlocker(
   blockers: IdentityMigrationBlocker[],
   code: string,
@@ -209,6 +223,49 @@ function propertySourceMap(
       );
   }
   return result;
+}
+
+function ownerStatusMap(
+  links: BookingPropertyLink[],
+  blockers: IdentityMigrationBlocker[],
+): Map<string, "active" | "suspended" | "archived"> {
+  const result = new Map<string, "active" | "suspended" | "archived">();
+  for (const link of links) {
+    const expectedRelationship =
+      link.sourceSystem === "booking"
+        ? "canonical_input"
+        : link.sourceSystem === "pms"
+          ? "operational_input"
+          : null;
+    if (link.status !== "active" || link.relationship !== expectedRelationship) continue;
+    const key = `${link.sourceSystem}:${link.sourceTable}:${link.sourceId.toLowerCase()}`;
+    if (!isOwnerStatus(link.ownerStatus)) {
+      addBookingBlocker(
+        blockers,
+        "INVALID_BOOKING_OWNER_STATUS",
+        "identity.organization_resource_links",
+        key,
+        "Booking property source does not have exactly one accepted owner disposition",
+      );
+      continue;
+    }
+    const prior = result.get(key);
+    if (prior && prior !== link.ownerStatus) {
+      result.delete(key);
+      addBookingBlocker(
+        blockers,
+        "AMBIGUOUS_BOOKING_OWNER_STATUS",
+        "identity.organization_resource_links",
+        key,
+        "Booking property source resolves to conflicting owner dispositions",
+      );
+    } else result.set(key, link.ownerStatus);
+  }
+  return result;
+}
+
+function isOwnerStatus(value: string | null): value is "active" | "suspended" | "archived" {
+  return value === "active" || value === "suspended" || value === "archived";
 }
 
 function propertySlugMap(

@@ -1,5 +1,10 @@
 import { targetBooking } from "./productionPmsAssignmentRecords.js";
-import { addPmsBlocker, propertyForHotel, safePmsSourceId } from "./productionPmsContext.js";
+import {
+  addPmsBlocker,
+  ownerStatusForHotel,
+  propertyForHotel,
+  safePmsSourceId,
+} from "./productionPmsContext.js";
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
 import type {
   PmsAssignmentBuild,
@@ -44,6 +49,9 @@ function connection(context: PmsBuildContext, source: IdentitySourceRow): PmsTar
   const propertyId = propertyForHotel(context, hotelId);
   const externalPropertyId = optionalUuid(data["channex_property_id"], "channex_property_id");
   const active = bool(data["is_active"], "is_active", true);
+  const ownerStatus = ownerStatusForHotel(context, hotelId);
+  const ownerActive = ownerStatus === "active";
+  const retainedActive = ownerActive && active && Boolean(externalPropertyId);
   const error = optionalText(data["last_ari_sync_error"], "last_ari_sync_error");
   const markups = channelMarkups(context, hotelId);
   const updatedAt = latestIso([
@@ -53,7 +61,30 @@ function connection(context: PmsBuildContext, source: IdentitySourceRow): PmsTar
   const capabilities = ["booking", "ari"];
   if (bool(data["messaging_app_installed"], "messaging_app_installed", false))
     capabilities.push("message");
-  const records = [
+  const records: PmsTargetRecord[] = [];
+  if (externalPropertyId && !retainedActive) {
+    const claimCreatedAt = iso(data["created_at"], "created_at");
+    records.push(
+      pmsRecord(
+        source,
+        "channel_binding_claims",
+        `${propertyId}:channex`,
+        claimCreatedAt,
+        false,
+        {
+          propertyId,
+          provider: "channex",
+          externalPropertyId,
+          claimState: "historical",
+          claimSource: "migration",
+          createdAt: claimCreatedAt,
+          updatedAt: claimCreatedAt,
+        },
+        { propertyId, provider: "channex", externalPropertyId, claimState: "historical" },
+      ),
+    );
+  }
+  records.push(
     pmsRecord(
       source,
       "channel_connections",
@@ -64,21 +95,30 @@ function connection(context: PmsBuildContext, source: IdentitySourceRow): PmsTar
         id,
         propertyId,
         provider: "channex",
-        connectionStatus: !active
-          ? "disconnected"
-          : !externalPropertyId
-            ? "setup_incomplete"
-            : error
-              ? "degraded"
-              : "connected",
-        externalPropertyId,
-        capabilities,
-        messagingAppInstalled: capabilities.includes("message"),
+        connectionStatus:
+          !ownerActive || !active
+            ? "disconnected"
+            : !externalPropertyId
+              ? "setup_incomplete"
+              : error
+                ? "degraded"
+                : "connected",
+        externalPropertyId: retainedActive ? externalPropertyId : null,
+        capabilities: retainedActive ? capabilities : [],
+        messagingAppInstalled: retainedActive && capabilities.includes("message"),
         lastBookingSyncAt: optionalIso(data["last_booking_sync_at"], "last_booking_sync_at"),
         lastAriSyncAt: optionalIso(data["last_ari_sync_at"], "last_ari_sync_at"),
         lastMessageSyncAt: optionalIso(data["last_message_sync_at"], "last_message_sync_at"),
         connectionMetadata: {
           migrationRunId: context.sourceRunId,
+          ...(!retainedActive
+            ? {
+                legacyExternalPropertyId: externalPropertyId,
+                ownerStatus,
+                retainedClaimState: externalPropertyId ? "historical" : null,
+                legacyCapabilities: capabilities,
+              }
+            : {}),
           legacyAriError: error,
           legacyAriFailedAt: optionalIso(
             data["last_ari_sync_failed_at"],
@@ -95,9 +135,9 @@ function connection(context: PmsBuildContext, source: IdentitySourceRow): PmsTar
         createdAt: iso(data["created_at"], "created_at"),
         updatedAt,
       },
-      { connection: data, markups: markups.map((row) => row.data) },
+      { connection: data, markups: markups.map((row) => row.data), ownerStatus },
     ),
-  ];
+  );
   records.push(...syncStatuses(context, source, id, propertyId));
   return records;
 }
@@ -162,19 +202,25 @@ function roomMapping(context: PmsBuildContext, source: IdentitySourceRow): PmsTa
   assertRoomType(context, roomTypeId, propertyId);
   const updatedAt = iso(data["updated_at"], "updated_at");
   return [
-    pmsRecord(source, "channel_room_type_mappings", id, updatedAt, true, {
+    pmsRecord(
+      source,
+      "channel_room_type_mappings",
       id,
-      propertyId,
-      connectionId,
-      roomTypeId,
-      externalRoomTypeId: uuid(data["channex_room_type_id"], "channex_room_type_id"),
-      status: bool(connectionSource.data["is_active"], "connection.is_active", true)
-        ? "active"
-        : "disabled",
-      mappingMetadata: { migrationRunId: context.sourceRunId },
-      createdAt: iso(data["created_at"], "created_at"),
       updatedAt,
-    }),
+      true,
+      {
+        id,
+        propertyId,
+        connectionId,
+        roomTypeId,
+        externalRoomTypeId: uuid(data["channex_room_type_id"], "channex_room_type_id"),
+        status: connectionIsActive(context, connectionSource) ? "active" : "disabled",
+        mappingMetadata: { migrationRunId: context.sourceRunId },
+        createdAt: iso(data["created_at"], "created_at"),
+        updatedAt,
+      },
+      { mapping: data, ownerStatus: ownerStatusForHotel(context, hotelId) },
+    ),
   ];
 }
 
@@ -233,9 +279,7 @@ function rateMapping(
         externalRatePlanId: uuid(data["channex_rate_plan_id"], "channex_rate_plan_id"),
         sellMode,
         markupPercent: percentage(markups[0]?.data["markup_pct"] ?? 0, "markup_pct"),
-        status: bool(connectionSource.data["is_active"], "connection.is_active", true)
-          ? "active"
-          : "disabled",
+        status: connectionIsActive(context, connectionSource) ? "active" : "disabled",
         mappingMetadata: {
           migrationRunId: context.sourceRunId,
           planName: optionalText(data["plan_name"], "plan_name"),
@@ -245,7 +289,11 @@ function rateMapping(
         createdAt: iso(data["created_at"], "created_at"),
         updatedAt,
       },
-      { mapping: data, markup: markups[0]?.data ?? null },
+      {
+        mapping: data,
+        markup: markups[0]?.data ?? null,
+        ownerStatus: ownerStatusForHotel(context, hotelId),
+      },
     ),
   ];
 }
@@ -272,23 +320,42 @@ function bookingMapping(
     throw new Error("channel booking slot has no exact operational booking assignment");
   const updatedAt = iso(data["updated_at"], "updated_at");
   return [
-    pmsRecord(source, "channel_booking_mappings", id, updatedAt, true, {
+    pmsRecord(
+      source,
+      "channel_booking_mappings",
       id,
-      propertyId,
-      connectionId,
-      guestBookingId,
-      assignmentId,
-      externalBookingId: uuid(data["channex_booking_id"], "channex_booking_id"),
-      externalRevisionId: optionalUuid(data["channex_revision_id"], "channex_revision_id"),
-      channel: requiredText(data["channel_source"] ?? "channex", "channel_source").toLowerCase(),
-      channelRoomIndex,
-      syncStatus: "active",
-      lastSyncedAt: optionalIso(data["last_synced_at"], "last_synced_at"),
-      mappingMetadata: { migrationRunId: context.sourceRunId, historicalReceipt: true },
-      createdAt: iso(data["created_at"], "created_at"),
       updatedAt,
-    }),
+      true,
+      {
+        id,
+        propertyId,
+        connectionId,
+        guestBookingId,
+        assignmentId,
+        externalBookingId: uuid(data["channex_booking_id"], "channex_booking_id"),
+        externalRevisionId: optionalUuid(data["channex_revision_id"], "channex_revision_id"),
+        channel: requiredText(data["channel_source"] ?? "channex", "channel_source").toLowerCase(),
+        channelRoomIndex,
+        syncStatus: connectionIsActive(context, requiredConnection(context, hotelId))
+          ? "active"
+          : "ignored",
+        lastSyncedAt: optionalIso(data["last_synced_at"], "last_synced_at"),
+        mappingMetadata: { migrationRunId: context.sourceRunId, historicalReceipt: true },
+        createdAt: iso(data["created_at"], "created_at"),
+        updatedAt,
+      },
+      { mapping: data, ownerStatus: ownerStatusForHotel(context, hotelId) },
+    ),
   ];
+}
+
+function connectionIsActive(context: PmsBuildContext, source: IdentitySourceRow): boolean {
+  const hotelId = uuid(source.data["hotel_id"], "connection.hotel_id");
+  return (
+    ownerStatusForHotel(context, hotelId) === "active" &&
+    bool(source.data["is_active"], "connection.is_active", true) &&
+    Boolean(optionalUuid(source.data["channex_property_id"], "connection.channex_property_id"))
+  );
 }
 
 function requiredConnection(context: PmsBuildContext, hotelId: string): IdentitySourceRow {
