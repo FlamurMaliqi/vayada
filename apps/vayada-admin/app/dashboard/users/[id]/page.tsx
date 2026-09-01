@@ -507,7 +507,7 @@ function UserDetailContent() {
             profilePictureFile,
             userDetail.id,
           );
-          profileUpdateData.profilePicture = uploadResponse.url;
+          profileUpdateData.profilePictureMediaObjectId = uploadResponse.mediaObjectId;
         }
 
         // Handle platforms - always include when in edit mode (even if empty array to allow clearing all)
@@ -716,6 +716,7 @@ function UserDetailContent() {
       location: "",
       description: "",
       accommodationType: null,
+      media: [],
       images: [],
       status: "draft",
       createdAt: new Date().toISOString(),
