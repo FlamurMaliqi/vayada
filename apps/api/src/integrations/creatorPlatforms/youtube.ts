@@ -18,6 +18,7 @@ import {
   string,
   type CreatorPlatformOptionalResponse,
   unavailable,
+  withAbortSignal,
 } from "./http.js";
 import type {
   CreatorPlatformAdapter,
@@ -79,13 +80,16 @@ export function createYouTubeCreatorPlatformAdapter(
       return googleGrant(token, now);
     },
 
-    async listAccounts(grant) {
+    async listAccounts(grant, signal) {
       assertProvider(grant, provider);
       const url = new URL("https://www.googleapis.com/youtube/v3/channels");
       url.searchParams.set("part", "snippet");
       url.searchParams.set("mine", "true");
       url.searchParams.set("maxResults", "50");
-      const root = record(provider, await fetchJson(provider, fetcher, url, bearer(grant)));
+      const root = record(
+        provider,
+        await fetchJson(provider, fetcher, url, withAbortSignal(bearer(grant), signal)),
+      );
       const accounts = array(provider, root.items, "invalid channels data").map((itemValue) => {
         const item = record(provider, itemValue, "invalid channel");
         const snippet = record(provider, item.snippet, "channel missing snippet");
@@ -106,7 +110,7 @@ export function createYouTubeCreatorPlatformAdapter(
       return { accounts, grant };
     },
 
-    async refreshGrant(grant) {
+    async refreshGrant(grant, signal) {
       assertProvider(grant, provider);
       if (!grant.refreshToken) throw new Error("YouTube refresh token is missing");
       const body = new URLSearchParams({
@@ -117,23 +121,36 @@ export function createYouTubeCreatorPlatformAdapter(
       });
       const token = record(
         provider,
-        await fetchJson(provider, fetcher, "https://oauth2.googleapis.com/token", {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body,
-        }),
+        await fetchJson(
+          provider,
+          fetcher,
+          "https://oauth2.googleapis.com/token",
+          withAbortSignal(
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body,
+            },
+            signal,
+          ),
+        ),
       );
       return googleGrant(token, now, grant);
     },
 
-    async importAccount(account, grant, window) {
+    async importAccount(account, grant, window, signal) {
       assertProvider(grant, provider);
       assertAccountProvider(provider, account.provider);
       assertImportWindow(window);
       const channelUrl = new URL("https://www.googleapis.com/youtube/v3/channels");
       channelUrl.searchParams.set("part", "statistics,contentDetails");
       channelUrl.searchParams.set("id", account.providerAccountId);
-      const channelPayload = await fetchJson(provider, fetcher, channelUrl, bearer(grant));
+      const channelPayload = await fetchJson(
+        provider,
+        fetcher,
+        channelUrl,
+        withAbortSignal(bearer(grant), signal),
+      );
       const channelRoot = record(provider, channelPayload);
       const channel = record(
         provider,
@@ -158,22 +175,50 @@ export function createYouTubeCreatorPlatformAdapter(
       );
       const [contentCount, activityResponse, countriesResponse, agesResponse, gendersResponse] =
         await Promise.all([
-          countUploads(fetcher, grant, uploadsPlaylistId, window),
-          optionalAnalytics(fetcher, grant, account.providerAccountId, window, {
-            metrics: "views,likes,comments,shares",
-          }),
-          optionalAnalytics(fetcher, grant, account.providerAccountId, window, {
-            dimensions: "country",
-            metrics: "views",
-          }),
-          optionalAnalytics(fetcher, grant, account.providerAccountId, window, {
-            dimensions: "ageGroup",
-            metrics: "viewerPercentage",
-          }),
-          optionalAnalytics(fetcher, grant, account.providerAccountId, window, {
-            dimensions: "gender",
-            metrics: "viewerPercentage",
-          }),
+          countUploads(fetcher, grant, uploadsPlaylistId, window, signal),
+          optionalAnalytics(
+            fetcher,
+            grant,
+            account.providerAccountId,
+            window,
+            {
+              metrics: "views,likes,comments,shares",
+            },
+            signal,
+          ),
+          optionalAnalytics(
+            fetcher,
+            grant,
+            account.providerAccountId,
+            window,
+            {
+              dimensions: "country",
+              metrics: "views",
+            },
+            signal,
+          ),
+          optionalAnalytics(
+            fetcher,
+            grant,
+            account.providerAccountId,
+            window,
+            {
+              dimensions: "ageGroup",
+              metrics: "viewerPercentage",
+            },
+            signal,
+          ),
+          optionalAnalytics(
+            fetcher,
+            grant,
+            account.providerAccountId,
+            window,
+            {
+              dimensions: "gender",
+              metrics: "viewerPercentage",
+            },
+            signal,
+          ),
         ]);
       const activity = activityResponse.ok ? analyticsRows(activityResponse.value)[0] : undefined;
 
@@ -253,6 +298,7 @@ async function countUploads(
   grant: YouTubeCreatorPlatformGrant,
   uploadsPlaylistId: string,
   window: { startDate: string; endDate: string },
+  signal?: AbortSignal,
 ): Promise<number> {
   const start = Date.parse(`${window.startDate}T00:00:00Z`);
   const end = Date.parse(`${window.endDate}T00:00:00Z`);
@@ -265,7 +311,10 @@ async function countUploads(
     url.searchParams.set("playlistId", uploadsPlaylistId);
     url.searchParams.set("maxResults", "50");
     if (pageToken) url.searchParams.set("pageToken", pageToken);
-    const root = record(provider, await fetchJson(provider, fetcher, url, bearer(grant)));
+    const root = record(
+      provider,
+      await fetchJson(provider, fetcher, url, withAbortSignal(bearer(grant), signal)),
+    );
     let reachedBeforeWindow = false;
     for (const itemValue of array(provider, root.items, "invalid upload data")) {
       const item = record(provider, itemValue, "invalid upload");
@@ -291,6 +340,7 @@ async function optionalAnalytics(
   channelId: string,
   window: { startDate: string; endDate: string },
   query: { metrics: string; dimensions?: string },
+  signal?: AbortSignal,
 ): Promise<CreatorPlatformOptionalResponse> {
   const url = new URL("https://youtubeanalytics.googleapis.com/v2/reports");
   url.searchParams.set("ids", `channel==${channelId}`);
@@ -298,7 +348,7 @@ async function optionalAnalytics(
   url.searchParams.set("endDate", previousDate(window.endDate));
   url.searchParams.set("metrics", query.metrics);
   if (query.dimensions) url.searchParams.set("dimensions", query.dimensions);
-  return fetchOptionalJson(provider, fetcher, url, bearer(grant));
+  return fetchOptionalJson(provider, fetcher, url, withAbortSignal(bearer(grant), signal));
 }
 
 function previousDate(date: string): string {

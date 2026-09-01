@@ -12,7 +12,10 @@ import type {
   MarketplaceCreatorPlatformConnectionRepository,
   ScheduledCreatorPlatformConnectionSyncClaim,
 } from "../routes/marketplaceCreatorPlatformConnections.js";
-import { runCreatorPlatformSyncCycle } from "./creatorPlatformSync.js";
+import {
+  runCreatorPlatformSyncCycle,
+  startCreatorPlatformSyncWorker,
+} from "./creatorPlatformSync.js";
 import type {
   CreatorPlatformSyncJob,
   CreatorPlatformSyncStore,
@@ -45,6 +48,9 @@ describe("creator platform sync worker", () => {
       leaseId: expect.any(String),
       leaseExpiresAt: "2026-09-01T12:10:00.000Z",
     });
+    expect(harness.store.schedule).toHaveBeenCalledWith(
+      expect.objectContaining({ platforms: ["instagram"] }),
+    );
     expect(harness.credentialGet).toHaveBeenCalledWith("vault/current");
     expect(harness.repository.updateConnectionFromImport).toHaveBeenCalledOnce();
     expect(harness.store.succeed).toHaveBeenCalledWith(job, {
@@ -71,6 +77,25 @@ describe("creator platform sync worker", () => {
       expect.objectContaining({
         code: "provider_rate_limit",
         retryAt: new Date("2026-09-01T12:05:00.000Z"),
+      }),
+    );
+  });
+
+  it("retries provider timeouts without replacing the last successful snapshot", async () => {
+    const harness = setup({ error: new DOMException("timed out", "TimeoutError") });
+
+    await expect(runCreatorPlatformSyncCycle(harness.options)).resolves.toMatchObject({
+      retried: 1,
+      deadLettered: 0,
+    });
+
+    expect(harness.repository.updateConnectionFromImport).not.toHaveBeenCalled();
+    expect(harness.repository.markConnectionError).not.toHaveBeenCalled();
+    expect(harness.store.fail).toHaveBeenCalledWith(
+      job,
+      expect.objectContaining({
+        code: "provider_network_error",
+        retryAt: new Date("2026-09-01T12:01:00.000Z"),
       }),
     );
   });
@@ -133,6 +158,21 @@ describe("creator platform sync worker", () => {
     });
   });
 
+  it("cancels a previously queued job when its platform is no longer configured", async () => {
+    const harness = setup();
+
+    await expect(
+      runCreatorPlatformSyncCycle({ ...harness.options, adapters: {} }),
+    ).resolves.toMatchObject({ canceled: 1, deadLettered: 0 });
+
+    expect(harness.credentialGet).not.toHaveBeenCalled();
+    expect(harness.repository.releaseConnectionSync).toHaveBeenCalledOnce();
+    expect(harness.store.cancel).toHaveBeenCalledWith(job, {
+      now,
+      code: "provider_not_configured",
+    });
+  });
+
   it("completes a replay without provider access after its snapshot already committed", async () => {
     const harness = setup({ lastSuccessfulSyncAt: "2026-09-01T12:00:01.000Z" });
 
@@ -143,6 +183,50 @@ describe("creator platform sync worker", () => {
     expect(harness.credentialGet).not.toHaveBeenCalled();
     expect(harness.repository.releaseConnectionSync).toHaveBeenCalledOnce();
     expect(harness.store.succeed).toHaveBeenCalledWith(job, { now, outcome: "succeeded" });
+  });
+
+  it("starts automatically, prevents overlap, and closes its owned resources", async () => {
+    const harness = setup();
+    const worker = startCreatorPlatformSyncWorker({
+      ...harness.options,
+      pollIntervalMs: 60_000,
+      warn: vi.fn(),
+    });
+
+    await worker.runNow();
+    expect(harness.store.schedule).toHaveBeenCalledOnce();
+    await worker.close();
+    expect(harness.store.close).toHaveBeenCalledOnce();
+    expect(harness.repository.close).toHaveBeenCalledOnce();
+  });
+
+  it("aborts an in-flight provider request before closing owned resources", async () => {
+    let started!: () => void;
+    const providerStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const adapter = creatorAdapter();
+    adapter.listAccounts = async (_grant, signal) => {
+      started();
+      return await new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    };
+    const harness = setup({ adapter });
+    const warn = vi.fn();
+    const worker = startCreatorPlatformSyncWorker({
+      ...harness.options,
+      pollIntervalMs: 60_000,
+      warn,
+    });
+
+    await providerStarted;
+    await expect(worker.close()).resolves.toBeUndefined();
+
+    expect(harness.repository.releaseConnectionSync).toHaveBeenCalledOnce();
+    expect(harness.store.close).toHaveBeenCalledOnce();
+    expect(harness.repository.close).toHaveBeenCalledOnce();
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 
@@ -155,6 +239,7 @@ type Repository = Pick<
   | "updateConnectionFromImport"
   | "markCredentialCleaned"
   | "recordCredentialCleanupFailure"
+  | "close"
 >;
 
 function setup(
@@ -163,6 +248,7 @@ function setup(
     error?: Error;
     claim?: ScheduledCreatorPlatformConnectionSyncClaim;
     lastSuccessfulSyncAt?: string;
+    adapter?: CreatorPlatformAdapter;
   } = {},
 ) {
   const claimedJob = overrides.job ?? job;
@@ -198,6 +284,7 @@ function setup(
     updateConnectionFromImport: vi.fn(async ({ connection: updated }) => updated),
     markCredentialCleaned: vi.fn(async () => undefined),
     recordCredentialCleanupFailure: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined),
   } satisfies Repository;
   const grant: CreatorPlatformGrant = {
     provider: "instagram",
@@ -215,7 +302,7 @@ function setup(
     put: vi.fn(async () => undefined),
     delete: vi.fn(async () => undefined),
   };
-  const adapter = creatorAdapter(overrides.error);
+  const adapter = overrides.adapter ?? creatorAdapter(overrides.error);
   return {
     store,
     repository,

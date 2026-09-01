@@ -17,6 +17,7 @@ import {
   string,
   type CreatorPlatformOptionalResponse,
   unavailable,
+  withAbortSignal,
 } from "./http.js";
 import type {
   CreatorPlatformAdapter,
@@ -86,11 +87,13 @@ export function createInstagramCreatorPlatformAdapter(
       } satisfies InstagramCreatorPlatformGrant;
     },
 
-    async listAccounts(grant) {
+    async listAccounts(grant, signal) {
       assertProvider(grant, provider);
       const url = new URL(`https://graph.instagram.com/${graphVersion}/me`);
       url.searchParams.set("fields", "id,user_id,username,name,account_type,profile_picture_url");
-      const user = instagramUserRecord(await fetchJson(provider, fetcher, url, bearer(grant)));
+      const user = instagramUserRecord(
+        await fetchJson(provider, fetcher, url, withAbortSignal(bearer(grant), signal)),
+      );
       const providerAccountId = identifier(provider, user.user_id ?? user.id, "missing user id");
       const username = optionalString(user.username);
       return {
@@ -109,12 +112,15 @@ export function createInstagramCreatorPlatformAdapter(
       };
     },
 
-    async refreshGrant(grant) {
+    async refreshGrant(grant, signal) {
       assertProvider(grant, provider);
       const url = new URL("https://graph.instagram.com/refresh_access_token");
       url.searchParams.set("grant_type", "ig_refresh_token");
       url.searchParams.set("access_token", grant.accessToken);
-      const payload = record(provider, await fetchJson(provider, fetcher, url));
+      const payload = record(
+        provider,
+        await fetchJson(provider, fetcher, url, withAbortSignal(undefined, signal)),
+      );
       const expiresIn = number(provider, payload.expires_in, "missing expires_in");
       return {
         ...grant,
@@ -123,7 +129,7 @@ export function createInstagramCreatorPlatformAdapter(
       };
     },
 
-    async importAccount(account, grant, window) {
+    async importAccount(account, grant, window, signal) {
       assertProvider(grant, provider);
       assertAccountProvider(provider, account.provider);
       assertImportWindow(window);
@@ -132,30 +138,33 @@ export function createInstagramCreatorPlatformAdapter(
         `https://graph.instagram.com/${graphVersion}/${encodeURIComponent(account.providerAccountId)}`,
       );
       userUrl.searchParams.set("fields", "followers_count");
-      const user = record(provider, await fetchJson(provider, fetcher, userUrl, bearer(grant)));
+      const user = record(
+        provider,
+        await fetchJson(provider, fetcher, userUrl, withAbortSignal(bearer(grant), signal)),
+      );
       const followers = number(provider, user.followers_count, "missing followers_count");
       const activityUrl = insightsUrl(graphVersion, account.providerAccountId, window);
       const [mediaCount, activityResponse, countriesResponse, agesResponse, gendersResponse] =
         await Promise.all([
-          countMedia(fetcher, grant, graphVersion, account.providerAccountId, window),
-          fetchOptionalJson(provider, fetcher, activityUrl, bearer(grant)),
+          countMedia(fetcher, grant, graphVersion, account.providerAccountId, window, signal),
+          fetchOptionalJson(provider, fetcher, activityUrl, withAbortSignal(bearer(grant), signal)),
           fetchOptionalJson(
             provider,
             fetcher,
             demographicsUrl(graphVersion, account.providerAccountId, "country"),
-            bearer(grant),
+            withAbortSignal(bearer(grant), signal),
           ),
           fetchOptionalJson(
             provider,
             fetcher,
             demographicsUrl(graphVersion, account.providerAccountId, "age"),
-            bearer(grant),
+            withAbortSignal(bearer(grant), signal),
           ),
           fetchOptionalJson(
             provider,
             fetcher,
             demographicsUrl(graphVersion, account.providerAccountId, "gender"),
-            bearer(grant),
+            withAbortSignal(bearer(grant), signal),
           ),
         ]);
       const activity = activityResponse.ok
@@ -243,6 +252,7 @@ async function countMedia(
   graphVersion: string,
   accountId: string,
   window: { startDate: string; endDate: string },
+  signal?: AbortSignal,
 ): Promise<number> {
   const start = Date.parse(`${window.startDate}T00:00:00Z`);
   const end = Date.parse(`${window.endDate}T00:00:00Z`);
@@ -259,7 +269,10 @@ async function countMedia(
     url.searchParams.set("until", providerWindow.until);
     url.searchParams.set("limit", "100");
     if (after) url.searchParams.set("after", after);
-    const root = record(provider, await fetchJson(provider, fetcher, url, bearer(grant)));
+    const root = record(
+      provider,
+      await fetchJson(provider, fetcher, url, withAbortSignal(bearer(grant), signal)),
+    );
     for (const mediaValue of array(provider, root.data, "invalid media data")) {
       const media = record(provider, mediaValue, "invalid media");
       identifier(provider, media.id, "media missing id");

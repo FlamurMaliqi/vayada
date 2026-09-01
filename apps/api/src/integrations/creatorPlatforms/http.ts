@@ -5,6 +5,8 @@ import type {
   CreatorPlatformUnavailableReason,
 } from "./types.js";
 
+const CREATOR_PLATFORM_REQUEST_TIMEOUT_MS = 30_000;
+
 export class CreatorPlatformResponseError extends Error {
   constructor(provider: CreatorPlatformProvider, detail: string) {
     super(`${provider} returned an invalid response: ${detail}`);
@@ -32,13 +34,7 @@ export class CreatorPlatformRequestError extends Error {
 }
 
 export type CreatorPlatformRequestErrorCategory =
-  | "authorization"
-  | "permission"
-  | "privacy"
-  | "rate_limit"
-  | "quota"
-  | "transient"
-  | "request";
+  "authorization" | "permission" | "privacy" | "rate_limit" | "quota" | "transient" | "request";
 
 export type CreatorPlatformOptionalResponse =
   | { ok: true; value: unknown }
@@ -56,13 +52,14 @@ export async function fetchJson(
   input: string | URL,
   init?: RequestInit,
 ): Promise<unknown> {
-  const response = await fetcher(input, init);
+  const response = await fetcher(input, boundedRequestInit(init));
   if (!response.ok) {
     throw await requestError(provider, response);
   }
   try {
     return await response.json();
-  } catch {
+  } catch (error) {
+    if (isAbortLikeError(error)) throw error;
     throw new CreatorPlatformResponseError(provider, "expected JSON");
   }
 }
@@ -92,8 +89,29 @@ export async function fetchOk(
   input: string | URL,
   init?: RequestInit,
 ): Promise<void> {
-  const response = await fetcher(input, init);
+  const response = await fetcher(input, boundedRequestInit(init));
   if (!response.ok) throw await requestError(provider, response);
+}
+
+export function withAbortSignal(
+  init: RequestInit | undefined,
+  signal: AbortSignal | undefined,
+): RequestInit | undefined {
+  return signal ? { ...init, signal } : init;
+}
+
+function boundedRequestInit(init: RequestInit | undefined): RequestInit {
+  const timeout = AbortSignal.timeout(CREATOR_PLATFORM_REQUEST_TIMEOUT_MS);
+  return {
+    ...init,
+    signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
+  };
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  return (
+    error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError")
+  );
 }
 
 async function requestError(

@@ -281,6 +281,14 @@ describe("api config", () => {
     ).toEqual({
       callbackBaseUrl: "https://creator.api.localhost:1356",
       webReturnUrl: "https://marketplace.localhost:1356/profile/complete",
+      sync: {
+        enabled: true,
+        pollIntervalMs: 60_000,
+        recurringIntervalMs: 86_400_000,
+        batchSize: 10,
+        maxAttempts: 5,
+        minimumSpacingMs: { meta: 1_000, tiktok: 2_000, google: 1_000 },
+      },
       credentialVault: {
         provider: "memory",
         secretPrefix: "vayada/test/creator-platforms",

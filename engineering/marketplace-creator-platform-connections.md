@@ -294,15 +294,43 @@ raw response cannot be accidentally persisted there.
 
 ## Production readiness
 
-Each platform still requires its own registered developer application, redirect
-URIs, permission review, and production approval. Instagram professional
-insights and Facebook Page insights require Meta review; TikTok scopes require
-TikTok approval; YouTube Analytics requires a Google OAuth client and consent
-configuration. Local adapter behavior does not imply those approvals exist.
+The in-repository runtime is implemented. It schedules each active connection
+after its last successful snapshot becomes due, persists an ID-only job in
+`platform.jobs`, reacquires current workspace ownership and connection status,
+and only then reads the credential vault. Provider work is serialized and
+spaced independently for Meta, TikTok, and Google. Rate limits, quota failures,
+network failures, vault-read failures, and provider 5xx responses receive
+bounded exponential retries. Failed attempts never replace the last successful
+snapshot. Invalid or revoked grants move the connection to
+`reconnect_required`; exhausted non-authorization failures move it to
+`sync_failed` and leave dead-letter evidence.
 
-Production enablement also requires the deployed credential vault, provider
-secrets, rate-limit/retry policy, provider-specific data retention review, and
-end-to-end callback testing. Connection-time import and creator-triggered sync
-are implemented; recurring scheduled metric sync remains a separate production
-worker. Until provider credentials are configured, the API reports a stable
-not-configured error instead of starting an authorization that cannot complete.
+The runtime starts automatically when at least one complete provider config is
+present and only enqueues connections for configured credential providers. It
+cancels in-flight provider and credential-vault calls during graceful shutdown.
+`CREATOR_PLATFORM_SYNC_ENABLED=false` disables it. Poll cadence, recurring
+interval, batch size, maximum attempts, and each provider's minimum job-start
+spacing are configurable through the `CREATOR_PLATFORM_SYNC_*`,
+`CREATOR_PLATFORM_META_*`, `CREATOR_PLATFORM_TIKTOK_*`, and
+`CREATOR_PLATFORM_GOOGLE_*` variables documented in `apps/api/.env.example`.
+
+External production enablement is still blocked until a human completes all of
+the following outside this repository:
+
+1. Register the Meta, TikTok, and Google applications and configure the exact
+   deployed callback URLs.
+2. Obtain provider review/approval for the production scopes used by Instagram
+   professional insights, Facebook Page insights, TikTok profile/video data,
+   and YouTube Data/Analytics.
+3. Add provider credentials to the production deployment secret store and give
+   the API task role access to the configured Secrets Manager prefix. Never put
+   those values in source control, Linear, pull requests, or chat.
+4. Complete the provider-specific retention/compliance review.
+5. Run live OAuth, account-selection, initial-import, scheduled-refresh,
+   revoked-grant, and reconnect evidence for all four platforms in the deployed
+   environment.
+
+Until a provider's complete configuration and external approval are available,
+the API reports a stable not-configured error instead of starting an
+authorization that cannot complete. Local adapter and worker tests are not
+evidence of provider approval or live OAuth verification.

@@ -1,4 +1,7 @@
-import type { CreatorPlatformProvider } from "@vayada/domain-marketplace";
+import type {
+  ConnectableCreatorPlatform,
+  CreatorPlatformProvider,
+} from "@vayada/domain-marketplace";
 import pg, { type QueryResultRow } from "pg";
 
 export const CREATOR_PLATFORM_SYNC_QUEUE = "marketplace.creator-platform-sync";
@@ -17,7 +20,12 @@ export type CreatorPlatformSyncJob = {
 };
 
 export type CreatorPlatformSyncStore = {
-  schedule(input: { now: Date; syncIntervalMs: number; maxAttempts: number }): Promise<number>;
+  schedule(input: {
+    now: Date;
+    syncIntervalMs: number;
+    maxAttempts: number;
+    platforms: ConnectableCreatorPlatform[];
+  }): Promise<number>;
   claim(input: {
     now: Date;
     workerId: string;
@@ -73,7 +81,12 @@ export function createPgCreatorPlatformSyncStore(config: {
 
 async function schedule(
   pool: Pool,
-  input: { now: Date; syncIntervalMs: number; maxAttempts: number },
+  input: {
+    now: Date;
+    syncIntervalMs: number;
+    maxAttempts: number;
+    platforms: ConnectableCreatorPlatform[];
+  },
 ): Promise<number> {
   const result = await pool.query<{ id: string }>(
     `INSERT INTO platform.jobs (
@@ -88,6 +101,7 @@ async function schedule(
             jsonb_build_object('connectionId', connection.id::text)
      FROM marketplace.creator_platform_connections connection
      WHERE connection.status = 'active'
+       AND connection.platform = ANY($6::text[])
        AND connection.credential_ref IS NOT NULL
        AND COALESCE(connection.last_successful_sync_at, connection.created_at)
            <= $1::timestamptz - ($2::bigint * interval '1 millisecond')
@@ -106,6 +120,7 @@ async function schedule(
       positive(input.maxAttempts),
       CREATOR_PLATFORM_SYNC_QUEUE,
       CREATOR_PLATFORM_SYNC_JOB_TYPE,
+      input.platforms,
     ],
   );
   return result.rows.length;

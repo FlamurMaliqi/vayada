@@ -52,12 +52,7 @@ export type CreatorPlatformConnectionDocument = {
 };
 
 type AuthorizationStatus =
-  | "authorizing"
-  | "processing"
-  | "pending_account_selection"
-  | "active"
-  | "failed"
-  | "expired";
+  "authorizing" | "processing" | "pending_account_selection" | "active" | "failed" | "expired";
 
 type AuthorizationRecord = {
   authorizationId: string;
@@ -866,6 +861,7 @@ export async function syncClaimedCreatorPlatformConnection(input: {
   credentialSecretPrefix: string;
   credentialCleanupAvailableAt: string;
   now: () => Date;
+  signal?: AbortSignal;
   cleanCredential(credentialRef: string, authorizationId: string): Promise<boolean>;
 }): Promise<CreatorPlatformConnectionDocument> {
   const { connection } = input;
@@ -874,7 +870,10 @@ export async function syncClaimedCreatorPlatformConnection(input: {
   }
   let grant: CreatorPlatformGrant | null;
   try {
-    grant = await input.credentialVault.get<CreatorPlatformGrant>(connection.credentialRef);
+    grant = await input.credentialVault.get<CreatorPlatformGrant>(
+      connection.credentialRef,
+      input.signal,
+    );
   } catch {
     throw new CreatorPlatformCredentialReadError();
   }
@@ -882,16 +881,22 @@ export async function syncClaimedCreatorPlatformConnection(input: {
     throw new CreatorPlatformGrantUnavailableError();
   }
   if (input.adapter.refreshGrant && shouldRefresh(grant, input.now())) {
-    grant = await input.adapter.refreshGrant(grant);
+    grant = await input.adapter.refreshGrant(grant, input.signal);
   }
-  const accountList = await input.adapter.listAccounts(grant);
+  const accountList = await input.adapter.listAccounts(grant, input.signal);
   grant = accountList.grant;
   const account = accountList.accounts.find(
     (candidate) => candidate.providerAccountId === connection.externalAccountId,
   );
   if (!account) throw new Error("Connected provider account is no longer available");
   grant = input.adapter.grantForAccount?.(account, grant) ?? grant;
-  const projection = await importProjection(input.adapter, account, grant, input.now());
+  const projection = await importProjection(
+    input.adapter,
+    account,
+    grant,
+    input.now(),
+    input.signal,
+  );
   const nextCredentialRef = credentialReference(
     input.credentialSecretPrefix,
     `${connection.authorizationId}/sync/${connection.syncLeaseId}`,
@@ -901,7 +906,7 @@ export async function syncClaimedCreatorPlatformConnection(input: {
     credentialRef: nextCredentialRef,
     availableAt: input.credentialCleanupAvailableAt,
   });
-  await input.credentialVault.put(nextCredentialRef, grant);
+  await input.credentialVault.put(nextCredentialRef, grant, input.signal);
   const updated = await input.repository.updateConnectionFromImport({
     access: input.access,
     connection,
@@ -1036,14 +1041,20 @@ async function importProjection(
   account: CreatorPlatformAccount,
   grant: CreatorPlatformGrant,
   now: Date,
+  signal?: AbortSignal,
 ): Promise<ImportedProjection> {
   const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const start = new Date(end);
   start.setUTCDate(start.getUTCDate() - CREATOR_PLATFORM_ENGAGEMENT_WINDOW_DAYS);
-  const providerImport = await adapter.importAccount(account, grant, {
-    startDate: start.toISOString().slice(0, 10),
-    endDate: end.toISOString().slice(0, 10),
-  });
+  const providerImport = await adapter.importAccount(
+    account,
+    grant,
+    {
+      startDate: start.toISOString().slice(0, 10),
+      endDate: end.toISOString().slice(0, 10),
+    },
+    signal,
+  );
   const imported: CreatorPlatformImport = {
     ...providerImport,
     demographics: {
