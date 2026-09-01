@@ -52,4 +52,34 @@ describe("uploadService", () => {
       "still processing",
     );
   });
+
+  it("uploads offer images against the exact offer and returns only their media IDs", async () => {
+    uploadPlatformMedia.mockResolvedValue([
+      result("media-one", "private/media/one"),
+      result("media-two", "private/media/two"),
+    ]);
+
+    const response = await uploadService.uploadListingImages([file, file], "offer-801");
+
+    expect(uploadPlatformMedia).toHaveBeenCalledWith({
+      purpose: "marketplace.offer.media",
+      visibility: "private",
+      resource: {
+        product: "marketplace",
+        resourceType: "marketplace_offer",
+        resourceId: "offer-801",
+      },
+      files: [file, file],
+      idempotencyKey: "admin:offer:offer-801",
+    });
+    expect(response).toEqual({ mediaObjectIds: ["media-one", "media-two"] });
+  });
+
+  it("fails when the media API does not return every selected offer image", async () => {
+    uploadPlatformMedia.mockResolvedValue([result("media-one", "private/media/one")]);
+
+    await expect(uploadService.uploadListingImages([file, file], "offer-801")).rejects.toThrow(
+      "Not every selected offer image",
+    );
+  });
 });

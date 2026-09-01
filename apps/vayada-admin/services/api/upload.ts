@@ -10,8 +10,7 @@ export interface UploadImageResponse {
 }
 
 export interface UploadListingImagesResponse {
-  images: UploadImageResponse[];
-  total: number;
+  mediaObjectIds: string[];
 }
 
 export const uploadService = {
@@ -48,16 +47,30 @@ export const uploadService = {
   /**
    * Upload multiple image files for listing
    * @param files - Array of image files to upload
-   * @param targetUserId - The user ID of the hotel
-   * @returns The upload response with array of images
+   * @param offerId - The exact Marketplace offer that owns the media
+   * @returns The upload response with media object IDs
    */
   uploadListingImages: async (
     files: File[],
-    targetUserId: string,
+    offerId: string,
   ): Promise<UploadListingImagesResponse> => {
-    void files;
-    void targetUserId;
-    throw new Error("Offer uploads require Platform/Admin media publication. See VAY-984.");
+    const uploaded = await uploadPlatformMedia({
+      purpose: "marketplace.offer.media",
+      visibility: "private",
+      resource: {
+        product: "marketplace",
+        resourceType: "marketplace_offer",
+        resourceId: offerId,
+      },
+      files,
+      idempotencyKey: `admin:offer:${offerId}`,
+    });
+    if (uploaded.length !== files.length) {
+      throw new Error("Not every selected offer image finished uploading.");
+    }
+    return {
+      mediaObjectIds: uploaded.map((image) => image.mediaId),
+    };
   },
 
   /**

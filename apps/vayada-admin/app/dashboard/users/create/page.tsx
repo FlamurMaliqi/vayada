@@ -20,6 +20,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { usersService, uploadService } from "@/services/api";
 import { ApiErrorResponse } from "@/services/api/client";
+import { createOfferWithMedia, OfferMediaPublicationError } from "@/services/api/offerMedia";
 import { CURRENCY_OPTIONS } from "@/lib/constants/booking";
 
 const AGE_GROUPS = ["18-24", "25-34", "35-44", "45-54", "55+"] as const;
@@ -764,7 +765,7 @@ export default function CreateUserPage() {
             createdUser.id,
           );
 
-          // Step 3: Update creator profile with the uploaded media object
+          // Step 3: Persist the canonical media object ID; the API derives the display URL.
           await usersService.updateCreatorProfile(createdUser.id, {
             profilePictureMediaObjectId: uploadResponse.mediaObjectId,
           });
@@ -780,6 +781,7 @@ export default function CreateUserPage() {
       // Step 2 & 3: Handle collaboration offers (if any)
       if (userType === "hotel" && listings.length > 0) {
         const failedOfferNames: string[] = [];
+        const unpublishedOfferNames: string[] = [];
 
         // Process each listing with its original index
         for (let listingIndex = 0; listingIndex < listings.length; listingIndex++) {
@@ -796,31 +798,12 @@ export default function CreateUserPage() {
           }
 
           try {
-            let imageUrls: string[] = [];
-
-            // Step 2: Upload offer media if there are any files
             const imageFiles = listingImageFiles[listingIndex] || [];
-
-            if (imageFiles.length > 0) {
-              try {
-                const uploadResponse = await uploadService.uploadListingImages(
-                  imageFiles,
-                  createdUser.id,
-                );
-                imageUrls = uploadResponse.images.map((img) => img.url);
-              } catch (uploadError) {
-                console.error("Failed to upload offer media:", uploadError);
-                // Continue without images - user can add them later
-              }
-            }
-
-            // Step 3: Create listing with uploaded image URLs
             const listingData: any = {
               name: listing.name,
               location: listing.location,
               description: listing.description,
               ...(listing.accommodationType && { accommodationType: listing.accommodationType }),
-              ...(imageUrls.length > 0 && { images: imageUrls }),
               collaborationOfferings: listing.collaborationOfferings
                 .filter((co) => co.platforms.length > 0 && co.availabilityMonths.length > 0)
                 .map((co) => {
@@ -877,19 +860,20 @@ export default function CreateUserPage() {
               },
             };
 
-            await usersService.createOffer(createdUser.id, listingData);
+            await createOfferWithMedia(createdUser.id, listingData, imageFiles);
           } catch (listingError) {
             console.error("Failed to create offer:", listingError);
-            failedOfferNames.push(listing.name);
+            if (listingError instanceof OfferMediaPublicationError) {
+              unpublishedOfferNames.push(listing.name);
+            } else {
+              failedOfferNames.push(listing.name);
+            }
           }
         }
 
-        if (failedOfferNames.length > 0) {
-          setLoading(false);
-          setError(
-            "User created, but these offers failed: " +
-              failedOfferNames.join(", ") +
-              ". Open the user from the dashboard to retry them.",
+        if (failedOfferNames.length > 0 || unpublishedOfferNames.length > 0) {
+          router.push(
+            `/dashboard/users/${createdUser.id}?tab=listings&notice=offer-setup-incomplete`,
           );
           return;
         }
