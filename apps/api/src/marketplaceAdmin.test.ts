@@ -466,6 +466,7 @@ describe("marketplace admin routes", () => {
       payload: {
         displayName: "Lina Travels",
         locationText: "Vienna, Austria",
+        profilePictureMediaObjectId: "f8017000-0000-4000-8000-000000000001",
         platforms: [
           {
             platform: "instagram",
@@ -486,7 +487,11 @@ describe("marketplace admin routes", () => {
     });
     expect(repository.calls.updateCreatorProfile[0]).toMatchObject({
       userId: "user_creator",
-      request: { displayName: "Lina Travels" },
+      actorUserId: "user_platform",
+      request: {
+        displayName: "Lina Travels",
+        profilePictureMediaObjectId: "f8017000-0000-4000-8000-000000000001",
+      },
     });
 
     const hotel = await injectJson<MarketplaceAdminUserProfileUpdateResponse>(app, {
@@ -518,6 +523,115 @@ describe("marketplace admin routes", () => {
     expect(response.statusCode).toBe(422);
     expect(response.body).toMatchObject({ code: "unsupported_website" });
     expect(repository.calls.updateHotelProfile).toHaveLength(0);
+  });
+
+  it("rejects malformed creator profile media object IDs", async () => {
+    const repository = createMemoryMarketplaceAdminRepository();
+    app = buildMarketplaceAdminApp(repository);
+
+    const response = await injectJson(app, {
+      method: "PUT",
+      url: "/api/marketplace/admin/users/user_creator/profile/creator",
+      headers: { authorization: "Bearer platform-token" },
+      payload: { profilePictureMediaObjectId: "f8017000--0000-4000-8000-000000000001" },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body).toMatchObject({ code: "invalid_profilePictureMediaObjectId" });
+    expect(repository.calls.updateCreatorProfile).toHaveLength(0);
+  });
+
+  it("persists only exact approved creator media IDs and their derived URL", async () => {
+    const sql: string[] = [];
+    const values: Array<readonly unknown[] | undefined> = [];
+    const repository = createPgMarketplaceAdminRepository({
+      connectionString: "postgresql://target-db",
+      identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+      pool: createAdminPgPool(sql, {
+        creatorProfileMediaUrl: "https://cdn.example.test/media/profile.webp",
+        queryValues: values,
+      }) as never,
+    });
+
+    await expect(
+      repository.updateCreatorProfileForUser({
+        userId: "f8011000-0000-4000-8000-000000000001",
+        actorUserId: "f8011000-0000-4000-8000-000000000002",
+        authorizationMode: "platform_organization_membership",
+        request: { profilePictureMediaObjectId: "f8017000-0000-4000-8000-000000000001" },
+      }),
+    ).resolves.toMatchObject({ profileType: "creator" });
+
+    const mediaQuery = sql.findIndex((statement) => statement.includes("platform.media_objects"));
+    expect(sql[mediaQuery]).toContain("media.created_by_user_id = $2::uuid");
+    expect(sql[mediaQuery]).toContain("media.public_approved = TRUE");
+    expect(sql[mediaQuery]).toContain("media.source_metadata ->> 'requestedVisibility'");
+    expect(sql[mediaQuery]).toContain("media.resource_type = 'creator_profile'");
+    expect(values[mediaQuery]).toEqual([
+      "f8017000-0000-4000-8000-000000000001",
+      "f8011000-0000-4000-8000-000000000002",
+      "f8012000-0000-0000-0000-000000000002",
+      "f8014000-0000-0000-0000-000000000001",
+    ]);
+    const updateSql = sql.find((statement) =>
+      statement.includes("UPDATE marketplace.creator_profiles"),
+    );
+    expect(updateSql).toContain("profilePictureMediaObjectId");
+    expect(updateSql).toContain("WHEN $5::boolean THEN profile_metadata -");
+    expect(sql.find((statement) => statement.includes("ORDER BY profile.id ASC"))).toContain(
+      "FOR UPDATE OF profile",
+    );
+
+    const denied = createPgMarketplaceAdminRepository({
+      connectionString: "postgresql://target-db",
+      identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+      pool: createAdminPgPool([]) as never,
+    });
+    app = buildMarketplaceAdminApp(denied);
+    const deniedResponse = await injectJson(app, {
+      method: "PUT",
+      url: "/api/marketplace/admin/users/f8011000-0000-4000-8000-000000000001/profile/creator",
+      headers: { authorization: "Bearer platform-token" },
+      payload: { profilePictureMediaObjectId: "f8017000-0000-4000-8000-000000000099" },
+    });
+    expect(deniedResponse.statusCode).toBe(422);
+    expect(deniedResponse.body).toMatchObject({ code: "invalid_profile_picture_media" });
+  });
+
+  it.each([
+    ["missing", []],
+    [
+      "ambiguous",
+      [
+        {
+          creatorProfileId: "f8014000-0000-0000-0000-000000000001",
+          organizationId: "f8012000-0000-0000-0000-000000000002",
+        },
+        {
+          creatorProfileId: "f8014000-0000-0000-0000-000000000002",
+          organizationId: "f8012000-0000-0000-0000-000000000003",
+        },
+      ],
+    ],
+  ])("rejects %s creator profile resolution for admin updates", async (_case, rows) => {
+    const sql: string[] = [];
+    const repository = createPgMarketplaceAdminRepository({
+      connectionString: "postgresql://target-db",
+      identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+      pool: createAdminPgPool(sql, { creatorProfileRows: rows }) as never,
+    });
+
+    await expect(
+      repository.updateCreatorProfileForUser({
+        userId: "f8011000-0000-4000-8000-000000000001",
+        actorUserId: "f8011000-0000-4000-8000-000000000002",
+        authorizationMode: "platform_organization_membership",
+        request: { displayName: "Lina Travels" },
+      }),
+    ).resolves.toBeNull();
+    expect(sql.some((statement) => statement.includes("UPDATE marketplace.creator_profiles"))).toBe(
+      false,
+    );
   });
 
   it("rejects blank offer titles on marketplace admin updates", async () => {
@@ -861,6 +975,9 @@ function createAdminPgPool(
     profileComplete?: boolean;
     revokeInviteExists?: boolean;
     successfulInviteRedemption?: boolean;
+    creatorProfileMediaUrl?: string;
+    creatorProfileRows?: Array<{ creatorProfileId: string; organizationId: string }>;
+    queryValues?: Array<readonly unknown[] | undefined>;
   } = {},
 ) {
   const offerId = "f8015000-0000-0000-0000-000000000001";
@@ -872,6 +989,7 @@ function createAdminPgPool(
     _values?: readonly unknown[],
   ): Promise<{ rows: T[] }> => {
     sql.push(text);
+    options.queryValues?.push(_values);
     if (text.includes("INSERT INTO marketplace.marketplace_offer_read_model")) {
       options.projectionModes?.push(String(_values?.[1]));
     }
@@ -897,6 +1015,25 @@ function createAdminPgPool(
       text.includes('collaboration.id::text AS "collaborationId"')
     ) {
       rows = [acceptedAffiliateCollaborationRow()];
+    } else if (
+      text.includes("FROM marketplace.creator_profiles profile") &&
+      text.includes("identity.organization_memberships membership")
+    ) {
+      rows = options.creatorProfileRows ?? [
+        {
+          creatorProfileId: "f8014000-0000-0000-0000-000000000001",
+          organizationId: "f8012000-0000-0000-0000-000000000002",
+        },
+      ];
+    } else if (
+      text.includes("FROM platform.media_objects media") &&
+      text.includes("variant.variant_name = 'original_safe'")
+    ) {
+      rows = options.creatorProfileMediaUrl
+        ? [{ publicCdnUrl: options.creatorProfileMediaUrl }]
+        : [];
+    } else if (text.includes("UPDATE marketplace.creator_profiles")) {
+      rows = [{ updatedAt: "2026-06-13T10:00:00.000Z" }];
     } else if (
       text.includes("FROM marketplace.marketplace_hotel_profiles profile") &&
       text.includes("identity.organization_memberships membership")

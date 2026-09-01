@@ -233,6 +233,7 @@ export type MarketplaceAdminCreatorPlatformWrite = {
 export type MarketplaceAdminCreatorProfileUpdateRequest = {
   displayName?: string;
   profilePictureUrl?: string | null;
+  profilePictureMediaObjectId?: string | null;
   locationText?: string | null;
   shortDescription?: string | null;
   portfolioUrl?: string | null;
@@ -357,6 +358,7 @@ export type MarketplaceAdminRepository = {
   }): Promise<MarketplaceCollaborationLifecycleWriteResponse | null>;
   updateCreatorProfileForUser(input: {
     userId: string;
+    actorUserId: string;
     request: MarketplaceAdminCreatorProfileUpdateRequest;
     authorizationMode: MarketplaceAdminAuthorizationMode;
   }): Promise<MarketplaceAdminUserProfileUpdateResponse | null>;
@@ -404,6 +406,13 @@ export type MarketplaceAdminRoutesOptions = {
   repository: MarketplaceAdminRepository;
   legacySuperadminFallbackEnabled?: boolean;
 };
+
+class MarketplaceAdminInvalidProfileMediaError extends Error {
+  constructor() {
+    super("invalid_profile_picture_media");
+    this.name = "MarketplaceAdminInvalidProfileMediaError";
+  }
+}
 
 type MarketplaceAdminPool = {
   query<T extends QueryResultRow = QueryResultRow>(
@@ -534,14 +543,34 @@ export function createPgMarketplaceAdminRepository(config: {
       return writeOffer(pool, async (client) => {
         const profile = await resolveAdminCreatorProfile(client, input.userId);
         if (!profile) return null;
+        const profileMedia =
+          input.request.profilePictureMediaObjectId === undefined
+            ? undefined
+            : await resolveAdminCreatorProfileMedia(client, {
+                mediaObjectId: input.request.profilePictureMediaObjectId,
+                actorUserId: input.actorUserId,
+                profile,
+              });
         const result = await client.query<{ updatedAt: Date | string }>(
           `UPDATE marketplace.creator_profiles
            SET display_name = CASE WHEN $3::boolean THEN $4 ELSE display_name END,
-               profile_picture_url = CASE WHEN $5::boolean THEN $6 ELSE profile_picture_url END,
+               profile_picture_url = CASE
+                 WHEN $15::boolean THEN $17
+                 WHEN $5::boolean THEN $6
+                 ELSE profile_picture_url
+               END,
                location_text = CASE WHEN $7::boolean THEN $8 ELSE location_text END,
                short_description = CASE WHEN $9::boolean THEN $10 ELSE short_description END,
                portfolio_url = CASE WHEN $11::boolean THEN $12 ELSE portfolio_url END,
                phone = CASE WHEN $13::boolean THEN $14 ELSE phone END,
+               profile_metadata = CASE
+                 WHEN $15::boolean THEN CASE WHEN $16::text IS NULL
+                   THEN profile_metadata - 'profilePictureMediaObjectId'
+                   ELSE jsonb_set(profile_metadata, '{profilePictureMediaObjectId}', to_jsonb($16::text), true)
+                 END
+                 WHEN $5::boolean THEN profile_metadata - 'profilePictureMediaObjectId'
+                 ELSE profile_metadata
+               END,
                updated_at = now()
            WHERE id::text = $1
              AND organization_id::text = $2
@@ -561,6 +590,9 @@ export function createPgMarketplaceAdminRepository(config: {
             input.request.portfolioUrl ?? null,
             input.request.phone !== undefined,
             input.request.phone ?? null,
+            input.request.profilePictureMediaObjectId !== undefined,
+            input.request.profilePictureMediaObjectId ?? null,
+            profileMedia?.publicCdnUrl ?? null,
           ],
         );
         const updatedAt = result.rows[0]?.updatedAt;
@@ -1052,11 +1084,20 @@ export async function registerMarketplaceAdminRoutes(
       if (request.params.profileType === "creator") {
         const validation = validateCreatorProfileRequest(request.body);
         if (typeof validation === "string") return sendAdminError(reply, 422, validation);
-        const result = await repository.updateCreatorProfileForUser({
-          userId: request.params.userId,
-          request: validation,
-          authorizationMode: access.authorizationMode,
-        });
+        let result: MarketplaceAdminUserProfileUpdateResponse | null;
+        try {
+          result = await repository.updateCreatorProfileForUser({
+            userId: request.params.userId,
+            actorUserId: access.context.actor.internalUserId,
+            request: validation,
+            authorizationMode: access.authorizationMode,
+          });
+        } catch (error) {
+          if (error instanceof MarketplaceAdminInvalidProfileMediaError) {
+            return sendAdminError(reply, 422, error.message);
+          }
+          throw error;
+        }
         if (!result) return sendAdminError(reply, 404, "creator_profile_not_found");
         return result;
       }
@@ -1390,6 +1431,20 @@ function validateCreatorProfileRequest(
       request[key] = value.trim();
     } else {
       return `invalid_${key}`;
+    }
+  }
+
+  if ("profilePictureMediaObjectId" in body) {
+    const value = body.profilePictureMediaObjectId;
+    if (value === null) {
+      request.profilePictureMediaObjectId = null;
+    } else if (
+      typeof value === "string" &&
+      /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value)
+    ) {
+      request.profilePictureMediaObjectId = value;
+    } else {
+      return "invalid_profilePictureMediaObjectId";
     }
   }
 
@@ -1797,11 +1852,53 @@ async function resolveAdminCreatorProfile(
        ON organization.id = membership.organization_id
       AND organization.kind = 'creator_workspace'
       AND organization.status = 'active'
-     ORDER BY profile.updated_at DESC, profile.id ASC
-     LIMIT 1`,
+     ORDER BY profile.id ASC
+     FOR UPDATE OF profile
+     FOR SHARE OF membership, organization`,
     [userId],
   );
-  return result.rows[0] ?? null;
+  return result.rows.length === 1 ? result.rows[0]! : null;
+}
+
+async function resolveAdminCreatorProfileMedia(
+  client: Pick<MarketplaceAdminPool, "query">,
+  input: {
+    mediaObjectId: string | null;
+    actorUserId: string;
+    profile: AdminCreatorProfile;
+  },
+): Promise<{ publicCdnUrl: string | null }> {
+  if (input.mediaObjectId === null) return { publicCdnUrl: null };
+  const result = await client.query<{ publicCdnUrl: string }>(
+    `SELECT variant.public_cdn_url AS "publicCdnUrl"
+       FROM platform.media_objects media
+       JOIN platform.media_variants variant
+         ON variant.media_object_id = media.id
+        AND variant.variant_name = 'original_safe'
+        AND variant.visibility = 'public'
+        AND variant.public_cdn_url IS NOT NULL
+      WHERE media.id = $1::uuid
+        AND media.created_by_user_id = $2::uuid
+        AND media.owner_organization_id::text = $3
+        AND media.purpose = 'marketplace.creator.profile_image'
+        AND media.resource_product = 'marketplace'
+        AND media.resource_type = 'creator_profile'
+        AND media.resource_id = $4
+        AND media.storage_kind = 'vayada_managed'
+        AND COALESCE(media.source_metadata ->> 'requestedVisibility', media.visibility) = 'public'
+        AND media.visibility = 'public'
+        AND media.public_approved = TRUE
+        AND media.lifecycle_status = 'active'`,
+    [
+      input.mediaObjectId,
+      input.actorUserId,
+      input.profile.organizationId,
+      input.profile.creatorProfileId,
+    ],
+  );
+  const media = result.rows.length === 1 ? result.rows[0] : undefined;
+  if (!media) throw new MarketplaceAdminInvalidProfileMediaError();
+  return media;
 }
 
 async function resolveAdminHotelProfile(
