@@ -271,6 +271,9 @@ function commandRepository(
     async replacePresentation() {
       throw new Error("Unexpected presentation replacement");
     },
+    async replacePlatformAdminHero() {
+      throw new Error("Unexpected Platform Admin hero replacement");
+    },
     async runPublicationBatch() {
       return { processed: 0, deferred: 0, deadLettered: 0 };
     },

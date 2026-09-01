@@ -27,6 +27,10 @@ export type BaseCommand = {
 export type AssignPropertyLogoCommand = BaseCommand & AssignPropertyLogoRequest;
 export type ReplacePropertyPresentationMediaCommand = BaseCommand &
   ReplacePropertyPresentationMediaRequest;
+export type ReplacePlatformAdminPropertyHeroCommand = Omit<BaseCommand, "organizationId"> & {
+  expectedProfileRevision: number;
+  mediaObjectId: string | null;
+};
 
 export type PropertyMediaCommandResult =
   | { ok: true; response: PropertyMediaCommandResponse }
@@ -37,10 +41,12 @@ export type InternalCommand = BaseCommand & {
   operation: Operation;
   expectedProfileRevision: number;
   assignments: readonly PropertyMediaAssignment[];
+  platformAdminHero?: true;
 };
 export type PublicationCommand = Omit<InternalCommand, "idempotencyKey">;
 
 export type PropertyRow = { profileRevision: string | number };
+export type PlatformAdminPropertyRow = PropertyRow & { ownerOrganizationId: string };
 export type AssignmentRow = {
   mediaObjectId: string;
   mediaType: "hero_image" | "gallery_image" | "logo";
@@ -259,6 +265,22 @@ export function assignmentResponse(
   return parsed;
 }
 
+export function commandAssignmentResponse(
+  outcome: PropertyMediaCommandResponse["outcome"],
+  profileRevision: number,
+  rows: readonly AssignmentRow[],
+  command: Pick<PublicationCommand, "platformAdminHero">,
+): PropertyMediaCommandResponse {
+  if (!command.platformAdminHero) return assignmentResponse(outcome, profileRevision, rows);
+
+  const logo = rows.filter(({ mediaType }) => mediaType === "logo");
+  const cover = rows.filter(({ mediaType }) => mediaType === "hero_image");
+  const gallery = rows
+    .filter(({ mediaType }) => mediaType === "gallery_image")
+    .map((row, index) => ({ ...row, sortOrder: cover.length + index }));
+  return assignmentResponse(outcome, profileRevision, [...logo, ...cover, ...gallery]);
+}
+
 export function parseStoredResult(value: unknown): PropertyMediaCommandResult | null {
   if (!isRecord(value) || typeof value["ok"] !== "boolean") return null;
   if (value["ok"] === true) {
@@ -294,6 +316,7 @@ export function snapshotCommand(input: InternalCommand): InternalCommand {
   const actorUserId = input["actorUserId"];
   const idempotencyKey = input["idempotencyKey"];
   const auditValue = input["audit"];
+  const platformAdminHero = input["platformAdminHero"];
   if (
     (operation !== "logo" && operation !== "presentation") ||
     !isUuid(organizationId) ||
@@ -302,7 +325,9 @@ export function snapshotCommand(input: InternalCommand): InternalCommand {
     typeof idempotencyKey !== "string" ||
     idempotencyKey.length < 1 ||
     idempotencyKey.length > 200 ||
-    !isRecord(auditValue)
+    !isRecord(auditValue) ||
+    (platformAdminHero !== undefined && platformAdminHero !== true) ||
+    (platformAdminHero === true && operation !== "presentation")
   ) {
     throw new Error("Property media command contains invalid scope data");
   }
@@ -365,6 +390,29 @@ export function snapshotCommand(input: InternalCommand): InternalCommand {
     audit,
     expectedProfileRevision: parsedRevision,
     assignments: parsedAssignments,
+    ...(platformAdminHero === true ? { platformAdminHero: true as const } : {}),
+  };
+}
+
+export function snapshotPlatformAdminHeroCommand(
+  input: ReplacePlatformAdminPropertyHeroCommand,
+): ReplacePlatformAdminPropertyHeroCommand {
+  const normalized = snapshotCommand({
+    ...input,
+    organizationId: "00000000-0000-4000-8000-000000000000",
+    operation: "presentation",
+    assignments: input.mediaObjectId
+      ? [{ mediaObjectId: input.mediaObjectId, role: "cover", altText: null, sortOrder: 0 }]
+      : [],
+    platformAdminHero: true,
+  });
+  return {
+    propertyId: normalized.propertyId,
+    actorUserId: normalized.actorUserId,
+    idempotencyKey: normalized.idempotencyKey,
+    audit: normalized.audit,
+    expectedProfileRevision: normalized.expectedProfileRevision,
+    mediaObjectId: normalized.assignments[0]?.mediaObjectId ?? null,
   };
 }
 
@@ -377,6 +425,7 @@ export function commandWithoutIdempotencyKey(command: InternalCommand): Publicat
     audit: { ...command.audit },
     expectedProfileRevision: command.expectedProfileRevision,
     assignments: command.assignments.map((assignment) => ({ ...assignment })),
+    ...(command.platformAdminHero ? { platformAdminHero: true as const } : {}),
   };
 }
 
@@ -388,6 +437,7 @@ export function commandFingerprint(command: PublicationCommand): string {
       operation: command.operation,
       expectedProfileRevision: command.expectedProfileRevision,
       assignments: command.assignments,
+      ...(command.platformAdminHero ? { platformAdminHero: true } : {}),
     }),
   );
 }

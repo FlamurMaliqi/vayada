@@ -15,6 +15,7 @@ export type {
   AssignPropertyLogoCommand,
   PropertyMediaCommandResult,
   PropertyMediaPublicationBatchResult,
+  ReplacePlatformAdminPropertyHeroCommand,
   ReplacePropertyPresentationMediaCommand,
 } from "./propertyMediaCommandEnvelope.js";
 export { propertyMediaCommandResultStatus } from "./propertyMediaCommandEnvelope.js";

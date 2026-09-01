@@ -11,6 +11,7 @@ const organizationId = "11111111-1111-4111-8111-111111111111";
 const propertyId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const actorUserId = "22222222-2222-4222-8222-222222222222";
 const mediaId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const galleryMediaId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const idempotencyId = "33333333-3333-4333-8333-333333333333";
 const publicationJobId = "44444444-4444-4444-8444-444444444444";
 const serving: PlatformMediaServingConfig = {
@@ -24,6 +25,109 @@ const serving: PlatformMediaServingConfig = {
 };
 
 describe("property media command repository", () => {
+  it("publishes only a hero upload for the unique current owner and preserves gallery media", async () => {
+    const hero = mediaRow("private", mediaId, "property.hero_image");
+    const gallery = mediaRow("public", galleryMediaId, "property.gallery_image");
+    const harness = fakeDatabase({
+      media: [hero, gallery],
+      assignments: [assignment(galleryMediaId, "gallery_image", "Pool", 0)],
+    });
+    const repository = createRepository(harness, fakePublisher());
+    const command = {
+      ...platformAdminCommand("admin-hero"),
+      expectedProfileRevision: 1,
+      mediaObjectId: mediaId,
+    };
+
+    const result = await repository.replacePlatformAdminHero(command);
+
+    expect(result).toMatchObject({
+      ok: true,
+      response: {
+        profileRevision: 3,
+        presentationAssignments: [
+          { mediaObjectId: mediaId, role: "cover", sortOrder: 0 },
+          { mediaObjectId: galleryMediaId, role: "gallery", sortOrder: 1 },
+        ],
+      },
+    });
+    expect(harness.state.assignments).toEqual([
+      assignment(galleryMediaId, "gallery_image", "Pool", 0),
+      assignment(mediaId, "hero_image", null, 0),
+    ]);
+    expect(harness.sql()).toContain("owner.relationship = 'owner'");
+    harness.state.assignments[0]!.altText = "Pool changed elsewhere";
+    await expect(repository.replacePlatformAdminHero(command)).resolves.toMatchObject({
+      ok: true,
+      response: { outcome: "idempotent_replay" },
+    });
+  });
+
+  it("clears only the hero and leaves the persisted gallery order unchanged", async () => {
+    const harness = fakeDatabase({
+      assignments: [
+        assignment(mediaId, "hero_image", null, 0),
+        assignment(galleryMediaId, "gallery_image", "Pool", 1),
+      ],
+    });
+    const repository = createRepository(harness, fakePublisher());
+
+    const result = await repository.replacePlatformAdminHero({
+      ...platformAdminCommand("clear-admin-hero"),
+      expectedProfileRevision: 1,
+      mediaObjectId: null,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      response: {
+        profileRevision: 2,
+        presentationAssignments: [{ mediaObjectId: galleryMediaId, role: "gallery", sortOrder: 0 }],
+      },
+    });
+    expect(harness.state.assignments).toEqual([
+      assignment(galleryMediaId, "gallery_image", "Pool", 1),
+    ]);
+  });
+
+  it("rejects a non-hero media purpose from the Platform Admin hero command", async () => {
+    const harness = fakeDatabase({ media: [mediaRow("private")] });
+    const publisher = fakePublisher();
+    const repository = createRepository(harness, publisher);
+
+    const result = await repository.replacePlatformAdminHero({
+      ...platformAdminCommand("admin-gallery-as-hero"),
+      expectedProfileRevision: 1,
+      mediaObjectId: mediaId,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: { code: "media_not_found", mediaObjectIds: [mediaId] },
+    });
+    expect(publisher.copyToPublic).not.toHaveBeenCalled();
+    expect(harness.state.assignments).toEqual([]);
+  });
+
+  it("stops publication when the unique property owner changes after command acceptance", async () => {
+    const harness = fakeDatabase({
+      media: [mediaRow("private", mediaId, "property.hero_image")],
+      ownerOrganizationIdsByLock: [[organizationId], ["77777777-7777-4777-8777-777777777777"]],
+    });
+    const publisher = fakePublisher();
+    const repository = createRepository(harness, publisher);
+
+    const result = await repository.replacePlatformAdminHero({
+      ...platformAdminCommand("owner-change"),
+      expectedProfileRevision: 1,
+      mediaObjectId: mediaId,
+    });
+
+    expect(result).toEqual({ ok: false, error: { code: "command_in_progress" } });
+    expect(publisher.copyToPublic).not.toHaveBeenCalled();
+    expect(harness.state.assignments).toEqual([]);
+  });
+
   it("accepts, publishes, and finalizes one asset in multiple presentation roles", async () => {
     const harness = fakeDatabase({ media: [mediaRow("private")] });
     const publisher = fakePublisher();
@@ -368,6 +472,11 @@ function baseCommand(idempotencyKey: string) {
   };
 }
 
+function platformAdminCommand(idempotencyKey: string) {
+  const { organizationId: _organizationId, ...command } = baseCommand(idempotencyKey);
+  return command;
+}
+
 function fakePublisher(): PropertyMediaVariantPublisher {
   return {
     copyToPublic: vi.fn(async () => undefined),
@@ -377,14 +486,18 @@ function fakePublisher(): PropertyMediaVariantPublisher {
 
 type MediaState = ReturnType<typeof mediaRow>;
 
-function mediaRow(visibility: "private" | "public") {
+function mediaRow(
+  visibility: "private" | "public",
+  objectId = mediaId,
+  purpose = "property.gallery_image",
+) {
   const checksumSha256 = "a".repeat(64);
   const variants = ["blur_preview", "large", "original_safe", "thumbnail"].map((variantName) => {
     const objectName =
       visibility === "private"
         ? `sha256-${checksumSha256}.webp`
         : "publication-55555555-5555-4555-8555-555555555555.webp";
-    const storageKey = `${visibility}/media/${mediaId}/${variantName}/${objectName}`;
+    const storageKey = `${visibility}/media/${objectId}/${variantName}/${objectName}`;
     return {
       variantName,
       visibility,
@@ -401,12 +514,12 @@ function mediaRow(visibility: "private" | "public") {
     };
   });
   return {
-    mediaObjectId: mediaId,
+    mediaObjectId: objectId,
     bucket: serving.bucketName,
     storageKey: variants.find(({ variantName }) => variantName === "original_safe")!.storageKey,
     storageKind: "vayada_managed",
     visibility,
-    purpose: "property.gallery_image",
+    purpose,
     ownerOrganizationId: organizationId,
     propertyId,
     lifecycleStatus: visibility === "private" ? "staged" : "active",
@@ -426,6 +539,15 @@ type AssignmentState = {
   altText: string | null;
   sortOrder: number;
 };
+
+function assignment(
+  mediaObjectId: string,
+  mediaType: AssignmentState["mediaType"],
+  altText: string | null,
+  sortOrder: number,
+): AssignmentState {
+  return { mediaObjectId, mediaType, altText, sortOrder };
+}
 
 type IdempotencyState = {
   id: string;
@@ -470,6 +592,7 @@ function fakeDatabase(options: {
   profileRevision?: number;
   media?: MediaState[];
   assignments?: AssignmentState[];
+  ownerOrganizationIdsByLock?: string[][];
 }) {
   const state: FakeState = {
     profileRevision: options.profileRevision ?? 1,
@@ -484,6 +607,7 @@ function fakeDatabase(options: {
   let transactionSnapshot: FakeState | null = null;
   let assignmentMutations = 0;
   let registryMutations = 0;
+  let platformAdminLockCount = 0;
 
   const client = {
     async query<T extends QueryResultRow = QueryResultRow>(
@@ -526,6 +650,21 @@ function fakeDatabase(options: {
             item.metadata.publication.jobId === String(values[5]),
         );
         return result<T>(row ? [{ id: row.id }] : []);
+      }
+
+      if (
+        normalized.includes('owner.organization_id::text AS "ownerOrganizationId"') &&
+        normalized.includes("FOR UPDATE OF property")
+      ) {
+        const owners = options.ownerOrganizationIdsByLock?.[platformAdminLockCount++] ?? [
+          organizationId,
+        ];
+        return result<T>(
+          owners.map((ownerOrganizationId) => ({
+            profileRevision: state.profileRevision,
+            ownerOrganizationId,
+          })),
+        );
       }
 
       if (
