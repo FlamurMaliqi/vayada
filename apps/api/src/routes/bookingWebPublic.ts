@@ -1180,6 +1180,12 @@ type TargetCheckoutPropertyRow = QueryResultRow & {
   sameDayBookingCutoffTime?: string | null;
 };
 
+type TargetCheckoutSameDayPolicyRow = QueryResultRow & {
+  timezone: string;
+  sameDayBookingsEnabled: boolean;
+  sameDayBookingCutoffTime: string | null;
+};
+
 type TargetCheckoutConfigRow = QueryResultRow & {
   propertyId: string;
   acceptanceMode: "instant" | "request" | null;
@@ -2374,7 +2380,7 @@ function assertTargetBookingConfirmationTokenActive(
   }
 }
 
-async function resolveTargetCheckoutProperty(
+export async function resolveTargetCheckoutProperty(
   pool: BookingWebQueryExecutor,
   slug: string,
   requireBookable = false,
@@ -2421,7 +2427,33 @@ async function resolveTargetCheckoutProperty(
   if (!property) {
     throw createHttpError(404, "Booking Web hotel checkout target not found.");
   }
-  return property;
+  if (!requireBookable) return property;
+
+  const policyResult = await pool.query<TargetCheckoutSameDayPolicyRow>(
+    `SELECT
+       location.timezone,
+       COALESCE(policy.enabled, $2::boolean) AS "sameDayBookingsEnabled",
+       CASE WHEN policy.property_id IS NULL THEN $3::text
+         ELSE policy.cutoff_local_time END AS "sameDayBookingCutoffTime"
+     FROM hotel_catalog.property_slugs policy_slug
+     JOIN hotel_catalog.property_locations location
+       ON location.property_id = policy_slug.property_id
+     LEFT JOIN booking.same_day_booking_policies policy
+       ON policy.property_id = location.property_id
+     WHERE policy_slug.slug = $1
+       AND policy_slug.purpose = 'canonical'
+       AND policy_slug.status = 'active'`,
+    [
+      slug,
+      SAME_DAY_BOOKING_POLICY_DEFAULTS.enabled,
+      SAME_DAY_BOOKING_POLICY_DEFAULTS.cutoffLocalTime,
+    ],
+  );
+  const policy = policyResult.rows[0];
+  if (!policy) {
+    throw createHttpError(404, "Booking Web hotel checkout target not found.");
+  }
+  return { ...property, ...policy };
 }
 
 async function resolveTargetHistoricalBookingProperty(
