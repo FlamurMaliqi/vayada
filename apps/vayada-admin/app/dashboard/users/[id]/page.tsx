@@ -24,6 +24,11 @@ import { usersService, uploadService } from "@/services/api";
 import { Input } from "@/components/ui";
 import { Textarea } from "@/components/ui/Textarea";
 import { ApiErrorResponse } from "@/services/api/client";
+import {
+  createOfferWithMedia,
+  OfferMediaPublicationError,
+  updateOfferWithMedia,
+} from "@/services/api/offerMedia";
 import type {
   UserDetailResponse,
   CreatorProfileDetail,
@@ -161,9 +166,6 @@ function UserDetailContent() {
   const [listingToDelete, setListingToDelete] = useState<ListingResponse | null>(null);
   const [deletingListing, setDeletingListing] = useState(false);
   const [listingDeleteError, setListingDeleteError] = useState("");
-  const [verifyingListingId, setVerifyingListingId] = useState<string | null>(null);
-  const [listingVerifyError, setListingVerifyError] = useState("");
-  const [listingVerifySuccess, setListingVerifySuccess] = useState("");
 
   // Edit mode state
   const [isEditing, setIsEditing] = useState(false);
@@ -235,7 +237,11 @@ function UserDetailContent() {
     },
   });
   const [savingListing, setSavingListing] = useState(false);
-  const [listingSaveError, setListingSaveError] = useState("");
+  const [listingSaveError, setListingSaveError] = useState(
+    searchParams?.get("notice") === "offer-setup-incomplete"
+      ? "Some offers or media were not published. Review existing offers, then retry only the missing work."
+      : "",
+  );
   const [listingSaveSuccess, setListingSaveSuccess] = useState("");
 
   // Listing edit state for dropdowns
@@ -814,33 +820,12 @@ function UserDetailContent() {
         targetAgeMax,
       };
 
-      // Handle image uploads if there are new images
-      if (listingImageFiles.length > 0) {
-        setUploadingListingImages(true);
-        try {
-          const uploadResponse = await uploadService.uploadListingImages(
-            listingImageFiles,
-            userDetail.id,
-          );
-          const newImageUrls = uploadResponse.images.map((img) => img.url);
-          createData.images = newImageUrls;
-        } catch (uploadError) {
-          if (uploadError instanceof ApiErrorResponse) {
-            setListingSaveError(
-              `Failed to upload images: ${(uploadError.data.detail as string) || "Upload failed"}`,
-            );
-          } else {
-            setListingSaveError("Failed to upload images. Please try again.");
-          }
-          setSavingListing(false);
-          setUploadingListingImages(false);
-          return;
-        } finally {
-          setUploadingListingImages(false);
-        }
+      if (listingImageFiles.length > 0) setUploadingListingImages(true);
+      try {
+        await createOfferWithMedia(userDetail.id, createData, listingImageFiles);
+      } finally {
+        setUploadingListingImages(false);
       }
-
-      await usersService.createOffer(userDetail.id, createData);
 
       // Reload user details to get new listing
       const updatedUserDetail = await usersService.getUserById(userDetail.id);
@@ -856,6 +841,18 @@ function UserDetailContent() {
 
       setTimeout(() => setListingSaveSuccess(""), 5000);
     } catch (err) {
+      if (err instanceof OfferMediaPublicationError) {
+        const updatedUserDetail = await usersService.getUserById(userDetail.id).catch(() => null);
+        if (updatedUserDetail) setUserDetail(updatedUserDetail);
+        setEditingListingId(null);
+        setSelectedListing(null);
+        setListingImageFiles([]);
+        setListingImagePreviews([]);
+        setListingSaveError(
+          "The offer was created, but its media was not published. Open the existing offer to retry.",
+        );
+        return;
+      }
       if (err instanceof ApiErrorResponse) {
         setListingSaveError((err.data.detail as string) || "Failed to create offer");
       } else {
@@ -909,30 +906,6 @@ function UserDetailContent() {
       }
     } finally {
       setDeletingListing(false);
-    }
-  };
-
-  const handleVerifyListing = async (listing: ListingResponse) => {
-    if (!userDetail) return;
-
-    try {
-      setVerifyingListingId(listing.id);
-      setListingVerifyError("");
-      setListingVerifySuccess("");
-
-      await usersService.verifyOffer(userDetail.id, listing.id);
-      const updatedUserDetail = await usersService.getUserById(userDetail.id);
-      setUserDetail(updatedUserDetail);
-      setSelectedListing(null);
-      setListingVerifySuccess(`Offer "${listing.name}" is live.`);
-    } catch (err) {
-      if (err instanceof ApiErrorResponse) {
-        setListingVerifyError((err.data.detail as string) || "Failed to publish offer.");
-      } else {
-        setListingVerifyError("Failed to publish offer. Please try again.");
-      }
-    } finally {
-      setVerifyingListingId(null);
     }
   };
 
@@ -1033,39 +1006,12 @@ function UserDetailContent() {
         updateData.creatorRequirements.id = editListingData.creatorRequirements.id;
       }
 
-      // Handle image uploads if there are new images
-      if (listingImageFiles.length > 0) {
-        setUploadingListingImages(true);
-        try {
-          const uploadResponse = await uploadService.uploadListingImages(
-            listingImageFiles,
-            userDetail.id,
-          );
-          const newImageUrls = uploadResponse.images.map((img) => img.url);
-          // Combine existing images (that weren't removed) with new images
-          updateData.images = [...listingExistingImages, ...newImageUrls];
-        } catch (uploadError) {
-          if (uploadError instanceof ApiErrorResponse) {
-            setListingSaveError(
-              `Failed to upload images: ${(uploadError.data.detail as string) || "Upload failed"}`,
-            );
-          } else {
-            setListingSaveError("Failed to upload images. Please try again.");
-          }
-          setSavingListing(false);
-          setUploadingListingImages(false);
-          return;
-        } finally {
-          setUploadingListingImages(false);
-        }
-      } else {
-        // Only update images if existing images were removed
-        if (listingExistingImages.length !== (selectedListing.images?.length || 0)) {
-          updateData.images = listingExistingImages;
-        }
+      if (listingImageFiles.length > 0) setUploadingListingImages(true);
+      try {
+        await updateOfferWithMedia(userDetail.id, editingListingId, updateData, listingImageFiles);
+      } finally {
+        setUploadingListingImages(false);
       }
-
-      await usersService.updateOffer(userDetail.id, editingListingId, updateData);
 
       // Reload user details to get updated listing
       const updatedUserDetail = await usersService.getUserById(userDetail.id);
@@ -1088,6 +1034,12 @@ function UserDetailContent() {
       setListingSaveSuccess("Offer updated successfully!");
       setTimeout(() => setListingSaveSuccess(""), 5000);
     } catch (err) {
+      if (err instanceof OfferMediaPublicationError) {
+        setListingSaveError(
+          "The offer changes were saved, but its media was not published. Reselect those images to retry.",
+        );
+        return;
+      }
       if (err instanceof ApiErrorResponse) {
         if (err.status === 400) {
           setListingSaveError((err.data.detail as string) || "Validation error");
@@ -1283,10 +1235,6 @@ function UserDetailContent() {
   const handleRemoveListingImageFile = (index: number) => {
     setListingImageFiles((prev) => prev.filter((_, i) => i !== index));
     setListingImagePreviews((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  const handleRemoveListingExistingImage = (imageUrl: string) => {
-    setListingExistingImages((prev) => prev.filter((img) => img !== imageUrl));
   };
 
   const handleAddPlatform = () => {
@@ -2620,16 +2568,6 @@ function UserDetailContent() {
             {/* Offers Tab */}
             {activeTab === "listings" && isHotel && profile && (
               <div className="space-y-4">
-                {listingVerifyError && (
-                  <div className="rounded-lg border border-red-200 bg-red-50 p-3" role="alert">
-                    <p className="text-sm text-red-800">{listingVerifyError}</p>
-                  </div>
-                )}
-                {listingVerifySuccess && (
-                  <div className="rounded-lg border border-green-200 bg-green-50 p-3" role="status">
-                    <p className="text-sm text-green-800">{listingVerifySuccess}</p>
-                  </div>
-                )}
                 <div className="flex justify-end">
                   <Button
                     variant="primary"
@@ -2683,22 +2621,6 @@ function UserDetailContent() {
                                 </span>
                               )}
                             </div>
-                            {listing.status === "pending" && (
-                              <Button
-                                variant="primary"
-                                size="sm"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void handleVerifyListing(listing);
-                                }}
-                                disabled={verifyingListingId !== null}
-                                className="mt-4 w-full"
-                              >
-                                {verifyingListingId === listing.id
-                                  ? "Publishing..."
-                                  : "Verify & publish"}
-                              </Button>
-                            )}
                           </div>
                         </div>
                         <button
@@ -2783,12 +2705,10 @@ function UserDetailContent() {
                     {/* Existing Images */}
                     {listingExistingImages.length > 0 && (
                       <div>
-                        <p className="text-sm text-gray-600 mb-3">
-                          Existing Images (click X to remove)
-                        </p>
+                        <p className="text-sm text-gray-600 mb-3">Published images</p>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                           {listingExistingImages.map((imageUrl, idx) => (
-                            <div key={idx} className="relative group">
+                            <div key={idx}>
                               <div className="aspect-square bg-gray-200 rounded-lg overflow-hidden">
                                 <img
                                   src={imageUrl}
@@ -2796,13 +2716,6 @@ function UserDetailContent() {
                                   className="w-full h-full object-cover"
                                 />
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveListingExistingImage(imageUrl)}
-                                className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                              >
-                                <XMarkIcon className="w-4 h-4" />
-                              </button>
                             </div>
                           ))}
                         </div>
