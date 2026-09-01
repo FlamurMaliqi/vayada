@@ -475,13 +475,16 @@ async function resolvePlatformAdminMediaTarget(
       `SELECT profile.id::text AS "resourceId",
               profile.organization_id::text AS "ownerOrganizationId"
          FROM marketplace.creator_profiles profile
+         JOIN identity.organization_memberships membership
+           ON membership.organization_id = profile.organization_id
+          AND membership.user_id = $1::uuid
+          AND membership.status = 'active'
          JOIN identity.organizations organization
            ON organization.id = profile.organization_id
           AND organization.kind = 'creator_workspace'
           AND organization.status = 'active'
-        WHERE profile.id = $1::uuid
-          AND profile.profile_status <> 'archived'
-        FOR SHARE OF profile, organization`,
+        WHERE profile.profile_status <> 'archived'
+        FOR SHARE OF profile, membership, organization`,
       [resourceId],
     );
   } else if (input.request.purpose === "marketplace.offer.media") {

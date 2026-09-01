@@ -421,7 +421,7 @@ describe("PostgreSQL platform media repository", () => {
       "marketplace.creator.profile_image",
       "marketplace",
       "creator_profile",
-      { resourceId: PROPERTY_ID, ownerOrganizationId: "org-creator" },
+      { resourceId: ROOM_TYPE_ID, ownerOrganizationId: "org-creator" },
       "marketplace.creator_profiles",
       "profile.profile_status <> 'archived'",
     ],
@@ -470,7 +470,7 @@ describe("PostgreSQL platform media repository", () => {
         target: {
           resourceProduct: product,
           resourceType,
-          resourceId: PROPERTY_ID,
+          resourceId: row.resourceId,
           propertyId: "propertyId" in row ? row.propertyId : undefined,
         },
         ownerOrganizationId: row.ownerOrganizationId,
@@ -480,6 +480,10 @@ describe("PostgreSQL platform media repository", () => {
       expect(sql).toContain(table);
       expect(sql).toContain(predicate);
       expect(sql).toContain("organization.status = 'active'");
+      if (purpose === "marketplace.creator.profile_image") {
+        expect(sql).toContain("membership.user_id = $1::uuid");
+        expect(sql).toContain("membership.status = 'active'");
+      }
       if (purpose === "property.hero_image") expect(sql).toContain("owner.relationship = 'owner'");
     },
   );
@@ -512,6 +516,44 @@ describe("PostgreSQL platform media repository", () => {
         policy: {
           targetResourceProduct: "hotel_catalog",
           targetResourceType: "property",
+        } as never,
+        context: { selectedOrganization: { kind: "platform" } } as never,
+      }),
+    ).resolves.toMatchObject({ ok: false, statusCode: 404, code: "media_target_not_found" });
+  });
+
+  it.each([
+    ["missing", []],
+    [
+      "ambiguous",
+      [
+        { resourceId: PROPERTY_ID, ownerOrganizationId: "org-one" },
+        { resourceId: ROOM_TYPE_ID, ownerOrganizationId: "org-two" },
+      ],
+    ],
+  ])("rejects %s Platform Admin creator ownership", async (_case, rows) => {
+    const query = vi.fn(async () => ({ rows }));
+    const repository = createPgPlatformMediaRepository({
+      connectionString: "postgresql://target.test/vayada",
+      publicCdnBaseUrl: "https://cdn.example.com",
+      pool: { query, connect: vi.fn(), end: vi.fn() } as never,
+    });
+
+    await expect(
+      repository.resolveTarget({
+        request: {
+          purpose: "marketplace.creator.profile_image",
+          visibility: "public",
+          resource: {
+            product: "marketplace",
+            resourceType: "creator_profile",
+            resourceId: PROPERTY_ID,
+          },
+          files: [],
+        },
+        policy: {
+          targetResourceProduct: "marketplace",
+          targetResourceType: "creator_profile",
         } as never,
         context: { selectedOrganization: { kind: "platform" } } as never,
       }),
