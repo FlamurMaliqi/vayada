@@ -69,6 +69,16 @@ def stripe_patches():
 class TestCreateBookingRequest:
     """Tests for POST /api/hotels/{slug}/bookings (new payment flow)."""
 
+    @pytest.fixture(autouse=True)
+    def isolate_payment_scenarios_from_wall_clock(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.booking_service.property_today", lambda timezone: date(2026, 8, 31)
+        )
+        monkeypatch.setattr(
+            "app.services.booking_service.is_same_day_booking_closed",
+            lambda *args, **kwargs: False,
+        )
+
     async def test_create_booking_card_payment(self, client, hotel_with_rooms):
         """Card booking creates a payment intent and returns client_secret."""
         hotel = hotel_with_rooms["hotel"]
