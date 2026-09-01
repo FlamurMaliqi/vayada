@@ -504,6 +504,14 @@ export const channexRequests = {
     skipIf: { kind: "property" },
     capture: { kind: "property" },
   }),
+  updateProperty: (
+    externalPropertyId: string,
+    property: Record<string, unknown>,
+  ): ChannexRequest => ({
+    method: "PUT",
+    path: `/api/v1/properties/${encodeURIComponent(externalPropertyId)}`,
+    body: { property },
+  }),
   deleteProperty: (externalPropertyId: string): ChannexRequest => ({
     method: "DELETE",
     path: `/api/v1/properties/${encodeURIComponent(externalPropertyId)}`,

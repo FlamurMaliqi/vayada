@@ -3,8 +3,11 @@ import {
   SAME_DAY_BOOKING_POLICY_DEFAULTS,
   type SameDayBookingPolicy,
 } from "@vayada/domain-booking";
+import { buildChannexManagementJobKey } from "@vayada/domain-pms-channex";
 import { createHash } from "node:crypto";
 import pg from "pg";
+
+import { PMS_CHANNEX_MANAGEMENT_QUEUE } from "./pmsChannexManagementReadModel.js";
 
 export type SameDayBookingSettings = SameDayBookingPolicy & {
   propertyId: string;
@@ -18,6 +21,7 @@ export type SameDayBookingSettingsResult =
       ok: true;
       settings: SameDayBookingSettings;
       replayed: boolean;
+      channexOperationId: string | null;
     }
   | { ok: false; code: "property_not_found" | "idempotency_conflict" };
 
@@ -121,6 +125,7 @@ async function updateSettings(
       current.enabled !== input.enabled ||
       current.cutoffLocalTime !== input.cutoffLocalTime;
     let row = current;
+    let channexOperationId: string | null = null;
     if (changed) {
       row = (
         await client.query<SettingsRow>(
@@ -143,19 +148,36 @@ async function updateSettings(
           ],
         )
       ).rows[0]!;
-      await insertDistributionEvent(client, context, row, keyHash, acceptedAt);
-      await insertAudit(client, context, row, input.commandId, acceptedAt);
+      const event = await insertDistributionEvent(client, context, row, keyHash, acceptedAt);
+      channexOperationId = await enqueueChannexSync(
+        client,
+        context,
+        propertyId,
+        input,
+        event,
+        acceptedAt,
+      );
+      await insertAudit(client, context, row, input.commandId, channexOperationId, acceptedAt);
     }
+    const responseSettings = settings(row);
     await client.query(
       `UPDATE platform.idempotency_keys SET status = 'completed', completed_at = $2::timestamptz,
          response_status_code = 200, response_resource_product = 'booking',
          response_resource_type = 'same_day_booking_policy', response_resource_id = $3,
-         idempotency_metadata = idempotency_metadata || jsonb_build_object('revision', $4::integer)
+         idempotency_metadata = idempotency_metadata || jsonb_build_object(
+           'revision', $4::integer, 'channexOperationId', $5::text, 'response', $6::jsonb)
        WHERE id = $1::uuid`,
-      [reserved.rows[0].id, acceptedAt.toISOString(), propertyId, row.revision],
+      [
+        reserved.rows[0].id,
+        acceptedAt.toISOString(),
+        propertyId,
+        row.revision,
+        channexOperationId,
+        JSON.stringify(responseSettings),
+      ],
     );
     await client.query("COMMIT");
-    return { ok: true, settings: settings(row), replayed: false };
+    return { ok: true, settings: responseSettings, replayed: false, channexOperationId };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -172,8 +194,12 @@ async function replay(
 ): Promise<SameDayBookingSettingsResult> {
   const existing = await client.query<{
     requestFingerprintHash: string;
+    channexOperationId: string | null;
+    response: SameDayBookingSettings | null;
   }>(
-    `SELECT request_fingerprint_hash AS "requestFingerprintHash"
+    `SELECT request_fingerprint_hash AS "requestFingerprintHash",
+       idempotency_metadata ->> 'channexOperationId' AS "channexOperationId",
+       idempotency_metadata -> 'response' AS response
      FROM platform.idempotency_keys
      WHERE operation_scope = 'booking' AND operation = $1 AND key_hash = $2
        AND property_id = $3::uuid FOR UPDATE`,
@@ -181,12 +207,13 @@ async function replay(
   );
   if (existing.rows[0]?.requestFingerprintHash !== fingerprint)
     return { ok: false, code: "idempotency_conflict" };
-  const row = (await readSettings(client, propertyId, false)).rows[0];
-  if (!row) return { ok: false, code: "property_not_found" };
+  const response = existing.rows[0].response;
+  if (!response) throw new Error("Completed same-day booking command response is missing");
   return {
     ok: true,
-    settings: settings(row),
+    settings: response,
     replayed: true,
+    channexOperationId: existing.rows[0].channexOperationId,
   };
 }
 
@@ -201,7 +228,7 @@ function readSettings(client: Pick<Pool, "query">, propertyId: string, lock: boo
      FROM hotel_catalog.properties property
      LEFT JOIN hotel_catalog.property_locations location ON location.property_id = property.id
      LEFT JOIN booking.same_day_booking_policies policy ON policy.property_id = property.id
-     WHERE property.id = $1::uuid ${lock ? "FOR KEY SHARE OF property" : ""}`,
+     WHERE property.id = $1::uuid ${lock ? "FOR UPDATE OF property" : ""}`,
     [
       propertyId,
       SAME_DAY_BOOKING_POLICY_DEFAULTS.enabled,
@@ -265,27 +292,101 @@ async function insertAudit(
   context: RequestContext,
   row: SettingsRow,
   commandId: string,
+  jobId: string | null,
   acceptedAt: Date,
 ) {
   await client.query(
     `INSERT INTO platform.product_audit_events (
        audit_key, product, action, occurred_at, tenant_scope, property_id, actor_type,
        actor_user_id, target_resource_product, target_resource_type, target_resource_id,
-       correlation_id, causation_id, redacted_payload, audit_metadata
+       job_id, correlation_id, causation_id, redacted_payload, audit_metadata
      ) VALUES ($1, 'booking', 'booking.same_day_booking_policy.changed', $2::timestamptz,
        'property', $3::uuid, 'user', $4::uuid, 'booking', 'same_day_booking_policy', $3,
-       $5, $6, jsonb_build_object('revision', $7::integer),
+       $5::uuid, $6, $7, jsonb_build_object('revision', $8::integer),
        '{"source":"pms-web"}'::jsonb) ON CONFLICT (product, audit_key) DO NOTHING`,
     [
       `booking.same-day-policy.changed:${row.propertyId}:${row.revision}`,
       acceptedAt.toISOString(),
       row.propertyId,
       context.actor.internalUserId,
+      jobId,
       context.audit.correlationId ?? context.audit.requestId,
       commandId,
       row.revision,
     ],
   );
+}
+
+async function enqueueChannexSync(
+  client: Client,
+  context: RequestContext,
+  propertyId: string,
+  input: { commandId: string; idempotencyKey: string },
+  event: { domainEventId: string; outboxEventId: string },
+  acceptedAt: Date,
+): Promise<string | null> {
+  const active = await client.query(
+    `SELECT 1 FROM pms.channel_connections WHERE property_id = $1::uuid
+       AND provider = 'channex' AND connection_status IN ('connected', 'degraded') FOR SHARE`,
+    [propertyId],
+  );
+  if (!active.rows[0]) return null;
+  const idempotencyKey = `${input.idempotencyKey}:channex`;
+  const keyHash = sha256(idempotencyKey);
+  const commandId = `${input.commandId}:channex`;
+  const fingerprint = sha256(JSON.stringify({ markups: [], operationType: "sync_ari" }));
+  const jobKey = buildChannexManagementJobKey({
+    propertyId,
+    operationType: "sync_ari",
+    idempotencyKey,
+  });
+  await client.query(
+    `INSERT INTO platform.idempotency_keys (
+       operation_scope, operation, key_hash, request_fingerprint_hash, status,
+       tenant_scope, property_id, correlation_id, locked_until, expires_at,
+       idempotency_metadata
+     ) VALUES ('pms', 'channex_management', $1, $2, 'in_progress', 'property', $3::uuid,
+       $4, $5::timestamptz + interval '15 minutes', $5::timestamptz + interval '24 hours',
+       jsonb_build_object('commandId', $6, 'operationType', 'sync_ari'))
+     ON CONFLICT (operation_scope, operation, key_hash, scope_key) DO NOTHING`,
+    [
+      keyHash,
+      fingerprint,
+      propertyId,
+      context.audit.correlationId ?? context.audit.requestId,
+      acceptedAt.toISOString(),
+      commandId,
+    ],
+  );
+  const job = await client.query<{ id: string }>(
+    `INSERT INTO platform.jobs (
+       job_key, queue_name, job_type, source_domain_event_id, source_outbox_event_id,
+       status, max_attempts, tenant_scope, property_id, resource_product, resource_type,
+       resource_id, correlation_id, idempotency_key_hash, payload, job_metadata
+     ) VALUES ($1, $2, 'channex.sync_ari', $3::uuid, $4::uuid, 'pending', 5, 'property',
+       $5::uuid, 'pms', 'channex_connection', $5, $6, $7, $8::jsonb,
+       '{"source":"same_day_booking_policy"}'::jsonb)
+     ON CONFLICT (queue_name, job_key) DO UPDATE SET updated_at = platform.jobs.updated_at
+     RETURNING id::text AS id`,
+    [
+      jobKey,
+      PMS_CHANNEX_MANAGEMENT_QUEUE,
+      event.domainEventId,
+      event.outboxEventId,
+      propertyId,
+      context.audit.correlationId ?? context.audit.requestId,
+      keyHash,
+      JSON.stringify({ commandId, idempotencyKey, operationType: "sync_ari" }),
+    ],
+  );
+  await client.query(
+    `UPDATE platform.idempotency_keys
+       SET idempotency_metadata = idempotency_metadata || jsonb_build_object('jobId', $4::text)
+     WHERE operation_scope = 'pms' AND operation = 'channex_management'
+       AND key_hash = $1 AND property_id = $2::uuid AND request_fingerprint_hash = $3`,
+    [keyHash, propertyId, fingerprint, job.rows[0]!.id],
+  );
+  return job.rows[0]!.id;
 }
 
 function settings(row: SettingsRow): SameDayBookingSettings {

@@ -145,6 +145,7 @@ describe("target Channex management plans", () => {
       connectionString: "postgresql://target",
       pool: db,
       bookingRevisionHandoff: handoff,
+      now: () => new Date("2026-08-14T10:00:00Z"),
     });
     const ari = await port.plan({
       ...job("update_markups"),
@@ -154,12 +155,27 @@ describe("target Channex management plans", () => {
       },
     });
     expect(ari.requests.map(({ path }) => path)).toEqual([
+      "/api/v1/properties/external-1",
       "/api/v1/availability",
       "/api/v1/restrictions",
     ]);
-    expect(ari.requests[1]?.body).toMatchObject({ values: [{ rate: 120 }] });
+    expect(ari.requests[0]?.body).toEqual({
+      property: { settings: { cut_off_time: "18:00:00", cut_off_days: 0 } },
+    });
+    expect(ari.requests[1]?.body).toMatchObject({ values: [{ availability: 0 }] });
+    expect(ari.requests[2]?.body).toMatchObject({ values: [{ rate: 120 }] });
     expect(db.sql()).toContain("rate_mapping.connection_id = connection.id");
     expect(db.sql()).toContain("connection.provider = 'channex'");
+
+    const disabled = await createPgChannexManagementPlanPort({
+      connectionString: "postgresql://target",
+      pool: new FakePool("ari_disabled"),
+      bookingRevisionHandoff: vi.fn(),
+      now: () => new Date("2026-08-15T10:00:00Z"),
+    }).plan(job("sync_ari"));
+    expect(disabled.requests[0]?.body).toEqual({
+      property: { settings: { cut_off_time: null, cut_off_days: 1 } },
+    });
 
     db = new FakePool("connected");
     handoff = vi.fn();
@@ -201,7 +217,8 @@ type Mode =
   | "retained"
   | "provision"
   | "multi_room"
-  | "ari";
+  | "ari"
+  | "ari_disabled";
 class FakePool {
   private calls: string[] = [];
   constructor(private readonly mode: Mode) {}
@@ -242,7 +259,15 @@ class FakePool {
         ];
       else rows = [{ externalPropertyId: null, claimExternalPropertyId: null, claimState: null }];
     } else if (text.includes("hotel_catalog.properties"))
-      rows = [{ title: this.mode === "unicode" ? "😀".repeat(300) : "Hotel", currency: "EUR" }];
+      rows = text.includes("same_day_booking_policies")
+        ? [
+            {
+              timezone: "Asia/Makassar",
+              enabled: this.mode !== "ari_disabled",
+              cutoffLocalTime: "18:00",
+            },
+          ]
+        : [{ title: this.mode === "unicode" ? "😀".repeat(300) : "Hotel", currency: "EUR" }];
     else if (text.includes("count(unit.id)")) {
       rows = [
         {
@@ -289,7 +314,7 @@ class FakePool {
     } else if (text.includes("FROM pms.inventory_days"))
       rows = [
         {
-          stayDate: "2026-08-14",
+          stayDate: this.mode === "ari_disabled" ? "2026-08-15" : "2026-08-14",
           available: 2,
           externalRoomTypeId: "external-room",
           externalRatePlanId: "external-rate",

@@ -1798,7 +1798,11 @@ export async function registerPmsOperationsRoutes(
             category: "conflict",
             message: "The idempotency key was already used for another settings update.",
           });
-        return { ...sameDayBookingResponse(result.settings), replayed: result.replayed };
+        return {
+          ...sameDayBookingResponse(result.settings),
+          replayed: result.replayed,
+          channexOperationId: result.channexOperationId,
+        };
       } catch (error) {
         request.log.error(
           { err: error, propertyId: request.params.propertyId },
