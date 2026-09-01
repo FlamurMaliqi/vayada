@@ -161,7 +161,7 @@ function promo(context: BookingBuildContext, source: IdentitySourceRow): Booking
     validFrom: optionalDate(data["valid_from"], "valid_from"),
     validUntil: optionalDate(data["valid_until"], "valid_until"),
     isActive: bool(data["is_active"], "is_active", true),
-    maxUses: integer(data["max_uses"], "max_uses", 1),
+    maxUses: integer(data["max_uses"], "max_uses", 999),
     currentUses: integer(data["current_uses"] ?? data["use_count"], "current_uses", 0),
     status: bool(data["is_active"], "is_active", true) ? "active" : "retired",
     minBookingValue: data["min_booking_value"] ?? null,
