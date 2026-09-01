@@ -122,6 +122,16 @@ export async function registerAiHotelRoutes(
   });
 }
 
+const TARGET_PUBLIC_CATALOG_PROFILE_READY = `(
+  catalog_profile.profile_status = 'complete'
+  OR (
+    catalog_profile.profile_status = 'incomplete'
+    AND cardinality(catalog_profile.completeness_reasons) = 1
+    AND 'description' = ANY(catalog_profile.completeness_reasons)
+    AND NULLIF(BTRIM(booking_branding.hero_subtext), '') IS NOT NULL
+  )
+)`;
+
 export function createTargetPublicHotelProfileRepository(config: {
   connectionString: string;
   max?: number;
@@ -151,9 +161,10 @@ export function createTargetPublicHotelProfileRepository(config: {
           AND slug_alias.purpose = 'redirect'
           AND slug_alias.status = 'redirected'
          WHERE (profile.canonical_slug = lower($1)
-            OR slug_alias.property_id IS NOT NULL)
+           OR slug_alias.property_id IS NOT NULL)
            AND profile.public_visibility = 'public_safe'
            AND profile.profile_status = 'public'
+           AND ${TARGET_PUBLIC_CATALOG_PROFILE_READY}
            AND (profile.expires_at IS NULL OR profile.expires_at > now())
          ORDER BY CASE WHEN profile.canonical_slug = lower($1) THEN 0 ELSE 1 END
          LIMIT 1`,
@@ -179,6 +190,7 @@ export function createTargetPublicHotelProfileRepository(config: {
          WHERE verified_domain.property_id IS NOT NULL
            AND profile.public_visibility = 'public_safe'
            AND profile.profile_status = 'public'
+           AND ${TARGET_PUBLIC_CATALOG_PROFILE_READY}
            AND (profile.expires_at IS NULL OR profile.expires_at > now())
          LIMIT 1`,
         [normalizedDomain],
@@ -509,7 +521,6 @@ const TARGET_PUBLIC_PROFILE_SELECT = `SELECT
          FROM distribution.public_hotel_bookability_profiles profile
          JOIN hotel_catalog.property_public_profile_read_model catalog_profile
            ON catalog_profile.property_id = profile.property_id
-          AND catalog_profile.profile_status = 'complete'
          LEFT JOIN booking.booking_settings booking_branding
            ON booking_branding.property_id = profile.property_id
          LEFT JOIN LATERAL (

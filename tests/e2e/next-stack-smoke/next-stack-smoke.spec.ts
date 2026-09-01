@@ -651,6 +651,7 @@ async function runHotelFlow(
       expect(result.freshnessStatus).toBe("fresh");
       expect(arrayField(result, "missingReadiness")).toEqual([]);
       const published = {
+        bookingBaseUrl: stringField(result, "bookingBaseUrl"),
         canonicalUrl: stringField(result, "canonicalUrl"),
         slug: stringField(result, "canonicalSlug"),
       };
@@ -664,9 +665,27 @@ async function runHotelFlow(
     });
 
   await test.step("open the published hotel and hand off to PMS and Booking Admin", async () => {
+    const publishedHost = new URL(publication.bookingBaseUrl).hostname;
+    expect(publishedHost).toBe(`${publication.slug}.next-booking.vayada.com`);
+    const hostResponse = await request.get(
+      `${NEXT_STACK_ORIGINS.api}/api/booking-web/hosts/${encodeURIComponent(publishedHost)}`,
+    );
+    expect(hostResponse).toBeOK();
+    await expect(hostResponse.json()).resolves.toMatchObject({
+      slug: publication.slug,
+      hotel: { name: hotelName },
+    });
+    const profileResponse = await request.get(
+      `${NEXT_STACK_ORIGINS.api}/api/booking-web/hotels/${encodeURIComponent(publication.slug)}`,
+    );
+    expect(profileResponse).toBeOK();
+    await expect(profileResponse.json()).resolves.toMatchObject({
+      hotel: { name: hotelName, slug: publication.slug },
+    });
     const publicPage = await context.newPage();
     await publicPage.goto(publication.canonicalUrl);
     await expect(publicPage.getByRole("heading", { name: hotelName }).first()).toBeVisible();
+    await expect(publicPage.getByRole("heading", { name: "Unable to Load Hotel" })).toHaveCount(0);
     await publicPage.close();
 
     await page.goto(`${NEXT_STACK_ORIGINS.marketplace}/marketplace`);

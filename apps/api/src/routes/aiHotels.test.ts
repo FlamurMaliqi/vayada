@@ -437,6 +437,9 @@ describe("target public hotel profile security", () => {
     await repository.findProfileByCustomDomain?.("book.alpenrose.example");
 
     expect(queries[0]?.text).toContain("profile.profile_status = 'public'");
+    expect(queries[0]?.text).toContain("catalog_profile.profile_status = 'incomplete'");
+    expect(queries[0]?.text).toContain("'description' = ANY(catalog_profile.completeness_reasons)");
+    expect(queries[0]?.text).toContain("NULLIF(BTRIM(booking_branding.hero_subtext), '')");
     expect(queries[0]?.text).toContain("profile.expires_at IS NULL");
     expect(queries[1]?.text).toContain("verified_domain.verification_status = 'verified'");
     expect(queries[1]?.text).toContain("verified_domain.canonical_when_verified = TRUE");
