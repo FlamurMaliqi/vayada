@@ -2,7 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { APIRequestContext, Page } from "@playwright/test";
+import type { APIRequestContext, Locator, Page } from "@playwright/test";
 
 const WORKOS_ORIGIN = "https://api.workos.com";
 
@@ -71,7 +71,9 @@ export class JsonApi {
     const response = await this.send(method, route, body, headers, timeout);
     const text = await response.text();
     if (!response.ok) {
-      throw new Error(`${method} ${route} returned ${response.status}: ${safeError(text)}`);
+      throw new Error(
+        `${method} ${route} returned ${response.status}: ${safeError(text, this.authorization ? [this.authorization] : [])}`,
+      );
     }
     if (!text) return undefined as T;
     try {
@@ -85,7 +87,7 @@ export class JsonApi {
     const response = await this.send("DELETE", route);
     if (!response.ok && response.status !== 404) {
       throw new Error(
-        `DELETE ${route} returned ${response.status}: ${safeError(await response.text())}`,
+        `DELETE ${route} returned ${response.status}: ${safeError(await response.text(), this.authorization ? [this.authorization] : [])}`,
       );
     }
   }
@@ -306,10 +308,28 @@ export async function authenticateSyntheticPlatformAdmin(
   return waitForPlatformAdminLogin(request, account.email, password);
 }
 
+export async function fillSecret(locator: Locator, value: string): Promise<void> {
+  await locator.evaluate((element, secret) => {
+    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
+      throw new Error("Secret target must be an input or textarea.");
+    }
+    const prototype =
+      element instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+    if (!setter) throw new Error("Secret target does not support value assignment.");
+    element.focus();
+    setter.call(element, secret);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }, value);
+}
+
 export async function login(page: Page, user: SyntheticUser, password: string): Promise<void> {
   await page.goto(`${NEXT_STACK_ORIGINS.marketplace}/login?returnTo=/onboarding`);
   await page.getByLabel("Email address").fill(user.email);
-  await page.getByLabel("Password").fill(password);
+  await fillSecret(page.getByLabel("Password"), password);
   const loginResponsePromise = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === "/auth/password/login" &&
@@ -596,8 +616,29 @@ function required(name: string): string {
   return value;
 }
 
-function safeError(value: string): string {
-  return value.replace(/[\r\n]+/g, " ").slice(0, 800) || "empty response";
+function safeError(value: string, extraSecrets: string[] = []): string {
+  let safe = value;
+  const configured = ["NEXT_STACK_SMOKE_PASSWORD", "WORKOS_API_KEY"].flatMap((name) => {
+    const secret = process.env[name]?.trim();
+    return secret ? [secret] : [];
+  });
+  for (const secret of [...configured, ...extraSecrets]) {
+    const token = secret.replace(/^Bearer\s+/i, "");
+    const variants = new Set([
+      secret,
+      token,
+      encodeURIComponent(secret),
+      encodeURIComponent(token),
+      JSON.stringify(secret).slice(1, -1),
+      JSON.stringify(token).slice(1, -1),
+      Buffer.from(secret).toString("base64"),
+      Buffer.from(token).toString("base64"),
+    ]);
+    for (const variant of [...variants].sort((left, right) => right.length - left.length)) {
+      if (variant.length >= 8) safe = safe.replaceAll(variant, "[REDACTED]");
+    }
+  }
+  return safe.replace(/[\r\n]+/g, " ").slice(0, 800) || "empty response";
 }
 
 function dateOnly(value: Date): string {

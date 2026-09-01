@@ -15,6 +15,7 @@ import {
   arrayField,
   createSyntheticPlatformAdmin,
   createSyntheticUser,
+  fillSecret,
   futureStay,
   loadSmokeEnvironment,
   login,
@@ -101,6 +102,54 @@ test("API transport failures do not expose authorization", async () => {
   await expect(expectPms(secret, "/resource", 200, undefined, fail)).rejects.toThrow(
     /^GET \/resource request failed\.$/,
   );
+});
+
+test("API error responses redact configured secrets", async () => {
+  const previousPassword = process.env.NEXT_STACK_SMOKE_PASSWORD;
+  const previousWorkosKey = process.env.WORKOS_API_KEY;
+  const password = ["response", "password", "sentinel", "value"].join("/");
+  const workosKey = ["sk", "test", "response", "sentinel"].join("_");
+  const bearer = ["dynamic", "access", "sentinel"].join(".");
+  process.env.NEXT_STACK_SMOKE_PASSWORD = password;
+  process.env.WORKOS_API_KEY = workosKey;
+  const request = {} as APIRequestContext;
+  const respond = () =>
+    Promise.resolve(
+      new Response(
+        `password=${encodeURIComponent(password)} key=${Buffer.from(workosKey).toString("base64")} authorization=${encodeURIComponent(`Bearer ${bearer}`)} token=${bearer}`,
+        { status: 500 },
+      ),
+    );
+
+  try {
+    const api = new JsonApi(request, "https://example.test", `Bearer ${bearer}`, respond);
+    await expect(api.json("POST", "/resource")).rejects.toThrow(
+      "POST /resource returned 500: password=[REDACTED] key=[REDACTED] authorization=[REDACTED] token=[REDACTED]",
+    );
+  } finally {
+    if (previousPassword === undefined) delete process.env.NEXT_STACK_SMOKE_PASSWORD;
+    else process.env.NEXT_STACK_SMOKE_PASSWORD = previousPassword;
+    if (previousWorkosKey === undefined) delete process.env.WORKOS_API_KEY;
+    else process.env.WORKOS_API_KEY = previousWorkosKey;
+  }
+});
+
+test("secret input avoids value-bearing Playwright steps", async ({ page }) => {
+  const secret =
+    process.env.NEXT_STACK_SMOKE_PASSWORD ?? ["synthetic", "evidence", "secret"].join("-");
+  await page.setContent(`
+    <label>Password <input type="password" /></label>
+    <output>0</output>
+    <script>
+      document.querySelector("input").addEventListener("input", (event) => {
+        document.querySelector("output").textContent = String(event.target.value.length);
+      });
+    </script>
+  `);
+
+  await fillSecret(page.getByLabel("Password"), secret);
+
+  expect(await page.locator("output").textContent()).toBe(String(secret.length));
 });
 
 test("ambiguous UI booking replay registers the exact request for cleanup", async () => {
