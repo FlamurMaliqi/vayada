@@ -1,0 +1,731 @@
+{
+  "contractVersion": "native-guest-inbox.v1",
+  "authorizationMatrix": [
+    {
+      "operation": "list-detail-unread-read",
+      "permissions": ["pms.inbox.read"],
+      "entitlement": "pms:property-management",
+      "resource": "pms_property"
+    },
+    {
+      "operation": "start-direct-email-close-reopen-reply",
+      "permissions": ["pms.inbox.read", "pms.inbox.reply"],
+      "entitlement": "pms:property-management",
+      "resource": "pms_property"
+    },
+    {
+      "operation": "prepare-finalize-inbox-attachment",
+      "permissions": ["pms.inbox.reply"],
+      "entitlement": "pms:property-management",
+      "resource": "pms_property"
+    },
+    {
+      "operation": "return-guest-contact",
+      "permissions": ["pms.guest_contact.read"]
+    }
+  ],
+  "cases": [
+    {
+      "id": "list-open-unread-threads",
+      "operation": "GET /api/pms/properties/prop_1/messaging/threads",
+      "query": {
+        "status": "open",
+        "unread": true,
+        "channel": "ota",
+        "search": "LEE",
+        "limit": 25
+      },
+      "context": {
+        "authenticated": true,
+        "permissions": ["pms.inbox.read"],
+        "entitlement": "active",
+        "propertyAccess": "prop_1"
+      },
+      "expected": {
+        "status": 200,
+        "sort": ["activityAt:desc", "id:desc"],
+        "searchIsCaseInsensitive": true,
+        "searchIsRedactedFromLogs": true,
+        "cursorContainsFilterHashOnly": true,
+        "nextCursorIsOpaque": true,
+        "itemsMatchProperty": "prop_1"
+      }
+    },
+    {
+      "id": "reject-filter-mismatched-cursor",
+      "operation": "GET /api/pms/properties/prop_1/messaging/threads",
+      "query": { "status": "closed", "cursor": "cursor_for_open_filter" },
+      "expected": { "status": 400, "code": "invalid_cursor" }
+    },
+    {
+      "id": "deny-unauthenticated-without-existence-leak",
+      "operation": "GET /api/pms/properties/prop_1/messaging/threads/thread_secret",
+      "context": { "authenticated": false },
+      "expected": {
+        "status": 401,
+        "code": "unauthenticated",
+        "threadLookupPerformed": false
+      }
+    },
+    {
+      "id": "deny-missing-read-permission",
+      "operation": "GET /api/pms/properties/prop_1/messaging/threads/thread_1",
+      "context": {
+        "authenticated": true,
+        "permissions": [],
+        "entitlement": "active",
+        "propertyAccess": "prop_1"
+      },
+      "expected": { "status": 403, "code": "missing_permission" }
+    },
+    {
+      "id": "deny-start-direct-email-without-reply-permission",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads",
+      "headers": { "Idempotency-Key": "start-email-denied" },
+      "input": { "bookingId": "booking_secret" },
+      "context": {
+        "authenticated": true,
+        "permissions": ["pms.inbox.read"],
+        "entitlement": "active",
+        "propertyAccess": "prop_1"
+      },
+      "expected": {
+        "status": 403,
+        "code": "missing_permission",
+        "bookingLookupPerformed": false
+      }
+    },
+    {
+      "id": "deny-missing-entitlement",
+      "operation": "GET /api/pms/properties/prop_1/messaging/unread-count",
+      "context": {
+        "authenticated": true,
+        "permissions": ["pms.inbox.read"],
+        "entitlement": "missing",
+        "propertyAccess": "prop_1"
+      },
+      "expected": { "status": 403, "code": "missing_entitlement" }
+    },
+    {
+      "id": "deny-inactive-entitlement",
+      "operation": "GET /api/pms/properties/prop_1/messaging/unread-count",
+      "context": {
+        "authenticated": true,
+        "permissions": ["pms.inbox.read"],
+        "entitlement": "suspended",
+        "propertyAccess": "prop_1"
+      },
+      "expected": { "status": 403, "code": "inactive_entitlement" }
+    },
+    {
+      "id": "deny-cross-property-access",
+      "operation": "GET /api/pms/properties/prop_2/messaging/threads/thread_1",
+      "context": {
+        "authenticated": true,
+        "permissions": ["pms.inbox.read"],
+        "entitlement": "active",
+        "propertyAccess": "prop_1"
+      },
+      "expected": {
+        "status": 403,
+        "code": "missing_resource_access",
+        "threadLookupPerformed": false
+      }
+    },
+    {
+      "id": "detail-redacts-contact-without-extra-permission",
+      "operation": "GET /api/pms/properties/prop_1/messaging/threads/thread_1",
+      "context": {
+        "authenticated": true,
+        "permissions": ["pms.inbox.read"],
+        "entitlement": "active",
+        "propertyAccess": "prop_1"
+      },
+      "record": {
+        "guestDisplayName": "Alex Lee",
+        "guestEmail": "alex@example.test",
+        "guestPhone": "+000000000"
+      },
+      "expected": {
+        "status": 200,
+        "guestDisplayName": "Alex Lee",
+        "guestEmail": "omitted",
+        "guestPhone": "omitted"
+      }
+    },
+    {
+      "id": "allow-null-guest-display-name",
+      "operation": "GET /api/pms/properties/prop_1/messaging/threads/thread_unnamed",
+      "record": { "guestDisplayName": null },
+      "expected": { "status": 200, "guest": { "displayName": null } }
+    },
+    {
+      "id": "detail-exposes-minimal-linked-booking-context",
+      "operation": "GET /api/pms/properties/prop_1/messaging/threads/thread_1",
+      "record": {
+        "threadPropertyId": "prop_1",
+        "bookingPropertyId": "prop_1",
+        "bookingId": "booking_1"
+      },
+      "expected": {
+        "status": 200,
+        "bookingLink": { "state": "linked", "bookingId": "booking_1" },
+        "messagesAreChronological": true,
+        "olderMessagesUseOpaquePreviousCursor": true
+      }
+    },
+    {
+      "id": "detail-shows-unlinked-booking",
+      "operation": "GET /api/pms/properties/prop_1/messaging/threads/thread_2",
+      "record": { "bookingId": null, "sourceBookingReference": "OTA-ABC" },
+      "expected": {
+        "status": 200,
+        "bookingLink": { "state": "unlinked", "sourceReference": "OTA-ABC" }
+      }
+    },
+    {
+      "id": "normalize-provider-channel-for-wire-contract",
+      "operation": "project-thread-summary",
+      "record": { "source": "channex", "channel": "booking.com" },
+      "expected": { "channel": "ota", "providerChannel": "booking.com" }
+    },
+    {
+      "id": "order-empty-direct-thread-with-non-null-activity",
+      "operation": "project-thread-summary",
+      "record": {
+        "createdAt": "2026-09-01T10:00:00.000Z",
+        "lastMessageAt": null
+      },
+      "expected": {
+        "activityAt": "2026-09-01T10:00:00.000Z",
+        "includedInCursorTraversal": true
+      }
+    },
+    {
+      "id": "mark-read-preserves-concurrent-inbound",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_1/read",
+      "headers": { "Idempotency-Key": "read-through-msg-3" },
+      "input": { "readThroughMessageId": "msg_3" },
+      "concurrentInbound": { "messageId": "msg_4" },
+      "expected": {
+        "status": 200,
+        "readMessageIds": ["msg_1", "msg_2", "msg_3"],
+        "unreadMessageIds": ["msg_4"],
+        "unreadCount": 1
+      }
+    },
+    {
+      "id": "close-is-local-versioned-and-audited",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_1/close",
+      "headers": { "Idempotency-Key": "close-1" },
+      "input": { "expectedThreadVersion": 12 },
+      "expected": {
+        "status": 200,
+        "threadStatus": "closed",
+        "threadVersion": 13,
+        "providerCloseCalled": false,
+        "auditAction": "pms.inbox.thread.closed"
+      }
+    },
+    {
+      "id": "reopen-is-local-versioned-and-audited",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_1/reopen",
+      "headers": { "Idempotency-Key": "reopen-1" },
+      "input": { "expectedThreadVersion": 13 },
+      "expected": {
+        "status": 200,
+        "threadStatus": "open",
+        "threadVersion": 14,
+        "providerReopenCalled": false,
+        "auditAction": "pms.inbox.thread.reopened"
+      }
+    },
+    {
+      "id": "reject-stale-thread-command",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_1/close",
+      "headers": { "Idempotency-Key": "close-stale" },
+      "input": { "expectedThreadVersion": 11 },
+      "record": { "threadVersion": 12 },
+      "expected": {
+        "status": 409,
+        "code": "thread_version_conflict",
+        "details": { "currentVersion": 12 },
+        "sideEffects": []
+      }
+    },
+    {
+      "id": "deduplicate-and-reopen-inbound-channex-message",
+      "operation": "ingest-channex-message",
+      "input": {
+        "propertyId": "prop_1",
+        "threadId": "thread_1",
+        "providerMessageId": "provider_msg_1"
+      },
+      "record": { "threadStatus": "closed", "unreadCount": 2, "version": 7 },
+      "deliveries": 2,
+      "expected": {
+        "storedMessages": 1,
+        "threadStatus": "open",
+        "unreadCount": 3,
+        "threadVersion": 8,
+        "reopenAuditEntries": 1,
+        "webhookKey": "webhook:channex:message:prop_1:provider_msg_1",
+        "eventKey": "channex.message.ingest:prop_1:thread_1:provider_msg_1:v1",
+        "jobKey": "channex.ingest-message:channel_message:prop_1:provider_msg_1:v1"
+      }
+    },
+    {
+      "id": "advance-open-thread-version-on-inbound",
+      "operation": "ingest-channex-message",
+      "input": {
+        "propertyId": "prop_1",
+        "threadId": "thread_open",
+        "providerMessageId": "provider_msg_open"
+      },
+      "record": { "threadStatus": "open", "unreadCount": 0, "version": 9 },
+      "expected": {
+        "threadStatus": "open",
+        "unreadCount": 1,
+        "threadVersion": 10,
+        "storedMessages": 1
+      }
+    },
+    {
+      "id": "start-direct-email-thread-from-booking",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads",
+      "headers": { "Idempotency-Key": "start-email-booking-1" },
+      "input": { "bookingId": "booking_1" },
+      "booking": {
+        "propertyId": "prop_1",
+        "source": "direct",
+        "postBookingEligible": true,
+        "realGuestEmail": true
+      },
+      "route": { "approvedPropertySender": true, "emailPolicyAllows": true },
+      "expected": {
+        "status": 201,
+        "threadSource": "manual",
+        "sourceThreadId": "direct-email:booking_1:v1",
+        "threadStatus": "open",
+        "channel": "email",
+        "threadVersion": 1,
+        "activityAt": "createdAt",
+        "replyRouteState": "ready",
+        "messages": 0,
+        "deliveryJobs": 0
+      }
+    },
+    {
+      "id": "reject-direct-email-thread-for-ota-booking",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads",
+      "headers": { "Idempotency-Key": "start-email-ota-booking" },
+      "input": { "bookingId": "booking_ota" },
+      "booking": { "propertyId": "prop_1", "source": "ota" },
+      "expected": {
+        "status": 400,
+        "code": "direct_email_not_allowed",
+        "threadsCreated": 0,
+        "deliveryJobs": 0
+      }
+    },
+    {
+      "id": "queue-manual-ota-reply",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_ota/messages",
+      "headers": { "Idempotency-Key": "reply-ota-1" },
+      "input": {
+        "expectedThreadVersion": 4,
+        "text": "Your room is ready.",
+        "attachmentMediaIds": []
+      },
+      "route": {
+        "threadChannel": "ota",
+        "channexConversation": "active",
+        "channelConnection": "active"
+      },
+      "expected": {
+        "status": 202,
+        "channel": "ota",
+        "deliveryState": "queued",
+        "threadVersion": 5,
+        "deliveryAttemptRowsBeforeWorker": 0,
+        "jobType": "pms.guest-message.deliver",
+        "jobKeyPattern": "pms.guest-message.deliver:message:<messageId>:manual-send:v1",
+        "emailFallbackCalled": false
+      }
+    },
+    {
+      "id": "hold-ota-reply-without-fallback",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_ota/messages",
+      "headers": { "Idempotency-Key": "reply-ota-held" },
+      "input": { "expectedThreadVersion": 4, "text": "Hello" },
+      "route": {
+        "threadChannel": "ota",
+        "channexConversation": "missing",
+        "guestEmail": "guest@example.test",
+        "approvedEmailSender": true
+      },
+      "expected": {
+        "status": 202,
+        "channel": null,
+        "deliveryState": "held",
+        "threadVersion": 5,
+        "reasonCode": "provider_conversation_unavailable",
+        "providerSendAttempts": 0,
+        "deliveryAttemptRows": 0,
+        "heldReplayRouteExists": false,
+        "resolutionRequiresNewManualReply": true,
+        "emailFallbackCalled": false
+      }
+    },
+    {
+      "id": "queue-direct-email-reply",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_email/messages",
+      "headers": { "Idempotency-Key": "reply-email-1" },
+      "input": { "expectedThreadVersion": 2, "text": "See you soon." },
+      "route": {
+        "threadOrigin": "direct-email:booking_1:v1",
+        "threadChannel": "email",
+        "realGuestEmail": true,
+        "approvedPropertySender": true
+      },
+      "expected": {
+        "status": 202,
+        "channel": "email",
+        "deliveryState": "queued",
+        "threadVersion": 3
+      }
+    },
+    {
+      "id": "hold-direct-email-without-approved-sender",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_email/messages",
+      "headers": { "Idempotency-Key": "reply-email-held" },
+      "input": { "expectedThreadVersion": 2, "text": "Hello" },
+      "route": {
+        "threadChannel": "email",
+        "realGuestEmail": true,
+        "approvedPropertySender": false
+      },
+      "expected": {
+        "status": 202,
+        "deliveryState": "held",
+        "threadVersion": 3,
+        "reasonCode": "approved_sender_unavailable",
+        "providerSendAttempts": 0,
+        "deliveryAttemptRows": 0
+      }
+    },
+    {
+      "id": "accept-finalized-private-attachment",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_1/messages",
+      "headers": { "Idempotency-Key": "reply-file-1" },
+      "input": { "expectedThreadVersion": 3, "attachmentMediaIds": ["media_1"] },
+      "media": {
+        "id": "media_1",
+        "propertyId": "prop_1",
+        "purpose": "pms.messaging.attachment",
+        "state": "finalized",
+        "visibility": "private",
+        "contentType": "application/pdf",
+        "withinResolvedChannelLimit": true
+      },
+      "expected": {
+        "status": 202,
+        "deliveryState": "queued",
+        "threadVersion": 4,
+        "attachmentAvailability": "available"
+      }
+    },
+    {
+      "id": "project-incomplete-migrated-attachment-as-unavailable",
+      "operation": "GET /api/pms/properties/prop_1/messaging/threads/thread_legacy",
+      "record": {
+        "attachmentId": "attachment_legacy",
+        "platformMediaObjectId": null,
+        "filename": null,
+        "contentType": null,
+        "sizeBytes": null,
+        "sourceUrl": "https://legacy.example/private-file"
+      },
+      "expected": {
+        "status": 200,
+        "attachment": {
+          "id": "attachment_legacy",
+          "availability": "unavailable",
+          "mediaId": null,
+          "filename": null,
+          "contentType": null,
+          "size": null,
+          "accessPath": null
+        },
+        "rawSourceUrlExposed": false
+      }
+    },
+    {
+      "id": "allow-front-desk-to-prepare-inbox-attachment",
+      "operation": "prepare-platform-media-upload",
+      "context": {
+        "permissions": ["pms.inbox.reply"],
+        "relationship": "front_desk",
+        "propertyAccess": "prop_1"
+      },
+      "input": {
+        "purpose": "pms.messaging.attachment",
+        "resource": "pms:pms_property:prop_1"
+      },
+      "expected": { "status": 201, "privateOnly": true }
+    },
+    {
+      "id": "deny-compatibility-manage-permission-for-inbox-attachment",
+      "operation": "prepare-platform-media-upload",
+      "context": {
+        "permissions": ["pms.operations.manage"],
+        "relationship": "operator",
+        "propertyAccess": "prop_1"
+      },
+      "input": {
+        "purpose": "pms.messaging.attachment",
+        "resource": "pms:pms_property:prop_1"
+      },
+      "expected": { "status": 403, "code": "missing_permission" }
+    },
+    {
+      "id": "reject-cross-property-attachment",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_1/messages",
+      "headers": { "Idempotency-Key": "reply-file-cross-property" },
+      "input": { "expectedThreadVersion": 3, "attachmentMediaIds": ["media_2"] },
+      "media": {
+        "id": "media_2",
+        "propertyId": "prop_2",
+        "purpose": "pms.messaging.attachment",
+        "state": "finalized"
+      },
+      "expected": {
+        "status": 400,
+        "code": "validation_failed",
+        "providerSendAttempts": 0
+      }
+    },
+    {
+      "id": "manual-reply-idempotent-replay",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_1/messages",
+      "headers": { "Idempotency-Key": "reply-same-key" },
+      "input": { "expectedThreadVersion": 3, "text": "Confirmed" },
+      "requests": 2,
+      "expected": {
+        "status": 202,
+        "outboundMessages": 1,
+        "deliveryJobs": 1,
+        "threadVersion": 4,
+        "storedFingerprint": "cryptographic_hash_only",
+        "idempotencyMetadataExcludes": ["text", "filename", "guestContact", "rawKey"],
+        "responsesAreEquivalent": true
+      }
+    },
+    {
+      "id": "accept-only-one-concurrent-reply-at-a-version",
+      "operation": "concurrent-manual-replies",
+      "record": { "threadVersion": 3 },
+      "inputs": [
+        { "idempotencyKey": "reply-a", "expectedThreadVersion": 3, "text": "A" },
+        { "idempotencyKey": "reply-b", "expectedThreadVersion": 3, "text": "B" }
+      ],
+      "expected": {
+        "accepted": 1,
+        "conflicts": 1,
+        "conflictCode": "thread_version_conflict",
+        "threadVersion": 4,
+        "outboundMessages": 1,
+        "deliveryRecords": 1
+      }
+    },
+    {
+      "id": "manual-reply-reopens-closed-thread",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_closed/messages",
+      "headers": { "Idempotency-Key": "reply-and-reopen" },
+      "record": { "threadStatus": "closed", "threadVersion": 6 },
+      "input": { "expectedThreadVersion": 6, "text": "One more detail" },
+      "expected": {
+        "status": 202,
+        "threadStatus": "open",
+        "threadVersion": 7,
+        "closureMetadata": null,
+        "auditAction": "pms.inbox.thread.reopened_by_reply",
+        "outboundMessages": 1
+      }
+    },
+    {
+      "id": "reject-idempotency-key-payload-change",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_1/messages",
+      "headers": { "Idempotency-Key": "reply-same-key" },
+      "priorInput": { "expectedThreadVersion": 3, "text": "Confirmed" },
+      "input": { "expectedThreadVersion": 3, "text": "Changed" },
+      "expected": {
+        "status": 409,
+        "code": "idempotency_conflict",
+        "additionalMessages": 0,
+        "additionalJobs": 0
+      }
+    },
+    {
+      "id": "scope-idempotency-by-property-and-operation",
+      "operation": "reserve-command-idempotency",
+      "inputs": [
+        { "propertyId": "prop_1", "operation": "pms.inbox.thread.reply", "key": "same-key" },
+        { "propertyId": "prop_2", "operation": "pms.inbox.thread.reply", "key": "same-key" },
+        { "propertyId": "prop_1", "operation": "pms.inbox.thread.close", "key": "same-key" }
+      ],
+      "expected": {
+        "independentReservations": 3,
+        "conflicts": 0,
+        "operationScope": "pms",
+        "tenantScope": "property"
+      }
+    },
+    {
+      "id": "reauthorize-before-idempotent-replay",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_1/messages",
+      "headers": { "Idempotency-Key": "reply-completed" },
+      "priorResult": { "status": 202, "messageId": "message_private" },
+      "context": {
+        "authenticated": true,
+        "permissions": ["pms.inbox.read", "pms.inbox.reply"],
+        "entitlement": "active",
+        "propertyAccess": "prop_2"
+      },
+      "expected": {
+        "status": 403,
+        "code": "missing_resource_access",
+        "idempotencyLookupPerformed": false,
+        "priorResponseReturned": false
+      }
+    },
+    {
+      "id": "delivery-retries-only-transient-failures",
+      "operation": "run-pms.guest-message.deliver",
+      "attempts": [
+        { "number": 1, "outcome": "transient_failure", "failureCode": "provider_503" },
+        { "number": 2, "outcome": "accepted", "providerReference": "provider_msg_2" }
+      ],
+      "expected": {
+        "visibleStates": ["queued", "retrying", "sent"],
+        "usesBoundedJitteredBackoff": true,
+        "maxAttempts": 5,
+        "auditAttemptCount": 2,
+        "deliveryAttemptRows": 2
+      }
+    },
+    {
+      "id": "reconcile-accepted-message-after-response-timeout",
+      "operation": "run-pms.guest-message.deliver",
+      "providerIdempotencyReference": "message:message_1",
+      "attempt": {
+        "number": 1,
+        "transportResult": "response_timeout",
+        "reconciliationResult": "accepted",
+        "providerReference": "provider_msg_1"
+      },
+      "expected": {
+        "attemptOutcome": "accepted",
+        "deliveryState": "sent",
+        "externalSendCount": 1,
+        "automaticRetryCount": 0
+      }
+    },
+    {
+      "id": "normalize-delivery-failures",
+      "operation": "project-delivery-failure",
+      "inputs": [
+        {
+          "condition": "ambiguous_unreconciled_timeout",
+          "state": "held",
+          "reason": "ambiguous_provider_outcome",
+          "retry": false
+        },
+        {
+          "condition": "entitlement_suspended",
+          "state": "held",
+          "reason": "access_unavailable",
+          "retry": false
+        },
+        {
+          "condition": "provider_configuration_missing",
+          "state": "held",
+          "reason": "provider_configuration_unavailable",
+          "retry": false
+        },
+        {
+          "condition": "resource_deleted",
+          "state": "audit_dead_letter_only",
+          "reason": "resource_deleted",
+          "retry": false,
+          "inboxProjectionSurvives": false
+        },
+        {
+          "condition": "invalid_attachment",
+          "state": "failed",
+          "reason": "invalid_delivery_payload",
+          "retry": false
+        },
+        {
+          "condition": "provider_429",
+          "state": "retrying",
+          "reason": "transient_provider_failure",
+          "retry": true
+        }
+      ],
+      "expected": { "allMappingsAreDeterministic": true }
+    },
+    {
+      "id": "do-not-invent-provider-acknowledgement",
+      "operation": "project-delivery-state",
+      "providerEvidence": { "acceptedForDispatch": true, "delivered": "unknown" },
+      "expected": {
+        "deliveryState": "sent",
+        "providerAcknowledgement": "omitted"
+      }
+    },
+    {
+      "id": "append-trustworthy-provider-acknowledgement",
+      "operation": "ingest-provider-delivery-receipt",
+      "record": { "attemptOutcome": "accepted", "attemptImmutable": true },
+      "input": {
+        "messageId": "message_1",
+        "attemptNumber": 1,
+        "receiptType": "delivered",
+        "providerObservedAt": "2026-09-01T11:00:00.000Z"
+      },
+      "expected": {
+        "appendOnlyReceiptRows": 1,
+        "attemptMutations": 0,
+        "providerAcknowledgedAt": "2026-09-01T11:00:00.000Z"
+      }
+    },
+    {
+      "id": "migrate-legacy-no-reply-needed",
+      "operation": "migrate-legacy-thread",
+      "input": { "status": "no_reply_needed", "propertyId": "prop_1" },
+      "expected": {
+        "status": "closed",
+        "closeReason": "legacy_no_reply_needed",
+        "auditEvidencePreserved": true
+      }
+    },
+    {
+      "id": "v1-does-not-authorize-deferred-sends",
+      "operation": "validate-contract-boundary",
+      "input": { "sendKind": "template_or_automation" },
+      "expected": {
+        "authorizedByContract": false,
+        "runtimeRouteExists": false,
+        "activeSchemaExists": false,
+        "requiredFutureGuards": [
+          "inactive_by_default",
+          "eligibility_rechecked_at_send_time",
+          "unresolved_variables_hold",
+          "one_send_idempotency",
+          "no_ota_to_email_fallback"
+        ]
+      }
+    }
+  ]
+}
