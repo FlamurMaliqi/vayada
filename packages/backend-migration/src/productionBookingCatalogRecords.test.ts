@@ -43,7 +43,7 @@ describe("production Booking catalog records", () => {
         discount_type: "percentage",
         discount_value: "10",
         is_active: true,
-        max_uses: 20,
+        max_uses: null,
         use_count: 2,
         created_at: "2026-08-01T00:00:00Z",
         updated_at: "2026-08-29T12:00:00Z",
@@ -68,6 +68,7 @@ describe("production Booking catalog records", () => {
     expect(records[2]!.row).toMatchObject({
       code: "SUMMER",
       discountValue: "10.00",
+      maxUses: 999,
       currentUses: 2,
       minBookingValue: null,
       applicableRoomIds: null,
