@@ -70,6 +70,7 @@ relationships may receive Inbox permissions through the staff-access policy.
 | ----------------------------------------------------------- | -------------------------------------- |
 | list, detail, unread count, mark read                       | `pms.inbox.read`                       |
 | triage, follow up, assign, note, start thread, manual reply | `pms.inbox.read` and `pms.inbox.reply` |
+| execute an available provider-specific action               | `pms.inbox.read` and `pms.inbox.reply` |
 | manage/use quick replies                                    | `pms.inbox.read` and `pms.inbox.reply` |
 | translate, summarize, draft                                 | `pms.inbox.read` and `pms.inbox.reply` |
 | prepare/finalize an Inbox attachment                        | `pms.inbox.reply`                      |

@@ -709,9 +709,26 @@
         "attentionState": "needs_attention",
         "providerActionAvailable": "booking_com_no_reply_needed"
       },
+      "context": {
+        "permissions": ["pms.inbox.read", "pms.inbox.reply"],
+        "propertyAccess": "prop_1"
+      },
       "expected": {
         "jobType": "pms.inbox.provider-action.deliver",
         "attentionState": "needs_attention"
+      }
+    },
+    {
+      "id": "deny-provider-action-with-read-only-access",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_booking/provider-actions/no-reply-needed",
+      "context": {
+        "permissions": ["pms.inbox.read"],
+        "propertyAccess": "prop_1"
+      },
+      "expected": {
+        "status": 403,
+        "code": "missing_permission",
+        "providerActionJobs": 0
       }
     },
     {
