@@ -73,7 +73,7 @@ type AuthorizationRecord = {
   expiresAt: string;
 };
 
-type ConnectionRecord = CreatorPlatformConnectionDocument & {
+export type CreatorPlatformConnectionRecord = CreatorPlatformConnectionDocument & {
   creatorProfileId: string;
   organizationId: string;
   authorizationId: string;
@@ -141,13 +141,13 @@ export type MarketplaceCreatorPlatformConnectionRepository = {
   getConnection(input: {
     access: CreatorProfileAccess;
     connectionId: string;
-  }): Promise<ConnectionRecord | null>;
+  }): Promise<CreatorPlatformConnectionRecord | null>;
   claimConnectionSync(input: {
     access: CreatorProfileAccess;
     connectionId: string;
     leaseId: string;
     leaseExpiresAt: string;
-  }): Promise<ConnectionRecord | null>;
+  }): Promise<CreatorPlatformConnectionRecord | null>;
   releaseConnectionSync(input: {
     connectionId: string;
     authorizationId: string;
@@ -155,7 +155,7 @@ export type MarketplaceCreatorPlatformConnectionRepository = {
   }): Promise<void>;
   updateConnectionFromImport(input: {
     access: CreatorProfileAccess;
-    connection: ConnectionRecord;
+    connection: CreatorPlatformConnectionRecord;
     grant: CreatorPlatformGrant;
     nextCredentialRef: string;
     projection: ImportedProjection;
@@ -701,7 +701,7 @@ export async function registerMarketplaceCreatorPlatformConnectionRoutes(
       }
       const syncLeaseId = randomUUID();
       const syncLeaseExpiresAt = new Date(now().getTime() + connectionSyncLeaseMs).toISOString();
-      let claimedConnection: ConnectionRecord | null;
+      let claimedConnection: CreatorPlatformConnectionRecord | null;
       try {
         claimedConnection = await options.repository.claimConnectionSync({
           access,
@@ -718,81 +718,24 @@ export async function registerMarketplaceCreatorPlatformConnectionRoutes(
         }
         throw error;
       }
-      if (!claimedConnection?.credentialRef) {
+      if (!claimedConnection?.credentialRef || !claimedConnection.syncLeaseId) {
         return reply.status(409).send({
           code: "creator_platform_sync_in_progress",
           detail: "This connection is already syncing. Please try again shortly.",
         });
       }
-      let grant: CreatorPlatformGrant | null;
       try {
-        grant = await options.credentialVault.get<CreatorPlatformGrant>(
-          claimedConnection.credentialRef,
-        );
-      } catch (error) {
-        request.log.warn(
-          { err: safeProviderError(error), platform: claimedConnection.platform },
-          "Creator platform credential read failed",
-        );
-        await options.repository.markConnectionError({
-          connectionId: claimedConnection.connectionId,
-          authorizationId: claimedConnection.authorizationId,
-          credentialRef: claimedConnection.credentialRef,
-          syncLeaseId,
-          status: "sync_failed",
-          errorCode: "credential_vault_unavailable",
-        });
-        return reply.status(502).send({
-          code: "provider_sync_failed",
-          detail: "The platform could not be refreshed. Please try again.",
-        });
-      }
-      if (!grant || grant.provider !== claimedConnection.platform) {
-        await options.repository.markConnectionError({
-          connectionId: claimedConnection.connectionId,
-          authorizationId: claimedConnection.authorizationId,
-          credentialRef: claimedConnection.credentialRef,
-          syncLeaseId,
-          status: "reconnect_required",
-          errorCode: "credential_unavailable",
-        });
-        return reply.status(409).send({
-          code: "platform_reconnect_required",
-          detail: "Connect the platform again before syncing it.",
-        });
-      }
-
-      try {
-        if (adapter.refreshGrant && shouldRefresh(grant, now())) {
-          grant = await adapter.refreshGrant(grant);
-        }
-        const accountList = await adapter.listAccounts(grant);
-        grant = accountList.grant;
-        const account = accountList.accounts.find(
-          (candidate) => candidate.providerAccountId === claimedConnection.externalAccountId,
-        );
-        if (!account) throw new Error("Connected provider account is no longer available");
-        grant = adapter.grantForAccount?.(account, grant) ?? grant;
-        const projection = await importProjection(adapter, account, grant, now());
-        const nextCredentialRef = credentialReference(
-          options.credentialSecretPrefix,
-          `${claimedConnection.authorizationId}/sync/${syncLeaseId}`,
-        );
-        await options.repository.queueCredentialCleanup({
-          authorizationId: claimedConnection.authorizationId,
-          credentialRef: nextCredentialRef,
-          availableAt: syncLeaseExpiresAt,
-        });
-        await options.credentialVault.put(nextCredentialRef, grant);
-        const updated = await options.repository.updateConnectionFromImport({
+        return await syncClaimedCreatorPlatformConnection({
+          repository: options.repository,
+          credentialVault: options.credentialVault,
+          adapter,
           access,
           connection: claimedConnection,
-          grant,
-          nextCredentialRef,
-          projection,
+          credentialSecretPrefix: options.credentialSecretPrefix,
+          credentialCleanupAvailableAt: syncLeaseExpiresAt,
+          now,
+          cleanCredential,
         });
-        await cleanCredential(claimedConnection.credentialRef, claimedConnection.authorizationId);
-        return updated;
       } catch (error) {
         if (error instanceof CreatorPlatformAuthorizationAccessRevokedError) {
           await options.repository.releaseConnectionSync({
@@ -816,25 +759,38 @@ export async function registerMarketplaceCreatorPlatformConnectionRoutes(
             detail: "The connection changed while it was syncing. Refresh and try again.",
           });
         }
+        const credentialReadFailure = error instanceof CreatorPlatformCredentialReadError;
+        const authorizationFailure =
+          error instanceof CreatorPlatformGrantUnavailableError || isAuthorizationFailure(error);
         request.log.warn(
           { err: safeProviderError(error), platform: claimedConnection.platform },
-          "Creator platform sync failed",
+          credentialReadFailure
+            ? "Creator platform credential read failed"
+            : "Creator platform sync failed",
         );
-        const authorizationFailure = isAuthorizationFailure(error);
         await options.repository.markConnectionError({
           connectionId: claimedConnection.connectionId,
           authorizationId: claimedConnection.authorizationId,
           credentialRef: claimedConnection.credentialRef,
           syncLeaseId,
           status: authorizationFailure ? "reconnect_required" : "sync_failed",
-          errorCode: authorizationFailure
-            ? "provider_authorization_invalid"
-            : "provider_sync_failed",
+          errorCode: credentialReadFailure
+            ? "credential_vault_unavailable"
+            : authorizationFailure
+              ? error instanceof CreatorPlatformGrantUnavailableError
+                ? "credential_unavailable"
+                : "provider_authorization_invalid"
+              : "provider_sync_failed",
         });
-        return reply.status(502).send({
-          code: authorizationFailure ? "platform_reconnect_required" : "provider_sync_failed",
-          detail: "The platform could not be refreshed. Please try again.",
-        });
+        return reply
+          .status(error instanceof CreatorPlatformGrantUnavailableError ? 409 : 502)
+          .send({
+            code: authorizationFailure ? "platform_reconnect_required" : "provider_sync_failed",
+            detail:
+              error instanceof CreatorPlatformGrantUnavailableError
+                ? "Connect the platform again before syncing it."
+                : "The platform could not be refreshed. Please try again.",
+          });
       }
     },
   );
@@ -883,6 +839,65 @@ export async function registerMarketplaceCreatorPlatformConnectionRoutes(
       return reply.status(204).send();
     },
   );
+}
+
+export async function syncClaimedCreatorPlatformConnection(input: {
+  repository: Pick<
+    MarketplaceCreatorPlatformConnectionRepository,
+    "queueCredentialCleanup" | "updateConnectionFromImport"
+  >;
+  credentialVault: ProviderCredentialVault;
+  adapter: CreatorPlatformAdapter;
+  access: CreatorProfileAccess;
+  connection: CreatorPlatformConnectionRecord;
+  credentialSecretPrefix: string;
+  credentialCleanupAvailableAt: string;
+  now: () => Date;
+  cleanCredential(credentialRef: string, authorizationId: string): Promise<boolean>;
+}): Promise<CreatorPlatformConnectionDocument> {
+  const { connection } = input;
+  if (!connection.credentialRef || !connection.syncLeaseId) {
+    throw new CreatorPlatformConnectionChangedError();
+  }
+  let grant: CreatorPlatformGrant | null;
+  try {
+    grant = await input.credentialVault.get<CreatorPlatformGrant>(connection.credentialRef);
+  } catch {
+    throw new CreatorPlatformCredentialReadError();
+  }
+  if (!grant || grant.provider !== connection.platform) {
+    throw new CreatorPlatformGrantUnavailableError();
+  }
+  if (input.adapter.refreshGrant && shouldRefresh(grant, input.now())) {
+    grant = await input.adapter.refreshGrant(grant);
+  }
+  const accountList = await input.adapter.listAccounts(grant);
+  grant = accountList.grant;
+  const account = accountList.accounts.find(
+    (candidate) => candidate.providerAccountId === connection.externalAccountId,
+  );
+  if (!account) throw new Error("Connected provider account is no longer available");
+  grant = input.adapter.grantForAccount?.(account, grant) ?? grant;
+  const projection = await importProjection(input.adapter, account, grant, input.now());
+  const nextCredentialRef = credentialReference(
+    input.credentialSecretPrefix,
+    `${connection.authorizationId}/sync/${connection.syncLeaseId}`,
+  );
+  await input.repository.queueCredentialCleanup({
+    authorizationId: connection.authorizationId,
+    credentialRef: nextCredentialRef,
+    availableAt: input.credentialCleanupAvailableAt,
+  });
+  await input.credentialVault.put(nextCredentialRef, grant);
+  const updated = await input.repository.updateConnectionFromImport({
+    access: input.access,
+    connection,
+    grant,
+    nextCredentialRef,
+    projection,
+  });
+  await input.cleanCredential(connection.credentialRef, connection.authorizationId);
+  return updated;
 }
 
 function parseConnectablePlatform(value: string): ConnectableCreatorPlatform | null {
@@ -1757,7 +1772,7 @@ function mapConnectionDocument(row: ConnectionRow): CreatorPlatformConnectionDoc
   };
 }
 
-function mapConnection(row: ConnectionRow): ConnectionRecord {
+function mapConnection(row: ConnectionRow): CreatorPlatformConnectionRecord {
   return {
     ...mapConnectionDocument(row),
     creatorProfileId: row.creatorProfileId,
@@ -2062,7 +2077,7 @@ function platformProjectionValues(
 async function updateImportedConnection(
   client: PgClient,
   access: CreatorProfileAccess,
-  connection: ConnectionRecord,
+  connection: CreatorPlatformConnectionRecord,
   grant: CreatorPlatformGrant,
   nextCredentialRef: string,
   projection: ImportedProjection,
@@ -2408,14 +2423,28 @@ class CreatorPlatformAuthorizationConsumedError extends Error {
   }
 }
 
-class CreatorPlatformAuthorizationAccessRevokedError extends Error {
+export class CreatorPlatformAuthorizationAccessRevokedError extends Error {
   constructor() {
     super("The creator no longer has access to this profile");
   }
 }
 
-class CreatorPlatformConnectionChangedError extends Error {
+export class CreatorPlatformConnectionChangedError extends Error {
   constructor() {
     super("The creator platform connection changed during the operation");
+  }
+}
+
+export class CreatorPlatformCredentialReadError extends Error {
+  constructor() {
+    super("Creator platform credential vault read failed");
+    this.name = "CreatorPlatformCredentialReadError";
+  }
+}
+
+export class CreatorPlatformGrantUnavailableError extends Error {
+  constructor() {
+    super("Creator platform grant is unavailable");
+    this.name = "CreatorPlatformGrantUnavailableError";
   }
 }
