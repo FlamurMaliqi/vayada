@@ -52,6 +52,15 @@ export const MARKETPLACE_ADMIN_HOTEL_REVIEW_CONTRACT = {
   doc: MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT.doc,
 } as const;
 
+export const MARKETPLACE_ADMIN_CREATOR_REVIEW_CONTRACT = {
+  method: "GET",
+  path: "/api/marketplace/admin/users/:userId/review/creator",
+  owner: "marketplace",
+  permission: MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT.permission,
+  fallback: MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT.fallback,
+  doc: MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT.doc,
+} as const;
+
 export const MARKETPLACE_ADMIN_USER_PROFILES_CONTRACT = {
   method: "PUT",
   path: "/api/marketplace/admin/users/:userId/profile/:profileType",
@@ -334,6 +343,36 @@ export type MarketplaceAdminHotelReviewResponse = {
   offers: MarketplaceAdminOffer[];
 };
 
+export type MarketplaceAdminCreatorReviewProfile = {
+  creatorProfileId: string;
+  displayName: string | null;
+  locationText: string | null;
+  shortDescription: string | null;
+  portfolioUrl: string | null;
+  phone: string | null;
+  profilePictureUrl: string | null;
+  profilePictureMediaObjectId: string | null;
+  profileComplete: boolean;
+  profileCompletedAt: string | null;
+  profileStatus: "pending" | "active" | "rejected" | "suspended" | "archived";
+  platforms: Array<
+    MarketplaceAdminCreatorPlatformWrite & {
+      platformId: string;
+      createdAt: string;
+      updatedAt: string;
+    }
+  >;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MarketplaceAdminCreatorReviewResponse = {
+  contractVersion: typeof MARKETPLACE_ADMIN_CONTRACT_VERSION;
+  authorizationMode: MarketplaceAdminAuthorizationMode;
+  userId: string;
+  profile: MarketplaceAdminCreatorReviewProfile | null;
+};
+
 export type MarketplaceAdminDeleteOfferResponse = {
   contractVersion: typeof MARKETPLACE_ADMIN_CONTRACT_VERSION;
   authorizationMode: MarketplaceAdminAuthorizationMode;
@@ -381,6 +420,10 @@ export type MarketplaceAdminRepository = {
     hotelUserId: string;
     authorizationMode: MarketplaceAdminAuthorizationMode;
   }): Promise<MarketplaceAdminHotelReviewResponse>;
+  readCreatorReviewForUser(input: {
+    userId: string;
+    authorizationMode: MarketplaceAdminAuthorizationMode;
+  }): Promise<MarketplaceAdminCreatorReviewResponse>;
   createOfferForUser(input: {
     hotelUserId: string;
     request: MarketplaceAdminCreateOfferRequest;
@@ -785,6 +828,18 @@ export function createPgMarketplaceAdminRepository(config: {
         offers: offerResult.rows.map((row) => mapOfferRow(row, input.authorizationMode)),
       };
     },
+    async readCreatorReviewForUser(input) {
+      const result = await pool.query<AdminCreatorReviewRow>(ADMIN_CREATOR_REVIEW_SELECT_SQL, [
+        input.userId,
+      ]);
+      const row = result.rows.length === 1 ? result.rows[0] : undefined;
+      return {
+        contractVersion: MARKETPLACE_ADMIN_CONTRACT_VERSION,
+        authorizationMode: input.authorizationMode,
+        userId: input.userId,
+        profile: row ? mapCreatorReviewRow(row) : null,
+      };
+    },
     async createOfferForUser(input) {
       return writeOffer(pool, async (client) => {
         const profile = await resolveAdminHotelProfile(client, input.hotelUserId);
@@ -1053,6 +1108,17 @@ export async function registerMarketplaceAdminRoutes(
       authorizationMode: access.authorizationMode,
     });
   });
+
+  app.get<{ Params: { userId: string } }>(
+    "/admin/users/:userId/review/creator",
+    async (request) => {
+      const access = await requireMarketplaceAdminAccess(request, options);
+      return repository.readCreatorReviewForUser({
+        userId: request.params.userId,
+        authorizationMode: access.authorizationMode,
+      });
+    },
+  );
 
   app.post<{ Params: CollaborationParams; Body: RespondBody }>(
     "/admin/collaborations/:collaborationId/respond",
@@ -1850,6 +1916,120 @@ type AdminCreatorProfile = {
   creatorProfileId: string;
   organizationId: string;
 };
+
+type AdminCreatorReviewRow = Omit<
+  MarketplaceAdminCreatorReviewProfile,
+  "createdAt" | "updatedAt" | "profileCompletedAt" | "platforms"
+> & {
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  profileCompletedAt: Date | string | null;
+  platforms: unknown;
+};
+
+const ADMIN_CREATOR_REVIEW_SELECT_SQL = `
+  SELECT
+    profile.id::text AS "creatorProfileId",
+    profile.display_name AS "displayName",
+    profile.location_text AS "locationText",
+    profile.short_description AS "shortDescription",
+    profile.portfolio_url AS "portfolioUrl",
+    profile.phone,
+    profile.profile_picture_url AS "profilePictureUrl",
+    profile.profile_metadata ->> 'profilePictureMediaObjectId' AS "profilePictureMediaObjectId",
+    marketplace.creator_profile_is_complete(
+      profile.id,
+      profile.organization_id
+    ) AS "profileComplete",
+    profile.profile_completed_at AS "profileCompletedAt",
+    profile.profile_status AS "profileStatus",
+    COALESCE(platforms.items, '[]'::jsonb) AS platforms,
+    profile.created_at AS "createdAt",
+    profile.updated_at AS "updatedAt"
+  FROM marketplace.creator_profiles profile
+  JOIN identity.organization_memberships membership
+    ON membership.organization_id = profile.organization_id
+   AND membership.user_id::text = $1
+   AND membership.status = 'active'
+  JOIN identity.organizations organization
+    ON organization.id = membership.organization_id
+   AND organization.kind = 'creator_workspace'
+   AND organization.status = 'active'
+  LEFT JOIN LATERAL (
+    SELECT jsonb_agg(
+      jsonb_build_object(
+        'platformId', platform.id::text,
+        'platform', platform.platform,
+        'handle', platform.handle,
+        'profileUrl', platform.profile_url,
+        'followerCount', platform.follower_count,
+        'engagementRate', platform.engagement_rate,
+        'audienceCountries', platform.audience_countries,
+        'audienceAgeGroups', platform.audience_age_groups,
+        'audienceGenderSplit', NULLIF(platform.audience_gender_split, '{}'::jsonb),
+        'createdAt', platform.created_at,
+        'updatedAt', platform.updated_at
+      ) ORDER BY platform.created_at, platform.id
+    ) AS items
+    FROM marketplace.creator_platforms platform
+    WHERE platform.creator_profile_id = profile.id
+      AND platform.organization_id = profile.organization_id
+  ) platforms ON TRUE
+  WHERE profile.profile_status <> 'archived'
+  ORDER BY profile.id
+`;
+
+function mapCreatorReviewRow(row: AdminCreatorReviewRow): MarketplaceAdminCreatorReviewProfile {
+  return {
+    ...row,
+    platforms: parseCreatorReviewPlatforms(row.platforms),
+    profileCompletedAt: row.profileCompletedAt ? toIsoString(row.profileCompletedAt) : null,
+    createdAt: toIsoString(row.createdAt),
+    updatedAt: toIsoString(row.updatedAt),
+  };
+}
+
+function parseCreatorReviewPlatforms(
+  raw: unknown,
+): MarketplaceAdminCreatorReviewProfile["platforms"] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((value) => {
+    if (!isRecord(value)) return [];
+    const platformId = readNonEmptyString(value.platformId);
+    const platform = toPlatformName(value.platform);
+    const handle = readNonEmptyString(value.handle);
+    const followerCount = toNonNegativeNumber(value.followerCount);
+    const engagementRate = toNonNegativeNumber(value.engagementRate);
+    const createdAt = toIsoStringOrNull(value.createdAt);
+    const updatedAt = toIsoStringOrNull(value.updatedAt);
+    if (
+      !platformId ||
+      !platform ||
+      !handle ||
+      followerCount === null ||
+      engagementRate === null ||
+      !createdAt ||
+      !updatedAt
+    ) {
+      return [];
+    }
+    return [
+      {
+        platformId,
+        platform,
+        handle,
+        profileUrl: optionalNullableString(value.profileUrl) ?? null,
+        followerCount,
+        engagementRate,
+        audienceCountries: parseAudienceCountries(value.audienceCountries),
+        audienceAgeGroups: parseAudienceAgeGroups(value.audienceAgeGroups),
+        audienceGenderSplit: parseGenderSplit(value.audienceGenderSplit),
+        createdAt,
+        updatedAt,
+      },
+    ];
+  });
+}
 
 async function resolveAdminCreatorProfile(
   client: Pick<MarketplaceAdminPool, "query">,

@@ -18,6 +18,7 @@ import {
 import type {
   MarketplaceAdminCollaborationsResponse,
   MarketplaceAdminCreateOfferRequest,
+  MarketplaceAdminCreatorReviewResponse,
   MarketplaceAdminDeleteOfferResponse,
   MarketplaceAdminHotelReviewResponse,
   MarketplaceAdminHotelAccountInviteCreateRequest,
@@ -455,6 +456,109 @@ describe("marketplace admin routes", () => {
         authorizationMode: "platform_organization_membership",
       },
     ]);
+  });
+
+  it("reads the exact Marketplace-owned creator profile separately from identity", async () => {
+    const repository = createMemoryMarketplaceAdminRepository();
+    app = buildMarketplaceAdminApp(repository);
+
+    const response = await injectJson<MarketplaceAdminCreatorReviewResponse>(app, {
+      method: "GET",
+      url: "/api/marketplace/admin/users/user_creator/review/creator",
+      headers: { authorization: "Bearer platform-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      userId: "user_creator",
+      profile: {
+        creatorProfileId: "creator_profile_801",
+        profilePictureMediaObjectId: "media_creator_801",
+      },
+    });
+    expect(repository.calls.readCreatorReview).toEqual([
+      {
+        userId: "user_creator",
+        authorizationMode: "platform_organization_membership",
+      },
+    ]);
+  });
+
+  it.each([
+    ["missing", []],
+    ["ambiguous", [creatorReviewRow(), creatorReviewRow("f8014000-0000-0000-0000-000000000002")]],
+  ])("fails closed for %s Admin creator profile reads", async (_case, creatorReviewRows) => {
+    const sql: string[] = [];
+    const repository = createPgMarketplaceAdminRepository({
+      connectionString: "postgresql://target-db",
+      identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+      pool: createAdminPgPool(sql, { creatorReviewRows }) as never,
+    });
+
+    await expect(
+      repository.readCreatorReviewForUser({
+        userId: "f8011000-0000-4000-8000-000000000001",
+        authorizationMode: "platform_organization_membership",
+      }),
+    ).resolves.toMatchObject({ profile: null });
+    expect(sql[0]).toContain("membership.status = 'active'");
+    expect(sql[0]).toContain("organization.kind = 'creator_workspace'");
+    expect(sql[0]).toContain("profile.profile_status <> 'archived'");
+    expect(sql[0]).not.toContain("LIMIT 1");
+  });
+
+  it("normalizes persisted creator platform JSON before exposing it", async () => {
+    const repository = createPgMarketplaceAdminRepository({
+      connectionString: "postgresql://target-db",
+      identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+      pool: createAdminPgPool([], {
+        creatorReviewRows: [
+          {
+            ...creatorReviewRow(),
+            platforms: [
+              {
+                platformId: "platform-801",
+                platform: "instagram",
+                handle: "@lina",
+                profileUrl: null,
+                followerCount: 20000,
+                engagementRate: "4.2",
+                audienceCountries: [
+                  { country: "AT", percentage: 60 },
+                  { country: "", percentage: "bad" },
+                ],
+                audienceAgeGroups: "invalid",
+                audienceGenderSplit: { male: 40, female: 60 },
+                createdAt: "2026-06-12T10:00:00.000Z",
+                updatedAt: "2026-06-13T10:00:00.000Z",
+              },
+              { platform: "invalid" },
+            ],
+          },
+        ],
+      }) as never,
+    });
+
+    await expect(
+      repository.readCreatorReviewForUser({
+        userId: "f8011000-0000-4000-8000-000000000001",
+        authorizationMode: "platform_organization_membership",
+      }),
+    ).resolves.toMatchObject({
+      profile: {
+        platforms: [
+          {
+            platformId: "platform-801",
+            platform: "instagram",
+            followerCount: 20000,
+            engagementRate: 4.2,
+            audienceCountries: [{ country: "AT", percentage: 60 }],
+            audienceAgeGroups: [],
+            audienceGenderSplit: { male: 40, female: 60 },
+          },
+        ],
+      },
+    });
   });
 
   it("keeps legacy Admin offer verification without a selected media set", async () => {
@@ -1029,6 +1133,7 @@ function createAdminPgPool(
     successfulInviteRedemption?: boolean;
     creatorProfileMediaUrl?: string;
     creatorProfileRows?: Array<{ creatorProfileId: string; organizationId: string }>;
+    creatorReviewRows?: unknown[];
     eligibleMediaCount?: number;
     queryValues?: Array<readonly unknown[] | undefined>;
   } = {},
@@ -1068,6 +1173,11 @@ function createAdminPgPool(
       text.includes('collaboration.id::text AS "collaborationId"')
     ) {
       rows = [acceptedAffiliateCollaborationRow()];
+    } else if (
+      text.includes("FROM marketplace.creator_profiles profile") &&
+      text.includes('profile.display_name AS "displayName"')
+    ) {
+      rows = options.creatorReviewRows ?? [creatorReviewRow()];
     } else if (
       text.includes("FROM marketplace.creator_profiles profile") &&
       text.includes("identity.organization_memberships membership")
@@ -1164,6 +1274,25 @@ function adminOfferRow(offerId: string, propertyId: string) {
     compensationOptions: [],
     creatorRequirements: {},
     createdAt: "2026-06-13T10:00:00.000Z",
+    updatedAt: "2026-06-13T10:00:00.000Z",
+  };
+}
+
+function creatorReviewRow(creatorProfileId = "f8014000-0000-0000-0000-000000000001") {
+  return {
+    creatorProfileId,
+    displayName: "Lina Travels",
+    locationText: "Vienna, Austria",
+    shortDescription: null,
+    portfolioUrl: null,
+    phone: null,
+    profilePictureUrl: "https://cdn.example.test/creator.webp",
+    profilePictureMediaObjectId: "f8017000-0000-4000-8000-000000000001",
+    profileComplete: true,
+    profileCompletedAt: "2026-06-13T10:00:00.000Z",
+    profileStatus: "active",
+    platforms: [],
+    createdAt: "2026-06-12T10:00:00.000Z",
     updatedAt: "2026-06-13T10:00:00.000Z",
   };
 }
@@ -1308,6 +1437,7 @@ function createMemoryMarketplaceAdminRepository(
     createInviteCode: [] as unknown[],
     revokeInviteCode: [] as unknown[],
     readHotelReview: [] as unknown[],
+    readCreatorReview: [] as unknown[],
     createOffer: [] as unknown[],
     updateOffer: [] as unknown[],
     verifyOffer: [] as unknown[],
@@ -1362,6 +1492,30 @@ function createMemoryMarketplaceAdminRepository(
           updatedAt: "2026-06-13T10:00:00.000Z",
         },
         offers: [offerResponse(input.authorizationMode)],
+      };
+    },
+    async readCreatorReviewForUser(input) {
+      calls.readCreatorReview.push(input);
+      return {
+        contractVersion: "marketplace-admin.v1",
+        authorizationMode: input.authorizationMode,
+        userId: input.userId,
+        profile: {
+          creatorProfileId: "creator_profile_801",
+          displayName: "Lina Travels",
+          locationText: "Vienna, Austria",
+          shortDescription: null,
+          portfolioUrl: null,
+          phone: null,
+          profilePictureUrl: "https://cdn.example.test/creator.webp",
+          profilePictureMediaObjectId: "media_creator_801",
+          profileComplete: true,
+          profileCompletedAt: "2026-06-13T10:00:00.000Z",
+          profileStatus: "active",
+          platforms: [],
+          createdAt: "2026-06-12T10:00:00.000Z",
+          updatedAt: "2026-06-13T10:00:00.000Z",
+        },
       };
     },
     async createOfferForUser(input) {
