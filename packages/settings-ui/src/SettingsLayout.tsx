@@ -110,7 +110,7 @@ function SettingsNavItem({
 
   if (section.href) {
     return (
-      <Link href={section.href} className={className}>
+      <Link href={section.href} className={className} aria-current={active ? "page" : undefined}>
         {inner}
       </Link>
     );

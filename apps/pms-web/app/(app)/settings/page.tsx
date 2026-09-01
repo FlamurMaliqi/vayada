@@ -1,14 +1,6 @@
 "use client";
 
 import { useCallback, useState, useEffect } from "react";
-import {
-  BoltIcon,
-  CalendarDaysIcon,
-  ClipboardDocumentCheckIcon,
-  GlobeAltIcon,
-  ReceiptPercentIcon,
-} from "@heroicons/react/24/outline";
-import { HotelIcon } from "@vayada/product-onboarding";
 import { bookingsService } from "@/services/bookings";
 import {
   getPmsCalendarSettings,
@@ -17,7 +9,7 @@ import {
   updatePmsPropertyProfile,
 } from "@/services/api/pmsPropertyClient";
 import { useTranslation } from "@/lib/i18n";
-import { SettingsLayout, type SettingsNavSection } from "@vayada/settings-ui";
+import { SettingsLayout } from "@vayada/settings-ui";
 import { PropertySection } from "@/components/settings/PropertySection";
 import { LocalizationSection } from "@/components/settings/LocalizationSection";
 import { BookingEngineSection } from "@/components/settings/BookingEngineSection";
@@ -29,6 +21,7 @@ import {
   pmsPropertyDetailsSaveError,
   type PmsPropertyProfileLoadStatus,
 } from "@/lib/settings/propertyDetails";
+import { getPmsSettingsSections } from "@/lib/settings/navigation";
 
 // Rail items also map to anchor IDs. Localization combines the existing
 // #currency + #language anchors (both preserved as sub-targets so the global
@@ -295,29 +288,7 @@ export default function SettingsPage() {
     }
   };
 
-  const sections: SettingsNavSection[] = [
-    {
-      id: "property-details",
-      label: "Property",
-      icon: HotelIcon,
-    },
-    { id: "calendar", label: "Calendar", icon: CalendarDaysIcon },
-    { id: "booking-engine", label: "Booking Engine", icon: BoltIcon },
-    { id: "ota-commissions", label: "OTA commissions", icon: ReceiptPercentIcon },
-    {
-      id: "checkin-checklist",
-      label: "Check-in checklist",
-      icon: ClipboardDocumentCheckIcon,
-      href: "/settings/checkin-checklist",
-    },
-    {
-      id: "checkout-inspection",
-      label: "Check-out inspection",
-      icon: ClipboardDocumentCheckIcon,
-      href: "/settings/checkout-inspection",
-    },
-    { id: "localization", label: "Localization", icon: GlobeAltIcon },
-  ];
+  const sections = getPmsSettingsSections(true);
 
   if (loading) {
     return (
