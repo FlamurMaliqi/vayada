@@ -208,6 +208,11 @@ describe.skipIf(!TEST_DATABASE_URL)(
         [propertyId],
       );
       await admin.query(
+        `INSERT INTO hotel_catalog.property_locations (property_id, timezone)
+         VALUES ($1::uuid, 'Europe/Athens')`,
+        [propertyId],
+      );
+      await admin.query(
         `INSERT INTO hotel_catalog.property_public_profile_read_model
          (property_id, public_id, display_name, canonical_slug,
           default_locale, supported_locales, profile_status)
@@ -357,6 +362,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
           "DELETE FROM booking.booking_settings WHERE property_id = $1::uuid",
           "DELETE FROM finance.payment_settings WHERE property_id = $1::uuid",
           "DELETE FROM hotel_catalog.property_slugs WHERE property_id = $1::uuid",
+          "DELETE FROM hotel_catalog.property_locations WHERE property_id = $1::uuid",
           "DELETE FROM hotel_catalog.property_public_profile_read_model WHERE property_id = $1::uuid",
           "DELETE FROM hotel_catalog.properties WHERE id = $1::uuid",
         ]) {
