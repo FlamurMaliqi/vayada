@@ -148,6 +148,7 @@ export const usersService = {
     data: {
       name?: string;
       profilePicture?: string;
+      profilePictureMediaObjectId?: string | null;
       location?: string;
       shortDescription?: string;
       portfolioLink?: string;
@@ -168,6 +169,9 @@ export const usersService = {
       {
         ...(data.name !== undefined ? { displayName: data.name } : {}),
         ...(data.profilePicture !== undefined ? { profilePictureUrl: data.profilePicture } : {}),
+        ...(data.profilePictureMediaObjectId !== undefined
+          ? { profilePictureMediaObjectId: data.profilePictureMediaObjectId }
+          : {}),
         ...(data.location !== undefined ? { locationText: data.location } : {}),
         ...(data.shortDescription !== undefined ? { shortDescription: data.shortDescription } : {}),
         ...(data.portfolioLink !== undefined ? { portfolioUrl: data.portfolioLink } : {}),
@@ -243,12 +247,8 @@ export const usersService = {
       collaborationOfferings?: any[];
       creatorRequirements?: any;
     },
-  ): Promise<any> => {
-    const response = await createMarketplaceAdminOffer(
-      hotelUserId,
-      toMarketplaceAdminCreateOfferRequest(data),
-    );
-    return transformSnakeToCamel(response);
+  ): Promise<MarketplaceAdminOffer> => {
+    return createMarketplaceAdminOffer(hotelUserId, toMarketplaceAdminCreateOfferRequest(data));
   },
 
   /**
@@ -278,8 +278,12 @@ export const usersService = {
   /**
    * Approve a pending offer and publish its media.
    */
-  verifyOffer: async (hotelUserId: string, listingId: string): Promise<MarketplaceAdminOffer> =>
-    verifyMarketplaceAdminOffer(hotelUserId, listingId),
+  verifyOffer: async (
+    hotelUserId: string,
+    listingId: string,
+    mediaObjectIds?: string[],
+  ): Promise<MarketplaceAdminOffer> =>
+    verifyMarketplaceAdminOffer(hotelUserId, listingId, mediaObjectIds),
 
   /**
    * Delete a listing
@@ -369,6 +373,7 @@ function toListingResponse(offer: MarketplaceAdminOffer, location: string): List
     location,
     description: offer.offerSummary ?? "",
     accommodationType: null,
+    media: offer.media,
     images: offer.media.flatMap((media) => (media.url ? [media.url] : [])),
     status: offer.offerStatus,
     createdAt: offer.createdAt,

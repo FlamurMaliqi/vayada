@@ -177,6 +177,7 @@ export interface CreatorProfileDetail {
   portfolioLink: string | null;
   phone: string | null;
   profilePicture: string | null;
+  profilePictureMediaObjectId: string | null;
   profileComplete: boolean;
   profileCompletedAt: string | null;
   createdAt: string;
@@ -220,6 +221,12 @@ export interface ListingResponse {
   location: string;
   description: string;
   accommodationType: string | null;
+  media: Array<{
+    mediaObjectId: string | null;
+    url: string | null;
+    approvalStatus: "pending_domain_approval" | "approved";
+    lifecycleStatus: "staged" | "active";
+  }>;
   images: string[];
   status: string;
   createdAt: string;

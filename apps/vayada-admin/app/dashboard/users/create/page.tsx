@@ -764,9 +764,9 @@ export default function CreateUserPage() {
             createdUser.id,
           );
 
-          // Step 3: Update creator profile with the image URL
+          // Step 3: Update creator profile with the uploaded media object
           await usersService.updateCreatorProfile(createdUser.id, {
-            profilePicture: uploadResponse.url,
+            profilePictureMediaObjectId: uploadResponse.mediaObjectId,
           });
         } catch (uploadError) {
           // If upload fails, still redirect but log the error
