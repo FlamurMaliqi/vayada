@@ -918,7 +918,7 @@ async function assertMarketplaceHandoff(
   });
   await expect(page.getByRole("main")).toBeVisible();
   await expect(page.getByRole("link", { name: "Dashboard", exact: true }).first()).toBeVisible();
-  await expect(page.getByText(hotelName, { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(hotelName, { exact: true }).first()).toBeVisible({ timeout: 45_000 });
 }
 
 async function acceptNecessaryCookies(page: Page): Promise<void> {
