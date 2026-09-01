@@ -406,6 +406,7 @@ describe("marketplace admin routes", () => {
       method: "POST",
       url: "/api/marketplace/admin/users/user_hotel/offers/offer_801/verify",
       headers: { authorization: "Bearer platform-token" },
+      payload: { mediaObjectIds: ["f8017000-0000-4000-8000-000000000001"] },
     });
 
     expect(verified.statusCode).toBe(200);
@@ -413,6 +414,7 @@ describe("marketplace admin routes", () => {
     expect(repository.calls.verifyOffer[0]).toMatchObject({
       hotelUserId: "user_hotel",
       offerId: "offer_801",
+      mediaObjectIds: ["f8017000-0000-4000-8000-000000000001"],
     });
 
     const deleted = await injectJson<MarketplaceAdminDeleteOfferResponse>(app, {
@@ -453,6 +455,24 @@ describe("marketplace admin routes", () => {
         authorizationMode: "platform_organization_membership",
       },
     ]);
+  });
+
+  it("keeps legacy Admin offer verification without a selected media set", async () => {
+    const repository = createMemoryMarketplaceAdminRepository();
+    app = buildMarketplaceAdminApp(repository);
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/marketplace/admin/users/user_hotel/offers/offer_801/verify",
+      headers: { authorization: "Bearer platform-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(repository.calls.verifyOffer[0]).toMatchObject({
+      hotelUserId: "user_hotel",
+      offerId: "offer_801",
+    });
+    expect(repository.calls.verifyOffer[0]).not.toHaveProperty("mediaObjectIds");
   });
 
   it("updates creator and hotel profiles through marketplace admin target routes", async () => {
@@ -523,6 +543,26 @@ describe("marketplace admin routes", () => {
     expect(response.statusCode).toBe(422);
     expect(response.body).toMatchObject({ code: "unsupported_website" });
     expect(repository.calls.updateHotelProfile).toHaveLength(0);
+  });
+
+  it("rejects malformed or duplicate media IDs before offer verification", async () => {
+    const repository = createMemoryMarketplaceAdminRepository();
+    app = buildMarketplaceAdminApp(repository);
+
+    for (const mediaObjectIds of [
+      ["not-a-uuid"],
+      ["f8017000-0000-4000-8000-000000000001", "f8017000-0000-4000-8000-000000000001"],
+    ]) {
+      const response = await injectJson(app, {
+        method: "POST",
+        url: "/api/marketplace/admin/users/user_hotel/offers/offer_801/verify",
+        headers: { authorization: "Bearer platform-token" },
+        payload: { mediaObjectIds },
+      });
+      expect(response.statusCode).toBe(422);
+      expect(response.body).toMatchObject({ code: "invalid_mediaObjectIds" });
+    }
+    expect(repository.calls.verifyOffer).toHaveLength(0);
   });
 
   it("rejects malformed creator profile media object IDs", async () => {
@@ -703,13 +743,13 @@ describe("marketplace admin routes", () => {
       repository.verifyOfferForUser({
         hotelUserId: "user_hotel",
         offerId: "f8015000-0000-0000-0000-000000000001",
+        mediaObjectIds: ["f8017000-0000-4000-8000-000000000001"],
         authorizationMode: "platform_organization_membership",
       }),
     ).resolves.toMatchObject({
       offerId: "f8015000-0000-0000-0000-000000000001",
       offerStatus: "verified",
     });
-
     await expect(
       repository.updateOfferForUser({
         hotelUserId: "user_hotel",
@@ -743,6 +783,7 @@ describe("marketplace admin routes", () => {
       {
         organizationId: "f8012000-0000-0000-0000-000000000001",
         offerId: "f8015000-0000-0000-0000-000000000001",
+        mediaObjectIds: ["f8017000-0000-4000-8000-000000000001"],
       },
     ]);
     expect(statements).toContain("SET offer_status = 'verified', updated_at = now()");
@@ -854,23 +895,34 @@ describe("marketplace admin routes", () => {
     expect(statements).not.toContain("JOIN hotel_catalog.property_locations location");
   });
 
-  it("rejects offer verification when the offer has no pending or approved media", async () => {
+  it("rejects offer verification when any requested media ID is outside the exact offer", async () => {
     const promoteOfferMedia = vi.fn(async () => 0);
+    const sql: string[] = [];
+    const values: Array<readonly unknown[] | undefined> = [];
     const repository = createPgMarketplaceAdminRepository({
       connectionString: "postgresql://target-db",
       identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
       offerMediaPromotion: { promoteOfferMedia },
-      pool: createAdminPgPool([], { hasEligibleMedia: false }) as never,
+      pool: createAdminPgPool(sql, { eligibleMediaCount: 0, queryValues: values }) as never,
     });
 
     await expect(
       repository.verifyOfferForUser({
         hotelUserId: "user_hotel",
         offerId: "f8015000-0000-0000-0000-000000000001",
+        mediaObjectIds: ["f8017000-0000-4000-8000-000000000099"],
         authorizationMode: "platform_organization_membership",
       }),
     ).rejects.toMatchObject({ statusCode: 422 });
     expect(promoteOfferMedia).not.toHaveBeenCalled();
+    const eligibilityQuery = sql.findIndex((statement) => statement.includes('AS "eligibleCount"'));
+    expect(sql[eligibilityQuery]).toContain("media.owner_organization_id = $1::uuid");
+    expect(sql[eligibilityQuery]).toContain("media.resource_id = $2");
+    expect(values[eligibilityQuery]).toEqual([
+      "f8012000-0000-0000-0000-000000000001",
+      "f8015000-0000-0000-0000-000000000001",
+      ["f8017000-0000-4000-8000-000000000099"],
+    ]);
   });
 
   it("rejects offer verification while the Marketplace hotel profile is incomplete", async () => {
@@ -977,6 +1029,7 @@ function createAdminPgPool(
     successfulInviteRedemption?: boolean;
     creatorProfileMediaUrl?: string;
     creatorProfileRows?: Array<{ creatorProfileId: string; organizationId: string }>;
+    eligibleMediaCount?: number;
     queryValues?: Array<readonly unknown[] | undefined>;
   } = {},
 ) {
@@ -1050,6 +1103,10 @@ function createAdminPgPool(
           createdAt: "2026-06-13T10:00:00.000Z",
           updatedAt: "2026-06-13T10:00:00.000Z",
         },
+      ];
+    } else if (text.includes('AS "eligibleCount"')) {
+      rows = [
+        { eligibleCount: options.eligibleMediaCount ?? (_values?.[2] as unknown[])?.length ?? 0 },
       ];
     } else if (
       text.includes("SELECT EXISTS (") &&

@@ -4,7 +4,11 @@ import pg, { type QueryResult, type QueryResultRow } from "pg";
 import type { PlatformMediaServingConfig } from "./mediaServing.js";
 
 export type MarketplaceOfferMediaPromotionPort = {
-  promoteOfferMedia(input: { organizationId: string; offerId: string }): Promise<number>;
+  promoteOfferMedia(input: {
+    organizationId: string;
+    offerId: string;
+    mediaObjectIds?: string[];
+  }): Promise<number>;
   close?(): Promise<void>;
 };
 
@@ -32,6 +36,14 @@ type PendingVariantRow = {
   checksumSha256: string | null;
 };
 
+type SelectedMediaRow = {
+  mediaId: string;
+  visibility: "public" | "private";
+  publicApproved: boolean;
+  lifecycleStatus: "staged" | "active";
+  hasOriginalSafe: boolean;
+};
+
 type PromotedVariant = PendingVariantRow & {
   publicStorageKey: string;
   publicCdnUrl: string;
@@ -57,6 +69,55 @@ export function createPgS3MarketplaceOfferMediaPromotion(config: {
       const copiedPublicKeys: string[] = [];
       try {
         await client.query("BEGIN");
+        if (input.mediaObjectIds) {
+          const requestedIds = Array.from(
+            new Set(input.mediaObjectIds.map((mediaObjectId) => mediaObjectId.toLowerCase())),
+          );
+          if (requestedIds.length !== input.mediaObjectIds.length || requestedIds.length === 0) {
+            throw invalidMediaSelection();
+          }
+          const selected = await client.query<SelectedMediaRow>(
+            `SELECT
+               media.id::text AS "mediaId",
+               media.visibility,
+               media.public_approved AS "publicApproved",
+               media.lifecycle_status AS "lifecycleStatus",
+               EXISTS (
+                 SELECT 1
+                 FROM platform.media_variants original_safe
+                 WHERE original_safe.media_object_id = media.id
+                   AND original_safe.variant_name = 'original_safe'
+                   AND original_safe.visibility = 'private'
+               ) AS "hasOriginalSafe"
+             FROM platform.media_objects media
+             WHERE media.owner_organization_id::text = $1
+               AND media.resource_product = 'marketplace'
+               AND media.resource_type = 'marketplace_offer'
+               AND media.resource_id = $2
+               AND media.id = ANY($3::uuid[])
+               AND media.purpose = 'marketplace.offer.media'
+             ORDER BY media.id
+             FOR UPDATE OF media`,
+            [input.organizationId, input.offerId, requestedIds],
+          );
+          if (
+            selected.rows.length !== requestedIds.length ||
+            selected.rows.some(
+              (media) =>
+                !(
+                  (media.visibility === "public" &&
+                    media.publicApproved &&
+                    media.lifecycleStatus === "active") ||
+                  (media.visibility === "private" &&
+                    !media.publicApproved &&
+                    media.lifecycleStatus === "staged" &&
+                    media.hasOriginalSafe)
+                ),
+            )
+          ) {
+            throw invalidMediaSelection();
+          }
+        }
         const pending = await client.query<PendingVariantRow>(
           `SELECT
              media.id::text AS "mediaId",
@@ -73,6 +134,7 @@ export function createPgS3MarketplaceOfferMediaPromotion(config: {
              AND media.resource_product = 'marketplace'
              AND media.resource_type = 'marketplace_offer'
              AND media.resource_id = $2
+             AND ($3::uuid[] IS NULL OR media.id = ANY($3::uuid[]))
              AND media.purpose = 'marketplace.offer.media'
              AND media.visibility = 'private'
              AND media.public_approved = FALSE
@@ -80,7 +142,7 @@ export function createPgS3MarketplaceOfferMediaPromotion(config: {
              AND variant.visibility = 'private'
            ORDER BY media.created_at, media.id, variant.created_at, variant.id
            FOR UPDATE OF media`,
-          [input.organizationId, input.offerId],
+          [input.organizationId, input.offerId, input.mediaObjectIds ?? null],
         );
         if (pending.rows.length === 0) {
           await client.query("COMMIT");
@@ -217,6 +279,12 @@ function publicStorageKeyFor(privateStorageKey: string): string {
     throw new Error("Pending Marketplace offer variants must use the private storage namespace");
   }
   return `public/${privateStorageKey.slice("private/".length)}`;
+}
+
+function invalidMediaSelection(): Error {
+  return Object.assign(new Error("Selected Marketplace offer media is not eligible for approval"), {
+    statusCode: 422,
+  });
 }
 
 function copySource(bucketName: string, storageKey: string): string {

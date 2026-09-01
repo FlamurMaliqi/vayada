@@ -13,6 +13,8 @@ const serving: PlatformMediaServingConfig = {
   privateDownloadTtlSeconds: 300,
   privateDownloadMaxTtlSeconds: 900,
 };
+const MEDIA_ID = "f8017000-0000-4000-8000-000000000001";
+const APPROVED_MEDIA_ID = "f8017000-0000-4000-8000-000000000002";
 
 describe("Marketplace offer media promotion", () => {
   it("copies pending private variants before atomically approving their media object", async () => {
@@ -31,7 +33,11 @@ describe("Marketplace offer media promotion", () => {
     });
 
     await expect(
-      promotion.promoteOfferMedia({ organizationId: "org-1", offerId: "offer-1" }),
+      promotion.promoteOfferMedia({
+        organizationId: "org-1",
+        offerId: "offer-1",
+        mediaObjectIds: [MEDIA_ID],
+      }),
     ).resolves.toBe(1);
 
     const copies = send.mock.calls.map(([command]) => command as CopyObjectCommand);
@@ -50,6 +56,11 @@ describe("Marketplace offer media promotion", () => {
     expect(database.statements).toContain("BEGIN");
     expect(database.statements).toContain("COMMIT");
     expect(database.statements).not.toContain("ROLLBACK");
+    const pending = database.queries.find(({ text }) =>
+      text.includes("FROM platform.media_objects media"),
+    );
+    expect(pending?.text).toContain("media.id = ANY($3::uuid[])");
+    expect(pending?.values).toEqual(["org-1", "offer-1", [MEDIA_ID]]);
     const update = database.queries.find(({ text }) =>
       text.includes("UPDATE platform.media_objects"),
     );
@@ -81,6 +92,51 @@ describe("Marketplace offer media promotion", () => {
     expect(database.statements).toContain("COMMIT");
   });
 
+  it("promotes only the pending subset of an exact mixed staged/public replay", async () => {
+    const database = fakeDatabase([pendingVariant("original_safe")], true, [
+      selectedMedia(MEDIA_ID, "private"),
+      selectedMedia(APPROVED_MEDIA_ID, "public"),
+    ]);
+    const send = vi.fn(async (_command: unknown) => ({}));
+    const promotion = createPgS3MarketplaceOfferMediaPromotion({
+      connectionString: "postgresql://target.test/vayada",
+      serving,
+      pool: database.pool as never,
+      s3Client: { send } as unknown as S3Client,
+    });
+
+    await expect(
+      promotion.promoteOfferMedia({
+        organizationId: "org-1",
+        offerId: "offer-1",
+        mediaObjectIds: [MEDIA_ID, APPROVED_MEDIA_ID],
+      }),
+    ).resolves.toBe(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(database.statements).toContain("COMMIT");
+  });
+
+  it("rejects an exact selected set before copying when a staged object lacks original_safe", async () => {
+    const database = fakeDatabase([pendingVariant("large")]);
+    const send = vi.fn(async (_command: unknown) => ({}));
+    const promotion = createPgS3MarketplaceOfferMediaPromotion({
+      connectionString: "postgresql://target.test/vayada",
+      serving,
+      pool: database.pool as never,
+      s3Client: { send } as unknown as S3Client,
+    });
+
+    await expect(
+      promotion.promoteOfferMedia({
+        organizationId: "org-1",
+        offerId: "offer-1",
+        mediaObjectIds: [MEDIA_ID],
+      }),
+    ).rejects.toMatchObject({ statusCode: 422 });
+    expect(send).not.toHaveBeenCalled();
+    expect(database.statements).toContain("ROLLBACK");
+  });
+
   it("removes copied public objects when database approval fails", async () => {
     const database = fakeDatabase([pendingVariant("original_safe")], false);
     const send = vi.fn(async (_command: unknown) => ({}));
@@ -104,7 +160,7 @@ describe("Marketplace offer media promotion", () => {
 
 function pendingVariant(variantName: string) {
   return {
-    mediaId: "media-1",
+    mediaId: MEDIA_ID,
     variantName,
     storageKey: `private/media/media-1/${variantName}/sha256-${"a".repeat(64)}.webp`,
     contentType: "image/webp",
@@ -115,15 +171,41 @@ function pendingVariant(variantName: string) {
   };
 }
 
-function fakeDatabase(pendingRows: ReturnType<typeof pendingVariant>[], approve = true) {
+function selectedMedia(mediaId: string, visibility: "private" | "public") {
+  return {
+    mediaId,
+    visibility,
+    publicApproved: visibility === "public",
+    lifecycleStatus: visibility === "public" ? "active" : "staged",
+    hasOriginalSafe: visibility === "private",
+  };
+}
+
+function fakeDatabase(
+  pendingRows: ReturnType<typeof pendingVariant>[],
+  approve = true,
+  selectedRows?: ReturnType<typeof selectedMedia>[],
+) {
   const statements: string[] = [];
   const queries: Array<{ text: string; values?: readonly unknown[] }> = [];
   const query = vi.fn(async (text: string, values?: readonly unknown[]) => {
     statements.push(text);
     queries.push({ text, values });
+    if (text.includes('AS "hasOriginalSafe"')) {
+      return {
+        rows:
+          selectedRows ??
+          Array.from(new Set(pendingRows.map(({ mediaId }) => mediaId))).map((mediaId) => ({
+            ...selectedMedia(mediaId, "private"),
+            hasOriginalSafe: pendingRows.some(
+              (row) => row.mediaId === mediaId && row.variantName === "original_safe",
+            ),
+          })),
+      };
+    }
     if (text.includes("FROM platform.media_objects media")) return { rows: pendingRows };
     if (text.includes("UPDATE platform.media_objects")) {
-      return { rows: approve ? [{ id: "media-1" }] : [] };
+      return { rows: approve ? [{ id: MEDIA_ID }] : [] };
     }
     return { rows: [] };
   });
