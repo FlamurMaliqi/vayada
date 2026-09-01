@@ -1,5 +1,5 @@
 {
-  "contractVersion": "native-guest-inbox.v1",
+  "contractVersion": "native-guest-inbox.v2",
   "authorizationMatrix": [
     {
       "operation": "list-detail-unread-read",
@@ -8,7 +8,19 @@
       "resource": "pms_property"
     },
     {
-      "operation": "start-direct-email-close-reopen-reply",
+      "operation": "triage-follow-up-assign-note-start-reply",
+      "permissions": ["pms.inbox.read", "pms.inbox.reply"],
+      "entitlement": "pms:property-management",
+      "resource": "pms_property"
+    },
+    {
+      "operation": "list-preview-quick-reply",
+      "permissions": ["pms.inbox.read", "pms.inbox.reply"],
+      "entitlement": "pms:property-management",
+      "resource": "pms_property"
+    },
+    {
+      "operation": "translate-summarize-draft",
       "permissions": ["pms.inbox.read", "pms.inbox.reply"],
       "entitlement": "pms:property-management",
       "resource": "pms_property"
@@ -26,10 +38,10 @@
   ],
   "cases": [
     {
-      "id": "list-open-unread-threads",
+      "id": "list-attention-unread-threads",
       "operation": "GET /api/pms/properties/prop_1/messaging/threads",
       "query": {
-        "status": "open",
+        "attentionState": "needs_attention",
         "unread": true,
         "channel": "ota",
         "search": "LEE",
@@ -54,7 +66,10 @@
     {
       "id": "reject-filter-mismatched-cursor",
       "operation": "GET /api/pms/properties/prop_1/messaging/threads",
-      "query": { "status": "closed", "cursor": "cursor_for_open_filter" },
+      "query": {
+        "attentionState": "done",
+        "cursor": "cursor_for_attention_filter"
+      },
       "expected": { "status": 400, "code": "invalid_cursor" }
     },
     {
@@ -169,7 +184,7 @@
       },
       "expected": {
         "status": 200,
-        "bookingLink": { "state": "linked", "bookingId": "booking_1" },
+        "conversationContext": { "state": "linked", "bookingId": "booking_1" },
         "messagesAreChronological": true,
         "olderMessagesUseOpaquePreviousCursor": true
       }
@@ -180,7 +195,10 @@
       "record": { "bookingId": null, "sourceBookingReference": "OTA-ABC" },
       "expected": {
         "status": 200,
-        "bookingLink": { "state": "unlinked", "sourceReference": "OTA-ABC" }
+        "conversationContext": {
+          "state": "unlinked",
+          "sourceReference": "OTA-ABC"
+        }
       }
     },
     {
@@ -215,16 +233,16 @@
       }
     },
     {
-      "id": "close-is-local-versioned-and-audited",
-      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_1/close",
-      "headers": { "Idempotency-Key": "close-1" },
+      "id": "done-is-local-versioned-and-audited",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_1/done",
+      "headers": { "Idempotency-Key": "done-1" },
       "input": { "expectedThreadVersion": 12 },
       "expected": {
         "status": 200,
-        "threadStatus": "closed",
+        "attentionState": "done",
         "threadVersion": 13,
-        "providerCloseCalled": false,
-        "auditAction": "pms.inbox.thread.closed"
+        "providerActionCalled": false,
+        "auditAction": "pms.inbox.thread.marked_done"
       }
     },
     {
@@ -234,16 +252,49 @@
       "input": { "expectedThreadVersion": 13 },
       "expected": {
         "status": 200,
-        "threadStatus": "open",
+        "attentionState": "needs_attention",
         "threadVersion": 14,
         "providerReopenCalled": false,
         "auditAction": "pms.inbox.thread.reopened"
       }
     },
     {
+      "id": "follow-up-schedules-idempotent-release",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_1/follow-up",
+      "headers": { "Idempotency-Key": "follow-up-1" },
+      "input": {
+        "expectedThreadVersion": 14,
+        "followUpAt": "2026-09-03T09:00:00.000Z"
+      },
+      "expected": {
+        "status": 200,
+        "attentionState": "follow_up",
+        "threadVersion": 15,
+        "jobType": "pms.inbox.follow-up.release",
+        "dueResult": "needs_attention",
+        "duplicateReleaseMutations": 0,
+        "supersededReleaseMutations": 0
+      }
+    },
+    {
+      "id": "coordinate-thread-with-property-boundaries",
+      "operation": "coordinate-thread",
+      "inputs": [
+        {
+          "kind": "assign",
+          "assignee": { "active": true, "propertyAccess": "prop_2" }
+        },
+        { "kind": "note", "text": "Late arrival." }
+      ],
+      "expected": {
+        "crossPropertyAssignment": { "status": 400, "code": "validation_failed" },
+        "internalNote": { "status": 201, "deliveryJobs": 0, "guestFacingExports": 0 }
+      }
+    },
+    {
       "id": "reject-stale-thread-command",
-      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_1/close",
-      "headers": { "Idempotency-Key": "close-stale" },
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_1/done",
+      "headers": { "Idempotency-Key": "done-stale" },
       "input": { "expectedThreadVersion": 11 },
       "record": { "threadVersion": 12 },
       "expected": {
@@ -254,40 +305,63 @@
       }
     },
     {
-      "id": "deduplicate-and-reopen-inbound-channex-message",
+      "id": "deduplicate-and-restore-attention-on-inbound-channex-message",
       "operation": "ingest-channex-message",
       "input": {
         "propertyId": "prop_1",
         "threadId": "thread_1",
         "providerMessageId": "provider_msg_1"
       },
-      "record": { "threadStatus": "closed", "unreadCount": 2, "version": 7 },
+      "record": { "attentionState": "done", "unreadCount": 2, "version": 7 },
       "deliveries": 2,
       "expected": {
         "storedMessages": 1,
-        "threadStatus": "open",
+        "attentionState": "needs_attention",
         "unreadCount": 3,
         "threadVersion": 8,
-        "reopenAuditEntries": 1,
+        "attentionRestoredAuditEntries": 1,
         "webhookKey": "webhook:channex:message:prop_1:provider_msg_1",
         "eventKey": "channex.message.ingest:prop_1:thread_1:provider_msg_1:v1",
         "jobKey": "channex.ingest-message:channel_message:prop_1:provider_msg_1:v1"
       }
     },
     {
-      "id": "advance-open-thread-version-on-inbound",
+      "id": "advance-attention-thread-version-on-inbound",
       "operation": "ingest-channex-message",
       "input": {
         "propertyId": "prop_1",
-        "threadId": "thread_open",
-        "providerMessageId": "provider_msg_open"
+        "threadId": "thread_attention",
+        "providerMessageId": "provider_msg_attention"
       },
-      "record": { "threadStatus": "open", "unreadCount": 0, "version": 9 },
+      "record": {
+        "attentionState": "needs_attention",
+        "unreadCount": 0,
+        "version": 9
+      },
       "expected": {
-        "threadStatus": "open",
+        "attentionState": "needs_attention",
         "unreadCount": 1,
         "threadVersion": 10,
         "storedMessages": 1
+      }
+    },
+    {
+      "id": "project-airbnb-inquiry-without-inventing-booking",
+      "operation": "ingest-channex-inquiry-message",
+      "input": {
+        "propertyId": "prop_1",
+        "providerChannel": "airbnb",
+        "providerInquiryId": "inquiry_1",
+        "arrivalDate": "2026-10-10",
+        "departureDate": "2026-10-12"
+      },
+      "expected": {
+        "conversationContext": {
+          "state": "inquiry",
+          "bookingId": null,
+          "sourceReference": "inquiry_1"
+        },
+        "bookingCreated": false
       }
     },
     {
@@ -306,7 +380,7 @@
         "status": 201,
         "threadSource": "manual",
         "sourceThreadId": "direct-email:booking_1:v1",
-        "threadStatus": "open",
+        "attentionState": "needs_attention",
         "channel": "email",
         "threadVersion": 1,
         "activityAt": "createdAt",
@@ -539,17 +613,17 @@
       }
     },
     {
-      "id": "manual-reply-reopens-closed-thread",
-      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_closed/messages",
-      "headers": { "Idempotency-Key": "reply-and-reopen" },
-      "record": { "threadStatus": "closed", "threadVersion": 6 },
+      "id": "manual-reply-restores-attention",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_done/messages",
+      "headers": { "Idempotency-Key": "reply-and-restore-attention" },
+      "record": { "attentionState": "done", "threadVersion": 6 },
       "input": { "expectedThreadVersion": 6, "text": "One more detail" },
       "expected": {
         "status": 202,
-        "threadStatus": "open",
+        "attentionState": "needs_attention",
         "threadVersion": 7,
-        "closureMetadata": null,
-        "auditAction": "pms.inbox.thread.reopened_by_reply",
+        "doneMetadata": null,
+        "auditAction": "pms.inbox.thread.attention_restored_by_reply",
         "outboundMessages": 1
       }
     },
@@ -572,7 +646,7 @@
       "inputs": [
         { "propertyId": "prop_1", "operation": "pms.inbox.thread.reply", "key": "same-key" },
         { "propertyId": "prop_2", "operation": "pms.inbox.thread.reply", "key": "same-key" },
-        { "propertyId": "prop_1", "operation": "pms.inbox.thread.close", "key": "same-key" }
+        { "propertyId": "prop_1", "operation": "pms.inbox.thread.mark_done", "key": "same-key" }
       ],
       "expected": {
         "independentReservations": 3,
@@ -597,6 +671,47 @@
         "code": "missing_resource_access",
         "idempotencyLookupPerformed": false,
         "priorResponseReturned": false
+      }
+    },
+    {
+      "id": "quick-reply-preview-blocks-unresolved-required-variable",
+      "operation": "POST /api/pms/properties/prop_1/messaging/quick-replies/quick_1/preview",
+      "headers": { "Idempotency-Key": "quick-preview-1" },
+      "input": { "threadId": "thread_inquiry" },
+      "quickReply": { "text": "Your room {{room_number}} is ready." },
+      "expected": {
+        "status": 200,
+        "unresolvedVariables": ["room_number"],
+        "composerUseAllowed": false,
+        "messagesCreated": 0,
+        "deliveryJobs": 0
+      }
+    },
+    {
+      "id": "assisted-draft-never-sends",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_1/assist",
+      "headers": { "Idempotency-Key": "draft-1" },
+      "input": { "kind": "draft_reply", "throughMessageId": "msg_9" },
+      "expected": {
+        "status": 200,
+        "assistedTextReturned": true,
+        "basedThroughMessageId": "msg_9",
+        "messagesCreated": 0,
+        "deliveryJobs": 0,
+        "attentionStateChanged": false
+      }
+    },
+    {
+      "id": "provider-no-reply-needed-does-not-change-vayada-triage",
+      "operation": "POST /api/pms/properties/prop_1/messaging/threads/thread_booking/provider-actions/no-reply-needed",
+      "headers": { "Idempotency-Key": "provider-no-reply-1" },
+      "record": {
+        "attentionState": "needs_attention",
+        "providerActionAvailable": "booking_com_no_reply_needed"
+      },
+      "expected": {
+        "jobType": "pms.inbox.provider-action.deliver",
+        "attentionState": "needs_attention"
       }
     },
     {
@@ -705,15 +820,15 @@
       "operation": "migrate-legacy-thread",
       "input": { "status": "no_reply_needed", "propertyId": "prop_1" },
       "expected": {
-        "status": "closed",
-        "closeReason": "legacy_no_reply_needed",
+        "attentionState": "done",
+        "doneReason": "legacy_no_reply_needed",
         "auditEvidencePreserved": true
       }
     },
     {
-      "id": "v1-does-not-authorize-deferred-sends",
+      "id": "v2-does-not-authorize-automated-sends",
       "operation": "validate-contract-boundary",
-      "input": { "sendKind": "template_or_automation" },
+      "input": { "sendKind": "automation" },
       "expected": {
         "authorizedByContract": false,
         "runtimeRouteExists": false,
