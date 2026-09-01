@@ -4,7 +4,11 @@ import { useState, useRef, useEffect } from "react";
 import { PhotoIcon, XMarkIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
 import { bookingSettingsService } from "@/services/booking";
 import { COLOR_PRESETS, FONT_PAIRINGS } from "@/lib/constants/booking";
-import { hasPropertyHero, propertyHeroService } from "@/services/api/propertyHero";
+import {
+  hasPropertyHero,
+  isPropertyHeroPublicationConfirmed,
+  propertyHeroService,
+} from "@/services/api/propertyHero";
 
 const GOOGLE_FONTS_URL =
   "https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Source+Sans+Pro:wght@300;400;600;700&family=Inter:wght@300;400;500;600;700&family=Lora:ital,wght@0,400;0,700;1,400&family=Italiana&display=swap";
@@ -154,17 +158,21 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
       }
     } catch (err) {
       if (mediaOperationRef.current !== operation) return;
-      console.error("Image upload failed:", err);
       try {
         const current = await propertyHeroService.get(propertyId);
         if (mediaOperationRef.current !== operation) return;
         setProfileRevision(current.profileRevision);
         setHeroMediaObjectId(current.hero?.mediaObjectId ?? null);
         setHeroImage(current.hero?.url ?? "");
+        if (isPropertyHeroPublicationConfirmed(current, err)) {
+          setFeedback({ type: "success", message: "Hero image published successfully" });
+          return;
+        }
       } catch {
         if (mediaOperationRef.current !== operation) return;
         setHeroImage(previousImage.startsWith("blob:") ? "" : previousImage);
       }
+      console.error("Image upload failed:", err);
       setFeedback({ type: "error", message: "Image upload failed. Please try again." });
     } finally {
       if (mediaOperationRef.current === operation) setUploading(false);
@@ -199,7 +207,7 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
       } catch {
         // The revision-fenced clear result remains authoritative.
       }
-    } catch {
+    } catch (err) {
       if (mediaOperationRef.current !== operation) return;
       try {
         const current = await propertyHeroService.get(propertyId);
@@ -207,6 +215,11 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
         setProfileRevision(current.profileRevision);
         setHeroMediaObjectId(current.hero?.mediaObjectId ?? null);
         setHeroImage(current.hero?.url ?? "");
+        if (isPropertyHeroPublicationConfirmed(current, err)) {
+          setFeedback({ type: "success", message: "Hero image removed successfully" });
+          if (fileInputRef.current) fileInputRef.current.value = "";
+          return;
+        }
       } catch {
         // Keep the revision-fenced clear result when refresh is unavailable.
       }
