@@ -239,11 +239,135 @@ describe("property media assignment routes", () => {
   });
 });
 
+describe("Platform Admin property hero routes", () => {
+  const platformOptions = {
+    permissions: ["platform.admin.read", "platform.user.suspend"] as PermissionKey[],
+    linkedResources: [platformLink()],
+    organizationKind: "platform" as const,
+  };
+
+  it("reads and replaces only the exact property's canonical hero media", async () => {
+    const hero = {
+      propertyId,
+      profileRevision: 7,
+      hero: { mediaObjectId: mediaId, url: "https://cdn.example.test/media/hero.webp" },
+    };
+    const getPlatformAdminHero = vi.fn(async () => hero);
+    const replacePlatformAdminHero = vi.fn(async () => ({
+      ok: true as const,
+      response: {
+        ...successResponse().response,
+        profileRevision: 8,
+        presentationAssignments: [
+          { mediaObjectId: mediaId, role: "cover" as const, altText: null, sortOrder: 0 },
+        ],
+      },
+    }));
+    app = buildPropertyMediaApp({
+      ...platformOptions,
+      repository: commandRepository({ getPlatformAdminHero, replacePlatformAdminHero }),
+    });
+    const headers = { authorization: "Bearer valid-token" };
+
+    const read = await injectJson(app, {
+      method: "GET",
+      url: `/api/platform/admin/properties/${propertyId}/media/hero`,
+      headers,
+    });
+    const write = await injectJson(app, {
+      method: "PUT",
+      url: `/api/platform/admin/properties/${propertyId}/media/hero`,
+      headers: { ...headers, "idempotency-key": "admin-hero-1" },
+      payload: { expectedProfileRevision: 6, mediaObjectId: mediaId.toUpperCase() },
+    });
+
+    expect(read.body).toEqual({ contractVersion: "platform-admin-property-hero.v1", ...hero });
+    expect(write.body).toMatchObject({
+      propertyId,
+      profileRevision: 8,
+      hero: { mediaObjectId: mediaId, url: null },
+      outcome: "updated",
+    });
+    expect(getPlatformAdminHero).toHaveBeenCalledTimes(1);
+    expect(replacePlatformAdminHero).toHaveBeenCalledWith(
+      expect.objectContaining({
+        propertyId,
+        actorUserId: "user_property_owner",
+        expectedProfileRevision: 6,
+        mediaObjectId: mediaId,
+        idempotencyKey: "admin-hero-1",
+      }),
+    );
+  });
+
+  it.each(["permission", "organization", "resource"] as const)(
+    "denies inexact Platform Admin %s scope before parsing the body",
+    async (denied) => {
+      const replacePlatformAdminHero = vi.fn(async () => successResponse());
+      app = buildPropertyMediaApp({
+        repository: commandRepository({ replacePlatformAdminHero }),
+        permissions: denied === "permission" ? [] : (["platform.user.suspend"] as PermissionKey[]),
+        linkedResources: denied === "resource" ? [] : [platformLink()],
+        organizationKind: denied === "organization" ? "hotel_group" : "platform",
+      });
+
+      const response = await app.inject({
+        method: "PUT",
+        url: `/api/platform/admin/properties/${propertyId}/media/hero`,
+        headers: {
+          authorization: "Bearer valid-token",
+          "content-type": "application/json",
+          "idempotency-key": "denied-admin-hero",
+        },
+        payload: "{ malformed",
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(replacePlatformAdminHero).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects broad write input and returns no property data for an unknown exact target", async () => {
+    const replacePlatformAdminHero = vi.fn(async () => successResponse());
+    app = buildPropertyMediaApp({
+      ...platformOptions,
+      repository: commandRepository({
+        getPlatformAdminHero: vi.fn(async () => null),
+        replacePlatformAdminHero,
+      }),
+    });
+    const headers = { authorization: "Bearer valid-token" };
+
+    const missing = await injectJson(app, {
+      method: "GET",
+      url: `/api/platform/admin/properties/${propertyId}/media/hero`,
+      headers,
+    });
+    const broad = await injectJson(app, {
+      method: "PUT",
+      url: `/api/platform/admin/properties/${propertyId}/media/hero`,
+      headers: { ...headers, "idempotency-key": "broad-admin-hero" },
+      payload: { expectedProfileRevision: 1, mediaObjectId: null, gallery: [] },
+    });
+    const oversizedRevision = await injectJson(app, {
+      method: "PUT",
+      url: `/api/platform/admin/properties/${propertyId}/media/hero`,
+      headers: { ...headers, "idempotency-key": "oversized-admin-hero" },
+      payload: { expectedProfileRevision: 2_147_483_648, mediaObjectId: null },
+    });
+
+    expect(missing.statusCode).toBe(404);
+    expect(broad.statusCode).toBe(422);
+    expect(oversizedRevision.statusCode).toBe(422);
+    expect(replacePlatformAdminHero).not.toHaveBeenCalled();
+  });
+});
+
 function buildPropertyMediaApp(options: {
   repository: PropertyMediaCommandRepository;
   permissions?: PermissionKey[];
   linkedResources?: LinkedResource[];
-  organizationKind?: "hotel_group" | "creator_workspace";
+  organizationKind?: "hotel_group" | "creator_workspace" | "platform";
 }): FastifyInstance {
   return buildApp({
     logger: false,
@@ -274,6 +398,9 @@ function commandRepository(
     async replacePlatformAdminHero() {
       throw new Error("Unexpected Platform Admin hero replacement");
     },
+    async getPlatformAdminHero() {
+      throw new Error("Unexpected Platform Admin hero read");
+    },
     async runPublicationBatch() {
       return { processed: 0, deferred: 0, deadLettered: 0 };
     },
@@ -284,7 +411,7 @@ function commandRepository(
 
 function identityRepository(options: {
   linkedResources?: LinkedResource[];
-  organizationKind?: "hotel_group" | "creator_workspace";
+  organizationKind?: "hotel_group" | "creator_workspace" | "platform";
 }): IdentityRepository {
   return {
     async findUserByProviderUserId() {
@@ -310,6 +437,16 @@ function identityRepository(options: {
     async findLinkedResources() {
       return options.linkedResources ?? [propertyLink("owner", "active")];
     },
+  };
+}
+
+function platformLink(): LinkedResource {
+  return {
+    product: "platform",
+    resourceType: "platform",
+    resourceId: "vayada",
+    relationship: "operator",
+    status: "active",
   };
 }
 

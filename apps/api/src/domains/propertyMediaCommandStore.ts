@@ -69,6 +69,12 @@ export type PropertyMediaReadModelSync = (
   client: Queryable,
   input: { propertyId: string },
 ) => Promise<void>;
+
+export type PlatformAdminPropertyHeroRead = {
+  propertyId: string;
+  profileRevision: number;
+  hero: { mediaObjectId: string; url: string } | null;
+};
 type CanonicalPrivatePropertyVariant = Parameters<
   typeof assertCanonicalPrivatePropertyVariants
 >[0]["variants"][number];
@@ -1345,6 +1351,69 @@ export async function lockPlatformAdminProperty(
       property.ownerOrganizationId === expectedOwnerOrganizationId.toLowerCase())
     ? property
     : null;
+}
+
+export async function readPlatformAdminPropertyHero(
+  pool: CommandPool,
+  propertyId: string,
+): Promise<PlatformAdminPropertyHeroRead | null> {
+  const client = await pool.connect();
+  try {
+    const result = await client.query<{
+      propertyId: string;
+      profileRevision: string | number;
+      mediaObjectId: string | null;
+      url: string | null;
+    }>(
+      `SELECT property.id::text AS "propertyId",
+              property.profile_revision AS "profileRevision",
+              media_object.id::text AS "mediaObjectId",
+              variant.public_cdn_url AS url
+       FROM hotel_catalog.properties property
+       JOIN identity.organization_resource_links owner
+         ON owner.product = 'hotel_catalog'
+        AND owner.resource_type = 'property'
+        AND owner.resource_id = property.id::text
+        AND owner.relationship = 'owner'
+        AND owner.status = 'active'
+       JOIN identity.organizations organization
+         ON organization.id = owner.organization_id
+        AND organization.kind = 'hotel_group'
+        AND organization.status = 'active'
+       LEFT JOIN hotel_catalog.property_media assignment
+         ON assignment.property_id = property.id
+        AND assignment.media_type = 'hero_image'
+        AND assignment.source_system = 'platform'
+        AND assignment.public_approved = TRUE
+       LEFT JOIN platform.media_objects media_object
+         ON media_object.id = assignment.platform_media_object_id
+        AND media_object.owner_organization_id = owner.organization_id
+        AND media_object.property_id = property.id
+        AND media_object.purpose = 'property.hero_image'
+        AND media_object.visibility = 'public'
+        AND media_object.public_approved = TRUE
+        AND media_object.lifecycle_status = 'active'
+        AND media_object.storage_kind = 'vayada_managed'
+       LEFT JOIN platform.media_variants variant
+         ON variant.media_object_id = media_object.id
+        AND variant.variant_name = 'original_safe'
+        AND variant.visibility = 'public'
+       WHERE property.id = $1::uuid
+         AND property.lifecycle_status <> 'retired'
+       ORDER BY owner.organization_id, assignment.id, variant.id`,
+      [propertyId],
+    );
+    const row = result.rows.length === 1 ? result.rows[0] : undefined;
+    if (!row) return null;
+    return {
+      propertyId: row.propertyId,
+      profileRevision: positiveInteger(row.profileRevision),
+      hero:
+        row.mediaObjectId && row.url ? { mediaObjectId: row.mediaObjectId, url: row.url } : null,
+    };
+  } finally {
+    client.release();
+  }
 }
 
 export async function resolveMedia(
