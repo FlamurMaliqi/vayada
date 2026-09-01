@@ -5,6 +5,7 @@ export type {
   EntitlementStatus,
   InternalUserStatus,
   LinkedResource,
+  MembershipPropertyAccess,
   MembershipStatus,
   OrganizationKind,
   OrganizationStatus,

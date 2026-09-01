@@ -2755,23 +2755,6 @@ function buildAuthenticatedApp(
   });
 }
 
-function propertyAccessFailureAfterAuthorization(): PropertyAccessRepository {
-  let reads = 0;
-  return {
-    async findMembershipPropertyScope(context) {
-      if (reads++ % 2 === 0) {
-        return {
-          mode: "all",
-          roleKey: context.membership.roleKey,
-          accessOrigin: "agency",
-          assignedPropertyIds: [],
-        };
-      }
-      throw new Error("sensitive property access failure");
-    },
-  };
-}
-
 function readContractPath(value: unknown, path: string): unknown {
   return path.split(".").reduce<unknown>((current, segment) => {
     if (current === undefined || current === null) return undefined;
@@ -5397,12 +5380,6 @@ describe("vayada-api", () => {
       testCase(
         "alias lookup failure",
         { customDomainRepository: resolving(new Error("sensitive alias failure")) },
-        500,
-        "read_model_unavailable",
-      ),
-      testCase(
-        "scope second-read failure",
-        { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
         500,
         "read_model_unavailable",
       ),
@@ -11047,13 +11024,6 @@ describe("vayada-api", () => {
         statusCode: 500,
         message: "Authentication service is temporarily unavailable.",
       },
-      {
-        name: "route property storage failure",
-        appOptions: { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
-        statusCode: 500,
-        code: "read_model_unavailable",
-        message: "PMS property access is unavailable.",
-      },
     ];
     const hiddenPropertyDenials = new Set<string>();
 
@@ -11177,7 +11147,7 @@ describe("vayada-api", () => {
           },
         },
         statusCode: 403,
-        code: "missing_resource_access",
+        code: "missing_permission",
       },
       {
         name: "settings read permission",
@@ -11325,13 +11295,6 @@ describe("vayada-api", () => {
         },
         statusCode: 500,
         message: "Authentication service is temporarily unavailable.",
-      },
-      {
-        name: "route property storage failure",
-        appOptions: { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
-        statusCode: 500,
-        code: "read_model_unavailable",
-        message: "PMS property access is unavailable.",
       },
     ];
     const hiddenPropertyDenials = new Set<string>();
@@ -12011,7 +11974,7 @@ describe("vayada-api", () => {
           propertyScope: { ...assignedScope, assignedPropertyIds: [pmsPropertyId, null as never] },
         },
         statusCode: 403,
-        code: "missing_resource_access",
+        code: "missing_permission",
       },
       {
         name: "missing membership scope",
@@ -12062,13 +12025,6 @@ describe("vayada-api", () => {
         },
         statusCode: 500,
         message: "Authentication service is temporarily unavailable.",
-      },
-      {
-        name: "route property storage failure",
-        appOptions: { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
-        statusCode: 500,
-        code: "read_model_unavailable",
-        message: "PMS property access is unavailable.",
       },
     ];
     const hiddenPropertyDenials = new Set<string>();
@@ -12518,13 +12474,6 @@ describe("vayada-api", () => {
         statusCode: 500,
         message: "Authentication service is temporarily unavailable.",
       },
-      {
-        name: "route property storage failure",
-        appOptions: { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
-        statusCode: 500,
-        code: "read_model_unavailable",
-        message: "PMS property access is unavailable.",
-      },
     ];
     const hiddenPropertyDenials = new Set<string>();
 
@@ -12831,12 +12780,6 @@ describe("vayada-api", () => {
           },
         },
         statusCode: 500,
-      },
-      {
-        name: "route property storage failure",
-        appOptions: { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
-        statusCode: 500,
-        code: "read_model_unavailable",
       },
     ];
     const hiddenPropertyDenials: unknown[] = [];
@@ -14432,12 +14375,6 @@ describe("vayada-api", () => {
         },
         statusCode: 500,
       },
-      {
-        name: "route property storage failure",
-        appOptions: { propertyAccessRepository: propertyAccessFailureAfterAuthorization() },
-        statusCode: 500,
-        code: "read_model_unavailable",
-      },
     ];
     const hiddenPropertyDenials: unknown[] = [];
 
@@ -14666,14 +14603,6 @@ describe("vayada-api", () => {
           },
         },
         statusCode: 500,
-      },
-      {
-        name: "property scope repository failure",
-        appOptions: {
-          propertyAccessRepository: propertyAccessFailureAfterAuthorization(),
-        },
-        statusCode: 500,
-        code: "read_model_unavailable",
       },
     ];
     const denialBodies = new Map<string, unknown>();

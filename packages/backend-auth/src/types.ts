@@ -125,6 +125,13 @@ export type SelectedOrganization = {
   status: OrganizationStatus;
 };
 
+export type MembershipPropertyAccess = {
+  mode: "all" | "assigned";
+  roleKey: string;
+  accessOrigin: "agency";
+  assignedPropertyIds: readonly string[];
+};
+
 export type ActiveMembership = {
   membershipId: string;
   status: MembershipStatus;
@@ -133,6 +140,7 @@ export type ActiveMembership = {
   workosRoleSlugs: string[];
   // Populated by backend-authorization after this package resolves identity.
   permissions: PermissionKey[];
+  propertyAccess?: MembershipPropertyAccess;
 };
 
 export type LinkedResource = {

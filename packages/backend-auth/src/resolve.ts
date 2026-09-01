@@ -2,6 +2,7 @@ import { AuthError } from "./errors.js";
 import { type IdentityRepository } from "./repository.js";
 import {
   type LinkedResource,
+  type MembershipPropertyAccess,
   type PermissionKey,
   type Product,
   type ProductEntitlement,
@@ -15,6 +16,7 @@ import { type VerifiedSession } from "./verify.js";
 export type AuthorizationResolution = {
   permissions: PermissionKey[];
   entitlements?: ProductEntitlement[];
+  propertyAccess?: MembershipPropertyAccess;
 };
 
 export type AuthorizationResolver = (context: RequestContext) => Promise<AuthorizationResolution>;
@@ -149,6 +151,7 @@ export async function resolveRequestContext(
     membership: {
       ...context.membership,
       permissions: authorization.permissions,
+      ...(authorization.propertyAccess ? { propertyAccess: authorization.propertyAccess } : {}),
     },
     entitlements: authorization.entitlements ?? context.entitlements,
   };
