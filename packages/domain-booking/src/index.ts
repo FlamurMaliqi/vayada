@@ -36,6 +36,7 @@ export * from "./bookingGuestPolicyProjection.js";
 export * from "./manualBookingPaymentIntent.js";
 export * from "./bookingAttribution.js";
 export * from "./bookingAddonEconomics.js";
+export * from "./sameDayBookingPolicy.js";
 
 export type BookingUtcDateTime = string;
 export type BookingDate = string;

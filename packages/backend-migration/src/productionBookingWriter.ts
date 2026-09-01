@@ -20,6 +20,7 @@ const commonTimes = [
 ] as const;
 const WRITE_ORDER = [
   "booking_settings",
+  "same_day_booking_policies",
   "addon_definitions",
   "promo_definitions",
   "quote_sessions",
@@ -63,6 +64,19 @@ const WRITERS: Record<string, WriterDefinition> = {
       c("primaryColor", "primary_color", "text"),
       c("fontPairing", "font_pairing", "text"),
       c("acceptanceMode", "acceptance_mode", "text"),
+      c("updatedAt", "updated_at", "timestamptz"),
+    ],
+  },
+  same_day_booking_policies: {
+    table: "booking.same_day_booking_policies",
+    key: "property_id",
+    mutable: true,
+    columns: [
+      c("propertyId", "property_id", "uuid"),
+      c("enabled", "enabled", "boolean"),
+      c("cutoffLocalTime", "cutoff_local_time", "text"),
+      c("revision", "revision", "integer"),
+      c("sourceFreshness", "source_freshness", "jsonb"),
       c("updatedAt", "updated_at", "timestamptz"),
     ],
   },
