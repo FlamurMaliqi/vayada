@@ -25,6 +25,7 @@ import {
   type PmsLinkedInventoryGroupCommandResult,
 } from "../domains/pmsLinkedInventoryGroupRepository.js";
 import type { PmsRoomAssignmentSettingsPort } from "../domains/pmsRoomAssignmentSettings.js";
+import type { SameDayBookingSettingsPort } from "../domains/sameDayBookingSettings.js";
 import { pmsRoomOrderVersion } from "../domains/pmsRoomOrder.js";
 import type {
   PmsRoomAssignmentOptimizationHistoryItem,
@@ -999,6 +1000,7 @@ export type PmsOperationsRoutesOptions = {
   allowedOrigins?: string[];
   propertyPlanReadRepository?: PropertyPlanReadRepository;
   bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
+  sameDayBookingSettings?: SameDayBookingSettingsPort;
   publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort;
   roomAssignmentSettings?: PmsRoomAssignmentSettingsPort;
   roomAssignmentHistory?: PmsRoomAssignmentOptimizationHistoryPort;
@@ -1160,6 +1162,7 @@ export async function registerPmsOperationsRoutes(
     await options.propertyPlanReadRepository?.close?.();
     await options.roomAssignmentSettings?.close?.();
     await options.roomAssignmentHistory?.close?.();
+    await options.sameDayBookingSettings?.close?.();
   });
 
   for (const path of [
@@ -1181,6 +1184,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/calendar-settings",
     "/properties/:propertyId/calendar-shuffles",
     "/properties/:propertyId/booking-acceptance",
+    "/properties/:propertyId/same-day-booking",
     "/properties/:propertyId/messaging/unread-count",
     "/properties/:propertyId/reservations",
     "/properties/:propertyId/reservations/:guestBookingId",
@@ -1725,6 +1729,86 @@ export async function registerPmsOperationsRoutes(
         reply,
         readModelUnavailable("PMS property profile write model is unavailable."),
       );
+    },
+  );
+
+  app.get<{ Params: PmsPropertyParams }>(
+    "/properties/:propertyId/same-day-booking",
+    async (request, reply) => {
+      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? []))
+        return sendPmsOperationsError(reply, originNotAllowed());
+      const { propertyId } = request.params;
+      if (
+        !(await enforcePmsPropertyAccessPolicy(
+          request,
+          reply,
+          propertyId,
+          "pms.settings.read",
+          options.propertyAccessRepository,
+        ))
+      )
+        return reply;
+      try {
+        const result = await options.sameDayBookingSettings?.find(propertyId);
+        return result
+          ? sameDayBookingResponse(result)
+          : sendPmsOperationsError(reply, propertyNotFound(propertyId));
+      } catch {
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("Same-day booking settings are unavailable."),
+        );
+      }
+    },
+  );
+
+  app.put<{ Params: PmsPropertyParams; Body: unknown }>(
+    "/properties/:propertyId/same-day-booking",
+    async (request, reply) => {
+      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? []))
+        return sendPmsOperationsError(reply, originNotAllowed());
+      const context = await enforcePmsPropertyAccessPolicy(
+        request,
+        reply,
+        request.params.propertyId,
+        "pms.settings.manage",
+        options.propertyAccessRepository,
+      );
+      if (!context) return reply;
+      const input = sameDayBookingInput(request.body);
+      if (!input)
+        return sendPmsOperationsError(
+          reply,
+          invalidBody(
+            "Same-day booking settings require commandId, idempotencyKey, enabled, and a 30-minute cutoff or null.",
+          ),
+        );
+      try {
+        const result = await options.sameDayBookingSettings?.update(
+          context,
+          request.params.propertyId,
+          input,
+        );
+        if (!result || (!result.ok && result.code === "property_not_found"))
+          return sendPmsOperationsError(reply, propertyNotFound(request.params.propertyId));
+        if (!result.ok)
+          return sendPmsOperationsError(reply, {
+            statusCode: 409,
+            code: result.code,
+            category: "conflict",
+            message: "The idempotency key was already used for another settings update.",
+          });
+        return { ...sameDayBookingResponse(result.settings), replayed: result.replayed };
+      } catch (error) {
+        request.log.error(
+          { err: error, propertyId: request.params.propertyId },
+          "Same-day booking settings update failed",
+        );
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("Same-day booking settings could not be saved."),
+        );
+      }
     },
   );
 
@@ -3294,6 +3378,37 @@ function bookingAcceptanceResponse(propertyId: string, acceptanceMode: "instant"
     acceptanceMode,
     instantBook: acceptanceMode === "instant",
   } as const;
+}
+
+function sameDayBookingResponse(
+  settings: Awaited<ReturnType<SameDayBookingSettingsPort["find"]>> & {},
+) {
+  return { contractVersion: "same-day-booking-policy.v1", ...settings } as const;
+}
+
+function sameDayBookingInput(body: unknown) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const value = body as Record<string, unknown>;
+  if (
+    Object.keys(value).length !== 4 ||
+    typeof value.commandId !== "string" ||
+    !value.commandId.trim() ||
+    typeof value.idempotencyKey !== "string" ||
+    !value.idempotencyKey.trim() ||
+    typeof value.enabled !== "boolean" ||
+    !(
+      value.cutoffLocalTime === null ||
+      (typeof value.cutoffLocalTime === "string" &&
+        /^(?:[01]\d|2[0-3]):(?:00|30)$/.test(value.cutoffLocalTime))
+    )
+  )
+    return null;
+  return {
+    commandId: value.commandId,
+    idempotencyKey: value.idempotencyKey,
+    enabled: value.enabled,
+    cutoffLocalTime: value.cutoffLocalTime as string | null,
+  };
 }
 
 async function listCalendarReservationsOverlappingStayRange(
