@@ -259,6 +259,11 @@ are recorded individually while the remaining inventory continues. Public
 objects receive `original_safe`, `large`, `thumbnail`, and `blur_preview` WebP
 variants under `public/media/*`; private attachments receive only a private
 `provider_original` object. Raw S3 endpoints are rejected as CDN configuration.
+Malformed URL fields and non-string media arrays are quarantined as an immutable
+source-value hash plus a reason code; their raw value is never copied. Valid
+media fields on the same row still import. Catalog omits a quarantined field only
+when the same run, source identity, field, reason, and current source-value hash
+all match, so stale evidence cannot suppress a changed legacy value.
 
 Apply only the same reviewed run and configuration:
 

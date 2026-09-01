@@ -2,6 +2,7 @@ import type pg from "pg";
 
 import type {
   ExistingCatalogDomain,
+  ExistingCatalogMediaQuarantine,
   ExistingCatalogMediaObject,
 } from "./productionCatalogPresentationPlan.js";
 import type { CatalogOwnerLink, ExistingCatalogSourceLink } from "./productionCatalogOwnership.js";
@@ -26,6 +27,7 @@ export type ProductionCatalogTargetState = {
   policies: CatalogTargetRow[];
   media: CatalogTargetRow[];
   mediaObjects: ExistingCatalogMediaObject[];
+  mediaQuarantines?: ExistingCatalogMediaQuarantine[];
   ownerRevisions: CatalogOwnerRevision[];
 };
 
@@ -152,6 +154,17 @@ export async function readProductionCatalogTargetState(
      ORDER BY source_system, source_table, source_row_id, purpose`,
     [sourceRunId],
   );
+  const mediaQuarantines = await client.query<ExistingCatalogMediaQuarantine>(
+    `SELECT source_system AS "sourceSystem", source_table AS "sourceTable",
+            source_row_id AS "sourceRowId", purpose, source_field AS "sourceField",
+            source_value_sha256 AS "sourceValueSha256", reason_code AS "reasonCode"
+     FROM platform.production_media_migration_quarantines
+     WHERE source_run_id = $1::text
+       AND source_system IN ('booking', 'marketplace')
+       AND purpose IN ('property.hero_image', 'property.gallery_image', 'property.logo')
+     ORDER BY source_system, source_table, source_row_id, purpose`,
+    [sourceRunId],
+  );
   const ownerRevisions = await client.query<CatalogOwnerRevision>(
     `SELECT property_id::text AS "propertyId", owner_key AS "ownerKey", revision::text
      FROM hotel_catalog.property_owner_revisions
@@ -171,6 +184,7 @@ export async function readProductionCatalogTargetState(
     policies: policies.rows,
     media: media.rows,
     mediaObjects: mediaObjects.rows,
+    mediaQuarantines: mediaQuarantines.rows,
     ownerRevisions: ownerRevisions.rows,
   };
 }

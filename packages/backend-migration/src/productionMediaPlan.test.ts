@@ -26,7 +26,14 @@ describe("production media plan", () => {
     const repeated = buildProductionMediaPlan(input);
 
     expect(first.blockers).toEqual([]);
-    expect(first.counts).toEqual({ planned: 1, pending: 1, reused: 0, public: 1, private: 0 });
+    expect(first.counts).toEqual({
+      planned: 1,
+      pending: 1,
+      reused: 0,
+      quarantined: 0,
+      public: 1,
+      private: 0,
+    });
     expect(first.references[0]).toMatchObject({
       sourceSystem: "booking",
       sourceTable: "booking_hotels",
@@ -250,26 +257,152 @@ describe("production media plan", () => {
     expect(plan.references[0]).toMatchObject({ visibility: "private", publicApproved: false });
   });
 
-  it("reports a bad reference without aborting the inventory scan", () => {
+  it("quarantines a malformed URL and continues valid media later on the same row", () => {
     const input = fixture();
-    input.rows.push(
-      row("booking_addons", {
-        id: "10550000-0000-4000-a000-000000000004",
-        hotel_id: HOTEL,
-        image: "http://legacy-media-test.s3.amazonaws.com/addons/unsafe.jpg",
-        created_at: "2026-08-01T00:00:00Z",
-        updated_at: "2026-08-30T00:00:00Z",
-      }),
-    );
+    input.rows[0]!.data["hero_image"] =
+      "http://legacy-media-test.s3.amazonaws.com/hotels/unsafe.jpg";
+    input.rows[0]!.data["images"] = [LOGO];
 
     const plan = buildProductionMediaPlan(input);
     expect(plan.references).toHaveLength(1);
-    expect(plan.blockers).toContainEqual(
+    expect(plan.references[0]).toMatchObject({
+      sourceRowId: `${HOTEL}:images:1`,
+      sourceUrl: LOGO,
+    });
+    expect(plan.blockers).toEqual([]);
+    expect(plan.quarantines).toEqual([
       expect.objectContaining({
-        code: "INVALID_MEDIA_SOURCE_ROW",
-        source: "booking.booking_addons",
+        sourceSystem: "booking",
+        sourceTable: "booking_hotels",
+        sourceRowId: `${HOTEL}:hero_image`,
+        sourceField: "hero_image",
+        purpose: "property.hero_image",
+        reasonCode: "INVALID_HTTPS_URL",
+        sourceValueSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
       }),
-    );
+    ]);
+    expect(JSON.stringify(plan.quarantines)).not.toContain("unsafe.jpg");
+  });
+
+  it("quarantines a malformed PMS image array without copying its value", () => {
+    const input = fixture();
+    input.rows = [
+      pmsRow("room_types", {
+        id: CREATOR,
+        hotel_id: HOTEL,
+        images: { stale: HERO },
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-30T00:00:00Z",
+      }),
+    ];
+    input.target.propertyLinks = [
+      {
+        sourceSystem: "pms",
+        sourceTable: "hotels",
+        sourceId: HOTEL,
+        propertyId: PROPERTY,
+        relationship: "operational_input",
+        status: "active",
+        migrationRunId: RUN,
+      },
+    ];
+    input.target.resourceLinks = [
+      {
+        organizationId: ORGANIZATION,
+        product: "pms",
+        resourceType: "pms_hotel",
+        resourceId: HOTEL,
+        relationship: "operator",
+        status: "active",
+      },
+    ];
+
+    const plan = buildProductionMediaPlan(input);
+
+    expect(plan.references).toEqual([]);
+    expect(plan.blockers).toEqual([]);
+    expect(plan.quarantines).toEqual([
+      expect.objectContaining({
+        sourceSystem: "pms",
+        sourceTable: "room_types",
+        sourceRowId: `${CREATOR}:images`,
+        sourceField: "images",
+        purpose: "pms.room_type.media",
+        reasonCode: "INVALID_STRING_ARRAY",
+      }),
+    ]);
+    expect(JSON.stringify(plan.quarantines)).not.toContain(HERO);
+  });
+
+  it("prefers a valid PMS S3 key without parsing an unused malformed source URL", () => {
+    const input = fixture();
+    input.rows = [
+      pmsRow("message_threads", { id: COLLABORATION, hotel_id: HOTEL }),
+      pmsRow("messages", { id: MESSAGE, thread_id: COLLABORATION }),
+      pmsRow("message_attachments", {
+        id: CREATOR,
+        message_id: MESSAGE,
+        s3_key: "messages/photo.jpg",
+        source_url: { stale: HERO },
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-30T00:00:00Z",
+      }),
+    ];
+    input.target.propertyLinks = [
+      {
+        sourceSystem: "pms",
+        sourceTable: "hotels",
+        sourceId: HOTEL,
+        propertyId: PROPERTY,
+        relationship: "operational_input",
+        status: "active",
+        migrationRunId: RUN,
+      },
+    ];
+    input.target.resourceLinks = [
+      {
+        organizationId: ORGANIZATION,
+        product: "pms",
+        resourceType: "pms_hotel",
+        resourceId: HOTEL,
+        relationship: "operator",
+        status: "active",
+      },
+    ];
+
+    const plan = buildProductionMediaPlan(input);
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.quarantines).toEqual([]);
+    expect(plan.references).toEqual([
+      expect.objectContaining({
+        sourceField: "s3_key",
+        sourceUrl: "https://legacy-media-test.s3.amazonaws.com/messages/photo.jpg",
+      }),
+    ]);
+
+    input.rows[2]!.data["s3_key"] = null;
+    const fallback = buildProductionMediaPlan(input);
+    expect(fallback.blockers).toEqual([]);
+    expect(fallback.references).toEqual([]);
+    expect(fallback.quarantines).toEqual([
+      expect.objectContaining({
+        sourceRowId: `${CREATOR}:source_url`,
+        sourceField: "source_url",
+        reasonCode: "INVALID_HTTPS_URL",
+      }),
+    ]);
+  });
+
+  it("uses a safe filename fallback for a valid URL with malformed percent escapes", () => {
+    const input = fixture();
+    input.rows[0]!.data["hero_image"] =
+      "https://legacy-media-test.s3.amazonaws.com/hotels/%E0%A4%A";
+
+    const plan = buildProductionMediaPlan(input);
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.references[0]).toMatchObject({ originalFilename: "legacy-media" });
   });
 
   it.each([

@@ -30,6 +30,15 @@ export type ExistingCatalogMediaObject = {
   lifecycleStatus: string;
   publicApproved: boolean;
 };
+export type ExistingCatalogMediaQuarantine = {
+  sourceSystem: CatalogSourceSystem;
+  sourceTable: string;
+  sourceRowId: string;
+  purpose: ExistingCatalogMediaObject["purpose"];
+  sourceField: string;
+  sourceValueSha256: string;
+  reasonCode: "INVALID_HTTPS_URL" | "INVALID_STRING_ARRAY";
+};
 export type PlannedCatalogDomain = ExistingCatalogDomain;
 export type PlannedCatalogMediaAssignment = {
   id: string;
@@ -52,7 +61,11 @@ export function planProductionCatalogPresentation(
   rows: IdentitySourceRow[],
   ownership: CatalogOwnershipPlan,
   content: ProductionCatalogContentPlan,
-  existing: { domains?: ExistingCatalogDomain[]; mediaObjects?: ExistingCatalogMediaObject[] } = {},
+  existing: {
+    domains?: ExistingCatalogDomain[];
+    mediaObjects?: ExistingCatalogMediaObject[];
+    mediaQuarantines?: ExistingCatalogMediaQuarantine[];
+  } = {},
 ): ProductionCatalogPresentationPlan {
   const blockers = [...content.blockers];
   const domains: PlannedCatalogDomain[] = [];
@@ -61,6 +74,9 @@ export function planProductionCatalogPresentation(
   const domainsByHostname = new Map(existingDomains.map((row) => [row.hostname, row]));
   const mediaBySource = new Map(
     (existing.mediaObjects ?? []).map((row) => [mediaSourceKey(row), row]),
+  );
+  const mediaQuarantines = new Map(
+    (existing.mediaQuarantines ?? []).map((row) => [mediaQuarantineKey(row), row]),
   );
 
   for (const group of ownership.properties) {
@@ -139,6 +155,7 @@ export function planProductionCatalogPresentation(
         booking?.updatedAt,
         group.marketplace[0]?.data,
         group.marketplace[0]?.updatedAt,
+        mediaQuarantines,
       );
     } catch (error) {
       addBlocker(
@@ -150,6 +167,15 @@ export function planProductionCatalogPresentation(
       );
     }
     for (const reference of references) {
+      if (
+        quarantineMatches(
+          mediaQuarantines,
+          reference,
+          reference.sourceValueSha256,
+          "INVALID_HTTPS_URL",
+        )
+      )
+        continue;
       const object = mediaBySource.get(mediaSourceKey(reference));
       if (!object) {
         addBlocker(
@@ -217,6 +243,8 @@ type MediaReference = {
   sourceSystem: "booking" | "marketplace";
   sourceTable: "booking_hotels" | "hotel_profiles";
   sourceRowId: string;
+  sourceField: string;
+  sourceValueSha256: string;
   purpose: ExistingCatalogMediaObject["purpose"];
   mediaType: PlannedCatalogMediaAssignment["mediaType"];
   sortOrder: number;
@@ -227,56 +255,110 @@ function mediaReferences(
   bookingUpdatedAt: string | undefined,
   marketplace: Record<string, unknown> | undefined,
   marketplaceUpdatedAt: string | undefined,
+  quarantines: Map<string, ExistingCatalogMediaQuarantine>,
 ): MediaReference[] {
   const result: MediaReference[] = [];
   if (booking) {
     const bookingId = String(booking["id"]);
-    if (optionalText(booking["hero_image"], "hero_image"))
+    if (
+      hasMediaValue(booking["hero_image"], "hero_image", quarantines, {
+        sourceSystem: "booking",
+        sourceTable: "booking_hotels",
+        sourceRowId: `${bookingId}:hero_image`,
+        sourceField: "hero_image",
+        purpose: "property.hero_image",
+      })
+    )
       result.push({
         sourceSystem: "booking",
         sourceTable: "booking_hotels",
         sourceRowId: `${bookingId}:hero_image`,
+        sourceField: "hero_image",
+        sourceValueSha256: mediaValueSha256(booking["hero_image"]),
         purpose: "property.hero_image",
         mediaType: "hero_image",
         sortOrder: 0,
         updatedAt: bookingUpdatedAt!,
       });
     const images = booking["images"];
-    if (images != null && (!Array.isArray(images) || images.some((url) => typeof url !== "string")))
-      throw new Error("booking_hotels.images must be a string array");
-    for (const [index, url] of ((images ?? []) as string[]).entries())
+    let gallery: string[] = [];
+    if (
+      images != null &&
+      (!Array.isArray(images) || images.some((url) => typeof url !== "string"))
+    ) {
+      const quarantine = {
+        sourceSystem: "booking",
+        sourceTable: "booking_hotels",
+        sourceRowId: `${bookingId}:images`,
+        sourceField: "images",
+        purpose: "property.gallery_image",
+      } as const;
+      if (
+        !quarantineMatches(
+          quarantines,
+          quarantine,
+          mediaValueSha256(images),
+          "INVALID_STRING_ARRAY",
+        )
+      )
+        throw new Error("booking_hotels.images must be a string array");
+    } else if (Array.isArray(images)) gallery = images;
+    for (const [index, url] of gallery.entries())
       if (url.trim())
         result.push({
           sourceSystem: "booking",
           sourceTable: "booking_hotels",
           sourceRowId: `${bookingId}:images:${index + 1}`,
+          sourceField: `images[${index}]`,
+          sourceValueSha256: mediaValueSha256(url),
           purpose: "property.gallery_image",
           mediaType: "gallery_image",
           sortOrder: index,
           updatedAt: bookingUpdatedAt!,
         });
-    if (optionalText(booking["branding_logo_url"], "branding_logo_url"))
+    if (
+      hasMediaValue(booking["branding_logo_url"], "branding_logo_url", quarantines, {
+        sourceSystem: "booking",
+        sourceTable: "booking_hotels",
+        sourceRowId: `${bookingId}:branding_logo_url`,
+        sourceField: "branding_logo_url",
+        purpose: "property.logo",
+      })
+    )
       result.push({
         sourceSystem: "booking",
         sourceTable: "booking_hotels",
         sourceRowId: `${bookingId}:branding_logo_url`,
+        sourceField: "branding_logo_url",
+        sourceValueSha256: mediaValueSha256(booking["branding_logo_url"]),
         purpose: "property.logo",
         mediaType: "logo",
         sortOrder: 0,
         updatedAt: bookingUpdatedAt!,
       });
   }
-  if (marketplace && optionalText(marketplace["picture"], "picture")) {
+  if (marketplace) {
     const profileId = String(marketplace["id"]);
-    result.push({
-      sourceSystem: "marketplace",
-      sourceTable: "hotel_profiles",
-      sourceRowId: `${profileId}:picture`,
-      purpose: "property.logo",
-      mediaType: "logo",
-      sortOrder: 1,
-      updatedAt: marketplaceUpdatedAt!,
-    });
+    if (
+      hasMediaValue(marketplace["picture"], "picture", quarantines, {
+        sourceSystem: "marketplace",
+        sourceTable: "hotel_profiles",
+        sourceRowId: `${profileId}:picture`,
+        sourceField: "picture",
+        purpose: "property.logo",
+      })
+    )
+      result.push({
+        sourceSystem: "marketplace",
+        sourceTable: "hotel_profiles",
+        sourceRowId: `${profileId}:picture`,
+        sourceField: "picture",
+        sourceValueSha256: mediaValueSha256(marketplace["picture"]),
+        purpose: "property.logo",
+        mediaType: "logo",
+        sortOrder: 1,
+        updatedAt: marketplaceUpdatedAt!,
+      });
   }
   return result;
 }
@@ -286,6 +368,63 @@ function mediaSourceKey(value: {
   sourceRowId: string;
 }): string {
   return `${value.sourceSystem}:${value.sourceTable}:${value.sourceRowId}`;
+}
+function mediaQuarantineKey(value: {
+  sourceSystem: string;
+  sourceTable: string;
+  sourceRowId: string;
+  purpose: string;
+}): string {
+  return `${mediaSourceKey(value)}:${value.purpose}`;
+}
+function hasMediaValue(
+  value: unknown,
+  field: string,
+  quarantines: Map<string, ExistingCatalogMediaQuarantine>,
+  identity: {
+    sourceSystem: string;
+    sourceTable: string;
+    sourceRowId: string;
+    sourceField: string;
+    purpose: string;
+  },
+): boolean {
+  try {
+    return Boolean(optionalText(value, field));
+  } catch (error) {
+    if (
+      quarantineMatches(
+        quarantines,
+        identity,
+        mediaValueSha256(value),
+        "INVALID_HTTPS_URL",
+      )
+    )
+      return false;
+    throw error;
+  }
+}
+function quarantineMatches(
+  quarantines: Map<string, ExistingCatalogMediaQuarantine>,
+  identity: {
+    sourceSystem: string;
+    sourceTable: string;
+    sourceRowId: string;
+    sourceField: string;
+    purpose: string;
+  },
+  sourceValueSha256: string,
+  reasonCode: ExistingCatalogMediaQuarantine["reasonCode"],
+): boolean {
+  const quarantine = quarantines.get(mediaQuarantineKey(identity));
+  return (
+    quarantine?.sourceField === identity.sourceField &&
+    quarantine.sourceValueSha256 === sourceValueSha256 &&
+    quarantine.reasonCode === reasonCode
+  );
+}
+function mediaValueSha256(value: unknown): string {
+  return createHash("sha256").update(stableJson({ value })).digest("hex");
 }
 function validHostname(value: string): boolean {
   return (

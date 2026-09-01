@@ -27,6 +27,7 @@ const HOTEL_USER = "10550000-0000-4000-a000-000000000026";
 const CREATOR_ORGANIZATION = "10550000-0000-4000-a000-000000000027";
 const COLLABORATION = "10550000-0000-4000-a000-000000000028";
 const MESSAGE = "10550000-0000-4000-a000-000000000029";
+const ADDON = "10550000-0000-4000-a000-000000000030";
 
 describe.skipIf(!URL)("production media migration (PostgreSQL)", () => {
   let client: pg.Client;
@@ -39,6 +40,18 @@ describe.skipIf(!URL)("production media migration (PostgreSQL)", () => {
   });
 
   afterAll(async () => {
+    await client.query(
+      `ALTER TABLE platform.production_media_migration_quarantines
+       DISABLE TRIGGER trg_production_media_migration_quarantines_immutable`,
+    );
+    await client.query(
+      "DELETE FROM platform.production_media_migration_quarantines WHERE source_run_id=$1",
+      [RUN],
+    );
+    await client.query(
+      `ALTER TABLE platform.production_media_migration_quarantines
+       ENABLE TRIGGER trg_production_media_migration_quarantines_immutable`,
+    );
     await client.query(
       "DELETE FROM platform.production_media_migration_runs WHERE source_run_id=$1",
       [RUN],
@@ -64,6 +77,7 @@ describe.skipIf(!URL)("production media migration (PostgreSQL)", () => {
 
   it("records a missing object, resumes it, and never uploads the completed item twice", async () => {
     let failGallery = true;
+    let quarantinedValue = "http://legacy-media-test.s3.amazonaws.com/addons/stale.jpg";
     const importedIds: string[] = [];
     const storage = {
       importReference: vi.fn(async (reference: ProductionMediaReference) => {
@@ -76,21 +90,30 @@ describe.skipIf(!URL)("production media migration (PostgreSQL)", () => {
     const services = {
       readSnapshot: vi.fn(async () => ({
         completedAt: "2026-08-30T00:00:00.000Z",
-        rows: sourceRows(),
+        rows: sourceRows(quarantinedValue),
       })),
       storage,
     };
 
     const first = await runProductionMediaMigration(config(), services);
     expect(first.blockers.map((blocker) => blocker.code)).toEqual(["MEDIA_SOURCE_MISSING"]);
-    expect(first).toMatchObject({ applied: false, counts: { completed: 2, missing: 1 } });
+    expect(first).toMatchObject({
+      applied: false,
+      counts: { completed: 2, missing: 1, quarantined: 1 },
+      quarantines: [
+        expect.objectContaining({
+          sourceRowId: `${ADDON}:image`,
+          reasonCode: "INVALID_HTTPS_URL",
+        }),
+      ],
+    });
     expect(importedIds).toHaveLength(2);
 
     failGallery = false;
     const resumed = await runProductionMediaMigration(config(), services);
     expect(resumed).toMatchObject({
       applied: true,
-      counts: { completed: 3, missing: 0, corrupt: 0, failed: 0 },
+      counts: { completed: 3, missing: 0, corrupt: 0, failed: 0, quarantined: 1 },
       blockers: [],
     });
     expect(importedIds).toHaveLength(3);
@@ -100,6 +123,9 @@ describe.skipIf(!URL)("production media migration (PostgreSQL)", () => {
       status: string;
       planned: number;
       completed: number;
+      quarantined: number;
+      quarantineRows: number;
+      quarantineRedacted: boolean;
       objects: number;
       variants: number;
       chatOwner: string;
@@ -109,6 +135,14 @@ describe.skipIf(!URL)("production media migration (PostgreSQL)", () => {
       `SELECT run.status,
               run.planned_count AS planned,
               run.completed_count AS completed,
+              run.quarantined_count AS quarantined,
+              (SELECT count(*)::int FROM platform.production_media_migration_quarantines
+                WHERE source_run_id=$1) AS "quarantineRows",
+              (SELECT bool_and(source_value_sha256 ~ '^[0-9a-f]{64}$'
+                               AND length(source_field) > 0
+                               AND length(reason_code) > 0)
+                 FROM platform.production_media_migration_quarantines
+                WHERE source_run_id=$1) AS "quarantineRedacted",
               (SELECT count(*)::int FROM platform.media_objects
                 WHERE source_metadata ->> 'migrationRunId'=$1) AS objects,
               (SELECT count(*)::int FROM platform.media_variants variant
@@ -131,12 +165,43 @@ describe.skipIf(!URL)("production media migration (PostgreSQL)", () => {
       status: "completed",
       planned: 3,
       completed: 3,
+      quarantined: 1,
+      quarantineRows: 1,
+      quarantineRedacted: true,
       objects: 3,
       variants: 9,
       chatOwner: CREATOR_ORGANIZATION,
       chatRetainedUntil: "2028-08-01 00:00:00+00",
       chatMigrationCase: "media-url-migration",
     });
+
+    await expect(
+      client.query(
+        `UPDATE platform.production_media_migration_quarantines
+            SET source_value_sha256=$2
+          WHERE source_run_id=$1`,
+        [RUN, "b".repeat(64)],
+      ),
+    ).rejects.toThrow("quarantine evidence is immutable");
+    await expect(
+      client.query(
+        "DELETE FROM platform.production_media_migration_quarantines WHERE source_run_id=$1",
+        [RUN],
+      ),
+    ).rejects.toThrow("quarantine evidence is immutable");
+    await expect(
+      client.query("TRUNCATE platform.production_media_migration_quarantines"),
+    ).rejects.toThrow("quarantine evidence is immutable");
+    await expect(
+      client.query("DELETE FROM platform.production_media_migration_runs WHERE source_run_id=$1", [
+        RUN,
+      ]),
+    ).rejects.toThrow("violates foreign key constraint");
+
+    quarantinedValue = "ftp://legacy-media-test/addons/different-stale.jpg";
+    await expect(runProductionMediaMigration(config(), services)).rejects.toThrow(
+      "different immutable inputs",
+    );
   });
 });
 
@@ -152,7 +217,7 @@ function config(): ProductionMediaMigrationConfig {
   };
 }
 
-function sourceRows(): IdentitySourceRow[] {
+function sourceRows(quarantinedValue: string): IdentitySourceRow[] {
   return [
     {
       sourceDatabase: "booking",
@@ -167,27 +232,39 @@ function sourceRows(): IdentitySourceRow[] {
       },
     },
     {
+      sourceDatabase: "booking",
+      sourceTable: "booking_addons",
+      rowOrdinal: 2,
+      data: {
+        id: ADDON,
+        hotel_id: HOTEL,
+        image: quarantinedValue,
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-30T00:00:00Z",
+      },
+    },
+    {
       sourceDatabase: "marketplace",
       sourceTable: "hotel_profiles",
-      rowOrdinal: 2,
+      rowOrdinal: 3,
       data: { id: HOTEL, user_id: HOTEL_USER },
     },
     {
       sourceDatabase: "marketplace",
       sourceTable: "creators",
-      rowOrdinal: 3,
+      rowOrdinal: 4,
       data: { id: CREATOR, user_id: CREATOR_USER },
     },
     {
       sourceDatabase: "marketplace",
       sourceTable: "collaborations",
-      rowOrdinal: 4,
+      rowOrdinal: 5,
       data: { id: COLLABORATION, hotel_id: HOTEL, creator_id: CREATOR },
     },
     {
       sourceDatabase: "marketplace",
       sourceTable: "chat_messages",
-      rowOrdinal: 5,
+      rowOrdinal: 6,
       data: {
         id: MESSAGE,
         collaboration_id: COLLABORATION,
