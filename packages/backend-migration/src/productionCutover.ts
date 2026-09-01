@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 
 import pg from "pg";
 
+import {
+  DatabaseAttestationError,
+  readDatabaseAttestationTable,
+  resolveDatabaseAttestation,
+} from "./databaseAttestation.js";
 import { normalizePgConnectionString } from "./pgConnection.js";
 import {
   runProductionBookingMigration,
@@ -298,6 +303,15 @@ SELECT
   max(substring(setting FROM length('vayada.target_backup_proof_sha256=') + 1))
     FILTER (WHERE setting LIKE 'vayada.target_backup_proof_sha256=%') AS "backupProofSha256"
 FROM database_settings`;
+
+const TARGET_ATTESTATION_KEYS = {
+  environment: "vayada.target_environment",
+  targetIdentitySha256: "vayada.target_identity_sha256",
+  cleanRunId: "vayada.target_clean_run_id",
+  cleanProofSha256: "vayada.target_clean_proof_sha256",
+  applicationRelease: "vayada.target_application_release",
+  backupProofSha256: "vayada.target_backup_proof_sha256",
+} as const;
 
 export class ProductionCutoverError extends Error {
   constructor(
@@ -737,10 +751,45 @@ async function readTargetCutoverAttestation(
   client: pg.Client,
   config: ProductionCutoverConfig,
 ): Promise<TargetCutoverAttestation> {
-  const result = await client.query<TargetCutoverAttestation>(TARGET_CUTOVER_ATTESTATION_SQL);
-  const attestation = result.rows[0];
+  const result = await client.query<Partial<TargetCutoverAttestation>>(
+    TARGET_CUTOVER_ATTESTATION_SQL,
+  );
+  const settings = result.rows[0] ?? {};
+  let resolved: Record<string, string | null>;
+  try {
+    const table = await readDatabaseAttestationTable(client);
+    resolved = resolveDatabaseAttestation(
+      {
+        [TARGET_ATTESTATION_KEYS.environment]: settings.environment ?? null,
+        [TARGET_ATTESTATION_KEYS.targetIdentitySha256]: settings.targetIdentitySha256 ?? null,
+        [TARGET_ATTESTATION_KEYS.cleanRunId]: settings.cleanRunId ?? null,
+        [TARGET_ATTESTATION_KEYS.cleanProofSha256]: settings.cleanProofSha256 ?? null,
+        [TARGET_ATTESTATION_KEYS.applicationRelease]: settings.applicationRelease ?? null,
+        [TARGET_ATTESTATION_KEYS.backupProofSha256]: settings.backupProofSha256 ?? null,
+      },
+      table,
+      Object.values(TARGET_ATTESTATION_KEYS),
+    );
+  } catch (error) {
+    if (error instanceof DatabaseAttestationError) {
+      throw new ProductionCutoverError(
+        error.code === "DISAGREEMENT"
+          ? "TARGET_ATTESTATION_DISAGREEMENT"
+          : "UNTRUSTED_TARGET_ATTESTATION",
+        "Target database attestation is not trustworthy",
+      );
+    }
+    throw error;
+  }
+  const attestation = {
+    environment: resolved[TARGET_ATTESTATION_KEYS.environment],
+    targetIdentitySha256: resolved[TARGET_ATTESTATION_KEYS.targetIdentitySha256],
+    cleanRunId: resolved[TARGET_ATTESTATION_KEYS.cleanRunId],
+    cleanProofSha256: resolved[TARGET_ATTESTATION_KEYS.cleanProofSha256],
+    applicationRelease: resolved[TARGET_ATTESTATION_KEYS.applicationRelease],
+    backupProofSha256: resolved[TARGET_ATTESTATION_KEYS.backupProofSha256],
+  };
   if (
-    !attestation ||
     !isSha256(attestation.targetIdentitySha256) ||
     attestation.environment !== config.environment ||
     attestation.cleanRunId !== config.runId ||
@@ -753,7 +802,7 @@ async function readTargetCutoverAttestation(
       "TARGET_ATTESTATION_MISMATCH",
       "Target database attestation does not match this cutover run",
     );
-  return attestation;
+  return attestation as TargetCutoverAttestation;
 }
 
 function validateSmokeReport(

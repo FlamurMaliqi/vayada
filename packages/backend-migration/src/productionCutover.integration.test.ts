@@ -4,6 +4,11 @@ import pg from "pg";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  DATABASE_ATTESTATION_OWNER,
+  DATABASE_ATTESTATION_SCHEMA,
+  DATABASE_ATTESTATION_TABLE,
+} from "./databaseAttestation.js";
+import {
   abortProductionCutover,
   PRODUCTION_CUTOVER_LOCK_ID,
   PRODUCTION_CUTOVER_STEPS,
@@ -29,6 +34,8 @@ const SHA = "d".repeat(64);
 const TARGET_IDENTITY_SHA = "9".repeat(64);
 const RELEASE = "c".repeat(40);
 const APPROVED_RUN_ID = `vay1360-${"7".repeat(24)}`;
+const ATTESTATION_READER_ROLE = "vayada_attestation_reader_test";
+const ATTESTATION_WRITER_ROLE = "vayada_attestation_writer_test";
 
 describe.skipIf(!URL)("production cutover orchestration (PostgreSQL)", () => {
   beforeEach(async () => {
@@ -250,6 +257,93 @@ describe.skipIf(!URL)("production cutover orchestration (PostgreSQL)", () => {
     ).rejects.toMatchObject({ code: "TARGET_ATTESTATION_MISMATCH" });
     expect(calls).toEqual([]);
   });
+
+  it("accepts administrator-owned RDS table evidence through a SELECT-only target role", async () => {
+    const calls: string[] = [];
+    const input = config(runId("0"));
+    const restrictedUrl = await attestTargetTable(input);
+    const report = await runProductionCutover(
+      { ...input, connectionString: restrictedUrl },
+      successfulServices(calls),
+    );
+
+    expect(report.status).toBe("awaiting_smoke");
+    expect(calls).toContain("parity");
+  });
+
+  it("rejects disagreement between database settings and RDS table evidence", async () => {
+    const calls: string[] = [];
+    const input = config(runId("d"));
+    const restrictedUrl = await attestTargetTable(input);
+    await setDatabaseAttestationSetting(
+      input.connectionString,
+      "vayada.target_environment",
+      "production",
+    );
+
+    await expect(
+      runProductionCutover(
+        { ...input, connectionString: restrictedUrl },
+        successfulServices(calls),
+      ),
+    ).rejects.toMatchObject({ code: "TARGET_ATTESTATION_DISAGREEMENT" });
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects RDS table evidence reached through SET ROLE", async () => {
+    const calls: string[] = [];
+    const input = config(runId("e"));
+    await attestTargetTable(input);
+    const setRoleUrl = new globalThis.URL(input.connectionString);
+    setRoleUrl.searchParams.set("options", `-c role=${ATTESTATION_READER_ROLE}`);
+
+    await expect(
+      runProductionCutover(
+        { ...input, connectionString: setRoleUrl.toString() },
+        successfulServices(calls),
+      ),
+    ).rejects.toMatchObject({ code: "UNTRUSTED_TARGET_ATTESTATION" });
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects a SELECT-only login that can assume an evidence-writer role", async () => {
+    const calls: string[] = [];
+    const input = config(runId("f"));
+    const restrictedUrl = await attestTargetTable(input);
+    await grantAssumableEvidenceWriter(input.connectionString);
+
+    await expect(
+      runProductionCutover(
+        { ...input, connectionString: restrictedUrl },
+        successfulServices(calls),
+      ),
+    ).rejects.toMatchObject({ code: "UNTRUSTED_TARGET_ATTESTATION" });
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    "wrong_owner",
+    "rls",
+    "malformed",
+    "owner_function",
+    "secdef_writer",
+    "cascade_fk",
+  ] as const)(
+    "rejects an administrator evidence table with an unsafe %s contract",
+    async (variant) => {
+      const calls: string[] = [];
+      const input = config(runId("f"));
+      const restrictedUrl = await attestTargetTable(input, variant);
+
+      await expect(
+        runProductionCutover(
+          { ...input, connectionString: restrictedUrl },
+          successfulServices(calls),
+        ),
+      ).rejects.toMatchObject({ code: "UNTRUSTED_TARGET_ATTESTATION" });
+      expect(calls).toEqual([]);
+    },
+  );
 
   it("keeps an invalid smoke artifact in the awaiting-smoke state", async () => {
     const input = config(runId("9"));
@@ -617,6 +711,208 @@ async function attestTarget(
   }
 }
 
+async function attestTargetTable(
+  input: ProductionCutoverConfig,
+  variant:
+    | "trusted"
+    | "wrong_owner"
+    | "rls"
+    | "malformed"
+    | "owner_function"
+    | "secdef_writer"
+    | "cascade_fk" = "trusted",
+): Promise<string> {
+  const databaseName = new globalThis.URL(input.connectionString).pathname.replace(/^\//, "");
+  if (!/^[a-z_][a-z0-9_]*$/.test(databaseName)) throw new Error("Unsafe test database name");
+  const password = "vayada-attestation-reader-test";
+  const adminRole = decodeURIComponent(new globalThis.URL(input.connectionString).username);
+  if (!/^[a-z_][a-z0-9_]*$/.test(adminRole)) throw new Error("Unsafe test admin role");
+  const values = {
+    "vayada.target_environment": input.environment,
+    "vayada.target_identity_sha256": TARGET_IDENTITY_SHA,
+    "vayada.target_clean_run_id": input.runId,
+    "vayada.target_clean_proof_sha256": input.targetCleanProofSha256,
+    "vayada.target_application_release": input.applicationRelease,
+  };
+  const client = new pg.Client({ connectionString: input.connectionString });
+  await client.connect();
+  try {
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '${DATABASE_ATTESTATION_OWNER}'
+        ) THEN
+          CREATE ROLE ${DATABASE_ATTESTATION_OWNER} NOLOGIN
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '${ATTESTATION_READER_ROLE}'
+        ) THEN
+          CREATE ROLE ${ATTESTATION_READER_ROLE} LOGIN PASSWORD '${password}'
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '${ATTESTATION_WRITER_ROLE}'
+        ) THEN
+          CREATE ROLE ${ATTESTATION_WRITER_ROLE} NOLOGIN
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+        END IF;
+      END $$`);
+    await client.query(
+      `GRANT ${DATABASE_ATTESTATION_OWNER} TO ${adminRole} WITH INHERIT FALSE, SET TRUE`,
+    );
+    await client.query(
+      variant === "wrong_owner"
+        ? `CREATE SCHEMA ${DATABASE_ATTESTATION_SCHEMA}`
+        : `CREATE SCHEMA ${DATABASE_ATTESTATION_SCHEMA}
+           AUTHORIZATION ${DATABASE_ATTESTATION_OWNER}`,
+    );
+    if (variant !== "wrong_owner") await client.query(`SET ROLE ${DATABASE_ATTESTATION_OWNER}`);
+    await client.query(
+      variant === "malformed"
+        ? `CREATE TABLE ${DATABASE_ATTESTATION_SCHEMA}.${DATABASE_ATTESTATION_TABLE} (
+             attestation_key text PRIMARY KEY,
+             attestation_value text NOT NULL
+           )`
+        : `CREATE TABLE ${DATABASE_ATTESTATION_SCHEMA}.${DATABASE_ATTESTATION_TABLE} (
+             attestation_key text PRIMARY KEY,
+             attestation_value text NOT NULL,
+             attested_at timestamptz NOT NULL DEFAULT now()
+           )`,
+    );
+    for (const [key, value] of Object.entries(values)) {
+      await client.query(
+        `INSERT INTO ${DATABASE_ATTESTATION_SCHEMA}.${DATABASE_ATTESTATION_TABLE}
+           (attestation_key, attestation_value) VALUES ($1, $2)`,
+        [key, value],
+      );
+    }
+    if (variant === "rls") {
+      await client.query(
+        `ALTER TABLE ${DATABASE_ATTESTATION_SCHEMA}.${DATABASE_ATTESTATION_TABLE}
+         ENABLE ROW LEVEL SECURITY`,
+      );
+    }
+    if (variant === "owner_function") {
+      await client.query(`
+        CREATE FUNCTION ${DATABASE_ATTESTATION_SCHEMA}.rewrite_attestation()
+        RETURNS void LANGUAGE sql SECURITY DEFINER
+        AS 'UPDATE ${DATABASE_ATTESTATION_SCHEMA}.${DATABASE_ATTESTATION_TABLE}
+            SET attestation_value = attestation_value'`);
+    }
+    if (variant === "secdef_writer") {
+      await client.query(
+        `GRANT UPDATE ON ${DATABASE_ATTESTATION_SCHEMA}.${DATABASE_ATTESTATION_TABLE}
+         TO ${ATTESTATION_WRITER_ROLE}`,
+      );
+    }
+    if (variant === "cascade_fk") {
+      await client.query(`
+        CREATE TABLE ${DATABASE_ATTESTATION_SCHEMA}.attestation_parents (
+          attestation_value text PRIMARY KEY
+        );
+        INSERT INTO ${DATABASE_ATTESTATION_SCHEMA}.attestation_parents(attestation_value)
+          SELECT DISTINCT attestation_value
+          FROM ${DATABASE_ATTESTATION_SCHEMA}.${DATABASE_ATTESTATION_TABLE};
+        ALTER TABLE ${DATABASE_ATTESTATION_SCHEMA}.${DATABASE_ATTESTATION_TABLE}
+          ADD CONSTRAINT fk_database_attestation_value
+          FOREIGN KEY (attestation_value)
+          REFERENCES ${DATABASE_ATTESTATION_SCHEMA}.attestation_parents(attestation_value)
+          ON UPDATE CASCADE ON DELETE CASCADE`);
+    }
+    if (variant !== "wrong_owner") await client.query("RESET ROLE");
+    await client.query(`REVOKE ALL ON SCHEMA ${DATABASE_ATTESTATION_SCHEMA} FROM PUBLIC`);
+    await client.query(
+      `REVOKE ALL ON ${DATABASE_ATTESTATION_SCHEMA}.${DATABASE_ATTESTATION_TABLE} FROM PUBLIC`,
+    );
+    await client.query(
+      `GRANT USAGE ON SCHEMA ${DATABASE_ATTESTATION_SCHEMA} TO ${ATTESTATION_READER_ROLE}`,
+    );
+    await client.query(
+      `GRANT SELECT ON ${DATABASE_ATTESTATION_SCHEMA}.${DATABASE_ATTESTATION_TABLE}
+       TO ${ATTESTATION_READER_ROLE}`,
+    );
+    await client.query(`GRANT USAGE ON SCHEMA platform TO ${ATTESTATION_READER_ROLE}`);
+    await client.query(
+      `GRANT SELECT, INSERT, UPDATE, DELETE ON
+         platform.production_cutover_runs, platform.production_cutover_steps
+       TO ${ATTESTATION_READER_ROLE}`,
+    );
+    if (variant === "secdef_writer") {
+      await client.query(`
+        CREATE FUNCTION public.rewrite_vayada_attestation_test()
+        RETURNS void LANGUAGE sql SECURITY DEFINER
+        AS 'UPDATE ${DATABASE_ATTESTATION_SCHEMA}.${DATABASE_ATTESTATION_TABLE}
+            SET attestation_value = attestation_value';
+        ALTER FUNCTION public.rewrite_vayada_attestation_test()
+          OWNER TO ${ATTESTATION_WRITER_ROLE};
+        GRANT EXECUTE ON FUNCTION public.rewrite_vayada_attestation_test()
+          TO ${ATTESTATION_READER_ROLE}`);
+    }
+    if (variant === "cascade_fk") {
+      await client.query(
+        `GRANT SELECT, UPDATE, DELETE
+         ON ${DATABASE_ATTESTATION_SCHEMA}.attestation_parents
+         TO ${ATTESTATION_READER_ROLE}`,
+      );
+    }
+    for (const key of Object.keys(values)) {
+      await client.query(`ALTER DATABASE "${databaseName}" RESET ${key}`);
+    }
+  } finally {
+    await client.end();
+  }
+  const restricted = new globalThis.URL(input.connectionString);
+  restricted.username = ATTESTATION_READER_ROLE;
+  restricted.password = password;
+  return restricted.toString();
+}
+
+async function grantAssumableEvidenceWriter(connectionString: string): Promise<void> {
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+  try {
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '${ATTESTATION_WRITER_ROLE}'
+        ) THEN
+          CREATE ROLE ${ATTESTATION_WRITER_ROLE} NOLOGIN
+            NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+        END IF;
+      END $$`);
+    await client.query(
+      `GRANT UPDATE ON ${DATABASE_ATTESTATION_SCHEMA}.${DATABASE_ATTESTATION_TABLE}
+       TO ${ATTESTATION_WRITER_ROLE}`,
+    );
+    await client.query(
+      `GRANT ${ATTESTATION_WRITER_ROLE} TO ${ATTESTATION_READER_ROLE}
+       WITH INHERIT FALSE, SET TRUE`,
+    );
+  } finally {
+    await client.end();
+  }
+}
+
+async function setDatabaseAttestationSetting(
+  connectionString: string,
+  key: string,
+  value: string,
+): Promise<void> {
+  if (!/^[a-z0-9_.]+$/.test(key) || !/^[a-z0-9_.:-]+$/.test(value)) {
+    throw new Error("Unsafe test attestation setting");
+  }
+  const databaseName = new globalThis.URL(connectionString).pathname.replace(/^\//, "");
+  if (!/^[a-z_][a-z0-9_]*$/.test(databaseName)) throw new Error("Unsafe test database name");
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+  try {
+    await client.query(`ALTER DATABASE "${databaseName}" SET ${key} TO '${value}'`);
+  } finally {
+    await client.end();
+  }
+}
+
 async function createCleanTargetDatabase(): Promise<string> {
   const adminUrl = new globalThis.URL(URL!);
   const baseName = adminUrl.pathname.replace(/^\//, "");
@@ -668,6 +964,18 @@ async function hasOrchestrationTable(connectionString: string): Promise<boolean>
 }
 
 async function cleanup(client: pg.Client) {
+  await client.query("DROP FUNCTION IF EXISTS public.rewrite_vayada_attestation_test()");
+  await client.query(`
+    DO $$ BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '${ATTESTATION_WRITER_ROLE}'
+      ) AND EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '${ATTESTATION_READER_ROLE}'
+      ) THEN
+        REVOKE ${ATTESTATION_WRITER_ROLE} FROM ${ATTESTATION_READER_ROLE};
+      END IF;
+    END $$`);
+  await client.query(`DROP SCHEMA IF EXISTS ${DATABASE_ATTESTATION_SCHEMA} CASCADE`);
   await client.query(
     "DELETE FROM platform.production_cutover_steps WHERE run_id LIKE 'vay1360-fffffffffffffffffffffff%'",
   );

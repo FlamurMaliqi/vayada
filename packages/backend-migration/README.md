@@ -84,9 +84,9 @@ reviewed `cutoverFreezeProofSha256` in the manifest and the matching
 `--cutover-freeze-proof-sha256` argument.
 
 Before opening the read-only extractor connections, attest each restored source
-with database-level settings applied by its administrator. The extractor reads
-the settings from `pg_db_role_setting`, so session parameters cannot impersonate
-another snapshot:
+with durable evidence applied by its administrator. On PostgreSQL installations
+that allow custom database settings, the existing `pg_db_role_setting` path is
+still supported; session parameters cannot impersonate another snapshot:
 
 ```sql
 ALTER DATABASE <source_database>
@@ -95,6 +95,57 @@ ALTER DATABASE <source_database>
 ALTER DATABASE <source_database>
   SET vayada.cutover_freeze_proof_sha256 TO '<reviewed-sha256>';
 ```
+
+AWS RDS administrators cannot set arbitrary custom database parameters. Use the
+evidence table there, owned by the dedicated `NOLOGIN`
+`vayada_migration_attestor` role, and connect the extractor with a dedicated
+login (not `SET ROLE`). Create the attestor once per RDS cluster. Its grant to
+the database administrator must be non-inherited so administrator-owned
+`SECURITY DEFINER` functions cannot inherit evidence-write access:
+
+```sql
+CREATE ROLE vayada_migration_attestor NOLOGIN
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+GRANT vayada_migration_attestor TO <database_admin> WITH INHERIT FALSE, SET TRUE;
+
+CREATE ROLE <migration_reader> LOGIN PASSWORD '<generated-secret>'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+REVOKE CREATE ON DATABASE <source_database> FROM <migration_reader>;
+
+CREATE SCHEMA vayada_migration_evidence AUTHORIZATION vayada_migration_attestor;
+SET ROLE vayada_migration_attestor;
+REVOKE ALL ON SCHEMA vayada_migration_evidence FROM PUBLIC;
+CREATE TABLE vayada_migration_evidence.database_attestations (
+  attestation_key text PRIMARY KEY,
+  attestation_value text NOT NULL,
+  attested_at timestamptz NOT NULL DEFAULT now()
+);
+REVOKE ALL ON vayada_migration_evidence.database_attestations FROM PUBLIC;
+INSERT INTO vayada_migration_evidence.database_attestations
+  (attestation_key, attestation_value)
+VALUES
+  ('vayada.source_snapshot_identifier', '<reviewed-snapshot-identifier>'),
+  ('vayada.cutover_freeze_proof_sha256', '<reviewed-sha256>');
+GRANT USAGE ON SCHEMA vayada_migration_evidence TO <migration_reader>;
+GRANT SELECT ON vayada_migration_evidence.database_attestations TO <migration_reader>;
+RESET ROLE;
+
+GRANT CONNECT ON DATABASE <source_database> TO <migration_reader>;
+GRANT USAGE ON SCHEMA <reviewed_schema> TO <migration_reader>;
+GRANT SELECT ON <reviewed_schema>.<reviewed_table> TO <migration_reader>;
+```
+
+Omit the freeze-proof row only when the reviewed manifest has no freeze proof.
+Repeat the final two grants for every reviewed schema and active source table;
+do not use all-table grants. The extractor rejects a wrong owner, any
+evidence-write ACL outside the attestor, inherited attestor membership, an
+assumable writer role, a `SET ROLE` connection, callable `SECURITY DEFINER`
+code whose owner can mutate the evidence, RLS, partitions/inheritance, extra
+constraints or triggers (including cascading foreign keys), malformed columns
+or primary key, duplicate keys, and any disagreement between the table and
+database settings. The auxiliary evidence schema is deliberately excluded from
+the reviewed legacy schema fingerprint; all legacy application schemas remain
+fingerprinted.
 
 ## Production Identity Migration
 
@@ -504,10 +555,10 @@ The trusted runtime `APPLICATION_RELEASE` or `GIT_SHA` must exactly equal
 staging/staging, dry-run uses preprod/preprod, and production uses
 production/preprod.
 
-Before a run, a database administrator must bind the target itself with
-database-level settings. The command reads these only from
-`pg_catalog.pg_db_role_setting` for the current database and role `0`; session
-options cannot spoof them:
+Before a run, a database administrator must bind the target itself with durable
+evidence. The database-level settings path remains supported where available;
+the command reads it only from `pg_catalog.pg_db_role_setting` for the current
+database and role `0`, so session options cannot spoof it:
 
 ```sql
 ALTER DATABASE <target_database> SET vayada.target_environment TO '<environment>';
@@ -517,11 +568,32 @@ ALTER DATABASE <target_database> SET vayada.target_clean_proof_sha256 TO '<clean
 ALTER DATABASE <target_database> SET vayada.target_application_release TO '<deployed full Git SHA>';
 ```
 
+On AWS RDS, create the same dedicated-owner evidence table shown above in
+the target database through `SET ROLE vayada_migration_attestor`, grant the
+cutover role only `USAGE` and `SELECT` on that schema/table, and insert these
+keys while the attestor role is active:
+
+```sql
+SET ROLE vayada_migration_attestor;
+INSERT INTO vayada_migration_evidence.database_attestations
+  (attestation_key, attestation_value)
+VALUES
+  ('vayada.target_environment', '<environment>'),
+  ('vayada.target_identity_sha256', '<stable target SHA-256>'),
+  ('vayada.target_clean_run_id', '<vay1360 run ID>'),
+  ('vayada.target_clean_proof_sha256', '<clean-target evidence SHA-256>'),
+  ('vayada.target_application_release', '<deployed full Git SHA>');
+GRANT USAGE ON SCHEMA vayada_migration_evidence TO <cutover_role>;
+GRANT SELECT ON vayada_migration_evidence.database_attestations TO <cutover_role>;
+RESET ROLE;
+```
+
 Production additionally requires
-`vayada.target_backup_proof_sha256` to equal the reviewed
+`vayada.target_backup_proof_sha256` in the same durable trust path to equal the reviewed
 `--backup-proof-sha256`. A wrong database, environment, run, release, clean
 proof, or production backup proof fails before the advisory lock or any
-migration service runs.
+migration service runs. If both durable trust paths are populated, every shared
+value must agree exactly.
 
 Run staging and the isolated pre-production dry-run with confirmations bound to
 the exact orchestration and source run IDs:

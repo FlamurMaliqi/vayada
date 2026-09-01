@@ -236,7 +236,7 @@ WITH schema_items AS (
   SELECT format('relation|%s|%s|%s', n.nspname, c.relname, c.relkind) AS item
   FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-  WHERE n.nspname NOT IN ('information_schema', 'pg_catalog')
+  WHERE n.nspname NOT IN ('information_schema', 'pg_catalog', 'vayada_migration_evidence')
     AND n.nspname !~ '^pg_toast'
   UNION ALL
   SELECT format('column|%s|%s|%s|%s|%s|%s', n.nspname, c.relname, a.attname,
@@ -247,7 +247,7 @@ WITH schema_items AS (
   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
   LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
   WHERE a.attnum > 0 AND NOT a.attisdropped
-    AND n.nspname NOT IN ('information_schema', 'pg_catalog')
+    AND n.nspname NOT IN ('information_schema', 'pg_catalog', 'vayada_migration_evidence')
     AND n.nspname !~ '^pg_toast'
   UNION ALL
   SELECT format('constraint|%s|%s|%s|%s', n.nspname, c.relname, x.conname,
@@ -255,18 +255,18 @@ WITH schema_items AS (
   FROM pg_catalog.pg_constraint x
   JOIN pg_catalog.pg_class c ON c.oid = x.conrelid
   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-  WHERE n.nspname NOT IN ('information_schema', 'pg_catalog')
+  WHERE n.nspname NOT IN ('information_schema', 'pg_catalog', 'vayada_migration_evidence')
   UNION ALL
   SELECT format('index|%s|%s|%s', schemaname, indexname, indexdef)
   FROM pg_catalog.pg_indexes
-  WHERE schemaname NOT IN ('information_schema', 'pg_catalog')
+  WHERE schemaname NOT IN ('information_schema', 'pg_catalog', 'vayada_migration_evidence')
   UNION ALL
   SELECT format('view|%s|%s|%s', n.nspname, c.relname,
                 pg_catalog.pg_get_viewdef(c.oid, true))
   FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
   WHERE c.relkind IN ('v', 'm')
-    AND n.nspname NOT IN ('information_schema', 'pg_catalog')
+    AND n.nspname NOT IN ('information_schema', 'pg_catalog', 'vayada_migration_evidence')
   UNION ALL
   SELECT format('sequence|%s|%s|%s|%s|%s|%s|%s|%s|%s', n.nspname, c.relname,
                 s.seqtypid::regtype, s.seqstart, s.seqincrement, s.seqmax,
@@ -274,13 +274,13 @@ WITH schema_items AS (
   FROM pg_catalog.pg_sequence s
   JOIN pg_catalog.pg_class c ON c.oid = s.seqrelid
   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-  WHERE n.nspname NOT IN ('information_schema', 'pg_catalog')
+  WHERE n.nspname NOT IN ('information_schema', 'pg_catalog', 'vayada_migration_evidence')
   UNION ALL
   SELECT format('enum|%s|%s|%s|%s', n.nspname, t.typname, e.enumlabel, e.enumsortorder)
   FROM pg_catalog.pg_type t
   JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
   JOIN pg_catalog.pg_enum e ON e.enumtypid = t.oid
-  WHERE n.nspname NOT IN ('information_schema', 'pg_catalog')
+  WHERE n.nspname NOT IN ('information_schema', 'pg_catalog', 'vayada_migration_evidence')
     AND n.nspname !~ '^pg_toast'
   UNION ALL
   SELECT format('extension|%s|%s', extname, extversion) FROM pg_catalog.pg_extension
