@@ -82,4 +82,23 @@ describe("uploadService", () => {
       "Not every selected offer image",
     );
   });
+
+  it("uploads a private hero for the exact property and returns only its media ID", async () => {
+    uploadPlatformMedia.mockResolvedValue([result("media-hero", "private/media/hero")]);
+
+    await expect(uploadService.uploadHotelProfileImage(file, "property-984")).resolves.toEqual({
+      mediaObjectId: "media-hero",
+    });
+    expect(uploadPlatformMedia).toHaveBeenCalledWith({
+      purpose: "property.hero_image",
+      visibility: "private",
+      resource: {
+        product: "hotel_catalog",
+        resourceType: "property",
+        resourceId: "property-984",
+      },
+      files: [file],
+      idempotencyKey: "admin:property-hero:property-984",
+    });
+  });
 });
