@@ -9,6 +9,7 @@ export type CreatorPlatformSyncJob = {
   jobId: string;
   connectionId: string | null;
   provider: CreatorPlatformProvider | null;
+  scheduledAt: string;
   attemptNumber: number;
   maxAttempts: number;
   workerId: string;
@@ -52,6 +53,7 @@ type JobRow = {
   maxAttempts: number;
   payload: unknown;
   provider: CreatorPlatformProvider | null;
+  scheduledAt: Date | string;
 };
 
 export function createPgCreatorPlatformSyncStore(config: {
@@ -179,14 +181,15 @@ async function claim(
        SET status = 'running', attempts_count = candidate.attempts_count + 1,
            locked_at = $3::timestamptz, locked_by = $5, updated_at = $3::timestamptz
        FROM candidate WHERE job.id = candidate.id
-       RETURNING job.id, job.attempts_count, job.max_attempts, job.payload
+       RETURNING job.id, job.attempts_count, job.max_attempts, job.payload, job.created_at
      ), attempt AS (
        INSERT INTO platform.job_attempts (job_id, attempt_number, status, worker_id, started_at)
        SELECT claimed.id, claimed.attempts_count, 'running', $5, $3::timestamptz FROM claimed
        RETURNING job_id
      )
      SELECT claimed.id::text AS "jobId", claimed.attempts_count AS "attemptsCount",
-            claimed.max_attempts AS "maxAttempts", claimed.payload, candidate.provider
+            claimed.max_attempts AS "maxAttempts", claimed.payload, candidate.provider,
+            claimed.created_at AS "scheduledAt"
      FROM claimed JOIN candidate ON candidate.id = claimed.id
      JOIN attempt ON attempt.job_id = claimed.id`,
       [
@@ -208,6 +211,7 @@ async function claim(
       jobId: row.jobId,
       connectionId,
       provider: row.provider,
+      scheduledAt: new Date(row.scheduledAt).toISOString(),
       attemptNumber: row.attemptsCount,
       maxAttempts: row.maxAttempts,
       workerId: input.workerId,

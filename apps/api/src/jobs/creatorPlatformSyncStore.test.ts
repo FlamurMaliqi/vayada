@@ -13,6 +13,7 @@ const job: CreatorPlatformSyncJob = {
   jobId: "00000000-0000-4000-8000-000000000002",
   connectionId,
   provider: "meta",
+  scheduledAt: now.toISOString(),
   attemptNumber: 2,
   maxAttempts: 5,
   workerId: "creator-sync:test",
@@ -51,6 +52,7 @@ describe("creator platform sync job store", () => {
           maxAttempts: 5,
           payload: { connectionId },
           provider: "meta",
+          scheduledAt: now,
         },
       ],
     ]);
@@ -82,6 +84,7 @@ describe("creator platform sync job store", () => {
           maxAttempts: 5,
           payload: { connectionId, credentialRef: "must-not-be-here" },
           provider: "meta",
+          scheduledAt: now,
         },
       ],
     ]);
