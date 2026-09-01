@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { PhotoIcon, XMarkIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
 import { bookingSettingsService } from "@/services/booking";
 import { COLOR_PRESETS, FONT_PAIRINGS } from "@/lib/constants/booking";
-import { uploadSingleImage } from "@/lib/utils/uploadImage";
+import { hasPropertyHero, propertyHeroService } from "@/services/api/propertyHero";
 
 const GOOGLE_FONTS_URL =
   "https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Source+Sans+Pro:wght@300;400;600;700&family=Inter:wght@300;400;500;600;700&family=Lora:ital,wght@0,400;0,700;1,400&family=Italiana&display=swap";
@@ -23,19 +23,21 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
   const [activeTab, setActiveTab] = useState<Tab>("media");
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [designSettingsReady, setDesignSettingsReady] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(
     null,
   );
 
   // Media & Content state
-  const [heroImage, setHeroImage] = useState<string>(
-    "https://images.unsplash.com/photo-1566073771259-6a8506099945?w=1920&q=80",
-  );
+  const [heroImage, setHeroImage] = useState("");
+  const [heroMediaObjectId, setHeroMediaObjectId] = useState<string | null>(null);
+  const [profileRevision, setProfileRevision] = useState<number | null>(null);
   const [heroHeading, setHeroHeading] = useState("Sundancer Lombok");
   const [heroSubtext, setHeroSubtext] = useState(
     "A boutique escape featuring private pools, ocean views, and tranquil luxury in the pristine shores of Sekotong.",
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaOperationRef = useRef(0);
 
   // Colors state
   const [primaryColor, setPrimaryColor] = useState("#4F46E5");
@@ -54,60 +56,164 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
   ]);
 
   useEffect(() => {
-    bookingSettingsService
-      .getDesignSettings(hotelId)
-      .then((settings) => {
-        if (settings.hero_image) setHeroImage(settings.hero_image);
-        if (settings.hero_heading) setHeroHeading(settings.hero_heading);
-        if (settings.hero_subtext) setHeroSubtext(settings.hero_subtext);
-        if (settings.primary_color) setPrimaryColor(settings.primary_color);
-        if (settings.accent_color) setAccentColor(settings.accent_color);
-        if (settings.font_pairing) setSelectedFont(settings.font_pairing);
-        if (settings.booking_filters) setBookingFilters(settings.booking_filters);
+    const operation = ++mediaOperationRef.current;
+    setLoading(true);
+    setFeedback(null);
+    setDesignSettingsReady(false);
+    setUploading(false);
+    setProfileRevision(null);
+    setHeroMediaObjectId(null);
+    setHeroImage("");
+    Promise.allSettled([
+      bookingSettingsService.getDesignSettings(hotelId),
+      propertyHeroService.get(hotelId),
+    ])
+      .then(([design, media]) => {
+        if (mediaOperationRef.current !== operation) return;
+        if (design.status === "fulfilled") {
+          const settings = design.value;
+          setDesignSettingsReady(true);
+          if (settings.hero_heading) setHeroHeading(settings.hero_heading);
+          if (settings.hero_subtext) setHeroSubtext(settings.hero_subtext);
+          if (settings.primary_color) setPrimaryColor(settings.primary_color);
+          if (settings.accent_color) setAccentColor(settings.accent_color);
+          if (settings.font_pairing) setSelectedFont(settings.font_pairing);
+          if (settings.booking_filters) setBookingFilters(settings.booking_filters);
+        }
+        if (media.status === "fulfilled") {
+          setProfileRevision(media.value.profileRevision);
+          setHeroMediaObjectId(media.value.hero?.mediaObjectId ?? null);
+          setHeroImage(media.value.hero?.url ?? "");
+        }
+        const failedLoads = [
+          design.status === "rejected" && "design settings",
+          media.status === "rejected" && "property media",
+        ].filter(Boolean);
+        if (failedLoads.length > 0) {
+          setFeedback({
+            type: "error",
+            message: `We could not load ${failedLoads.join(" or ")}. Reload to try again.`,
+          });
+        }
       })
-      .catch(() => {
-        // Keep attractive defaults on error
-      })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (mediaOperationRef.current === operation) setLoading(false);
+      });
+    return () => {
+      mediaOperationRef.current += 1;
+    };
   }, [hotelId]);
+
+  useEffect(
+    () => () => {
+      if (heroImage.startsWith("blob:")) URL.revokeObjectURL(heroImage);
+    },
+    [heroImage],
+  );
 
   const [uploading, setUploading] = useState(false);
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    e.target.value = "";
+    if (profileRevision === null) {
+      setFeedback({ type: "error", message: "Property media is not available yet." });
+      return;
+    }
 
     // Show local preview immediately
     const previousImage = heroImage;
     const previewUrl = URL.createObjectURL(file);
     setHeroImage(previewUrl);
+    const operation = ++mediaOperationRef.current;
+    const propertyId = hotelId;
 
-    // Upload to S3 via PMS API
+    // Upload privately, then publish through the exact property command.
     try {
       setUploading(true);
-      const imageUrl = await uploadSingleImage(file);
-      URL.revokeObjectURL(previewUrl);
-      setHeroImage(imageUrl);
-
-      // Auto-save hero image to backend so it persists on reload
+      const updated = await propertyHeroService.uploadAndReplace(file, propertyId, profileRevision);
+      if (mediaOperationRef.current !== operation) return;
+      setProfileRevision(updated.profileRevision);
+      setHeroMediaObjectId(updated.hero?.mediaObjectId ?? null);
+      setFeedback({ type: "success", message: "Hero image published successfully" });
       try {
-        await bookingSettingsService.updateDesignSettings(hotelId, { hero_image: imageUrl });
+        const current = await propertyHeroService.get(propertyId);
+        if (mediaOperationRef.current !== operation) return;
+        setProfileRevision(current.profileRevision);
+        setHeroMediaObjectId(current.hero?.mediaObjectId ?? null);
+        setHeroImage(current.hero?.url ?? "");
+        if (current.hero?.mediaObjectId !== updated.hero?.mediaObjectId) {
+          setFeedback({
+            type: "error",
+            message: "Hero changed again; showing the latest version.",
+          });
+        }
       } catch {
-        setFeedback({ type: "error", message: "Failed to save design settings" });
+        // Keep the local preview; the command result remains the source of truth.
       }
     } catch (err) {
+      if (mediaOperationRef.current !== operation) return;
       console.error("Image upload failed:", err);
-      URL.revokeObjectURL(previewUrl);
-      setHeroImage(previousImage);
+      try {
+        const current = await propertyHeroService.get(propertyId);
+        if (mediaOperationRef.current !== operation) return;
+        setProfileRevision(current.profileRevision);
+        setHeroMediaObjectId(current.hero?.mediaObjectId ?? null);
+        setHeroImage(current.hero?.url ?? "");
+      } catch {
+        if (mediaOperationRef.current !== operation) return;
+        setHeroImage(previousImage.startsWith("blob:") ? "" : previousImage);
+      }
       setFeedback({ type: "error", message: "Image upload failed. Please try again." });
     } finally {
-      setUploading(false);
+      if (mediaOperationRef.current === operation) setUploading(false);
     }
   };
 
-  const removeHeroImage = () => {
-    setHeroImage("");
-    if (fileInputRef.current) fileInputRef.current.value = "";
+  const removeHeroImage = async () => {
+    if (profileRevision === null) return;
+    const operation = ++mediaOperationRef.current;
+    const propertyId = hotelId;
+    try {
+      setUploading(true);
+      const updated = await propertyHeroService.replace(propertyId, profileRevision, null);
+      if (mediaOperationRef.current !== operation) return;
+      setProfileRevision(updated.profileRevision);
+      setHeroMediaObjectId(null);
+      setHeroImage("");
+      setFeedback({ type: "success", message: "Hero image removed successfully" });
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      try {
+        const current = await propertyHeroService.get(propertyId);
+        if (mediaOperationRef.current !== operation) return;
+        setProfileRevision(current.profileRevision);
+        setHeroMediaObjectId(current.hero?.mediaObjectId ?? null);
+        setHeroImage(current.hero?.url ?? "");
+        if (current.hero?.mediaObjectId !== updated.hero?.mediaObjectId) {
+          setFeedback({
+            type: "error",
+            message: "Hero changed again; showing the latest version.",
+          });
+        }
+      } catch {
+        // The revision-fenced clear result remains authoritative.
+      }
+    } catch {
+      if (mediaOperationRef.current !== operation) return;
+      try {
+        const current = await propertyHeroService.get(propertyId);
+        if (mediaOperationRef.current !== operation) return;
+        setProfileRevision(current.profileRevision);
+        setHeroMediaObjectId(current.hero?.mediaObjectId ?? null);
+        setHeroImage(current.hero?.url ?? "");
+      } catch {
+        // Keep the revision-fenced clear result when refresh is unavailable.
+      }
+      setFeedback({ type: "error", message: "Failed to remove hero image" });
+    } finally {
+      if (mediaOperationRef.current === operation) setUploading(false);
+    }
   };
 
   const resetContent = () => {
@@ -118,13 +224,14 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
   };
 
   const handleSave = async () => {
+    if (!designSettingsReady) {
+      setFeedback({ type: "error", message: "Reload before saving design settings." });
+      return;
+    }
     try {
       setSaving(true);
       setFeedback(null);
-      // Never persist blob: URLs — they are temporary local previews
-      const imageToSave = heroImage.startsWith("blob:") ? "" : heroImage;
       await bookingSettingsService.updateDesignSettings(hotelId, {
-        hero_image: imageToSave,
         hero_heading: heroHeading,
         hero_subtext: heroSubtext,
         primary_color: primaryColor,
@@ -215,10 +322,17 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
                   </h2>
                   <p className="text-[12px] text-gray-500 mt-0.5 mb-2.5">1920x1080 recommended</p>
 
-                  {heroImage ? (
+                  {hasPropertyHero(heroMediaObjectId, heroImage) ? (
                     <div className="relative rounded-lg overflow-hidden bg-gray-200">
+                      {!heroImage && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-gray-500">
+                          <PhotoIcon className="w-6 h-6" />
+                          <span className="text-[12px]">Preview unavailable</span>
+                        </div>
+                      )}
                       <img
-                        src={heroImage}
+                        key={heroMediaObjectId ?? heroImage}
+                        src={heroImage || undefined}
                         alt="Hero"
                         className="w-full h-36 object-cover"
                         onError={(e) => {
@@ -227,7 +341,8 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
                       />
                       <button
                         onClick={removeHeroImage}
-                        className="absolute top-1.5 right-1.5 w-6 h-6 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center transition-colors"
+                        disabled={uploading || profileRevision === null}
+                        className="absolute top-1.5 right-1.5 w-6 h-6 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <XMarkIcon className="w-3.5 h-3.5" />
                       </button>
@@ -235,7 +350,8 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
                   ) : (
                     <button
                       onClick={() => fileInputRef.current?.click()}
-                      className="w-full h-36 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center gap-1.5 text-gray-400 hover:border-gray-400 hover:text-gray-500 transition-colors"
+                      disabled={uploading || profileRevision === null}
+                      className="w-full h-36 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center gap-1.5 text-gray-400 hover:border-gray-400 hover:text-gray-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <PhotoIcon className="w-6 h-6" />
                       <span className="text-[12px]">Click to upload</span>
@@ -250,10 +366,11 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
                     className="hidden"
                   />
 
-                  {heroImage && (
+                  {hasPropertyHero(heroMediaObjectId, heroImage) && (
                     <button
                       onClick={() => fileInputRef.current?.click()}
-                      className="mt-2 w-full py-1.5 text-[12px] text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                      disabled={uploading || profileRevision === null}
+                      className="mt-2 w-full py-1.5 text-[12px] text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Replace Image
                     </button>
@@ -491,7 +608,7 @@ export default function DesignStudioSection({ hotelId }: { hotelId: string }) {
           <div className="pt-3 shrink-0 border-t border-gray-100">
             <button
               onClick={handleSave}
-              disabled={saving || uploading}
+              disabled={saving || uploading || !designSettingsReady}
               className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-primary-500 text-white text-[13px] font-medium rounded-lg hover:bg-primary-600 disabled:opacity-50 transition-colors"
             >
               {saving ? (
