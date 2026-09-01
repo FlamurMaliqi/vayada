@@ -82,6 +82,14 @@ export type CreatorPlatformConnectionRecord = CreatorPlatformConnectionDocument 
   syncLeaseId: string | null;
 };
 
+export type ScheduledCreatorPlatformConnectionSyncClaim =
+  | {
+      outcome: "claimed";
+      access: CreatorProfileAccess;
+      connection: CreatorPlatformConnectionRecord;
+    }
+  | { outcome: "busy" | "ineligible" };
+
 type ImportedProjection = {
   account: CreatorPlatformAccount;
   imported: CreatorPlatformImport;
@@ -148,6 +156,11 @@ export type MarketplaceCreatorPlatformConnectionRepository = {
     leaseId: string;
     leaseExpiresAt: string;
   }): Promise<CreatorPlatformConnectionRecord | null>;
+  claimScheduledConnectionSync(input: {
+    connectionId: string;
+    leaseId: string;
+    leaseExpiresAt: string;
+  }): Promise<ScheduledCreatorPlatformConnectionSyncClaim>;
   releaseConnectionSync(input: {
     connectionId: string;
     authorizationId: string;
@@ -1452,6 +1465,87 @@ export function createPgMarketplaceCreatorPlatformConnectionRepository(config: {
           [input.connectionId],
         );
         return result.rows[0] ? mapConnection(result.rows[0]) : null;
+      });
+    },
+
+    async claimScheduledConnectionSync(input) {
+      return inTransaction(pool, async (client) => {
+        const candidate = await client.query<CreatorProfileAccess>(
+          `SELECT membership.user_id::text AS "actorUserId",
+                  connection.organization_id::text AS "organizationId",
+                  connection.creator_profile_id::text AS "creatorProfileId"
+           FROM marketplace.creator_platform_connections connection
+           JOIN identity.organizations organization
+             ON organization.id = connection.organization_id
+            AND organization.kind = 'creator_workspace'
+            AND organization.status = 'active'
+           JOIN identity.organization_resource_links link
+             ON link.organization_id = organization.id
+            AND link.product = 'marketplace'
+            AND link.resource_type = 'creator_profile'
+            AND link.resource_id = connection.creator_profile_id::text
+            AND link.relationship = 'owner'
+            AND link.status = 'active'
+           JOIN identity.organization_memberships membership
+             ON membership.organization_id = organization.id
+            AND membership.status = 'active'
+           JOIN identity.users actor
+             ON actor.id = membership.user_id
+            AND actor.status = 'active'
+           JOIN identity.role_permission_grants permission
+             ON permission.organization_kind = organization.kind
+            AND permission.role_key = membership.role_key
+            AND permission.permission_key = 'marketplace.profile.manage'
+           WHERE connection.id = $1::uuid
+             AND connection.status = 'active'
+             AND connection.credential_ref IS NOT NULL
+           ORDER BY membership.created_at, membership.id
+           LIMIT 1`,
+          [input.connectionId],
+        );
+        const access = candidate.rows[0];
+        if (!access || !(await isCreatorProfileActorAuthorized(client, access, true))) {
+          return { outcome: "ineligible" };
+        }
+        await lockCreatorProfile(client, access);
+        const claimed = await client.query<{ connectionId: string }>(
+          `UPDATE marketplace.creator_platform_connections
+           SET sync_lease_id = $2, sync_lease_expires_at = $3::timestamptz,
+               last_sync_attempt_at = now(), updated_at = now()
+           WHERE id = $1::uuid
+             AND creator_profile_id = $4::uuid
+             AND organization_id = $5::uuid
+             AND status = 'active'
+             AND credential_ref IS NOT NULL
+             AND (sync_lease_id IS NULL OR sync_lease_expires_at <= now())
+           RETURNING id::text AS "connectionId"`,
+          [
+            input.connectionId,
+            input.leaseId,
+            input.leaseExpiresAt,
+            access.creatorProfileId,
+            access.organizationId,
+          ],
+        );
+        if (!claimed.rows[0]) {
+          const eligible = await client.query<{ eligible: boolean }>(
+            `SELECT status = 'active' AND credential_ref IS NOT NULL AS eligible
+             FROM marketplace.creator_platform_connections
+             WHERE id = $1::uuid`,
+            [input.connectionId],
+          );
+          return { outcome: eligible.rows[0]?.eligible ? "busy" : "ineligible" };
+        }
+        const connection = await client.query<ConnectionRow>(
+          `SELECT ${connectionColumns}
+           FROM marketplace.creator_platform_connections connection
+           JOIN marketplace.creator_platforms platform ON platform.id = connection.platform_id
+           WHERE connection.id = $1::uuid`,
+          [input.connectionId],
+        );
+        return connection.rows[0]
+          ? { outcome: "claimed", access, connection: mapConnection(connection.rows[0]) }
+          : { outcome: "ineligible" };
       });
     },
 
