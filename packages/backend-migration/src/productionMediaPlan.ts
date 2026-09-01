@@ -47,6 +47,16 @@ export type ProductionMediaReference = {
   retainedUntil: string | null;
 };
 
+export type ProductionMediaQuarantine = {
+  sourceSystem: "booking" | "marketplace" | "pms";
+  sourceTable: string;
+  sourceRowId: string;
+  sourceField: string;
+  sourceValueSha256: string;
+  purpose: ProductionMediaPurpose;
+  reasonCode: "INVALID_HTTPS_URL" | "INVALID_STRING_ARRAY";
+};
+
 export type ExistingProductionMediaObject = {
   id: string;
   sourceSystem: string;
@@ -106,8 +116,16 @@ export type ProductionMediaPlan = {
   references: ProductionMediaReference[];
   pending: ProductionMediaReference[];
   reused: ProductionMediaReference[];
+  quarantines: ProductionMediaQuarantine[];
   blockers: IdentityMigrationBlocker[];
-  counts: { planned: number; pending: number; reused: number; public: number; private: number };
+  counts: {
+    planned: number;
+    pending: number;
+    reused: number;
+    quarantined: number;
+    public: number;
+    private: number;
+  };
 };
 
 export function buildProductionMediaPlan(input: {
@@ -120,7 +138,8 @@ export function buildProductionMediaPlan(input: {
   cdnBaseUrl: string;
 }): ProductionMediaPlan {
   const blockers: IdentityMigrationBlocker[] = [];
-  const context = createContext(input, blockers);
+  const quarantines: ProductionMediaQuarantine[] = [];
+  const context = createContext(input, blockers, quarantines);
   const references: ProductionMediaReference[] = [];
 
   for (const row of input.rows) {
@@ -234,11 +253,15 @@ export function buildProductionMediaPlan(input: {
       );
   }
 
-  const inventoryChecksumSha256 = sha256(ordered);
+  const orderedQuarantines = quarantines.sort((left, right) =>
+    quarantineKey(left).localeCompare(quarantineKey(right)),
+  );
+  const inventoryChecksumSha256 = sha256({ references: ordered, quarantines: orderedQuarantines });
   const material = {
     sourceRunId: input.sourceRunId,
     inventoryChecksumSha256,
     references: ordered,
+    quarantines: orderedQuarantines,
     blockers: sortedBlockers(blockers),
   };
   return {
@@ -250,6 +273,7 @@ export function buildProductionMediaPlan(input: {
       planned: ordered.length,
       pending: pending.length,
       reused: reused.length,
+      quarantined: orderedQuarantines.length,
       public: ordered.filter((row) => row.visibility === "public").length,
       private: ordered.filter((row) => row.visibility === "private").length,
     },
@@ -273,6 +297,7 @@ function createContext(
     cdnBaseUrl: string;
   },
   blockers: IdentityMigrationBlocker[],
+  quarantines: ProductionMediaQuarantine[],
 ) {
   const property = uniqueMap(
     input.target.propertyLinks.filter(
@@ -304,7 +329,15 @@ function createContext(
   const byTable = new Map<string, IdentitySourceRow[]>();
   for (const row of input.rows)
     byTable.set(row.sourceTable, [...(byTable.get(row.sourceTable) ?? []), row]);
-  return { ...input, blockers, property, privateProperties, organization, byTable };
+  return {
+    ...input,
+    blockers,
+    quarantines,
+    property,
+    privateProperties,
+    organization,
+    byTable,
+  };
 }
 
 function bookingHotel(context: Context, row: IdentitySourceRow): ProductionMediaReference[] {
@@ -330,7 +363,13 @@ function bookingHotel(context: Context, row: IdentitySourceRow): ProductionMedia
     resourceId: scope.propertyId,
     sortOrder: 0,
   });
-  for (const [index, value] of strings(row.data["images"], "images").entries())
+  for (
+    const [index, value] of mediaStrings(context, row, row.data["images"], {
+      field: "images",
+      rowId: `${id}:images`,
+      purpose: "property.gallery_image",
+    }).entries()
+  )
     appendUrl(result, context, row, scope, {
       value,
       field: `images[${index}]`,
@@ -428,7 +467,13 @@ function marketplaceListing(context: Context, row: IdentitySourceRow): Productio
     "owner",
   );
   const result: ProductionMediaReference[] = [];
-  for (const [index, value] of strings(row.data["images"], "images").entries())
+  for (
+    const [index, value] of mediaStrings(context, row, row.data["images"], {
+      field: "images",
+      rowId: `${id}:images`,
+      purpose: "marketplace.offer.media",
+    }).entries()
+  )
     appendUrl(result, context, row, scope, {
       value,
       field: `images[${index}]`,
@@ -525,7 +570,13 @@ function pmsRoomType(context: Context, row: IdentitySourceRow): ProductionMediaR
   const hotelId = uuid(row.data["hotel_id"], "hotel_id");
   const scope = hotelScope(context, "pms", "hotels", hotelId, "pms", "pms_hotel", "operator");
   const result: ProductionMediaReference[] = [];
-  for (const [index, value] of strings(row.data["images"], "images").entries())
+  for (
+    const [index, value] of mediaStrings(context, row, row.data["images"], {
+      field: "images",
+      rowId: `${id}:images`,
+      purpose: "pms.room_type.media",
+    }).entries()
+  )
     appendUrl(result, context, row, scope, {
       value,
       field: `images[${index}]`,
@@ -546,9 +597,9 @@ function pmsAttachment(context: Context, row: IdentitySourceRow): ProductionMedi
   const hotelId = uuid(thread.data["hotel_id"], "hotel_id");
   const scope = hotelScope(context, "pms", "hotels", hotelId, "pms", "pms_hotel", "operator");
   const s3Key = optionalText(row.data["s3_key"], "s3_key");
-  const sourceUrl = optionalText(row.data["source_url"], "source_url");
-  if (!s3Key && !sourceUrl) return [];
-  const value = s3Key ? s3Url(context.legacyPmsBucket, s3Key) : sourceUrl!;
+  const sourceUrl = row.data["source_url"];
+  if (!s3Key && (sourceUrl === null || sourceUrl === undefined || sourceUrl === "")) return [];
+  const value = s3Key ? s3Url(context.legacyPmsBucket, s3Key) : sourceUrl;
   const result: ProductionMediaReference[] = [];
   appendUrl(result, context, row, scope, {
     value,
@@ -582,11 +633,25 @@ function appendUrl(
     retainedUntil?: string | null;
   },
 ): void {
-  const value = optionalText(input.value, input.field);
+  let value: string | null;
+  try {
+    value = optionalText(input.value, input.field);
+  } catch {
+    quarantineField(context, row, input, "INVALID_HTTPS_URL");
+    return;
+  }
   if (!value) return;
-  const parsed = new URL(value);
-  if (parsed.protocol !== "https:" || parsed.username || parsed.password)
-    throw new Error(`${input.field} must be an HTTPS URL without credentials`);
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    quarantineField(context, row, input, "INVALID_HTTPS_URL");
+    return;
+  }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password) {
+    quarantineField(context, row, input, "INVALID_HTTPS_URL");
+    return;
+  }
   const visibility = scope.ownerStatus === "active" ? (input.visibility ?? "public") : "private";
   const material = {
     sourceSystem: row.sourceDatabase as ProductionMediaReference["sourceSystem"],
@@ -617,8 +682,17 @@ function appendUrl(
       input.purpose,
     ),
     sourceReferenceSha256: sha256(material),
-    originalFilename: decodeURIComponent(parsed.pathname.split("/").at(-1) || "legacy-media"),
+    originalFilename: originalFilename(parsed),
   });
+}
+
+function originalFilename(url: URL): string {
+  const encoded = url.pathname.split("/").at(-1) || "legacy-media";
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return "legacy-media";
+  }
 }
 
 function retentionDate(value: unknown): string {
@@ -697,11 +771,22 @@ function timestamp(row: IdentitySourceRow): string {
   return iso(row.data["updated_at"] ?? row.data["created_at"], "updated_at");
 }
 
-function strings(value: unknown, field: string): string[] {
+function mediaStrings(
+  context: Context,
+  row: IdentitySourceRow,
+  value: unknown,
+  input: {
+    field: string;
+    rowId: string;
+    purpose: ProductionMediaPurpose;
+  },
+): string[] {
   if (value == null) return [];
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string"))
-    throw new Error(`${field} must be a string array`);
-  return value.map((item) => item.trim()).filter(Boolean);
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    quarantineField(context, row, { ...input, value }, "INVALID_STRING_ARRAY");
+    return [];
+  }
+  return value.filter((item) => item.trim());
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -779,6 +864,32 @@ function mediaKey(value: {
   purpose: string;
 }): string {
   return `${value.sourceSystem}:${value.sourceTable}:${value.sourceRowId}:${value.purpose}`;
+}
+
+function quarantineKey(value: ProductionMediaQuarantine): string {
+  return `${mediaKey(value)}:${value.sourceField}:${value.reasonCode}`;
+}
+
+function quarantineField(
+  context: Context,
+  row: IdentitySourceRow,
+  input: {
+    value: unknown;
+    field: string;
+    rowId: string;
+    purpose: ProductionMediaPurpose;
+  },
+  reasonCode: ProductionMediaQuarantine["reasonCode"],
+): void {
+  context.quarantines.push({
+    sourceSystem: row.sourceDatabase as ProductionMediaQuarantine["sourceSystem"],
+    sourceTable: row.sourceTable,
+    sourceRowId: input.rowId,
+    sourceField: input.field,
+    sourceValueSha256: sha256({ value: input.value }),
+    purpose: input.purpose,
+    reasonCode,
+  });
 }
 
 function safeId(row: IdentitySourceRow): string {

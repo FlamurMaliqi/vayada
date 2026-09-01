@@ -26,6 +26,10 @@ describe("production catalog target reader", () => {
     expect(state.ownerRevisions[0]).toMatchObject({ revision: "2" });
     expect(state.ownerLinks[0]).toMatchObject({ status: "archived" });
     expect(state.mediaObjects[0]).toMatchObject({ lifecycleStatus: "active" });
+    expect(state.mediaQuarantines?.[0]).toMatchObject({
+      sourceValueSha256: "a".repeat(64),
+      reasonCode: "INVALID_HTTPS_URL",
+    });
     expect(
       fixture.calls.find((call) => call.sql.includes("platform.media_objects"))?.sql,
     ).toContain("source_row_id");
@@ -34,6 +38,11 @@ describe("production catalog target reader", () => {
     );
     expect(mediaObjectCall?.sql).toContain("source_metadata ->> 'migrationRunId' = $1::text");
     expect(mediaObjectCall?.values).toEqual([RUN]);
+    const mediaQuarantineCall = fixture.calls.find((call) =>
+      call.sql.includes("production_media_migration_quarantines"),
+    );
+    expect(mediaQuarantineCall?.sql).toContain("source_run_id = $1::text");
+    expect(mediaQuarantineCall?.values).toEqual([RUN]);
     expect(fixture.calls.find((call) => call.sql.includes("property_source_links"))?.sql).toContain(
       "migrationRunId",
     );
@@ -76,6 +85,20 @@ class TargetFixture {
       };
     if (sql.includes("platform.media_objects"))
       return { rows: [{ id: PROPERTY, lifecycleStatus: "active" }] as T[] };
+    if (sql.includes("platform.production_media_migration_quarantines"))
+      return {
+        rows: [
+          {
+            sourceSystem: "booking",
+            sourceTable: "booking_hotels",
+            sourceRowId: `${PROPERTY}:hero_image`,
+            purpose: "property.hero_image",
+            sourceField: "hero_image",
+            sourceValueSha256: "a".repeat(64),
+            reasonCode: "INVALID_HTTPS_URL",
+          },
+        ] as T[],
+      };
     return { rows: [] };
   }
 }

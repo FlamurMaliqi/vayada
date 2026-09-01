@@ -7,6 +7,7 @@ import type { IdentityMigrationBlocker } from "./productionIdentityDisposition.j
 import {
   buildProductionMediaPlan,
   type ProductionMediaPlan,
+  type ProductionMediaQuarantine,
   type ProductionMediaReference,
 } from "./productionMediaPlan.js";
 import { readProductionMediaSnapshot } from "./productionMediaSnapshotReader.js";
@@ -46,6 +47,7 @@ export type ProductionMediaMigrationReport = {
     corrupt: number;
     failed: number;
   };
+  quarantines: ProductionMediaQuarantine[];
   blockers: IdentityMigrationBlocker[];
 };
 
@@ -196,6 +198,7 @@ async function runWithClient(
     sourceRunId: config.sourceRunId,
     inventoryChecksumSha256: finalPlan.inventoryChecksumSha256,
     counts,
+    quarantines: finalPlan.quarantines,
     blockers,
   };
   const checksum = sha256(material);
@@ -208,6 +211,7 @@ async function runWithClient(
     checksum,
     inventoryChecksumSha256: finalPlan.inventoryChecksumSha256,
     counts,
+    quarantines: finalPlan.quarantines,
     blockers,
   };
 }
@@ -233,10 +237,12 @@ async function prepareRun(
       throw new Error("Existing media migration run uses different immutable inputs");
     await client.query(
       `INSERT INTO platform.production_media_migration_runs
-         (source_run_id, inventory_sha256, config_sha256, status, planned_count, blocker_count)
-       VALUES ($1,$2,$3,'running',$4,$5)
+         (source_run_id, inventory_sha256, config_sha256, status, planned_count,
+          quarantined_count, blocker_count)
+       VALUES ($1,$2,$3,'running',$4,$5,$6)
        ON CONFLICT (source_run_id) DO UPDATE SET
          status = 'running', planned_count = EXCLUDED.planned_count,
+         quarantined_count = EXCLUDED.quarantined_count,
          blocker_count = EXCLUDED.blocker_count, report_checksum_sha256 = NULL,
          completed_at = NULL, updated_at = now()`,
       [
@@ -244,6 +250,7 @@ async function prepareRun(
         plan.inventoryChecksumSha256,
         configSha256,
         plan.references.length,
+        plan.quarantines.length,
         plan.blockers.length,
       ],
     );
@@ -261,6 +268,32 @@ async function prepareRun(
       );
       if (prepared.rowCount !== 1)
         throw new Error("Existing media migration item uses different immutable source evidence");
+    }
+    for (const quarantine of plan.quarantines) {
+      const prepared = await client.query(
+        `INSERT INTO platform.production_media_migration_quarantines
+           (source_run_id, source_system, source_table, source_row_id, purpose,
+            source_field, source_value_sha256, reason_code)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (source_run_id, source_system, source_table, source_row_id, purpose)
+         DO UPDATE SET updated_at = now()
+         WHERE platform.production_media_migration_quarantines.source_field = EXCLUDED.source_field
+           AND platform.production_media_migration_quarantines.source_value_sha256 =
+               EXCLUDED.source_value_sha256
+           AND platform.production_media_migration_quarantines.reason_code = EXCLUDED.reason_code`,
+        [
+          sourceRunId,
+          quarantine.sourceSystem,
+          quarantine.sourceTable,
+          quarantine.sourceRowId,
+          quarantine.purpose,
+          quarantine.sourceField,
+          quarantine.sourceValueSha256,
+          quarantine.reasonCode,
+        ],
+      );
+      if (prepared.rowCount !== 1)
+        throw new Error("Existing media quarantine uses different immutable source evidence");
     }
   });
 }
@@ -504,8 +537,8 @@ async function finishRun(
   await client.query(
     `UPDATE platform.production_media_migration_runs
         SET status = $2, completed_count = $3, missing_count = $4,
-            corrupt_count = $5, failed_count = $6, blocker_count = $7,
-            report_checksum_sha256 = $8,
+            corrupt_count = $5, failed_count = $6, quarantined_count = $7,
+            blocker_count = $8, report_checksum_sha256 = $9,
             completed_at = CASE WHEN $2 = 'completed' THEN now() ELSE NULL END,
             updated_at = now()
       WHERE source_run_id = $1`,
@@ -516,6 +549,7 @@ async function finishRun(
       counts.missing,
       counts.corrupt,
       counts.failed,
+      counts.quarantined,
       blockerCount,
       checksum,
     ],
@@ -541,10 +575,12 @@ function dryRunReport(
       sourceRunId: config.sourceRunId,
       inventoryChecksumSha256: plan.inventoryChecksumSha256,
       counts,
+      quarantines: plan.quarantines,
       blockers: plan.blockers,
     }),
     inventoryChecksumSha256: plan.inventoryChecksumSha256,
     counts,
+    quarantines: plan.quarantines,
     blockers: plan.blockers,
   };
 }

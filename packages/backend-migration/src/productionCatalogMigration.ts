@@ -114,7 +114,8 @@ export async function runProductionCatalogPrerequisiteTransaction(
                     hotel_catalog.property_profiles, hotel_catalog.property_amenities,
                     hotel_catalog.property_contact_channels,
                     hotel_catalog.property_policy_summaries,
-                    hotel_catalog.property_owner_revisions
+                    hotel_catalog.property_owner_revisions,
+                    platform.production_media_migration_quarantines
          IN SHARE ROW EXCLUSIVE MODE`,
       );
     }
@@ -187,7 +188,8 @@ export async function runProductionCatalogTransaction(
                     hotel_catalog.property_policy_summaries,
                     hotel_catalog.property_public_profile_read_model,
                     hotel_catalog.property_owner_revisions,
-                    platform.media_objects, platform.media_variants
+                    platform.media_objects, platform.media_variants,
+                    platform.production_media_migration_quarantines
          IN SHARE ROW EXCLUSIVE MODE`,
       );
     }

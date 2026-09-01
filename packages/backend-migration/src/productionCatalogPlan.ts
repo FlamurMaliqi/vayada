@@ -61,6 +61,7 @@ export function buildProductionCatalogPlan(
   const presentation = planProductionCatalogPresentation(orderedRows, ownership, content, {
     domains: target.domains,
     mediaObjects: target.mediaObjects,
+    mediaQuarantines: target.mediaQuarantines ?? [],
   });
   const reconciliation = reconcileProductionCatalog(core, content, presentation, target);
   const blockers = [...reconciliation.blockers];

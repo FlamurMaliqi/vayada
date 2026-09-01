@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sha256 } from "./productionBookingValues.js";
 import { planProductionCatalogContent } from "./productionCatalogContentPlan.js";
 import { planProductionCatalogCore } from "./productionCatalogCorePlan.js";
 import { planCatalogOwnership } from "./productionCatalogOwnership.js";
@@ -82,6 +83,111 @@ describe("planProductionCatalogPresentation", () => {
   it("blocks raw media references until VAY-1055 supplies an object", () => {
     const { ownership, content } = plans();
     const plan = planProductionCatalogPresentation(rows, ownership, content);
+    expect(plan.blockers.map((row) => row.code)).toContain("UNRESOLVED_MEDIA_REFERENCE");
+  });
+
+  it("omits a same-run quarantined media field without copying or blocking it", () => {
+    const { ownership, content } = plans();
+    const plan = planProductionCatalogPresentation(rows, ownership, content, {
+      mediaObjects: [
+        {
+          id: MEDIA,
+          propertyId: PROPERTY,
+          purpose: "property.hero_image",
+          sourceSystem: "booking",
+          sourceTable: "booking_hotels",
+          sourceRowId: `${PROPERTY}:hero_image`,
+          visibility: "public",
+          lifecycleStatus: "active",
+          publicApproved: true,
+        },
+      ],
+      mediaQuarantines: [
+        {
+          sourceSystem: "booking",
+          sourceTable: "booking_hotels",
+          sourceRowId: `${PROPERTY}:hero_image`,
+          purpose: "property.hero_image",
+          sourceField: "hero_image",
+          sourceValueSha256: sha256({ value: rows[0]!.data.hero_image }),
+          reasonCode: "INVALID_HTTPS_URL",
+        },
+      ],
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.media).toEqual([]);
+    expect(JSON.stringify(plan)).not.toContain("legacy.invalid");
+  });
+
+  it("accepts a redacted quarantine for a malformed Booking image array", () => {
+    const malformed = structuredClone(rows);
+    const data = malformed[0]!.data as Record<string, unknown>;
+    data.hero_image = null;
+    data.images = { stale: "https://legacy.invalid/gallery.jpg" };
+    const ownership = planCatalogOwnership(malformed);
+    const core = planProductionCatalogCore(malformed, ownership);
+    const content = planProductionCatalogContent(malformed, ownership, core);
+    const plan = planProductionCatalogPresentation(malformed, ownership, content, {
+      mediaQuarantines: [
+        {
+          sourceSystem: "booking",
+          sourceTable: "booking_hotels",
+          sourceRowId: `${PROPERTY}:images`,
+          purpose: "property.gallery_image",
+          sourceField: "images",
+          sourceValueSha256: sha256({ value: data.images }),
+          reasonCode: "INVALID_STRING_ARRAY",
+        },
+      ],
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.media).toEqual([]);
+  });
+
+  it("omits a quarantined Booking image array containing a non-string element", () => {
+    const malformed = structuredClone(rows);
+    const data = malformed[0]!.data as Record<string, unknown>;
+    data.hero_image = null;
+    data.images = ["https://legacy.invalid/gallery.jpg", 42];
+    const ownership = planCatalogOwnership(malformed);
+    const core = planProductionCatalogCore(malformed, ownership);
+    const content = planProductionCatalogContent(malformed, ownership, core);
+    const plan = planProductionCatalogPresentation(malformed, ownership, content, {
+      mediaQuarantines: [
+        {
+          sourceSystem: "booking",
+          sourceTable: "booking_hotels",
+          sourceRowId: `${PROPERTY}:images`,
+          purpose: "property.gallery_image",
+          sourceField: "images",
+          sourceValueSha256: sha256({ value: data.images }),
+          reasonCode: "INVALID_STRING_ARRAY",
+        },
+      ],
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.media).toEqual([]);
+  });
+
+  it("does not let stale quarantine evidence suppress a changed media value", () => {
+    const { ownership, content } = plans();
+    const plan = planProductionCatalogPresentation(rows, ownership, content, {
+      mediaQuarantines: [
+        {
+          sourceSystem: "booking",
+          sourceTable: "booking_hotels",
+          sourceRowId: `${PROPERTY}:hero_image`,
+          purpose: "property.hero_image",
+          sourceField: "hero_image",
+          sourceValueSha256: sha256({ value: "https://legacy.invalid/old-hero.jpg" }),
+          reasonCode: "INVALID_HTTPS_URL",
+        },
+      ],
+    });
+
     expect(plan.blockers.map((row) => row.code)).toContain("UNRESOLVED_MEDIA_REFERENCE");
   });
 
