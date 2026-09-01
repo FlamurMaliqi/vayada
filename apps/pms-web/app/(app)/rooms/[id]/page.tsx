@@ -3,6 +3,7 @@
 import { useState, useEffect, use } from "react";
 import { ArrowLeftIcon, TrashIcon } from "@heroicons/react/24/outline";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   roomsService,
   roomTypeUpdateForm,
@@ -13,17 +14,16 @@ import {
 import RoomTypeForm from "@/components/rooms/RoomTypeForm";
 import ConfirmDialog from "@/components/ConfirmDialog";
 
-const ROOM_TYPE_MUTATIONS_UNSUPPORTED_MESSAGE =
-  "Room type deletion is not available on PMS next-stack yet.";
-
 export default function EditRoomPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const router = useRouter();
   const [room, setRoom] = useState<RoomType | null>(null);
   const [loading, setLoading] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [propertyPlan, setPropertyPlan] = useState<PropertyPlan | null>(null);
 
   const [form, setForm] = useState<RoomTypeUpdate>({});
@@ -57,9 +57,17 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
     }
   };
 
-  const handleDelete = () => {
-    setShowDeleteConfirm(false);
-    setError(ROOM_TYPE_MUTATIONS_UNSUPPORTED_MESSAGE);
+  const handleDelete = async () => {
+    setDeleting(true);
+    setError("");
+    try {
+      await roomsService.delete(id);
+      router.push("/rooms");
+    } catch (error) {
+      setShowDeleteConfirm(false);
+      setError(error instanceof Error ? error.message : "Failed to retire room type.");
+      setDeleting(false);
+    }
   };
 
   if (loading) {
@@ -92,8 +100,7 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
         </div>
         <button
           onClick={() => setShowDeleteConfirm(true)}
-          disabled
-          title={ROOM_TYPE_MUTATIONS_UNSUPPORTED_MESSAGE}
+          disabled={deleting}
           className="inline-flex items-center gap-1.5 px-3 py-2 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50 shrink-0"
         >
           <TrashIcon className="w-4 h-4" />
@@ -117,8 +124,8 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
       {showDeleteConfirm && (
         <ConfirmDialog
           title="Delete Room Type"
-          message="Are you sure you want to delete this room type? This cannot be undone."
-          confirmLabel="Delete"
+          message="Retire this room type? Vayada will first check reservations, physical units, inventory, and publication state. Historical records are preserved."
+          confirmLabel={deleting ? "Retiring…" : "Retire"}
           variant="danger"
           onConfirm={handleDelete}
           onCancel={() => setShowDeleteConfirm(false)}
