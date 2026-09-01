@@ -43,6 +43,7 @@ import {
   type BookingAcceptanceMode,
   type PropertySettings,
   type PropertySettingsUpdate,
+  type SameDayBookingSettings,
 } from "@/services/settings";
 import { ToggleSwitch, FeedbackAlert, SaveButton } from "@/components/ui";
 import { CountrySelect } from "@/components/settings/CountrySelect";
@@ -54,6 +55,7 @@ import {
 } from "@vayada/settings-ui";
 import { LocationMapPreview } from "@/components/settings/LocationMapPreview";
 import { PoiSearchInput } from "@/components/settings/PoiSearchInput";
+import { SameDayBookingCard } from "@/components/settings/SameDayBookingCard";
 import { useTranslation } from "@/lib/i18n";
 import {
   buildSettingsSectionUrl,
@@ -277,6 +279,10 @@ export default function SettingsPage() {
   const [acceptanceLoading, setAcceptanceLoading] = useState(true);
   const [acceptanceSaving, setAcceptanceSaving] = useState(false);
   const [acceptanceError, setAcceptanceError] = useState("");
+  const [sameDaySettings, setSameDaySettings] = useState<SameDayBookingSettings | null>(null);
+  const [sameDayLoading, setSameDayLoading] = useState(true);
+  const [sameDaySaving, setSameDaySaving] = useState(false);
+  const [sameDayError, setSameDayError] = useState("");
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(
     null,
   );
@@ -344,6 +350,19 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const loadSameDayBooking = useCallback(async (hotelId: string) => {
+    setSameDayLoading(true);
+    setSameDaySettings(null);
+    setSameDayError("");
+    try {
+      setSameDaySettings(await settingsService.getSameDayBooking(hotelId));
+    } catch (error) {
+      setSameDayError(errorMessage(error, "Same-day booking settings failed to load."));
+    } finally {
+      setSameDayLoading(false);
+    }
+  }, []);
+
   const applyFinancePaymentSettings = useCallback((res: FinancePaymentSettingsResponse) => {
     const ps = res.paymentSettings;
     const providerAccount = ps.providerAccount;
@@ -392,6 +411,9 @@ export default function SettingsPage() {
     setAcceptanceLoading(true);
     setAcceptanceMode(null);
     setAcceptanceError("");
+    setSameDayLoading(true);
+    setSameDaySettings(null);
+    setSameDayError("");
     const propertyPromise = fetchSettings();
     propertyPromise
       .then(async (property) => {
@@ -399,6 +421,8 @@ export default function SettingsPage() {
           setBillingPlanLoading(false);
           setAcceptanceLoading(false);
           setAcceptanceError("Select a hotel before loading booking acceptance settings.");
+          setSameDayLoading(false);
+          setSameDayError("Select a hotel before loading same-day booking settings.");
           return null;
         }
         const hotelId = readBookingHotelId(property);
@@ -406,9 +430,12 @@ export default function SettingsPage() {
           setBillingPlanLoading(false);
           setAcceptanceLoading(false);
           setAcceptanceError("Select a hotel before loading booking acceptance settings.");
+          setSameDayLoading(false);
+          setSameDayError("Select a hotel before loading same-day booking settings.");
           return null;
         }
         void loadBookingAcceptance(hotelId);
+        void loadSameDayBooking(hotelId);
         const propertyLink = await getBookingHotelPropertyLink({ hotelId });
         setBillingPropertyId(propertyLink.propertyId);
         const billingReturn =
@@ -462,7 +489,7 @@ export default function SettingsPage() {
         setBillingPlanLoading(false);
         setPaymentError(errorMessage(err, "Payment settings failed to load."));
       });
-  }, [applyFinancePaymentSettings, fetchSettings, loadBookingAcceptance]);
+  }, [applyFinancePaymentSettings, fetchSettings, loadBookingAcceptance, loadSameDayBooking]);
 
   const refreshStripeOnboarding = useCallback(
     async (
@@ -589,6 +616,32 @@ export default function SettingsPage() {
   const retryBookingAcceptance = () => {
     const hotelId = readBookingHotelId(settings);
     if (hotelId) void loadBookingAcceptance(hotelId);
+  };
+
+  const saveSameDayBooking = async (enabled: boolean, cutoffLocalTime: string | null) => {
+    const hotelId = readBookingHotelId(settings);
+    if (!hotelId || !sameDaySettings) {
+      setSameDayError("Load the current same-day booking setting before changing it.");
+      return;
+    }
+    setSameDaySaving(true);
+    setSameDayError("");
+    setFeedback(null);
+    try {
+      setSameDaySettings(
+        await settingsService.updateSameDayBooking(enabled, cutoffLocalTime, hotelId),
+      );
+      setFeedback({ type: "success", message: "Same-day booking settings saved." });
+    } catch (error) {
+      setSameDayError(errorMessage(error, "Same-day booking settings could not be saved."));
+    } finally {
+      setSameDaySaving(false);
+    }
+  };
+
+  const retrySameDayBooking = () => {
+    const hotelId = readBookingHotelId(settings);
+    if (hotelId) void loadSameDayBooking(hotelId);
   };
 
   const handleCreateStripeAccount = async () => {
@@ -1204,6 +1257,15 @@ export default function SettingsPage() {
               </div>
             )}
           </div>
+
+          <SameDayBookingCard
+            settings={sameDaySettings}
+            loading={sameDayLoading}
+            saving={sameDaySaving}
+            loadError={sameDayError}
+            onSave={(enabled, cutoffLocalTime) => void saveSameDayBooking(enabled, cutoffLocalTime)}
+            onRetry={retrySameDayBooking}
+          />
 
           {/* Map View */}
           <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5">

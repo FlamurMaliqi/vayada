@@ -31,6 +31,7 @@ export type SameDayBookingSettingsPort = {
     context: RequestContext,
     propertyId: string,
     input: SameDayBookingPolicy & { commandId: string; idempotencyKey: string },
+    source: "booking-admin" | "pms-web",
   ): Promise<SameDayBookingSettingsResult>;
   close?(): Promise<void>;
 };
@@ -68,7 +69,8 @@ export function createTargetSameDayBookingSettingsPort(config: {
       const row = (await readSettings(pool, propertyId, false)).rows[0];
       return row ? settings(row) : null;
     },
-    update: (context, propertyId, input) => updateSettings(pool, now(), context, propertyId, input),
+    update: (context, propertyId, input, source) =>
+      updateSettings(pool, now(), context, propertyId, input, source),
     async close() {
       await pool.end();
     },
@@ -81,6 +83,7 @@ async function updateSettings(
   context: RequestContext,
   propertyId: string,
   input: SameDayBookingPolicy & { commandId: string; idempotencyKey: string },
+  source: "booking-admin" | "pms-web",
 ): Promise<SameDayBookingSettingsResult> {
   const client = await pool.connect();
   const keyHash = sha256(input.idempotencyKey);
@@ -157,7 +160,15 @@ async function updateSettings(
         event,
         acceptedAt,
       );
-      await insertAudit(client, context, row, input.commandId, channexOperationId, acceptedAt);
+      await insertAudit(
+        client,
+        context,
+        row,
+        input.commandId,
+        channexOperationId,
+        acceptedAt,
+        source,
+      );
     }
     const responseSettings = settings(row);
     await client.query(
@@ -301,6 +312,7 @@ async function insertAudit(
   commandId: string,
   jobId: string | null,
   acceptedAt: Date,
+  source: "booking-admin" | "pms-web",
 ) {
   await client.query(
     `INSERT INTO platform.product_audit_events (
@@ -310,7 +322,7 @@ async function insertAudit(
      ) VALUES ($1, 'booking', 'booking.same_day_booking_policy.changed', $2::timestamptz,
        'property', $3::uuid, 'user', $4::uuid, 'booking', 'same_day_booking_policy', $3,
        $5::uuid, $6, $7, jsonb_build_object('revision', $8::integer),
-       '{"source":"pms-web"}'::jsonb) ON CONFLICT (product, audit_key) DO NOTHING`,
+       jsonb_build_object('source', $9::text)) ON CONFLICT (product, audit_key) DO NOTHING`,
     [
       `booking.same-day-policy.changed:${row.propertyId}:${row.revision}`,
       acceptedAt.toISOString(),
@@ -320,6 +332,7 @@ async function insertAudit(
       context.audit.correlationId ?? context.audit.requestId,
       commandId,
       row.revision,
+      source,
     ],
   );
 }

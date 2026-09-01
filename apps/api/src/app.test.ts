@@ -2659,7 +2659,7 @@ function buildAuthenticatedApp(
     customDomainRepository?: BookingCustomDomainRepository;
     bookingAddonItemsRepository?: BookingAddonItemsRepository;
     bookingPromoCodesRepository?: BookingPromoCodesRepository;
-    pmsOperationsRepository?: PmsOperationsReadRepository;
+    pmsOperationsRepository?: PmsOperationsReadRepository | null;
     pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
     pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
     bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
@@ -2697,7 +2697,10 @@ function buildAuthenticatedApp(
     browserAllowedOrigins: options.browserAllowedOrigins,
     bookingReservationsRepository: options.reservationsRepository ?? bookingReservationsRepository,
     bookingChangeRequestRepository: options.changeRequestRepository,
-    pmsOperationsRepository: options.pmsOperationsRepository ?? pmsOperationsRepository,
+    pmsOperationsRepository:
+      options.pmsOperationsRepository === null
+        ? undefined
+        : (options.pmsOperationsRepository ?? pmsOperationsRepository),
     pmsCheckoutChargeMarkPaidFreezeEnabled: options.pmsCheckoutChargeMarkPaidFreezeEnabled,
     pmsOperationsCommandRepository: options.pmsOperationsCommandRepository,
     bookingAcceptanceSettings: options.bookingAcceptanceSettings,
@@ -4314,6 +4317,94 @@ describe("vayada-api", () => {
     expect(update.statusCode).toBe(200);
     expect(update.body).toMatchObject({ acceptanceMode: "instant", instantBook: true });
     expect(published).toEqual([pmsPropertyId]);
+  });
+
+  it("reads and idempotently updates the canonical same-day policy through Booking Admin", async () => {
+    let enabled = true;
+    let cutoffLocalTime: string | null = "18:00";
+    let closes = 0;
+    const sameDayBookingSettings: SameDayBookingSettingsPort = {
+      async find(propertyId) {
+        expect(propertyId).toBe(pmsPropertyId);
+        return {
+          propertyId,
+          propertyTimeZone: "Europe/Vienna",
+          enabled,
+          cutoffLocalTime,
+          revision: 2,
+          updatedAt: "2026-09-01T10:00:00.000Z",
+        };
+      },
+      async update(context, propertyId, input, source) {
+        expect(context.membership.permissions).toContain("booking.settings.manage");
+        expect(context.membership.permissions).not.toContain("pms.settings.manage");
+        expect(propertyId).toBe(pmsPropertyId);
+        expect(input).toMatchObject({ commandId: "command-1", idempotencyKey: "key-1" });
+        expect(source).toBe("booking-admin");
+        enabled = input.enabled;
+        cutoffLocalTime = input.cutoffLocalTime;
+        return {
+          ok: true,
+          replayed: false,
+          channexOperationId: null,
+          settings: {
+            propertyId,
+            propertyTimeZone: "Europe/Vienna",
+            enabled,
+            cutoffLocalTime,
+            revision: 3,
+            updatedAt: "2026-09-01T10:01:00.000Z",
+          },
+        };
+      },
+      async close() {
+        closes += 1;
+      },
+    };
+    app = buildAuthenticatedApp({
+      linkedPmsPropertyId: null,
+      sameDayBookingSettings,
+    });
+
+    const read = await injectJson(app, {
+      method: "GET",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/settings/same-day-booking",
+      headers: { authorization: "Bearer valid-token" },
+    });
+    const update = await injectJson(app, {
+      method: "PUT",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/settings/same-day-booking",
+      payload: {
+        commandId: "command-1",
+        idempotencyKey: "key-1",
+        enabled: false,
+        cutoffLocalTime: "12:30",
+      },
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(read.statusCode).toBe(200);
+    expect(read.body).toMatchObject({
+      contractVersion: "same-day-booking-policy.v1",
+      propertyTimeZone: "Europe/Vienna",
+      enabled: true,
+      cutoffLocalTime: "18:00",
+    });
+    expect(update.statusCode).toBe(200);
+    expect(update.body).toMatchObject({
+      enabled: false,
+      cutoffLocalTime: "12:30",
+      revision: 3,
+      replayed: false,
+    });
+    await app.close();
+    app = null;
+    expect(closes).toBe(1);
+
+    app = buildAuthenticatedApp({ pmsOperationsRepository: null, sameDayBookingSettings });
+    await app.close();
+    app = null;
+    expect(closes).toBe(2);
   });
 
   it("publishes Booking setup through the canonical Distribution command boundary", async () => {
@@ -10823,9 +10914,10 @@ describe("vayada-api", () => {
             updatedAt: "2026-08-31T10:00:00.000Z",
           };
         },
-        async update(_context, propertyId, input) {
+        async update(_context, propertyId, input, source) {
           expect(propertyId).toBe(pmsPropertyId);
           expect(input).toMatchObject({ commandId: "command-1", idempotencyKey: "key-1" });
+          expect(source).toBe("pms-web");
           enabled = input.enabled;
           cutoffLocalTime = input.cutoffLocalTime;
           return {

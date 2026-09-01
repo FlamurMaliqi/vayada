@@ -86,12 +86,17 @@ describe.skipIf(!TEST_DATABASE_URL)("same-day settings PostgreSQL concurrency", 
     );
 
     const pid = await backendPid(commandPool);
-    const restore = port.update(context(), propertyId, {
-      commandId: "restore-a",
-      idempotencyKey: "restore-a",
-      enabled: true,
-      cutoffLocalTime: "18:00",
-    });
+    const restore = port.update(
+      context(),
+      propertyId,
+      {
+        commandId: "restore-a",
+        idempotencyKey: "restore-a",
+        enabled: true,
+        cutoffLocalTime: "18:00",
+      },
+      "pms-web",
+    );
     await waitForLockWaiter(admin, pid);
     await blocker.query("COMMIT");
 

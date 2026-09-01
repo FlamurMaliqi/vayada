@@ -10,6 +10,7 @@ import {
   isBookingAcceptanceMode,
   type BookingAcceptanceSettingsPort,
 } from "../domains/bookingAcceptanceSettings.js";
+import type { SameDayBookingSettingsPort } from "../domains/sameDayBookingSettings.js";
 import { syncPropertyOfferReadModels } from "./marketplaceAdmin.js";
 import { enforceRoutePolicy } from "./policy.js";
 
@@ -342,6 +343,18 @@ export type BookingAcceptanceSettingsResponse = {
   instantBook: boolean;
 };
 
+export type BookingSameDaySettingsResponse = {
+  contractVersion: "same-day-booking-policy.v1";
+  propertyId: string;
+  propertyTimeZone: string;
+  enabled: boolean;
+  cutoffLocalTime: string | null;
+  revision: number;
+  updatedAt: string | null;
+  replayed?: boolean;
+  channexOperationId?: string | null;
+};
+
 export type BookingPropertySettingsResponse = Record<string, unknown>;
 
 export type BookingAddonSettings = BookingAddonSettingsResponse;
@@ -488,6 +501,7 @@ export type BookingSettingsWriteErrorCode =
   | "inactive_entitlement"
   | "missing_resource_access"
   | "invalid_payload"
+  | "idempotency_conflict"
   | "invalid_header_logo_media"
   | "private_contact_conflict"
   | "not_found"
@@ -929,6 +943,8 @@ export class BookingHeaderLogoMediaError extends Error {
     this.name = "BookingHeaderLogoMediaError";
   }
 }
+
+class SameDayIdempotencyConflictError extends Error {}
 
 const TARGET_BOOKING_SETTINGS_SOURCE_LINK_CTE = `
   WITH scoped_property_candidates AS (
@@ -2064,6 +2080,8 @@ export async function registerBookingSettingsRoutes(
   publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort,
   inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort,
   bookingAcceptanceSettings?: BookingAcceptanceSettingsPort,
+  sameDayBookingSettings?: SameDayBookingSettingsPort,
+  ownsSameDayBookingSettings = true,
 ): Promise<void> {
   const closeables = new Set(
     [
@@ -2072,6 +2090,7 @@ export async function registerBookingSettingsRoutes(
       publicBookabilityPublisher,
       inventoryPublicOfferProjector,
       bookingAcceptanceSettings,
+      ownsSameDayBookingSettings ? sameDayBookingSettings : undefined,
     ].filter(Boolean),
   );
   app.addHook("onClose", async () => {
@@ -2145,7 +2164,7 @@ export async function registerBookingSettingsRoutes(
       }
 
       try {
-        const propertyId = await findBookingAcceptancePropertyId(repository, hotelId);
+        const propertyId = await findBookingPropertyId(repository, hotelId);
         if (!propertyId) {
           return sendBookingPropertySettingsError(reply, {
             statusCode: 404,
@@ -2167,6 +2186,38 @@ export async function registerBookingSettingsRoutes(
       } catch (error) {
         request.log.error({ err: error, hotelId }, "Booking acceptance settings read failed");
         return sendBookingPropertySettingsError(reply, bookingAcceptanceReadUnavailable());
+      }
+    },
+  );
+
+  app.get<{ Params: BookingHotelParams }>(
+    "/hotels/:hotelId/settings/same-day-booking",
+    async (request, reply) => {
+      const { hotelId } = request.params;
+      try {
+        enforceBookingSettingsPolicy(request, hotelId);
+      } catch (error) {
+        const contractError = toBookingSettingsAccessError(error, request, hotelId);
+        if (contractError) return sendBookingPropertySettingsError(reply, contractError);
+        throw error;
+      }
+      if (!sameDayBookingSettings) {
+        return sendBookingPropertySettingsError(reply, sameDayBookingReadUnavailable());
+      }
+      try {
+        const propertyId = await findBookingPropertyId(repository, hotelId);
+        const settings = propertyId ? await sameDayBookingSettings.find(propertyId) : null;
+        return settings
+          ? toBookingSameDaySettingsResponse(settings)
+          : sendBookingPropertySettingsError(reply, {
+              statusCode: 404,
+              code: "not_found",
+              category: "read_model",
+              message: "Same-day booking settings were not found.",
+            });
+      } catch (error) {
+        request.log.error({ err: error, hotelId }, "Same-day booking settings read failed");
+        return sendBookingPropertySettingsError(reply, sameDayBookingReadUnavailable());
       }
     },
   );
@@ -2610,7 +2661,7 @@ export async function registerBookingSettingsRoutes(
       }
 
       try {
-        const propertyId = await findBookingAcceptancePropertyId(repository, hotelId);
+        const propertyId = await findBookingPropertyId(repository, hotelId);
         if (!propertyId) {
           return sendBookingSettingsWriteError(reply, {
             statusCode: 404,
@@ -2638,6 +2689,31 @@ export async function registerBookingSettingsRoutes(
         return sendBookingSettingsWriteError(reply, bookingAcceptanceWriteUnavailable());
       }
     },
+  );
+
+  app.put<{ Params: BookingHotelParams; Body: unknown }>(
+    "/hotels/:hotelId/settings/same-day-booking",
+    async (request, reply) =>
+      handleBookingSettingsWrite({
+        request,
+        reply,
+        parseBody: parseSameDayBookingSettingsWriteBody,
+        write: async (hotelId, settings, context) => {
+          if (!sameDayBookingSettings) throw new Error("Same-day settings are unavailable.");
+          const propertyId = await findBookingPropertyId(repository, hotelId);
+          const result = propertyId
+            ? await sameDayBookingSettings.update(context, propertyId, settings, "booking-admin")
+            : null;
+          if (!result || (!result.ok && result.code === "property_not_found")) return null;
+          if (!result.ok) throw new SameDayIdempotencyConflictError();
+          return {
+            ...result.settings,
+            replayed: result.replayed,
+            channexOperationId: result.channexOperationId,
+          };
+        },
+        toResponse: toBookingSameDaySettingsResponse,
+      }),
   );
 
   if (!writeRepository) return;
@@ -2792,7 +2868,46 @@ function parseBookingAcceptanceSettingsWriteBody(
   return { ok: true, value: { acceptanceMode: parsed.value.acceptanceMode } };
 }
 
-async function findBookingAcceptancePropertyId(
+function parseSameDayBookingSettingsWriteBody(body: unknown): ValidationResult<{
+  commandId: string;
+  idempotencyKey: string;
+  enabled: boolean;
+  cutoffLocalTime: string | null;
+}> {
+  const parsed = expectStrictObject(body, [
+    "commandId",
+    "idempotencyKey",
+    "enabled",
+    "cutoffLocalTime",
+  ]);
+  if (!parsed.ok) return parsed;
+  const { commandId, idempotencyKey, enabled, cutoffLocalTime } = parsed.value;
+  const details: string[] = [];
+  if (typeof commandId !== "string" || !commandId.trim()) details.push("commandId is required.");
+  if (typeof idempotencyKey !== "string" || !idempotencyKey.trim()) {
+    details.push("idempotencyKey is required.");
+  }
+  if (typeof enabled !== "boolean") details.push("enabled must be a boolean.");
+  if (
+    cutoffLocalTime !== null &&
+    (typeof cutoffLocalTime !== "string" || !/^(?:[01]\d|2[0-3]):(?:00|30)$/.test(cutoffLocalTime))
+  ) {
+    details.push("cutoffLocalTime must be on a 30-minute boundary or null.");
+  }
+  return details.length
+    ? { ok: false, details }
+    : {
+        ok: true,
+        value: {
+          commandId: commandId as string,
+          idempotencyKey: idempotencyKey as string,
+          enabled: enabled as boolean,
+          cutoffLocalTime: cutoffLocalTime as string | null,
+        },
+      };
+}
+
+async function findBookingPropertyId(
   repository: BookingSettingsReadRepository,
   hotelId: string,
 ): Promise<string | null> {
@@ -2800,6 +2915,12 @@ async function findBookingAcceptancePropertyId(
     throw new Error("Booking hotel property link is unavailable.");
   }
   return (await repository.findPropertyLinkByHotelId(hotelId))?.propertyId ?? null;
+}
+
+export function toBookingSameDaySettingsResponse(
+  settings: Omit<BookingSameDaySettingsResponse, "contractVersion">,
+): BookingSameDaySettingsResponse {
+  return { contractVersion: "same-day-booking-policy.v1", ...settings };
 }
 
 export function toBookingAcceptanceSettingsResponse(
@@ -2829,6 +2950,15 @@ function bookingAcceptanceWriteUnavailable(): BookingSettingsWriteError {
     code: "write_model_unavailable",
     category: "write_model",
     message: "Booking acceptance settings could not be saved.",
+  };
+}
+
+function sameDayBookingReadUnavailable(): BookingHotelPropertyLinkError {
+  return {
+    statusCode: 500,
+    code: "read_model_unavailable",
+    category: "read_model",
+    message: "Same-day booking settings are unavailable.",
   };
 }
 
@@ -2891,6 +3021,14 @@ async function handleBookingSettingsWrite<TBody, TStored>(input: {
         code: "invalid_header_logo_media",
         category: "validation",
         message: error.message,
+      });
+    }
+    if (error instanceof SameDayIdempotencyConflictError) {
+      return sendBookingSettingsWriteError(input.reply, {
+        statusCode: 409,
+        code: "idempotency_conflict",
+        category: "write_model",
+        message: "The idempotency key was already used for another settings update.",
       });
     }
     input.request.log.error({ err: error, hotelId }, "Booking settings write failed");

@@ -1788,6 +1788,7 @@ export async function registerPmsOperationsRoutes(
           context,
           request.params.propertyId,
           input,
+          "pms-web",
         );
         if (!result || (!result.ok && result.code === "property_not_found"))
           return sendPmsOperationsError(reply, propertyNotFound(request.params.propertyId));

@@ -21,8 +21,8 @@ describe("target same-day booking settings", () => {
       cutoffLocalTime: "12:30",
     } as const;
 
-    const first = await port.update(context(), PROPERTY, command);
-    const replay = await port.update(context(), PROPERTY, command);
+    const first = await port.update(context(), PROPERTY, command, "pms-web");
+    const replay = await port.update(context(), PROPERTY, command, "pms-web");
 
     expect(first).toMatchObject({
       ok: true,
@@ -42,6 +42,7 @@ describe("target same-day booking settings", () => {
     expect(pool.sql.join("\n")).toContain("max_attempts");
     expect(pool.sql.join("\n")).toContain("platform.product_audit_events");
     expect(pool.sql.join("\n")).toContain("FOR UPDATE OF property");
+    expect(pool.auditSources).toEqual(["pms-web"]);
   });
 
   it("replays the original response after a newer command changes the policy", async () => {
@@ -58,14 +59,19 @@ describe("target same-day booking settings", () => {
       cutoffLocalTime: "12:30",
     } as const;
 
-    await port.update(context(), PROPERTY, first);
-    await port.update(context(), PROPERTY, {
-      commandId: "command-b",
-      idempotencyKey: "key-b",
-      enabled: true,
-      cutoffLocalTime: "17:00",
-    });
-    const replay = await port.update(context(), PROPERTY, first);
+    await port.update(context(), PROPERTY, first, "pms-web");
+    await port.update(
+      context(),
+      PROPERTY,
+      {
+        commandId: "command-b",
+        idempotencyKey: "key-b",
+        enabled: true,
+        cutoffLocalTime: "17:00",
+      },
+      "pms-web",
+    );
+    const replay = await port.update(context(), PROPERTY, first, "pms-web");
 
     expect(replay).toMatchObject({
       ok: true,
@@ -77,6 +83,7 @@ describe("target same-day booking settings", () => {
 
 class SettingsPool {
   sql: string[] = [];
+  auditSources: string[] = [];
   private readonly reservations = new Map<
     string,
     { id: string; fingerprint: string; response: unknown; channexOperationId: string | null }
@@ -131,6 +138,8 @@ class SettingsPool {
       rows = [{ connected: true }];
     } else if (text.includes("INSERT INTO platform.jobs")) {
       rows = [{ id: "13550000-0000-4000-8000-000000000005" }];
+    } else if (text.includes("INSERT INTO platform.product_audit_events")) {
+      this.auditSources.push(String(values[8]));
     } else if (text.includes("response_status_code = 200")) {
       const reservation = [...this.reservations.values()].find(({ id }) => id === values[0]);
       if (reservation) {

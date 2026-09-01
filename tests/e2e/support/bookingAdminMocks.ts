@@ -13,6 +13,7 @@ export const BOOKING_ADMIN_PROPERTY_LINK_PATH = `/api/booking/hotels/${BOOKING_A
 export const BOOKING_ADMIN_PROPERTY_PROFILE_PATH = `/api/hotel-setup/properties/${BOOKING_ADMIN_PROPERTY_ID}/profile`;
 export const BOOKING_ADMIN_PROPERTY_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/property`;
 const BOOKING_ADMIN_BOOKING_ACCEPTANCE_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/booking-acceptance`;
+export const BOOKING_ADMIN_SAME_DAY_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/same-day-booking`;
 export const BOOKING_ADMIN_PUBLIC_BOOKABILITY_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/public-bookability`;
 export const BOOKING_ADMIN_ADDON_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/addons`;
 export const BOOKING_ADMIN_BENEFITS_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/benefits`;
@@ -366,6 +367,8 @@ export async function mockBookingAdminShellRoutes(
 ): Promise<void> {
   const propertySettings = options.propertySettings ?? defaultBookingAdminPropertySettings;
   let bookingAcceptanceMode: "instant" | "request" = "instant";
+  let sameDayEnabled = true;
+  let sameDayCutoff: string | null = "18:00";
   await page.route("**/api/pms/properties/*/module-activations", (route) =>
     route.fulfill({
       json: {
@@ -405,6 +408,27 @@ export async function mockBookingAdminShellRoutes(
         propertyId: BOOKING_ADMIN_PROPERTY_ID,
         acceptanceMode: bookingAcceptanceMode,
         instantBook: bookingAcceptanceMode === "instant",
+      },
+    });
+  });
+  await page.route(`**${BOOKING_ADMIN_SAME_DAY_PATH}*`, async (route) => {
+    if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON() as {
+        enabled: boolean;
+        cutoffLocalTime: string | null;
+      };
+      sameDayEnabled = body.enabled;
+      sameDayCutoff = body.cutoffLocalTime;
+    }
+    await route.fulfill({
+      json: {
+        contractVersion: "same-day-booking-policy.v1",
+        propertyId: BOOKING_ADMIN_PROPERTY_ID,
+        propertyTimeZone: "Europe/Vienna",
+        enabled: sameDayEnabled,
+        cutoffLocalTime: sameDayCutoff,
+        revision: 2,
+        updatedAt: "2026-09-01T10:00:00.000Z",
       },
     });
   });

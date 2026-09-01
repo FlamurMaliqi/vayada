@@ -101,6 +101,18 @@ export interface BookingAcceptanceSettings {
   instantBook: boolean;
 }
 
+export interface SameDayBookingSettings {
+  contractVersion: "same-day-booking-policy.v1";
+  propertyId: string;
+  propertyTimeZone: string;
+  enabled: boolean;
+  cutoffLocalTime: string | null;
+  revision: number;
+  updatedAt: string | null;
+  replayed?: boolean;
+  channexOperationId?: string | null;
+}
+
 export interface DesignSettings {
   header_logo: string;
   header_logo_media_object_id: string | null;
@@ -265,6 +277,15 @@ function bookingAcceptanceEndpoint(hotelId: string): string {
   return `/api/booking/hotels/${encodeURIComponent(hotelId)}/settings/booking-acceptance`;
 }
 
+function sameDayBookingEndpoint(hotelId: string): string {
+  return `/api/booking/hotels/${encodeURIComponent(hotelId)}/settings/same-day-booking`;
+}
+
+function sameDayCommandId(): string {
+  const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  return `booking.same-day-booking:${suffix}`;
+}
+
 async function getTargetDesignSettings(explicitHotelId?: string): Promise<BookingDesignSettings> {
   const hotelId = resolveBookingHotelId(explicitHotelId);
   return apiClient.get<BookingDesignSettings>(
@@ -404,6 +425,21 @@ export const settingsService = {
       { acceptanceMode },
       omitHotelContext,
     ),
+
+  getSameDayBooking: (hotelId?: string) =>
+    apiClient.get<SameDayBookingSettings>(
+      sameDayBookingEndpoint(resolveBookingHotelId(hotelId)),
+      omitHotelContext,
+    ),
+
+  updateSameDayBooking: (enabled: boolean, cutoffLocalTime: string | null, hotelId?: string) => {
+    const commandId = sameDayCommandId();
+    return apiClient.put<SameDayBookingSettings>(
+      sameDayBookingEndpoint(resolveBookingHotelId(hotelId)),
+      { commandId, idempotencyKey: commandId, enabled, cutoffLocalTime },
+      omitHotelContext,
+    );
+  },
 
   changePassword: (current_password: string, new_password: string) =>
     apiClient.post("/auth/change-password", { current_password, new_password }),
