@@ -44,7 +44,7 @@ describe("production Booking catalog records", () => {
         discount_value: "10",
         is_active: true,
         max_uses: 20,
-        current_uses: 2,
+        use_count: 2,
         created_at: "2026-08-01T00:00:00Z",
         updated_at: "2026-08-29T12:00:00Z",
       }),
@@ -65,7 +65,15 @@ describe("production Booking catalog records", () => {
     });
     expect(records[1]!.row).toMatchObject({ pricingModel: "per_guest", priceAmount: "12.50" });
     expect(JSON.stringify(records[1]!.row)).not.toContain("http");
-    expect(records[2]!.row).toMatchObject({ code: "SUMMER", discountValue: "10.00" });
+    expect(records[2]!.row).toMatchObject({
+      code: "SUMMER",
+      discountValue: "10.00",
+      currentUses: 2,
+      minBookingValue: null,
+      applicableRoomIds: null,
+      stayDateFrom: null,
+      stayDateUntil: null,
+    });
   });
 
   it("stores funnel metadata privately and redacts the audit projection", () => {

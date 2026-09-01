@@ -34,7 +34,6 @@ export const PRODUCTION_BOOKING_SOURCE_TABLES: Record<BookingDatabase, readonly 
     "booking_events",
     "booking_hotels",
     "booking_promo_codes",
-    "booking_promo_redemptions",
   ],
   pms: [
     "booking_additional_guests",

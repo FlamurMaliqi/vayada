@@ -54,7 +54,6 @@ export const VAY_1350_ACTIVE_SOURCE_TABLES: Record<SourceDatabase, readonly stri
     "public.booking_hotel_translations",
     "public.booking_hotels",
     "public.booking_promo_codes",
-    "public.booking_promo_redemptions",
     "public.commission_rate_changes",
   ],
   marketplace: [
