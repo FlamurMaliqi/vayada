@@ -40,6 +40,9 @@ describe("production catalog target reader", () => {
     expect(fixture.calls.find((call) => call.sql.includes("property_source_links"))?.sql).toContain(
       "status",
     );
+    expect(fixture.calls.find((call) => call.sql.includes("property_source_links"))?.sql).toContain(
+      "migrationDisposition",
+    );
   });
 });
 

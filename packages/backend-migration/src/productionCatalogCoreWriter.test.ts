@@ -31,8 +31,16 @@ describe("production catalog core writer", () => {
     expect(properties).not.toContain("completeness_reasons = EXCLUDED");
     const links = fixture.sql.find((sql) => sql.includes("property_source_links"))!;
     expect(links).toContain("metadata = hotel_catalog.property_source_links.metadata");
+    expect(links).toContain("migrationDisposition");
+    expect(links).toContain("migrationDispositionReason");
     expect(links).toContain("property_id = EXCLUDED.property_id");
     expect(links).toContain("relationship = EXCLUDED.relationship");
+    const ownerLinks = fixture.sql.find((sql) => sql.includes("organization_resource_links"))!;
+    expect(ownerLinks).toContain("private_quarantine");
+    expect(ownerLinks).toContain("status = 'archived'");
+    const entitlements = fixture.sql.find((sql) => sql.includes("product_entitlements"))!;
+    expect(entitlements).toContain("private_quarantine");
+    expect(entitlements).toContain("status = 'suspended'");
     const locations = fixture.sql.find((sql) => sql.includes("property_locations"))!;
     expect(locations).toContain("property_owner_revisions");
     expect(locations).not.toMatch(/address_public\s*=|geo_public\s*=|map_display_mode\s*=/);

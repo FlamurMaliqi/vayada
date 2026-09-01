@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createProductionPmsContext } from "./productionPmsContext.js";
 import { buildPmsRoomRecords } from "./productionPmsRoomRecords.js";
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
+import type { ProductionPmsTargetState } from "./productionPmsTypes.js";
 
 const HOTEL = "10000000-0000-4000-a000-000000000001";
 const PROPERTY = "20000000-0000-4000-a000-000000000001";
@@ -96,6 +97,37 @@ describe("production PMS room records", () => {
       expect.objectContaining({ code: "INVALID_SOURCE_ROW", source: "pms.room_types" }),
     );
   });
+
+  it("retains private-quarantined PMS room media without a public snapshot", () => {
+    const targetState = target();
+    targetState.propertyLinks[0]!.migrationDisposition = "private_quarantine";
+    targetState.media![0] = {
+      ...targetState.media![0]!,
+      visibility: "private",
+      publicApproved: false,
+      publicUrl: null,
+      storageKey: `private/media/${MEDIA}/provider_original/file.webp`,
+    };
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: sourceRows(),
+      target: targetState,
+    });
+
+    const built = buildPmsRoomRecords(context);
+
+    expect(context.blockers).toEqual([]);
+    expect(built.records.find((record) => record.targetTable === "room_types")?.row).toMatchObject({
+      mediaSnapshot: [
+        {
+          mediaObjectId: MEDIA,
+          url: null,
+          publicApproved: false,
+        },
+      ],
+    });
+  });
 });
 
 function sourceRows(): IdentitySourceRow[] {
@@ -180,7 +212,7 @@ function sourceRows(): IdentitySourceRow[] {
   ];
 }
 
-function target() {
+function target(): ProductionPmsTargetState {
   return {
     propertyLinks: [
       {

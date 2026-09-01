@@ -40,6 +40,8 @@ describe.skipIf(!URL)("production catalog writers (PostgreSQL)", () => {
               sourceTable: "booking_hotels",
               sourceId: PROPERTY,
               relationship: "canonical_input",
+              migrationDisposition: "canonical",
+              migrationDispositionReason: null,
             },
           ],
           "vay1351-0123456789abcdef01234567",

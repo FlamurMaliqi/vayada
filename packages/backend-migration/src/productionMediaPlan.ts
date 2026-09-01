@@ -86,6 +86,7 @@ export type ProductionMediaTargetState = {
     relationship: string;
     status: string;
     migrationRunId: string | null;
+    migrationDisposition?: "canonical" | "private_quarantine" | null;
   }>;
   resourceLinks: Array<{
     organizationId: string;
@@ -282,6 +283,16 @@ function createContext(
     blockers,
     "AMBIGUOUS_MEDIA_PROPERTY",
   );
+  const privateProperties = new Set(
+    input.target.propertyLinks
+      .filter(
+        (row) =>
+          row.status === "active" &&
+          row.migrationRunId === input.sourceRunId &&
+          row.migrationDisposition === "private_quarantine",
+      )
+      .map((row) => `${row.sourceSystem}:${row.sourceTable}:${row.sourceId.toLowerCase()}`),
+  );
   const organization = uniqueOwnerMap(
     input.target.resourceLinks.filter(
       (row) => row.status === "active" || row.status === "suspended" || row.status === "archived",
@@ -293,7 +304,7 @@ function createContext(
   const byTable = new Map<string, IdentitySourceRow[]>();
   for (const row of input.rows)
     byTable.set(row.sourceTable, [...(byTable.get(row.sourceTable) ?? []), row]);
-  return { ...input, blockers, property, organization, byTable };
+  return { ...input, blockers, property, privateProperties, organization, byTable };
 }
 
 function bookingHotel(context: Context, row: IdentitySourceRow): ProductionMediaReference[] {
@@ -657,7 +668,14 @@ function hotelScope(
     throw new Error(
       `no active ${context.sourceRunId} property link for ${sourceSystem}.${sourceTable} ${sourceId}`,
     );
-  return { propertyId, ...owner(context, product, resourceType, sourceId, relationship) };
+  const ownerScope = owner(context, product, resourceType, sourceId, relationship);
+  return {
+    propertyId,
+    ...ownerScope,
+    ...(context.privateProperties.has(`${sourceSystem}:${sourceTable}:${sourceId}`)
+      ? { ownerStatus: "archived" as const }
+      : {}),
+  };
 }
 
 function owner(

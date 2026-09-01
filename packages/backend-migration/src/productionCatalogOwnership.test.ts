@@ -67,7 +67,7 @@ describe("planCatalogOwnership", () => {
     ]);
   });
 
-  it("fails closed when one owner resolves to multiple Booking properties", () => {
+  it("materializes an ambiguous owner mapping as a deterministic private property", () => {
     const plan = planCatalogOwnership([
       auth(),
       booking(),
@@ -82,7 +82,22 @@ describe("planCatalogOwnership", () => {
       }),
     ]);
 
-    expect(plan.blockers.map((blocker) => blocker.code)).toContain("AMBIGUOUS_CANONICAL_PROPERTY");
+    expect(plan.blockers).toEqual([]);
+    expect(plan.properties).toHaveLength(3);
+    expect(plan.quarantinedSources).toEqual([
+      expect.objectContaining({
+        sourceSystem: "marketplace",
+        sourceId: "33333333-3333-4333-8333-333333333333",
+        reason: "ambiguous_canonical_property",
+      }),
+    ]);
+    const quarantined = plan.quarantinedSources[0]!;
+    expect(plan.sourceLinks).toContainEqual(
+      expect.objectContaining({
+        propertyId: quarantined.propertyId,
+        migrationDisposition: "private_quarantine",
+      }),
+    );
   });
 
   it("blocks stale target source-link reassignment and duplicate slugs", () => {
@@ -144,7 +159,7 @@ describe("planCatalogOwnership", () => {
     expect(plan.sourceLinks.find((link) => link.sourceSystem === "pms")?.propertyId).toBe(ID.other);
   });
 
-  it("still blocks unresolved rows owned by an existing non-verified user", () => {
+  it("retains an unmatched non-verified owner's row as private quarantine", () => {
     const plan = planCatalogOwnership([
       auth({ status: "pending" }),
       row("marketplace", "hotel_profiles", {
@@ -157,8 +172,62 @@ describe("planCatalogOwnership", () => {
       }),
     ]);
 
-    expect(plan.blockers.map((blocker) => blocker.code)).toEqual(["MISSING_CANONICAL_PROPERTY"]);
-    expect(plan.quarantinedSources).toEqual([]);
+    expect(plan.blockers).toEqual([]);
+    expect(plan.quarantinedSources).toEqual([
+      expect.objectContaining({
+        sourceId: ID.other,
+        reason: "missing_canonical_property",
+      }),
+    ]);
+    expect(plan.properties[0]).toMatchObject({
+      propertyId: plan.quarantinedSources[0]!.propertyId,
+      booking: null,
+      migrationDisposition: "private_quarantine",
+    });
+  });
+
+  it("keeps one exact PMS match and quarantines a second owner-level duplicate", () => {
+    const duplicate = "33333333-3333-4333-8333-333333333333";
+    const plan = planCatalogOwnership([
+      auth(),
+      booking(),
+      row("pms", "hotels", {
+        id: ID.booking,
+        user_id: ID.user,
+        name: "Exact PMS Hotel",
+        slug: "exact",
+        created_at: "2026-08-01T00:00:00Z",
+      }),
+      row("pms", "hotels", {
+        id: duplicate,
+        user_id: ID.user,
+        name: "Second PMS Hotel",
+        slug: "second",
+        created_at: "2026-08-01T00:00:00Z",
+      }),
+    ]);
+
+    expect(plan.blockers).toEqual([]);
+    expect(
+      plan.properties.find((property) => property.propertyId === ID.booking)?.pms,
+    ).toHaveLength(1);
+    expect(plan.quarantinedSources).toEqual([
+      expect.objectContaining({ sourceId: duplicate, reason: "duplicate_pms_property" }),
+    ]);
+  });
+
+  it("reproduces private property IDs and dispositions across reruns", () => {
+    const source = row("pms", "hotels", {
+      id: ID.other,
+      user_id: ID.other,
+      name: "Orphan PMS Hotel",
+      slug: "orphan",
+      created_at: "2026-08-01T00:00:00Z",
+    });
+    const first = planCatalogOwnership([source]);
+    const repeated = planCatalogOwnership([source], first.sourceLinks);
+
+    expect(repeated).toEqual(first);
   });
 
   it("blocks an existing source link with the wrong relationship", () => {
@@ -194,5 +263,24 @@ describe("planCatalogOwnership", () => {
       ],
     );
     expect(plan.blockers.map((blocker) => blocker.code)).toEqual(["CATALOG_SOURCE_LINK_INACTIVE"]);
+  });
+
+  it("blocks a target source link whose reviewed disposition changes", () => {
+    const plan = planCatalogOwnership(
+      [booking()],
+      [
+        {
+          propertyId: ID.booking,
+          sourceSystem: "booking",
+          sourceTable: "booking_hotels",
+          sourceId: ID.booking,
+          relationship: "canonical_input",
+          migrationDisposition: "private_quarantine",
+        },
+      ],
+    );
+    expect(plan.blockers.map((blocker) => blocker.code)).toEqual([
+      "CATALOG_SOURCE_DISPOSITION_CONFLICT",
+    ]);
   });
 });

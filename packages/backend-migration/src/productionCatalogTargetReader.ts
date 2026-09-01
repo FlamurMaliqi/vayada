@@ -36,7 +36,9 @@ export async function readProductionCatalogSourceLinks(
     `SELECT property_id::text AS "propertyId", source_system AS "sourceSystem",
             source_table AS "sourceTable", source_id AS "sourceId", relationship, status,
             metadata ->> 'migrationRunId' AS "migrationRunId",
-            metadata ->> 'migrationPhase' AS "migrationPhase"
+            metadata ->> 'migrationPhase' AS "migrationPhase",
+            metadata ->> 'migrationDisposition' AS "migrationDisposition",
+            metadata ->> 'migrationDispositionReason' AS "migrationDispositionReason"
      FROM hotel_catalog.property_source_links
      WHERE source_system IN ('booking', 'pms', 'marketplace')
      ORDER BY source_system, source_table, source_id`,

@@ -13,6 +13,7 @@ import {
   uuid,
 } from "./productionIdentitySourceValidation.js";
 import type { CatalogOwnershipPlan } from "./productionCatalogOwnership.js";
+import { stableCatalogId } from "./productionCatalogValues.js";
 
 export type PlannedCatalogProperty = {
   id: string;
@@ -72,49 +73,57 @@ export function planProductionCatalogCore(
 
   for (const group of ownership.properties) {
     const booking = group.booking;
+    const primary = group.primary;
     const pms = group.pms[0];
     try {
       const location = buildLocation(
         group.propertyId,
-        booking.data,
+        booking?.data,
         pms?.data,
         group.marketplace[0]?.data,
+        primary.updatedAt,
       );
-      const defaultLocale = locale(booking.data["default_language"] ?? "en", "default_language");
+      const defaultLocale = locale(booking?.data["default_language"] ?? "en", "default_language");
       const supportedLocales = uniqueLocales([
         defaultLocale,
-        ...jsonStringArray(booking.data["supported_languages"], "supported_languages"),
+        ...jsonStringArray(booking?.data["supported_languages"], "supported_languages"),
         ...(translationLocales.get(group.propertyId) ?? []),
       ]);
-      const canonicalSlug = booking.slug!;
+      const canonicalSlug =
+        booking?.slug ?? `legacy-private-${primary.sourceSystem}-${primary.sourceId}`;
       const canonicalSlugId = stableCatalogId("slug", `${group.propertyId}:${canonicalSlug}`);
       const completenessReasons = [
-        ...(booking.ownershipQuarantined ? ["legacy_owner_quarantined"] : []),
-        ...(!booking.ownershipQuarantined && !booking.ownerPublicEligible
+        ...(group.migrationDispositionReason ? [group.migrationDispositionReason] : []),
+        ...(primary.ownershipQuarantined && !group.migrationDispositionReason
+          ? ["legacy_owner_quarantined"]
+          : []),
+        ...(!primary.ownershipQuarantined && !primary.ownerPublicEligible
           ? ["legacy_owner_not_verified"]
           : []),
         ...(!location.countryCode || !location.city ? ["location_unverified"] : []),
         ...(!location.timezone ? ["timezone_missing"] : []),
       ];
       const profileStatus =
-        booking.status !== "live" || !booking.ownerPublicEligible
+        group.migrationDisposition === "private_quarantine" ||
+        booking?.status !== "live" ||
+        !primary.ownerPublicEligible
           ? "private"
           : completenessReasons.length === 0
             ? "complete"
             : "incomplete";
       properties.push({
         id: group.propertyId,
-        publicId: `legacy-property-${group.propertyId}`,
-        displayName: booking.name,
+        publicId: `${group.migrationDisposition === "private_quarantine" ? "legacy-private-property" : "legacy-property"}-${group.propertyId}`,
+        displayName: primary.name,
         propertyType: optionalText(pms?.data["property_type"], "property_type"),
         category: null,
-        starRating: starRating(booking.data["star_rating"], blockers, booking.sourceId),
+        starRating: starRating(booking?.data["star_rating"], blockers, primary.sourceId),
         defaultLocale,
         supportedLocales,
         profileStatus,
         completenessReasons,
-        createdAt: booking.createdAt,
-        updatedAt: [booking.updatedAt, pms?.updatedAt]
+        createdAt: primary.createdAt,
+        updatedAt: [booking?.updatedAt, pms?.updatedAt, group.marketplace[0]?.updatedAt]
           .filter((value): value is string => Boolean(value))
           .sort()
           .at(-1)!,
@@ -126,17 +135,17 @@ export function planProductionCatalogCore(
         purpose: "canonical",
         status: "active",
         redirectsToId: null,
-        updatedAt: booking.updatedAt,
+        updatedAt: primary.updatedAt,
       });
       for (const redirect of new Set(
-        jsonStringArray(booking.data["previous_slugs"], "previous_slugs"),
+        jsonStringArray(booking?.data["previous_slugs"], "previous_slugs"),
       )) {
         if (redirect === canonicalSlug) {
           addBlocker(
             blockers,
             "INVALID_REDIRECT_SLUG",
             "booking.booking_hotels",
-            booking.sourceId,
+            primary.sourceId,
             "previous_slugs contains the active canonical slug",
           );
           continue;
@@ -148,7 +157,7 @@ export function planProductionCatalogCore(
           purpose: "redirect",
           status: "redirected",
           redirectsToId: canonicalSlugId,
-          updatedAt: booking.updatedAt,
+          updatedAt: primary.updatedAt,
         });
       }
 
@@ -157,8 +166,8 @@ export function planProductionCatalogCore(
       addBlocker(
         blockers,
         "INVALID_CATALOG_CORE_FACT",
-        "booking.booking_hotels",
-        booking.sourceId,
+        `${primary.sourceSystem}.${primary.sourceTable}`,
+        primary.sourceId,
         error instanceof Error ? error.message : "Invalid catalog core fact",
       );
     }
@@ -188,12 +197,13 @@ export function planProductionCatalogCore(
 
 function buildLocation(
   propertyId: string,
-  booking: Record<string, unknown>,
+  booking: Record<string, unknown> | undefined,
   pms: Record<string, unknown> | undefined,
   marketplace: Record<string, unknown> | undefined,
+  updatedAt: string,
 ): PlannedCatalogLocation {
   const country =
-    optionalText(pms?.["country"], "country") ?? optionalText(booking["country"], "country");
+    optionalText(pms?.["country"], "country") ?? optionalText(booking?.["country"], "country");
   const countryCode =
     country && /^[A-Za-z]{2}$/.test(country.trim()) ? country.trim().toUpperCase() : null;
   const latitude = numberOrNull(pms?.["latitude"], "latitude");
@@ -201,7 +211,7 @@ function buildLocation(
   if ((latitude === null) !== (longitude === null))
     throw new Error("latitude and longitude must be supplied together");
   const timezone =
-    optionalText(pms?.["timezone"], "timezone") ?? optionalText(booking["timezone"], "timezone");
+    optionalText(pms?.["timezone"], "timezone") ?? optionalText(booking?.["timezone"], "timezone");
   const notes =
     country && !countryCode ? `Legacy country retained without ISO promotion: ${country}` : null;
   return {
@@ -211,7 +221,7 @@ function buildLocation(
     city: optionalText(pms?.["city"], "city"),
     streetAddress:
       optionalText(pms?.["address"], "address") ??
-      optionalText(booking["contact_address"], "contact_address"),
+      optionalText(booking?.["contact_address"], "contact_address"),
     postalCode: optionalText(pms?.["zip_code"], "zip_code"),
     rawMarketplaceLocation: optionalText(marketplace?.["location"], "location"),
     latitude: latitude !== null && longitude !== null ? latitude : null,
@@ -219,8 +229,7 @@ function buildLocation(
     timezone: timezone && /^[A-Za-z_]+\/[A-Za-z0-9_+./-]+$/.test(timezone) ? timezone : null,
     sourceConfidence: pms ? "high" : "low",
     migrationNotes: notes,
-    updatedAt:
-      optionalText(pms?.["updated_at"], "updated_at") ?? text(booking["updated_at"], "updated_at"),
+    updatedAt,
   };
 }
 
@@ -249,15 +258,7 @@ function parseTranslationLocales(
   return result;
 }
 
-export function stableCatalogId(kind: string, value: string): string {
-  const bytes = Buffer.from(
-    createHash("sha1").update(`vayada:catalog:${kind}:${value}`).digest().subarray(0, 16),
-  );
-  bytes[6] = (bytes[6]! & 15) | 80;
-  bytes[8] = (bytes[8]! & 63) | 128;
-  const hex = bytes.toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
+export { stableCatalogId } from "./productionCatalogValues.js";
 
 function locale(value: unknown, field: string): string {
   const result = text(value, field).trim().toLowerCase();

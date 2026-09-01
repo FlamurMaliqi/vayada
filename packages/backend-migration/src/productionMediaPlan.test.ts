@@ -172,6 +172,16 @@ describe("production media plan", () => {
     expect(plan.references[0]).toMatchObject({ visibility: "private", publicApproved: false });
   });
 
+  it("forces media for a private-quarantined property to remain private", () => {
+    const input = fixture();
+    input.target.propertyLinks[0]!.migrationDisposition = "private_quarantine";
+
+    const plan = buildProductionMediaPlan(input);
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.references[0]).toMatchObject({ visibility: "private", publicApproved: false });
+  });
+
   it("retains suspended creator media as private", () => {
     const input = fixture();
     input.rows = [

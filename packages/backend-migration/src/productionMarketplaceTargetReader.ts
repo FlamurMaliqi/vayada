@@ -19,7 +19,8 @@ export async function readProductionMarketplacePrerequisites(
 ): Promise<ProductionMarketplacePrerequisites> {
   const propertyLinks = await client.query<MarketplacePropertyLink>(
     `SELECT source_id AS "sourceId", property_id::text AS "propertyId", relationship, status,
-            metadata ->> 'migrationRunId' AS "migrationRunId"
+            metadata ->> 'migrationRunId' AS "migrationRunId",
+            metadata ->> 'migrationDisposition' AS "migrationDisposition"
      FROM hotel_catalog.property_source_links
      WHERE source_system = 'marketplace' AND source_table = 'hotel_profiles'
        AND metadata ->> 'migrationRunId' = $1

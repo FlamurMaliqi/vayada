@@ -11,7 +11,8 @@ export async function readProductionMediaTargetState(
   const propertyLinks = await client.query<ProductionMediaTargetState["propertyLinks"][number]>(
     `SELECT source_system AS "sourceSystem", source_table AS "sourceTable",
             source_id AS "sourceId", property_id::text AS "propertyId", relationship, status,
-            metadata ->> 'migrationRunId' AS "migrationRunId"
+            metadata ->> 'migrationRunId' AS "migrationRunId",
+            metadata ->> 'migrationDisposition' AS "migrationDisposition"
        FROM hotel_catalog.property_source_links
       WHERE (source_system, source_table) IN (
               ('booking', 'booking_hotels'),

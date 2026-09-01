@@ -66,14 +66,28 @@ export function reconcileProductionCatalog(
     target.sourceLinks
       .filter(
         (row) =>
-          row.sourceSystem === "booking" &&
-          row.sourceTable === "booking_hotels" &&
-          row.propertyId === row.sourceId &&
           row.migrationPhase !== "prerequisites" &&
-          VAY1351_RUN.test(row.migrationRunId ?? ""),
+          VAY1351_RUN.test(row.migrationRunId ?? "") &&
+          (row.migrationDisposition === "canonical" ||
+            row.migrationDisposition === "private_quarantine" ||
+            (row.sourceSystem === "booking" &&
+              row.sourceTable === "booking_hotels" &&
+              row.propertyId === row.sourceId)),
       )
       .map((row) => row.propertyId),
   );
+  const currentProperties = new Map(target.properties.map((row) => [String(row["id"]), row]));
+  for (const property of core.properties) {
+    const current = currentProperties.get(property.id);
+    if (property.profileStatus === "private" && current && current["profileStatus"] !== "private")
+      addBlocker(
+        blockers,
+        "CATALOG_PRIVATE_DISPOSITION_CONFLICT",
+        "hotel_catalog.properties",
+        property.id,
+        "Target property is public-capable but the reviewed migration disposition is private",
+      );
+  }
   const sourceSlugs = protectCanonicalSlugs(core.slugs, target.slugs, blockers);
   const reconcile = <T extends { updatedAt: string }>(
     entity: string,

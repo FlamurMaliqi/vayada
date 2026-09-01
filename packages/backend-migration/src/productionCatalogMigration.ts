@@ -4,6 +4,7 @@ import { normalizePgConnectionString } from "./pgConnection.js";
 import { writeProductionCatalogContent } from "./productionCatalogContentWriter.js";
 import { writeProductionCatalogCore } from "./productionCatalogCoreWriter.js";
 import type { ExistingCatalogSourceLink } from "./productionCatalogOwnership.js";
+import { stableCatalogId } from "./productionCatalogValues.js";
 import {
   buildProductionCatalogPlan,
   type ProductionCatalogCounts,
@@ -107,7 +108,8 @@ export async function runProductionCatalogPrerequisiteTransaction(
     if (input.mode === "apply") {
       await client.query("SET LOCAL lock_timeout = '5s'");
       await client.query(
-        `LOCK TABLE hotel_catalog.properties, hotel_catalog.property_source_links,
+        `LOCK TABLE identity.organization_resource_links, identity.product_entitlements,
+                    hotel_catalog.properties, hotel_catalog.property_source_links,
                     hotel_catalog.property_slugs, hotel_catalog.property_locations,
                     hotel_catalog.property_profiles, hotel_catalog.property_amenities,
                     hotel_catalog.property_contact_channels,
@@ -176,7 +178,8 @@ export async function runProductionCatalogTransaction(
     if (input.mode === "apply") {
       await client.query("SET LOCAL lock_timeout = '5s'");
       await client.query(
-        `LOCK TABLE hotel_catalog.properties, hotel_catalog.property_source_links,
+        `LOCK TABLE identity.organization_resource_links, identity.product_entitlements,
+                    hotel_catalog.properties, hotel_catalog.property_source_links,
                     hotel_catalog.property_slugs, hotel_catalog.property_domains,
                     hotel_catalog.property_locations, hotel_catalog.property_profiles,
                     hotel_catalog.property_media, hotel_catalog.property_amenities,
@@ -224,14 +227,24 @@ export async function runProductionCatalogTransaction(
 function catalogPropertyIds(rows: IdentitySourceRow[]): string[] {
   return [
     ...new Set(
-      rows.flatMap((row) =>
-        row.sourceDatabase === "booking" &&
-        row.sourceTable === "booking_hotels" &&
-        typeof row.data["id"] === "string" &&
-        UUID.test(row.data["id"])
-          ? [row.data["id"].toLowerCase()]
-          : [],
-      ),
+      rows.flatMap((row) => {
+        const sourceId = row.data["id"];
+        if (typeof sourceId !== "string" || !UUID.test(sourceId)) return [];
+        const normalized = sourceId.toLowerCase();
+        if (row.sourceDatabase === "booking" && row.sourceTable === "booking_hotels")
+          return [normalized];
+        if (
+          (row.sourceDatabase === "pms" && row.sourceTable === "hotels") ||
+          (row.sourceDatabase === "marketplace" && row.sourceTable === "hotel_profiles")
+        )
+          return [
+            stableCatalogId(
+              "private-property",
+              `${row.sourceDatabase}:${row.sourceTable}:${normalized}`,
+            ),
+          ];
+        return [];
+      }),
     ),
   ].sort();
 }

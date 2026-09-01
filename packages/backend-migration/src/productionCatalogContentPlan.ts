@@ -78,13 +78,14 @@ export function planProductionCatalogContent(
 
   for (const group of ownership.properties) {
     const booking = group.booking;
+    const primary = group.primary;
     const marketplace = group.marketplace[0];
     try {
       const defaultLocale = text(
-        booking.data["default_language"] ?? "en",
+        booking?.data["default_language"] ?? "en",
         "default_language",
       ).toLowerCase();
-      const bookingDescription = optionalText(booking.data["description"], "description");
+      const bookingDescription = optionalText(booking?.data["description"], "description");
       const marketplaceDescription = optionalText(marketplace?.data["about"], "about");
       if (bookingDescription || marketplaceDescription)
         profiles.set(`${group.propertyId}:${defaultLocale}`, {
@@ -97,17 +98,18 @@ export function planProductionCatalogContent(
             : marketplace?.status === "verified"
               ? "medium"
               : "low",
-          updatedAt: bookingDescription ? booking.updatedAt : marketplace!.updatedAt,
+          updatedAt: bookingDescription ? booking!.updatedAt : marketplace!.updatedAt,
         });
 
-      addAmenities(
-        amenities,
-        group.propertyId,
-        booking.data["amenities"],
-        "booking",
-        booking.updatedAt,
-        blockers,
-      );
+      if (booking)
+        addAmenities(
+          amenities,
+          group.propertyId,
+          booking.data["amenities"],
+          "booking",
+          booking.updatedAt,
+          blockers,
+        );
       if (group.pms[0])
         addAmenities(
           amenities,
@@ -117,7 +119,8 @@ export function planProductionCatalogContent(
           group.pms[0]!.updatedAt,
           blockers,
         );
-      addContacts(contacts, group.propertyId, booking.data, "booking", booking.updatedAt);
+      if (booking)
+        addContacts(contacts, group.propertyId, booking.data, "booking", booking.updatedAt);
       if (marketplace)
         addContacts(
           contacts,
@@ -126,33 +129,34 @@ export function planProductionCatalogContent(
           "marketplace",
           marketplace.updatedAt,
         );
-      policies.push({
-        propertyId: group.propertyId,
-        checkInTime: time(
-          booking.data["check_in_time"],
-          "check_in_time",
-          blockers,
-          booking.sourceId,
-        ),
-        checkOutTime: time(
-          booking.data["check_out_time"],
-          "check_out_time",
-          blockers,
-          booking.sourceId,
-        ),
-        cancellationSummary: optionalText(
-          booking.data["cancellation_policy_text"],
-          "cancellation_policy_text",
-        ),
-        paymentPolicySummary: optionalText(booking.data["terms_text"], "terms_text"),
-        updatedAt: booking.updatedAt,
-      });
+      if (booking)
+        policies.push({
+          propertyId: group.propertyId,
+          checkInTime: time(
+            booking.data["check_in_time"],
+            "check_in_time",
+            blockers,
+            booking.sourceId,
+          ),
+          checkOutTime: time(
+            booking.data["check_out_time"],
+            "check_out_time",
+            blockers,
+            booking.sourceId,
+          ),
+          cancellationSummary: optionalText(
+            booking.data["cancellation_policy_text"],
+            "cancellation_policy_text",
+          ),
+          paymentPolicySummary: optionalText(booking.data["terms_text"], "terms_text"),
+          updatedAt: booking.updatedAt,
+        });
     } catch (error) {
       addBlocker(
         blockers,
         "INVALID_CATALOG_CONTENT",
-        "booking.booking_hotels",
-        booking.sourceId,
+        `${primary.sourceSystem}.${primary.sourceTable}`,
+        primary.sourceId,
         error instanceof Error ? error.message : "Invalid catalog content",
       );
     }
@@ -164,7 +168,8 @@ export function planProductionCatalogContent(
   )) {
     try {
       const propertyId = uuid(row.data["hotel_id"], "hotel_id");
-      if (!ownership.properties.some((group) => group.propertyId === propertyId)) continue;
+      const group = ownership.properties.find((candidate) => candidate.propertyId === propertyId);
+      if (!group?.booking) continue;
       const locale = text(row.data["locale"], "locale").toLowerCase();
       const description = optionalText(row.data["description"], "description");
       if (description)
@@ -174,8 +179,7 @@ export function planProductionCatalogContent(
           shortDescription: null,
           longDescription: description,
           sourceConfidence: "high",
-          updatedAt: ownership.properties.find((group) => group.propertyId === propertyId)!.booking
-            .updatedAt,
+          updatedAt: group.booking.updatedAt,
         });
       const translatedAmenities = row.data["amenities"];
       if (translatedAmenities)
@@ -184,7 +188,7 @@ export function planProductionCatalogContent(
           propertyId,
           translatedAmenities,
           "booking",
-          ownership.properties.find((group) => group.propertyId === propertyId)!.booking.updatedAt,
+          group.booking.updatedAt,
           blockers,
         );
     } catch (error) {

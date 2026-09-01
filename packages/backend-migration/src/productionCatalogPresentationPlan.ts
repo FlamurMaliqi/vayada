@@ -65,22 +65,24 @@ export function planProductionCatalogPresentation(
 
   for (const group of ownership.properties) {
     const booking = group.booking;
+    const primary = group.primary;
     let hostname: string | undefined;
-    try {
-      hostname = optionalText(booking.data["custom_domain"], "custom_domain")
-        ?.trim()
-        .toLowerCase()
-        .replace(/\.$/, "");
-    } catch (error) {
-      addBlocker(
-        blockers,
-        "INVALID_CUSTOM_DOMAIN",
-        "booking.booking_hotels",
-        booking.sourceId,
-        error instanceof Error ? error.message : "custom_domain is malformed",
-      );
-    }
-    if (hostname) {
+    if (booking)
+      try {
+        hostname = optionalText(booking.data["custom_domain"], "custom_domain")
+          ?.trim()
+          .toLowerCase()
+          .replace(/\.$/, "");
+      } catch (error) {
+        addBlocker(
+          blockers,
+          "INVALID_CUSTOM_DOMAIN",
+          "booking.booking_hotels",
+          booking.sourceId,
+          error instanceof Error ? error.message : "custom_domain is malformed",
+        );
+      }
+    if (booking && hostname) {
       if (!validHostname(hostname))
         addBlocker(
           blockers,
@@ -123,7 +125,7 @@ export function planProductionCatalogPresentation(
                 verificationStatus: "pending",
                 canonicalWhenVerified: false,
                 verifiedAt: null,
-                updatedAt: booking.updatedAt,
+                updatedAt: booking!.updatedAt,
               },
             );
         }
@@ -133,8 +135,8 @@ export function planProductionCatalogPresentation(
     let references: MediaReference[] = [];
     try {
       references = mediaReferences(
-        booking.data,
-        booking.updatedAt,
+        booking?.data,
+        booking?.updatedAt,
         group.marketplace[0]?.data,
         group.marketplace[0]?.updatedAt,
       );
@@ -142,8 +144,8 @@ export function planProductionCatalogPresentation(
       addBlocker(
         blockers,
         "INVALID_MEDIA_REFERENCE",
-        "booking.booking_hotels",
-        booking.sourceId,
+        `${primary.sourceSystem}.${primary.sourceTable}`,
+        primary.sourceId,
         error instanceof Error ? error.message : "media reference is malformed",
       );
     }
@@ -194,6 +196,7 @@ export function planProductionCatalogPresentation(
         sortOrder: reference.sortOrder,
         sourceSystem: reference.sourceSystem,
         publicApproved:
+          group.migrationDisposition === "canonical" &&
           object.visibility === "public" &&
           object.lifecycleStatus === "active" &&
           object.publicApproved,
@@ -220,47 +223,49 @@ type MediaReference = {
   updatedAt: string;
 };
 function mediaReferences(
-  booking: Record<string, unknown>,
-  bookingUpdatedAt: string,
+  booking: Record<string, unknown> | undefined,
+  bookingUpdatedAt: string | undefined,
   marketplace: Record<string, unknown> | undefined,
   marketplaceUpdatedAt: string | undefined,
 ): MediaReference[] {
-  const bookingId = String(booking["id"]);
   const result: MediaReference[] = [];
-  if (optionalText(booking["hero_image"], "hero_image"))
-    result.push({
-      sourceSystem: "booking",
-      sourceTable: "booking_hotels",
-      sourceRowId: `${bookingId}:hero_image`,
-      purpose: "property.hero_image",
-      mediaType: "hero_image",
-      sortOrder: 0,
-      updatedAt: bookingUpdatedAt,
-    });
-  const images = booking["images"];
-  if (images != null && (!Array.isArray(images) || images.some((url) => typeof url !== "string")))
-    throw new Error("booking_hotels.images must be a string array");
-  for (const [index, url] of ((images ?? []) as string[]).entries())
-    if (url.trim())
+  if (booking) {
+    const bookingId = String(booking["id"]);
+    if (optionalText(booking["hero_image"], "hero_image"))
       result.push({
         sourceSystem: "booking",
         sourceTable: "booking_hotels",
-        sourceRowId: `${bookingId}:images:${index + 1}`,
-        purpose: "property.gallery_image",
-        mediaType: "gallery_image",
-        sortOrder: index,
-        updatedAt: bookingUpdatedAt,
+        sourceRowId: `${bookingId}:hero_image`,
+        purpose: "property.hero_image",
+        mediaType: "hero_image",
+        sortOrder: 0,
+        updatedAt: bookingUpdatedAt!,
       });
-  if (optionalText(booking["branding_logo_url"], "branding_logo_url"))
-    result.push({
-      sourceSystem: "booking",
-      sourceTable: "booking_hotels",
-      sourceRowId: `${bookingId}:branding_logo_url`,
-      purpose: "property.logo",
-      mediaType: "logo",
-      sortOrder: 0,
-      updatedAt: bookingUpdatedAt,
-    });
+    const images = booking["images"];
+    if (images != null && (!Array.isArray(images) || images.some((url) => typeof url !== "string")))
+      throw new Error("booking_hotels.images must be a string array");
+    for (const [index, url] of ((images ?? []) as string[]).entries())
+      if (url.trim())
+        result.push({
+          sourceSystem: "booking",
+          sourceTable: "booking_hotels",
+          sourceRowId: `${bookingId}:images:${index + 1}`,
+          purpose: "property.gallery_image",
+          mediaType: "gallery_image",
+          sortOrder: index,
+          updatedAt: bookingUpdatedAt!,
+        });
+    if (optionalText(booking["branding_logo_url"], "branding_logo_url"))
+      result.push({
+        sourceSystem: "booking",
+        sourceTable: "booking_hotels",
+        sourceRowId: `${bookingId}:branding_logo_url`,
+        purpose: "property.logo",
+        mediaType: "logo",
+        sortOrder: 0,
+        updatedAt: bookingUpdatedAt!,
+      });
+  }
   if (marketplace && optionalText(marketplace["picture"], "picture")) {
     const profileId = String(marketplace["id"]);
     result.push({

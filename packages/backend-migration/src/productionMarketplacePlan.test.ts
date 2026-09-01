@@ -122,6 +122,43 @@ describe("production Marketplace plan", () => {
     ).toBe(false);
   });
 
+  it("keeps an active owner's private-quarantined property and operations non-live", () => {
+    const target = prerequisites();
+    target.propertyLinks[0]!.migrationDisposition = "private_quarantine";
+    target.publicProperties = [];
+
+    const plan = buildProductionMarketplacePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-03T00:00:00.000Z",
+      rows: representativeRows(),
+      target,
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(
+      plan.records.find((record) => record.targetTable === "marketplace_hotel_profiles")?.row,
+    ).toMatchObject({
+      marketplaceProfileStatus: "archived",
+      marketplaceMetadata: { migrationDisposition: "private_quarantine" },
+    });
+    expect(
+      plan.records.find((record) => record.targetTable === "marketplace_offers")?.row,
+    ).toMatchObject({
+      offerStatus: "archived",
+      imageUrls: [],
+      offerMetadata: { migrationDisposition: "private_quarantine" },
+    });
+    expect(
+      plan.records.find((record) => record.targetTable === "collaborations")?.row,
+    ).toMatchObject({
+      lifecycleStatus: "cancelled",
+      collaborationMetadata: { migrationDisposition: "private_quarantine" },
+    });
+    expect(
+      plan.records.some((record) => record.targetTable === "marketplace_offer_read_model"),
+    ).toBe(false);
+  });
+
   it("ignores a valid operator link when the owner is unambiguous", () => {
     const target = prerequisites();
     target.resourceLinks.push({
