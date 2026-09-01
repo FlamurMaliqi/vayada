@@ -94,7 +94,9 @@ const CLAIM_PENDING_INVENTORY_EVENTS = `
     SELECT outbox.id, outbox.property_id
     FROM platform.outbox_events outbox
     WHERE outbox.destination = 'distribution.public-bookability'
-      AND outbox.event_type = 'pms.inventory.changed'
+      AND outbox.event_type IN (
+        'pms.inventory.changed', 'booking.same_day_booking_policy.changed'
+      )
       AND outbox.tenant_scope = 'property'
       AND ($2::uuid IS NULL OR outbox.property_id = $2::uuid)
       AND outbox.attempts_count < outbox.max_attempts
@@ -111,7 +113,9 @@ const CLAIM_PENDING_INVENTORY_EVENTS = `
     FROM platform.outbox_events outbox
     JOIN candidate_event candidate ON candidate.property_id = outbox.property_id
     WHERE outbox.destination = 'distribution.public-bookability'
-      AND outbox.event_type = 'pms.inventory.changed'
+      AND outbox.event_type IN (
+        'pms.inventory.changed', 'booking.same_day_booking_policy.changed'
+      )
       AND outbox.tenant_scope = 'property'
       AND outbox.attempts_count < outbox.max_attempts
       AND (
@@ -563,7 +567,9 @@ async function recoverExpiredProjectionLeases(
              true
            )
        WHERE outbox.destination = 'distribution.public-bookability'
-         AND outbox.event_type = 'pms.inventory.changed'
+         AND outbox.event_type IN (
+           'pms.inventory.changed', 'booking.same_day_booking_policy.changed'
+         )
          AND outbox.tenant_scope = 'property'
          AND outbox.status = 'leased'
          AND outbox.leased_until <= $1::timestamptz
@@ -660,7 +666,9 @@ async function projectInventoryClaim(
        WHERE outbox.property_id = $1::uuid
          AND outbox.id = ANY($2::uuid[])
          AND outbox.destination = 'distribution.public-bookability'
-         AND outbox.event_type = 'pms.inventory.changed'
+         AND outbox.event_type IN (
+           'pms.inventory.changed', 'booking.same_day_booking_policy.changed'
+         )
          AND outbox.status = 'leased'
          AND outbox.outbox_metadata #>> '{publicOfferProjection,leaseToken}' = $3
        ORDER BY outbox.created_at, outbox.id
