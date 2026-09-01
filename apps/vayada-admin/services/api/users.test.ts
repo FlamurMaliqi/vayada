@@ -53,6 +53,11 @@ describe("usersService media writes", () => {
     );
   });
 
+  it("does not send an empty creator profile update", async () => {
+    await expect(usersService.updateCreatorProfile("user-creator", {})).resolves.toEqual({});
+    expect(mocks.put).not.toHaveBeenCalled();
+  });
+
   it("returns the created offer ID needed to scope subsequent media uploads", async () => {
     const offer = { offerId: "offer-801" };
     mocks.createOffer.mockResolvedValue(offer);

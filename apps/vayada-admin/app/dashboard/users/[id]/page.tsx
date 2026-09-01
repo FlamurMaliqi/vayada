@@ -53,6 +53,7 @@ const ACCOMMODATION_TYPES = [
   "Lodge",
 ] as const;
 const COLLABORATION_TYPES = ["Free Stay", "Paid", "Discount", "Affiliate"] as const;
+const CREATOR_PLATFORM_EDITING_ENABLED = false;
 const MONTHS = [
   "January",
   "February",
@@ -516,55 +517,9 @@ function UserDetailContent() {
           profileUpdateData.profilePictureMediaObjectId = uploadResponse.mediaObjectId;
         }
 
-        // Handle platforms - always include when in edit mode (even if empty array to allow clearing all)
-        // Filter out invalid platforms and map to API format
-        profileUpdateData.platforms = editPlatforms
-          .filter((p) => p.handle && p.followers && p.engagementRate)
-          .map((p) => {
-            const platformData: any = {
-              name: p.name,
-              handle: p.handle,
-              followers: parseInt(p.followers) || 0,
-              engagementRate: parseFloat(p.engagementRate) || 0,
-            };
-
-            if (p.topCountries && p.topCountries.length > 0) {
-              const validCountries = p.topCountries.filter(
-                (tc: { country: string; percentage: string }) =>
-                  tc.country && (tc.percentage || tc.percentage === "0"),
-              );
-              if (validCountries.length > 0) {
-                platformData.topCountries = validCountries.map(
-                  (tc: { country: string; percentage: string }) => ({
-                    country: tc.country,
-                    percentage: parseFloat(tc.percentage) || 0,
-                  }),
-                );
-              }
-            }
-
-            if (p.topAgeGroups && p.topAgeGroups.length > 0) {
-              const validAgeGroups = p.topAgeGroups.filter(
-                (ag: { ageRange: string }) => ag.ageRange,
-              );
-              if (validAgeGroups.length > 0) {
-                platformData.topAgeGroups = validAgeGroups.map((ag: { ageRange: string }) => ({
-                  ageRange: ag.ageRange,
-                }));
-              }
-            }
-
-            if (p.genderSplit && (p.genderSplit.male || p.genderSplit.female)) {
-              platformData.genderSplit = {
-                male: p.genderSplit.male ? parseFloat(p.genderSplit.male) : 0,
-                female: p.genderSplit.female ? parseFloat(p.genderSplit.female) : 0,
-              };
-            }
-
-            return platformData;
-          });
-
-        await usersService.updateCreatorProfile(userDetail.id, profileUpdateData);
+        if (Object.keys(profileUpdateData).length > 0) {
+          await usersService.updateCreatorProfile(userDetail.id, profileUpdateData);
+        }
       }
 
       // Update hotel profile fields (only for hotels)
@@ -2123,7 +2078,7 @@ function UserDetailContent() {
             {/* Social Media Tab */}
             {activeTab === "social" && isCreator && profile && (
               <div className="space-y-4">
-                {isEditing ? (
+                {isEditing && CREATOR_PLATFORM_EDITING_ENABLED ? (
                   <>
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="text-lg font-semibold text-gray-900">
@@ -2457,6 +2412,12 @@ function UserDetailContent() {
                   </>
                 ) : (
                   <>
+                    {isEditing && (
+                      <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+                        Connected platform data is read-only here and remains managed by its source
+                        connection.
+                      </div>
+                    )}
                     {(profile as CreatorProfileDetail).platforms &&
                     (profile as CreatorProfileDetail).platforms.length > 0 ? (
                       <div className="space-y-4">

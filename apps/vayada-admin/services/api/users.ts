@@ -164,6 +164,7 @@ export const usersService = {
       }>;
     },
   ): Promise<any> => {
+    if (Object.keys(data).length === 0) return {};
     const response = await apiClient.put<any>(
       `/api/marketplace/admin/users/${userId}/profile/creator`,
       {
