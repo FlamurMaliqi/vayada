@@ -1,16 +1,17 @@
 # Native Guest Inbox contract
 
-- Status: approved MVP contract for `native-guest-inbox.v1`
+- Status: approved combined-Inbox contract for `native-guest-inbox.v2`
 - Owner: PMS Operations
 - Decision source: [VAY-905](https://linear.app/vayadacom/issue/VAY-905/define-native-guest-inbox-mvp-and-cutover-plan)
 - Contract ticket: [VAY-1369](https://linear.app/vayadacom/issue/VAY-1369/define-the-target-guest-messaging-contract)
 
 ## Purpose
 
-This contract defines the target-system boundary for property staff to read and
-manually reply to post-booking guest conversations. It is implemented in
-`apps/api`, consumed by `apps/pms-web`, and owned by the PMS Operations module.
-Marketplace creator chat remains a separate product and data model.
+This contract defines the target-system boundary for property teams to triage,
+coordinate, and reply to guest conversations with optional human-reviewed
+assistance. It is implemented in `apps/api`, consumed by `apps/pms-web`, and
+owned by the PMS Operations module. Marketplace creator chat remains a separate
+product and data model.
 
 The normative examples are in
 `engineering/fixtures/native-guest-inbox/cases.json`.
@@ -19,19 +20,26 @@ The normative examples are in
 
 Included:
 
-- property-scoped thread list, detail, unread count, read, close, reopen, and
-  direct-email thread start and manual reply commands;
-- post-booking OTA conversations received and delivered through Channex;
+- property-scoped thread list, detail, unread count, read, triage, follow-up,
+  assignment, internal-note, direct-email thread start, and manual reply
+  commands;
+- Booking.com and Airbnb conversations received and delivered through Channex,
+  including Airbnb inquiry threads without a booking;
 - direct manual email only when a real guest email and an approved property
   sender are available;
 - private image or PDF attachments prepared by Platform Media;
 - visible queued, retrying, sent, held, and failed delivery states;
-- shared property-thread unread state and an explicit unlinked-booking state.
+- property-scoped quick replies with validated preview before composition;
+- translate, summarize, and draft assistance that can never send without a
+  separate explicit staff reply command;
+- shared property-thread unread state and explicit linked, inquiry, and
+  unlinked conversation context.
 
 Excluded:
 
-- pre-booking inquiries, Marketplace chat, WhatsApp, AI drafting, assignment,
-  internal notes, SLA tooling, analytics, templates, and automations;
+- Marketplace chat, WhatsApp, SMS, social, web chat, phone, voice, cross-property
+  queues, advanced routing, SLA tooling, analytics, and automations;
+- autonomous AI sending or actions;
 - per-user unread state and silent fallback between delivery channels;
 - any Inbox runtime implementation in this contract ticket.
 
@@ -58,11 +66,14 @@ Every route requires an authenticated `RequestContext`, an active
 `pms_property` resource in the URL. `owner`, `operator`, and `front_desk`
 relationships may receive Inbox permissions through the staff-access policy.
 
-| Operation                                       | Required permissions                   |
-| ----------------------------------------------- | -------------------------------------- |
-| list, detail, unread count, mark read           | `pms.inbox.read`                       |
-| start direct email, close, reopen, manual reply | `pms.inbox.read` and `pms.inbox.reply` |
-| prepare/finalize an Inbox attachment            | `pms.inbox.reply`                      |
+| Operation                                                   | Required permissions                   |
+| ----------------------------------------------------------- | -------------------------------------- |
+| list, detail, unread count, mark read                       | `pms.inbox.read`                       |
+| triage, follow up, assign, note, start thread, manual reply | `pms.inbox.read` and `pms.inbox.reply` |
+| execute an available provider-specific action               | `pms.inbox.read` and `pms.inbox.reply` |
+| manage/use quick replies                                    | `pms.inbox.read` and `pms.inbox.reply` |
+| translate, summarize, draft                                 | `pms.inbox.read` and `pms.inbox.reply` |
+| prepare/finalize an Inbox attachment                        | `pms.inbox.reply`                      |
 
 `pms.guest_contact.read` is additionally required to return a guest email or
 phone number. Without it, the route remains usable but those fields are omitted;
@@ -88,24 +99,43 @@ A thread belongs to exactly one property and has an immutable source identity,
 an optional property-scoped booking link, a channel, shared unread state, and a
 monotonic `version` used by staff commands.
 
-`status` is exactly `open` or `closed`. Closing is a reversible Vayada workflow
-action; it does not claim that an OTA provider closed its conversation. Every
-newly accepted inbound guest message increments unread once, updates activity,
-and advances the version. If the thread was closed, the same transaction also
-reopens it and clears its closure metadata. Legacy `no_reply_needed` threads
-migrate to `closed` with close reason `legacy_no_reply_needed` and preserved
-audit evidence.
+`attentionState` is exactly `needs_attention`, `follow_up`, or `done`. These are
+local, reversible Vayada workflow states and never imply that an OTA provider
+closed a conversation. `follow_up` requires a future `followUpAt` and records
+the actor. A durable `pms.inbox.follow-up.release` job moves a due thread to
+`needs_attention` idempotently only if its scheduled timestamp still matches the
+thread; a superseded job is a no-op. `done` and `needs_attention` clear
+follow-up metadata.
 
-`unreadCount` is shared by all staff at the property in v1. `activityAt` plus
+Every newly accepted inbound guest message increments unread once, updates
+activity, advances the version, and moves `follow_up` or `done` to
+`needs_attention` in the same transaction. An accepted manual reply does not
+automatically complete the thread; staff retain explicit control of triage.
+Legacy `no_reply_needed` maps to `done` with reason
+`legacy_no_reply_needed` and preserved audit evidence.
+
+`unreadCount` is shared by all staff at the property in v2. `activityAt` plus
 `id` is the deterministic recent-first ordering key; `activityAt` is the last
-message time or, for an empty direct thread, its creation time.
+message or internal-note time or, for an empty direct thread, its creation time.
 
-### Booking link
+Assignment is optional and points to one active membership with access to the
+same property. Assignment changes are versioned and audited. Removing a member's
+property access clears their active assignments through an audited reconciliation
+job; it does not hide or delete conversations.
 
-`bookingLink.state` is `linked` or `unlinked`. A linked booking must belong to
-the same property as the thread. An unlinked thread remains readable and shows
-the provider booking reference when retained, but the API must not invent or
-cross-property-match a booking.
+An internal note belongs to the property and thread, records its author and
+timestamp, advances thread activity/version, and is visible only to authorized
+property staff. Notes are never passed to a delivery adapter or returned to a
+guest-facing surface.
+
+### Conversation context
+
+`conversationContext.state` is `linked`, `inquiry`, or `unlinked`. A linked
+booking must belong to the same property as the thread. An inquiry retains the
+provider inquiry identity and only normalized dates/guest counts that the
+provider supplied; it does not invent a booking. An unlinked thread remains
+readable and shows the provider reference when retained, but the API must not
+invent or cross-property-match a booking.
 
 ### Message
 
@@ -114,6 +144,22 @@ A message belongs to one thread and property, has direction `inbound` or
 attachments. Inbound provider messages are unique by thread and provider source
 message ID. Outbound manual messages are unique by the accepted command's
 idempotency record.
+
+### Quick reply and assisted content
+
+A quick reply is property-scoped, staff-authored reusable text with a stable
+name and optional approved variables. Selecting one performs a preview against
+the thread's target booking/property ports. Preview returns rendered text and
+unresolved variables but does not create a message or delivery job. Unknown or
+required unresolved variables block use in the composer.
+
+Assistance operations are `translate_message`, `translate_draft`, `summarize`,
+and `draft_reply`. They use a pinned `throughMessageId` where conversation
+context matters, minimize guest PII, and return text labeled as assisted output.
+An assistance result is never a Message, never changes thread triage, and never
+creates an outbox job. Staff may edit the result and must submit the normal
+manual-reply command to send it. Manual reply remains available when the
+assistance service is unavailable.
 
 ### Attachment
 
@@ -170,7 +216,7 @@ All routes are under:
 ```
 
 Identifiers are opaque strings. Timestamps are UTC ISO-8601 values. Successful
-responses include `contractVersion: "native-guest-inbox.v1"`.
+responses include `contractVersion: "native-guest-inbox.v2"`.
 
 These are the shared wire shapes (nullable fields are returned explicitly unless
 marked optional for permission-based redaction):
@@ -198,12 +244,21 @@ type ReplyRoute =
 type ThreadSummary = {
   id: string;
   version: number;
-  status: "open" | "closed";
+  attentionState: "needs_attention" | "follow_up" | "done";
+  followUpAt: string | null;
+  assignedTo: null | { membershipId: string; displayName: string };
   channel: "ota" | "email";
   providerChannel: string | null;
   guest: { displayName: string | null; email?: string; phone?: string };
-  bookingLink:
+  conversationContext:
     | { state: "linked"; bookingId: string; reference: string }
+    | {
+        state: "inquiry";
+        bookingId: null;
+        sourceReference: string;
+        arrivalDate: string | null;
+        departureDate: string | null;
+      }
     | { state: "unlinked"; bookingId: null; sourceReference: string | null };
   unreadCount: number;
   activityAt: string;
@@ -238,13 +293,24 @@ type Message = {
     providerAcknowledgedAt: string | null;
   };
 };
+
+type InternalNote = {
+  id: string;
+  author: { membershipId: string; displayName: string };
+  text: string;
+  occurredAt: string;
+};
+
+type TimelineItem =
+  { kind: "message"; message: Message } | { kind: "internal_note"; note: InternalNote };
 ```
 
 When present, `accessPath` is an authenticated Platform Media route, not a
 durable signed URL. New attachments must return `available` with complete
 metadata. An incomplete migrated attachment returns `unavailable` with nullable
 metadata and no raw source URL. `Message.delivery` is `null` for inbound
-messages.
+messages. Thread detail returns chronological `TimelineItem` values; internal
+notes never appear in guest-facing adapters or exports.
 
 ### Mutation idempotency
 
@@ -256,17 +322,27 @@ operation per command:
 ```text
 pms.inbox.thread.start_direct_email
 pms.inbox.thread.mark_read
-pms.inbox.thread.close
+pms.inbox.thread.mark_done
+pms.inbox.thread.follow_up
 pms.inbox.thread.reopen
+pms.inbox.thread.assign
+pms.inbox.thread.add_note
+pms.inbox.quick_reply.create
+pms.inbox.quick_reply.update
+pms.inbox.quick_reply.archive
+pms.inbox.quick_reply.preview
+pms.inbox.assist
+pms.inbox.provider.no_reply_needed
 pms.inbox.thread.reply
 ```
 
 The fingerprint input is canonical JSON containing the operation, property ID,
 thread or booking ID, and normalized request body. Only its cryptographic hash is
-stored. Idempotency and audit metadata exclude message text, filenames, guest
-contacts, and the raw client key. The same key may therefore be used independently
-for another property or operation; reusing it for a different resource or payload
-within the same property and operation returns `409 idempotency_conflict`.
+stored. Idempotency and audit metadata exclude message/note/assist text,
+filenames, guest contacts, and the raw client key. The same key may therefore be
+used independently for another property or operation; reusing it for a different
+resource or payload within the same property and operation returns `409
+idempotency_conflict`.
 
 Completed records remain replayable for at least 30 days and never expire before
 their related message's content-retention window. An outbound message also keeps
@@ -276,26 +352,30 @@ hash so expiry or content deletion cannot create a duplicate send.
 ### List threads
 
 ```http
-GET /threads?status=open&unread=true&channel=ota&search=lee&limit=25&cursor=...
+GET /threads?attentionState=needs_attention&unread=true&channel=ota&assignee=me&search=lee&limit=25&cursor=...
 ```
 
-- `status`: `open` or `closed`;
+- `attentionState`: `needs_attention`, `follow_up`, or `done`;
 - `unread`: boolean;
 - `channel`: `ota` or `email`;
-- `search`: guest display name, booking reference, or retained message text;
+- `assignee`: `me`, `unassigned`, or an eligible membership ID;
+- `search`: guest display name, booking/inquiry reference, or retained
+  message/note text;
 - `limit`: 1–100, default 25;
 - `cursor`: opaque recent-first `(activityAt,id)` continuation.
 
 The response returns `items` and `nextCursor`. Each item includes thread ID,
-version, status, channel, guest display name, booking-link state/reference,
-unread count, retained last-message preview and timestamp, attachment indicator,
-and current `replyRoute`. Contact values follow the extra PII permission.
+version, attention state, follow-up time, assignee, channel, guest display name,
+conversation context/reference, unread count, retained last-message preview and
+timestamp, attachment indicator, and current `replyRoute`. Contact values follow
+the extra PII permission.
 
 Pagination is snapshot-stable for the cursor boundary: ties use the thread ID,
 and an item updated after page one may reappear only in a new traversal. Invalid
 or filter-mismatched cursors return `400 invalid_cursor`. `activityAt` is
-`COALESCE(last_message_at, created_at)`, so an intentionally created empty direct
-thread participates in the same non-null keyset ordering.
+`GREATEST(COALESCE(last_message_at, created_at),
+COALESCE(last_internal_note_at, created_at))`, so an intentionally created empty
+direct thread participates in the same non-null keyset ordering.
 
 ### Thread detail
 
@@ -303,10 +383,12 @@ thread participates in the same non-null keyset ordering.
 GET /threads/:threadId?messageLimit=50&before=...
 ```
 
-The response returns the complete thread summary, minimal booking context,
-`replyRoute`, and a chronological page of messages. `previousCursor` loads older
-messages using an opaque `(sentAt,id)` boundary. Attachment entries expose an
-authorized private-media descriptor, never a stored public URL.
+The response returns the complete thread summary, minimal booking or inquiry
+context, `replyRoute`, available provider actions, and a chronological page of
+messages and internal notes. `previousCursor` loads older timeline items using
+an opaque `(occurredAt,kind,id)` boundary, including `kind` as the deterministic
+tie-breaker across both tables. Attachment entries expose an authorized private-
+media descriptor, never a stored public URL.
 
 `replyRoute` is advisory. The reply command must resolve it again inside its
 transaction.
@@ -334,20 +416,75 @@ inbound message remains unread. Replaying the same key returns the original
 result. A message outside the thread, or a non-inbound boundary, returns `400
 validation_failed`.
 
-### Close and reopen
+### Triage, follow-up, assignment, and notes
 
 ```http
-POST /threads/:threadId/close
+POST /threads/:threadId/done
+POST /threads/:threadId/follow-up
 POST /threads/:threadId/reopen
 Idempotency-Key: <opaque client key>
 
 {"expectedThreadVersion":12}
+{"expectedThreadVersion":12,"followUpAt":"2026-09-03T09:00:00.000Z"}
 ```
 
-Commands atomically change the local workflow state, closure metadata, audit
-record, and version. A stale version returns `409 thread_version_conflict` with
-the current version. A same-key replay returns the original result before the
-version check. Close/reopen has no provider side effect in v1.
+`done` and `reopen` move the thread to `done` and `needs_attention` respectively.
+`follow-up` requires a future time, moves it to `follow_up`, and schedules the
+durable release job. These commands are local: no provider conversation is
+changed. A stale version returns `409 thread_version_conflict`; a same-key
+replay returns the original result before the version check.
+
+```http
+POST /threads/:threadId/assignment
+POST /threads/:threadId/notes
+Idempotency-Key: <opaque client key>
+
+{"expectedThreadVersion":12,"assigneeMembershipId":"membership_123"}
+{"expectedThreadVersion":12,"text":"Guest prefers a quiet room."}
+```
+
+An assignment may be cleared with `assigneeMembershipId: null`. The assignee
+must have active access to the URL property. A note is required, staff-only
+text. Both commands atomically advance the thread version and activity and
+write non-content audit metadata.
+
+### Quick replies and assisted content
+
+```http
+GET  /quick-replies
+POST /quick-replies
+POST /quick-replies/:quickReplyId/update
+POST /quick-replies/:quickReplyId/archive
+POST /quick-replies/:quickReplyId/preview
+POST /threads/:threadId/assist
+Idempotency-Key: <opaque client key>
+```
+
+Create accepts a stable name and text; update/archive require the quick reply's
+expected version. Archived quick replies are omitted from the default list but
+remain auditable. Preview accepts the thread ID and returns `renderedText` plus
+`unresolvedVariables`; it creates no message or job. The assistance endpoint
+accepts one of `translate_message`, `translate_draft`, `summarize`, or
+`draft_reply`, plus the source text or `throughMessageId` required by that
+operation. It returns labeled assisted text and the pinned message boundary.
+It never sends or mutates the thread. Service failure returns `503
+assistance_unavailable`; staff can still write and send a manual reply.
+
+### Provider-specific actions
+
+Thread detail may expose `booking_com_no_reply_needed` only when the provider
+conversation supports it. The idempotent command is:
+
+```http
+POST /threads/:threadId/provider-actions/no-reply-needed
+Idempotency-Key: <opaque client key>
+```
+
+It returns `202` after atomically recording audit/outbox evidence for a durable
+`pms.inbox.provider-action.deliver` job. Execution revalidates the provider
+capability and uses a stable provider idempotency reference; ambiguous outcomes
+are held for review rather than retried blindly. It does not implicitly change
+the Vayada `attentionState`; staff may separately mark the thread done.
 
 ### Start a direct email thread
 
@@ -366,7 +503,7 @@ channel `email`, no messages, and `activityAt=createdAt`. An OTA reservation is
 rejected with `400 direct_email_not_allowed` rather than converted to email.
 
 The command returns `201` when created or `200` when the deterministic thread
-already exists. A new thread starts `open` at version `1`. Missing guest email,
+already exists. A new thread starts `needs_attention` at version `1`. Missing guest email,
 sender approval, or email policy does not invent a route; it creates the thread
 with the corresponding held `replyRoute` so staff can see the blocker. No
 message or delivery job is created.
@@ -398,9 +535,10 @@ version returns `409 thread_version_conflict` and sends nothing. Acceptance
 atomically increments `thread.version` whether the resolved delivery state is
 `queued` or `held`, updates the last-message projection, and returns the new
 `threadVersion`. Therefore only one of two different replies using the same
-expected version can be accepted. Replying to a closed thread atomically reopens
-it, clears closure metadata, writes `pms.inbox.thread.reopened_by_reply` audit
-evidence, and advances the version only once for the accepted command.
+expected version can be accepted. Replying from `done` or `follow_up` atomically
+moves the thread to `needs_attention`, clears done/follow-up metadata, writes
+`pms.inbox.thread.attention_restored_by_reply` audit evidence, and advances the
+version only once for the accepted command.
 
 ## Routing and transport boundaries
 
@@ -422,8 +560,9 @@ channex.ingest-message:channel_message:<propertyId>:<providerMessageId>:v1
 
 The adapter authenticates and normalizes the webhook; PMS Operations
 idempotently creates or updates the thread and message. Duplicate delivery does
-not duplicate messages, unread increments, or reopen audit entries. Inquiry
-webhooks are ignored by this contract and routed to their later-phase owner.
+not duplicate messages, unread increments, or attention-restored audit entries.
+Supported Airbnb inquiry webhooks create an `inquiry` thread with provider
+identity and supplied dates/guest count, never an invented booking.
 
 ### Direct email
 
@@ -463,7 +602,7 @@ correlation and causation IDs. Failure mapping is normative:
 | non-retryable provider rejection                             | `failed/provider_rejected`                                         | no              |
 | retry budget exhausted                                       | `failed/retry_exhausted`                                           | no              |
 
-V1 has no held-message replay command. After resolving a routing, access, or
+V2 has no held-message replay command. After resolving a routing, access, or
 configuration hold, an authorized actor submits a new manual reply with a new
 idempotency key; the held message remains audit evidence. An ambiguous provider
 outcome must first be resolved manually and cannot be retried by the Inbox.
@@ -488,6 +627,8 @@ Besides authorization errors, routes use `400 validation_failed` or
 thread_version_conflict` or `idempotency_conflict`, `413 attachment_too_large`, `415
 unsupported_attachment_type`, and `500 read_model_unavailable`. Provider
 failures after acceptance are delivery states, not retroactive HTTP failures.
+Assistance service failure uses `503 assistance_unavailable` and does not affect
+manual composition or sending.
 
 ## Target-schema contract
 
@@ -497,36 +638,42 @@ idempotency, and product-audit tables remain shared infrastructure.
 
 Required deltas for implementation tickets:
 
-1. change the thread status constraint to `open|closed`; add monotonic `version`,
-   `closed_at`, `closed_by_user_id`, and `close_reason` fields;
+1. replace legacy status with `attention_state`
+   (`needs_attention|follow_up|done`); add monotonic `version`, follow-up and
+   done metadata, nullable same-property assignee membership, and inquiry
+   context fields;
 2. preserve the existing nullable provider-specific `channel` value as
    `provider_channel`; add required normalized `delivery_channel` (`ota|email`)
    used by the wire contract and routing. Backfill Channex sources to `ota`, and
    classify other migrated threads before exposing them;
 3. preserve the property-scoped booking foreign key and source-thread uniqueness;
-4. add nullable outbound delivery projection fields to `pms.messages`: normalized
+4. add property-scoped internal notes and quick replies; notes advance thread
+   activity but never enter a delivery projection;
+5. add nullable outbound delivery projection fields to `pms.messages`: normalized
    state/channel/reason, current attempt, and latest trustworthy receipt time;
-5. add canonical `pms.message_delivery_attempts` with message/property FKs,
+6. add canonical `pms.message_delivery_attempts` with message/property FKs,
    resolved route, outcome (`running|accepted|transient_failure|terminal_failure`),
    attempt number, scheduling/provider evidence, and normalized failure metadata;
-6. add append-only `pms.message_delivery_receipts` for trustworthy provider
+7. add append-only `pms.message_delivery_receipts` for trustworthy provider
    delivery/read acknowledgements linked to message and accepted attempt;
-7. derive or transactionally project staff-visible delivery state from message,
+8. derive or transactionally project staff-visible delivery state from message,
    job, and attempt records, never only from a provider payload;
-8. preserve incomplete legacy attachments as `unavailable` until VAY-1381 can
+9. preserve incomplete legacy attachments as `unavailable` until VAY-1381 can
    backfill a valid private media object; quarantine any row that cannot be
    safely mapped and never expose its raw `source_url`;
-9. use the shared idempotency and audit records rather than adding parallel
-   Inbox-specific ledgers.
+10. use shared idempotency and audit records for assignment, notes, quick-reply
+    preview, assistance, provider actions, and delivery rather than parallel
+    Inbox-specific ledgers.
 
-Migration must map `no_reply_needed` to `closed` before tightening the status
+Migration must map `no_reply_needed` to `done` before tightening the state
 constraint. Schema work belongs to the follow-up implementation tickets, not
 VAY-1369.
 
 ## Privacy, retention, and audit
 
-- Thread/message text, guest contact, provider payloads, and attachments are
-  property-scoped PII. Queries and search indexes must preserve that scope.
+- Thread/message/note/assisted text, guest contact, provider payloads, and
+  attachments are property-scoped PII. Queries and search indexes preserve that
+  scope.
 - Guest contacts are omitted without `pms.guest_contact.read`; logs, analytics,
   errors, job payloads, and audit metadata must not contain raw contact values.
 - Ingress, access, and APM logging must redact the `search` query value and must
@@ -538,18 +685,20 @@ VAY-1369.
 - Private attachments are served only through an authorized media boundary.
 - Retention/deletion may remove content while keeping minimal non-content audit
   evidence, provider references, timestamps, and action identity.
-- Read, close, reopen, reply acceptance, route holds, delivery attempts, retries,
-  and manual replay are correlated and auditable.
+- Read, triage, follow-up, assignment, note, assisted-content use, provider
+  actions, reply acceptance, route holds, delivery attempts, retries, and manual
+  replay are correlated and auditable.
 
 ## Legacy and VAY-657 divergences
 
 The target deliberately differs from the legacy `/admin/messaging` behavior and
 the assumptions captured in VAY-657:
 
-- there is no `no_reply_needed` state; it migrates to auditable `closed`;
-- close/reopen is a local, reversible workflow and never silently mirrors a
+- there is no `no_reply_needed` state; it migrates to auditable `done`;
+- Vayada triage is local and reversible and never silently mirrors a
   provider operation;
-- a new inbound message reopens a closed thread;
+- a new inbound message moves a `done` or `follow_up` thread to
+  `needs_attention`;
 - unread state is changed through a message boundary, preventing a concurrent
   inbound message from being accidentally marked read;
 - delivery is durable and visible instead of being implied by an HTTP success;
@@ -560,22 +709,26 @@ the assumptions captured in VAY-657:
 
 ## Deferred feature safety
 
-Templates and automations remain outside `native-guest-inbox.v1`; this contract
-defines no route, active schema, or send command for them. The administrative
-consolidation of VAY-1371 into VAY-1369 preserves only these future safety gates:
-default absent/inactive, re-check eligibility and route availability at send
-time, hold unresolved variables, use a one-send idempotency key, preserve audit
-evidence, and forbid OTA-to-email fallback. The fixture contains only a negative
-guard proving these features are not authorized by v1.
+Property-scoped quick replies are included, but they only prepare editable
+composer text. Automations remain outside `native-guest-inbox.v2`; this contract
+defines no scheduled or event-driven send route for them. A future automation
+must be absent/inactive by default, re-check eligibility and route availability
+at send time, hold unresolved variables, use a one-send idempotency key, preserve
+audit evidence, and forbid OTA-to-email fallback. The fixture proves that v2
+does not authorize automated sends.
 
 ## Follow-up ownership
 
-- VAY-906 consumes the thread/message shapes in the Inbox experience design.
-- VAY-1372 implements authenticated, idempotent inbound Channex ingestion.
+- VAY-906 consumes the queue, assignment, note, quick-reply, assistance, and
+  thread/message shapes in the Inbox experience design.
+- VAY-1372 implements authenticated, idempotent inbound Channex ingestion,
+  including supported Airbnb inquiries.
 - VAY-1373 implements target schema deltas, the Inbox-specific Platform Media
-  permission policy, and property-scoped API commands.
+  permission policy, quick replies, assisted-content ports, and property-scoped
+  API/command/read-model boundaries.
 - VAY-1375 implements route resolution, durable delivery, retries, and holds.
-- VAY-1376 implements the responsive PMS Inbox UI against these routes.
+- VAY-1376 implements the responsive PMS Inbox, quick-reply management, and
+  assisted composer against these routes.
 - VAY-1381 migrates legacy data, validates parity, and performs reversible
   cutover.
 
