@@ -23,7 +23,6 @@ import {
 } from "@/services/api/financeSubscriptionsClient";
 import {
   CalendarDaysIcon,
-  BellIcon,
   CreditCardIcon,
   BanknotesIcon,
   GlobeAltIcon,
@@ -31,10 +30,6 @@ import {
   ChatBubbleLeftIcon,
   EnvelopeIcon,
   MapPinIcon,
-  PlusIcon,
-  TrashIcon,
-  ArrowUpIcon,
-  ArrowDownIcon,
   ArrowTopRightOnSquareIcon,
 } from "@heroicons/react/24/outline";
 import { HotelIcon } from "@vayada/product-onboarding";
@@ -53,8 +48,6 @@ import {
   SettingsCard,
   type SettingsNavSection,
 } from "@vayada/settings-ui";
-import { LocationMapPreview } from "@/components/settings/LocationMapPreview";
-import { PoiSearchInput } from "@/components/settings/PoiSearchInput";
 import { SameDayBookingCard } from "@/components/settings/SameDayBookingCard";
 import { useTranslation } from "@/lib/i18n";
 import {
@@ -75,9 +68,6 @@ import {
 //   the hotel pays Vayada; payments = how the hotel collects from guests).
 type Section = SettingsSectionId;
 
-const POI_COLORS = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#0d9488", "#db2777"];
-const PROPERTY_MAP_CENTERING_UNAVAILABLE =
-  "Automatic property map centering is not available on next-api yet.";
 const BILLING_SETTINGS_UNAVAILABLE = "Billing settings are not available on next-api yet.";
 const STRIPE_DASHBOARD_ERROR =
   "Couldn't open your Stripe Dashboard right now. Please try again in a moment.";
@@ -145,14 +135,6 @@ function paymentPolicyNumber(policy: unknown, key: string, fallback: number): nu
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-const hasValidCoordinatePair = (latitude: number, longitude: number) =>
-  Number.isFinite(latitude) &&
-  Number.isFinite(longitude) &&
-  latitude >= -90 &&
-  latitude <= 90 &&
-  longitude >= -180 &&
-  longitude <= 180;
-
 const DEFAULT_SETTINGS: PropertySettings = {
   slug: "",
   property_name: "",
@@ -189,12 +171,8 @@ const DEFAULT_SETTINGS: PropertySettings = {
   payout_account_number: "",
   payout_bank_name: "",
   payout_swift: "",
-  refer_a_guest_enabled: false,
-  map_view_enabled: false,
   terms_text: "",
   cancellation_policy_text: "",
-  show_room_detail_map: false,
-  points_of_interest: [],
 };
 
 type TargetSettingsUpdate =
@@ -225,12 +203,6 @@ function buildTargetSettingsUpdate(
   }
 
   if (section === "booking") {
-    if (settings.map_view_enabled || settings.refer_a_guest_enabled) {
-      return {
-        ok: false,
-        message: "Map view and refer-a-guest settings are not available on next-api yet.",
-      };
-    }
     return {
       ok: true,
       data: {
@@ -247,12 +219,6 @@ function buildTargetSettingsUpdate(
     };
   }
 
-  if (section === "location") {
-    return { ok: false, message: "Location map settings are not available on next-api yet." };
-  }
-  if (section === "notifications") {
-    return { ok: false, message: "Notification settings are not available on next-api yet." };
-  }
   return { ok: false, message: "This settings section is not saved by property settings." };
 }
 
@@ -311,7 +277,6 @@ export default function SettingsPage() {
   const [paymentSuccess, setPaymentSuccess] = useState("");
   const [savingPayment, setSavingPayment] = useState(false);
   const [paymentSettingsLoaded, setPaymentSettingsLoaded] = useState(false);
-  const [selectedPoiId, setSelectedPoiId] = useState<string | null>(null);
   const [billingPropertyId, setBillingPropertyId] = useState<string | null>(null);
   const [financePlanStatus, setFinancePlanStatus] = useState<FinancePlanStatus | null>(null);
   const [billingPlanLoading, setBillingPlanLoading] = useState(true);
@@ -858,21 +823,6 @@ export default function SettingsPage() {
       return;
     }
 
-    const pois = settings.points_of_interest || [];
-    const invalidPoi = pois.find(
-      (poi) =>
-        !poi.label.trim() ||
-        !poi.travelTime.trim() ||
-        !hasValidCoordinatePair(poi.latitude, poi.longitude),
-    );
-    if (invalidPoi) {
-      setFeedback({
-        type: "error",
-        message: "Every point of interest needs a label, travel time, latitude, and longitude.",
-      });
-      selectSection("location");
-      return;
-    }
     try {
       setSaving(true);
       setFeedback(null);
@@ -942,72 +892,9 @@ export default function SettingsPage() {
     setSettings({ ...settings, [key]: value });
   };
 
-  const updatePois = (pois: NonNullable<PropertySettings["points_of_interest"]>) => {
-    updateSetting(
-      "points_of_interest",
-      pois.map((poi, position) => ({ ...poi, position })),
-    );
-  };
-
-  const addPoi = () => {
-    const pois = settings.points_of_interest || [];
-    if (pois.length >= 10) {
-      setFeedback({ type: "error", message: "Maximum 10 points of interest." });
-      return;
-    }
-    const used = new Set(pois.map((poi) => poi.color));
-    const color = POI_COLORS.find((candidate) => !used.has(candidate)) || POI_COLORS[0];
-    const id =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `poi-${Date.now()}`;
-    const newPoi = {
-      id,
-      label: "",
-      travelTime: "",
-      color,
-      latitude: NaN,
-      longitude: NaN,
-      position: pois.length,
-    };
-    updatePois([...pois, newPoi]);
-    setSelectedPoiId(id);
-  };
-
-  const patchPoi = (
-    id: string,
-    patch: Partial<NonNullable<PropertySettings["points_of_interest"]>[number]>,
-  ) => {
-    updatePois(
-      (settings.points_of_interest || []).map((poi) =>
-        poi.id === id ? { ...poi, ...patch } : poi,
-      ),
-    );
-  };
-
-  const deletePoi = (id: string) => {
-    updatePois((settings.points_of_interest || []).filter((poi) => poi.id !== id));
-    if (selectedPoiId === id) setSelectedPoiId(null);
-  };
-
-  const movePoi = (id: string, direction: -1 | 1) => {
-    const pois = [...(settings.points_of_interest || [])];
-    const index = pois.findIndex((poi) => poi.id === id);
-    const next = index + direction;
-    if (index < 0 || next < 0 || next >= pois.length) return;
-    [pois[index], pois[next]] = [pois[next], pois[index]];
-    updatePois(pois);
-  };
-
   const sections: SettingsNavSection[] = [
     { id: "property", label: t("settings.tabs.property"), icon: HotelIcon },
     { id: "booking", label: t("settings.tabs.booking"), icon: CalendarDaysIcon },
-    { id: "location", label: "Location map", icon: MapPinIcon },
-    {
-      id: "notifications",
-      label: t("settings.tabs.notifications"),
-      icon: BellIcon,
-    },
     // TODO i18n: add settings.tabs.payments to messages/*.json.
     // Hardcoded English until then.
     { id: "billing", label: t("settings.tabs.billing"), icon: CreditCardIcon },
@@ -1267,28 +1154,6 @@ export default function SettingsPage() {
             onRetry={retrySameDayBooking}
           />
 
-          {/* Map View */}
-          <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5">
-            <ToggleSwitch
-              enabled={settings.map_view_enabled ?? false}
-              onChange={() => updateSetting("map_view_enabled", !settings.map_view_enabled)}
-              label={t("settings.booking.mapViewLabel")}
-              description={t("settings.booking.mapViewDesc")}
-            />
-          </div>
-
-          {/* Refer a Guest */}
-          <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5">
-            <ToggleSwitch
-              enabled={settings.refer_a_guest_enabled ?? false}
-              onChange={() =>
-                updateSetting("refer_a_guest_enabled", !settings.refer_a_guest_enabled)
-              }
-              label={t("settings.booking.referAGuest")}
-              description={t("settings.booking.referAGuestDesc")}
-            />
-          </div>
-
           {/* Booking Policies */}
           <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5">
             <h2 className="text-sm font-semibold text-gray-900">
@@ -1323,268 +1188,6 @@ export default function SettingsPage() {
                 className="w-full px-2.5 py-2 border border-gray-300 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-y"
               />
             </div>
-          </div>
-
-          {/* Save button */}
-          <div className="flex justify-end">
-            <SaveButton onClick={handleSave} saving={saving}>
-              {t("common.save")}
-            </SaveButton>
-          </div>
-        </div>
-      )}
-
-      {/* Location map tab */}
-      {activeSection === "location" && (
-        <div className="mt-5 space-y-4">
-          <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5">
-            <ToggleSwitch
-              enabled={settings.show_room_detail_map ?? false}
-              onChange={() => updateSetting("show_room_detail_map", !settings.show_room_detail_map)}
-              label="Show location map on room detail"
-              description="Guests see the property and nearby points of interest before selecting a rate."
-            />
-          </div>
-
-          <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <h2 className="text-sm font-semibold text-gray-900">Points of interest</h2>
-                <p className="text-[13px] text-gray-500 mt-0.5">Up to 10 map pins per property.</p>
-              </div>
-              <button
-                type="button"
-                onClick={addPoi}
-                disabled={(settings.points_of_interest || []).length >= 10}
-                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-primary-600 px-3 py-2 text-[13px] font-semibold text-white hover:bg-primary-700 disabled:opacity-50"
-              >
-                <PlusIcon className="h-4 w-4" />
-                Add point of interest
-              </button>
-            </div>
-
-            <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-              <div className="space-y-3">
-                {(settings.points_of_interest || []).length === 0 && (
-                  <div className="rounded-lg border border-dashed border-gray-300 px-4 py-8 text-center text-[13px] text-gray-500">
-                    No points of interest yet.
-                  </div>
-                )}
-                {(settings.points_of_interest || []).map((poi, index) => (
-                  <div
-                    key={poi.id}
-                    className={`rounded-lg border p-3 ${
-                      selectedPoiId === poi.id
-                        ? "border-primary-300 bg-primary-50/40"
-                        : "border-gray-200"
-                    }`}
-                    onClick={() => setSelectedPoiId(poi.id)}
-                  >
-                    <div className="mb-3 flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="h-4 w-4 rounded-full border border-white shadow-sm"
-                          style={{ backgroundColor: poi.color }}
-                        />
-                        <span className="text-[13px] font-semibold text-gray-900">
-                          Point {index + 1}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            movePoi(poi.id, -1);
-                          }}
-                          disabled={index === 0}
-                          className="rounded-md p-1.5 text-gray-500 hover:bg-white disabled:opacity-40"
-                          aria-label="Move point up"
-                        >
-                          <ArrowUpIcon className="h-4 w-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            movePoi(poi.id, 1);
-                          }}
-                          disabled={index === (settings.points_of_interest || []).length - 1}
-                          className="rounded-md p-1.5 text-gray-500 hover:bg-white disabled:opacity-40"
-                          aria-label="Move point down"
-                        >
-                          <ArrowDownIcon className="h-4 w-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            deletePoi(poi.id);
-                          }}
-                          className="rounded-md p-1.5 text-red-500 hover:bg-red-50"
-                          aria-label="Delete point"
-                        >
-                          <TrashIcon className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <label className="block text-[13px] font-medium text-gray-700">
-                        Label
-                        <input
-                          type="text"
-                          value={poi.label}
-                          onChange={(event) => patchPoi(poi.id, { label: event.target.value })}
-                          className="mt-1 w-full rounded-lg border border-gray-300 px-2.5 py-1.5 text-[13px] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
-                          placeholder="Kuta Beach"
-                        />
-                      </label>
-                      <label className="block text-[13px] font-medium text-gray-700">
-                        Travel time
-                        <input
-                          type="text"
-                          value={poi.travelTime}
-                          onChange={(event) => patchPoi(poi.id, { travelTime: event.target.value })}
-                          className="mt-1 w-full rounded-lg border border-gray-300 px-2.5 py-1.5 text-[13px] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
-                          placeholder="3 min walk"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="mt-3">
-                      <label className="block text-[13px] font-medium text-gray-700 mb-1">
-                        Search location
-                      </label>
-                      <PoiSearchInput
-                        onSelect={(latitude, longitude, name) => {
-                          patchPoi(poi.id, {
-                            latitude,
-                            longitude,
-                            ...(!poi.label.trim() ? { label: name } : {}),
-                          });
-                          setSelectedPoiId(poi.id);
-                        }}
-                      />
-                      {Number.isFinite(poi.latitude) && Number.isFinite(poi.longitude) && (
-                        <p className="mt-1 text-[11px] text-gray-400">
-                          Placed at {poi.latitude.toFixed(5)}, {poi.longitude.toFixed(5)}
-                          {" · "}
-                          <button
-                            type="button"
-                            className="text-primary-600 hover:underline"
-                            onClick={() => setSelectedPoiId(poi.id)}
-                          >
-                            click map to reposition
-                          </button>
-                        </p>
-                      )}
-                      {(!Number.isFinite(poi.latitude) || !Number.isFinite(poi.longitude)) && (
-                        <p className="mt-1 text-[11px] text-amber-600">
-                          Not placed yet — search above or{" "}
-                          <button
-                            type="button"
-                            className="underline"
-                            onClick={() => setSelectedPoiId(poi.id)}
-                          >
-                            click the map
-                          </button>
-                          .
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {POI_COLORS.map((color) => (
-                        <button
-                          key={color}
-                          type="button"
-                          onClick={() => patchPoi(poi.id, { color })}
-                          className={`h-7 w-7 rounded-full border-2 ${
-                            poi.color === color ? "border-gray-900" : "border-white"
-                          } shadow-sm`}
-                          style={{ backgroundColor: color }}
-                          aria-label={`Use pin color ${color}`}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="lg:sticky lg:top-5 lg:self-start space-y-2">
-                {(settings.points_of_interest || []).length === 0 && (
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
-                    {PROPERTY_MAP_CENTERING_UNAVAILABLE}
-                  </div>
-                )}
-                <LocationMapPreview
-                  propertyName={settings.property_name}
-                  property={null}
-                  pois={(settings.points_of_interest || []).filter(
-                    (poi) => Number.isFinite(poi.latitude) && Number.isFinite(poi.longitude),
-                  )}
-                  selectedPoiId={selectedPoiId}
-                  onPlacePoi={
-                    selectedPoiId
-                      ? (latitude, longitude) => patchPoi(selectedPoiId, { latitude, longitude })
-                      : undefined
-                  }
-                  onMovePoi={(id, latitude, longitude) => patchPoi(id, { latitude, longitude })}
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="flex justify-end">
-            <SaveButton onClick={handleSave} saving={saving}>
-              {t("common.save")}
-            </SaveButton>
-          </div>
-        </div>
-      )}
-
-      {/* Notifications tab */}
-      {activeSection === "notifications" && (
-        <div className="mt-5 space-y-4">
-          <div className="bg-white rounded-lg border border-gray-200 p-4 md:p-5">
-            <div className="flex items-center gap-1.5 mb-0.5">
-              <EnvelopeIcon className="w-4 h-4 text-gray-700" />
-              <h2 className="text-sm font-semibold text-gray-900">
-                {t("settings.notifications.title")}
-              </h2>
-            </div>
-            <p className="text-[13px] text-gray-500 mb-4">{t("settings.notifications.subtitle")}</p>
-
-            <ToggleSwitch
-              enabled={settings.email_notifications}
-              onChange={() => updateSetting("email_notifications", !settings.email_notifications)}
-              label={t("settings.notifications.emailNotifications")}
-              description={t("settings.notifications.emailNotificationsDesc")}
-            />
-
-            <div className="border-t border-gray-200 my-2" />
-
-            <ToggleSwitch
-              enabled={settings.new_booking_alerts}
-              onChange={() => updateSetting("new_booking_alerts", !settings.new_booking_alerts)}
-              label={t("settings.notifications.newBookingAlerts")}
-              description={t("settings.notifications.newBookingAlertsDesc")}
-            />
-
-            <ToggleSwitch
-              enabled={settings.ota_booking_alerts}
-              onChange={() => updateSetting("ota_booking_alerts", !settings.ota_booking_alerts)}
-              label={t("settings.notifications.otaBookingAlerts")}
-              description={t("settings.notifications.otaBookingAlertsDesc")}
-            />
-
-            <ToggleSwitch
-              enabled={settings.payment_alerts}
-              onChange={() => updateSetting("payment_alerts", !settings.payment_alerts)}
-              label={t("settings.notifications.paymentAlerts")}
-              description={t("settings.notifications.paymentAlertsDesc")}
-            />
           </div>
 
           {/* Save button */}

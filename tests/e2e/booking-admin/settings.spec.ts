@@ -188,80 +188,46 @@ test.describe("booking-admin settings no-legacy guard", () => {
           },
         }),
     );
-    let financePatchCount = 0;
-    await page.route(`**${BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH}`, async (route) => {
-      if (route.request().method() === "GET") {
-        await route.fulfill({
-          json: {
-            contractVersion: "finance-route-contracts.v1",
-            propertyId: BOOKING_ADMIN_PROPERTY_ID,
-            paymentSettings: {
-              paymentsEnabled: true,
-              paymentProvider: "vayada",
-              acceptedMethods: ["pay_at_property", "cash", "manual_card", "card"],
-              defaultCurrency: "EUR",
-              supportedCurrencies: ["EUR"],
-              requiresManualReview: false,
-              providerAccount: {
-                providerAccountId: null,
-                provider: null,
-                status: "not_configured",
-                onboardingStatus: "not_started",
-                chargesEnabled: false,
-                payoutsEnabled: false,
-                capabilities: [],
-              },
-            },
-          },
-        });
-        return;
-      }
-      financePatchCount += 1;
-      const body = route.request().postDataJSON() as {
-        commandId: string;
-        idempotencyKey: string;
-        paymentSettings: {
-          paymentProvider: string;
-          acceptedMethods: string[];
-        };
-      };
-      expect(body.commandId).toContain("settings-payment-settings");
-      expect(body.idempotencyKey).toBe(body.commandId);
-      expect(body.paymentSettings).toMatchObject({
-        paymentProvider: "vayada",
-        acceptedMethods: ["pay_at_property", "cash", "manual_card", "card"],
-      });
-      await route.fulfill({
+    await page.route(`**${BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH}`, (route) =>
+      route.fulfill({
         json: {
           contractVersion: "finance-route-contracts.v1",
           propertyId: BOOKING_ADMIN_PROPERTY_ID,
-          paymentSettings: body.paymentSettings,
-          commandMeta: {
-            commandId: body.commandId,
-            idempotencyKey: body.idempotencyKey,
-            sideEffects: ["audit_event"],
-            outboxEvents: [],
-            jobs: [],
+          paymentSettings: {
+            paymentsEnabled: true,
+            paymentProvider: "vayada",
+            acceptedMethods: ["pay_at_property", "cash", "manual_card", "card"],
+            defaultCurrency: "EUR",
+            supportedCurrencies: ["EUR"],
+            requiresManualReview: false,
+            providerAccount: {
+              providerAccountId: null,
+              provider: null,
+              status: "not_configured",
+              onboardingStatus: "not_started",
+              chargesEnabled: false,
+              payoutsEnabled: false,
+              capabilities: [],
+            },
           },
         },
-      });
-    });
+      }),
+    );
     await page.goto("/settings");
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
 
     await page.getByRole("button", { name: "Booking", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Custom Domain" })).toHaveCount(0);
     await expect(page.getByPlaceholder("booking.yourdomain.com")).toHaveCount(0);
-
-    await page.getByRole("button", { name: "Location map", exact: true }).click();
-    await expect(
-      page.getByText("Automatic property map centering is not available on next-api yet."),
-    ).toBeVisible();
+    await expect(page.getByRole("switch", { name: "Enable map view" })).toHaveCount(0);
+    await expect(page.getByRole("switch", { name: '"Refer a Guest" Feature' })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Location map", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Notifications", exact: true })).toHaveCount(0);
 
     await page.getByRole("button", { name: "Payments", exact: true }).click();
-    await page.getByRole("button", { name: "Save Changes", exact: true }).click();
-    await expect(page.getByText("Payment settings saved").first()).toBeVisible();
-    expect(financePatchCount).toBe(1);
+    await expect(
+      page.getByText("vayada Payments is not available in target checkout yet."),
+    ).toBeVisible();
 
     await assertNoLegacyCalls();
     await assertHealthy();
@@ -393,8 +359,8 @@ test.describe("booking-admin settings no-legacy guard", () => {
     expect(new URL(page.url()).searchParams.get("billing")).toBe("canceled");
     expect(new URL(page.url()).searchParams.get("source")).toBe("email");
 
-    await page.getByRole("button", { name: "Location map", exact: true }).click();
-    await expect.poll(() => new URL(page.url()).searchParams.get("section")).toBe("location");
+    await page.getByRole("button", { name: "Billing", exact: true }).click();
+    await expect.poll(() => new URL(page.url()).searchParams.get("section")).toBe("billing");
 
     await page.goBack();
     await expect(page.getByRole("button", { name: "Booking", exact: true })).toHaveAttribute(
@@ -403,10 +369,18 @@ test.describe("booking-admin settings no-legacy guard", () => {
     );
 
     await page.goForward();
-    await expect(page.getByRole("button", { name: "Location map", exact: true })).toHaveAttribute(
+    await expect(page.getByRole("button", { name: "Billing", exact: true })).toHaveAttribute(
       "aria-current",
       "page",
     );
+
+    for (const section of ["location", "notifications"]) {
+      await page.goto(`/settings?section=${section}`, { waitUntil: "networkidle" });
+      await expect(page.getByRole("button", { name: "Property", exact: true })).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+    }
 
     await page.goto("/settings?section=unknown", { waitUntil: "networkidle" });
     await expect(page.getByRole("button", { name: "Property", exact: true })).toHaveAttribute(

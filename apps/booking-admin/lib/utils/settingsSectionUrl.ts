@@ -1,11 +1,4 @@
-export const SETTINGS_SECTIONS = [
-  "property",
-  "booking",
-  "location",
-  "notifications",
-  "billing",
-  "payments",
-] as const;
+export const SETTINGS_SECTIONS = ["property", "booking", "billing", "payments"] as const;
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number];
 
