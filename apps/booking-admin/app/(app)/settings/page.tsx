@@ -259,15 +259,12 @@ export default function SettingsPage() {
   const [localizationLoading, setLocalizationLoading] = useState(true);
   const [localizationLoadError, setLocalizationLoadError] = useState("");
   const [canonicalDefaultCurrency, setCanonicalDefaultCurrency] = useState<string | null>(null);
+  const localizationLoadVersion = useRef(0);
   const getBookingHotelIdForLocalization = useCallback(() => {
     const hotelId = readBookingHotelId(settings);
     if (!hotelId) throw new Error("Booking hotel id is required.");
     return hotelId;
   }, [settings]);
-  const showLocalizationFeedback = useCallback(
-    (type: "success" | "error", message: string) => setFeedback({ type, message }),
-    [],
-  );
   const {
     defaultCurrency,
     setDefaultCurrency,
@@ -282,7 +279,7 @@ export default function SettingsPage() {
     handleSaveCurrencyLang,
   } = useLocalizationSettingsTab({
     getBookingHotelIdForSave: getBookingHotelIdForLocalization,
-    showFeedback: showLocalizationFeedback,
+    showFeedback: (type, message) => setFeedback({ type, message }),
   });
   const saveLocalizationSettings = async () => {
     const saved = await handleSaveCurrencyLang();
@@ -366,17 +363,23 @@ export default function SettingsPage() {
 
   const loadLocalizationSettings = useCallback(
     async (hotelId: string) => {
+      if (hotelId !== getSelectedBookingHotelId()) return;
+      const loadVersion = ++localizationLoadVersion.current;
+      const isCurrentLoad = () =>
+        loadVersion === localizationLoadVersion.current && hotelId === getSelectedBookingHotelId();
       setLocalizationLoading(true);
       setLocalizationLoadError("");
       setCanonicalDefaultCurrency(null);
       try {
         const localization = await getBookingLocalizationSettings({ hotelId });
+        if (!isCurrentLoad()) return;
         applyLocalizationSettings(localization);
         setCanonicalDefaultCurrency(localization.defaultCurrency);
       } catch (error) {
+        if (!isCurrentLoad()) return;
         setLocalizationLoadError(errorMessage(error, "Localization settings failed to load."));
       } finally {
-        setLocalizationLoading(false);
+        if (isCurrentLoad()) setLocalizationLoading(false);
       }
     },
     [applyLocalizationSettings],
@@ -434,8 +437,6 @@ export default function SettingsPage() {
     setSameDayLoading(true);
     setSameDaySettings(null);
     setSameDayError("");
-    setLocalizationLoading(true);
-    setLocalizationLoadError("");
     if (selectedHotelId) void loadLocalizationSettings(selectedHotelId);
     const propertyPromise = fetchSettings();
     propertyPromise
