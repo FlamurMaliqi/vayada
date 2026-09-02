@@ -16,6 +16,7 @@ import {
   createPgMarketplaceAdminRepository,
   mapOfferRow,
   syncPropertyOfferReadModels,
+  validateMergedOfferUpdate,
 } from "./routes/marketplaceAdmin.js";
 import type {
   MarketplaceAdminCollaborationsResponse,
@@ -29,9 +30,11 @@ import type {
   MarketplaceAdminOffer,
   MarketplaceAdminInviteCode,
   MarketplaceAdminRepository,
+  MarketplaceAdminUpdateOfferRequest,
   MarketplaceAdminUserProfileUpdateResponse,
   MarketplaceCollaborationLifecycleWriteResponse,
   MarketplaceCollaborationRead,
+  OfferRow,
 } from "./routes/marketplaceAdmin.js";
 
 const platformSession: VerifiedSession = {
@@ -1009,6 +1012,7 @@ describe("marketplace admin routes", () => {
     await expect(
       repository.createOfferForUser({
         hotelUserId: "user_hotel",
+        audit: offerAudit(),
         request: offerPayload(),
         authorizationMode: "platform_organization_membership",
       }),
@@ -1028,6 +1032,7 @@ describe("marketplace admin routes", () => {
     await expect(
       repository.updateOfferForUser({
         hotelUserId: "user_hotel",
+        audit: offerAudit(),
         offerId: "f8015000-0000-0000-0000-000000000001",
         request: { title: "Updated creator suite" },
         authorizationMode: "platform_organization_membership",
@@ -1087,6 +1092,55 @@ describe("marketplace admin routes", () => {
       "COALESCE(public_profile.profile_status, property.profile_status) = 'complete'",
     );
     expect(statements).toContain("SET status = 'archived'");
+  });
+
+  it.each([
+    {
+      name: "required platform against stored deliverables",
+      request: {
+        creatorRequirements: {
+          platforms: ["tiktok"],
+          platformRequirementLevel: "required",
+          targetCountries: ["AT"],
+          targetAgeMin: 18,
+          targetAgeMax: 45,
+          targetAgeGroups: ["18-24"],
+          creatorTypes: ["travel"],
+        },
+      } satisfies MarketplaceAdminUpdateOfferRequest,
+      code: "inconsistent_requirement_platforms",
+    },
+    {
+      name: "matching value against stored compensation",
+      request: {
+        matchingCriteria: {
+          ...matchingCriteriaWrite(),
+          expectedCompensationValue: { amount: "900.00", currency: "USD" },
+        },
+      } satisfies MarketplaceAdminUpdateOfferRequest,
+      code: "inconsistent_compensation_currency",
+    },
+  ])("rolls back $name partial updates", async ({ request, code }) => {
+    const sql: string[] = [];
+    const repository = createPgMarketplaceAdminRepository({
+      connectionString: "postgresql://target-db",
+      identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+      pool: createAdminPgPool(sql, { offerRows: [matchingOfferRow()] }) as never,
+    });
+
+    await expect(
+      repository.updateOfferForUser({
+        hotelUserId: "user_hotel",
+        audit: offerAudit(),
+        offerId: "f8015000-0000-0000-0000-000000000001",
+        request,
+        authorizationMode: "platform_organization_membership",
+      }),
+    ).rejects.toMatchObject({ code, statusCode: 422 });
+
+    expect(sql).toContain("ROLLBACK");
+    expect(sql.join("\n")).not.toContain("INSERT INTO platform.product_audit_events");
+    expect(sql.join("\n")).not.toContain("DELETE FROM marketplace.offer_deliverables");
   });
 
   it("refreshes every nonarchived offer projection for a canonical profile write", async () => {
@@ -1232,6 +1286,7 @@ describe("marketplace admin routes", () => {
     await expect(
       repository.createOfferForUser({
         hotelUserId: "user_hotel",
+        audit: offerAudit(),
         request: offerPayload(),
         authorizationMode: "platform_organization_membership",
       }),
@@ -1264,6 +1319,57 @@ describe("marketplace admin routes", () => {
         lifecycleStatus: "staged",
       },
     ]);
+    expect(offer.matchingCriteria).toBeNull();
+  });
+
+  it("maps explicit matching criteria and requirement levels on offer reads", () => {
+    const offer = mapOfferRow(
+      {
+        ...adminOfferRow("offer_801", "property_801"),
+        deliverables: [
+          {
+            deliverableId: "deliverable_801",
+            platform: "instagram",
+            deliverableType: "reel",
+            quantity: 1,
+            timingGuidance: null,
+            requirementLevel: "required",
+          },
+        ],
+        matchingCriteria: matchingCriteriaDocument(),
+      },
+      "platform_organization_membership",
+    );
+
+    expect(offer.deliverables[0]?.requirementLevel).toBe("required");
+    expect(offer.matchingCriteria).toMatchObject({
+      contractVersion: "marketplace-offer-matching-criteria.v1",
+      revision: 1,
+      primaryCampaignGoal: "ugc_asset_creation",
+    });
+  });
+
+  it("validates one-sided updates against the persisted matching inputs", () => {
+    const current = { ...offerResponse("platform_organization_membership") };
+    current.matchingCriteria = matchingCriteriaDocument();
+
+    expect(
+      validateMergedOfferUpdate(current, {
+        creatorRequirements: {
+          ...current.creatorRequirements!,
+          platforms: ["tiktok"],
+          platformRequirementLevel: "required",
+        },
+      }),
+    ).toBe("inconsistent_requirement_platforms");
+    expect(
+      validateMergedOfferUpdate(current, {
+        matchingCriteria: {
+          ...matchingCriteriaWrite(),
+          expectedCompensationValue: { amount: "900.00", currency: "USD" },
+        },
+      }),
+    ).toBe("inconsistent_compensation_currency");
   });
 
   it("requests affiliate provisioning when an admin approval accepts the collaboration", async () => {
@@ -1307,6 +1413,7 @@ function createAdminPgPool(
     creatorReviewRows?: unknown[];
     eligibleMediaCount?: number;
     queryValues?: Array<readonly unknown[] | undefined>;
+    offerRows?: OfferRow[];
   } = {},
 ) {
   const offerId = "f8015000-0000-0000-0000-000000000001";
@@ -1418,7 +1525,7 @@ function createAdminPgPool(
     } else if (text.includes('id::text AS "offerResourceId"')) {
       rows = [{ offerResourceId: offerId, title: "Creator suite", offerStatus: "pending" }];
     } else if (text.includes('offer.id::text AS "offerId"')) {
-      rows = [adminOfferRow(offerId, propertyId)];
+      rows = options.offerRows ?? [adminOfferRow(offerId, propertyId)];
     }
     return { rows: rows as T[] };
   };
@@ -1433,7 +1540,7 @@ function createAdminPgPool(
   };
 }
 
-function adminOfferRow(offerId: string, propertyId: string) {
+function adminOfferRow(offerId: string, propertyId: string): OfferRow {
   return {
     offerId,
     propertyId,
@@ -1446,6 +1553,54 @@ function adminOfferRow(offerId: string, propertyId: string) {
     creatorRequirements: {},
     createdAt: "2026-06-13T10:00:00.000Z",
     updatedAt: "2026-06-13T10:00:00.000Z",
+  };
+}
+
+function matchingOfferRow(): OfferRow {
+  return {
+    ...adminOfferRow(
+      "f8015000-0000-0000-0000-000000000001",
+      "f8013000-0000-0000-0000-000000000001",
+    ),
+    deliverables: [
+      {
+        deliverableId: "deliverable_801",
+        platform: "instagram",
+        deliverableType: "reel",
+        quantity: 1,
+        timingGuidance: null,
+        requirementLevel: "required",
+      },
+    ],
+    compensationOptions: [
+      {
+        compensationOptionId: "compensation_801",
+        compensationType: "paid",
+        availabilityMonths: [],
+        platforms: ["instagram"],
+        freeStayMinNights: null,
+        freeStayMaxNights: null,
+        paidMaxAmount: "900.00",
+        discountPercentage: null,
+        commissionPercentage: null,
+        minFollowers: null,
+        followerRequirementLevel: null,
+        currency: "EUR",
+        termsSummary: null,
+      },
+    ],
+    creatorRequirements: {
+      platforms: ["instagram"],
+      platformRequirementLevel: "required",
+      targetCountries: ["AT"],
+      targetCountriesRequirementLevel: null,
+      targetAgeMin: 18,
+      targetAgeMax: 45,
+      targetAgeGroups: ["18-24"],
+      creatorTypes: ["travel"],
+      creatorTypesRequirementLevel: null,
+    },
+    matchingCriteria: matchingCriteriaDocument(),
   };
 }
 
@@ -1856,6 +2011,60 @@ function offerPayload(): MarketplaceAdminCreateOfferRequest {
       targetAgeGroups: ["18-24"],
       creatorTypes: ["travel"],
     },
+  };
+}
+
+function matchingCriteriaDocument(): NonNullable<MarketplaceAdminOffer["matchingCriteria"]> {
+  return {
+    primaryCampaignGoal: "ugc_asset_creation",
+    availability: {
+      requirementLevel: "required",
+      flexibility: "flexible",
+      startsOn: "2026-10-01",
+      endsOn: "2026-10-31",
+      blackouts: [],
+    },
+    contentCategories: { requirementLevel: "required", values: ["travel"] },
+    contentStyles: { requirementLevel: "preferred", values: ["cinematic"] },
+    usageRights: {
+      channels: ["organic_social"],
+      duration: { mode: "fixed", days: 365 },
+    },
+    includedRevisionRounds: 2,
+    expectedEffortHours: { minimum: 6, maximum: 10 },
+    expectedCompensationValue: { amount: "900.00", currency: "EUR" },
+    applicationCapacity: { acceptingApplications: true, maximumActiveApplications: 20 },
+    contractVersion: "marketplace-offer-matching-criteria.v1",
+    revision: 1,
+    updatedAt: "2026-09-03T00:00:00.000Z",
+  };
+}
+
+function matchingCriteriaWrite(): NonNullable<
+  MarketplaceAdminCreateOfferRequest["matchingCriteria"]
+> {
+  const document = matchingCriteriaDocument();
+  return {
+    primaryCampaignGoal: document.primaryCampaignGoal,
+    availability: document.availability,
+    contentCategories: document.contentCategories,
+    contentStyles: document.contentStyles,
+    usageRights: document.usageRights,
+    includedRevisionRounds: document.includedRevisionRounds,
+    expectedEffortHours: document.expectedEffortHours,
+    expectedCompensationValue: document.expectedCompensationValue,
+    applicationCapacity: document.applicationCapacity,
+  };
+}
+
+function offerAudit() {
+  return {
+    actorUserId: "f8011000-0000-0000-0000-000000000001",
+    actorOrganizationId: "f8012000-0000-0000-0000-000000000001",
+    requestId: "request-marketplace-offer-801",
+    correlationId: "correlation-marketplace-offer-801",
+    source: "api" as const,
+    occurredAt: "2026-09-03T00:00:00.000Z",
   };
 }
 

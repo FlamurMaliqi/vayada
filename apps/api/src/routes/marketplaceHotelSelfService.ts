@@ -9,17 +9,22 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import pg, { type PoolClient } from "pg";
 
 import {
+  MarketplaceOfferConsistencyError,
   OFFER_SELECT_SQL,
   mapOfferRow,
+  offerWriteAudit,
   readOffer,
+  recordOfferMatchingAudit,
   replaceOfferChildren,
   syncOfferReadModel,
   syncPropertyOfferReadModels,
   validateCreateOfferRequest,
+  validateMergedOfferUpdate,
   validateUpdateOfferRequest,
   type MarketplaceAdminCreateOfferRequest,
   type MarketplaceAdminOffer,
   type MarketplaceAdminUpdateOfferRequest,
+  type MarketplaceOfferWriteAudit,
   type OfferRow,
 } from "./marketplaceAdmin.js";
 import { enforceRoutePolicy } from "./policy.js";
@@ -54,6 +59,7 @@ type MarketplaceHotelSelfServiceOfferCreation = MarketplaceHotelSelfServiceOffer
 type MarketplaceHotelSelfServiceOfferCreationContinuation = {
   organizationId: string;
   propertyId: string;
+  audit: MarketplaceOfferWriteAudit;
   idempotencyKey: string;
   request: MarketplaceAdminCreateOfferRequest;
   offerResourceId: string;
@@ -82,6 +88,7 @@ export type MarketplaceHotelSelfServiceRepository = {
   createOffer(input: {
     organizationId: string;
     propertyId: string;
+    audit: MarketplaceOfferWriteAudit;
     idempotencyKey: string;
     request: MarketplaceAdminCreateOfferRequest;
   }): Promise<MarketplaceHotelSelfServiceOfferCreation | null>;
@@ -92,6 +99,7 @@ export type MarketplaceHotelSelfServiceRepository = {
   updateOffer(input: {
     organizationId: string;
     propertyId: string;
+    audit: MarketplaceOfferWriteAudit;
     offerResourceId: string;
     request: MarketplaceAdminUpdateOfferRequest;
   }): Promise<MarketplaceAdminOffer | null>;
@@ -167,6 +175,7 @@ export async function registerMarketplaceHotelSelfServiceRoutes(
         created = await repository.createOffer({
           organizationId: access.organizationId,
           propertyId: request.params.propertyId,
+          audit: offerWriteAudit(access.context),
           idempotencyKey,
           request: request.body,
         });
@@ -181,6 +190,7 @@ export async function registerMarketplaceHotelSelfServiceRoutes(
         const continuation = {
           organizationId: access.organizationId,
           propertyId: request.params.propertyId,
+          audit: offerWriteAudit(access.context),
           idempotencyKey,
           request: request.body,
           offerResourceId: created.offerResourceId,
@@ -213,12 +223,21 @@ export async function registerMarketplaceHotelSelfServiceRoutes(
       );
       if (!offerResourceId) return sendError(reply, 404, "marketplace_offer_not_found");
       requireOfferAccess(request, offerResourceId);
-      const offer = await repository.updateOffer({
-        organizationId: access.organizationId,
-        propertyId: request.params.propertyId,
-        offerResourceId,
-        request: request.body,
-      });
+      let offer: MarketplaceAdminOffer | null;
+      try {
+        offer = await repository.updateOffer({
+          organizationId: access.organizationId,
+          propertyId: request.params.propertyId,
+          audit: offerWriteAudit(access.context),
+          offerResourceId,
+          request: request.body,
+        });
+      } catch (error) {
+        if (error instanceof MarketplaceOfferConsistencyError) {
+          return sendError(reply, 422, error.code);
+        }
+        throw error;
+      }
       if (!offer) return sendError(reply, 404, "marketplace_offer_not_found");
       return toSelfServiceOffer(offer, offerResourceId);
     },
@@ -371,6 +390,15 @@ export function createPgMarketplaceHotelSelfServiceRepository(config: {
           deliverables: input.request.deliverables,
           compensationOptions: input.request.compensationOptions,
           creatorRequirements: input.request.creatorRequirements,
+          matchingCriteria: input.request.matchingCriteria,
+          actorUserId: input.audit.actorUserId,
+        });
+        await recordOfferMatchingAudit(client, {
+          action: "created",
+          offerId,
+          propertyId: input.propertyId,
+          request: input.request,
+          audit: input.audit,
         });
         await syncOfferReadModel(client, offerId, "initialize");
         const offerDocument = await readOffer(client, offerId, "platform_organization_membership");
@@ -485,8 +513,17 @@ export function createPgMarketplaceHotelSelfServiceRepository(config: {
         if (
           input.request.deliverables !== undefined ||
           input.request.compensationOptions !== undefined ||
-          input.request.creatorRequirements !== undefined
+          input.request.creatorRequirements !== undefined ||
+          input.request.matchingCriteria !== undefined
         ) {
+          const current = await readOffer(
+            client,
+            input.offerResourceId,
+            "platform_organization_membership",
+          );
+          if (!current) return null;
+          const consistencyError = validateMergedOfferUpdate(current, input.request);
+          if (consistencyError) throw new MarketplaceOfferConsistencyError(consistencyError);
           await replaceOfferChildren(client, {
             offerId: input.offerResourceId,
             propertyId: input.propertyId,
@@ -494,6 +531,15 @@ export function createPgMarketplaceHotelSelfServiceRepository(config: {
             deliverables: input.request.deliverables,
             compensationOptions: input.request.compensationOptions,
             creatorRequirements: input.request.creatorRequirements,
+            matchingCriteria: input.request.matchingCriteria,
+            actorUserId: input.audit.actorUserId,
+          });
+          await recordOfferMatchingAudit(client, {
+            action: "updated",
+            offerId: input.offerResourceId,
+            propertyId: input.propertyId,
+            request: input.request,
+            audit: input.audit,
           });
         }
         await syncOfferReadModel(client, input.offerResourceId, "initialize");
@@ -744,6 +790,7 @@ async function withTransaction<T>(
 type OfferCreationInput = {
   organizationId: string;
   propertyId: string;
+  audit: MarketplaceOfferWriteAudit;
   idempotencyKey: string;
   request: MarketplaceAdminCreateOfferRequest;
 };

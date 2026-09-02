@@ -70,6 +70,50 @@ export type MarketplaceOfferStatus =
   | "suspended"
   | "archived";
 
+export type MarketplaceOfferRequirementLevel = "required" | "preferred";
+export type MarketplaceOfferMatchingCriteriaWrite = {
+  primaryCampaignGoal:
+    | "ugc_asset_creation"
+    | "awareness"
+    | "direct_bookings"
+    | "affiliate_conversion"
+    | "seasonal_demand"
+    | "other"
+    | null;
+  availability: {
+    requirementLevel: MarketplaceOfferRequirementLevel;
+    flexibility: "exact" | "flexible";
+    startsOn: string;
+    endsOn: string;
+    blackouts: Array<{ startsOn: string; endsOn: string }>;
+  } | null;
+  contentCategories: {
+    requirementLevel: MarketplaceOfferRequirementLevel;
+    values: string[];
+  } | null;
+  contentStyles: {
+    requirementLevel: MarketplaceOfferRequirementLevel;
+    values: string[];
+  } | null;
+  usageRights: {
+    channels: string[];
+    duration: { mode: "fixed"; days: number } | { mode: "perpetual" };
+  } | null;
+  includedRevisionRounds: number | null;
+  expectedEffortHours: { minimum: number; maximum: number } | null;
+  expectedCompensationValue: { amount: string; currency: string } | null;
+  applicationCapacity: {
+    acceptingApplications: boolean;
+    maximumActiveApplications: number | null;
+  } | null;
+};
+
+export type MarketplaceOfferMatchingCriteria = MarketplaceOfferMatchingCriteriaWrite & {
+  contractVersion: "marketplace-offer-matching-criteria.v1";
+  revision: number;
+  updatedAt: string;
+};
+
 export type MarketplaceOfferCompensationOptionWrite = {
   compensationType: "free_stay" | "paid" | "discount" | "affiliate";
   availabilityMonths: string[];
@@ -80,17 +124,21 @@ export type MarketplaceOfferCompensationOptionWrite = {
   discountPercentage: number | null;
   commissionPercentage: number | null;
   minFollowers: number | null;
+  followerRequirementLevel?: MarketplaceOfferRequirementLevel | null;
   currency: string | null;
   termsSummary: string | null;
 };
 
 export type MarketplaceOfferCreatorRequirementsWrite = {
   platforms: MarketplacePlatformName[];
+  platformRequirementLevel?: MarketplaceOfferRequirementLevel | null;
   targetCountries: string[];
+  targetCountriesRequirementLevel?: MarketplaceOfferRequirementLevel | null;
   targetAgeMin: number | null;
   targetAgeMax: number | null;
   targetAgeGroups: string[];
   creatorTypes: ("lifestyle" | "travel" | "other")[];
+  creatorTypesRequirementLevel?: MarketplaceOfferRequirementLevel | null;
 };
 
 export type MarketplaceOfferDeliverableWrite = {
@@ -98,6 +146,7 @@ export type MarketplaceOfferDeliverableWrite = {
   deliverableType: string;
   quantity: number;
   timingGuidance?: string | null;
+  requirementLevel?: MarketplaceOfferRequirementLevel | null;
 };
 
 export type MarketplaceAdminCreateOfferRequest = {
@@ -106,6 +155,7 @@ export type MarketplaceAdminCreateOfferRequest = {
   deliverables: MarketplaceOfferDeliverableWrite[];
   compensationOptions: MarketplaceOfferCompensationOptionWrite[];
   creatorRequirements: MarketplaceOfferCreatorRequirementsWrite;
+  matchingCriteria?: MarketplaceOfferMatchingCriteriaWrite | null;
 };
 
 export type MarketplaceAdminUpdateOfferRequest = Partial<
@@ -117,6 +167,7 @@ export type MarketplaceAdminUpdateOfferRequest = Partial<
   deliverables?: MarketplaceOfferDeliverableWrite[];
   compensationOptions?: MarketplaceOfferCompensationOptionWrite[];
   creatorRequirements?: MarketplaceOfferCreatorRequirementsWrite | null;
+  matchingCriteria?: MarketplaceOfferMatchingCriteriaWrite | null;
 };
 
 export type MarketplaceAdminOffer = {
@@ -138,6 +189,7 @@ export type MarketplaceAdminOffer = {
     compensationOptionId: string;
   })[];
   creatorRequirements: MarketplaceOfferCreatorRequirementsWrite | null;
+  matchingCriteria?: MarketplaceOfferMatchingCriteria | null;
   createdAt: string;
   updatedAt: string;
 };

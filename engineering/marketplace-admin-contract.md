@@ -65,7 +65,9 @@ admin lifecycle timestamps (`hotelAgreedAt`, `creatorAgreedAt`, `completedAt`,
 `cancelledAt`) needed by `vayada-admin`.
 
 Offer writes accept only Marketplace-owned fields: `title`, `offerSummary`,
-`deliverables`, `compensationOptions`, and `creatorRequirements`. Hotel name,
+`deliverables`, `compensationOptions`, `creatorRequirements`, and the optional
+versioned `matchingCriteria` contract documented in
+`engineering/marketplace-hotel-self-service-contract.md`. Hotel name,
 classification, location, contacts, descriptions, and media remain in the
 shared hotel catalog and are not accepted by these routes.
 
