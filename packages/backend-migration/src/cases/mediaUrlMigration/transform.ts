@@ -278,7 +278,13 @@ export async function transformMediaUrlMigration(client: pg.Client): Promise<voi
       source,
       source_thread_id,
       channel,
-      CASE WHEN source = 'manual' THEN 'email' ELSE 'ota' END,
+      CASE
+        WHEN source = 'manual' THEN 'email'
+        WHEN source = 'channex' THEN 'ota'
+        WHEN source = 'migration'
+          AND lower(btrim(channel)) IN ('booking.com', 'booking_com', 'bookingcom', 'airbnb')
+          THEN 'ota'
+      END,
       CASE WHEN status = 'open' THEN 'needs_attention' ELSE 'done' END,
       CASE WHEN status = 'open' THEN NULL ELSE now() END,
       CASE status

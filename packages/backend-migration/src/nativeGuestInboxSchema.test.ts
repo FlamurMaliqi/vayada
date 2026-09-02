@@ -53,6 +53,12 @@ describe("native guest Inbox target schema", () => {
     expect(migration).toContain("protect_pms_message_delivery_receipt_evidence");
     expect(migration).toContain("protect_pms_message_delivery_attempt_truncate");
     expect(migration).toContain("protect_pms_message_delivery_receipt_truncate");
+    expect(migration).toContain(
+      "FOREIGN KEY (message_id, property_id) REFERENCES pms.messages(id, property_id) ON DELETE RESTRICT",
+    );
+    expect(migration).toContain(
+      "REFERENCES pms.message_delivery_attempts(id, message_id, property_id) ON DELETE RESTRICT",
+    );
     expect(migration).not.toMatch(/CREATE TABLE pms\.[a-z_]*idempotency/i);
     expect(migration).not.toMatch(/CREATE TABLE pms\.[a-z_]*audit/i);
   });

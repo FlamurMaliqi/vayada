@@ -1,6 +1,8 @@
 -- Migration: 0134_native_guest_inbox
 -- Owner: domain-pms
 -- See: engineering/native-guest-inbox-contract.md, VAY-1373
+-- Production row counts and the resulting lock profile must be audited by VAY-1370
+-- before this migration is scheduled against a live database.
 
 ALTER TABLE pms.message_threads
   DROP CONSTRAINT IF EXISTS message_threads_status_check;
@@ -207,7 +209,7 @@ CREATE TABLE pms.message_delivery_attempts (
   CONSTRAINT uq_pms_message_delivery_attempt_scope UNIQUE (id, message_id, property_id),
   CONSTRAINT uq_pms_message_delivery_attempt_number UNIQUE (message_id, attempt_number),
   CONSTRAINT fk_pms_message_delivery_attempt_message_property
-    FOREIGN KEY (message_id, property_id) REFERENCES pms.messages(id, property_id) ON DELETE CASCADE,
+    FOREIGN KEY (message_id, property_id) REFERENCES pms.messages(id, property_id) ON DELETE RESTRICT,
   CONSTRAINT chk_pms_message_delivery_attempt_completion CHECK (
     (outcome = 'running' AND completed_at IS NULL)
     OR (outcome <> 'running' AND completed_at IS NOT NULL)
@@ -256,7 +258,7 @@ CREATE TABLE pms.message_delivery_receipts (
   receipt_metadata JSONB NOT NULL DEFAULT '{}',
   CONSTRAINT fk_pms_message_delivery_receipt_attempt
     FOREIGN KEY (attempt_id, message_id, property_id)
-    REFERENCES pms.message_delivery_attempts(id, message_id, property_id) ON DELETE CASCADE
+    REFERENCES pms.message_delivery_attempts(id, message_id, property_id) ON DELETE RESTRICT
 );
 
 CREATE UNIQUE INDEX uq_pms_message_delivery_receipt_provider
