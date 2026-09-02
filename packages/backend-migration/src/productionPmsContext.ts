@@ -81,6 +81,7 @@ export function createProductionPmsContext(input: {
     userIds: new Set(input.target.userIds.map((id) => id.toLowerCase())),
     mediaIds: new Set(input.target.mediaIds.map((id) => id.toLowerCase())),
     mediaBySource,
+    effectiveRoomTypeActiveById: new Map(),
   };
 }
 

@@ -105,6 +105,7 @@ export type PmsBuildContext = {
   userIds: Set<string>;
   mediaIds: Set<string>;
   mediaBySource: Map<string, PmsMediaReference>;
+  effectiveRoomTypeActiveById: Map<string, boolean>;
 };
 
 export type PmsRoomBuild = {

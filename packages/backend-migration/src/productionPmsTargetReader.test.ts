@@ -166,6 +166,9 @@ describe("production PMS target reader", () => {
     expect(calls.find((sql) => sql.includes("WITH requested AS"))).toContain(
       "target.claim_state <> 'active'",
     );
+    expect(calls.find((sql) => sql.includes("WITH requested AS"))).toContain(
+      "lower(target.name) = lower(requested.name)",
+    );
   });
 
   it("blocks mutable migration-owned targets whose source row disappeared", async () => {
