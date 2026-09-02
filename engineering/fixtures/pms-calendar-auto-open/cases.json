@@ -1,0 +1,164 @@
+{
+  "contractVersion": "pms-calendar-auto-open.v1",
+  "cases": [
+    {
+      "caseId": "rolling-18-months-uses-property-month-end",
+      "evaluationInstant": "2026-08-31T16:30:00.000Z",
+      "propertyTimeZone": "Asia/Taipei",
+      "setting": {
+        "revision": 3,
+        "enabled": true,
+        "mode": "rolling",
+        "rollingMonths": 18,
+        "fixedEndMonth": null
+      },
+      "generatedCoverageThrough": "2027-09-30",
+      "expected": {
+        "propertyLocalDate": "2026-09-01",
+        "targetOpenThrough": "2028-03-31",
+        "preservedLayers": ["manual", "channel", "linked_stop_sell", "block", "booking"]
+      }
+    },
+    {
+      "caseId": "fixed-month-batches-beyond-rolling-maximum",
+      "evaluationInstant": "2026-09-02T10:00:00.000Z",
+      "propertyTimeZone": "Asia/Taipei",
+      "setting": {
+        "revision": 2,
+        "enabled": true,
+        "mode": "fixed",
+        "rollingMonths": null,
+        "fixedEndMonth": "2030-12"
+      },
+      "generatedCoverageThrough": "2027-06-30",
+      "expected": {
+        "targetOpenThrough": "2030-12-31",
+        "materializationThrough": "2030-12-31",
+        "usesBoundedInternalBatches": true,
+        "advancesAtNextMonthBoundary": false
+      }
+    },
+    {
+      "caseId": "disabled-policy-is-a-no-op",
+      "evaluationInstant": "2026-09-02T10:00:00.000Z",
+      "propertyTimeZone": "Europe/London",
+      "setting": {
+        "revision": 5,
+        "enabled": false,
+        "mode": "rolling",
+        "rollingMonths": 12,
+        "fixedEndMonth": null
+      },
+      "generatedCoverageThrough": "2027-12-31",
+      "expected": {
+        "targetOpenThrough": null,
+        "createJob": false,
+        "coveragePreserved": true
+      }
+    },
+    {
+      "caseId": "missing-rate-warns-and-keeps-generated-limit-zero",
+      "evaluationInstant": "2026-09-02T10:00:00.000Z",
+      "propertyTimeZone": "Europe/Berlin",
+      "setting": {
+        "revision": 4,
+        "enabled": true,
+        "mode": "rolling",
+        "rollingMonths": 12,
+        "fixedEndMonth": null
+      },
+      "generatedCoverageThrough": "2027-03-31",
+      "rateGaps": [
+        {
+          "roomTypeId": "rt_suite",
+          "from": "2027-04-01",
+          "through": "2027-04-30",
+          "previousRateEligible": true,
+          "manualSellableLimitCount": 2,
+          "channelSellableLimitCount": 3
+        }
+      ],
+      "expected": {
+        "targetOpenThrough": "2027-09-30",
+        "materializationThrough": "2027-09-30",
+        "outcome": "partial",
+        "warnings": [
+          {
+            "code": "missing_rate",
+            "roomTypeId": "rt_suite",
+            "from": "2027-04-01",
+            "through": "2027-04-30"
+          }
+        ],
+        "missingRateGeneratedSellableLimitCount": 0,
+        "projectedAvailabilityAfterRateGate": 0,
+        "rateGateChanged": true,
+        "projectionRefreshEvents": 1,
+        "ariChangedEvents": 1,
+        "ownerLimitsPreserved": true
+      }
+    },
+    {
+      "caseId": "rolling-horizon-honors-leap-year",
+      "evaluationInstant": "2027-02-10T12:00:00.000Z",
+      "propertyTimeZone": "UTC",
+      "setting": {
+        "revision": 1,
+        "enabled": true,
+        "mode": "rolling",
+        "rollingMonths": 12,
+        "fixedEndMonth": null
+      },
+      "expected": {
+        "propertyLocalDate": "2027-02-10",
+        "targetOpenThrough": "2028-02-29"
+      }
+    },
+    {
+      "caseId": "expired-fixed-target-preserves-existing-coverage",
+      "evaluationInstant": "2026-09-02T10:00:00.000Z",
+      "propertyTimeZone": "Europe/Berlin",
+      "setting": {
+        "revision": 8,
+        "enabled": true,
+        "mode": "fixed",
+        "rollingMonths": null,
+        "fixedEndMonth": "2026-08"
+      },
+      "generatedCoverageThrough": "2028-03-31",
+      "savedTransition": "disabled_to_enabled",
+      "expected": {
+        "targetOpenThrough": "2026-08-31",
+        "createJob": false,
+        "coveragePreserved": true
+      }
+    },
+    {
+      "caseId": "duplicate-source-and-horizon-reuses-v2-job",
+      "evaluationInstant": "2026-06-04T10:00:00.000Z",
+      "propertyTimeZone": "Europe/Berlin",
+      "propertyId": "prop_alpenrose",
+      "setting": {
+        "revision": 6,
+        "enabled": true,
+        "mode": "rolling",
+        "rollingMonths": 12,
+        "fixedEndMonth": null
+      },
+      "sourceCanonicalJson": "{\"contractVersion\":\"pms-calendar-auto-open-source.v1\",\"settingRevision\":6,\"propertyProfileRevision\":4,\"propertyTimeZone\":\"Europe/Berlin\",\"operatingCalendarRevision\":9,\"rooms\":[{\"roomTypeId\":\"rt_deluxe\",\"roomFactsRevision\":2,\"roomUnitsRevision\":3}],\"pricing\":{\"pricingCurrencyRevision\":2,\"flexibleRatePlans\":[{\"roomTypeId\":\"rt_deluxe\",\"flexibleRatePlanRevision\":5}],\"optionalPricingAggregateRevision\":7}}",
+      "sourceFingerprint": "613b3cff719ad4b744ecf0a049884f1115612a4b74de4ea44da07921b1e57ce5",
+      "expected": {
+        "targetOpenThrough": "2027-06-30",
+        "domainEventKey": "pms.calendar-auto-open:prop_alpenrose:2027-06-30:source-613b3cff719ad4b744ecf0a049884f1115612a4b74de4ea44da07921b1e57ce5:v2",
+        "jobKey": "pms.calendar-auto-open:property:prop_alpenrose:open-through-2027-06-30:source-613b3cff719ad4b744ecf0a049884f1115612a4b74de4ea44da07921b1e57ce5:v2",
+        "duplicateRun": {
+          "createdNewEvent": false,
+          "createdNewJob": false,
+          "changedDayCount": 0,
+          "projectionRefreshEvents": 0,
+          "ariChangedEvents": 0
+        }
+      }
+    }
+  ]
+}
