@@ -242,6 +242,96 @@ test.describe("pms-web smoke", () => {
     await assertHealthy();
   });
 
+  test("deactivates and reactivates staff while preserving failed status changes", async ({
+    page,
+  }) => {
+    const rosterPath = "**/api/identity/staff/members";
+    const statusPath = "**/api/identity/staff/members/*/status";
+    const requests: Array<{ idempotencyKey: string | undefined; status: string }> = [];
+    let releaseFirstRequest!: () => void;
+    const firstRequestPending = new Promise<void>((resolve) => {
+      releaseFirstRequest = resolve;
+    });
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.unroute(rosterPath);
+    await page.route(rosterPath, (route) =>
+      route.fulfill({
+        json: {
+          members: [
+            {
+              id: "staff_membership_ada",
+              name: "Ada Lovelace",
+              email: "ada@example.com",
+              roleKey: "front_desk",
+              propertyIds: [PMS_WEB_PROPERTY_ID],
+              status: "active",
+              lastActiveAt: "2026-08-24T12:00:00.000Z",
+            },
+            {
+              id: "staff_membership_grace",
+              name: "Grace Hopper",
+              email: "grace@example.com",
+              roleKey: "hotel_manager",
+              propertyIds: [PMS_WEB_PROPERTY_ID],
+              status: "pending",
+              lastActiveAt: null,
+            },
+          ],
+        },
+      }),
+    );
+    await page.route(statusPath, async (route) => {
+      const status = (route.request().postDataJSON() as { status: string }).status;
+      requests.push({
+        idempotencyKey: route.request().headers()["idempotency-key"],
+        status,
+      });
+      if (requests.length === 1) await firstRequestPending;
+      return requests.length === 1
+        ? route.fulfill({ status: 503, json: { code: "staff_status_update_failed" } })
+        : route.fulfill({
+            json: { membershipId: "staff_membership_ada", status },
+          });
+    });
+    page.on("dialog", (dialog) => dialog.accept());
+    await page.goto("/settings/team");
+
+    const adaRow = page.getByRole("row").filter({ hasText: "Ada Lovelace" });
+    const graceRow = page.getByRole("row").filter({ hasText: "Grace Hopper" });
+    await expect(graceRow.getByText("Invitation pending")).toBeVisible();
+    await expect(graceRow.getByRole("button")).toHaveCount(0);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const deactivate = adaRow.getByRole("button", { name: "Deactivate Ada Lovelace" });
+    await deactivate.focus();
+    await expect(deactivate).toBeFocused();
+    await deactivate.click();
+    await expect(
+      adaRow.getByRole("button", { name: "Saving status for Ada Lovelace" }),
+    ).toHaveAttribute("aria-busy", "true");
+    releaseFirstRequest();
+    await expect(adaRow.getByRole("alert")).toHaveText("Couldn’t update Ada Lovelace. Try again.");
+    await expect(adaRow.getByText("Active", { exact: true })).toBeVisible();
+
+    await deactivate.click();
+    await expect(adaRow.getByText("Deactivated", { exact: true })).toBeVisible();
+    const reactivate = adaRow.getByRole("button", { name: "Reactivate Ada Lovelace" });
+    await reactivate.click();
+    await expect(adaRow.getByText("Active", { exact: true })).toBeVisible();
+
+    expect(requests.map((request) => request.status)).toEqual([
+      "deactivated",
+      "deactivated",
+      "active",
+    ]);
+    expect(new Set(requests.map((request) => request.idempotencyKey)).size).toBe(3);
+    expect(
+      requests.every((request) => request.idempotencyKey?.startsWith("pms-staff-status:")),
+    ).toBe(true);
+  });
+
   test("distinguishes loading, empty, and failed team rosters", async ({ page }) => {
     const rosterPath = "**/api/identity/staff/members";
     let releaseRoster!: () => void;
