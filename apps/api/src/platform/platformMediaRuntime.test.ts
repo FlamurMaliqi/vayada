@@ -113,6 +113,7 @@ describe("platform media runtime composition", () => {
         "marketplace.collaboration_chat.attachment",
         "property.logo",
         "pms.room_type.media",
+        "pms.messaging.attachment",
         "finance.expense.receipt",
       ],
       bucketName: "vayada-media-production",
