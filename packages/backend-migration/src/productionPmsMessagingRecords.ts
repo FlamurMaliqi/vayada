@@ -34,7 +34,8 @@ function thread(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetR
   const id = uuid(data["id"], "id");
   const propertyId = propertyForHotel(context, data["hotel_id"]);
   const sourceName = requiredText(data["source"], "source").toLowerCase();
-  if (sourceName !== "channex") throw new Error(`message source ${sourceName} is unsupported`);
+  if (!["channex", "direct"].includes(sourceName))
+    throw new Error(`message source ${sourceName} is unsupported`);
   const status = requiredText(data["status"] ?? "open", "status").toLowerCase();
   if (!["open", "closed", "no_reply_needed"].includes(status))
     throw new Error(`message thread status ${status} is unsupported`);
@@ -51,7 +52,7 @@ function thread(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetR
       id,
       propertyId,
       guestBookingId: bookingId,
-      source: "channex",
+      source: sourceName === "direct" ? "manual" : "channex",
       sourceThreadId: requiredText(data["source_thread_id"], "source_thread_id"),
       sourceBookingId: optionalText(data["source_booking_id"], "source_booking_id"),
       channel: optionalText(data["channel"], "channel"),

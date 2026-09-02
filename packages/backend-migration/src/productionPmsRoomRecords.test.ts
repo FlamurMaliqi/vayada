@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createProductionPmsContext } from "./productionPmsContext.js";
 import { buildPmsRoomRecords } from "./productionPmsRoomRecords.js";
+import { sha256 } from "./productionBookingValues.js";
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
 import type { ProductionPmsTargetState } from "./productionPmsTypes.js";
 
@@ -126,6 +127,65 @@ describe("production PMS room records", () => {
           publicApproved: false,
         },
       ],
+    });
+  });
+
+  it("keeps legacy seasons with empty boundaries as evidence without materializing a rule", () => {
+    const source = sourceRows();
+    source.find((row) => row.sourceTable === "room_types")!.data["seasons"] = [
+      { from: "", to: "", rate: 250, minStay: 2 },
+    ];
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: source,
+      target: target(),
+    });
+
+    const built = buildPmsRoomRecords(context);
+
+    expect(context.blockers).toEqual([]);
+    expect(built.records.filter((record) => record.targetTable === "rate_rules")).toHaveLength(2);
+    expect(built.records.find((record) => record.targetTable === "room_types")?.row).toMatchObject({
+      roomAttributes: { legacyPricing: { ignoredSeasonIndices: [0] } },
+    });
+  });
+
+  it("omits an exact quarantined malformed image field and retains redacted evidence", () => {
+    const source = sourceRows();
+    const roomType = source.find((row) => row.sourceTable === "room_types")!;
+    roomType.data["images"] = [{ stale: SOURCE_IMAGE }];
+    const targetState = target();
+    targetState.media = [];
+    targetState.mediaQuarantines = [
+      {
+        sourceTable: "room_types",
+        sourceRowId: `${ROOM_TYPE}:images`,
+        sourceField: "images",
+        sourceValueSha256: sha256({ value: roomType.data["images"] }),
+        purpose: "pms.room_type.media",
+        reasonCode: "INVALID_STRING_ARRAY",
+      },
+    ];
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: source,
+      target: targetState,
+    });
+
+    const built = buildPmsRoomRecords(context);
+
+    expect(context.blockers).toEqual([]);
+    expect(built.records.filter((record) => record.targetTable === "room_type_media")).toEqual([]);
+    expect(built.records.find((record) => record.targetTable === "room_types")?.row).toMatchObject({
+      mediaSnapshot: [],
+      roomAttributes: {
+        legacyMediaDisposition: {
+          reasonCode: "INVALID_STRING_ARRAY",
+          sourceValueSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        },
+      },
     });
   });
 });

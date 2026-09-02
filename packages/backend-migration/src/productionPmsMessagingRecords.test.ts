@@ -58,6 +58,26 @@ describe("production PMS messaging", () => {
       expect.objectContaining({ message: expect.stringContaining("VAY-1055 gate") }),
     );
   });
+
+  it("retains legacy direct email as a non-provider manual thread", () => {
+    const sourceRows = rows();
+    sourceRows.find((row) => row.sourceTable === "message_threads")!.data["source"] = "direct";
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: sourceRows,
+      target: target([MEDIA]),
+    });
+
+    const records = buildPmsMessagingRecords(context);
+
+    expect(context.blockers).toEqual([]);
+    expect(records.find((record) => record.targetTable === "message_threads")?.row).toMatchObject({
+      source: "manual",
+      sourceThreadId: "thread-ext",
+      channel: "booking.com",
+    });
+  });
 });
 
 function rows(): IdentitySourceRow[] {
