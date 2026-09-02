@@ -37,6 +37,7 @@ import {
 } from "@vayada/domain-finance";
 import { createHash, createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import Fastify from "fastify";
 import type { QueryResult, QueryResultRow } from "pg";
 import { afterEach, describe, expect, it } from "vitest";
@@ -108,7 +109,11 @@ import type { BookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceS
 import type { SameDayBookingSettingsPort } from "./domains/sameDayBookingSettings.js";
 import type { PmsRoomAssignmentSettingsPort } from "./domains/pmsRoomAssignmentSettings.js";
 import type { PmsRoomAssignmentOptimizationHistoryPort } from "./domains/pmsRoomAssignmentOptimizationHistory.js";
-import type { PmsInboxReadPort, PmsInboxThreadSummary } from "./domains/pmsInbox.js";
+import type {
+  PmsInboxMarkReadPort,
+  PmsInboxReadPort,
+  PmsInboxThreadSummary,
+} from "./domains/pmsInbox.js";
 import {
   type BookingReservationListFilters,
   type BookingReservationsReadRepository,
@@ -2662,6 +2667,7 @@ function buildAuthenticatedApp(
     bookingPromoCodesRepository?: BookingPromoCodesRepository;
     pmsOperationsRepository?: PmsOperationsReadRepository | null;
     pmsInboxReadPort?: PmsInboxReadPort;
+    pmsInboxMarkReadPort?: PmsInboxMarkReadPort;
     pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
     pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
     bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
@@ -2707,6 +2713,7 @@ function buildAuthenticatedApp(
     pmsCheckoutChargeMarkPaidFreezeEnabled: options.pmsCheckoutChargeMarkPaidFreezeEnabled,
     pmsOperationsCommandRepository: options.pmsOperationsCommandRepository,
     pmsInboxReadPort: options.pmsInboxReadPort,
+    pmsInboxMarkReadPort: options.pmsInboxMarkReadPort,
     bookingAcceptanceSettings: options.bookingAcceptanceSettings,
     sameDayBookingSettings: options.sameDayBookingSettings,
     pmsRoomAssignmentSettings: options.pmsRoomAssignmentSettings,
@@ -11787,7 +11794,7 @@ describe("vayada-api", () => {
       headers: {
         origin: "https://pms.localhost",
         "access-control-request-method": "GET",
-        "access-control-request-headers": "authorization,content-type,x-hotel-id",
+        "access-control-request-headers": "authorization,content-type,idempotency-key,x-hotel-id",
       },
     });
     const read = await app.inject({
@@ -11802,7 +11809,7 @@ describe("vayada-api", () => {
     expect(preflight.statusCode).toBe(204);
     expect(preflight.headers["access-control-allow-origin"]).toBe("https://pms.localhost");
     expect(preflight.headers["access-control-allow-headers"]).toBe(
-      "authorization,content-type,x-hotel-id",
+      "authorization,content-type,idempotency-key,x-hotel-id",
     );
     expect(preflight.headers["access-control-allow-methods"]).toBe(
       "GET,POST,PUT,PATCH,DELETE,OPTIONS",
@@ -12933,6 +12940,182 @@ describe("vayada-api", () => {
     expect(logs.join("\n")).not.toContain("alex@example.com");
     expect(calls).toHaveLength(8);
     expect(calls[0]?.input).toMatchObject({ propertyId: pmsPropertyId, messageLimit: 25 });
+  });
+
+  it("forwards the protected idempotent Inbox message-boundary read command", async () => {
+    const calls: Parameters<PmsInboxMarkReadPort["markRead"]>[0][] = [];
+    const port: PmsInboxMarkReadPort = {
+      async markRead(input) {
+        calls.push(input);
+        if (input.threadId === "missing")
+          return { ok: false, error: { code: "thread_not_found", message: "Thread not found." } };
+        if (input.idempotencyKey === "conflict")
+          return {
+            ok: false,
+            error: { code: "idempotency_conflict", message: "Idempotency conflict." },
+          };
+        if (input.readThroughMessageId === "outbound")
+          return { ok: false, error: { code: "validation_failed", message: "Invalid boundary." } };
+        return {
+          ok: true,
+          value: {
+            propertyId: input.threadId === "wrong-scope" ? "foreign-property" : input.propertyId,
+            threadId: input.threadId,
+            readThroughMessageId: input.readThroughMessageId,
+            unreadCount: 1,
+          },
+        };
+      },
+    };
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsInboxMarkReadPort: port,
+      pmsOperationsAllowedOrigins: ["https://pms.localhost"],
+    });
+    const base = `/api/pms/properties/${pmsPropertyId}/messaging/threads`;
+    const request = (threadId: string, idempotencyKey: string, readThroughMessageId = "msg_3") =>
+      injectJson(app!, {
+        method: "POST",
+        url: `${base}/${threadId}/read`,
+        headers: { authorization: "Bearer valid-token", "idempotency-key": idempotencyKey },
+        payload: { readThroughMessageId },
+      });
+
+    const preflight = await app.inject({
+      method: "OPTIONS",
+      url: `${base}/thread_1/read`,
+      headers: { origin: "https://pms.localhost" },
+    });
+    const first = await request("thread_1", "read-through-3");
+    const replay = await request("thread_1", "read-through-3");
+    const missing = await request("missing", "missing-thread");
+    const invalid = await request("thread_1", "invalid-boundary", "outbound");
+    const conflict = await request("thread_1", "conflict");
+    const wrongScope = await request("wrong-scope", "wrong-scope");
+
+    expect(preflight).toMatchObject({ statusCode: 204 });
+    expect(preflight.headers["access-control-allow-headers"]).toContain("idempotency-key");
+    for (const response of [first, replay])
+      expect(response).toMatchObject({
+        statusCode: 200,
+        body: {
+          contractVersion: "native-guest-inbox.v2",
+          readThroughMessageId: "msg_3",
+          unreadCount: 1,
+        },
+      });
+    expect(missing).toMatchObject({ statusCode: 404, body: { code: "thread_not_found" } });
+    expect(invalid).toMatchObject({ statusCode: 400, body: { code: "validation_failed" } });
+    expect(conflict).toMatchObject({ statusCode: 409, body: { code: "idempotency_conflict" } });
+    expect(wrongScope).toMatchObject({
+      statusCode: 500,
+      body: { code: "read_model_unavailable" },
+    });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("Test server did not bind");
+    const payload = JSON.stringify({ readThroughMessageId: "msg_3" });
+    const duplicateHeaderStatus = await new Promise<number>((resolve, reject) => {
+      const duplicate = httpRequest(
+        {
+          host: "127.0.0.1",
+          port: address.port,
+          method: "POST",
+          path: `${base}/thread_1/read`,
+          headers: {
+            authorization: "Bearer valid-token",
+            "content-type": "application/json",
+            "content-length": String(Buffer.byteLength(payload)),
+            "idempotency-key": ["first", "second"],
+          },
+        },
+        (response) => {
+          response.resume();
+          response.on("end", () => resolve(response.statusCode ?? 0));
+        },
+      );
+      duplicate.on("error", reject);
+      duplicate.end(payload);
+    });
+    expect(duplicateHeaderStatus).toBe(400);
+    expect(calls).toHaveLength(6);
+    expect(calls[0]).toMatchObject({
+      propertyId: pmsPropertyId,
+      idempotencyKey: "read-through-3",
+      readThroughMessageId: "msg_3",
+    });
+  });
+
+  it("authorizes Inbox mark-read before malformed JSON parsing or idempotency lookup", async () => {
+    const dispatches: unknown[] = [];
+    const port: PmsInboxMarkReadPort = {
+      async markRead(input) {
+        dispatches.push(input);
+        throw new Error("must not dispatch");
+      },
+    };
+    const entitlement: ProductEntitlement = {
+      product: "pms",
+      key: "property-management",
+      status: "active",
+    };
+    const cases = [
+      { name: "missing auth", options: {}, propertyId: pmsPropertyId, statusCode: 401 },
+      {
+        name: "missing permission",
+        options: { permissions: [] },
+        propertyId: pmsPropertyId,
+        statusCode: 403,
+      },
+      {
+        name: "missing entitlement",
+        options: { entitlements: [] },
+        propertyId: pmsPropertyId,
+        statusCode: 403,
+      },
+      {
+        name: "wrong property",
+        options: {},
+        propertyId: "f6853000-0000-0000-0000-000000000099",
+        statusCode: 403,
+      },
+    ];
+
+    for (const candidate of cases) {
+      app = buildAuthenticatedApp({
+        permissions: ["pms.inbox.read"],
+        entitlements: [entitlement],
+        pmsInboxMarkReadPort: port,
+        ...candidate.options,
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/pms/properties/${candidate.propertyId}/messaging/threads/thread_1/read`,
+        headers: {
+          ...(candidate.name === "missing auth" ? {} : { authorization: "Bearer valid-token" }),
+          "content-type": "application/json",
+          "idempotency-key": "private-key",
+        },
+        payload: "{",
+      });
+      expect(response.statusCode, candidate.name).toBe(candidate.statusCode);
+      await app.close();
+      app = null;
+    }
+    expect(dispatches).toHaveLength(0);
+
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read"],
+      entitlements: [entitlement],
+    });
+    const invalid = await injectJson(app, {
+      method: "POST",
+      url: `/api/pms/properties/${pmsPropertyId}/messaging/threads/thread_1/read`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: { readThroughMessageId: "msg_3" },
+    });
+    expect(invalid).toMatchObject({ statusCode: 400, body: { code: "validation_failed" } });
   });
 
   it("fails closed across the PMS inbox read denial matrix", async () => {

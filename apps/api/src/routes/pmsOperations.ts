@@ -38,6 +38,7 @@ import {
 import { HIDDEN_GUEST_CONTACT } from "../domains/bookingGuestContactAccess.js";
 import {
   NATIVE_GUEST_INBOX_CONTRACT_VERSION,
+  type PmsInboxMarkReadPort,
   type PmsInboxReadError,
   type PmsInboxReadPort,
   type PmsInboxThreadSummary,
@@ -1012,6 +1013,7 @@ export type PmsOperationsRoutesOptions = {
   roomAssignmentSettings?: PmsRoomAssignmentSettingsPort;
   roomAssignmentHistory?: PmsRoomAssignmentOptimizationHistoryPort;
   inboxReadPort?: PmsInboxReadPort;
+  inboxMarkReadPort?: PmsInboxMarkReadPort;
 };
 
 type PmsPropertyParams = {
@@ -1124,6 +1126,7 @@ type PmsOperationsErrorCode =
   | "missing_resource_access"
   | "invalid_query"
   | "invalid_cursor"
+  | "validation_failed"
   | "invalid_body"
   | "invalid_date_range"
   | "invalid_status_transition"
@@ -1211,6 +1214,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/messaging/unread-count",
     "/properties/:propertyId/messaging/threads",
     "/properties/:propertyId/messaging/threads/:threadId",
+    "/properties/:propertyId/messaging/threads/:threadId/read",
     "/properties/:propertyId/reservations",
     "/properties/:propertyId/reservations/:guestBookingId",
     "/properties/:propertyId/reservations/:guestBookingId/notes",
@@ -2214,6 +2218,54 @@ export async function registerPmsOperationsRoutes(
         };
       } catch {
         request.log.error("PMS Inbox thread detail failed");
+        return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
+      }
+    },
+  );
+
+  app.post<{ Params: PmsInboxThreadParams; Body: unknown }>(
+    "/properties/:propertyId/messaging/threads/:threadId/read",
+    {
+      onRequest: async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          sendPmsOperationsError(reply, missingOriginPermission());
+          return;
+        }
+        await enforcePmsPropertyAccessPolicy(
+          request,
+          reply,
+          request.params.propertyId,
+          "pms.inbox.read",
+          options.propertyAccessRepository,
+        );
+      },
+    },
+    async (request, reply) => {
+      const input = parseInboxMarkRead(request);
+      if ("error" in input) return sendPmsOperationsError(reply, input.error);
+      if (!options.inboxMarkReadPort)
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS Inbox read commands are unavailable."),
+        );
+      const { propertyId, threadId } = request.params;
+      try {
+        const result = await options.inboxMarkReadPort.markRead({
+          propertyId,
+          threadId,
+          actorMembershipId: request.authContext!.membership.membershipId,
+          ...input.value,
+        });
+        if (!result.ok) return sendInboxMarkReadError(reply, result.error);
+        if (
+          result.value.propertyId !== propertyId ||
+          result.value.threadId !== threadId ||
+          result.value.readThroughMessageId !== input.value.readThroughMessageId
+        )
+          throw new Error("Inbox mark-read scope mismatch");
+        return { contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION, ...result.value };
+      } catch {
+        request.log.error("PMS Inbox mark-read failed");
         return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
       }
     },
@@ -3884,7 +3936,7 @@ function writePmsOperationsCorsHeaders(
   if (!allowedOrigins.includes(origin)) return false;
   reply
     .header("Access-Control-Allow-Origin", origin)
-    .header("Access-Control-Allow-Headers", "authorization,content-type,x-hotel-id")
+    .header("Access-Control-Allow-Headers", "authorization,content-type,idempotency-key,x-hotel-id")
     .header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
     .header("Vary", "Origin");
   return true;
@@ -5194,6 +5246,35 @@ function parseInboxDetailQuery(
   return { value: { messageLimit, ...(before ? { before } : {}) } };
 }
 
+function parseInboxMarkRead(
+  request: FastifyRequest<{ Body: unknown }>,
+):
+  | { value: { idempotencyKey: string; readThroughMessageId: string } }
+  | { error: PmsOperationsError } {
+  const body = objectBody(request.body);
+  const idempotencyKeyOccurrences = request.raw.rawHeaders.filter(
+    (value, index) => index % 2 === 0 && value.toLowerCase() === "idempotency-key",
+  ).length;
+  const idempotencyKey =
+    idempotencyKeyOccurrences === 1 && typeof request.headers["idempotency-key"] === "string"
+      ? boundedText(request.headers["idempotency-key"], 200)
+      : undefined;
+  const readThroughMessageId =
+    body && typeof body.readThroughMessageId === "string"
+      ? boundedText(body.readThroughMessageId, 200)
+      : undefined;
+  if (!body || Object.keys(body).length !== 1 || !idempotencyKey || !readThroughMessageId)
+    return {
+      error: {
+        statusCode: 400,
+        code: "validation_failed",
+        category: "validation",
+        message: "Mark read requires an idempotency key and read-through message.",
+      },
+    };
+  return { value: { idempotencyKey, readThroughMessageId } };
+}
+
 function boundedText(value: string, max: number): string | undefined {
   const normalized = value.trim();
   return normalized.length >= 1 && normalized.length <= max ? normalized : undefined;
@@ -5242,6 +5323,20 @@ function sendInboxReadError(reply: FastifyReply, error: PmsInboxReadError): Fast
     statusCode: error.code === "thread_not_found" ? 404 : 400,
     code: error.code,
     category: error.code === "thread_not_found" ? "not_found" : "validation",
+    message: error.message,
+  });
+}
+
+function sendInboxMarkReadError(
+  reply: FastifyReply,
+  error: Extract<Awaited<ReturnType<PmsInboxMarkReadPort["markRead"]>>, { ok: false }>["error"],
+): FastifyReply {
+  const statusCode =
+    error.code === "thread_not_found" ? 404 : error.code === "idempotency_conflict" ? 409 : 400;
+  return sendPmsOperationsError(reply, {
+    statusCode,
+    code: error.code,
+    category: statusCode === 404 ? "not_found" : statusCode === 409 ? "conflict" : "validation",
     message: error.message,
   });
 }

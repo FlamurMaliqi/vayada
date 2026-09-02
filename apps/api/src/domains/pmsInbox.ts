@@ -138,3 +138,30 @@ export type PmsInboxReadPort = {
   }>;
   close?(): Promise<void>;
 };
+
+export type PmsInboxMarkReadPort = {
+  markRead(input: {
+    propertyId: string;
+    threadId: string;
+    actorMembershipId: string;
+    idempotencyKey: string;
+    readThroughMessageId: string;
+  }): Promise<
+    | {
+        ok: true;
+        value: {
+          propertyId: string;
+          threadId: string;
+          readThroughMessageId: string;
+          unreadCount: number;
+        };
+      }
+    | {
+        ok: false;
+        error: {
+          code: "validation_failed" | "thread_not_found" | "idempotency_conflict";
+          message: string;
+        };
+      }
+  >;
+};
