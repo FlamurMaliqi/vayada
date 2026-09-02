@@ -10,6 +10,10 @@ interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
 
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
   ({ label, error, helperText, className = "", ...props }, ref) => {
+    const feedbackId = props.id && (error || helperText) ? `${props.id}-feedback` : undefined;
+    const describedBy =
+      [props["aria-describedby"], feedbackId].filter(Boolean).join(" ") || undefined;
+
     return (
       <div className="w-full">
         {label && (
@@ -33,9 +37,11 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
             ${className}
           `}
           {...props}
+          aria-describedby={describedBy}
+          aria-invalid={error ? true : props["aria-invalid"]}
         />
         {error && (
-          <p className="mt-1.5 text-sm text-red-600 flex items-center">
+          <p id={feedbackId} role="alert" className="mt-1.5 text-sm text-red-600 flex items-center">
             <svg className="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
               <path
                 fillRule="evenodd"
@@ -46,7 +52,11 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
             {error}
           </p>
         )}
-        {helperText && !error && <p className="mt-1.5 text-sm text-gray-500">{helperText}</p>}
+        {helperText && !error && (
+          <p id={feedbackId} className="mt-1.5 text-sm text-gray-500">
+            {helperText}
+          </p>
+        )}
       </div>
     );
   },

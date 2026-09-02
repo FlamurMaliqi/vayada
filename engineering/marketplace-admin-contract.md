@@ -77,8 +77,14 @@ profiles.
 
 The creator review follows the same ownership boundary: it returns Marketplace
 profile fields, platform connections, and the persisted profile-image media
-object ID only when the target user resolves to exactly one active,
-non-archived creator-workspace profile.
+object ID only when the target user resolves to exactly one profile in an
+active creator workspace. Archived profiles remain readable so Admin can show
+their terminal lifecycle state. The response also includes a server-computed
+`moderation` capability with `allowed` and `allowedTransitions`. The capability
+uses the exact creator-moderation policy above without the legacy superadmin
+fallback, and its transitions account for the current lifecycle state and
+profile completeness. Admin clients must fail closed when the capability is
+missing or denied and must not recreate lifecycle authorization rules locally.
 
 ## Creator Profile Moderation
 

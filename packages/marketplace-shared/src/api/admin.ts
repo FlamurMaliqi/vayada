@@ -160,6 +160,17 @@ export type MarketplaceAdminHotelReviewResponse = {
   offers: MarketplaceAdminOffer[];
 };
 
+export const MARKETPLACE_ADMIN_CREATOR_PROFILE_STATUSES = [
+  "pending",
+  "active",
+  "rejected",
+  "suspended",
+  "archived",
+] as const;
+
+export type MarketplaceAdminCreatorProfileStatus =
+  (typeof MARKETPLACE_ADMIN_CREATOR_PROFILE_STATUSES)[number];
+
 export type MarketplaceAdminCreatorReviewProfile = {
   creatorProfileId: string;
   displayName: string | null;
@@ -171,7 +182,7 @@ export type MarketplaceAdminCreatorReviewProfile = {
   profilePictureMediaObjectId: string | null;
   profileComplete: boolean;
   profileCompletedAt: string | null;
-  profileStatus: "pending" | "active" | "rejected" | "suspended" | "archived";
+  profileStatus: MarketplaceAdminCreatorProfileStatus;
   platforms: Array<{
     platformId: string;
     platform: MarketplacePlatformName;
@@ -194,7 +205,58 @@ export type MarketplaceAdminCreatorReviewResponse = {
   authorizationMode: MarketplaceAdminAuthorizationMode;
   userId: string;
   profile: MarketplaceAdminCreatorReviewProfile | null;
+  moderation: MarketplaceAdminCreatorModerationCapabilities;
 };
+
+export type MarketplaceAdminCreatorModerationTargetStatus = Exclude<
+  MarketplaceAdminCreatorProfileStatus,
+  "pending"
+>;
+
+export type MarketplaceAdminCreatorModerationCapabilities = {
+  allowed: boolean;
+  allowedTransitions: MarketplaceAdminCreatorModerationTargetStatus[];
+};
+
+export type MarketplaceAdminCreatorModerationRequest = {
+  expectedStatus: MarketplaceAdminCreatorProfileStatus;
+  nextStatus: MarketplaceAdminCreatorModerationTargetStatus;
+  reason: string;
+};
+
+export type MarketplaceAdminCreatorModerationResponse = {
+  contractVersion: "marketplace-creator-moderation.v1";
+  outcome: "transitioned" | "unchanged";
+  creatorProfileId: string;
+  previousStatus: MarketplaceAdminCreatorProfileStatus;
+  profileStatus: MarketplaceAdminCreatorModerationTargetStatus;
+  reason: string;
+  moderatedByUserId: string;
+  moderatedAt: string;
+};
+
+export function isMarketplaceAdminCreatorModerationReason(value: unknown): value is string {
+  if (
+    typeof value !== "string" ||
+    value.length < 1 ||
+    value.length > 1000 ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    return false;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      if (index + 1 >= value.length) return false;
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return false;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
 
 export type MarketplaceAdminDeleteOfferResponse = {
   contractVersion: MarketplaceAdminContractVersion;
@@ -218,6 +280,8 @@ export const marketplaceAdminEndpoints = {
     `/api/marketplace/admin/users/${encodeURIComponent(hotelUserId)}/review`,
   creatorReview: (userId: string) =>
     `/api/marketplace/admin/users/${encodeURIComponent(userId)}/review/creator`,
+  creatorModeration: (creatorProfileId: string) =>
+    `/api/marketplace/admin/creators/${encodeURIComponent(creatorProfileId)}/moderation`,
   updateOffer: (hotelUserId: string, offerId: string) =>
     `/api/marketplace/admin/users/${encodeURIComponent(
       hotelUserId,
@@ -286,6 +350,28 @@ export async function getMarketplaceAdminCreatorReview(
   return vayadaApiClient.get<MarketplaceAdminCreatorReviewResponse>(
     marketplaceAdminEndpoints.creatorReview(userId),
   );
+}
+
+export async function moderateMarketplaceAdminCreatorProfile(
+  creatorProfileId: string,
+  request: MarketplaceAdminCreatorModerationRequest,
+  idempotencyKey: string,
+): Promise<MarketplaceAdminCreatorModerationResponse> {
+  return vayadaApiClient.post<MarketplaceAdminCreatorModerationResponse>(
+    marketplaceAdminEndpoints.creatorModeration(creatorProfileId),
+    request,
+    toIdempotencyOptions(idempotencyKey),
+  );
+}
+
+export function buildMarketplaceAdminCreatorModerationIdempotencyKey(input: {
+  creatorProfileId: string;
+  nextStatus: MarketplaceAdminCreatorModerationTargetStatus;
+  nonce: string;
+}): string {
+  return `marketplace.admin.creator.${input.nextStatus}:${sanitizeIdempotencySegment(
+    input.creatorProfileId,
+  )}:${sanitizeIdempotencySegment(input.nonce)}:v1`;
 }
 
 export async function updateMarketplaceAdminOffer(
