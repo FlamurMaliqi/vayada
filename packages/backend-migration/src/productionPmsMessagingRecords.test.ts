@@ -32,6 +32,12 @@ describe("production PMS messaging", () => {
       senderType: "guest",
       piiRetentionUntil: "2027-09-03",
     });
+    expect(records.find((record) => record.targetTable === "message_threads")?.row).toMatchObject({
+      attentionState: "needs_attention",
+      conversationContextState: "linked",
+      deliveryChannel: "ota",
+      providerChannel: "booking.com",
+    });
     expect(records.find((record) => record.targetTable === "messages")).toMatchObject({
       mutable: true,
       sourceUpdatedAt: "2026-09-01T12:01:00.000Z",

@@ -263,8 +263,12 @@ export async function transformMediaUrlMigration(client: pg.Client): Promise<voi
         guest_booking_id,
         source,
         source_thread_id,
-        channel,
-        status,
+        provider_channel,
+        delivery_channel,
+        attention_state,
+        done_at,
+        done_reason,
+        conversation_context_state,
         unread_count
       )
     SELECT
@@ -274,7 +278,14 @@ export async function transformMediaUrlMigration(client: pg.Client): Promise<voi
       source,
       source_thread_id,
       channel,
-      status,
+      CASE WHEN source = 'manual' THEN 'email' ELSE 'ota' END,
+      CASE WHEN status = 'open' THEN 'needs_attention' ELSE 'done' END,
+      CASE WHEN status = 'open' THEN NULL ELSE now() END,
+      CASE status
+        WHEN 'no_reply_needed' THEN 'legacy_no_reply_needed'
+        WHEN 'closed' THEN 'legacy_closed'
+      END,
+      'unlinked',
       unread_count
     FROM migration_source_media.pms_message_threads
   `);
