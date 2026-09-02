@@ -96,6 +96,7 @@ describe("platform media runtime composition", () => {
       signer: adapter,
       serving: platformMediaServing,
     });
+    expect(runtime.privateDownloads).toEqual({ signer: adapter, serving: platformMediaServing });
     expect(runtime.routes.repository).toBe(repository);
     expect(runtime.routes.signer).toBe(adapter);
     expect(runtime.routes.finalizer).toBe(adapter);

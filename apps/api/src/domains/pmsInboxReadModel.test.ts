@@ -77,6 +77,7 @@ describe("PostgreSQL PMS Inbox list read model", () => {
     } as const;
     const read = createPgPmsInboxReadPort({
       connectionString: "",
+      attachmentMediaAccessEnabled: true,
       pool,
       emailReplyRoutes: {
         async resolveReplyRoutes({ propertyId, threads }) {

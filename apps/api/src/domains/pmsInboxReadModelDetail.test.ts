@@ -130,9 +130,10 @@ function recordingPool(options: { threadRows?: QueryResultRow[] } = {}) {
   return { pool, calls };
 }
 
-function createRead(pool: PmsInboxReadPool) {
+function createRead(pool: PmsInboxReadPool, attachmentMediaAccessEnabled = true) {
   return createPgPmsInboxReadPort({
     connectionString: "",
+    attachmentMediaAccessEnabled,
     pool,
     emailReplyRoutes: {
       async resolveReplyRoutes() {
@@ -250,6 +251,7 @@ describe("PostgreSQL PMS Inbox thread detail read model", () => {
     const emailCalls: unknown[] = [];
     const read = createPgPmsInboxReadPort({
       connectionString: "",
+      attachmentMediaAccessEnabled: true,
       pool,
       emailReplyRoutes: {
         async resolveReplyRoutes(input) {
@@ -338,5 +340,35 @@ describe("PostgreSQL PMS Inbox thread detail read model", () => {
         id: MESSAGE,
       }),
     ).toThrow("PMS Inbox timeline cursor timestamp is invalid");
+  });
+
+  it("does not advertise attachment paths when protected media serving is disabled", async () => {
+    const { pool } = recordingPool();
+    const result = await createRead(pool, false).getThread({
+      propertyId: PROPERTY,
+      threadId: THREAD,
+      canReadGuestContact: false,
+      messageLimit: 2,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        timeline: [
+          { item: { kind: "internal_note" } },
+          {
+            item: {
+              kind: "message",
+              message: {
+                attachments: [
+                  { availability: "unavailable", mediaId: null, accessPath: null },
+                  { availability: "unavailable", mediaId: null, accessPath: null },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    });
   });
 });
