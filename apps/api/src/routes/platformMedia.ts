@@ -707,7 +707,7 @@ const targetPurposePolicies: Record<PlatformMediaPurpose, PlatformMediaPurposePo
   },
   "pms.messaging.attachment": {
     purpose: "pms.messaging.attachment",
-    permission: "pms.operations.manage",
+    permission: "pms.inbox.reply",
     allowedRelationships: ["owner", "operator", "front_desk"],
     allowedResources: [
       { product: "pms", resourceType: "pms_property" },

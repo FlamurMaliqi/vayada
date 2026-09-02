@@ -1108,7 +1108,7 @@ type PmsCheckOutCommandBody = {
   checkoutNotes?: unknown;
 };
 
-type PmsOperationsErrorCategory =
+export type PmsOperationsErrorCategory =
   | "authentication"
   | "authorization"
   | "validation"
@@ -1117,7 +1117,7 @@ type PmsOperationsErrorCategory =
   | "side_effect"
   | "not_found";
 
-type PmsOperationsErrorCode =
+export type PmsOperationsErrorCode =
   | "unauthenticated"
   | "invalid_token"
   | "missing_permission"
@@ -1149,6 +1149,7 @@ type PmsOperationsErrorCode =
   | "read_model_unavailable"
   | "room_type_not_found"
   | "thread_not_found"
+  | "attachment_not_found"
   | "room_block_not_found"
   | "room_block_conflict"
   | "side_effect_failed"
@@ -1159,7 +1160,7 @@ type PmsOperationsErrorCode =
   | "charge_not_found"
   | "property_not_found";
 
-type PmsOperationsError = {
+export type PmsOperationsError = {
   statusCode: 400 | 401 | 403 | 404 | 409 | 500;
   code: PmsOperationsErrorCode;
   category: PmsOperationsErrorCategory;
@@ -3777,7 +3778,10 @@ function enforcePmsFinanceManagePolicy(
   }
 }
 
-function sendPmsOperationsError(reply: FastifyReply, error: PmsOperationsError): FastifyReply {
+export function sendPmsOperationsError(
+  reply: FastifyReply,
+  error: PmsOperationsError,
+): FastifyReply {
   return reply.status(error.statusCode).send(error);
 }
 
@@ -6447,7 +6451,7 @@ function daysInclusive(from: string, to: string): number {
   return Math.floor((toTime - fromTime) / 86_400_000) + 1;
 }
 
-function toPmsOperationsAccessError(
+export function toPmsOperationsAccessError(
   error: unknown,
   request: FastifyRequest,
   propertyId: string,

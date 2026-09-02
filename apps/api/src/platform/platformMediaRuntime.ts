@@ -37,6 +37,10 @@ export type PlatformMediaRuntime = {
     signer: PlatformMediaPrivateDownloadSigner;
     serving: PlatformMediaServingConfig;
   };
+  privateDownloads: {
+    signer: PlatformMediaPrivateDownloadSigner;
+    serving: PlatformMediaServingConfig;
+  };
   cleanupStore: ReturnType<typeof createPgPlatformMediaCleanupStore>;
   propertyMediaCommands: ReturnType<typeof createPgS3PropertyMediaCommandRepository>;
   routes: PlatformMediaRoutesOptions;
@@ -102,6 +106,7 @@ export function composePlatformMediaRuntime(
       signer: adapter,
       serving: input.platformMediaServing,
     },
+    privateDownloads: { signer: adapter, serving: input.platformMediaServing },
     cleanupStore,
     propertyMediaCommands,
     routes: {

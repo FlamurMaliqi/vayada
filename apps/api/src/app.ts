@@ -181,6 +181,10 @@ import {
 import { registerPlatformPropertyMediaRoutes } from "./routes/platform/admin/propertyMedia.js";
 import { registerPmsOperationsRoutes } from "./routes/pmsOperations.js";
 import type { PmsInboxMarkReadPort, PmsInboxReadPort } from "./domains/pmsInbox.js";
+import {
+  registerPmsInboxAttachmentMediaRoutes,
+  type PmsInboxAttachmentMediaRoutesOptions,
+} from "./routes/pmsInboxAttachmentMedia.js";
 import type { PmsLinkedInventoryGroupCommandRepository } from "./domains/pmsLinkedInventoryGroupRepository.js";
 import {
   registerPmsManualBookingPreviewRoutes,
@@ -248,6 +252,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   pmsOperationsRepository?: PmsOperationsReadRepository;
   pmsInboxReadPort?: PmsInboxReadPort;
   pmsInboxMarkReadPort?: PmsInboxMarkReadPort;
+  pmsInboxAttachmentMedia?: Omit<PmsInboxAttachmentMediaRoutesOptions, "propertyAccessRepository">;
   pmsManualBookingPreview?: PmsManualBookingPreviewRoutesOptions;
   pmsManualBookingCreate?: PmsManualBookingCreateRoutesOptions;
   pmsModuleActivationRepository?: PmsModuleActivationRepository;
@@ -799,6 +804,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPlatformMediaRoutes, {
       prefix: "/api/media",
       ...options.platformMedia,
+    });
+  }
+  if (options.pmsInboxAttachmentMedia && options.auth?.propertyAccessRepository) {
+    app.register(registerPmsInboxAttachmentMediaRoutes, {
+      prefix: "/api/media",
+      ...options.pmsInboxAttachmentMedia,
+      propertyAccessRepository: options.auth.propertyAccessRepository,
     });
   }
 

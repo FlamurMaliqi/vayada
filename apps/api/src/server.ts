@@ -70,6 +70,7 @@ import {
 import { createPublicRuntimeRepositories } from "./publicRuntime.js";
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
 import { createPgPmsLinkedInventoryGroupCommandRepository } from "./domains/pmsLinkedInventoryGroupRepository.js";
+import { createPgPmsInboxAttachmentMediaReadPort } from "./domains/pmsInboxAttachmentMedia.js";
 import { createTargetBookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
 import { createTargetSameDayBookingSettingsPort } from "./domains/sameDayBookingSettings.js";
 import { createTargetPmsInventoryPublicOfferProjection } from "./domains/pmsInventoryPublicOfferProjection.js";
@@ -1208,6 +1209,13 @@ const app = buildApp({
       }
     : undefined,
   financeFolios: financeFolioRuntime?.routes,
+  pmsInboxAttachmentMedia: platformMediaRuntime
+    ? {
+        read: createPgPmsInboxAttachmentMediaReadPort({ connectionString: targetDatabaseUrl }),
+        signer: platformMediaRuntime.privateDownloads.signer,
+        serving: platformMediaRuntime.privateDownloads.serving,
+      }
+    : undefined,
   pmsFinanceCompatibilityRepository,
   financeXenditBankValidator: xenditBankValidator,
   financePublicHotelProfileRepository,

@@ -139,6 +139,7 @@ const THREAD_FROM = `FROM pms.message_threads thread
 export function createPgPmsInboxReadPort(config: {
   connectionString: string;
   emailReplyRoutes: PmsInboxEmailReplyRouteReadPort;
+  attachmentMediaAccessEnabled: boolean;
   pool?: PmsInboxReadPool;
   max?: number;
 }): PmsInboxReadPort {
@@ -316,7 +317,13 @@ export function createPgPmsInboxReadPort(config: {
       const oldestRow = rows.at(-1);
       const messageIds = rows.filter((row) => row.kind === "message").map((row) => row.id);
       const attachments = messageIds.length
-        ? await readAttachments(pool, input.propertyId, input.threadId, messageIds)
+        ? await readAttachments(
+            pool,
+            input.propertyId,
+            input.threadId,
+            messageIds,
+            config.attachmentMediaAccessEnabled,
+          )
         : new Map<string, PmsInboxAttachment[]>();
       const emailRoutes = await resolvePmsInboxEmailReplyRoutes(
         config.emailReplyRoutes,
@@ -371,6 +378,7 @@ async function readAttachments(
   propertyId: string,
   threadId: string,
   messageIds: readonly string[],
+  accessEnabled: boolean,
 ): Promise<Map<string, PmsInboxAttachment[]>> {
   const result = await pool.query<AttachmentRow>(
     `SELECT attachment.id::text, attachment.message_id::text AS "messageId",
@@ -394,7 +402,7 @@ async function readAttachments(
       AND ((media.resource_type = 'message_thread' AND media.resource_id = message.thread_id::text)
         OR (media.resource_type = 'message_attachment' AND media.resource_id = attachment.id::text))
       AND media.lifecycle_status = 'active' AND media.storage_kind = 'vayada_managed'
-      AND media.deleted_at IS NULL
+      AND media.storage_key LIKE 'private/%' AND media.deleted_at IS NULL
      WHERE attachment.property_id = $1::uuid AND message.thread_id = $2::uuid
        AND attachment.message_id = ANY($3::uuid[])
      ORDER BY attachment.created_at, attachment.id`,
@@ -404,7 +412,12 @@ async function readAttachments(
   for (const row of result.rows) {
     const size = row.size === null ? null : Number(row.size);
     const attachment: PmsInboxAttachment =
-      row.available && row.mediaId && row.filename && row.contentType && Number.isSafeInteger(size)
+      accessEnabled &&
+      row.available &&
+      row.mediaId &&
+      row.filename &&
+      row.contentType &&
+      Number.isSafeInteger(size)
         ? {
             id: row.id,
             availability: "available",
