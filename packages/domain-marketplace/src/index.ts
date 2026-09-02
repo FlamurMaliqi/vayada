@@ -13,6 +13,7 @@ export * from "./hotelCollaborationPreferences.js";
 export * from "./hotelCollaborationPreferenceCommands.js";
 export * from "./legacyHotelCollaborationPreferenceDraft.js";
 export * from "./affiliateAdmin.js";
+export * from "./creatorProfileModeration.js";
 
 // ---------------------------------------------------------------------------
 // Shared scalar types

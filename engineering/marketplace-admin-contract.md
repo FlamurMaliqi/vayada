@@ -15,6 +15,7 @@ Contract version: `marketplace-admin.v1`.
 | Approve as hotel         | `POST`   | `/api/marketplace/admin/collaborations/{collaborationId}/approve` |
 | Read hotel review        | `GET`    | `/api/marketplace/admin/users/{hotelUserId}/review`               |
 | Read creator review      | `GET`    | `/api/marketplace/admin/users/{userId}/review/creator`            |
+| Moderate creator profile | `POST`   | `/api/marketplace/admin/creators/{creatorProfileId}/moderation`   |
 | Create hotel-user offer  | `POST`   | `/api/marketplace/admin/users/{hotelUserId}/offers`               |
 | Update hotel-user offer  | `PUT`    | `/api/marketplace/admin/users/{hotelUserId}/offers/{offerId}`     |
 | Archive hotel-user offer | `DELETE` | `/api/marketplace/admin/users/{hotelUserId}/offers/{offerId}`     |
@@ -34,6 +35,16 @@ During WorkOS/platform backfill, the routes may fall back to the legacy
 resolved. This fallback is intentionally narrow to these marketplace admin
 compatibility routes and must not be treated as a permanent authorization
 primitive.
+
+Creator moderation is a new target-only command and does **not** use that
+fallback. It requires all of:
+
+```text
+permission: platform.user.suspend
+entitlement: platform/platform-admin on platform/platform/vayada
+resource: platform/platform/vayada
+relationship: operator
+```
 
 ## Scope Boundaries
 
@@ -68,6 +79,57 @@ The creator review follows the same ownership boundary: it returns Marketplace
 profile fields, platform connections, and the persisted profile-image media
 object ID only when the target user resolves to exactly one active,
 non-archived creator-workspace profile.
+
+## Creator Profile Moderation
+
+Creator profile moderation has its own contract version:
+`marketplace-creator-moderation.v1`.
+
+The request requires exactly one `Idempotency-Key` header and this body:
+
+```ts
+type MarketplaceCreatorModerationRequest = {
+  expectedStatus: "pending" | "active" | "rejected" | "suspended" | "archived";
+  nextStatus: "active" | "rejected" | "suspended" | "archived";
+  reason: string;
+};
+```
+
+`reason` is trimmed, must contain 1–1000 characters, must not contain control
+characters or malformed Unicode surrogate pairs, and is stored as confidential
+audit data. Allowed state changes are:
+
+| Current     | Allowed next states              |
+| ----------- | -------------------------------- |
+| `pending`   | `active`, `rejected`, `archived` |
+| `active`    | `suspended`, `archived`          |
+| `rejected`  | `active`, `archived`             |
+| `suspended` | `active`, `archived`             |
+| `archived`  | none                             |
+
+Activation requires the canonical creator completeness function to return
+true. Rejected or suspended profiles may therefore be activated after their
+profile data has been corrected; there is no hidden reset-to-pending action.
+Archived profiles are terminal in v1.
+
+The command returns `outcome: "transitioned"` with the previous state, next
+state, actor, timestamp, and reason. If the profile already has the requested
+next state, it returns `outcome: "unchanged"` without another profile mutation
+or transition audit; this check intentionally precedes expected-state conflict
+handling so a safe retry remains a no-op. Reusing an idempotency key with an
+identical request replays the original response. Reusing it with different
+input returns `409 idempotency_key_conflict`.
+
+Other typed failures are `404 creator_profile_not_found`,
+`409 profile_status_conflict`, `409 invalid_profile_transition`,
+`409 profile_incomplete`, and `409 command_in_progress`. Invalid identifiers,
+headers, or bodies return `422` validation errors and do not call the command
+repository.
+
+Every `transitioned` result is committed atomically with an append-only
+`platform.product_audit_events` row containing the actor, timestamp, previous
+state, next state, and confidential reason. `unchanged` results retain their
+idempotency record but do not claim that a new transition occurred.
 
 `offerId` is the target `marketplace.marketplace_offers.id`. Archive is a soft
 delete that sets `offerStatus = archived`.
