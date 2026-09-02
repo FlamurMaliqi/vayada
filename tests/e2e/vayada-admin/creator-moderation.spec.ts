@@ -287,6 +287,44 @@ test("shows creator review without controls when moderation permission is denied
   );
 });
 
+test("clears a failed decision when the operator cancels", async ({ page, baseURL }) => {
+  const adminBaseURL = resolvedAdminBaseURL(baseURL);
+  const pageOrigin = new URL(adminBaseURL).origin;
+
+  await mockAdminAuth(page, adminBaseURL);
+  await authenticateAdmin(page);
+  await routeCreatorDetail(page, pageOrigin, {
+    profileStatus: "pending",
+    profileComplete: true,
+    profileAvailable: true,
+    moderationAllowed: true,
+    allowedTransitions: ["active", "rejected", "archived"],
+  });
+  await page.route(moderationRoute(), async (route) => {
+    if (await fulfillPreflight(route, pageOrigin)) return;
+    await fulfillJson(
+      route,
+      pageOrigin,
+      { statusCode: 422, code: "invalid_moderation_reason", message: "invalid request" },
+      422,
+    );
+  });
+
+  await page.goto(new URL(`/dashboard/users/${userId}`, adminBaseURL).toString());
+  const rejectButton = page.getByRole("button", { name: "Reject" });
+  await rejectButton.click();
+  const dialog = page.getByRole("dialog");
+  await page.getByLabel("Reason").fill("Audience information could not be verified.");
+  await page.getByRole("button", { name: "Reject creator" }).click();
+  const serverError = "The moderation request was invalid. Review the reason and try again.";
+  await expect(dialog.getByRole("alert")).toHaveText(serverError);
+
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText(serverError)).toHaveCount(0);
+  await expect(rejectButton).toBeFocused();
+});
+
 test("removes stale controls when the creator profile no longer exists", async ({
   page,
   baseURL,
@@ -335,7 +373,7 @@ test("removes stale controls when the creator profile no longer exists", async (
 test("does not expose moderation controls when creator review access is denied", async ({
   page,
   baseURL,
-}, testInfo) => {
+}) => {
   const adminBaseURL = resolvedAdminBaseURL(baseURL);
   const pageOrigin = new URL(adminBaseURL).origin;
 

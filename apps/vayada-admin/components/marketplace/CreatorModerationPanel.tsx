@@ -117,6 +117,7 @@ export function CreatorModerationPanel({ creatorName, profile, moderation, onMod
     setSelectedAction(null);
     setReason("");
     setReasonError("");
+    setRequestError("");
     setIdempotencyKey(null);
     triggerRef.current?.focus();
   }
