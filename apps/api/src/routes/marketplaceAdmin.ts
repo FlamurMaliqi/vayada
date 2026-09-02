@@ -2,20 +2,38 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import { requireAuthContext, type PermissionKey, type RequestContext } from "@vayada/backend-auth";
 import { isSetupTrack, type SetupTrack } from "@vayada/domain-hotels";
+import {
+  MARKETPLACE_CREATOR_MODERATION_AUTHORIZATION,
+  isMarketplaceCreatorModerationReason,
+  isMarketplaceCreatorModerationTargetStatus,
+  isMarketplaceCreatorProfileStatus,
+  type MarketplaceCreatorModerationRequest,
+  type MarketplaceCreatorModerationResponse,
+  type MarketplaceCreatorModerationResult,
+  type MarketplaceCreatorProfileStatus,
+} from "@vayada/domain-marketplace";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import pg, { type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 
 import type { MarketplaceOfferIdentityAccessCommandPort } from "../platform/marketplaceOfferIdentityAccess.js";
 import type { MarketplaceOfferMediaPromotionPort } from "../platform/marketplaceOfferMediaPromotion.js";
+import { executeMarketplaceCreatorModeration } from "../domains/marketplaceCreatorModerationRepository.js";
 import {
   ensureCanonicalPropertySlug,
   PROJECT_CANONICAL_PUBLIC_PROPERTY_PROFILE,
 } from "../platform/publicBookabilityPublication.js";
 import { enforceRoutePolicy } from "./policy.js";
 
+export type {
+  MarketplaceCreatorModerationRequest,
+  MarketplaceCreatorModerationResponse,
+  MarketplaceCreatorModerationResult,
+} from "@vayada/domain-marketplace";
+
 export const MARKETPLACE_ADMIN_CONTRACT_VERSION = "marketplace-admin.v1" as const;
 export const HOTEL_ACCOUNT_INVITE_CONTRACT_VERSION = "hotel-account-invite.v1" as const;
 export const HOTEL_ACCOUNT_INVITE_HANDOFF_PATH = "/setup" as const;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function hotelAccountInviteOrganizationExternalId(inviteId: string): string {
   return `vayada-signup:marketplace-web:hotel:invite:${inviteId}`;
@@ -58,6 +76,15 @@ export const MARKETPLACE_ADMIN_CREATOR_REVIEW_CONTRACT = {
   owner: "marketplace",
   permission: MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT.permission,
   fallback: MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT.fallback,
+  doc: MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT.doc,
+} as const;
+
+export const MARKETPLACE_ADMIN_CREATOR_MODERATION_CONTRACT = {
+  method: "POST",
+  path: "/api/marketplace/admin/creators/:creatorProfileId/moderation",
+  owner: "marketplace",
+  ...MARKETPLACE_CREATOR_MODERATION_AUTHORIZATION,
+  fallback: "none",
   doc: MARKETPLACE_ADMIN_COLLABORATIONS_CONTRACT.doc,
 } as const;
 
@@ -424,6 +451,18 @@ export type MarketplaceAdminRepository = {
     userId: string;
     authorizationMode: MarketplaceAdminAuthorizationMode;
   }): Promise<MarketplaceAdminCreatorReviewResponse>;
+  moderateCreatorProfile(input: {
+    creatorProfileId: string;
+    idempotencyKey: string;
+    request: MarketplaceCreatorModerationRequest;
+    audit: {
+      actorUserId: string;
+      actorOrganizationId: string;
+      requestId: string;
+      correlationId: string | null;
+      requestedAt: string;
+    };
+  }): Promise<MarketplaceCreatorModerationResult>;
   createOfferForUser(input: {
     hotelUserId: string;
     request: MarketplaceAdminCreateOfferRequest;
@@ -840,6 +879,9 @@ export function createPgMarketplaceAdminRepository(config: {
         profile: row ? mapCreatorReviewRow(row) : null,
       };
     },
+    async moderateCreatorProfile(input) {
+      return executeMarketplaceCreatorModeration(pool, input);
+    },
     async createOfferForUser(input) {
       return writeOffer(pool, async (client) => {
         const profile = await resolveAdminHotelProfile(client, input.hotelUserId);
@@ -1120,6 +1162,35 @@ export async function registerMarketplaceAdminRoutes(
     },
   );
 
+  app.post<{ Params: { creatorProfileId: string }; Body: unknown }>(
+    "/admin/creators/:creatorProfileId/moderation",
+    async (request, reply) => {
+      const context = requireMarketplaceCreatorModerationAccess(request);
+      if (!UUID_PATTERN.test(request.params.creatorProfileId)) {
+        return sendAdminError(reply, 422, "invalid_creator_profile_id");
+      }
+      const idempotencyKey = readSingleIdempotencyKey(request);
+      if (!idempotencyKey) return sendAdminError(reply, 422, "idempotency_required");
+      const parsed = parseMarketplaceCreatorModerationRequest(request.body);
+      if (typeof parsed === "string") return sendAdminError(reply, 422, parsed);
+      const result = await repository.moderateCreatorProfile({
+        creatorProfileId: request.params.creatorProfileId.toLowerCase(),
+        idempotencyKey,
+        request: parsed,
+        audit: {
+          actorUserId: context.actor.internalUserId,
+          actorOrganizationId: context.selectedOrganization.organizationId,
+          requestId: context.audit.requestId,
+          correlationId: context.audit.correlationId ?? null,
+          requestedAt: context.audit.receivedAt,
+        },
+      });
+      if (result.ok) return result.response;
+      const statusCode = result.error.code === "creator_profile_not_found" ? 404 : 409;
+      return sendAdminError(reply, statusCode, result.error.code, result.error.currentStatus);
+    },
+  );
+
   app.post<{ Params: CollaborationParams; Body: RespondBody }>(
     "/admin/collaborations/:collaborationId/respond",
     async (request, reply) => {
@@ -1287,12 +1358,49 @@ async function requireMarketplaceAdminAccess(
   }
 }
 
+function requireMarketplaceCreatorModerationAccess(request: FastifyRequest): RequestContext {
+  const policy = MARKETPLACE_ADMIN_CREATOR_MODERATION_CONTRACT;
+  const resource = {
+    product: policy.resource.product,
+    resourceType: policy.resource.resourceType,
+    resourceId: policy.resource.resourceId,
+  } as const;
+  return enforceRoutePolicy(request, {
+    permission: policy.permission,
+    entitlement: { ...policy.entitlement, resource },
+    resource: { ...resource, allowedRelationships: [...policy.resource.allowedRelationships] },
+  });
+}
+
 function readIdempotencyKey(request: FastifyRequest): string | null {
   const header = request.headers["idempotency-key"];
   const headerValue = Array.isArray(header) ? header[0] : header;
   const body = request.body && typeof request.body === "object" ? request.body : {};
   const bodyValue = "idempotencyKey" in body ? body.idempotencyKey : undefined;
   return readNonEmptyString(headerValue) ?? readNonEmptyString(bodyValue);
+}
+
+function readSingleIdempotencyKey(request: FastifyRequest): string | null {
+  const occurrences = request.raw.rawHeaders.filter(
+    (value, index) => index % 2 === 0 && value.toLowerCase() === "idempotency-key",
+  ).length;
+  const header = request.headers["idempotency-key"];
+  if (occurrences !== 1 || typeof header !== "string") return null;
+  const key = header.trim();
+  return key.length >= 1 && key.length <= 200 ? key : null;
+}
+
+function parseMarketplaceCreatorModerationRequest(
+  body: unknown,
+): MarketplaceCreatorModerationRequest | string {
+  if (!isRecord(body) || !hasOnlyKeys(body, ["expectedStatus", "nextStatus", "reason"])) {
+    return "invalid_moderation_body";
+  }
+  if (!isMarketplaceCreatorProfileStatus(body.expectedStatus)) return "invalid_expected_status";
+  if (!isMarketplaceCreatorModerationTargetStatus(body.nextStatus)) return "invalid_next_status";
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  if (!isMarketplaceCreatorModerationReason(reason)) return "invalid_moderation_reason";
+  return { expectedStatus: body.expectedStatus, nextStatus: body.nextStatus, reason };
 }
 
 const HOTEL_ACCOUNT_INVITE_REQUEST_KEYS = [
@@ -1588,12 +1696,18 @@ function parseCreatorPlatform(value: unknown): MarketplaceAdminCreatorPlatformWr
   };
 }
 
-function sendAdminError(reply: FastifyReply, statusCode: 404 | 422, code: string) {
+function sendAdminError(
+  reply: FastifyReply,
+  statusCode: 404 | 409 | 422,
+  code: string,
+  currentStatus?: MarketplaceCreatorProfileStatus,
+) {
   return reply.status(statusCode).send({
     statusCode,
     code,
-    category: statusCode === 404 ? "not_found" : "validation",
+    category: statusCode === 404 ? "not_found" : statusCode === 409 ? "conflict" : "validation",
     message: code,
+    ...(currentStatus ? { currentStatus } : {}),
   });
 }
 
