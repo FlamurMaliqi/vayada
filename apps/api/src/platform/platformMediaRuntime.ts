@@ -95,6 +95,7 @@ export function composePlatformMediaRuntime(
     "marketplace.collaboration_chat.attachment",
     "property.logo",
     "pms.room_type.media",
+    "pms.messaging.attachment",
     "finance.expense.receipt",
   ];
 

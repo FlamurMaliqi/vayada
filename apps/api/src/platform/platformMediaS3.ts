@@ -34,6 +34,7 @@ const SUPPORTED_IMAGE_PURPOSES = new Set<PlatformMediaPurpose>([
   "marketplace.offer.media",
   "marketplace.collaboration_chat.attachment",
   "pms.room_type.media",
+  "pms.messaging.attachment",
   "finance.expense.receipt",
 ]);
 const IMAGE_CONTENT_TYPES = new Set([
@@ -43,7 +44,9 @@ const IMAGE_CONTENT_TYPES = new Set([
   "image/gif",
   "image/svg+xml",
 ]);
-const MAX_SIGNED_IMAGE_SIZE_BYTES = 20 * 1024 * 1024;
+const ORIGINAL_FILE_CONTENT_TYPES = new Set(["application/pdf", "image/heic", "image/heif"]);
+const UPLOAD_CONTENT_TYPES = new Set([...IMAGE_CONTENT_TYPES, ...ORIGINAL_FILE_CONTENT_TYPES]);
+const MAX_SIGNED_FILE_SIZE_BYTES = 25 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 25_000_000;
 const MAX_RESIZABLE_IMAGE_PIXELS = 60_000_000;
 const PRIVATE_CACHE_CONTROL = "private, no-store";
@@ -157,15 +160,15 @@ export function createS3PlatformMediaAdapter(
 
     async signUploadTarget(input) {
       const contentType = normalizeContentType(input.contentType);
-      if (!IMAGE_CONTENT_TYPES.has(contentType)) {
-        throw new Error("S3 platform media only signs supported image types");
+      if (!UPLOAD_CONTENT_TYPES.has(contentType)) {
+        throw new Error("S3 platform media only signs supported attachment types");
       }
       if (
         !Number.isInteger(input.sizeBytes) ||
         input.sizeBytes < 1 ||
-        input.sizeBytes > MAX_SIGNED_IMAGE_SIZE_BYTES
+        input.sizeBytes > MAX_SIGNED_FILE_SIZE_BYTES
       ) {
-        throw new Error("Image upload size must be between 1 byte and 20 MB");
+        throw new Error("Media upload size must be between 1 byte and 25 MB");
       }
       assertStagingKey(input.stagingKey, input.sessionId);
 
@@ -231,10 +234,40 @@ export function createS3PlatformMediaAdapter(
             return {
               ok: false,
               code: "invalid_media_size",
-              message: "Images cannot be empty.",
+              message: "Media files cannot be empty.",
             };
           }
           if (bytes.length !== input.sessionFile.sizeBytes) return sizeMismatch();
+
+          const declaredContentType = normalizeContentType(input.sessionFile.contentType);
+          if (ORIGINAL_FILE_CONTENT_TYPES.has(declaredContentType)) {
+            if (
+              input.session.purpose !== "pms.messaging.attachment" ||
+              !isValidOriginalFile(bytes, declaredContentType)
+            ) {
+              return {
+                ok: false,
+                code: "unsupported_media_type",
+                message: "The staged attachment bytes do not match the signed content type.",
+              };
+            }
+            const checksumSha256 = sha256(bytes);
+            const mismatch = clientInspectionMismatch(
+              input,
+              declaredContentType,
+              bytes.length,
+              checksumSha256,
+            );
+            if (mismatch) return mismatch;
+            return {
+              ok: true,
+              inspection: {
+                contentType: declaredContentType,
+                sizeBytes: bytes.length,
+                checksumSha256,
+              },
+            };
+          }
 
           const pixelCeiling = input.policy.resizeOversizedPublicImages
             ? MAX_RESIZABLE_IMAGE_PIXELS
@@ -257,7 +290,7 @@ export function createS3PlatformMediaAdapter(
               message: "Images must contain valid JPG, PNG, WebP, GIF, or SVG bytes.",
             };
           }
-          if (contentType !== normalizeContentType(input.sessionFile.contentType)) {
+          if (contentType !== declaredContentType) {
             return {
               ok: false,
               code: "media_type_mismatch",
@@ -271,32 +304,13 @@ export function createS3PlatformMediaAdapter(
           }
 
           const checksumSha256 = sha256(bytes);
-          if (
-            input.clientFile.contentType !== undefined &&
-            normalizeContentType(input.clientFile.contentType) !== contentType
-          ) {
-            return {
-              ok: false,
-              code: "media_type_mismatch",
-              message: "Finalized content type must match the inspected upload.",
-            };
-          }
-          if (
-            input.clientFile.sizeBytes !== undefined &&
-            input.clientFile.sizeBytes !== bytes.length
-          ) {
-            return sizeMismatch();
-          }
-          if (
-            input.clientFile.checksumSha256 !== undefined &&
-            input.clientFile.checksumSha256 !== checksumSha256
-          ) {
-            return {
-              ok: false,
-              code: "media_checksum_mismatch",
-              message: "Finalized checksum must match the inspected upload.",
-            };
-          }
+          const mismatch = clientInspectionMismatch(
+            input,
+            contentType,
+            bytes.length,
+            checksumSha256,
+          );
+          if (mismatch) return mismatch;
 
           const inspection = {
             contentType,
@@ -364,6 +378,7 @@ export function createS3PlatformMediaAdapter(
             variantName,
             publicPathPrefix,
             input.session.effectiveVisibility,
+            input.file.inspection.contentType,
           );
           await s3.send(
             new PutObjectCommand({
@@ -407,12 +422,33 @@ async function createVariant(
   variantName: PlatformMediaVariantName,
   publicPathPrefix: string,
   visibility: "private" | "public",
+  inspectedContentType: string,
 ): Promise<{ record: PlatformMediaVariantRecord; bytes: Buffer }> {
   if (variantName === "provider_original") {
     if (visibility !== "private") {
       throw new Error("Provider-original media must stay private");
     }
     assertSegment(mediaId, "mediaId");
+    const normalizedContentType = normalizeContentType(inspectedContentType);
+    if (ORIGINAL_FILE_CONTENT_TYPES.has(normalizedContentType)) {
+      const checksumSha256 = sha256(source);
+      const extension =
+        normalizedContentType === "application/pdf"
+          ? "pdf"
+          : normalizedContentType.slice("image/".length);
+      return {
+        bytes: source,
+        record: {
+          variantName,
+          visibility,
+          storageKey: `private/${publicPathPrefix}/${mediaId}/${variantName}/sha256-${checksumSha256}.${extension}`,
+          contentType: normalizedContentType,
+          sizeBytes: source.length,
+          checksumSha256,
+          publicCdnUrl: null,
+        },
+      };
+    }
     const metadata = await sharp(source, { failOn: "error" })
       .timeout({ seconds: IMAGE_OPERATION_TIMEOUT_SECONDS })
       .metadata();
@@ -468,6 +504,46 @@ async function createVariant(
       publicCdnUrl: null,
     },
   };
+}
+
+function clientInspectionMismatch(
+  input: Parameters<PlatformMediaUploadFinalizer["inspectUploadedFile"]>[0],
+  contentType: string,
+  sizeBytes: number,
+  checksumSha256: string,
+) {
+  if (
+    input.clientFile.contentType !== undefined &&
+    normalizeContentType(input.clientFile.contentType) !== contentType
+  ) {
+    return {
+      ok: false as const,
+      code: "media_type_mismatch",
+      message: "Finalized content type must match the inspected upload.",
+    };
+  }
+  if (input.clientFile.sizeBytes !== undefined && input.clientFile.sizeBytes !== sizeBytes) {
+    return sizeMismatch();
+  }
+  if (
+    input.clientFile.checksumSha256 !== undefined &&
+    input.clientFile.checksumSha256 !== checksumSha256
+  ) {
+    return {
+      ok: false as const,
+      code: "media_checksum_mismatch",
+      message: "Finalized checksum must match the inspected upload.",
+    };
+  }
+  return null;
+}
+
+function isValidOriginalFile(bytes: Buffer, contentType: string): boolean {
+  if (contentType === "application/pdf") return bytes.subarray(0, 5).toString("ascii") === "%PDF-";
+  if (bytes.length < 12 || bytes.subarray(4, 8).toString("ascii") !== "ftyp") return false;
+  return new Set(["heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1"]).has(
+    bytes.subarray(8, 12).toString("ascii"),
+  );
 }
 
 async function readVerifiedStagedObject(input: {
