@@ -67,6 +67,25 @@ describe("production Booking reservation records", () => {
     expect(context.blockers[0]).toMatchObject({ code: "INVALID_SOURCE_ROW", sourceId: BOOKING });
   });
 
+  it("records the documented pre-switch commission inference", () => {
+    const source = booking();
+    source.data["billing_plan_at_creation"] = null;
+    const context = createProductionBookingContext(input([source]));
+    const record = buildBookingReservationRecords(context)[0]!;
+
+    expect(context.blockers).toEqual([]);
+    expect(record.row).toMatchObject({
+      billingPlanSnapshot: "commission",
+      bookingMetadata: {
+        billingPlanEvidence: {
+          sourceField: "billing_plan_at_creation",
+          sourceValue: null,
+          inferredPreSwitchCommission: true,
+        },
+      },
+    });
+  });
+
   it("blocks unknown channels and billing plans instead of guessing", () => {
     for (const [field, value] of [
       ["channel", "mystery-channel"],

@@ -248,6 +248,9 @@ describe("target Booking reservations property scope", () => {
     expect(listQuery?.text).toContain('booking.check_out::text AS "checkOut"');
     expect(listQuery?.text).toContain('AS "guestContactAccepted"');
     expect(listQuery?.text).toContain("'guest_booking.accepted'");
+    expect(listQuery?.text).toContain("FROM booking.booking_addon_selection_items item");
+    expect(listQuery?.text).toContain("jsonb_array_elements_text(dated.service_dates)");
+    expect(listQuery?.text).toContain("SUM(selection.total_amount)");
     expect(listQuery?.text).not.toContain("contact_event.actor_type = 'property_user'");
   });
 });

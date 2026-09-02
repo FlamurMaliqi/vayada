@@ -36,6 +36,27 @@ export type ProductionMigrationSourceLink = {
   lastMigratedAt: string;
 };
 
+export type ProductionBookingQuarantine = {
+  sourceDatabase: "booking" | "pms";
+  sourceTable: string;
+  sourceId: string;
+  sourceField: string;
+  sourceValueSha256: string;
+  reasonCode: "EMPTY_ADDITIONAL_GUEST_PLACEHOLDER" | "UNSUPPORTED_GUEST_PRIVATE_FIELD";
+  retentionUntil: string;
+};
+
+export type ProductionBookingInference = {
+  sourceDatabase: "pms";
+  sourceTable: "bookings";
+  sourceId: string;
+  sourceField: "billing_plan_at_creation";
+  sourceValueSha256: string;
+  sourceRowSha256: string;
+  inferredValue: "commission";
+  reasonCode: "MISSING_BILLING_PLAN_PRE_SWITCH_COMMISSION";
+};
+
 export type BookingPropertyLink = {
   sourceSystem: string;
   sourceTable: string;
@@ -51,6 +72,9 @@ export type BookingPropertySlug = {
   propertyId: string;
   purpose: string;
   status: string;
+  redirectTargetPropertyId?: string | null;
+  redirectTargetPurpose?: string | null;
+  redirectTargetStatus?: string | null;
 };
 
 export type BookingMediaReference = {
@@ -86,6 +110,8 @@ export type ProductionBookingPlan = {
   records: BookingTargetRecord[];
   writes: BookingTargetRecord[];
   provenance: ProductionMigrationSourceLink[];
+  quarantines: ProductionBookingQuarantine[];
+  inferences: ProductionBookingInference[];
   blockers: IdentityMigrationBlocker[];
   parity: {
     sourceTableCounts: Record<string, number>;
@@ -120,6 +146,8 @@ export type BookingBuildContext = {
   rows: IdentitySourceRow[];
   target: ProductionBookingTargetState;
   blockers: IdentityMigrationBlocker[];
+  quarantines: ProductionBookingQuarantine[];
+  inferences: ProductionBookingInference[];
   propertyBySource: Map<string, string>;
   ownerStatusBySource: Map<string, "active" | "suspended" | "archived">;
   propertyBySlug: Map<string, string>;

@@ -72,6 +72,7 @@ function reservation(
   const totalAmount = money(data["total_amount"], "total_amount");
   const balanceAmount = money(data["balance_amount"], "balance_amount", totalAmount);
   const roomCount = integer(data["number_of_rooms"], "number_of_rooms", 1);
+  const billingPlanSnapshot = billingPlan(data["billing_plan_at_creation"]);
   const draftId = draft ? uuid(draft.data["id"], "draft.id") : null;
   const quoteSessionId = draftId
     ? deterministicUuid("production-booking", "draft-quote", draftId)
@@ -95,9 +96,9 @@ function reservation(
     totalAmount,
     balanceAmount,
     cancellationReason: lifecycleStatus === "canceled" ? "legacy_canceled" : null,
-    bookingMetadata: bookingMetadata(context, data),
+    bookingMetadata: bookingMetadata(context, data, billingPlanSnapshot),
     expectedPaymentMethod: expectedPaymentMethod(data["payment_method"]),
-    billingPlanSnapshot: billingPlan(data["billing_plan_at_creation"]),
+    billingPlanSnapshot,
     commissionTermsSnapshot: commissionTerms(data),
     financeTermsCapturedAt: createdAt,
     bookingChannel: bookingChannel(data["channel"]),
@@ -175,7 +176,11 @@ function reservation(
   ];
 }
 
-function bookingMetadata(context: BookingBuildContext, data: Record<string, unknown>) {
+function bookingMetadata(
+  context: BookingBuildContext,
+  data: Record<string, unknown>,
+  billingPlanSnapshot: string,
+) {
   return {
     migrationRunId: context.sourceRunId,
     sourceHotelId: data["hotel_id"],
@@ -189,6 +194,13 @@ function bookingMetadata(context: BookingBuildContext, data: Record<string, unkn
     addonDates: data["addon_dates"] ?? {},
     addonTotal: data["addon_total"] ?? 0,
     sourcePaymentStatus: data["payment_status"] ?? "unpaid",
+    billingPlanEvidence: {
+      sourceField: "billing_plan_at_creation",
+      sourceValue: data["billing_plan_at_creation"] ?? null,
+      inferredPreSwitchCommission:
+        billingPlanSnapshot === "commission" &&
+        !String(data["billing_plan_at_creation"] ?? "").trim(),
+    },
     promoCode: data["promo_code"] ?? null,
     promoDiscount: data["promo_discount"] ?? 0,
     lastMinuteDiscountPercent: data["last_minute_discount_percent"] ?? 0,
@@ -226,7 +238,10 @@ function expectedPaymentMethod(value: unknown): string {
 }
 
 function billingPlan(value: unknown): string {
-  const plan = requiredText(value, "billing_plan_at_creation").toLowerCase();
+  const plan =
+    String(value ?? "")
+      .trim()
+      .toLowerCase() || "commission";
   if (plan !== "fixed" && plan !== "commission")
     throw new Error(`billing_plan_at_creation ${plan} is unsupported`);
   return plan;

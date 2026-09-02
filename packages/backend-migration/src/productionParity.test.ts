@@ -424,6 +424,8 @@ function domainReports(): {
         sourceDraftMaterialization: {},
         plannedDraftStatuses: {},
       },
+      quarantines: [],
+      inferences: [],
       blockers: [],
     },
     pms: {
