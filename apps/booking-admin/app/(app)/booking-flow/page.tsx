@@ -3,7 +3,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "@/lib/i18n";
 import {
-  GlobeAltIcon,
   HomeIcon,
   SparklesIcon,
   CheckBadgeIcon,
@@ -36,10 +35,7 @@ import {
   getBookingGuestFormSettings,
   type BookingGuestFormSettings,
 } from "@/services/api/bookingGuestFormSettingsClient";
-import {
-  getBookingLocalizationSettings,
-  type BookingLocalizationSettings,
-} from "@/services/api/bookingLocalizationSettingsClient";
+import { getBookingLocalizationSettings } from "@/services/api/bookingLocalizationSettingsClient";
 import {
   BookingLastMinuteSettingsClientError,
   getBookingLastMinuteSettings,
@@ -66,15 +62,13 @@ import { DEFAULT_LAST_MINUTE_TIERS } from "@vayada/product-onboarding";
 import RoomsTab from "@/components/booking-flow/RoomsTab";
 import AddonsTab, { type AddonItemFormValues } from "@/components/booking-flow/AddonsTab";
 import BenefitsTab from "@/components/booking-flow/BenefitsTab";
-import LocalizationTab from "@/components/booking-flow/LocalizationTab";
 import GuestFormTab from "@/components/booking-flow/GuestFormTab";
 import {
   useBenefitsSettingsTab,
   useGuestFormSettingsTab,
-  useLocalizationSettingsTab,
 } from "@/components/booking-flow/useBookingFlowSettingsTabs";
 
-type Tab = "rooms" | "addons" | "benefits" | "localization" | "guest-form" | "last-minute";
+type Tab = "rooms" | "addons" | "benefits" | "guest-form" | "last-minute";
 
 type PmsRoomsResponse = {
   items?: {
@@ -109,13 +103,6 @@ const DEFAULT_GUEST_FORM_SETTINGS: BookingGuestFormSettings = {
 
 const DEFAULT_BENEFITS_SETTINGS: BookingBenefitsSettings = {
   benefits: [],
-};
-
-const DEFAULT_LOCALIZATION_SETTINGS: BookingLocalizationSettings = {
-  defaultCurrency: "EUR",
-  defaultLanguage: "en",
-  supportedCurrencies: [],
-  supportedLanguages: [],
 };
 
 const DEFAULT_ROOM_FILTER_SETTINGS: BookingRoomFilterSettings = {
@@ -269,6 +256,7 @@ export default function BookingFlowPage() {
     DEFAULT_LAST_MINUTE_SETTINGS,
   );
   const [savingLastMinute, setSavingLastMinute] = useState(false);
+  const [defaultCurrency, setDefaultCurrency] = useState("EUR");
 
   const { t } = useTranslation();
 
@@ -310,20 +298,6 @@ export default function BookingFlowPage() {
     applyGuestFormSettings,
     handleSaveGuestForm,
   } = useGuestFormSettingsTab({ getBookingHotelIdForSave, showFeedback });
-  const {
-    defaultCurrency,
-    setDefaultCurrency,
-    defaultLanguage,
-    setDefaultLanguage,
-    supportedCurrencies,
-    setSupportedCurrencies,
-    supportedLanguages,
-    setSupportedLanguages,
-    savingCurrencyLang,
-    applyLocalizationSettings,
-    handleSaveCurrencyLang,
-  } = useLocalizationSettingsTab({ getBookingHotelIdForSave, showFeedback });
-
   useEffect(() => {
     const selectedHotelId = getSelectedBookingHotelId();
     const propertyPromise = settingsService.getPropertySettings().catch(() => null);
@@ -358,8 +332,9 @@ export default function BookingFlowPage() {
       DEFAULT_BENEFITS_SETTINGS,
     );
     const localizationSettingsPromise = loadTypedSetting(
-      (hotelId) => getBookingLocalizationSettings({ hotelId }),
-      DEFAULT_LOCALIZATION_SETTINGS,
+      (hotelId) =>
+        getBookingLocalizationSettings({ hotelId }).then((settings) => settings.defaultCurrency),
+      "EUR",
     );
     const roomFilterSettingsPromise = loadTypedSetting(
       (hotelId) => getBookingRoomFilterSettings({ hotelId }),
@@ -386,7 +361,7 @@ export default function BookingFlowPage() {
           addonContext,
           benefitsRes,
           guestFormSettings,
-          localizationSettings,
+          localizationCurrency,
           roomFilterSettings,
           lastMinuteSettings,
           property,
@@ -400,7 +375,7 @@ export default function BookingFlowPage() {
             normalizeBookingBenefitsSettings(benefitsRes, DEFAULT_BENEFITS_SETTINGS).benefits,
           );
           applyGuestFormSettings(guestFormSettings);
-          applyLocalizationSettings(localizationSettings);
+          setDefaultCurrency(localizationCurrency);
           const normalizedRoomFilterSettings = normalizeBookingRoomFilterSettings(
             roomFilterSettings,
             DEFAULT_ROOM_FILTER_SETTINGS,
@@ -428,7 +403,7 @@ export default function BookingFlowPage() {
         },
       )
       .finally(() => setLoading(false));
-  }, [applyGuestFormSettings, applyLocalizationSettings, setBenefits]);
+  }, [applyGuestFormSettings, setBenefits]);
 
   const handleToggleAddonSetting = async (key: keyof AddonSettings) => {
     const previous = addonSettingsRef.current;
@@ -658,11 +633,6 @@ export default function BookingFlowPage() {
     { id: "addons", label: t("bookingFlow.tabs.addons"), icon: SparklesIcon },
     { id: "benefits", label: t("bookingFlow.tabs.benefits"), icon: CheckBadgeIcon },
     {
-      id: "localization",
-      label: t("bookingFlow.tabs.localization"),
-      icon: GlobeAltIcon,
-    },
-    {
       id: "guest-form",
       label: t("bookingFlow.tabs.guestForm"),
       icon: ClipboardDocumentListIcon,
@@ -731,21 +701,6 @@ export default function BookingFlowPage() {
             setBenefitInput={setBenefitInput}
             saveBenefits={handleSaveBenefits}
             savingBenefits={savingBenefits}
-          />
-        )}
-
-        {activeTab === "localization" && (
-          <LocalizationTab
-            defaultCurrency={defaultCurrency}
-            setDefaultCurrency={setDefaultCurrency}
-            defaultLanguage={defaultLanguage}
-            setDefaultLanguage={setDefaultLanguage}
-            supportedCurrencies={supportedCurrencies}
-            setSupportedCurrencies={setSupportedCurrencies}
-            supportedLanguages={supportedLanguages}
-            setSupportedLanguages={setSupportedLanguages}
-            onSave={handleSaveCurrencyLang}
-            saving={savingCurrencyLang}
           />
         )}
 

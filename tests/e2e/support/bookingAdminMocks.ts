@@ -432,6 +432,9 @@ export async function mockBookingAdminShellRoutes(
       },
     });
   });
+  await page.route(`**${BOOKING_ADMIN_LOCALIZATION_SETTINGS_PATH}*`, (route) =>
+    route.fulfill({ json: defaultLocalizationSettings }),
+  );
   await page.route("**/api/booking/hotels/*/settings/design", (route) =>
     route.fulfill({ json: defaultBookingAdminDesignSettings }),
   );
