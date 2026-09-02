@@ -29,7 +29,7 @@ describe("production Booking reservation records", () => {
       balanceAmount: "0.00",
       bookingChannel: "direct",
       expectedPaymentMethod: "manual_card",
-      bookingMetadata: { sourcePaymentStatus: "captured" },
+      bookingMetadata: { sourceChannel: "direct", sourcePaymentStatus: "captured" },
     });
     expect(records[1]!.row).toMatchObject({
       guestRole: "booker",
@@ -85,6 +85,23 @@ describe("production Booking reservation records", () => {
       },
     });
   });
+
+  it.each(["beds24", "other"])(
+    "keeps legacy %s attribution explicit without inventing an OTA",
+    (channel) => {
+      const source = booking();
+      source.data["channel"] = channel;
+      const context = createProductionBookingContext(input([source]));
+      const record = buildBookingReservationRecords(context)[0]!;
+
+      expect(context.blockers).toEqual([]);
+      expect(record.row).toMatchObject({
+        bookingChannel: "unknown",
+        directBookingSource: null,
+        bookingMetadata: { sourceChannel: channel },
+      });
+    },
+  );
 
   it("blocks unknown channels and billing plans instead of guessing", () => {
     for (const [field, value] of [
