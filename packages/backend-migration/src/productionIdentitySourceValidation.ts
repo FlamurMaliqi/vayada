@@ -127,10 +127,34 @@ export function date(value: unknown, field: string): string {
   if (Number.isNaN(parsed.getTime())) throw new Error(`${field} must be a valid timestamp`);
   return parsed.toISOString();
 }
+export function canonicalTimestamp(value: unknown, field: string): string {
+  if (value instanceof Date) return date(value, field);
+  if (typeof value !== "string") throw new Error(`${field} must be a timestamp`);
+  const match =
+    /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}(?::?\d{2})?)$/i.exec(
+      value,
+    );
+  if (!match) throw new Error(`${field} must be a precise timestamp with a timezone`);
+  const [, calendarDate, time, rawFraction = "", rawZone] = match;
+  const zone = rawZone!.toUpperCase() === "Z" ? "Z" : normalizeTimestampOffset(rawZone!);
+  const parsed = new Date(`${calendarDate}T${time}${zone}`);
+  if (Number.isNaN(parsed.getTime())) throw new Error(`${field} must be a valid timestamp`);
+  const significantFraction = rawFraction.replace(/0+$/, "");
+  const fraction = significantFraction ? significantFraction.padEnd(3, "0") : "000";
+  return `${parsed.toISOString().slice(0, 19)}.${fraction}Z`;
+}
 export const optionalDate = (value: unknown, field: string) =>
   value == null || value === "" ? null : date(value, field);
+export const optionalCanonicalTimestamp = (value: unknown, field: string) =>
+  value == null || value === "" ? null : canonicalTimestamp(value, field);
 export function newestDate(...values: Array<string | null>): string {
   const present = values.filter((value): value is string => value !== null);
   if (!present.length) throw new Error("At least one timestamp is required");
   return new Date(Math.max(...present.map((value) => Date.parse(value)))).toISOString();
+}
+
+function normalizeTimestampOffset(value: string): string {
+  if (/^[+-]\d{2}$/.test(value)) return `${value}:00`;
+  if (/^[+-]\d{4}$/.test(value)) return `${value.slice(0, 3)}:${value.slice(3)}`;
+  return value;
 }
