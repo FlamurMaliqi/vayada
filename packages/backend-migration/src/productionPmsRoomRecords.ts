@@ -34,11 +34,16 @@ export function buildPmsRoomRecords(context: PmsBuildContext): PmsRoomBuild {
   const records: PmsTargetRecord[] = [];
   const flexiblePlanByRoomType = new Map<string, string>();
   const channelPlanByMapping = new Map<string, string>();
+  const duplicateNameDispositions = roomTypeDuplicateNameDispositions(context);
   for (const source of context.rowsByTable.get("linked_inventory_groups") ?? [])
     append(context, source, records, () => linkedGroup(context, source));
   for (const source of context.rowsByTable.get("room_types") ?? [])
     append(context, source, records, () => {
-      const built = roomType(context, source);
+      const built = roomType(
+        context,
+        source,
+        duplicateNameDispositions.get(uuid(source.data["id"], "id")),
+      );
       flexiblePlanByRoomType.set(built.roomTypeId, built.flexiblePlanId);
       return built.records;
     });
@@ -51,6 +56,131 @@ export function buildPmsRoomRecords(context: PmsBuildContext): PmsRoomBuild {
       return [built.record];
     });
   return { records, flexiblePlanByRoomType, channelPlanByMapping };
+}
+
+type RoomTypeDuplicateNameDisposition = {
+  canonicalRoomTypeId: string | null;
+  duplicateGroupSize: number;
+  effectiveActive: boolean;
+  reasonCode:
+    | "duplicate_name_canonical"
+    | "duplicate_name_empty_inactive"
+    | "duplicate_name_historical_inactive";
+  sourceActive: boolean;
+};
+
+function roomTypeDuplicateNameDispositions(
+  context: PmsBuildContext,
+): Map<string, RoomTypeDuplicateNameDisposition> {
+  const groups = new Map<string, Array<{ id: string; row: IdentitySourceRow }>>();
+  for (const row of context.rowsByTable.get("room_types") ?? []) {
+    try {
+      if (!bool(row.data["is_active"], "is_active", true)) continue;
+      const id = uuid(row.data["id"], "id");
+      const propertyId = context.propertyByHotel.get(
+        requiredText(row.data["hotel_id"], "hotel_id").toLowerCase(),
+      );
+      if (!propertyId) continue;
+      const name = requiredText(row.data["name"], "name").trim().toLowerCase();
+      const key = `${propertyId}:${name}`;
+      groups.set(key, [...(groups.get(key) ?? []), { id, row }]);
+    } catch {
+      // The normal row builder records malformed source fields as blockers.
+    }
+  }
+
+  const result = new Map<string, RoomTypeDuplicateNameDisposition>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const evidence = group.map((entry) => duplicateRoomTypeEvidence(context, entry));
+    const live = evidence.filter((entry) => entry.live);
+    if (live.length > 1) {
+      for (const entry of live)
+        addPmsBlocker(
+          context,
+          "DUPLICATE_ACTIVE_ROOM_TYPE_NAME",
+          "pms.room_types",
+          entry.id,
+          "Multiple same-name room types retain future or channel evidence",
+        );
+      continue;
+    }
+    const canonical =
+      live[0] ??
+      evidence.filter((entry) => entry.capacity > 0).sort(compareDuplicateRoomTypeEvidence)[0] ??
+      null;
+    for (const entry of evidence) {
+      const effectiveActive = canonical?.id === entry.id;
+      context.effectiveRoomTypeActiveById.set(entry.id, effectiveActive);
+      result.set(entry.id, {
+        canonicalRoomTypeId: canonical?.id ?? null,
+        duplicateGroupSize: evidence.length,
+        effectiveActive,
+        reasonCode: effectiveActive
+          ? "duplicate_name_canonical"
+          : canonical
+            ? "duplicate_name_historical_inactive"
+            : "duplicate_name_empty_inactive",
+        sourceActive: true,
+      });
+    }
+  }
+  return result;
+}
+
+function duplicateRoomTypeEvidence(
+  context: PmsBuildContext,
+  entry: { id: string; row: IdentitySourceRow },
+): {
+  id: string;
+  capacity: number;
+  live: boolean;
+  nonCancelledBookings: number;
+  updatedAt: string;
+} {
+  const rows = (table: string) => context.rowsByTable.get(table) ?? [];
+  const references = (table: string) =>
+    rows(table).filter((row) => String(row.data["room_type_id"] ?? "").toLowerCase() === entry.id);
+  const snapshotDay = context.snapshotAt.slice(0, 10);
+  const bookings = references("bookings");
+  const futureBookings = bookings.filter((row) => {
+    const status = String(row.data["status"] ?? "").toLowerCase();
+    return (
+      !["cancelled", "canceled", "no_show"].includes(status) &&
+      String(row.data["check_out"] ?? "").slice(0, 10) >= snapshotDay
+    );
+  });
+  const futureBlocks = references("room_blocks").filter(
+    (row) => String(row.data["end_date"] ?? row.data["ends_on"] ?? "").slice(0, 10) >= snapshotDay,
+  );
+  const activeChannelMappings = references("channex_room_type_mappings").filter(
+    (row) => row.data["is_active"] !== false,
+  );
+  const physicalRooms = references("rooms").length;
+  return {
+    id: entry.id,
+    capacity: Math.max(physicalRooms, integer(entry.row.data["total_rooms"], "total_rooms", 0)),
+    live: futureBookings.length > 0 || futureBlocks.length > 0 || activeChannelMappings.length > 0,
+    nonCancelledBookings: bookings.filter(
+      (row) =>
+        !["cancelled", "canceled", "no_show"].includes(
+          String(row.data["status"] ?? "").toLowerCase(),
+        ),
+    ).length,
+    updatedAt: iso(entry.row.data["updated_at"], "updated_at"),
+  };
+}
+
+function compareDuplicateRoomTypeEvidence(
+  left: ReturnType<typeof duplicateRoomTypeEvidence>,
+  right: ReturnType<typeof duplicateRoomTypeEvidence>,
+): number {
+  return (
+    right.capacity - left.capacity ||
+    right.nonCancelledBookings - left.nonCancelledBookings ||
+    right.updatedAt.localeCompare(left.updatedAt) ||
+    left.id.localeCompare(right.id)
+  );
 }
 
 function linkedGroup(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetRecord[] {
@@ -73,6 +203,7 @@ function linkedGroup(context: PmsBuildContext, source: IdentitySourceRow): PmsTa
 function roomType(
   context: PmsBuildContext,
   source: IdentitySourceRow,
+  duplicateNameDisposition?: RoomTypeDuplicateNameDisposition,
 ): { roomTypeId: string; flexiblePlanId: string; records: PmsTargetRecord[] } {
   const data = source.data;
   const id = uuid(data["id"], "id");
@@ -91,6 +222,8 @@ function roomType(
   const updatedAt = iso(data["updated_at"], "updated_at");
   const roomCurrency = currency(data["currency"] ?? "EUR");
   const baseRate = money(data["base_rate"] ?? 0, "base_rate");
+  const effectiveActive =
+    duplicateNameDisposition?.effectiveActive ?? bool(data["is_active"], "is_active", true);
   const ignoredSeasonIndices = ignoredLegacySeasonIndices(data);
   const legacyPricing = {
     ...pricingSnapshot(data),
@@ -158,6 +291,9 @@ function roomType(
         bedrooms: integer(data["bedrooms"], "bedrooms", 1),
         bathrooms: integer(data["bathrooms"], "bathrooms", 1),
         legacyPricing,
+        ...(duplicateNameDisposition
+          ? { legacyRoomTypeDisposition: duplicateNameDisposition }
+          : {}),
         ...(imageQuarantine
           ? {
               legacyMediaDisposition: {
@@ -177,7 +313,7 @@ function roomType(
       })),
       baseRateAmount: baseRate,
       currency: roomCurrency,
-      active: bool(data["is_active"], "is_active", true),
+      active: effectiveActive,
       sortOrder: integer(data["sort_order"], "sort_order", 0),
       locationSummary: {
         address: optionalText(data["location_address"], "location_address"),
@@ -188,7 +324,7 @@ function roomType(
       createdAt,
       updatedAt,
     },
-    { row: data, linkedGroupId },
+    { row: data, linkedGroupId, duplicateNameDisposition },
   );
   const flexiblePlanId = deterministicUuid("production-pms", "rate-plan", id, "flexible");
   const plans = [
@@ -211,11 +347,12 @@ function roomType(
         cancellationPolicySnapshot: flexibleCancellation,
         baseRateAmount: baseRate,
         currency: roomCurrency,
-        active: bool(data["flexible_rate_enabled"], "flexible_rate_enabled", true),
+        active:
+          effectiveActive && bool(data["flexible_rate_enabled"], "flexible_rate_enabled", true),
         createdAt,
         updatedAt,
       },
-      { roomType: data, cancellationPolicy: flexibleCancellation },
+      { roomType: data, cancellationPolicy: flexibleCancellation, effectiveActive },
     ),
   ];
   if (
@@ -244,11 +381,13 @@ function roomType(
           cancellationPolicySnapshot: nonRefundableCancellation,
           baseRateAmount: nonRefundableRate(data, baseRate),
           currency: roomCurrency,
-          active: bool(data["non_refundable_enabled"], "non_refundable_enabled", false),
+          active:
+            effectiveActive &&
+            bool(data["non_refundable_enabled"], "non_refundable_enabled", false),
           createdAt,
           updatedAt,
         },
-        { roomType: data, cancellationPolicy: nonRefundableCancellation },
+        { roomType: data, cancellationPolicy: nonRefundableCancellation, effectiveActive },
       ),
     );
   }
@@ -313,26 +452,40 @@ function channelPlan(
   return {
     mappingId,
     planId,
-    record: pmsRecord(source, "rate_plans", planId, updatedAt, true, {
-      id: planId,
-      propertyId,
-      roomTypeId,
-      code: `CH-${mappingId.slice(0, 8).toUpperCase()}`,
-      name: planName,
-      rateType: /non.?refundable/i.test(planName) ? "non_refundable" : "manual",
-      mealPlan:
-        data["meal_plan_code"] === null || data["meal_plan_code"] === undefined
-          ? null
-          : `legacy:${integer(data["meal_plan_code"], "meal_plan_code")}`,
-      paymentPolicy: {},
-      depositPolicy: {},
-      cancellationPolicySnapshot: {},
-      baseRateAmount: money(parent.data["base_rate"] ?? 0, "base_rate"),
-      currency: currency(parent.data["currency"] ?? "EUR"),
-      active: bool(parent.data["is_active"], "is_active", true),
-      createdAt: iso(data["created_at"], "created_at"),
+    record: pmsRecord(
+      source,
+      "rate_plans",
+      planId,
       updatedAt,
-    }),
+      true,
+      {
+        id: planId,
+        propertyId,
+        roomTypeId,
+        code: `CH-${mappingId.slice(0, 8).toUpperCase()}`,
+        name: planName,
+        rateType: /non.?refundable/i.test(planName) ? "non_refundable" : "manual",
+        mealPlan:
+          data["meal_plan_code"] === null || data["meal_plan_code"] === undefined
+            ? null
+            : `legacy:${integer(data["meal_plan_code"], "meal_plan_code")}`,
+        paymentPolicy: {},
+        depositPolicy: {},
+        cancellationPolicySnapshot: {},
+        baseRateAmount: money(parent.data["base_rate"] ?? 0, "base_rate"),
+        currency: currency(parent.data["currency"] ?? "EUR"),
+        active:
+          context.effectiveRoomTypeActiveById.get(roomTypeId) ??
+          bool(parent.data["is_active"], "is_active", true),
+        createdAt: iso(data["created_at"], "created_at"),
+        updatedAt,
+      },
+      {
+        mapping: data,
+        parent: parent.data,
+        effectiveActive: context.effectiveRoomTypeActiveById.get(roomTypeId) ?? null,
+      },
+    ),
   };
 }
 

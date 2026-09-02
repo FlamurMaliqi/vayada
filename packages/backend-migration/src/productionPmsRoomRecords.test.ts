@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createProductionPmsContext } from "./productionPmsContext.js";
+import { buildPmsInventoryRecords } from "./productionPmsInventoryRecords.js";
 import { buildPmsRoomRecords } from "./productionPmsRoomRecords.js";
 import { sha256 } from "./productionBookingValues.js";
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
@@ -9,7 +10,11 @@ import type { ProductionPmsTargetState } from "./productionPmsTypes.js";
 const HOTEL = "10000000-0000-4000-a000-000000000001";
 const PROPERTY = "20000000-0000-4000-a000-000000000001";
 const ROOM_TYPE = "30000000-0000-4000-a000-000000000001";
+const ROOM_TYPE_DUPLICATE = "30000000-0000-4000-a000-000000000002";
+const ROOM_TYPE_EMPTY_A = "30000000-0000-4000-a000-000000000003";
+const ROOM_TYPE_EMPTY_B = "30000000-0000-4000-a000-000000000004";
 const ROOM = "40000000-0000-4000-a000-000000000001";
+const ROOM_DUPLICATE = "40000000-0000-4000-a000-000000000002";
 const GROUP = "50000000-0000-4000-a000-000000000001";
 const MAPPING = "60000000-0000-4000-a000-000000000001";
 const MEDIA = "a0000000-0000-4000-a000-000000000001";
@@ -188,10 +193,184 @@ describe("production PMS room records", () => {
       },
     });
   });
+
+  it("deactivates a historical same-name duplicate while preserving both room types", () => {
+    const rows = sourceRows();
+    const original = rows.find((row) => row.sourceTable === "room_types")!;
+    rows.push(
+      row("room_types", {
+        ...structuredClone(original.data),
+        id: ROOM_TYPE_DUPLICATE,
+        name: "suite",
+        total_rooms: 1,
+        images: [],
+        created_at: "2026-01-02T00:00:00Z",
+      }),
+      row("rooms", {
+        id: ROOM_DUPLICATE,
+        hotel_id: HOTEL,
+        room_type_id: ROOM_TYPE_DUPLICATE,
+        room_number: "102",
+        status: "available",
+        created_at: "2026-01-02T00:00:00Z",
+        updated_at: "2026-02-01T00:00:00Z",
+      }),
+    );
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows,
+      target: target(),
+    });
+
+    const built = buildPmsRoomRecords(context);
+    const roomTypes = built.records.filter((record) => record.targetTable === "room_types");
+
+    expect(context.blockers).toEqual([]);
+    expect(roomTypes.find((record) => record.sourceId === ROOM_TYPE)?.row).toMatchObject({
+      name: "Suite",
+      active: true,
+      roomAttributes: {
+        legacyRoomTypeDisposition: {
+          canonicalRoomTypeId: ROOM_TYPE,
+          duplicateGroupSize: 2,
+          effectiveActive: true,
+          reasonCode: "duplicate_name_canonical",
+          sourceActive: true,
+        },
+      },
+    });
+    expect(roomTypes.find((record) => record.sourceId === ROOM_TYPE_DUPLICATE)?.row).toMatchObject({
+      name: "suite",
+      active: false,
+      roomAttributes: {
+        legacyRoomTypeDisposition: {
+          canonicalRoomTypeId: ROOM_TYPE,
+          duplicateGroupSize: 2,
+          effectiveActive: false,
+          reasonCode: "duplicate_name_historical_inactive",
+          sourceActive: true,
+        },
+      },
+    });
+    expect(
+      built.records
+        .filter(
+          (record) =>
+            record.targetTable === "rate_plans" && record.row["roomTypeId"] === ROOM_TYPE_DUPLICATE,
+        )
+        .every((record) => record.row["active"] === false),
+    ).toBe(true);
+    expect(
+      buildPmsInventoryRecords(context)
+        .filter((record) => record.row["roomTypeId"] === ROOM_TYPE_DUPLICATE)
+        .every((record) => record.row["status"] === "closed" && record.row["availableCount"] === 0),
+    ).toBe(true);
+  });
+
+  it("deactivates all empty same-name legacy copies", () => {
+    const rows = sourceRows();
+    const original = rows.find((row) => row.sourceTable === "room_types")!;
+    for (const [id, createdAt] of [
+      [ROOM_TYPE_EMPTY_A, "2026-07-08T00:18:28Z"],
+      [ROOM_TYPE_EMPTY_B, "2026-07-08T00:18:29Z"],
+    ])
+      rows.push(
+        row("room_types", {
+          ...structuredClone(original.data),
+          id,
+          name: "Empty Copy",
+          total_rooms: 0,
+          images: [],
+          created_at: createdAt,
+        }),
+      );
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows,
+      target: target(),
+    });
+
+    const emptyCopies = buildPmsRoomRecords(context).records.filter(
+      (record) =>
+        record.targetTable === "room_types" &&
+        [ROOM_TYPE_EMPTY_A, ROOM_TYPE_EMPTY_B].includes(record.sourceId),
+    );
+
+    expect(context.blockers).toEqual([]);
+    expect(emptyCopies).toHaveLength(2);
+    expect(emptyCopies.every((record) => record.row["active"] === false)).toBe(true);
+    expect(emptyCopies.map((record) => record.row["roomAttributes"])).toEqual([
+      expect.objectContaining({
+        legacyRoomTypeDisposition: expect.objectContaining({
+          canonicalRoomTypeId: null,
+          reasonCode: "duplicate_name_empty_inactive",
+        }),
+      }),
+      expect.objectContaining({
+        legacyRoomTypeDisposition: expect.objectContaining({
+          canonicalRoomTypeId: null,
+          reasonCode: "duplicate_name_empty_inactive",
+        }),
+      }),
+    ]);
+  });
+
+  it("blocks same-name room types when more than one has future booking evidence", () => {
+    const rows = sourceRows();
+    const original = rows.find((row) => row.sourceTable === "room_types")!;
+    rows.push(
+      row("room_types", {
+        ...structuredClone(original.data),
+        id: ROOM_TYPE_DUPLICATE,
+        images: [],
+      }),
+      row("bookings", {
+        id: "b0000000-0000-4000-a000-000000000001",
+        room_type_id: ROOM_TYPE,
+        status: "confirmed",
+        check_out: "2026-09-10",
+      }),
+      row("bookings", {
+        id: "b0000000-0000-4000-a000-000000000002",
+        room_type_id: ROOM_TYPE_DUPLICATE,
+        status: "confirmed",
+        check_out: "2026-09-11",
+      }),
+    );
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows,
+      target: target(),
+    });
+
+    buildPmsRoomRecords(context);
+
+    expect(context.blockers).toEqual([
+      expect.objectContaining({
+        code: "DUPLICATE_ACTIVE_ROOM_TYPE_NAME",
+        source: "pms.room_types",
+        sourceId: ROOM_TYPE,
+      }),
+      expect.objectContaining({
+        code: "DUPLICATE_ACTIVE_ROOM_TYPE_NAME",
+        source: "pms.room_types",
+        sourceId: ROOM_TYPE_DUPLICATE,
+      }),
+    ]);
+  });
 });
 
 function sourceRows(): IdentitySourceRow[] {
   return [
+    row("hotels", {
+      id: HOTEL,
+      timezone: "UTC",
+      same_day_bookings_enabled: true,
+      calendar_auto_open_enabled: false,
+    }),
     row("linked_inventory_groups", {
       id: GROUP,
       hotel_id: HOTEL,

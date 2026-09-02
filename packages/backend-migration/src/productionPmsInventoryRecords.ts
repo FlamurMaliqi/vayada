@@ -53,6 +53,7 @@ type InventoryFacts = {
   linkedActivity: IdentitySourceRow[];
   hotel: IdentitySourceRow;
   checksumInput: unknown;
+  effectiveRoomTypeActive: boolean;
 };
 
 function inventoryFacts(context: PmsBuildContext, source: IdentitySourceRow): InventoryFacts {
@@ -90,6 +91,9 @@ function inventoryFacts(context: PmsBuildContext, source: IdentitySourceRow): In
     blocks,
     linkedActivity,
     hotel,
+    effectiveRoomTypeActive:
+      context.effectiveRoomTypeActiveById.get(roomTypeId) ??
+      bool(source.data["is_active"], "is_active", true),
     checksumInput: {
       hotel: hotel.data,
       roomType: source.data,
@@ -97,6 +101,7 @@ function inventoryFacts(context: PmsBuildContext, source: IdentitySourceRow): In
       drafts: drafts.map((row) => row.data),
       blocks: blocks.map((row) => row.data),
       linkedActivity: linkedActivity.map((row) => ({ table: row.sourceTable, row: row.data })),
+      effectiveRoomTypeActive: context.effectiveRoomTypeActiveById.get(roomTypeId) ?? null,
     },
   };
 }
@@ -122,7 +127,8 @@ function inventoryDay(
     if (row.sourceTable === "booking_drafts") return activeDraft(context, row, stayDate);
     return activeBlock(row, stayDate);
   });
-  const calendarOpen = sellableAtSnapshot(context, source, facts.hotel, stayDate);
+  const calendarOpen =
+    facts.effectiveRoomTypeActive && sellableAtSnapshot(context, source, facts.hotel, stayDate);
   if (assignedCount > facts.totalCount)
     throw new Error(
       `${stayDate} assigned (${assignedCount}) exceeds total_rooms (${facts.totalCount})`,
@@ -168,6 +174,7 @@ function inventoryDay(
           softHeldCount,
           linkedStopSell,
           calendarOpen,
+          effectiveRoomTypeActive: facts.effectiveRoomTypeActive,
           ...(overCapacity
             ? {
                 migratedBlockedCount,

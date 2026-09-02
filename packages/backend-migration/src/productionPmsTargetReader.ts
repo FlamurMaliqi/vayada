@@ -309,7 +309,7 @@ async function readCollisions(
        SELECT * FROM jsonb_to_recordset($1::jsonb) AS source(
          "targetTable" text, "targetId" text, "propertyId" uuid,
          "sourceSystem" text, "sourceRoomTypeId" text, "sourceRoomId" text,
-         "roomNumber" text, "roomTypeId" uuid, code text,
+         name text, active boolean, "roomNumber" text, "roomTypeId" uuid, code text,
          "guestBookingId" uuid, position integer, source text, "sourceThreadId" text,
          "threadId" uuid, "sourceMessageId" text, provider text, "connectionId" uuid,
          "externalPropertyId" text, "claimState" text,
@@ -324,6 +324,12 @@ async function readCollisions(
       AND target.id::text <> requested."targetId" AND target.property_id = requested."propertyId"
       AND target.source_system = requested."sourceSystem"
       AND target.source_room_type_id = requested."sourceRoomTypeId"
+     UNION ALL
+     SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.room_types', target.id::text,
+            'Another active room type owns this case-insensitive property name'
+     FROM requested JOIN pms.room_types target ON requested."targetTable" = 'room_types'
+      AND target.id::text <> requested."targetId" AND target.property_id = requested."propertyId"
+      AND target.active AND requested.active AND lower(target.name) = lower(requested.name)
      UNION ALL
      SELECT 'TARGET_UNIQUE_CONFLICT', 'pms.rooms', target.id::text,
             'Another room owns this legacy identity or property room number'
