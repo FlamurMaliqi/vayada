@@ -200,11 +200,23 @@ describe("production Booking related records", () => {
         quantityBasis: "legacy_invoice_default",
       },
     },
+    {
+      addon_names: undefined,
+      addon_quantities: {},
+      expected: {
+        name: "Add-ons",
+        nameBasis: "legacy_invoice_fallback",
+        quantity: 1,
+        quantityBasis: "legacy_invoice_default",
+      },
+    },
   ])(
     "uses the deployed legacy invoice fallback for incomplete add-on snapshots",
     ({ addon_names, addon_quantities, expected }) => {
       const rows = allRows().slice(0, 2);
-      Object.assign(rows[0]!.data, { addon_names, addon_quantities });
+      if (addon_names === undefined) delete rows[0]!.data["addon_names"];
+      else rows[0]!.data["addon_names"] = addon_names;
+      rows[0]!.data["addon_quantities"] = addon_quantities;
       const context = createProductionBookingContext(input(rows));
       const [selection] = buildBookingRelatedRecords(context);
 

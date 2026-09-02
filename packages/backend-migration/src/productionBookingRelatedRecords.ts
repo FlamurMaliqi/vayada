@@ -264,19 +264,22 @@ function addonSelections(
   const ids = rawIds.map((value, index) => uuid(value, `addon_ids[${index}]`));
   if (new Set(ids).size !== ids.length) throw new Error("addon_ids must be unique");
   const bookedTotal = money(data["addon_total"], "addon_total", ids.length ? undefined : "0.00");
-  const rawNames = data["addon_names"];
+  const rawNamesValue = data["addon_names"];
   const rawQuantities = data["addon_quantities"];
   const rawDates = data["addon_dates"];
   if (!ids.length) {
     const hasSnapshotEvidence =
       Number(bookedTotal) !== 0 ||
-      (Array.isArray(rawNames) && rawNames.length > 0) ||
+      (Array.isArray(rawNamesValue) && rawNamesValue.length > 0) ||
       Object.keys(object(rawQuantities)).length > 0 ||
       Object.keys(object(rawDates)).length > 0;
     if (hasSnapshotEvidence) throw new Error("add-on snapshot has evidence but no addon_ids");
     return [];
   }
-  if (!Array.isArray(rawNames) || (rawNames.length !== 0 && rawNames.length !== ids.length))
+  if (rawNamesValue !== null && rawNamesValue !== undefined && !Array.isArray(rawNamesValue))
+    throw new Error("addon_names must align exactly with addon_ids");
+  const rawNames = Array.isArray(rawNamesValue) ? rawNamesValue : [];
+  if (rawNames.length !== 0 && rawNames.length !== ids.length)
     throw new Error("addon_names must align exactly with addon_ids");
   const hasSnapshotNames = rawNames.length === ids.length;
   const names = hasSnapshotNames
