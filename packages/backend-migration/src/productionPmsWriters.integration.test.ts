@@ -46,10 +46,22 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       await seedPrerequisites(client);
       const prerequisites = await readProductionPmsPrerequisites(client, RUN);
       const source = sourceRows();
+      const historicalMapping = source.find(
+        (row) => row.sourceTable === "channex_booking_mappings",
+      )!;
+      source.push({
+        ...historicalMapping,
+        rowOrdinal: source.length + 1,
+        data: {
+          ...historicalMapping.data,
+          id: "13560000-0000-4000-8000-000000000091",
+          channex_room_index: 1,
+        },
+      });
       const plan = buildProductionPmsPlan({
         sourceRunId: RUN,
-        snapshotAt: "2026-08-30T00:00:00Z",
-        completedAt: "2026-08-30T00:00:00Z",
+        snapshotAt: "2026-09-04T00:00:00Z",
+        completedAt: "2026-09-04T00:00:00Z",
         rows: source,
         target: { ...prerequisites, records: [], provenance: [] },
       });
@@ -68,8 +80,8 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       const target = await readProductionPmsTargetState(client, plan.records, prerequisites);
       const verified = buildProductionPmsPlan({
         sourceRunId: RUN,
-        snapshotAt: "2026-08-30T00:00:00Z",
-        completedAt: "2026-08-30T00:00:00Z",
+        snapshotAt: "2026-09-04T00:00:00Z",
+        completedAt: "2026-09-04T00:00:00Z",
         rows: source,
         target,
       });
@@ -82,6 +94,8 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
            (SELECT count(*)::int FROM pms.inventory_days WHERE property_id = $1) AS inventory,
            (SELECT count(*)::int FROM pms.operational_booking_assignments WHERE guest_booking_id = $2) AS assignments,
            (SELECT count(*)::int FROM pms.channel_booking_mappings WHERE guest_booking_id = $2) AS mappings,
+           (SELECT count(*)::int FROM pms.channel_booking_mappings
+             WHERE guest_booking_id = $2 AND assignment_id IS NULL AND sync_status = 'ignored') AS ignored_mappings,
            (SELECT count(*)::int FROM pms.room_type_media WHERE room_type_id = $3) AS room_media,
            (SELECT media_snapshot FROM pms.room_types WHERE id = $3) AS media_snapshot,
            (SELECT delivery_status FROM platform.external_webhook_events WHERE provider = 'channex' LIMIT 1) AS webhook_status,
@@ -93,7 +107,8 @@ describe.skipIf(!URL)("production PMS writers (PostgreSQL)", () => {
       expect(stored.rows[0]).toMatchObject({
         inventory: 366,
         assignments: 1,
-        mappings: 1,
+        mappings: 2,
+        ignored_mappings: 1,
         room_media: 1,
         media_snapshot: [
           {

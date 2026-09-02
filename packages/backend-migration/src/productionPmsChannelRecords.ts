@@ -309,15 +309,20 @@ function bookingMapping(
   const propertyId = propertyForHotel(context, hotelId);
   const connectionId = uuid(requiredConnection(context, hotelId).data["id"], "connection.id");
   const guestBookingId = uuid(data["booking_id"], "booking_id");
-  if (targetBooking(context, guestBookingId).propertyId !== propertyId)
+  const booking = targetBooking(context, guestBookingId);
+  if (booking.propertyId !== propertyId)
     throw new Error("channel booking mapping crosses properties");
   const channelRoomIndex = integer(data["channex_room_index"], "channex_room_index", 0);
   if (channelRoomIndex < 0) throw new Error("channex_room_index must be non-negative");
-  const assignmentId = assignments.assignmentByBookingPosition.get(
-    `${guestBookingId}:${channelRoomIndex + 1}`,
-  );
-  if (!assignmentId)
-    throw new Error("channel booking slot has no exact operational booking assignment");
+  const assignmentId =
+    assignments.assignmentByBookingPosition.get(`${guestBookingId}:${channelRoomIndex + 1}`) ??
+    null;
+  if (
+    !assignmentId &&
+    booking.target.lifecycleStatus !== "canceled" &&
+    booking.target.checkOut > context.snapshotAt.slice(0, 10)
+  )
+    throw new Error("active channel booking slot has no exact operational booking assignment");
   const updatedAt = iso(data["updated_at"], "updated_at");
   return [
     pmsRecord(
@@ -336,11 +341,16 @@ function bookingMapping(
         externalRevisionId: optionalUuid(data["channex_revision_id"], "channex_revision_id"),
         channel: requiredText(data["channel_source"] ?? "channex", "channel_source").toLowerCase(),
         channelRoomIndex,
-        syncStatus: connectionIsActive(context, requiredConnection(context, hotelId))
-          ? "active"
-          : "ignored",
+        syncStatus:
+          assignmentId && connectionIsActive(context, requiredConnection(context, hotelId))
+            ? "active"
+            : "ignored",
         lastSyncedAt: optionalIso(data["last_synced_at"], "last_synced_at"),
-        mappingMetadata: { migrationRunId: context.sourceRunId, historicalReceipt: true },
+        mappingMetadata: {
+          migrationRunId: context.sourceRunId,
+          historicalReceipt: true,
+          ...(assignmentId ? {} : { migrationDisposition: "historical_unassigned_slot" }),
+        },
         createdAt: iso(data["created_at"], "created_at"),
         updatedAt,
       },

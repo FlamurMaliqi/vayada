@@ -38,6 +38,9 @@ describe("production PMS target reader", () => {
       ["vay1351-run"],
       ["vay1351-run"],
     ]);
+    expect(
+      calls.find((call) => call.sql.includes("production_media_migration_quarantines"))?.values,
+    ).toEqual(["vay1351-run"]);
   });
 
   it("loads UUID and composite target rows, provenance, and unique collisions", async () => {

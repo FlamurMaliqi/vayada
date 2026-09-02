@@ -94,6 +94,60 @@ describe("production PMS inventory", () => {
     );
   });
 
+  it("closes legacy over-blocked days without inventing capacity", () => {
+    const source = rows();
+    source.push(
+      row("room_blocks", {
+        id: "60000000-0000-4000-a000-000000000001",
+        hotel_id: HOTEL,
+        room_type_id: TYPE_B,
+        start_date: "2026-09-01",
+        end_date: "2026-09-02",
+        blocked_count: 5,
+      }),
+    );
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: source,
+      target: {
+        propertyLinks: [
+          {
+            sourceId: HOTEL,
+            propertyId: PROPERTY,
+            relationship: "operational_input",
+            status: "active",
+            migrationRunId: "run",
+            ownerStatus: "active",
+          },
+        ],
+        bookings: [],
+        userIds: [],
+        mediaIds: [],
+        records: [],
+        provenance: [],
+      },
+    });
+
+    const records = buildPmsInventoryRecords(context);
+
+    expect(context.blockers).toEqual([]);
+    expect(day(records, TYPE_B, "2026-09-01")).toMatchObject({
+      totalCount: 2,
+      assignedCount: 0,
+      blockedCount: 2,
+      availableCount: 0,
+      status: "closed",
+      sourceFreshness: {
+        legacy: {
+          blockedCount: 5,
+          migratedBlockedCount: 2,
+          migrationDisposition: "legacy_over_capacity_closed",
+        },
+      },
+    });
+  });
+
   it("blocks active legacy holds that have no target release lifecycle", () => {
     const source = rows();
     source.push(

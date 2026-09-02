@@ -17,6 +17,7 @@ import {
   money,
   optionalText,
   requiredText,
+  sha256,
   uuid,
 } from "./productionBookingValues.js";
 import {
@@ -90,9 +91,14 @@ function roomType(
   const updatedAt = iso(data["updated_at"], "updated_at");
   const roomCurrency = currency(data["currency"] ?? "EUR");
   const baseRate = money(data["base_rate"] ?? 0, "base_rate");
-  const legacyPricing = pricingSnapshot(data);
+  const ignoredSeasonIndices = ignoredLegacySeasonIndices(data);
+  const legacyPricing = {
+    ...pricingSnapshot(data),
+    ...(ignoredSeasonIndices.length ? { ignoredSeasonIndices } : {}),
+  };
   const flexibleCancellation = cancellationPolicy(context, data, "flexible");
-  const legacyImages = jsonArray(data["images"], "images");
+  const imageQuarantine = matchingImageQuarantine(context, id, data["images"]);
+  const legacyImages = imageQuarantine ? [] : jsonArray(data["images"], "images");
   if (legacyImages.some((value) => typeof value !== "string"))
     throw new Error("images must contain only URL strings");
   if (legacyImages.length > 20) throw new Error("images exceeds the 20-image target limit");
@@ -152,6 +158,14 @@ function roomType(
         bedrooms: integer(data["bedrooms"], "bedrooms", 1),
         bathrooms: integer(data["bathrooms"], "bathrooms", 1),
         legacyPricing,
+        ...(imageQuarantine
+          ? {
+              legacyMediaDisposition: {
+                reasonCode: imageQuarantine.reasonCode,
+                sourceValueSha256: imageQuarantine.sourceValueSha256,
+              },
+            }
+          : {}),
       },
       amenitiesSnapshot: jsonArray(data["amenities"], "amenities"),
       mediaSnapshot: media.map((item) => ({
@@ -384,6 +398,7 @@ function rateRules(
     if (!season || typeof season !== "object" || Array.isArray(season))
       throw new Error(`seasons[${index}] must be an object`);
     const value = season as Record<string, unknown>;
+    if (ignoredLegacySeasonReason(value)) continue;
     for (const [occurrence, range] of recurringDateRanges(
       value["from"],
       value["to"],
@@ -432,6 +447,35 @@ function rateRules(
       rulePayload: jsonMap(lastMinute, "last_minute_discount"),
     });
   return result;
+}
+
+function ignoredLegacySeasonIndices(data: Record<string, unknown>): number[] {
+  return jsonArray(data["seasons"], "seasons").flatMap((season, index) => {
+    if (!season || typeof season !== "object" || Array.isArray(season)) return [];
+    return ignoredLegacySeasonReason(season as Record<string, unknown>) ? [index] : [];
+  });
+}
+
+function ignoredLegacySeasonReason(value: Record<string, unknown>): boolean {
+  // Deployed legacy pricing treats a season without both boundaries as non-covering.
+  return (
+    typeof value["from"] !== "string" ||
+    !value["from"].trim() ||
+    typeof value["to"] !== "string" ||
+    !value["to"].trim()
+  );
+}
+
+function matchingImageQuarantine(context: PmsBuildContext, roomTypeId: string, value: unknown) {
+  return context.target.mediaQuarantines?.find(
+    (quarantine) =>
+      quarantine.sourceTable === "room_types" &&
+      quarantine.sourceRowId === `${roomTypeId}:images` &&
+      quarantine.sourceField === "images" &&
+      quarantine.purpose === "pms.room_type.media" &&
+      quarantine.reasonCode === "INVALID_STRING_ARRAY" &&
+      quarantine.sourceValueSha256 === sha256({ value }),
+  );
 }
 
 function pricingSnapshot(data: Record<string, unknown>): Record<string, unknown> {

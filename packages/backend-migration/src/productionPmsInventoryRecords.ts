@@ -123,15 +123,21 @@ function inventoryDay(
     return activeBlock(row, stayDate);
   });
   const calendarOpen = sellableAtSnapshot(context, source, facts.hotel, stayDate);
-  if (assignedCount + blockedCount > facts.totalCount)
+  if (assignedCount > facts.totalCount)
     throw new Error(
-      `${stayDate} assigned (${assignedCount}) plus blocked (${blockedCount}) exceeds total_rooms (${facts.totalCount})`,
+      `${stayDate} assigned (${assignedCount}) exceeds total_rooms (${facts.totalCount})`,
     );
+  const overCapacity = assignedCount + blockedCount > facts.totalCount;
+  // Legacy can contain duplicate historical blocks. Preserve their raw total as evidence,
+  // but never increase capacity or let an impossible envelope become sellable in the target.
+  const migratedBlockedCount = overCapacity
+    ? Math.max(0, facts.totalCount - assignedCount)
+    : blockedCount;
   const availableCount =
-    calendarOpen && !linkedStopSell
-      ? Math.max(0, facts.totalCount - assignedCount - blockedCount - softHeldCount)
+    calendarOpen && !linkedStopSell && !overCapacity
+      ? Math.max(0, facts.totalCount - assignedCount - migratedBlockedCount - softHeldCount)
       : 0;
-  const status = calendarOpen ? "open" : "closed";
+  const status = calendarOpen && !overCapacity ? "open" : "closed";
   const targetId = `${facts.propertyId}:${facts.roomTypeId}:${stayDate}`;
   const linkedSourceRevision = nextLinkedSourceRevision(
     existingInventory.get(targetId),
@@ -149,7 +155,7 @@ function inventoryDay(
       stayDate,
       totalCount: facts.totalCount,
       assignedCount,
-      blockedCount,
+      blockedCount: migratedBlockedCount,
       availableCount,
       status,
       sourceFreshness: {
@@ -162,6 +168,12 @@ function inventoryDay(
           softHeldCount,
           linkedStopSell,
           calendarOpen,
+          ...(overCapacity
+            ? {
+                migratedBlockedCount,
+                migrationDisposition: "legacy_over_capacity_closed",
+              }
+            : {}),
         },
       },
       updatedAt: context.completedAt,

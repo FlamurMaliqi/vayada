@@ -63,11 +63,21 @@ export type PmsMediaReference = {
   storageKey: string;
 };
 
+export type PmsMediaQuarantine = {
+  sourceTable: string;
+  sourceRowId: string;
+  sourceField: string;
+  sourceValueSha256: string;
+  purpose: "pms.room_type.media" | "pms.messaging.attachment";
+  reasonCode: "INVALID_HTTPS_URL" | "INVALID_STRING_ARRAY";
+};
+
 export type ProductionPmsTargetState = {
   propertyLinks: PmsPropertyLink[];
   bookings: PmsTargetBooking[];
   userIds: string[];
   media?: PmsMediaReference[];
+  mediaQuarantines?: PmsMediaQuarantine[];
   /** @deprecated Retained for older plan fixtures; media gates use source-bound references. */
   mediaIds: string[];
   records: ExistingPmsTargetRecord[];

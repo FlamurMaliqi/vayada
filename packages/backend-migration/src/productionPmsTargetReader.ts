@@ -5,6 +5,7 @@ import type { ProductionMigrationSourceLink } from "./productionBookingTypes.js"
 import type {
   ExistingPmsTargetRecord,
   PmsPropertyLink,
+  PmsMediaQuarantine,
   PmsMediaReference,
   PmsTargetRecord,
   ProductionPmsTargetState,
@@ -79,6 +80,16 @@ export async function readProductionPmsPrerequisites(
       ORDER BY media.source_table, media.source_row_id, media.purpose, media.id`,
     [sourceRunId],
   );
+  const mediaQuarantines = await client.query<PmsMediaQuarantine>(
+    `SELECT source_table AS "sourceTable", source_row_id AS "sourceRowId",
+            source_field AS "sourceField", source_value_sha256 AS "sourceValueSha256",
+            purpose, reason_code AS "reasonCode"
+       FROM platform.production_media_migration_quarantines
+      WHERE source_run_id = $1 AND source_system = 'pms'
+        AND purpose IN ('pms.room_type.media', 'pms.messaging.attachment')
+      ORDER BY source_table, source_row_id, purpose`,
+    [sourceRunId],
+  );
   return {
     propertyLinks: links.rows,
     bookings: bookings.rows.map((booking) => ({
@@ -87,6 +98,7 @@ export async function readProductionPmsPrerequisites(
     })),
     userIds: users.rows.map((row) => row.id),
     media: mediaReferences.rows,
+    mediaQuarantines: mediaQuarantines.rows,
     mediaIds: media.rows.map((row) => row.id),
   };
 }
