@@ -190,3 +190,48 @@ export type PmsInboxMarkReadPort = {
       }
   >;
 };
+
+export type PmsInboxReplyError = {
+  code:
+    | "validation_failed"
+    | "thread_not_found"
+    | "thread_version_conflict"
+    | "idempotency_conflict"
+    | "attachment_too_large"
+    | "unsupported_attachment_type";
+  message: string;
+  currentVersion?: number;
+};
+
+export type PmsInboxReplyPort = {
+  reply(input: {
+    propertyId: string;
+    threadId: string;
+    organizationId: string;
+    actorUserId: string;
+    actorMembershipId: string;
+    idempotencyKey: string;
+    expectedThreadVersion: number;
+    text: string | null;
+    attachmentMediaIds: readonly string[];
+    audit: {
+      requestId: string;
+      correlationId: string;
+      requestedAt: string;
+    };
+  }): Promise<
+    | {
+        ok: true;
+        value: {
+          propertyId: string;
+          threadId: string;
+          messageId: string;
+          threadVersion: number;
+          delivery: NonNullable<PmsInboxMessage["delivery"]>;
+          acceptedAt: string;
+        };
+      }
+    | { ok: false; error: PmsInboxReplyError }
+  >;
+  close?(): Promise<void>;
+};

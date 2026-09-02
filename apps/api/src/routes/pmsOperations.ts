@@ -39,8 +39,10 @@ import { HIDDEN_GUEST_CONTACT } from "../domains/bookingGuestContactAccess.js";
 import {
   NATIVE_GUEST_INBOX_CONTRACT_VERSION,
   type PmsInboxMarkReadPort,
+  type PmsInboxMessage,
   type PmsInboxReadError,
   type PmsInboxReadPort,
+  type PmsInboxReplyPort,
   type PmsInboxThreadSummary,
   type PmsInboxTimelineItem,
 } from "../domains/pmsInbox.js";
@@ -1014,6 +1016,7 @@ export type PmsOperationsRoutesOptions = {
   roomAssignmentHistory?: PmsRoomAssignmentOptimizationHistoryPort;
   inboxReadPort?: PmsInboxReadPort;
   inboxMarkReadPort?: PmsInboxMarkReadPort;
+  inboxReplyPort?: PmsInboxReplyPort;
 };
 
 type PmsPropertyParams = {
@@ -1149,7 +1152,10 @@ export type PmsOperationsErrorCode =
   | "read_model_unavailable"
   | "room_type_not_found"
   | "thread_not_found"
+  | "thread_version_conflict"
   | "attachment_not_found"
+  | "attachment_too_large"
+  | "unsupported_attachment_type"
   | "room_block_not_found"
   | "room_block_conflict"
   | "side_effect_failed"
@@ -1161,10 +1167,11 @@ export type PmsOperationsErrorCode =
   | "property_not_found";
 
 export type PmsOperationsError = {
-  statusCode: 400 | 401 | 403 | 404 | 409 | 500;
+  statusCode: 400 | 401 | 403 | 404 | 409 | 413 | 415 | 500;
   code: PmsOperationsErrorCode;
   category: PmsOperationsErrorCategory;
   message: string;
+  details?: Record<string, unknown>;
 };
 
 // prettier-ignore
@@ -1189,6 +1196,7 @@ export async function registerPmsOperationsRoutes(
     await options.roomAssignmentSettings?.close?.();
     await options.roomAssignmentHistory?.close?.();
     await options.inboxReadPort?.close?.();
+    await options.inboxReplyPort?.close?.();
     await options.sameDayBookingSettings?.close?.();
   });
 
@@ -2267,6 +2275,74 @@ export async function registerPmsOperationsRoutes(
         return { contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION, ...result.value };
       } catch {
         request.log.error("PMS Inbox mark-read failed");
+        return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
+      }
+    },
+  );
+
+  app.post<{ Params: PmsInboxThreadParams; Body: unknown }>(
+    "/properties/:propertyId/messaging/threads/:threadId/messages",
+    {
+      onRequest: async (request, reply) => {
+        if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+          sendPmsOperationsError(reply, missingOriginPermission());
+          return;
+        }
+        const context = await enforcePmsPropertyAccessPolicy(
+          request,
+          reply,
+          request.params.propertyId,
+          "pms.inbox.reply",
+          options.propertyAccessRepository,
+        );
+        if (context && !hasPermission(context, "pms.inbox.read"))
+          sendPmsOperationsError(reply, {
+            statusCode: 403,
+            code: "missing_permission",
+            category: "authorization",
+            message: "Missing required PMS Inbox read permission.",
+          });
+      },
+    },
+    async (request, reply) => {
+      const input = parseInboxReply(request);
+      if ("error" in input) return sendPmsOperationsError(reply, input.error);
+      if (!options.inboxReplyPort)
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS Inbox reply commands are unavailable."),
+        );
+      const { propertyId, threadId } = request.params;
+      const context = request.authContext!;
+      try {
+        const result = await options.inboxReplyPort.reply({
+          propertyId,
+          threadId,
+          organizationId: context.selectedOrganization.organizationId,
+          actorUserId: context.actor.internalUserId,
+          actorMembershipId: context.membership.membershipId,
+          ...input.value,
+          audit: {
+            requestId: context.audit.requestId,
+            correlationId: context.audit.correlationId ?? context.audit.requestId,
+            requestedAt: context.audit.receivedAt,
+          },
+        });
+        if (!result.ok) return sendInboxReplyError(reply, result.error);
+        if (
+          result.value.propertyId !== propertyId ||
+          result.value.threadId !== threadId ||
+          !isUuid(result.value.messageId) ||
+          result.value.threadVersion <= input.value.expectedThreadVersion ||
+          !validAcceptedInboxReply(result.value.delivery, result.value.acceptedAt)
+        )
+          throw new Error("Inbox reply scope mismatch");
+        return reply.code(202).send({
+          contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION,
+          ...result.value,
+        });
+      } catch {
+        request.log.error("PMS Inbox reply failed");
         return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
       }
     },
@@ -5256,13 +5332,7 @@ function parseInboxMarkRead(
   | { value: { idempotencyKey: string; readThroughMessageId: string } }
   | { error: PmsOperationsError } {
   const body = objectBody(request.body);
-  const idempotencyKeyOccurrences = request.raw.rawHeaders.filter(
-    (value, index) => index % 2 === 0 && value.toLowerCase() === "idempotency-key",
-  ).length;
-  const idempotencyKey =
-    idempotencyKeyOccurrences === 1 && typeof request.headers["idempotency-key"] === "string"
-      ? boundedText(request.headers["idempotency-key"], 200)
-      : undefined;
+  const idempotencyKey = singleIdempotencyKey(request);
   const readThroughMessageId =
     body && typeof body.readThroughMessageId === "string"
       ? boundedText(body.readThroughMessageId, 200)
@@ -5277,6 +5347,71 @@ function parseInboxMarkRead(
       },
     };
   return { value: { idempotencyKey, readThroughMessageId } };
+}
+
+function parseInboxReply(request: FastifyRequest<{ Body: unknown }>):
+  | {
+      value: {
+        idempotencyKey: string;
+        expectedThreadVersion: number;
+        text: string | null;
+        attachmentMediaIds: string[];
+      };
+    }
+  | { error: PmsOperationsError } {
+  const body = objectBody(request.body);
+  const idempotencyKey = singleIdempotencyKey(request);
+  if (
+    !body ||
+    Object.keys(body).some(
+      (key) => !["expectedThreadVersion", "text", "attachmentMediaIds"].includes(key),
+    ) ||
+    !idempotencyKey ||
+    typeof body.expectedThreadVersion !== "number" ||
+    !Number.isSafeInteger(body.expectedThreadVersion) ||
+    Number(body.expectedThreadVersion) < 1 ||
+    (body.text !== undefined && typeof body.text !== "string") ||
+    (body.attachmentMediaIds !== undefined && !Array.isArray(body.attachmentMediaIds))
+  )
+    return { error: invalidInboxReply() };
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  if (text.length > 20_000) return { error: invalidInboxReply() };
+  const attachmentMediaIds = (body.attachmentMediaIds ?? []).map((value) =>
+    typeof value === "string" ? value.trim() : "",
+  );
+  if (
+    attachmentMediaIds.length > 10 ||
+    attachmentMediaIds.some((id) => !isUuid(id)) ||
+    new Set(attachmentMediaIds).size !== attachmentMediaIds.length ||
+    (!text && attachmentMediaIds.length === 0)
+  )
+    return { error: invalidInboxReply() };
+  return {
+    value: {
+      idempotencyKey,
+      expectedThreadVersion: Number(body.expectedThreadVersion),
+      text: text || null,
+      attachmentMediaIds,
+    },
+  };
+}
+
+function singleIdempotencyKey(request: FastifyRequest): string | undefined {
+  const occurrences = request.raw.rawHeaders.filter(
+    (value, index) => index % 2 === 0 && value.toLowerCase() === "idempotency-key",
+  ).length;
+  return occurrences === 1 && typeof request.headers["idempotency-key"] === "string"
+    ? boundedText(request.headers["idempotency-key"], 200)
+    : undefined;
+}
+
+function invalidInboxReply(): PmsOperationsError {
+  return {
+    statusCode: 400,
+    code: "validation_failed",
+    category: "validation",
+    message: "Reply requires a thread version and text or valid attachment media IDs.",
+  };
 }
 
 function boundedText(value: string, max: number): string | undefined {
@@ -5343,6 +5478,45 @@ function sendInboxMarkReadError(
     category: statusCode === 404 ? "not_found" : statusCode === 409 ? "conflict" : "validation",
     message: error.message,
   });
+}
+
+function sendInboxReplyError(
+  reply: FastifyReply,
+  error: Extract<Awaited<ReturnType<PmsInboxReplyPort["reply"]>>, { ok: false }>["error"],
+): FastifyReply {
+  const statusCode =
+    error.code === "thread_not_found"
+      ? 404
+      : error.code === "thread_version_conflict" || error.code === "idempotency_conflict"
+        ? 409
+        : error.code === "attachment_too_large"
+          ? 413
+          : error.code === "unsupported_attachment_type"
+            ? 415
+            : 400;
+  return sendPmsOperationsError(reply, {
+    statusCode,
+    code: error.code,
+    category: statusCode === 404 ? "not_found" : statusCode === 409 ? "conflict" : "validation",
+    message: error.message,
+    ...(error.currentVersion === undefined
+      ? {}
+      : { details: { currentVersion: error.currentVersion } }),
+  });
+}
+
+function validAcceptedInboxReply(
+  delivery: NonNullable<PmsInboxMessage["delivery"]>,
+  acceptedAt: string,
+): boolean {
+  const instant = Date.parse(acceptedAt);
+  const validInstant = Number.isFinite(instant) && new Date(instant).toISOString() === acceptedAt;
+  if (!validInstant || delivery.providerAcknowledgedAt !== null) return false;
+  return delivery.state === "queued"
+    ? (delivery.channel === "ota" || delivery.channel === "email") && delivery.reasonCode === null
+    : delivery.state === "held" &&
+        delivery.channel === null &&
+        Boolean(delivery.reasonCode?.trim());
 }
 
 function invalidQuery(message: string): PmsOperationsError {

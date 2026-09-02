@@ -180,7 +180,11 @@ import {
 } from "./routes/platform/admin/propertyLifecycle.js";
 import { registerPlatformPropertyMediaRoutes } from "./routes/platform/admin/propertyMedia.js";
 import { registerPmsOperationsRoutes } from "./routes/pmsOperations.js";
-import type { PmsInboxMarkReadPort, PmsInboxReadPort } from "./domains/pmsInbox.js";
+import type {
+  PmsInboxMarkReadPort,
+  PmsInboxReadPort,
+  PmsInboxReplyPort,
+} from "./domains/pmsInbox.js";
 import {
   registerPmsInboxAttachmentMediaRoutes,
   type PmsInboxAttachmentMediaRoutesOptions,
@@ -252,6 +256,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   pmsOperationsRepository?: PmsOperationsReadRepository;
   pmsInboxReadPort?: PmsInboxReadPort;
   pmsInboxMarkReadPort?: PmsInboxMarkReadPort;
+  pmsInboxReplyPort?: PmsInboxReplyPort;
   pmsInboxAttachmentMedia?: Omit<PmsInboxAttachmentMediaRoutesOptions, "propertyAccessRepository">;
   pmsManualBookingPreview?: PmsManualBookingPreviewRoutesOptions;
   pmsManualBookingCreate?: PmsManualBookingCreateRoutesOptions;
@@ -673,6 +678,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       roomAssignmentHistory: options.pmsRoomAssignmentHistory,
       inboxReadPort: options.pmsInboxReadPort,
       inboxMarkReadPort: options.pmsInboxMarkReadPort,
+      inboxReplyPort: options.pmsInboxReplyPort,
       publicBookabilityPublisher: options.publicBookabilityPublisher,
     });
   }
