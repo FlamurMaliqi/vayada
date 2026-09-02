@@ -1,7 +1,7 @@
 import type { QueryResultRow } from "pg";
 import { describe, expect, it } from "vitest";
 
-import { createPgPmsInboxListReadPort, type PmsInboxReadPool } from "./pmsInboxReadModel.js";
+import { createPgPmsInboxReadPort, type PmsInboxReadPool } from "./pmsInboxReadModel.js";
 
 const PROPERTY = "11111111-1111-4111-8111-111111111111";
 const ACTOR = "22222222-2222-4222-8222-222222222222";
@@ -75,7 +75,7 @@ describe("PostgreSQL PMS Inbox list read model", () => {
       providerChannel: null,
       reasonCode: null,
     } as const;
-    const read = createPgPmsInboxListReadPort({
+    const read = createPgPmsInboxReadPort({
       connectionString: "",
       pool,
       emailReplyRoutes: {
