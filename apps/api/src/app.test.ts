@@ -40,7 +40,7 @@ import { readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import Fastify from "fastify";
 import type { QueryResult, QueryResultRow } from "pg";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createTargetPublicHotelQuoteRepository,
@@ -112,6 +112,7 @@ import type { PmsRoomAssignmentOptimizationHistoryPort } from "./domains/pmsRoom
 import type {
   PmsInboxMarkReadPort,
   PmsInboxReadPort,
+  PmsInboxReplyPort,
   PmsInboxThreadSummary,
 } from "./domains/pmsInbox.js";
 import {
@@ -2668,6 +2669,7 @@ function buildAuthenticatedApp(
     pmsOperationsRepository?: PmsOperationsReadRepository | null;
     pmsInboxReadPort?: PmsInboxReadPort;
     pmsInboxMarkReadPort?: PmsInboxMarkReadPort;
+    pmsInboxReplyPort?: PmsInboxReplyPort;
     pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
     pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
     bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
@@ -2714,6 +2716,7 @@ function buildAuthenticatedApp(
     pmsOperationsCommandRepository: options.pmsOperationsCommandRepository,
     pmsInboxReadPort: options.pmsInboxReadPort,
     pmsInboxMarkReadPort: options.pmsInboxMarkReadPort,
+    pmsInboxReplyPort: options.pmsInboxReplyPort,
     bookingAcceptanceSettings: options.bookingAcceptanceSettings,
     sameDayBookingSettings: options.sameDayBookingSettings,
     pmsRoomAssignmentSettings: options.pmsRoomAssignmentSettings,
@@ -13116,6 +13119,214 @@ describe("vayada-api", () => {
       payload: { readThroughMessageId: "msg_3" },
     });
     expect(invalid).toMatchObject({ statusCode: 400, body: { code: "validation_failed" } });
+  });
+
+  it("accepts protected Inbox manual replies and maps command outcomes", async () => {
+    const mediaId = "77777777-7777-4777-8777-777777777777";
+    const calls: Parameters<PmsInboxReplyPort["reply"]>[0][] = [];
+    const close = vi.fn(async () => undefined);
+    const port: PmsInboxReplyPort = {
+      async reply(input) {
+        calls.push(input);
+        const failures: Record<
+          string,
+          Extract<Awaited<ReturnType<PmsInboxReplyPort["reply"]>>, { ok: false }>["error"]
+        > = {
+          missing: { code: "thread_not_found", message: "Thread not found." },
+          version: {
+            code: "thread_version_conflict",
+            message: "The conversation changed.",
+            currentVersion: 9,
+          },
+          conflict: { code: "idempotency_conflict", message: "Idempotency conflict." },
+          oversized: { code: "attachment_too_large", message: "Attachment is too large." },
+          unsupported: {
+            code: "unsupported_attachment_type",
+            message: "Attachment type is unsupported.",
+          },
+          invalid: { code: "validation_failed", message: "Attachment is unavailable." },
+        };
+        const error = failures[input.idempotencyKey];
+        if (error) return { ok: false, error };
+        return {
+          ok: true,
+          value: {
+            propertyId: input.threadId === "wrong-scope" ? "foreign-property" : input.propertyId,
+            threadId: input.threadId,
+            messageId: "55555555-5555-4555-8555-555555555555",
+            threadVersion: input.expectedThreadVersion + 1,
+            delivery:
+              input.threadId === "held"
+                ? {
+                    state: "held" as const,
+                    channel: null,
+                    reasonCode: "channel_connection_inactive",
+                    providerAcknowledgedAt: null,
+                  }
+                : {
+                    state: "queued" as const,
+                    channel: "ota" as const,
+                    reasonCode: null,
+                    providerAcknowledgedAt: null,
+                  },
+            acceptedAt:
+              input.threadId === "bad-result" ? "not-an-instant" : "2026-09-03T00:00:00.000Z",
+          },
+        };
+      },
+      close,
+    };
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read", "pms.inbox.reply"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsInboxReplyPort: port,
+    });
+    const base = `/api/pms/properties/${pmsPropertyId}/messaging/threads`;
+    const request = (
+      threadId: string,
+      idempotencyKey: string,
+      payload: unknown = {
+        expectedThreadVersion: 4,
+        text: "  Your room is ready.  ",
+        attachmentMediaIds: [mediaId],
+      },
+    ) =>
+      injectJson(app!, {
+        method: "POST",
+        url: `${base}/${threadId}/messages`,
+        headers: { authorization: "Bearer valid-token", "idempotency-key": idempotencyKey },
+        payload: payload as never,
+      });
+
+    const queued = await request("thread_1", "send-1");
+    const held = await request("held", "send-held", {
+      expectedThreadVersion: 7,
+      attachmentMediaIds: [mediaId],
+    });
+    expect(queued).toMatchObject({
+      statusCode: 202,
+      body: {
+        contractVersion: "native-guest-inbox.v2",
+        threadVersion: 5,
+        delivery: { state: "queued", channel: "ota", reasonCode: null },
+      },
+    });
+    expect(held).toMatchObject({
+      statusCode: 202,
+      body: { threadVersion: 8, delivery: { state: "held", channel: null } },
+    });
+
+    const outcomes = [
+      ["missing", 404, "thread_not_found"],
+      ["version", 409, "thread_version_conflict"],
+      ["conflict", 409, "idempotency_conflict"],
+      ["oversized", 413, "attachment_too_large"],
+      ["unsupported", 415, "unsupported_attachment_type"],
+      ["invalid", 400, "validation_failed"],
+    ] as const;
+    for (const [key, statusCode, code] of outcomes) {
+      const response = await request("thread_1", key);
+      expect(response).toMatchObject({ statusCode, body: { code } });
+      if (key === "version")
+        expect(response.body).toMatchObject({ details: { currentVersion: 9 } });
+    }
+    for (const threadId of ["wrong-scope", "bad-result"]) {
+      const response = await request(threadId, `send-${threadId}`);
+      expect(response).toMatchObject({ statusCode: 500, body: { code: "read_model_unavailable" } });
+    }
+
+    const invalidPayloads = [
+      {},
+      { expectedThreadVersion: 0, text: "Hello" },
+      { expectedThreadVersion: 4, text: " " },
+      { expectedThreadVersion: 4, attachmentMediaIds: ["not-a-uuid"] },
+      { expectedThreadVersion: 4, attachmentMediaIds: [mediaId, mediaId] },
+      { expectedThreadVersion: 4, text: "Hello", unexpected: true },
+    ];
+    const dispatchedBeforeInvalidPayloads = calls.length;
+    for (const payload of invalidPayloads) {
+      const response = await request("thread_1", "invalid-payload", payload);
+      expect(response).toMatchObject({ statusCode: 400, body: { code: "validation_failed" } });
+    }
+    expect(calls).toHaveLength(dispatchedBeforeInvalidPayloads);
+    expect(calls[0]).toMatchObject({
+      propertyId: pmsPropertyId,
+      threadId: "thread_1",
+      idempotencyKey: "send-1",
+      expectedThreadVersion: 4,
+      text: "Your room is ready.",
+      attachmentMediaIds: [mediaId],
+      audit: { requestId: expect.any(String), correlationId: expect.any(String) },
+    });
+
+    await app.close();
+    app = null;
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("authorizes Inbox replies before parsing content or dispatching idempotency", async () => {
+    const dispatches: unknown[] = [];
+    const port: PmsInboxReplyPort = {
+      async reply(input) {
+        dispatches.push(input);
+        throw new Error("must not dispatch");
+      },
+    };
+    const entitlement: ProductEntitlement = {
+      product: "pms",
+      key: "property-management",
+      status: "active",
+    };
+    const cases: Array<{
+      name: string;
+      permissions: PermissionKey[];
+      entitlements?: ProductEntitlement[];
+      propertyId?: string;
+      statusCode: number;
+    }> = [
+      { name: "missing auth", permissions: ["pms.inbox.read", "pms.inbox.reply"], statusCode: 401 },
+      { name: "missing read", permissions: ["pms.inbox.reply"], statusCode: 403 },
+      { name: "missing reply", permissions: ["pms.inbox.read"], statusCode: 403 },
+      {
+        name: "missing entitlement",
+        permissions: ["pms.inbox.read", "pms.inbox.reply"],
+        entitlements: [],
+        statusCode: 403,
+      },
+      {
+        name: "inactive entitlement",
+        permissions: ["pms.inbox.read", "pms.inbox.reply"],
+        entitlements: [{ ...entitlement, status: "suspended" as const }],
+        statusCode: 403,
+      },
+      {
+        name: "wrong property",
+        permissions: ["pms.inbox.read", "pms.inbox.reply"],
+        propertyId: "f6853000-0000-0000-0000-000000000099",
+        statusCode: 403,
+      },
+    ];
+    for (const candidate of cases) {
+      app = buildAuthenticatedApp({
+        permissions: candidate.permissions,
+        entitlements: candidate.entitlements ?? [entitlement],
+        pmsInboxReplyPort: port,
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/pms/properties/${candidate.propertyId ?? pmsPropertyId}/messaging/threads/thread_1/messages`,
+        headers: {
+          ...(candidate.name === "missing auth" ? {} : { authorization: "Bearer valid-token" }),
+          "content-type": "application/json",
+          "idempotency-key": "private-key",
+        },
+        payload: "{",
+      });
+      expect(response.statusCode, candidate.name).toBe(candidate.statusCode);
+      await app.close();
+      app = null;
+    }
+    expect(dispatches).toHaveLength(0);
   });
 
   it("fails closed across the PMS inbox read denial matrix", async () => {
