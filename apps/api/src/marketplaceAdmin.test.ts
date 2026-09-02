@@ -481,6 +481,10 @@ describe("marketplace admin routes", () => {
         creatorProfileId: "creator_profile_801",
         profilePictureMediaObjectId: "media_creator_801",
       },
+      moderation: {
+        allowed: true,
+        allowedTransitions: ["suspended", "archived"],
+      },
     });
     expect(repository.calls.readCreatorReview).toEqual([
       {
@@ -488,6 +492,25 @@ describe("marketplace admin routes", () => {
         authorizationMode: "platform_organization_membership",
       },
     ]);
+  });
+
+  it("keeps creator review read-only when the stricter moderation policy is not met", async () => {
+    const repository = createMemoryMarketplaceAdminRepository({
+      legacySuperadminUserIds: ["user_creator"],
+    });
+    app = buildMarketplaceAdminApp(repository, {
+      marketplaceAdminLegacySuperadminFallbackEnabled: true,
+    });
+
+    const response = await injectJson<MarketplaceAdminCreatorReviewResponse>(app, {
+      method: "GET",
+      url: "/api/marketplace/admin/users/user_creator/review/creator",
+      headers: { authorization: "Bearer creator-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.authorizationMode).toBe("legacy_superadmin_fallback");
+    expect(response.body.moderation).toEqual({ allowed: false, allowedTransitions: [] });
   });
 
   it("moderates a creator profile with server-owned audit context", async () => {
@@ -634,8 +657,25 @@ describe("marketplace admin routes", () => {
     ).resolves.toMatchObject({ profile: null });
     expect(sql[0]).toContain("membership.status = 'active'");
     expect(sql[0]).toContain("organization.kind = 'creator_workspace'");
-    expect(sql[0]).toContain("profile.profile_status <> 'archived'");
+    expect(sql[0]).not.toContain("profile.profile_status <> 'archived'");
     expect(sql[0]).not.toContain("LIMIT 1");
+  });
+
+  it("keeps an archived creator profile visible as its terminal lifecycle state", async () => {
+    const repository = createPgMarketplaceAdminRepository({
+      connectionString: "postgresql://target-db",
+      identityAccess: createPgMarketplaceOfferIdentityAccessCommandPort(),
+      pool: createAdminPgPool([], {
+        creatorReviewRows: [{ ...creatorReviewRow(), profileStatus: "archived" }],
+      }) as never,
+    });
+
+    await expect(
+      repository.readCreatorReviewForUser({
+        userId: "f8011000-0000-4000-8000-000000000001",
+        authorizationMode: "platform_organization_membership",
+      }),
+    ).resolves.toMatchObject({ profile: { profileStatus: "archived" } });
   });
 
   it("normalizes persisted creator platform JSON before exposing it", async () => {
