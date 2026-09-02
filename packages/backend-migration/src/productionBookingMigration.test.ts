@@ -20,6 +20,8 @@ describe("production Booking migration transaction", () => {
     expect(report.applied).toBe(false);
     expect(client.sql).toEqual(["BEGIN ISOLATION LEVEL REPEATABLE READ", "ROLLBACK"]);
     expect(services.writeRecords).not.toHaveBeenCalled();
+    expect(services.writeQuarantines).not.toHaveBeenCalled();
+    expect(services.writeInferences).not.toHaveBeenCalled();
     expect(services.writeProvenance).not.toHaveBeenCalled();
   });
 
@@ -38,6 +40,8 @@ describe("production Booking migration transaction", () => {
     expect(client.sql[2]).toContain("LOCK TABLE booking.booking_settings");
     expect(client.sql.at(-1)).toBe("COMMIT");
     expect(services.writeRecords).toHaveBeenCalledTimes(1);
+    expect(services.writeQuarantines).toHaveBeenCalledWith(client, expect.any(Array), RUN);
+    expect(services.writeInferences).toHaveBeenCalledWith(client, expect.any(Array), RUN);
     expect(services.writeProvenance).toHaveBeenCalledWith(client, expect.any(Array), RUN);
   });
 
@@ -77,6 +81,8 @@ function serviceFixture(): ProductionBookingMigrationServices {
     })),
     buildPlan: vi.fn(() => plan(true)),
     writeRecords: vi.fn(async () => ({ guest_bookings: 1 })),
+    writeQuarantines: vi.fn(async (_client, quarantines) => quarantines.length),
+    writeInferences: vi.fn(async (_client, inferences) => inferences.length),
     writeProvenance: vi.fn(async () => 1),
   } as ProductionBookingMigrationServices;
 }
@@ -112,6 +118,8 @@ function plan(withWrite: boolean): ProductionBookingPlan {
         lastMigratedAt: "2026-08-30T00:00:00.000Z",
       },
     ],
+    quarantines: [],
+    inferences: [],
     blockers: [],
     parity: {
       sourceTableCounts: { "pms.bookings": 1 },

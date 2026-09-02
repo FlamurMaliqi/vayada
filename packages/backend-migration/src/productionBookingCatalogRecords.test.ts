@@ -183,6 +183,62 @@ describe("production Booking catalog records", () => {
     expect(audit["aiVisible"]).toBe(false);
   });
 
+  it("keeps unmapped old funnel events private and migration-scoped", () => {
+    const context = createProductionBookingContext(
+      input([
+        row("booking_events", {
+          id: EVENT,
+          hotel_slug: "removed-hotel",
+          event_type: "page_viewed",
+          metadata: { page: "home" },
+          created_at: "2026-08-29T12:00:00Z",
+        }),
+      ]),
+    );
+    const audit = buildBookingCatalogRecords(context)[0]!.row;
+
+    expect(context.blockers).toEqual([]);
+    expect(audit).toMatchObject({
+      tenantScope: "migration",
+      propertyId: null,
+      privacyScope: "restricted",
+      aiVisible: false,
+      auditMetadata: {
+        propertyResolution: "unmapped_historical",
+        legacyHotelSlugSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+    });
+    expect(JSON.stringify(audit)).not.toContain("removed-hotel");
+  });
+
+  it("uses the only available PMS freshness timestamp and accepts the target font value", () => {
+    const context = createProductionBookingContext(
+      input([
+        pmsRow("hotels", {
+          id: HOTEL,
+          created_at: "2026-08-01T00:00:00Z",
+          same_day_bookings_enabled: true,
+        }),
+        row("booking_hotels", {
+          id: HOTEL,
+          updated_at: "2026-08-29T12:00:00Z",
+          branding_font_pairing: "high-end-serif",
+        }),
+      ]),
+    );
+    const records = buildBookingCatalogRecords(context);
+
+    expect(context.blockers).toEqual([]);
+    expect(records[0]).toMatchObject({
+      sourceUpdatedAt: "2026-08-01T00:00:00.000Z",
+      row: {
+        sourceFreshness: { timestampBasis: "created_at" },
+        updatedAt: "2026-08-01T00:00:00.000Z",
+      },
+    });
+    expect(records[1]!.row["fontPairing"]).toBe("high-end-serif");
+  });
+
   it.each([
     [true, "18:00", true, "18:00"],
     [false, "12:30", false, "12:30"],

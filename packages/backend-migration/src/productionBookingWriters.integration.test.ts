@@ -8,6 +8,8 @@ import {
 } from "./productionBookingTargetReader.js";
 import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
 import {
+  writeProductionBookingInferences,
+  writeProductionBookingQuarantines,
   writeProductionBookingRecords,
   writeProductionMigrationProvenance,
 } from "./productionBookingWriter.js";
@@ -16,11 +18,13 @@ import { assertSafeTestDatabase } from "./testUtils.js";
 const URL = process.env["TEST_DATABASE_URL"];
 const RUN = "vay1351-0123456789abcdef01234567";
 const PROPERTY = "13550000-0000-4000-8000-000000000081";
+const ORGANIZATION = "13550000-0000-4000-8000-000000000080";
 const BOOKING_HOTEL = "13550000-0000-4000-8000-000000000082";
 const PMS_HOTEL = "13550000-0000-4000-8000-000000000083";
 const BOOKING = "13550000-0000-4000-8000-000000000084";
 const DRAFT = "13550000-0000-4000-8000-000000000085";
 const ADDON = "13550000-0000-4000-8000-000000000086";
+const MISSING_ADDON = "13550000-0000-4000-8000-000000000096";
 const PROMO = "13550000-0000-4000-8000-000000000087";
 const LOGO_MEDIA = "13550000-0000-4000-8000-000000000098";
 const HERO_MEDIA = "13550000-0000-4000-8000-000000000099";
@@ -58,6 +62,18 @@ describe.skipIf(!URL)("production Booking writers (PostgreSQL)", () => {
         ]),
       );
       expect(await writeProductionBookingRecords(client, plan.writes)).toEqual(expectedCounts);
+      expect(await writeProductionBookingQuarantines(client, plan.quarantines, RUN)).toBe(
+        plan.quarantines.length,
+      );
+      expect(await writeProductionBookingInferences(client, plan.inferences, RUN)).toBe(
+        plan.inferences.length,
+      );
+      expect(await writeProductionBookingInferences(client, plan.inferences, RUN)).toBe(
+        plan.inferences.length,
+      );
+      expect(await writeProductionBookingQuarantines(client, plan.quarantines, RUN)).toBe(
+        plan.quarantines.length,
+      );
       expect(await writeProductionMigrationProvenance(client, plan.provenance, RUN)).toBe(
         plan.provenance.length,
       );
@@ -88,8 +104,23 @@ describe.skipIf(!URL)("production Booking writers (PostgreSQL)", () => {
            (SELECT header_logo_media_object_id::text FROM booking.booking_settings
              WHERE property_id = $3) AS header_logo_media_object_id,
            (SELECT hero_image_url FROM booking.booking_settings
-             WHERE property_id = $3) AS hero_image_url`,
-        [BOOKING, DRAFT, PROPERTY],
+             WHERE property_id = $3) AS hero_image_url,
+           (SELECT count(*)::int FROM platform.production_booking_migration_quarantines
+             WHERE source_run_id = $4) AS quarantines,
+           (SELECT count(*)::int FROM platform.production_booking_migration_inferences
+             WHERE source_run_id = $4) AS inferences,
+           (SELECT jsonb_agg(jsonb_build_object(
+                     'addonKey', item.addon_key,
+                     'name', item.addon_name,
+                     'quantity', item.quantity,
+                     'serviceDates', item.service_dates
+                   ) ORDER BY item.item_ordinality)
+              FROM booking.booking_addon_selection_items item
+             WHERE item.guest_booking_id = $1) AS addon_items,
+           (SELECT SUM(selection.total_amount)::text
+              FROM booking.booking_addon_selections selection
+             WHERE selection.guest_booking_id = $1) AS addon_total`,
+        [BOOKING, DRAFT, PROPERTY, RUN],
       );
       expect(stored.rows[0]).toMatchObject({
         bookings: 1,
@@ -101,10 +132,49 @@ describe.skipIf(!URL)("production Booking writers (PostgreSQL)", () => {
         audit: { page: "checkout" },
         header_logo_media_object_id: LOGO_MEDIA,
         hero_image_url: HERO_CDN_URL,
+        quarantines: 1,
+        inferences: 1,
+        addon_items: [
+          {
+            addonKey: ADDON,
+            name: "Breakfast",
+            quantity: 2,
+            serviceDates: ["2026-09-02"],
+          },
+          {
+            addonKey: MISSING_ADDON,
+            name: "Airport transfer",
+            quantity: 1,
+            serviceDates: ["2026-09-02", "2026-09-03"],
+          },
+        ],
+        addon_total: "30.00",
       });
       const publicSummary = JSON.stringify(stored.rows[0].summary);
       expect(publicSummary).not.toContain("private@example.test");
       expect(publicSummary).not.toContain("+43123");
+
+      await client.query("SAVEPOINT immutable_quarantine");
+      await expect(
+        client.query(
+          `UPDATE platform.production_booking_migration_quarantines
+              SET source_value_sha256 = $1
+            WHERE source_run_id = $2`,
+          ["c".repeat(64), RUN],
+        ),
+      ).rejects.toThrow("immutable");
+      await client.query("ROLLBACK TO SAVEPOINT immutable_quarantine");
+
+      await client.query("SAVEPOINT immutable_inference");
+      await expect(
+        client.query(
+          `UPDATE platform.production_booking_migration_inferences
+              SET inferred_value = 'commission'
+            WHERE source_run_id = $1`,
+          [RUN],
+        ),
+      ).rejects.toThrow("immutable");
+      await client.query("ROLLBACK TO SAVEPOINT immutable_inference");
     } finally {
       await client.query("ROLLBACK");
     }
@@ -113,9 +183,29 @@ describe.skipIf(!URL)("production Booking writers (PostgreSQL)", () => {
 
 async function seedCatalog(client: pg.Client): Promise<void> {
   await client.query(
+    `INSERT INTO platform.source_extraction_runs
+       (run_id, environment, source_schema_revision, status, finished_at, duration_ms)
+     VALUES ($1, 'local', $2, 'completed', now(), 1)
+     ON CONFLICT (run_id) DO NOTHING`,
+    [RUN, "a".repeat(40)],
+  );
+  await client.query(
     `INSERT INTO hotel_catalog.properties(id, public_id, display_name)
        VALUES ($1, 'booking-integration', 'Booking Integration')`,
     [PROPERTY],
+  );
+  await client.query(
+    `INSERT INTO identity.organizations(id, kind, name, slug)
+       VALUES ($1, 'hotel_group', 'Booking Integration', 'booking-integration')`,
+    [ORGANIZATION],
+  );
+  await client.query(
+    `INSERT INTO identity.organization_resource_links
+       (organization_id, product, resource_type, resource_id, relationship)
+     VALUES
+       ($1, 'booking', 'booking_hotel', $2, 'owner'),
+       ($1, 'pms', 'pms_hotel', $3, 'operator')`,
+    [ORGANIZATION, BOOKING_HOTEL, PMS_HOTEL],
   );
   await client.query(
     `INSERT INTO hotel_catalog.property_source_links
@@ -262,6 +352,7 @@ function sourceRows(): IdentitySourceRow[] {
       first_name: "Leo",
       last_name: "Guest",
       nationality: "DE",
+      passport_number: "private-passport",
       created_at: "2026-08-01T00:00:00Z",
       updated_at: UPDATED,
     }),
@@ -311,9 +402,15 @@ function booking(): IdentitySourceRow {
     payment_status: "captured",
     payment_method: "card",
     channel: "direct",
-    billing_plan_at_creation: "commission",
-    addon_ids: [ADDON],
-    addon_quantities: { [ADDON]: 1 },
+    billing_plan_at_creation: null,
+    addon_ids: [ADDON, MISSING_ADDON],
+    addon_names: ["Breakfast", "Airport transfer"],
+    addon_quantities: { [ADDON]: 2, [MISSING_ADDON]: 1 },
+    addon_dates: {
+      [ADDON]: ["2026-09-02"],
+      [MISSING_ADDON]: ["2026-09-02", "2026-09-03"],
+    },
+    addon_total: "30",
     promo_code: "SUMMER",
     promo_discount: "10",
     created_at: "2026-08-01T00:00:00Z",

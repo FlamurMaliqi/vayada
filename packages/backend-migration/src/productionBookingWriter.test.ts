@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  writeProductionBookingInferences,
+  writeProductionBookingQuarantines,
   writeProductionBookingRecords,
   writeProductionMigrationProvenance,
 } from "./productionBookingWriter.js";
@@ -53,6 +55,54 @@ describe("production Booking writers", () => {
     expect(client.sql[0]).toContain("last_migrated_at = now()");
     expect(client.values[0]?.[1]).toBe(RUN);
   });
+
+  it("stores only hash evidence for quarantined Booking fields", async () => {
+    const client = new WriterFixture();
+    const count = await writeProductionBookingQuarantines(
+      client as never,
+      [
+        {
+          sourceDatabase: "pms",
+          sourceTable: "booking_additional_guests",
+          sourceId: "guest-1",
+          sourceField: "passport_number",
+          sourceValueSha256: "b".repeat(64),
+          reasonCode: "UNSUPPORTED_GUEST_PRIVATE_FIELD",
+          retentionUntil: "2027-09-04",
+        },
+      ],
+      RUN,
+    );
+
+    expect(count).toBe(1);
+    expect(client.sql[0]).toContain("production_booking_migration_quarantines");
+    expect(client.sql[0]).toContain("ON CONFLICT DO NOTHING");
+    expect(JSON.stringify(client.values[0])).not.toContain("passport-value");
+  });
+
+  it("stores immutable pre-switch billing inference evidence", async () => {
+    const client = new WriterFixture();
+    const count = await writeProductionBookingInferences(
+      client as never,
+      [
+        {
+          sourceDatabase: "pms",
+          sourceTable: "bookings",
+          sourceId: "booking-1",
+          sourceField: "billing_plan_at_creation",
+          sourceValueSha256: "b".repeat(64),
+          sourceRowSha256: "c".repeat(64),
+          inferredValue: "commission",
+          reasonCode: "MISSING_BILLING_PLAN_PRE_SWITCH_COMMISSION",
+        },
+      ],
+      RUN,
+    );
+
+    expect(count).toBe(1);
+    expect(client.sql[0]).toContain("production_booking_migration_inferences");
+    expect(client.sql[0]).toContain("ON CONFLICT DO NOTHING");
+  });
 });
 
 class WriterFixture {
@@ -61,7 +111,7 @@ class WriterFixture {
   async query(sql: string, values: unknown[] = []) {
     this.sql.push(sql);
     this.values.push(values);
-    return { rows: [], rowCount: 1 };
+    return { rows: sql.includes("AS count") ? [{ count: 1 }] : [], rowCount: 1 };
   }
 }
 

@@ -30,7 +30,7 @@ describe("production Booking mapping context", () => {
     expect(context.blockers).toEqual([]);
   });
 
-  it("fails closed for ambiguous ownership and unresolved event slugs", () => {
+  it("fails closed for ambiguous slugs but accepts a unique redirect", () => {
     const context = createProductionBookingContext({
       sourceRunId: "vay1351-0123456789abcdef01234567",
       completedAt: "2026-08-30T00:00:00.000Z",
@@ -38,34 +38,125 @@ describe("production Booking mapping context", () => {
       target: target({
         propertySlugs: [
           { slug: "hotel", propertyId: "property-1", purpose: "canonical", status: "active" },
-          { slug: "hotel", propertyId: "property-2", purpose: "alias", status: "active" },
+          { slug: "hotel", propertyId: "property-2", purpose: "canonical", status: "active" },
         ],
       }),
     });
-    expect(context.blockers.map((blocker) => blocker.code)).toEqual([
-      "AMBIGUOUS_PROPERTY_SLUG",
-      "UNRESOLVED_EVENT_PROPERTY",
-    ]);
+    expect(context.blockers.map((blocker) => blocker.code)).toEqual(["AMBIGUOUS_PROPERTY_SLUG"]);
+
+    const redirected = createProductionBookingContext({
+      sourceRunId: "vay1351-0123456789abcdef01234567",
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows: [],
+      target: target({
+        propertySlugs: [
+          {
+            slug: "old-hotel",
+            propertyId: "property-1",
+            purpose: "redirect",
+            status: "redirected",
+            redirectTargetPropertyId: "property-1",
+            redirectTargetPurpose: "canonical",
+            redirectTargetStatus: "active",
+          },
+          {
+            slug: "overlay",
+            propertyId: "property-1",
+            purpose: "marketplace_overlay",
+            status: "active",
+          },
+          {
+            slug: "wrong-target",
+            propertyId: "property-1",
+            purpose: "redirect",
+            status: "redirected",
+            redirectTargetPropertyId: "property-2",
+            redirectTargetPurpose: "canonical",
+            redirectTargetStatus: "active",
+          },
+        ],
+      }),
+    });
+    expect(redirected.propertyBySlug.get("old-hotel")).toBe("property-1");
+    expect(redirected.propertyBySlug.has("overlay")).toBe(false);
+    expect(redirected.propertyBySlug.has("wrong-target")).toBe(false);
+    expect(redirected.blockers).toEqual([]);
   });
 
-  it("blocks unsupported sensitive guest fields and unresolved property scope", () => {
+  it("hash-quarantines unsupported guest fields without copying their values", () => {
     const context = createProductionBookingContext({
       sourceRunId: "vay1351-0123456789abcdef01234567",
       completedAt: "2026-08-30T00:00:00.000Z",
       rows: [
-        row("pms", "booking_additional_guests", { id: "guest-1", passport_number: "secret" }),
+        row("pms", "bookings", {
+          id: "booking-1",
+          hotel_id: "pms-hotel-1",
+          booking_reference: "B-1",
+          check_out: "2026-09-04",
+        }),
+        row("pms", "booking_additional_guests", {
+          id: "guest-1",
+          booking_id: "booking-1",
+          passport_number: "secret",
+        }),
         row("booking", "booking_addons", {
           id: "addon-1",
           hotel_id: "hotel-1",
           image: "https://legacy/image.jpg",
         }),
       ],
+      target: target({
+        propertyLinks: [
+          {
+            sourceSystem: "pms",
+            sourceTable: "hotels",
+            sourceId: "pms-hotel-1",
+            propertyId: "property-1",
+            relationship: "operational_input",
+            status: "active",
+            ownerStatus: "active",
+          },
+        ],
+      }),
+    });
+    expect(context.blockers.map((blocker) => blocker.code)).toEqual(["UNRESOLVED_PROPERTY"]);
+    expect(context.quarantines).toEqual([
+      expect.objectContaining({
+        sourceId: "guest-1",
+        sourceField: "passport_number",
+        reasonCode: "UNSUPPORTED_GUEST_PRIVATE_FIELD",
+        sourceValueSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      }),
+    ]);
+    expect(JSON.stringify(context.quarantines)).not.toContain("secret");
+    expect(context.inferences).toEqual([
+      expect.objectContaining({
+        sourceId: "booking-1",
+        inferredValue: "commission",
+        reasonCode: "MISSING_BILLING_PLAN_PRE_SWITCH_COMMISSION",
+        sourceRowSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      }),
+    ]);
+  });
+
+  it("fails closed when guest quarantine retention cannot be bounded", () => {
+    const context = createProductionBookingContext({
+      sourceRunId: "vay1351-0123456789abcdef01234567",
+      completedAt: "2026-08-30T00:00:00.000Z",
+      rows: [
+        row("pms", "booking_additional_guests", {
+          id: "guest-1",
+          booking_id: "missing-booking",
+          passport_number: "secret",
+        }),
+      ],
       target: target(),
     });
-    expect(context.blockers.map((blocker) => blocker.code)).toEqual([
-      "UNRESOLVED_PROPERTY",
-      "UNSUPPORTED_SENSITIVE_GUEST_FIELDS",
-    ]);
+
+    expect(context.quarantines).toEqual([]);
+    expect(context.blockers).toContainEqual(
+      expect.objectContaining({ code: "INVALID_GUEST_QUARANTINE_RETENTION" }),
+    );
   });
 });
 

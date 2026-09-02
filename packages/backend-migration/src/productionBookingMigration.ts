@@ -13,6 +13,8 @@ import type {
   ProductionBookingTargetState,
 } from "./productionBookingTypes.js";
 import {
+  writeProductionBookingInferences,
+  writeProductionBookingQuarantines,
   writeProductionBookingRecords,
   writeProductionMigrationProvenance,
 } from "./productionBookingWriter.js";
@@ -26,6 +28,8 @@ export type ProductionBookingMigrationReport = {
   checksum: string;
   counts: ProductionBookingPlan["counts"];
   parity: ProductionBookingPlan["parity"];
+  quarantines: ProductionBookingPlan["quarantines"];
+  inferences: ProductionBookingPlan["inferences"];
   blockers: ProductionBookingPlan["blockers"];
 };
 export type ProductionBookingMigrationServices = {
@@ -34,6 +38,8 @@ export type ProductionBookingMigrationServices = {
   readTarget: typeof readProductionBookingTargetState;
   buildPlan: typeof buildProductionBookingPlan;
   writeRecords: typeof writeProductionBookingRecords;
+  writeQuarantines: typeof writeProductionBookingQuarantines;
+  writeInferences: typeof writeProductionBookingInferences;
   writeProvenance: typeof writeProductionMigrationProvenance;
 };
 const productionServices: ProductionBookingMigrationServices = {
@@ -42,6 +48,8 @@ const productionServices: ProductionBookingMigrationServices = {
   readTarget: readProductionBookingTargetState,
   buildPlan: buildProductionBookingPlan,
   writeRecords: writeProductionBookingRecords,
+  writeQuarantines: writeProductionBookingQuarantines,
+  writeInferences: writeProductionBookingInferences,
   writeProvenance: writeProductionMigrationProvenance,
 };
 
@@ -103,6 +111,24 @@ export async function runProductionBookingTransaction(
     }
     const written = await services.writeRecords(client, plan.writes);
     assertWriteCounts(plan.writes, written);
+    const quarantineCount = await services.writeQuarantines(
+      client,
+      plan.quarantines,
+      input.sourceRunId,
+    );
+    if (quarantineCount !== plan.quarantines.length)
+      throw new Error(
+        `Booking quarantine writer preserved ${quarantineCount} of ${plan.quarantines.length} planned rows`,
+      );
+    const inferenceCount = await services.writeInferences(
+      client,
+      plan.inferences,
+      input.sourceRunId,
+    );
+    if (inferenceCount !== plan.inferences.length)
+      throw new Error(
+        `Booking inference writer preserved ${inferenceCount} of ${plan.inferences.length} planned rows`,
+      );
     const provenanceCount = await services.writeProvenance(
       client,
       plan.provenance,
@@ -154,7 +180,9 @@ async function lockBookingTargets(client: QueryClient): Promise<void> {
                 booking.booking_addon_selections, booking.promo_definitions,
                 booking.promo_applications, booking.booking_status_events,
                 booking.booking_change_requests, booking.direct_booking_summary_read_model,
-                platform.product_audit_events, platform.production_migration_source_links
+                platform.product_audit_events, platform.production_migration_source_links,
+                platform.production_booking_migration_quarantines,
+                platform.production_booking_migration_inferences
      IN SHARE ROW EXCLUSIVE MODE`,
   );
 }
@@ -174,6 +202,8 @@ function report(
     checksum: plan.checksum,
     counts: plan.counts,
     parity: plan.parity,
+    quarantines: plan.quarantines,
+    inferences: plan.inferences,
     blockers: plan.blockers,
   };
 }
