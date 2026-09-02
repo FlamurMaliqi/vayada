@@ -193,6 +193,7 @@ function bookingMetadata(
     addonQuantities: data["addon_quantities"] ?? {},
     addonDates: data["addon_dates"] ?? {},
     addonTotal: data["addon_total"] ?? 0,
+    sourceChannel: normalizedSourceChannel(data["channel"]),
     sourcePaymentStatus: data["payment_status"] ?? "unpaid",
     billingPlanEvidence: {
       sourceField: "billing_plan_at_creation",
@@ -248,7 +249,7 @@ function billingPlan(value: unknown): string {
 }
 
 function bookingChannel(value: unknown): string {
-  const channel = String(value ?? "").toLowerCase();
+  const channel = normalizedSourceChannel(value) ?? "";
   const mapped: Record<string, string> = {
     direct: "direct",
     website: "direct",
@@ -259,9 +260,17 @@ function bookingChannel(value: unknown): string {
     expedia: "expedia",
     agoda: "agoda",
   };
-  if (!channel || channel === "manual") return "unknown";
+  if (!channel || channel === "manual" || channel === "beds24" || channel === "other")
+    return "unknown";
   if (!mapped[channel]) throw new Error(`channel ${channel} is unsupported`);
   return mapped[channel];
+}
+
+function normalizedSourceChannel(value: unknown): string | null {
+  const channel = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  return channel || null;
 }
 
 function directBookingSource(data: Record<string, unknown>): string | null {

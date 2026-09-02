@@ -276,23 +276,31 @@ function addonSelections(
     if (hasSnapshotEvidence) throw new Error("add-on snapshot has evidence but no addon_ids");
     return [];
   }
-  if (!Array.isArray(rawNames) || rawNames.length !== ids.length)
+  if (!Array.isArray(rawNames) || (rawNames.length !== 0 && rawNames.length !== ids.length))
     throw new Error("addon_names must align exactly with addon_ids");
-  const names = rawNames.map((value, index) => requiredText(value, `addon_names[${index}]`));
-  const quantities = normalizedAddonMap(rawQuantities, "addon_quantities", ids);
+  const hasSnapshotNames = rawNames.length === ids.length;
+  const names = hasSnapshotNames
+    ? rawNames.map((value, index) => requiredText(value, `addon_names[${index}]`))
+    : ids.map(() => "Add-ons");
+  const quantities = normalizedAddonMap(rawQuantities, "addon_quantities", ids, true);
   const dates = normalizedAddonMap(rawDates, "addon_dates", ids, true);
   const bookingId = uuid(data["id"], "id");
   const propertyId = propertyFor(context, "pms", "hotels", data["hotel_id"]);
   const updatedAt = iso(data["updated_at"], "updated_at");
   const bookingCurrency = currency(data["currency"] ?? "EUR");
   const items = ids.map((addonId, index) => {
-    const quantity = integer(quantities.get(addonId), `addon_quantities[${addonId}]`);
+    const hasSnapshotQuantity = quantities.has(addonId);
+    const quantity = hasSnapshotQuantity
+      ? integer(quantities.get(addonId), `addon_quantities[${addonId}]`)
+      : 1;
     if (quantity < 1) throw new Error(`addon_quantities[${addonId}] must be positive`);
     const serviceDates = addonServiceDates(dates.get(addonId), addonId);
     return {
       sourceAddonId: addonId,
       name: names[index]!,
+      nameBasis: hasSnapshotNames ? "booking_snapshot" : "legacy_invoice_fallback",
       quantity,
+      quantityBasis: hasSnapshotQuantity ? "booking_snapshot" : "legacy_invoice_default",
       serviceDates,
       definitionStatus: context.addonById.has(addonId) ? "matched" : "missing_at_snapshot",
     };
@@ -307,8 +315,8 @@ function addonSelections(
         quoteSessionId: null,
         addonDefinitionId: null,
         addonSnapshot: {
-          name: names.join(", "),
-          nameBasis: "booking_snapshot_bundle",
+          name: hasSnapshotNames ? names.join(", ") : "Add-ons",
+          nameBasis: hasSnapshotNames ? "booking_snapshot_bundle" : "legacy_invoice_fallback",
           category: null,
           pricingModel: "legacy_bundle_snapshot",
           amountBasis: "booking_addon_total",
@@ -340,11 +348,12 @@ function addonSelections(
       addonSnapshot: {
         sourceAddonId: item.sourceAddonId,
         name: item.name,
-        nameBasis: "booking_snapshot",
+        nameBasis: item.nameBasis,
         category: null,
         pricingModel: "legacy_snapshot",
         definitionStatus: item.definitionStatus,
         amountBasis: "booking_addon_total",
+        quantityBasis: item.quantityBasis,
         serviceDates: item.serviceDates,
       },
       quantity: item.quantity,

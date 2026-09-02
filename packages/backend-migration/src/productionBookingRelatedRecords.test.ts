@@ -179,11 +179,83 @@ describe("production Booking related records", () => {
     },
   );
 
+  it.each([
+    {
+      addon_names: ["Breakfast"],
+      addon_quantities: {},
+      expected: {
+        name: "Breakfast",
+        nameBasis: "booking_snapshot",
+        quantity: 1,
+        quantityBasis: "legacy_invoice_default",
+      },
+    },
+    {
+      addon_names: [],
+      addon_quantities: {},
+      expected: {
+        name: "Add-ons",
+        nameBasis: "legacy_invoice_fallback",
+        quantity: 1,
+        quantityBasis: "legacy_invoice_default",
+      },
+    },
+  ])(
+    "uses the deployed legacy invoice fallback for incomplete add-on snapshots",
+    ({ addon_names, addon_quantities, expected }) => {
+      const rows = allRows().slice(0, 2);
+      Object.assign(rows[0]!.data, { addon_names, addon_quantities });
+      const context = createProductionBookingContext(input(rows));
+      const [selection] = buildBookingRelatedRecords(context);
+
+      expect(context.blockers).toEqual([]);
+      expect(selection?.row).toMatchObject({
+        quantity: expected.quantity,
+        totalAmount: "30.00",
+        addonSnapshot: {
+          name: expected.name,
+          nameBasis: expected.nameBasis,
+          quantityBasis: expected.quantityBasis,
+          amountBasis: "booking_addon_total",
+        },
+      });
+    },
+  );
+
+  it("keeps a multi-add-on aggregate once when legacy quantities are absent", () => {
+    const rows = allRows().slice(0, 2);
+    const secondAddon = "13550000-0000-4000-8000-000000000041";
+    Object.assign(rows[0]!.data, {
+      addon_ids: [ADDON, secondAddon],
+      addon_names: ["Breakfast", "Airport transfer"],
+      addon_quantities: {},
+      addon_total: "9500",
+    });
+    const context = createProductionBookingContext(input(rows));
+    const [selection] = buildBookingRelatedRecords(context);
+
+    expect(context.blockers).toEqual([]);
+    expect(selection?.row).toMatchObject({
+      quantity: 1,
+      totalAmount: "9500.00",
+      addonSnapshot: {
+        amountBasis: "booking_addon_total",
+        items: [
+          { name: "Breakfast", quantity: 1, quantityBasis: "legacy_invoice_default" },
+          { name: "Airport transfer", quantity: 1, quantityBasis: "legacy_invoice_default" },
+        ],
+      },
+    });
+  });
+
   it("fails closed for ambiguous add-on snapshot shapes", () => {
+    const secondAddon = "13550000-0000-4000-8000-000000000041";
+    const unknownAddon = "13550000-0000-4000-8000-000000000042";
     const cases = [
       { addon_ids: [], addon_names: ["Breakfast"], addon_total: "30" },
-      { addon_names: [], addon_total: "30" },
-      { addon_quantities: {}, addon_total: "30" },
+      { addon_ids: [ADDON, secondAddon], addon_names: ["Breakfast"], addon_total: "30" },
+      { addon_quantities: { [unknownAddon]: 1 }, addon_total: "30" },
+      { addon_quantities: { [ADDON]: 0 }, addon_total: "30" },
       { addon_dates: { [ADDON]: "2026-09-02" }, addon_total: "30" },
     ];
 
