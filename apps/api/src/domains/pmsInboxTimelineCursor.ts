@@ -20,9 +20,14 @@ export function encodePmsInboxTimelineCursor(
 ): string {
   const occurredAt =
     cursor.occurredAt instanceof Date ? cursor.occurredAt.toISOString() : cursor.occurredAt;
-  const preciseOccurredAt = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(occurredAt)
-    ? occurredAt
-    : occurredAt.replace(/(\.\d{3})Z$/, "$1000Z");
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?Z$/.exec(occurredAt);
+  if (!match) throw new Error("PMS Inbox timeline cursor timestamp is invalid");
+  const preciseOccurredAt = `${match[1]}.${(match[2] ?? "").padEnd(6, "0")}Z`;
+  if (
+    new Date(`${preciseOccurredAt.slice(0, 23)}Z`).toISOString() !==
+    `${preciseOccurredAt.slice(0, 23)}Z`
+  )
+    throw new Error("PMS Inbox timeline cursor timestamp is invalid");
   return Buffer.from(
     JSON.stringify({ v: 1, q: fingerprint, p: [preciseOccurredAt, cursor.kind, cursor.id] }),
   ).toString("base64url");
