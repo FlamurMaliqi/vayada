@@ -14,6 +14,31 @@ export type PmsInboxReplyRoute =
         | "email_policy_disallowed";
     };
 
+export type PmsInboxEmailReplyRoute =
+  | { state: "ready"; channel: "email"; providerChannel: null; reasonCode: null }
+  | {
+      state: "held";
+      channel: null;
+      providerChannel: null;
+      reasonCode:
+        | "guest_email_unavailable"
+        | "approved_sender_unavailable"
+        | "email_policy_disallowed";
+    };
+
+export type PmsInboxEmailReplyRouteReadPort = {
+  resolveReplyRoutes(input: {
+    propertyId: string;
+    threads: readonly { threadId: string; guestEmail: string | null }[];
+  }): Promise<
+    readonly {
+      propertyId: string;
+      threadId: string;
+      route: PmsInboxEmailReplyRoute;
+    }[]
+  >;
+};
+
 export type PmsInboxConversationContext =
   | { state: "linked"; bookingId: string; reference: string }
   | {
