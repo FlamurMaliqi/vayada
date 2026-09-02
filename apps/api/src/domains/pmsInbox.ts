@@ -41,12 +41,61 @@ export type PmsInboxThreadSummary = {
   replyRoute: PmsInboxReplyRoute;
 };
 
-export type PmsInboxPortError = {
-  code: "invalid_cursor";
+export type PmsInboxAttachment =
+  | {
+      id: string;
+      availability: "available";
+      mediaId: string;
+      filename: string;
+      contentType: string;
+      size: number;
+      accessPath: `/api/media/${string}`;
+    }
+  | {
+      id: string;
+      availability: "unavailable";
+      mediaId: string | null;
+      filename: string | null;
+      contentType: string | null;
+      size: number | null;
+      accessPath: null;
+    };
+
+export type PmsInboxMessage = {
+  id: string;
+  direction: "inbound" | "outbound";
+  sender: { type: "guest" | "property_user" | "channel" | "system"; name: string | null };
+  text: string | null;
+  occurredAt: string;
+  readAt: string | null;
+  attachments: PmsInboxAttachment[];
+  delivery: null | {
+    state: "queued" | "retrying" | "sent" | "held" | "failed";
+    channel: "ota" | "email" | null;
+    reasonCode: string | null;
+    providerAcknowledgedAt: string | null;
+  };
+};
+
+export type PmsInboxTimelineItem =
+  | { kind: "message"; message: PmsInboxMessage }
+  | {
+      kind: "internal_note";
+      note: {
+        id: string;
+        author: { membershipId: string; displayName: string };
+        text: string;
+        occurredAt: string;
+      };
+    };
+
+export type PmsInboxReadError = {
+  code: "invalid_cursor" | "thread_not_found";
   message: string;
 };
 export type PmsInboxPortResult<T> =
-  { ok: true; value: T } | { ok: false; error: PmsInboxPortError };
+  | { ok: true; value: T }
+  | { ok: false; error: PmsInboxReadError };
 
 export type PmsInboxReadPort = {
   listThreads(input: {
@@ -65,6 +114,21 @@ export type PmsInboxReadPort = {
       propertyId: string;
       items: readonly { propertyId: string; thread: PmsInboxThreadSummary }[];
       nextCursor: string | null;
+    }>
+  >;
+  getThread(input: {
+    propertyId: string;
+    threadId: string;
+    canReadGuestContact: boolean;
+    messageLimit: number;
+    before?: string;
+  }): Promise<
+    PmsInboxPortResult<{
+      propertyId: string;
+      thread: PmsInboxThreadSummary;
+      availableProviderActions: readonly "booking_com_no_reply_needed"[];
+      timeline: readonly { propertyId: string; threadId: string; item: PmsInboxTimelineItem }[];
+      previousCursor: string | null;
     }>
   >;
   unreadCount(propertyId: string): Promise<{

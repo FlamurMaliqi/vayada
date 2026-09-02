@@ -12624,6 +12624,12 @@ describe("vayada-api", () => {
     expect(response.body).toMatchObject({
       message: "PMS messaging unread count read model is unavailable.",
     });
+    const invalidDetail = await injectJson(app, {
+      method: "GET",
+      url: `/api/pms/properties/${pmsPropertyId}/messaging/threads/thread_1?messageLimit=0`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(invalidDetail).toMatchObject({ statusCode: 400, body: { code: "invalid_query" } });
   });
 
   it("serves the protected native Inbox list and unread contract through its scoped port", async () => {
@@ -12679,6 +12685,9 @@ describe("vayada-api", () => {
       async unreadCount(propertyId) {
         calls.push({ operation: "unread", input: propertyId });
         return { propertyId, threadCount: 1, messageCount: 2 };
+      },
+      async getThread() {
+        throw new Error("not exercised by list test");
       },
     };
     app = buildAuthenticatedApp({
@@ -12760,6 +12769,170 @@ describe("vayada-api", () => {
     });
     expect(JSON.stringify(redacted.body)).not.toContain("alex@example.com");
     expect(logs.join("\n")).not.toContain("private");
+  });
+
+  it("serves scoped Inbox detail with protected staff-only timeline data", async () => {
+    const calls: Array<{ operation: string; input: unknown }> = [];
+    const logs: string[] = [];
+    const thread: PmsInboxThreadSummary = {
+      id: "thread_1",
+      version: 4,
+      attentionState: "needs_attention",
+      followUpAt: null,
+      assignedTo: null,
+      channel: "ota",
+      providerChannel: "booking.com",
+      guest: { displayName: "Alex Lee", email: "alex@example.com" },
+      conversationContext: { state: "linked", bookingId: "booking_1", reference: "VAY-1" },
+      unreadCount: 2,
+      activityAt: "2026-09-01T10:00:00.000Z",
+      lastMessage: { preview: "Hello", at: "2026-09-01T10:00:00.000Z", hasAttachments: true },
+      replyRoute: {
+        state: "ready",
+        channel: "ota",
+        providerChannel: "booking.com",
+        reasonCode: null,
+      },
+    };
+    const readPort: PmsInboxReadPort = {
+      async listThreads() {
+        throw new Error("not exercised");
+      },
+      async unreadCount() {
+        throw new Error("not exercised");
+      },
+      async getThread(input) {
+        calls.push({ operation: "detail", input });
+        if (input.threadId === "throws") throw new Error("alex@example.com private message");
+        if (input.threadId === "missing")
+          return { ok: false, error: { code: "thread_not_found", message: "Thread not found." } };
+        if (input.before === "bad")
+          return { ok: false, error: { code: "invalid_cursor", message: "Invalid cursor." } };
+        const propertyId = input.threadId === "foreign" ? "foreign-property" : input.propertyId;
+        const timelineThreadId = input.threadId === "foreign-thread" ? "thread_1" : input.threadId;
+        const accessPath =
+          input.threadId === "unsafe-media"
+            ? "/api/media/../public/guide.pdf"
+            : input.threadId === "encoded-unsafe-media"
+              ? "/api/media/%2e%2e/public/guide.pdf"
+              : "/api/media/objects/media_1";
+        return {
+          ok: true,
+          value: {
+            propertyId,
+            thread: { ...thread, id: input.threadId },
+            availableProviderActions: ["booking_com_no_reply_needed"],
+            timeline: [
+              {
+                propertyId,
+                threadId: timelineThreadId,
+                item: {
+                  kind: "message",
+                  message: {
+                    id: "msg_3",
+                    direction: "inbound",
+                    sender: { type: "guest", name: "Alex Lee" },
+                    text: "Hello",
+                    occurredAt: "2026-09-01T10:00:00.000Z",
+                    readAt: null,
+                    attachments: [
+                      {
+                        id: "attachment_1",
+                        availability: "available",
+                        mediaId: "media_1",
+                        filename: "guide.pdf",
+                        contentType: "application/pdf",
+                        size: 4,
+                        accessPath: accessPath as `/api/media/${string}`,
+                      },
+                      {
+                        id: "attachment_legacy",
+                        availability: "unavailable",
+                        mediaId: null,
+                        filename: null,
+                        contentType: null,
+                        size: null,
+                        accessPath: null,
+                      },
+                    ],
+                    delivery: null,
+                  },
+                },
+              },
+            ],
+            previousCursor: "older",
+          },
+        };
+      },
+    };
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsInboxReadPort: readPort,
+      logger: { level: "info", stream: { write: (line) => logs.push(line) } },
+    });
+    const base = `/api/pms/properties/${pmsPropertyId}/messaging/threads`;
+    const headers = { authorization: "Bearer valid-token" };
+    const denied = await injectJson(app, { method: "GET", url: `${base}/thread_1` });
+    const detail = await injectJson(app, {
+      method: "GET",
+      url: `${base}/thread_1?messageLimit=25`,
+      headers,
+    });
+    const missing = await injectJson(app, { method: "GET", url: `${base}/missing`, headers });
+    const invalidCursor = await injectJson(app, {
+      method: "GET",
+      url: `${base}/thread_1?before=bad`,
+      headers,
+    });
+    const foreign = await injectJson(app, { method: "GET", url: `${base}/foreign`, headers });
+    const foreignThread = await injectJson(app, {
+      method: "GET",
+      url: `${base}/foreign-thread`,
+      headers,
+    });
+    const unsafeMedia = await injectJson(app, {
+      method: "GET",
+      url: `${base}/unsafe-media`,
+      headers,
+    });
+    const encodedUnsafeMedia = await injectJson(app, {
+      method: "GET",
+      url: `${base}/encoded-unsafe-media`,
+      headers,
+    });
+    const thrown = await injectJson(app, { method: "GET", url: `${base}/throws`, headers });
+
+    expect(denied).toMatchObject({ statusCode: 401, body: { code: "unauthenticated" } });
+    expect(detail).toMatchObject({
+      statusCode: 200,
+      body: {
+        contractVersion: "native-guest-inbox.v2",
+        thread: { guest: { displayName: "Alex Lee" } },
+        timeline: [
+          {
+            kind: "message",
+            message: {
+              attachments: [
+                { availability: "available" },
+                { availability: "unavailable", accessPath: null },
+              ],
+            },
+          },
+        ],
+        previousCursor: "older",
+      },
+    });
+    expect(JSON.stringify(detail.body)).not.toContain("alex@example.com");
+    expect(missing).toMatchObject({ statusCode: 404, body: { code: "thread_not_found" } });
+    expect(invalidCursor).toMatchObject({ statusCode: 400, body: { code: "invalid_cursor" } });
+    expect(foreign).toMatchObject({ statusCode: 500, body: { code: "read_model_unavailable" } });
+    expect(JSON.stringify(foreign.body)).not.toContain("Alex Lee");
+    for (const response of [foreignThread, unsafeMedia, encodedUnsafeMedia, thrown])
+      expect(response).toMatchObject({ statusCode: 500, body: { code: "read_model_unavailable" } });
+    expect(logs.join("\n")).not.toContain("alex@example.com");
+    expect(calls).toHaveLength(8);
+    expect(calls[0]?.input).toMatchObject({ propertyId: pmsPropertyId, messageLimit: 25 });
   });
 
   it("fails closed across the PMS inbox read denial matrix", async () => {

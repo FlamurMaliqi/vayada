@@ -38,8 +38,10 @@ import {
 import { HIDDEN_GUEST_CONTACT } from "../domains/bookingGuestContactAccess.js";
 import {
   NATIVE_GUEST_INBOX_CONTRACT_VERSION,
-  type PmsInboxPortError,
+  type PmsInboxReadError,
   type PmsInboxReadPort,
+  type PmsInboxThreadSummary,
+  type PmsInboxTimelineItem,
 } from "../domains/pmsInbox.js";
 import type {
   PmsCalendarDay,
@@ -1016,6 +1018,8 @@ type PmsPropertyParams = {
   propertyId: string;
 };
 
+type PmsInboxThreadParams = PmsPropertyParams & { threadId: string };
+
 type PmsRoomTypeParams = PmsPropertyParams & {
   roomTypeId: string;
 };
@@ -1057,6 +1061,7 @@ type PmsInboxListQuery = {
   limit?: string;
   cursor?: string;
 };
+type PmsInboxDetailQuery = { messageLimit?: string; before?: string };
 
 type PmsRoomBlocksQuery = {
   from?: string;
@@ -1140,6 +1145,7 @@ type PmsOperationsErrorCode =
   | "room_photo_plan_limit_reached"
   | "read_model_unavailable"
   | "room_type_not_found"
+  | "thread_not_found"
   | "room_block_not_found"
   | "room_block_conflict"
   | "side_effect_failed"
@@ -1204,6 +1210,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/same-day-booking",
     "/properties/:propertyId/messaging/unread-count",
     "/properties/:propertyId/messaging/threads",
+    "/properties/:propertyId/messaging/threads/:threadId",
     "/properties/:propertyId/reservations",
     "/properties/:propertyId/reservations/:guestBookingId",
     "/properties/:propertyId/reservations/:guestBookingId/notes",
@@ -2107,8 +2114,8 @@ export async function registerPmsOperationsRoutes(
         const count = await options.inboxReadPort.unreadCount(propertyId);
         if (count.propertyId !== propertyId) throw new Error("Inbox unread scope mismatch");
         return { contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION, ...count };
-      } catch (error) {
-        request.log.error({ err: error }, "PMS Inbox unread count failed");
+      } catch {
+        request.log.error("PMS Inbox unread count failed");
         return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
       }
     },
@@ -2140,7 +2147,7 @@ export async function registerPmsOperationsRoutes(
           canReadGuestContact,
           ...query.value,
         });
-        if (!result.ok) return sendInboxPortError(reply, result.error);
+        if (!result.ok) return sendInboxReadError(reply, result.error);
         if (
           result.value.propertyId !== propertyId ||
           result.value.items.some((item) => item.propertyId !== propertyId)
@@ -2149,14 +2156,64 @@ export async function registerPmsOperationsRoutes(
         return {
           contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION,
           items: result.value.items.map((item) =>
-            canReadGuestContact
-              ? item.thread
-              : { ...item.thread, guest: { displayName: item.thread.guest.displayName } },
+            redactInboxGuestContact(item.thread, canReadGuestContact),
           ),
           nextCursor: result.value.nextCursor,
         };
-      } catch (error) {
-        request.log.error({ err: error }, "PMS Inbox thread list failed");
+      } catch {
+        request.log.error("PMS Inbox thread list failed");
+        return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
+      }
+    },
+  );
+
+  app.get<{ Params: PmsInboxThreadParams; Querystring: PmsInboxDetailQuery }>(
+    "/properties/:propertyId/messaging/threads/:threadId",
+    async (request, reply) => {
+      if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? []))
+        return sendPmsOperationsError(reply, missingOriginPermission());
+      const { propertyId, threadId } = request.params;
+      const context = await enforcePmsPropertyAccessPolicy(
+        request,
+        reply,
+        propertyId,
+        "pms.inbox.read",
+        options.propertyAccessRepository,
+      );
+      if (!context) return reply;
+      const query = parseInboxDetailQuery(request.query);
+      if ("error" in query) return sendPmsOperationsError(reply, query.error);
+      if (!options.inboxReadPort)
+        return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
+      const canReadGuestContact = hasPermission(context, "pms.guest_contact.read");
+      try {
+        const result = await options.inboxReadPort.getThread({
+          propertyId,
+          threadId,
+          canReadGuestContact,
+          ...query.value,
+        });
+        if (!result.ok) return sendInboxReadError(reply, result.error);
+        if (
+          result.value.propertyId !== propertyId ||
+          result.value.thread.id !== threadId ||
+          result.value.timeline.some(
+            (item) =>
+              item.propertyId !== propertyId ||
+              item.threadId !== threadId ||
+              hasUnsafeInboxAttachment(item.item),
+          )
+        )
+          throw new Error("Inbox detail scope mismatch");
+        return {
+          contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION,
+          thread: redactInboxGuestContact(result.value.thread, canReadGuestContact),
+          availableProviderActions: result.value.availableProviderActions,
+          timeline: result.value.timeline.map((item) => item.item),
+          previousCursor: result.value.previousCursor,
+        };
+      } catch {
+        request.log.error("PMS Inbox thread detail failed");
         return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
       }
     },
@@ -5115,16 +5172,76 @@ function parseInboxListQuery(query: PmsInboxListQuery):
   };
 }
 
+function parseInboxDetailQuery(
+  query: PmsInboxDetailQuery,
+): { value: { messageLimit: number; before?: string } } | { error: PmsOperationsError } {
+  if (Object.keys(query).some((key) => key !== "messageLimit" && key !== "before"))
+    return { error: invalidQuery("Inbox thread detail query is invalid.") };
+  const messageLimit =
+    query.messageLimit === undefined
+      ? 50
+      : typeof query.messageLimit === "string"
+        ? Number(query.messageLimit)
+        : NaN;
+  const before = typeof query.before === "string" ? boundedText(query.before, 4096) : undefined;
+  if (
+    !Number.isSafeInteger(messageLimit) ||
+    messageLimit < 1 ||
+    messageLimit > 100 ||
+    (query.before !== undefined && !before)
+  )
+    return { error: invalidQuery("Inbox thread detail query is invalid.") };
+  return { value: { messageLimit, ...(before ? { before } : {}) } };
+}
+
 function boundedText(value: string, max: number): string | undefined {
   const normalized = value.trim();
   return normalized.length >= 1 && normalized.length <= max ? normalized : undefined;
 }
 
-function sendInboxPortError(reply: FastifyReply, error: PmsInboxPortError): FastifyReply {
+function redactInboxGuestContact(
+  thread: PmsInboxThreadSummary,
+  canReadGuestContact: boolean,
+): PmsInboxThreadSummary {
+  return canReadGuestContact
+    ? thread
+    : { ...thread, guest: { displayName: thread.guest.displayName } };
+}
+
+function hasUnsafeInboxAttachment(item: PmsInboxTimelineItem): boolean {
+  if (item.kind === "internal_note") return false;
+  return item.message.attachments.some((attachment) =>
+    attachment.availability === "unavailable"
+      ? attachment.accessPath !== null
+      : !attachment.mediaId.trim() ||
+        !attachment.filename.trim() ||
+        !attachment.contentType.trim() ||
+        !Number.isSafeInteger(attachment.size) ||
+        attachment.size < 0 ||
+        !isAuthenticatedInboxMediaPath(attachment.accessPath),
+  );
+}
+
+function isAuthenticatedInboxMediaPath(path: string): boolean {
+  try {
+    const url = new URL(path, "https://inbox.invalid");
+    return (
+      url.origin === "https://inbox.invalid" &&
+      !url.search &&
+      !url.hash &&
+      url.pathname === path &&
+      path.startsWith("/api/media/")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function sendInboxReadError(reply: FastifyReply, error: PmsInboxReadError): FastifyReply {
   return sendPmsOperationsError(reply, {
-    statusCode: 400,
+    statusCode: error.code === "thread_not_found" ? 404 : 400,
     code: error.code,
-    category: "validation",
+    category: error.code === "thread_not_found" ? "not_found" : "validation",
     message: error.message,
   });
 }
