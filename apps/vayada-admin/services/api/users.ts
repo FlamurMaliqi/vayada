@@ -105,6 +105,7 @@ export const usersService = {
       return {
         ...identityUser,
         profile: review.profile ? toCreatorProfileDetail(identityUser, review) : null,
+        creatorModeration: review.moderation,
       };
     }
     if (identityUser.type !== "hotel") return identityUser;
@@ -389,6 +390,7 @@ function toCreatorProfileDetail(
   return {
     id: profile.creatorProfileId,
     userId: identityUser.id,
+    profileStatus: profile.profileStatus,
     location: profile.locationText,
     shortDescription: profile.shortDescription,
     portfolioLink: profile.portfolioUrl,

@@ -23,7 +23,9 @@ import {
 import { usersService, uploadService } from "@/services/api";
 import { Input } from "@/components/ui";
 import { Textarea } from "@/components/ui/Textarea";
+import { CreatorModerationPanel } from "@/components/marketplace/CreatorModerationPanel";
 import { ApiErrorResponse } from "@/services/api/client";
+import { ApiErrorResponse as VayadaApiErrorResponse } from "@vayada/marketplace-shared/api/client";
 import {
   createOfferWithMedia,
   OfferMediaPublicationError,
@@ -160,6 +162,7 @@ function UserDetailContent() {
   const [userDetail, setUserDetail] = useState<UserDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [refreshWarning, setRefreshWarning] = useState("");
   const [selectedListing, setSelectedListing] = useState<ListingResponse | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -349,14 +352,22 @@ function UserDetailContent() {
     }
   }, [isEditing, userDetail]);
 
-  const loadUserDetail = async () => {
+  const loadUserDetail = async (showLoading = true) => {
     try {
-      setLoading(true);
-      setError("");
+      if (showLoading) setLoading(true);
+      if (showLoading) setError("");
+      else setRefreshWarning("");
       const data = await usersService.getUserById(userId);
       setUserDetail(data);
+      setRefreshWarning("");
     } catch (err) {
-      if (err instanceof ApiErrorResponse) {
+      if (!showLoading) {
+        setRefreshWarning(
+          "The latest creator profile could not be refreshed. Reload this page before another decision.",
+        );
+        return;
+      }
+      if (err instanceof ApiErrorResponse || err instanceof VayadaApiErrorResponse) {
         if (err.status === 404) {
           setError("User not found");
         } else if (err.status === 403) {
@@ -368,7 +379,7 @@ function UserDetailContent() {
         setError("Failed to load user details");
       }
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
 
@@ -1707,6 +1718,43 @@ function UserDetailContent() {
                 {/* Creator Profile Section */}
                 {isCreator && profile && (
                   <div className="border-t pt-6">
+                    {refreshWarning && (
+                      <div
+                        role="alert"
+                        className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"
+                      >
+                        {refreshWarning}
+                      </div>
+                    )}
+                    <CreatorModerationPanel
+                      creatorName={userDetail.name}
+                      profile={profile as CreatorProfileDetail}
+                      moderation={
+                        userDetail.creatorModeration ?? {
+                          allowed: false,
+                          allowedTransitions: [],
+                        }
+                      }
+                      onModerated={async (profileStatus) => {
+                        setUserDetail((current) => {
+                          if (!current || current.type !== "creator") return current;
+                          return {
+                            ...current,
+                            creatorModeration: current.creatorModeration
+                              ? { ...current.creatorModeration, allowedTransitions: [] }
+                              : current.creatorModeration,
+                            profile:
+                              profileStatus && current.profile
+                                ? {
+                                    ...(current.profile as CreatorProfileDetail),
+                                    profileStatus,
+                                  }
+                                : current.profile,
+                          };
+                        });
+                        await loadUserDetail(false);
+                      }}
+                    />
                     <div className="flex items-center justify-between mb-4">
                       <div>
                         <h3 className="text-lg font-semibold text-gray-900">
@@ -1911,6 +1959,15 @@ function UserDetailContent() {
                         </p>
                       </div>
                     </div>
+                  </div>
+                )}
+
+                {isCreator && !profile && (
+                  <div
+                    role="status"
+                    className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700"
+                  >
+                    This creator does not have an available marketplace profile.
                   </div>
                 )}
 

@@ -4,6 +4,8 @@ import { requireAuthContext, type PermissionKey, type RequestContext } from "@va
 import { isSetupTrack, type SetupTrack } from "@vayada/domain-hotels";
 import {
   MARKETPLACE_CREATOR_MODERATION_AUTHORIZATION,
+  MARKETPLACE_CREATOR_PROFILE_STATUSES,
+  canModerateMarketplaceCreatorProfile,
   isMarketplaceCreatorModerationReason,
   isMarketplaceCreatorModerationTargetStatus,
   isMarketplaceCreatorProfileStatus,
@@ -398,7 +400,15 @@ export type MarketplaceAdminCreatorReviewResponse = {
   authorizationMode: MarketplaceAdminAuthorizationMode;
   userId: string;
   profile: MarketplaceAdminCreatorReviewProfile | null;
+  moderation: MarketplaceAdminCreatorModerationCapabilities;
 };
+
+export type MarketplaceAdminCreatorModerationCapabilities = {
+  allowed: boolean;
+  allowedTransitions: Exclude<MarketplaceCreatorProfileStatus, "pending">[];
+};
+
+type MarketplaceAdminCreatorReviewData = Omit<MarketplaceAdminCreatorReviewResponse, "moderation">;
 
 export type MarketplaceAdminDeleteOfferResponse = {
   contractVersion: typeof MARKETPLACE_ADMIN_CONTRACT_VERSION;
@@ -450,7 +460,7 @@ export type MarketplaceAdminRepository = {
   readCreatorReviewForUser(input: {
     userId: string;
     authorizationMode: MarketplaceAdminAuthorizationMode;
-  }): Promise<MarketplaceAdminCreatorReviewResponse>;
+  }): Promise<MarketplaceAdminCreatorReviewData>;
   moderateCreatorProfile(input: {
     creatorProfileId: string;
     idempotencyKey: string;
@@ -1155,10 +1165,14 @@ export async function registerMarketplaceAdminRoutes(
     "/admin/users/:userId/review/creator",
     async (request) => {
       const access = await requireMarketplaceAdminAccess(request, options);
-      return repository.readCreatorReviewForUser({
+      const review = await repository.readCreatorReviewForUser({
         userId: request.params.userId,
         authorizationMode: access.authorizationMode,
       });
+      return {
+        ...review,
+        moderation: creatorModerationCapabilities(request, review.profile),
+      } satisfies MarketplaceAdminCreatorReviewResponse;
     },
   );
 
@@ -1370,6 +1384,28 @@ function requireMarketplaceCreatorModerationAccess(request: FastifyRequest): Req
     entitlement: { ...policy.entitlement, resource },
     resource: { ...resource, allowedRelationships: [...policy.resource.allowedRelationships] },
   });
+}
+
+function creatorModerationCapabilities(
+  request: FastifyRequest,
+  profile: MarketplaceAdminCreatorReviewProfile | null,
+): MarketplaceAdminCreatorModerationCapabilities {
+  try {
+    requireMarketplaceCreatorModerationAccess(request);
+  } catch {
+    return { allowed: false, allowedTransitions: [] };
+  }
+  if (!profile) return { allowed: true, allowedTransitions: [] };
+  return {
+    allowed: true,
+    allowedTransitions: MARKETPLACE_CREATOR_PROFILE_STATUSES.filter(
+      isMarketplaceCreatorModerationTargetStatus,
+    ).filter(
+      (nextStatus) =>
+        canModerateMarketplaceCreatorProfile(profile.profileStatus, nextStatus) &&
+        (nextStatus !== "active" || profile.profileComplete),
+    ),
+  };
 }
 
 function readIdempotencyKey(request: FastifyRequest): string | null {
@@ -2089,7 +2125,6 @@ const ADMIN_CREATOR_REVIEW_SELECT_SQL = `
     WHERE platform.creator_profile_id = profile.id
       AND platform.organization_id = profile.organization_id
   ) platforms ON TRUE
-  WHERE profile.profile_status <> 'archived'
   ORDER BY profile.id
 `;
 
