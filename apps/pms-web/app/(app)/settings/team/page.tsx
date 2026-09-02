@@ -5,7 +5,11 @@ import { SettingsCard, SettingsLayout, SettingsSection } from "@vayada/settings-
 
 import { getPmsSettingsSections } from "@/lib/settings/navigation";
 import { listPmsProperties, type PmsPropertySummary } from "@/services/api/pmsPropertyClient";
-import { getPmsStaffRoster, type PmsStaffMember } from "@/services/api/pmsStaffClient";
+import {
+  getPmsStaffRoster,
+  updatePmsStaffStatus,
+  type PmsStaffMember,
+} from "@/services/api/pmsStaffClient";
 
 const sections = getPmsSettingsSections(false);
 const roleLabels: Record<PmsStaffMember["roleKey"], string> = {
@@ -20,6 +24,12 @@ export default function TeamSettingsPage() {
   const [properties, setProperties] = useState<PmsPropertySummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [updatingMemberId, setUpdatingMemberId] = useState<string | null>(null);
+  const [actionFeedback, setActionFeedback] = useState<{
+    memberId: string;
+    type: "error" | "success";
+    message: string;
+  } | null>(null);
 
   const loadRoster = useCallback(async () => {
     setLoading(true);
@@ -41,6 +51,41 @@ export default function TeamSettingsPage() {
   useEffect(() => {
     void loadRoster();
   }, [loadRoster]);
+
+  const changeStatus = async (member: PmsStaffMember) => {
+    const nextStatus = member.status === "active" ? "deactivated" : "active";
+    const label = member.name || member.email;
+    if (
+      nextStatus === "deactivated" &&
+      !window.confirm(`Deactivate ${label}? They will lose PMS access until reactivated.`)
+    ) {
+      return;
+    }
+
+    setUpdatingMemberId(member.id);
+    setActionFeedback(null);
+    try {
+      const updated = await updatePmsStaffStatus(member.id, nextStatus);
+      setMembers((current) =>
+        current.map((item) =>
+          item.id === updated.membershipId ? { ...item, status: updated.status } : item,
+        ),
+      );
+      setActionFeedback({
+        memberId: member.id,
+        type: "success",
+        message: `${label} ${updated.status === "active" ? "reactivated" : "deactivated"}.`,
+      });
+    } catch {
+      setActionFeedback({
+        memberId: member.id,
+        type: "error",
+        message: `Couldn’t update ${label}. Try again.`,
+      });
+    } finally {
+      setUpdatingMemberId(null);
+    }
+  };
 
   const propertyNames = new Map(properties.map((property) => [property.id, property.name]));
 
@@ -98,6 +143,9 @@ export default function TeamSettingsPage() {
                     <th scope="col" className="px-4 py-3 md:px-5">
                       Last active
                     </th>
+                    <th scope="col" className="px-4 py-3 md:px-5">
+                      Actions
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -122,6 +170,38 @@ export default function TeamSettingsPage() {
                       </td>
                       <td className="px-4 py-3 text-gray-500 md:px-5">
                         {formatLastActive(member.lastActiveAt)}
+                      </td>
+                      <td className="px-4 py-3 md:px-5">
+                        {member.status === "pending" ? (
+                          <span className="text-xs text-gray-500">Invitation pending</span>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={updatingMemberId !== null}
+                            onClick={() => void changeStatus(member)}
+                            aria-busy={updatingMemberId === member.id}
+                            aria-label={
+                              updatingMemberId === member.id
+                                ? `Saving status for ${member.name || member.email}`
+                                : `${member.status === "active" ? "Deactivate" : "Reactivate"} ${member.name || member.email}`
+                            }
+                            className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {updatingMemberId === member.id
+                              ? "Saving…"
+                              : member.status === "active"
+                                ? "Deactivate"
+                                : "Reactivate"}
+                          </button>
+                        )}
+                        {actionFeedback?.memberId === member.id && (
+                          <p
+                            role={actionFeedback.type === "error" ? "alert" : "status"}
+                            className={`mt-1 text-xs ${actionFeedback.type === "error" ? "text-red-600" : "text-emerald-700"}`}
+                          >
+                            {actionFeedback.message}
+                          </p>
+                        )}
                       </td>
                     </tr>
                   ))}
