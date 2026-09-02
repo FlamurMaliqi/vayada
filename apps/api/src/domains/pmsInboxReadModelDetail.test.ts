@@ -313,4 +313,30 @@ describe("PostgreSQL PMS Inbox thread detail read model", () => {
       id: v7Message,
     });
   });
+
+  it.each([
+    ["2026-09-02T08:00:00Z", "2026-09-02T08:00:00.000000Z"],
+    ["2026-09-02T08:00:00.1Z", "2026-09-02T08:00:00.100000Z"],
+    ["2026-09-02T08:00:00.123Z", "2026-09-02T08:00:00.123000Z"],
+    ["2026-09-02T08:00:00.123456Z", "2026-09-02T08:00:00.123456Z"],
+  ])("normalizes timeline cursor timestamp precision from %s", (occurredAt, expected) => {
+    const fingerprint = pmsInboxTimelineFingerprint(PROPERTY, THREAD);
+    const cursor = encodePmsInboxTimelineCursor(fingerprint, {
+      occurredAt,
+      kind: "message",
+      id: MESSAGE,
+    });
+    expect(decodePmsInboxTimelineCursor(cursor, fingerprint)?.occurredAt).toBe(expected);
+  });
+
+  it("rejects unsupported timeline cursor timestamps before encoding", () => {
+    const fingerprint = pmsInboxTimelineFingerprint(PROPERTY, THREAD);
+    expect(() =>
+      encodePmsInboxTimelineCursor(fingerprint, {
+        occurredAt: "2026-09-02T08:00:00.1234567Z",
+        kind: "message",
+        id: MESSAGE,
+      }),
+    ).toThrow("PMS Inbox timeline cursor timestamp is invalid");
+  });
 });
