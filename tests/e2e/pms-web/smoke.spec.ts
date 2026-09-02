@@ -201,6 +201,8 @@ test.describe("pms-web smoke", () => {
     const checklistLinks = page.getByRole("link", { name: "Check-in checklist" });
     await expect(checklistLinks.last()).toBeVisible();
     await expect(page.getByRole("link", { name: "Check-out inspection" }).last()).toBeVisible();
+    const teamLinks = page.getByRole("link", { name: "Team & Roles" });
+    await expect(teamLinks.last()).toHaveAttribute("href", "/settings/team");
 
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(checklistLinks.first()).toBeVisible();
@@ -208,6 +210,73 @@ test.describe("pms-web smoke", () => {
     await expect(checklistLinks.first()).toBeFocused();
 
     await assertHealthy();
+  });
+
+  test("shows the canonical staff roster through the Team & Roles deep link", async ({
+    page,
+  }, testInfo) => {
+    const assertHealthy = watchPageHealth(page, testInfo);
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.goto("/settings/team");
+
+    await expect(page.getByRole("heading", { name: "Team & Roles" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Team & Roles" }).last()).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    const roster = page.getByRole("table");
+    await expect(roster.getByText("Ada Lovelace")).toBeVisible();
+    await expect(roster.getByText("ada@example.com")).toBeVisible();
+    await expect(roster.getByText("Front Desk")).toBeVisible();
+    await expect(roster.getByText("Alpenrose Munich")).toBeVisible();
+    await expect(roster.getByText("Active", { exact: true })).toBeVisible();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileTeamLink = page.getByRole("link", { name: "Team & Roles" }).first();
+    await expect(mobileTeamLink).toBeVisible();
+    await mobileTeamLink.focus();
+    await expect(mobileTeamLink).toBeFocused();
+
+    await assertHealthy();
+  });
+
+  test("distinguishes loading, empty, and failed team rosters", async ({ page }) => {
+    const rosterPath = "**/api/identity/staff/members";
+    let releaseRoster!: () => void;
+    const rosterRelease = new Promise<void>((resolve) => {
+      releaseRoster = resolve;
+    });
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.route(rosterPath, async (route) => {
+      await rosterRelease;
+      return route.fulfill({ json: { members: [] } });
+    });
+    await page.goto("/settings/team");
+
+    await expect(page.getByRole("status")).toHaveText("Loading team members…");
+    releaseRoster();
+    await expect(page.getByText("No team members yet")).toBeVisible();
+
+    await page.unroute(rosterPath);
+    await page.route(rosterPath, (route) =>
+      route.fulfill({ status: 503, json: { code: "staff_roster_failed" } }),
+    );
+    await page.reload();
+
+    const alert = page.getByRole("alert").filter({ hasText: "We couldn’t load your team." });
+    await expect(alert).toContainText("We couldn’t load your team.");
+    const retry = alert.getByRole("button", { name: "Retry" });
+    await retry.focus();
+    await expect(retry).toBeFocused();
+
+    await page.unroute(rosterPath);
+    await page.route(rosterPath, (route) => route.fulfill({ json: { members: [] } }));
+    await retry.click();
+    await expect(page.getByText("No team members yet")).toBeVisible();
   });
 
   test("loads migrated PMS operations surfaces without legacy helper calls", async ({

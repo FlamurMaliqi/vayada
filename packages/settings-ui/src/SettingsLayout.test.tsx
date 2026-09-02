@@ -10,7 +10,7 @@ describe("SettingsLayout", () => {
           { id: "property", label: "Property" },
           { id: "billing", label: "Billing", href: "/settings?section=billing" },
         ]}
-        activeId="property"
+        activeId="billing"
       >
         <p>Settings content</p>
       </SettingsLayout>,

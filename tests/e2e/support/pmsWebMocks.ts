@@ -191,6 +191,23 @@ export async function mockPmsWebAuthenticatedSession(
 }
 
 export async function mockPmsWebTargetRoutes(page: Page): Promise<void> {
+  await page.route("**/api/identity/staff/members", (route) =>
+    route.fulfill({
+      json: {
+        members: [
+          {
+            id: "staff_membership_ada",
+            name: "Ada Lovelace",
+            email: "ada@example.com",
+            roleKey: "front_desk",
+            propertyIds: [PMS_WEB_PROPERTY_ID],
+            status: "active",
+            lastActiveAt: "2026-08-24T12:00:00.000Z",
+          },
+        ],
+      },
+    }),
+  );
   await page.route("**/auth/compat/pms-web-token", (route) =>
     route.fulfill({
       json: {
