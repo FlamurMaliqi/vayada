@@ -359,8 +359,8 @@ test.describe("booking-admin settings no-legacy guard", () => {
     expect(new URL(page.url()).searchParams.get("billing")).toBe("canceled");
     expect(new URL(page.url()).searchParams.get("source")).toBe("email");
 
-    await page.getByRole("button", { name: "Billing", exact: true }).click();
-    await expect.poll(() => new URL(page.url()).searchParams.get("section")).toBe("billing");
+    await page.getByRole("button", { name: "Localization", exact: true }).click();
+    await expect.poll(() => new URL(page.url()).searchParams.get("section")).toBe("localization");
 
     await page.goBack();
     await expect(page.getByRole("button", { name: "Booking", exact: true })).toHaveAttribute(
@@ -369,7 +369,7 @@ test.describe("booking-admin settings no-legacy guard", () => {
     );
 
     await page.goForward();
-    await expect(page.getByRole("button", { name: "Billing", exact: true })).toHaveAttribute(
+    await expect(page.getByRole("button", { name: "Localization", exact: true })).toHaveAttribute(
       "aria-current",
       "page",
     );
@@ -399,10 +399,16 @@ test.describe("booking-admin settings no-legacy guard", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     const mobilePropertyButton = page.getByRole("button", { name: "Property", exact: true });
     const mobileBookingButton = page.getByRole("button", { name: "Booking", exact: true });
+    const mobileLocalizationButton = page.getByRole("button", {
+      name: "Localization",
+      exact: true,
+    });
     await expect(mobileBookingButton).toBeVisible();
     await mobilePropertyButton.focus();
     await page.keyboard.press("Tab");
     await expect(mobileBookingButton).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(mobileLocalizationButton).toBeFocused();
 
     await page.goto("/settings?billing=canceled", { waitUntil: "networkidle" });
     await expect(page.getByRole("button", { name: "Billing", exact: true })).toHaveAttribute(

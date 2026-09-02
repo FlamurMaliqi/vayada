@@ -42,6 +42,10 @@ import {
 } from "@/services/settings";
 import { ToggleSwitch, FeedbackAlert, SaveButton } from "@/components/ui";
 import { CountrySelect } from "@/components/settings/CountrySelect";
+import LocalizationTab from "@/components/booking-flow/LocalizationTab";
+import { useLocalizationSettingsTab } from "@/components/booking-flow/useBookingFlowSettingsTabs";
+import { getBookingLocalizationSettings } from "@/services/api/bookingLocalizationSettingsClient";
+import { getSelectedBookingHotelId } from "@/services/api/bookingHotelScope";
 import {
   SettingsLayout,
   SettingsSection,
@@ -252,6 +256,38 @@ export default function SettingsPage() {
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(
     null,
   );
+  const [localizationLoading, setLocalizationLoading] = useState(true);
+  const [localizationLoadError, setLocalizationLoadError] = useState("");
+  const [canonicalDefaultCurrency, setCanonicalDefaultCurrency] = useState<string | null>(null);
+  const getBookingHotelIdForLocalization = useCallback(() => {
+    const hotelId = readBookingHotelId(settings);
+    if (!hotelId) throw new Error("Booking hotel id is required.");
+    return hotelId;
+  }, [settings]);
+  const showLocalizationFeedback = useCallback(
+    (type: "success" | "error", message: string) => setFeedback({ type, message }),
+    [],
+  );
+  const {
+    defaultCurrency,
+    setDefaultCurrency,
+    defaultLanguage,
+    setDefaultLanguage,
+    supportedCurrencies,
+    setSupportedCurrencies,
+    supportedLanguages,
+    setSupportedLanguages,
+    savingCurrencyLang,
+    applyLocalizationSettings,
+    handleSaveCurrencyLang,
+  } = useLocalizationSettingsTab({
+    getBookingHotelIdForSave: getBookingHotelIdForLocalization,
+    showFeedback: showLocalizationFeedback,
+  });
+  const saveLocalizationSettings = async () => {
+    const saved = await handleSaveCurrencyLang();
+    if (saved) setCanonicalDefaultCurrency(saved.defaultCurrency);
+  };
 
   // Stripe Connect / Payments
   const [stripeAccountId, setStripeAccountId] = useState<string | null>(null);
@@ -328,6 +364,24 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const loadLocalizationSettings = useCallback(
+    async (hotelId: string) => {
+      setLocalizationLoading(true);
+      setLocalizationLoadError("");
+      setCanonicalDefaultCurrency(null);
+      try {
+        const localization = await getBookingLocalizationSettings({ hotelId });
+        applyLocalizationSettings(localization);
+        setCanonicalDefaultCurrency(localization.defaultCurrency);
+      } catch (error) {
+        setLocalizationLoadError(errorMessage(error, "Localization settings failed to load."));
+      } finally {
+        setLocalizationLoading(false);
+      }
+    },
+    [applyLocalizationSettings],
+  );
+
   const applyFinancePaymentSettings = useCallback((res: FinancePaymentSettingsResponse) => {
     const ps = res.paymentSettings;
     const providerAccount = ps.providerAccount;
@@ -367,6 +421,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     const paymentSettingsVersion = ++paymentSettingsLoadVersion.current;
+    const selectedHotelId = getSelectedBookingHotelId();
     const stripeReturn = new URLSearchParams(window.location.search).get("stripe");
     if (stripeReturn === "return" || stripeReturn === "refresh") {
       setStripeAccountCreationBlocked(true);
@@ -379,6 +434,9 @@ export default function SettingsPage() {
     setSameDayLoading(true);
     setSameDaySettings(null);
     setSameDayError("");
+    setLocalizationLoading(true);
+    setLocalizationLoadError("");
+    if (selectedHotelId) void loadLocalizationSettings(selectedHotelId);
     const propertyPromise = fetchSettings();
     propertyPromise
       .then(async (property) => {
@@ -388,6 +446,10 @@ export default function SettingsPage() {
           setAcceptanceError("Select a hotel before loading booking acceptance settings.");
           setSameDayLoading(false);
           setSameDayError("Select a hotel before loading same-day booking settings.");
+          if (!selectedHotelId) {
+            setLocalizationLoading(false);
+            setLocalizationLoadError("Select a hotel before loading localization settings.");
+          }
           return null;
         }
         const hotelId = readBookingHotelId(property);
@@ -397,10 +459,15 @@ export default function SettingsPage() {
           setAcceptanceError("Select a hotel before loading booking acceptance settings.");
           setSameDayLoading(false);
           setSameDayError("Select a hotel before loading same-day booking settings.");
+          if (!selectedHotelId) {
+            setLocalizationLoading(false);
+            setLocalizationLoadError("Select a hotel before loading localization settings.");
+          }
           return null;
         }
         void loadBookingAcceptance(hotelId);
         void loadSameDayBooking(hotelId);
+        if (hotelId !== selectedHotelId) void loadLocalizationSettings(hotelId);
         const propertyLink = await getBookingHotelPropertyLink({ hotelId });
         setBillingPropertyId(propertyLink.propertyId);
         const billingReturn =
@@ -454,7 +521,13 @@ export default function SettingsPage() {
         setBillingPlanLoading(false);
         setPaymentError(errorMessage(err, "Payment settings failed to load."));
       });
-  }, [applyFinancePaymentSettings, fetchSettings, loadBookingAcceptance, loadSameDayBooking]);
+  }, [
+    applyFinancePaymentSettings,
+    fetchSettings,
+    loadBookingAcceptance,
+    loadLocalizationSettings,
+    loadSameDayBooking,
+  ]);
 
   const refreshStripeOnboarding = useCallback(
     async (
@@ -757,6 +830,15 @@ export default function SettingsPage() {
         fail("Payment settings did not load. Refresh before saving payments.");
         return null;
       }
+      if (
+        localizationLoading ||
+        localizationLoadError ||
+        savingCurrencyLang ||
+        !canonicalDefaultCurrency
+      ) {
+        fail("Localization settings did not load. Retry Localization before saving payments.");
+        return null;
+      }
       if (paymentProvider === "xendit" || paymentProvider === "vayada") {
         fail(`${paymentProvider === "xendit" ? "Xendit" : "vayada Payments"} is coming soon.`);
         return null;
@@ -784,7 +866,7 @@ export default function SettingsPage() {
           payoutBankName: settings.payout_bank_name,
           payoutSwift: settings.payout_swift,
           paymentProvider,
-          defaultCurrency: settings.default_currency,
+          defaultCurrency: canonicalDefaultCurrency,
           commandPrefix: `settings-payment-settings-${hotelId}`,
         }),
       });
@@ -895,6 +977,7 @@ export default function SettingsPage() {
   const sections: SettingsNavSection[] = [
     { id: "property", label: t("settings.tabs.property"), icon: HotelIcon },
     { id: "booking", label: t("settings.tabs.booking"), icon: CalendarDaysIcon },
+    { id: "localization", label: t("bookingFlow.tabs.localization"), icon: GlobeAltIcon },
     // TODO i18n: add settings.tabs.payments to messages/*.json.
     // Hardcoded English until then.
     { id: "billing", label: t("settings.tabs.billing"), icon: CreditCardIcon },
@@ -917,7 +1000,9 @@ export default function SettingsPage() {
 
       {/* Feedback banner */}
       {feedback && (
-        <FeedbackAlert type={feedback.type} message={feedback.message} className="mb-4" />
+        <div role={feedback.type === "error" ? "alert" : "status"} aria-live="polite">
+          <FeedbackAlert type={feedback.type} message={feedback.message} className="mb-4" />
+        </div>
       )}
 
       {/* Property tab */}
@@ -1197,6 +1282,52 @@ export default function SettingsPage() {
             </SaveButton>
           </div>
         </div>
+      )}
+
+      {activeSection === "localization" && (
+        <SettingsSection
+          id="localization"
+          title={t("bookingFlow.tabs.localization")}
+          description="Choose the currencies and languages available on your booking page."
+        >
+          {localizationLoading ? (
+            <SettingsCard>
+              <p className="text-sm text-gray-500" role="status">
+                Loading localization settings…
+              </p>
+            </SettingsCard>
+          ) : localizationLoadError ? (
+            <SettingsCard>
+              <div className="flex flex-wrap items-center justify-between gap-3" role="alert">
+                <p className="text-sm text-red-700">{localizationLoadError}</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const hotelId = readBookingHotelId(settings);
+                    if (hotelId) void loadLocalizationSettings(hotelId);
+                  }}
+                  disabled={!readBookingHotelId(settings)}
+                  className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-gray-400 disabled:opacity-50"
+                >
+                  Retry
+                </button>
+              </div>
+            </SettingsCard>
+          ) : (
+            <LocalizationTab
+              defaultCurrency={defaultCurrency}
+              setDefaultCurrency={setDefaultCurrency}
+              defaultLanguage={defaultLanguage}
+              setDefaultLanguage={setDefaultLanguage}
+              supportedCurrencies={supportedCurrencies}
+              setSupportedCurrencies={setSupportedCurrencies}
+              supportedLanguages={supportedLanguages}
+              setSupportedLanguages={setSupportedLanguages}
+              onSave={saveLocalizationSettings}
+              saving={savingCurrencyLang}
+            />
+          )}
+        </SettingsSection>
       )}
 
       {/* Billing tab */}
