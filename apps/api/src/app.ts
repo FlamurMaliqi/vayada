@@ -180,6 +180,7 @@ import {
 } from "./routes/platform/admin/propertyLifecycle.js";
 import { registerPlatformPropertyMediaRoutes } from "./routes/platform/admin/propertyMedia.js";
 import { registerPmsOperationsRoutes } from "./routes/pmsOperations.js";
+import type { PmsInboxReadPort } from "./domains/pmsInbox.js";
 import type { PmsLinkedInventoryGroupCommandRepository } from "./domains/pmsLinkedInventoryGroupRepository.js";
 import {
   registerPmsManualBookingPreviewRoutes,
@@ -245,6 +246,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   bookingGuestPolicy?: BookingGuestPolicyRoutesOptions;
   bookingChangeRequestRepository?: BookingHotelChangeRequestRepository;
   pmsOperationsRepository?: PmsOperationsReadRepository;
+  pmsInboxReadPort?: PmsInboxReadPort;
   pmsManualBookingPreview?: PmsManualBookingPreviewRoutesOptions;
   pmsManualBookingCreate?: PmsManualBookingCreateRoutesOptions;
   pmsModuleActivationRepository?: PmsModuleActivationRepository;
@@ -347,7 +349,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     },
     trustProxy: options.trustProxy ?? false,
     disableRequestLogging: (request) =>
-      request.url.startsWith("/api/marketplace/creator-platform-oauth/"),
+      request.url.startsWith("/api/marketplace/creator-platform-oauth/") ||
+      (request.url.startsWith("/api/pms/properties/") &&
+        request.url.split("?", 1)[0]?.endsWith("/messaging/threads") === true),
   });
 
   app.setErrorHandler((error, request, reply) => {
@@ -661,6 +665,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       sameDayBookingSettings: options.sameDayBookingSettings,
       roomAssignmentSettings: options.pmsRoomAssignmentSettings,
       roomAssignmentHistory: options.pmsRoomAssignmentHistory,
+      inboxReadPort: options.pmsInboxReadPort,
       publicBookabilityPublisher: options.publicBookabilityPublisher,
     });
   }

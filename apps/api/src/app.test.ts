@@ -108,6 +108,7 @@ import type { BookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceS
 import type { SameDayBookingSettingsPort } from "./domains/sameDayBookingSettings.js";
 import type { PmsRoomAssignmentSettingsPort } from "./domains/pmsRoomAssignmentSettings.js";
 import type { PmsRoomAssignmentOptimizationHistoryPort } from "./domains/pmsRoomAssignmentOptimizationHistory.js";
+import type { PmsInboxReadPort, PmsInboxThreadSummary } from "./domains/pmsInbox.js";
 import {
   type BookingReservationListFilters,
   type BookingReservationsReadRepository,
@@ -2660,6 +2661,7 @@ function buildAuthenticatedApp(
     bookingAddonItemsRepository?: BookingAddonItemsRepository;
     bookingPromoCodesRepository?: BookingPromoCodesRepository;
     pmsOperationsRepository?: PmsOperationsReadRepository | null;
+    pmsInboxReadPort?: PmsInboxReadPort;
     pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
     pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
     bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
@@ -2680,6 +2682,7 @@ function buildAuthenticatedApp(
     linkedBookingPropertyId?: string | null;
     propertyScope?: MembershipPropertyScope | null;
     propertyAccessRepository?: PropertyAccessRepository;
+    logger?: false | { level: string; stream: { write(line: string): void } };
   } = {},
 ): ReturnType<typeof buildApp> {
   const propertyAccessRepository =
@@ -2693,7 +2696,7 @@ function buildAuthenticatedApp(
         });
 
   return buildApp({
-    logger: false,
+    logger: options.logger ?? false,
     browserAllowedOrigins: options.browserAllowedOrigins,
     bookingReservationsRepository: options.reservationsRepository ?? bookingReservationsRepository,
     bookingChangeRequestRepository: options.changeRequestRepository,
@@ -2703,6 +2706,7 @@ function buildAuthenticatedApp(
         : (options.pmsOperationsRepository ?? pmsOperationsRepository),
     pmsCheckoutChargeMarkPaidFreezeEnabled: options.pmsCheckoutChargeMarkPaidFreezeEnabled,
     pmsOperationsCommandRepository: options.pmsOperationsCommandRepository,
+    pmsInboxReadPort: options.pmsInboxReadPort,
     bookingAcceptanceSettings: options.bookingAcceptanceSettings,
     sameDayBookingSettings: options.sameDayBookingSettings,
     pmsRoomAssignmentSettings: options.pmsRoomAssignmentSettings,
@@ -12620,6 +12624,142 @@ describe("vayada-api", () => {
     expect(response.body).toMatchObject({
       message: "PMS messaging unread count read model is unavailable.",
     });
+  });
+
+  it("serves the protected native Inbox list and unread contract through its scoped port", async () => {
+    const calls: Array<{ operation: string; input: unknown }> = [];
+    const thread: PmsInboxThreadSummary = {
+      id: "thread_1",
+      version: 4,
+      attentionState: "needs_attention",
+      followUpAt: null,
+      assignedTo: null,
+      channel: "ota",
+      providerChannel: "booking.com",
+      guest: { displayName: "Alex Lee", email: "alex@example.com" },
+      conversationContext: { state: "linked", bookingId: "booking_1", reference: "VAY-1" },
+      unreadCount: 2,
+      activityAt: "2026-09-01T10:00:00.000Z",
+      lastMessage: { preview: "Hello", at: "2026-09-01T10:00:00.000Z", hasAttachments: false },
+      replyRoute: {
+        state: "ready",
+        channel: "ota",
+        providerChannel: "booking.com",
+        reasonCode: null,
+      },
+    };
+    const port: PmsInboxReadPort = {
+      async listThreads(input) {
+        calls.push({ operation: "list", input });
+        if (input.cursor === "mismatch") {
+          return {
+            ok: false,
+            error: { code: "invalid_cursor", message: "Inbox cursor does not match its filters." },
+          };
+        }
+        if (input.cursor === "scope-mismatch") {
+          return {
+            ok: true,
+            value: {
+              propertyId: input.propertyId,
+              items: [{ propertyId: "foreign-property", thread }],
+              nextCursor: null,
+            },
+          };
+        }
+        return {
+          ok: true,
+          value: {
+            propertyId: input.propertyId,
+            items: [{ propertyId: input.propertyId, thread }],
+            nextCursor: "next",
+          },
+        };
+      },
+      async unreadCount(propertyId) {
+        calls.push({ operation: "unread", input: propertyId });
+        return { propertyId, threadCount: 1, messageCount: 2 };
+      },
+    };
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read", "pms.guest_contact.read"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsInboxReadPort: port,
+    });
+    const headers = { authorization: "Bearer valid-token" };
+    const base = `/api/pms/properties/${pmsPropertyId}/messaging`;
+    const list = await injectJson(app, {
+      method: "GET",
+      url: `${base}/threads?attentionState=needs_attention&unread=true&channel=ota&assignee=me&search=LEE&limit=25`,
+      headers,
+    });
+    const unread = await injectJson(app, { method: "GET", url: `${base}/unread-count`, headers });
+    const invalidCursor = await injectJson(app, {
+      method: "GET",
+      url: `${base}/threads?cursor=mismatch`,
+      headers,
+    });
+    const denied = await injectJson(app, { method: "GET", url: `${base}/threads` });
+    const scopeMismatch = await injectJson(app, {
+      method: "GET",
+      url: `${base}/threads?cursor=scope-mismatch`,
+      headers,
+    });
+    const invalidFilter = await injectJson(app, {
+      method: "GET",
+      url: `${base}/threads?search=`,
+      headers,
+    });
+    const repeatedFilter = await injectJson(app, {
+      method: "GET",
+      url: `${base}/threads?search=one&search=two`,
+      headers,
+    });
+
+    for (const response of [list, unread]) {
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toMatchObject({ contractVersion: "native-guest-inbox.v2" });
+    }
+    expect(list.body).toMatchObject({ items: [{ id: "thread_1" }], nextCursor: "next" });
+    expect(unread.body).toMatchObject({ threadCount: 1, messageCount: 2 });
+    expect(invalidCursor).toMatchObject({ statusCode: 400, body: { code: "invalid_cursor" } });
+    expect(denied).toMatchObject({ statusCode: 401, body: { code: "unauthenticated" } });
+    expect(scopeMismatch).toMatchObject({
+      statusCode: 500,
+      body: { code: "read_model_unavailable" },
+    });
+    expect(JSON.stringify(scopeMismatch.body)).not.toContain("Alex Lee");
+    expect(invalidFilter).toMatchObject({ statusCode: 400, body: { code: "invalid_query" } });
+    expect(repeatedFilter).toMatchObject({ statusCode: 400, body: { code: "invalid_query" } });
+    expect(calls.map((call) => call.operation)).toEqual(["list", "unread", "list", "list"]);
+    expect(calls[0]?.input).toMatchObject({
+      propertyId: pmsPropertyId,
+      attentionState: "needs_attention",
+      unread: true,
+      channel: "ota",
+      search: "LEE",
+      canReadGuestContact: true,
+    });
+
+    await app.close();
+    app = null;
+    const logs: string[] = [];
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsInboxReadPort: port,
+      logger: { level: "info", stream: { write: (line) => logs.push(line) } },
+    });
+    const redacted = await injectJson(app, {
+      method: "GET",
+      url: `${base}/threads?search=private%20guest`,
+      headers,
+    });
+    expect(redacted.body).toMatchObject({
+      items: [{ guest: { displayName: "Alex Lee" } }],
+    });
+    expect(JSON.stringify(redacted.body)).not.toContain("alex@example.com");
+    expect(logs.join("\n")).not.toContain("private");
   });
 
   it("fails closed across the PMS inbox read denial matrix", async () => {
