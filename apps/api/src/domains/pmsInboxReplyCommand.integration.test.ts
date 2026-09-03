@@ -1,6 +1,7 @@
 import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { relayPmsInboxDeliveryOutbox } from "../jobs/pmsInboxDeliveryOutbox.js";
 import { createPgPmsInboxReplyPort } from "./pmsInboxReplyCommand.js";
 
 const URL = process.env["TEST_DATABASE_URL"];
@@ -118,6 +119,34 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
     expect(evidence).not.toContain("guest-document.pdf");
     expect(evidence).not.toContain("guest@example.test");
     expect(evidence).not.toContain("ready-once");
+
+    await expect(relayPmsInboxDeliveryOutbox(URL!, { now: new Date(NOW) })).resolves.toEqual({
+      published: 1,
+    });
+    await expect(relayPmsInboxDeliveryOutbox(URL!, { now: new Date(NOW) })).resolves.toEqual({
+      published: 0,
+    });
+    await expect(
+      admin.query(
+        `SELECT job_key AS "jobKey", job_type AS "jobType", queue_name AS "queueName",
+                property_id::text AS "propertyId", resource_id AS "resourceId",
+                payload, source_outbox_event_id IS NOT NULL AS "hasOutboxSource"
+         FROM platform.jobs WHERE property_id = $1::uuid`,
+        [PROPERTY],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          jobKey: `pms.guest-message.deliver:message:${messageId}:manual-send:v1`,
+          jobType: "pms.guest-message.deliver",
+          queueName: "pms.guest-message.delivery",
+          propertyId: PROPERTY,
+          resourceId: messageId,
+          payload: { propertyId: PROPERTY, threadId: THREAD, messageId, channel: "ota" },
+          hasOutboxSource: true,
+        },
+      ],
+    });
   });
 
   it("persists a held reply without creating delivery work", async () => {
@@ -481,6 +510,8 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
       for (const statement of [
         "DELETE FROM pms.message_delivery_receipts WHERE property_id = ANY($1::uuid[])",
         "DELETE FROM pms.message_delivery_attempts WHERE property_id = ANY($1::uuid[])",
+        "DELETE FROM platform.job_attempts WHERE job_id IN (SELECT id FROM platform.jobs WHERE property_id = ANY($1::uuid[]))",
+        "DELETE FROM platform.jobs WHERE property_id = ANY($1::uuid[])",
         "DELETE FROM platform.product_audit_events WHERE property_id = ANY($1::uuid[])",
         "DELETE FROM platform.outbox_events WHERE property_id = ANY($1::uuid[])",
         "DELETE FROM platform.domain_events WHERE property_id = ANY($1::uuid[])",
