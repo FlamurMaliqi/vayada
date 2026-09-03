@@ -13,7 +13,6 @@ import {
   JsonApi,
   NEXT_STACK_ORIGINS,
   arrayField,
-  authenticateSyntheticPmsUser,
   createSyntheticPlatformAdmin,
   createSyntheticUser,
   fillSecret,
@@ -151,41 +150,6 @@ test("secret input avoids value-bearing Playwright steps", async ({ page }) => {
   await fillSecret(page.getByLabel("Password"), secret);
 
   expect(await page.locator("output").textContent()).toBe(String(secret.length));
-});
-
-test("PMS cleanup authentication returns a fresh access token", async () => {
-  const user: SyntheticUser = {
-    id: "hotel-owner",
-    email: "hotel-owner@example.test",
-    firstName: "Hotel",
-    lastName: "Owner",
-    role: "hotel",
-  };
-  let loginRequest: { url: string; options: unknown } | undefined;
-  const request = {
-    async post(url: string, options: unknown) {
-      loginRequest = { url, options };
-      return {
-        ok: () => true,
-        text: async () => JSON.stringify({ accessToken: "fresh-access-token" }),
-      };
-    },
-  } as unknown as APIRequestContext;
-
-  await expect(
-    authenticateSyntheticPmsUser(request, user, "synthetic-password"),
-  ).resolves.toBe("fresh-access-token");
-  expect(loginRequest).toEqual({
-    url: `${NEXT_STACK_ORIGINS.pms}/auth/password/login`,
-    options: {
-      headers: { origin: NEXT_STACK_ORIGINS.pms },
-      data: {
-        email: user.email,
-        password: "synthetic-password",
-        surface: "pms-web",
-      },
-    },
-  });
 });
 
 test("ambiguous UI booking replay registers the exact request for cleanup", async () => {
@@ -328,6 +292,95 @@ test("ambiguous primary manual booking exposes replay failure", async () => {
 
   expect(failure).toBeInstanceOf(AggregateError);
   expect((failure as AggregateError).errors).toEqual([originalError, replayError]);
+});
+
+test("cleanup refreshes hotel authentication before PMS fallback", async () => {
+  const environment: SmokeEnvironment = {
+    emailDomain: "example.test",
+    password: "synthetic-password",
+    runId: "20260903123456-deadbeef",
+    workosApiKey: "sk_test_synthetic",
+  };
+  const owner: SyntheticUser = {
+    id: "hotel-owner",
+    email: "hotel-owner@example.test",
+    firstName: "Hotel",
+    lastName: "Owner",
+    role: "hotel",
+  };
+  const booking: BookingResource = {
+    bookingId: "booking-1",
+    email: "guest@example.test",
+    mode: "instant",
+    resolved: false,
+    slug: "synthetic-hotel",
+  };
+  const targetCalls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+    );
+    const method = init?.method ?? "GET";
+    if (url.origin === NEXT_STACK_ORIGINS.api) {
+      expect(init?.headers).toMatchObject({ authorization: "Bearer fresh-access-token" });
+      targetCalls.push(`${method} ${url.pathname}`);
+      return jsonResponse({});
+    }
+    if (url.pathname === "/user_management/users" && method === "GET") {
+      return jsonResponse({ data: [] });
+    }
+    if (url.pathname === "/user_management/organization_memberships" && method === "GET") {
+      return jsonResponse({ data: [] });
+    }
+    if (url.pathname === `/user_management/users/${owner.id}` && method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`Unexpected test request: ${method} ${url}`);
+  }) as typeof globalThis.fetch;
+  const request = {
+    async post(url: string) {
+      expect(url).toBe(`${NEXT_STACK_ORIGINS.pms}/auth/password/login`);
+      return {
+        ok: () => true,
+        text: async () => JSON.stringify({ accessToken: "fresh-access-token" }),
+      };
+    },
+    async fetch() {
+      return {
+        ok: () => false,
+        status: () => 409,
+        text: async () => JSON.stringify({ message: "Cancellation policy conflict." }),
+      };
+    },
+  } as unknown as APIRequestContext;
+
+  try {
+    const errors = await cleanupSmokeResources(
+      request,
+      environment,
+      [owner],
+      [booking],
+      {
+        api: {
+          async json() {
+            throw new Error("Expired hotel API must not be reused.");
+          },
+        } as unknown as JsonApi,
+        ownerWorkosUserId: owner.id,
+        propertyId: "property-1",
+      },
+    );
+    expect(errors).toEqual([]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  expect(booking.resolved).toBe(true);
+  expect(targetCalls).toEqual([
+    "POST /api/pms/properties/property-1/reservations/booking-1/cancel",
+    "PATCH /api/finance/properties/property-1/payment-settings",
+  ]);
 });
 
 test("ordinary cleanup reconciles an untracked synthetic booking before retirement", async () => {
@@ -747,9 +800,11 @@ async function runHotelFlow(
       };
       registerHotel({
         api,
+        ownerWorkosUserId: user.id,
         propertyId: setup.propertyId,
         slug: published.slug,
         stay,
+        workosOrganizationId: session.workosOrganizationId,
       });
       return published;
     });
