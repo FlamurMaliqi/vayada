@@ -113,7 +113,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open candidate selection"
     await admin.query("UPDATE pms.room_types SET room_facts_revision = 2 WHERE id = $1::uuid", [
       second.roomTypeId,
     ]);
-    const changedSource = await store.findCalendarAutoOpenCandidates(now, 10);
+    const changedSource = await store.findCalendarAutoOpenCandidates(now, 2);
     expect(changedSource.candidates).toHaveLength(2);
     expect(changedSource.candidates[0]).toMatchObject({
       propertyId: second.propertyId,
