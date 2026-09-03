@@ -404,6 +404,11 @@ revision, and command replay returns the already persisted event. A later
 contract may introduce revisions only after the source model persists them;
 calling the current endpoint again cannot synthesize a revision.
 
+The canonical platform envelope uses event key
+`<eventType>:<sourceId>:<revision>`, resource product `marketplace`, resource type
+`matching_event`, and resource ID `sourceId`. Its event type/version,
+occurrence/recording time, property, correlation, and actor equal the projection.
+
 Saving creator matching preferences does not emit a product analytics event in
 the first UI release. Marketplace has no approved product-event transport, and
 a preference update is an input rather than a matching outcome. The VAY-1412
