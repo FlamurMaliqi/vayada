@@ -43,7 +43,7 @@ export function createPgPmsInboxDeliveryStore(config: {
     config.pool ?? new pg.Pool({ connectionString: config.connectionString, max: config.max });
   let closed = false;
   return {
-    claim: (workerId) => claimPmsInboxDeliveryJob(pool, workerId),
+    claim: (workerId) => transaction(pool, (client) => claimPmsInboxDeliveryJob(client, workerId)),
     prepare: (job) =>
       transaction(pool, (client) =>
         preparePmsInboxDeliveryJob(client, job, {
@@ -83,17 +83,18 @@ export async function claimPmsInboxDeliveryJob(
 ): Promise<PmsInboxDeliveryJob | null> {
   const result = await pool.query<PmsInboxDeliveryJob>(
     `UPDATE platform.jobs job
-     SET status = 'running', attempts_count = attempts_count + 1,
+     SET status = 'running', attempts_count = job.attempts_count +
+           CASE WHEN candidate.status = 'pending' THEN 1 ELSE 0 END,
          locked_at = now(), locked_by = $3, updated_at = now()
      FROM (
-       SELECT id
+       SELECT id, status
        FROM platform.jobs
        WHERE queue_name = $1 AND job_type = $2
          AND (
-           status = 'pending'
+           (status = 'pending' AND attempts_count < max_attempts)
            OR (status = 'running' AND locked_at < now() - interval '5 minutes')
          )
-         AND run_after <= now() AND attempts_count < max_attempts
+         AND run_after <= now()
        ORDER BY priority DESC, run_after, created_at
        FOR UPDATE SKIP LOCKED
        LIMIT 1
@@ -123,7 +124,13 @@ export async function claimPmsInboxDeliveryJob(
        job_id, attempt_number, status, worker_id, started_at
      )
      VALUES ($1::uuid, $2, 'running', $3, now())
-     ON CONFLICT (job_id, attempt_number) DO NOTHING`,
+     ON CONFLICT (job_id, attempt_number) DO UPDATE
+     SET worker_id = EXCLUDED.worker_id,
+         error_metadata = platform.job_attempts.error_metadata || jsonb_build_object(
+           'previousLeaseWorkerId', platform.job_attempts.worker_id,
+           'leaseRecoveryCount', COALESCE((platform.job_attempts.error_metadata ->> 'leaseRecoveryCount')::int, 0) + 1
+         )
+     WHERE platform.job_attempts.status = 'running'`,
     [job.id, job.attemptNumber, workerId],
   );
   return job;
@@ -306,6 +313,9 @@ export async function preparePmsInboxDeliveryJob(
   );
   if (projected.rowCount !== 1)
     throw new Error("PMS Inbox delivery attempt was not projected onto its message");
+  await client.query("UPDATE platform.jobs SET locked_at = clock_timestamp() WHERE id = $1::uuid", [
+    job.id,
+  ]);
   return {
     state: "ready",
     adapter,

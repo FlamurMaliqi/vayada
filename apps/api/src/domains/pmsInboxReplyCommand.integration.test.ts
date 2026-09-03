@@ -306,6 +306,72 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
     },
   );
 
+  it.each([false, true])(
+    "recovers a crashed final lease without a sixth attempt (provider started=%s)",
+    async (started) => {
+      await reply.reply(command(`crashed-final-${started}`));
+      await relayPmsInboxDeliveryOutbox(URL!, { now: new Date(NOW) });
+      await admin.query(
+        "UPDATE platform.jobs SET attempts_count = 4 WHERE property_id = $1::uuid",
+        [PROPERTY],
+      );
+      const store = createPgPmsInboxDeliveryStore({
+        connectionString: URL!,
+        emailReplyRoutes: approvedEmailRoutes,
+        media: { read: async () => new Uint8Array() },
+      });
+      try {
+        const original = await store.claim("crashed-worker");
+        expect(original?.attemptNumber).toBe(5);
+        if (!original) throw new Error("Expected a claimed job");
+        if (started) expect((await store.prepare(original)).state).toBe("ready");
+        await admin.query(
+          "UPDATE platform.jobs SET locked_at = now() - interval '6 minutes' WHERE id = $1::uuid",
+          [original.id],
+        );
+        const recovered = await store.claim("recovery-worker");
+        expect(recovered?.attemptNumber).toBe(5);
+        if (!recovered) throw new Error("Expected a recovered job");
+        await expect(
+          store.complete(original, {
+            outcome: "accepted",
+            attemptId: MEDIA,
+            providerReference: "stale",
+          }),
+        ).resolves.toBe(false);
+        const send = vi.fn<PmsInboxDeliveryProvider["send"]>(async () => ({
+          ok: true,
+          providerReference: "recovered",
+        }));
+        let returned = false;
+        const totals = await runPmsInboxDeliveryJobs(
+          { ...store, claim: async () => (returned ? null : ((returned = true), recovered)) },
+          { channex: { send } },
+        );
+        expect(totals).toMatchObject(started ? { held: 1 } : { sent: 1 });
+        expect(send).toHaveBeenCalledTimes(started ? 0 : 1);
+        expect(
+          (
+            await admin.query(
+              `SELECT attempts_count, status FROM platform.jobs WHERE id = $1::uuid`,
+              [original.id],
+            )
+          ).rows,
+        ).toEqual([{ attempts_count: 5, status: started ? "failed" : "succeeded" }]);
+        expect(
+          (
+            await admin.query(
+              `SELECT attempt_number FROM platform.job_attempts WHERE job_id = $1::uuid`,
+              [original.id],
+            )
+          ).rows,
+        ).toEqual([{ attempt_number: 5 }]);
+      } finally {
+        await store.close();
+      }
+    },
+  );
+
   it("persists a held reply without creating delivery work", async () => {
     await admin.query(
       `UPDATE pms.channel_connections SET connection_status = 'disconnected'

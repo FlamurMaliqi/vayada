@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   nextPmsInboxDeliveryRunAt,
   projectPmsInboxDeliveryFailure,
@@ -29,7 +31,7 @@ export async function runPmsInboxDeliveryJobs(
   deadLettered: number;
 }> {
   const totals = { processed: 0, sent: 0, retrying: 0, held: 0, failed: 0, deadLettered: 0 };
-  const workerId = options.workerId ?? `pms-inbox-delivery:${process.pid}`;
+  const workerId = `${options.workerId ?? "pms-inbox-delivery"}:${randomUUID()}`;
   for (let index = 0; index < (options.limit ?? 25); index += 1) {
     const job = await store.claim(workerId);
     if (!job) break;
