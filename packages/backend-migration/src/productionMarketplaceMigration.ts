@@ -11,9 +11,13 @@ import {
 import type {
   MarketplaceTargetRecord,
   ProductionMarketplacePlan,
+  ProductionMarketplaceQuarantineReasonCode,
   ProductionMarketplaceTargetState,
 } from "./productionMarketplaceTypes.js";
-import { writeProductionMarketplaceRecords } from "./productionMarketplaceWriter.js";
+import {
+  writeProductionMarketplaceQuarantines,
+  writeProductionMarketplaceRecords,
+} from "./productionMarketplaceWriter.js";
 
 type QueryClient = Pick<pg.ClientBase, "query">;
 export type ProductionMarketplaceMigrationMode = "dry-run" | "apply";
@@ -23,6 +27,7 @@ export type ProductionMarketplaceMigrationReport = {
   applied: boolean;
   checksum: string;
   counts: ProductionMarketplacePlan["counts"];
+  quarantineCountsByReason: Partial<Record<ProductionMarketplaceQuarantineReasonCode, number>>;
   parity: ProductionMarketplacePlan["parity"];
   blockers: ProductionMarketplacePlan["blockers"];
 };
@@ -32,6 +37,7 @@ export type ProductionMarketplaceMigrationServices = {
   readTarget: typeof readProductionMarketplaceTargetState;
   buildPlan: typeof buildProductionMarketplacePlan;
   writeRecords: typeof writeProductionMarketplaceRecords;
+  writeQuarantines: typeof writeProductionMarketplaceQuarantines;
   writeProvenance: typeof writeProductionMigrationProvenance;
 };
 
@@ -41,6 +47,7 @@ const productionServices: ProductionMarketplaceMigrationServices = {
   readTarget: readProductionMarketplaceTargetState,
   buildPlan: buildProductionMarketplacePlan,
   writeRecords: writeProductionMarketplaceRecords,
+  writeQuarantines: writeProductionMarketplaceQuarantines,
   writeProvenance: writeProductionMigrationProvenance,
 };
 
@@ -110,6 +117,15 @@ export async function runProductionMarketplaceTransaction(
     }
     const written = await services.writeRecords(client, plan.writes);
     assertWriteCounts(plan.writes, written);
+    const quarantineCount = await services.writeQuarantines(
+      client,
+      plan.quarantines,
+      input.sourceRunId,
+    );
+    if (quarantineCount !== plan.quarantines.length)
+      throw new Error(
+        `Marketplace quarantine writer preserved ${quarantineCount} of ${plan.quarantines.length} planned rows`,
+      );
     const provenanceCount = await services.writeProvenance(
       client,
       plan.provenance,
@@ -174,7 +190,8 @@ async function lockMarketplaceTargets(client: QueryClient): Promise<void> {
                 marketplace.trips, marketplace.external_collaborations,
                 marketplace.marketplace_notifications, marketplace.invite_codes,
                 marketplace.newsletter_preferences, marketplace.marketplace_offer_read_model,
-                platform.production_migration_source_links
+                platform.production_migration_source_links,
+                platform.production_marketplace_migration_quarantines
      IN SHARE ROW EXCLUSIVE MODE`,
   );
 }
@@ -195,6 +212,14 @@ function report(
     applied,
     checksum: plan.checksum,
     counts: plan.counts,
+    quarantineCountsByReason: Object.fromEntries(
+      plan.quarantines
+        .map((quarantine) => quarantine.reasonCode)
+        .reduce((counts, reason) => {
+          counts.set(reason, (counts.get(reason) ?? 0) + 1);
+          return counts;
+        }, new Map<ProductionMarketplaceQuarantineReasonCode, number>()),
+    ),
     parity: plan.parity,
     blockers: plan.blockers,
   };

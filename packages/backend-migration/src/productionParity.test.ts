@@ -462,7 +462,12 @@ function domainReports(): {
       mode: "dry-run",
       applied: false,
       checksum: SHA,
-      counts: { ...reconciliationCounts },
+      counts: {
+        ...reconciliationCounts,
+        quarantinedValues: 0,
+        quarantinedSourceRows: 0,
+      },
+      quarantineCountsByReason: {},
       parity: {
         sourceTableCounts: { "marketplace.creator_profiles": 1 },
         targetTableCounts: { "marketplace.creator_profiles": 1 },

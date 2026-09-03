@@ -31,6 +31,7 @@ describe("production Marketplace migration transaction", () => {
     expect(report.applied).toBe(false);
     expect(client.sql).toEqual(["BEGIN ISOLATION LEVEL REPEATABLE READ", "ROLLBACK"]);
     expect(services.writeRecords).not.toHaveBeenCalled();
+    expect(services.writeQuarantines).not.toHaveBeenCalled();
     expect(services.writeProvenance).not.toHaveBeenCalled();
   });
 
@@ -49,6 +50,7 @@ describe("production Marketplace migration transaction", () => {
     expect(client.sql[2]).toContain("identity.organization_resource_links");
     expect(client.sql[3]).toContain("LOCK TABLE marketplace.creator_profiles");
     expect(client.sql.at(-1)).toBe("COMMIT");
+    expect(services.writeQuarantines).toHaveBeenCalledWith(client, [], RUN);
   });
 
   it("rolls back when exact writer counts disagree", async () => {
@@ -63,6 +65,34 @@ describe("production Marketplace migration transaction", () => {
       ),
     ).rejects.toThrow("applied 0 of 1");
     expect(client.sql.at(-1)).toBe("ROLLBACK");
+  });
+
+  it("rolls back when exact quarantine evidence is not preserved", async () => {
+    const client = new TransactionFixture();
+    const services = serviceFixture();
+    const planned = plan(true);
+    planned.quarantines = [
+      {
+        sourceTable: "invite_codes",
+        sourceId: "source",
+        sourceField: "data",
+        sourceValueSha256: "c".repeat(64),
+        reasonCode: "EXPIRED_INVITE_MEDIA_PAYLOAD_OMITTED",
+        retentionUntil: "2028-08-30",
+      },
+    ];
+    services.buildPlan = vi.fn(() => planned);
+    services.writeQuarantines = vi.fn(async () => 0);
+
+    await expect(
+      runProductionMarketplaceTransaction(
+        client as never,
+        { sourceRunId: RUN, mode: "apply" },
+        services,
+      ),
+    ).rejects.toThrow("preserved 0 of 1");
+    expect(client.sql.at(-1)).toBe("ROLLBACK");
+    expect(services.writeProvenance).not.toHaveBeenCalled();
   });
 
   it("never writes a blocked apply plan", async () => {
@@ -82,6 +112,7 @@ describe("production Marketplace migration transaction", () => {
     expect(report.applied).toBe(false);
     expect(client.sql.at(-1)).toBe("ROLLBACK");
     expect(services.writeRecords).not.toHaveBeenCalled();
+    expect(services.writeQuarantines).not.toHaveBeenCalled();
   });
 });
 
@@ -112,6 +143,7 @@ function serviceFixture(): ProductionMarketplaceMigrationServices {
     readTarget: vi.fn(async () => ({ ...prerequisites, records: [], provenance: [] })),
     buildPlan: vi.fn(() => plan(true)),
     writeRecords: vi.fn(async () => ({ creator_profiles: 1 })),
+    writeQuarantines: vi.fn(async (_client, quarantines) => quarantines.length),
     writeProvenance: vi.fn(async () => 1),
   } as ProductionMarketplaceMigrationServices;
 }
@@ -134,6 +166,7 @@ function plan(withWrite: boolean): ProductionMarketplacePlan {
     checksum: "b".repeat(64),
     records: [record],
     writes: withWrite ? [record] : [],
+    quarantines: [],
     provenance: [
       {
         sourceDatabase: "marketplace",
@@ -163,6 +196,8 @@ function plan(withWrite: boolean): ProductionMarketplacePlan {
       unchanged: withWrite ? 0 : 1,
       preservedNewerTarget: 0,
       preservedTargetDeletions: 0,
+      quarantinedValues: 0,
+      quarantinedSourceRows: 0,
     },
   };
 }

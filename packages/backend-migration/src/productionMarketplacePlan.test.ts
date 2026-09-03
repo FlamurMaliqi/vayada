@@ -5,7 +5,10 @@ import type { IdentitySourceRow } from "./productionIdentityDisposition.js";
 import { buildProductionMarketplacePlan } from "./productionMarketplacePlan.js";
 import type { ProductionMarketplaceTargetState } from "./productionMarketplaceTypes.js";
 import { readProductionMarketplaceTargetState } from "./productionMarketplaceTargetReader.js";
-import { writeProductionMarketplaceRecords } from "./productionMarketplaceWriter.js";
+import {
+  writeProductionMarketplaceQuarantines,
+  writeProductionMarketplaceRecords,
+} from "./productionMarketplaceWriter.js";
 import { assertSafeTestDatabase } from "./testUtils.js";
 
 const RUN = "vay1351-0123456789abcdef01234567";
@@ -226,6 +229,316 @@ describe("production Marketplace plan", () => {
       audienceCountries: migrated?.row["audienceCountries"],
       audienceAgeGroups: migrated?.row["audienceAgeGroups"],
     });
+  });
+
+  it("omits only an invalid audience metric entry and retains hash-only evidence", () => {
+    const rows = representativeRows();
+    const platform = rows.find((row) => row.sourceTable === "creator_platforms")!;
+    platform.data["top_countries"] = { US: "101", DE: 50 };
+
+    const plan = buildProductionMarketplacePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-03T00:00:00.000Z",
+      rows,
+      target: prerequisites(),
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(
+      plan.records.find((record) => record.targetTable === "creator_platforms")?.row[
+        "audienceCountries"
+      ],
+    ).toEqual([{ country: "DE", percentage: 50 }]);
+    expect(plan.quarantines).toEqual([
+      expect.objectContaining({
+        sourceTable: "creator_platforms",
+        sourceField: "top_countries[0].percentage",
+        reasonCode: "INVALID_AUDIENCE_PERCENTAGE_ENTRY_OMITTED",
+      }),
+    ]);
+    expect(JSON.stringify(plan.quarantines)).not.toContain("US");
+    expect(JSON.stringify(plan.quarantines)).not.toContain("101");
+  });
+
+  it("never coerces malformed audience percentages into invented zeroes or ones", () => {
+    const rows = representativeRows();
+    const platform = rows.find((source) => source.sourceTable === "creator_platforms")!;
+    platform.data["top_countries"] = {
+      NullIsland: null,
+      BooleanLand: true,
+      BlankRepublic: " ",
+      ArrayNation: [1],
+      PT: "50",
+    };
+
+    const plan = buildProductionMarketplacePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-03T00:00:00.000Z",
+      rows,
+      target: prerequisites(),
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(
+      plan.records.find((record) => record.targetTable === "creator_platforms")?.row[
+        "audienceCountries"
+      ],
+    ).toEqual([{ country: "PT", percentage: 50 }]);
+    expect(plan.quarantines).toHaveLength(4);
+    expect(
+      plan.quarantines.every(
+        (quarantine) => quarantine.reasonCode === "INVALID_AUDIENCE_PERCENTAGE_ENTRY_OMITTED",
+      ),
+    ).toBe(true);
+    for (const rawLabel of ["NullIsland", "BooleanLand", "BlankRepublic", "ArrayNation"])
+      expect(JSON.stringify(plan.quarantines)).not.toContain(rawLabel);
+  });
+
+  it("retains observed collaborations with missing compensation and legacy deliverable kinds", () => {
+    const rows = representativeRows();
+    rows.find((source) => source.sourceTable === "collaborations")!.data["collaboration_type"] = "";
+    rows.find((source) => source.sourceTable === "collaboration_deliverables")!.data["platform"] =
+      "Content Package";
+    rows.push(
+      row("collaboration_deliverables", 16, {
+        id: id(25),
+        collaboration_id: COLLABORATION,
+        platform: "Custom",
+        type: "videos",
+        quantity: 1,
+        status: "pending",
+        created_at: CREATED,
+        updated_at: UPDATED,
+      }),
+    );
+
+    const plan = buildProductionMarketplacePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-03T00:00:00.000Z",
+      rows,
+      target: prerequisites(),
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(
+      plan.records.find((record) => record.targetTable === "collaborations")?.row,
+    ).toMatchObject({
+      lifecycleStatus: "accepted",
+      compensationType: null,
+      collaborationMetadata: {
+        compensationTypeMigrationDisposition: "missing_legacy_value_retained_null",
+      },
+    });
+    expect(
+      plan.records
+        .filter((record) => record.targetTable === "collaboration_deliverables")
+        .map((record) => record.row["platform"])
+        .sort(),
+    ).toEqual(["content_package", "custom"]);
+    expect(plan.quarantines).toEqual([
+      expect.objectContaining({
+        sourceTable: "collaborations",
+        sourceField: "collaboration_type",
+        reasonCode: "MISSING_COLLABORATION_COMPENSATION_TYPE_RETAINED_NULL",
+      }),
+    ]);
+  });
+
+  it("fails closed for the unobserved completed collaboration with missing compensation", () => {
+    const rows = representativeRows();
+    const collaboration = rows.find((source) => source.sourceTable === "collaborations")!;
+    collaboration.data["status"] = "completed";
+    collaboration.data["collaboration_type"] = "";
+
+    const plan = buildProductionMarketplacePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-03T00:00:00.000Z",
+      rows,
+      target: prerequisites(),
+    });
+
+    expect(plan.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "INVALID_SOURCE_ROW",
+          source: "marketplace.collaborations",
+          message: "completed collaboration lacks a supported collaboration_type",
+        }),
+      ]),
+    );
+    expect(plan.quarantines).toEqual([]);
+  });
+
+  it("keeps a creator profile but never exposes its unapproved media", () => {
+    const rows = representativeRows();
+    const legacyUrl = "https://legacy-marketplace.s3.amazonaws.com/unapproved-profile.jpg";
+    rows.find((source) => source.sourceTable === "creators")!.data["profile_picture"] = legacyUrl;
+    const target = prerequisites();
+    target.media.push({
+      mediaObjectId: id(26),
+      sourceUrl: legacyUrl,
+      sourceTable: "creators",
+      sourceRowId: `${CREATOR}:profile_picture`,
+      sourceField: "profile_picture",
+      visibility: "private",
+      purpose: "marketplace.creator.profile_image",
+      lifecycleStatus: "active",
+      publicApproved: false,
+      publicUrl: null,
+      resourceType: "creator_profile",
+      resourceId: CREATOR,
+    });
+
+    const plan = buildProductionMarketplacePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-03T00:00:00.000Z",
+      rows,
+      target,
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(
+      plan.records.find((record) => record.targetTable === "creator_profiles")?.row,
+    ).toMatchObject({
+      profilePictureUrl: null,
+      profileComplete: false,
+      profileCompletedAt: null,
+      profileMetadata: { profilePictureMigrationDisposition: "unapproved_media_omitted" },
+    });
+    expect(plan.quarantines).toEqual([
+      expect.objectContaining({ reasonCode: "UNAPPROVED_CREATOR_PROFILE_MEDIA_OMITTED" }),
+    ]);
+    expect(JSON.stringify(plan.records)).not.toContain(legacyUrl);
+    expect(JSON.stringify(plan.quarantines)).not.toContain(legacyUrl);
+  });
+
+  it("binds an approved creator profile image to its managed media object", () => {
+    const rows = representativeRows();
+    const legacyUrl = "https://legacy-marketplace.s3.amazonaws.com/approved-profile.jpg";
+    const publicUrl = "https://media.example.test/creator-profile.webp";
+    rows.find((source) => source.sourceTable === "creators")!.data["profile_picture"] = legacyUrl;
+    const target = prerequisites();
+    target.media.push({
+      mediaObjectId: id(30),
+      sourceUrl: legacyUrl,
+      sourceTable: "creators",
+      sourceRowId: `${CREATOR}:profile_picture`,
+      sourceField: "profile_picture",
+      visibility: "public",
+      purpose: "marketplace.creator.profile_image",
+      lifecycleStatus: "active",
+      publicApproved: true,
+      publicUrl,
+      resourceType: "creator_profile",
+      resourceId: CREATOR,
+    });
+
+    const plan = buildProductionMarketplacePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-03T00:00:00.000Z",
+      rows,
+      target,
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(
+      plan.records.find((record) => record.targetTable === "creator_profiles")?.row,
+    ).toMatchObject({
+      profilePictureUrl: publicUrl,
+      profileComplete: true,
+      profileMetadata: { profilePictureMediaObjectId: id(30) },
+    });
+    expect(plan.quarantines).toEqual([]);
+  });
+
+  it("expires a stale pending invite and omits its legacy media payload", () => {
+    const rows = representativeRows();
+    const invite = rows.find((source) => source.sourceTable === "invite_codes")!;
+    const legacyUrl = "https://legacy-marketplace.s3.amazonaws.com/expired-invite.jpg";
+    invite.data["data"] = { nested: { image: legacyUrl } };
+    invite.data["expires_at"] = "2026-07-01T00:00:00.000Z";
+
+    const plan = buildProductionMarketplacePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-03T00:00:00.000Z",
+      rows,
+      target: prerequisites(),
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.records.find((record) => record.targetTable === "invite_codes")?.row).toMatchObject(
+      {
+        status: "expired",
+        payload: { migrationDisposition: "expired_legacy_media_payload_omitted" },
+      },
+    );
+    expect(plan.quarantines).toEqual([
+      expect.objectContaining({ reasonCode: "EXPIRED_INVITE_MEDIA_PAYLOAD_OMITTED" }),
+    ]);
+    expect(JSON.stringify(plan.records)).not.toContain(legacyUrl);
+    expect(JSON.stringify(plan.quarantines)).not.toContain(legacyUrl);
+  });
+
+  it("still blocks an unexpired invite with unresolved legacy media", () => {
+    const rows = representativeRows();
+    const invite = rows.find((source) => source.sourceTable === "invite_codes")!;
+    invite.data["data"] = {
+      image: "https://legacy-marketplace.s3.amazonaws.com/active-invite.jpg",
+    };
+
+    const plan = buildProductionMarketplacePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-03T00:00:00.000Z",
+      rows,
+      target: prerequisites(),
+    });
+
+    expect(plan.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "INVALID_SOURCE_ROW",
+          source: "marketplace.invite_codes",
+        }),
+      ]),
+    );
+    expect(plan.records.some((record) => record.targetTable === "invite_codes")).toBe(false);
+    expect(plan.quarantines).toEqual([]);
+  });
+
+  it("omits identity-orphaned user state instead of attaching or reviving it", () => {
+    const rows = representativeRows();
+    rows.find((source) => source.sourceTable === "notifications")!.data["user_id"] = id(27);
+    rows.find((source) => source.sourceTable === "newsletter_preferences")!.data["user_id"] =
+      id(28);
+
+    const plan = buildProductionMarketplacePlan({
+      sourceRunId: RUN,
+      completedAt: "2026-08-03T00:00:00.000Z",
+      rows,
+      target: prerequisites(),
+    });
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.records.some((record) => record.targetTable === "marketplace_notifications")).toBe(
+      false,
+    );
+    expect(plan.records.some((record) => record.targetTable === "newsletter_preferences")).toBe(
+      false,
+    );
+    expect(plan.quarantines).toHaveLength(2);
+    expect(plan.quarantines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceTable: "notifications",
+          reasonCode: "ORPHANED_IDENTITY_DEPENDENT_ROW_OMITTED",
+        }),
+        expect.objectContaining({
+          sourceTable: "newsletter_preferences",
+          reasonCode: "ORPHANED_IDENTITY_DEPENDENT_ROW_OMITTED",
+        }),
+      ]),
+    );
+    expect(plan.counts).toMatchObject({ quarantinedValues: 2, quarantinedSourceRows: 2 });
   });
 
   it("blocks unresolved legacy media instead of copying a raw URL", () => {
@@ -575,6 +888,79 @@ describe.skipIf(!TEST_DATABASE_URL)("production Marketplace writer (PostgreSQL)"
           )
         ).rows[0]?.count,
       ).toBe(1);
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
+
+  it("retries exact hash-only quarantine evidence and rejects mutation", async () => {
+    await client.query("BEGIN");
+    try {
+      await client.query(
+        `INSERT INTO platform.source_extraction_runs
+           (run_id, environment, source_schema_revision, status, finished_at, duration_ms)
+         VALUES ($1, 'local', $2, 'completed', now(), 1)
+         ON CONFLICT (run_id) DO NOTHING`,
+        [RUN, "a".repeat(40)],
+      );
+      const quarantines = [
+        {
+          sourceTable: "invite_codes",
+          sourceId: id(29),
+          sourceField: "data",
+          sourceValueSha256: "b".repeat(64),
+          reasonCode: "EXPIRED_INVITE_MEDIA_PAYLOAD_OMITTED" as const,
+          retentionUntil: "2028-08-03",
+        },
+      ];
+
+      expect(await writeProductionMarketplaceQuarantines(client, quarantines, RUN)).toBe(1);
+      expect(await writeProductionMarketplaceQuarantines(client, quarantines, RUN)).toBe(1);
+      const stored = await client.query<{
+        sourceValueSha256: string;
+        reasonCode: string;
+        retentionUntil: string;
+      }>(
+        `SELECT source_value_sha256 AS "sourceValueSha256",
+                reason_code AS "reasonCode", retention_until::text AS "retentionUntil"
+           FROM platform.production_marketplace_migration_quarantines
+          WHERE source_run_id = $1`,
+        [RUN],
+      );
+      expect(stored.rows).toEqual([
+        {
+          sourceValueSha256: "b".repeat(64),
+          reasonCode: "EXPIRED_INVITE_MEDIA_PAYLOAD_OMITTED",
+          retentionUntil: "2028-08-03",
+        },
+      ]);
+
+      await client.query("SAVEPOINT immutable_marketplace_quarantine");
+      await expect(
+        client.query(
+          `UPDATE platform.production_marketplace_migration_quarantines
+              SET source_value_sha256 = $1
+            WHERE source_run_id = $2`,
+          ["c".repeat(64), RUN],
+        ),
+      ).rejects.toThrow("immutable");
+      await client.query("ROLLBACK TO SAVEPOINT immutable_marketplace_quarantine");
+
+      await client.query("SAVEPOINT undeletable_marketplace_quarantine");
+      await expect(
+        client.query(
+          `DELETE FROM platform.production_marketplace_migration_quarantines
+            WHERE source_run_id = $1`,
+          [RUN],
+        ),
+      ).rejects.toThrow("immutable");
+      await client.query("ROLLBACK TO SAVEPOINT undeletable_marketplace_quarantine");
+
+      await client.query("SAVEPOINT untruncatable_marketplace_quarantine");
+      await expect(
+        client.query("TRUNCATE platform.production_marketplace_migration_quarantines"),
+      ).rejects.toThrow("immutable");
+      await client.query("ROLLBACK TO SAVEPOINT untruncatable_marketplace_quarantine");
     } finally {
       await client.query("ROLLBACK");
     }

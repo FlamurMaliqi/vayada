@@ -18,6 +18,22 @@ export type MarketplaceTargetRecord = {
   row: Record<string, unknown>;
 };
 
+export type ProductionMarketplaceQuarantineReasonCode =
+  | "MISSING_COLLABORATION_COMPENSATION_TYPE_RETAINED_NULL"
+  | "INVALID_AUDIENCE_PERCENTAGE_ENTRY_OMITTED"
+  | "UNAPPROVED_CREATOR_PROFILE_MEDIA_OMITTED"
+  | "EXPIRED_INVITE_MEDIA_PAYLOAD_OMITTED"
+  | "ORPHANED_IDENTITY_DEPENDENT_ROW_OMITTED";
+
+export type ProductionMarketplaceQuarantine = {
+  sourceTable: string;
+  sourceId: string;
+  sourceField: string;
+  sourceValueSha256: string;
+  reasonCode: ProductionMarketplaceQuarantineReasonCode;
+  retentionUntil: string;
+};
+
 export type ExistingMarketplaceTargetRecord = {
   targetProduct: string;
   targetTable: string;
@@ -88,6 +104,7 @@ export type MarketplaceBuildContext = {
   rows: IdentitySourceRow[];
   target: ProductionMarketplaceTargetState;
   blockers: IdentityMigrationBlocker[];
+  quarantines: ProductionMarketplaceQuarantine[];
   rowsByTable: Map<string, IdentitySourceRow[]>;
   creatorById: Map<string, IdentitySourceRow>;
   hotelById: Map<string, IdentitySourceRow>;
@@ -110,6 +127,7 @@ export type ProductionMarketplacePlan = {
   records: MarketplaceTargetRecord[];
   writes: MarketplaceTargetRecord[];
   provenance: ProductionMigrationSourceLink[];
+  quarantines: ProductionMarketplaceQuarantine[];
   blockers: IdentityMigrationBlocker[];
   parity: {
     sourceTableCounts: Record<string, number>;
@@ -132,5 +150,7 @@ export type ProductionMarketplacePlan = {
     unchanged: number;
     preservedNewerTarget: number;
     preservedTargetDeletions: number;
+    quarantinedValues: number;
+    quarantinedSourceRows: number;
   };
 };
