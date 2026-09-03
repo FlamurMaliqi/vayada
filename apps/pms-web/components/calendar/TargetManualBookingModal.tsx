@@ -20,6 +20,9 @@ const SOURCES = [["call", "Call"], ["email", "Email"], ["whatsapp", "WhatsApp"],
 // prettier-ignore
 const METHODS = (["pay_at_property", "bank_transfer", "manual_card", "cash", "other"] as const).map((method) => [method, paymentMethodLabel(method)] as const);
 const PREVIEW_DEBOUNCE_MS = 250;
+const PREVIEW_LOADING_DELAY_MS = 1_000;
+const PREVIEW_FAILURE_MESSAGE =
+  "Couldn't calculate pricing. Check that this room type has rates set up for the selected dates, then try again.";
 
 // prettier-ignore
 type Props = { roomTypes: CalendarRoomType[]; rooms: CalendarRoom[]; onSubmit: (input: PmsManualBookingCreateInput) => Promise<PmsManualBookingCreateResult>; onClose: () => void; initialRoomId?: string; initialCheckIn?: string; initialCheckOut?: string; canRecordPaidPayment?: boolean; };
@@ -62,7 +65,7 @@ function stayDefaults(
     checkOut,
     adults: 1,
     children: 0,
-    ratePlanId: type?.ratePlans[0]?.id ?? "custom",
+    ratePlanId: type?.ratePlans[0]?.id ?? "missing",
     nightlyRate: "",
   };
 }
@@ -75,6 +78,31 @@ function overlaps(left: StayDraft, right: StayDraft) {
 
 // prettier-ignore
 function errorDetails(error: unknown, fallback: string, stays: StayDraft[]) { const message = error instanceof Error ? error.message : fallback; if (!(error instanceof PmsManualBookingServiceError) || !error.stayPosition) return { message }; const stay = stays[error.stayPosition - 1], field = error.code === "invalid_dates" ? "checkIn" : error.field === "stays" ? "adults" : error.field === "currency" ? "nightlyRate" : error.field; return { message, stay: stay ? { key: stay.key, field: field ?? "roomId", message } : undefined }; }
+
+function previewErrorDetails(
+  error: unknown,
+  stays: StayDraft[],
+): {
+  message: string;
+  retryable: boolean;
+  stay?: { key: number; field: string; message: string };
+} {
+  if (
+    error instanceof PmsManualBookingServiceError &&
+    ["rate_not_found", "rate_plan_not_found", "inactive_rate_plan"].includes(error.code)
+  ) {
+    const stay = stays[error.stayPosition ? error.stayPosition - 1 : 0];
+    const range = stay ? `${stay.checkIn} – ${stay.checkOut}` : "the selected dates";
+    return {
+      message: `No rate found for ${range}. Set up a season in Rooms & Rates first.`,
+      retryable: false,
+    };
+  }
+  const detail = errorDetails(error, PREVIEW_FAILURE_MESSAGE, stays);
+  return detail.stay
+    ? { ...detail, retryable: false }
+    : { message: PREVIEW_FAILURE_MESSAGE, retryable: true };
+}
 
 // prettier-ignore
 function addonSelection(addon: BookingAddon, packageCount: number, stays: StayDraft[]) { const dates = new Set<string>(); for (const stay of stays) for (let date = stay.checkIn; date < stay.checkOut; date = addDay(date)) dates.add(date); const serviceDates = Array.from(dates).sort(), occupancy = (date: string) => stays.filter((stay) => stay.checkIn <= date && date < stay.checkOut).reduce((sum, stay) => sum + stay.adults + stay.children, 0), serviceUnits = addon.perNight ? serviceDates.map((serviceDate) => ({ serviceDate, guestCount: addon.perPerson ? occupancy(serviceDate) : null })) : [{ serviceDate: null, guestCount: addon.perPerson ? stays.reduce((sum, stay) => sum + stay.adults + stay.children, 0) : null }]; return { addonId: addon.id, packageCount, serviceUnits }; }
@@ -92,6 +120,10 @@ export default function TargetManualBookingModal({
   const firstRoom = rooms.find((room) => room.id === initialRoomId) ?? rooms[0];
   // prettier-ignore
   const [stays, setStays] = useState(() => [stayDefaults(1, firstRoom?.id ?? "", initialCheckIn, initialCheckOut, roomTypes, rooms)]), [addons, setAddons] = useState<BookingAddon[]>([]), [addonPackages, setAddonPackages] = useState<Record<string, number>>({}), [addonState, setAddonState] = useState<"loading" | "ready" | "error">("loading"), [firstName, setFirstName] = useState(""), [lastName, setLastName] = useState(""), [email, setEmail] = useState(""), [phone, setPhone] = useState(""), [countryCode, setCountryCode] = useState(""), [source, setSource] = useState<PmsManualBookingCreateInput["directSource"]>("call"), [method, setMethod] = useState<PmsManualBookingCreateInput["payment"]["expectedMethod"]>("pay_at_property"), [settlement, setSettlement] = useState<"paid" | "unpaid">("unpaid"), [specialRequests, setSpecialRequests] = useState(""), [privateNote, setPrivateNote] = useState(""), [previewEvidence, setPreviewEvidence] = useState<{ key: string; result: PmsManualBookingPreviewResult } | null>(null), [previewState, setPreviewState] = useState<"idle" | "loading" | "error">("idle"), [message, setMessage] = useState(""), [stayError, setStayError] = useState<{ key: number; field: string; message: string } | null>(null), [submitting, setSubmitting] = useState(false), [retryLocked, setRetryLocked] = useState(false), [focusTarget, setFocusTarget] = useState<string | null>(null), [canRecordPaidPayment, setCanRecordPaidPayment] = useState(suppliedPaidCapability ?? false);
+  const [showPreviewSpinner, setShowPreviewSpinner] = useState(false);
+  const [previewMessage, setPreviewMessage] = useState("");
+  const [previewCanRetry, setPreviewCanRetry] = useState(false);
+  const [previewRetry, setPreviewRetry] = useState(0);
   const attempt = useRef<PmsManualBookingCreateInput | null>(null);
   const attemptLocked = useRef(false);
   const nextKey = useRef(2),
@@ -136,6 +168,7 @@ export default function TargetManualBookingModal({
         stay.children < 0 ||
         stay.adults + stay.children > roomType.maxOccupancy ||
         conflicts.has(index) ||
+        stay.ratePlanId === "missing" ||
         (stay.ratePlanId === "custom" && override === null)
       )
         return null;
@@ -159,32 +192,53 @@ export default function TargetManualBookingModal({
   }, [addonPackages, addons, conflicts, roomTypes, rooms, stays]);
   const previewKey = previewInput ? JSON.stringify(previewInput) : null;
   const preview = previewEvidence?.key === previewKey ? previewEvidence.result : null;
+  const missingRateStay = stays.find(
+    (stay) => stay.ratePlanId === "missing" && stay.checkIn && stay.checkOut > stay.checkIn,
+  );
+  const missingRateMessage = missingRateStay
+    ? `No rate found for ${missingRateStay.checkIn} – ${missingRateStay.checkOut}. Set up a season in Rooms & Rates first.`
+    : "";
 
   useEffect(() => {
     if (!previewInput) {
       setPreviewEvidence(null);
       setPreviewState("idle");
+      setShowPreviewSpinner(false);
+      setPreviewMessage("");
+      setPreviewCanRetry(false);
       return;
     }
     let active = true;
     setPreviewEvidence(null);
     setStayError(null);
     setPreviewState("loading");
+    setShowPreviewSpinner(false);
+    setPreviewMessage("");
+    setPreviewCanRetry(false);
+    const loadingTimeout = globalThis.setTimeout(
+      () => active && setShowPreviewSpinner(true),
+      PREVIEW_LOADING_DELAY_MS,
+    );
     const timeout = globalThis.setTimeout(() => {
       void calendarService.previewManualBooking(previewInput).then(
         (result) => {
           if (!active) return;
+          globalThis.clearTimeout(loadingTimeout);
           setPreviewEvidence({ key: previewKey!, result });
           setPreviewState("idle");
+          setShowPreviewSpinner(false);
           setMessage("");
         },
         (error: unknown) => {
           if (!active) return;
-          const detail = errorDetails(error, "Could not calculate the price.", stays);
+          globalThis.clearTimeout(loadingTimeout);
+          const detail = previewErrorDetails(error, stays);
           setPreviewEvidence(null);
           setPreviewState("error");
+          setShowPreviewSpinner(false);
           setStayError(detail.stay ?? null);
-          setMessage(detail.stay ? "" : detail.message);
+          setPreviewMessage(detail.stay ? "" : detail.message);
+          setPreviewCanRetry(detail.retryable);
           if (detail.stay) setFocusTarget(`${detail.stay.key}:${detail.stay.field}`);
         },
       );
@@ -192,8 +246,9 @@ export default function TargetManualBookingModal({
     return () => {
       active = false;
       globalThis.clearTimeout(timeout);
+      globalThis.clearTimeout(loadingTimeout);
     };
-  }, [previewInput, previewKey, stays]);
+  }, [previewInput, previewKey, previewRetry, stays]);
 
   function updateStay(index: number, patch: Partial<StayDraft>) {
     setPreviewEvidence(null);
@@ -206,7 +261,7 @@ export default function TargetManualBookingModal({
       roomType = roomTypes.find((item) => item.id === room?.roomTypeId);
     updateStay(index, {
       roomId,
-      ratePlanId: roomType?.ratePlans[0]?.id ?? "custom",
+      ratePlanId: roomType?.ratePlans[0]?.id ?? "missing",
       nightlyRate: "",
     });
   }
@@ -276,17 +331,36 @@ export default function TargetManualBookingModal({
     }
   }
 
+  const previewTotal = preview ? (
+    `Total ${formatCurrency(Number(preview.grandTotal.amountDecimal), preview.currency)}`
+  ) : previewState === "loading" ? (
+    <span className="inline-flex items-center gap-2" role="status">
+      {showPreviewSpinner ? (
+        <span
+          aria-hidden="true"
+          data-pricing-spinner
+          className="size-4 animate-spin rounded-full border-2 border-gray-300 border-t-primary-600"
+        />
+      ) : null}
+      Calculating total…
+    </span>
+  ) : missingRateMessage ? (
+    "Total unavailable"
+  ) : (
+    "Select dates and a room to calculate total"
+  );
+
   return (
     <>
       {/* prettier-ignore */}
-      <Modal ariaLabel="New booking" onClose={submitting || retryLocked ? () => undefined : onClose} maxWidth="xl" footer={ <div className="flex items-center justify-between gap-3"> <span className="text-sm font-semibold text-gray-900"> {preview ? `Total ${formatCurrency(Number(preview.grandTotal.amountDecimal), preview.currency)}` : "Server total pending"} </span> <div className="flex gap-2"> <button type="button" disabled={submitting || retryLocked} onClick={onClose} className="px-4 py-2 text-sm text-gray-700 disabled:opacity-50"> Cancel </button> <button form="target-manual-booking" disabled={(!preview && !retryLocked) || submitting || (!retryLocked && previewState === "loading")} className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50" > {submitting ? "Creating…" : retryLocked ? "Retry creation" : "Create booking"} </button> </div> </div> } > <h2 className="text-lg font-bold text-gray-900">New booking</h2> <p className="mt-0.5 text-sm text-gray-500"> Create a direct reservation from a guest enquiry. </p>
+      <Modal ariaLabel="New booking" onClose={submitting || retryLocked ? () => undefined : onClose} maxWidth="xl" footer={ <div className="flex items-center justify-between gap-3"> <span className="text-sm font-semibold text-gray-900"> {previewTotal} </span> <div className="flex gap-2"> <button type="button" disabled={submitting || retryLocked} onClick={onClose} className="px-4 py-2 text-sm text-gray-700 disabled:opacity-50"> Cancel </button> <button form="target-manual-booking" disabled={(!preview && !retryLocked) || submitting || (!retryLocked && previewState === "loading")} className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50" > {submitting ? "Creating…" : retryLocked ? "Retry creation" : "Create booking"} </button> </div> </div> } > <h2 className="text-lg font-bold text-gray-900">New booking</h2> <p className="mt-0.5 text-sm text-gray-500"> Create a direct reservation from a guest enquiry. </p>
         <form id="target-manual-booking" aria-busy={submitting} onSubmit={submit} onChange={() => { if (!attemptLocked.current) attempt.current = null; }} className="mt-5 space-y-6" > <fieldset disabled={submitting || retryLocked} className="space-y-6">
           <section> <h3 className={sectionClass}>Stays</h3> <div className="space-y-3"> {stays.map((stay, index) => { const room = rooms.find((item) => item.id === stay.roomId), roomType = roomTypes.find((item) => item.id === room?.roomTypeId), occupancyExceeded = Boolean(roomType && stay.adults + stay.children > roomType.maxOccupancy), conflict = conflicts.has(index), serverError = stayError?.key === stay.key ? stayError : null, serverStay = preview?.stays.find((item) => item.position === index + 1); return (
             <section key={stay.key} data-stay aria-labelledby={`stay-title-${stay.key}`} className="rounded-xl border border-gray-200 bg-gray-50/60 p-3 sm:p-4"> <div className="mb-3 flex items-center justify-between"> <h4 id={`stay-title-${stay.key}`} className="text-sm font-semibold text-gray-900">Room {index + 1}</h4> {stays.length > 1 && ( <button type="button" onClick={() => removeStay(index)} aria-label={`Remove room ${index + 1}`} className="text-xs font-medium text-red-600 hover:text-red-700">Remove</button> )} </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2"> <label className={`${labelClass} sm:col-span-2`}> Room * <select ref={(node) => { if (node) controls.current.set(`${stay.key}:roomId`, node); }} aria-label={`Room ${index + 1} room`} aria-invalid={conflict || serverError?.field === "roomId"} aria-describedby={conflict ? `stay-conflict-${stay.key}` : serverError?.field === "roomId" ? `stay-server-${stay.key}` : undefined} value={stay.roomId} onChange={(event) => changeRoom(index, event.target.value)} className={inputClass} required> {roomTypes.map((type) => ( <optgroup key={type.id} label={type.name}> {rooms.filter((item) => item.roomTypeId === type.id).map((item) => ( <option key={item.id} value={item.id}>#{item.roomNumber} — {type.name}</option> ))} </optgroup> ))} </select> </label>
                 <label className={labelClass}> Check-in * <input ref={(node) => { if (node) controls.current.set(`${stay.key}:checkIn`, node); }} aria-label={`Room ${index + 1} check-in`} aria-invalid={serverError?.field === "checkIn"} aria-describedby={serverError?.field === "checkIn" ? `stay-server-${stay.key}` : undefined} type="date" value={stay.checkIn} onChange={(event) => { const checkIn = event.target.value; updateStay(index, { checkIn, ...(!stay.checkOut || stay.checkOut <= checkIn ? { checkOut: addDay(checkIn) } : {}) }); }} className={inputClass} required /> </label> <label className={labelClass}> Check-out * <input aria-label={`Room ${index + 1} check-out`} type="date" min={addDay(stay.checkIn) || undefined} value={stay.checkOut} onChange={(event) => updateStay(index, { checkOut: event.target.value })} className={inputClass} required /> </label>
                 <label className={labelClass}> Adults <input ref={(node) => { if (node) controls.current.set(`${stay.key}:adults`, node); }} aria-label={`Room ${index + 1} adults`} type="number" min={1} max={Math.max(1, (roomType?.maxOccupancy ?? 1) - stay.children)} value={stay.adults} aria-invalid={occupancyExceeded || serverError?.field === "adults"} aria-describedby={occupancyExceeded ? `stay-occupancy-${stay.key}` : serverError?.field === "adults" ? `stay-server-${stay.key}` : undefined} onChange={(event) => updateStay(index, { adults: Number(event.target.value) })} className={inputClass} /> </label> <label className={labelClass}> Children <input aria-label={`Room ${index + 1} children`} type="number" min={0} max={Math.max(0, (roomType?.maxOccupancy ?? 1) - stay.adults)} value={stay.children} aria-invalid={occupancyExceeded} aria-describedby={occupancyExceeded ? `stay-occupancy-${stay.key}` : undefined} onChange={(event) => updateStay(index, { children: Number(event.target.value) })} className={inputClass} /> </label>
-                <label className={labelClass}> Rate plan * <select ref={(node) => { if (node) controls.current.set(`${stay.key}:ratePlanId`, node); }} aria-label={`Room ${index + 1} rate plan`} aria-invalid={serverError?.field === "ratePlanId"} aria-describedby={serverError?.field === "ratePlanId" ? `stay-server-${stay.key}` : undefined} value={stay.ratePlanId} onChange={(event) => updateStay(index, { ratePlanId: event.target.value, nightlyRate: "" })} className={inputClass}> {roomType?.ratePlans.map((plan) => ( <option key={plan.id} value={plan.id}>{plan.name}</option> ))} <option value="custom">Custom rate</option> </select> </label> <label className={labelClass}> {stay.ratePlanId === "custom" ? "Custom nightly rate *" : "Nightly override"} <input ref={(node) => { if (node) controls.current.set(`${stay.key}:nightlyRate`, node); }} aria-label={`Room ${index + 1} nightly rate`} aria-invalid={serverError?.field === "nightlyRate"} aria-describedby={serverError?.field === "nightlyRate" ? `stay-server-${stay.key}` : undefined} type="number" min={0} step="0.01" value={stay.nightlyRate} onChange={(event) => updateStay(index, { nightlyRate: event.target.value })} required={stay.ratePlanId === "custom"} className={inputClass} /> </label> </div>
+                <label className={labelClass}> Rate plan * <select ref={(node) => { if (node) controls.current.set(`${stay.key}:ratePlanId`, node); }} aria-label={`Room ${index + 1} rate plan`} aria-invalid={serverError?.field === "ratePlanId"} aria-describedby={serverError?.field === "ratePlanId" ? `stay-server-${stay.key}` : undefined} value={stay.ratePlanId} onChange={(event) => updateStay(index, { ratePlanId: event.target.value, nightlyRate: "" })} className={inputClass}> {stay.ratePlanId === "missing" && <option value="missing" disabled>No rate available</option>} {roomType?.ratePlans.map((plan) => ( <option key={plan.id} value={plan.id}>{plan.name}</option> ))} <option value="custom">Custom rate</option> </select> </label> <label className={labelClass}> {stay.ratePlanId === "custom" ? "Custom nightly rate *" : "Nightly override"} <input ref={(node) => { if (node) controls.current.set(`${stay.key}:nightlyRate`, node); }} aria-label={`Room ${index + 1} nightly rate`} aria-invalid={serverError?.field === "nightlyRate"} aria-describedby={serverError?.field === "nightlyRate" ? `stay-server-${stay.key}` : undefined} type="number" min={0} step="0.01" value={stay.nightlyRate} onChange={(event) => updateStay(index, { nightlyRate: event.target.value })} required={stay.ratePlanId === "custom"} className={inputClass} /> </label> </div>
               {occupancyExceeded && ( <p id={`stay-occupancy-${stay.key}`} role="alert" className="mt-2 text-xs text-red-700">This room allows at most {roomType?.maxOccupancy} guests.</p> )} {conflict && ( <p id={`stay-conflict-${stay.key}`} role="alert" className="mt-2 text-xs text-red-700">This physical room overlaps another stay in this booking.</p> )} {serverError && ( <p id={`stay-server-${stay.key}`} role="alert" className="mt-2 text-xs text-red-700">{serverError.message}</p> )}
               <div aria-live="polite" className="mt-3 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs"> <div className="flex justify-between"><span>Standard: {serverStay?.standardTotal ? formatCurrency(Number(serverStay.standardTotal.amountDecimal), preview!.currency) : "—"}</span><strong>Applied: {serverStay ? formatCurrency(Number(serverStay.appliedTotal.amountDecimal), preview!.currency) : previewState === "loading" ? "Calculating…" : "—"}</strong></div> {serverStay?.nightly.length ? ( <ul className="mt-2 space-y-1 border-t border-gray-100 pt-2 text-gray-600"> {serverStay.nightly.map((night) => ( <li key={night.serviceDate} className="flex justify-between"><span>{night.serviceDate}</span><span>{night.standard ? `${formatCurrency(Number(night.standard.amountDecimal), preview!.currency)} → ` : ""}{formatCurrency(Number(night.applied.amountDecimal), preview!.currency)}</span></li> ))} </ul> ) : null} </div>
             </section> ); })} <button type="button" onClick={addStay} disabled={stays.length >= 20} className="w-full rounded-lg border border-dashed border-primary-300 px-3 py-2 text-sm font-medium text-primary-700 hover:bg-primary-50 disabled:border-gray-200 disabled:text-gray-400">+ Add another room</button> {stays.length >= 20 && ( <p className="text-xs text-gray-500">The 20-room booking limit has been reached.</p> )} </div> </section>
@@ -314,6 +388,7 @@ export default function TargetManualBookingModal({
           <section> <h3 className={sectionClass}>Notes (optional)</h3> <div className="space-y-3">
               <label className={labelClass}> Special requests (visible to guest) <textarea name="specialRequests" rows={2} value={specialRequests} onChange={(e) => setSpecialRequests(e.target.value)} className={inputClass} /> </label>
               <label className={labelClass}> Private note (staff only) <textarea name="privateNote" rows={2} value={privateNote} onChange={(e) => setPrivateNote(e.target.value)} className={inputClass} /> </label> </div> </section> </fieldset>
+ {(missingRateMessage || previewMessage) && ( <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"> <span>{missingRateMessage || previewMessage}</span> {!missingRateMessage && previewCanRetry && ( <button type="button" onClick={() => { setPreviewMessage(""); setPreviewRetry((value) => value + 1); }} className="shrink-0 font-semibold underline underline-offset-2">Retry pricing</button> )} </div> )}
  {message && ( <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" > {message} </p> )}
         </form> </Modal>
     </>
