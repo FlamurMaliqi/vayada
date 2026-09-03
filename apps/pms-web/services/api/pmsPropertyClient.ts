@@ -33,6 +33,45 @@ export interface PmsCalendarSettings {
   updatedAt: string | null;
 }
 
+export type PmsCalendarAutoOpenSetting = {
+  contractVersion: "pms-calendar-auto-open.v1";
+  propertyId: string;
+  revision: number;
+  enabled: boolean;
+  mode: "rolling" | "fixed";
+  rollingMonths: 12 | 18 | 24 | null;
+  fixedEndMonth: string | null;
+  updatedAt: string | null;
+};
+
+export type PmsCalendarAutoOpenRead = {
+  contractVersion: "pms-calendar-auto-open.v1";
+  setting: PmsCalendarAutoOpenSetting;
+  horizon: {
+    propertyTimeZone: string;
+    propertyLocalDate: string;
+    targetOpenThrough: string | null;
+  };
+  warnings: ReadonlyArray<{
+    code: "missing_rate";
+    roomTypeId: string;
+    from: string;
+    through: string;
+  }>;
+};
+
+export type PmsCalendarAutoOpenUpdate = Pick<
+  PmsCalendarAutoOpenSetting,
+  "revision" | "enabled" | "mode" | "rollingMonths" | "fixedEndMonth"
+>;
+
+export type PmsCalendarAutoOpenUpdateResult = PmsCalendarAutoOpenRead & {
+  outcome: "created" | "updated" | "unchanged";
+  enqueueIntentId: string | null;
+};
+
+const pendingCalendarAutoOpenCommands = new Map<string, string>();
+
 export type PmsRoomShuffleHistoryItem = {
   shuffleId: string;
   assignmentId: string;
@@ -148,6 +187,45 @@ export async function updatePmsCalendarSettings(enabled: boolean): Promise<PmsCa
     { autoRearrangeEnabled: enabled },
     pmsOperationsRequestOptions,
   );
+}
+
+export async function getPmsCalendarAutoOpen(): Promise<PmsCalendarAutoOpenRead> {
+  const propertyId = await resolveSelectedPmsPropertyId("loading calendar auto-open settings");
+  return pmsOperationsClient.get<PmsCalendarAutoOpenRead>(
+    propertyEndpoint(propertyId, "calendar-auto-open"),
+    pmsOperationsRequestOptions,
+  );
+}
+
+export async function updatePmsCalendarAutoOpen(
+  input: PmsCalendarAutoOpenUpdate,
+): Promise<PmsCalendarAutoOpenUpdateResult> {
+  const propertyId = await resolveSelectedPmsPropertyId("saving calendar auto-open settings");
+  const body = {
+    expectedRevision: input.revision,
+    enabled: input.enabled,
+    mode: input.mode,
+    rollingMonths: input.rollingMonths,
+    fixedEndMonth: input.fixedEndMonth,
+  };
+  const fingerprint = JSON.stringify([propertyId, body]);
+  const idempotencyKey =
+    pendingCalendarAutoOpenCommands.get(fingerprint) ??
+    `pms-calendar-auto-open:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
+  pendingCalendarAutoOpenCommands.set(fingerprint, idempotencyKey);
+  const response = await pmsOperationsClient.patch<PmsCalendarAutoOpenUpdateResult>(
+    propertyEndpoint(propertyId, "calendar-auto-open"),
+    body,
+    {
+      ...pmsOperationsRequestOptions,
+      headers: {
+        ...(pmsOperationsRequestOptions.headers as Record<string, string>),
+        "Idempotency-Key": idempotencyKey,
+      },
+    },
+  );
+  pendingCalendarAutoOpenCommands.delete(fingerprint);
+  return response;
 }
 
 export async function listPmsRoomShuffleHistory(

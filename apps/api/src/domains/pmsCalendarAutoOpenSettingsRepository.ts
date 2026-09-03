@@ -8,6 +8,7 @@ import {
   isPmsCalendarAutoOpenSetting,
   type PmsCalendarAutoOpenSetting,
   type PmsCalendarAutoOpenSettingsPort,
+  type PmsCalendarAutoOpenWarning,
   type PmsCalendarAutoOpenUpdateResult,
   type UpdatePmsCalendarAutoOpenSetting,
 } from "@vayada/domain-pms";
@@ -34,6 +35,7 @@ type Row = QueryResultRow & {
   rollingMonths: 12 | 18 | 24 | null;
   fixedEndMonth: string | null;
   updatedAt: Date | string | null;
+  warnings?: unknown;
 };
 type IdempotencyRow = QueryResultRow & {
   id: string;
@@ -78,7 +80,11 @@ export function createPgPmsCalendarAutoOpenSettingsRepository(config: {
       const current = setting(row);
       if (!validTimeZone(row.propertyTimeZone, current))
         throw new Error("PMS calendar auto-open property timezone is invalid");
-      return { setting: current, propertyTimeZone: row.propertyTimeZone! };
+      return {
+        setting: current,
+        propertyTimeZone: row.propertyTimeZone!,
+        warnings: parseWarnings(row.warnings),
+      };
     },
     async update(command) {
       if (!validCommand(command)) return failure({ code: "invalid_setting" });
@@ -199,10 +205,25 @@ async function read(client: Pick<Client, "query">, propertyId: string, lock: boo
        COALESCE(settings.mode, 'rolling') AS mode,
        CASE WHEN settings.property_id IS NULL THEN 18 ELSE settings.rolling_months END AS "rollingMonths",
        to_char(settings.fixed_end_month, 'YYYY-MM') AS "fixedEndMonth",
-       settings.updated_at AS "updatedAt"
+       settings.updated_at AS "updatedAt", COALESCE(application.warnings, '[]'::jsonb) AS warnings
      FROM hotel_catalog.properties property
      LEFT JOIN hotel_catalog.property_locations location ON location.property_id = property.id
      LEFT JOIN pms.calendar_auto_open_settings settings ON settings.property_id = property.id
+     LEFT JOIN LATERAL (
+       SELECT job.job_metadata #> '{calendarAutoOpenResult,warnings}' AS warnings
+       FROM platform.jobs job
+       WHERE job.property_id = property.id
+         AND job.queue_name = 'pms.inventory.scheduler'
+         AND job.job_type = 'pms.calendar-auto-open'
+         AND job.status = 'succeeded'
+         AND job.resource_product = 'pms'
+         AND job.resource_type = 'property'
+         AND job.resource_id = property.id::text
+         AND job.payload #>> '{source,settingRevision}' = COALESCE(settings.revision, 0)::text
+         AND jsonb_typeof(job.job_metadata #> '{calendarAutoOpenResult,warnings}') = 'array'
+       ORDER BY job.finished_at DESC, job.created_at DESC, job.id DESC
+       LIMIT 1
+     ) application ON TRUE
      WHERE property.id = $1::uuid`,
     [propertyId],
   );
@@ -559,6 +580,47 @@ function setting(row: Row): PmsCalendarAutoOpenSetting {
     fixedEndMonth: row.fixedEndMonth,
     updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
   });
+}
+
+function parseWarnings(value: unknown): readonly PmsCalendarAutoOpenWarning[] {
+  if (!Array.isArray(value)) return Object.freeze([]);
+  return Object.freeze(
+    value.flatMap((candidate) => {
+      const roomTypeId = isRecord(candidate) ? candidate["roomTypeId"] : null;
+      const from = isRecord(candidate) ? candidate["from"] : null;
+      const through = isRecord(candidate) ? candidate["through"] : null;
+      if (
+        !isRecord(candidate) ||
+        candidate["code"] !== "missing_rate" ||
+        !isUuid(roomTypeId) ||
+        !isDateOnly(from) ||
+        !isDateOnly(through) ||
+        from > through
+      )
+        return [];
+      return [
+        {
+          code: "missing_rate" as const,
+          roomTypeId,
+          from,
+          through,
+        },
+      ];
+    }),
+  );
+}
+
+function isDateOnly(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function isUuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value)
+  );
 }
 
 function success(

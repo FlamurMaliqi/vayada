@@ -25,6 +25,7 @@ export type PmsCalendarAutoOpenSetting = PmsCalendarAutoOpenConfiguration &
 export type PmsCalendarAutoOpenSettingContext = Readonly<{
   setting: PmsCalendarAutoOpenSetting;
   propertyTimeZone: string;
+  warnings: readonly PmsCalendarAutoOpenWarning[];
 }>;
 
 export type PmsCalendarAutoOpenHorizon = Readonly<{
