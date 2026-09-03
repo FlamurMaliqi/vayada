@@ -14,17 +14,17 @@ ECR repositories are created and owned by `vayada-platform` (via `ecr.tf`). The 
 
 ## Services
 
-| App directory              | ECR repository                       | Deploy target                  |
-| -------------------------- | ------------------------------------ | ------------------------------ |
-| `apps/booking-api`         | `vayada-booking-backend`             | ECS Fargate                    |
-| `apps/booking-web`         | `vayada-booking-frontend`            | ECS Fargate                    |
-| `apps/booking-admin`       | `vayada-booking-admin-frontend`      | ECS Fargate                    |
-| `apps/pms-api`             | `vayada-pms-backend`                 | ECS Fargate                    |
-| `apps/pms-web`             | `vayada-pms-frontend`                | ECS Fargate                    |
-| `apps/marketplace-api`     | `vayada-creator-marketplace-backend` | ECS Fargate                    |
-| `apps/vayada-admin`        | `vayada-admin-frontend`              | ECS Fargate                    |
-| `apps/affiliate-dashboard` | `vayada-affiliate-dashboard`         | ECS Fargate                    |
-| `apps/landing`             | `vayada-landing`                     | App Runner (planned; inactive) |
+| App directory              | ECR repository                       | Deploy target |
+| -------------------------- | ------------------------------------ | ------------- |
+| `apps/booking-api`         | `vayada-booking-backend`             | ECS Fargate   |
+| `apps/booking-web`         | `vayada-booking-frontend`            | ECS Fargate   |
+| `apps/booking-admin`       | `vayada-booking-admin-frontend`      | ECS Fargate   |
+| `apps/pms-api`             | `vayada-pms-backend`                 | ECS Fargate   |
+| `apps/pms-web`             | `vayada-pms-frontend`                | ECS Fargate   |
+| `apps/marketplace-api`     | `vayada-creator-marketplace-backend` | ECS Fargate   |
+| `apps/vayada-admin`        | `vayada-admin-frontend`              | ECS Fargate   |
+| `apps/affiliate-dashboard` | `vayada-affiliate-dashboard`         | ECS Fargate   |
+| `apps/landing`             | `vayada-landing`                     | App Runner    |
 
 ## Image tagging
 
@@ -64,17 +64,17 @@ client_payload:
 
 Platform CI listens for this event and executes the ECS deploy for the named service using the SHA-pinned image.
 
-### Landing status
+### Landing deployment
 
-The landing artifact and App Runner target describe the intended target-stack
-contract, not an active deployment path. This repository currently has no
-workflow that publishes `apps/landing`, so App Runner does not receive a new
-`:latest` image when landing changes merge.
+Landing is the exception to the platform dispatch flow:
+[`deploy-landing.yml`](../.github/workflows/deploy-landing.yml) publishes
+`apps/landing` directly to `vayada-landing:latest` and an immutable commit-SHA
+tag. The existing App Runner service watches `latest` and serves it at
+`vayada.com`; it does not receive an ECS deploy trigger.
 
-`vayada.com` remains the legacy system and is outside this contract. Do not
-deploy `apps/landing` to that hostname or change its DNS or runtime. Landing
-publication requires an explicit, reviewed workflow and a target-stack
-hostname before the App Runner polling model can be activated.
+`vayada.com` is the shared public landing surface, not an application-stack
+cutover hostname. Landing deployment does not repoint or redeploy the separate
+application and API hostnames.
 
 ## Platform CI responsibilities
 

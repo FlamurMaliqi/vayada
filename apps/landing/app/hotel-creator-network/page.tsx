@@ -123,6 +123,8 @@ async function getNetworkStats(): Promise<NetworkStats | null> {
 
     const creators = creatorsResponse.data;
     const hotels = hotelsResponse.data;
+    if (creators.length === 0 && hotels.length === 0) return null;
+
     const combinedReach = creators.reduce((total, creator) => {
       const audienceSize =
         creator.audienceSize ||
