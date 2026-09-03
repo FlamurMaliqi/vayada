@@ -131,14 +131,12 @@ export async function readProductionPmsTargetState(
        ORDER BY ${targetId}`,
       [[...new Set(ids)]],
     );
-    records.push(
-      ...result.rows.map((row) => ({
-        targetProduct: definition.product,
-        targetTable,
-        targetId: row.targetId,
-        updatedAt: normalizeTimestamp(row.updatedAt, `${definition.table}.${definition.freshness}`),
-        row: camelize(JSON.parse(row.rowData) as Record<string, unknown>),
-      })),
+    appendProductionPmsTargetRows(
+      records,
+      definition.product,
+      targetTable,
+      `${definition.table}.${definition.freshness}`,
+      result.rows,
     );
   }
   const roomTypeCohort = await client.query<{
@@ -227,17 +225,30 @@ function appendMissingRecords(
   const existing = new Set(
     records.filter((record) => record.targetTable === targetTable).map((record) => record.targetId),
   );
-  records.push(
-    ...rows
-      .filter((row) => !existing.has(row.targetId))
-      .map((row) => ({
-        targetProduct: "pms",
-        targetTable,
-        targetId: row.targetId,
-        updatedAt: normalizeTimestamp(row.updatedAt, `pms.${targetTable}.updated_at`),
-        row: camelize(JSON.parse(row.rowData) as Record<string, unknown>),
-      })),
+  appendProductionPmsTargetRows(
+    records,
+    "pms",
+    targetTable,
+    `pms.${targetTable}.updated_at`,
+    rows.filter((row) => !existing.has(row.targetId)),
   );
+}
+
+export function appendProductionPmsTargetRows(
+  records: ExistingPmsTargetRecord[],
+  targetProduct: string,
+  targetTable: string,
+  freshnessField: string,
+  rows: Array<{ targetId: string; updatedAt: string | null; rowData: string }>,
+): void {
+  for (const row of rows)
+    records.push({
+      targetProduct,
+      targetTable,
+      targetId: row.targetId,
+      updatedAt: normalizeTimestamp(row.updatedAt, freshnessField),
+      row: camelize(JSON.parse(row.rowData) as Record<string, unknown>),
+    });
 }
 
 async function readStaleTargetBlockers(

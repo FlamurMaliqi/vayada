@@ -250,6 +250,37 @@ describe("production PMS channels", () => {
       records.find((record) => record.targetTable === "channel_room_type_mappings")?.row,
     ).toMatchObject({ status: "disabled" });
   });
+
+  it("does not revive source-disabled provider mappings", () => {
+    const sourceRows = rows();
+    sourceRows.find((row) => row.sourceTable === "channex_room_type_mappings")!.data["is_active"] =
+      false;
+    sourceRows.find((row) => row.sourceTable === "channex_rate_plan_mappings")!.data["is_active"] =
+      false;
+    const context = createProductionPmsContext({
+      sourceRunId: "run",
+      completedAt: "2026-08-30T00:00:00Z",
+      rows: sourceRows,
+      target: target(),
+    });
+    const rooms = buildPmsRoomRecords(context);
+    const assignments = buildPmsAssignmentRecords(context, rooms);
+    const records = buildPmsChannelRecords(context, rooms, assignments);
+
+    expect(context.blockers).toEqual([]);
+    expect(
+      records.find((record) => record.targetTable === "channel_room_type_mappings")?.row,
+    ).toMatchObject({
+      status: "disabled",
+      mappingMetadata: { sourceActive: false, roomTypeActive: true },
+    });
+    expect(
+      records.find((record) => record.targetTable === "channel_rate_plan_mappings")?.row,
+    ).toMatchObject({
+      status: "disabled",
+      mappingMetadata: { sourceActive: false, roomTypeActive: true },
+    });
+  });
 });
 
 function rows(): IdentitySourceRow[] {
