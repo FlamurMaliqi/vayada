@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createPmsCalendarAutoOpenSource,
+  fingerprintPmsCalendarAutoOpenSource,
+} from "@vayada/domain-pms";
+
+import {
   DEFAULT_CHANNEX_ARI_MAX_ATTEMPTS,
   buildAriPushDomainEventKey,
   buildAriPushJobKey,
@@ -98,7 +103,7 @@ describe("PMS Channex ARI and calendar scheduler jobs", () => {
     ).toBe(true);
   });
 
-  it("auto-opens rolling calendar windows once per property/open-through window", async () => {
+  it("enqueues calendar windows once per property, horizon, and source", async () => {
     const candidate = calendarCandidate();
     const store = new MemoryPmsChannexSchedulerStore({
       calendarAutoOpen: [candidate],
@@ -108,39 +113,57 @@ describe("PMS Channex ARI and calendar scheduler jobs", () => {
     const firstRun = await runPmsChannexSchedulerJobs(store, provider, {
       now: fixedNow,
       workerId: "worker_calendar",
-      run: ["rollingCalendarAutoOpen"],
-      rollingCalendarDaysAhead: 548,
+      run: ["calendarAutoOpen"],
     });
     const rerun = await runPmsChannexSchedulerJobs(store, provider, {
       now: fixedNow,
       workerId: "worker_calendar",
-      run: ["rollingCalendarAutoOpen"],
-      rollingCalendarDaysAhead: 548,
+      run: ["calendarAutoOpen"],
     });
 
     expect(firstRun).toMatchObject({
       scanned: 1,
       enqueued: 1,
       reused: 0,
-      autoOpened: 1,
+      autoOpenEnqueued: 1,
     });
     expect(rerun).toMatchObject({
       scanned: 1,
       enqueued: 0,
       reused: 1,
-      autoOpened: 0,
+      autoOpenEnqueued: 0,
     });
     expect(store.calendarOpenResults).toEqual([
       {
         candidate,
-        applied: true,
-        eventKey: "pms.calendar-auto-open:prop_alpenrose:2028-03-02:v1",
-        jobKey: "pms.calendar-auto-open:property:prop_alpenrose:open-through-2028-03-02:v1",
+        createdNewJob: true,
+        eventKey: `pms.calendar-auto-open:prop_alpenrose:2028-03-31:source-${candidate.sourceFingerprint}:v2`,
+        jobKey: `pms.calendar-auto-open:property:prop_alpenrose:open-through-2028-03-31:source-${candidate.sourceFingerprint}:v2`,
       },
     ]);
     expect(store.domainEvents.map((event) => event.eventKey)).toContain(
-      "pms.calendar-auto-open:prop_alpenrose:2028-03-02:v1",
+      `pms.calendar-auto-open:prop_alpenrose:2028-03-31:source-${candidate.sourceFingerprint}:v2`,
     );
+  });
+
+  it("reports one calendar enqueue failure without stopping later properties", async () => {
+    const failed = calendarCandidate({ propertyId: "prop_failed" });
+    const later = calendarCandidate({ propertyId: "prop_later" });
+    const store = new MemoryPmsChannexSchedulerStore({
+      calendarAutoOpen: [failed, later],
+      calendarEnqueueFailures: [failed.propertyId],
+    });
+
+    const result = await runPmsChannexSchedulerJobs(store, createSequenceProvider([]), {
+      now: fixedNow,
+      run: ["calendarAutoOpen"],
+    });
+
+    expect(result.autoOpenEnqueued).toBe(1);
+    expect(result.autoOpenFailures).toEqual([
+      { propertyId: failed.propertyId, stage: "enqueue", message: "enqueue failed" },
+    ]);
+    expect(store.calendarOpenResults[0]?.candidate.propertyId).toBe(later.propertyId);
   });
 
   it("retries retryable Channex provider failures and dead-letters after max attempts", async () => {
@@ -230,11 +253,21 @@ describe("PMS Channex ARI and calendar scheduler jobs", () => {
       "channex.push-ari:room_type:rt_deluxe:2026-09-12_2026-09-15:inventory-version-42:v1",
     );
     expect(
-      buildCalendarAutoOpenEventKey({ propertyId: "prop_alpenrose", openThrough: "2028-03-02" }),
-    ).toBe("pms.calendar-auto-open:prop_alpenrose:2028-03-02:v1");
+      buildCalendarAutoOpenEventKey({
+        propertyId: "prop_alpenrose",
+        openThrough: "2028-03-31",
+        sourceFingerprint: "a".repeat(64),
+      }),
+    ).toBe(`pms.calendar-auto-open:prop_alpenrose:2028-03-31:source-${"a".repeat(64)}:v2`);
     expect(
-      buildCalendarAutoOpenJobKey({ propertyId: "prop_alpenrose", openThrough: "2028-03-02" }),
-    ).toBe("pms.calendar-auto-open:property:prop_alpenrose:open-through-2028-03-02:v1");
+      buildCalendarAutoOpenJobKey({
+        propertyId: "prop_alpenrose",
+        openThrough: "2028-03-31",
+        sourceFingerprint: "a".repeat(64),
+      }),
+    ).toBe(
+      `pms.calendar-auto-open:property:prop_alpenrose:open-through-2028-03-31:source-${"a".repeat(64)}:v2`,
+    );
   });
 });
 
@@ -242,6 +275,7 @@ type MemoryStoreOptions = {
   incrementalAri?: PmsChannexAriPushCandidate[];
   fullAri?: PmsChannexAriPushCandidate[];
   calendarAutoOpen?: PmsCalendarAutoOpenCandidate[];
+  calendarEnqueueFailures?: string[];
 };
 
 class MemoryPmsChannexSchedulerStore implements PmsChannexSchedulerStore {
@@ -255,11 +289,13 @@ class MemoryPmsChannexSchedulerStore implements PmsChannexSchedulerStore {
   private readonly incrementalAri: PmsChannexAriPushCandidate[];
   private readonly fullAri: PmsChannexAriPushCandidate[];
   private readonly calendarAutoOpen: PmsCalendarAutoOpenCandidate[];
+  private readonly calendarEnqueueFailures: Set<string>;
 
   constructor(options: MemoryStoreOptions = {}) {
     this.incrementalAri = options.incrementalAri ?? [];
     this.fullAri = options.fullAri ?? [];
     this.calendarAutoOpen = options.calendarAutoOpen ?? [];
+    this.calendarEnqueueFailures = new Set(options.calendarEnqueueFailures);
   }
 
   async findIncrementalAriPushCandidates(
@@ -276,12 +312,8 @@ class MemoryPmsChannexSchedulerStore implements PmsChannexSchedulerStore {
     return this.fullAri.slice(0, limit);
   }
 
-  async findRollingCalendarAutoOpenCandidates(
-    _now: Date,
-    _daysAhead: number,
-    limit: number,
-  ): Promise<PmsCalendarAutoOpenCandidate[]> {
-    return this.calendarAutoOpen.slice(0, limit);
+  async findCalendarAutoOpenCandidates(_now: Date, limit: number) {
+    return { candidates: this.calendarAutoOpen.slice(0, limit), failures: [] };
   }
 
   async enqueueAriPushJob(
@@ -348,16 +380,17 @@ class MemoryPmsChannexSchedulerStore implements PmsChannexSchedulerStore {
     return deadLetter;
   }
 
-  async applyRollingCalendarAutoOpen(
+  async enqueueCalendarAutoOpenJob(
     candidate: PmsCalendarAutoOpenCandidate,
     _context: PmsChannexSchedulerContext,
   ): Promise<PmsCalendarAutoOpenResult> {
+    if (this.calendarEnqueueFailures.has(candidate.propertyId)) throw new Error("enqueue failed");
     const eventKey = buildCalendarAutoOpenEventKey(candidate);
     const jobKey = buildCalendarAutoOpenJobKey(candidate);
     const existing = this.calendarOpenResults.find((result) => result.eventKey === eventKey);
-    if (existing) return { ...existing, applied: false };
+    if (existing) return { ...existing, createdNewJob: false };
 
-    const result = { candidate, applied: true, eventKey, jobKey };
+    const result = { candidate, createdNewJob: true, eventKey, jobKey };
     this.calendarOpenResults.push(result);
     this.domainEvents.push({
       eventKey,
@@ -396,13 +429,30 @@ function ariCandidate(
 function calendarCandidate(
   overrides: Partial<PmsCalendarAutoOpenCandidate> = {},
 ): PmsCalendarAutoOpenCandidate {
+  const source = createPmsCalendarAutoOpenSource({
+    settingRevision: 6,
+    propertyProfileRevision: 4,
+    propertyTimeZone: "Europe/Berlin",
+    operatingCalendarRevision: 9,
+    rooms: [
+      { roomTypeId: "rt_deluxe", roomFactsRevision: 2, roomUnitsRevision: 3 },
+      { roomTypeId: "rt_suite", roomFactsRevision: 4, roomUnitsRevision: 5 },
+    ],
+    pricing: {
+      pricingCurrencyRevision: 2,
+      flexibleRatePlans: [{ roomTypeId: "rt_deluxe", flexibleRatePlanRevision: 5 }],
+      optionalPricingAggregateRevision: 7,
+    },
+  });
   return {
     propertyId: "prop_alpenrose",
     organizationId: "org_alpenrose",
     openFrom: "2027-09-01",
-    openThrough: "2028-03-02",
+    openThrough: "2028-03-31",
     roomTypeIds: ["rt_deluxe", "rt_suite"],
-    inventoryVersion: "calendar-window-2028-03-02",
+    generatedCoverageThrough: "2027-08-31",
+    source,
+    sourceFingerprint: fingerprintPmsCalendarAutoOpenSource(source),
     correlationId: "corr_calendar_001",
     ...overrides,
   };
