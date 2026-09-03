@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { createUnavailablePmsInboxEmailReplyRouteReadPort } from "../domains/pmsInboxProductionRuntime.js";
 import {
   claimPmsInboxDeliveryJob,
   completePmsInboxDeliveryJob,
@@ -83,7 +84,7 @@ describe("PostgreSQL PMS Inbox delivery store", () => {
 
     await expect(
       preparePmsInboxDeliveryJob({ query } as never, JOB, {
-        emailEnabled: false,
+        emailReplyRoutes: createUnavailablePmsInboxEmailReplyRouteReadPort(),
         media: { read },
       }),
     ).resolves.toMatchObject({
@@ -113,7 +114,7 @@ describe("PostgreSQL PMS Inbox delivery store", () => {
 
     await expect(
       preparePmsInboxDeliveryJob({ query } as never, JOB, {
-        emailEnabled: false,
+        emailReplyRoutes: createUnavailablePmsInboxEmailReplyRouteReadPort(),
         media: { read: vi.fn() },
       }),
     ).resolves.toEqual({ state: "blocked", failure: "access_unavailable" });
@@ -193,7 +194,7 @@ describe("PostgreSQL PMS Inbox delivery store", () => {
     const store = createPgPmsInboxDeliveryStore({
       connectionString: "",
       pool: pool as never,
-      emailEnabled: false,
+      emailReplyRoutes: createUnavailablePmsInboxEmailReplyRouteReadPort(),
       media: { read: vi.fn() },
     });
 
@@ -223,6 +224,8 @@ function completionClient() {
 
 function delivery() {
   return {
+    threadId: "13750000-0000-4000-8000-000000000005",
+    threadDeliveryChannel: "ota",
     body: "Welcome!",
     deliveryState: "queued",
     deliveryChannel: "ota",

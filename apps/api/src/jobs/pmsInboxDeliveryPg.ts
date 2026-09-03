@@ -1,5 +1,7 @@
 import pg, { type QueryResultRow } from "pg";
 
+import type { PmsInboxEmailReplyRouteReadPort } from "../domains/pmsInbox.js";
+import { resolvePmsInboxEmailReplyRoutes } from "../domains/pmsInboxEmailReplyRoutes.js";
 import {
   PMS_INBOX_DELIVERY_JOB_TYPE,
   PMS_INBOX_DELIVERY_QUEUE,
@@ -29,7 +31,7 @@ export type PgPmsInboxDeliveryStore = PmsInboxDeliveryStore & { close(): Promise
 export function createPgPmsInboxDeliveryStore(config: {
   connectionString: string;
   media: PmsInboxDeliveryMediaPort;
-  emailEnabled: boolean;
+  emailReplyRoutes: PmsInboxEmailReplyRouteReadPort;
   pool?: Pool;
   max?: number;
 }): PgPmsInboxDeliveryStore {
@@ -45,7 +47,7 @@ export function createPgPmsInboxDeliveryStore(config: {
       transaction(pool, (client) =>
         preparePmsInboxDeliveryJob(client, job, {
           media: config.media,
-          emailEnabled: config.emailEnabled,
+          emailReplyRoutes: config.emailReplyRoutes,
         }),
       ),
     complete: (job, completion) =>
@@ -127,6 +129,8 @@ export async function claimPmsInboxDeliveryJob(
 }
 
 type DeliveryRow = {
+  threadId: string;
+  threadDeliveryChannel: string;
   body: string;
   deliveryState: string;
   deliveryChannel: "ota" | "email";
@@ -166,7 +170,7 @@ const ALLOWED_TYPES = new Set([
 export async function preparePmsInboxDeliveryJob(
   client: PmsInboxDeliveryQueryable,
   job: PmsInboxDeliveryJob,
-  options: { emailEnabled: boolean; media: PmsInboxDeliveryMediaPort },
+  options: { emailReplyRoutes: PmsInboxEmailReplyRouteReadPort; media: PmsInboxDeliveryMediaPort },
 ): Promise<PmsInboxPreparedDelivery> {
   const lease = await client.query(
     `SELECT 1 FROM platform.jobs
@@ -179,12 +183,13 @@ export async function preparePmsInboxDeliveryJob(
 
   const result = await client.query<DeliveryRow>(
     `SELECT message.body, message.delivery_state AS "deliveryState",
+            thread.id::text AS "threadId", thread.delivery_channel AS "threadDeliveryChannel",
             message.delivery_channel AS "deliveryChannel", thread.source,
             thread.source_thread_id AS "sourceThreadId",
             thread.provider_channel AS "providerChannel",
             thread.conversation_context_state AS "conversationContextState",
             booking.booking_channel AS "bookingChannel",
-            COALESCE(NULLIF(BTRIM(thread.guest_email), ''), guest.email) AS "guestEmail",
+            guest.email AS "guestEmail",
             property.lifecycle_status = 'active' AND EXISTS (
               SELECT 1 FROM identity.organization_resource_links link
               JOIN identity.organizations organization ON organization.id = link.organization_id
@@ -237,6 +242,7 @@ export async function preparePmsInboxDeliveryJob(
        SELECT NULLIF(BTRIM(booking_guest.email), '') AS email
        FROM booking.booking_guests booking_guest
        WHERE booking_guest.guest_booking_id = booking.id
+         AND NULLIF(BTRIM(booking_guest.email), '') IS NOT NULL
        ORDER BY CASE booking_guest.guest_role WHEN 'booker' THEN 0
                     WHEN 'primary_guest' THEN 1 ELSE 2 END,
                 booking_guest.created_at, booking_guest.id LIMIT 1
@@ -269,8 +275,16 @@ export async function preparePmsInboxDeliveryJob(
       attemptId: row.currentAttemptId,
     };
   if (!row.accessReady) return { state: "blocked", failure: "access_unavailable" };
-  const adapter = routeAdapter(row, options.emailEnabled);
+  const adapter = routeAdapter(row);
   if (!adapter) return { state: "blocked", failure: "provider_configuration_unavailable" };
+  if (adapter === "resend") {
+    const routes = await resolvePmsInboxEmailReplyRoutes(options.emailReplyRoutes, job.propertyId, [
+      { threadId: row.threadId, guestEmail: row.guestEmail },
+    ]);
+    const route = routes.get(row.threadId);
+    if (route?.state !== "ready" || route.channel !== "email")
+      return { state: "blocked", failure: "provider_configuration_unavailable" };
+  }
   let attachments: Awaited<ReturnType<typeof loadAttachments>>;
   try {
     attachments = await loadAttachments(client, job, row, options.media);
@@ -313,8 +327,9 @@ export async function preparePmsInboxDeliveryJob(
   };
 }
 
-function routeAdapter(row: DeliveryRow, emailEnabled: boolean): "channex" | "resend" | null {
+function routeAdapter(row: DeliveryRow): "channex" | "resend" | null {
   if (!["queued", "retrying"].includes(row.deliveryState)) return null;
+  if (row.deliveryChannel !== row.threadDeliveryChannel) return null;
   if (row.deliveryChannel === "ota")
     return row.source === "channex" &&
       row.sourceThreadId.trim() &&
@@ -325,8 +340,7 @@ function routeAdapter(row: DeliveryRow, emailEnabled: boolean): "channex" | "res
       : null;
   return row.source === "manual" &&
     row.bookingChannel === "direct" &&
-    Boolean(row.guestEmail?.trim()) &&
-    emailEnabled
+    Boolean(row.guestEmail?.trim())
     ? "resend"
     : null;
 }
@@ -344,13 +358,18 @@ async function loadAttachments(
             COALESCE(object.visibility = 'private' AND object.storage_kind = 'vayada_managed'
               AND object.lifecycle_status = 'active' AND object.deleted_at IS NULL
               AND object.property_id = attachment.property_id
-              AND object.resource_product = 'pms' AND object.resource_type = 'message_thread', FALSE)
+              AND object.resource_product = 'pms' AND object.resource_type = 'message_thread'
+              AND object.resource_id = $3 AND object.purpose = 'pms.messaging.attachment'
+              AND object.source_metadata ->> 'attachmentState' = 'claimed'
+              AND object.source_metadata ->> 'claimedByMessageId' = attachment.message_id::text
+              AND object.size_bytes = attachment.size_bytes
+              AND lower(object.content_type) = lower(attachment.content_type), FALSE)
               AS "mediaReady"
      FROM pms.message_attachments attachment
      LEFT JOIN platform.media_objects object ON object.id = attachment.platform_media_object_id
      WHERE attachment.message_id = $1::uuid AND attachment.property_id = $2::uuid
      ORDER BY attachment.created_at, attachment.id`,
-    [job.messageId, job.propertyId],
+    [job.messageId, job.propertyId, delivery.threadId],
   );
   const limit =
     delivery.deliveryChannel === "ota" ? providerLimit(delivery.providerChannel) : 25 * 1024 * 1024;

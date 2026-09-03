@@ -1,7 +1,12 @@
 import pg from "pg";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { relayPmsInboxDeliveryOutbox } from "../jobs/pmsInboxDeliveryOutbox.js";
+import { createPgPmsInboxDeliveryStore } from "../jobs/pmsInboxDeliveryPg.js";
+import { runPmsInboxDeliveryJobs } from "../jobs/pmsInboxDeliveryWorker.js";
+import type { PmsInboxEmailReplyRouteReadPort } from "./pmsInbox.js";
+import type { PmsInboxDeliveryProvider } from "./pmsInboxDelivery.js";
+import { createUnavailablePmsInboxEmailReplyRouteReadPort } from "./pmsInboxProductionRuntime.js";
 import { createPgPmsInboxReplyPort } from "./pmsInboxReplyCommand.js";
 
 const URL = process.env["TEST_DATABASE_URL"];
@@ -21,6 +26,15 @@ const NOW = "2026-09-03T09:00:00.000Z";
 describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
   const admin = new pg.Client({ connectionString: URL });
   let resolvedGuestEmails: Array<string | null> = [];
+  const approvedEmailRoutes: PmsInboxEmailReplyRouteReadPort = {
+    async resolveReplyRoutes({ propertyId, threads }) {
+      return threads.map(({ threadId }) => ({
+        propertyId,
+        threadId,
+        route: { state: "ready", channel: "email", providerChannel: null, reasonCode: null },
+      }));
+    },
+  };
   const reply = createPgPmsInboxReplyPort({
     connectionString: URL ?? "postgresql://integration-test-disabled",
     max: 4,
@@ -147,6 +161,105 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
         },
       ],
     });
+    await admin.query(
+      "UPDATE platform.media_objects SET checksum_sha256 = repeat('a', 64) WHERE id = $1::uuid",
+      [MEDIA],
+    );
+    const send = vi.fn<PmsInboxDeliveryProvider["send"]>(async () => ({
+      ok: true,
+      providerReference: "ota-message-1",
+    }));
+    await expect(deliver(send)).resolves.toMatchObject({ processed: 1, sent: 1 });
+    await expect(deliver(send)).resolves.toMatchObject({ processed: 0 });
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]?.[0]).toMatchObject({ channel: "ota", recipientEmail: null });
+    expect(send.mock.calls[0]?.[0].attachments).toHaveLength(1);
+    expect((await state(messageId)).message).toMatchObject({ deliveryState: "sent" });
+    expect(
+      (
+        await admin.query(
+          `SELECT outcome, provider_reference FROM pms.message_delivery_attempts WHERE message_id = $1::uuid`,
+          [messageId],
+        )
+      ).rows,
+    ).toEqual([{ outcome: "accepted", provider_reference: "ota-message-1" }]);
+  });
+
+  it.each([
+    "connection",
+    "entitlement",
+    "attachment-thread",
+    "attachment-claim",
+    "attachment-size",
+  ])("revalidates %s at execution without an external send", async (changed) => {
+    const accepted = await reply.reply(
+      command(`delivery-${changed}`, { attachmentMediaIds: [MEDIA] }),
+    );
+    expect(accepted.ok).toBe(true);
+    if (changed === "connection")
+      await admin.query(
+        "UPDATE pms.channel_connections SET messaging_app_installed = FALSE WHERE property_id = $1::uuid",
+        [PROPERTY],
+      );
+    else if (changed === "entitlement")
+      await admin.query(
+        "UPDATE identity.product_entitlements SET status = 'suspended' WHERE organization_id = $1::uuid",
+        [ORGANIZATION],
+      );
+    else if (changed === "attachment-thread")
+      await admin.query("UPDATE platform.media_objects SET resource_id = $2 WHERE id = $1::uuid", [
+        MEDIA,
+        OTHER_THREAD,
+      ]);
+    else if (changed === "attachment-claim")
+      await admin.query(
+        "UPDATE platform.media_objects SET source_metadata = '{}'::jsonb WHERE id = $1::uuid",
+        [MEDIA],
+      );
+    else
+      await admin.query("UPDATE platform.media_objects SET size_bytes = 2048 WHERE id = $1::uuid", [
+        MEDIA,
+      ]);
+    const send = vi.fn<PmsInboxDeliveryProvider["send"]>();
+    await deliver(send);
+    expect(send).not.toHaveBeenCalled();
+    const messageId = accepted.ok ? accepted.value.messageId : "";
+    expect((await state(messageId)).message).toMatchObject({
+      deliveryState: changed.startsWith("attachment") ? "failed" : "held",
+      deliveryReasonCode: changed.startsWith("attachment")
+        ? "invalid_delivery_payload"
+        : changed === "entitlement"
+          ? "access_unavailable"
+          : "provider_configuration_unavailable",
+    });
+  });
+
+  it("retries a known provider failure with stable identity and persists only one acceptance", async () => {
+    const accepted = await reply.reply(command("provider-retry"));
+    const send = vi
+      .fn<PmsInboxDeliveryProvider["send"]>()
+      .mockResolvedValueOnce({ ok: false, failure: "transient_provider_failure" })
+      .mockResolvedValueOnce({ ok: true, providerReference: "retry-accepted" });
+    await expect(deliver(send)).resolves.toMatchObject({ retrying: 1 });
+    await admin.query("UPDATE platform.jobs SET run_after = now() WHERE property_id = $1::uuid", [
+      PROPERTY,
+    ]);
+    await expect(deliver(send)).resolves.toMatchObject({ sent: 1 });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[0]?.[0]).toEqual(send.mock.calls[1]?.[0]);
+    await expect(deliver(send)).resolves.toMatchObject({ processed: 0 });
+    const messageId = accepted.ok ? accepted.value.messageId : "";
+    expect(
+      (
+        await admin.query(
+          `SELECT outcome, provider_reference FROM pms.message_delivery_attempts WHERE message_id = $1::uuid ORDER BY attempt_number`,
+          [messageId],
+        )
+      ).rows,
+    ).toEqual([
+      { outcome: "transient_failure", provider_reference: null },
+      { outcome: "accepted", provider_reference: "retry-accepted" },
+    ]);
   });
 
   it("persists a held reply without creating delivery work", async () => {
@@ -234,38 +347,56 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
     });
   });
 
-  it("routes linked email threads using the current Booking-owned guest email", async () => {
-    await admin.query(
-      `INSERT INTO booking.guest_bookings
-         (id, property_id, public_reference, lifecycle_status, check_in, check_out, currency)
+  it.each([true, false])(
+    "rechecks current Booking email and sender policy (approved=%s)",
+    async (approved) => {
+      await admin.query(
+        `INSERT INTO booking.guest_bookings
+         (id, property_id, public_reference, lifecycle_status, check_in, check_out, currency, booking_channel, direct_booking_source)
        VALUES ($1::uuid, $2::uuid, 'INBOX-EMAIL-BOOKING', 'confirmed',
-               '2026-09-04', '2026-09-05', 'EUR')`,
-      [BOOKING, PROPERTY],
-    );
-    await admin.query(
-      `INSERT INTO booking.booking_guests
+               '2026-09-04', '2026-09-05', 'EUR', 'direct', 'booking_engine')`,
+        [BOOKING, PROPERTY],
+      );
+      await admin.query(
+        `INSERT INTO booking.booking_guests
          (id, guest_booking_id, guest_role, first_name, last_name, email)
        VALUES ($1::uuid, $2::uuid, 'booker', 'Current', 'Guest',
                '  current-guest@example.test  ')`,
-      [BOOKING_GUEST, BOOKING],
-    );
-    await admin.query(
-      `UPDATE pms.message_threads
+        [BOOKING_GUEST, BOOKING],
+      );
+      await admin.query(
+        `UPDATE pms.message_threads
        SET source = 'manual', source_thread_id = 'email-thread', provider_channel = NULL,
            guest_email = 'stale-guest@example.test', guest_booking_id = $1::uuid,
            delivery_channel = 'email', conversation_context_state = 'linked'
        WHERE property_id = $2::uuid AND id = $3::uuid`,
-      [BOOKING, PROPERTY, THREAD],
-    );
+        [BOOKING, PROPERTY, THREAD],
+      );
 
-    await expect(
-      reply.reply(command("current-booking-email", { attachmentMediaIds: [] })),
-    ).resolves.toMatchObject({
-      ok: true,
-      value: { delivery: { state: "queued", channel: "email" } },
-    });
-    expect(resolvedGuestEmails).toEqual(["current-guest@example.test"]);
-  });
+      await expect(
+        reply.reply(command("current-booking-email", { attachmentMediaIds: [] })),
+      ).resolves.toMatchObject({
+        ok: true,
+        value: { delivery: { state: "queued", channel: "email" } },
+      });
+      expect(resolvedGuestEmails).toEqual(["current-guest@example.test"]);
+      const send = vi.fn<PmsInboxDeliveryProvider["send"]>(async () => ({
+        ok: true,
+        providerReference: "email-accepted",
+      }));
+      await deliver(
+        send,
+        approved ? approvedEmailRoutes : createUnavailablePmsInboxEmailReplyRouteReadPort(),
+      );
+      if (approved) {
+        expect(send).toHaveBeenCalledOnce();
+        expect(send.mock.calls[0]?.[0]).toMatchObject({
+          channel: "email",
+          recipientEmail: "current-guest@example.test",
+        });
+      } else expect(send).not.toHaveBeenCalled();
+    },
+  );
 
   it("replays concurrent commands with the same key and payload exactly once", async () => {
     const input = command("same-key-same-payload", { attachmentMediaIds: [] });
@@ -363,6 +494,23 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
     };
   }
 
+  async function deliver(
+    send: PmsInboxDeliveryProvider["send"],
+    emailReplyRoutes = approvedEmailRoutes,
+  ) {
+    await relayPmsInboxDeliveryOutbox(URL!, { now: new Date(NOW) });
+    const store = createPgPmsInboxDeliveryStore({
+      connectionString: URL!,
+      emailReplyRoutes,
+      media: { read: async ({ expectedSizeBytes }) => new Uint8Array(expectedSizeBytes) },
+    });
+    try {
+      return await runPmsInboxDeliveryJobs(store, { channex: { send }, resend: { send } });
+    } finally {
+      await store.close();
+    }
+  }
+
   async function seed(): Promise<void> {
     await admin.query(
       `INSERT INTO identity.users (id, email, name, status)
@@ -375,9 +523,9 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
       [ORGANIZATION],
     );
     await admin.query(
-      `INSERT INTO hotel_catalog.properties (id, public_id, display_name)
-       VALUES ($1::uuid, 'inbox-test', 'Inbox Test'),
-              ($2::uuid, 'inbox-other', 'Inbox Other')`,
+      `INSERT INTO hotel_catalog.properties (id, public_id, display_name, lifecycle_status)
+       VALUES ($1::uuid, 'inbox-test', 'Inbox Test', 'active'),
+              ($2::uuid, 'inbox-other', 'Inbox Other', 'active')`,
       [PROPERTY, OTHER_PROPERTY],
     );
     await admin.query(

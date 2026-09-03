@@ -54,17 +54,19 @@ export async function relayPmsInboxDeliveryOutbox(
          RETURNING source_outbox_event_id
        ), published AS (
          UPDATE platform.outbox_events outbox
-         SET status = 'published', attempts_count = attempts_count + 1,
+         SET status = 'published', attempts_count = outbox.attempts_count + 1,
              leased_until = NULL, published_at = $3::timestamptz,
              updated_at = $3::timestamptz
          FROM candidates candidate
          WHERE outbox.id = candidate.id
-           AND EXISTS (
+           AND (EXISTS (
+             SELECT 1 FROM jobs WHERE jobs.source_outbox_event_id = candidate.id
+           ) OR EXISTS (
              SELECT 1 FROM platform.jobs job
              WHERE job.queue_name = $4 AND job.job_key = candidate.outbox_key
                AND job.source_outbox_event_id = candidate.id
                AND job.source_domain_event_id = candidate.domain_event_id
-           )
+           ))
          RETURNING outbox.id
        )
        SELECT count(*)::text AS published FROM published`,
