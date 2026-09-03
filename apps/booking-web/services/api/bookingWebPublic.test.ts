@@ -80,6 +80,34 @@ describe("Booking Web public hotel adapter", () => {
     expect(hotel.heroImage).toBe("/vayada-logo.png");
   });
 
+  it("maps header visibility and keeps Refer a Guest behind the active module", () => {
+    const response = publicHotelResponse();
+    response.hotel.branding = {
+      logoUrl: null,
+      showContactButton: false,
+      showReferAGuestButton: true,
+      showLanguageSelector: false,
+      showCurrencySelector: true,
+      heroImage: null,
+      heroHeading: null,
+      heroSubtext: null,
+      primaryColor: null,
+      fontPairing: null,
+    };
+
+    expect(toLegacyHotel(response)).toMatchObject({
+      headerSettings: {
+        showContactButton: false,
+        showLanguageSelector: false,
+        showCurrencySelector: true,
+      },
+      referAGuestEnabled: false,
+    });
+
+    response.hotel.capabilities.referralCodes = true;
+    expect(toLegacyHotel(response).referAGuestEnabled).toBe(true);
+  });
+
   it("preserves target amenity labels and an explicit reviewed-empty list", () => {
     const response = {
       request: { nights: 2, rooms: 1 },

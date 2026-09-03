@@ -17,10 +17,22 @@ function renderMediaTab(galleryImages: PropertyGalleryImage[]) {
       handleImageUpload={vi.fn()}
       removeHeroImage={vi.fn()}
       headerLogo=""
+      headerLogoUrl=""
       logoInputRef={createRef<HTMLInputElement>()}
       handleLogoUpload={vi.fn()}
+      addHeaderLogoUrl={vi.fn()}
+      setHeaderLogoUrl={vi.fn()}
       removeHeaderLogo={vi.fn()}
       uploadingLogo={false}
+      showContactButton
+      setShowContactButton={vi.fn()}
+      showReferAGuestButton={false}
+      setShowReferAGuestButton={vi.fn()}
+      referAGuestModuleEnabled={false}
+      showLanguageSelector
+      setShowLanguageSelector={vi.fn()}
+      showCurrencySelector
+      setShowCurrencySelector={vi.fn()}
       resetContent={vi.fn()}
       galleryImages={galleryImages}
       galleryAtCapacity={galleryImages.length >= 10}

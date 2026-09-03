@@ -17,6 +17,12 @@ export function BookingPagePreview({
   heroSubtext,
   primaryColor,
   propertyName,
+  showContactButton = true,
+  showLanguageSelector = true,
+  showCurrencySelector = true,
+  showReferAGuestButton = false,
+  supportedLanguages,
+  supportedCurrencies,
 }: {
   bookingUrl?: string;
   className?: string;
@@ -29,9 +35,21 @@ export function BookingPagePreview({
   heroSubtext: string;
   primaryColor: string;
   propertyName: string;
+  showContactButton?: boolean;
+  showLanguageSelector?: boolean;
+  showCurrencySelector?: boolean;
+  showReferAGuestButton?: boolean;
+  supportedLanguages?: readonly string[];
+  supportedCurrencies?: readonly string[];
 }) {
   const accent = /^#[0-9a-f]{6}$/i.test(primaryColor) ? primaryColor : "#4F46E5";
   const tint = `${accent}18`;
+  const languageCount = supportedLanguages
+    ? new Set([defaultLanguage, ...supportedLanguages].filter(Boolean)).size
+    : 2;
+  const currencyCount = supportedCurrencies
+    ? new Set([currency, ...supportedCurrencies].filter(Boolean)).size
+    : 2;
 
   return (
     <div
@@ -71,21 +89,33 @@ export function BookingPagePreview({
               </span>
             )}
             <div className="flex items-center gap-1.5">
-              <span
-                className="rounded-full px-2.5 py-1 text-[9px] font-semibold text-white"
-                style={{ backgroundColor: accent }}
-              >
-                Contact
-              </span>
-              <span className="hidden rounded-full border border-white/60 px-2.5 py-1 text-[9px] font-semibold text-white sm:inline">
-                Refer a Guest
-              </span>
-              <span className="rounded-full border border-white/60 px-2 py-1 text-[9px] font-semibold text-white">
-                {(defaultLanguage || "en").toUpperCase()}
-              </span>
-              <span className="rounded-full border border-white/60 px-2 py-1 text-[9px] font-semibold text-white">
-                {currency || "EUR"}
-              </span>
+              {showContactButton && (
+                <span
+                  className="rounded-full px-2.5 py-1 text-[9px] font-semibold text-white"
+                  style={{ backgroundColor: accent }}
+                >
+                  Contact
+                </span>
+              )}
+              {showReferAGuestButton && (
+                <span
+                  data-testid="booking-preview-refer"
+                  className="rounded-full border border-white/60 px-2.5 py-1 text-[9px] font-semibold text-white"
+                >
+                  <span className="sm:hidden">Refer</span>
+                  <span className="hidden sm:inline">Refer a Guest</span>
+                </span>
+              )}
+              {showLanguageSelector && languageCount > 1 && (
+                <span className="rounded-full border border-white/60 px-2 py-1 text-[9px] font-semibold text-white">
+                  {(defaultLanguage || "en").toUpperCase()}
+                </span>
+              )}
+              {showCurrencySelector && currencyCount > 1 && (
+                <span className="rounded-full border border-white/60 px-2 py-1 text-[9px] font-semibold text-white">
+                  {currency || "EUR"}
+                </span>
+              )}
             </div>
           </div>
 

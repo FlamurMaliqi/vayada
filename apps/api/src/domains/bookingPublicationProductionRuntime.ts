@@ -1,8 +1,12 @@
 import {
   createBookingLaunchReadinessProvider,
+  type BookingPublicationAuditContext,
+  type BookingPublicationCommandPort,
+  type BookingPublicationOperation,
   type BookingDesignReadinessPort,
   type BookingGuestPolicyReadPort,
   type BookingMandatoryChargeConfirmationEvidencePort,
+  type ReadyBookingPublicationEvidence,
 } from "@vayada/domain-booking";
 import { createBookingPublicationBuilder } from "@vayada/domain-distribution/booking-publication-builder";
 import type { HotelMediaResolutionPort } from "@vayada/domain-hotels";
@@ -34,8 +38,70 @@ export type BookingPublicationProductionRuntime = {
     readinessProvider: ReturnType<typeof createBookingLaunchReadinessProvider>;
   };
   projector: BookingPublicationProjector;
+  refresh: BookingPublicationRefreshPort["refresh"];
   close(): Promise<void>;
 };
+
+export type BookingPublicationRefreshPort = {
+  refresh(input: {
+    organizationId: string;
+    propertyId: string;
+    actorUserId: string;
+    idempotencyKey: string;
+    audit: BookingPublicationAuditContext;
+  }): Promise<BookingPublicationOperation>;
+};
+
+type BookingPublicationRefreshDependencies = {
+  readinessProvider: Pick<
+    ReturnType<typeof createBookingLaunchReadinessProvider>,
+    "getBookingReadiness"
+  >;
+  projection: Pick<
+    ReturnType<typeof createPgDistributionBookingPublicationProjection>,
+    "getActive"
+  >;
+  repository: Pick<BookingPublicationCommandPort, "requestPublication" | "getPublicationStatus">;
+  projector: Pick<BookingPublicationProjector, "projectPending">;
+};
+
+export function createBookingPublicationRefresh(
+  dependencies: BookingPublicationRefreshDependencies,
+): BookingPublicationRefreshPort["refresh"] {
+  return async (input) => {
+    const readiness = await dependencies.readinessProvider.getBookingReadiness({
+      organizationId: input.organizationId,
+      propertyId: input.propertyId,
+    });
+    if (
+      readiness.outcome !== "evaluated" ||
+      readiness.product !== "booking" ||
+      readiness.status !== "ready"
+    ) {
+      throw new Error("Booking publication readiness is incomplete.");
+    }
+    const active = await dependencies.projection.getActive(input.propertyId);
+    const requested = await dependencies.repository.requestPublication({
+      ...input,
+      expectedActiveContentRevisionId: active?.revisionId ?? null,
+      readiness: readiness as ReadyBookingPublicationEvidence,
+    });
+    if (!requested.ok) {
+      throw new Error(`Booking publication refresh failed: ${requested.error.code}.`);
+    }
+    await dependencies.projector.projectPending({ propertyId: input.propertyId });
+    const operation = await dependencies.repository.getPublicationStatus({
+      organizationId: input.organizationId,
+      propertyId: input.propertyId,
+      operationId: requested.operation.operationId,
+      actorUserId: input.actorUserId,
+    });
+    if (!operation || operation.status === "failed" || operation.status === "unknown") {
+      throw new Error("Booking publication refresh did not complete.");
+    }
+    return operation;
+  };
+}
 
 export type BookingPublicationWorker = { close(): Promise<void> };
 
@@ -150,9 +216,16 @@ export function createBookingPublicationProductionRuntime(config: {
     readiness: readinessProvider,
     builder,
   });
+  const refresh = createBookingPublicationRefresh({
+    readinessProvider,
+    projection,
+    repository,
+    projector,
+  });
   return {
     routes: { repository, readinessProvider },
     projector,
+    refresh,
     async close() {
       await Promise.all([
         projector.close?.(),

@@ -168,6 +168,10 @@ function sanitizeBooking(
       ? {
           branding: {
             logoUrl: branding.logoUrl,
+            showContactButton: branding.showContactButton,
+            showReferAGuestButton: branding.showReferAGuestButton,
+            showLanguageSelector: branding.showLanguageSelector,
+            showCurrencySelector: branding.showCurrencySelector,
             heroImage: branding.heroImage,
             heroHeading: branding.heroHeading,
             heroSubtext: branding.heroSubtext,

@@ -11,6 +11,7 @@ export const BOOKING_ADMIN_ADDON_ITEMS_PATH = `/api/booking/hotels/${BOOKING_ADM
 export const BOOKING_ADMIN_PROMO_CODES_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/promo-codes`;
 export const BOOKING_ADMIN_PROPERTY_LINK_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/property-link`;
 export const BOOKING_ADMIN_PROPERTY_PROFILE_PATH = `/api/hotel-setup/properties/${BOOKING_ADMIN_PROPERTY_ID}/profile`;
+export const BOOKING_ADMIN_PUBLIC_PROPERTY_PROFILE_PATH = `/api/hotel-setup/properties/${BOOKING_ADMIN_PROPERTY_ID}/public-profile`;
 export const BOOKING_ADMIN_PROPERTY_SETTINGS_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/property`;
 const BOOKING_ADMIN_BOOKING_ACCEPTANCE_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/booking-acceptance`;
 export const BOOKING_ADMIN_SAME_DAY_PATH = `/api/booking/hotels/${BOOKING_ADMIN_HOTEL_ID}/settings/same-day-booking`;
@@ -121,6 +122,10 @@ export interface BookingAdminRoomFilterSettingsFixture {
 export interface BookingAdminDesignSettingsFixture {
   headerLogo: string;
   headerLogoMediaObjectId: string | null;
+  showContactButton: boolean;
+  showReferAGuestButton: boolean;
+  showLanguageSelector: boolean;
+  showCurrencySelector: boolean;
   heroImage: string;
   heroHeading: string;
   heroSubtext: string;
@@ -222,6 +227,17 @@ export const defaultBookingAdminPropertyProfile = {
   },
 };
 
+export const defaultBookingAdminPublicPropertyProfile = {
+  propertyId: BOOKING_ADMIN_PROPERTY_ID,
+  profileRevision: 1,
+  publicProfile: {
+    locale: "en",
+    shortDescription: "An independent alpine escape made for memorable direct stays.",
+    longDescription: null,
+    media: [],
+  },
+};
+
 const defaultAddonSettings: BookingAdminAddonSettingsFixture = {
   showAddonsStep: true,
   groupAddonsByCategory: true,
@@ -302,6 +318,10 @@ const defaultRoomFilterSettings: BookingAdminRoomFilterSettingsFixture = {
 export const defaultBookingAdminDesignSettings: BookingAdminDesignSettingsFixture = {
   headerLogo: "",
   headerLogoMediaObjectId: null,
+  showContactButton: true,
+  showReferAGuestButton: false,
+  showLanguageSelector: true,
+  showCurrencySelector: true,
   heroImage: "/hotel-hero.JPG",
   heroHeading: "Stay above the clouds",
   heroSubtext: "An independent alpine escape made for memorable direct stays.",
@@ -496,6 +516,9 @@ export async function mockBookingAdminShellRoutes(
   );
   await page.route(`**${BOOKING_ADMIN_PROPERTY_PROFILE_PATH}*`, (route) =>
     route.fulfill({ json: defaultBookingAdminPropertyProfile }),
+  );
+  await page.route(`**${BOOKING_ADMIN_PUBLIC_PROPERTY_PROFILE_PATH}*`, (route) =>
+    route.fulfill({ json: defaultBookingAdminPublicPropertyProfile }),
   );
   await page.route(`**${BOOKING_ADMIN_PUBLIC_BOOKABILITY_PATH}*`, (route) =>
     route.fulfill({

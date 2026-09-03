@@ -52,6 +52,7 @@ import { buildApp } from "./app.js";
 import { agencyPropertyAccessRepository } from "./testAuthorization.js";
 import { loadConfig } from "./config.js";
 import { HIDDEN_GUEST_CONTACT } from "./domains/bookingGuestContactAccess.js";
+import type { BookingPublicationRefreshPort } from "./domains/bookingPublicationProductionRuntime.js";
 import type { PropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
 import { pmsRoomOrderVersion } from "./domains/pmsRoomOrder.js";
 import {
@@ -648,6 +649,10 @@ const bookingSettingsRepository: BookingSettingsReadRepository = {
     return {
       headerLogo: "https://cdn.vayada.example/alpenrose/header-logo.webp",
       headerLogoMediaObjectId: bookingHeaderLogoMediaObjectId,
+      showContactButton: true,
+      showReferAGuestButton: false,
+      showLanguageSelector: true,
+      showCurrencySelector: true,
       heroImage: "https://cdn.vayada.example/alpenrose/booking-hero.jpg",
       heroHeading: "Stay above the clouds",
       heroSubtext: "An independent alpine escape.",
@@ -742,6 +747,10 @@ const bookingSettingsWriteRepository: BookingSettingsWriteRepository = {
         settings.headerLogoMediaObjectId === undefined
           ? bookingHeaderLogoMediaObjectId
           : settings.headerLogoMediaObjectId,
+      showContactButton: settings.showContactButton ?? true,
+      showReferAGuestButton: settings.showReferAGuestButton ?? false,
+      showLanguageSelector: settings.showLanguageSelector ?? true,
+      showCurrencySelector: settings.showCurrencySelector ?? true,
       heroImage: settings.heroImage ?? "https://cdn.vayada.example/alpenrose/booking-hero.jpg",
       heroHeading: settings.heroHeading ?? "Stay above the clouds",
       heroSubtext: settings.heroSubtext ?? "An independent alpine escape.",
@@ -2535,6 +2544,11 @@ function targetPublicHotelProfileRow(): QueryResultRow {
       supportedLocales: ["en", "de"],
     },
     bookingHeaderLogo: "https://cdn.vayada.example/hotels/distribution-alpenrose/header-logo.webp",
+    bookingShowContactButton: false,
+    bookingShowReferAGuestButton: true,
+    bookingShowLanguageSelector: false,
+    bookingShowCurrencySelector: true,
+    bookingReferAGuestModuleEnabled: true,
     bookingHeroImage: "https://cdn.vayada.example/hotels/distribution-alpenrose/booking.jpg",
     bookingHeroHeading: "Stay in the heart of the Alps",
     bookingHeroSubtext: "Book direct for our best available rates.",
@@ -2655,6 +2669,7 @@ function buildAuthenticatedApp(
     settingsRepository?: BookingSettingsReadRepository;
     settingsWriteRepository?: BookingSettingsWriteRepository;
     publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort;
+    bookingPublicationRefresh?: BookingPublicationRefreshPort;
     pmsInventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort;
     customDomainRepository?: BookingCustomDomainRepository;
     bookingAddonItemsRepository?: BookingAddonItemsRepository;
@@ -2718,6 +2733,7 @@ function buildAuthenticatedApp(
     bookingSettingsWriteRepository:
       options.settingsWriteRepository ?? bookingSettingsWriteRepository,
     publicBookabilityPublisher: options.publicBookabilityPublisher,
+    bookingPublicationRefresh: options.bookingPublicationRefresh,
     pmsInventoryPublicOfferProjector: options.pmsInventoryPublicOfferProjector,
     bookingCustomDomainRepository: options.customDomainRepository ?? bookingCustomDomainRepository,
     bookingPropertyAccessRepository: propertyAccessRepository,
@@ -4457,6 +4473,44 @@ describe("vayada-api", () => {
     });
   });
 
+  it("refreshes the active Booking publication through the Design Studio endpoint", async () => {
+    const refreshInputs: Parameters<BookingPublicationRefreshPort["refresh"]>[0][] = [];
+    app = buildAuthenticatedApp({
+      bookingPublicationRefresh: {
+        async refresh(input) {
+          refreshInputs.push(input);
+          return {
+            operationId: "a1000000-0000-4000-8000-000000001299",
+            propertyId: input.propertyId,
+            status: "succeeded",
+            expectedActiveContentRevisionId: null,
+            resultContentRevisionId: "a1000000-0000-4000-8000-000000001300",
+            failureCode: null,
+            requestedAt: "2026-09-03T01:00:00.000Z",
+            updatedAt: "2026-09-03T01:00:01.000Z",
+            completedAt: "2026-09-03T01:00:01.000Z",
+          };
+        },
+      },
+    });
+
+    const response = await injectJson(app, {
+      method: "POST",
+      url: "/api/booking/hotels/booking_hotel_alpenrose/public-bookability",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({ status: "succeeded", propertyId: pmsPropertyId });
+    expect(refreshInputs).toHaveLength(1);
+    expect(refreshInputs[0]).toMatchObject({
+      organizationId: "org_hotel_group",
+      propertyId: pmsPropertyId,
+      actorUserId: "user_hotel_owner",
+      idempotencyKey: expect.any(String),
+    });
+  });
+
   it("returns booking property settings with auth, policy, and the legacy-compatible shape", async () => {
     app = buildAuthenticatedApp();
 
@@ -4608,6 +4662,10 @@ describe("vayada-api", () => {
     expect(readResponse.body).toEqual({
       headerLogo: "https://cdn.vayada.example/alpenrose/header-logo.webp",
       headerLogoMediaObjectId: bookingHeaderLogoMediaObjectId,
+      showContactButton: true,
+      showReferAGuestButton: false,
+      showLanguageSelector: true,
+      showCurrencySelector: true,
       heroImage: "https://cdn.vayada.example/alpenrose/booking-hero.jpg",
       heroHeading: "Stay above the clouds",
       heroSubtext: "An independent alpine escape.",
@@ -4621,6 +4679,10 @@ describe("vayada-api", () => {
       headers: { authorization: "Bearer valid-token" },
       payload: {
         headerLogoMediaObjectId: bookingHeaderLogoMediaObjectId,
+        showContactButton: false,
+        showReferAGuestButton: true,
+        showLanguageSelector: false,
+        showCurrencySelector: true,
         heroHeading: "Book the mountain directly",
         primaryColor: "#0F766E",
         fontPairing: "grand-classic",
@@ -4630,6 +4692,10 @@ describe("vayada-api", () => {
     expect(writeResponse.body).toEqual({
       headerLogo: "https://cdn.vayada.example/alpenrose/new-logo.webp",
       headerLogoMediaObjectId: bookingHeaderLogoMediaObjectId,
+      showContactButton: false,
+      showReferAGuestButton: true,
+      showLanguageSelector: false,
+      showCurrencySelector: true,
       heroImage: "https://cdn.vayada.example/alpenrose/booking-hero.jpg",
       heroHeading: "Book the mountain directly",
       heroSubtext: "An independent alpine escape.",
@@ -7122,6 +7188,10 @@ describe("vayada-api", () => {
         supportedCurrencies: ["EUR", "USD"],
         branding: {
           logoUrl: "https://cdn.vayada.example/hotels/distribution-alpenrose/header-logo.webp",
+          showContactButton: false,
+          showReferAGuestButton: true,
+          showLanguageSelector: false,
+          showCurrencySelector: true,
           heroImage: "https://cdn.vayada.example/hotels/distribution-alpenrose/booking.jpg",
           heroHeading: "Stay in the heart of the Alps",
           heroSubtext: "Book direct for our best available rates.",
@@ -7157,6 +7227,20 @@ describe("vayada-api", () => {
     expect(queries[0]?.text).toContain("hotel_catalog.property_slugs");
     expect(queries[0]?.text).toContain("booking.booking_settings");
     expect(queries[0]?.text).toContain('booking_header_logo.public_cdn_url AS "bookingHeaderLogo"');
+    expect(queries[0]?.text).toContain(
+      'booking_branding.show_contact_button AS "bookingShowContactButton"',
+    );
+    expect(queries[0]?.text).toContain("entitlement.entitlement_key = 'module:affiliates'");
+    expect(queries[0]?.text).toContain(
+      "pms_resource.organization_id = entitlement.organization_id",
+    );
+    expect(queries[0]?.text).toContain("pms_resource.product = 'pms'");
+    expect(queries[0]?.text).toContain("pms_resource.resource_type = 'pms_property'");
+    expect(queries[0]?.text).toContain(
+      "booking_resource.organization_id = entitlement.organization_id",
+    );
+    expect(queries[0]?.text).toContain("booking_resource.product = 'booking'");
+    expect(queries[0]?.text).toContain("booking_resource.resource_type = 'booking_hotel'");
     expect(queries[0]?.text).toContain("booking_branding.header_logo_media_object_id");
     expect(queries[0]?.text).toContain("media.purpose = 'booking.header_logo'");
     expect(queries[0]?.text).toContain('booking_branding.hero_image_url AS "bookingHeroImage"');
@@ -7166,6 +7250,10 @@ describe("vayada-api", () => {
     expect(queries[0]?.values).toEqual(["distribution-alpenrose"]);
     expect(serializePublicHotelProfileProjection(profile!).hotel.branding).toEqual({
       logoUrl: "https://cdn.vayada.example/hotels/distribution-alpenrose/header-logo.webp",
+      showContactButton: false,
+      showReferAGuestButton: true,
+      showLanguageSelector: false,
+      showCurrencySelector: true,
       heroImage: "https://cdn.vayada.example/hotels/distribution-alpenrose/booking.jpg",
       heroHeading: "Stay in the heart of the Alps",
       heroSubtext: "Book direct for our best available rates.",
@@ -7173,6 +7261,26 @@ describe("vayada-api", () => {
       fontPairing: "grand-classic",
     });
     expect(findForbiddenPublicBookabilityKeys(profile)).toEqual([]);
+  });
+
+  it("keeps Refer a Guest disabled without an active, property-scoped module entitlement", async () => {
+    const row = targetPublicHotelProfileRow();
+    row.bookingReferAGuestModuleEnabled = false;
+    const pool: PublicHotelProfileReadPool = {
+      async query<T extends QueryResultRow>() {
+        return { rows: [row] as unknown as T[] };
+      },
+      async end() {},
+    };
+    const repository = createTargetPublicHotelProfileRepository({
+      connectionString: "postgresql://target-db",
+      pool,
+    });
+
+    const profile = await repository.findProfileBySlug("distribution-alpenrose");
+
+    expect(profile?.hotel.capabilities.referralCodes).toBe(false);
+    expect(profile?.hotel.branding?.showReferAGuestButton).toBe(false);
   });
 
   it("reads target public quotes from distribution read models without PMS public API", async () => {
@@ -8175,6 +8283,10 @@ describe("vayada-api", () => {
       hero_subtext: string | null;
       primary_color: string;
       font_pairing: string;
+      show_contact_button: boolean;
+      show_refer_a_guest_button: boolean;
+      show_language_selector: boolean;
+      show_currency_selector: boolean;
       last_minute_discount: {
         enabled: boolean;
         stackWithPromo: boolean;
@@ -8209,6 +8321,10 @@ describe("vayada-api", () => {
       hero_subtext: "An independent alpine escape.",
       primary_color: "#2563EB",
       font_pairing: "modern-minimalist",
+      show_contact_button: true,
+      show_refer_a_guest_button: false,
+      show_language_selector: true,
+      show_currency_selector: true,
       last_minute_discount: {
         enabled: false,
         stackWithPromo: false,
@@ -8368,7 +8484,7 @@ describe("vayada-api", () => {
         }
 
         if (text.includes("SET header_logo_media_object_id = CASE")) {
-          const design = JSON.parse(values?.[1] as string) as Record<string, string | null>;
+          const design = JSON.parse(values?.[1] as string) as Record<string, unknown>;
           if (
             design.headerLogoMediaObjectId &&
             design.headerLogoMediaObjectId !== bookingHeaderLogoMediaObjectId
@@ -8384,16 +8500,36 @@ describe("vayada-api", () => {
             };
           }
           if (Object.hasOwn(design, "headerLogoMediaObjectId")) {
-            state.header_logo_media_object_id = design.headerLogoMediaObjectId;
-            state.header_logo_url = design.headerLogoMediaObjectId
+            const mediaObjectId =
+              typeof design.headerLogoMediaObjectId === "string"
+                ? design.headerLogoMediaObjectId
+                : null;
+            state.header_logo_media_object_id = mediaObjectId;
+            state.header_logo_url = mediaObjectId
               ? "https://cdn.vayada.example/alpenrose/new-logo.webp"
               : null;
           }
-          if (Object.hasOwn(design, "heroImage")) state.hero_image_url = design.heroImage || null;
-          if (Object.hasOwn(design, "heroHeading")) state.hero_heading = design.heroHeading || null;
-          if (Object.hasOwn(design, "heroSubtext")) state.hero_subtext = design.heroSubtext || null;
+          if (typeof design.heroImage === "string") state.hero_image_url = design.heroImage || null;
+          if (typeof design.heroHeading === "string") {
+            state.hero_heading = design.heroHeading || null;
+          }
+          if (typeof design.heroSubtext === "string") {
+            state.hero_subtext = design.heroSubtext || null;
+          }
           if (typeof design.primaryColor === "string") state.primary_color = design.primaryColor;
           if (typeof design.fontPairing === "string") state.font_pairing = design.fontPairing;
+          if (typeof design.showContactButton === "boolean") {
+            state.show_contact_button = design.showContactButton;
+          }
+          if (typeof design.showReferAGuestButton === "boolean") {
+            state.show_refer_a_guest_button = design.showReferAGuestButton;
+          }
+          if (typeof design.showLanguageSelector === "boolean") {
+            state.show_language_selector = design.showLanguageSelector;
+          }
+          if (typeof design.showCurrencySelector === "boolean") {
+            state.show_currency_selector = design.showCurrencySelector;
+          }
         } else if (text.includes("show_addons_step = $2")) {
           state.show_addons_step = values?.[1] as boolean;
           state.group_addons_by_category = values?.[2] as boolean;
@@ -8658,6 +8794,10 @@ describe("vayada-api", () => {
       headers: { authorization: "Bearer valid-token" },
       payload: {
         headerLogoMediaObjectId: bookingHeaderLogoMediaObjectId,
+        showContactButton: false,
+        showReferAGuestButton: true,
+        showLanguageSelector: false,
+        showCurrencySelector: true,
         heroHeading: "Book the mountain directly",
         primaryColor: "#0F766E",
         fontPairing: "grand-classic",
@@ -8667,6 +8807,10 @@ describe("vayada-api", () => {
     expect(designResponse.body).toEqual({
       headerLogo: "https://cdn.vayada.example/alpenrose/new-logo.webp",
       headerLogoMediaObjectId: bookingHeaderLogoMediaObjectId,
+      showContactButton: false,
+      showReferAGuestButton: true,
+      showLanguageSelector: false,
+      showCurrencySelector: true,
       heroImage: "https://cdn.vayada.example/alpenrose/booking-hero.jpg",
       heroHeading: "Book the mountain directly",
       heroSubtext: "An independent alpine escape.",
@@ -8697,6 +8841,10 @@ describe("vayada-api", () => {
       "booking_hotel_alpenrose",
       JSON.stringify({
         headerLogoMediaObjectId: bookingHeaderLogoMediaObjectId,
+        showContactButton: false,
+        showReferAGuestButton: true,
+        showLanguageSelector: false,
+        showCurrencySelector: true,
         heroHeading: "Book the mountain directly",
         primaryColor: "#0F766E",
         fontPairing: "grand-classic",
@@ -8749,6 +8897,10 @@ describe("vayada-api", () => {
     expect(partialDesignResponse.body).toEqual({
       headerLogo: "https://cdn.vayada.example/alpenrose/new-logo.webp",
       headerLogoMediaObjectId: bookingHeaderLogoMediaObjectId,
+      showContactButton: false,
+      showReferAGuestButton: true,
+      showLanguageSelector: false,
+      showCurrencySelector: true,
       heroImage: "https://cdn.vayada.example/alpenrose/booking-hero.jpg",
       heroHeading: "Book the mountain directly",
       heroSubtext: "Come for the mountains. Stay for the quiet.",

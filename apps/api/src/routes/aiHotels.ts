@@ -81,6 +81,11 @@ type TargetPublicHotelProfileRow = {
   capabilities: unknown;
   supportedQuoteParameters: unknown;
   bookingHeaderLogo: string | null;
+  bookingShowContactButton: boolean | null;
+  bookingShowReferAGuestButton: boolean | null;
+  bookingShowLanguageSelector: boolean | null;
+  bookingShowCurrencySelector: boolean | null;
+  bookingReferAGuestModuleEnabled: boolean;
   bookingHeroImage: string | null;
   bookingHeroHeading: string | null;
   bookingHeroSubtext: string | null;
@@ -364,6 +369,18 @@ function serializeHotelProfile(
       ? {
           branding: {
             logoUrl: hotel.branding.logoUrl ?? null,
+            ...(hotel.branding.showContactButton === undefined
+              ? {}
+              : { showContactButton: hotel.branding.showContactButton }),
+            ...(hotel.branding.showReferAGuestButton === undefined
+              ? {}
+              : { showReferAGuestButton: hotel.branding.showReferAGuestButton }),
+            ...(hotel.branding.showLanguageSelector === undefined
+              ? {}
+              : { showLanguageSelector: hotel.branding.showLanguageSelector }),
+            ...(hotel.branding.showCurrencySelector === undefined
+              ? {}
+              : { showCurrencySelector: hotel.branding.showCurrencySelector }),
             heroImage: hotel.branding.heroImage ?? null,
             heroHeading: hotel.branding.heroHeading ?? null,
             heroSubtext: hotel.branding.heroSubtext ?? null,
@@ -507,6 +524,42 @@ const TARGET_PUBLIC_PROFILE_SELECT = `SELECT
            profile.capabilities,
            profile.supported_quote_parameters AS "supportedQuoteParameters",
            booking_header_logo.public_cdn_url AS "bookingHeaderLogo",
+           booking_branding.show_contact_button AS "bookingShowContactButton",
+           booking_branding.show_refer_a_guest_button AS "bookingShowReferAGuestButton",
+           booking_branding.show_language_selector AS "bookingShowLanguageSelector",
+           booking_branding.show_currency_selector AS "bookingShowCurrencySelector",
+           EXISTS (
+             SELECT 1
+             FROM identity.product_entitlements entitlement
+             WHERE entitlement.product = 'pms'
+               AND entitlement.entitlement_key = 'module:affiliates'
+               AND entitlement.status = 'active'
+               AND entitlement.resource_product = 'pms'
+               AND entitlement.resource_type = 'pms_property'
+               AND entitlement.resource_id = profile.property_id::text
+               AND (entitlement.starts_at IS NULL OR entitlement.starts_at <= now())
+               AND (entitlement.expires_at IS NULL OR entitlement.expires_at > now())
+               AND EXISTS (
+                 SELECT 1
+                 FROM identity.organization_resource_links pms_resource
+                 WHERE pms_resource.organization_id = entitlement.organization_id
+                   AND pms_resource.product = 'pms'
+                   AND pms_resource.resource_type = 'pms_property'
+                   AND pms_resource.resource_id = profile.property_id::text
+                   AND pms_resource.relationship IN ('owner', 'operator')
+                   AND pms_resource.status = 'active'
+               )
+               AND EXISTS (
+                 SELECT 1
+                 FROM identity.organization_resource_links booking_resource
+                 WHERE booking_resource.organization_id = entitlement.organization_id
+                   AND booking_resource.product = 'booking'
+                   AND booking_resource.resource_type = 'booking_hotel'
+                   AND booking_resource.resource_id = profile.property_id::text
+                   AND booking_resource.relationship IN ('owner', 'operator')
+                   AND booking_resource.status = 'active'
+               )
+           ) AS "bookingReferAGuestModuleEnabled",
            booking_branding.hero_image_url AS "bookingHeroImage",
            booking_branding.hero_heading AS "bookingHeroHeading",
            booking_branding.hero_subtext AS "bookingHeroSubtext",
@@ -571,7 +624,7 @@ function toTargetPublicHotelProfileProjection(
     onlinePayment: booleanValue(capabilities["onlinePayment"]),
     payAtProperty: booleanValue(capabilities["payAtProperty"]),
     promoCodes: booleanValue(capabilities["promoCodes"]),
-    referralCodes: booleanValue(capabilities["referralCodes"]),
+    referralCodes: row.bookingReferAGuestModuleEnabled,
     bookingDeepLinks: booleanValue(capabilities["bookingDeepLinks"]),
   };
   const trust = targetProfileTrust(
@@ -663,6 +716,11 @@ function publicBookingBranding(
 ): Pick<PublicBookabilityHotelProfile, "branding"> {
   const branding = {
     logoUrl: stringValue(row.bookingHeaderLogo),
+    showContactButton: row.bookingShowContactButton ?? true,
+    showReferAGuestButton:
+      row.bookingReferAGuestModuleEnabled && (row.bookingShowReferAGuestButton ?? false),
+    showLanguageSelector: row.bookingShowLanguageSelector ?? true,
+    showCurrencySelector: row.bookingShowCurrencySelector ?? true,
     heroImage: stringValue(row.bookingHeroImage),
     heroHeading: stringValue(row.bookingHeroHeading),
     heroSubtext: stringValue(row.bookingHeroSubtext),

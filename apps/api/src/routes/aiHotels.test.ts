@@ -63,6 +63,11 @@ function targetProfileRow(overrides: Record<string, unknown> = {}): QueryResultR
     bookingHeroSubtext: null,
     bookingPrimaryColor: null,
     bookingFontPairing: null,
+    bookingShowContactButton: true,
+    bookingShowReferAGuestButton: false,
+    bookingShowLanguageSelector: true,
+    bookingShowCurrencySelector: true,
+    bookingReferAGuestModuleEnabled: false,
     publicSetupCompleteness: { status: "ready", missing: [] },
     sourceFreshness: {
       hotel_catalog: { status: "fresh", generatedAt: "2026-07-22T09:55:00.000Z" },
@@ -332,6 +337,10 @@ describe("target public hotel profile security", () => {
       heroSubtext: "Book direct for our best available rates.",
       primaryColor: "#3157D5",
       fontPairing: "grand-classic",
+      showContactButton: true,
+      showReferAGuestButton: false,
+      showLanguageSelector: true,
+      showCurrencySelector: true,
     });
     expect(queries[0]?.text).toContain('booking_header_logo.public_cdn_url AS "bookingHeaderLogo"');
     expect(queries[0]?.text).toContain("booking_branding.header_logo_media_object_id");
@@ -392,6 +401,10 @@ describe("target public hotel profile security", () => {
       heroSubtext: "An independent alpine escape.",
       primaryColor: "#2563EB",
       fontPairing: "modern-minimalist",
+      showContactButton: true,
+      showReferAGuestButton: false,
+      showLanguageSelector: true,
+      showCurrencySelector: true,
     });
     expect(findForbiddenPublicBookabilityKeys(response.json())).toEqual([]);
     await app.close();

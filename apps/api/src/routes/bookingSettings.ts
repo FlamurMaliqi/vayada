@@ -11,6 +11,7 @@ import {
   type BookingAcceptanceSettingsPort,
 } from "../domains/bookingAcceptanceSettings.js";
 import type { SameDayBookingSettingsPort } from "../domains/sameDayBookingSettings.js";
+import type { BookingPublicationRefreshPort } from "../domains/bookingPublicationProductionRuntime.js";
 import { syncPropertyOfferReadModels } from "./marketplaceAdmin.js";
 import { enforceRoutePolicy } from "./policy.js";
 
@@ -223,6 +224,10 @@ export type BookingRoomFilterSettingsReadModel = {
 export type BookingDesignSettingsReadModel = {
   headerLogo?: string | null;
   headerLogoMediaObjectId?: string | null;
+  showContactButton?: boolean | null;
+  showReferAGuestButton?: boolean | null;
+  showLanguageSelector?: boolean | null;
+  showCurrencySelector?: boolean | null;
   heroImage?: string | null;
   heroHeading?: string | null;
   heroSubtext?: string | null;
@@ -312,6 +317,10 @@ export type BookingRoomFilterSettingsResponse = {
 export type BookingDesignSettingsResponse = {
   headerLogo: string;
   headerLogoMediaObjectId: string | null;
+  showContactButton: boolean;
+  showReferAGuestButton: boolean;
+  showLanguageSelector: boolean;
+  showCurrencySelector: boolean;
   heroImage: string;
   heroHeading: string;
   heroSubtext: string;
@@ -489,10 +498,7 @@ type BookingSettingsQueryClient = {
 };
 
 export type BookingSettingsWriteErrorCategory =
-  | "authentication"
-  | "authorization"
-  | "validation"
-  | "write_model";
+  "authentication" | "authorization" | "validation" | "write_model";
 
 export type BookingSettingsWriteErrorCode =
   | "unauthenticated"
@@ -517,9 +523,7 @@ export type BookingSettingsWriteError = {
 
 export type BookingAddonSettingsErrorCategory = "authentication" | "authorization" | "read_model";
 export type BookingGuestFormSettingsErrorCategory =
-  | "authentication"
-  | "authorization"
-  | "read_model";
+  "authentication" | "authorization" | "read_model";
 
 export type BookingAddonSettingsErrorCode =
   | "unauthenticated"
@@ -540,23 +544,15 @@ export type BookingGuestFormSettingsErrorCode =
   | "read_model_unavailable";
 
 export type BookingBenefitsSettingsErrorCategory =
-  | "authentication"
-  | "authorization"
-  | "read_model";
+  "authentication" | "authorization" | "read_model";
 
 export type BookingLocalizationSettingsErrorCategory =
-  | "authentication"
-  | "authorization"
-  | "read_model";
+  "authentication" | "authorization" | "read_model";
 
 export type BookingRoomFilterSettingsErrorCategory =
-  | "authentication"
-  | "authorization"
-  | "read_model";
+  "authentication" | "authorization" | "read_model";
 export type BookingLastMinuteSettingsErrorCategory =
-  | "authentication"
-  | "authorization"
-  | "read_model";
+  "authentication" | "authorization" | "read_model";
 
 export type BookingBenefitsSettingsErrorCode =
   | "unauthenticated"
@@ -852,6 +848,10 @@ type TargetBookingSettingsRow = {
   filter_rooms: unknown;
   header_logo_media_object_id: string | null;
   header_logo_url: string | null;
+  show_contact_button: boolean | null;
+  show_refer_a_guest_button: boolean | null;
+  show_language_selector: boolean | null;
+  show_currency_selector: boolean | null;
   hero_image_url: string | null;
   hero_heading: string | null;
   hero_subtext: string | null;
@@ -1067,6 +1067,10 @@ const TARGET_BOOKING_PROPERTY_SETTINGS_SELECT = `
       ELSE settings.header_logo_media_object_id
     END AS header_logo_media_object_id,
     booking_header_logo.public_cdn_url AS header_logo_url,
+    settings.show_contact_button,
+    settings.show_refer_a_guest_button,
+    settings.show_language_selector,
+    settings.show_currency_selector,
     settings.hero_image_url,
     settings.hero_heading,
     settings.hero_subtext,
@@ -1170,6 +1174,10 @@ const TARGET_BOOKING_SETTINGS_SELECT = `
       ELSE settings.header_logo_media_object_id
     END AS header_logo_media_object_id,
     booking_header_logo.public_cdn_url AS header_logo_url,
+    settings.show_contact_button,
+    settings.show_refer_a_guest_button,
+    settings.show_language_selector,
+    settings.show_currency_selector,
     settings.hero_image_url,
     settings.hero_heading,
     settings.hero_subtext,
@@ -1224,6 +1232,26 @@ const TARGET_BOOKING_DESIGN_SETTINGS_UPDATE = `
             THEN NULLIF(BTRIM($2::jsonb ->> 'headerLogoMediaObjectId'), '')::uuid
           ELSE settings.header_logo_media_object_id
         END,
+        show_contact_button = CASE
+          WHEN $2::jsonb ? 'showContactButton'
+            THEN ($2::jsonb ->> 'showContactButton')::boolean
+          ELSE settings.show_contact_button
+        END,
+        show_refer_a_guest_button = CASE
+          WHEN $2::jsonb ? 'showReferAGuestButton'
+            THEN ($2::jsonb ->> 'showReferAGuestButton')::boolean
+          ELSE settings.show_refer_a_guest_button
+        END,
+        show_language_selector = CASE
+          WHEN $2::jsonb ? 'showLanguageSelector'
+            THEN ($2::jsonb ->> 'showLanguageSelector')::boolean
+          ELSE settings.show_language_selector
+        END,
+        show_currency_selector = CASE
+          WHEN $2::jsonb ? 'showCurrencySelector'
+            THEN ($2::jsonb ->> 'showCurrencySelector')::boolean
+          ELSE settings.show_currency_selector
+        END,
         hero_image_url = CASE
           WHEN $2::jsonb ? 'heroImage'
             THEN NULLIF(BTRIM($2::jsonb ->> 'heroImage'), '')
@@ -1271,6 +1299,10 @@ const TARGET_BOOKING_DESIGN_SETTINGS_UPDATE = `
       settings.custom_filters,
       settings.filter_rooms,
       settings.header_logo_media_object_id,
+      settings.show_contact_button,
+      settings.show_refer_a_guest_button,
+      settings.show_language_selector,
+      settings.show_currency_selector,
       settings.hero_image_url,
       settings.hero_heading,
       settings.hero_subtext,
@@ -1304,6 +1336,10 @@ const TARGET_BOOKING_DESIGN_SETTINGS_UPDATE = `
       ELSE updated_settings.header_logo_media_object_id
     END AS header_logo_media_object_id,
     booking_header_logo.public_cdn_url AS header_logo_url,
+    updated_settings.show_contact_button,
+    updated_settings.show_refer_a_guest_button,
+    updated_settings.show_language_selector,
+    updated_settings.show_currency_selector,
     updated_settings.hero_image_url,
     updated_settings.hero_heading,
     updated_settings.hero_subtext,
@@ -1564,6 +1600,10 @@ function toTargetDesignSettings(row: TargetBookingSettingsRow): BookingDesignSet
   return {
     headerLogo: row.header_logo_url,
     headerLogoMediaObjectId: row.header_logo_media_object_id,
+    showContactButton: row.show_contact_button,
+    showReferAGuestButton: row.show_refer_a_guest_button,
+    showLanguageSelector: row.show_language_selector,
+    showCurrencySelector: row.show_currency_selector,
     heroImage: row.hero_image_url,
     heroHeading: row.hero_heading,
     heroSubtext: row.hero_subtext,
@@ -1804,6 +1844,10 @@ export function createPgTargetBookingSettingsRepository(config: {
           settings.custom_filters,
           settings.filter_rooms,
           settings.header_logo_media_object_id,
+          settings.show_contact_button,
+          settings.show_refer_a_guest_button,
+          settings.show_language_selector,
+          settings.show_currency_selector,
           settings.hero_image_url,
           settings.hero_heading,
           settings.hero_subtext,
@@ -1836,6 +1880,10 @@ export function createPgTargetBookingSettingsRepository(config: {
             ELSE updated_settings.header_logo_media_object_id
           END AS header_logo_media_object_id,
           booking_header_logo.public_cdn_url AS header_logo_url,
+          updated_settings.show_contact_button,
+          updated_settings.show_refer_a_guest_button,
+          updated_settings.show_language_selector,
+          updated_settings.show_currency_selector,
           updated_settings.hero_image_url,
           updated_settings.hero_heading,
           updated_settings.hero_subtext,
@@ -2078,6 +2126,7 @@ export async function registerBookingSettingsRoutes(
   repository: BookingSettingsReadRepository,
   writeRepository?: BookingSettingsWriteRepository,
   publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort,
+  bookingPublicationRefresh?: BookingPublicationRefreshPort,
   inventoryPublicOfferProjector?: PmsInventoryPublicOfferProjectionPort,
   bookingAcceptanceSettings?: BookingAcceptanceSettingsPort,
   sameDayBookingSettings?: SameDayBookingSettingsPort,
@@ -2544,14 +2593,16 @@ export async function registerBookingSettingsRoutes(
     },
   );
 
-  if (publicBookabilityPublisher) {
+  const targetPublicBookabilityPublisher = publicBookabilityPublisher;
+  if (targetPublicBookabilityPublisher || bookingPublicationRefresh) {
     app.post<{ Params: BookingHotelParams }>(
       "/hotels/:hotelId/public-bookability",
       async (request, reply) => {
         const { hotelId } = request.params;
 
+        let context: ReturnType<typeof enforceBookingSettingsPolicy>;
         try {
-          enforceBookingSettingsPolicy(request, hotelId);
+          context = enforceBookingSettingsPolicy(request, hotelId);
         } catch (error) {
           const contractError = toBookingSettingsAccessError(error, request, hotelId);
           if (contractError) return sendBookingSettingsWriteError(reply, contractError);
@@ -2590,7 +2641,19 @@ export async function registerBookingSettingsRoutes(
         }
 
         try {
-          let publication = await publicBookabilityPublisher.publish({
+          if (bookingPublicationRefresh) {
+            return await bookingPublicationRefresh.refresh({
+              organizationId: context.selectedOrganization.organizationId,
+              propertyId: propertyLink.propertyId,
+              actorUserId: context.actor.internalUserId,
+              idempotencyKey: context.audit.requestId,
+              audit: context.audit,
+            });
+          }
+          if (!targetPublicBookabilityPublisher) {
+            throw new Error("Public bookability publication is unavailable.");
+          }
+          let publication = await targetPublicBookabilityPublisher.publish({
             propertyId: propertyLink.propertyId,
           });
           if (!publication) {
@@ -2606,7 +2669,7 @@ export async function registerBookingSettingsRoutes(
               propertyId: propertyLink.propertyId,
             });
             if (projection.projectedOfferDays > 0) {
-              publication = await publicBookabilityPublisher.publish({
+              publication = await targetPublicBookabilityPublisher.publish({
                 propertyId: propertyLink.propertyId,
               });
               if (!publication) {
@@ -3357,6 +3420,10 @@ function parseDesignSettingsWriteBody(
 
   const allowedKeys = new Set([
     "headerLogoMediaObjectId",
+    "showContactButton",
+    "showReferAGuestButton",
+    "showLanguageSelector",
+    "showCurrencySelector",
     "heroImage",
     "heroHeading",
     "heroSubtext",
@@ -3387,6 +3454,14 @@ function parseDesignSettingsWriteBody(
     }
     value.headerLogoMediaObjectId = headerLogoMediaObjectId;
   }
+  const showContactButton = expectOptionalBoolean(body, "showContactButton", details);
+  if (showContactButton !== undefined) value.showContactButton = showContactButton;
+  const showReferAGuestButton = expectOptionalBoolean(body, "showReferAGuestButton", details);
+  if (showReferAGuestButton !== undefined) value.showReferAGuestButton = showReferAGuestButton;
+  const showLanguageSelector = expectOptionalBoolean(body, "showLanguageSelector", details);
+  if (showLanguageSelector !== undefined) value.showLanguageSelector = showLanguageSelector;
+  const showCurrencySelector = expectOptionalBoolean(body, "showCurrencySelector", details);
+  if (showCurrencySelector !== undefined) value.showCurrencySelector = showCurrencySelector;
   const heroImage = expectOptionalBoundedString(body, "heroImage", 2048, details);
   if (heroImage !== undefined) {
     if (heroImage && !isHttpUrl(heroImage)) {
@@ -3521,6 +3596,10 @@ export function toDesignSettingsResponse(
     headerLogoMediaObjectId: settings.headerLogo
       ? (settings.headerLogoMediaObjectId ?? null)
       : null,
+    showContactButton: settings.showContactButton ?? true,
+    showReferAGuestButton: settings.showReferAGuestButton ?? false,
+    showLanguageSelector: settings.showLanguageSelector ?? true,
+    showCurrencySelector: settings.showCurrencySelector ?? true,
     heroImage: settings.heroImage ?? "",
     heroHeading: settings.heroHeading ?? "",
     heroSubtext: settings.heroSubtext ?? "",
@@ -3786,9 +3865,7 @@ type NullablePropertySettingsStringKey =
   | "cancellationPolicyText";
 
 type BooleanPropertySettingsKey =
-  | "specialRequestsEnabled"
-  | "arrivalTimeEnabled"
-  | "guestCountEnabled";
+  "specialRequestsEnabled" | "arrivalTimeEnabled" | "guestCountEnabled";
 
 function assignOptionalNullableString(
   target: UpdateBookingPropertySettingsBody,
@@ -4373,10 +4450,7 @@ type BookingSettingsAccessError = {
 };
 
 type BookingSettingsAuthorizationErrorCode =
-  | "missing_permission"
-  | "missing_entitlement"
-  | "inactive_entitlement"
-  | "missing_resource_access";
+  "missing_permission" | "missing_entitlement" | "inactive_entitlement" | "missing_resource_access";
 
 function enforceBookingSettingsPolicy(
   request: FastifyRequest,

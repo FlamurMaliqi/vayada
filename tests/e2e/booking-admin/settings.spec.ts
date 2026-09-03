@@ -10,6 +10,7 @@ import {
   BOOKING_ADMIN_SAME_DAY_PATH,
   defaultBookingAdminPropertySettings,
   defaultCustomDomain,
+  mockBookingAdminDesignSettings,
   mockBookingAdminAuthenticatedSession,
   mockBookingAdminShellRoutes,
   type BookingAdminCustomDomainFixture,
@@ -244,6 +245,7 @@ test.describe("booking-admin settings no-legacy guard", () => {
     const assertHealthy = watchPageHealth(page, testInfo);
     await mockBookingAdminAuthenticatedSession(page);
     await mockBookingAdminShellRoutes(page);
+    const { requests: designRequests } = await mockBookingAdminDesignSettings(page);
     let customDomain: BookingAdminCustomDomainFixture = defaultCustomDomain;
     await page.route(`**${BOOKING_ADMIN_CUSTOM_DOMAIN_PATH}*`, async (route) => {
       const method = route.request().method();
@@ -281,28 +283,104 @@ test.describe("booking-admin settings no-legacy guard", () => {
 
     await page.goto("/design-studio");
 
-    const customDomainHeading = page.getByRole("heading", { name: "Custom Domain" });
-    const heroImageHeading = page.getByRole("heading", { name: /Hero Image/ });
+    await expect(page.getByRole("button", { name: "Content" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Colors" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Typography" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Layout" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Domain" })).toBeVisible();
+
     const preview = page.getByLabel("Live booking page preview");
-    await expect(customDomainHeading).toBeVisible();
+    const heroImageHeading = page.getByRole("heading", { name: /Hero Image/ });
     await expect(heroImageHeading).toBeVisible();
-    const mediaHeadings = await page.locator("h2").allTextContents();
-    expect(mediaHeadings.indexOf("Custom Domain")).toBeLessThan(
-      mediaHeadings.findIndex((heading) => heading.startsWith("Hero Image")),
-    );
-    await expect(preview).toContainText("hotel-alpenrose.booking.vayada.com");
+    await expect(page.getByRole("heading", { name: "Custom Domain" })).toHaveCount(0);
+    await expect(page.getByRole("switch", { name: "Contact button" })).toBeChecked();
+    await expect(page.getByRole("switch", { name: "Refer a Guest button" })).toBeDisabled();
+    await expect(page.getByRole("switch", { name: "Language selector" })).toBeChecked();
+    await expect(page.getByRole("switch", { name: "Currency selector" })).toBeChecked();
+
+    await page.getByRole("switch", { name: "Contact button" }).click();
+    await page.getByRole("switch", { name: "Language selector" }).click();
+    await expect(preview).not.toContainText("Contact");
+    await expect(preview).not.toContainText("EN");
+    await expect(preview).toContainText("EUR");
+    await page.getByRole("button", { name: "Save Changes" }).click();
+    await expect
+      .poll(
+        () => designRequests.find((request) => request.method === "PATCH")?.body?.showContactButton,
+      )
+      .toBe(false);
+    await expect
+      .poll(
+        () =>
+          designRequests.find((request) => request.method === "PATCH")?.body?.showLanguageSelector,
+      )
+      .toBe(false);
+    expect(
+      designRequests.find((request) => request.method === "PATCH")?.body?.showCurrencySelector,
+    ).toBe(true);
+
+    await page.getByRole("button", { name: "Domain" }).click();
+    await expect(page.getByRole("heading", { name: "Current booking URL" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Custom Domain" })).toBeVisible();
+    await expect(heroImageHeading).toHaveCount(0);
+    await expect(page.getByText("hotel-alpenrose.booking.vayada.com")).toBeVisible();
+    await expect(preview).toContainText(/hotel-alpenrose\.booking\.localhost(?::\d+)?/);
 
     await page.getByPlaceholder("booking.yourdomain.com").fill("book.alpenrose.example");
     await page.getByRole("button", { name: "Connect Domain" }).click();
 
     await expect(preview).toContainText("book.alpenrose.example");
-    await expect(preview).not.toContainText("hotel-alpenrose.booking.vayada.com");
+    await expect(preview).not.toContainText(/hotel-alpenrose\.booking\.localhost(?::\d+)?/);
     await expect(page.getByText("custom.booking.vayada.com")).toBeVisible();
 
-    await page.getByRole("button", { name: "Remove Domain" }).click();
+    await page.getByRole("button", { name: "Remove domain" }).click();
 
     await expect(page.getByPlaceholder("booking.yourdomain.com")).toBeVisible();
-    await expect(preview).toContainText("hotel-alpenrose.booking.vayada.com");
+    await expect(preview).toContainText(/hotel-alpenrose\.booking\.localhost(?::\d+)?/);
+    await assertHealthy();
+  });
+
+  test("keeps Refer a Guest visible in the mobile Design Studio preview", async ({
+    page,
+  }, testInfo) => {
+    test.skip(
+      !PROD,
+      "Requires a production booking-admin build so the authenticated shell hydrates.",
+    );
+
+    const assertHealthy = watchPageHealth(page, testInfo);
+    await mockBookingAdminAuthenticatedSession(page);
+    await mockBookingAdminShellRoutes(page);
+    await mockBookingAdminDesignSettings(page);
+    await page.route("**/api/pms/properties/*/module-activations", (route) =>
+      route.fulfill({
+        json: {
+          hotelId: BOOKING_ADMIN_PROPERTY_ID,
+          canManage: true,
+          supportedModules: ["affiliates"],
+          activeModules: ["affiliates"],
+          activations: [
+            {
+              moduleId: "affiliates",
+              isActive: true,
+              activatedAt: "2026-06-22T10:00:00.000Z",
+              deactivatedAt: null,
+              updatedAt: "2026-06-22T10:00:00.000Z",
+            },
+          ],
+        },
+      }),
+    );
+
+    await page.goto("/design-studio");
+    const referToggle = page.getByRole("switch", { name: "Refer a Guest button" });
+    await expect(referToggle).toBeEnabled();
+    await referToggle.click();
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.getByRole("button", { name: "Preview" }).click();
+
+    await expect(page.getByTestId("booking-preview-refer")).toBeVisible();
+    await expect(page.getByTestId("booking-preview-refer")).toContainText("Refer");
     await assertHealthy();
   });
 

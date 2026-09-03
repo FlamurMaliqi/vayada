@@ -28,6 +28,10 @@ export type BookingWebPublicHotelResponse = {
     summary: string | null;
     branding?: {
       logoUrl?: string | null;
+      showContactButton?: boolean;
+      showReferAGuestButton?: boolean;
+      showLanguageSelector?: boolean;
+      showCurrencySelector?: boolean;
       heroImage: string | null;
       heroHeading: string | null;
       heroSubtext: string | null;
@@ -303,13 +307,20 @@ export function toLegacyHotel(data: BookingWebPublicHotelResponse): Hotel {
           fontPairing: hotel.branding.fontPairing || undefined,
         }
       : undefined,
+    headerSettings: {
+      showContactButton: hotel.branding?.showContactButton ?? true,
+      showReferAGuestButton: hotel.branding?.showReferAGuestButton ?? false,
+      showLanguageSelector: hotel.branding?.showLanguageSelector ?? true,
+      showCurrencySelector: hotel.branding?.showCurrencySelector ?? true,
+    },
     defaultLanguage: hotel.defaultLocale,
     supportedLanguages: hotel.supportedLocales,
     guestTypeSettings: {
       adultAgeThreshold: hotel.supportedQuoteParameters.adultAgeThreshold ?? 18,
       childrenEnabled: hotel.supportedQuoteParameters.childrenSupported,
     },
-    referAGuestEnabled: hotel.capabilities.referralCodes,
+    referAGuestEnabled:
+      hotel.capabilities.referralCodes && (hotel.branding?.showReferAGuestButton ?? false),
     instantBook: hotel.capabilities.instantBook,
     mapViewEnabled: false,
     showRoomDetailMap: false,

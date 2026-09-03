@@ -8,6 +8,14 @@ export type BookingWebAffiliateHotelResolver = {
   close?(): Promise<void>;
 };
 
+export type BookingWebAffiliateHotelResolverPool = {
+  query<Row extends pg.QueryResultRow = pg.QueryResultRow>(
+    text: string,
+    values?: unknown[],
+  ): Promise<{ rows: Row[] }>;
+  end(): Promise<void>;
+};
+
 type BookingWebAffiliateHotelParams = {
   slug: string;
 };
@@ -83,7 +91,7 @@ export async function registerBookingWebAffiliateRoutes(
     Params: BookingWebAffiliateHotelParams;
     Querystring: BookingWebAffiliateEmailQuery;
   }>("/hotels/:slug/affiliates/check-email", async (request, reply) => {
-    await assertHotelExists(options.hotelResolver, request.params.slug);
+    await assertAffiliateEnabled(options.hotelResolver, request.params.slug);
     const email = normalizeEmail(request.query.email);
     if (!email) {
       throw createHttpError(400, "Email is required.");
@@ -100,7 +108,7 @@ export async function registerBookingWebAffiliateRoutes(
     Params: BookingWebAffiliateHotelParams;
     Body: BookingWebAffiliateRegistrationRequest;
   }>("/hotels/:slug/affiliates", async (request, reply) => {
-    await assertHotelExists(options.hotelResolver, request.params.slug);
+    await assertAffiliateEnabled(options.hotelResolver, request.params.slug);
     const body = request.body ?? {};
     const email = normalizeEmail(body.email);
     const fullName = typeof body.fullName === "string" ? body.fullName.trim() : "";
@@ -126,7 +134,7 @@ export async function registerBookingWebAffiliateRoutes(
     Params: BookingWebAffiliateParams;
     Body: BookingWebAffiliateStripeConnectRequest;
   }>("/hotels/:slug/affiliates/:affiliateId/stripe/connect", async (request, reply) => {
-    await assertHotelExists(options.hotelResolver, request.params.slug);
+    await assertAffiliateEnabled(options.hotelResolver, request.params.slug);
     const email = normalizeEmail(request.body?.email);
     if (!email) {
       throw createHttpError(400, "Email is required.");
@@ -254,16 +262,51 @@ export function createPgBookingWebAffiliateRepository(
 export function createPgBookingWebAffiliateHotelResolver(config: {
   connectionString: string;
   max?: number;
+  pool?: BookingWebAffiliateHotelResolverPool;
 }): BookingWebAffiliateHotelResolver {
-  const pool = new pg.Pool({
-    connectionString: config.connectionString,
-    max: config.max,
-  });
+  const ownsPool = !config.pool;
+  const pool =
+    config.pool ??
+    new pg.Pool({
+      connectionString: config.connectionString,
+      max: config.max,
+    });
 
   return {
     async findProfileBySlug(slug) {
-      const result = await pool.query<{ slug: string }>(
-        `SELECT profile.canonical_slug AS slug
+      const result = await pool.query<{ referralCodes: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1
+           FROM identity.product_entitlements entitlement
+           WHERE entitlement.product = 'pms'
+             AND entitlement.entitlement_key = 'module:affiliates'
+             AND entitlement.status = 'active'
+             AND entitlement.resource_product = 'pms'
+             AND entitlement.resource_type = 'pms_property'
+             AND entitlement.resource_id = profile.property_id::text
+             AND (entitlement.starts_at IS NULL OR entitlement.starts_at <= now())
+             AND (entitlement.expires_at IS NULL OR entitlement.expires_at > now())
+             AND EXISTS (
+               SELECT 1
+               FROM identity.organization_resource_links pms_resource
+               WHERE pms_resource.organization_id = entitlement.organization_id
+                 AND pms_resource.product = 'pms'
+                 AND pms_resource.resource_type = 'pms_property'
+                 AND pms_resource.resource_id = profile.property_id::text
+                 AND pms_resource.relationship IN ('owner', 'operator')
+                 AND pms_resource.status = 'active'
+             )
+             AND EXISTS (
+               SELECT 1
+               FROM identity.organization_resource_links booking_resource
+               WHERE booking_resource.organization_id = entitlement.organization_id
+                 AND booking_resource.product = 'booking'
+                 AND booking_resource.resource_type = 'booking_hotel'
+                 AND booking_resource.resource_id = profile.property_id::text
+                 AND booking_resource.relationship IN ('owner', 'operator')
+                 AND booking_resource.status = 'active'
+             )
+         ) AS "referralCodes"
          FROM hotel_catalog.property_public_profile_read_model profile
          JOIN hotel_catalog.property_slugs property_slug
            ON property_slug.property_id = profile.property_id
@@ -275,22 +318,37 @@ export function createPgBookingWebAffiliateHotelResolver(config: {
          LIMIT 1`,
         [slug],
       );
-      return result.rows[0] ?? null;
+      const row = result.rows[0];
+      return row
+        ? { hotel: { capabilities: { referralCodes: row.referralCodes === true } } }
+        : null;
     },
     async close() {
-      await pool.end();
+      if (ownsPool) await pool.end();
     },
   };
 }
 
-async function assertHotelExists(
+async function assertAffiliateEnabled(
   repository: BookingWebAffiliateHotelResolver,
   slug: string,
 ): Promise<void> {
   const profile = await repository.findProfileBySlug(slug);
-  if (!profile) {
+  if (!hasReferralCapability(profile)) {
     throw createHttpError(404, "Booking Web hotel profile not found.");
   }
+}
+
+function hasReferralCapability(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const hotel = (value as Record<string, unknown>).hotel;
+  if (!hotel || typeof hotel !== "object") return false;
+  const capabilities = (hotel as Record<string, unknown>).capabilities;
+  return (
+    Boolean(capabilities) &&
+    typeof capabilities === "object" &&
+    (capabilities as Record<string, unknown>).referralCodes === true
+  );
 }
 
 async function findAffiliateRegistration(

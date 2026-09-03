@@ -1249,6 +1249,10 @@ const app = buildApp({
   bookingSettingsWriteRepository: bookingSettingsRepository,
   propertyLaunchSettingsRepository,
   publicBookabilityPublisher: routePublicBookabilityPublisher,
+  bookingPublicationRefresh:
+    config.publicHotelProfileSource === "active_publication" && bookingPublicationRuntime
+      ? { refresh: bookingPublicationRuntime.refresh.bind(bookingPublicationRuntime) }
+      : undefined,
   bookingCustomDomainRepository,
   marketplaceDiscoveryRepository,
   marketplaceCollaborationRepository: createPgMarketplaceCollaborationReadRepository({

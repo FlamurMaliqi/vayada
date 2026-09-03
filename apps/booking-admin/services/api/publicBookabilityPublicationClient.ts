@@ -15,6 +15,13 @@ export type PublicBookabilityPublication = {
   missingReadiness: string[];
 };
 
+export type ActiveBookingPublicationRefresh = {
+  operationId: string;
+  propertyId: string;
+  status: "pending" | "succeeded";
+  resultContentRevisionId: string | null;
+};
+
 export type PublicationReadinessStep = {
   id: "pms" | "payments" | "booking" | "profile";
   label: string;
@@ -23,11 +30,11 @@ export type PublicationReadinessStep = {
 export async function publishPublicBookabilityProfile(
   hotelId: string,
   client: PublicationApiClient = apiClient,
-): Promise<PublicBookabilityPublication> {
+): Promise<PublicBookabilityPublication | ActiveBookingPublicationRefresh> {
   const normalizedHotelId = hotelId.trim();
   if (!normalizedHotelId) throw new Error("Booking hotel id is required.");
 
-  return client.post<PublicBookabilityPublication>(
+  return client.post<PublicBookabilityPublication | ActiveBookingPublicationRefresh>(
     PUBLIC_BOOKABILITY_PUBLICATION_PATH.replace(":hotelId", encodeURIComponent(normalizedHotelId)),
     undefined,
     omitHotelContext,
