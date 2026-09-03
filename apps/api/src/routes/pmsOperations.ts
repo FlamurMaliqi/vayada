@@ -45,6 +45,8 @@ import {
   type PmsInboxReplyPort,
   type PmsInboxThreadSummary,
   type PmsInboxTimelineItem,
+  type PmsInboxTriageAction,
+  type PmsInboxTriagePort,
 } from "../domains/pmsInbox.js";
 import type {
   PmsCalendarDay,
@@ -1017,6 +1019,7 @@ export type PmsOperationsRoutesOptions = {
   inboxReadPort?: PmsInboxReadPort;
   inboxMarkReadPort?: PmsInboxMarkReadPort;
   inboxReplyPort?: PmsInboxReplyPort;
+  inboxTriagePort?: PmsInboxTriagePort;
 };
 
 type PmsPropertyParams = {
@@ -1198,6 +1201,7 @@ export async function registerPmsOperationsRoutes(
     await options.inboxReadPort?.close?.();
     await options.inboxMarkReadPort?.close?.();
     await options.inboxReplyPort?.close?.();
+    await options.inboxTriagePort?.close?.();
     await options.sameDayBookingSettings?.close?.();
   });
 
@@ -1226,6 +1230,9 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/messaging/threads/:threadId",
     "/properties/:propertyId/messaging/threads/:threadId/read",
     "/properties/:propertyId/messaging/threads/:threadId/messages",
+    "/properties/:propertyId/messaging/threads/:threadId/done",
+    "/properties/:propertyId/messaging/threads/:threadId/follow-up",
+    "/properties/:propertyId/messaging/threads/:threadId/reopen",
     "/properties/:propertyId/reservations",
     "/properties/:propertyId/reservations/:guestBookingId",
     "/properties/:propertyId/reservations/:guestBookingId/notes",
@@ -2289,6 +2296,72 @@ export async function registerPmsOperationsRoutes(
       }
     },
   );
+
+  for (const [pathAction, action] of [
+    ["done", "done"],
+    ["follow-up", "follow_up"],
+    ["reopen", "reopen"],
+  ] as const satisfies readonly (readonly [string, PmsInboxTriageAction])[]) {
+    app.post<{ Params: PmsInboxThreadParams; Body: unknown }>(
+      `/properties/:propertyId/messaging/threads/:threadId/${pathAction}`,
+      {
+        onRequest: async (request, reply) => {
+          if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+            sendPmsOperationsError(reply, missingOriginPermission());
+            return;
+          }
+          const context = await enforcePmsPropertyAccessPolicy(
+            request,
+            reply,
+            request.params.propertyId,
+            "pms.inbox.reply",
+            options.propertyAccessRepository,
+          );
+          if (context && !hasPermission(context, "pms.inbox.read"))
+            sendPmsOperationsError(reply, {
+              statusCode: 403,
+              code: "missing_permission",
+              category: "authorization",
+              message: "Missing required PMS Inbox read permission.",
+            });
+        },
+      },
+      async (request, reply) => {
+        const input = parseInboxTriage(request, action);
+        if ("error" in input) return sendPmsOperationsError(reply, input.error);
+        if (!options.inboxTriagePort)
+          return sendPmsOperationsError(
+            reply,
+            readModelUnavailable("PMS Inbox triage commands are unavailable."),
+          );
+        const { propertyId, threadId } = request.params;
+        const context = request.authContext!;
+        try {
+          const result = await options.inboxTriagePort.transition({
+            propertyId,
+            threadId,
+            organizationId: context.selectedOrganization.organizationId,
+            actorUserId: context.actor.internalUserId,
+            actorMembershipId: context.membership.membershipId,
+            action,
+            ...input.value,
+            audit: {
+              requestId: context.audit.requestId,
+              correlationId: context.audit.correlationId ?? context.audit.requestId,
+              requestedAt: context.audit.receivedAt,
+            },
+          });
+          if (!result.ok) return sendInboxTriageError(reply, result.error);
+          if (!validInboxTriageResult(result.value, propertyId, threadId, action, input.value))
+            throw new Error("Inbox triage scope mismatch");
+          return { contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION, ...result.value };
+        } catch {
+          request.log.error("PMS Inbox triage command failed");
+          return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
+        }
+      },
+    );
+  }
 
   app.post<{ Params: PmsInboxThreadParams; Body: unknown }>(
     "/properties/:propertyId/messaging/threads/:threadId/messages",
@@ -5359,6 +5432,51 @@ function parseInboxMarkRead(
   return { value: { idempotencyKey, readThroughMessageId } };
 }
 
+function parseInboxTriage(
+  request: FastifyRequest<{ Body: unknown }>,
+  action: PmsInboxTriageAction,
+):
+  | {
+      value: {
+        idempotencyKey: string;
+        expectedThreadVersion: number;
+        followUpAt: string | null;
+      };
+    }
+  | { error: PmsOperationsError } {
+  const body = objectBody(request.body);
+  const idempotencyKey = singleIdempotencyKey(request);
+  const expectedKeys =
+    action === "follow_up" ? ["expectedThreadVersion", "followUpAt"] : ["expectedThreadVersion"];
+  const expectedThreadVersion = body?.expectedThreadVersion;
+  const followUpAt = action === "follow_up" ? body?.followUpAt : null;
+  if (
+    !body ||
+    Object.keys(body).sort().join(",") !== expectedKeys.sort().join(",") ||
+    !idempotencyKey ||
+    typeof expectedThreadVersion !== "number" ||
+    !Number.isSafeInteger(expectedThreadVersion) ||
+    expectedThreadVersion < 1 ||
+    (action === "follow_up" &&
+      (typeof followUpAt !== "string" || !isCanonicalInboxInstant(followUpAt)))
+  )
+    return {
+      error: {
+        statusCode: 400,
+        code: "validation_failed",
+        category: "validation",
+        message: "Inbox triage command is invalid.",
+      },
+    };
+  return {
+    value: {
+      idempotencyKey,
+      expectedThreadVersion,
+      followUpAt: action === "follow_up" ? (followUpAt as string) : null,
+    },
+  };
+}
+
 function parseInboxReply(request: FastifyRequest<{ Body: unknown }>):
   | {
       value: {
@@ -5490,6 +5608,27 @@ function sendInboxMarkReadError(
   });
 }
 
+function sendInboxTriageError(
+  reply: FastifyReply,
+  error: Extract<Awaited<ReturnType<PmsInboxTriagePort["transition"]>>, { ok: false }>["error"],
+): FastifyReply {
+  const statusCode =
+    error.code === "thread_not_found"
+      ? 404
+      : error.code === "thread_version_conflict" || error.code === "idempotency_conflict"
+        ? 409
+        : 400;
+  return sendPmsOperationsError(reply, {
+    statusCode,
+    code: error.code,
+    category: statusCode === 404 ? "not_found" : statusCode === 409 ? "conflict" : "validation",
+    message: error.message,
+    ...(error.currentVersion === undefined
+      ? {}
+      : { details: { currentVersion: error.currentVersion } }),
+  });
+}
+
 function sendInboxReplyError(
   reply: FastifyReply,
   error: Extract<Awaited<ReturnType<PmsInboxReplyPort["reply"]>>, { ok: false }>["error"],
@@ -5527,6 +5666,30 @@ function validAcceptedInboxReply(
     : delivery.state === "held" &&
         delivery.channel === null &&
         Boolean(delivery.reasonCode?.trim());
+}
+
+function validInboxTriageResult(
+  value: Extract<Awaited<ReturnType<PmsInboxTriagePort["transition"]>>, { ok: true }>["value"],
+  propertyId: string,
+  threadId: string,
+  action: PmsInboxTriageAction,
+  input: { expectedThreadVersion: number; followUpAt: string | null },
+): boolean {
+  const expectedState =
+    action === "done" ? "done" : action === "follow_up" ? "follow_up" : "needs_attention";
+  return (
+    value.propertyId === propertyId &&
+    value.threadId === threadId &&
+    value.attentionState === expectedState &&
+    value.followUpAt === (action === "follow_up" ? input.followUpAt : null) &&
+    Number.isSafeInteger(value.threadVersion) &&
+    value.threadVersion > input.expectedThreadVersion
+  );
+}
+
+function isCanonicalInboxInstant(value: string): boolean {
+  const time = Date.parse(value);
+  return Number.isFinite(time) && new Date(time).toISOString() === value;
 }
 
 function invalidQuery(message: string): PmsOperationsError {

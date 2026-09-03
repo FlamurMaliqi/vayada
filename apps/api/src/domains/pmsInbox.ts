@@ -195,6 +195,47 @@ export type PmsInboxMarkReadPort = {
   close?(): Promise<void>;
 };
 
+export type PmsInboxTriageAction = "done" | "follow_up" | "reopen";
+
+export type PmsInboxTriagePort = {
+  transition(input: {
+    propertyId: string;
+    threadId: string;
+    organizationId: string;
+    actorUserId: string;
+    actorMembershipId: string;
+    action: PmsInboxTriageAction;
+    idempotencyKey: string;
+    expectedThreadVersion: number;
+    followUpAt: string | null;
+    audit: { requestId: string; correlationId: string; requestedAt: string };
+  }): Promise<
+    | {
+        ok: true;
+        value: {
+          propertyId: string;
+          threadId: string;
+          attentionState: "needs_attention" | "follow_up" | "done";
+          followUpAt: string | null;
+          threadVersion: number;
+        };
+      }
+    | {
+        ok: false;
+        error: {
+          code:
+            | "validation_failed"
+            | "thread_not_found"
+            | "thread_version_conflict"
+            | "idempotency_conflict";
+          message: string;
+          currentVersion?: number;
+        };
+      }
+  >;
+  close?(): Promise<void>;
+};
+
 export type PmsInboxReplyError = {
   code:
     | "validation_failed"
