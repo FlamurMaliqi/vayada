@@ -11,6 +11,31 @@ export type PmsInboxDeliveryFailure =
   | "invalid_delivery_payload"
   | "provider_rejected";
 
+export type PmsInboxDeliveryAttachmentContent = {
+  filename: string;
+  contentType: string;
+  bytes: Uint8Array;
+};
+
+export type PmsInboxDeliveryProviderInput = {
+  messageId: string;
+  providerIdempotencyReference: string;
+  channel: "ota" | "email";
+  providerConversationId: string | null;
+  recipientEmail: string | null;
+  subject: string;
+  text: string;
+  attachments: readonly PmsInboxDeliveryAttachmentContent[];
+};
+
+export type PmsInboxDeliveryProviderResult =
+  | { ok: true; providerReference: string }
+  | { ok: false; failure: PmsInboxDeliveryFailure; providerRequestId?: string };
+
+export type PmsInboxDeliveryProvider = {
+  send(input: PmsInboxDeliveryProviderInput): Promise<PmsInboxDeliveryProviderResult>;
+};
+
 export type PmsInboxDeliveryProjection =
   | {
       attemptOutcome: "transient_failure";
