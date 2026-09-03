@@ -27,11 +27,12 @@ jobs:
   smoke:
     name: Verify deployed next stack
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 70
     environment: next-smoke
     env:
       CI: "true"
       E2E_NEXT_STACK_SMOKE: "1"
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
       NEXT_STACK_SMOKE_ENV: next
       NEXT_STACK_SMOKE_ALLOW_LIVE_WORKOS: "1"
       NEXT_STACK_SMOKE_EMAIL_DOMAIN: ${{ vars.NEXT_STACK_SMOKE_EMAIL_DOMAIN }}
@@ -44,36 +45,98 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        timeout-minutes: 2
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
+        timeout-minutes: 2
         with:
           node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies
+        timeout-minutes: 3
         run: npm ci
 
       - name: Build PMS domain contracts
+        timeout-minutes: 2
         run: npm --workspace @vayada/domain-pms run build
 
       - name: Verify PMS optimizer safety tests
+        timeout-minutes: 5
         run: npm --workspace vayada-api test -- src/domains/pmsRoomAssignmentOptimizer.test.ts
 
-      - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+      - name: Resolve exact Playwright runtime
+        id: playwright_runtime
+        timeout-minutes: 1
+        run: node -p '"version=" + require("playwright-core/package.json").version' >> "$GITHUB_OUTPUT"
+
+      - name: Restore Playwright Chromium
+        id: chromium_cache
+        uses: actions/cache/restore@v4
+        timeout-minutes: 3
+        continue-on-error: true
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-chromium-headless-shell-${{ steps.playwright_runtime.outputs.version }}
+
+      - name: Install and verify Playwright Chromium
+        id: chromium_setup
+        timeout-minutes: 10
+        run: |
+          ./node_modules/.bin/playwright install --with-deps --only-shell chromium
+          node --input-type=module <<'NODE'
+          import { chromium } from "playwright";
+
+          const browser = await chromium.launch({ headless: true });
+          console.log(`Verified Chromium ${await browser.version()}`);
+          await browser.close();
+          NODE
+
+      - name: Save Playwright Chromium
+        id: chromium_cache_save
+        if: steps.chromium_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        timeout-minutes: 3
+        continue-on-error: true
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-chromium-headless-shell-${{ steps.playwright_runtime.outputs.version }}
+
+      - name: Report Chromium cache failure
+        if: ${{ always() && (steps.chromium_cache.outcome == 'failure' || steps.chromium_cache_save.outcome == 'failure') }}
+        timeout-minutes: 2
+        run: |
+          echo "::warning title=Playwright Chromium cache unavailable::The smoke will continue with the verified local browser, but a later run may need to download it again. Check the cache result and disk usage below."
+          echo "Playwright version: ${{ steps.playwright_runtime.outputs.version }}"
+          echo "Chromium cache hit: ${{ steps.chromium_cache.outputs.cache-hit }}"
+          df -h "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
+          du -sh "$PLAYWRIGHT_BROWSERS_PATH" || true
+
+      - name: Diagnose Chromium setup failure
+        if: ${{ always() && (steps.playwright_runtime.outcome == 'failure' || steps.chromium_setup.outcome == 'failure') }}
+        timeout-minutes: 2
+        run: |
+          echo "::error title=Playwright Chromium setup failed::The exact Chromium runtime could not be resolved, installed, and launched within the bounded setup steps. Check the install plan and disk usage below."
+          echo "Playwright version: ${{ steps.playwright_runtime.outputs.version }}"
+          ./node_modules/.bin/playwright install --dry-run --only-shell chromium || true
+          df -h "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
+          du -sh "$PLAYWRIGHT_BROWSERS_PATH" || true
 
       - name: Run next-stack smoke
+        timeout-minutes: 25
         run: npm run e2e:next-stack-smoke
 
       - name: Verify browser evidence contains no configured secrets
         id: evidence_audit
         if: always()
+        timeout-minutes: 2
         run: npm run e2e:next-stack-smoke:evidence-audit
 
       - name: Upload browser evidence
         if: always() && steps.evidence_audit.outcome == 'success'
         uses: actions/upload-artifact@v4
+        timeout-minutes: 3
         with:
           name: next-stack-smoke-evidence
           retention-days: 7
