@@ -26,11 +26,11 @@ export const MARKETPLACE_ONBOARDING_STEPS: OnboardingStep[] = [
   },
   {
     title: "Account details",
-    description: "Add the person Vayada should contact.",
+    description: "Add the person vayada should contact.",
   },
   {
     title: "Choose systems",
-    description: "Pick the Vayada systems this business will use.",
+    description: "Pick the vayada systems this business will use.",
   },
 ];
 

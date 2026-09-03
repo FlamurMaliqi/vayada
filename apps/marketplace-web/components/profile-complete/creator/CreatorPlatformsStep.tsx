@@ -126,7 +126,7 @@ export function CreatorPlatformsStep({
             Choose the {platformDisplayName(pendingAuthorization.platform)} account to connect
           </p>
           <p className="mt-1 text-xs text-gray-600">
-            Vayada will import statistics for the account you select.
+            vayada will import statistics for the account you select.
           </p>
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             {pendingAuthorization.accounts.map((account) => (

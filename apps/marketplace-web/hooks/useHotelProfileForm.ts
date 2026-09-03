@@ -176,7 +176,7 @@ export function useHotelProfileForm(options: UseHotelProfileFormOptions = {}) {
       }
 
       if (options.requireLocalityConsent && !form.localityPublic) {
-        onError?.("Consent to show your city and country on public Vayada surfaces is required.");
+        onError?.("Consent to show your city and country on public vayada surfaces is required.");
         return false;
       }
 

@@ -62,7 +62,7 @@ export function resolveSharedFirstRunSetupView(
   if (!status) return emptyView("loading", "Loading setup");
 
   if (status.organization.selectedTracks.length === 0 || options.forceTrackSelection) {
-    return emptyView("track_selection", "Choose how you’ll use Vayada");
+    return emptyView("track_selection", "Choose how you’ll use vayada");
   }
 
   if (options.forceCreateProperty || status.propertySelection.state === "no_property") {

@@ -50,7 +50,7 @@ export function HotelBasicInfoStep({
             </h3>
             <p className="mt-1 text-sm leading-5 text-gray-500">
               {publicProfileMode
-                ? "Add the description and visibility choices used across Vayada’s public surfaces."
+                ? "Add the description and visibility choices used across vayada’s public surfaces."
                 : "Your shared hotel details are already saved. Add only the pitch creators should see."}
             </p>
           </div>
@@ -97,7 +97,7 @@ export function HotelBasicInfoStep({
             />
             <span>
               <span className="block font-semibold">
-                Show city and country on public Vayada surfaces
+                Show city and country on public vayada surfaces
               </span>
               <span
                 id="marketplace-locality-consent-help"

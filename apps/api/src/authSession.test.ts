@@ -2200,7 +2200,7 @@ describe("AuthKit session routes", () => {
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({
       state: "auth_failed",
-      message: "This email already has a Vayada account. Sign in instead.",
+      message: "This email already has a vayada account. Sign in instead.",
     });
     expect(authenticateCalled).toBe(false);
     expect(organizationCalled).toBe(false);

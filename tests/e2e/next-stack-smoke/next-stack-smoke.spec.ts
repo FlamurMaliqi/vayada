@@ -499,7 +499,7 @@ async function runHotelFlow(
     await login(page, user, environment.password);
     await acceptNecessaryCookies(page);
     await expect(
-      page.getByRole("heading", { name: "Welcome to Vayada — what brings you here?" }),
+      page.getByRole("heading", { name: "Welcome to vayada — what brings you here?" }),
     ).toBeVisible();
     await page.getByRole("radio", { name: /i manage a hotel/i }).click();
     await page.getByRole("button", { name: "Continue", exact: true }).click();
@@ -509,7 +509,7 @@ async function runHotelFlow(
     await page.getByRole("button", { name: "Continue to hotel setup" }).click();
     await expect(page.getByRole("heading", { name: "Your profile is ready" })).toBeVisible();
     await page.getByRole("button", { name: "Set up my first hotel" }).click();
-    await expect(page.getByRole("heading", { name: "Choose how you’ll use Vayada" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Choose how you’ll use vayada" })).toBeVisible();
     const result = await readAuthSession(page);
     expect(result.organizationKind).toBe("hotel_group");
     return result;
@@ -855,7 +855,7 @@ async function runForeignHotelFlow(
   await page.getByRole("button", { name: "Continue to hotel setup" }).click();
   await expect(page.getByRole("heading", { name: "Your profile is ready" })).toBeVisible();
   await page.getByRole("button", { name: "Set up my first hotel" }).click();
-  await expect(page.getByRole("heading", { name: "Choose how you’ll use Vayada" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Choose how you’ll use vayada" })).toBeVisible();
   const session = await readAuthSession(page);
   expect(session.organizationKind).toBe("hotel_group");
   const api = targetApi(request, session.accessToken);
