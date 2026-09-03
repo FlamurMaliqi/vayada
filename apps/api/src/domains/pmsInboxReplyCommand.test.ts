@@ -241,6 +241,15 @@ describe("PostgreSQL PMS Inbox manual replies", () => {
       "property_id = $1::uuid AND id = $2::uuid",
     );
     expect(database.call("UPDATE pms.message_threads").text).toContain("version = $3::bigint");
+    expect(database.call("FROM platform.media_objects").text).toContain("property_id = $2::uuid");
+    expect(database.call("FROM platform.media_objects").text).toContain(
+      "resource_id = $3::uuid::text",
+    );
+    expect(database.call("FROM platform.media_objects").values).toEqual([
+      [MEDIA],
+      PROPERTY,
+      THREAD,
+    ]);
     expect(database.call("UPDATE platform.media_objects").text).toContain(
       "resource_id = $5::uuid::text",
     );
