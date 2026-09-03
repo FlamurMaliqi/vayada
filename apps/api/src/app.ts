@@ -2,6 +2,7 @@ import { backendAuthPlugin, type BackendAuthPluginOptions } from "@vayada/backen
 import type { IdentityLifecycleCommandBus } from "@vayada/backend-auth";
 import type { BookingGuestPiiPort } from "@vayada/domain-booking";
 import type { FinanceSubscriptionService } from "@vayada/domain-finance";
+import type { PmsCalendarAutoOpenSettingsPort } from "@vayada/domain-pms";
 import type {
   PmsInventoryPublicOfferProjectionPort,
   PublicBookabilityPublicationCommandPort,
@@ -180,6 +181,7 @@ import {
 } from "./routes/platform/admin/propertyLifecycle.js";
 import { registerPlatformPropertyMediaRoutes } from "./routes/platform/admin/propertyMedia.js";
 import { registerPmsOperationsRoutes } from "./routes/pmsOperations.js";
+import { registerPmsCalendarAutoOpenRoutes } from "./routes/pmsCalendarAutoOpen.js";
 import type { PmsLinkedInventoryGroupCommandRepository } from "./domains/pmsLinkedInventoryGroupRepository.js";
 import {
   registerPmsManualBookingPreviewRoutes,
@@ -261,6 +263,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   sameDayBookingSettings?: SameDayBookingSettingsPort;
   pmsRoomAssignmentSettings?: PmsRoomAssignmentSettingsPort;
   pmsRoomAssignmentHistory?: PmsRoomAssignmentOptimizationHistoryPort;
+  pmsCalendarAutoOpenSettings?: PmsCalendarAutoOpenSettingsPort;
   pmsRoomPublication?: PmsRoomPublicationRoutesOptions;
   pmsPricing?: PmsPricingRoutesOptions;
   pmsRecurringPricing?: PmsRecurringPricingRoutesOptions;
@@ -662,6 +665,14 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       roomAssignmentSettings: options.pmsRoomAssignmentSettings,
       roomAssignmentHistory: options.pmsRoomAssignmentHistory,
       publicBookabilityPublisher: options.publicBookabilityPublisher,
+    });
+  }
+  if (options.pmsCalendarAutoOpenSettings && options.auth) {
+    app.register(registerPmsCalendarAutoOpenRoutes, {
+      prefix: "/api/pms",
+      settings: options.pmsCalendarAutoOpenSettings,
+      propertyAccessRepository: options.auth.propertyAccessRepository,
+      allowedOrigins: options.pmsOperationsAllowedOrigins,
     });
   }
   if (options.pmsRoomPublication) {

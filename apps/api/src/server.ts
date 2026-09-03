@@ -101,6 +101,7 @@ import { createPmsManualBookingProductionCommandConfig } from "./domains/pmsManu
 import { createPmsRoomAssignmentOptimizationTriggerPort } from "./domains/pmsRoomAssignmentOptimizationTriggers.js";
 import { createPgPmsRoomAssignmentSettingsPort } from "./domains/pmsRoomAssignmentSettings.js";
 import { createPgPmsRoomAssignmentOptimizationHistoryPort } from "./domains/pmsRoomAssignmentOptimizationHistory.js";
+import { createPgPmsCalendarAutoOpenSettingsRepository } from "./domains/pmsCalendarAutoOpenSettingsRepository.js";
 import { createPgPmsRecurringPricingReadModel } from "./domains/pmsRecurringPricingReadModel.js";
 import { createPgPmsRecurringPricingCommandRepository } from "./domains/pmsRecurringPricingCommandRepository.js";
 import { createPgPmsMandatoryChargeConfirmationReadModel } from "./domains/pmsMandatoryChargeConfirmationReadModel.js";
@@ -401,6 +402,10 @@ const pmsRoomAssignmentSettings = pmsOperationsRepository
 const pmsRoomAssignmentHistory = pmsOperationsRepository
   ? createPgPmsRoomAssignmentOptimizationHistoryPort({ connectionString: targetDatabaseUrl })
   : undefined;
+const pmsCalendarAutoOpenSettings =
+  pmsOperationsRepository && config.auth
+    ? createPgPmsCalendarAutoOpenSettingsRepository({ connectionString: targetDatabaseUrl })
+    : undefined;
 
 const pmsModuleActivationRepository = config.auth
   ? createPgPmsModuleActivationRepository({
@@ -1181,6 +1186,7 @@ const app = buildApp({
   sameDayBookingSettings,
   pmsRoomAssignmentSettings,
   pmsRoomAssignmentHistory,
+  pmsCalendarAutoOpenSettings,
   pmsRoomPublication: pmsRoomPublicationRuntime
     ? {
         mediaCommandPort: pmsRoomPublicationRuntime.commandRepository,
