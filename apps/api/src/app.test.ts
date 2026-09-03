@@ -12947,6 +12947,7 @@ describe("vayada-api", () => {
 
   it("forwards the protected idempotent Inbox message-boundary read command", async () => {
     const calls: Parameters<PmsInboxMarkReadPort["markRead"]>[0][] = [];
+    const close = vi.fn(async () => undefined);
     const port: PmsInboxMarkReadPort = {
       async markRead(input) {
         calls.push(input);
@@ -12969,6 +12970,7 @@ describe("vayada-api", () => {
           },
         };
       },
+      close,
     };
     app = buildAuthenticatedApp({
       permissions: ["pms.inbox.read"],
@@ -13045,9 +13047,21 @@ describe("vayada-api", () => {
     expect(calls).toHaveLength(6);
     expect(calls[0]).toMatchObject({
       propertyId: pmsPropertyId,
+      organizationId: "org_hotel_group",
+      actorUserId: "user_hotel_owner",
+      actorMembershipId: "membership_hotel_owner",
       idempotencyKey: "read-through-3",
       readThroughMessageId: "msg_3",
+      audit: {
+        requestId: expect.any(String),
+        correlationId: expect.any(String),
+        requestedAt: expect.any(String),
+      },
     });
+    expect(calls[0]!.audit.correlationId).toBe(calls[0]!.audit.requestId);
+    await app.close();
+    app = null;
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it("authorizes Inbox mark-read before malformed JSON parsing or idempotency lookup", async () => {
