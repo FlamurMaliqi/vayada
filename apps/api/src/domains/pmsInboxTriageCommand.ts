@@ -107,7 +107,7 @@ export function createPgPmsInboxTriagePort(config: {
           input.action === "follow_up" &&
           new Date(input.followUpAt as string).getTime() <= acceptedAt.getTime()
         )
-          return commitResult(
+          return await commitResult(
             client,
             idempotencyId,
             failure("validation_failed", "Follow-up time must be in the future."),
@@ -116,7 +116,7 @@ export function createPgPmsInboxTriagePort(config: {
 
         const thread = await lockThread(client, input);
         if (!thread)
-          return commitResult(
+          return await commitResult(
             client,
             idempotencyId,
             failure("thread_not_found", "Inbox thread was not found."),
@@ -124,7 +124,7 @@ export function createPgPmsInboxTriagePort(config: {
           );
         const currentVersion = safeVersion(thread.version);
         if (currentVersion !== input.expectedThreadVersion)
-          return commitResult(
+          return await commitResult(
             client,
             idempotencyId,
             failure(
@@ -173,7 +173,7 @@ export function createPgPmsInboxTriagePort(config: {
           acceptedAt,
         );
 
-        return commitResult(
+        return await commitResult(
           client,
           idempotencyId,
           {

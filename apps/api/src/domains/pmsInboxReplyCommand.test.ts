@@ -27,6 +27,8 @@ type FakeOptions = {
   connectionReady?: boolean;
   attachment?: Partial<AttachmentRow> | null;
   failAt?: string;
+  commitGate?: Promise<void>;
+  onCommitStarted?: () => void;
 };
 
 type ThreadRow = {
@@ -61,6 +63,8 @@ type AttachmentRow = {
 class FakeDatabase {
   readonly calls: Call[] = [];
   releases = 0;
+  releasedBeforeCommit = false;
+  private commitCompleted = false;
   replay: QueryResultRow | null = null;
 
   constructor(readonly options: FakeOptions = {}) {}
@@ -74,9 +78,15 @@ class FakeDatabase {
       this.calls.push({ text, values });
       if (this.options.failAt && text.includes(this.options.failAt))
         throw new Error("database leak");
+      if (text === "COMMIT" && this.options.commitGate) {
+        this.options.onCommitStarted?.();
+        await this.options.commitGate;
+        this.commitCompleted = true;
+      }
       return this.result(text, values) as { rows: T[]; rowCount: number };
     },
     release: () => {
+      if (this.options.commitGate && !this.commitCompleted) this.releasedBeforeCommit = true;
       this.releases += 1;
     },
   };
@@ -212,6 +222,17 @@ function readyEmail() {
 }
 
 describe("PostgreSQL PMS Inbox manual replies", () => {
+  it("keeps the pooled client until commit finishes", async () => {
+    const { database, commitStarted, finishCommit } = delayedCommitDatabase();
+    const result = port(database).reply.reply(command());
+    await commitStarted;
+    expect(database.releases).toBe(0);
+    finishCommit();
+    await expect(result).resolves.toMatchObject({ ok: true });
+    expect(database.releasedBeforeCommit).toBe(false);
+    expect(database.releases).toBe(1);
+  });
+
   it("atomically accepts, audits, and queues a property-scoped OTA reply", async () => {
     const database = new FakeDatabase();
     const { reply, resolveReplyRoutes } = port(database);
@@ -493,3 +514,19 @@ describe("PostgreSQL PMS Inbox manual replies", () => {
     expect(database.calls).toHaveLength(0);
   });
 });
+
+function delayedCommitDatabase() {
+  let finishCommit!: () => void;
+  let reportCommitStarted!: () => void;
+  const commitGate = new Promise<void>((resolve) => {
+    finishCommit = resolve;
+  });
+  const commitStarted = new Promise<void>((resolve) => {
+    reportCommitStarted = resolve;
+  });
+  return {
+    database: new FakeDatabase({ commitGate, onCommitStarted: reportCommitStarted }),
+    commitStarted,
+    finishCommit,
+  };
+}

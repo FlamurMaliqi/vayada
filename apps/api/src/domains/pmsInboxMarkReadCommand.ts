@@ -95,14 +95,14 @@ export function createPgPmsInboxMarkReadPort(config: {
 
         const boundary = await captureBoundarySnapshot(client, input);
         if (boundary.status === "thread_not_found")
-          return commitResult(
+          return await commitResult(
             client,
             idempotencyId,
             failure("thread_not_found", "Inbox thread was not found."),
             acceptedAt,
           );
         if (boundary.status === "invalid_boundary")
-          return commitResult(
+          return await commitResult(
             client,
             idempotencyId,
             failure(
@@ -113,7 +113,7 @@ export function createPgPmsInboxMarkReadPort(config: {
           );
 
         if (!(await lockThread(client, input)))
-          return commitResult(
+          return await commitResult(
             client,
             idempotencyId,
             failure("thread_not_found", "Inbox thread was not found."),
@@ -146,7 +146,7 @@ export function createPgPmsInboxMarkReadPort(config: {
           acceptedAt,
         );
 
-        return commitResult(
+        return await commitResult(
           client,
           idempotencyId,
           {

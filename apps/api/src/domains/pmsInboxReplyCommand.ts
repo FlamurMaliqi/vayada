@@ -143,7 +143,7 @@ export function createPgPmsInboxReplyPort(config: {
 
         const thread = await lockThread(client, input.propertyId, input.threadId);
         if (!thread)
-          return commitResult(
+          return await commitResult(
             client,
             idempotencyId,
             failure("thread_not_found", "Inbox thread was not found."),
@@ -151,7 +151,7 @@ export function createPgPmsInboxReplyPort(config: {
           );
         const currentVersion = safeVersion(thread.version);
         if (currentVersion !== input.expectedThreadVersion)
-          return commitResult(
+          return await commitResult(
             client,
             idempotencyId,
             failure(
@@ -166,7 +166,7 @@ export function createPgPmsInboxReplyPort(config: {
         const attachments = await lockAttachments(client, input);
         const attachmentError = validateAttachments(attachments, input, route, acceptedAt);
         if (attachmentError)
-          return commitResult(
+          return await commitResult(
             client,
             idempotencyId,
             { ok: false, error: attachmentError },
@@ -235,7 +235,7 @@ export function createPgPmsInboxReplyPort(config: {
             acceptedAt: acceptedAt.toISOString(),
           },
         };
-        return commitResult(client, idempotencyId, result, acceptedAt);
+        return await commitResult(client, idempotencyId, result, acceptedAt);
       } catch {
         await rollbackQuietly(client);
         throw new Error("PMS Inbox reply command failed");
