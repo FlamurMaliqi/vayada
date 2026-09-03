@@ -36,6 +36,42 @@ export type PmsInboxDeliveryProvider = {
   send(input: PmsInboxDeliveryProviderInput): Promise<PmsInboxDeliveryProviderResult>;
 };
 
+export type PmsInboxDeliveryJob = {
+  id: string;
+  workerId: string;
+  propertyId: string;
+  messageId: string;
+  attemptNumber: number;
+  maxAttempts: number;
+  correlationId: string | null;
+};
+
+export type PmsInboxPreparedDelivery =
+  | {
+      ok: true;
+      adapter: "channex" | "resend";
+      attemptId: string;
+      input: PmsInboxDeliveryProviderInput;
+    }
+  | { ok: false; failure: Exclude<PmsInboxDeliveryFailure, "transient_provider_failure"> };
+
+export type PmsInboxDeliveryCompletion =
+  | { outcome: "accepted"; attemptId: string; providerReference: string }
+  | {
+      outcome: "failed";
+      attemptId: string | null;
+      failure: PmsInboxDeliveryFailure | "retry_exhausted";
+      projection: PmsInboxDeliveryProjection;
+      providerRequestId?: string;
+      retryAt?: Date;
+    };
+
+export type PmsInboxDeliveryStore = {
+  claim(workerId: string): Promise<PmsInboxDeliveryJob | null>;
+  prepare(job: PmsInboxDeliveryJob): Promise<PmsInboxPreparedDelivery>;
+  complete(job: PmsInboxDeliveryJob, completion: PmsInboxDeliveryCompletion): Promise<boolean>;
+};
+
 export type PmsInboxDeliveryProjection =
   | {
       attemptOutcome: "transient_failure";
