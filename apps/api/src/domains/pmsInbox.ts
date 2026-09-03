@@ -425,6 +425,41 @@ export type PmsInboxAssistancePort = {
   close?(): Promise<void>;
 };
 
+export type PmsInboxProviderActionError = {
+  code:
+    | "validation_failed"
+    | "thread_not_found"
+    | "provider_action_unavailable"
+    | "idempotency_conflict";
+  message: string;
+};
+
+export type PmsInboxProviderActionPort = {
+  noReplyNeeded(input: {
+    propertyId: string;
+    threadId: string;
+    organizationId: string;
+    actorUserId: string;
+    actorMembershipId: string;
+    idempotencyKey: string;
+    audit: { requestId: string; correlationId: string; requestedAt: string };
+  }): Promise<
+    | {
+        ok: true;
+        value: {
+          propertyId: string;
+          threadId: string;
+          action: "booking_com_no_reply_needed";
+          jobId: string;
+          acceptedAt: string;
+          attentionStateChanged: false;
+        };
+      }
+    | { ok: false; error: PmsInboxProviderActionError }
+  >;
+  close?(): Promise<void>;
+};
+
 export type PmsInboxReplyError = {
   code:
     | "validation_failed"

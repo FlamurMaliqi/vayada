@@ -43,6 +43,8 @@ import {
   type PmsInboxAssistanceRequest,
   type PmsInboxMarkReadPort,
   type PmsInboxMessage,
+  type PmsInboxProviderActionError,
+  type PmsInboxProviderActionPort,
   type PmsInboxQuickReply,
   type PmsInboxQuickReplyError,
   type PmsInboxQuickReplyPort,
@@ -1026,6 +1028,7 @@ export type PmsOperationsRoutesOptions = {
   inboxAssistancePort?: PmsInboxAssistancePort;
   inboxReadPort?: PmsInboxReadPort;
   inboxMarkReadPort?: PmsInboxMarkReadPort;
+  inboxProviderActionPort?: PmsInboxProviderActionPort;
   inboxQuickReplyPort?: PmsInboxQuickReplyPort;
   inboxReplyPort?: PmsInboxReplyPort;
   inboxTriagePort?: PmsInboxTriagePort;
@@ -1171,6 +1174,7 @@ export type PmsOperationsErrorCode =
   | "quick_reply_version_conflict"
   | "quick_reply_name_conflict"
   | "assistance_unavailable"
+  | "provider_action_unavailable"
   | "attachment_not_found"
   | "attachment_too_large"
   | "unsupported_attachment_type"
@@ -1216,6 +1220,7 @@ export async function registerPmsOperationsRoutes(
     await options.inboxAssistancePort?.close?.();
     await options.inboxReadPort?.close?.();
     await options.inboxMarkReadPort?.close?.();
+    await options.inboxProviderActionPort?.close?.();
     await options.inboxQuickReplyPort?.close?.();
     await options.inboxReplyPort?.close?.();
     await options.inboxTriagePort?.close?.();
@@ -1254,6 +1259,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/messaging/threads/:threadId/assignment",
     "/properties/:propertyId/messaging/threads/:threadId/notes",
     "/properties/:propertyId/messaging/threads/:threadId/assist",
+    "/properties/:propertyId/messaging/threads/:threadId/provider-actions/no-reply-needed",
     "/properties/:propertyId/messaging/quick-replies",
     "/properties/:propertyId/messaging/quick-replies/:quickReplyId/update",
     "/properties/:propertyId/messaging/quick-replies/:quickReplyId/archive",
@@ -2491,6 +2497,47 @@ export async function registerPmsOperationsRoutes(
         return sendPmsOperationsError(
           reply,
           readModelUnavailable("PMS Inbox assistance is unavailable."),
+        );
+      }
+    },
+  );
+
+  app.post<{ Params: PmsInboxThreadParams; Body: unknown }>(
+    "/properties/:propertyId/messaging/threads/:threadId/provider-actions/no-reply-needed",
+    { onRequest: inboxStaffCommandAuthorization(options) },
+    async (request, reply) => {
+      const input = parseInboxProviderAction(request);
+      if ("error" in input) return sendPmsOperationsError(reply, input.error);
+      if (!options.inboxProviderActionPort)
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS Inbox provider actions are unavailable."),
+        );
+      const { propertyId, threadId } = request.params;
+      try {
+        const result = await options.inboxProviderActionPort.noReplyNeeded({
+          propertyId,
+          threadId,
+          ...inboxCommandActor(request.authContext!),
+          idempotencyKey: input.value.idempotencyKey,
+        });
+        if (!result.ok) return sendInboxProviderActionError(reply, result.error);
+        if (!validInboxProviderAction(result.value, propertyId, threadId))
+          throw new Error("Inbox provider-action scope mismatch");
+        return reply.code(202).send({
+          contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION,
+          propertyId: result.value.propertyId,
+          threadId: result.value.threadId,
+          action: result.value.action,
+          jobId: result.value.jobId,
+          acceptedAt: result.value.acceptedAt,
+          attentionStateChanged: result.value.attentionStateChanged,
+        });
+      } catch {
+        request.log.error("PMS Inbox provider action failed");
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS Inbox provider actions are unavailable."),
         );
       }
     },
@@ -6014,6 +6061,18 @@ function parseInboxAssistance(request: FastifyRequest<{ Body: unknown }>):
   return { error: invalidInboxAssistance() };
 }
 
+function parseInboxProviderAction(
+  request: FastifyRequest<{ Body: unknown }>,
+): { value: { idempotencyKey: string } } | { error: PmsOperationsError } {
+  const idempotencyKey = singleIdempotencyKey(request);
+  const body = request.body === undefined ? {} : objectBody(request.body);
+  if (!idempotencyKey || !body || Object.keys(body).length > 0)
+    return {
+      error: invalidInboxStaffCommand("Inbox provider-action request is invalid."),
+    };
+  return { value: { idempotencyKey } };
+}
+
 function normalizedInboxQuickReplyFields(
   body: Record<string, unknown>,
 ): { name: string; text: string; approvedVariables: string[] } | null {
@@ -6278,6 +6337,24 @@ function sendInboxAssistanceError(
   });
 }
 
+function sendInboxProviderActionError(
+  reply: FastifyReply,
+  error: PmsInboxProviderActionError,
+): FastifyReply {
+  const statusCode =
+    error.code === "thread_not_found"
+      ? 404
+      : error.code === "provider_action_unavailable" || error.code === "idempotency_conflict"
+        ? 409
+        : 400;
+  return sendPmsOperationsError(reply, {
+    statusCode,
+    code: error.code,
+    category: statusCode === 404 ? "not_found" : statusCode === 409 ? "conflict" : "validation",
+    message: error.message,
+  });
+}
+
 function sendInboxReplyError(
   reply: FastifyReply,
   error: Extract<Awaited<ReturnType<PmsInboxReplyPort["reply"]>>, { ok: false }>["error"],
@@ -6446,6 +6523,24 @@ function validInboxAssistance(
     value.attribution === "ai_assisted" &&
     value.reviewRequired === true &&
     value.basedThroughMessageId === basedThroughMessageId
+  );
+}
+
+function validInboxProviderAction(
+  value: Extract<
+    Awaited<ReturnType<PmsInboxProviderActionPort["noReplyNeeded"]>>,
+    { ok: true }
+  >["value"],
+  propertyId: string,
+  threadId: string,
+): boolean {
+  return (
+    value.propertyId === propertyId &&
+    value.threadId === threadId &&
+    value.action === "booking_com_no_reply_needed" &&
+    isUuid(value.jobId) &&
+    isCanonicalInboxInstant(value.acceptedAt) &&
+    value.attentionStateChanged === false
   );
 }
 

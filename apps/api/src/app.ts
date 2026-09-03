@@ -183,6 +183,7 @@ import { registerPmsOperationsRoutes } from "./routes/pmsOperations.js";
 import type {
   PmsInboxAssistancePort,
   PmsInboxMarkReadPort,
+  PmsInboxProviderActionPort,
   PmsInboxQuickReplyPort,
   PmsInboxReadPort,
   PmsInboxReplyPort,
@@ -261,6 +262,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   pmsInboxAssistancePort?: PmsInboxAssistancePort;
   pmsInboxReadPort?: PmsInboxReadPort;
   pmsInboxMarkReadPort?: PmsInboxMarkReadPort;
+  pmsInboxProviderActionPort?: PmsInboxProviderActionPort;
   pmsInboxQuickReplyPort?: PmsInboxQuickReplyPort;
   pmsInboxReplyPort?: PmsInboxReplyPort;
   pmsInboxTriagePort?: PmsInboxTriagePort;
@@ -687,6 +689,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       inboxAssistancePort: options.pmsInboxAssistancePort,
       inboxReadPort: options.pmsInboxReadPort,
       inboxMarkReadPort: options.pmsInboxMarkReadPort,
+      inboxProviderActionPort: options.pmsInboxProviderActionPort,
       inboxQuickReplyPort: options.pmsInboxQuickReplyPort,
       inboxReplyPort: options.pmsInboxReplyPort,
       inboxTriagePort: options.pmsInboxTriagePort,
