@@ -135,6 +135,7 @@ import { createPropertySetupFinanceStateProvider } from "./platform/propertySetu
 import { createPropertySetupReviewLifecycleStateProvider } from "./platform/propertySetupReviewLifecycleState.js";
 import { createPropertySetupRouteStateReadPort } from "./platform/propertySetupRouteState.js";
 import { runPlatformMediaCleanupJobs } from "./jobs/platformMediaCleanup.js";
+import { startPmsInboxAssignmentReconciliationWorker } from "./jobs/pmsInboxAssignmentReconciliation.js";
 import {
   createPgBookingLifecycleStore,
   runBookingLifecycleSchedulerJobs,
@@ -1378,6 +1379,12 @@ const staffRemovalWorker = staffInvitationRuntime
     })
   : undefined;
 
+const pmsInboxAssignmentReconciliationWorker = startPmsInboxAssignmentReconciliationWorker({
+  connectionString: targetDatabaseUrl,
+  workerId: `pms-inbox-assignment-reconciliation:${process.pid}`,
+  warn: (error, message) => app.log.warn({ error }, message),
+});
+
 const stopPostgresTelemetry = postgresRuntime.startTelemetry(app.log);
 app.addHook("onClose", async () => {
   stopPostgresTelemetry();
@@ -1395,6 +1402,7 @@ const bookingPublicationWorker = bookingPublicationRuntime
 app.addHook("onClose", async () => {
   await creatorPlatformSyncWorker?.close();
   await staffRemovalWorker?.close();
+  await pmsInboxAssignmentReconciliationWorker.close();
   await bookingPublicationWorker?.close();
   await bookingPublicationRuntime?.close();
   await Promise.all([
