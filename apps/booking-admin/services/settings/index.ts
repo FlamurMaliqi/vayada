@@ -116,6 +116,10 @@ export interface SameDayBookingSettings {
 export interface DesignSettings {
   header_logo: string;
   header_logo_media_object_id: string | null;
+  show_contact_button: boolean;
+  show_refer_a_guest_button: boolean;
+  show_language_selector: boolean;
+  show_currency_selector: boolean;
   hero_image: string;
   hero_heading: string;
   hero_subtext: string;
@@ -128,6 +132,10 @@ export type DesignSettingsUpdate = Partial<DesignSettings>;
 type BookingDesignSettings = {
   headerLogo: string;
   headerLogoMediaObjectId: string | null;
+  showContactButton: boolean;
+  showReferAGuestButton: boolean;
+  showLanguageSelector: boolean;
+  showCurrencySelector: boolean;
   heroImage: string;
   heroHeading: string;
   heroSubtext: string;
@@ -141,6 +149,10 @@ function toDesignSettings(branding: BookingDesignSettings): DesignSettings {
   return {
     header_logo: branding.headerLogo,
     header_logo_media_object_id: branding.headerLogoMediaObjectId,
+    show_contact_button: branding.showContactButton,
+    show_refer_a_guest_button: branding.showReferAGuestButton,
+    show_language_selector: branding.showLanguageSelector,
+    show_currency_selector: branding.showCurrencySelector,
     hero_image: branding.heroImage,
     hero_heading: branding.heroHeading,
     hero_subtext: branding.heroSubtext,
@@ -152,6 +164,10 @@ function toDesignSettings(branding: BookingDesignSettings): DesignSettings {
 function toBrandingDesignUpdate(data: DesignSettingsUpdate): BookingDesignSettingsUpdate {
   return {
     headerLogoMediaObjectId: data.header_logo_media_object_id,
+    showContactButton: data.show_contact_button,
+    showReferAGuestButton: data.show_refer_a_guest_button,
+    showLanguageSelector: data.show_language_selector,
+    showCurrencySelector: data.show_currency_selector,
     heroImage: data.hero_image,
     heroHeading: data.hero_heading,
     heroSubtext: data.hero_subtext,

@@ -154,10 +154,48 @@ test.describe("booking-web tenant smoke", () => {
     await page.setViewportSize({ width: 375, height: 812 });
     await expect(logo).toBeVisible();
     expect((await logo.boundingBox())?.height).toBeLessThanOrEqual(32);
+    await expect(nav.getByTestId("mobile-contact-button")).toBeVisible();
     await expect(nav.getByRole("button", { name: "Refer", exact: true })).toBeVisible();
     await expect(nav.getByRole("button", { name: "EN", exact: true })).toBeVisible();
     await expect(nav.getByRole("button", { name: "EUR", exact: true })).toBeVisible();
     expect((await nav.boundingBox())?.height).toBe(64);
+  });
+
+  test("honors the published booking header controls", async ({ page }) => {
+    await mockBookingApis(page, {
+      headerSettings: {
+        showContactButton: false,
+        showReferAGuestButton: false,
+        showLanguageSelector: false,
+        showCurrencySelector: true,
+      },
+    });
+
+    await page.goto("/");
+    const nav = page.locator("nav");
+    await expect(nav.getByRole("button", { name: "Contact" })).toHaveCount(0);
+    await expect(nav.getByTestId("mobile-contact-button")).toHaveCount(0);
+    await expect(nav.getByRole("button", { name: /Refer/ })).toHaveCount(0);
+    await expect(nav.getByRole("button", { name: "EN", exact: true })).toHaveCount(0);
+    await expect(nav.getByRole("button", { name: "EUR", exact: true })).toBeVisible();
+  });
+
+  test("auto-hides language and currency when each has one option", async ({ page }) => {
+    await mockBookingApis(page, {
+      headerSettings: {
+        showContactButton: true,
+        showReferAGuestButton: false,
+        showLanguageSelector: true,
+        showCurrencySelector: true,
+      },
+      supportedLocales: ["en"],
+      supportedCurrencies: ["EUR"],
+    });
+
+    await page.goto("/");
+    const nav = page.locator("nav");
+    await expect(nav.getByRole("button", { name: "EN", exact: true })).toHaveCount(0);
+    await expect(nav.getByRole("button", { name: "EUR", exact: true })).toHaveCount(0);
   });
 
   test("previews six room amenities before expanding the full list", async ({ page }) => {

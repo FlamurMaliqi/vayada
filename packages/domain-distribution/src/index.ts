@@ -85,11 +85,7 @@ export type PublicBookabilityContactChannelType =
   (typeof PUBLIC_BOOKABILITY_CONTACT_CHANNEL_TYPES)[number];
 
 export type PublicBookabilityPublicationStatus =
-  | "public"
-  | "incomplete"
-  | "unpublished"
-  | "stale"
-  | "unavailable";
+  "public" | "incomplete" | "unpublished" | "stale" | "unavailable";
 
 export type PublishPublicBookabilityProfileCommand = {
   propertyId: string;
@@ -209,6 +205,10 @@ export type PublicBookabilitySupportedQuoteParameters = {
 
 export type PublicBookabilityBranding = {
   logoUrl?: string | null;
+  showContactButton?: boolean;
+  showReferAGuestButton?: boolean;
+  showLanguageSelector?: boolean;
+  showCurrencySelector?: boolean;
   heroImage: string | null;
   heroHeading: string | null;
   heroSubtext: string | null;

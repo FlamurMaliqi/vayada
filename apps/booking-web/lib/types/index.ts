@@ -24,6 +24,13 @@ export interface HotelBranding {
   faviconUrl?: string;
 }
 
+export interface HotelHeaderSettings {
+  showContactButton: boolean;
+  showReferAGuestButton: boolean;
+  showLanguageSelector: boolean;
+  showCurrencySelector: boolean;
+}
+
 export interface GuestTypeSettings {
   adultAgeThreshold: number;
   childrenEnabled: boolean;
@@ -64,6 +71,7 @@ export interface Hotel {
   filterRooms?: Record<string, string[]>;
   socialLinks?: HotelSocialLinks;
   branding?: HotelBranding;
+  headerSettings?: HotelHeaderSettings;
   defaultLanguage: string;
   supportedLanguages: string[];
   guestTypeSettings?: GuestTypeSettings;

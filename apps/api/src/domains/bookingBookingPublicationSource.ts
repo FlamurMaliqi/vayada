@@ -33,6 +33,12 @@ type SettingsRow = QueryResultRow & {
   acceptanceMode: string;
   defaultLanguage: string;
   supportedLanguages: string[];
+  headerLogoUrl: string | null;
+  showContactButton: boolean;
+  showReferAGuestButton: boolean;
+  showLanguageSelector: boolean;
+  showCurrencySelector: boolean;
+  referAGuestModuleEnabled: boolean;
   heroSubtext: string | null;
   hasActivePromos: boolean;
   updatedAt: Date | string;
@@ -195,7 +201,11 @@ async function load(
   ].sort();
   const content: BookingPublicationSnapshotContent["booking"] = {
     branding: {
-      logoUrl: null,
+      logoUrl: settings.headerLogoUrl,
+      showContactButton: settings.showContactButton,
+      showReferAGuestButton: settings.referAGuestModuleEnabled && settings.showReferAGuestButton,
+      showLanguageSelector: settings.showLanguageSelector,
+      showCurrencySelector: settings.showCurrencySelector,
       heroImage: hero,
       heroHeading: design.snapshot.profile.displayName,
       heroSubtext: settings.heroSubtext ?? design.snapshot.profile.shortDescription,
@@ -211,7 +221,7 @@ async function load(
     capabilities: {
       instantBook: settings.acceptanceMode === "instant",
       promoCodes: settings.hasActivePromos,
-      referralCodes: false,
+      referralCodes: settings.referAGuestModuleEnabled,
     },
     supportedQuoteParameters: {
       minRooms: 1,
@@ -243,6 +253,24 @@ const SETTINGS_SQL = `
 SELECT settings.acceptance_mode AS "acceptanceMode",
        settings.default_language AS "defaultLanguage",
        settings.supported_languages AS "supportedLanguages",
+       header_logo.public_cdn_url AS "headerLogoUrl",
+       settings.show_contact_button AS "showContactButton",
+       settings.show_refer_a_guest_button AS "showReferAGuestButton",
+       settings.show_language_selector AS "showLanguageSelector",
+       settings.show_currency_selector AS "showCurrencySelector",
+       EXISTS (
+         SELECT 1
+         FROM identity.product_entitlements entitlement
+         WHERE entitlement.organization_id = $1::uuid
+           AND entitlement.product = 'pms'
+           AND entitlement.entitlement_key = 'module:affiliates'
+           AND entitlement.status = 'active'
+           AND entitlement.resource_product = 'pms'
+           AND entitlement.resource_type = 'pms_property'
+           AND entitlement.resource_id = settings.property_id::text
+           AND (entitlement.starts_at IS NULL OR entitlement.starts_at <= now())
+           AND (entitlement.expires_at IS NULL OR entitlement.expires_at > now())
+       ) AS "referAGuestModuleEnabled",
        NULLIF(BTRIM(settings.hero_subtext), '') AS "heroSubtext",
        settings.updated_at AS "updatedAt",
        EXISTS (SELECT 1 FROM booking.promo_definitions promo
@@ -250,6 +278,37 @@ SELECT settings.acceptance_mode AS "acceptanceMode",
            AND promo.is_active AND (promo.valid_from IS NULL OR promo.valid_from <= current_date)
            AND (promo.valid_until IS NULL OR promo.valid_until >= current_date)) AS "hasActivePromos"
 FROM booking.booking_settings settings
+LEFT JOIN LATERAL (
+  SELECT variant.public_cdn_url
+  FROM platform.media_objects media
+  JOIN platform.media_variants variant
+    ON variant.media_object_id = media.id
+   AND variant.visibility = 'public'
+   AND variant.public_cdn_url LIKE 'https://%'
+  WHERE media.id = settings.header_logo_media_object_id
+    AND media.owner_organization_id = $1::uuid
+    AND media.purpose = 'booking.header_logo'
+    AND media.visibility = 'public'
+    AND media.public_approved = TRUE
+    AND media.lifecycle_status = 'active'
+    AND media.resource_product = 'booking'
+    AND media.resource_type = 'booking_hotel'
+    AND (
+      media.resource_id = settings.property_id::text
+      OR EXISTS (
+        SELECT 1
+        FROM hotel_catalog.property_source_links source
+        WHERE source.property_id = settings.property_id
+          AND source.source_system = 'booking'
+          AND source.source_table = 'booking_hotels'
+          AND source.source_id = media.resource_id
+          AND source.relationship = 'canonical_input'
+          AND source.status = 'active'
+      )
+    )
+  ORDER BY (variant.variant_name = 'original_safe') DESC, variant.created_at, variant.id
+  LIMIT 1
+) header_logo ON TRUE
 JOIN identity.organization_resource_links resource
   ON resource.organization_id = $1::uuid AND resource.product = 'booking'
  AND resource.resource_type = 'booking_hotel' AND resource.resource_id = settings.property_id::text

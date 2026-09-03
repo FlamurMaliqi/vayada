@@ -691,6 +691,7 @@ test.describe("booking-admin adaptive setup", () => {
     await expect(page.getByAltText("Header logo preview")).toHaveAttribute("src", logoUrls[1]!);
     await expect(page.getByAltText("Alpenrose logo")).toHaveAttribute("src", logoUrls[1]!);
 
+    await page.getByRole("button", { name: "Manage header logo" }).click();
     await page.getByRole("button", { name: "Remove logo" }).click();
     await expect(page.getByAltText("Header logo preview")).toHaveCount(0);
     await expect(page.getByRole("main").getByText("Alpenrose", { exact: true })).toBeVisible();

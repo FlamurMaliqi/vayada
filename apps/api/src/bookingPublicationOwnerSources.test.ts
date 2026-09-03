@@ -109,6 +109,12 @@ describe("production Booking publication owner sources", () => {
             acceptanceMode: "instant",
             defaultLanguage: "en",
             supportedLanguages: ["en", "de"],
+            headerLogoUrl: "https://cdn.test/logo.webp",
+            showContactButton: false,
+            showReferAGuestButton: true,
+            showLanguageSelector: false,
+            showCurrencySelector: true,
+            referAGuestModuleEnabled: true,
             heroSubtext: "Book direct.",
             hasActivePromos: true,
             updatedAt: now,
@@ -136,8 +142,16 @@ describe("production Booking publication owner sources", () => {
     await expect(source.getSnapshot(manifestRequest(evidence.sources))).resolves.toMatchObject({
       outcome: "snapshot",
       content: {
-        branding: { heroImage: "https://cdn.test/cover.webp", heroSubtext: "Book direct." },
-        capabilities: { instantBook: true, promoCodes: true },
+        branding: {
+          logoUrl: "https://cdn.test/logo.webp",
+          showContactButton: false,
+          showReferAGuestButton: true,
+          showLanguageSelector: false,
+          showCurrencySelector: true,
+          heroImage: "https://cdn.test/cover.webp",
+          heroSubtext: "Book direct.",
+        },
+        capabilities: { instantBook: true, promoCodes: true, referralCodes: true },
         supportedQuoteParameters: { childrenSupported: true, adultAgeThreshold: 18 },
       },
     });

@@ -1,8 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { HEADER_LOGO_MAX_BYTES, headerLogoUploadError } from "./headerLogo";
+import {
+  HEADER_LOGO_MAX_BYTES,
+  headerLogoDimensionsError,
+  headerLogoFileFromUrl,
+  headerLogoUploadError,
+} from "./headerLogo";
 
 describe("header logo upload", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it.each([
     ["logo.png", "image/png"],
     ["logo.jpg", "image/jpeg"],
@@ -26,5 +33,41 @@ describe("header logo upload", () => {
         }),
       ),
     ).toBe("Choose a logo smaller than 500 KB.");
+  });
+
+  it("enforces the rendered 300 × 80 pixel bounds", async () => {
+    vi.stubGlobal(
+      "Image",
+      class {
+        src = "";
+        naturalWidth = 301;
+        naturalHeight = 80;
+        async decode() {}
+      },
+    );
+
+    await expect(
+      headerLogoDimensionsError(new File(["logo"], "logo.png", { type: "image/png" })),
+    ).resolves.toBe("Choose a logo no larger than 300 × 80px.");
+  });
+
+  it("downloads a public logo URL into the secure upload flow", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(new Blob(["logo"], { type: "image/png" }), {
+            headers: { "content-type": "image/png" },
+          }),
+      ),
+    );
+
+    await expect(headerLogoFileFromUrl("https://cdn.example.com/logo.png")).resolves.toMatchObject({
+      name: "logo.png",
+      type: "image/png",
+    });
+    await expect(headerLogoFileFromUrl("data:image/png;base64,abc")).rejects.toThrow(
+      "Enter a public HTTP or HTTPS image URL.",
+    );
   });
 });

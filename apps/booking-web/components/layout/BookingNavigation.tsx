@@ -229,12 +229,17 @@ export default function BookingNavigation() {
   const locale = useLocale();
   const router = useRouter();
   const pathname = usePathname();
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [contactOpen, setContactOpen] = useState(false);
   const [referOpen, setReferOpen] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   const [currOpen, setCurrOpen] = useState(false);
   const logoUrl = hotel.branding?.logoUrl;
+  const header = hotel.headerSettings ?? {
+    showContactButton: true,
+    showReferAGuestButton: false,
+    showLanguageSelector: true,
+    showCurrencySelector: true,
+  };
 
   const availableLanguages = useMemo(() => {
     const codes = new Set<string>(hotel?.supportedLanguages ?? []);
@@ -274,7 +279,7 @@ export default function BookingNavigation() {
     <>
       <nav className="absolute top-0 left-0 right-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
+          <div className="relative flex items-center justify-between h-16">
             {/* The existing mobile text fallback stays hidden; an uploaded logo gets
                 a constrained slot that cannot shrink the action controls. */}
             <Link
@@ -302,24 +307,19 @@ export default function BookingNavigation() {
             {/* Right - Actions (always visible on mobile, full nav on desktop) */}
             <div className="hidden md:flex items-center gap-2">
               {/* Contact */}
-              <div className="relative">
-                <button
-                  onClick={() => {
-                    closeAll();
-                    setContactOpen(!contactOpen);
-                  }}
-                  className="px-5 py-2 text-sm font-semibold text-white bg-primary-600 rounded-full hover:bg-primary-700 transition-colors"
-                >
-                  {t("contact")}
-                </button>
-                <ContactPopover
-                  open={contactOpen}
-                  onClose={() => setContactOpen(false)}
-                  phone={hotel.contact.phone}
-                  whatsapp={hotel.contact.whatsapp}
-                  email={hotel.contact.email}
-                />
-              </div>
+              {header.showContactButton && (
+                <div className="relative">
+                  <button
+                    onClick={() => {
+                      closeAll();
+                      setContactOpen(!contactOpen);
+                    }}
+                    className="px-5 py-2 text-sm font-semibold text-white bg-primary-600 rounded-full hover:bg-primary-700 transition-colors"
+                  >
+                    {t("contact")}
+                  </button>
+                </div>
+              )}
 
               {/* Refer a Guest */}
               {hotel.referAGuestEnabled && (
@@ -340,7 +340,7 @@ export default function BookingNavigation() {
               )}
 
               {/* Language */}
-              {availableLanguages.length > 1 && (
+              {header.showLanguageSelector && availableLanguages.length > 1 && (
                 <div className="relative">
                   <button
                     onClick={() => {
@@ -378,7 +378,7 @@ export default function BookingNavigation() {
               )}
 
               {/* Currency */}
-              {currencyItems.length > 1 && (
+              {header.showCurrencySelector && currencyItems.length > 1 && (
                 <div className="relative">
                   <button
                     onClick={() => {
@@ -410,6 +410,34 @@ export default function BookingNavigation() {
 
             {/* Mobile inline actions */}
             <div className="md:hidden flex shrink-0 items-center gap-1.5 ml-auto">
+              {header.showContactButton && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    data-testid="mobile-contact-button"
+                    aria-label={t("contact")}
+                    onClick={() => {
+                      closeAll();
+                      setContactOpen(!contactOpen);
+                    }}
+                    className="flex h-7 w-7 items-center justify-center rounded-full bg-primary-600 text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+                  >
+                    <svg
+                      className="h-3.5 w-3.5"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"
+                      />
+                    </svg>
+                  </button>
+                </div>
+              )}
               {hotel.referAGuestEnabled && (
                 <button
                   onClick={() => {
@@ -434,7 +462,7 @@ export default function BookingNavigation() {
                   Refer
                 </button>
               )}
-              {availableLanguages.length > 1 && (
+              {header.showLanguageSelector && availableLanguages.length > 1 && (
                 <div className="relative">
                   <button
                     onClick={() => {
@@ -467,63 +495,46 @@ export default function BookingNavigation() {
                   />
                 </div>
               )}
-              <div className="relative">
-                <button
-                  onClick={() => {
-                    closeAll();
-                    setCurrOpen(!currOpen);
-                  }}
-                  className="flex items-center gap-1 px-2 py-1.5 text-xs font-medium text-white/90"
-                >
-                  {selectedCurrency}
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M19 9l-7 7-7-7"
-                    />
-                  </svg>
-                </button>
-                <Dropdown
-                  open={currOpen}
-                  onClose={() => setCurrOpen(false)}
-                  items={currencyItems}
-                  selected={selectedCurrency}
-                  onSelect={setSelectedCurrency}
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Mobile Menu */}
-        {isMenuOpen && (
-          <div className="md:hidden bg-black/80 backdrop-blur-md border-t border-white/10">
-            <div className="px-4 py-4 space-y-3">
-              <button
-                onClick={() => {
-                  setContactOpen(!contactOpen);
-                  setIsMenuOpen(false);
-                }}
-                className="block w-full text-left text-white hover:text-white/80 py-2 font-medium"
-              >
-                {t("contact")}
-              </button>
-              {hotel.referAGuestEnabled && (
-                <button
-                  onClick={() => {
-                    setReferOpen(true);
-                    setIsMenuOpen(false);
-                  }}
-                  className="block w-full text-left text-white hover:text-white/80 py-2 font-medium"
-                >
-                  {t("referGuest")}
-                </button>
+              {header.showCurrencySelector && currencyItems.length > 1 && (
+                <div className="relative">
+                  <button
+                    onClick={() => {
+                      closeAll();
+                      setCurrOpen(!currOpen);
+                    }}
+                    className="flex items-center gap-1 px-2 py-1.5 text-xs font-medium text-white/90"
+                  >
+                    {selectedCurrency}
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M19 9l-7 7-7-7"
+                      />
+                    </svg>
+                  </button>
+                  <Dropdown
+                    open={currOpen}
+                    onClose={() => setCurrOpen(false)}
+                    items={currencyItems}
+                    selected={selectedCurrency}
+                    onSelect={setSelectedCurrency}
+                  />
+                </div>
               )}
             </div>
+            {header.showContactButton && (
+              <ContactPopover
+                open={contactOpen}
+                onClose={() => setContactOpen(false)}
+                phone={hotel.contact.phone}
+                whatsapp={hotel.contact.whatsapp}
+                email={hotel.contact.email}
+              />
+            )}
           </div>
-        )}
+        </div>
       </nav>
 
       {/* Refer Modal (rendered outside nav for z-index) */}

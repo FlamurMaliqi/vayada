@@ -37,6 +37,7 @@ import type {
   BookingSettingsReadRepository,
   BookingSettingsWriteRepository,
 } from "./routes/bookingSettings.js";
+import type { BookingPublicationRefreshPort } from "./domains/bookingPublicationProductionRuntime.js";
 import { registerAiHotelQuoteRoutes } from "./routes/aiHotelQuotes.js";
 import { registerAiHotelRoutes } from "./routes/aiHotels.js";
 import { registerAuthSessionRoutes } from "./routes/authSession.js";
@@ -277,6 +278,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   bookingSettingsRepository?: BookingSettingsReadRepository;
   bookingSettingsWriteRepository?: BookingSettingsWriteRepository;
   publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort;
+  bookingPublicationRefresh?: BookingPublicationRefreshPort;
   bookingCustomDomainRepository?: BookingCustomDomainRepository;
   publicHotelProfileRepository?: PublicHotelProfileRepository;
   publicHotelQuoteRepository?: PublicHotelQuoteRepository;
@@ -630,6 +632,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     sameDayBookingSettings: options.sameDayBookingSettings,
     ownsSameDayBookingSettings: !options.pmsOperationsRepository,
     publicBookabilityPublisher: options.publicBookabilityPublisher,
+    bookingPublicationRefresh: options.bookingPublicationRefresh,
     inventoryPublicOfferProjector: options.pmsInventoryPublicOfferProjector,
     customDomainRepository: options.bookingCustomDomainRepository,
     changeRequestRepository: options.bookingChangeRequestRepository,
@@ -729,6 +732,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPmsModuleActivationRoutes, {
       prefix: "/api/pms",
       repository: options.pmsModuleActivationRepository,
+      bookingPublicationRefresh: options.bookingPublicationRefresh,
       allowedOrigins: options.pmsOperationsAllowedOrigins,
     });
   }
