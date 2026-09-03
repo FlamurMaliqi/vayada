@@ -3,6 +3,7 @@ import type { APIRequestContext } from "@playwright/test";
 import { waitForNoPublicOffer, type BookingResource, type Stay } from "./booking-lifecycle";
 import {
   arrayField,
+  authenticateSyntheticPmsUser,
   authenticateSyntheticPlatformAdmin,
   createSyntheticPlatformAdmin,
   numberField,
@@ -43,6 +44,19 @@ export async function cleanupSmokeResources(
 ): Promise<unknown[]> {
   const errors: unknown[] = [];
   const publicClient = publicApi(request);
+  let hotelApi = hotel?.api;
+  if (hotel?.ownerWorkosUserId) {
+    try {
+      const owner = users.find(({ id }) => id === hotel.ownerWorkosUserId);
+      if (!owner) throw new Error("Synthetic hotel owner could not be found for cleanup.");
+      hotelApi = targetApi(
+        request,
+        await authenticateSyntheticPmsUser(request, owner, environment.password),
+      );
+    } catch (error) {
+      errors.push(error);
+    }
+  }
   for (const booking of bookings.filter(({ resolved }) => !resolved).reverse()) {
     try {
       const action = booking.mode === "request" ? "withdraw" : "cancel";
@@ -53,12 +67,12 @@ export async function cleanupSmokeResources(
       );
       booking.resolved = true;
     } catch (error) {
-      if (!hotel) {
+      if (!hotel || !hotelApi) {
         errors.push(error);
         continue;
       }
       try {
-        await hotel.api.json(
+        await hotelApi.json(
           "POST",
           `/api/pms/properties/${hotel.propertyId}/reservations/${booking.bookingId}/cancel`,
           {
@@ -77,9 +91,10 @@ export async function cleanupSmokeResources(
   }
 
   if (hotel) {
+    const api = hotelApi ?? hotel.api;
     for (const addonItemId of hotel.addonItemIds ?? []) {
       try {
-        await hotel.api.json(
+        await api.json(
           "DELETE",
           `/api/booking/hotels/${hotel.propertyId}/addon-items/${addonItemId}`,
         );
@@ -88,7 +103,7 @@ export async function cleanupSmokeResources(
       }
     }
     try {
-      await hotel.api.json(
+      await api.json(
         "PATCH",
         `/api/finance/properties/${hotel.propertyId}/payment-settings`,
         {

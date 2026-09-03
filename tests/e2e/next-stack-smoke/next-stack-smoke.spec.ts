@@ -13,6 +13,7 @@ import {
   JsonApi,
   NEXT_STACK_ORIGINS,
   arrayField,
+  authenticateSyntheticPmsUser,
   createSyntheticPlatformAdmin,
   createSyntheticUser,
   fillSecret,
@@ -150,6 +151,41 @@ test("secret input avoids value-bearing Playwright steps", async ({ page }) => {
   await fillSecret(page.getByLabel("Password"), secret);
 
   expect(await page.locator("output").textContent()).toBe(String(secret.length));
+});
+
+test("PMS cleanup authentication returns a fresh access token", async () => {
+  const user: SyntheticUser = {
+    id: "hotel-owner",
+    email: "hotel-owner@example.test",
+    firstName: "Hotel",
+    lastName: "Owner",
+    role: "hotel",
+  };
+  let loginRequest: { url: string; options: unknown } | undefined;
+  const request = {
+    async post(url: string, options: unknown) {
+      loginRequest = { url, options };
+      return {
+        ok: () => true,
+        text: async () => JSON.stringify({ accessToken: "fresh-access-token" }),
+      };
+    },
+  } as unknown as APIRequestContext;
+
+  await expect(
+    authenticateSyntheticPmsUser(request, user, "synthetic-password"),
+  ).resolves.toBe("fresh-access-token");
+  expect(loginRequest).toEqual({
+    url: `${NEXT_STACK_ORIGINS.pms}/auth/password/login`,
+    options: {
+      headers: { origin: NEXT_STACK_ORIGINS.pms },
+      data: {
+        email: user.email,
+        password: "synthetic-password",
+        surface: "pms-web",
+      },
+    },
+  });
 });
 
 test("ambiguous UI booking replay registers the exact request for cleanup", async () => {
@@ -555,7 +591,12 @@ async function runHotelFlow(
         { "Idempotency-Key": `next-smoke:${environment.runId}:property` },
       );
       const propertyId = stringField(property, "propertyId");
-      registerHotel({ api, propertyId });
+      registerHotel({
+        api,
+        ownerWorkosUserId: user.id,
+        propertyId,
+        workosOrganizationId: session.workosOrganizationId,
+      });
 
       await api.json("PUT", `/api/hotel-setup/properties/${propertyId}/launch-settings`, {
         defaultCurrency: "EUR",
