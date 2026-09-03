@@ -136,6 +136,7 @@ import { createPropertySetupReviewLifecycleStateProvider } from "./platform/prop
 import { createPropertySetupRouteStateReadPort } from "./platform/propertySetupRouteState.js";
 import { runPlatformMediaCleanupJobs } from "./jobs/platformMediaCleanup.js";
 import { startPmsInboxAssignmentReconciliationWorker } from "./jobs/pmsInboxAssignmentReconciliation.js";
+import { startPmsInboxFollowUpReleaseWorker } from "./jobs/pmsInboxFollowUpRelease.js";
 import {
   createPgBookingLifecycleStore,
   runBookingLifecycleSchedulerJobs,
@@ -1385,6 +1386,12 @@ const pmsInboxAssignmentReconciliationWorker = startPmsInboxAssignmentReconcilia
   warn: (error, message) => app.log.warn({ error }, message),
 });
 
+const pmsInboxFollowUpReleaseWorker = startPmsInboxFollowUpReleaseWorker({
+  connectionString: targetDatabaseUrl,
+  workerId: `pms-inbox-follow-up-release:${process.pid}`,
+  warn: (error, message) => app.log.warn({ error }, message),
+});
+
 const stopPostgresTelemetry = postgresRuntime.startTelemetry(app.log);
 app.addHook("onClose", async () => {
   stopPostgresTelemetry();
@@ -1403,6 +1410,7 @@ app.addHook("onClose", async () => {
   await creatorPlatformSyncWorker?.close();
   await staffRemovalWorker?.close();
   await pmsInboxAssignmentReconciliationWorker.close();
+  await pmsInboxFollowUpReleaseWorker.close();
   await bookingPublicationWorker?.close();
   await bookingPublicationRuntime?.close();
   await Promise.all([
