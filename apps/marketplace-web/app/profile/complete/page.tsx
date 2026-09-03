@@ -483,13 +483,13 @@ export default function ProfileCompletePage() {
       if (!connectedAccount) {
         setConnectionNotice({
           tone: "error",
-          message: `${platformName} returned to Vayada, but the connected account could not be confirmed. Try connecting it again.`,
+          message: `${platformName} returned to vayada, but the connected account could not be confirmed. Try connecting it again.`,
         });
         return;
       }
       setConnectionNotice({
         tone: "success",
-        message: `${platformName} is connected. Vayada is importing the available statistics.`,
+        message: `${platformName} is connected. vayada is importing the available statistics.`,
       });
       return;
     }

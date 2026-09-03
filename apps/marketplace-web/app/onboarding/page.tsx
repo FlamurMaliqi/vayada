@@ -342,7 +342,7 @@ export default function OnboardingPage() {
           ? "Getting things ready"
           : pendingHotelInvite
             ? "Create your invited hotel account"
-            : "Welcome to Vayada — what brings you here?"
+            : "Welcome to vayada — what brings you here?"
       }
       description={
         loading

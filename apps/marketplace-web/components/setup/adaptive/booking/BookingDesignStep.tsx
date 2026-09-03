@@ -46,7 +46,7 @@ type BookingDesignForm = {
 };
 
 const COLOR_LABELS: Record<BookingDesignPrimaryColor, string> = {
-  "#4F46E5": "Vayada indigo",
+  "#4F46E5": "vayada indigo",
   "#0077B6": "Ocean blue",
   "#2D6A4F": "Forest green",
   "#7B2D8E": "Royal purple",

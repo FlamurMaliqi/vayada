@@ -2040,7 +2040,7 @@ function TrackSelection({
           className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-center text-sm text-amber-900"
           role="status"
         >
-          Ask a hotel group owner to choose or add Vayada services.
+          Ask a hotel group owner to choose or add vayada services.
         </div>
       )}
 
@@ -2514,7 +2514,7 @@ function SetupReview({
         Review and next steps
       </h1>
       <p className="mt-3 max-w-2xl text-base leading-7 text-gray-600">
-        Each Vayada service has its own readiness status. You can use ready services while another
+        Each vayada service has its own readiness status. You can use ready services while another
         one is still being reviewed.
       </p>
       {onBack && <SetupBackButton onClick={onBack} />}
@@ -2595,7 +2595,7 @@ function setupTaskStateCopy(task: SetupTask): TaskStateCopy {
   if (task.readiness === "pending_sync") {
     return {
       label: "Syncing",
-      description: "Vayada is checking the latest saved information. No action is needed yet.",
+      description: "vayada is checking the latest saved information. No action is needed yet.",
       tone: "neutral",
     };
   }
@@ -2651,8 +2651,8 @@ function setupTaskStateCopy(task: SetupTask): TaskStateCopy {
 
 function recommendedActionDescription(task: SetupTask): string {
   if (task.actionableBy === "operator") return "You can complete this step now.";
-  if (task.actionableBy === "support") return "Vayada support can complete this step.";
-  if (task.actionableBy === "system") return "Vayada will complete this step automatically.";
+  if (task.actionableBy === "support") return "vayada support can complete this step.";
+  if (task.actionableBy === "system") return "vayada will complete this step automatically.";
   return "A hotel group owner can complete this step now.";
 }
 

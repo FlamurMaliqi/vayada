@@ -367,7 +367,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         return redirectWithOAuthError(
           reply,
           state.value,
-          "This email already has a Vayada account. Sign in instead.",
+          "This email already has a vayada account. Sign in instead.",
         );
       }
       if (state.value.intent) {
@@ -415,7 +415,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
         return redirectWithOAuthError(
           reply,
           state.value,
-          "No Vayada account exists for this Google login. Create an account first.",
+          "No vayada account exists for this Google login. Create an account first.",
         );
       }
     }
@@ -617,7 +617,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync<AuthSessionRouteOptio
       if (isConflictError(error)) {
         return reply.code(409).send({
           state: "auth_failed",
-          message: "This email already has a Vayada account. Sign in instead.",
+          message: "This email already has a vayada account. Sign in instead.",
         });
       }
       return reply.code(400).send({

@@ -681,7 +681,7 @@ export function RoomAuthoringStep({
       {draftManifestMissing && (
         <RecoveryBanner
           title="Setup data is still unavailable"
-          message="You can keep editing this room. Refresh before saving or leaving so Vayada can protect the latest room revisions."
+          message="You can keep editing this room. Refresh before saving or leaving so vayada can protect the latest room revisions."
           actionLabel="Refresh setup data"
           onAction={() => void refreshRoute()}
           tone="warning"
@@ -828,7 +828,7 @@ export function RoomAuthoringStep({
               max="500"
               inputMode="numeric"
               value={activeRoom.unitCount}
-              help="Vayada creates one PMS room for each unit. Add room numbers later."
+              help="vayada creates one PMS room for each unit. Add room numbers later."
               error={errors.unitCount}
               onChange={(value) => {
                 updateActive({ unitCount: value });
@@ -1459,7 +1459,7 @@ export function RoomAuthoringStep({
         >
           <p className="text-sm leading-6 text-gray-600">
             {removeTarget.saved
-              ? "Vayada will first check bookings, assigned or verified rooms, channel mappings, pricing, calendar, and other operational references. Shared photos will not be deleted."
+              ? "vayada will first check bookings, assigned or verified rooms, channel mappings, pricing, calendar, and other operational references. Shared photos will not be deleted."
               : "This removes the unfinished room draft and its photo assignments. Shared photos will not be deleted."}
           </p>
           <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
