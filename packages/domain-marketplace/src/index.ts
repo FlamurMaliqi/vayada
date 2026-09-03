@@ -14,6 +14,7 @@ export * from "./hotelCollaborationPreferenceCommands.js";
 export * from "./legacyHotelCollaborationPreferenceDraft.js";
 export * from "./affiliateAdmin.js";
 export * from "./creatorProfileModeration.js";
+export * from "./creatorMatchingPreferences.js";
 export * from "./offerMatchingCriteria.js";
 
 import type {
@@ -21,6 +22,10 @@ import type {
   MarketplaceOfferMatchingCriteriaWrite,
   MarketplaceOfferRequirementLevel,
 } from "./offerMatchingCriteria.js";
+import type {
+  MarketplaceCreatorMatchingPreferences,
+  MarketplaceCreatorMatchingPreferencesWrite,
+} from "./creatorMatchingPreferences.js";
 
 // ---------------------------------------------------------------------------
 // Shared scalar types
@@ -352,6 +357,7 @@ export type CreatorProfileDocument = {
   platforms: CreatorProfilePlatform[];
   audienceSize: number;
   rating: CreatorProfileRatingSummary;
+  matchingPreferences: MarketplaceCreatorMatchingPreferences | null;
   createdAt: MarketplaceUtcDateTime;
   updatedAt: MarketplaceUtcDateTime;
 };
@@ -366,6 +372,7 @@ export type UpdateCreatorProfileRequest = {
   profilePictureUrl?: string | null;
   profilePictureMediaObjectId?: string | null;
   platforms?: CreatorProfilePlatformInput[];
+  matchingPreferences?: MarketplaceCreatorMatchingPreferencesWrite | null;
 };
 
 export type CreatorProfileSelfServiceErrorCode =
