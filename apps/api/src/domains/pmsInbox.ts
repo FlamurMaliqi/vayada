@@ -379,6 +379,52 @@ export type PmsInboxQuickReplyPort = {
   close?(): Promise<void>;
 };
 
+export type PmsInboxAssistanceKind =
+  "translate_message" | "translate_draft" | "summarize" | "draft_reply";
+
+export type PmsInboxAssistanceRequest =
+  | {
+      kind: "translate_message" | "translate_draft";
+      sourceText: string;
+      targetLanguage: string;
+    }
+  | { kind: "summarize" | "draft_reply"; throughMessageId: string };
+
+export type PmsInboxAssistanceError = {
+  code:
+    "validation_failed" | "thread_not_found" | "idempotency_conflict" | "assistance_unavailable";
+  message: string;
+};
+
+export type PmsInboxAssistancePort = {
+  assist(
+    input: PmsInboxAssistanceRequest & {
+      propertyId: string;
+      threadId: string;
+      organizationId: string;
+      actorUserId: string;
+      actorMembershipId: string;
+      idempotencyKey: string;
+      audit: { requestId: string; correlationId: string; requestedAt: string };
+    },
+  ): Promise<
+    | {
+        ok: true;
+        value: {
+          propertyId: string;
+          threadId: string;
+          kind: PmsInboxAssistanceKind;
+          assistedText: string;
+          attribution: "ai_assisted";
+          reviewRequired: true;
+          basedThroughMessageId: string | null;
+        };
+      }
+    | { ok: false; error: PmsInboxAssistanceError }
+  >;
+  close?(): Promise<void>;
+};
+
 export type PmsInboxReplyError = {
   code:
     | "validation_failed"

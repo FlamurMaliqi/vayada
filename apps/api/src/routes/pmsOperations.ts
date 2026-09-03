@@ -38,6 +38,9 @@ import {
 import { HIDDEN_GUEST_CONTACT } from "../domains/bookingGuestContactAccess.js";
 import {
   NATIVE_GUEST_INBOX_CONTRACT_VERSION,
+  type PmsInboxAssistanceError,
+  type PmsInboxAssistancePort,
+  type PmsInboxAssistanceRequest,
   type PmsInboxMarkReadPort,
   type PmsInboxMessage,
   type PmsInboxQuickReply,
@@ -1020,6 +1023,7 @@ export type PmsOperationsRoutesOptions = {
   publicBookabilityPublisher?: PublicBookabilityPublicationCommandPort;
   roomAssignmentSettings?: PmsRoomAssignmentSettingsPort;
   roomAssignmentHistory?: PmsRoomAssignmentOptimizationHistoryPort;
+  inboxAssistancePort?: PmsInboxAssistancePort;
   inboxReadPort?: PmsInboxReadPort;
   inboxMarkReadPort?: PmsInboxMarkReadPort;
   inboxQuickReplyPort?: PmsInboxQuickReplyPort;
@@ -1166,6 +1170,7 @@ export type PmsOperationsErrorCode =
   | "quick_reply_not_found"
   | "quick_reply_version_conflict"
   | "quick_reply_name_conflict"
+  | "assistance_unavailable"
   | "attachment_not_found"
   | "attachment_too_large"
   | "unsupported_attachment_type"
@@ -1180,7 +1185,7 @@ export type PmsOperationsErrorCode =
   | "property_not_found";
 
 export type PmsOperationsError = {
-  statusCode: 400 | 401 | 403 | 404 | 409 | 413 | 415 | 500;
+  statusCode: 400 | 401 | 403 | 404 | 409 | 413 | 415 | 500 | 503;
   code: PmsOperationsErrorCode;
   category: PmsOperationsErrorCategory;
   message: string;
@@ -1208,6 +1213,7 @@ export async function registerPmsOperationsRoutes(
     await options.propertyPlanReadRepository?.close?.();
     await options.roomAssignmentSettings?.close?.();
     await options.roomAssignmentHistory?.close?.();
+    await options.inboxAssistancePort?.close?.();
     await options.inboxReadPort?.close?.();
     await options.inboxMarkReadPort?.close?.();
     await options.inboxQuickReplyPort?.close?.();
@@ -1247,6 +1253,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/messaging/threads/:threadId/reopen",
     "/properties/:propertyId/messaging/threads/:threadId/assignment",
     "/properties/:propertyId/messaging/threads/:threadId/notes",
+    "/properties/:propertyId/messaging/threads/:threadId/assist",
     "/properties/:propertyId/messaging/quick-replies",
     "/properties/:propertyId/messaging/quick-replies/:quickReplyId/update",
     "/properties/:propertyId/messaging/quick-replies/:quickReplyId/archive",
@@ -2301,7 +2308,7 @@ export async function registerPmsOperationsRoutes(
       try {
         const result = await options.inboxQuickReplyPort.create({
           propertyId,
-          ...inboxQuickReplyActor(context),
+          ...inboxCommandActor(context),
           ...input.value,
         });
         if (!result.ok) return sendInboxQuickReplyError(reply, result.error);
@@ -2340,7 +2347,7 @@ export async function registerPmsOperationsRoutes(
         const result = await options.inboxQuickReplyPort.update({
           propertyId,
           quickReplyId,
-          ...inboxQuickReplyActor(context),
+          ...inboxCommandActor(context),
           ...input.value,
         });
         if (!result.ok) return sendInboxQuickReplyError(reply, result.error);
@@ -2380,7 +2387,7 @@ export async function registerPmsOperationsRoutes(
         const result = await options.inboxQuickReplyPort.archive({
           propertyId,
           quickReplyId,
-          ...inboxQuickReplyActor(context),
+          ...inboxCommandActor(context),
           ...input.value,
         });
         if (!result.ok) return sendInboxQuickReplyError(reply, result.error);
@@ -2422,7 +2429,7 @@ export async function registerPmsOperationsRoutes(
         const result = await options.inboxQuickReplyPort.preview({
           propertyId,
           quickReplyId,
-          ...inboxQuickReplyActor(context),
+          ...inboxCommandActor(context),
           ...input.value,
         });
         if (!result.ok) return sendInboxQuickReplyError(reply, result.error);
@@ -2442,6 +2449,49 @@ export async function registerPmsOperationsRoutes(
       } catch {
         request.log.error("PMS Inbox quick-reply preview failed");
         return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
+      }
+    },
+  );
+
+  app.post<{ Params: PmsInboxThreadParams; Body: unknown }>(
+    "/properties/:propertyId/messaging/threads/:threadId/assist",
+    { onRequest: inboxStaffCommandAuthorization(options) },
+    async (request, reply) => {
+      const input = parseInboxAssistance(request);
+      if ("error" in input) return sendPmsOperationsError(reply, input.error);
+      if (!options.inboxAssistancePort)
+        return sendInboxAssistanceError(reply, {
+          code: "assistance_unavailable",
+          message: "Inbox assistance is temporarily unavailable.",
+        });
+      const { propertyId, threadId } = request.params;
+      const context = request.authContext!;
+      try {
+        const result = await options.inboxAssistancePort.assist({
+          propertyId,
+          threadId,
+          ...inboxCommandActor(context),
+          ...input.value,
+        });
+        if (!result.ok) return sendInboxAssistanceError(reply, result.error);
+        if (!validInboxAssistance(result.value, propertyId, threadId, input.value))
+          throw new Error("Inbox assistance scope mismatch");
+        return {
+          contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION,
+          propertyId: result.value.propertyId,
+          threadId: result.value.threadId,
+          kind: result.value.kind,
+          assistedText: result.value.assistedText,
+          attribution: result.value.attribution,
+          reviewRequired: result.value.reviewRequired,
+          basedThroughMessageId: result.value.basedThroughMessageId,
+        };
+      } catch {
+        request.log.error("PMS Inbox assistance failed");
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS Inbox assistance is unavailable."),
+        );
       }
     },
   );
@@ -5928,6 +5978,42 @@ function parseInboxQuickReplyPreview(
   return { value: { idempotencyKey, threadId: body.threadId } };
 }
 
+function parseInboxAssistance(request: FastifyRequest<{ Body: unknown }>):
+  | { value: PmsInboxAssistanceRequest & { idempotencyKey: string } }
+  | {
+      error: PmsOperationsError;
+    } {
+  const body = objectBody(request.body);
+  const idempotencyKey = singleIdempotencyKey(request);
+  if (!body || !idempotencyKey || typeof body.kind !== "string")
+    return { error: invalidInboxAssistance() };
+  if (body.kind === "translate_message" || body.kind === "translate_draft") {
+    const targetLanguage =
+      typeof body.targetLanguage === "string" ? body.targetLanguage.trim() : "";
+    if (
+      Object.keys(body).sort().join(",") !== ["kind", "sourceText", "targetLanguage"].join(",") ||
+      typeof body.sourceText !== "string" ||
+      !body.sourceText.trim() ||
+      body.sourceText.length > 20_000 ||
+      !/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/.test(targetLanguage)
+    )
+      return { error: invalidInboxAssistance() };
+    return {
+      value: { kind: body.kind, sourceText: body.sourceText, targetLanguage, idempotencyKey },
+    };
+  }
+  if (body.kind === "summarize" || body.kind === "draft_reply") {
+    if (
+      Object.keys(body).sort().join(",") !== ["kind", "throughMessageId"].join(",") ||
+      typeof body.throughMessageId !== "string" ||
+      !isUuid(body.throughMessageId)
+    )
+      return { error: invalidInboxAssistance() };
+    return { value: { kind: body.kind, throughMessageId: body.throughMessageId, idempotencyKey } };
+  }
+  return { error: invalidInboxAssistance() };
+}
+
 function normalizedInboxQuickReplyFields(
   body: Record<string, unknown>,
 ): { name: string; text: string; approvedVariables: string[] } | null {
@@ -5954,6 +6040,15 @@ function validInboxVersion(value: unknown): value is number {
 
 function invalidInboxQuickReply(message: string): PmsOperationsError {
   return { statusCode: 400, code: "validation_failed", category: "validation", message };
+}
+
+function invalidInboxAssistance(): PmsOperationsError {
+  return {
+    statusCode: 400,
+    code: "validation_failed",
+    category: "validation",
+    message: "Inbox assistance request is invalid.",
+  };
 }
 
 function invalidInboxStaffCommand(message: string): PmsOperationsError {
@@ -6156,6 +6251,33 @@ function sendInboxQuickReplyError(
   });
 }
 
+function sendInboxAssistanceError(
+  reply: FastifyReply,
+  error: PmsInboxAssistanceError,
+): FastifyReply {
+  const statusCode =
+    error.code === "thread_not_found"
+      ? 404
+      : error.code === "idempotency_conflict"
+        ? 409
+        : error.code === "assistance_unavailable"
+          ? 503
+          : 400;
+  return sendPmsOperationsError(reply, {
+    statusCode,
+    code: error.code,
+    category:
+      statusCode === 404
+        ? "not_found"
+        : statusCode === 409
+          ? "conflict"
+          : statusCode === 503
+            ? "side_effect"
+            : "validation",
+    message: error.message,
+  });
+}
+
 function sendInboxReplyError(
   reply: FastifyReply,
   error: Extract<Awaited<ReturnType<PmsInboxReplyPort["reply"]>>, { ok: false }>["error"],
@@ -6306,6 +6428,27 @@ function validInboxQuickReplyPreview(
   );
 }
 
+function validInboxAssistance(
+  value: Extract<Awaited<ReturnType<PmsInboxAssistancePort["assist"]>>, { ok: true }>["value"],
+  propertyId: string,
+  threadId: string,
+  input: PmsInboxAssistanceRequest,
+): boolean {
+  const basedThroughMessageId =
+    input.kind === "summarize" || input.kind === "draft_reply" ? input.throughMessageId : null;
+  return (
+    value.propertyId === propertyId &&
+    value.threadId === threadId &&
+    value.kind === input.kind &&
+    typeof value.assistedText === "string" &&
+    Boolean(value.assistedText.trim()) &&
+    value.assistedText.length <= 20_000 &&
+    value.attribution === "ai_assisted" &&
+    value.reviewRequired === true &&
+    value.basedThroughMessageId === basedThroughMessageId
+  );
+}
+
 function inboxStaffCommandAuthorization(options: PmsOperationsRoutesOptions) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
@@ -6329,7 +6472,7 @@ function inboxStaffCommandAuthorization(options: PmsOperationsRoutesOptions) {
   };
 }
 
-function inboxQuickReplyActor(context: RequestContext): {
+function inboxCommandActor(context: RequestContext): {
   organizationId: string;
   actorUserId: string;
   actorMembershipId: string;
