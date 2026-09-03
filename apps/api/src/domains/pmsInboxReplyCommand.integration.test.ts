@@ -177,6 +177,34 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
     expect(counts.rows[0]).toEqual({ messages: 0, outbox: 0, attachmentState: "orphan" });
   });
 
+  it("holds an unlinked email reply even when the thread has a cached guest email", async () => {
+    await admin.query(
+      `UPDATE pms.message_threads
+       SET source = 'manual', source_thread_id = 'unlinked-email-thread',
+           provider_channel = NULL, guest_email = 'stale-guest@example.test',
+           delivery_channel = 'email'
+       WHERE property_id = $1::uuid AND id = $2::uuid`,
+      [PROPERTY, THREAD],
+    );
+
+    const accepted = await reply.reply(command("unlinked-email", { attachmentMediaIds: [] }));
+    expect(accepted).toMatchObject({
+      ok: true,
+      value: {
+        delivery: { state: "held", channel: null, reasonCode: "guest_email_unavailable" },
+      },
+    });
+    expect(resolvedGuestEmails).toEqual([null]);
+    const messageId = accepted.ok ? accepted.value.messageId : "";
+    const persisted = await state(messageId);
+    expect(persisted.counts.outbox).toBe(0);
+    expect(persisted.message).toMatchObject({
+      deliveryState: "held",
+      deliveryChannel: null,
+      deliveryReasonCode: "guest_email_unavailable",
+    });
+  });
+
   it("routes linked email threads using the current Booking-owned guest email", async () => {
     await admin.query(
       `INSERT INTO booking.guest_bookings

@@ -240,8 +240,8 @@ describe("PostgreSQL PMS Inbox manual replies", () => {
     const threadLookup = database.call("FROM pms.message_threads").text;
     expect(threadLookup).toContain("thread.property_id = $1::uuid AND thread.id = $2::uuid");
     expect(threadLookup).toContain("guest_booking.property_id = thread.property_id");
-    expect(threadLookup).toContain("CASE WHEN thread.guest_booking_id IS NOT NULL");
-    expect(threadLookup).toContain("THEN current_guest.email");
+    expect(threadLookup).toContain('current_guest.email AS "guestEmail"');
+    expect(threadLookup).not.toContain("thread.guest_email");
     expect(threadLookup).toContain("FOR UPDATE OF thread");
     expect(database.call("UPDATE pms.message_threads").text).toContain("version = $3::bigint");
     expect(database.call("FROM platform.media_objects").text).toContain("property_id = $2::uuid");
