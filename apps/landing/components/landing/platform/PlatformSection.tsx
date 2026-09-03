@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Link from "next/link";
 import { ArrowRightIcon } from "@heroicons/react/24/outline";
 
 const linkClasses =
@@ -25,10 +26,10 @@ export default function PlatformSection() {
                 Turn website visitors into direct bookings with branded checkout, upsells and
                 referral tracking.
               </p>
-              <a href="/booking-engine" className={linkClasses}>
+              <Link href="/booking-engine" className={linkClasses}>
                 Explore Booking Engine
                 <ArrowRightIcon className="h-4 w-4" />
-              </a>
+              </Link>
             </div>
             <Image
               src="/booking-preview.jpg"
@@ -46,10 +47,10 @@ export default function PlatformSection() {
               <p className="mt-3 text-sm leading-relaxed text-gray-600">
                 Run rooms, rates, reservations and channel inventory from one calm workspace.
               </p>
-              <a href="/pms" className={linkClasses}>
+              <Link href="/pms" className={linkClasses}>
                 Explore PMS
                 <ArrowRightIcon className="h-4 w-4" />
-              </a>
+              </Link>
             </div>
             <Image
               src="/pms-product-mock.png"
@@ -68,10 +69,10 @@ export default function PlatformSection() {
                 Find vetted creators, manage hotel stays and turn trusted recommendations into
                 direct demand.
               </p>
-              <a href="/hotel-creator-network" className={linkClasses}>
+              <Link href="/hotel-creator-network" className={linkClasses}>
                 Explore Creator Marketplace
                 <ArrowRightIcon className="h-4 w-4" />
-              </a>
+              </Link>
             </div>
             <Image
               src="/hcn-network-mock.png"
