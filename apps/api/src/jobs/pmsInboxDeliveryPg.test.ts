@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   claimPmsInboxDeliveryJob,
   completePmsInboxDeliveryJob,
+  createPgPmsInboxDeliveryStore,
   preparePmsInboxDeliveryJob,
 } from "./pmsInboxDeliveryPg.js";
 
@@ -173,6 +174,38 @@ describe("PostgreSQL PMS Inbox delivery store", () => {
     );
     expect(exhausted.queries.some((sql) => sql.includes("platform.dead_letter_events"))).toBe(true);
     expect(exhausted.values.flat()).toContain("dead_lettered");
+  });
+
+  it("wraps preparation and completion in isolated transactions", async () => {
+    const calls: string[] = [];
+    const client = {
+      query: vi.fn(async (text: string) => {
+        calls.push(text);
+        if (text.includes("SELECT 1 FROM platform.jobs")) return { rows: [{ present: true }] };
+        if (text.includes("FROM pms.messages message")) {
+          return { rows: [{ ...delivery(), accessReady: false }] };
+        }
+        return { rows: [], rowCount: 1 };
+      }),
+      release: vi.fn(),
+    };
+    const pool = { connect: vi.fn(async () => client), query: vi.fn(), end: vi.fn() };
+    const store = createPgPmsInboxDeliveryStore({
+      connectionString: "",
+      pool: pool as never,
+      emailEnabled: false,
+      media: { read: vi.fn() },
+    });
+
+    await expect(store.prepare(JOB)).resolves.toEqual({
+      state: "blocked",
+      failure: "access_unavailable",
+    });
+    expect(calls[0]).toBe("BEGIN");
+    expect(calls.at(-1)).toBe("COMMIT");
+    expect(client.release).toHaveBeenCalledOnce();
+    await store.close();
+    expect(pool.end).not.toHaveBeenCalled();
   });
 });
 

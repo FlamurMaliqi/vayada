@@ -1,4 +1,4 @@
-import type { QueryResultRow } from "pg";
+import pg, { type QueryResultRow } from "pg";
 
 import {
   PMS_INBOX_DELIVERY_JOB_TYPE,
@@ -7,6 +7,7 @@ import {
   type PmsInboxDeliveryMediaPort,
   type PmsInboxDeliveryCompletion,
   type PmsInboxDeliveryJob,
+  type PmsInboxDeliveryStore,
   type PmsInboxPreparedDelivery,
 } from "../domains/pmsInboxDelivery.js";
 
@@ -16,6 +17,62 @@ export type PmsInboxDeliveryQueryable = {
     values?: readonly unknown[],
   ): Promise<{ rows: T[]; rowCount?: number | null }>;
 };
+
+type Client = PmsInboxDeliveryQueryable & { release(): void };
+type Pool = PmsInboxDeliveryQueryable & {
+  connect(): Promise<Client>;
+  end?(): Promise<void>;
+};
+
+export type PgPmsInboxDeliveryStore = PmsInboxDeliveryStore & { close(): Promise<void> };
+
+export function createPgPmsInboxDeliveryStore(config: {
+  connectionString: string;
+  media: PmsInboxDeliveryMediaPort;
+  emailEnabled: boolean;
+  pool?: Pool;
+  max?: number;
+}): PgPmsInboxDeliveryStore {
+  if (!config.pool && !config.connectionString.trim())
+    throw new Error("PMS Inbox delivery connectionString must not be empty");
+  const ownsPool = !config.pool;
+  const pool =
+    config.pool ?? new pg.Pool({ connectionString: config.connectionString, max: config.max });
+  let closed = false;
+  return {
+    claim: (workerId) => claimPmsInboxDeliveryJob(pool, workerId),
+    prepare: (job) =>
+      transaction(pool, (client) =>
+        preparePmsInboxDeliveryJob(client, job, {
+          media: config.media,
+          emailEnabled: config.emailEnabled,
+        }),
+      ),
+    complete: (job, completion) =>
+      transaction(pool, (client) => completePmsInboxDeliveryJob(client, job, completion)),
+    async close() {
+      if (!ownsPool || closed) return;
+      if (!pool.end) throw new Error("Owned PMS Inbox delivery pool cannot be closed");
+      await pool.end();
+      closed = true;
+    },
+  };
+}
+
+async function transaction<T>(pool: Pool, work: (client: Client) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await work(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 export async function claimPmsInboxDeliveryJob(
   pool: PmsInboxDeliveryQueryable,
