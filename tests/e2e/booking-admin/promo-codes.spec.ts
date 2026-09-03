@@ -34,7 +34,7 @@ test.describe("booking-admin promo-code settings cutover", () => {
         minBookingValue: "500.00",
         applicableRoomIds: ["f6853000-0000-4000-8000-000000000010"],
         validFrom: "2026-07-01",
-        validUntil: "2026-08-31",
+        validUntil: "2099-08-31",
         stayDateFrom: "2026-08-01",
         stayDateUntil: "2026-09-30",
         isActive: true,
@@ -114,6 +114,30 @@ test.describe("booking-admin promo-code settings cutover", () => {
     await page.getByPlaceholder("Search codes...").fill("");
 
     await page.getByRole("button", { name: "New promo code" }).click();
+    const editor = page.getByRole("dialog", { name: "Create promo code" });
+    const overlay = page.locator('body > [role="presentation"]');
+    await expect(overlay).toHaveCSS("position", "fixed");
+    await expect(overlay).toHaveCSS("inset", "0px");
+
+    const activeSwitch = editor.getByRole("switch");
+    const track = await activeSwitch.boundingBox();
+    const knob = await activeSwitch.locator("span").boundingBox();
+    expect(track).not.toBeNull();
+    expect(knob).not.toBeNull();
+    expect(knob!.x).toBeGreaterThanOrEqual(track!.x);
+    expect(knob!.x + knob!.width).toBeLessThanOrEqual(track!.x + track!.width);
+    expect(knob!.x + knob!.width / 2).toBeGreaterThan(track!.x + track!.width / 2);
+
+    await activeSwitch.click();
+    await expect(activeSwitch).toHaveAttribute("aria-checked", "false");
+    await expect
+      .poll(async () => {
+        const bounds = await activeSwitch.locator("span").boundingBox();
+        return bounds ? bounds.x + bounds.width / 2 : undefined;
+      })
+      .toBeLessThan(track!.x + track!.width / 2);
+    await activeSwitch.click();
+
     await page.getByRole("textbox", { name: /^Code/ }).fill("spring25");
     await page.getByRole("spinbutton", { name: /^Discount value/ }).fill("25");
     await page.getByRole("spinbutton", { name: /^Minimum booking value/ }).fill("300");

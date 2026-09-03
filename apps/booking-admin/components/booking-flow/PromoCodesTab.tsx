@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 import {
   MagnifyingGlassIcon,
   PencilSquareIcon,
@@ -434,7 +435,7 @@ export default function PromoCodesTab({
                             className={`relative order-3 ml-2 h-5 w-9 rounded-full transition-colors disabled:opacity-50 ${promo.isActive ? "bg-primary-600" : "bg-gray-300"}`}
                           >
                             <span
-                              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${promo.isActive ? "translate-x-4" : "translate-x-0.5"}`}
+                              className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${promo.isActive ? "translate-x-4" : "translate-x-0"}`}
                             />
                           </button>
                           <button
@@ -471,7 +472,7 @@ export default function PromoCodesTab({
       </div>
 
       {isEditorOpen && (
-        <div
+        <ModalOverlay
           className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/45 p-4"
           role="presentation"
           onMouseDown={(event) => {
@@ -628,7 +629,7 @@ export default function PromoCodesTab({
                     className={`relative h-6 w-11 rounded-full transition-colors ${draft.isActive ? "bg-primary-600" : "bg-gray-300"}`}
                   >
                     <span
-                      className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${draft.isActive ? "translate-x-5" : "translate-x-0.5"}`}
+                      className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${draft.isActive ? "translate-x-5" : "translate-x-0"}`}
                     />
                   </button>
                 </div>
@@ -759,7 +760,7 @@ export default function PromoCodesTab({
               </button>
             </div>
           </form>
-        </div>
+        </ModalOverlay>
       )}
     </div>
   );
@@ -767,6 +768,10 @@ export default function PromoCodesTab({
 
 const inputClass =
   "h-10 w-full rounded-lg border border-gray-300 px-3 text-sm text-gray-900 outline-none focus:border-gray-900 focus:ring-1 focus:ring-gray-900";
+
+function ModalOverlay(props: React.ComponentProps<"div">) {
+  return createPortal(<div {...props} />, document.body);
+}
 
 function Field({
   label,
