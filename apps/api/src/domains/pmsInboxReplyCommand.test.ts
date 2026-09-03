@@ -237,9 +237,12 @@ describe("PostgreSQL PMS Inbox manual replies", () => {
     expect(database.calls[0]?.text).toBe("BEGIN");
     expect(database.calls.at(-1)?.text).toBe("COMMIT");
     expect(database.releases).toBe(1);
-    expect(database.call("FROM pms.message_threads").text).toContain(
-      "property_id = $1::uuid AND id = $2::uuid",
-    );
+    const threadLookup = database.call("FROM pms.message_threads").text;
+    expect(threadLookup).toContain("thread.property_id = $1::uuid AND thread.id = $2::uuid");
+    expect(threadLookup).toContain("guest_booking.property_id = thread.property_id");
+    expect(threadLookup).toContain("CASE WHEN thread.guest_booking_id IS NOT NULL");
+    expect(threadLookup).toContain("THEN current_guest.email");
+    expect(threadLookup).toContain("FOR UPDATE OF thread");
     expect(database.call("UPDATE pms.message_threads").text).toContain("version = $3::bigint");
     expect(database.call("FROM platform.media_objects").text).toContain("property_id = $2::uuid");
     expect(database.call("FROM platform.media_objects").text).toContain(
@@ -426,6 +429,34 @@ describe("PostgreSQL PMS Inbox manual replies", () => {
         database.calls.some((call) => call.text.includes("UPDATE platform.media_objects")),
       ).toBe(false);
       expect(database.calls.at(-1)?.text).toBe("COMMIT");
+    }
+  });
+
+  it("applies the attachment limit for the resolved provider route", async () => {
+    const cases = [
+      ["booking.com", 8 * 1024 * 1024, true],
+      ["booking_com", 8 * 1024 * 1024 + 1, false],
+      ["expedia", 10 * 1024 * 1024, true],
+      ["expedia.com", 10 * 1024 * 1024 + 1, false],
+      ["airbnb", 25 * 1024 * 1024, true],
+      ["airbnb", 25 * 1024 * 1024 + 1, false],
+    ] as const;
+
+    for (const [providerChannel, sizeBytes, accepted] of cases) {
+      const database = new FakeDatabase({
+        thread: { providerChannel },
+        attachment: { sizeBytes: String(sizeBytes) },
+      });
+      const result = await port(database).reply.reply(command());
+      expect(result.ok).toBe(accepted);
+      if (!accepted)
+        expect(result).toEqual({
+          ok: false,
+          error: {
+            code: "attachment_too_large",
+            message: "One or more attachments are too large.",
+          },
+        });
     }
   });
 

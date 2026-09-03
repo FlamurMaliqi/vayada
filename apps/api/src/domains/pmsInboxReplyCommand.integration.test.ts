@@ -13,16 +13,20 @@ const ACTOR = "13730000-0000-4000-8000-000000000006";
 const MEMBERSHIP = "13730000-0000-4000-8000-000000000007";
 const MEDIA = "13730000-0000-4000-8000-000000000008";
 const OTHER_MEDIA = "13730000-0000-4000-8000-000000000009";
+const BOOKING = "13730000-0000-4000-8000-000000000010";
+const BOOKING_GUEST = "13730000-0000-4000-8000-000000000011";
 const NOW = "2026-09-03T09:00:00.000Z";
 
 describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
   const admin = new pg.Client({ connectionString: URL });
+  let resolvedGuestEmails: Array<string | null> = [];
   const reply = createPgPmsInboxReplyPort({
     connectionString: URL ?? "postgresql://integration-test-disabled",
     max: 4,
     now: () => new Date(NOW),
     emailReplyRoutes: {
       async resolveReplyRoutes({ propertyId, threads }) {
+        resolvedGuestEmails.push(...threads.map(({ guestEmail }) => guestEmail));
         return threads.map(({ threadId, guestEmail }) => ({
           propertyId,
           threadId,
@@ -45,6 +49,7 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
   });
 
   beforeEach(async () => {
+    resolvedGuestEmails = [];
     await cleanup();
     await seed();
   });
@@ -170,6 +175,91 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
       [PROPERTY, OTHER_MEDIA],
     );
     expect(counts.rows[0]).toEqual({ messages: 0, outbox: 0, attachmentState: "orphan" });
+  });
+
+  it("routes linked email threads using the current Booking-owned guest email", async () => {
+    await admin.query(
+      `INSERT INTO booking.guest_bookings
+         (id, property_id, public_reference, lifecycle_status, check_in, check_out, currency)
+       VALUES ($1::uuid, $2::uuid, 'INBOX-EMAIL-BOOKING', 'confirmed',
+               '2026-09-04', '2026-09-05', 'EUR')`,
+      [BOOKING, PROPERTY],
+    );
+    await admin.query(
+      `INSERT INTO booking.booking_guests
+         (id, guest_booking_id, guest_role, first_name, last_name, email)
+       VALUES ($1::uuid, $2::uuid, 'booker', 'Current', 'Guest',
+               '  current-guest@example.test  ')`,
+      [BOOKING_GUEST, BOOKING],
+    );
+    await admin.query(
+      `UPDATE pms.message_threads
+       SET source = 'manual', source_thread_id = 'email-thread', provider_channel = NULL,
+           guest_email = 'stale-guest@example.test', guest_booking_id = $1::uuid,
+           delivery_channel = 'email', conversation_context_state = 'linked'
+       WHERE property_id = $2::uuid AND id = $3::uuid`,
+      [BOOKING, PROPERTY, THREAD],
+    );
+
+    await expect(
+      reply.reply(command("current-booking-email", { attachmentMediaIds: [] })),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { delivery: { state: "queued", channel: "email" } },
+    });
+    expect(resolvedGuestEmails).toEqual(["current-guest@example.test"]);
+  });
+
+  it("replays concurrent commands with the same key and payload exactly once", async () => {
+    const input = command("same-key-same-payload", { attachmentMediaIds: [] });
+    const [first, second] = await Promise.all([reply.reply(input), reply.reply(input)]);
+
+    expect(second).toEqual(first);
+    expect(first).toMatchObject({ ok: true, value: { threadVersion: 5 } });
+    const counts = await admin.query<{
+      messages: number;
+      idempotency: number;
+      outbox: number;
+      version: string;
+    }>(
+      `SELECT
+         (SELECT count(*)::int FROM pms.messages WHERE property_id = $1::uuid) AS messages,
+         (SELECT count(*)::int FROM platform.idempotency_keys WHERE property_id = $1::uuid) AS idempotency,
+         (SELECT count(*)::int FROM platform.outbox_events WHERE property_id = $1::uuid) AS outbox,
+         (SELECT version::text FROM pms.message_threads
+          WHERE property_id = $1::uuid AND id = $2::uuid) AS version`,
+      [PROPERTY, THREAD],
+    );
+    expect(counts.rows[0]).toEqual({ messages: 1, idempotency: 1, outbox: 1, version: "5" });
+  });
+
+  it("rejects one concurrent payload when the same key is reused", async () => {
+    const [first, second] = await Promise.all([
+      reply.reply(command("same-key-different-payload", { text: "First", attachmentMediaIds: [] })),
+      reply.reply(
+        command("same-key-different-payload", { text: "Second", attachmentMediaIds: [] }),
+      ),
+    ]);
+
+    const results = [first, second];
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    expect(results.filter((result) => !result.ok)).toEqual([
+      {
+        ok: false,
+        error: {
+          code: "idempotency_conflict",
+          message: "Idempotency key was already used for a different reply.",
+        },
+      },
+    ]);
+    const counts = await admin.query<{ messages: number; idempotency: number; outbox: number }>(
+      `SELECT
+         (SELECT count(*)::int FROM pms.messages WHERE property_id = $1::uuid) AS messages,
+         (SELECT count(*)::int FROM platform.idempotency_keys WHERE property_id = $1::uuid) AS idempotency,
+         (SELECT count(*)::int FROM platform.outbox_events WHERE property_id = $1::uuid) AS outbox`,
+      [PROPERTY],
+    );
+    expect(counts.rows[0]).toEqual({ messages: 1, idempotency: 1, outbox: 1 });
   });
 
   it("serializes concurrent replies so only one expected version is accepted", async () => {
@@ -374,6 +464,10 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
         "DELETE FROM pms.message_threads WHERE property_id = ANY($1::uuid[])",
       ])
         await admin.query(statement, [properties]);
+      await admin.query("DELETE FROM booking.booking_guests WHERE guest_booking_id = $1::uuid", [
+        BOOKING,
+      ]);
+      await admin.query("DELETE FROM booking.guest_bookings WHERE id = $1::uuid", [BOOKING]);
       for (const statement of [
         "DELETE FROM identity.product_entitlements WHERE organization_id = $1::uuid",
         "DELETE FROM identity.organization_resource_links WHERE organization_id = $1::uuid",
