@@ -161,7 +161,7 @@ export function createPgPmsInboxReplyPort(config: {
           );
 
         const route = await resolveRoute(client, config.emailReplyRoutes, input, thread);
-        const attachments = await lockAttachments(client, input.attachmentMediaIds);
+        const attachments = await lockAttachments(client, input);
         const attachmentError = validateAttachments(attachments, input, acceptedAt);
         if (attachmentError)
           return commitResult(
@@ -465,9 +465,9 @@ async function resolveRoute(
 
 async function lockAttachments(
   client: PmsInboxReplyCommandClient,
-  mediaIds: readonly string[],
+  input: ReplyInput,
 ): Promise<AttachmentRow[]> {
-  if (!mediaIds.length) return [];
+  if (!input.attachmentMediaIds.length) return [];
   const result = await client.query<AttachmentRow>(
     `SELECT id::text AS "mediaId", property_id::text AS "propertyId",
             resource_product AS "resourceProduct", resource_type AS "resourceType",
@@ -479,9 +479,11 @@ async function lockAttachments(
             source_metadata ->> 'attachmentState' AS "attachmentState",
             deleted_at AS "deletedAt"
      FROM platform.media_objects
-     WHERE id = ANY($1::uuid[])
+     WHERE id = ANY($1::uuid[]) AND property_id = $2::uuid
+       AND resource_product = 'pms' AND resource_type = 'message_thread'
+       AND resource_id = $3::uuid::text AND purpose = 'pms.messaging.attachment'
      FOR UPDATE`,
-    [mediaIds],
+    [input.attachmentMediaIds, input.propertyId, input.threadId],
   );
   return result.rows;
 }
@@ -493,15 +495,15 @@ function validateAttachments(
 ): PmsInboxReplyError | null {
   if (rows.length !== input.attachmentMediaIds.length)
     return validationFailure("One or more attachments are unavailable.");
-  const byId = new Map(rows.map((row) => [row.mediaId, row]));
+  const byId = new Map(rows.map((row) => [row.mediaId.toLowerCase(), row]));
   for (const mediaId of input.attachmentMediaIds) {
-    const row = byId.get(mediaId);
+    const row = byId.get(mediaId.toLowerCase());
     if (
       !row ||
-      row.propertyId !== input.propertyId ||
+      !sameUuid(row.propertyId, input.propertyId) ||
       row.resourceProduct !== "pms" ||
       row.resourceType !== "message_thread" ||
-      row.resourceId !== input.threadId ||
+      !sameUuid(row.resourceId, input.threadId) ||
       row.purpose !== "pms.messaging.attachment" ||
       row.visibility !== "private" ||
       row.storageKind !== "vayada_managed" ||
@@ -948,6 +950,10 @@ function safeVersion(value: string | number): number {
 function trimmed(value: string | null): string | null {
   const normalized = value?.trim();
   return normalized ? normalized : null;
+}
+
+function sameUuid(left: string | null, right: string): boolean {
+  return left?.toLowerCase() === right.toLowerCase();
 }
 
 function validInstant(value: string): boolean {
