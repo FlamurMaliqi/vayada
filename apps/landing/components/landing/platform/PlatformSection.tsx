@@ -1,88 +1,146 @@
 import Image from "next/image";
-import Link from "next/link";
-import { ArrowRightIcon } from "@heroicons/react/24/outline";
+import { ArrowRightIcon, CheckIcon } from "@heroicons/react/24/outline";
 
-const linkClasses =
-  "mt-5 inline-flex items-center gap-2 text-sm font-medium text-primary-600 transition-colors hover:text-primary-700";
+type Product = {
+  id: string;
+  eyebrow: string;
+  title: string;
+  body: string;
+  bullets: string[];
+  image: { src: string; alt: string };
+  ctaLabel: string;
+  ctaHref: string;
+  reverse?: boolean;
+  badge?: string;
+};
+
+const PRODUCTS: Product[] = [
+  {
+    id: "booking-engine",
+    eyebrow: "Booking Engine",
+    title: "Turn website visitors into direct bookings",
+    body: "Launch a branded booking flow that converts demand, captures guest data and increases revenue per stay.",
+    bullets: [
+      "Branded checkout",
+      "Affiliate & referral tracking",
+      "Upsell experiences & transport",
+    ],
+    image: {
+      src: "/booking-preview.jpg",
+      alt: "Live Vayada-powered direct booking page for Green Poya Resort in Lombok",
+    },
+    ctaLabel: "Learn more about the Booking Engine",
+    ctaHref: "/booking-engine",
+    badge: "vayada.com/green-poya",
+  },
+  {
+    id: "pms",
+    eyebrow: "Property Management",
+    title: "Manage rooms, rates and reservations in one place",
+    body: "A lightweight PMS for hotels and villas to run daily operations, manage availability and keep OTA channels synchronized.",
+    bullets: ["Calendar & rates", "Guest CRM", "Channel Manager"],
+    image: {
+      src: "/pms-product-mock.png",
+      alt: "Vayada PMS calendar showing reservations across rooms and villas",
+    },
+    ctaLabel: "Learn more about the PMS",
+    ctaHref: "/pms",
+    reverse: true,
+  },
+  {
+    id: "hcn",
+    eyebrow: "Hotel-Creator-Network",
+    title: "Trust becomes distribution with vetted creators",
+    body: "Join the free marketplace where you discover, vet, and manage creator partnerships in one centralized hub.",
+    bullets: [
+      "Vetted creator matching",
+      "Centralized collaboration workflow",
+      "Pay only on completed stays",
+    ],
+    image: {
+      src: "/hcn-network-mock.png",
+      alt: "Vayada Hotel-Creator-Network dashboard with verified creator profiles",
+    },
+    ctaLabel: "Learn more about the Hotel-Creator-Network",
+    ctaHref: "/hotel-creator-network",
+  },
+];
 
 export default function PlatformSection() {
   return (
-    <section id="products" className="bg-white py-16 md:py-24">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        <div className="max-w-2xl">
-          <h2 className="text-balance font-display text-4xl font-semibold leading-tight text-ink md:text-5xl">
-            Three products, one direct-growth stack
+    <section id="product" className="relative bg-white pt-14 pb-8 md:pt-32 md:pb-16">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-[600px] bg-[var(--gradient-radial)]" />
+      <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-3xl text-center">
+          <p className="text-xs uppercase tracking-[0.2em] text-primary-500">The platform</p>
+          <h2 className="mt-4 font-display text-4xl font-semibold leading-tight text-ink md:text-6xl">
+            Modular infrastructure to win <span className="text-primary-500">direct bookings</span>
           </h2>
-          <p className="mt-5 max-w-xl text-lg leading-relaxed text-gray-600">
-            Use the complete platform or start with the part your hotel needs most.
+          <p className="mx-auto mt-5 max-w-xl text-lg text-gray-500">
+            Built for independent properties at every stage: replace your full stack or add the
+            tools your current setup is missing.
           </p>
         </div>
 
-        <div className="mt-12 grid gap-5 lg:grid-cols-[1.05fr_0.95fr] lg:grid-rows-2">
-          <article className="overflow-hidden rounded-3xl border border-border bg-[#f7f8fc] lg:row-span-2">
-            <div className="p-7 md:p-10">
-              <h3 className="font-display text-3xl font-semibold text-ink">Booking Engine</h3>
-              <p className="mt-3 max-w-lg leading-relaxed text-gray-600">
-                Turn website visitors into direct bookings with branded checkout, upsells and
-                referral tracking.
-              </p>
-              <Link href="/booking-engine" className={linkClasses}>
-                Explore Booking Engine
-                <ArrowRightIcon className="h-4 w-4" />
-              </Link>
-            </div>
-            <Image
-              src="/booking-preview.jpg"
-              alt="Vayada Booking Engine on a hotel website"
-              width={1920}
-              height={1084}
-              sizes="(min-width: 1024px) 50vw, 100vw"
-              className="h-auto w-full border-t border-border object-cover"
-            />
-          </article>
+        <div className="mt-20 space-y-8">
+          {PRODUCTS.map((p) => (
+            <div
+              id={p.id}
+              key={p.id}
+              className="group relative flex flex-col gap-8 overflow-hidden rounded-3xl border border-border bg-white p-8 transition-all hover:border-border-strong md:p-12"
+            >
+              <div className="grid gap-8 md:grid-cols-2 md:items-center">
+                <div className={p.reverse ? "md:order-2" : ""}>
+                  <p className="text-xs uppercase tracking-[0.2em] text-primary-500">{p.eyebrow}</p>
+                  <h3 className="mt-4 font-display text-3xl font-semibold leading-tight text-ink md:text-4xl">
+                    {p.title}
+                  </h3>
+                  <p className="mt-4 text-base leading-relaxed text-gray-500">{p.body}</p>
+                  <ul className="mt-6 space-y-2">
+                    {p.bullets.map((b) => (
+                      <li key={b} className="flex items-center gap-3 text-sm">
+                        <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-primary-50 text-primary-500">
+                          <CheckIcon className="h-3 w-3" strokeWidth={3} />
+                        </span>
+                        <span className="text-gray-700">{b}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
 
-          <article className="grid overflow-hidden rounded-3xl border border-border bg-white lg:grid-cols-[0.9fr_1.1fr]">
-            <div className="p-7 md:p-8">
-              <h3 className="font-display text-2xl font-semibold text-ink">PMS</h3>
-              <p className="mt-3 text-sm leading-relaxed text-gray-600">
-                Run rooms, rates, reservations and channel inventory from one calm workspace.
-              </p>
-              <Link href="/pms" className={linkClasses}>
-                Explore PMS
-                <ArrowRightIcon className="h-4 w-4" />
-              </Link>
+                <div className={`relative ${p.reverse ? "md:order-1" : ""}`}>
+                  {p.badge && (
+                    <div className="flex items-center gap-1.5 border-b border-border bg-[#f7f8fc] px-3 py-2 text-[10px] text-gray-500">
+                      <span className="h-2 w-2 rounded-full bg-red-400/70" />
+                      <span className="h-2 w-2 rounded-full bg-yellow-400/70" />
+                      <span className="h-2 w-2 rounded-full bg-green-400/70" />
+                      <span className="ml-3">{p.badge}</span>
+                    </div>
+                  )}
+                  <div
+                    className={`relative overflow-hidden border border-border-strong bg-white ${p.badge ? "rounded-b-2xl" : "rounded-2xl"} md:min-h-[280px]`}
+                  >
+                    <Image
+                      src={p.image.src}
+                      alt={p.image.alt}
+                      width={1200}
+                      height={800}
+                      className="block h-auto w-full md:h-full md:object-cover"
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className={p.reverse ? "md:text-right" : "md:text-left"}>
+                <a
+                  href={p.ctaHref}
+                  className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-primary-500 px-6 text-sm font-medium text-white shadow-glow transition-all hover:bg-primary-600"
+                >
+                  {p.ctaLabel}
+                  <ArrowRightIcon className="w-4 h-4" />
+                </a>
+              </div>
             </div>
-            <Image
-              src="/pms-product-mock.png"
-              alt="Vayada PMS reservation calendar"
-              width={1920}
-              height={1138}
-              sizes="(min-width: 1024px) 25vw, 100vw"
-              className="h-full min-h-52 w-full border-t border-border object-cover object-left lg:border-l lg:border-t-0"
-            />
-          </article>
-
-          <article className="grid overflow-hidden rounded-3xl border border-border bg-primary-50 lg:grid-cols-[1.1fr_0.9fr]">
-            <div className="p-7 md:p-8">
-              <h3 className="font-display text-2xl font-semibold text-ink">Creator Marketplace</h3>
-              <p className="mt-3 text-sm leading-relaxed text-gray-600">
-                Find vetted creators, manage hotel stays and turn trusted recommendations into
-                direct demand.
-              </p>
-              <Link href="/hotel-creator-network" className={linkClasses}>
-                Explore Creator Marketplace
-                <ArrowRightIcon className="h-4 w-4" />
-              </Link>
-            </div>
-            <Image
-              src="/hcn-network-mock.png"
-              alt="Vayada Creator Marketplace with hotel and creator profiles"
-              width={1920}
-              height={1199}
-              sizes="(min-width: 1024px) 25vw, 100vw"
-              className="h-full min-h-52 w-full border-t border-primary-100 object-cover object-left lg:border-l lg:border-t-0"
-            />
-          </article>
+          ))}
         </div>
       </div>
     </section>
