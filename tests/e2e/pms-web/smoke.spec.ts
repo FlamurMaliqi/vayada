@@ -537,6 +537,101 @@ test.describe("pms-web smoke", () => {
     await assertHealthy();
   });
 
+  test("saves a room rate through the canonical pricing owner", async ({ page }, testInfo) => {
+    const assertHealthy = watchPageHealth(page, testInfo);
+    const assertNoLegacyCalls = watchNoLegacyCalls(page, testInfo, "pms-web-operations");
+    let savedRate = "180.00";
+    let canonicalPlanRevision = 0;
+    const roomType = () => ({
+      ...pmsWebRoomType,
+      version: "room-type-facts-v3",
+      roomMediaRevision: 1,
+      ratePlans:
+        canonicalPlanRevision === 0
+          ? []
+          : [
+              {
+                ratePlanId: "11111111-1111-4111-8111-111111111111",
+                pricingContractVersion: "pms-pricing.v1",
+                code: "ONB15-FLEX",
+                name: "Flexible",
+                rateType: "flexible",
+                mealPlan: null,
+                baseRate: { amountDecimal: savedRate, currency: "EUR" },
+                active: true,
+              },
+            ],
+    });
+
+    await mockPmsWebAuthenticatedSession(page);
+    await mockPmsWebTargetRoutes(page);
+    await page.route(
+      `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-types/${PMS_WEB_ROOM_TYPE_ID}`,
+      (route) => route.fulfill({ json: { propertyId: PMS_WEB_PROPERTY_ID, item: roomType() } }),
+    );
+    await page.route(`**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/pricing-source`, (route) =>
+      route.fulfill({
+        json: {
+          pricingCurrency: { currency: "EUR", pricingCurrencyRevision: 4 },
+          flexibleRatePlans:
+            canonicalPlanRevision === 0
+              ? []
+              : [
+                  {
+                    roomTypeId: PMS_WEB_ROOM_TYPE_ID,
+                    flexibleRatePlanId: "11111111-1111-4111-8111-111111111111",
+                    flexibleRatePlanRevision: canonicalPlanRevision,
+                    sourceRoomFactsRevision: 3,
+                    baseAmount: { amountDecimal: savedRate, currency: "EUR" },
+                    cancellationTerms: {},
+                  },
+                ],
+        },
+      }),
+    );
+    await page.route(
+      `**/api/pms/properties/${PMS_WEB_PROPERTY_ID}/room-types/${PMS_WEB_ROOM_TYPE_ID}/flexible-rate-plan`,
+      (route) => {
+        const body = route.request().postDataJSON() as Record<string, unknown>;
+        expect(body).toMatchObject({
+          expectedRoomFactsRevision: 3,
+          expectedPricingCurrencyRevision: 4,
+          expectedFlexibleRatePlanRevision: 0,
+          baseAmountDecimal: "125.00",
+        });
+        savedRate = "125.00";
+        canonicalPlanRevision = 1;
+        return route.fulfill({
+          json: {
+            flexibleRatePlan: {
+              roomTypeId: PMS_WEB_ROOM_TYPE_ID,
+              flexibleRatePlanId: "11111111-1111-4111-8111-111111111111",
+              flexibleRatePlanRevision: canonicalPlanRevision,
+              sourceRoomFactsRevision: 3,
+              baseAmount: { amountDecimal: savedRate, currency: "EUR" },
+              cancellationTerms: {},
+            },
+          },
+        });
+      },
+    );
+
+    await page.goto(`/rooms/${PMS_WEB_ROOM_TYPE_ID}`);
+    await page.getByRole("button", { name: "Pricing & Rates" }).click();
+    await expect(page.getByText("(standard plan)")).toBeVisible();
+    await expect(
+      page.getByRole("combobox").filter({ has: page.locator('option[value="EUR"]') }),
+    ).toBeDisabled();
+    const rateTable = page.getByText("Set rates per season").locator("xpath=../..");
+    await rateTable.getByRole("spinbutton").first().fill("125");
+    await page.getByRole("button", { name: "Save Changes" }).click();
+    await expect(page.getByText("Room type changes saved.")).toBeVisible();
+    await page.getByRole("button", { name: "Pricing & Rates" }).click();
+    await expect(rateTable.getByRole("spinbutton").first()).toHaveValue("125");
+    await assertNoLegacyCalls();
+    await assertHealthy();
+  });
+
   test("prices a new calendar booking and handles preview failures", async ({ page }, testInfo) => {
     const assertNoLegacyCalls = watchNoLegacyCalls(page, testInfo, "pms-web-operations");
     let previewAttempt = 0;

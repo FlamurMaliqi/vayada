@@ -36,7 +36,10 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
         setRoom(r);
         setForm(roomTypeUpdateForm(r));
       })
-      .catch(console.error)
+      .catch((cause) => {
+        console.error(cause);
+        setError(cause instanceof Error ? cause.message : "Failed to load room type.");
+      })
       .finally(() => setLoading(false));
   }, [id]);
 
@@ -84,7 +87,18 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
   if (!room) {
     return (
       <div className="p-6">
-        <p className="text-gray-500">Room type not found.</p>
+        <p className={error ? "text-red-600" : "text-gray-500"}>
+          {error || "Room type not found."}
+        </p>
+        {error && (
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-3 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            Try again
+          </button>
+        )}
       </div>
     );
   }
@@ -109,6 +123,11 @@ export default function EditRoomPage({ params }: { params: Promise<{ id: string 
       </div>
 
       <RoomTypeForm
+        key={[
+          form.canonicalPricingSnapshot?.expectedRoomFactsRevision,
+          form.canonicalPricingSnapshot?.expectedPricingCurrencyRevision,
+          form.canonicalPricingSnapshot?.expectedFlexibleRatePlanRevision,
+        ].join(":")}
         form={form}
         onChange={setForm}
         onSubmit={handleSubmit}

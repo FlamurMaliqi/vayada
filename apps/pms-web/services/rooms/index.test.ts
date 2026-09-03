@@ -76,6 +76,23 @@ function pmsRoomTypeItem(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function canonicalPricingSnapshot(overrides: Record<string, unknown> = {}) {
+  return {
+    expectedRoomFactsRevision: 3,
+    expectedPricingCurrencyRevision: 4,
+    expectedFlexibleRatePlanRevision: 0,
+    currency: "EUR",
+    baseAmountDecimal: "180.00",
+    cancellationPolicy: "Free until 7 days before",
+    freeCancellationDeadlineDays: 7,
+    flexibleCancellationType: "free" as const,
+    partialRefundCancelWindowDays: 30,
+    partialRefundAmountPercent: 50,
+    partialRefundTiers: [],
+    ...overrides,
+  };
+}
+
 describe("roomsService lifecycle commands", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -188,19 +205,12 @@ describe("roomsService.update", () => {
     });
   });
 
-  it("patches room-type location and cancellation fields through PMS operations", async () => {
+  it("keeps non-pricing room changes on the PMS operations command", async () => {
     const roomType = await roomsService.update("room-type-1", {
       name: "Ignored by location update",
       locationAddress: "Seestrasse 12, Innsbruck",
       latitude: 47.2692,
       longitude: 11.4041,
-      flexibleCancellationType: "partial_refund",
-      partialRefundCancelWindowDays: 30,
-      partialRefundAmountPercent: 50,
-      partialRefundTiers: [
-        { minDaysBeforeCheckIn: 30, refundPercent: 50 },
-        { minDaysBeforeCheckIn: 7, refundPercent: 20 },
-      ],
     });
 
     expect(mocks.patch).toHaveBeenCalledWith(
@@ -209,19 +219,14 @@ describe("roomsService.update", () => {
         locationAddress: "Seestrasse 12, Innsbruck",
         latitude: 47.2692,
         longitude: 11.4041,
-        flexibleCancellationType: "partial_refund",
-        partialRefundCancelWindowDays: 30,
-        partialRefundAmountPercent: 50,
-        partialRefundTiers: [
-          { minDaysBeforeCheckIn: 30, refundPercent: 50 },
-          { minDaysBeforeCheckIn: 7, refundPercent: 20 },
-        ],
         commandId: expect.stringMatching(/^pms-room-type-update-/),
         idempotencyKey: expect.stringMatching(/^pms-room-type-update-/),
       }),
       { headers: { "X-Vayada-Omit-Hotel-Context": "true" } },
     );
     expect(mocks.patch.mock.calls[0]![1]).not.toHaveProperty("name");
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.put).not.toHaveBeenCalled();
     expect(roomType).toMatchObject({
       id: "room-type-1",
       locationAddress: "Seestrasse 12, Innsbruck",
@@ -230,7 +235,7 @@ describe("roomsService.update", () => {
     });
   });
 
-  it("persists partial-refund tiers through the canonical pricing owner", async () => {
+  it("creates the canonical flexible plan and reloads its saved base rate", async () => {
     const partialPolicy = {
       type: "free_until_days_before_arrival",
       freeCancellationDeadlineDays: 7,
@@ -242,49 +247,57 @@ describe("roomsService.update", () => {
         { minDaysBeforeCheckIn: 7, refundPercent: 20 },
       ],
     };
-    mocks.patch
-      .mockRejectedValueOnce(
-        new Error("Flexible cancellation is unavailable for this room type's pricing contract."),
-      )
-      .mockResolvedValueOnce({});
-    mocks.get
-      .mockResolvedValueOnce({
-        pricingCurrency: { pricingCurrencyRevision: 4 },
-        flexibleRatePlans: [
-          {
-            roomTypeId: "room-type-1",
-            flexibleRatePlanRevision: 6,
-            sourceRoomFactsRevision: 3,
-            baseAmount: { amountDecimal: "180.00", currency: "EUR" },
-            cancellationTerms: {
-              type: "free_until_days_before_arrival",
-              freeCancellationDeadlineDays: 7,
-              afterDeadlinePenalty: "full_booking_amount",
-              noShowPenalty: "full_booking_amount",
-            },
-          },
-        ],
-      })
-      .mockResolvedValueOnce({
+    const canonicalPlan = {
+      roomTypeId: "room-type-1",
+      flexibleRatePlanId: "11111111-1111-4111-8111-111111111111",
+      flexibleRatePlanRevision: 1,
+      sourceRoomFactsRevision: 3,
+      baseAmount: { amountDecimal: "125.00", currency: "EUR" },
+      cancellationTerms: partialPolicy,
+    };
+    mocks.get.mockImplementation(async (endpoint: string) => {
+      if (endpoint.endsWith("/recurring-booking-evidence")) {
+        return { pricingCurrencyRevision: 4, currency: "EUR", sources: [] };
+      }
+      if (endpoint.endsWith("/pricing-source")) {
+        return {
+          pricingCurrency: { currency: "EUR", pricingCurrencyRevision: 4 },
+          flexibleRatePlans: mocks.put.mock.calls.length > 0 ? [canonicalPlan] : [],
+        };
+      }
+      return {
         propertyId: "pms-property-1",
         item: pmsRoomTypeItem({
           ratePlans: [
             {
-              ratePlanId: "canonical-flex-1",
+              ratePlanId: canonicalPlan.flexibleRatePlanId,
               pricingContractVersion: "pms-pricing.v1",
               code: "ONB15-FLEX",
               name: "Flexible",
               rateType: "flexible",
               mealPlan: null,
-              baseRate: { amountDecimal: "180.00", currency: "EUR" },
+              baseRate: canonicalPlan.baseAmount,
               cancellationPolicySnapshot: partialPolicy,
               active: true,
             },
           ],
         }),
-      });
+      };
+    });
+    mocks.put.mockResolvedValue({ flexibleRatePlan: canonicalPlan });
 
     const updated = await roomsService.update("room-type-1", {
+      canonicalPricingSnapshot: canonicalPricingSnapshot(),
+      seasons: [
+        {
+          name: "Default",
+          tier: "mid",
+          from: "01-01",
+          to: "12-31",
+          rate: "125",
+          minStay: 1,
+        },
+      ],
       flexibleCancellationType: "partial_refund",
       partialRefundTiers: partialPolicy.partialRefundTiers,
     });
@@ -294,8 +307,8 @@ describe("roomsService.update", () => {
       expect.objectContaining({
         expectedRoomFactsRevision: 3,
         expectedPricingCurrencyRevision: 4,
-        expectedFlexibleRatePlanRevision: 6,
-        baseAmountDecimal: "180.00",
+        expectedFlexibleRatePlanRevision: 0,
+        baseAmountDecimal: "125.00",
         cancellationTerms: expect.objectContaining({
           flexibleCancellationType: "partial_refund",
           partialRefundTiers: partialPolicy.partialRefundTiers,
@@ -303,71 +316,268 @@ describe("roomsService.update", () => {
       }),
       expect.objectContaining({
         headers: expect.objectContaining({
-          "Idempotency-Key": expect.stringMatching(/^pms-flexible-cancellation-update-/),
+          "Idempotency-Key": expect.stringMatching(/^pms-flexible-rate-plan-/),
         }),
       }),
     );
-    expect(mocks.patch.mock.calls[1]![1]).not.toHaveProperty("flexibleCancellationType");
+    expect(mocks.patch.mock.calls[0]![1]).not.toHaveProperty("flexibleCancellationType");
     expect(updated).toMatchObject({
+      baseRate: 125,
       flexibleCancellationType: "partial_refund",
       partialRefundTiers: partialPolicy.partialRefundTiers,
     });
   });
 
-  it("restores the partial-refund selection and every tier from the target snapshot", async () => {
+  it("updates an existing flexible plan with the revisions captured on editor load", async () => {
+    const savedPlan = {
+      roomTypeId: "room-type-1",
+      flexibleRatePlanId: "11111111-1111-4111-8111-111111111111",
+      flexibleRatePlanRevision: 7,
+      sourceRoomFactsRevision: 3,
+      baseAmount: { amountDecimal: "125.00", currency: "EUR" },
+      cancellationTerms: {},
+    };
+    mocks.put.mockResolvedValue({ flexibleRatePlan: savedPlan });
+    mocks.get.mockImplementation(async (endpoint: string) =>
+      endpoint.endsWith("/pricing-source")
+        ? {
+            pricingCurrency: { currency: "EUR", pricingCurrencyRevision: 4 },
+            flexibleRatePlans: [savedPlan],
+          }
+        : { propertyId: "pms-property-1", item: pmsRoomTypeItem() },
+    );
+
+    await roomsService.update("room-type-1", {
+      canonicalPricingSnapshot: canonicalPricingSnapshot({
+        expectedFlexibleRatePlanRevision: 6,
+        cancellationPolicy: "Partial refund by notice period",
+        freeCancellationDeadlineDays: 14,
+      }),
+      seasons: [
+        { name: "Default", tier: "mid", from: "01-01", to: "12-31", rate: "125", minStay: 1 },
+      ],
+    });
+
+    expect(mocks.put.mock.calls[0]?.[1]).toMatchObject({
+      expectedRoomFactsRevision: 3,
+      expectedPricingCurrencyRevision: 4,
+      expectedFlexibleRatePlanRevision: 6,
+      baseAmountDecimal: "125.00",
+      cancellationTerms: expect.objectContaining({ freeCancellationDeadlineDays: 14 }),
+    });
+  });
+
+  it("does not rewrite canonical pricing when an unrelated field changes", async () => {
+    const currentPlan = {
+      roomTypeId: "room-type-1",
+      flexibleRatePlanId: "11111111-1111-4111-8111-111111111111",
+      flexibleRatePlanRevision: 6,
+      sourceRoomFactsRevision: 3,
+      baseAmount: { amountDecimal: "180.00", currency: "EUR" },
+      cancellationTerms: {},
+    };
+    mocks.get.mockImplementation(async (endpoint: string) =>
+      endpoint.endsWith("/pricing-source")
+        ? {
+            pricingCurrency: { currency: "EUR", pricingCurrencyRevision: 4 },
+            flexibleRatePlans: [currentPlan],
+          }
+        : { propertyId: "pms-property-1", item: pmsRoomTypeItem() },
+    );
+
+    await roomsService.update("room-type-1", {
+      canonicalPricingSnapshot: canonicalPricingSnapshot({
+        expectedFlexibleRatePlanRevision: 6,
+      }),
+      locationAddress: "Seestrasse 12, Innsbruck",
+      currency: "EUR",
+      flexibleRateEnabled: true,
+      seasons: [
+        { name: "Default", tier: "mid", from: "01-01", to: "12-31", rate: "180", minStay: 1 },
+      ],
+      cancellationPolicy: "Free until 7 days before",
+      flexibleCancellationType: "free",
+      partialRefundCancelWindowDays: 30,
+      partialRefundAmountPercent: 50,
+      partialRefundTiers: [{ minDaysBeforeCheckIn: 30, refundPercent: 50 }],
+    });
+
+    expect(mocks.put).not.toHaveBeenCalled();
+  });
+
+  it("creates the required flexible plan during an otherwise unrelated editor save", async () => {
+    const createdPlan = {
+      roomTypeId: "room-type-1",
+      flexibleRatePlanId: "11111111-1111-4111-8111-111111111111",
+      flexibleRatePlanRevision: 1,
+      sourceRoomFactsRevision: 3,
+      baseAmount: { amountDecimal: "180.00", currency: "EUR" },
+      cancellationTerms: {},
+    };
+    mocks.put.mockResolvedValue({ flexibleRatePlan: createdPlan });
+    mocks.get.mockImplementation(async (endpoint: string) =>
+      endpoint.endsWith("/pricing-source")
+        ? {
+            pricingCurrency: { currency: "EUR", pricingCurrencyRevision: 4 },
+            flexibleRatePlans: [createdPlan],
+          }
+        : { propertyId: "pms-property-1", item: pmsRoomTypeItem() },
+    );
+
+    await roomsService.update("room-type-1", {
+      canonicalPricingSnapshot: canonicalPricingSnapshot(),
+      locationAddress: "Seestrasse 12, Innsbruck",
+      seasons: [
+        { name: "Default", tier: "mid", from: "01-01", to: "12-31", rate: "180", minStay: 1 },
+      ],
+    });
+
+    expect(mocks.put.mock.calls[0]?.[1]).toMatchObject({
+      expectedFlexibleRatePlanRevision: 0,
+      baseAmountDecimal: "180.00",
+    });
+  });
+
+  it("keeps the editor-load plan revision so concurrent pricing changes conflict", async () => {
+    mocks.put.mockRejectedValue(new Error("Room pricing changed. Refresh and try again."));
+
+    await expect(
+      roomsService.update("room-type-1", {
+        canonicalPricingSnapshot: canonicalPricingSnapshot({
+          expectedFlexibleRatePlanRevision: 6,
+        }),
+        seasons: [
+          { name: "Default", tier: "mid", from: "01-01", to: "12-31", rate: "125", minStay: 1 },
+        ],
+      }),
+    ).rejects.toThrow("Room pricing changed");
+    expect(mocks.put.mock.calls[0]?.[1]).toMatchObject({
+      expectedFlexibleRatePlanRevision: 6,
+    });
+  });
+
+  it("rejects room-level currency changes before mutating the room", async () => {
+    await expect(
+      roomsService.update("room-type-1", {
+        canonicalPricingSnapshot: canonicalPricingSnapshot(),
+        currency: "USD",
+      }),
+    ).rejects.toThrow("property currency");
+    expect(mocks.patch).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a canonical pricing failure instead of returning a saved room", async () => {
     mocks.get.mockResolvedValue({
-      propertyId: "pms-property-1",
-      item: pmsRoomTypeItem({
-        ratePlans: [
+      pricingCurrency: { currency: "EUR", pricingCurrencyRevision: 4 },
+      flexibleRatePlans: [],
+    });
+    mocks.put.mockRejectedValue(new Error("Pricing is temporarily unavailable."));
+
+    await expect(
+      roomsService.update("room-type-1", {
+        canonicalPricingSnapshot: canonicalPricingSnapshot(),
+        seasons: [
           {
-            ratePlanId: "canonical-flex-1",
-            pricingContractVersion: "pms-pricing.v1",
-            code: "ONB15-FLEX",
-            name: "Canonical flexible",
-            rateType: "flexible",
-            mealPlan: null,
-            baseRate: { amountDecimal: "180.00", currency: "EUR" },
-            active: true,
-            cancellationPolicySnapshot: {
-              flexibleCancellationType: "free",
-              partialRefundTiers: [],
-            },
-          },
-          {
-            ratePlanId: "flex-1",
-            pricingContractVersion: null,
-            code: "LEGACY-FLEX",
-            name: "Flexible",
-            rateType: "flexible",
-            mealPlan: null,
-            baseRate: { amountDecimal: "180.00", currency: "EUR" },
-            active: true,
-            cancellationPolicySnapshot: {
-              kind: "flexible",
-              text: "Partial refund by notice period",
-              flexibleCancellationType: "partial_refund",
-              partialRefundCancelWindowDays: 30,
-              partialRefundAmountPercent: 50,
-              partialRefundTiers: [
-                { min_days_before_check_in: 30, refund_percent: 50 },
-                { minDaysBeforeCheckIn: 7, refundPercent: 20 },
-              ],
-            },
+            name: "Default",
+            tier: "mid",
+            from: "01-01",
+            to: "12-31",
+            rate: "125",
+            minStay: 1,
           },
         ],
       }),
-    });
+    ).rejects.toThrow("Pricing is temporarily unavailable.");
+  });
+
+  it("rejects unsupported seasonal schedules before changing the room", async () => {
+    await expect(
+      roomsService.update("room-type-1", {
+        seasons: [
+          { name: "Summer", tier: "high", from: "06-01", to: "08-31", rate: "210", minStay: 1 },
+        ],
+      }),
+    ).rejects.toThrow("one year-round rate");
+    expect(mocks.patch).not.toHaveBeenCalled();
+  });
+
+  it("loads the canonical plan instead of a stale legacy base rate", async () => {
+    const canonicalPlan = {
+      roomTypeId: "room-type-1",
+      flexibleRatePlanId: "11111111-1111-4111-8111-111111111111",
+      flexibleRatePlanRevision: 6,
+      sourceRoomFactsRevision: 3,
+      baseAmount: { amountDecimal: "210.00", currency: "EUR" },
+      cancellationTerms: {
+        text: "Partial refund by notice period",
+        freeCancellationDeadlineDays: 14,
+      },
+    };
+    mocks.get.mockImplementation(async (endpoint: string) =>
+      endpoint.endsWith("/pricing-source")
+        ? {
+            pricingCurrency: { currency: "EUR", pricingCurrencyRevision: 4 },
+            flexibleRatePlans: [canonicalPlan],
+          }
+        : {
+            propertyId: "pms-property-1",
+            item: pmsRoomTypeItem({
+              baseRate: { amountDecimal: "180.00", currency: "EUR" },
+              ratePlans: [],
+            }),
+          },
+    );
 
     const roomType = await roomsService.get("room-type-1");
     expect(roomTypeUpdateForm(roomType)).toMatchObject({
-      flexibleCancellationType: "partial_refund",
-      cancellationPolicy: "Partial refund by notice period",
-      partialRefundCancelWindowDays: 30,
-      partialRefundAmountPercent: 50,
-      partialRefundTiers: [
-        { minDaysBeforeCheckIn: 30, refundPercent: 50 },
-        { minDaysBeforeCheckIn: 7, refundPercent: 20 },
+      baseRate: 210,
+      seasons: [
+        {
+          name: "Default",
+          from: "01-01",
+          to: "12-31",
+          rate: "210",
+        },
       ],
+      canonicalPricingSnapshot: expect.objectContaining({
+        expectedPricingCurrencyRevision: 4,
+        expectedFlexibleRatePlanRevision: 6,
+        baseAmountDecimal: "210.00",
+        cancellationPolicy: "Partial refund by notice period",
+        freeCancellationDeadlineDays: 14,
+      }),
+    });
+  });
+
+  it("distinguishes a pricing-load failure from a missing room", async () => {
+    mocks.get.mockImplementation(async (endpoint: string) => {
+      if (endpoint.endsWith("/pricing-source")) {
+        throw new Error("Pricing is temporarily unavailable.");
+      }
+      return { propertyId: "pms-property-1", item: pmsRoomTypeItem() };
+    });
+
+    await expect(roomsService.get("room-type-1")).rejects.toThrow(
+      "Room pricing could not be loaded: Pricing is temporarily unavailable.",
+    );
+  });
+
+  it("opens an unpriced room so its first positive rate can be entered", async () => {
+    mocks.get.mockImplementation(async (endpoint: string) =>
+      endpoint.endsWith("/pricing-source")
+        ? {
+            pricingCurrency: { currency: "EUR", pricingCurrencyRevision: 4 },
+            flexibleRatePlans: [],
+          }
+        : {
+            propertyId: "pms-property-1",
+            item: pmsRoomTypeItem({ baseRate: { amountDecimal: "0.00", currency: "EUR" } }),
+          },
+    );
+
+    await expect(roomsService.get("room-type-1")).resolves.toMatchObject({
+      baseRate: 0,
+      canonicalPricingSnapshot: { baseAmountDecimal: "0.00" },
     });
   });
 

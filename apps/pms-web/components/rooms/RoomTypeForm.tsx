@@ -11,6 +11,7 @@ import {
   MealPlanCode,
   PartialRefundTier,
   RateDepositSetting,
+  RoomSeason,
   type PropertyPlan,
 } from "@/services/rooms";
 import ImageUpload from "@/components/ImageUpload";
@@ -767,6 +768,7 @@ export default function RoomTypeForm({
   roomTypeId,
   propertyPlan,
 }: RoomTypeFormProps) {
+  type EditableRoomSeason = Omit<RoomSeason, "maxStay"> & { maxStay?: number | null };
   const formRef = useRef<HTMLFormElement | null>(null);
   const skipPriceWarningConfirmRef = useRef(false);
   const previousCurrencyRef = useRef(form.currency || "EUR");
@@ -806,18 +808,7 @@ export default function RoomTypeForm({
         }))
       : [{ from: "01-01", to: "12-31" }],
   );
-  const [seasons, setSeasons] = useState<
-    {
-      name: string;
-      tier: string;
-      from: string;
-      to: string;
-      rate: string;
-      minStay: number;
-      maxStay?: number | null;
-      occupancyRates?: Record<string, string>;
-    }[]
-  >(
+  const [seasons, setSeasons] = useState<EditableRoomSeason[]>(
     sortSeasonsChronologically(
       (form.seasons || []).map((s) => {
         const rawMaxStay = s.maxStay ?? (s as { max_stay?: number | string | null }).max_stay;
@@ -2307,10 +2298,16 @@ export default function RoomTypeForm({
                         <span className="text-[10px] text-gray-500">Currency</span>
                         <select
                           value={form.currency || "EUR"}
+                          disabled={mode === "edit"}
+                          title={
+                            mode === "edit"
+                              ? "Change currency from property pricing settings."
+                              : undefined
+                          }
                           onChange={(e) =>
                             onChange((prev: any) => ({ ...prev, currency: e.target.value }))
                           }
-                          className="text-[11px] px-2 py-1 border border-gray-200 rounded-lg bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 cursor-pointer"
+                          className="text-[11px] px-2 py-1 border border-gray-200 rounded-lg bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 cursor-pointer disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
                         >
                           {Object.entries(CURRENCY_SYMBOLS).map(([code, symbol]) => (
                             <option key={code} value={code}>
@@ -2635,15 +2632,21 @@ export default function RoomTypeForm({
                   className={`rounded-xl border px-4 py-3.5 transition-colors ${flexibleRateEnabled ? "border-primary-200 bg-primary-50/30" : "border-gray-200 bg-gray-50"}`}
                 >
                   <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setFlexibleRateEnabled(!flexibleRateEnabled)}
-                      className={`relative w-10 h-[22px] rounded-full transition-colors shrink-0 ${flexibleRateEnabled ? "bg-primary-500" : "bg-gray-300"}`}
-                    >
-                      <div
-                        className={`absolute top-[2px] w-[18px] h-[18px] rounded-full bg-white shadow transition-transform ${flexibleRateEnabled ? "left-[20px]" : "left-[2px]"}`}
-                      />
-                    </button>
+                    {mode === "edit" ? (
+                      <span className="flex h-[22px] w-10 shrink-0 items-center justify-center rounded-full bg-primary-500 text-white">
+                        <CheckIcon className="h-4 w-4" aria-hidden="true" />
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setFlexibleRateEnabled(!flexibleRateEnabled)}
+                        className={`relative w-10 h-[22px] rounded-full transition-colors shrink-0 ${flexibleRateEnabled ? "bg-primary-500" : "bg-gray-300"}`}
+                      >
+                        <div
+                          className={`absolute top-[2px] w-[18px] h-[18px] rounded-full bg-white shadow transition-transform ${flexibleRateEnabled ? "left-[20px]" : "left-[2px]"}`}
+                        />
+                      </button>
+                    )}
                     <svg
                       className="w-4 h-4 text-primary-500 shrink-0"
                       viewBox="0 0 24 24"
@@ -2658,9 +2661,11 @@ export default function RoomTypeForm({
                     </svg>
                     <span className="text-[12px] font-semibold text-gray-900">Flexible rate</span>
                     <span className="text-[11px] text-gray-400">
-                      {flexibleCancellationType === "partial_refund"
-                        ? "(partial refund)"
-                        : "(free cancellation)"}
+                      {mode === "edit"
+                        ? "(standard plan)"
+                        : flexibleCancellationType === "partial_refund"
+                          ? "(partial refund)"
+                          : "(free cancellation)"}
                     </span>
                   </div>
                   {flexibleRateEnabled && (
