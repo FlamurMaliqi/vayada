@@ -77,9 +77,19 @@ export type PlatformMediaPrivateDownloadSigner = {
   signPrivateDownload(policy: PrivateDownloadPolicy): Promise<string>;
 };
 
+export type PlatformMediaPrivateObjectReader = {
+  readPrivateObject(input: {
+    bucketName: string;
+    storageKey: string;
+    expectedSizeBytes: number;
+    expectedChecksumSha256: string;
+  }): Promise<Uint8Array>;
+};
+
 export type S3PlatformMediaAdapter = PlatformMediaUploadSigner &
   PlatformMediaUploadFinalizer &
   PlatformMediaPrivateDownloadSigner &
+  PlatformMediaPrivateObjectReader &
   PlatformMediaObjectDeleter;
 
 class UploadTooLargeError extends Error {}
@@ -156,6 +166,35 @@ export function createS3PlatformMediaAdapter(
         ResponseContentType: policy.responseContentType,
       });
       return getSignedUrl(s3, command, { expiresIn: policy.expiresInSeconds });
+    },
+
+    async readPrivateObject(input) {
+      if (input.bucketName !== bucketName)
+        throw new Error("Private object bucket must match the platform media bucket");
+      if (!input.storageKey.startsWith("private/"))
+        throw new Error("Private object storage key must use the private prefix");
+      if (
+        !Number.isInteger(input.expectedSizeBytes) ||
+        input.expectedSizeBytes < 1 ||
+        input.expectedSizeBytes > MAX_SIGNED_FILE_SIZE_BYTES ||
+        !/^[0-9a-f]{64}$/.test(input.expectedChecksumSha256)
+      )
+        throw new Error("Private object integrity evidence is invalid");
+      const object = await s3.send(
+        new GetObjectCommand({ Bucket: bucketName, Key: input.storageKey }),
+      );
+      if (
+        !object.Body ||
+        (object.ContentLength !== undefined && object.ContentLength !== input.expectedSizeBytes)
+      )
+        throw new Error("Private object does not match its media record");
+      const bytes = await readBody(object.Body, input.expectedSizeBytes);
+      if (
+        bytes.length !== input.expectedSizeBytes ||
+        sha256(bytes) !== input.expectedChecksumSha256
+      )
+        throw new Error("Private object does not match its media record");
+      return bytes;
     },
 
     async signUploadTarget(input) {
