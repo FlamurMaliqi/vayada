@@ -151,6 +151,10 @@ import { createChannexManagementProvider } from "./integrations/channexManagemen
 import { createPgChannexManagementPlanPort } from "./integrations/channexManagementPlans.js";
 import { runPmsChannexManagementWorkerOnce } from "./jobs/pmsChannexManagementWorker.js";
 import { createPgPmsChannexManagementWorkerStore } from "./jobs/pmsChannexManagementWorkerStore.js";
+import {
+  createPgPmsCalendarAutoOpenWorkerStore,
+  runPmsCalendarAutoOpenWorkerOnce,
+} from "./jobs/pmsCalendarAutoOpenWorker.js";
 import { createPmsChannexManagementTargetState } from "./jobs/pmsChannexManagementTargetState.js";
 import {
   runFinanceSubscriptionNotificationJobs,
@@ -756,6 +760,12 @@ const pmsOperatingCalendarRuntime = createPmsOperatingCalendarProductionRuntime(
   },
   operatingCalendar: propertySetupPmsRuntime.operatingCalendar,
 });
+const pmsCalendarAutoOpenWorkerStore = pmsOperatingCalendarRuntime
+  ? createPgPmsCalendarAutoOpenWorkerStore({
+      connectionString: targetDatabaseUrl,
+      propertyProfileEvidence: propertySetupPmsRuntime.propertyProfileEvidence,
+    })
+  : undefined;
 const pmsGuestPolicySetupCommands =
   config.pmsOperationsSource === "target"
     ? {
@@ -1523,6 +1533,34 @@ app.addHook("onClose", async () => {
     channexManagementPlans?.close(),
     channexBookingRevisionStore?.close?.(),
   ]);
+});
+
+let activeCalendarAutoOpenRun: Promise<void> | undefined;
+const runCalendarAutoOpen = () => {
+  if (!pmsCalendarAutoOpenWorkerStore || activeCalendarAutoOpenRun) return;
+  activeCalendarAutoOpenRun = runPmsCalendarAutoOpenWorkerOnce({
+    store: pmsCalendarAutoOpenWorkerStore,
+    workerId: `pms-calendar-auto-open:${process.pid}`,
+  })
+    .then((result) => {
+      if (result.outcome === "dead_lettered") {
+        app.log.error(result, "PMS calendar auto-open job was dead-lettered");
+      }
+    })
+    .catch((error: unknown) => app.log.warn({ err: error }, "PMS calendar auto-open worker failed"))
+    .finally(() => {
+      activeCalendarAutoOpenRun = undefined;
+    });
+};
+const calendarAutoOpenTimer = pmsCalendarAutoOpenWorkerStore
+  ? setInterval(runCalendarAutoOpen, 2_000)
+  : undefined;
+calendarAutoOpenTimer?.unref();
+if (pmsCalendarAutoOpenWorkerStore) runCalendarAutoOpen();
+app.addHook("onClose", async () => {
+  if (calendarAutoOpenTimer) clearInterval(calendarAutoOpenTimer);
+  await activeCalendarAutoOpenRun;
+  await pmsCalendarAutoOpenWorkerStore?.close?.();
 });
 
 let activeFinanceSubscriptionBatch: Promise<void> | undefined;

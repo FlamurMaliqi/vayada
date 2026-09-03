@@ -51,6 +51,7 @@ export function createTargetPmsInventoryReservationPort(): DirectBookingInventor
              AND offer.freshness_status = 'fresh'
              AND (offer.expires_at IS NULL OR offer.expires_at > $8::timestamptz)
              AND inventory.status <> 'closed'
+             AND COALESCE(inventory.rate_gate_open, TRUE)
              AND inventory.calendar_revision IS NOT NULL
              AND inventory.inventory_revision IS NOT NULL
            GROUP BY offer.room_type_id
@@ -88,6 +89,7 @@ export function createTargetPmsInventoryReservationPort(): DirectBookingInventor
              AND inventory.stay_date >= $4::date
              AND inventory.stay_date < $5::date
              AND inventory.status <> 'closed'
+             AND COALESCE(inventory.rate_gate_open, TRUE)
              AND inventory.available_count >= $6::integer
            RETURNING inventory.stay_date, inventory.available_count, inventory.total_count
          ),

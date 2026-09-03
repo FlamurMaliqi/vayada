@@ -88,6 +88,14 @@ describe("PMS calendar auto-open settings repository", () => {
       repository.update(command({ mode: "fixed", rollingMonths: null, fixedEndMonth: "2026-08" })),
     ).resolves.toEqual({ ok: false, error: { code: "invalid_setting" } });
 
+    const tooFar = createPgPmsCalendarAutoOpenSettingsRepository({
+      pool: new TestPool([virtual]),
+      now,
+    });
+    await expect(
+      tooFar.update(command({ mode: "fixed", rollingMonths: null, fixedEndMonth: "2028-10" })),
+    ).resolves.toEqual({ ok: false, error: { code: "invalid_setting" } });
+
     const missingZone = createPgPmsCalendarAutoOpenSettingsRepository({
       pool: new TestPool([{ ...virtual, propertyTimeZone: null }]),
       now,
@@ -95,6 +103,46 @@ describe("PMS calendar auto-open settings repository", () => {
     await expect(
       missingZone.update(command({ mode: "fixed", rollingMonths: null, fixedEndMonth: "2027-08" })),
     ).resolves.toEqual({ ok: false, error: { code: "property_time_zone_invalid" } });
+
+    const existingFar = row({
+      configured: true,
+      revision: 6,
+      enabled: true,
+      mode: "fixed",
+      rollingMonths: null,
+      fixedEndMonth: "2029-01",
+    });
+    const disabledFar = { ...existingFar, revision: 7, enabled: false };
+    const disableFar = createPgPmsCalendarAutoOpenSettingsRepository({
+      pool: new TestPool([existingFar], [disabledFar]),
+      now,
+    });
+    await expect(
+      disableFar.update(
+        command({
+          expectedRevision: 6,
+          enabled: false,
+          mode: "fixed",
+          rollingMonths: null,
+          fixedEndMonth: "2029-01",
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: true, outcome: "updated", setting: { revision: 7 } });
+    const reenableFar = createPgPmsCalendarAutoOpenSettingsRepository({
+      pool: new TestPool([disabledFar]),
+      now,
+    });
+    await expect(
+      reenableFar.update(
+        command({
+          expectedRevision: 7,
+          enabled: true,
+          mode: "fixed",
+          rollingMonths: null,
+          fixedEndMonth: "2029-01",
+        }),
+      ),
+    ).resolves.toEqual({ ok: false, error: { code: "invalid_setting" } });
 
     const historical = row({
       configured: true,

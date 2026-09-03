@@ -5,6 +5,7 @@ import {
   calculatePmsCalendarAutoOpenHorizon,
   createPmsCalendarAutoOpenSource,
   fingerprintPmsCalendarAutoOpenSource,
+  isPmsCalendarAutoOpenFixedTargetWithinLimit,
   type PmsCalendarAutoOpenSource,
 } from "@vayada/domain-pms";
 import pg from "pg";
@@ -32,6 +33,7 @@ export type PmsChannexAriPushCandidate = {
     to: string;
   };
   inventoryVersion: string;
+  rateGateOpen: boolean;
   triggerRefId: string;
   sourceOutboxEventId?: string;
   outboxKey?: string;
@@ -210,6 +212,7 @@ type AriCandidateRow = {
   dateFrom: string | Date;
   dateTo: string | Date;
   inventoryVersion: string;
+  rateGateOpen: boolean;
   triggerRefId: string;
   sourceOutboxEventId?: string | null;
   outboxKey?: string | null;
@@ -559,6 +562,16 @@ async function selectIncrementalAriPushCandidates(
        COALESCE(outbox.payload #>> '{dateRange,from}', outbox.payload ->> 'dateFrom') AS "dateFrom",
        COALESCE(outbox.payload #>> '{dateRange,to}', outbox.payload ->> 'dateTo') AS "dateTo",
        COALESCE(outbox.payload ->> 'inventoryVersion', outbox.id::text) AS "inventoryVersion",
+       CASE
+         WHEN outbox.payload ->> 'rateGateOpen' IN ('true', 'false')
+           THEN (outbox.payload ->> 'rateGateOpen')::boolean
+         ELSE EXISTS (
+           SELECT 1 FROM pms.rate_plans canonical_rate
+           WHERE canonical_rate.property_id=outbox.property_id
+             AND canonical_rate.room_type_id=room_mapping.room_type_id
+             AND canonical_rate.pricing_contract_version='pms-pricing.v1'
+         )
+       END AS "rateGateOpen",
        COALESCE(outbox.payload ->> 'triggerRefId', outbox.outbox_key) AS "triggerRefId",
        outbox.id::text AS "sourceOutboxEventId",
        outbox.outbox_key AS "outboxKey",
@@ -608,6 +621,12 @@ async function selectFullAriPushCandidates(
        $1::date AS "dateFrom",
        $2::date AS "dateTo",
        $3::text AS "inventoryVersion",
+       EXISTS (
+         SELECT 1 FROM pms.rate_plans canonical_rate
+         WHERE canonical_rate.property_id=connection.property_id
+           AND canonical_rate.room_type_id=room_mapping.room_type_id
+           AND canonical_rate.pricing_contract_version='pms-pricing.v1'
+       ) AS "rateGateOpen",
        $3::text AS "triggerRefId",
        NULL::text AS "sourceOutboxEventId",
        NULL::text AS "outboxKey",
@@ -1426,6 +1445,7 @@ function ariCandidateFromRow(row: AriCandidateRow): PmsChannexAriPushCandidate {
       to: dateOnly(row.dateTo),
     },
     inventoryVersion: row.inventoryVersion,
+    rateGateOpen: row.rateGateOpen,
     triggerRefId: row.triggerRefId,
     sourceOutboxEventId: row.sourceOutboxEventId ?? undefined,
     outboxKey: row.outboxKey ?? undefined,
@@ -1450,20 +1470,20 @@ function calendarCandidateFromSourceRow(
   ) {
     throw new Error("PMS calendar auto-open setting source is invalid");
   }
-  const horizon = calculatePmsCalendarAutoOpenHorizon(
-    {
-      contractVersion: PMS_CALENDAR_AUTO_OPEN_CONTRACT_VERSION,
-      propertyId: row.propertyId,
-      revision,
-      enabled: true,
-      mode: row.mode,
-      rollingMonths: row.mode === "rolling" ? (rollingMonths as 12 | 18 | 24) : null,
-      fixedEndMonth: row.mode === "fixed" ? fixedEndMonth : null,
-      updatedAt: null,
-    },
-    row.propertyTimeZone,
-    now,
-  );
+  const setting = {
+    contractVersion: PMS_CALENDAR_AUTO_OPEN_CONTRACT_VERSION,
+    propertyId: row.propertyId,
+    revision,
+    enabled: true,
+    mode: row.mode,
+    rollingMonths: row.mode === "rolling" ? (rollingMonths as 12 | 18 | 24) : null,
+    fixedEndMonth: row.mode === "fixed" ? fixedEndMonth : null,
+    updatedAt: null,
+  } as const;
+  const horizon = calculatePmsCalendarAutoOpenHorizon(setting, row.propertyTimeZone, now);
+  if (!isPmsCalendarAutoOpenFixedTargetWithinLimit(setting, row.propertyTimeZone, now)) {
+    throw new Error("PMS calendar auto-open fixed target exceeds the 24-month maximum");
+  }
   if (!horizon.targetOpenThrough || horizon.targetOpenThrough < horizon.propertyLocalDate)
     return null;
 
@@ -1536,6 +1556,7 @@ function ariJobPayload(candidate: PmsChannexAriPushCandidate): Record<string, un
     channexRoomTypeId: candidate.channexRoomTypeId,
     dateRange: candidate.dateRange,
     inventoryVersion: candidate.inventoryVersion,
+    rateGateOpen: candidate.rateGateOpen,
     triggerRefId: candidate.triggerRefId,
     sourceOutboxEventId: candidate.sourceOutboxEventId ?? null,
     outboxKey: candidate.outboxKey ?? null,

@@ -418,6 +418,7 @@ function ariCandidate(
     channexRoomTypeId: "chx_rt_deluxe",
     dateRange: { from: "2026-09-12", to: "2026-09-15" },
     inventoryVersion: "outbox-ari-001",
+    rateGateOpen: true,
     triggerRefId: "room-block-001",
     sourceOutboxEventId: "outbox_ari_001",
     outboxKey: "pms.inventory.ari_changed:prop_alpenrose:rt_deluxe:2026-09-12_2026-09-15",

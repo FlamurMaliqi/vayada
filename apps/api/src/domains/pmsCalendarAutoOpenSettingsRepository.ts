@@ -4,6 +4,7 @@ import {
   PMS_CALENDAR_AUTO_OPEN_CONTRACT_VERSION,
   calculatePmsCalendarAutoOpenHorizon,
   isPmsCalendarAutoOpenConfiguration,
+  isPmsCalendarAutoOpenFixedTargetWithinLimit,
   isPmsCalendarAutoOpenSetting,
   type PmsCalendarAutoOpenSetting,
   type PmsCalendarAutoOpenSettingsPort,
@@ -514,16 +515,20 @@ function validateSelectedFixedMonth(
   command: UpdatePmsCalendarAutoOpenSetting,
   acceptedAt: Date,
 ): Extract<PmsCalendarAutoOpenUpdateResult, { ok: false }>["error"] | null {
-  if (
-    command.mode !== "fixed" ||
-    (current.configured &&
-      current.mode === "fixed" &&
-      current.fixedEndMonth === command.fixedEndMonth)
-  )
-    return null;
+  if (command.mode !== "fixed") return null;
   const localMonth = propertyLocalMonth(acceptedAt, current.propertyTimeZone);
   if (!localMonth) return { code: "property_time_zone_invalid" };
-  return command.fixedEndMonth! < localMonth ? { code: "invalid_setting" } : null;
+  const preservesSelectedMonth =
+    current.configured &&
+    current.mode === "fixed" &&
+    current.fixedEndMonth === command.fixedEndMonth;
+  if (preservesSelectedMonth && (command.fixedEndMonth! < localMonth || !command.enabled)) {
+    return null;
+  }
+  return command.fixedEndMonth! < localMonth ||
+    !isPmsCalendarAutoOpenFixedTargetWithinLimit(command, current.propertyTimeZone!, acceptedAt)
+    ? { code: "invalid_setting" }
+    : null;
 }
 
 function propertyLocalMonth(instant: Date, timeZone: string | null): string | null {

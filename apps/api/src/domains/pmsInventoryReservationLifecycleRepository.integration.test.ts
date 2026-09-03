@@ -22,6 +22,7 @@ import {
   createPgPmsInventoryMaterializationRepository,
   type PmsInventoryMaterializationRepository,
 } from "./pmsInventoryMaterializationRepository.js";
+import { PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS } from "./pmsInventoryPublicOfferProjection.js";
 import { createTargetPmsInventoryReservationPort } from "./pmsInventoryReservation.js";
 import { lockPmsInventoryMutationScope } from "./pmsInventoryMutationLock.js";
 import { reconcilePmsLinkedInventory } from "./pmsLinkedInventoryReconciler.js";
@@ -168,6 +169,70 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
     });
   });
 
+  it("projects positive preserved inventory as zero while its rate gate is closed", async () => {
+    const fixture = await createFixture(admin, closeables, { capacity: 2, startingLimit: 2 });
+    await materialize(fixture, "2026-08-04", "2026-08-04");
+    await admin.query(
+      `INSERT INTO hotel_catalog.property_locations (property_id,timezone)
+       VALUES ($1::uuid,'Europe/Berlin')`,
+      [fixture.propertyId],
+    );
+    await admin.query(
+      `INSERT INTO pms.property_pricing_settings (property_id,currency)
+       VALUES ($1::uuid,'EUR')`,
+      [fixture.propertyId],
+    );
+    await admin.query(
+      `INSERT INTO pms.rate_plans (
+         id,property_id,room_type_id,code,name,rate_type,base_rate_amount,currency,active,
+         cancellation_policy_snapshot,pricing_contract_version,flexible_rate_plan_revision,
+         source_room_facts_revision,source_pricing_currency_revision
+       ) VALUES ($1::uuid,$2::uuid,$3::uuid,'flexible','Flexible','flexible',100,'EUR',TRUE,
+         '{"type":"free_until_days_before_arrival","freeCancellationDeadlineDays":1,
+           "afterDeadlinePenalty":"full_booking_amount","noShowPenalty":"full_booking_amount"}'::jsonb,
+         'pms-pricing.v1',1,1,1)`,
+      [randomUUID(), fixture.propertyId, fixture.roomTypeId],
+    );
+    await admin.query(
+      `INSERT INTO hotel_catalog.property_public_profile_read_model (
+         property_id,public_id,display_name,canonical_slug,default_locale,
+         supported_locales,profile_status
+       ) VALUES ($1::uuid,$2,'Rate-gated Hotel',$2,'en',ARRAY['en'],'complete')`,
+      [fixture.propertyId, `rate-gated-${fixture.propertyId}`],
+    );
+    await admin.query(
+      `INSERT INTO distribution.public_hotel_bookability_profiles (
+         property_id,public_id,canonical_slug,canonical_url,booking_base_url,timezone,
+         default_currency,supported_currencies,profile_status,freshness_status,
+         public_setup_completeness
+       ) VALUES ($1::uuid,$2,$2,'https://booking.example.test/'||$2,
+         'https://booking.example.test','Europe/Berlin','EUR',ARRAY['EUR'],'public','fresh',
+         '{"status":"ready"}'::jsonb)`,
+      [fixture.propertyId, `rate-gated-${fixture.propertyId}`],
+    );
+    await admin.query(
+      `UPDATE pms.inventory_days
+       SET inventory_revision=inventory_revision+1,
+           generated_pricing_source_fingerprint=$3,
+           rate_gate_open=FALSE
+       WHERE property_id=$1::uuid AND room_type_id=$2::uuid`,
+      [fixture.propertyId, fixture.roomTypeId, "b".repeat(64)],
+    );
+
+    await admin.query(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS, [
+      fixture.propertyId,
+      ACCEPTED_AT.toISOString(),
+    ]);
+    expect(
+      await admin.query(
+        `SELECT available_rooms AS available, sellable_publicly AS sellable,
+                availability_status AS status
+         FROM distribution.public_room_offer_snapshots WHERE property_id=$1::uuid`,
+        [fixture.propertyId],
+      ),
+    ).toMatchObject({ rows: [{ available: 0, sellable: false, status: "closed" }] });
+  });
+
   it("advances canonical revisions and consumes each public booking release once", async () => {
     const fixture = await createFixture(admin, closeables, { capacity: 2, startingLimit: 2 });
     await admin.query(
@@ -246,6 +311,43 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS inventory reservation lifecy
           occurredAt: ACCEPTED_AT,
         }),
       );
+    await admin.query(
+      `INSERT INTO pms.inventory_days (
+         property_id, room_type_id, stay_date, total_count, available_count,
+         calendar_revision, inventory_revision, generated_sellable_limit_count,
+         effective_sellable_limit_count, generated_source_revision,
+         channel_source_revision, manual_source_revision, block_source_revision,
+         booking_source_revision, generated_pricing_source_fingerprint, rate_gate_open
+       ) VALUES ($1::uuid,$2::uuid,'2026-08-09',2,2,1,1,2,2,1,0,0,0,0,$3,FALSE)`,
+      [fixture.propertyId, fixture.roomTypeId, "a".repeat(64)],
+    );
+    await admin.query(
+      `INSERT INTO distribution.public_room_offer_snapshots (
+         property_id, room_type_id, stay_date, public_offer_key,
+         available_rooms, currency, freshness_status
+       ) VALUES ($1::uuid,$2::uuid,'2026-08-09',$3,2,'EUR','fresh')`,
+      [fixture.propertyId, fixture.roomTypeId, publicOfferKey],
+    );
+    await expect(reserve(randomUUID(), "2026-08-09", "2026-08-10")).resolves.toBeNull();
+    expect(
+      await admin.query(
+        `SELECT assigned_count AS assigned, available_count AS available
+         FROM pms.inventory_days
+         WHERE property_id=$1::uuid AND room_type_id=$2::uuid AND stay_date='2026-08-09'`,
+        [fixture.propertyId, fixture.roomTypeId],
+      ),
+    ).toMatchObject({ rows: [{ assigned: 0, available: 2 }] });
+    await admin.query(
+      `DELETE FROM distribution.public_room_offer_snapshots
+       WHERE property_id=$1::uuid AND room_type_id=$2::uuid AND stay_date='2026-08-09'`,
+      [fixture.propertyId, fixture.roomTypeId],
+    );
+    await admin.query(
+      `DELETE FROM pms.inventory_days
+       WHERE property_id=$1::uuid AND room_type_id=$2::uuid AND stay_date='2026-08-09'`,
+      [fixture.propertyId, fixture.roomTypeId],
+    );
+
     const first = await reserve(randomUUID(), "2026-08-04", "2026-08-06");
     const second = await reserve(randomUUID(), "2026-08-04", "2026-08-05");
     expect(first).toMatchObject({

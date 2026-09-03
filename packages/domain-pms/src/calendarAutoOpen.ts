@@ -4,6 +4,8 @@ export const PMS_CALENDAR_AUTO_OPEN_CONTRACT_VERSION = "pms-calendar-auto-open.v
 export const PMS_CALENDAR_AUTO_OPEN_SOURCE_CONTRACT_VERSION =
   "pms-calendar-auto-open-source.v1" as const;
 export const PMS_CALENDAR_AUTO_OPEN_ROLLING_MONTHS = [12, 18, 24] as const;
+export const PMS_CALENDAR_AUTO_OPEN_MAX_FIXED_MONTHS = 24 as const;
+export const PMS_CALENDAR_AUTO_OPEN_MAX_HORIZON_DAYS = 762 as const;
 
 export type PmsCalendarAutoOpenConfiguration = Readonly<{
   enabled: boolean;
@@ -167,6 +169,21 @@ export function calculatePmsCalendarAutoOpenHorizon(
     }
   }
   return Object.freeze({ propertyTimeZone, propertyLocalDate, targetOpenThrough });
+}
+
+export function isPmsCalendarAutoOpenFixedTargetWithinLimit(
+  configuration: PmsCalendarAutoOpenConfiguration,
+  propertyTimeZone: string,
+  instant: Date,
+): boolean {
+  if (configuration.mode !== "fixed") return true;
+  if (configuration.fixedEndMonth === null) return false;
+  const [year, month] = localDate(instant, propertyTimeZone).split("-").map(Number);
+  const maximumMonth = monthEnd(year!, month! - 1 + PMS_CALENDAR_AUTO_OPEN_MAX_FIXED_MONTHS).slice(
+    0,
+    7,
+  );
+  return configuration.fixedEndMonth <= maximumMonth;
 }
 
 export function createPmsCalendarAutoOpenSource(

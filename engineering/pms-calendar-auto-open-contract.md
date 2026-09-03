@@ -38,7 +38,8 @@ type PmsCalendarAutoOpenSetting = {
 - rolling mode requires one of `12`, `18`, or `24` and requires
   `fixedEndMonth = null`;
 - fixed mode requires a real `YYYY-MM` month and requires
-  `rollingMonths = null`; an update may not choose a past local month, but a
+  `rollingMonths = null`; an update may choose from the current local month
+  through 24 calendar months ahead, matching the maximum rolling lookahead. A
   stored fixed month remains valid after time passes;
 - disabling retains the selected mode and parameter so re-enabling is
   predictable;
@@ -91,9 +92,11 @@ operating-calendar and inventory materialization contracts instead of adding a
 parallel availability store.
 
 The logical evaluation may span more than the current 366-day materialization
-bound, especially because fixed mode has no artificial maximum month. The
-implementation processes bounded internal batches while exposing one
-continuous coverage result. A partial batch must not be reported as complete.
+bound but never more than 762 days. The implementation processes bounded
+internal batches in one atomic application while exposing one continuous
+coverage result. A failed application leaves no partial inventory, and a retry
+restarts the same bounded work. A partial batch must not be reported as
+complete.
 
 For every property, room type, and candidate date:
 

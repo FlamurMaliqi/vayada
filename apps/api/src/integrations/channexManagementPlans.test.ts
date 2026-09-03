@@ -166,6 +166,15 @@ describe("target Channex management plans", () => {
     expect(ari.requests[2]?.body).toMatchObject({ values: [{ rate: 120 }] });
     expect(db.sql()).toContain("rate_mapping.connection_id = connection.id");
     expect(db.sql()).toContain("connection.provider = 'channex'");
+    expect(db.sql()).toContain("COALESCE(inventory.rate_gate_open, TRUE)");
+
+    const rateGated = await createPgChannexManagementPlanPort({
+      connectionString: "postgresql://target",
+      pool: new FakePool("ari_rate_gated"),
+      bookingRevisionHandoff: vi.fn(),
+      now: () => new Date("2026-08-14T09:00:00Z"),
+    }).plan(job("sync_ari"));
+    expect(rateGated.requests[1]?.body).toMatchObject({ values: [{ availability: 0 }] });
 
     const disabled = await createPgChannexManagementPlanPort({
       connectionString: "postgresql://target",
@@ -218,6 +227,7 @@ type Mode =
   | "provision"
   | "multi_room"
   | "ari"
+  | "ari_rate_gated"
   | "ari_disabled";
 class FakePool {
   private calls: string[] = [];
@@ -315,7 +325,7 @@ class FakePool {
       rows = [
         {
           stayDate: this.mode === "ari_disabled" ? "2026-08-15" : "2026-08-14",
-          available: 2,
+          available: this.mode === "ari_rate_gated" ? 0 : 2,
           externalRoomTypeId: "external-room",
           externalRatePlanId: "external-rate",
           rate: 100,

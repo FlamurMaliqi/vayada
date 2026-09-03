@@ -80,6 +80,15 @@ describe("PMS inventory public offer projection", () => {
     );
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain("input.inventory_status = 'closed'");
     expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
+      "COALESCE(inventory.rate_gate_open, TRUE) AS rate_gate_open",
+    );
+    expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
+      "input.rate_gate_open\n      AND input.room_type_active",
+    );
+    expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
+      "CASE WHEN input.rate_gate_open THEN input.available_count ELSE 0 END",
+    );
+    expect(PROJECT_PMS_INVENTORY_TO_PUBLIC_OFFERS).toContain(
       "ON CONFLICT (property_id, public_offer_key, stay_date) DO UPDATE",
     );
   });
