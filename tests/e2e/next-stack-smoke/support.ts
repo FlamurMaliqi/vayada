@@ -357,18 +357,24 @@ export async function login(page: Page, user: SyntheticUser, password: string): 
 }
 
 export async function loginPms(page: Page, user: SyntheticUser, password: string): Promise<void> {
-  const response = await page
-    .context()
-    .request.post(`${NEXT_STACK_ORIGINS.pms}/auth/password/login`, {
-      headers: { origin: NEXT_STACK_ORIGINS.pms },
-      data: { email: user.email, password, surface: "pms-web" },
-    });
-  if (!response.ok()) {
-    throw new Error(
-      `PMS password login returned ${response.status()}: ${safeError(await response.text())}`,
-    );
-  }
+  await authenticateSyntheticPmsUser(page.context().request, user, password);
   await page.goto(`${NEXT_STACK_ORIGINS.pms}/login`);
+}
+
+export async function authenticateSyntheticPmsUser(
+  request: APIRequestContext,
+  user: SyntheticUser,
+  password: string,
+): Promise<string> {
+  const response = await request.post(`${NEXT_STACK_ORIGINS.pms}/auth/password/login`, {
+    headers: { origin: NEXT_STACK_ORIGINS.pms },
+    data: { email: user.email, password, surface: "pms-web" },
+  });
+  const body = await response.text();
+  if (!response.ok()) {
+    throw new Error(`PMS password login returned ${response.status()}: ${safeError(body)}`);
+  }
+  return stringField(record(JSON.parse(body)), "accessToken");
 }
 
 export async function readAuthSession(
