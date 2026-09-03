@@ -13353,23 +13353,23 @@ describe("vayada-api", () => {
     const archives: Parameters<PmsInboxQuickReplyPort["archive"]>[0][] = [];
     const previews: Parameters<PmsInboxQuickReplyPort["preview"]>[0][] = [];
     const close = vi.fn(async () => undefined);
-    const errorFor = (
-      key: string,
-    ):
-      | Extract<Awaited<ReturnType<PmsInboxQuickReplyPort["create"]>>, { ok: false }>["error"]
-      | undefined =>
-      ({
-        missing: { code: "quick_reply_not_found", message: "Quick reply not found." },
-        thread: { code: "thread_not_found", message: "Thread not found." },
-        version: {
-          code: "quick_reply_version_conflict",
-          message: "Quick reply changed.",
-          currentVersion: 9,
-        },
-        name: { code: "quick_reply_name_conflict", message: "Name already exists." },
-        conflict: { code: "idempotency_conflict", message: "Idempotency conflict." },
-        invalid: { code: "validation_failed", message: "Quick reply is invalid." },
-      })[key as "missing"];
+    type QuickReplyError = Extract<
+      Awaited<ReturnType<PmsInboxQuickReplyPort["create"]>>,
+      { ok: false }
+    >["error"];
+    const failures: Readonly<Record<string, QuickReplyError>> = {
+      missing: { code: "quick_reply_not_found", message: "Quick reply not found." },
+      thread: { code: "thread_not_found", message: "Thread not found." },
+      version: {
+        code: "quick_reply_version_conflict",
+        message: "Quick reply changed.",
+        currentVersion: 9,
+      },
+      name: { code: "quick_reply_name_conflict", message: "Name already exists." },
+      conflict: { code: "idempotency_conflict", message: "Idempotency conflict." },
+      invalid: { code: "validation_failed", message: "Quick reply is invalid." },
+    };
+    const errorFor = (key: string): QuickReplyError | undefined => failures[key];
     const item = (
       propertyId = pmsPropertyId,
       version = 1,

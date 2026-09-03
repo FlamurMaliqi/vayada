@@ -6293,7 +6293,14 @@ function validInboxQuickReplyPreview(
     typeof value.renderedText === "string" &&
     value.renderedText.length <= 20_000 &&
     Array.isArray(value.unresolvedVariables) &&
-    value.unresolvedVariables.every((variable) => /^[a-z][a-z0-9_]{0,99}$/.test(variable)) &&
+    value.unresolvedVariables.every(
+      (variable) =>
+        typeof variable === "string" &&
+        Boolean(variable.trim()) &&
+        variable.length <= 100 &&
+        !variable.includes("{") &&
+        !variable.includes("}"),
+    ) &&
     new Set(value.unresolvedVariables).size === value.unresolvedVariables.length &&
     value.composerUseAllowed === (value.unresolvedVariables.length === 0)
   );
