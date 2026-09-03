@@ -31,6 +31,7 @@ import type {
   MarketplaceBuildContext,
   MarketplaceMediaReference,
   MarketplaceTargetRecord,
+  ProductionMarketplaceQuarantine,
 } from "./productionMarketplaceTypes.js";
 
 export function buildMarketplaceRecords(
@@ -84,6 +85,10 @@ function buildCreator(
   const ownerUserId = requireUser(context, source.data["user_id"], "user_id");
   const updatedAt = timestamp(source);
   const picture = optionalText(source.data["profile_picture"], "profile_picture");
+  const profilePicture = picture
+    ? resolveCreatorProfileMedia(context, source, picture, id)
+    : { publicUrl: null, mediaObjectId: null, omitted: false };
+  const sourceProfileComplete = bool(source.data["profile_complete"], "profile_complete");
   return [
     record(source, "creator_profiles", id, updatedAt, {
       id,
@@ -97,15 +102,23 @@ function buildCreator(
       shortDescription: optionalText(source.data["short_description"], "short_description"),
       portfolioUrl: optionalText(source.data["portfolio_link"], "portfolio_link"),
       phone: optionalText(source.data["phone"], "phone"),
-      profilePictureUrl: picture
-        ? resolvePublicMedia(context, picture, "creators", id, "profile_picture")
-        : null,
-      profileComplete: bool(source.data["profile_complete"], "profile_complete"),
-      profileCompletedAt: optionalIso(source.data["profile_completed_at"], "profile_completed_at"),
+      profilePictureUrl: profilePicture.publicUrl,
+      profileComplete: profilePicture.omitted ? false : sourceProfileComplete,
+      profileCompletedAt: profilePicture.omitted
+        ? null
+        : optionalIso(source.data["profile_completed_at"], "profile_completed_at"),
       profileStatus: mapOwnerStatus(
         resourceLinkFor(context.target.resourceLinks, "creator_profile", id)?.status,
       ),
-      profileMetadata: { legacySource: "marketplace.creators" },
+      profileMetadata: {
+        legacySource: "marketplace.creators",
+        ...(profilePicture.mediaObjectId
+          ? { profilePictureMediaObjectId: profilePicture.mediaObjectId }
+          : {}),
+        ...(profilePicture.omitted
+          ? { profilePictureMigrationDisposition: "unapproved_media_omitted" }
+          : {}),
+      },
       piiRetentionUntil: retentionDate(context.completedAt),
       createdAt: iso(source.data["created_at"], "created_at"),
       updatedAt,
@@ -135,8 +148,20 @@ function buildCreatorPlatform(
       profileUrl: socialProfileUrl(platform, handle),
       followerCount: nonNegativeInteger(source.data["followers"], "followers"),
       engagementRate: nonNegativeDecimal(source.data["engagement_rate"], "engagement_rate"),
-      audienceCountries: audiencePercentages(source.data["top_countries"], "country"),
-      audienceAgeGroups: audiencePercentages(source.data["top_age_groups"], "ageRange"),
+      audienceCountries: audiencePercentages(
+        context,
+        source,
+        source.data["top_countries"],
+        "top_countries",
+        "country",
+      ),
+      audienceAgeGroups: audiencePercentages(
+        context,
+        source,
+        source.data["top_age_groups"],
+        "top_age_groups",
+        "ageRange",
+      ),
       audienceGenderSplit: audienceGenderSplit(source.data["gender_split"]),
       verificationStatus: "unverified",
       platformMetadata: { legacySource: "marketplace.creator_platforms" },
@@ -348,7 +373,19 @@ function buildCollaboration(
     source.data["consent"] == null ? null : bool(source.data["consent"], "consent");
   if (initiatorType === "creator" && creatorConsent !== true)
     throw new Error("creator-initiated collaboration lacks explicit creator consent");
-  const rawType = mapCompensation(source.data["collaboration_type"]);
+  const sourceLifecycleStatus = mapCollaborationStatus(source.data["status"]);
+  const rawType = optionalCollaborationCompensation(source.data["collaboration_type"]);
+  if (rawType === null) {
+    if (sourceLifecycleStatus === "completed")
+      throw new Error("completed collaboration lacks a supported collaboration_type");
+    quarantine(
+      context,
+      source,
+      "collaboration_type",
+      source.data["collaboration_type"],
+      "MISSING_COLLABORATION_COMPENSATION_TYPE_RETAINED_NULL",
+    );
+  }
   const affiliateEnabled =
     rawType === "affiliate" ||
     optionalText(source.data["affiliate_referral_code"], "affiliate_referral_code") !== null ||
@@ -366,9 +403,7 @@ function buildCollaboration(
       sourceSystem: "migration",
       sourceCollaborationId: id,
       initiatorType,
-      lifecycleStatus: scope.privateQuarantine
-        ? "cancelled"
-        : mapCollaborationStatus(source.data["status"]),
+      lifecycleStatus: scope.privateQuarantine ? "cancelled" : sourceLifecycleStatus,
       compensationType: rawType === "affiliate" ? null : rawType,
       applicationMessage: optionalText(source.data["why_great_fit"], "why_great_fit"),
       negotiatedTerms: {},
@@ -408,8 +443,11 @@ function buildCollaboration(
       completedAt: optionalIso(source.data["completed_at"], "completed_at"),
       collaborationMetadata: {
         legacySource: "marketplace.collaborations",
-        legacySourceStatus: mapCollaborationStatus(source.data["status"]),
+        legacySourceStatus: sourceLifecycleStatus,
         migrationDisposition: scope.privateQuarantine ? "private_quarantine" : "canonical",
+        ...(rawType === null
+          ? { compensationTypeMigrationDisposition: "missing_legacy_value_retained_null" }
+          : {}),
       },
       createdAt: iso(source.data["created_at"], "created_at"),
       updatedAt,
@@ -470,7 +508,7 @@ function buildDeliverable(
       id,
       collaborationId: uuid(source.data["collaboration_id"], "collaboration_id"),
       propertyId: scope.propertyId,
-      platform: mapPlatform(source.data["platform"]),
+      platform: mapDeliverablePlatform(source.data["platform"]),
       deliverableType: requiredText(source.data["type"], "type").toLowerCase(),
       quantity: positiveInteger(source.data["quantity"], "quantity"),
       deliverableStatus: status,
@@ -611,12 +649,17 @@ function buildNotification(
   context: MarketplaceBuildContext,
 ): MarketplaceTargetRecord[] {
   const id = uuid(source.data["id"], "id");
+  const recipientUserId = uuid(source.data["user_id"], "user_id");
+  if (!context.users.has(recipientUserId)) {
+    quarantine(context, source, "*", source.data, "ORPHANED_IDENTITY_DEPENDENT_ROW_OMITTED");
+    return [];
+  }
   const createdAt = iso(source.data["created_at"], "created_at");
   const readAt = optionalIso(source.data["read_at"], "read_at");
   return [
     record(source, "marketplace_notifications", id, readAt ?? createdAt, {
       id,
-      recipientUserId: requireUser(context, source.data["user_id"], "user_id"),
+      recipientUserId,
       organizationId: null,
       notificationType: requiredText(source.data["type"], "type"),
       title: requiredText(source.data["title"], "title"),
@@ -638,24 +681,41 @@ function buildInvite(
   const id = uuid(source.data["id"], "id");
   const createdAt = iso(source.data["created_at"], "created_at");
   const redeemedAt = optionalIso(source.data["redeemed_at"], "redeemed_at");
-  const payload = requiredObject(source.data["data"], "data");
-  assertNoLegacyMedia(payload, "invite payload");
+  const expiresAt = iso(source.data["expires_at"], "expires_at");
+  const sourceStatus = mapInviteStatus(source.data["status"]);
+  const status =
+    sourceStatus === "pending" && Date.parse(expiresAt) <= Date.parse(context.completedAt)
+      ? "expired"
+      : sourceStatus;
+  let payload = requiredObject(source.data["data"], "data");
+  if (containsLegacyMedia(payload)) {
+    if (status !== "expired" || redeemedAt)
+      throw new Error("invite payload contains an unresolved legacy media URL");
+    quarantine(context, source, "data", payload, "EXPIRED_INVITE_MEDIA_PAYLOAD_OMITTED");
+    payload = { migrationDisposition: "expired_legacy_media_payload_omitted" };
+  }
   return [
-    record(source, "invite_codes", id, redeemedAt ?? createdAt, {
+    record(
+      source,
+      "invite_codes",
       id,
-      code: requiredText(source.data["code"], "code"),
-      inviteType: "hotel",
-      status: mapInviteStatus(source.data["status"]),
-      payload,
-      createdByUserId: optionalUser(context, source.data["created_by"], "created_by"),
-      redeemedByUserId: optionalUser(context, source.data["redeemed_by"], "redeemed_by"),
-      creatorProfileId: null,
-      creatorOrganizationId: null,
-      propertyId: null,
-      redeemedAt,
-      expiresAt: iso(source.data["expires_at"], "expires_at"),
-      createdAt,
-    }),
+      redeemedAt ?? (status === "expired" ? expiresAt : createdAt),
+      {
+        id,
+        code: requiredText(source.data["code"], "code"),
+        inviteType: "hotel",
+        status,
+        payload,
+        createdByUserId: optionalUser(context, source.data["created_by"], "created_by"),
+        redeemedByUserId: optionalUser(context, source.data["redeemed_by"], "redeemed_by"),
+        creatorProfileId: null,
+        creatorOrganizationId: null,
+        propertyId: null,
+        redeemedAt,
+        expiresAt,
+        createdAt,
+      },
+    ),
   ];
 }
 
@@ -664,11 +724,16 @@ function buildNewsletter(
   context: MarketplaceBuildContext,
 ): MarketplaceTargetRecord[] {
   const id = uuid(source.data["id"], "id");
+  const userId = uuid(source.data["user_id"], "user_id");
+  if (!context.users.has(userId)) {
+    quarantine(context, source, "*", source.data, "ORPHANED_IDENTITY_DEPENDENT_ROW_OMITTED");
+    return [];
+  }
   const updatedAt = timestamp(source);
   return [
     record(source, "newsletter_preferences", id, updatedAt, {
       id,
-      userId: requireUser(context, source.data["user_id"], "user_id"),
+      userId,
       organizationId: null,
       enabled: bool(source.data["enabled"], "enabled"),
       countryFilter: nullableStringArray(source.data["country_filter"], "country_filter"),
@@ -728,6 +793,40 @@ function resolvePublicMedia(
     throw new Error(`${field} resolves to a VAY-1055 media object with the wrong resource scope`);
   if (looksLegacy(media.publicUrl)) throw new Error(`${field} still resolves to a legacy URL`);
   return media.publicUrl;
+}
+
+function resolveCreatorProfileMedia(
+  context: MarketplaceBuildContext,
+  source: IdentitySourceRow,
+  sourceUrl: string,
+  creatorId: string,
+): { publicUrl: string | null; mediaObjectId: string | null; omitted: boolean } {
+  const media = resolveMedia(context, sourceUrl, "creators", creatorId, "profile_picture");
+  if (
+    media.purpose !== "marketplace.creator.profile_image" ||
+    media.resourceType !== "creator_profile" ||
+    media.resourceId !== creatorId
+  )
+    throw new Error(
+      "profile_picture resolves to a VAY-1055 media object with the wrong resource scope",
+    );
+  if (media.lifecycleStatus !== "active")
+    throw new Error("profile_picture has no active VAY-1055 media object");
+  if (!media.publicApproved) {
+    quarantine(
+      context,
+      source,
+      "profile_picture",
+      sourceUrl,
+      "UNAPPROVED_CREATOR_PROFILE_MEDIA_OMITTED",
+    );
+    return { publicUrl: null, mediaObjectId: null, omitted: true };
+  }
+  if (media.visibility !== "public" || !media.publicUrl)
+    throw new Error("profile_picture has no approved active public VAY-1055 media variant");
+  if (looksLegacy(media.publicUrl))
+    throw new Error("profile_picture still resolves to a legacy URL");
+  return { publicUrl: media.publicUrl, mediaObjectId: media.mediaObjectId, omitted: false };
 }
 
 function resolvePrivateMedia(
@@ -859,6 +958,13 @@ function mapPlatform(value: unknown): string {
   throw new Error(`platform ${platform} is unsupported`);
 }
 
+function mapDeliverablePlatform(value: unknown): string {
+  const platform = requiredText(value, "platform").toLowerCase();
+  if (platform === "content package") return "content_package";
+  if (platform === "custom") return "custom";
+  return mapPlatform(platform);
+}
+
 function mapHotelStatus(value: unknown): string {
   const status = requiredText(value, "status").toLowerCase();
   if (["pending", "verified", "rejected", "suspended"].includes(status)) return status;
@@ -907,6 +1013,12 @@ function mapCompensation(value: unknown): string {
   const normalized = requiredText(value, "collaboration_type").toLowerCase().replaceAll(" ", "_");
   if (["free_stay", "paid", "discount", "affiliate"].includes(normalized)) return normalized;
   throw new Error(`collaboration_type ${normalized} is unsupported`);
+}
+
+function optionalCollaborationCompensation(value: unknown): string | null {
+  return value === null || value === undefined || String(value).trim() === ""
+    ? null
+    : mapCompensation(value);
 }
 
 function mapCollaborationStatus(value: unknown): string {
@@ -967,7 +1079,10 @@ function requiredObject(value: unknown, field: string): Record<string, unknown> 
 }
 
 function audiencePercentages(
+  context: MarketplaceBuildContext,
+  source: IdentitySourceRow,
   value: unknown,
+  sourceField: "top_countries" | "top_age_groups",
   label: "country" | "ageRange",
 ): Array<Record<"percentage" | "country" | "ageRange", number | string>> {
   if (value === null || value === undefined) return [];
@@ -982,15 +1097,28 @@ function audiencePercentages(
   if (entries.length > 50) throw new Error(`audience ${label} must contain at most 50 entries`);
   const seen = new Set<string>();
   return entries
-    .map(([rawLabel, percentage]) => {
+    .flatMap(([rawLabel, percentage], index) => {
       const normalizedLabel = requiredText(rawLabel, label);
       if (seen.has(normalizedLabel))
         throw new Error(`audience ${label} contains a duplicate label`);
       seen.add(normalizedLabel);
-      return {
-        [label]: normalizedLabel,
-        percentage: audiencePercentage(percentage, `${label}.percentage`),
-      } as Record<"percentage" | "country" | "ageRange", number | string>;
+      const parsed = parseAudiencePercentage(percentage);
+      if (parsed === null) {
+        quarantine(
+          context,
+          source,
+          `${sourceField}[${index}].percentage`,
+          { label: normalizedLabel, percentage },
+          "INVALID_AUDIENCE_PERCENTAGE_ENTRY_OMITTED",
+        );
+        return [];
+      }
+      return [
+        {
+          [label]: normalizedLabel,
+          percentage: parsed,
+        } as Record<"percentage" | "country" | "ageRange", number | string>,
+      ];
     })
     .sort((left, right) => String(left[label]).localeCompare(String(right[label])));
 }
@@ -1009,10 +1137,16 @@ function audienceGenderSplit(value: unknown): Record<string, number> {
 }
 
 function audiencePercentage(value: unknown, field: string): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100)
-    throw new Error(`${field} must be between 0 and 100`);
+  const parsed = parseAudiencePercentage(value);
+  if (parsed === null) throw new Error(`${field} must be between 0 and 100`);
   return parsed;
+}
+
+function parseAudiencePercentage(value: unknown): number | null {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && value.trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 ? parsed : null;
 }
 
 function optionalInteger(value: unknown, field: string): number | null {
@@ -1073,6 +1207,31 @@ function assertNoLegacyMedia(value: unknown, field: string): void {
   if (value && typeof value === "object")
     for (const entry of Object.values(value as Record<string, unknown>))
       assertNoLegacyMedia(entry, field);
+}
+
+function containsLegacyMedia(value: unknown): boolean {
+  if (typeof value === "string") return looksUrl(value) && looksLegacy(value);
+  if (Array.isArray(value)) return value.some(containsLegacyMedia);
+  return !!value && typeof value === "object"
+    ? Object.values(value as Record<string, unknown>).some(containsLegacyMedia)
+    : false;
+}
+
+function quarantine(
+  context: MarketplaceBuildContext,
+  source: IdentitySourceRow,
+  sourceField: string,
+  sourceValue: unknown,
+  reasonCode: ProductionMarketplaceQuarantine["reasonCode"],
+): void {
+  context.quarantines.push({
+    sourceTable: source.sourceTable,
+    sourceId: sourceIdentity(source),
+    sourceField,
+    sourceValueSha256: sha256({ value: sourceValue }),
+    reasonCode,
+    retentionUntil: retentionDate(context.completedAt),
+  });
 }
 
 function safeSourceId(row: IdentitySourceRow): string {
