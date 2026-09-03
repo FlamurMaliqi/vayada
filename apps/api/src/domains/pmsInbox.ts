@@ -21,9 +21,7 @@ export type PmsInboxEmailReplyRoute =
       channel: null;
       providerChannel: null;
       reasonCode:
-        | "guest_email_unavailable"
-        | "approved_sender_unavailable"
-        | "email_policy_disallowed";
+        "guest_email_unavailable" | "approved_sender_unavailable" | "email_policy_disallowed";
     };
 
 export type PmsInboxEmailReplyRouteReadPort = {
@@ -119,8 +117,7 @@ export type PmsInboxReadError = {
   message: string;
 };
 export type PmsInboxPortResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; error: PmsInboxReadError };
+  { ok: true; value: T } | { ok: false; error: PmsInboxReadError };
 
 export type PmsInboxReadPort = {
   listThreads(input: {
@@ -232,6 +229,61 @@ export type PmsInboxTriagePort = {
           currentVersion?: number;
         };
       }
+  >;
+  close?(): Promise<void>;
+};
+
+export type PmsInboxStaffCommandError = {
+  code:
+    "validation_failed" | "thread_not_found" | "thread_version_conflict" | "idempotency_conflict";
+  message: string;
+  currentVersion?: number;
+};
+
+export type PmsInboxStaffCommandPort = {
+  assign(input: {
+    propertyId: string;
+    threadId: string;
+    organizationId: string;
+    actorUserId: string;
+    actorMembershipId: string;
+    idempotencyKey: string;
+    expectedThreadVersion: number;
+    assigneeMembershipId: string | null;
+    audit: { requestId: string; correlationId: string; requestedAt: string };
+  }): Promise<
+    | {
+        ok: true;
+        value: {
+          propertyId: string;
+          threadId: string;
+          assignedTo: null | { membershipId: string; displayName: string };
+          threadVersion: number;
+        };
+      }
+    | { ok: false; error: PmsInboxStaffCommandError }
+  >;
+  addNote(input: {
+    propertyId: string;
+    threadId: string;
+    organizationId: string;
+    actorUserId: string;
+    actorMembershipId: string;
+    idempotencyKey: string;
+    expectedThreadVersion: number;
+    text: string;
+    audit: { requestId: string; correlationId: string; requestedAt: string };
+  }): Promise<
+    | {
+        ok: true;
+        value: {
+          propertyId: string;
+          threadId: string;
+          note: Extract<PmsInboxTimelineItem, { kind: "internal_note" }>["note"];
+          threadVersion: number;
+        };
+      }
+    | { ok: false; error: PmsInboxStaffCommandError }
   >;
   close?(): Promise<void>;
 };

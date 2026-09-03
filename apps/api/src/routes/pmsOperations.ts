@@ -43,6 +43,7 @@ import {
   type PmsInboxReadError,
   type PmsInboxReadPort,
   type PmsInboxReplyPort,
+  type PmsInboxStaffCommandPort,
   type PmsInboxThreadSummary,
   type PmsInboxTimelineItem,
   type PmsInboxTriageAction,
@@ -1020,6 +1021,7 @@ export type PmsOperationsRoutesOptions = {
   inboxMarkReadPort?: PmsInboxMarkReadPort;
   inboxReplyPort?: PmsInboxReplyPort;
   inboxTriagePort?: PmsInboxTriagePort;
+  inboxStaffCommandPort?: PmsInboxStaffCommandPort;
 };
 
 type PmsPropertyParams = {
@@ -1202,6 +1204,7 @@ export async function registerPmsOperationsRoutes(
     await options.inboxMarkReadPort?.close?.();
     await options.inboxReplyPort?.close?.();
     await options.inboxTriagePort?.close?.();
+    await options.inboxStaffCommandPort?.close?.();
     await options.sameDayBookingSettings?.close?.();
   });
 
@@ -1233,6 +1236,8 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/messaging/threads/:threadId/done",
     "/properties/:propertyId/messaging/threads/:threadId/follow-up",
     "/properties/:propertyId/messaging/threads/:threadId/reopen",
+    "/properties/:propertyId/messaging/threads/:threadId/assignment",
+    "/properties/:propertyId/messaging/threads/:threadId/notes",
     "/properties/:propertyId/reservations",
     "/properties/:propertyId/reservations/:guestBookingId",
     "/properties/:propertyId/reservations/:guestBookingId/notes",
@@ -2362,6 +2367,107 @@ export async function registerPmsOperationsRoutes(
       },
     );
   }
+
+  app.post<{ Params: PmsInboxThreadParams; Body: unknown }>(
+    "/properties/:propertyId/messaging/threads/:threadId/assignment",
+    { onRequest: inboxStaffCommandAuthorization(options) },
+    async (request, reply) => {
+      const input = parseInboxAssignment(request);
+      if ("error" in input) return sendPmsOperationsError(reply, input.error);
+      if (!options.inboxStaffCommandPort)
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS Inbox staff commands are unavailable."),
+        );
+      const { propertyId, threadId } = request.params;
+      const context = request.authContext!;
+      try {
+        const result = await options.inboxStaffCommandPort.assign({
+          propertyId,
+          threadId,
+          organizationId: context.selectedOrganization.organizationId,
+          actorUserId: context.actor.internalUserId,
+          actorMembershipId: context.membership.membershipId,
+          ...input.value,
+          audit: inboxCommandAudit(context),
+        });
+        if (!result.ok) return sendInboxStaffCommandError(reply, result.error);
+        if (!validInboxAssignmentResult(result.value, propertyId, threadId, input.value))
+          throw new Error("Inbox assignment scope mismatch");
+        return {
+          contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION,
+          propertyId: result.value.propertyId,
+          threadId: result.value.threadId,
+          assignedTo: result.value.assignedTo
+            ? {
+                membershipId: result.value.assignedTo.membershipId,
+                displayName: result.value.assignedTo.displayName,
+              }
+            : null,
+          threadVersion: result.value.threadVersion,
+        };
+      } catch {
+        request.log.error("PMS Inbox assignment command failed");
+        return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
+      }
+    },
+  );
+
+  app.post<{ Params: PmsInboxThreadParams; Body: unknown }>(
+    "/properties/:propertyId/messaging/threads/:threadId/notes",
+    { onRequest: inboxStaffCommandAuthorization(options) },
+    async (request, reply) => {
+      const input = parseInboxInternalNote(request);
+      if ("error" in input) return sendPmsOperationsError(reply, input.error);
+      if (!options.inboxStaffCommandPort)
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS Inbox staff commands are unavailable."),
+        );
+      const { propertyId, threadId } = request.params;
+      const context = request.authContext!;
+      try {
+        const result = await options.inboxStaffCommandPort.addNote({
+          propertyId,
+          threadId,
+          organizationId: context.selectedOrganization.organizationId,
+          actorUserId: context.actor.internalUserId,
+          actorMembershipId: context.membership.membershipId,
+          ...input.value,
+          audit: inboxCommandAudit(context),
+        });
+        if (!result.ok) return sendInboxStaffCommandError(reply, result.error);
+        if (
+          !validInboxInternalNoteResult(
+            result.value,
+            propertyId,
+            threadId,
+            context.membership.membershipId,
+            input.value,
+          )
+        )
+          throw new Error("Inbox internal-note scope mismatch");
+        return reply.code(201).send({
+          contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION,
+          propertyId: result.value.propertyId,
+          threadId: result.value.threadId,
+          note: {
+            id: result.value.note.id,
+            author: {
+              membershipId: result.value.note.author.membershipId,
+              displayName: result.value.note.author.displayName,
+            },
+            text: result.value.note.text,
+            occurredAt: result.value.note.occurredAt,
+          },
+          threadVersion: result.value.threadVersion,
+        });
+      } catch {
+        request.log.error("PMS Inbox internal-note command failed");
+        return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
+      }
+    },
+  );
 
   app.post<{ Params: PmsInboxThreadParams; Body: unknown }>(
     "/properties/:propertyId/messaging/threads/:threadId/messages",
@@ -5477,6 +5583,67 @@ function parseInboxTriage(
   };
 }
 
+function parseInboxAssignment(request: FastifyRequest<{ Body: unknown }>):
+  | {
+      value: {
+        idempotencyKey: string;
+        expectedThreadVersion: number;
+        assigneeMembershipId: string | null;
+      };
+    }
+  | { error: PmsOperationsError } {
+  const body = objectBody(request.body);
+  const idempotencyKey = singleIdempotencyKey(request);
+  const expectedThreadVersion = body?.expectedThreadVersion;
+  const assigneeMembershipId = body?.assigneeMembershipId;
+  if (
+    !body ||
+    Object.keys(body).sort().join(",") !==
+      ["assigneeMembershipId", "expectedThreadVersion"].sort().join(",") ||
+    !idempotencyKey ||
+    typeof expectedThreadVersion !== "number" ||
+    !Number.isSafeInteger(expectedThreadVersion) ||
+    expectedThreadVersion < 1 ||
+    (assigneeMembershipId !== null &&
+      (typeof assigneeMembershipId !== "string" || !isUuid(assigneeMembershipId)))
+  )
+    return { error: invalidInboxStaffCommand("Inbox assignment command is invalid.") };
+  return {
+    value: {
+      idempotencyKey,
+      expectedThreadVersion,
+      assigneeMembershipId: assigneeMembershipId as string | null,
+    },
+  };
+}
+
+function parseInboxInternalNote(
+  request: FastifyRequest<{ Body: unknown }>,
+):
+  | { value: { idempotencyKey: string; expectedThreadVersion: number; text: string } }
+  | { error: PmsOperationsError } {
+  const body = objectBody(request.body);
+  const idempotencyKey = singleIdempotencyKey(request);
+  const expectedThreadVersion = body?.expectedThreadVersion;
+  const text = typeof body?.text === "string" ? body.text.trim() : "";
+  if (
+    !body ||
+    Object.keys(body).sort().join(",") !== ["expectedThreadVersion", "text"].sort().join(",") ||
+    !idempotencyKey ||
+    typeof expectedThreadVersion !== "number" ||
+    !Number.isSafeInteger(expectedThreadVersion) ||
+    expectedThreadVersion < 1 ||
+    !text ||
+    text.length > 20_000
+  )
+    return { error: invalidInboxStaffCommand("Inbox internal note is invalid.") };
+  return { value: { idempotencyKey, expectedThreadVersion, text } };
+}
+
+function invalidInboxStaffCommand(message: string): PmsOperationsError {
+  return { statusCode: 400, code: "validation_failed", category: "validation", message };
+}
+
 function parseInboxReply(request: FastifyRequest<{ Body: unknown }>):
   | {
       value: {
@@ -5629,6 +5796,27 @@ function sendInboxTriageError(
   });
 }
 
+function sendInboxStaffCommandError(
+  reply: FastifyReply,
+  error: Extract<Awaited<ReturnType<PmsInboxStaffCommandPort["assign"]>>, { ok: false }>["error"],
+): FastifyReply {
+  const statusCode =
+    error.code === "thread_not_found"
+      ? 404
+      : error.code === "thread_version_conflict" || error.code === "idempotency_conflict"
+        ? 409
+        : 400;
+  return sendPmsOperationsError(reply, {
+    statusCode,
+    code: error.code,
+    category: statusCode === 404 ? "not_found" : statusCode === 409 ? "conflict" : "validation",
+    message: error.message,
+    ...(error.currentVersion === undefined
+      ? {}
+      : { details: { currentVersion: error.currentVersion } }),
+  });
+}
+
 function sendInboxReplyError(
   reply: FastifyReply,
   error: Extract<Awaited<ReturnType<PmsInboxReplyPort["reply"]>>, { ok: false }>["error"],
@@ -5685,6 +5873,82 @@ function validInboxTriageResult(
     Number.isSafeInteger(value.threadVersion) &&
     value.threadVersion > input.expectedThreadVersion
   );
+}
+
+function validInboxAssignmentResult(
+  value: Extract<Awaited<ReturnType<PmsInboxStaffCommandPort["assign"]>>, { ok: true }>["value"],
+  propertyId: string,
+  threadId: string,
+  input: { expectedThreadVersion: number; assigneeMembershipId: string | null },
+): boolean {
+  const validAssignee =
+    input.assigneeMembershipId === null
+      ? value.assignedTo === null
+      : value.assignedTo?.membershipId === input.assigneeMembershipId &&
+        Boolean(value.assignedTo.displayName.trim());
+  return (
+    value.propertyId === propertyId &&
+    value.threadId === threadId &&
+    validAssignee &&
+    value.threadVersion === input.expectedThreadVersion + 1
+  );
+}
+
+function validInboxInternalNoteResult(
+  value: Extract<Awaited<ReturnType<PmsInboxStaffCommandPort["addNote"]>>, { ok: true }>["value"],
+  propertyId: string,
+  threadId: string,
+  actorMembershipId: string,
+  input: { expectedThreadVersion: number; text: string },
+): boolean {
+  return (
+    value.propertyId === propertyId &&
+    value.threadId === threadId &&
+    isUuid(value.note.id) &&
+    value.note.author.membershipId === actorMembershipId &&
+    Boolean(value.note.author.displayName.trim()) &&
+    value.note.text === input.text &&
+    isCanonicalInboxInstant(value.note.occurredAt) &&
+    value.threadVersion === input.expectedThreadVersion + 1
+  );
+}
+
+function inboxStaffCommandAuthorization(options: PmsOperationsRoutesOptions) {
+  return async (
+    request: FastifyRequest<{ Params: PmsInboxThreadParams }>,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
+      sendPmsOperationsError(reply, missingOriginPermission());
+      return;
+    }
+    const context = await enforcePmsPropertyAccessPolicy(
+      request,
+      reply,
+      request.params.propertyId,
+      "pms.inbox.reply",
+      options.propertyAccessRepository,
+    );
+    if (context && !hasPermission(context, "pms.inbox.read"))
+      sendPmsOperationsError(reply, {
+        statusCode: 403,
+        code: "missing_permission",
+        category: "authorization",
+        message: "Missing required PMS Inbox read permission.",
+      });
+  };
+}
+
+function inboxCommandAudit(context: RequestContext): {
+  requestId: string;
+  correlationId: string;
+  requestedAt: string;
+} {
+  return {
+    requestId: context.audit.requestId,
+    correlationId: context.audit.correlationId ?? context.audit.requestId,
+    requestedAt: context.audit.receivedAt,
+  };
 }
 
 function isCanonicalInboxInstant(value: string): boolean {

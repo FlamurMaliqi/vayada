@@ -184,6 +184,7 @@ import type {
   PmsInboxMarkReadPort,
   PmsInboxReadPort,
   PmsInboxReplyPort,
+  PmsInboxStaffCommandPort,
   PmsInboxTriagePort,
 } from "./domains/pmsInbox.js";
 import {
@@ -259,6 +260,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   pmsInboxMarkReadPort?: PmsInboxMarkReadPort;
   pmsInboxReplyPort?: PmsInboxReplyPort;
   pmsInboxTriagePort?: PmsInboxTriagePort;
+  pmsInboxStaffCommandPort?: PmsInboxStaffCommandPort;
   pmsInboxAttachmentMedia?: Omit<PmsInboxAttachmentMediaRoutesOptions, "propertyAccessRepository">;
   pmsManualBookingPreview?: PmsManualBookingPreviewRoutesOptions;
   pmsManualBookingCreate?: PmsManualBookingCreateRoutesOptions;
@@ -682,6 +684,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       inboxMarkReadPort: options.pmsInboxMarkReadPort,
       inboxReplyPort: options.pmsInboxReplyPort,
       inboxTriagePort: options.pmsInboxTriagePort,
+      inboxStaffCommandPort: options.pmsInboxStaffCommandPort,
       publicBookabilityPublisher: options.publicBookabilityPublisher,
     });
   }
