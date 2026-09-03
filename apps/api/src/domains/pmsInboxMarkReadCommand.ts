@@ -31,7 +31,11 @@ type IdempotencyRow = {
   idempotencyMetadata: unknown;
 };
 
-type BoundaryRow = { sentAt: Date | string };
+type BoundarySnapshotRow = { boundaryExists: boolean; candidateMessageIds: string[] };
+type BoundarySnapshot =
+  | { status: "thread_not_found" }
+  | { status: "invalid_boundary" }
+  | { status: "ready"; candidateMessageIds: string[] };
 type UnreadRow = { unreadCount: string | number };
 type InsertedIdRow = { id: string };
 
@@ -89,16 +93,15 @@ export function createPgPmsInboxMarkReadPort(config: {
           );
         }
 
-        if (!(await lockThread(client, input)))
+        const boundary = await captureBoundarySnapshot(client, input);
+        if (boundary.status === "thread_not_found")
           return commitResult(
             client,
             idempotencyId,
             failure("thread_not_found", "Inbox thread was not found."),
             acceptedAt,
           );
-
-        const boundary = await readBoundary(client, input);
-        if (!boundary)
+        if (boundary.status === "invalid_boundary")
           return commitResult(
             client,
             idempotencyId,
@@ -109,7 +112,20 @@ export function createPgPmsInboxMarkReadPort(config: {
             acceptedAt,
           );
 
-        const markedReadCount = await markMessagesRead(client, input, boundary, acceptedAt);
+        if (!(await lockThread(client, input)))
+          return commitResult(
+            client,
+            idempotencyId,
+            failure("thread_not_found", "Inbox thread was not found."),
+            acceptedAt,
+          );
+
+        const markedReadCount = await markMessagesRead(
+          client,
+          input,
+          boundary.candidateMessageIds,
+          acceptedAt,
+        );
         const unreadCount = await refreshUnreadCount(client, input, acceptedAt);
         const domainEventId = await insertMarkedReadEvent(
           client,
@@ -319,24 +335,43 @@ async function lockThread(
   return Boolean(result.rows[0]);
 }
 
-async function readBoundary(
+async function captureBoundarySnapshot(
   client: PmsInboxMarkReadCommandClient,
   input: MarkReadInput,
-): Promise<BoundaryRow | null> {
-  const result = await client.query<BoundaryRow>(
-    `SELECT sent_at AS "sentAt"
-     FROM pms.messages
-     WHERE property_id = $1::uuid AND thread_id = $2::uuid
-       AND id = $3::uuid AND direction = 'inbound'`,
+): Promise<BoundarySnapshot> {
+  const result = await client.query<BoundarySnapshotRow>(
+    `SELECT boundary.id IS NOT NULL AS "boundaryExists",
+            COALESCE(candidates.ids, '{}'::uuid[])::text[] AS "candidateMessageIds"
+     FROM pms.message_threads thread
+     LEFT JOIN LATERAL (
+       SELECT message.id, message.sent_at
+       FROM pms.messages message
+       WHERE message.property_id = thread.property_id AND message.thread_id = thread.id
+         AND message.id = $3::uuid AND message.direction = 'inbound'
+     ) boundary ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT array_agg(candidate.id ORDER BY candidate.sent_at, candidate.id) AS ids
+       FROM pms.messages candidate
+       WHERE candidate.property_id = thread.property_id AND candidate.thread_id = thread.id
+         AND candidate.direction = 'inbound'
+         AND (candidate.sent_at < boundary.sent_at
+           OR (candidate.sent_at = boundary.sent_at AND candidate.id <= boundary.id))
+     ) candidates ON boundary.id IS NOT NULL
+     WHERE thread.property_id = $1::uuid AND thread.id = $2::uuid`,
     [input.propertyId, input.threadId, input.readThroughMessageId],
   );
-  return result.rows[0] ?? null;
+  const row = result.rows[0];
+  if (!row) return { status: "thread_not_found" };
+  if (!row.boundaryExists) return { status: "invalid_boundary" };
+  if (!Array.isArray(row.candidateMessageIds) || row.candidateMessageIds.length === 0)
+    throw new Error("PMS Inbox mark-read boundary snapshot is invalid");
+  return { status: "ready", candidateMessageIds: row.candidateMessageIds };
 }
 
 async function markMessagesRead(
   client: PmsInboxMarkReadCommandClient,
   input: MarkReadInput,
-  boundary: BoundaryRow,
+  candidateMessageIds: readonly string[],
   acceptedAt: Date,
 ): Promise<number> {
   const result = await client.query(
@@ -344,9 +379,8 @@ async function markMessagesRead(
      SET read_at = $4::timestamptz
      WHERE property_id = $1::uuid AND thread_id = $2::uuid
        AND direction = 'inbound' AND read_at IS NULL
-       AND (sent_at < $5::timestamptz
-         OR (sent_at = $5::timestamptz AND id <= $3::uuid))`,
-    [input.propertyId, input.threadId, input.readThroughMessageId, acceptedAt, boundary.sentAt],
+       AND id = ANY($3::uuid[])`,
+    [input.propertyId, input.threadId, candidateMessageIds, acceptedAt],
   );
   return result.rowCount ?? 0;
 }
