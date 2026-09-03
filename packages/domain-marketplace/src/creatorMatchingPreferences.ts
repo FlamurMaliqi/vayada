@@ -15,10 +15,25 @@ export const MARKETPLACE_CREATOR_COLLABORATION_GOALS = [
   "other",
 ] as const;
 
+export const MARKETPLACE_CREATOR_CONTENT_CATEGORIES = [
+  "travel",
+  "lifestyle",
+  "food_drink",
+  "wellness_fitness",
+  "adventure_outdoors",
+  "family",
+  "luxury",
+  "fashion_beauty",
+  "business_events",
+  "other",
+] as const;
+
 export type MarketplaceCreatorMatchingCompensationType =
   (typeof MARKETPLACE_CREATOR_MATCHING_COMPENSATION_TYPES)[number];
 export type MarketplaceCreatorCollaborationGoal =
   (typeof MARKETPLACE_CREATOR_COLLABORATION_GOALS)[number];
+export type MarketplaceCreatorContentCategory =
+  (typeof MARKETPLACE_CREATOR_CONTENT_CATEGORIES)[number];
 
 export type MarketplaceCreatorCodePreference<T extends string = string> =
   | { readonly mode: "no_preference" }

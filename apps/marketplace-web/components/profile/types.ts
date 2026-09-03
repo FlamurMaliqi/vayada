@@ -6,13 +6,14 @@ import type {
   PlatformGenderSplit,
   CreatorType,
 } from "@/lib/types";
+import type { MarketplaceCreatorMatchingPreferences } from "@vayada/domain-marketplace";
 
 // Re-export for convenience
 export type { PlatformCountry, PlatformAgeGroup, PlatformGenderSplit };
 
 // Profile page specific types
 export type UserType = "hotel" | "creator";
-export type CreatorTab = "overview" | "platforms" | "reviews";
+export type CreatorTab = "overview" | "matching" | "platforms" | "reviews";
 export type HotelTab = "overview" | "listings";
 export type PlatformName = "Instagram" | "TikTok" | "YouTube" | "Facebook" | "Blog" | "X" | "Other";
 
@@ -78,6 +79,7 @@ export interface ApiCreatorResponse {
   creator_type?: CreatorType;
   platforms?: ApiPlatformResponse[];
   rating?: ApiRatingResponse;
+  matchingPreferences?: MarketplaceCreatorMatchingPreferences | null;
 }
 
 // Canonical creator profile update payload used by the TypeScript API adapter.
@@ -112,6 +114,7 @@ export interface CreatorProfile {
   location: string;
   status: "verified" | "pending" | "rejected";
   creatorType: CreatorType;
+  matchingPreferences?: MarketplaceCreatorMatchingPreferences | null;
   rating?: CreatorRating;
   platforms: ProfilePlatform[];
   portfolioLink?: string;

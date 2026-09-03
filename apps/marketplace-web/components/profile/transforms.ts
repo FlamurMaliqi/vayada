@@ -225,6 +225,7 @@ export function transformCreatorProfile(apiCreator: ApiCreatorResponse): Creator
         ? apiCreator.status
         : "pending",
     creatorType,
+    matchingPreferences: apiCreator.matchingPreferences ?? null,
     rating,
     platforms,
     portfolioLink,

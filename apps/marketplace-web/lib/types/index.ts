@@ -2,6 +2,8 @@
  * Core domain types for vayada marketplace
  */
 
+import type { MarketplaceCreatorMatchingPreferences } from "@vayada/domain-marketplace";
+
 // User types
 export type UserType = "hotel" | "creator" | "admin";
 
@@ -191,6 +193,7 @@ export interface Creator {
   profilePicture?: string | null;
   profilePictureMediaObjectId?: string | null;
   creatorType: CreatorType;
+  matchingPreferences?: MarketplaceCreatorMatchingPreferences | null;
   rating?: CreatorRating;
   status: UserStatus;
   createdAt: Date;

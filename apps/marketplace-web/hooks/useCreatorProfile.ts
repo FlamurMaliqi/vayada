@@ -15,6 +15,7 @@ import type {
   ApiCreatorResponse,
   CreatorUpdatePayload,
   CreatorProfile,
+  CreatorTab,
   PlatformName,
 } from "@/components/profile/types";
 
@@ -43,9 +44,7 @@ export function useCreatorProfile(
   const [loading, setLoading] = useState(true);
   const [profileStatus, setProfileStatus] = useState<CreatorProfileStatus | null>(null);
   const [isProfileIncomplete, setIsProfileIncomplete] = useState(false);
-  const [activeCreatorTab, setActiveCreatorTab] = useState<"overview" | "platforms" | "reviews">(
-    "overview",
-  );
+  const [activeCreatorTab, setActiveCreatorTab] = useState<CreatorTab>("overview");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [isEditingContact, setIsEditingContact] = useState(false);
