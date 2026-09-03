@@ -33,6 +33,9 @@ describe("PMS calendar auto-open settings repository", () => {
     });
     expect(createPool.sql.join("\n")).toContain("FOR UPDATE OF property");
     expect(createPool.sql.join("\n")).toContain("calendar_auto_open_settings.revision = $6");
+    expect(createPool.sql.join("\n")).toContain("pms.calendar_auto_open.setting_changed");
+    expect(createPool.sql.join("\n")).toContain("pms.inventory.scheduler");
+    expect(createPool.sql.join("\n")).toContain("platform.product_audit_events");
 
     const fixed = row({
       configured: true,
@@ -102,8 +105,9 @@ describe("PMS calendar auto-open settings repository", () => {
       fixedEndMonth: "2026-08",
     });
     const disabled = { ...historical, revision: 5, enabled: false };
+    const preservedPool = new TestPool([historical], [disabled]);
     const preserved = createPgPmsCalendarAutoOpenSettingsRepository({
-      pool: new TestPool([historical], [disabled]),
+      pool: preservedPool,
       now,
     });
     await expect(
@@ -117,6 +121,23 @@ describe("PMS calendar auto-open settings repository", () => {
         }),
       ),
     ).resolves.toMatchObject({ ok: true, outcome: "updated", setting: { revision: 5 } });
+    expect(preservedPool.sql.some((sql) => sql.includes("platform.outbox_events"))).toBe(false);
+
+    const reenabled = { ...historical, revision: 6 };
+    const expiredPool = new TestPool([disabled], [reenabled]);
+    const expired = createPgPmsCalendarAutoOpenSettingsRepository({ pool: expiredPool, now });
+    await expect(
+      expired.update(
+        command({
+          expectedRevision: 5,
+          enabled: true,
+          mode: "fixed",
+          rollingMonths: null,
+          fixedEndMonth: "2026-08",
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: true, outcome: "updated", setting: { revision: 6 } });
+    expect(expiredPool.sql.some((sql) => sql.includes("platform.outbox_events"))).toBe(false);
   });
 
   it("does not advance an exact current value", async () => {
@@ -125,6 +146,10 @@ describe("PMS calendar auto-open settings repository", () => {
     await expect(
       repository.update(command({ expectedRevision: 4, enabled: false })),
     ).resolves.toMatchObject({ ok: true, outcome: "unchanged", setting: { revision: 4 } });
+    expect(pool.sql.some((sql) => sql.includes("calendar_auto_open_settings ("))).toBe(false);
+    expect(pool.sql.some((sql) => sql.includes("platform.domain_events"))).toBe(false);
+    expect(pool.sql.some((sql) => sql.includes("platform.outbox_events"))).toBe(false);
+    expect(pool.sql.some((sql) => sql.includes("platform.product_audit_events"))).toBe(false);
     expect(pool.sql.at(-1)).toBe("COMMIT");
   });
 });
@@ -164,6 +189,13 @@ function command(
     mode: "rolling",
     rollingMonths: 18,
     fixedEndMonth: null,
+    idempotencyKey: "calendar-auto-open-key",
+    audit: {
+      actorUserId: "14330000-0000-4000-8000-000000000002",
+      requestId: "request-1",
+      correlationId: "correlation-1",
+      requestedAt: "2026-09-03T08:00:00.000Z",
+    },
     ...overrides,
   };
 }
@@ -177,15 +209,24 @@ class TestPool {
     return { query: this.query.bind(this), release() {} };
   }
   async end() {}
-  async query<T extends QueryResultRow = QueryResultRow>(text: string): Promise<{ rows: T[] }> {
+  async query<T extends QueryResultRow = QueryResultRow>(
+    text: string,
+  ): Promise<{ rows: T[]; rowCount: number }> {
     this.sql.push(text);
     const rows = text.includes("FOR UPDATE OF property")
       ? [{ id: propertyId }]
       : text.includes("FROM hotel_catalog.properties")
         ? this.reads.splice(0, 1)
-        : text.includes("INSERT INTO pms.calendar_auto_open_settings")
-          ? this.writes.splice(0, 1)
-          : [];
-    return { rows: rows as unknown as T[] };
+        : text.includes("FROM platform.idempotency_keys")
+          ? []
+          : text.includes("INSERT INTO platform.idempotency_keys")
+            ? [{ id: "14330000-0000-4000-8000-000000000003" }]
+            : text.includes("INSERT INTO pms.calendar_auto_open_settings")
+              ? this.writes.splice(0, 1)
+              : [];
+    return {
+      rows: rows as unknown as T[],
+      rowCount: text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK" ? 0 : 1,
+    };
   }
 }

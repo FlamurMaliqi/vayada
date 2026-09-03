@@ -1,10 +1,13 @@
+import { randomUUID } from "node:crypto";
+
 import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createPgPmsCalendarAutoOpenSettingsRepository } from "./pmsCalendarAutoOpenSettingsRepository.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
-const propertyId = "14330000-0000-4000-8000-000000000001";
+let propertyId = randomUUID();
+const actorUserId = "14330000-0000-4000-8000-000000000002";
 
 describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open settings concurrency", () => {
   const admin = new pg.Pool({ connectionString: TEST_DATABASE_URL ?? "postgresql://disabled" });
@@ -31,11 +34,17 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open settings concurrency
 
   beforeEach(async () => {
     await blocker.query("ROLLBACK");
-    await admin.query("DELETE FROM hotel_catalog.properties WHERE id = $1::uuid", [propertyId]);
+    propertyId = randomUUID();
+    await admin.query(
+      `INSERT INTO identity.users (id, email, name, status)
+       VALUES ($1::uuid, 'vay1434@example.test', 'VAY-1434', 'active')
+       ON CONFLICT (id) DO NOTHING`,
+      [actorUserId],
+    );
     await admin.query(
       `INSERT INTO hotel_catalog.properties (id, public_id, display_name)
-       VALUES ($1::uuid, 'auto-open-concurrency', 'Auto-open Concurrency')`,
-      [propertyId],
+       VALUES ($1::uuid, $2, 'Auto-open Concurrency')`,
+      [propertyId, `auto-open-${propertyId}`],
     );
     await admin.query(
       `INSERT INTO hotel_catalog.property_locations (property_id, timezone)
@@ -46,7 +55,6 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open settings concurrency
 
   afterAll(async () => {
     await blocker.query("ROLLBACK");
-    await admin.query("DELETE FROM hotel_catalog.properties WHERE id = $1::uuid", [propertyId]);
     await Promise.all([firstPool.end(), secondPool.end(), admin.end()]);
     await blocker.end();
   });
@@ -58,11 +66,11 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open settings concurrency
     ]);
 
     const firstPid = await backendPid(firstPool);
-    const first = firstRepository.update(command(true));
+    const first = firstRepository.update(command(true, "first-key"));
     await waitForLockWaiter(admin, firstPid);
 
     const secondPid = await backendPid(secondPool);
-    const second = secondRepository.update(command(false));
+    const second = secondRepository.update(command(false, "second-key"));
     await waitForLockWaiter(admin, secondPid);
     await blocker.query("COMMIT");
 
@@ -76,9 +84,81 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open settings concurrency
       error: { code: "calendar_auto_open_revision_conflict", currentRevision: 1 },
     });
   });
+
+  it("replays the committed response without duplicating setting evidence or work", async () => {
+    const commandValue = command(true, "replay-key");
+    const first = await firstRepository.update(commandValue);
+    const replay = await secondRepository.update(commandValue);
+
+    expect(first).toEqual(replay);
+    expect(first).toMatchObject({
+      ok: true,
+      outcome: "created",
+      setting: { revision: 1, enabled: true },
+    });
+    const evidence = await admin.query<{
+      settings: number;
+      events: number;
+      outbox: number;
+      audits: number;
+      idempotency: number;
+    }>(
+      `SELECT
+         (SELECT count(*)::int FROM pms.calendar_auto_open_settings WHERE property_id = $1::uuid) AS settings,
+         (SELECT count(*)::int FROM platform.domain_events WHERE property_id = $1::uuid) AS events,
+         (SELECT count(*)::int FROM platform.outbox_events WHERE property_id = $1::uuid) AS outbox,
+         (SELECT count(*)::int FROM platform.product_audit_events WHERE property_id = $1::uuid) AS audits,
+         (SELECT count(*)::int FROM platform.idempotency_keys WHERE property_id = $1::uuid) AS idempotency`,
+      [propertyId],
+    );
+    expect(evidence.rows[0]).toEqual({
+      settings: 1,
+      events: 1,
+      outbox: 1,
+      audits: 1,
+      idempotency: 1,
+    });
+    const records = await admin.query<{
+      eventKey: string;
+      eventType: string;
+      eventPayload: Record<string, unknown>;
+      destination: string;
+      outboxType: string;
+      outboxPayload: Record<string, unknown>;
+      auditPayload: Record<string, unknown>;
+    }>(
+      `SELECT event.event_key AS "eventKey", event.event_type AS "eventType",
+              event.payload AS "eventPayload", outbox.destination,
+              outbox.event_type AS "outboxType", outbox.payload AS "outboxPayload",
+              audit.redacted_payload AS "auditPayload"
+       FROM platform.domain_events event
+       JOIN platform.outbox_events outbox ON outbox.domain_event_id = event.id
+       JOIN platform.product_audit_events audit ON audit.domain_event_id = event.id
+       WHERE event.property_id = $1::uuid`,
+      [propertyId],
+    );
+    expect(records.rows[0]).toMatchObject({
+      eventKey: `pms.calendar-auto-open.setting:${propertyId}:revision-1:v1`,
+      eventType: "pms.calendar_auto_open.setting_changed",
+      eventPayload: { propertyId, revision: 1, enabled: true, mode: "rolling" },
+      destination: "pms.inventory.scheduler",
+      outboxType: "pms.calendar_auto_open.evaluation_requested",
+      outboxPayload: { propertyId, settingRevision: 1 },
+      auditPayload: {
+        previous: { revision: 0, enabled: false },
+        next: { revision: 1, enabled: true },
+      },
+    });
+    expect(Object.keys(records.rows[0]!.eventPayload).sort()).toEqual([
+      "enabled",
+      "mode",
+      "propertyId",
+      "revision",
+    ]);
+  });
 });
 
-function command(enabled: boolean) {
+function command(enabled: boolean, idempotencyKey: string) {
   return {
     propertyId,
     expectedRevision: 0,
@@ -86,6 +166,13 @@ function command(enabled: boolean) {
     mode: "rolling" as const,
     rollingMonths: 18 as const,
     fixedEndMonth: null,
+    idempotencyKey,
+    audit: {
+      actorUserId,
+      requestId: `${idempotencyKey}-request`,
+      correlationId: `${idempotencyKey}-correlation`,
+      requestedAt: "2026-09-03T08:00:00.000Z",
+    },
   };
 }
 
