@@ -314,7 +314,7 @@ export async function runRoomShuffleAcceptance(args: Args): Promise<void> {
     await page.route(bookingPath, returnZeroResult);
     let silent: CreatedBooking;
     try {
-      silent = await createUiBooking(args, "Zero transition silent", room1, 75, 76, {
+      silent = await createUiBooking(args, "Zero transition silent", room1, 77, 78, {
         beforeSubmit: async () => expect(toast).toBeVisible(),
         existingResource: zeroFixture.resource,
       });
