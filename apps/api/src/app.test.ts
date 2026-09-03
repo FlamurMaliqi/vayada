@@ -114,6 +114,7 @@ import type {
   PmsInboxReadPort,
   PmsInboxReplyPort,
   PmsInboxThreadSummary,
+  PmsInboxTriagePort,
 } from "./domains/pmsInbox.js";
 import {
   type BookingReservationListFilters,
@@ -2670,6 +2671,7 @@ function buildAuthenticatedApp(
     pmsInboxReadPort?: PmsInboxReadPort;
     pmsInboxMarkReadPort?: PmsInboxMarkReadPort;
     pmsInboxReplyPort?: PmsInboxReplyPort;
+    pmsInboxTriagePort?: PmsInboxTriagePort;
     pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
     pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
     bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
@@ -2717,6 +2719,7 @@ function buildAuthenticatedApp(
     pmsInboxReadPort: options.pmsInboxReadPort,
     pmsInboxMarkReadPort: options.pmsInboxMarkReadPort,
     pmsInboxReplyPort: options.pmsInboxReplyPort,
+    pmsInboxTriagePort: options.pmsInboxTriagePort,
     bookingAcceptanceSettings: options.bookingAcceptanceSettings,
     sameDayBookingSettings: options.sameDayBookingSettings,
     pmsRoomAssignmentSettings: options.pmsRoomAssignmentSettings,
@@ -13133,6 +13136,205 @@ describe("vayada-api", () => {
       payload: { readThroughMessageId: "msg_3" },
     });
     expect(invalid).toMatchObject({ statusCode: 400, body: { code: "validation_failed" } });
+  });
+
+  it("accepts protected Inbox triage transitions and validates adapter results", async () => {
+    const calls: Parameters<PmsInboxTriagePort["transition"]>[0][] = [];
+    const close = vi.fn(async () => undefined);
+    const port: PmsInboxTriagePort = {
+      async transition(input) {
+        calls.push(input);
+        if (input.threadId === "missing")
+          return { ok: false, error: { code: "thread_not_found", message: "Thread not found." } };
+        if (input.idempotencyKey === "version")
+          return {
+            ok: false,
+            error: {
+              code: "thread_version_conflict",
+              message: "The conversation changed.",
+              currentVersion: 9,
+            },
+          };
+        if (input.idempotencyKey === "conflict")
+          return {
+            ok: false,
+            error: { code: "idempotency_conflict", message: "Idempotency conflict." },
+          };
+        const attentionState =
+          input.action === "done"
+            ? "done"
+            : input.action === "follow_up"
+              ? "follow_up"
+              : "needs_attention";
+        return {
+          ok: true,
+          value: {
+            propertyId: input.propertyId,
+            threadId: input.threadId === "wrong-scope" ? "foreign-thread" : input.threadId,
+            attentionState,
+            followUpAt: input.action === "follow_up" ? input.followUpAt : null,
+            threadVersion: input.expectedThreadVersion + 1,
+          },
+        };
+      },
+      close,
+    };
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read", "pms.inbox.reply"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsInboxTriagePort: port,
+      pmsOperationsAllowedOrigins: ["https://pms.localhost"],
+    });
+    const base = `/api/pms/properties/${pmsPropertyId}/messaging/threads`;
+    const request = (
+      action: "done" | "follow-up" | "reopen",
+      body: Record<string, unknown>,
+      idempotencyKey = `triage-${action}`,
+      threadId = "thread_1",
+    ) =>
+      injectJson(app!, {
+        method: "POST",
+        url: `${base}/${threadId}/${action}`,
+        headers: { authorization: "Bearer valid-token", "idempotency-key": idempotencyKey },
+        payload: body,
+      });
+    const followUpAt = "2027-09-03T09:00:00.000Z";
+
+    for (const action of ["done", "follow-up", "reopen"] as const) {
+      const preflight = await app.inject({
+        method: "OPTIONS",
+        url: `${base}/thread_1/${action}`,
+        headers: { origin: "https://pms.localhost" },
+      });
+      expect(preflight.statusCode, action).toBe(204);
+    }
+    const done = await request("done", { expectedThreadVersion: 4 });
+    const followUp = await request("follow-up", { expectedThreadVersion: 5, followUpAt });
+    const reopened = await request("reopen", { expectedThreadVersion: 6 });
+    expect(done).toMatchObject({
+      statusCode: 200,
+      body: { attentionState: "done", followUpAt: null, threadVersion: 5 },
+    });
+    expect(followUp).toMatchObject({
+      statusCode: 200,
+      body: { attentionState: "follow_up", followUpAt, threadVersion: 6 },
+    });
+    expect(reopened).toMatchObject({
+      statusCode: 200,
+      body: { attentionState: "needs_attention", followUpAt: null, threadVersion: 7 },
+    });
+    expect(await request("done", { expectedThreadVersion: 4 }, "missing", "missing")).toMatchObject(
+      { statusCode: 404, body: { code: "thread_not_found" } },
+    );
+    expect(await request("done", { expectedThreadVersion: 4 }, "version")).toMatchObject({
+      statusCode: 409,
+      body: { code: "thread_version_conflict", details: { currentVersion: 9 } },
+    });
+    expect(await request("done", { expectedThreadVersion: 4 }, "conflict")).toMatchObject({
+      statusCode: 409,
+      body: { code: "idempotency_conflict" },
+    });
+    expect(
+      await request("done", { expectedThreadVersion: 4 }, "wrong-scope", "wrong-scope"),
+    ).toMatchObject({ statusCode: 500, body: { code: "read_model_unavailable" } });
+
+    const dispatched = calls.length;
+    for (const invalid of [
+      request("done", { expectedThreadVersion: 4, followUpAt }),
+      request("follow-up", { expectedThreadVersion: 4 }),
+      request("follow-up", { expectedThreadVersion: 4, followUpAt: "tomorrow" }),
+      request("reopen", { expectedThreadVersion: 0 }),
+      request("done", { expectedThreadVersion: 4 }, ""),
+    ])
+      await expect(invalid).resolves.toMatchObject({
+        statusCode: 400,
+        body: { code: "validation_failed" },
+      });
+    expect(calls).toHaveLength(dispatched);
+    expect(calls[0]).toMatchObject({
+      propertyId: pmsPropertyId,
+      threadId: "thread_1",
+      organizationId: "org_hotel_group",
+      actorUserId: "user_hotel_owner",
+      actorMembershipId: "membership_hotel_owner",
+      action: "done",
+      idempotencyKey: "triage-done",
+      expectedThreadVersion: 4,
+      followUpAt: null,
+      audit: {
+        requestId: expect.any(String),
+        correlationId: expect.any(String),
+        requestedAt: expect.any(String),
+      },
+    });
+    await app.close();
+    app = null;
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("authorizes Inbox triage before parsing malformed JSON or idempotency", async () => {
+    const dispatches: unknown[] = [];
+    const port: PmsInboxTriagePort = {
+      async transition(input) {
+        dispatches.push(input);
+        throw new Error("must not dispatch");
+      },
+    };
+    const entitlement: ProductEntitlement = {
+      product: "pms",
+      key: "property-management",
+      status: "active",
+    };
+    const cases = [
+      { name: "missing auth", options: {}, propertyId: pmsPropertyId, statusCode: 401 },
+      {
+        name: "missing reply permission",
+        options: { permissions: ["pms.inbox.read"] as PermissionKey[] },
+        propertyId: pmsPropertyId,
+        statusCode: 403,
+      },
+      {
+        name: "missing read permission",
+        options: { permissions: ["pms.inbox.reply"] as PermissionKey[] },
+        propertyId: pmsPropertyId,
+        statusCode: 403,
+      },
+      {
+        name: "missing entitlement",
+        options: { entitlements: [] },
+        propertyId: pmsPropertyId,
+        statusCode: 403,
+      },
+      {
+        name: "wrong property",
+        options: {},
+        propertyId: "f6853000-0000-0000-0000-000000000099",
+        statusCode: 403,
+      },
+    ];
+
+    for (const candidate of cases) {
+      app = buildAuthenticatedApp({
+        permissions: ["pms.inbox.read", "pms.inbox.reply"],
+        entitlements: [entitlement],
+        pmsInboxTriagePort: port,
+        ...candidate.options,
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/pms/properties/${candidate.propertyId}/messaging/threads/thread_1/done`,
+        headers: {
+          ...(candidate.name === "missing auth" ? {} : { authorization: "Bearer valid-token" }),
+          "content-type": "application/json",
+          "idempotency-key": "private-key",
+        },
+        payload: "{",
+      });
+      expect(response.statusCode, candidate.name).toBe(candidate.statusCode);
+      await app.close();
+      app = null;
+    }
+    expect(dispatches).toHaveLength(0);
   });
 
   it("accepts protected Inbox manual replies and maps command outcomes", async () => {
