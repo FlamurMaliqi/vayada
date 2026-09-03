@@ -20,7 +20,7 @@
       }
     },
     {
-      "caseId": "fixed-month-batches-beyond-rolling-maximum",
+      "caseId": "fixed-month-at-maximum-lookahead-uses-batches",
       "evaluationInstant": "2026-09-02T10:00:00.000Z",
       "propertyTimeZone": "Asia/Taipei",
       "setting": {
@@ -28,12 +28,12 @@
         "enabled": true,
         "mode": "fixed",
         "rollingMonths": null,
-        "fixedEndMonth": "2030-12"
+        "fixedEndMonth": "2028-09"
       },
       "generatedCoverageThrough": "2027-06-30",
       "expected": {
-        "targetOpenThrough": "2030-12-31",
-        "materializationThrough": "2030-12-31",
+        "targetOpenThrough": "2028-09-30",
+        "materializationThrough": "2028-09-30",
         "usesBoundedInternalBatches": true,
         "advancesAtNextMonthBoundary": false
       }

@@ -242,6 +242,23 @@ describe("PMS inventory materialization contract", () => {
     ).toMatchObject({ ready: false, blockers: ["coverage_gap", "room_set_mismatch"] });
   });
 
+  it("accepts continuous materialized coverage that safely contains the launch window", () => {
+    expect(
+      evaluatePmsInventoryLaunchReadiness(
+        {
+          ...readinessSnapshot,
+          coverage: {
+            ...readinessSnapshot.coverage,
+            coverageThrough: "2027-08-30",
+            expectedDayCount: 393,
+            materializedDayCount: 393,
+          },
+        },
+        { from: "2026-08-03", through: "2027-08-03" },
+      ),
+    ).toMatchObject({ ready: true, blockers: [] });
+  });
+
   it("rejects negative configured limits without blocking intentional lower overrides", () => {
     expect(
       evaluatePmsInventoryLaunchReadiness(

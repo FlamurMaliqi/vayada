@@ -242,6 +242,46 @@ describe("PMS inventory materialization planner", () => {
     });
   });
 
+  it("gates only the generated limit when a sellable rate is missing", () => {
+    const retained = currentDay(ROOM_A, "2026-12-20", {
+      channelSellableLimitCount: 7,
+      manualSellableLimitCount: 6,
+      effectiveSellableLimitCount: 6,
+      assignedCount: 2,
+      blockedCount: 1,
+      availableCount: 3,
+    });
+    const result = planPmsInventoryMaterialization({
+      ...baseInput,
+      horizon: { from: "2026-12-20", through: "2026-12-20" },
+      currentDays: [retained, currentDay(ROOM_B, "2026-12-20")],
+      generatedSellableLimitOverrides: [
+        { roomTypeId: ROOM_A, stayDate: "2026-12-20", count: 0 },
+        { roomTypeId: ROOM_B, stayDate: "2026-12-20", count: 0 },
+      ],
+    });
+    expect(result.ok && result.outcome).toBe("rematerialized");
+    if (!result.ok) return;
+    expect(result.days).toEqual([
+      expect.objectContaining({
+        roomTypeId: ROOM_A,
+        generatedSellableLimitCount: 0,
+        manualSellableLimitCount: 6,
+        channelSellableLimitCount: 7,
+        effectiveSellableLimitCount: 6,
+        assignedCount: 2,
+        blockedCount: 1,
+        availableCount: 3,
+      }),
+      expect.objectContaining({
+        roomTypeId: ROOM_B,
+        generatedSellableLimitCount: 0,
+        effectiveSellableLimitCount: 0,
+        availableCount: 0,
+      }),
+    ]);
+  });
+
   it("preserves linked stop-sell while rematerializing generated fields", () => {
     const linked = currentDay(ROOM_A, "2026-12-20", {
       linkedStopSell: true,

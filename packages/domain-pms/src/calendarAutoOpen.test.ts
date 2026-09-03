@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   PMS_CALENDAR_AUTO_OPEN_CONTRACT_VERSION,
+  PMS_CALENDAR_AUTO_OPEN_MAX_FIXED_MONTHS,
+  PMS_CALENDAR_AUTO_OPEN_MAX_HORIZON_DAYS,
   calculatePmsCalendarAutoOpenHorizon,
   createPmsCalendarAutoOpenSource,
   fingerprintPmsCalendarAutoOpenSource,
+  isPmsCalendarAutoOpenFixedTargetWithinLimit,
   type PmsCalendarAutoOpenSetting,
 } from "./calendarAutoOpen.js";
 
@@ -38,6 +41,26 @@ describe("PMS calendar auto-open horizon", () => {
         new Date("2027-02-10T12:00:00.000Z"),
       ).targetOpenThrough,
     ).toBeNull();
+  });
+
+  it("bounds fixed targets to the same 24-month lookahead as rolling mode", () => {
+    expect(PMS_CALENDAR_AUTO_OPEN_MAX_FIXED_MONTHS).toBe(24);
+    expect(PMS_CALENDAR_AUTO_OPEN_MAX_HORIZON_DAYS).toBe(762);
+    const instant = new Date("2026-09-02T10:00:00.000Z");
+    expect(
+      isPmsCalendarAutoOpenFixedTargetWithinLimit(
+        setting({ mode: "fixed", rollingMonths: null, fixedEndMonth: "2028-09" }),
+        "Asia/Taipei",
+        instant,
+      ),
+    ).toBe(true);
+    expect(
+      isPmsCalendarAutoOpenFixedTargetWithinLimit(
+        setting({ mode: "fixed", rollingMonths: null, fixedEndMonth: "2028-10" }),
+        "Asia/Taipei",
+        instant,
+      ),
+    ).toBe(false);
   });
 });
 

@@ -329,7 +329,9 @@ async function ariPlan(
   const from = propertyLocalClock(now, policy.timezone).date;
   const through = addDays(from, 365);
   const result = await pool.query<AriRow>(
-    `SELECT inventory.stay_date AS "stayDate", inventory.available_count AS available,
+    `SELECT inventory.stay_date AS "stayDate",
+       CASE WHEN COALESCE(inventory.rate_gate_open, TRUE)
+         THEN inventory.available_count ELSE 0 END AS available,
        room_mapping.external_room_type_id AS "externalRoomTypeId",
        rate_mapping.external_rate_plan_id AS "externalRatePlanId",
        plan.base_rate_amount::float8 AS rate, rate_mapping.channel,
