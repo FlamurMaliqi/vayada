@@ -9,8 +9,8 @@ export default function LandingFooter() {
           vayada
         </Link>
         <p className="text-xs text-gray-500">
-          © {new Date().getFullYear()} vayada. AI-powered and trust-based direct distribution for
-          independent hospitality.
+          © {new Date().getFullYear()} vayada. Direct growth tools for independent hotels and travel
+          creators.
         </p>
         <div className="flex items-center gap-6 text-xs text-gray-500">
           <Link href={ROUTES.IMPRINT} className="transition-colors hover:text-ink">
