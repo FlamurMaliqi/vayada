@@ -13180,6 +13180,7 @@ describe("vayada-api", () => {
       permissions: ["pms.inbox.read", "pms.inbox.reply"],
       entitlements: [{ product: "pms", key: "property-management", status: "active" }],
       pmsInboxReplyPort: port,
+      pmsOperationsAllowedOrigins: ["https://pms.localhost"],
     });
     const base = `/api/pms/properties/${pmsPropertyId}/messaging/threads`;
     const request = (
@@ -13198,11 +13199,18 @@ describe("vayada-api", () => {
         payload: payload as never,
       });
 
+    const preflight = await app.inject({
+      method: "OPTIONS",
+      url: `${base}/thread_1/messages`,
+      headers: { origin: "https://pms.localhost" },
+    });
     const queued = await request("thread_1", "send-1");
     const held = await request("held", "send-held", {
       expectedThreadVersion: 7,
       attachmentMediaIds: [mediaId],
     });
+    expect(preflight).toMatchObject({ statusCode: 204 });
+    expect(preflight.headers["access-control-allow-headers"]).toContain("idempotency-key");
     expect(queued).toMatchObject({
       statusCode: 202,
       body: {
