@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import {
   PMS_WEB_PROPERTY_ID,
   PMS_WEB_ROOM_ID,
+  PMS_WEB_ROOM_TYPE_ID,
   mockPmsWebAuthenticatedSession,
   mockPmsWebTargetRoutes,
   pmsWebRoomType,
@@ -192,6 +193,11 @@ test.describe("pms-web smoke", () => {
     await expect(
       calendarSection.getByText("This setting is shared between PMS and Booking Engine."),
     ).toBeVisible();
+    const autoOpen = calendarSection.getByRole("switch", {
+      name: "Auto-open future calendar",
+    });
+    await expect(autoOpen).not.toBeChecked();
+    await expect(calendarSection.getByText(/Current horizon: Not active/)).toBeVisible();
     await expect(
       page
         .locator("section#booking-engine")
@@ -206,6 +212,18 @@ test.describe("pms-web smoke", () => {
     await expect(teamLinks.last()).toHaveAttribute("href", "/settings/team");
 
     await page.setViewportSize({ width: 390, height: 844 });
+    await autoOpen.focus();
+    await expect(autoOpen).toBeFocused();
+    await autoOpen.press("Space");
+    await calendarSection.getByLabel("Open through").selectOption("24");
+    await calendarSection.getByRole("button", { name: "Save auto-open" }).click();
+    await expect(calendarSection.getByRole("status")).toContainText(
+      "Inventory and connected channels are updating",
+    );
+    await expect(calendarSection.getByText(/Current horizon: Sep 30, 2028/)).toBeVisible();
+    await expect(calendarSection.getByRole("alert")).toContainText(
+      `${PMS_WEB_ROOM_TYPE_ID} has no positive rate`,
+    );
     await expect(checklistLinks.first()).toBeVisible();
     await checklistLinks.first().focus();
     await expect(checklistLinks.first()).toBeFocused();

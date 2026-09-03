@@ -70,7 +70,7 @@ export async function registerPmsCalendarAutoOpenRoutes(
           contractVersion: PMS_CALENDAR_AUTO_OPEN_CONTRACT_VERSION,
           setting: value.setting,
           horizon,
-          warnings: [],
+          warnings: value.warnings,
         } satisfies PmsCalendarAutoOpenRead & {
           contractVersion: typeof PMS_CALENDAR_AUTO_OPEN_CONTRACT_VERSION;
         });

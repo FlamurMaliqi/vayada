@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { SettingsSection, SettingsCard } from "@vayada/settings-ui";
 
 type Props = {
@@ -9,6 +10,7 @@ type Props = {
   loadError: string;
   onToggle: (next: boolean) => void;
   onRetry: () => void;
+  autoOpenEditor?: ReactNode;
   sameDayEnabled: boolean;
   sameDayCutoffTime: string | null;
   sameDayTimeZone: string;
@@ -34,6 +36,7 @@ export function CalendarSection({
   loadError,
   onToggle,
   onRetry,
+  autoOpenEditor,
   sameDayEnabled,
   sameDayCutoffTime,
   sameDayTimeZone,
@@ -108,6 +111,8 @@ export function CalendarSection({
           </p>
         )}
       </SettingsCard>
+
+      {autoOpenEditor}
 
       <SettingsCard>
         {sameDayLoadError ? (

@@ -20,6 +20,12 @@ const otherPropertyId = "14340000-0000-4000-8000-000000000002";
 const actorUserId = "14340000-0000-4000-8000-000000000003";
 const organizationId = "14340000-0000-4000-8000-000000000004";
 const evaluatedAt = "2026-09-03T08:00:00.000Z";
+const warning = {
+  code: "missing_rate" as const,
+  roomTypeId: "14340000-0000-4000-8000-000000000006",
+  from: "2027-01-01",
+  through: "2027-01-31",
+};
 
 type Auth = {
   permissions?: PermissionKey[];
@@ -51,7 +57,7 @@ describe("PMS calendar auto-open routes", () => {
         propertyLocalDate: "2026-09-03",
         targetOpenThrough: null,
       },
-      warnings: [],
+      warnings: [warning],
     });
     expect(test.findContext).toHaveBeenCalledWith(propertyId);
   });
@@ -200,6 +206,7 @@ async function testApp(
   const findContext = vi.fn(async () => ({
     setting: setting(0, false),
     propertyTimeZone: "Asia/Taipei",
+    warnings: [warning],
   }));
   app.decorateRequest("authContext", null);
   app.addHook("onRequest", async (request) => {

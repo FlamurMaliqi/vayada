@@ -22,6 +22,34 @@ describe("PMS calendar auto-open settings repository", () => {
     expect(pool.sql).toHaveLength(1);
   });
 
+  it("reads typed warnings from the latest canonical application result", async () => {
+    const warning = {
+      code: "missing_rate",
+      roomTypeId: "14330000-0000-4000-8000-000000000004",
+      from: "2027-01-01",
+      through: "2027-01-31",
+    };
+    const pool = new TestPool([
+      {
+        ...virtual,
+        warnings: [
+          warning,
+          { ...warning, roomTypeId: "" },
+          { ...warning, from: "2027-99-01" },
+          { ...warning, from: "2027-02-01", through: "2027-01-31" },
+          { code: "unknown" },
+        ],
+      },
+    ]);
+    const repository = createPgPmsCalendarAutoOpenSettingsRepository({ pool });
+
+    await expect(repository.findContext(propertyId)).resolves.toMatchObject({
+      warnings: [warning],
+    });
+    expect(pool.sql[0]).toContain("calendarAutoOpenResult,warnings");
+    expect(pool.sql[0]).toContain("source,settingRevision");
+  });
+
   it("creates rolling revision one and updates fixed revision two", async () => {
     const rolling = row({ configured: true, revision: 1, enabled: true, rollingMonths: 24 });
     const createPool = new TestPool([virtual], [rolling]);
@@ -212,6 +240,7 @@ type Row = {
   rollingMonths: 12 | 18 | 24 | null;
   fixedEndMonth: string | null;
   updatedAt: string | null;
+  warnings?: unknown;
 };
 function row(overrides: Partial<Row>): Row {
   return {
