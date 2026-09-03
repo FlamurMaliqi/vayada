@@ -42,6 +42,7 @@ type ReleaseOutcome = {
 };
 
 const JOB_TYPE = "pms.inbox.follow-up.release";
+const MAX_LEASE_RECLAIMS = 5;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export async function runPmsInboxFollowUpReleaseJobs(
@@ -64,6 +65,10 @@ export async function runPmsInboxFollowUpReleaseJobs(
   let released = 0;
   try {
     for (let index = 0; index < (options.limit ?? 25); index += 1) {
+      if (await sweepExhaustedLease(pool, options.propertyId ?? null)) {
+        processed += 1;
+        continue;
+      }
       const job = await claimJob(
         pool,
         options.workerId ?? `${JOB_TYPE}:${process.pid}`,
@@ -72,14 +77,14 @@ export async function runPmsInboxFollowUpReleaseJobs(
       if (!job) break;
       processed += 1;
       if (!validJob(job)) {
-        await deadLetterInvalidJob(pool, job);
+        await containFinalization(() => deadLetterInvalidJob(pool, job));
         continue;
       }
       try {
         const result = await releaseFollowUp(pool, job);
         if (result.outcome === "released") released += 1;
       } catch {
-        await failJob(pool, job);
+        await containFinalization(() => failJob(pool, job));
       }
     }
     return { processed, released };
@@ -142,6 +147,11 @@ async function claimJob(
                THEN job.max_attempts + 1
              ELSE job.max_attempts
            END,
+           job_metadata = job.job_metadata || jsonb_build_object(
+             'leaseReclaimCount', CASE WHEN job.status = 'running'
+               THEN COALESCE((job.job_metadata ->> 'leaseReclaimCount')::integer, 0) + 1
+               ELSE COALESCE((job.job_metadata ->> 'leaseReclaimCount')::integer, 0)
+             END),
            locked_at = now(), locked_by = $2, updated_at = now()
        FROM (
          SELECT id
@@ -150,7 +160,8 @@ async function claimJob(
            AND tenant_scope = 'property' AND property_id IS NOT NULL
            AND (
              (status = 'pending' AND run_after <= now() AND attempts_count < max_attempts)
-             OR (status = 'running' AND locked_at < now() - interval '5 minutes')
+             OR (status = 'running' AND locked_at < now() - interval '5 minutes'
+                 AND COALESCE((job_metadata ->> 'leaseReclaimCount')::integer, 0) < $4)
            )
            AND ($3::uuid IS NULL OR property_id = $3::uuid)
          ORDER BY priority DESC, run_after, created_at, id
@@ -167,7 +178,7 @@ async function claimJob(
          job.payload ->> 'threadId' AS "payloadThreadId",
          job.payload ->> 'followUpAt' AS "followUpAt",
          job.job_metadata ->> 'action' AS action`,
-      [JOB_TYPE, workerId, propertyId],
+      [JOB_TYPE, workerId, propertyId, MAX_LEASE_RECLAIMS],
     );
     const job = result.rows[0] ?? null;
     if (!job) {
@@ -190,6 +201,71 @@ async function claimJob(
     );
     await client.query("COMMIT");
     return job;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function sweepExhaustedLease(
+  pool: PmsInboxFollowUpReleasePool,
+  propertyId: string | null,
+): Promise<boolean> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const candidate = await client.query<FollowUpReleaseJob>(
+      `SELECT id::text AS id, attempts_count AS "attemptsCount", max_attempts AS "maxAttempts",
+              locked_by AS "workerId", property_id::text AS "propertyId",
+              resource_id AS "threadId", correlation_id AS "correlationId",
+              idempotency_key_hash AS "idempotencyKeyHash",
+              payload ->> 'propertyId' AS "payloadPropertyId",
+              payload ->> 'threadId' AS "payloadThreadId",
+              payload ->> 'followUpAt' AS "followUpAt", job_metadata ->> 'action' AS action
+       FROM platform.jobs
+       WHERE queue_name = $1 AND job_type = $1 AND tenant_scope = 'property'
+         AND property_id IS NOT NULL AND status = 'running' AND locked_by IS NOT NULL
+         AND locked_at < now() - interval '5 minutes'
+         AND COALESCE((job_metadata ->> 'leaseReclaimCount')::integer, 0) >= $2
+         AND ($3::uuid IS NULL OR property_id = $3::uuid)
+       ORDER BY priority DESC, run_after, created_at, id
+       FOR UPDATE SKIP LOCKED
+       LIMIT 1`,
+      [JOB_TYPE, MAX_LEASE_RECLAIMS, propertyId],
+    );
+    const job = candidate.rows[0];
+    if (!job) {
+      await client.query("COMMIT");
+      return false;
+    }
+    const attempt = await client.query<{ id: string }>(
+      `UPDATE platform.job_attempts
+       SET status = 'timed_out', finished_at = now(),
+           duration_ms = GREATEST(0, floor(extract(epoch FROM (now() - started_at)) * 1000))::integer,
+           error_type = 'worker_timeout',
+           error_message = 'Worker lease reclaim limit exhausted.'
+       WHERE job_id = $1::uuid AND attempt_number = $2 AND status = 'running'
+         AND worker_id = $3
+       RETURNING id::text AS id`,
+      [job.id, job.attemptsCount, job.workerId],
+    );
+    const deadLettered = await client.query(
+      `UPDATE platform.jobs
+       SET status = 'dead_lettered', finished_at = now(), locked_at = NULL, locked_by = NULL,
+           updated_at = now(),
+           job_metadata = job_metadata || jsonb_build_object(
+             'failureCode', 'lease_reclaim_exhausted')
+       WHERE id = $1::uuid AND status = 'running' AND attempts_count = $2 AND locked_by = $3`,
+      [job.id, job.attemptsCount, job.workerId],
+    );
+    const attemptId = attempt.rows[0]?.id;
+    if (!attemptId || deadLettered.rowCount !== 1)
+      throw new Error("PMS Inbox follow-up release lost its exhausted worker lease");
+    await insertDeadLetter(client, job, attemptId, "lease_reclaim_exhausted");
+    await client.query("COMMIT");
+    return true;
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
@@ -413,6 +489,14 @@ async function deadLetterInvalidJob(
   job: FollowUpReleaseJob,
 ): Promise<void> {
   await finalizeFailure(pool, job, "invalid_job", true);
+}
+
+async function containFinalization(finalize: () => Promise<void>): Promise<void> {
+  try {
+    await finalize();
+  } catch {
+    // A superseding worker owns the job now; keep processing this bounded batch.
+  }
 }
 
 async function failJob(pool: PmsInboxFollowUpReleasePool, job: FollowUpReleaseJob): Promise<void> {
