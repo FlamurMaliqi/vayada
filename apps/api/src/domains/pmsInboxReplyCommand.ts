@@ -420,10 +420,7 @@ async function lockThread(
             thread.source_thread_id AS "sourceThreadId",
             thread.delivery_channel AS "deliveryChannel",
             thread.provider_channel AS "providerChannel",
-            CASE WHEN thread.guest_booking_id IS NOT NULL
-              THEN current_guest.email
-              ELSE NULLIF(BTRIM(thread.guest_email), '')
-            END AS "guestEmail",
+            current_guest.email AS "guestEmail",
             thread.attention_state AS "attentionState"
      FROM pms.message_threads thread
      LEFT JOIN booking.guest_bookings guest_booking
