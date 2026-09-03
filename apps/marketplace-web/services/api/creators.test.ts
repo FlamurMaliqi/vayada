@@ -47,6 +47,7 @@ const targetProfile = {
   ],
   audienceSize: 1200,
   rating: { averageRating: 0, totalReviews: 0 },
+  matchingPreferences: null,
   createdAt: "2026-07-05T10:00:00.000Z",
   updatedAt: "2026-07-05T10:00:00.000Z",
 };
@@ -314,6 +315,45 @@ describe("creator target self-service client", () => {
       creatorType: "Travel",
       audienceSize: 1200,
       platforms: [expect.objectContaining({ profileUrl: "https://instagram.com/lina" })],
+    });
+  });
+
+  it("updates matching preferences without sending unrelated profile fields", async () => {
+    setAuthKitSession({
+      accessToken: "workos-access-token",
+      organizationKind: "creator_workspace",
+      user: { id: "user_creator", email: "creator@example.com", status: "active" },
+    });
+
+    const matchingPreferences = {
+      contentCategories: { mode: "selected" as const, values: ["travel", "wellness_fitness"] },
+      deliverableTypes: { mode: "selected" as const, values: ["short_form_video"] },
+      compensationTypes: { mode: "no_preference" as const },
+      collaborationGoals: { mode: "selected" as const, values: ["ugc_creation" as const] },
+      travel: { mode: "planned_trips" as const, flexibilityDaysBefore: 3, flexibilityDaysAfter: 5 },
+    };
+    let body: unknown;
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return jsonResponse({
+        ...targetProfile,
+        matchingPreferences: {
+          ...matchingPreferences,
+          contractVersion: "marketplace-creator-matching-preferences.v1",
+          evidenceSource: "creator_declared",
+          revision: 1,
+          updatedAt: "2026-09-03T08:00:00.000Z",
+        },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const profile = await creatorService.updateMatchingPreferences(matchingPreferences);
+
+    expect(body).toEqual({ matchingPreferences });
+    expect(profile.matchingPreferences).toMatchObject({
+      contentCategories: { mode: "selected", values: ["travel", "wellness_fitness"] },
+      revision: 1,
     });
   });
 
