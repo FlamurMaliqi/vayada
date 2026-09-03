@@ -35,8 +35,14 @@ export async function runPmsInboxDeliveryJobs(
     if (!job) break;
     const prepared = await store.prepare(job);
     let completion: PmsInboxDeliveryCompletion;
-    if (!prepared.ok) {
-      completion = failedCompletion(job, prepared.failure, null, options);
+    if (prepared.state === "blocked") {
+      completion = failedCompletion(job, prepared.failure, prepared.attemptId ?? null, options);
+    } else if (prepared.state === "accepted") {
+      completion = {
+        outcome: "accepted",
+        attemptId: prepared.attemptId,
+        providerReference: prepared.providerReference,
+      };
     } else {
       const provider = providers[prepared.adapter];
       if (!provider) {

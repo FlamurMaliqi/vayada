@@ -48,12 +48,22 @@ export type PmsInboxDeliveryJob = {
 
 export type PmsInboxPreparedDelivery =
   | {
-      ok: true;
+      state: "ready";
       adapter: "channex" | "resend";
       attemptId: string;
       input: PmsInboxDeliveryProviderInput;
     }
-  | { ok: false; failure: Exclude<PmsInboxDeliveryFailure, "transient_provider_failure"> };
+  | { state: "accepted"; attemptId: string; providerReference: string }
+  | { state: "blocked"; failure: PmsInboxDeliveryFailure; attemptId?: string };
+
+export type PmsInboxDeliveryMediaPort = {
+  read(input: {
+    bucketName: string;
+    storageKey: string;
+    expectedSizeBytes: number;
+    expectedChecksumSha256: string;
+  }): Promise<Uint8Array>;
+};
 
 export type PmsInboxDeliveryCompletion =
   | { outcome: "accepted"; attemptId: string; providerReference: string }

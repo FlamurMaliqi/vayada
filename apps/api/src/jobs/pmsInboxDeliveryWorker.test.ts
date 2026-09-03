@@ -61,7 +61,7 @@ describe("PMS Inbox delivery worker", () => {
   });
 
   it("holds route denial and ambiguous provider outcomes without retrying", async () => {
-    const denied = storeWithPreparation({ ok: false, failure: "access_unavailable" });
+    const denied = storeWithPreparation({ state: "blocked", failure: "access_unavailable" });
     await runPmsInboxDeliveryJobs(denied, {});
     expect(completion(denied)).toMatchObject({
       attemptId: null,
@@ -105,7 +105,7 @@ describe("PMS Inbox delivery worker", () => {
 function readyStore(overrides: Partial<PmsInboxDeliveryJob> = {}): PmsInboxDeliveryStore {
   return storeWithPreparation(
     {
-      ok: true,
+      state: "ready",
       adapter: "channex",
       attemptId: "attempt-1",
       input: {

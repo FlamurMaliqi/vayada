@@ -3,7 +3,10 @@ import type { QueryResultRow } from "pg";
 import {
   PMS_INBOX_DELIVERY_JOB_TYPE,
   PMS_INBOX_DELIVERY_QUEUE,
+  pmsInboxProviderIdempotencyReference,
+  type PmsInboxDeliveryMediaPort,
   type PmsInboxDeliveryJob,
+  type PmsInboxPreparedDelivery,
 } from "../domains/pmsInboxDelivery.js";
 
 export type PmsInboxDeliveryQueryable = {
@@ -63,4 +66,270 @@ export async function claimPmsInboxDeliveryJob(
     [job.id, job.attemptNumber, workerId],
   );
   return job;
+}
+
+type DeliveryRow = {
+  body: string;
+  deliveryState: string;
+  deliveryChannel: "ota" | "email";
+  source: string;
+  sourceThreadId: string;
+  providerChannel: string | null;
+  conversationContextState: string;
+  bookingChannel: string | null;
+  guestEmail: string | null;
+  accessReady: boolean;
+  channexReady: boolean;
+  currentAttemptId: string | null;
+  currentAttemptOutcome: string | null;
+  currentProviderReference: string | null;
+};
+
+type AttachmentRow = {
+  filename: string | null;
+  contentType: string | null;
+  sizeBytes: string | number | null;
+  bucketName: string | null;
+  storageKey: string | null;
+  checksumSha256: string | null;
+  mediaReady: boolean;
+};
+
+const ALLOWED_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/heic",
+  "image/heif",
+  "application/pdf",
+]);
+
+export async function preparePmsInboxDeliveryJob(
+  client: PmsInboxDeliveryQueryable,
+  job: PmsInboxDeliveryJob,
+  options: { emailEnabled: boolean; media: PmsInboxDeliveryMediaPort },
+): Promise<PmsInboxPreparedDelivery> {
+  const lease = await client.query(
+    `SELECT 1 FROM platform.jobs
+     WHERE id = $1::uuid AND status = 'running' AND locked_by = $2
+       AND attempts_count = $3
+     FOR UPDATE`,
+    [job.id, job.workerId, job.attemptNumber],
+  );
+  if (!lease.rows[0]) throw new Error("PMS Inbox delivery job lease was lost");
+
+  const result = await client.query<DeliveryRow>(
+    `SELECT message.body, message.delivery_state AS "deliveryState",
+            message.delivery_channel AS "deliveryChannel", thread.source,
+            thread.source_thread_id AS "sourceThreadId",
+            thread.provider_channel AS "providerChannel",
+            thread.conversation_context_state AS "conversationContextState",
+            booking.booking_channel AS "bookingChannel",
+            COALESCE(NULLIF(BTRIM(thread.guest_email), ''), guest.email) AS "guestEmail",
+            property.lifecycle_status = 'active' AND EXISTS (
+              SELECT 1 FROM identity.organization_resource_links link
+              JOIN identity.organizations organization ON organization.id = link.organization_id
+              JOIN identity.product_entitlements entitlement
+                ON entitlement.organization_id = organization.id AND entitlement.product = 'pms'
+               AND entitlement.entitlement_key = 'property-management'
+               AND entitlement.status = 'active'
+               AND (entitlement.starts_at IS NULL OR entitlement.starts_at <= now())
+               AND (entitlement.expires_at IS NULL OR entitlement.expires_at > now())
+               AND (entitlement.resource_product IS NULL OR (
+                 entitlement.resource_product = 'pms'
+                 AND entitlement.resource_type = 'pms_property'
+                 AND entitlement.resource_id = message.property_id::text
+               ))
+              WHERE link.product = 'pms' AND link.resource_type = 'pms_property'
+                AND link.resource_id = message.property_id::text AND link.status = 'active'
+                AND link.relationship IN ('owner', 'operator', 'front_desk')
+                AND organization.status = 'active'
+                AND NOT EXISTS (
+                  SELECT 1 FROM identity.product_entitlements suspended
+                  WHERE suspended.organization_id = organization.id
+                    AND suspended.product = 'pms'
+                    AND suspended.entitlement_key = 'property-management'
+                    AND suspended.status = 'suspended'
+                    AND (suspended.resource_product IS NULL OR (
+                      suspended.resource_product = 'pms'
+                      AND suspended.resource_type = 'pms_property'
+                      AND suspended.resource_id = message.property_id::text
+                    ))
+                    AND (suspended.starts_at IS NULL OR suspended.starts_at <= now())
+                    AND (suspended.expires_at IS NULL OR suspended.expires_at > now())
+                )
+            ) AS "accessReady",
+            EXISTS (
+              SELECT 1 FROM pms.channel_connections connection
+              WHERE connection.property_id = message.property_id
+                AND connection.provider = 'channex'
+                AND connection.connection_status IN ('connected', 'degraded')
+                AND connection.messaging_app_installed
+            ) AS "channexReady",
+            attempt.id::text AS "currentAttemptId", attempt.outcome AS "currentAttemptOutcome",
+            attempt.provider_reference AS "currentProviderReference"
+     FROM pms.messages message
+     JOIN hotel_catalog.properties property ON property.id = message.property_id
+     JOIN pms.message_threads thread
+       ON thread.id = message.thread_id AND thread.property_id = message.property_id
+     LEFT JOIN booking.guest_bookings booking
+       ON booking.id = thread.guest_booking_id AND booking.property_id = thread.property_id
+     LEFT JOIN LATERAL (
+       SELECT NULLIF(BTRIM(booking_guest.email), '') AS email
+       FROM booking.booking_guests booking_guest
+       WHERE booking_guest.guest_booking_id = booking.id
+       ORDER BY CASE booking_guest.guest_role WHEN 'booker' THEN 0
+                    WHEN 'primary_guest' THEN 1 ELSE 2 END,
+                booking_guest.created_at, booking_guest.id LIMIT 1
+     ) guest ON TRUE
+     LEFT JOIN pms.message_delivery_attempts attempt
+       ON attempt.id = message.current_delivery_attempt_id
+      AND attempt.message_id = message.id AND attempt.property_id = message.property_id
+     WHERE message.id = $1::uuid AND message.property_id = $2::uuid
+       AND message.direction = 'outbound'
+     FOR UPDATE OF message, thread`,
+    [job.messageId, job.propertyId],
+  );
+  const row = result.rows[0];
+  if (!row) return { state: "blocked", failure: "resource_deleted" };
+  if (
+    row.deliveryState === "sent" &&
+    row.currentAttemptId &&
+    row.currentAttemptOutcome === "accepted" &&
+    row.currentProviderReference
+  )
+    return {
+      state: "accepted",
+      attemptId: row.currentAttemptId,
+      providerReference: row.currentProviderReference,
+    };
+  if (row.currentAttemptId && row.currentAttemptOutcome === "running")
+    return {
+      state: "blocked",
+      failure: "ambiguous_provider_outcome",
+      attemptId: row.currentAttemptId,
+    };
+  if (!row.accessReady) return { state: "blocked", failure: "access_unavailable" };
+  const adapter = routeAdapter(row, options.emailEnabled);
+  if (!adapter) return { state: "blocked", failure: "provider_configuration_unavailable" };
+  let attachments: Awaited<ReturnType<typeof loadAttachments>>;
+  try {
+    attachments = await loadAttachments(client, job, row, options.media);
+  } catch {
+    return { state: "blocked", failure: "transient_provider_failure" };
+  }
+  if (!attachments) return { state: "blocked", failure: "invalid_delivery_payload" };
+  const attempt = await client.query<{ id: string }>(
+    `INSERT INTO pms.message_delivery_attempts
+       (property_id, message_id, attempt_number, resolved_channel, adapter,
+        outcome, scheduled_at, started_at)
+     VALUES ($1::uuid, $2::uuid, $3, $4, $5, 'running', now(), now())
+     RETURNING id::text AS id`,
+    [job.propertyId, job.messageId, job.attemptNumber, row.deliveryChannel, adapter],
+  );
+  const attemptId = attempt.rows[0]?.id;
+  if (!attemptId) throw new Error("PMS Inbox delivery attempt was not created");
+  const projected = await client.query(
+    `UPDATE pms.messages SET current_delivery_attempt_id = $3::uuid
+     WHERE id = $1::uuid AND property_id = $2::uuid
+       AND delivery_state IN ('queued', 'retrying')`,
+    [job.messageId, job.propertyId, attemptId],
+  );
+  if (projected.rowCount !== 1)
+    throw new Error("PMS Inbox delivery attempt was not projected onto its message");
+  return {
+    state: "ready",
+    adapter,
+    attemptId,
+    input: {
+      messageId: job.messageId,
+      providerIdempotencyReference: pmsInboxProviderIdempotencyReference(job.messageId),
+      channel: row.deliveryChannel,
+      providerConversationId: adapter === "channex" ? row.sourceThreadId : null,
+      recipientEmail: adapter === "resend" ? row.guestEmail?.trim() || null : null,
+      subject: "A message from your accommodation",
+      text: row.body,
+      attachments,
+    },
+  };
+}
+
+function routeAdapter(row: DeliveryRow, emailEnabled: boolean): "channex" | "resend" | null {
+  if (!["queued", "retrying"].includes(row.deliveryState)) return null;
+  if (row.deliveryChannel === "ota")
+    return row.source === "channex" &&
+      row.sourceThreadId.trim() &&
+      row.providerChannel?.trim() &&
+      row.conversationContextState !== "inquiry" &&
+      row.channexReady
+      ? "channex"
+      : null;
+  return row.source === "manual" &&
+    row.bookingChannel === "direct" &&
+    Boolean(row.guestEmail?.trim()) &&
+    emailEnabled
+    ? "resend"
+    : null;
+}
+
+async function loadAttachments(
+  client: PmsInboxDeliveryQueryable,
+  job: PmsInboxDeliveryJob,
+  delivery: DeliveryRow,
+  media: PmsInboxDeliveryMediaPort,
+) {
+  const result = await client.query<AttachmentRow>(
+    `SELECT attachment.filename, lower(attachment.content_type) AS "contentType",
+            attachment.size_bytes::text AS "sizeBytes", object.bucket AS "bucketName",
+            object.storage_key AS "storageKey", object.checksum_sha256 AS "checksumSha256",
+            COALESCE(object.visibility = 'private' AND object.storage_kind = 'vayada_managed'
+              AND object.lifecycle_status = 'active' AND object.deleted_at IS NULL
+              AND object.property_id = attachment.property_id
+              AND object.resource_product = 'pms' AND object.resource_type = 'message_thread', FALSE)
+              AS "mediaReady"
+     FROM pms.message_attachments attachment
+     LEFT JOIN platform.media_objects object ON object.id = attachment.platform_media_object_id
+     WHERE attachment.message_id = $1::uuid AND attachment.property_id = $2::uuid
+     ORDER BY attachment.created_at, attachment.id`,
+    [job.messageId, job.propertyId],
+  );
+  const limit =
+    delivery.deliveryChannel === "ota" ? providerLimit(delivery.providerChannel) : 25 * 1024 * 1024;
+  if (result.rows.length > 10) return null;
+  const contents = [];
+  for (const row of result.rows) {
+    const size = Number(row.sizeBytes);
+    if (
+      !row.mediaReady ||
+      !row.filename?.trim() ||
+      !row.contentType ||
+      !ALLOWED_TYPES.has(row.contentType) ||
+      !Number.isSafeInteger(size) ||
+      size < 1 ||
+      size > limit ||
+      !row.bucketName ||
+      !row.storageKey?.startsWith("private/") ||
+      !row.checksumSha256?.match(/^[0-9a-f]{64}$/)
+    )
+      return null;
+    const bytes = await media.read({
+      bucketName: row.bucketName,
+      storageKey: row.storageKey,
+      expectedSizeBytes: size,
+      expectedChecksumSha256: row.checksumSha256,
+    });
+    if (bytes.byteLength !== size) return null;
+    contents.push({ filename: row.filename.trim(), contentType: row.contentType, bytes });
+  }
+  return contents;
+}
+
+function providerLimit(channel: string | null): number {
+  const normalized = channel?.trim().toLowerCase();
+  if (["booking.com", "booking_com", "bookingcom"].includes(normalized ?? ""))
+    return 8 * 1024 * 1024;
+  if (["expedia", "expedia.com", "expedia_com", "expediacom"].includes(normalized ?? ""))
+    return 10 * 1024 * 1024;
+  return 25 * 1024 * 1024;
 }
