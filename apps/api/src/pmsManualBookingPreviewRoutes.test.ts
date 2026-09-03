@@ -32,6 +32,7 @@ type State = {
   stalePlan?: boolean;
   staleAdditionalBinding?: boolean;
   missingSeasonBinding?: boolean;
+  unboundedOccupancy?: boolean;
   childCountPolicy?: "adult_only" | "all";
   stalePolicy?: boolean;
 };
@@ -95,6 +96,25 @@ describe("target manual-booking preview", () => {
       currency: "EUR",
     });
     expect(response.json().grandTotal).toEqual({ amountDecimal: "699.00", currency: "EUR" });
+  });
+
+  it("uses total occupancy when optional adult and child limits are unset", async () => {
+    app = await testApp({ reads: [], unboundedOccupancy: true });
+    const body = command();
+    body.stays = [
+      {
+        ...body.stays[1],
+        position: 1,
+        adults: 1,
+        children: 1,
+      },
+    ];
+    body.addOns = [];
+
+    const response = await request(app, body);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().grandTotal).toEqual({ amountDecimal: "160.00", currency: "EUR" });
   });
 
   // prettier-ignore
@@ -305,7 +325,7 @@ function ports(state: State): PmsManualBookingPreviewRoutesOptions {
   const ports: PmsManualBookingPreviewRoutesOptions = {
     pms: {
       async listRoomsByPropertyId() { read("rooms"); return { items: roomIds.map((roomId) => ({ roomId, roomTypeId })) } as any; },
-      async listRoomTypesByPropertyId() { read("types"); return { items: [{ roomTypeId, active: true, occupancyLimits: { adults: 4, children: 4, total: 4 }, ratePlans: [{ ratePlanId: legacyPlanId, pricingContractVersion: null, active: true }, { ratePlanId: planId, pricingContractVersion: "pms-pricing.v1", active: !state.inactivePlan }] }] } as any; },
+      async listRoomTypesByPropertyId() { read("types"); return { items: [{ roomTypeId, active: true, occupancyLimits: state.unboundedOccupancy ? { total: 4 } : { adults: 4, children: 4, total: 4 }, ratePlans: [{ ratePlanId: legacyPlanId, pricingContractVersion: null, active: true }, { ratePlanId: planId, pricingContractVersion: "pms-pricing.v1", active: !state.inactivePlan }] }] } as any; },
       async getPhysicalRoomAvailability(_propertyId, stays) { read("available"); return stays.map((_, index) => state.unavailable || (state.capacityUnavailable && index === 1) ? false : true); },
     },
     pricing: {

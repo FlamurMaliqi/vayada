@@ -105,10 +105,11 @@ export async function calculateManualBookingPreview(
     const roomType = roomTypes.items.find((item) => item.roomTypeId === room.roomTypeId);
     if (!roomType?.active) fail(404, "room_not_found", "roomId", stay.position);
     const limits = roomType.occupancyLimits;
+    const totalLimit = limits.total ?? 0;
     if (
-      stay.adults > (limits.adults ?? 0) ||
-      stay.children > (limits.children ?? 0) ||
-      stay.adults + stay.children > (limits.total ?? 0)
+      stay.adults > (limits.adults ?? totalLimit) ||
+      stay.children > (limits.children ?? totalLimit) ||
+      stay.adults + stay.children > totalLimit
     )
       fail(422, "occupancy_exceeded", "stays", stay.position);
     let standards: bigint[] | null = null;
