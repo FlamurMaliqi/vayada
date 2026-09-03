@@ -10,9 +10,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Vayada - Direct distribution for independent hotels",
+  title: "Vayada - Direct growth for hotels and travel creators",
   description:
-    "Booking engine, PMS, creator network and AI distribution intelligence, built for independent hospitality.",
+    "Booking Engine, PMS and Creator Marketplace for independent hotels and travel creators.",
   icons: {
     icon: [
       { url: "/vayada-logo.png" },
