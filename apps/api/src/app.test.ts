@@ -113,6 +113,7 @@ import type {
   PmsInboxMarkReadPort,
   PmsInboxReadPort,
   PmsInboxReplyPort,
+  PmsInboxStaffCommandPort,
   PmsInboxThreadSummary,
   PmsInboxTriagePort,
 } from "./domains/pmsInbox.js";
@@ -2672,6 +2673,7 @@ function buildAuthenticatedApp(
     pmsInboxMarkReadPort?: PmsInboxMarkReadPort;
     pmsInboxReplyPort?: PmsInboxReplyPort;
     pmsInboxTriagePort?: PmsInboxTriagePort;
+    pmsInboxStaffCommandPort?: PmsInboxStaffCommandPort;
     pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
     pmsOperationsCommandRepository?: PmsOperationsCommandRepository;
     bookingAcceptanceSettings?: BookingAcceptanceSettingsPort;
@@ -2720,6 +2722,7 @@ function buildAuthenticatedApp(
     pmsInboxMarkReadPort: options.pmsInboxMarkReadPort,
     pmsInboxReplyPort: options.pmsInboxReplyPort,
     pmsInboxTriagePort: options.pmsInboxTriagePort,
+    pmsInboxStaffCommandPort: options.pmsInboxStaffCommandPort,
     bookingAcceptanceSettings: options.bookingAcceptanceSettings,
     sameDayBookingSettings: options.sameDayBookingSettings,
     pmsRoomAssignmentSettings: options.pmsRoomAssignmentSettings,
@@ -13331,6 +13334,268 @@ describe("vayada-api", () => {
         payload: "{",
       });
       expect(response.statusCode, candidate.name).toBe(candidate.statusCode);
+      await app.close();
+      app = null;
+    }
+    expect(dispatches).toHaveLength(0);
+  });
+
+  it("accepts protected Inbox assignment and internal-note commands", async () => {
+    const assignee = "13733000-0000-4000-8000-000000000001";
+    const noteId = "13733000-0000-4000-8000-000000000002";
+    const assignments: Parameters<PmsInboxStaffCommandPort["assign"]>[0][] = [];
+    const notes: Parameters<PmsInboxStaffCommandPort["addNote"]>[0][] = [];
+    const close = vi.fn(async () => undefined);
+    const failures = (key: string) => {
+      if (key === "missing")
+        return {
+          ok: false as const,
+          error: { code: "thread_not_found" as const, message: "Missing." },
+        };
+      if (key === "version")
+        return {
+          ok: false as const,
+          error: {
+            code: "thread_version_conflict" as const,
+            message: "Changed.",
+            currentVersion: 9,
+          },
+        };
+      if (key === "conflict")
+        return {
+          ok: false as const,
+          error: { code: "idempotency_conflict" as const, message: "Conflict." },
+        };
+      if (key === "ineligible")
+        return {
+          ok: false as const,
+          error: { code: "validation_failed" as const, message: "Assignee unavailable." },
+        };
+      return null;
+    };
+    const port: PmsInboxStaffCommandPort = {
+      async assign(input) {
+        assignments.push(input);
+        const failed = failures(input.idempotencyKey);
+        if (failed) return failed;
+        return Object.assign(
+          {
+            ok: true as const,
+            value: {
+              propertyId: input.propertyId,
+              threadId: input.idempotencyKey === "bad-result" ? "foreign-thread" : input.threadId,
+              assignedTo:
+                input.assigneeMembershipId === null
+                  ? null
+                  : Object.assign(
+                      { membershipId: input.assigneeMembershipId, displayName: "Night Manager" },
+                      { propertyAccessMode: "assigned" },
+                    ),
+              threadVersion: input.expectedThreadVersion + 1,
+            },
+          },
+          { internalScope: "must-not-leak" },
+        );
+      },
+      async addNote(input) {
+        notes.push(input);
+        const failed = failures(input.idempotencyKey);
+        if (failed) return failed;
+        return Object.assign(
+          {
+            ok: true as const,
+            value: {
+              propertyId: input.propertyId,
+              threadId: input.idempotencyKey === "bad-result" ? "foreign-thread" : input.threadId,
+              note: Object.assign(
+                {
+                  id: noteId,
+                  author: Object.assign(
+                    {
+                      membershipId: input.actorMembershipId,
+                      displayName: "Hotel Owner",
+                    },
+                    { email: "private@example.test" },
+                  ),
+                  text: input.text,
+                  occurredAt: "2026-09-03T09:00:00.000Z",
+                },
+                { providerPayload: "must-not-leak" },
+              ),
+              threadVersion: input.expectedThreadVersion + 1,
+            },
+          },
+          { internalScope: "must-not-leak" },
+        );
+      },
+      close,
+    };
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read", "pms.inbox.reply"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsInboxStaffCommandPort: port,
+      pmsOperationsAllowedOrigins: ["https://pms.localhost"],
+    });
+    const base = `/api/pms/properties/${pmsPropertyId}/messaging/threads/thread_1`;
+    const post = (path: "assignment" | "notes", key: string, payload: unknown) =>
+      injectJson(app!, {
+        method: "POST",
+        url: `${base}/${path}`,
+        headers: { authorization: "Bearer valid-token", "idempotency-key": key },
+        payload: payload as never,
+      });
+
+    for (const path of ["assignment", "notes"] as const)
+      await expect(
+        app.inject({
+          method: "OPTIONS",
+          url: `${base}/${path}`,
+          headers: { origin: "https://pms.localhost" },
+        }),
+      ).resolves.toMatchObject({ statusCode: 204 });
+    const assigned = await post("assignment", "assign", {
+      expectedThreadVersion: 4,
+      assigneeMembershipId: assignee,
+    });
+    expect(assigned).toMatchObject({
+      statusCode: 200,
+      body: {
+        contractVersion: "native-guest-inbox.v2",
+        assignedTo: { membershipId: assignee, displayName: "Night Manager" },
+        threadVersion: 5,
+      },
+    });
+    expect(assigned.body).toEqual({
+      contractVersion: "native-guest-inbox.v2",
+      propertyId: pmsPropertyId,
+      threadId: "thread_1",
+      assignedTo: { membershipId: assignee, displayName: "Night Manager" },
+      threadVersion: 5,
+    });
+    await expect(
+      post("assignment", "clear", { expectedThreadVersion: 5, assigneeMembershipId: null }),
+    ).resolves.toMatchObject({ statusCode: 200, body: { assignedTo: null, threadVersion: 6 } });
+    const noted = await post("notes", "note", {
+      expectedThreadVersion: 6,
+      text: "  Prepare late arrival.  ",
+    });
+    expect(noted).toMatchObject({
+      statusCode: 201,
+      body: {
+        note: {
+          id: noteId,
+          author: { membershipId: "membership_hotel_owner", displayName: "Hotel Owner" },
+          text: "Prepare late arrival.",
+        },
+        threadVersion: 7,
+      },
+    });
+    expect(noted.body).toEqual({
+      contractVersion: "native-guest-inbox.v2",
+      propertyId: pmsPropertyId,
+      threadId: "thread_1",
+      note: {
+        id: noteId,
+        author: { membershipId: "membership_hotel_owner", displayName: "Hotel Owner" },
+        text: "Prepare late arrival.",
+        occurredAt: "2026-09-03T09:00:00.000Z",
+      },
+      threadVersion: 7,
+    });
+    for (const [key, statusCode, code] of [
+      ["missing", 404, "thread_not_found"],
+      ["version", 409, "thread_version_conflict"],
+      ["conflict", 409, "idempotency_conflict"],
+      ["ineligible", 400, "validation_failed"],
+    ] as const)
+      await expect(
+        post("assignment", key, { expectedThreadVersion: 4, assigneeMembershipId: assignee }),
+      ).resolves.toMatchObject({ statusCode, body: { code } });
+    await expect(
+      post("notes", "bad-result", { expectedThreadVersion: 4, text: "Internal" }),
+    ).resolves.toMatchObject({ statusCode: 500, body: { code: "read_model_unavailable" } });
+
+    const dispatchCount = assignments.length + notes.length;
+    for (const request of [
+      post("assignment", "bad", { expectedThreadVersion: 4 }),
+      post("assignment", "bad", { expectedThreadVersion: 4, assigneeMembershipId: "invalid" }),
+      post("notes", "bad", { expectedThreadVersion: 0, text: "Note" }),
+      post("notes", "bad", { expectedThreadVersion: 4, text: " " }),
+      post("notes", "bad", { expectedThreadVersion: 4, text: "Note", extra: true }),
+    ])
+      await expect(request).resolves.toMatchObject({
+        statusCode: 400,
+        body: { code: "validation_failed" },
+      });
+    expect(assignments.length + notes.length).toBe(dispatchCount);
+    expect(assignments[0]).toMatchObject({
+      propertyId: pmsPropertyId,
+      threadId: "thread_1",
+      organizationId: "org_hotel_group",
+      actorUserId: "user_hotel_owner",
+      actorMembershipId: "membership_hotel_owner",
+      assigneeMembershipId: assignee,
+      expectedThreadVersion: 4,
+      idempotencyKey: "assign",
+      audit: { requestId: expect.any(String), correlationId: expect.any(String) },
+    });
+    expect(notes[0]).toMatchObject({ text: "Prepare late arrival.", expectedThreadVersion: 6 });
+    await app.close();
+    app = null;
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("authorizes Inbox staff commands before parsing content or idempotency", async () => {
+    const dispatches: unknown[] = [];
+    const port: PmsInboxStaffCommandPort = {
+      async assign(input) {
+        dispatches.push(input);
+        throw new Error("must not dispatch");
+      },
+      async addNote(input) {
+        dispatches.push(input);
+        throw new Error("must not dispatch");
+      },
+    };
+    const entitlement: ProductEntitlement = {
+      product: "pms",
+      key: "property-management",
+      status: "active",
+    };
+    const cases = [
+      { name: "missing auth", permissions: ["pms.inbox.read", "pms.inbox.reply"], status: 401 },
+      { name: "missing read", permissions: ["pms.inbox.reply"], status: 403 },
+      { name: "missing reply", permissions: ["pms.inbox.read"], status: 403 },
+      {
+        name: "missing entitlement",
+        permissions: ["pms.inbox.read", "pms.inbox.reply"],
+        entitlements: [] as ProductEntitlement[],
+        status: 403,
+      },
+      {
+        name: "wrong property",
+        permissions: ["pms.inbox.read", "pms.inbox.reply"],
+        propertyId: "f6853000-0000-0000-0000-000000000099",
+        status: 403,
+      },
+    ] as const;
+    for (const [index, candidate] of cases.entries()) {
+      app = buildAuthenticatedApp({
+        permissions: [...candidate.permissions] as PermissionKey[],
+        entitlements: "entitlements" in candidate ? [...candidate.entitlements] : [entitlement],
+        pmsInboxStaffCommandPort: port,
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/pms/properties/${"propertyId" in candidate ? candidate.propertyId : pmsPropertyId}/messaging/threads/thread_1/${index % 2 ? "notes" : "assignment"}`,
+        headers: {
+          ...(candidate.name === "missing auth" ? {} : { authorization: "Bearer valid-token" }),
+          "content-type": "application/json",
+          "idempotency-key": "private-key",
+        },
+        payload: "{",
+      });
+      expect(response.statusCode, candidate.name).toBe(candidate.status);
       await app.close();
       app = null;
     }
