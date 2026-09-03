@@ -288,6 +288,97 @@ export type PmsInboxStaffCommandPort = {
   close?(): Promise<void>;
 };
 
+export type PmsInboxQuickReply = {
+  propertyId: string;
+  id: string;
+  name: string;
+  text: string;
+  approvedVariables: readonly string[];
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PmsInboxQuickReplyError = {
+  code:
+    | "validation_failed"
+    | "quick_reply_not_found"
+    | "quick_reply_version_conflict"
+    | "quick_reply_name_conflict"
+    | "thread_not_found"
+    | "idempotency_conflict";
+  message: string;
+  currentVersion?: number;
+};
+
+type PmsInboxQuickReplyActor = {
+  propertyId: string;
+  organizationId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  audit: { requestId: string; correlationId: string; requestedAt: string };
+};
+
+type PmsInboxQuickReplyMutation = PmsInboxQuickReplyActor & { idempotencyKey: string };
+
+export type PmsInboxQuickReplyPort = {
+  list(input: { propertyId: string }): Promise<readonly PmsInboxQuickReply[]>;
+  create(
+    input: PmsInboxQuickReplyMutation & {
+      name: string;
+      text: string;
+      approvedVariables: readonly string[];
+    },
+  ): Promise<
+    | { ok: true; value: { propertyId: string; quickReply: PmsInboxQuickReply } }
+    | { ok: false; error: PmsInboxQuickReplyError }
+  >;
+  update(
+    input: PmsInboxQuickReplyMutation & {
+      quickReplyId: string;
+      expectedVersion: number;
+      name: string;
+      text: string;
+      approvedVariables: readonly string[];
+    },
+  ): Promise<
+    | { ok: true; value: { propertyId: string; quickReply: PmsInboxQuickReply } }
+    | { ok: false; error: PmsInboxQuickReplyError }
+  >;
+  archive(
+    input: PmsInboxQuickReplyMutation & {
+      quickReplyId: string;
+      expectedVersion: number;
+    },
+  ): Promise<
+    | {
+        ok: true;
+        value: {
+          propertyId: string;
+          quickReplyId: string;
+          version: number;
+          archivedAt: string;
+        };
+      }
+    | { ok: false; error: PmsInboxQuickReplyError }
+  >;
+  preview(input: PmsInboxQuickReplyMutation & { quickReplyId: string; threadId: string }): Promise<
+    | {
+        ok: true;
+        value: {
+          propertyId: string;
+          quickReplyId: string;
+          threadId: string;
+          renderedText: string;
+          unresolvedVariables: readonly string[];
+          composerUseAllowed: boolean;
+        };
+      }
+    | { ok: false; error: PmsInboxQuickReplyError }
+  >;
+  close?(): Promise<void>;
+};
+
 export type PmsInboxReplyError = {
   code:
     | "validation_failed"

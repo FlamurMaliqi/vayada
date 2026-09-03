@@ -40,6 +40,9 @@ import {
   NATIVE_GUEST_INBOX_CONTRACT_VERSION,
   type PmsInboxMarkReadPort,
   type PmsInboxMessage,
+  type PmsInboxQuickReply,
+  type PmsInboxQuickReplyError,
+  type PmsInboxQuickReplyPort,
   type PmsInboxReadError,
   type PmsInboxReadPort,
   type PmsInboxReplyPort,
@@ -1019,6 +1022,7 @@ export type PmsOperationsRoutesOptions = {
   roomAssignmentHistory?: PmsRoomAssignmentOptimizationHistoryPort;
   inboxReadPort?: PmsInboxReadPort;
   inboxMarkReadPort?: PmsInboxMarkReadPort;
+  inboxQuickReplyPort?: PmsInboxQuickReplyPort;
   inboxReplyPort?: PmsInboxReplyPort;
   inboxTriagePort?: PmsInboxTriagePort;
   inboxStaffCommandPort?: PmsInboxStaffCommandPort;
@@ -1029,6 +1033,7 @@ type PmsPropertyParams = {
 };
 
 type PmsInboxThreadParams = PmsPropertyParams & { threadId: string };
+type PmsInboxQuickReplyParams = PmsPropertyParams & { quickReplyId: string };
 
 type PmsRoomTypeParams = PmsPropertyParams & {
   roomTypeId: string;
@@ -1158,6 +1163,9 @@ export type PmsOperationsErrorCode =
   | "room_type_not_found"
   | "thread_not_found"
   | "thread_version_conflict"
+  | "quick_reply_not_found"
+  | "quick_reply_version_conflict"
+  | "quick_reply_name_conflict"
   | "attachment_not_found"
   | "attachment_too_large"
   | "unsupported_attachment_type"
@@ -1202,6 +1210,7 @@ export async function registerPmsOperationsRoutes(
     await options.roomAssignmentHistory?.close?.();
     await options.inboxReadPort?.close?.();
     await options.inboxMarkReadPort?.close?.();
+    await options.inboxQuickReplyPort?.close?.();
     await options.inboxReplyPort?.close?.();
     await options.inboxTriagePort?.close?.();
     await options.inboxStaffCommandPort?.close?.();
@@ -1238,6 +1247,10 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/messaging/threads/:threadId/reopen",
     "/properties/:propertyId/messaging/threads/:threadId/assignment",
     "/properties/:propertyId/messaging/threads/:threadId/notes",
+    "/properties/:propertyId/messaging/quick-replies",
+    "/properties/:propertyId/messaging/quick-replies/:quickReplyId/update",
+    "/properties/:propertyId/messaging/quick-replies/:quickReplyId/archive",
+    "/properties/:propertyId/messaging/quick-replies/:quickReplyId/preview",
     "/properties/:propertyId/reservations",
     "/properties/:propertyId/reservations/:guestBookingId",
     "/properties/:propertyId/reservations/:guestBookingId/notes",
@@ -2241,6 +2254,193 @@ export async function registerPmsOperationsRoutes(
         };
       } catch {
         request.log.error("PMS Inbox thread detail failed");
+        return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
+      }
+    },
+  );
+
+  app.get<{ Params: PmsPropertyParams }>(
+    "/properties/:propertyId/messaging/quick-replies",
+    { onRequest: inboxStaffCommandAuthorization(options) },
+    async (request, reply) => {
+      const { propertyId } = request.params;
+      if (!options.inboxQuickReplyPort)
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS Inbox quick replies are unavailable."),
+        );
+      try {
+        const items = await options.inboxQuickReplyPort.list({ propertyId });
+        if (items.some((item) => !validInboxQuickReply(item, propertyId)))
+          throw new Error("Inbox quick-reply scope mismatch");
+        return {
+          contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION,
+          propertyId,
+          items: items.map(publicInboxQuickReply),
+        };
+      } catch {
+        request.log.error("PMS Inbox quick-reply list failed");
+        return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
+      }
+    },
+  );
+
+  app.post<{ Params: PmsPropertyParams; Body: unknown }>(
+    "/properties/:propertyId/messaging/quick-replies",
+    { onRequest: inboxStaffCommandAuthorization(options) },
+    async (request, reply) => {
+      const input = parseInboxQuickReplyCreate(request);
+      if ("error" in input) return sendPmsOperationsError(reply, input.error);
+      if (!options.inboxQuickReplyPort)
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS Inbox quick replies are unavailable."),
+        );
+      const { propertyId } = request.params;
+      const context = request.authContext!;
+      try {
+        const result = await options.inboxQuickReplyPort.create({
+          propertyId,
+          ...inboxQuickReplyActor(context),
+          ...input.value,
+        });
+        if (!result.ok) return sendInboxQuickReplyError(reply, result.error);
+        if (
+          result.value.propertyId !== propertyId ||
+          !validInboxQuickReply(result.value.quickReply, propertyId) ||
+          result.value.quickReply.version !== 1
+        )
+          throw new Error("Inbox quick-reply create scope mismatch");
+        return reply.code(201).send({
+          contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION,
+          propertyId,
+          quickReply: publicInboxQuickReply(result.value.quickReply),
+        });
+      } catch {
+        request.log.error("PMS Inbox quick-reply create failed");
+        return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
+      }
+    },
+  );
+
+  app.post<{ Params: PmsInboxQuickReplyParams; Body: unknown }>(
+    "/properties/:propertyId/messaging/quick-replies/:quickReplyId/update",
+    { onRequest: inboxStaffCommandAuthorization(options) },
+    async (request, reply) => {
+      const input = parseInboxQuickReplyUpdate(request);
+      if ("error" in input) return sendPmsOperationsError(reply, input.error);
+      if (!options.inboxQuickReplyPort)
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS Inbox quick replies are unavailable."),
+        );
+      const { propertyId, quickReplyId } = request.params;
+      const context = request.authContext!;
+      try {
+        const result = await options.inboxQuickReplyPort.update({
+          propertyId,
+          quickReplyId,
+          ...inboxQuickReplyActor(context),
+          ...input.value,
+        });
+        if (!result.ok) return sendInboxQuickReplyError(reply, result.error);
+        if (
+          result.value.propertyId !== propertyId ||
+          result.value.quickReply.id !== quickReplyId ||
+          !validInboxQuickReply(result.value.quickReply, propertyId) ||
+          result.value.quickReply.version !== input.value.expectedVersion + 1
+        )
+          throw new Error("Inbox quick-reply update scope mismatch");
+        return {
+          contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION,
+          propertyId,
+          quickReply: publicInboxQuickReply(result.value.quickReply),
+        };
+      } catch {
+        request.log.error("PMS Inbox quick-reply update failed");
+        return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
+      }
+    },
+  );
+
+  app.post<{ Params: PmsInboxQuickReplyParams; Body: unknown }>(
+    "/properties/:propertyId/messaging/quick-replies/:quickReplyId/archive",
+    { onRequest: inboxStaffCommandAuthorization(options) },
+    async (request, reply) => {
+      const input = parseInboxQuickReplyVersionedCommand(request);
+      if ("error" in input) return sendPmsOperationsError(reply, input.error);
+      if (!options.inboxQuickReplyPort)
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS Inbox quick replies are unavailable."),
+        );
+      const { propertyId, quickReplyId } = request.params;
+      const context = request.authContext!;
+      try {
+        const result = await options.inboxQuickReplyPort.archive({
+          propertyId,
+          quickReplyId,
+          ...inboxQuickReplyActor(context),
+          ...input.value,
+        });
+        if (!result.ok) return sendInboxQuickReplyError(reply, result.error);
+        if (
+          result.value.propertyId !== propertyId ||
+          result.value.quickReplyId !== quickReplyId ||
+          result.value.version !== input.value.expectedVersion + 1 ||
+          !isCanonicalInboxInstant(result.value.archivedAt)
+        )
+          throw new Error("Inbox quick-reply archive scope mismatch");
+        return {
+          contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION,
+          propertyId: result.value.propertyId,
+          quickReplyId: result.value.quickReplyId,
+          version: result.value.version,
+          archivedAt: result.value.archivedAt,
+        };
+      } catch {
+        request.log.error("PMS Inbox quick-reply archive failed");
+        return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
+      }
+    },
+  );
+
+  app.post<{ Params: PmsInboxQuickReplyParams; Body: unknown }>(
+    "/properties/:propertyId/messaging/quick-replies/:quickReplyId/preview",
+    { onRequest: inboxStaffCommandAuthorization(options) },
+    async (request, reply) => {
+      const input = parseInboxQuickReplyPreview(request);
+      if ("error" in input) return sendPmsOperationsError(reply, input.error);
+      if (!options.inboxQuickReplyPort)
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS Inbox quick replies are unavailable."),
+        );
+      const { propertyId, quickReplyId } = request.params;
+      const context = request.authContext!;
+      try {
+        const result = await options.inboxQuickReplyPort.preview({
+          propertyId,
+          quickReplyId,
+          ...inboxQuickReplyActor(context),
+          ...input.value,
+        });
+        if (!result.ok) return sendInboxQuickReplyError(reply, result.error);
+        if (
+          !validInboxQuickReplyPreview(result.value, propertyId, quickReplyId, input.value.threadId)
+        )
+          throw new Error("Inbox quick-reply preview scope mismatch");
+        return {
+          contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION,
+          propertyId: result.value.propertyId,
+          quickReplyId: result.value.quickReplyId,
+          threadId: result.value.threadId,
+          renderedText: result.value.renderedText,
+          unresolvedVariables: result.value.unresolvedVariables,
+          composerUseAllowed: result.value.composerUseAllowed,
+        };
+      } catch {
+        request.log.error("PMS Inbox quick-reply preview failed");
         return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
       }
     },
@@ -5640,6 +5840,122 @@ function parseInboxInternalNote(
   return { value: { idempotencyKey, expectedThreadVersion, text } };
 }
 
+function parseInboxQuickReplyCreate(request: FastifyRequest<{ Body: unknown }>):
+  | {
+      value: {
+        idempotencyKey: string;
+        name: string;
+        text: string;
+        approvedVariables: string[];
+      };
+    }
+  | { error: PmsOperationsError } {
+  const body = objectBody(request.body);
+  const idempotencyKey = singleIdempotencyKey(request);
+  if (
+    !body ||
+    Object.keys(body).some((key) => !["name", "text", "approvedVariables"].includes(key)) ||
+    !Object.hasOwn(body, "name") ||
+    !Object.hasOwn(body, "text") ||
+    !idempotencyKey
+  )
+    return { error: invalidInboxQuickReply("Inbox quick reply is invalid.") };
+  const fields = normalizedInboxQuickReplyFields(body);
+  return fields
+    ? { value: { idempotencyKey, ...fields } }
+    : { error: invalidInboxQuickReply("Inbox quick reply is invalid.") };
+}
+
+function parseInboxQuickReplyUpdate(request: FastifyRequest<{ Body: unknown }>):
+  | {
+      value: {
+        idempotencyKey: string;
+        expectedVersion: number;
+        name: string;
+        text: string;
+        approvedVariables: string[];
+      };
+    }
+  | { error: PmsOperationsError } {
+  const body = objectBody(request.body);
+  const idempotencyKey = singleIdempotencyKey(request);
+  if (
+    !body ||
+    Object.keys(body).some(
+      (key) => !["expectedVersion", "name", "text", "approvedVariables"].includes(key),
+    ) ||
+    !Object.hasOwn(body, "expectedVersion") ||
+    !Object.hasOwn(body, "name") ||
+    !Object.hasOwn(body, "text") ||
+    !idempotencyKey ||
+    !validInboxVersion(body.expectedVersion)
+  )
+    return { error: invalidInboxQuickReply("Inbox quick-reply update is invalid.") };
+  const fields = normalizedInboxQuickReplyFields(body);
+  return fields
+    ? { value: { idempotencyKey, expectedVersion: body.expectedVersion as number, ...fields } }
+    : { error: invalidInboxQuickReply("Inbox quick-reply update is invalid.") };
+}
+
+function parseInboxQuickReplyVersionedCommand(
+  request: FastifyRequest<{ Body: unknown }>,
+): { value: { idempotencyKey: string; expectedVersion: number } } | { error: PmsOperationsError } {
+  const body = objectBody(request.body);
+  const idempotencyKey = singleIdempotencyKey(request);
+  if (
+    !body ||
+    Object.keys(body).length !== 1 ||
+    !idempotencyKey ||
+    !validInboxVersion(body.expectedVersion)
+  )
+    return { error: invalidInboxQuickReply("Inbox quick-reply archive is invalid.") };
+  return { value: { idempotencyKey, expectedVersion: body.expectedVersion as number } };
+}
+
+function parseInboxQuickReplyPreview(
+  request: FastifyRequest<{ Body: unknown }>,
+): { value: { idempotencyKey: string; threadId: string } } | { error: PmsOperationsError } {
+  const body = objectBody(request.body);
+  const idempotencyKey = singleIdempotencyKey(request);
+  if (
+    !body ||
+    Object.keys(body).length !== 1 ||
+    !idempotencyKey ||
+    typeof body.threadId !== "string" ||
+    !isUuid(body.threadId)
+  )
+    return { error: invalidInboxQuickReply("Inbox quick-reply preview is invalid.") };
+  return { value: { idempotencyKey, threadId: body.threadId } };
+}
+
+function normalizedInboxQuickReplyFields(
+  body: Record<string, unknown>,
+): { name: string; text: string; approvedVariables: string[] } | null {
+  const name = typeof body.name === "string" ? boundedText(body.name, 200) : undefined;
+  const text = typeof body.text === "string" ? boundedText(body.text, 20_000) : undefined;
+  const approvedVariables = body.approvedVariables ?? [];
+  if (
+    !name ||
+    !text ||
+    !Array.isArray(approvedVariables) ||
+    approvedVariables.length > 100 ||
+    approvedVariables.some(
+      (variable) => typeof variable !== "string" || !/^[a-z][a-z0-9_]{0,99}$/.test(variable),
+    ) ||
+    new Set(approvedVariables).size !== approvedVariables.length
+  )
+    return null;
+  return { name, text, approvedVariables: [...approvedVariables] as string[] };
+}
+
+function validInboxVersion(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+
+function invalidInboxQuickReply(message: string): PmsOperationsError {
+  return { statusCode: 400, code: "validation_failed", category: "validation", message };
+}
+
 function invalidInboxStaffCommand(message: string): PmsOperationsError {
   return { statusCode: 400, code: "validation_failed", category: "validation", message };
 }
@@ -5817,6 +6133,29 @@ function sendInboxStaffCommandError(
   });
 }
 
+function sendInboxQuickReplyError(
+  reply: FastifyReply,
+  error: PmsInboxQuickReplyError,
+): FastifyReply {
+  const statusCode =
+    error.code === "quick_reply_not_found" || error.code === "thread_not_found"
+      ? 404
+      : error.code === "quick_reply_version_conflict" ||
+          error.code === "quick_reply_name_conflict" ||
+          error.code === "idempotency_conflict"
+        ? 409
+        : 400;
+  return sendPmsOperationsError(reply, {
+    statusCode,
+    code: error.code,
+    category: statusCode === 404 ? "not_found" : statusCode === 409 ? "conflict" : "validation",
+    message: error.message,
+    ...(error.currentVersion === undefined
+      ? {}
+      : { details: { currentVersion: error.currentVersion } }),
+  });
+}
+
 function sendInboxReplyError(
   reply: FastifyReply,
   error: Extract<Awaited<ReturnType<PmsInboxReplyPort["reply"]>>, { ok: false }>["error"],
@@ -5913,11 +6252,55 @@ function validInboxInternalNoteResult(
   );
 }
 
+function publicInboxQuickReply(quickReply: PmsInboxQuickReply) {
+  return {
+    id: quickReply.id,
+    name: quickReply.name,
+    text: quickReply.text,
+    approvedVariables: quickReply.approvedVariables,
+    version: quickReply.version,
+    createdAt: quickReply.createdAt,
+    updatedAt: quickReply.updatedAt,
+  };
+}
+
+function validInboxQuickReply(quickReply: PmsInboxQuickReply, propertyId: string): boolean {
+  return (
+    quickReply.propertyId === propertyId &&
+    isUuid(quickReply.id) &&
+    Boolean(boundedText(quickReply.name, 200)) &&
+    Boolean(boundedText(quickReply.text, 20_000)) &&
+    Array.isArray(quickReply.approvedVariables) &&
+    quickReply.approvedVariables.length <= 100 &&
+    quickReply.approvedVariables.every((variable) => /^[a-z][a-z0-9_]{0,99}$/.test(variable)) &&
+    new Set(quickReply.approvedVariables).size === quickReply.approvedVariables.length &&
+    validInboxVersion(quickReply.version) &&
+    isCanonicalInboxInstant(quickReply.createdAt) &&
+    isCanonicalInboxInstant(quickReply.updatedAt)
+  );
+}
+
+function validInboxQuickReplyPreview(
+  value: Extract<Awaited<ReturnType<PmsInboxQuickReplyPort["preview"]>>, { ok: true }>["value"],
+  propertyId: string,
+  quickReplyId: string,
+  threadId: string,
+): boolean {
+  return (
+    value.propertyId === propertyId &&
+    value.quickReplyId === quickReplyId &&
+    value.threadId === threadId &&
+    typeof value.renderedText === "string" &&
+    value.renderedText.length <= 20_000 &&
+    Array.isArray(value.unresolvedVariables) &&
+    value.unresolvedVariables.every((variable) => /^[a-z][a-z0-9_]{0,99}$/.test(variable)) &&
+    new Set(value.unresolvedVariables).size === value.unresolvedVariables.length &&
+    value.composerUseAllowed === (value.unresolvedVariables.length === 0)
+  );
+}
+
 function inboxStaffCommandAuthorization(options: PmsOperationsRoutesOptions) {
-  return async (
-    request: FastifyRequest<{ Params: PmsInboxThreadParams }>,
-    reply: FastifyReply,
-  ): Promise<void> => {
+  return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     if (!writePmsOperationsCorsHeaders(request, reply, options.allowedOrigins ?? [])) {
       sendPmsOperationsError(reply, missingOriginPermission());
       return;
@@ -5925,7 +6308,7 @@ function inboxStaffCommandAuthorization(options: PmsOperationsRoutesOptions) {
     const context = await enforcePmsPropertyAccessPolicy(
       request,
       reply,
-      request.params.propertyId,
+      (request.params as PmsPropertyParams).propertyId,
       "pms.inbox.reply",
       options.propertyAccessRepository,
     );
@@ -5936,6 +6319,20 @@ function inboxStaffCommandAuthorization(options: PmsOperationsRoutesOptions) {
         category: "authorization",
         message: "Missing required PMS Inbox read permission.",
       });
+  };
+}
+
+function inboxQuickReplyActor(context: RequestContext): {
+  organizationId: string;
+  actorUserId: string;
+  actorMembershipId: string;
+  audit: { requestId: string; correlationId: string; requestedAt: string };
+} {
+  return {
+    organizationId: context.selectedOrganization.organizationId,
+    actorUserId: context.actor.internalUserId,
+    actorMembershipId: context.membership.membershipId,
+    audit: inboxCommandAudit(context),
   };
 }
 

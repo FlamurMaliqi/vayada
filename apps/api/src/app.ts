@@ -182,6 +182,7 @@ import { registerPlatformPropertyMediaRoutes } from "./routes/platform/admin/pro
 import { registerPmsOperationsRoutes } from "./routes/pmsOperations.js";
 import type {
   PmsInboxMarkReadPort,
+  PmsInboxQuickReplyPort,
   PmsInboxReadPort,
   PmsInboxReplyPort,
   PmsInboxStaffCommandPort,
@@ -258,6 +259,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   pmsOperationsRepository?: PmsOperationsReadRepository;
   pmsInboxReadPort?: PmsInboxReadPort;
   pmsInboxMarkReadPort?: PmsInboxMarkReadPort;
+  pmsInboxQuickReplyPort?: PmsInboxQuickReplyPort;
   pmsInboxReplyPort?: PmsInboxReplyPort;
   pmsInboxTriagePort?: PmsInboxTriagePort;
   pmsInboxStaffCommandPort?: PmsInboxStaffCommandPort;
@@ -682,6 +684,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       roomAssignmentHistory: options.pmsRoomAssignmentHistory,
       inboxReadPort: options.pmsInboxReadPort,
       inboxMarkReadPort: options.pmsInboxMarkReadPort,
+      inboxQuickReplyPort: options.pmsInboxQuickReplyPort,
       inboxReplyPort: options.pmsInboxReplyPort,
       inboxTriagePort: options.pmsInboxTriagePort,
       inboxStaffCommandPort: options.pmsInboxStaffCommandPort,
