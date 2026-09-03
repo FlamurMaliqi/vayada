@@ -11,6 +11,10 @@ const migration = await readFile(
   join(import.meta.dirname, "../migrations/0142_marketplace_matching_event_projections.sql"),
   "utf8",
 );
+const attributionMigration = await readFile(
+  join(import.meta.dirname, "../migrations/0143_marketplace_matching_impression_attribution.sql"),
+  "utf8",
+);
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const ids = {
   actor: "10000000-0000-4000-8000-000000000001",
@@ -20,9 +24,20 @@ const ids = {
   property: "40000000-0000-4000-8000-000000000001",
   offer: "50000000-0000-4000-8000-000000000001",
   collaboration: "60000000-0000-4000-8000-000000000001",
+  recommendedCollaboration: "60000000-0000-4000-8000-000000000002",
+  evaluation: "70000000-0000-4000-8000-000000000001",
 } as const;
 const occurredAt = "2026-09-03T00:00:00.000Z";
 const recordedAt = "2026-09-03T01:00:00.000Z";
+const recommended = {
+  attributionKind: "recommended",
+  policyVersion: "matching-policy.v1",
+  evaluationId: ids.evaluation,
+  impressionId: "a".repeat(64),
+  recommendationSessionId: "session-1",
+  surface: "creator_offer_discovery",
+  presentationMode: "ranked",
+} as const;
 
 describe("Marketplace matching event projection migration contract", () => {
   it("uses a normalized, privacy-safe projection with exact resource links", () => {
@@ -155,6 +170,102 @@ describe.skipIf(!TEST_DATABASE_URL)(
         await expect(client.query(statement)).rejects.toMatchObject({ code: "55000" });
     });
 
+    it("deduplicates qualified impressions by policy, pair, surface, and UTC day", async () => {
+      await client.query(migration);
+      await client.query(attributionMigration);
+      await expect(
+        insertMatchingEvent(client, {
+          ...impression("0", "2026-09-02T00:00:00.000Z"),
+          evaluationId: undefined,
+        }),
+      ).rejects.toMatchObject({ constraint: "chk_marketplace_matching_event_context" });
+      await insertMatchingEvent(client, impression("a", "2026-09-03T00:00:00.000Z"));
+      await expect(
+        insertMatchingEvent(client, impression("b", "2026-09-03T23:59:59.999Z")),
+      ).rejects.toMatchObject({
+        code: "23505",
+        constraint: "uq_marketplace_matching_qualified_impression",
+      });
+      await insertMatchingEvent(client, impression("b", "2026-09-04T00:00:00.000Z"));
+    });
+
+    it("enforces attribution shapes and freezes collaboration attribution", async () => {
+      await client.query(migration);
+      await client.query(attributionMigration);
+      await expect(
+        insertCollaboration(client, ids.collaboration, "hotel", recommended),
+      ).rejects.toMatchObject({ constraint: "chk_marketplace_collaboration_matching_attribution" });
+      await expect(
+        insertCollaboration(client, ids.collaboration, "creator", {
+          ...recommended,
+          evaluationId: undefined,
+        }),
+      ).rejects.toMatchObject({ constraint: "chk_marketplace_collaboration_matching_attribution" });
+      await insertCollaboration(client, ids.collaboration, "hotel");
+      await insertMatchingEvent(client, {
+        eventType: "marketplace.match.invitation_sent.v1",
+        collaborationId: ids.collaboration,
+        attributionKind: "organic",
+      });
+      await insertCollaboration(client, ids.recommendedCollaboration, "creator", recommended);
+      await expect(
+        insertMatchingEvent(client, {
+          eventType: "marketplace.match.invitation_sent.v1",
+          collaborationId: ids.recommendedCollaboration,
+          ...recommended,
+        }),
+      ).rejects.toMatchObject({ constraint: "chk_marketplace_matching_event_context" });
+      await expect(
+        insertMatchingEvent(client, {
+          eventType: "marketplace.match.saved.v1",
+          ...recommended,
+          evaluationId: undefined,
+        }),
+      ).rejects.toMatchObject({ constraint: "chk_marketplace_matching_event_context" });
+      await expect(
+        insertMatchingEvent(client, {
+          eventType: "marketplace.match.accepted.v1",
+          collaborationId: ids.recommendedCollaboration,
+          ...recommended,
+          impressionId: "b".repeat(64),
+        }),
+      ).rejects.toMatchObject({
+        constraint: "chk_marketplace_matching_collaboration_attribution",
+      });
+      await expect(
+        client.query("UPDATE marketplace.collaborations SET matching_impression_id=$1", [
+          "b".repeat(64),
+        ]),
+      ).rejects.toMatchObject({
+        code: "55000",
+        constraint: "immutable_marketplace_collaboration_matching_attribution",
+      });
+      await insertMatchingEvent(client, {
+        eventType: "marketplace.match.accepted.v1",
+        collaborationId: ids.recommendedCollaboration,
+        ...recommended,
+      });
+    });
+
+    it("rejects one of two concurrent duplicate impressions", async () => {
+      await client.query(migration);
+      await client.query(attributionMigration);
+      const writer = new pg.Client({ connectionString: TEST_DATABASE_URL });
+      await writer.connect();
+      try {
+        const results = await Promise.allSettled([
+          insertMatchingEvent(client, impression("c", "2026-09-05T10:00:00.000Z")),
+          insertMatchingEvent(writer, impression("d", "2026-09-05T11:00:00.000Z")),
+        ]);
+        expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+        expect(results.find(({ status }) => status === "rejected")).toMatchObject({
+          reason: { code: "23505", constraint: "uq_marketplace_matching_qualified_impression" },
+        });
+      } finally {
+        await writer.end();
+      }
+    });
+
     it("rolls back all DDL when an append-only prerequisite is missing", async () => {
       await client.query("DROP FUNCTION platform.prevent_append_only_mutation()");
       await client.query("BEGIN");
@@ -223,6 +334,125 @@ async function insertProjection(client: pg.Client, input: ProjectionInput): Prom
   return domainEventId;
 }
 
+type MatchingEventInput = {
+  eventType: string;
+  sourceId?: string;
+  occurredAt?: string;
+  collaborationId?: string;
+  attributionKind?: "organic" | "recommended";
+  policyVersion?: string;
+  evaluationId?: string;
+  evaluationMode?: "shadow" | "active";
+  impressionId?: string;
+  recommendationSessionId?: string;
+  surface?: string;
+  presentationMode?: "ranked" | "exploration";
+  rank?: number;
+  slot?: number;
+};
+
+function impression(character: string, acceptedAt: string): MatchingEventInput {
+  const impressionId = character.repeat(64);
+  return {
+    eventType: "marketplace.match.impression.v1",
+    sourceId: impressionId,
+    occurredAt: acceptedAt,
+    policyVersion: recommended.policyVersion,
+    evaluationId: ids.evaluation,
+    impressionId,
+    recommendationSessionId: `session-${character}`,
+    surface: "creator_offer_discovery",
+    presentationMode: "ranked",
+    rank: 1,
+    slot: 1,
+  };
+}
+
+async function insertCollaboration(
+  client: pg.Client,
+  id: string,
+  initiatorType: "creator" | "hotel",
+  attribution: Omit<MatchingEventInput, "eventType"> = { attributionKind: "organic" },
+): Promise<void> {
+  await client.query(
+    `INSERT INTO marketplace.collaborations
+     (id,creator_profile_id,creator_organization_id,offer_id,property_id,hotel_organization_id,initiator_type,
+      matching_attribution_kind,matching_policy_version,matching_evaluation_id,
+      matching_impression_id,matching_recommendation_session_id,matching_surface,
+      matching_presentation_mode)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+    [
+      id,
+      ids.creator,
+      ids.creatorOrg,
+      ids.offer,
+      ids.property,
+      ids.hotelOrg,
+      initiatorType,
+      attribution.attributionKind,
+      attribution.policyVersion ?? null,
+      attribution.evaluationId ?? null,
+      attribution.impressionId ?? null,
+      attribution.recommendationSessionId ?? null,
+      attribution.surface ?? null,
+      attribution.presentationMode ?? null,
+    ],
+  );
+}
+
+async function insertMatchingEvent(client: pg.Client, input: MatchingEventInput): Promise<void> {
+  const domainEventId = randomUUID();
+  const sourceId = input.sourceId ?? randomUUID();
+  const acceptedAt = input.occurredAt ?? occurredAt;
+  await client.query(
+    `INSERT INTO platform.domain_events VALUES
+     ($1,'marketplace',$2,$3,1,$4,$4,$5,'correlation-1',$6,'marketplace',
+      'matching_event',$7,'{}','{}')`,
+    [
+      domainEventId,
+      `${input.eventType}:${sourceId}:1`,
+      input.eventType,
+      acceptedAt,
+      ids.property,
+      ids.actor,
+      sourceId,
+    ],
+  );
+  await client.query(
+    `INSERT INTO marketplace.matching_event_projections
+     (domain_event_id,event_type,source_id,revision,actor_user_id,creator_profile_id,
+      creator_organization_id,hotel_organization_id,property_id,offer_id,collaboration_id,
+      contract_version,correlation_id,occurred_at,recorded_at,attribution_kind,policy_version,
+      evaluation_id,evaluation_mode,impression_id,recommendation_session_id,surface,
+      presentation_mode,impression_rank,impression_slot)
+     VALUES ($1,$2,$3,1,$4,$5,$6,$7,$8,$9,$10,'marketplace-matching-contract.v2',
+       'correlation-1',$11,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+    [
+      domainEventId,
+      input.eventType,
+      sourceId,
+      ids.actor,
+      ids.creator,
+      ids.creatorOrg,
+      ids.hotelOrg,
+      ids.property,
+      ids.offer,
+      input.collaborationId ?? null,
+      acceptedAt,
+      input.attributionKind ?? null,
+      input.policyVersion ?? null,
+      input.evaluationId ?? null,
+      input.evaluationMode ?? null,
+      input.impressionId ?? null,
+      input.recommendationSessionId ?? null,
+      input.surface ?? null,
+      input.presentationMode ?? null,
+      input.rank ?? null,
+      input.slot ?? null,
+    ],
+  );
+}
+
 const fixtureSql = `
 DROP SCHEMA IF EXISTS marketplace, platform, identity CASCADE;
 CREATE SCHEMA identity; CREATE SCHEMA platform; CREATE SCHEMA marketplace;
@@ -232,7 +462,7 @@ CREATE TABLE marketplace.marketplace_offers (
   id UUID, property_id UUID, organization_id UUID, UNIQUE(id, property_id, organization_id));
 CREATE TABLE marketplace.collaborations (
   id UUID PRIMARY KEY, creator_profile_id UUID, creator_organization_id UUID,
-  offer_id UUID, property_id UUID, hotel_organization_id UUID);
+  offer_id UUID, property_id UUID, hotel_organization_id UUID, initiator_type TEXT);
 CREATE TABLE platform.domain_events (
   id UUID PRIMARY KEY, source_system TEXT, event_key TEXT, event_type TEXT, event_version INTEGER,
   occurred_at TIMESTAMPTZ, recorded_at TIMESTAMPTZ, property_id UUID,
@@ -243,6 +473,4 @@ BEGIN RAISE EXCEPTION 'append-only' USING ERRCODE='55000'; END $$;
 INSERT INTO identity.users VALUES ('${ids.actor}');
 INSERT INTO marketplace.creator_profiles VALUES ('${ids.creator}','${ids.creatorOrg}');
 INSERT INTO marketplace.marketplace_offers VALUES ('${ids.offer}','${ids.property}','${ids.hotelOrg}');
-INSERT INTO marketplace.collaborations VALUES
-  ('${ids.collaboration}','${ids.creator}','${ids.creatorOrg}','${ids.offer}','${ids.property}','${ids.hotelOrg}');
 `;
