@@ -1,3 +1,15 @@
+import type {
+  MarketplaceOfferMatchingCriteria,
+  MarketplaceOfferMatchingCriteriaWrite,
+  MarketplaceOfferRequirementLevel,
+} from "@vayada/domain-marketplace";
+
+export type {
+  MarketplaceOfferMatchingCriteria,
+  MarketplaceOfferMatchingCriteriaWrite,
+  MarketplaceOfferRequirementLevel,
+} from "@vayada/domain-marketplace";
+
 import {
   type MarketplaceCollaborationRead,
   type MarketplaceCollaborationStatus,
@@ -80,17 +92,21 @@ export type MarketplaceOfferCompensationOptionWrite = {
   discountPercentage: number | null;
   commissionPercentage: number | null;
   minFollowers: number | null;
+  followerRequirementLevel?: MarketplaceOfferRequirementLevel | null;
   currency: string | null;
   termsSummary: string | null;
 };
 
 export type MarketplaceOfferCreatorRequirementsWrite = {
   platforms: MarketplacePlatformName[];
+  platformRequirementLevel?: MarketplaceOfferRequirementLevel | null;
   targetCountries: string[];
+  targetCountriesRequirementLevel?: MarketplaceOfferRequirementLevel | null;
   targetAgeMin: number | null;
   targetAgeMax: number | null;
   targetAgeGroups: string[];
   creatorTypes: ("lifestyle" | "travel" | "other")[];
+  creatorTypesRequirementLevel?: MarketplaceOfferRequirementLevel | null;
 };
 
 export type MarketplaceOfferDeliverableWrite = {
@@ -98,6 +114,7 @@ export type MarketplaceOfferDeliverableWrite = {
   deliverableType: string;
   quantity: number;
   timingGuidance?: string | null;
+  requirementLevel?: MarketplaceOfferRequirementLevel | null;
 };
 
 export type MarketplaceAdminCreateOfferRequest = {
@@ -106,6 +123,7 @@ export type MarketplaceAdminCreateOfferRequest = {
   deliverables: MarketplaceOfferDeliverableWrite[];
   compensationOptions: MarketplaceOfferCompensationOptionWrite[];
   creatorRequirements: MarketplaceOfferCreatorRequirementsWrite;
+  matchingCriteria?: MarketplaceOfferMatchingCriteriaWrite | null;
 };
 
 export type MarketplaceAdminUpdateOfferRequest = Partial<
@@ -117,6 +135,7 @@ export type MarketplaceAdminUpdateOfferRequest = Partial<
   deliverables?: MarketplaceOfferDeliverableWrite[];
   compensationOptions?: MarketplaceOfferCompensationOptionWrite[];
   creatorRequirements?: MarketplaceOfferCreatorRequirementsWrite | null;
+  matchingCriteria?: MarketplaceOfferMatchingCriteriaWrite | null;
 };
 
 export type MarketplaceAdminOffer = {
@@ -138,6 +157,7 @@ export type MarketplaceAdminOffer = {
     compensationOptionId: string;
   })[];
   creatorRequirements: MarketplaceOfferCreatorRequirementsWrite | null;
+  matchingCriteria: MarketplaceOfferMatchingCriteria | null;
   createdAt: string;
   updatedAt: string;
 };

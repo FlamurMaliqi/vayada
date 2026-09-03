@@ -19,6 +19,7 @@ import {
   createPgMarketplaceHotelSelfServiceRepository,
   MarketplaceOfferIdempotencyConflictError,
 } from "./routes/marketplaceHotelSelfService.js";
+import { recordOfferMatchingAudit, replaceOfferChildren } from "./routes/marketplaceAdmin.js";
 import type {
   MarketplaceHotelSelfServiceOffer,
   MarketplaceHotelSelfServiceProfile,
@@ -45,6 +46,75 @@ afterEach(async () => {
 });
 
 describe("marketplace hotel self-service routes", () => {
+  it("persists matching criteria with requirement levels and private audit metadata", async () => {
+    const queries: Array<{ text: string; values: readonly unknown[] }> = [];
+    await replaceOfferChildren(
+      {
+        async query(text: string, values: readonly unknown[] = []) {
+          queries.push({ text, values });
+          return { rows: [] };
+        },
+      } as never,
+      {
+        offerId: offerResourceId,
+        propertyId: propertyTwo,
+        organizationId: "org_hotel_group",
+        actorUserId: "user_hotel_owner",
+        deliverables: [
+          {
+            platform: "instagram",
+            deliverableType: "reel",
+            quantity: 1,
+            requirementLevel: "required",
+          },
+        ],
+        matchingCriteria: matchingCriteria(),
+      },
+    );
+
+    expect(queries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: expect.stringContaining("requirement_level"),
+          values: expect.arrayContaining(["required"]),
+        }),
+        expect.objectContaining({
+          text: expect.stringContaining("INSERT INTO marketplace.offer_matching_criteria"),
+          values: expect.arrayContaining([JSON.stringify(matchingCriteria()), "user_hotel_owner"]),
+        }),
+      ]),
+    );
+  });
+
+  it("records criteria deletion as an attributed product audit event", async () => {
+    const queries: Array<{ text: string; values: readonly unknown[] }> = [];
+    await recordOfferMatchingAudit(
+      {
+        async query(text: string, values: readonly unknown[] = []) {
+          queries.push({ text, values });
+          return { rows: [] };
+        },
+      } as never,
+      {
+        action: "updated",
+        offerId: offerResourceId,
+        propertyId: propertyTwo,
+        request: { matchingCriteria: null },
+        audit: offerAudit(),
+      },
+    );
+
+    expect(queries[0]?.text).toContain("INSERT INTO platform.product_audit_events");
+    expect(JSON.parse(String(queries[0]?.values[8]))).toEqual({
+      changedFields: ["matchingCriteria"],
+      matchingCriteriaOperation: "deleted",
+    });
+    expect(JSON.parse(String(queries[0]?.values[9]))).toMatchObject({
+      requestId: offerAudit().requestId,
+      source: "api",
+    });
+  });
+
   it("updates profile completeness and offer projections in one transaction", async () => {
     const statements: string[] = [];
     const client = {
@@ -188,6 +258,7 @@ describe("marketplace hotel self-service routes", () => {
     const input = {
       organizationId: "org_hotel_group",
       propertyId: propertyTwo,
+      audit: offerAudit(),
       idempotencyKey: "onboarding-draft-offer-one",
       request: offerRequest(),
     };
@@ -200,6 +271,18 @@ describe("marketplace hotel self-service routes", () => {
     expect(created).toMatchObject({ offerResourceId, replayed: false });
     expect(replayed).toMatchObject({ offerResourceId, replayed: true });
     expect(harness.offerInsertCount()).toBe(1);
+    expect(harness.auditInsertCount()).toBe(1);
+    expect(
+      harness
+        .queries()
+        .find(({ text }) => text.includes("INSERT INTO platform.product_audit_events"))?.values,
+    ).toEqual(
+      expect.arrayContaining([
+        "marketplace.offer_matching_input.created",
+        offerAudit().actorUserId,
+        offerResourceId,
+      ]),
+    );
     expect(harness.idempotencyStatus()).toBe("completed");
     const idempotencyLookup = harness
       .queries()
@@ -233,6 +316,7 @@ describe("marketplace hotel self-service routes", () => {
     const input = {
       organizationId: "org_hotel_group",
       propertyId: propertyTwo,
+      audit: offerAudit(),
       idempotencyKey: "onboarding-organization-recheck",
       request: offerRequest(),
     };
@@ -260,6 +344,7 @@ describe("marketplace hotel self-service routes", () => {
     const input = {
       organizationId: "org_hotel_group",
       propertyId: propertyTwo,
+      audit: offerAudit(),
       idempotencyKey: "onboarding-draft-offer-one",
       request: offerRequest(),
     };
@@ -275,6 +360,26 @@ describe("marketplace hotel self-service routes", () => {
 
     expect(harness.offerInsertCount()).toBe(1);
     expect(harness.transactions().slice(-2)).toEqual(["BEGIN", "ROLLBACK"]);
+  });
+
+  it("rolls back the offer write when its audit event cannot be stored", async () => {
+    const harness = createOfferRepositoryHarness({ auditError: new Error("audit unavailable") });
+    const repository = createPgMarketplaceHotelSelfServiceRepository({
+      connectionString: "postgresql://target-db",
+      pool: harness.pool,
+    });
+
+    await expect(
+      repository.createOffer({
+        organizationId: "org_hotel_group",
+        propertyId: propertyTwo,
+        audit: offerAudit(),
+        idempotencyKey: "onboarding-audit-failure",
+        request: offerRequest(),
+      }),
+    ).rejects.toThrow("audit unavailable");
+
+    expect(harness.transactions()).toEqual(["BEGIN", "ROLLBACK"]);
   });
 
   it("reads the explicitly selected hotel when an account has multiple hotels", async () => {
@@ -340,6 +445,7 @@ describe("marketplace hotel self-service routes", () => {
       lifecycleCommandBus,
     });
 
+    const request = { ...offerRequest(), matchingCriteria: matchingCriteria() };
     const response = await injectJson<MarketplaceHotelSelfServiceOffer>(app, {
       method: "POST",
       url: `/api/marketplace/properties/${propertyTwo}/offers`,
@@ -347,7 +453,7 @@ describe("marketplace hotel self-service routes", () => {
         authorization: "Bearer valid-token",
         "idempotency-key": "hotel-onboarding-offer-two",
       },
-      payload: offerRequest(),
+      payload: request,
     });
 
     expect(response.statusCode).toBe(201);
@@ -358,7 +464,9 @@ describe("marketplace hotel self-service routes", () => {
       expect.objectContaining({
         organizationId: "org_hotel_group",
         propertyId: propertyTwo,
+        audit: expect.objectContaining({ actorUserId: "user_hotel_owner", source: "api" }),
         idempotencyKey: "hotel-onboarding-offer-two",
+        request,
       }),
     );
     expect(lifecycleCommandBus.commands).toEqual([
@@ -381,6 +489,7 @@ describe("marketplace hotel self-service routes", () => {
       expect.objectContaining({
         organizationId: "org_hotel_group",
         propertyId: propertyTwo,
+        audit: expect.objectContaining({ actorUserId: "user_hotel_owner", source: "api" }),
         idempotencyKey: "hotel-onboarding-offer-two",
         offerResourceId,
       }),
@@ -522,13 +631,16 @@ describe("marketplace hotel self-service routes", () => {
     });
 
     expect(response.statusCode).toBe(500);
-    expect(failOfferCreation).toHaveBeenCalledWith({
-      organizationId: "org_hotel_group",
-      propertyId: propertyTwo,
-      idempotencyKey: "hotel-onboarding-offer-link-failure",
-      request: offerRequest(),
-      offerResourceId,
-    });
+    expect(failOfferCreation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: "org_hotel_group",
+        propertyId: propertyTwo,
+        audit: expect.objectContaining({ actorUserId: "user_hotel_owner", source: "api" }),
+        idempotencyKey: "hotel-onboarding-offer-link-failure",
+        request: offerRequest(),
+        offerResourceId,
+      }),
+    );
   });
 
   it("recovers the archived offer on retry without duplicating the offer or operator link", async () => {
@@ -607,7 +719,7 @@ describe("marketplace hotel self-service routes", () => {
       method: "PUT",
       url: `/api/marketplace/properties/${propertyTwo}/offers/${offerResourceId}`,
       headers: { authorization: "Bearer valid-token" },
-      payload: { title: "Updated hotel stay" },
+      payload: { title: "Updated hotel stay", matchingCriteria: matchingCriteria() },
     });
 
     expect(response.statusCode).toBe(200);
@@ -616,7 +728,12 @@ describe("marketplace hotel self-service routes", () => {
       expect.objectContaining({
         organizationId: "org_hotel_group",
         propertyId: propertyTwo,
+        audit: expect.objectContaining({ actorUserId: "user_hotel_owner", source: "api" }),
         offerResourceId,
+        request: {
+          title: "Updated hotel stay",
+          matchingCriteria: matchingCriteria(),
+        },
       }),
     );
   });
@@ -674,6 +791,171 @@ describe("marketplace hotel self-service routes", () => {
     expect(updateOffer).not.toHaveBeenCalled();
   });
 
+  it("rejects malformed matching criteria before persistence", async () => {
+    const updateOffer = vi.fn();
+    app = buildMarketplaceHotelApp({
+      linkedResources: [profileLink(propertyTwo), offerLink(offerResourceId)],
+      repository: repository({
+        async resolveOfferResourceId() {
+          return offerResourceId;
+        },
+        updateOffer,
+      }),
+    });
+
+    const response = await injectJson<{ code: string }>(app, {
+      method: "PUT",
+      url: `/api/marketplace/properties/${propertyTwo}/offers/${offerResourceId}`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        matchingCriteria: {
+          ...matchingCriteria(),
+          availability: {
+            ...matchingCriteria().availability,
+            startsOn: "2026-10-20",
+            endsOn: "2026-10-01",
+          },
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body.code).toBe("invalid_matching_criteria");
+    expect(updateOffer).not.toHaveBeenCalled();
+  });
+
+  it("rejects ambiguous mandatory/preferred flags", async () => {
+    const updateOffer = vi.fn();
+    app = buildMarketplaceHotelApp({
+      linkedResources: [profileLink(propertyTwo), offerLink(offerResourceId)],
+      repository: repository({
+        async resolveOfferResourceId() {
+          return offerResourceId;
+        },
+        updateOffer,
+      }),
+    });
+
+    const response = await injectJson<{ code: string }>(app, {
+      method: "PUT",
+      url: `/api/marketplace/properties/${propertyTwo}/offers/${offerResourceId}`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        deliverables: [
+          {
+            ...offerRequest().deliverables[0],
+            requirementLevel: "mandatory",
+          },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body.code).toBe("invalid_deliverable_requirement_level");
+    expect(updateOffer).not.toHaveBeenCalled();
+  });
+
+  it("rejects follower criteria without a platform", async () => {
+    const updateOffer = vi.fn();
+    app = buildMarketplaceHotelApp({
+      linkedResources: [profileLink(propertyTwo), offerLink(offerResourceId)],
+      repository: repository({
+        async resolveOfferResourceId() {
+          return offerResourceId;
+        },
+        updateOffer,
+      }),
+    });
+
+    const response = await injectJson<{ code: string }>(app, {
+      method: "PUT",
+      url: `/api/marketplace/properties/${propertyTwo}/offers/${offerResourceId}`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        compensationOptions: [
+          {
+            ...offerRequest().compensationOptions[0],
+            platforms: [],
+            followerRequirementLevel: "required",
+          },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body.code).toBe("invalid_follower_requirement");
+    expect(updateOffer).not.toHaveBeenCalled();
+  });
+
+  it("denies matching-criteria updates across the hotel authorization matrix", async () => {
+    const cases = [
+      {
+        name: "missing session",
+        headers: {},
+        linkedResources: [profileLink(propertyTwo), offerLink(offerResourceId)],
+        statusCode: 401,
+      },
+      {
+        name: "missing permission",
+        headers: { authorization: "Bearer valid-token" },
+        permissions: [] as PermissionKey[],
+        linkedResources: [profileLink(propertyTwo), offerLink(offerResourceId)],
+        statusCode: 403,
+      },
+      {
+        name: "missing entitlement",
+        headers: { authorization: "Bearer valid-token" },
+        entitlements: [] as ProductEntitlement[],
+        linkedResources: [profileLink(propertyTwo), offerLink(offerResourceId)],
+        statusCode: 403,
+      },
+      {
+        name: "missing profile link",
+        headers: { authorization: "Bearer valid-token" },
+        linkedResources: [offerLink(offerResourceId)],
+        statusCode: 403,
+      },
+      {
+        name: "missing offer link",
+        headers: { authorization: "Bearer valid-token" },
+        linkedResources: [profileLink(propertyTwo)],
+        statusCode: 403,
+      },
+      {
+        name: "wrong organization kind",
+        headers: { authorization: "Bearer valid-token" },
+        organizationKind: "creator_workspace" as const,
+        linkedResources: [profileLink(propertyTwo), offerLink(offerResourceId)],
+        statusCode: 403,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const updateOffer = vi.fn();
+      const instance = buildMarketplaceHotelApp({
+        permissions: testCase.permissions,
+        entitlements: testCase.entitlements,
+        linkedResources: testCase.linkedResources,
+        organizationKind: testCase.organizationKind,
+        repository: repository({
+          async resolveOfferResourceId() {
+            return offerResourceId;
+          },
+          updateOffer,
+        }),
+      });
+      const response = await instance.inject({
+        method: "PUT",
+        url: `/api/marketplace/properties/${propertyTwo}/offers/${offerResourceId}`,
+        headers: testCase.headers,
+        payload: { matchingCriteria: matchingCriteria() },
+      });
+      expect(response.statusCode, testCase.name).toBe(testCase.statusCode);
+      expect(updateOffer, testCase.name).not.toHaveBeenCalled();
+      await instance.close();
+    }
+  });
+
   it("rejects canonical property fields on the Marketplace profile route", async () => {
     const updateProfile = vi.fn();
     app = buildMarketplaceHotelApp({
@@ -720,6 +1002,7 @@ function buildMarketplaceHotelApp(options: {
   linkedResources?: LinkedResource[];
   entitlements?: ProductEntitlement[];
   lifecycleCommandBus?: RecordingCommandBus;
+  organizationKind?: "hotel_group" | "creator_workspace";
 }): FastifyInstance {
   return buildApp({
     logger: false,
@@ -727,7 +1010,7 @@ function buildMarketplaceHotelApp(options: {
     identityLifecycleCommandBus: options.lifecycleCommandBus ?? recordingCommandBus(),
     auth: {
       verifier: createFakeVerifier(new Map([["valid-token", session]])),
-      repository: identityRepository(options.linkedResources),
+      repository: identityRepository(options.linkedResources, options.organizationKind),
       propertyAccessRepository: agencyPropertyAccessRepository,
       rolePermissionRepository: {
         async findPermissionsForRole() {
@@ -751,7 +1034,10 @@ function buildMarketplaceHotelApp(options: {
   });
 }
 
-function identityRepository(linkedResources?: LinkedResource[]): IdentityRepository {
+function identityRepository(
+  linkedResources?: LinkedResource[],
+  organizationKind: "hotel_group" | "creator_workspace" = "hotel_group",
+): IdentityRepository {
   return {
     async findUserByProviderUserId() {
       return { userId: "user_hotel_owner", email: "owner@example.com", status: "active" };
@@ -761,7 +1047,7 @@ function identityRepository(linkedResources?: LinkedResource[]): IdentityReposit
         organizationId: "org_hotel_group",
         workosOrgId: session.workosOrgId ?? null,
         name: "Alpenrose Hotels",
-        kind: "hotel_group",
+        kind: organizationKind,
         status: "active",
       };
     },
@@ -891,6 +1177,7 @@ function offer(propertyId: string) {
     deliverables: [],
     compensationOptions: [],
     creatorRequirements: null,
+    matchingCriteria: null,
     createdAt: "2026-07-11T00:00:00.000Z",
     updatedAt: "2026-07-11T00:00:00.000Z",
   };
@@ -953,6 +1240,40 @@ function offerRequest(): MarketplaceAdminCreateOfferRequest {
   };
 }
 
+function matchingCriteria() {
+  return {
+    primaryCampaignGoal: "ugc_asset_creation" as const,
+    availability: {
+      requirementLevel: "required" as const,
+      flexibility: "flexible" as const,
+      startsOn: "2026-10-01",
+      endsOn: "2026-10-31",
+      blackouts: [{ startsOn: "2026-10-10", endsOn: "2026-10-12" }],
+    },
+    contentCategories: { requirementLevel: "required" as const, values: ["travel"] },
+    contentStyles: { requirementLevel: "preferred" as const, values: ["cinematic"] },
+    usageRights: {
+      channels: ["organic_social", "website"],
+      duration: { mode: "fixed" as const, days: 365 },
+    },
+    includedRevisionRounds: 2,
+    expectedEffortHours: { minimum: 6, maximum: 10 },
+    expectedCompensationValue: { amount: "900.00", currency: "USD" },
+    applicationCapacity: { acceptingApplications: true, maximumActiveApplications: 20 },
+  };
+}
+
+function offerAudit() {
+  return {
+    actorUserId: "user_hotel_owner",
+    actorOrganizationId: "org_hotel_group",
+    requestId: "request-marketplace-offer",
+    correlationId: "correlation-marketplace-offer",
+    source: "api" as const,
+    occurredAt: "2026-09-03T00:00:00.000Z",
+  };
+}
+
 function profileLink(
   resourceId: string,
   relationship: LinkedResource["relationship"] = "owner",
@@ -979,7 +1300,7 @@ function offerLink(
   };
 }
 
-function createOfferRepositoryHarness() {
+function createOfferRepositoryHarness(options: { auditError?: Error } = {}) {
   let idempotency:
     | {
         id: string;
@@ -991,6 +1312,7 @@ function createOfferRepositoryHarness() {
       }
     | undefined;
   let offerInserts = 0;
+  let auditInserts = 0;
   let offerStatus: "pending" | "archived" = "pending";
   let offerOrganizationId = "org_hotel_group";
   const transactionStatements: string[] = [];
@@ -1024,6 +1346,11 @@ function createOfferRepositoryHarness() {
         offerInserts += 1;
         offerOrganizationId = String(values[1]);
         return queryResult([{ id: offerResourceId }]);
+      }
+      if (text.includes("INSERT INTO platform.product_audit_events")) {
+        if (options.auditError) throw options.auditError;
+        auditInserts += 1;
+        return queryResult();
       }
       if (text.includes('property.display_name AS "displayName"')) {
         return queryResult([
@@ -1129,6 +1456,7 @@ function createOfferRepositoryHarness() {
   return {
     pool,
     offerInsertCount: () => offerInserts,
+    auditInsertCount: () => auditInserts,
     offerStatus: () => offerStatus,
     idempotencyStatus: () => idempotency?.status,
     idempotencyMetadata: () => idempotency?.idempotencyMetadata,

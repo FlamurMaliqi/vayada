@@ -9,10 +9,15 @@ import {
   isMarketplaceCreatorModerationReason,
   isMarketplaceCreatorModerationTargetStatus,
   isMarketplaceCreatorProfileStatus,
+  parseMarketplaceOfferMatchingCriteria,
+  parseMarketplaceOfferMatchingCriteriaWrite,
   type MarketplaceCreatorModerationRequest,
   type MarketplaceCreatorModerationResponse,
   type MarketplaceCreatorModerationResult,
   type MarketplaceCreatorProfileStatus,
+  type MarketplaceOfferMatchingCriteria,
+  type MarketplaceOfferMatchingCriteriaWrite,
+  type MarketplaceOfferRequirementLevel,
 } from "@vayada/domain-marketplace";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import pg, { type PoolClient, type QueryResult, type QueryResultRow } from "pg";
@@ -218,17 +223,21 @@ export type MarketplaceOfferCompensationOptionWrite = {
   discountPercentage: number | null;
   commissionPercentage: number | null;
   minFollowers: number | null;
+  followerRequirementLevel?: MarketplaceOfferRequirementLevel | null;
   currency: string | null;
   termsSummary: string | null;
 };
 
 export type MarketplaceOfferCreatorRequirementsWrite = {
   platforms: MarketplacePlatformName[];
+  platformRequirementLevel?: MarketplaceOfferRequirementLevel | null;
   targetCountries: string[];
+  targetCountriesRequirementLevel?: MarketplaceOfferRequirementLevel | null;
   targetAgeMin: number | null;
   targetAgeMax: number | null;
   targetAgeGroups: string[];
   creatorTypes: ("lifestyle" | "travel" | "other")[];
+  creatorTypesRequirementLevel?: MarketplaceOfferRequirementLevel | null;
 };
 
 export type MarketplaceOfferDeliverableWrite = {
@@ -236,6 +245,7 @@ export type MarketplaceOfferDeliverableWrite = {
   deliverableType: string;
   quantity: number;
   timingGuidance?: string | null;
+  requirementLevel?: MarketplaceOfferRequirementLevel | null;
 };
 
 export type MarketplaceAdminCreateOfferRequest = {
@@ -244,6 +254,7 @@ export type MarketplaceAdminCreateOfferRequest = {
   deliverables: MarketplaceOfferDeliverableWrite[];
   compensationOptions: MarketplaceOfferCompensationOptionWrite[];
   creatorRequirements: MarketplaceOfferCreatorRequirementsWrite;
+  matchingCriteria?: MarketplaceOfferMatchingCriteriaWrite | null;
 };
 
 export type MarketplaceAdminUpdateOfferRequest = Partial<
@@ -255,6 +266,7 @@ export type MarketplaceAdminUpdateOfferRequest = Partial<
   deliverables?: MarketplaceOfferDeliverableWrite[];
   compensationOptions?: MarketplaceOfferCompensationOptionWrite[];
   creatorRequirements?: MarketplaceOfferCreatorRequirementsWrite | null;
+  matchingCriteria?: MarketplaceOfferMatchingCriteriaWrite | null;
 };
 
 export type MarketplaceAdminVerifyOfferRequest = {
@@ -343,6 +355,7 @@ export type MarketplaceAdminOffer = {
     compensationOptionId: string;
   })[];
   creatorRequirements: MarketplaceOfferCreatorRequirementsWrite | null;
+  matchingCriteria: MarketplaceOfferMatchingCriteria | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -419,6 +432,15 @@ export type MarketplaceAdminDeleteOfferResponse = {
   };
 };
 
+export type MarketplaceOfferWriteAudit = {
+  actorUserId: string;
+  actorOrganizationId: string;
+  requestId: string;
+  correlationId: string | null;
+  source: RequestContext["audit"]["source"];
+  occurredAt: string;
+};
+
 export type MarketplaceAdminRepository = {
   listCollaborations(input: {
     page: number;
@@ -475,11 +497,13 @@ export type MarketplaceAdminRepository = {
   }): Promise<MarketplaceCreatorModerationResult>;
   createOfferForUser(input: {
     hotelUserId: string;
+    audit: MarketplaceOfferWriteAudit;
     request: MarketplaceAdminCreateOfferRequest;
     authorizationMode: MarketplaceAdminAuthorizationMode;
   }): Promise<MarketplaceAdminOffer | null>;
   updateOfferForUser(input: {
     hotelUserId: string;
+    audit: MarketplaceOfferWriteAudit;
     offerId: string;
     request: MarketplaceAdminUpdateOfferRequest;
     authorizationMode: MarketplaceAdminAuthorizationMode;
@@ -929,6 +953,15 @@ export function createPgMarketplaceAdminRepository(config: {
           deliverables: input.request.deliverables,
           compensationOptions: input.request.compensationOptions,
           creatorRequirements: input.request.creatorRequirements,
+          matchingCriteria: input.request.matchingCriteria,
+          actorUserId: input.audit.actorUserId,
+        });
+        await recordOfferMatchingAudit(client, {
+          action: "created",
+          offerId,
+          propertyId: profile.propertyId,
+          request: input.request,
+          audit: input.audit,
         });
         await syncOfferReadModel(client, offerId, "initialize");
         return readOffer(client, offerId, input.authorizationMode);
@@ -956,8 +989,12 @@ export function createPgMarketplaceAdminRepository(config: {
         if (
           input.request.deliverables !== undefined ||
           input.request.compensationOptions !== undefined ||
-          input.request.creatorRequirements !== undefined
+          input.request.creatorRequirements !== undefined ||
+          input.request.matchingCriteria !== undefined
         ) {
+          const current = await readOffer(client, target.offerResourceId, input.authorizationMode);
+          if (!current) return null;
+          assertMergedOfferUpdateValid(current, input.request);
           await replaceOfferChildren(client, {
             offerId: target.offerResourceId,
             propertyId: profile.propertyId,
@@ -965,6 +1002,15 @@ export function createPgMarketplaceAdminRepository(config: {
             deliverables: input.request.deliverables,
             compensationOptions: input.request.compensationOptions,
             creatorRequirements: input.request.creatorRequirements,
+            matchingCriteria: input.request.matchingCriteria,
+            actorUserId: input.audit.actorUserId,
+          });
+          await recordOfferMatchingAudit(client, {
+            action: "updated",
+            offerId: target.offerResourceId,
+            propertyId: profile.propertyId,
+            request: input.request,
+            audit: input.audit,
           });
         }
         await syncOfferReadModel(client, target.offerResourceId, "initialize");
@@ -1290,6 +1336,7 @@ export async function registerMarketplaceAdminRoutes(
       if (validation) return sendAdminError(reply, 422, validation);
       const result = await repository.createOfferForUser({
         hotelUserId: request.params.hotelUserId,
+        audit: offerWriteAudit(access.context),
         request: request.body,
         authorizationMode: access.authorizationMode,
       });
@@ -1304,12 +1351,21 @@ export async function registerMarketplaceAdminRoutes(
       const access = await requireMarketplaceAdminAccess(request, options);
       const validation = validateUpdateOfferRequest(request.body);
       if (validation) return sendAdminError(reply, 422, validation);
-      const result = await repository.updateOfferForUser({
-        hotelUserId: request.params.hotelUserId,
-        offerId: request.params.offerId,
-        request: request.body,
-        authorizationMode: access.authorizationMode,
-      });
+      let result: MarketplaceAdminOffer | null;
+      try {
+        result = await repository.updateOfferForUser({
+          hotelUserId: request.params.hotelUserId,
+          audit: offerWriteAudit(access.context),
+          offerId: request.params.offerId,
+          request: request.body,
+          authorizationMode: access.authorizationMode,
+        });
+      } catch (error) {
+        if (error instanceof MarketplaceOfferConsistencyError) {
+          return sendAdminError(reply, 422, error.code);
+        }
+        throw error;
+      }
       if (!result) return sendAdminError(reply, 404, "offer_not_found");
       return result;
     },
@@ -1370,6 +1426,17 @@ async function requireMarketplaceAdminAccess(
     }
     throw error;
   }
+}
+
+export function offerWriteAudit(context: RequestContext): MarketplaceOfferWriteAudit {
+  return {
+    actorUserId: context.actor.internalUserId,
+    actorOrganizationId: context.selectedOrganization.organizationId,
+    requestId: context.audit.requestId,
+    correlationId: context.audit.correlationId ?? null,
+    source: context.audit.source,
+    occurredAt: context.audit.receivedAt,
+  };
 }
 
 function requireMarketplaceCreatorModerationAccess(request: FastifyRequest): RequestContext {
@@ -1577,6 +1644,7 @@ export function validateCreateOfferRequest(
     body.deliverables,
     body.compensationOptions,
     body.creatorRequirements,
+    body.matchingCriteria,
   );
 }
 
@@ -1591,6 +1659,7 @@ export function validateUpdateOfferRequest(
     body.deliverables,
     body.compensationOptions,
     body.creatorRequirements,
+    body.matchingCriteria,
   );
 }
 
@@ -1598,11 +1667,15 @@ function validateOfferChildren(
   deliverables?: MarketplaceOfferDeliverableWrite[],
   compensationOptions?: MarketplaceOfferCompensationOptionWrite[],
   requirements?: MarketplaceOfferCreatorRequirementsWrite | null,
+  matchingCriteria?: MarketplaceOfferMatchingCriteriaWrite | null,
 ): string | null {
   if (deliverables) {
     for (const deliverable of deliverables) {
       if (!readNonEmptyString(deliverable.deliverableType)) return "invalid_deliverable";
       if (!isPositiveInteger(deliverable.quantity)) return "invalid_deliverable";
+      if (!isOptionalRequirementLevel(deliverable.requirementLevel)) {
+        return "invalid_deliverable_requirement_level";
+      }
     }
   }
   if (compensationOptions) {
@@ -1628,10 +1701,119 @@ function validateOfferChildren(
       if (option.compensationType === "affiliate" && !isPercentage(option.commissionPercentage)) {
         return "invalid_commission";
       }
+      if (!isOptionalRequirementLevel(option.followerRequirementLevel)) {
+        return "invalid_follower_requirement_level";
+      }
+      if (
+        option.followerRequirementLevel &&
+        (!isPositiveInteger(option.minFollowers) ||
+          !Array.isArray(option.platforms) ||
+          option.platforms.length === 0 ||
+          option.platforms.some((platform) => !toPlatformName(platform)))
+      ) {
+        return "invalid_follower_requirement";
+      }
     }
   }
-  if (requirements && !Array.isArray(requirements.platforms)) return "invalid_requirements";
+  if (requirements) {
+    if (
+      !Array.isArray(requirements.platforms) ||
+      !Array.isArray(requirements.targetCountries) ||
+      !Array.isArray(requirements.creatorTypes)
+    ) {
+      return "invalid_requirements";
+    }
+    const selections = [
+      [requirements.platformRequirementLevel, requirements.platforms],
+      [requirements.targetCountriesRequirementLevel, requirements.targetCountries],
+      [requirements.creatorTypesRequirementLevel, requirements.creatorTypes],
+    ] as const;
+    if (
+      selections.some(
+        ([level, values]) =>
+          !isOptionalRequirementLevel(level) || (level === "required" && values.length === 0),
+      )
+    ) {
+      return "invalid_requirement_level";
+    }
+    if (
+      requirements.platformRequirementLevel === "required" &&
+      deliverables &&
+      requirements.platforms.some(
+        (platform) => !deliverables.some((deliverable) => deliverable.platform === platform),
+      )
+    ) {
+      return "inconsistent_requirement_platforms";
+    }
+  }
+  const parsedCriteria =
+    matchingCriteria === undefined || matchingCriteria === null
+      ? matchingCriteria
+      : parseMarketplaceOfferMatchingCriteriaWrite(matchingCriteria);
+  if (matchingCriteria !== undefined && matchingCriteria !== null && !parsedCriteria) {
+    return "invalid_matching_criteria";
+  }
+  if (parsedCriteria?.expectedCompensationValue && compensationOptions) {
+    const currencies = new Set(compensationOptions.map((option) => option.currency ?? "USD"));
+    if (!currencies.has(parsedCriteria.expectedCompensationValue.currency)) {
+      return "inconsistent_compensation_currency";
+    }
+  }
   return null;
+}
+
+export class MarketplaceOfferConsistencyError extends Error {
+  readonly statusCode = 422;
+
+  constructor(readonly code: string) {
+    super(code);
+    this.name = "MarketplaceOfferConsistencyError";
+  }
+}
+
+export function validateMergedOfferUpdate(
+  current: MarketplaceAdminOffer,
+  request: MarketplaceAdminUpdateOfferRequest,
+): string | null {
+  return validateOfferChildren(
+    request.deliverables ?? current.deliverables,
+    request.compensationOptions ?? current.compensationOptions,
+    request.creatorRequirements === undefined
+      ? current.creatorRequirements
+      : request.creatorRequirements,
+    request.matchingCriteria === undefined
+      ? matchingCriteriaWrite(current.matchingCriteria ?? null)
+      : request.matchingCriteria,
+  );
+}
+
+function assertMergedOfferUpdateValid(
+  current: MarketplaceAdminOffer,
+  request: MarketplaceAdminUpdateOfferRequest,
+): void {
+  const validation = validateMergedOfferUpdate(current, request);
+  if (validation) throw new MarketplaceOfferConsistencyError(validation);
+}
+
+function matchingCriteriaWrite(
+  criteria: MarketplaceOfferMatchingCriteria | null,
+): MarketplaceOfferMatchingCriteriaWrite | null {
+  if (!criteria) return null;
+  return {
+    primaryCampaignGoal: criteria.primaryCampaignGoal,
+    availability: criteria.availability,
+    contentCategories: criteria.contentCategories,
+    contentStyles: criteria.contentStyles,
+    usageRights: criteria.usageRights,
+    includedRevisionRounds: criteria.includedRevisionRounds,
+    expectedEffortHours: criteria.expectedEffortHours,
+    expectedCompensationValue: criteria.expectedCompensationValue,
+    applicationCapacity: criteria.applicationCapacity,
+  };
+}
+
+function isOptionalRequirementLevel(value: unknown): boolean {
+  return value === undefined || value === null || value === "required" || value === "preferred";
 }
 
 function validateCreatorProfileRequest(
@@ -2464,6 +2646,8 @@ export async function replaceOfferChildren(
     deliverables?: MarketplaceOfferDeliverableWrite[];
     compensationOptions?: MarketplaceOfferCompensationOptionWrite[];
     creatorRequirements?: MarketplaceOfferCreatorRequirementsWrite | null;
+    matchingCriteria?: MarketplaceOfferMatchingCriteriaWrite | null;
+    actorUserId?: string;
   },
 ): Promise<void> {
   if (input.deliverables !== undefined) {
@@ -2479,9 +2663,10 @@ export async function replaceOfferChildren(
            platform,
            deliverable_type,
            quantity,
-           timing_guidance
+           timing_guidance,
+           requirement_level
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           input.offerId,
           input.propertyId,
@@ -2490,6 +2675,7 @@ export async function replaceOfferChildren(
           deliverable.deliverableType,
           deliverable.quantity,
           deliverable.timingGuidance ?? null,
+          deliverable.requirementLevel ?? null,
         ],
       );
     }
@@ -2515,9 +2701,10 @@ export async function replaceOfferChildren(
            commission_percentage,
            min_followers,
            currency,
-           terms_summary
+           terms_summary,
+           follower_requirement_level
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::numeric, $10, $11::numeric, $12, $13, $14)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::numeric, $10, $11::numeric, $12, $13, $14, $15)`,
         [
           input.offerId,
           input.propertyId,
@@ -2533,6 +2720,7 @@ export async function replaceOfferChildren(
           option.minFollowers,
           option.currency ?? "USD",
           option.termsSummary,
+          option.followerRequirementLevel ?? null,
         ],
       );
     }
@@ -2553,9 +2741,12 @@ export async function replaceOfferChildren(
            target_age_min,
            target_age_max,
            target_age_groups,
-           creator_types
+           creator_types,
+           platform_requirement_level,
+           target_countries_requirement_level,
+           creator_types_requirement_level
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
         [
           input.offerId,
           input.propertyId,
@@ -2566,10 +2757,99 @@ export async function replaceOfferChildren(
           input.creatorRequirements.targetAgeMax,
           input.creatorRequirements.targetAgeGroups,
           input.creatorRequirements.creatorTypes,
+          input.creatorRequirements.platformRequirementLevel ?? null,
+          input.creatorRequirements.targetCountriesRequirementLevel ?? null,
+          input.creatorRequirements.creatorTypesRequirementLevel ?? null,
         ],
       );
     }
   }
+
+  if (input.matchingCriteria !== undefined) {
+    if (input.matchingCriteria === null) {
+      await client.query(`DELETE FROM marketplace.offer_matching_criteria WHERE offer_id = $1`, [
+        input.offerId,
+      ]);
+    } else {
+      if (!input.actorUserId) {
+        throw new Error("Marketplace offer matching criteria require an audit actor");
+      }
+      await client.query(
+        `INSERT INTO marketplace.offer_matching_criteria (
+           offer_id, property_id, organization_id, contract_version, criteria,
+           updated_by_user_id
+         ) VALUES (
+           $1, $2, $3, 'marketplace-offer-matching-criteria.v1', $4::jsonb, $5::uuid
+         )
+         ON CONFLICT (offer_id) DO UPDATE
+         SET criteria = EXCLUDED.criteria,
+             revision = marketplace.offer_matching_criteria.revision + 1,
+             updated_by_user_id = EXCLUDED.updated_by_user_id,
+             updated_at = now()`,
+        [
+          input.offerId,
+          input.propertyId,
+          input.organizationId,
+          JSON.stringify(input.matchingCriteria),
+          input.actorUserId,
+        ],
+      );
+    }
+  }
+}
+
+export async function recordOfferMatchingAudit(
+  client: Pick<MarketplaceAdminPool, "query">,
+  input: {
+    action: "created" | "updated";
+    offerId: string;
+    propertyId: string;
+    request: MarketplaceAdminCreateOfferRequest | MarketplaceAdminUpdateOfferRequest;
+    audit: MarketplaceOfferWriteAudit;
+  },
+): Promise<void> {
+  const changedFields = [
+    "deliverables",
+    "compensationOptions",
+    "creatorRequirements",
+    "matchingCriteria",
+  ].filter((field) => input.request[field as keyof typeof input.request] !== undefined);
+  await client.query(
+    `INSERT INTO platform.product_audit_events (
+       audit_key, product, action, occurred_at, tenant_scope, property_id,
+       actor_type, actor_user_id, target_resource_product, target_resource_type,
+       target_resource_id, correlation_id, causation_id, redacted_payload,
+       audit_metadata, privacy_scope
+     ) VALUES (
+       $1, 'marketplace', $2, $3::timestamptz, 'property', $4::uuid,
+       'user', $5::uuid, 'marketplace', 'marketplace_offer', $6, $7, $8,
+       $9::jsonb, $10::jsonb, 'internal'
+     )`,
+    [
+      `marketplace.offer-matching-input.${input.action}.${input.offerId}.${sha256(input.audit.requestId)}.v1`,
+      `marketplace.offer_matching_input.${input.action}`,
+      input.audit.occurredAt,
+      input.propertyId,
+      input.audit.actorUserId,
+      input.offerId,
+      input.audit.correlationId ?? input.audit.requestId,
+      input.audit.requestId,
+      JSON.stringify({
+        changedFields,
+        matchingCriteriaOperation:
+          input.request.matchingCriteria === undefined
+            ? "unchanged"
+            : input.request.matchingCriteria === null
+              ? "deleted"
+              : "upserted",
+      }),
+      JSON.stringify({
+        actorOrganizationId: input.audit.actorOrganizationId,
+        requestId: input.audit.requestId,
+        source: input.audit.source,
+      }),
+    ],
+  );
 }
 
 function offerMediaLateralSql(publicOnly: boolean): string {
@@ -2921,6 +3201,7 @@ export function mapOfferRow(
     deliverables: toOfferDeliverables(row.deliverables),
     compensationOptions: toCompensationOptions(row.compensationOptions),
     creatorRequirements: toCreatorRequirements(row.creatorRequirements),
+    matchingCriteria: toMatchingCriteria(row.matchingCriteria),
     createdAt: toIsoString(row.createdAt),
     updatedAt: toIsoString(row.updatedAt),
   };
@@ -2980,6 +3261,7 @@ function toCompensationOptions(value: unknown): MarketplaceAdminOffer["compensat
     discountPercentage: toNullableNumber(row.discountPercentage),
     commissionPercentage: toNullableNumber(row.commissionPercentage),
     minFollowers: toNullableNumber(row.minFollowers),
+    followerRequirementLevel: toRequirementLevel(row.followerRequirementLevel),
     currency: readString(row.currency),
     termsSummary: readString(row.termsSummary),
   }));
@@ -2993,6 +3275,7 @@ function toOfferDeliverables(value: unknown): MarketplaceAdminOffer["deliverable
     deliverableType: readString(row.deliverableType) ?? "post",
     quantity: toNullableNumber(row.quantity) ?? 1,
     timingGuidance: readString(row.timingGuidance),
+    requirementLevel: toRequirementLevel(row.requirementLevel),
   }));
 }
 
@@ -3000,14 +3283,28 @@ function toCreatorRequirements(value: unknown): MarketplaceOfferCreatorRequireme
   if (!isRecord(value) || Object.keys(value).length === 0) return null;
   return {
     platforms: toPlatformArray(value.platforms),
+    platformRequirementLevel: toRequirementLevel(value.platformRequirementLevel),
     targetCountries: toStringArray(value.targetCountries),
+    targetCountriesRequirementLevel: toRequirementLevel(value.targetCountriesRequirementLevel),
     targetAgeMin: toNullableNumber(value.targetAgeMin),
     targetAgeMax: toNullableNumber(value.targetAgeMax),
     targetAgeGroups: toStringArray(value.targetAgeGroups),
     creatorTypes: toStringArray(value.creatorTypes)
       .map((type) => (type === "lifestyle" || type === "travel" ? type : "other"))
       .filter((type, index, items) => items.indexOf(type) === index),
+    creatorTypesRequirementLevel: toRequirementLevel(value.creatorTypesRequirementLevel),
   };
+}
+
+function toMatchingCriteria(value: unknown): MarketplaceOfferMatchingCriteria | null {
+  if (value === null || value === undefined) return null;
+  const criteria = parseMarketplaceOfferMatchingCriteria(value);
+  if (!criteria) throw new Error("Stored Marketplace offer matching criteria is invalid");
+  return criteria;
+}
+
+function toRequirementLevel(value: unknown): MarketplaceOfferRequirementLevel | null {
+  return value === "required" || value === "preferred" ? value : null;
 }
 
 function toDeliverables(value: unknown): MarketplaceCollaborationDeliverable[] {
@@ -3312,6 +3609,7 @@ export type OfferRow = {
   deliverables: unknown;
   compensationOptions: unknown;
   creatorRequirements: unknown;
+  matchingCriteria?: unknown;
   createdAt: Date | string;
   updatedAt: Date | string;
 };
@@ -3438,6 +3736,7 @@ export const OFFER_SELECT_SQL = `
     COALESCE(deliverables.items, '[]'::jsonb) AS deliverables,
     COALESCE(compensation.items, '[]'::jsonb) AS "compensationOptions",
     COALESCE(requirements.item, '{}'::jsonb) AS "creatorRequirements",
+    matching_criteria.item AS "matchingCriteria",
     offer.created_at AS "createdAt",
     offer.updated_at AS "updatedAt"
   FROM marketplace.marketplace_offers offer
@@ -3457,7 +3756,8 @@ export const OFFER_SELECT_SQL = `
         'platform', deliverable.platform,
         'deliverableType', deliverable.deliverable_type,
         'quantity', deliverable.quantity,
-        'timingGuidance', deliverable.timing_guidance
+        'timingGuidance', deliverable.timing_guidance,
+        'requirementLevel', deliverable.requirement_level
       ) ORDER BY deliverable.created_at, deliverable.id
     ) AS items
     FROM marketplace.offer_deliverables deliverable
@@ -3479,7 +3779,8 @@ export const OFFER_SELECT_SQL = `
         'commissionPercentage', option.commission_percentage,
         'minFollowers', option.min_followers,
         'currency', option.currency,
-        'termsSummary', option.terms_summary
+        'termsSummary', option.terms_summary,
+        'followerRequirementLevel', option.follower_requirement_level
       )
       ORDER BY option.created_at ASC, option.id ASC
     ) AS items
@@ -3491,11 +3792,14 @@ export const OFFER_SELECT_SQL = `
   LEFT JOIN LATERAL (
     SELECT jsonb_build_object(
       'platforms', requirement.platforms,
+      'platformRequirementLevel', requirement.platform_requirement_level,
       'targetCountries', COALESCE(requirement.target_countries, '{}'),
+      'targetCountriesRequirementLevel', requirement.target_countries_requirement_level,
       'targetAgeMin', requirement.target_age_min,
       'targetAgeMax', requirement.target_age_max,
       'targetAgeGroups', requirement.target_age_groups,
-      'creatorTypes', requirement.creator_types
+      'creatorTypes', requirement.creator_types,
+      'creatorTypesRequirementLevel', requirement.creator_types_requirement_level
     ) AS item
     FROM marketplace.offer_creator_requirements requirement
     WHERE requirement.offer_id = offer.id
@@ -3503,4 +3807,16 @@ export const OFFER_SELECT_SQL = `
       AND requirement.organization_id = offer.organization_id
     LIMIT 1
   ) requirements ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT jsonb_build_object(
+      'contractVersion', criteria.contract_version,
+      'revision', criteria.revision,
+      'updatedAt', criteria.updated_at
+    ) || criteria.criteria AS item
+    FROM marketplace.offer_matching_criteria criteria
+    WHERE criteria.offer_id = offer.id
+      AND criteria.property_id = offer.property_id
+      AND criteria.organization_id = offer.organization_id
+    LIMIT 1
+  ) matching_criteria ON TRUE
 `;

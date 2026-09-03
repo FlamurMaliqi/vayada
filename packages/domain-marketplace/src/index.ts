@@ -14,6 +14,13 @@ export * from "./hotelCollaborationPreferenceCommands.js";
 export * from "./legacyHotelCollaborationPreferenceDraft.js";
 export * from "./affiliateAdmin.js";
 export * from "./creatorProfileModeration.js";
+export * from "./offerMatchingCriteria.js";
+
+import type {
+  MarketplaceOfferMatchingCriteria,
+  MarketplaceOfferMatchingCriteriaWrite,
+  MarketplaceOfferRequirementLevel,
+} from "./offerMatchingCriteria.js";
 
 // ---------------------------------------------------------------------------
 // Shared scalar types
@@ -487,17 +494,21 @@ export type MarketplaceOfferCompensationOption = {
   discountPercentage: number | null;
   commissionPercentage: number | null;
   minFollowers: number | null;
+  followerRequirementLevel?: MarketplaceOfferRequirementLevel | null;
   currency: MarketplaceCurrencyCode | null;
   termsSummary: string | null;
 };
 
 export type MarketplaceOfferCreatorRequirements = {
   platforms: MarketplacePlatformName[];
+  platformRequirementLevel?: MarketplaceOfferRequirementLevel | null;
   targetCountries: string[];
+  targetCountriesRequirementLevel?: MarketplaceOfferRequirementLevel | null;
   targetAgeMin: number | null;
   targetAgeMax: number | null;
   targetAgeGroups: string[];
   creatorTypes: MarketplaceCreatorType[];
+  creatorTypesRequirementLevel?: MarketplaceOfferRequirementLevel | null;
 };
 
 export type MarketplaceOfferDeliverable = {
@@ -506,6 +517,7 @@ export type MarketplaceOfferDeliverable = {
   deliverableType: string;
   quantity: number;
   timingGuidance: string | null;
+  requirementLevel?: MarketplaceOfferRequirementLevel | null;
 };
 
 export type MarketplaceOffer = {
@@ -517,6 +529,7 @@ export type MarketplaceOffer = {
   deliverables: MarketplaceOfferDeliverable[];
   compensationOptions: MarketplaceOfferCompensationOption[];
   creatorRequirements: MarketplaceOfferCreatorRequirements | null;
+  matchingCriteria: MarketplaceOfferMatchingCriteria | null;
   createdAt: MarketplaceUtcDateTime;
   updatedAt: MarketplaceUtcDateTime;
 };
@@ -554,12 +567,22 @@ export type UpdateMarketplaceHotelProfileRequest = {
 
 export type MarketplaceOfferCompensationOptionWrite = Omit<
   MarketplaceOfferCompensationOption,
-  "compensationOptionId"
->;
+  "compensationOptionId" | "followerRequirementLevel"
+> & { followerRequirementLevel?: MarketplaceOfferRequirementLevel | null };
 
-export type MarketplaceOfferCreatorRequirementsWrite = MarketplaceOfferCreatorRequirements;
+export type MarketplaceOfferCreatorRequirementsWrite = Omit<
+  MarketplaceOfferCreatorRequirements,
+  "platformRequirementLevel" | "targetCountriesRequirementLevel" | "creatorTypesRequirementLevel"
+> & {
+  platformRequirementLevel?: MarketplaceOfferRequirementLevel | null;
+  targetCountriesRequirementLevel?: MarketplaceOfferRequirementLevel | null;
+  creatorTypesRequirementLevel?: MarketplaceOfferRequirementLevel | null;
+};
 
-export type MarketplaceOfferDeliverableWrite = Omit<MarketplaceOfferDeliverable, "deliverableId">;
+export type MarketplaceOfferDeliverableWrite = Omit<
+  MarketplaceOfferDeliverable,
+  "deliverableId" | "requirementLevel"
+> & { requirementLevel?: MarketplaceOfferRequirementLevel | null };
 
 export type CreateMarketplaceOfferRequest = {
   title: string;
@@ -567,6 +590,7 @@ export type CreateMarketplaceOfferRequest = {
   deliverables: MarketplaceOfferDeliverableWrite[];
   compensationOptions: MarketplaceOfferCompensationOptionWrite[];
   creatorRequirements: MarketplaceOfferCreatorRequirementsWrite;
+  matchingCriteria?: MarketplaceOfferMatchingCriteriaWrite | null;
 };
 
 export type UpdateMarketplaceOfferRequest = Partial<
@@ -578,6 +602,7 @@ export type UpdateMarketplaceOfferRequest = Partial<
   deliverables?: MarketplaceOfferDeliverableWrite[];
   compensationOptions?: MarketplaceOfferCompensationOptionWrite[];
   creatorRequirements?: MarketplaceOfferCreatorRequirementsWrite | null;
+  matchingCriteria?: MarketplaceOfferMatchingCriteriaWrite | null;
 };
 
 export const MARKETPLACE_HOTEL_SELF_SERVICE_ERROR_CODES = [
