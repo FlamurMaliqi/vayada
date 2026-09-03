@@ -249,8 +249,128 @@ describe("target manual booking fields", () => {
     expect(JSON.stringify(view.toJSON())).not.toContain("Total €100");
   });
 
+  it("shows a spinner only when pricing takes longer than one second", async () => {
+    vi.spyOn(calendarService, "previewManualBooking").mockReturnValue(new Promise(() => undefined));
+    let view!: ReactTestRenderer;
+    await act(async () => {
+      view = create(
+        createElement(TargetManualBookingModal, {
+          roomTypes,
+          rooms,
+          initialCheckIn: "2026-09-10",
+          initialCheckOut: "2026-09-11",
+          onSubmit: vi.fn(),
+          onClose: vi.fn(),
+        }),
+      );
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(999);
+    });
+    expect(view.root.findAllByProps({ "data-pricing-spinner": true })).toHaveLength(0);
+    expect(view.root.findByProps({ form: "target-manual-booking" }).props.disabled).toBe(true);
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(view.root.findAllByProps({ "data-pricing-spinner": true })).toHaveLength(1);
+    expect(JSON.stringify(view.toJSON())).toContain("Calculating total");
+    act(() => view.unmount());
+  });
+
+  it("offers retry with the pricing failure guidance", async () => {
+    const request = vi
+      .spyOn(calendarService, "previewManualBooking")
+      .mockRejectedValue(new Error("Preview is unavailable."));
+    let view!: ReactTestRenderer;
+    await act(async () => {
+      view = create(
+        createElement(TargetManualBookingModal, {
+          roomTypes,
+          rooms,
+          initialCheckIn: "2026-09-10",
+          initialCheckOut: "2026-09-11",
+          onSubmit: vi.fn(),
+          onClose: vi.fn(),
+        }),
+      );
+    });
+    await settlePreview();
+
+    expect(JSON.stringify(view.toJSON())).toContain(
+      "Couldn't calculate pricing. Check that this room type has rates set up for the selected dates, then try again.",
+    );
+    const retry = view.root
+      .findAllByType("button")
+      .find((button) => button.children.join("") === "Retry pricing")!;
+    await act(async () => retry.props.onClick());
+    await settlePreview();
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("explains a missing rate for the selected dates and keeps creation blocked", async () => {
+    vi.spyOn(calendarService, "previewManualBooking").mockRejectedValue(
+      new PmsManualBookingServiceError(
+        "not_found",
+        "rate_plan_not_found",
+        404,
+        "rate plan not found.",
+        "ratePlanId",
+        1,
+      ),
+    );
+    let view!: ReactTestRenderer;
+    await act(async () => {
+      view = create(
+        createElement(TargetManualBookingModal, {
+          roomTypes,
+          rooms,
+          initialCheckIn: "2026-09-10",
+          initialCheckOut: "2026-09-11",
+          onSubmit: vi.fn(),
+          onClose: vi.fn(),
+        }),
+      );
+    });
+    await settlePreview();
+
+    expect(JSON.stringify(view.toJSON())).toContain(
+      "No rate found for 2026-09-10 – 2026-09-11. Set up a season in Rooms & Rates first.",
+    );
+    expect(
+      view.root
+        .findAllByType("button")
+        .some((button) => button.children.join("") === "Retry pricing"),
+    ).toBe(false);
+    expect(view.root.findByProps({ form: "target-manual-booking" }).props.disabled).toBe(true);
+  });
+
+  it("shows missing-rate guidance before preview when the room type has no rate plan", async () => {
+    const request = vi.spyOn(calendarService, "previewManualBooking");
+    let view!: ReactTestRenderer;
+    await act(async () => {
+      view = create(
+        createElement(TargetManualBookingModal, {
+          roomTypes: [{ ...roomTypes[0]!, ratePlans: [] }],
+          rooms: [rooms[0]!],
+          initialCheckIn: "2026-09-10",
+          initialCheckOut: "2026-09-11",
+          onSubmit: vi.fn(),
+          onClose: vi.fn(),
+        }),
+      );
+    });
+    await settlePreview();
+
+    expect(request).not.toHaveBeenCalled();
+    expect(JSON.stringify(view.toJSON())).toContain(
+      "No rate found for 2026-09-10 – 2026-09-11. Set up a season in Rooms & Rates first.",
+    );
+    expect(view.root.findByProps({ form: "target-manual-booking" }).props.disabled).toBe(true);
+  });
+
   // prettier-ignore
-  it("cannot create from stale evidence after the current preview fails", async () => { let fail = false; const onSubmit = vi.fn(); vi.spyOn(calendarService, "previewManualBooking").mockImplementation(async (input) => { if (fail) throw new Error("Preview failed."); return previewFor(input); }); let view!: ReactTestRenderer; await act(async () => { view = create(createElement(TargetManualBookingModal, { roomTypes, rooms, initialCheckIn: "2026-09-10", initialCheckOut: "2026-09-11", onSubmit, onClose: vi.fn() })); }); await settlePreview(); const adults = view.root.findByProps({ "aria-label": "Room 1 adults" }); fail = true; act(() => adults.props.onChange({ target: { value: "3" } })); await act(async () => view.root.findByProps({ "aria-label": "Room 1 adults" }).props.onChange({ target: { value: "1" } })); await settlePreview(); expect(view.root.findAllByProps({ role: "alert" }).some((alert) => alert.children.join("").includes("Preview failed."))).toBe(true); expect(view.root.findByProps({ form: "target-manual-booking" }).props.disabled).toBe(true); await act(async () => view.root.findByType("form").props.onSubmit({ preventDefault: vi.fn() })); expect(onSubmit).not.toHaveBeenCalled(); });
+  it("cannot create from stale evidence after the current preview fails", async () => { let fail = false; const onSubmit = vi.fn(); vi.spyOn(calendarService, "previewManualBooking").mockImplementation(async (input) => { if (fail) throw new Error("Preview failed."); return previewFor(input); }); let view!: ReactTestRenderer; await act(async () => { view = create(createElement(TargetManualBookingModal, { roomTypes, rooms, initialCheckIn: "2026-09-10", initialCheckOut: "2026-09-11", onSubmit, onClose: vi.fn() })); }); await settlePreview(); const adults = view.root.findByProps({ "aria-label": "Room 1 adults" }); fail = true; act(() => adults.props.onChange({ target: { value: "3" } })); await act(async () => view.root.findByProps({ "aria-label": "Room 1 adults" }).props.onChange({ target: { value: "1" } })); await settlePreview(); expect(JSON.stringify(view.toJSON())).toContain("Couldn't calculate pricing."); expect(view.root.findByProps({ form: "target-manual-booking" }).props.disabled).toBe(true); await act(async () => view.root.findByType("form").props.onSubmit({ preventDefault: vi.fn() })); expect(onSubmit).not.toHaveBeenCalled(); });
 
   it("locks an ambiguous create and retries the identical request", async () => {
     let resolveAddons!: (addons: []) => void;
