@@ -6,6 +6,7 @@ Decision inputs:
 
 - [VAY-1404 matching recommendation](https://linear.app/vayadacom/document/marketplace-hotel-creator-matching-recommendation-vay-1404-36658c2c005e)
 - [VAY-1406 production coverage audit](https://linear.app/vayadacom/document/production-marketplace-matching-signal-coverage-audit-vay-1406-a659eb8a0257)
+- [VAY-1442 creator preference vocabulary and analytics decision](https://linear.app/vayadacom/issue/VAY-1442/define-creator-preference-vocabulary-and-save-analytics-contract)
 
 This is the source of truth for Marketplace eligibility, two-sided scoring,
 explanations, measurement, and rollout. It defines a rules-based service
@@ -63,6 +64,36 @@ the owning record becomes inactive. Provider-derived metrics are `known` only
 when the connection is active, the field is in `imported_fields`, consent still
 applies, and the successful snapshot is at most 30 days old. No fallback may
 present self-declared platform totals as provider-verified evidence.
+
+## Creator preference vocabulary
+
+The first creator-facing matching-preference UI uses this content-category
+vocabulary. Stored codes are stable; changing or removing a code requires a
+reviewed contract change.
+
+| Stored code          | Creator-facing label  |
+| -------------------- | --------------------- |
+| `travel`             | Travel                |
+| `lifestyle`          | Lifestyle             |
+| `food_drink`         | Food & drink          |
+| `wellness_fitness`   | Wellness & fitness    |
+| `adventure_outdoors` | Adventure & outdoors  |
+| `family`             | Family travel         |
+| `luxury`             | Luxury                |
+| `fashion_beauty`     | Fashion & beauty      |
+| `business_events`    | Business & events     |
+| `other`              | Other                 |
+
+Creator deliverable preferences reuse the hotel collaboration vocabulary:
+`post`, `story`, `short_form_video`, `long_form_video`, `photography`, and
+`other`. Compensation types and collaboration goals remain the closed sets in
+`marketplace-creator-matching-preferences.v1`.
+
+The UI must keep `unknown` (not answered), explicit `no_preference`, and a
+nonempty selected set distinct. An existing stored code outside the current UI
+vocabulary is shown as an existing custom preference and preserved until the
+creator explicitly removes it. Saving another field must never silently erase
+such a value.
 
 ## Eligibility
 
@@ -291,6 +322,12 @@ must not inherit the current policy.
 
 Shadow evaluation emits `evaluated` only. It must not emit an `impression` or
 claim that the computed order was presented.
+
+Saving creator matching preferences does not emit a product analytics event in
+the first UI release. Marketplace has no approved product-event transport, and
+a preference update is an input rather than a matching outcome. VAY-1412 owns
+any later event contract, consent rule, retention, storage, and reporting path;
+clients must not add a one-off analytics endpoint or reuse Booking Web tracking.
 
 `satisfaction_recorded` requires `feedbackId`, monotonic `revision`,
 `respondentSide: creator | hotel`, and outcome. Its latest revision per side is
