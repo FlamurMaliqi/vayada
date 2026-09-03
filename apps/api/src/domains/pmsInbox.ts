@@ -161,6 +161,44 @@ export type PmsInboxReadPort = {
   close?(): Promise<void>;
 };
 
+export type PmsInboxStartDirectEmailError = {
+  code: "validation_failed" | "direct_email_not_allowed" | "idempotency_conflict";
+  message: string;
+};
+
+export type PmsInboxStartDirectEmailPort = {
+  start(input: {
+    propertyId: string;
+    bookingId: string;
+    organizationId: string;
+    actorUserId: string;
+    actorMembershipId: string;
+    idempotencyKey: string;
+    audit: { requestId: string; correlationId: string; requestedAt: string };
+  }): Promise<
+    | {
+        ok: true;
+        value: {
+          propertyId: string;
+          bookingId: string;
+          created: boolean;
+          thread: {
+            id: string;
+            source: "manual";
+            sourceThreadId: string;
+            attentionState: "needs_attention" | "follow_up" | "done";
+            channel: "email";
+            version: number;
+            activityAt: string;
+            replyRoute: PmsInboxEmailReplyRoute;
+          };
+        };
+      }
+    | { ok: false; error: PmsInboxStartDirectEmailError }
+  >;
+  close?(): Promise<void>;
+};
+
 export type PmsInboxMarkReadPort = {
   markRead(input: {
     propertyId: string;

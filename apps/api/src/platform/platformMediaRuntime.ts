@@ -17,6 +17,7 @@ import {
 export type PlatformMediaRuntimeInput = {
   auth?: unknown;
   allowedOrigins?: string[];
+  pmsInboxEnabled: boolean;
   targetDatabaseUrl: string;
   platformMediaServing?: PlatformMediaServingConfig;
 };
@@ -95,8 +96,8 @@ export function composePlatformMediaRuntime(
     "marketplace.collaboration_chat.attachment",
     "property.logo",
     "pms.room_type.media",
-    "pms.messaging.attachment",
     "finance.expense.receipt",
+    ...(input.pmsInboxEnabled ? (["pms.messaging.attachment"] as const) : []),
   ];
 
   return {

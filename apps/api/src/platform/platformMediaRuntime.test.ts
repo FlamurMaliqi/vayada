@@ -24,6 +24,7 @@ const platformMediaServing: PlatformMediaServingConfig = {
 
 const completeInput: PlatformMediaRuntimeInput = {
   auth: {},
+  pmsInboxEnabled: true,
   targetDatabaseUrl: "postgresql://target-db",
   platformMediaServing,
   allowedOrigins: ["https://marketplace.vayada.com"],
@@ -113,12 +114,20 @@ describe("platform media runtime composition", () => {
         "marketplace.collaboration_chat.attachment",
         "property.logo",
         "pms.room_type.media",
-        "pms.messaging.attachment",
         "finance.expense.receipt",
+        "pms.messaging.attachment",
       ],
       bucketName: "vayada-media-production",
       allowedOrigins: ["https://marketplace.vayada.com"],
     });
+  });
+
+  it("keeps Inbox attachment mutations disabled outside the target PMS runtime", () => {
+    const runtime = composePlatformMediaRuntime(
+      { ...completeInput, pmsInboxEnabled: false },
+      fakeFactories().factories,
+    );
+    expect(runtime?.routes.enabledPurposes).not.toContain("pms.messaging.attachment");
   });
 });
 

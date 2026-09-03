@@ -71,6 +71,7 @@ import { createPublicRuntimeRepositories } from "./publicRuntime.js";
 import { createTargetPmsOperationsCommandRepository } from "./domains/pmsOperationsCommandRepository.js";
 import { createPgPmsLinkedInventoryGroupCommandRepository } from "./domains/pmsLinkedInventoryGroupRepository.js";
 import { createPgPmsInboxAttachmentMediaReadPort } from "./domains/pmsInboxAttachmentMedia.js";
+import { createPmsInboxProductionRuntime } from "./domains/pmsInboxProductionRuntime.js";
 import { createTargetBookingAcceptanceSettingsPort } from "./domains/bookingAcceptanceSettings.js";
 import { createTargetSameDayBookingSettingsPort } from "./domains/sameDayBookingSettings.js";
 import { createTargetPmsInventoryPublicOfferProjection } from "./domains/pmsInventoryPublicOfferProjection.js";
@@ -654,10 +655,17 @@ const bookingPropertyAccessRepository = createPgPropertyAccessRepository({
 
 const platformMediaRuntime = composePlatformMediaRuntime({
   auth: config.auth,
+  pmsInboxEnabled: Boolean(pmsOperationsRepository),
   targetDatabaseUrl,
   platformMediaServing: config.platformMediaServing,
   allowedOrigins: config.authSession?.authAllowedOrigins,
 });
+const pmsInboxRuntime = pmsOperationsRepository
+  ? createPmsInboxProductionRuntime({
+      connectionString: targetDatabaseUrl,
+      attachmentMediaAccessEnabled: Boolean(platformMediaRuntime),
+    })
+  : undefined;
 
 const marketplaceSetupLifecycleStatusRepository = createPgMarketplaceSetupLifecycleStatusRepository(
   { connectionString: targetDatabaseUrl },
@@ -1120,6 +1128,7 @@ const app = buildApp({
   bookingDashboardMetricsReadPort,
   bookingPropertyAccessRepository,
   pmsOperationsRepository,
+  ...(pmsInboxRuntime?.routes ?? {}),
   pmsChannexManagement: pmsChannexManagementRepository
     ? {
         repository: pmsChannexManagementRepository,
@@ -1211,13 +1220,14 @@ const app = buildApp({
       }
     : undefined,
   financeFolios: financeFolioRuntime?.routes,
-  pmsInboxAttachmentMedia: platformMediaRuntime
-    ? {
-        read: createPgPmsInboxAttachmentMediaReadPort({ connectionString: targetDatabaseUrl }),
-        signer: platformMediaRuntime.privateDownloads.signer,
-        serving: platformMediaRuntime.privateDownloads.serving,
-      }
-    : undefined,
+  pmsInboxAttachmentMedia:
+    pmsInboxRuntime && platformMediaRuntime
+      ? {
+          read: createPgPmsInboxAttachmentMediaReadPort({ connectionString: targetDatabaseUrl }),
+          signer: platformMediaRuntime.privateDownloads.signer,
+          serving: platformMediaRuntime.privateDownloads.serving,
+        }
+      : undefined,
   pmsFinanceCompatibilityRepository,
   financeXenditBankValidator: xenditBankValidator,
   financePublicHotelProfileRepository,
@@ -1380,17 +1390,21 @@ const staffRemovalWorker = staffInvitationRuntime
     })
   : undefined;
 
-const pmsInboxAssignmentReconciliationWorker = startPmsInboxAssignmentReconciliationWorker({
-  connectionString: targetDatabaseUrl,
-  workerId: `pms-inbox-assignment-reconciliation:${process.pid}`,
-  warn: (error, message) => app.log.warn({ error }, message),
-});
+const pmsInboxAssignmentReconciliationWorker = pmsInboxRuntime
+  ? startPmsInboxAssignmentReconciliationWorker({
+      connectionString: targetDatabaseUrl,
+      workerId: `pms-inbox-assignment-reconciliation:${process.pid}`,
+      warn: (error, message) => app.log.warn({ error }, message),
+    })
+  : undefined;
 
-const pmsInboxFollowUpReleaseWorker = startPmsInboxFollowUpReleaseWorker({
-  connectionString: targetDatabaseUrl,
-  workerId: `pms-inbox-follow-up-release:${process.pid}`,
-  warn: (error, message) => app.log.warn({ error }, message),
-});
+const pmsInboxFollowUpReleaseWorker = pmsInboxRuntime
+  ? startPmsInboxFollowUpReleaseWorker({
+      connectionString: targetDatabaseUrl,
+      workerId: `pms-inbox-follow-up-release:${process.pid}`,
+      warn: (error, message) => app.log.warn({ error }, message),
+    })
+  : undefined;
 
 const stopPostgresTelemetry = postgresRuntime.startTelemetry(app.log);
 app.addHook("onClose", async () => {
@@ -1409,8 +1423,8 @@ const bookingPublicationWorker = bookingPublicationRuntime
 app.addHook("onClose", async () => {
   await creatorPlatformSyncWorker?.close();
   await staffRemovalWorker?.close();
-  await pmsInboxAssignmentReconciliationWorker.close();
-  await pmsInboxFollowUpReleaseWorker.close();
+  await pmsInboxAssignmentReconciliationWorker?.close();
+  await pmsInboxFollowUpReleaseWorker?.close();
   await bookingPublicationWorker?.close();
   await bookingPublicationRuntime?.close();
   await Promise.all([
@@ -1433,6 +1447,7 @@ app.addHook("onClose", async () => {
     pmsGuestPolicySetupCommands?.mandatoryCharges.close(),
     pmsPhysicalRoomOperationalLabels?.close(),
     pmsOperatingCalendarRuntime?.close(),
+    pmsInboxRuntime?.close(),
     ...(!platformMediaRuntime ? [hotelCatalogStep1Repository.close()] : []),
   ]);
 });

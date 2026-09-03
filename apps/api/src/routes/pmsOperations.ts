@@ -41,6 +41,7 @@ import {
   type PmsInboxAssistanceError,
   type PmsInboxAssistancePort,
   type PmsInboxAssistanceRequest,
+  type PmsInboxEmailReplyRoute,
   type PmsInboxMarkReadPort,
   type PmsInboxMessage,
   type PmsInboxProviderActionError,
@@ -51,6 +52,8 @@ import {
   type PmsInboxReadError,
   type PmsInboxReadPort,
   type PmsInboxReplyPort,
+  type PmsInboxStartDirectEmailError,
+  type PmsInboxStartDirectEmailPort,
   type PmsInboxStaffCommandPort,
   type PmsInboxThreadSummary,
   type PmsInboxTimelineItem,
@@ -1031,6 +1034,7 @@ export type PmsOperationsRoutesOptions = {
   inboxProviderActionPort?: PmsInboxProviderActionPort;
   inboxQuickReplyPort?: PmsInboxQuickReplyPort;
   inboxReplyPort?: PmsInboxReplyPort;
+  inboxStartDirectEmailPort?: PmsInboxStartDirectEmailPort;
   inboxTriagePort?: PmsInboxTriagePort;
   inboxStaffCommandPort?: PmsInboxStaffCommandPort;
 };
@@ -1175,6 +1179,7 @@ export type PmsOperationsErrorCode =
   | "quick_reply_name_conflict"
   | "assistance_unavailable"
   | "provider_action_unavailable"
+  | "direct_email_not_allowed"
   | "attachment_not_found"
   | "attachment_too_large"
   | "unsupported_attachment_type"
@@ -1223,6 +1228,7 @@ export async function registerPmsOperationsRoutes(
     await options.inboxProviderActionPort?.close?.();
     await options.inboxQuickReplyPort?.close?.();
     await options.inboxReplyPort?.close?.();
+    await options.inboxStartDirectEmailPort?.close?.();
     await options.inboxTriagePort?.close?.();
     await options.inboxStaffCommandPort?.close?.();
     await options.sameDayBookingSettings?.close?.();
@@ -2215,6 +2221,56 @@ export async function registerPmsOperationsRoutes(
         };
       } catch {
         request.log.error("PMS Inbox thread list failed");
+        return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
+      }
+    },
+  );
+
+  app.post<{ Params: PmsPropertyParams; Body: unknown }>(
+    "/properties/:propertyId/messaging/threads",
+    { onRequest: inboxStaffCommandAuthorization(options) },
+    async (request, reply) => {
+      const input = parseInboxStartDirectEmail(request);
+      if ("error" in input) return sendPmsOperationsError(reply, input.error);
+      if (!options.inboxStartDirectEmailPort)
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS Inbox direct-email commands are unavailable."),
+        );
+      const { propertyId } = request.params;
+      try {
+        const result = await options.inboxStartDirectEmailPort.start({
+          propertyId,
+          bookingId: input.value.bookingId,
+          ...inboxCommandActor(request.authContext!),
+          idempotencyKey: input.value.idempotencyKey,
+        });
+        if (!result.ok) return sendInboxStartDirectEmailError(reply, result.error);
+        if (!validInboxStartDirectEmail(result.value, propertyId, input.value.bookingId))
+          throw new Error("Inbox direct-email scope mismatch");
+        return reply.code(result.value.created ? 201 : 200).send({
+          contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION,
+          propertyId: result.value.propertyId,
+          bookingId: result.value.bookingId,
+          created: result.value.created,
+          thread: {
+            id: result.value.thread.id,
+            source: result.value.thread.source,
+            sourceThreadId: result.value.thread.sourceThreadId,
+            attentionState: result.value.thread.attentionState,
+            channel: result.value.thread.channel,
+            version: result.value.thread.version,
+            activityAt: result.value.thread.activityAt,
+            replyRoute: {
+              state: result.value.thread.replyRoute.state,
+              channel: result.value.thread.replyRoute.channel,
+              providerChannel: result.value.thread.replyRoute.providerChannel,
+              reasonCode: result.value.thread.replyRoute.reasonCode,
+            },
+          },
+        });
+      } catch {
+        request.log.error("PMS Inbox direct-email command failed");
         return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
       }
     },
@@ -5835,6 +5891,25 @@ function parseInboxMarkRead(
   return { value: { idempotencyKey, readThroughMessageId } };
 }
 
+function parseInboxStartDirectEmail(
+  request: FastifyRequest<{ Body: unknown }>,
+): { value: { bookingId: string; idempotencyKey: string } } | { error: PmsOperationsError } {
+  const body = objectBody(request.body);
+  const idempotencyKey = singleIdempotencyKey(request);
+  const bookingId = body && typeof body.bookingId === "string" ? body.bookingId : undefined;
+  if (
+    !body ||
+    Object.keys(body).length !== 1 ||
+    !idempotencyKey ||
+    !bookingId ||
+    !isUuid(bookingId)
+  )
+    return {
+      error: invalidInboxStaffCommand("Direct-email thread request is invalid."),
+    };
+  return { value: { bookingId, idempotencyKey } };
+}
+
 function parseInboxTriage(
   request: FastifyRequest<{ Body: unknown }>,
   action: PmsInboxTriageAction,
@@ -6231,6 +6306,19 @@ function sendInboxReadError(reply: FastifyReply, error: PmsInboxReadError): Fast
   });
 }
 
+function sendInboxStartDirectEmailError(
+  reply: FastifyReply,
+  error: PmsInboxStartDirectEmailError,
+): FastifyReply {
+  const statusCode = error.code === "idempotency_conflict" ? 409 : 400;
+  return sendPmsOperationsError(reply, {
+    statusCode,
+    code: error.code,
+    category: statusCode === 409 ? "conflict" : "validation",
+    message: error.message,
+  });
+}
+
 function sendInboxMarkReadError(
   reply: FastifyReply,
   error: Extract<Awaited<ReturnType<PmsInboxMarkReadPort["markRead"]>>, { ok: false }>["error"],
@@ -6542,6 +6630,43 @@ function validInboxProviderAction(
     isCanonicalInboxInstant(value.acceptedAt) &&
     value.attentionStateChanged === false
   );
+}
+
+function validInboxStartDirectEmail(
+  value: Awaited<ReturnType<PmsInboxStartDirectEmailPort["start"]>> extends infer Result
+    ? Result extends { ok: true; value: infer Value }
+      ? Value
+      : never
+    : never,
+  propertyId: string,
+  bookingId: string,
+): boolean {
+  return (
+    value.propertyId === propertyId &&
+    value.bookingId === bookingId &&
+    typeof value.created === "boolean" &&
+    isUuid(value.thread.id) &&
+    value.thread.source === "manual" &&
+    value.thread.sourceThreadId === `direct-email:${bookingId}:v1` &&
+    ["needs_attention", "follow_up", "done"].includes(value.thread.attentionState) &&
+    value.thread.channel === "email" &&
+    Number.isSafeInteger(value.thread.version) &&
+    value.thread.version >= 1 &&
+    isCanonicalInboxInstant(value.thread.activityAt) &&
+    validInboxReplyRoute(value.thread.replyRoute)
+  );
+}
+
+function validInboxReplyRoute(route: PmsInboxEmailReplyRoute): boolean {
+  return route.state === "ready"
+    ? route.channel === "email" && route.providerChannel === null && route.reasonCode === null
+    : route.channel === null &&
+        route.providerChannel === null &&
+        [
+          "guest_email_unavailable",
+          "approved_sender_unavailable",
+          "email_policy_disallowed",
+        ].includes(route.reasonCode);
 }
 
 function inboxStaffCommandAuthorization(options: PmsOperationsRoutesOptions) {

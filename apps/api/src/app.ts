@@ -187,6 +187,7 @@ import type {
   PmsInboxQuickReplyPort,
   PmsInboxReadPort,
   PmsInboxReplyPort,
+  PmsInboxStartDirectEmailPort,
   PmsInboxStaffCommandPort,
   PmsInboxTriagePort,
 } from "./domains/pmsInbox.js";
@@ -265,6 +266,7 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   pmsInboxProviderActionPort?: PmsInboxProviderActionPort;
   pmsInboxQuickReplyPort?: PmsInboxQuickReplyPort;
   pmsInboxReplyPort?: PmsInboxReplyPort;
+  pmsInboxStartDirectEmailPort?: PmsInboxStartDirectEmailPort;
   pmsInboxTriagePort?: PmsInboxTriagePort;
   pmsInboxStaffCommandPort?: PmsInboxStaffCommandPort;
   pmsInboxAttachmentMedia?: Omit<PmsInboxAttachmentMediaRoutesOptions, "propertyAccessRepository">;
@@ -692,6 +694,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       inboxProviderActionPort: options.pmsInboxProviderActionPort,
       inboxQuickReplyPort: options.pmsInboxQuickReplyPort,
       inboxReplyPort: options.pmsInboxReplyPort,
+      inboxStartDirectEmailPort: options.pmsInboxStartDirectEmailPort,
       inboxTriagePort: options.pmsInboxTriagePort,
       inboxStaffCommandPort: options.pmsInboxStaffCommandPort,
       publicBookabilityPublisher: options.publicBookabilityPublisher,

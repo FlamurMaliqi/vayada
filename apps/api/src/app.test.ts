@@ -116,6 +116,7 @@ import type {
   PmsInboxQuickReplyPort,
   PmsInboxReadPort,
   PmsInboxReplyPort,
+  PmsInboxStartDirectEmailPort,
   PmsInboxStaffCommandPort,
   PmsInboxThreadSummary,
   PmsInboxTriagePort,
@@ -2678,6 +2679,7 @@ function buildAuthenticatedApp(
     pmsInboxProviderActionPort?: PmsInboxProviderActionPort;
     pmsInboxQuickReplyPort?: PmsInboxQuickReplyPort;
     pmsInboxReplyPort?: PmsInboxReplyPort;
+    pmsInboxStartDirectEmailPort?: PmsInboxStartDirectEmailPort;
     pmsInboxTriagePort?: PmsInboxTriagePort;
     pmsInboxStaffCommandPort?: PmsInboxStaffCommandPort;
     pmsCheckoutChargeMarkPaidFreezeEnabled?: boolean;
@@ -2730,6 +2732,7 @@ function buildAuthenticatedApp(
     pmsInboxProviderActionPort: options.pmsInboxProviderActionPort,
     pmsInboxQuickReplyPort: options.pmsInboxQuickReplyPort,
     pmsInboxReplyPort: options.pmsInboxReplyPort,
+    pmsInboxStartDirectEmailPort: options.pmsInboxStartDirectEmailPort,
     pmsInboxTriagePort: options.pmsInboxTriagePort,
     pmsInboxStaffCommandPort: options.pmsInboxStaffCommandPort,
     bookingAcceptanceSettings: options.bookingAcceptanceSettings,
@@ -13853,6 +13856,178 @@ describe("vayada-api", () => {
       const response = await app.inject({
         method: "POST",
         url: `/api/pms/properties/${"propertyId" in candidate ? candidate.propertyId : pmsPropertyId}/messaging/threads/13735000-0000-4000-8000-000000000001/assist`,
+        headers: {
+          ...(candidate.name === "missing auth" ? {} : { authorization: "Bearer valid-token" }),
+          "content-type": "application/json",
+          "idempotency-key": "private-key",
+        },
+        payload: "{",
+      });
+      expect(response.statusCode, candidate.name).toBe(candidate.status);
+      await app.close();
+      app = null;
+    }
+    expect(dispatches).toHaveLength(0);
+  });
+
+  it("creates or returns a protected direct-email Inbox thread", async () => {
+    const bookingId = "13736100-0000-4000-8000-000000000001";
+    const threadId = "13736100-0000-4000-8000-000000000002";
+    const calls: Parameters<PmsInboxStartDirectEmailPort["start"]>[0][] = [];
+    const close = vi.fn(async () => undefined);
+    const port: PmsInboxStartDirectEmailPort = {
+      async start(input) {
+        calls.push(input);
+        if (input.idempotencyKey === "ineligible")
+          return {
+            ok: false,
+            error: { code: "direct_email_not_allowed", message: "Unavailable." },
+          };
+        if (input.idempotencyKey === "conflict")
+          return { ok: false, error: { code: "idempotency_conflict", message: "Conflict." } };
+        if (input.idempotencyKey === "invalid")
+          return { ok: false, error: { code: "validation_failed", message: "Invalid." } };
+        return {
+          ok: true,
+          value: {
+            propertyId: input.propertyId,
+            bookingId: input.bookingId,
+            created: input.idempotencyKey !== "existing",
+            thread: Object.assign(
+              {
+                id: input.idempotencyKey === "bad-result" ? "foreign-thread" : threadId,
+                source: "manual" as const,
+                sourceThreadId: `direct-email:${input.bookingId}:v1`,
+                attentionState: "needs_attention" as const,
+                channel: "email" as const,
+                version: 1,
+                activityAt: "2026-09-03T11:00:00.000Z",
+                replyRoute: {
+                  state: "ready" as const,
+                  channel: "email" as const,
+                  providerChannel: null,
+                  reasonCode: null,
+                },
+              },
+              { guestEmail: "must-not-leak@example.test" },
+            ),
+          },
+        };
+      },
+      close,
+    };
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read", "pms.inbox.reply"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsInboxStartDirectEmailPort: port,
+      pmsOperationsAllowedOrigins: ["https://pms.localhost"],
+    });
+    const url = `/api/pms/properties/${pmsPropertyId}/messaging/threads`;
+    const post = (key?: string, body: unknown = { bookingId }) =>
+      injectJson(app!, {
+        method: "POST",
+        url,
+        headers: {
+          authorization: "Bearer valid-token",
+          ...(key ? { "idempotency-key": key } : {}),
+        },
+        payload: body as never,
+      });
+
+    await expect(
+      app.inject({ method: "OPTIONS", url, headers: { origin: "https://pms.localhost" } }),
+    ).resolves.toMatchObject({ statusCode: 204 });
+    const created = await post("created");
+    expect(created).toMatchObject({
+      statusCode: 201,
+      body: {
+        contractVersion: "native-guest-inbox.v2",
+        propertyId: pmsPropertyId,
+        bookingId,
+        created: true,
+        thread: { id: threadId, source: "manual", channel: "email", version: 1 },
+      },
+    });
+    expect(JSON.stringify(created.body)).not.toContain("must-not-leak");
+    await expect(post("existing")).resolves.toMatchObject({
+      statusCode: 200,
+      body: { created: false },
+    });
+    for (const [key, statusCode, code] of [
+      ["ineligible", 400, "direct_email_not_allowed"],
+      ["conflict", 409, "idempotency_conflict"],
+      ["invalid", 400, "validation_failed"],
+      ["bad-result", 500, "read_model_unavailable"],
+    ] as const)
+      await expect(post(key)).resolves.toMatchObject({ statusCode, body: { code } });
+    const beforeInvalid = calls.length;
+    await expect(post()).resolves.toMatchObject({ statusCode: 400 });
+    await expect(post("extra", { bookingId, channel: "email" })).resolves.toMatchObject({
+      statusCode: 400,
+      body: { code: "validation_failed" },
+    });
+    expect(calls).toHaveLength(beforeInvalid);
+    expect(calls[0]).toMatchObject({
+      propertyId: pmsPropertyId,
+      bookingId,
+      organizationId: "org_hotel_group",
+      actorUserId: "user_hotel_owner",
+      actorMembershipId: "membership_hotel_owner",
+      idempotencyKey: "created",
+    });
+    await app.close();
+    app = null;
+    expect(close).toHaveBeenCalledOnce();
+
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read", "pms.inbox.reply"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+    });
+    await expect(post("missing-port")).resolves.toMatchObject({
+      statusCode: 500,
+      body: { code: "read_model_unavailable" },
+    });
+  });
+
+  it("authorizes direct-email thread creation before reading its body", async () => {
+    const dispatches: unknown[] = [];
+    const port: PmsInboxStartDirectEmailPort = {
+      async start(input) {
+        dispatches.push(input);
+        throw new Error("must not dispatch");
+      },
+    };
+    const entitlement: ProductEntitlement = {
+      product: "pms",
+      key: "property-management",
+      status: "active",
+    };
+    const cases = [
+      { name: "missing auth", permissions: ["pms.inbox.read", "pms.inbox.reply"], status: 401 },
+      { name: "missing read", permissions: ["pms.inbox.reply"], status: 403 },
+      { name: "missing reply", permissions: ["pms.inbox.read"], status: 403 },
+      {
+        name: "missing entitlement",
+        permissions: ["pms.inbox.read", "pms.inbox.reply"],
+        entitlements: [] as ProductEntitlement[],
+        status: 403,
+      },
+      {
+        name: "wrong property",
+        permissions: ["pms.inbox.read", "pms.inbox.reply"],
+        propertyId: "f6853000-0000-0000-0000-000000000099",
+        status: 403,
+      },
+    ] as const;
+    for (const candidate of cases) {
+      app = buildAuthenticatedApp({
+        permissions: [...candidate.permissions] as PermissionKey[],
+        entitlements: "entitlements" in candidate ? [...candidate.entitlements] : [entitlement],
+        pmsInboxStartDirectEmailPort: port,
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/pms/properties/${"propertyId" in candidate ? candidate.propertyId : pmsPropertyId}/messaging/threads`,
         headers: {
           ...(candidate.name === "missing auth" ? {} : { authorization: "Bearer valid-token" }),
           "content-type": "application/json",
