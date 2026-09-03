@@ -1,3 +1,15 @@
+import type {
+  MarketplaceOfferMatchingCriteria,
+  MarketplaceOfferMatchingCriteriaWrite,
+  MarketplaceOfferRequirementLevel,
+} from "@vayada/domain-marketplace";
+
+export type {
+  MarketplaceOfferMatchingCriteria,
+  MarketplaceOfferMatchingCriteriaWrite,
+  MarketplaceOfferRequirementLevel,
+} from "@vayada/domain-marketplace";
+
 import {
   type MarketplaceCollaborationRead,
   type MarketplaceCollaborationStatus,
@@ -69,50 +81,6 @@ export type MarketplaceOfferStatus =
   | "rejected"
   | "suspended"
   | "archived";
-
-export type MarketplaceOfferRequirementLevel = "required" | "preferred";
-export type MarketplaceOfferMatchingCriteriaWrite = {
-  primaryCampaignGoal:
-    | "ugc_asset_creation"
-    | "awareness"
-    | "direct_bookings"
-    | "affiliate_conversion"
-    | "seasonal_demand"
-    | "other"
-    | null;
-  availability: {
-    requirementLevel: MarketplaceOfferRequirementLevel;
-    flexibility: "exact" | "flexible";
-    startsOn: string;
-    endsOn: string;
-    blackouts: Array<{ startsOn: string; endsOn: string }>;
-  } | null;
-  contentCategories: {
-    requirementLevel: MarketplaceOfferRequirementLevel;
-    values: string[];
-  } | null;
-  contentStyles: {
-    requirementLevel: MarketplaceOfferRequirementLevel;
-    values: string[];
-  } | null;
-  usageRights: {
-    channels: string[];
-    duration: { mode: "fixed"; days: number } | { mode: "perpetual" };
-  } | null;
-  includedRevisionRounds: number | null;
-  expectedEffortHours: { minimum: number; maximum: number } | null;
-  expectedCompensationValue: { amount: string; currency: string } | null;
-  applicationCapacity: {
-    acceptingApplications: boolean;
-    maximumActiveApplications: number | null;
-  } | null;
-};
-
-export type MarketplaceOfferMatchingCriteria = MarketplaceOfferMatchingCriteriaWrite & {
-  contractVersion: "marketplace-offer-matching-criteria.v1";
-  revision: number;
-  updatedAt: string;
-};
 
 export type MarketplaceOfferCompensationOptionWrite = {
   compensationType: "free_stay" | "paid" | "discount" | "affiliate";
@@ -189,7 +157,7 @@ export type MarketplaceAdminOffer = {
     compensationOptionId: string;
   })[];
   creatorRequirements: MarketplaceOfferCreatorRequirementsWrite | null;
-  matchingCriteria?: MarketplaceOfferMatchingCriteria | null;
+  matchingCriteria: MarketplaceOfferMatchingCriteria | null;
   createdAt: string;
   updatedAt: string;
 };

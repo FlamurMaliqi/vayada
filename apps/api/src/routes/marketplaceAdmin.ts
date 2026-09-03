@@ -355,7 +355,7 @@ export type MarketplaceAdminOffer = {
     compensationOptionId: string;
   })[];
   creatorRequirements: MarketplaceOfferCreatorRequirementsWrite | null;
-  matchingCriteria?: MarketplaceOfferMatchingCriteria | null;
+  matchingCriteria: MarketplaceOfferMatchingCriteria | null;
   createdAt: string;
   updatedAt: string;
 };

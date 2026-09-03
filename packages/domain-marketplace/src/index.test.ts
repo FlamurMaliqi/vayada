@@ -431,6 +431,7 @@ describe("@vayada/domain-marketplace", () => {
             targetAgeGroups: ["25-34", "35-44"],
             creatorTypes: ["travel", "lifestyle"],
           },
+          matchingCriteria: null,
           createdAt: "2026-06-12T08:02:00.000Z",
           updatedAt: "2026-06-12T08:03:00.000Z",
         },

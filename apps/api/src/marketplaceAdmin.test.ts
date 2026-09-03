@@ -2114,6 +2114,7 @@ function offerResponse(
       targetAgeGroups: ["18-24"],
       creatorTypes: ["travel"],
     },
+    matchingCriteria: null,
     createdAt: "2026-06-13T10:00:00.000Z",
     updatedAt: "2026-06-13T10:00:00.000Z",
   };

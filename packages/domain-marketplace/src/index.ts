@@ -529,7 +529,7 @@ export type MarketplaceOffer = {
   deliverables: MarketplaceOfferDeliverable[];
   compensationOptions: MarketplaceOfferCompensationOption[];
   creatorRequirements: MarketplaceOfferCreatorRequirements | null;
-  matchingCriteria?: MarketplaceOfferMatchingCriteria | null;
+  matchingCriteria: MarketplaceOfferMatchingCriteria | null;
   createdAt: MarketplaceUtcDateTime;
   updatedAt: MarketplaceUtcDateTime;
 };
