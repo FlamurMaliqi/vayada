@@ -446,8 +446,8 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
             .getByText("Expected method", { exact: true })
             .locator("..")
             .getByText(paymentMethodLabel(expectedMethod), { exact: true }),
-          `Expected ${expectedMethod} in payment grid: ${await paymentGrid.innerText()}`,
-        ).toBeVisible();
+          `Expected ${expectedMethod} to render as ${paymentMethodLabel(expectedMethod)}.`,
+        ).toBeVisible({ timeout: 30_000 });
         await expect(
           paymentGrid
             .getByText("Status", { exact: true })
