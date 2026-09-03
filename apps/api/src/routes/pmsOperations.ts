@@ -1224,6 +1224,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/messaging/threads",
     "/properties/:propertyId/messaging/threads/:threadId",
     "/properties/:propertyId/messaging/threads/:threadId/read",
+    "/properties/:propertyId/messaging/threads/:threadId/messages",
     "/properties/:propertyId/reservations",
     "/properties/:propertyId/reservations/:guestBookingId",
     "/properties/:propertyId/reservations/:guestBookingId/notes",
