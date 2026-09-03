@@ -89,7 +89,7 @@ export function createPgPmsInboxProviderActionPort(config: {
 
       try {
         await client.query("BEGIN");
-        if (!(await lockActorScope(client, input, acceptedAt)))
+        if (!(await lockPmsInboxReplyActorScope(client, input, acceptedAt)))
           throw new Error("PMS Inbox provider-action actor scope is unavailable");
         const replay = await findReplay(client, input, keyHash, fingerprint);
         if (replay) return await rollbackResult(client, replay);
@@ -208,9 +208,14 @@ function normalizeInput(input: Input): Input | null {
   return { ...input, idempotencyKey: input.idempotencyKey.trim() };
 }
 
-async function lockActorScope(
-  client: PmsInboxProviderActionClient,
-  input: Input,
+export async function lockPmsInboxReplyActorScope(
+  client: {
+    query<T extends QueryResultRow = QueryResultRow>(
+      text: string,
+      values?: readonly unknown[],
+    ): Promise<{ rows: T[] }>;
+  },
+  input: Pick<Input, "organizationId" | "propertyId" | "actorUserId" | "actorMembershipId">,
   acceptedAt: Date,
 ): Promise<boolean> {
   const scope = await client.query<ScopeRow>(

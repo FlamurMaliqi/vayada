@@ -706,6 +706,8 @@ async function insertAcceptedEvent(
         contractVersion: "native-guest-inbox.v2",
         attachmentCount: input.attachmentMediaIds.length,
         hasText: Boolean(input.text),
+        organizationId: input.organizationId,
+        actorMembershipId: input.actorMembershipId,
       }),
     ],
   );

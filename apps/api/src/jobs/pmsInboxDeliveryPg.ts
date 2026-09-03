@@ -2,6 +2,7 @@ import pg, { type QueryResultRow } from "pg";
 
 import type { PmsInboxEmailReplyRouteReadPort } from "../domains/pmsInbox.js";
 import { resolvePmsInboxEmailReplyRoutes } from "../domains/pmsInboxEmailReplyRoutes.js";
+import { lockPmsInboxReplyActorScope } from "../domains/pmsInboxProviderActionCommand.js";
 import {
   PMS_INBOX_DELIVERY_JOB_TYPE,
   PMS_INBOX_DELIVERY_QUEUE,
@@ -131,6 +132,9 @@ export async function claimPmsInboxDeliveryJob(
 type DeliveryRow = {
   threadId: string;
   threadDeliveryChannel: string;
+  organizationId: string | null;
+  actorMembershipId: string | null;
+  actorUserId: string | null;
   body: string;
   deliveryState: string;
   deliveryChannel: "ota" | "email";
@@ -190,39 +194,10 @@ export async function preparePmsInboxDeliveryJob(
             thread.conversation_context_state AS "conversationContextState",
             booking.booking_channel AS "bookingChannel",
             guest.email AS "guestEmail",
-            property.lifecycle_status = 'active' AND EXISTS (
-              SELECT 1 FROM identity.organization_resource_links link
-              JOIN identity.organizations organization ON organization.id = link.organization_id
-              JOIN identity.product_entitlements entitlement
-                ON entitlement.organization_id = organization.id AND entitlement.product = 'pms'
-               AND entitlement.entitlement_key = 'property-management'
-               AND entitlement.status = 'active'
-               AND (entitlement.starts_at IS NULL OR entitlement.starts_at <= now())
-               AND (entitlement.expires_at IS NULL OR entitlement.expires_at > now())
-               AND (entitlement.resource_product IS NULL OR (
-                 entitlement.resource_product = 'pms'
-                 AND entitlement.resource_type = 'pms_property'
-                 AND entitlement.resource_id = message.property_id::text
-               ))
-              WHERE link.product = 'pms' AND link.resource_type = 'pms_property'
-                AND link.resource_id = message.property_id::text AND link.status = 'active'
-                AND link.relationship IN ('owner', 'operator', 'front_desk')
-                AND organization.status = 'active'
-                AND NOT EXISTS (
-                  SELECT 1 FROM identity.product_entitlements suspended
-                  WHERE suspended.organization_id = organization.id
-                    AND suspended.product = 'pms'
-                    AND suspended.entitlement_key = 'property-management'
-                    AND suspended.status = 'suspended'
-                    AND (suspended.resource_product IS NULL OR (
-                      suspended.resource_product = 'pms'
-                      AND suspended.resource_type = 'pms_property'
-                      AND suspended.resource_id = message.property_id::text
-                    ))
-                    AND (suspended.starts_at IS NULL OR suspended.starts_at <= now())
-                    AND (suspended.expires_at IS NULL OR suspended.expires_at > now())
-                )
-            ) AS "accessReady",
+            property.lifecycle_status = 'active' AS "accessReady",
+            source.event_metadata ->> 'organizationId' AS "organizationId",
+            source.event_metadata ->> 'actorMembershipId' AS "actorMembershipId",
+            source.actor_user_id::text AS "actorUserId",
             EXISTS (
               SELECT 1 FROM pms.channel_connections connection
               WHERE connection.property_id = message.property_id
@@ -233,6 +208,11 @@ export async function preparePmsInboxDeliveryJob(
             attempt.id::text AS "currentAttemptId", attempt.outcome AS "currentAttemptOutcome",
             attempt.provider_reference AS "currentProviderReference"
      FROM pms.messages message
+     JOIN platform.jobs job ON job.id = $3::uuid AND job.property_id = message.property_id
+     LEFT JOIN platform.domain_events source ON source.id = job.source_domain_event_id
+       AND source.property_id = message.property_id AND source.resource_id = message.id::text
+       AND source.event_type = 'pms.inbox.reply.accepted'
+       AND source.actor_user_id = message.sender_user_id
      JOIN hotel_catalog.properties property ON property.id = message.property_id
      JOIN pms.message_threads thread
        ON thread.id = message.thread_id AND thread.property_id = message.property_id
@@ -253,7 +233,7 @@ export async function preparePmsInboxDeliveryJob(
      WHERE message.id = $1::uuid AND message.property_id = $2::uuid
        AND message.direction = 'outbound'
      FOR UPDATE OF message, thread`,
-    [job.messageId, job.propertyId],
+    [job.messageId, job.propertyId, job.id],
   );
   const row = result.rows[0];
   if (!row) return { state: "blocked", failure: "resource_deleted" };
@@ -274,7 +254,23 @@ export async function preparePmsInboxDeliveryJob(
       failure: "ambiguous_provider_outcome",
       attemptId: row.currentAttemptId,
     };
-  if (!row.accessReady) return { state: "blocked", failure: "access_unavailable" };
+  if (
+    !row.accessReady ||
+    !row.organizationId ||
+    !row.actorMembershipId ||
+    !row.actorUserId ||
+    !(await lockPmsInboxReplyActorScope(
+      client,
+      {
+        propertyId: job.propertyId,
+        organizationId: row.organizationId,
+        actorUserId: row.actorUserId,
+        actorMembershipId: row.actorMembershipId,
+      },
+      new Date(),
+    ))
+  )
+    return { state: "blocked", failure: "access_unavailable" };
   const adapter = routeAdapter(row);
   if (!adapter) return { state: "blocked", failure: "provider_configuration_unavailable" };
   if (adapter === "resend") {
@@ -603,13 +599,15 @@ async function insertDeliveryAudit(
     `INSERT INTO platform.product_audit_events (
        audit_key, product, action, occurred_at, tenant_scope, property_id, actor_type,
        target_resource_product, target_resource_type, target_resource_id,
-       job_id, correlation_id, redacted_payload, audit_metadata,
+       job_id, correlation_id, redacted_payload, audit_metadata, domain_event_id, causation_id,
        retention_class, privacy_scope
-     ) VALUES (
+     ) SELECT
        $1, 'pms', $2, now(), 'property', $3::uuid, 'system',
        'pms', 'message', $4, $5::uuid, $6, $7::jsonb, $8::jsonb,
+       job.source_domain_event_id, job.source_domain_event_id::text,
        'guest_pii', 'confidential'
-     ) ON CONFLICT (product, audit_key) DO NOTHING`,
+     FROM platform.jobs job WHERE job.id = $5::uuid
+     ON CONFLICT (product, audit_key) DO NOTHING`,
     [
       `pms.inbox.delivery:${job.id}:attempt:${job.attemptNumber}:${status}:v1`,
       `pms.inbox.message.delivery_${status}`,

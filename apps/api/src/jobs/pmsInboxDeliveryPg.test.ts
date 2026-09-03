@@ -74,6 +74,16 @@ describe("PostgreSQL PMS Inbox delivery store", () => {
       queries.push(text);
       if (text.includes("SELECT 1 FROM platform.jobs")) return { rows: [{ present: true }] };
       if (text.includes("FROM pms.messages message")) return { rows: [delivery()] };
+      if (text.includes("SELECT membership.property_access_mode"))
+        return {
+          rows: [{ propertyAccessMode: "all", roleKey: "owner", permissionOverrides: null }],
+        };
+      if (text.includes("FROM identity.role_permission_grants"))
+        return {
+          rows: [{ permissionKey: "pms.inbox.read" }, { permissionKey: "pms.inbox.reply" }],
+        };
+      if (text.includes("FROM identity.product_entitlements"))
+        return { rows: [{ status: "active", startsAt: null, expiresAt: null }] };
       if (text.includes("FROM pms.message_attachments")) return { rows: [] };
       if (text.includes("INSERT INTO pms.message_delivery_attempts")) {
         return { rows: [{ id: "13750000-0000-4000-8000-000000000004" }] };
@@ -226,6 +236,9 @@ function delivery() {
   return {
     threadId: "13750000-0000-4000-8000-000000000005",
     threadDeliveryChannel: "ota",
+    organizationId: "13750000-0000-4000-8000-000000000006",
+    actorUserId: "13750000-0000-4000-8000-000000000007",
+    actorMembershipId: "13750000-0000-4000-8000-000000000008",
     body: "Welcome!",
     deliveryState: "queued",
     deliveryChannel: "ota",

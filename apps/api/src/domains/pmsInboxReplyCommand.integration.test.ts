@@ -21,6 +21,7 @@ const MEDIA = "13730000-0000-4000-8000-000000000008";
 const OTHER_MEDIA = "13730000-0000-4000-8000-000000000009";
 const BOOKING = "13730000-0000-4000-8000-000000000010";
 const BOOKING_GUEST = "13730000-0000-4000-8000-000000000011";
+const OTHER_ORGANIZATION = "13730000-0000-4000-8000-000000000012";
 const NOW = "2026-09-03T09:00:00.000Z";
 
 describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
@@ -261,6 +262,49 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
       { outcome: "accepted", provider_reference: "retry-accepted" },
     ]);
   });
+
+  it.each(["organization", "membership", "assignment", "permission"])(
+    "holds revoked originating %s despite another active property owner",
+    async (revoked) => {
+      const accepted = await reply.reply(command(`revoked-${revoked}`));
+      expect(accepted.ok).toBe(true);
+      if (revoked === "organization")
+        await admin.query(
+          "UPDATE identity.organizations SET status = 'suspended' WHERE id = $1::uuid",
+          [ORGANIZATION],
+        );
+      else if (revoked === "membership")
+        await admin.query(
+          "UPDATE identity.organization_memberships SET status = 'suspended' WHERE id = $1::uuid",
+          [MEMBERSHIP],
+        );
+      else if (revoked === "assignment")
+        await admin.query(
+          "UPDATE identity.organization_memberships SET property_access_mode = 'assigned' WHERE id = $1::uuid",
+          [MEMBERSHIP],
+        );
+      else
+        await admin.query(
+          `UPDATE identity.organization_memberships SET permission_overrides = '{"grant":[],"deny":["pms.inbox.reply"]}'::jsonb WHERE id = $1::uuid`,
+          [MEMBERSHIP],
+        );
+      const send = vi.fn<PmsInboxDeliveryProvider["send"]>();
+      await expect(deliver(send)).resolves.toMatchObject({ held: 1 });
+      expect(send).not.toHaveBeenCalled();
+      const messageId = accepted.ok ? accepted.value.messageId : "";
+      expect((await state(messageId)).message).toMatchObject({
+        deliveryReasonCode: "access_unavailable",
+      });
+      expect(
+        (
+          await admin.query(
+            `SELECT causation_id = domain_event_id::text AS linked FROM platform.product_audit_events WHERE job_id IS NOT NULL AND property_id = $1::uuid`,
+            [PROPERTY],
+          )
+        ).rows,
+      ).toEqual([{ linked: true }]);
+    },
+  );
 
   it("persists a held reply without creating delivery work", async () => {
     await admin.query(
@@ -519,8 +563,9 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
     );
     await admin.query(
       `INSERT INTO identity.organizations (id, kind, name, slug, status)
-       VALUES ($1::uuid, 'hotel_group', 'Inbox Test', 'inbox-test', 'active')`,
-      [ORGANIZATION],
+       VALUES ($1::uuid, 'hotel_group', 'Inbox Test', 'inbox-test', 'active'),
+              ($2::uuid, 'hotel_group', 'Other Owner', 'inbox-other-owner', 'active')`,
+      [ORGANIZATION, OTHER_ORGANIZATION],
     );
     await admin.query(
       `INSERT INTO hotel_catalog.properties (id, public_id, display_name, lifecycle_status)
@@ -537,16 +582,19 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
     await admin.query(
       `INSERT INTO identity.organization_resource_links
          (organization_id, product, resource_type, resource_id, relationship, status)
-       VALUES ($1::uuid, 'pms', 'pms_property', $2::uuid::text, 'owner', 'active')`,
-      [ORGANIZATION, PROPERTY],
+       VALUES ($1::uuid, 'pms', 'pms_property', $2::uuid::text, 'owner', 'active'),
+              ($3::uuid, 'pms', 'pms_property', $2::uuid::text, 'owner', 'active')`,
+      [ORGANIZATION, PROPERTY, OTHER_ORGANIZATION],
     );
     await admin.query(
       `INSERT INTO identity.product_entitlements
          (organization_id, product, entitlement_key, status,
           resource_product, resource_type, resource_id)
        VALUES ($1::uuid, 'pms', 'property-management', 'active',
+               'pms', 'pms_property', $2::uuid::text),
+              ($3::uuid, 'pms', 'property-management', 'active',
                'pms', 'pms_property', $2::uuid::text)`,
-      [ORGANIZATION, PROPERTY],
+      [ORGANIZATION, PROPERTY, OTHER_ORGANIZATION],
     );
     await admin.query(
       `INSERT INTO pms.message_threads
@@ -676,15 +724,17 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
       ]);
       await admin.query("DELETE FROM booking.guest_bookings WHERE id = $1::uuid", [BOOKING]);
       for (const statement of [
-        "DELETE FROM identity.product_entitlements WHERE organization_id = $1::uuid",
-        "DELETE FROM identity.organization_resource_links WHERE organization_id = $1::uuid",
-        "DELETE FROM identity.organization_memberships WHERE organization_id = $1::uuid",
+        "DELETE FROM identity.product_entitlements WHERE organization_id = ANY($1::uuid[])",
+        "DELETE FROM identity.organization_resource_links WHERE organization_id = ANY($1::uuid[])",
+        "DELETE FROM identity.organization_memberships WHERE organization_id = ANY($1::uuid[])",
       ])
-        await admin.query(statement, [ORGANIZATION]);
+        await admin.query(statement, [[ORGANIZATION, OTHER_ORGANIZATION]]);
       await admin.query("DELETE FROM hotel_catalog.properties WHERE id = ANY($1::uuid[])", [
         properties,
       ]);
-      await admin.query("DELETE FROM identity.organizations WHERE id = $1::uuid", [ORGANIZATION]);
+      await admin.query("DELETE FROM identity.organizations WHERE id = ANY($1::uuid[])", [
+        [ORGANIZATION, OTHER_ORGANIZATION],
+      ]);
       await admin.query("DELETE FROM identity.users WHERE id = $1::uuid", [ACTOR]);
       await admin.query("COMMIT");
     } catch (error) {
