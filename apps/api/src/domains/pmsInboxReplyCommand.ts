@@ -75,7 +75,9 @@ const OPERATION = "pms.inbox.thread.reply";
 const DELIVERY_EVENT_TYPE = "pms.guest-message.deliver";
 const MAX_TEXT_LENGTH = 20_000;
 const MAX_ATTACHMENTS = 10;
-const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const DEFAULT_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const BOOKING_COM_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+const EXPEDIA_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ALLOWED_ATTACHMENT_TYPES = new Set([
   "image/jpeg",
@@ -162,7 +164,7 @@ export function createPgPmsInboxReplyPort(config: {
 
         const route = await resolveRoute(client, config.emailReplyRoutes, input, thread);
         const attachments = await lockAttachments(client, input);
-        const attachmentError = validateAttachments(attachments, input, acceptedAt);
+        const attachmentError = validateAttachments(attachments, input, route, acceptedAt);
         if (attachmentError)
           return commitResult(
             client,
@@ -414,12 +416,35 @@ async function lockThread(
   threadId: string,
 ): Promise<ThreadRow | null> {
   const result = await client.query<ThreadRow>(
-    `SELECT version::text, source, source_thread_id AS "sourceThreadId",
-            delivery_channel AS "deliveryChannel", provider_channel AS "providerChannel",
-            guest_email AS "guestEmail", attention_state AS "attentionState"
-     FROM pms.message_threads
-     WHERE property_id = $1::uuid AND id = $2::uuid
-     FOR UPDATE`,
+    `SELECT thread.version::text, thread.source,
+            thread.source_thread_id AS "sourceThreadId",
+            thread.delivery_channel AS "deliveryChannel",
+            thread.provider_channel AS "providerChannel",
+            CASE WHEN thread.guest_booking_id IS NOT NULL
+              THEN current_guest.email
+              ELSE NULLIF(BTRIM(thread.guest_email), '')
+            END AS "guestEmail",
+            thread.attention_state AS "attentionState"
+     FROM pms.message_threads thread
+     LEFT JOIN booking.guest_bookings guest_booking
+       ON guest_booking.id = thread.guest_booking_id
+      AND guest_booking.property_id = thread.property_id
+     LEFT JOIN LATERAL (
+       SELECT NULLIF(BTRIM(booking_guest.email), '') AS email
+       FROM booking.booking_guests booking_guest
+       WHERE booking_guest.guest_booking_id = guest_booking.id
+         AND NULLIF(BTRIM(booking_guest.email), '') IS NOT NULL
+       ORDER BY CASE booking_guest.guest_role
+                  WHEN 'booker' THEN 0
+                  WHEN 'primary_guest' THEN 1
+                  ELSE 2
+                END,
+                booking_guest.created_at,
+                booking_guest.id
+       LIMIT 1
+     ) current_guest ON TRUE
+     WHERE thread.property_id = $1::uuid AND thread.id = $2::uuid
+     FOR UPDATE OF thread`,
     [propertyId, threadId],
   );
   return result.rows[0] ?? null;
@@ -491,6 +516,7 @@ async function lockAttachments(
 function validateAttachments(
   rows: readonly AttachmentRow[],
   input: ReplyInput,
+  route: PmsInboxReplyRoute,
   acceptedAt: Date,
 ): PmsInboxReplyError | null {
   if (rows.length !== input.attachmentMediaIds.length)
@@ -526,10 +552,19 @@ function validateAttachments(
     const size = Number(row.sizeBytes);
     if (!Number.isSafeInteger(size) || size <= 0)
       return validationFailure("One or more attachments are unavailable.");
-    if (size > MAX_ATTACHMENT_BYTES)
+    if (size > maxAttachmentBytes(route))
       return { code: "attachment_too_large", message: "One or more attachments are too large." };
   }
   return null;
+}
+
+function maxAttachmentBytes(route: PmsInboxReplyRoute): number {
+  const providerChannel = trimmed(route.providerChannel)?.toLowerCase();
+  if (["booking.com", "booking_com", "bookingcom"].includes(providerChannel ?? ""))
+    return BOOKING_COM_MAX_ATTACHMENT_BYTES;
+  if (["expedia", "expedia.com", "expedia_com", "expediacom"].includes(providerChannel ?? ""))
+    return EXPEDIA_MAX_ATTACHMENT_BYTES;
+  return DEFAULT_MAX_ATTACHMENT_BYTES;
 }
 
 async function insertMessage(
