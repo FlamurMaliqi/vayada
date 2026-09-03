@@ -308,6 +308,11 @@ test("cleanup refreshes hotel authentication before PMS fallback", async () => {
     lastName: "Owner",
     role: "hotel",
   };
+  const decoy: SyntheticUser = {
+    ...owner,
+    id: "other-hotel-owner",
+    email: "other-hotel-owner@example.test",
+  };
   const booking: BookingResource = {
     bookingId: "booking-1",
     email: "guest@example.test",
@@ -315,6 +320,7 @@ test("cleanup refreshes hotel authentication before PMS fallback", async () => {
     resolved: false,
     slug: "synthetic-hotel",
   };
+  const calls: string[] = [];
   const targetCalls: string[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input, init) => {
@@ -324,6 +330,7 @@ test("cleanup refreshes hotel authentication before PMS fallback", async () => {
     const method = init?.method ?? "GET";
     if (url.origin === NEXT_STACK_ORIGINS.api) {
       expect(init?.headers).toMatchObject({ authorization: "Bearer fresh-access-token" });
+      calls.push("target");
       targetCalls.push(`${method} ${url.pathname}`);
       return jsonResponse({});
     }
@@ -333,20 +340,31 @@ test("cleanup refreshes hotel authentication before PMS fallback", async () => {
     if (url.pathname === "/user_management/organization_memberships" && method === "GET") {
       return jsonResponse({ data: [] });
     }
-    if (url.pathname === `/user_management/users/${owner.id}` && method === "DELETE") {
+    if (url.pathname.startsWith("/user_management/users/") && method === "DELETE") {
       return new Response(null, { status: 204 });
     }
     throw new Error(`Unexpected test request: ${method} ${url}`);
   }) as typeof globalThis.fetch;
   const request = {
-    async post(url: string) {
+    async post(url: string, options: unknown) {
+      calls.push("login");
       expect(url).toBe(`${NEXT_STACK_ORIGINS.pms}/auth/password/login`);
+      expect(options).toEqual({
+        headers: { origin: NEXT_STACK_ORIGINS.pms },
+        data: { email: owner.email, password: environment.password, surface: "pms-web" },
+      });
       return {
         ok: () => true,
         text: async () => JSON.stringify({ accessToken: "fresh-access-token" }),
       };
     },
-    async fetch() {
+    async fetch(url: string, options: { data?: unknown; method?: string }) {
+      calls.push("public");
+      expect({ url, ...options }).toMatchObject({
+        url: `${NEXT_STACK_ORIGINS.api}/api/booking-web/hotels/${booking.slug}/bookings/${booking.bookingId}/cancel`,
+        method: "POST",
+        data: { guestEmail: booking.email },
+      });
       return {
         ok: () => false,
         status: () => 409,
@@ -359,7 +377,7 @@ test("cleanup refreshes hotel authentication before PMS fallback", async () => {
     const errors = await cleanupSmokeResources(
       request,
       environment,
-      [owner],
+      [decoy, owner],
       [booking],
       {
         api: {
@@ -377,6 +395,7 @@ test("cleanup refreshes hotel authentication before PMS fallback", async () => {
   }
 
   expect(booking.resolved).toBe(true);
+  expect(calls.slice(0, 4)).toEqual(["login", "public", "target", "target"]);
   expect(targetCalls).toEqual([
     "POST /api/pms/properties/property-1/reservations/booking-1/cancel",
     "PATCH /api/finance/properties/property-1/payment-settings",
