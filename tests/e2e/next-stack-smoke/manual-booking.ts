@@ -446,6 +446,7 @@ export async function runManualBookingAcceptance(args: Args): Promise<void> {
             .getByText("Expected method", { exact: true })
             .locator("..")
             .getByText(paymentMethodLabel(expectedMethod), { exact: true }),
+          `Expected ${expectedMethod} in payment grid: ${await paymentGrid.innerText()}`,
         ).toBeVisible();
         await expect(
           paymentGrid

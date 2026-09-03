@@ -58,7 +58,7 @@ export async function configureGuestPolicyForManualBooking(args: Args): Promise<
       previewCommand = manualPreviewCommand(roomId);
     expect(await previewStatus(request, accessToken, propertyId, previewCommand)).toEqual([
       404,
-      "property_not_found",
+      "rate_not_found",
     ]);
     await configurePricing(api, propertyId, roomTypeId);
     await configureInventory(api, propertyId, roomTypeId, roomUnitsRevision);
