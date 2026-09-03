@@ -1,6 +1,6 @@
 # vayada-landing
 
-The public **marketing / landing site** for vayada (Next.js 14, App Router).
+The target-stack **marketing / landing site** for vayada (Next.js App Router).
 
 Split out of `vayada-creator-marketplace-frontend` so the marketing surface and
 the authenticated creator marketplace app evolve as independent projects. This
@@ -38,8 +38,13 @@ API host. The current portless local default is the marketplace FastAPI API; use
 `http://localhost:8003` only when testing a target `apps/api` cutover. See
 `.env.example`.
 
-## Deploy
+## Deployment status
 
-`Dockerfile` builds a Next.js `standalone` image. `.github/workflows/deploy.yml`
-pushes to ECR repo **`vayada-landing`** on push to `main`; the container
-platform auto-deploys. ECR repo + service + DNS are provisioned in [`vayada-platform`](https://github.com/vayada-marketplace/vayada-platform) — pending the domain cutover.
+`Dockerfile` can build a Next.js `standalone` image, but this repository does
+not currently contain an active workflow that publishes or deploys
+`apps/landing`. Merging landing changes to `main` is not a production
+deployment.
+
+`vayada.com` belongs to the legacy system. Do not deploy this app to that
+hostname or change its DNS or runtime. A target-stack hostname and an explicit,
+reviewed deployment workflow must be established before this app is published.
