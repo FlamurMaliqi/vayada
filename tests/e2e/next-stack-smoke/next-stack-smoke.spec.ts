@@ -738,7 +738,9 @@ async function runHotelFlow(
     await publicPage.close();
 
     await page.goto(`${NEXT_STACK_ORIGINS.marketplace}/marketplace`);
-    await expect(page.getByRole("heading", { name: "Marketplace", exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "vayada Marketplace", exact: true }),
+    ).toBeVisible();
     await assertMarketplaceHandoff(page, "Property Manager", NEXT_STACK_ORIGINS.pms, hotelName);
     await page.goto(`${NEXT_STACK_ORIGINS.marketplace}/marketplace`);
     await assertMarketplaceHandoff(
@@ -940,7 +942,9 @@ async function runCreatorFlow(
     await expect(page.getByRole("heading", { name: "Your profile is complete" })).toBeVisible();
     await page.getByRole("button", { name: "Open marketplace" }).click();
     await expect(page).toHaveURL(/\/marketplace$/);
-    await expect(page.getByRole("heading", { name: "Marketplace", exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "vayada Marketplace", exact: true }),
+    ).toBeVisible();
   });
 }
 
