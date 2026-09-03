@@ -112,6 +112,7 @@ import type { PmsRoomAssignmentOptimizationHistoryPort } from "./domains/pmsRoom
 import type {
   PmsInboxAssistancePort,
   PmsInboxMarkReadPort,
+  PmsInboxProviderActionPort,
   PmsInboxQuickReplyPort,
   PmsInboxReadPort,
   PmsInboxReplyPort,
@@ -2674,6 +2675,7 @@ function buildAuthenticatedApp(
     pmsInboxAssistancePort?: PmsInboxAssistancePort;
     pmsInboxReadPort?: PmsInboxReadPort;
     pmsInboxMarkReadPort?: PmsInboxMarkReadPort;
+    pmsInboxProviderActionPort?: PmsInboxProviderActionPort;
     pmsInboxQuickReplyPort?: PmsInboxQuickReplyPort;
     pmsInboxReplyPort?: PmsInboxReplyPort;
     pmsInboxTriagePort?: PmsInboxTriagePort;
@@ -2725,6 +2727,7 @@ function buildAuthenticatedApp(
     pmsInboxAssistancePort: options.pmsInboxAssistancePort,
     pmsInboxReadPort: options.pmsInboxReadPort,
     pmsInboxMarkReadPort: options.pmsInboxMarkReadPort,
+    pmsInboxProviderActionPort: options.pmsInboxProviderActionPort,
     pmsInboxQuickReplyPort: options.pmsInboxQuickReplyPort,
     pmsInboxReplyPort: options.pmsInboxReplyPort,
     pmsInboxTriagePort: options.pmsInboxTriagePort,
@@ -13850,6 +13853,170 @@ describe("vayada-api", () => {
       const response = await app.inject({
         method: "POST",
         url: `/api/pms/properties/${"propertyId" in candidate ? candidate.propertyId : pmsPropertyId}/messaging/threads/13735000-0000-4000-8000-000000000001/assist`,
+        headers: {
+          ...(candidate.name === "missing auth" ? {} : { authorization: "Bearer valid-token" }),
+          "content-type": "application/json",
+          "idempotency-key": "private-key",
+        },
+        payload: "{",
+      });
+      expect(response.statusCode, candidate.name).toBe(candidate.status);
+      await app.close();
+      app = null;
+    }
+    expect(dispatches).toHaveLength(0);
+  });
+
+  it("accepts the protected Booking.com no-reply-needed provider action", async () => {
+    const threadId = "13736000-0000-4000-8000-000000000001";
+    const jobId = "13736000-0000-4000-8000-000000000002";
+    const calls: Parameters<PmsInboxProviderActionPort["noReplyNeeded"]>[0][] = [];
+    const close = vi.fn(async () => undefined);
+    const port: PmsInboxProviderActionPort = {
+      async noReplyNeeded(input) {
+        calls.push(input);
+        if (input.idempotencyKey === "missing")
+          return { ok: false, error: { code: "thread_not_found", message: "Missing." } };
+        if (input.idempotencyKey === "unavailable")
+          return {
+            ok: false,
+            error: { code: "provider_action_unavailable", message: "Unavailable." },
+          };
+        if (input.idempotencyKey === "conflict")
+          return { ok: false, error: { code: "idempotency_conflict", message: "Conflict." } };
+        if (input.idempotencyKey === "invalid")
+          return { ok: false, error: { code: "validation_failed", message: "Invalid." } };
+        return {
+          ok: true,
+          value: Object.assign(
+            {
+              propertyId: input.propertyId,
+              threadId: input.idempotencyKey === "bad-result" ? "foreign-thread" : input.threadId,
+              action: "booking_com_no_reply_needed" as const,
+              jobId,
+              acceptedAt: "2026-09-03T11:00:00.000Z",
+              attentionStateChanged: false as const,
+            },
+            { providerIdempotencyReference: "must-not-leak", sourceThreadId: "must-not-leak" },
+          ),
+        };
+      },
+      close,
+    };
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read", "pms.inbox.reply"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsInboxProviderActionPort: port,
+      pmsOperationsAllowedOrigins: ["https://pms.localhost"],
+    });
+    const url = `/api/pms/properties/${pmsPropertyId}/messaging/threads/${threadId}/provider-actions/no-reply-needed`;
+    const post = (key?: string, payload?: unknown) =>
+      injectJson(app!, {
+        method: "POST",
+        url,
+        headers: {
+          authorization: "Bearer valid-token",
+          ...(key ? { "idempotency-key": key } : {}),
+        },
+        ...(payload === undefined ? {} : { payload: payload as never }),
+      });
+
+    await expect(
+      app.inject({ method: "OPTIONS", url, headers: { origin: "https://pms.localhost" } }),
+    ).resolves.toMatchObject({ statusCode: 204 });
+    await expect(post("accepted")).resolves.toEqual({
+      statusCode: 202,
+      body: {
+        contractVersion: "native-guest-inbox.v2",
+        propertyId: pmsPropertyId,
+        threadId,
+        action: "booking_com_no_reply_needed",
+        jobId,
+        acceptedAt: "2026-09-03T11:00:00.000Z",
+        attentionStateChanged: false,
+      },
+    });
+    for (const [key, statusCode, code] of [
+      ["missing", 404, "thread_not_found"],
+      ["unavailable", 409, "provider_action_unavailable"],
+      ["conflict", 409, "idempotency_conflict"],
+      ["invalid", 400, "validation_failed"],
+      ["bad-result", 500, "read_model_unavailable"],
+    ] as const)
+      await expect(post(key)).resolves.toMatchObject({ statusCode, body: { code } });
+
+    const beforeInvalid = calls.length;
+    await expect(post()).resolves.toMatchObject({
+      statusCode: 400,
+      body: { code: "validation_failed" },
+    });
+    await expect(post("unexpected-body", { action: "send" })).resolves.toMatchObject({
+      statusCode: 400,
+      body: { code: "validation_failed" },
+    });
+    expect(calls).toHaveLength(beforeInvalid);
+    expect(calls[0]).toMatchObject({
+      propertyId: pmsPropertyId,
+      threadId,
+      organizationId: "org_hotel_group",
+      actorUserId: "user_hotel_owner",
+      actorMembershipId: "membership_hotel_owner",
+      idempotencyKey: "accepted",
+      audit: { requestId: expect.any(String), correlationId: expect.any(String) },
+    });
+    await app.close();
+    app = null;
+    expect(close).toHaveBeenCalledOnce();
+
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read", "pms.inbox.reply"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+    });
+    await expect(post("missing-port")).resolves.toMatchObject({
+      statusCode: 500,
+      body: { code: "read_model_unavailable" },
+    });
+  });
+
+  it("authorizes Inbox provider actions before reading their body", async () => {
+    const dispatches: unknown[] = [];
+    const port: PmsInboxProviderActionPort = {
+      async noReplyNeeded(input) {
+        dispatches.push(input);
+        throw new Error("must not dispatch");
+      },
+    };
+    const entitlement: ProductEntitlement = {
+      product: "pms",
+      key: "property-management",
+      status: "active",
+    };
+    const cases = [
+      { name: "missing auth", permissions: ["pms.inbox.read", "pms.inbox.reply"], status: 401 },
+      { name: "missing read", permissions: ["pms.inbox.reply"], status: 403 },
+      { name: "missing reply", permissions: ["pms.inbox.read"], status: 403 },
+      {
+        name: "missing entitlement",
+        permissions: ["pms.inbox.read", "pms.inbox.reply"],
+        entitlements: [] as ProductEntitlement[],
+        status: 403,
+      },
+      {
+        name: "wrong property",
+        permissions: ["pms.inbox.read", "pms.inbox.reply"],
+        propertyId: "f6853000-0000-0000-0000-000000000099",
+        status: 403,
+      },
+    ] as const;
+    for (const candidate of cases) {
+      app = buildAuthenticatedApp({
+        permissions: [...candidate.permissions] as PermissionKey[],
+        entitlements: "entitlements" in candidate ? [...candidate.entitlements] : [entitlement],
+        pmsInboxProviderActionPort: port,
+      });
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/pms/properties/${"propertyId" in candidate ? candidate.propertyId : pmsPropertyId}/messaging/threads/13736000-0000-4000-8000-000000000001/provider-actions/no-reply-needed`,
         headers: {
           ...(candidate.name === "missing auth" ? {} : { authorization: "Bearer valid-token" }),
           "content-type": "application/json",
