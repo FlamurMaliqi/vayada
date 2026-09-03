@@ -111,6 +111,7 @@ import type { PmsRoomAssignmentSettingsPort } from "./domains/pmsRoomAssignmentS
 import type { PmsRoomAssignmentOptimizationHistoryPort } from "./domains/pmsRoomAssignmentOptimizationHistory.js";
 import type {
   PmsInboxMarkReadPort,
+  PmsInboxQuickReplyPort,
   PmsInboxReadPort,
   PmsInboxReplyPort,
   PmsInboxStaffCommandPort,
@@ -2671,6 +2672,7 @@ function buildAuthenticatedApp(
     pmsOperationsRepository?: PmsOperationsReadRepository | null;
     pmsInboxReadPort?: PmsInboxReadPort;
     pmsInboxMarkReadPort?: PmsInboxMarkReadPort;
+    pmsInboxQuickReplyPort?: PmsInboxQuickReplyPort;
     pmsInboxReplyPort?: PmsInboxReplyPort;
     pmsInboxTriagePort?: PmsInboxTriagePort;
     pmsInboxStaffCommandPort?: PmsInboxStaffCommandPort;
@@ -2720,6 +2722,7 @@ function buildAuthenticatedApp(
     pmsOperationsCommandRepository: options.pmsOperationsCommandRepository,
     pmsInboxReadPort: options.pmsInboxReadPort,
     pmsInboxMarkReadPort: options.pmsInboxMarkReadPort,
+    pmsInboxQuickReplyPort: options.pmsInboxQuickReplyPort,
     pmsInboxReplyPort: options.pmsInboxReplyPort,
     pmsInboxTriagePort: options.pmsInboxTriagePort,
     pmsInboxStaffCommandPort: options.pmsInboxStaffCommandPort,
@@ -13334,6 +13337,332 @@ describe("vayada-api", () => {
         payload: "{",
       });
       expect(response.statusCode, candidate.name).toBe(candidate.statusCode);
+      await app.close();
+      app = null;
+    }
+    expect(dispatches).toHaveLength(0);
+  });
+
+  it("accepts protected Inbox quick-reply reads, commands, and previews", async () => {
+    const quickReplyId = "13734000-0000-4000-8000-000000000001";
+    const threadId = "13734000-0000-4000-8000-000000000002";
+    const now = "2026-09-03T10:00:00.000Z";
+    const lists: Parameters<PmsInboxQuickReplyPort["list"]>[0][] = [];
+    const creates: Parameters<PmsInboxQuickReplyPort["create"]>[0][] = [];
+    const updates: Parameters<PmsInboxQuickReplyPort["update"]>[0][] = [];
+    const archives: Parameters<PmsInboxQuickReplyPort["archive"]>[0][] = [];
+    const previews: Parameters<PmsInboxQuickReplyPort["preview"]>[0][] = [];
+    const close = vi.fn(async () => undefined);
+    const errorFor = (
+      key: string,
+    ):
+      | Extract<Awaited<ReturnType<PmsInboxQuickReplyPort["create"]>>, { ok: false }>["error"]
+      | undefined =>
+      ({
+        missing: { code: "quick_reply_not_found", message: "Quick reply not found." },
+        thread: { code: "thread_not_found", message: "Thread not found." },
+        version: {
+          code: "quick_reply_version_conflict",
+          message: "Quick reply changed.",
+          currentVersion: 9,
+        },
+        name: { code: "quick_reply_name_conflict", message: "Name already exists." },
+        conflict: { code: "idempotency_conflict", message: "Idempotency conflict." },
+        invalid: { code: "validation_failed", message: "Quick reply is invalid." },
+      })[key as "missing"];
+    const item = (
+      propertyId = pmsPropertyId,
+      version = 1,
+      fields: { name?: string; text?: string; approvedVariables?: readonly string[] } = {},
+    ) =>
+      Object.assign(
+        {
+          propertyId,
+          id: quickReplyId,
+          name: fields.name ?? "Room ready",
+          text: fields.text ?? "Your room {{room_number}} is ready.",
+          approvedVariables: fields.approvedVariables ?? ["room_number"],
+          version,
+          createdAt: now,
+          updatedAt: now,
+        },
+        { createdByMembershipId: "must-not-leak" },
+      );
+    const port: PmsInboxQuickReplyPort = {
+      async list(input) {
+        lists.push(input);
+        return [item()];
+      },
+      async create(input) {
+        creates.push(input);
+        const error = errorFor(input.idempotencyKey);
+        if (error) return { ok: false, error };
+        return {
+          ok: true,
+          value: {
+            propertyId:
+              input.idempotencyKey === "bad-result" ? "foreign-property" : input.propertyId,
+            quickReply: item(input.propertyId, 1, input),
+          },
+        };
+      },
+      async update(input) {
+        updates.push(input);
+        const error = errorFor(input.idempotencyKey);
+        if (error) return { ok: false, error };
+        return {
+          ok: true,
+          value: {
+            propertyId: input.propertyId,
+            quickReply: item(input.propertyId, input.expectedVersion + 1, input),
+          },
+        };
+      },
+      async archive(input) {
+        archives.push(input);
+        const error = errorFor(input.idempotencyKey);
+        if (error) return { ok: false, error };
+        return {
+          ok: true,
+          value: Object.assign(
+            {
+              propertyId: input.propertyId,
+              quickReplyId: input.quickReplyId,
+              version: input.expectedVersion + 1,
+              archivedAt: now,
+            },
+            { providerPayload: "must-not-leak", contractVersion: "must-not-override" },
+          ),
+        };
+      },
+      async preview(input) {
+        previews.push(input);
+        const error = errorFor(input.idempotencyKey);
+        if (error) return { ok: false, error };
+        return {
+          ok: true,
+          value: Object.assign(
+            {
+              propertyId: input.propertyId,
+              quickReplyId: input.quickReplyId,
+              threadId: input.threadId,
+              renderedText: "Your room {{room_number}} is ready.",
+              unresolvedVariables: ["room_number"],
+              composerUseAllowed: false,
+            },
+            { bookingContext: "must-not-leak", contractVersion: "must-not-override" },
+          ),
+        };
+      },
+      close,
+    };
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read", "pms.inbox.reply"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsInboxQuickReplyPort: port,
+      pmsOperationsAllowedOrigins: ["https://pms.localhost"],
+    });
+    const base = `/api/pms/properties/${pmsPropertyId}/messaging/quick-replies`;
+    const post = (path: string, key: string, payload: unknown) =>
+      injectJson(app!, {
+        method: "POST",
+        url: `${base}${path}`,
+        headers: { authorization: "Bearer valid-token", "idempotency-key": key },
+        payload: payload as never,
+      });
+
+    for (const path of [
+      "",
+      `/${quickReplyId}/update`,
+      `/${quickReplyId}/archive`,
+      `/${quickReplyId}/preview`,
+    ])
+      await expect(
+        app.inject({
+          method: "OPTIONS",
+          url: `${base}${path}`,
+          headers: { origin: "https://pms.localhost" },
+        }),
+      ).resolves.toMatchObject({ statusCode: 204 });
+
+    const listed = await injectJson(app, {
+      method: "GET",
+      url: base,
+      headers: { authorization: "Bearer valid-token" },
+    });
+    expect(listed).toEqual({
+      statusCode: 200,
+      body: {
+        contractVersion: "native-guest-inbox.v2",
+        propertyId: pmsPropertyId,
+        items: [
+          {
+            id: quickReplyId,
+            name: "Room ready",
+            text: "Your room {{room_number}} is ready.",
+            approvedVariables: ["room_number"],
+            version: 1,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      },
+    });
+    const created = await post("", "create", {
+      name: "  Welcome  ",
+      text: "  Welcome {{guest_name}}.  ",
+      approvedVariables: ["guest_name"],
+    });
+    expect(created).toMatchObject({
+      statusCode: 201,
+      body: { quickReply: { name: "Welcome", text: "Welcome {{guest_name}}.", version: 1 } },
+    });
+    const updated = await post(`/${quickReplyId}/update`, "update", {
+      expectedVersion: 1,
+      name: "Arrival",
+      text: "Arrival is {{arrival_date}}.",
+      approvedVariables: ["arrival_date"],
+    });
+    expect(updated).toMatchObject({ statusCode: 200, body: { quickReply: { version: 2 } } });
+    const archived = await post(`/${quickReplyId}/archive`, "archive", { expectedVersion: 2 });
+    expect(archived).toEqual({
+      statusCode: 200,
+      body: {
+        contractVersion: "native-guest-inbox.v2",
+        propertyId: pmsPropertyId,
+        quickReplyId,
+        version: 3,
+        archivedAt: now,
+      },
+    });
+    const previewed = await post(`/${quickReplyId}/preview`, "preview", { threadId });
+    expect(previewed).toEqual({
+      statusCode: 200,
+      body: {
+        contractVersion: "native-guest-inbox.v2",
+        propertyId: pmsPropertyId,
+        quickReplyId,
+        threadId,
+        renderedText: "Your room {{room_number}} is ready.",
+        unresolvedVariables: ["room_number"],
+        composerUseAllowed: false,
+      },
+    });
+
+    for (const [key, statusCode, code] of [
+      ["missing", 404, "quick_reply_not_found"],
+      ["thread", 404, "thread_not_found"],
+      ["version", 409, "quick_reply_version_conflict"],
+      ["name", 409, "quick_reply_name_conflict"],
+      ["conflict", 409, "idempotency_conflict"],
+      ["invalid", 400, "validation_failed"],
+    ] as const)
+      await expect(post(`/${quickReplyId}/preview`, key, { threadId })).resolves.toMatchObject({
+        statusCode,
+        body: { code },
+      });
+    await expect(post("", "bad-result", { name: "Welcome", text: "Hello" })).resolves.toMatchObject(
+      { statusCode: 500, body: { code: "read_model_unavailable" } },
+    );
+
+    const dispatchCount = creates.length + updates.length + archives.length + previews.length;
+    for (const request of [
+      post("", "bad", { name: "", text: "Hello" }),
+      post("", "bad", { name: "Hello", text: "Hello", approvedVariables: ["Bad-Name"] }),
+      post(`/${quickReplyId}/update`, "bad", {
+        expectedVersion: 0,
+        name: "Hello",
+        text: "Hello",
+      }),
+      post(`/${quickReplyId}/archive`, "bad", { expectedVersion: 1, extra: true }),
+      post(`/${quickReplyId}/preview`, "bad", { threadId: "not-a-uuid" }),
+    ])
+      await expect(request).resolves.toMatchObject({
+        statusCode: 400,
+        body: { code: "validation_failed" },
+      });
+    expect(creates.length + updates.length + archives.length + previews.length).toBe(dispatchCount);
+    expect(lists).toEqual([{ propertyId: pmsPropertyId }]);
+    expect(creates[0]).toMatchObject({
+      propertyId: pmsPropertyId,
+      organizationId: "org_hotel_group",
+      actorUserId: "user_hotel_owner",
+      actorMembershipId: "membership_hotel_owner",
+      idempotencyKey: "create",
+      name: "Welcome",
+      text: "Welcome {{guest_name}}.",
+      approvedVariables: ["guest_name"],
+      audit: { requestId: expect.any(String), correlationId: expect.any(String) },
+    });
+    expect(previews[0]).toMatchObject({ quickReplyId, threadId, idempotencyKey: "preview" });
+    await app.close();
+    app = null;
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("authorizes every quick-reply operation before reading its body", async () => {
+    const dispatches: unknown[] = [];
+    const port: PmsInboxQuickReplyPort = {
+      async list(input) {
+        dispatches.push(input);
+        return [];
+      },
+      async create(input) {
+        dispatches.push(input);
+        throw new Error("must not dispatch");
+      },
+      async update(input) {
+        dispatches.push(input);
+        throw new Error("must not dispatch");
+      },
+      async archive(input) {
+        dispatches.push(input);
+        throw new Error("must not dispatch");
+      },
+      async preview(input) {
+        dispatches.push(input);
+        throw new Error("must not dispatch");
+      },
+    };
+    const entitlement: ProductEntitlement = {
+      product: "pms",
+      key: "property-management",
+      status: "active",
+    };
+    const cases = [
+      { name: "missing auth", permissions: ["pms.inbox.read", "pms.inbox.reply"], status: 401 },
+      { name: "missing read", permissions: ["pms.inbox.reply"], status: 403 },
+      { name: "missing reply", permissions: ["pms.inbox.read"], status: 403 },
+      {
+        name: "missing entitlement",
+        permissions: ["pms.inbox.read", "pms.inbox.reply"],
+        entitlements: [] as ProductEntitlement[],
+        status: 403,
+      },
+      {
+        name: "wrong property",
+        permissions: ["pms.inbox.read", "pms.inbox.reply"],
+        propertyId: "f6853000-0000-0000-0000-000000000099",
+        status: 403,
+      },
+    ] as const;
+    for (const [index, candidate] of cases.entries()) {
+      app = buildAuthenticatedApp({
+        permissions: [...candidate.permissions] as PermissionKey[],
+        entitlements: "entitlements" in candidate ? [...candidate.entitlements] : [entitlement],
+        pmsInboxQuickReplyPort: port,
+      });
+      const response = await app.inject({
+        method: index === 0 ? "GET" : "POST",
+        url: `/api/pms/properties/${"propertyId" in candidate ? candidate.propertyId : pmsPropertyId}/messaging/quick-replies${index === 0 ? "" : "/13734000-0000-4000-8000-000000000001/preview"}`,
+        headers: {
+          ...(candidate.name === "missing auth" ? {} : { authorization: "Bearer valid-token" }),
+          "content-type": "application/json",
+          "idempotency-key": "private-key",
+        },
+        payload: index === 0 ? undefined : "{",
+      });
+      expect(response.statusCode, candidate.name).toBe(candidate.status);
       await app.close();
       app = null;
     }
