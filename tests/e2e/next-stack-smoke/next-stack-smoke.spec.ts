@@ -13,6 +13,7 @@ import {
   JsonApi,
   NEXT_STACK_ORIGINS,
   arrayField,
+  authenticateSyntheticPmsUser,
   createSyntheticPlatformAdmin,
   createSyntheticUser,
   fillSecret,
@@ -623,7 +624,7 @@ async function runHotelFlow(
     return result;
   });
 
-  const api = targetApi(request, session.accessToken);
+  let api = targetApi(request, session.accessToken);
   const hotelName = `QA Next Hotel ${environment.runId}`;
   const setup =
     await test.step("provision tracks, hotel profile, commission, payment and room", async () => {
@@ -902,6 +903,16 @@ async function runHotelFlow(
     page,
     propertyId: setup.propertyId,
     request,
+    refreshAuthentication: async () => {
+      const accessToken = await authenticateSyntheticPmsUser(
+        page.context().request,
+        user,
+        environment.password,
+      );
+      api = targetApi(request, accessToken);
+      resource.api = api;
+      return { accessToken, api };
+    },
     slug: publication.slug,
     testInfo,
     addonItemIds: resource.addonItemIds,
