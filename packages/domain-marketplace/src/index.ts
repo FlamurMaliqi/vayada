@@ -16,6 +16,7 @@ export * from "./affiliateAdmin.js";
 export * from "./creatorProfileModeration.js";
 export * from "./creatorMatchingPreferences.js";
 export * from "./offerMatchingCriteria.js";
+export * from "./matchingEvents.js";
 
 import type {
   MarketplaceOfferMatchingCriteria,
