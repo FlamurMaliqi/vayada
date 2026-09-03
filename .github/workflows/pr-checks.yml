@@ -160,6 +160,7 @@ jobs:
           src/domains/pmsPhysicalRoomUnitReconcileRepository.integration.test.ts
           src/domains/pmsRoomPublicationCommandRepository.integration.test.ts
           src/domains/pmsCalendarAutoOpenSettingsRepository.integration.test.ts
+          src/jobs/pmsChannexScheduler.integration.test.ts
           src/domains/pmsOperatingCalendarCommandRepository.integration.test.ts
           src/domains/pmsOperatingCalendarImpact.integration.test.ts
           src/domains/pmsManualBookingCommandRepository.integration.test.ts

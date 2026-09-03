@@ -1,4 +1,8 @@
+import { createHash } from "node:crypto";
+
 export const PMS_CALENDAR_AUTO_OPEN_CONTRACT_VERSION = "pms-calendar-auto-open.v1" as const;
+export const PMS_CALENDAR_AUTO_OPEN_SOURCE_CONTRACT_VERSION =
+  "pms-calendar-auto-open-source.v1" as const;
 export const PMS_CALENDAR_AUTO_OPEN_ROLLING_MONTHS = [12, 18, 24] as const;
 
 export type PmsCalendarAutoOpenConfiguration = Readonly<{
@@ -38,6 +42,27 @@ export type PmsCalendarAutoOpenWarning = Readonly<{
   roomTypeId: string;
   from: string;
   through: string;
+}>;
+
+export type PmsCalendarAutoOpenSource = Readonly<{
+  contractVersion: typeof PMS_CALENDAR_AUTO_OPEN_SOURCE_CONTRACT_VERSION;
+  settingRevision: number;
+  propertyProfileRevision: number;
+  propertyTimeZone: string;
+  operatingCalendarRevision: number;
+  rooms: readonly Readonly<{
+    roomTypeId: string;
+    roomFactsRevision: number;
+    roomUnitsRevision: number;
+  }>[];
+  pricing: Readonly<{
+    pricingCurrencyRevision: number;
+    flexibleRatePlans: readonly Readonly<{
+      roomTypeId: string;
+      flexibleRatePlanRevision: number;
+    }>[];
+    optionalPricingAggregateRevision: number;
+  }>;
 }>;
 
 export const PMS_CALENDAR_AUTO_OPEN_DEFAULT_CONFIGURATION = Object.freeze({
@@ -142,6 +167,80 @@ export function calculatePmsCalendarAutoOpenHorizon(
     }
   }
   return Object.freeze({ propertyTimeZone, propertyLocalDate, targetOpenThrough });
+}
+
+export function createPmsCalendarAutoOpenSource(
+  input: Omit<PmsCalendarAutoOpenSource, "contractVersion">,
+): PmsCalendarAutoOpenSource {
+  const rooms = [...input.rooms].sort(byRoomTypeId).map((room) =>
+    Object.freeze({
+      roomTypeId: room.roomTypeId,
+      roomFactsRevision: room.roomFactsRevision,
+      roomUnitsRevision: room.roomUnitsRevision,
+    }),
+  );
+  const flexibleRatePlans = [...input.pricing.flexibleRatePlans].sort(byRoomTypeId).map((plan) =>
+    Object.freeze({
+      roomTypeId: plan.roomTypeId,
+      flexibleRatePlanRevision: plan.flexibleRatePlanRevision,
+    }),
+  );
+  assertSource(input, rooms, flexibleRatePlans);
+  return Object.freeze({
+    contractVersion: PMS_CALENDAR_AUTO_OPEN_SOURCE_CONTRACT_VERSION,
+    settingRevision: input.settingRevision,
+    propertyProfileRevision: input.propertyProfileRevision,
+    propertyTimeZone: input.propertyTimeZone,
+    operatingCalendarRevision: input.operatingCalendarRevision,
+    rooms: Object.freeze(rooms),
+    pricing: Object.freeze({
+      pricingCurrencyRevision: input.pricing.pricingCurrencyRevision,
+      flexibleRatePlans: Object.freeze(flexibleRatePlans),
+      optionalPricingAggregateRevision: input.pricing.optionalPricingAggregateRevision,
+    }),
+  });
+}
+
+export function fingerprintPmsCalendarAutoOpenSource(source: PmsCalendarAutoOpenSource): string {
+  return createHash("sha256").update(JSON.stringify(source)).digest("hex");
+}
+
+function byRoomTypeId(left: { roomTypeId: string }, right: { roomTypeId: string }): number {
+  return left.roomTypeId < right.roomTypeId ? -1 : left.roomTypeId > right.roomTypeId ? 1 : 0;
+}
+
+function assertSource(
+  input: Omit<PmsCalendarAutoOpenSource, "contractVersion">,
+  rooms: PmsCalendarAutoOpenSource["rooms"],
+  plans: PmsCalendarAutoOpenSource["pricing"]["flexibleRatePlans"],
+): void {
+  const positive = (value: number) => Number.isSafeInteger(value) && value > 0;
+  if (
+    !positive(input.settingRevision) ||
+    !positive(input.propertyProfileRevision) ||
+    !positive(input.operatingCalendarRevision) ||
+    input.propertyTimeZone.trim() !== input.propertyTimeZone ||
+    input.propertyTimeZone.length === 0 ||
+    rooms.length === 0 ||
+    rooms.some(
+      (room, index) =>
+        room.roomTypeId.length === 0 ||
+        !positive(room.roomFactsRevision) ||
+        !positive(room.roomUnitsRevision) ||
+        (index > 0 && rooms[index - 1]!.roomTypeId === room.roomTypeId),
+    ) ||
+    !positive(input.pricing.pricingCurrencyRevision) ||
+    !Number.isSafeInteger(input.pricing.optionalPricingAggregateRevision) ||
+    input.pricing.optionalPricingAggregateRevision < 0 ||
+    plans.some(
+      (plan, index) =>
+        plan.roomTypeId.length === 0 ||
+        !positive(plan.flexibleRatePlanRevision) ||
+        (index > 0 && plans[index - 1]!.roomTypeId === plan.roomTypeId),
+    )
+  ) {
+    throw new TypeError("PMS calendar auto-open source is invalid");
+  }
 }
 
 function localDate(instant: Date, timeZone: string): string {
