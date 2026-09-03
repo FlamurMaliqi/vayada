@@ -63,12 +63,16 @@ class FakeDatabase {
       return this.replay ? ok([this.replay]) : ok([]);
     if (text.includes("INSERT INTO platform.idempotency_keys"))
       return this.replay ? ok([]) : ok([{ id: IDEMPOTENCY }]);
-    if (text.includes("SELECT 1 FROM pms.message_threads"))
-      return this.options.thread === false ? ok([]) : ok([{ "?column?": 1 }]);
-    if (text.includes('SELECT sent_at AS "sentAt"'))
-      return this.options.boundary === false
+    if (text.includes("FROM pms.message_threads thread"))
+      return this.options.thread === false
         ? ok([])
-        : ok([{ sentAt: "2026-09-03T08:59:00.000Z" }]);
+        : ok([
+            {
+              boundaryExists: this.options.boundary !== false,
+              candidateMessageIds: this.options.boundary === false ? [] : [BOUNDARY],
+            },
+          ]);
+    if (text.includes("SELECT 1 FROM pms.message_threads")) return ok([{ "?column?": 1 }]);
     if (text.includes("UPDATE pms.messages")) return count(this.options.markedReadCount ?? 2);
     if (text.includes("UPDATE pms.message_threads thread"))
       return ok([{ unreadCount: String(this.options.unreadCount ?? 1) }]);
@@ -150,13 +154,17 @@ describe("PostgreSQL PMS Inbox mark-read command", () => {
     expect(
       database.calls.findIndex((call) => call.text.includes("hotel_catalog.properties")),
     ).toBeLessThan(database.calls.findIndex((call) => call.text.includes("idempotency_keys")));
-    const boundary = database.call('SELECT sent_at AS "sentAt"');
-    expect(boundary.text).toContain("property_id = $1::uuid AND thread_id = $2::uuid");
-    expect(boundary.text).toContain("id = $3::uuid AND direction = 'inbound'");
+    const boundary = database.call("FROM pms.message_threads thread");
+    expect(boundary.text).toContain(
+      "message.property_id = thread.property_id AND message.thread_id = thread.id",
+    );
+    expect(boundary.text).toContain("message.id = $3::uuid AND message.direction = 'inbound'");
+    expect(boundary.text).toContain("array_agg(candidate.id ORDER BY candidate.sent_at");
     expect(boundary.values).toEqual([PROPERTY, THREAD, BOUNDARY]);
     const update = database.call("UPDATE pms.messages");
     expect(update.text).toContain("direction = 'inbound' AND read_at IS NULL");
-    expect(update.text).toContain("sent_at = $5::timestamptz AND id <= $3::uuid");
+    expect(update.text).toContain("id = ANY($3::uuid[])");
+    expect(update.values).toEqual([PROPERTY, THREAD, [BOUNDARY], NOW]);
     expect(database.call("UPDATE pms.message_threads thread").text).toContain(
       "direction = 'inbound' AND read_at IS NULL",
     );

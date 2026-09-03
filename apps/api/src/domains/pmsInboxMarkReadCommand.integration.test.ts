@@ -123,7 +123,7 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox mark-read transaction", () => {
     expect(persisted.counts).toEqual({ idempotency: 1, events: 1, audits: 1, outbox: 0 });
   });
 
-  it("keeps a concurrently accepted later inbound message unread", async () => {
+  it("keeps a concurrently accepted inbound message unread despite its older sent time", async () => {
     const blocker = new pg.Client({ connectionString: URL });
     await blocker.connect();
     try {
@@ -140,7 +140,7 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox mark-read transaction", () => {
            (id, property_id, thread_id, source_message_id, direction, sender_type,
             body, sent_at, received_at, raw_payload)
          VALUES ($1::uuid, $2::uuid, $3::uuid, 'concurrent-inbound', 'inbound', 'guest',
-                 'Concurrent', '2026-09-03T08:59:30.000Z', $4::timestamptz, '{}'::jsonb)`,
+                 'Concurrent', '2026-09-03T08:56:00.000Z', $4::timestamptz, '{}'::jsonb)`,
         [CONCURRENT, PROPERTY, THREAD, NOW],
       );
       await blocker.query(
