@@ -1,7 +1,6 @@
 "use client";
 
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
-import { consentService } from "@/services/api/consent";
 
 // Cookie consent categories
 export interface CookieConsent {
@@ -26,25 +25,7 @@ interface CookieConsentContextType {
   closeSettings: () => void;
 }
 
-const VISITOR_ID_KEY = "vayada_visitor_id";
 const CONSENT_KEY = "vayada_cookie_consent";
-
-// Generate a unique visitor ID
-function generateVisitorId(): string {
-  return "v_" + Math.random().toString(36).substring(2) + Date.now().toString(36);
-}
-
-// Get or create visitor ID
-function getVisitorId(): string {
-  if (typeof window === "undefined") return "";
-
-  let visitorId = localStorage.getItem(VISITOR_ID_KEY);
-  if (!visitorId) {
-    visitorId = generateVisitorId();
-    localStorage.setItem(VISITOR_ID_KEY, visitorId);
-  }
-  return visitorId;
-}
 
 const CookieConsentContext = createContext<CookieConsentContextType | undefined>(undefined);
 
@@ -55,43 +36,20 @@ export function CookieConsentProvider({ children }: { children: ReactNode }) {
   const [showBanner, setShowBanner] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
-  // Load consent from localStorage on mount
+  // Landing consent is local to this browser. Account-level privacy settings
+  // live in the authenticated application.
   useEffect(() => {
-    const loadConsent = async () => {
+    const loadConsent = () => {
       try {
-        // Check localStorage first
         const storedConsent = localStorage.getItem(CONSENT_KEY);
         if (storedConsent) {
           const parsed = JSON.parse(storedConsent) as CookieConsent;
           setConsent(parsed);
           setHasConsented(true);
           setShowBanner(false);
-        } else {
-          // No stored consent, show banner
-          setShowBanner(true);
+          return;
         }
-
-        // Try to sync with backend
-        const visitorId = getVisitorId();
-        if (visitorId) {
-          try {
-            const backendConsent = await consentService.getCookieConsent(visitorId);
-            if (backendConsent) {
-              const consentData: CookieConsent = {
-                necessary: backendConsent.necessary,
-                functional: backendConsent.functional,
-                analytics: backendConsent.analytics,
-                marketing: backendConsent.marketing,
-              };
-              setConsent(consentData);
-              setHasConsented(true);
-              setShowBanner(false);
-              localStorage.setItem(CONSENT_KEY, JSON.stringify(consentData));
-            }
-          } catch {
-            // Backend not available, use localStorage
-          }
-        }
+        setShowBanner(true);
       } catch (error) {
         console.error("Error loading cookie consent:", error);
       } finally {
@@ -102,7 +60,7 @@ export function CookieConsentProvider({ children }: { children: ReactNode }) {
     loadConsent();
   }, []);
 
-  // Save consent to localStorage and backend
+  // Save consent locally so the public site never depends on an account API.
   const saveConsent = useCallback(async (newConsent: CookieConsent) => {
     // Always ensure necessary is true
     const finalConsent = { ...newConsent, necessary: true };
@@ -113,18 +71,6 @@ export function CookieConsentProvider({ children }: { children: ReactNode }) {
     setHasConsented(true);
     setShowBanner(false);
     setShowSettings(false);
-
-    // Save to backend
-    try {
-      const visitorId = getVisitorId();
-      await consentService.saveCookieConsent({
-        visitor_id: visitorId,
-        ...finalConsent,
-      });
-    } catch (error) {
-      console.error("Error saving cookie consent to backend:", error);
-      // Don't throw - localStorage save is enough for functionality
-    }
   }, []);
 
   const acceptAll = useCallback(async () => {

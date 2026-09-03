@@ -82,6 +82,20 @@ test("ordinary product API clients retain configured service origins", async ({}
   }
 });
 
+test("landing production APIs are explicit and consent remains local", async ({}, testInfo) => {
+  const root = repositoryRoot(testInfo);
+  const [workflowSource, consentSource] = await Promise.all([
+    source(root, ".github/workflows/deploy-landing.yml"),
+    source(root, "apps/landing/context/CookieConsentContext.tsx"),
+  ]);
+
+  expect(workflowSource).toContain("CONTACT_API_URL: https://api.vayada.com");
+  expect(workflowSource).toContain("MARKETPLACE_API_URL: https://next-api.vayada.com");
+  expect(workflowSource).toContain("NEXT_PUBLIC_VAYADA_API_URL=${{ env.MARKETPLACE_API_URL }}");
+  expect(workflowSource).not.toMatch(/NEXT_PUBLIC_[A-Z_]+=.*(?:localhost|127\.0\.0\.1)/);
+  expect(consentSource).not.toContain("@/services/api/consent");
+});
+
 test("all gateway tests lock down cookies, redirects, cache headers, and unsafe headers", async ({}, testInfo) => {
   const root = repositoryRoot(testInfo);
   for (const { app } of apps) {

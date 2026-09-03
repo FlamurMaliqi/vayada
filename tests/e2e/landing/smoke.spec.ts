@@ -28,9 +28,6 @@ test.describe("landing smoke", () => {
   for (const route of routes) {
     test(`${route.path} renders the public shell`, async ({ page }, testInfo) => {
       const assertHealthy = watchPageHealth(page, testInfo);
-      await page.route("**/consent/cookies**", async (requestRoute) => {
-        await requestRoute.fulfill({ status: 204, body: "" });
-      });
 
       await page.goto(route.path);
 
@@ -45,9 +42,6 @@ test.describe("landing smoke", () => {
 
 test("homepage exposes distinct hotel, creator and account actions", async ({ page }, testInfo) => {
   const assertHealthy = watchPageHealth(page, testInfo);
-  await page.route("**/consent/cookies**", async (requestRoute) => {
-    await requestRoute.fulfill({ status: 204, body: "" });
-  });
 
   await page.goto("/");
 
@@ -88,9 +82,6 @@ test("homepage exposes distinct hotel, creator and account actions", async ({ pa
 test("homepage keeps its primary journeys usable on mobile", async ({ page }, testInfo) => {
   const assertHealthy = watchPageHealth(page, testInfo);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.route("**/consent/cookies**", async (requestRoute) => {
-    await requestRoute.fulfill({ status: 204, body: "" });
-  });
 
   await page.goto("/");
 
