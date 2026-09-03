@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { claimPmsInboxDeliveryJob, preparePmsInboxDeliveryJob } from "./pmsInboxDeliveryPg.js";
+import {
+  claimPmsInboxDeliveryJob,
+  completePmsInboxDeliveryJob,
+  preparePmsInboxDeliveryJob,
+} from "./pmsInboxDeliveryPg.js";
 
 const JOB = {
   id: "13750000-0000-4000-8000-000000000001",
@@ -114,7 +118,75 @@ describe("PostgreSQL PMS Inbox delivery store", () => {
     ).resolves.toEqual({ state: "blocked", failure: "access_unavailable" });
     expect(query).toHaveBeenCalledTimes(2);
   });
+
+  it("atomically projects accepted provider evidence and finishes the job", async () => {
+    const { client, queries } = completionClient();
+
+    await expect(
+      completePmsInboxDeliveryJob(client, JOB, {
+        outcome: "accepted",
+        attemptId: "13750000-0000-4000-8000-000000000004",
+        providerReference: "provider-message-1",
+      }),
+    ).resolves.toBe(true);
+
+    expect(queries.some((sql) => sql.includes("SET outcome = 'accepted'"))).toBe(true);
+    expect(queries.some((sql) => sql.includes("delivery_state = $3"))).toBe(true);
+    expect(queries.some((sql) => sql.includes("SET status = $4"))).toBe(true);
+    expect(queries.some((sql) => sql.includes("platform.product_audit_events"))).toBe(true);
+  });
+
+  it("projects a transient retry and dead-letters exhausted work", async () => {
+    const retry = completionClient();
+    await completePmsInboxDeliveryJob(retry.client, JOB, {
+      outcome: "failed",
+      attemptId: "13750000-0000-4000-8000-000000000004",
+      failure: "transient_provider_failure",
+      projection: {
+        attemptOutcome: "transient_failure",
+        state: "retrying",
+        reasonCode: "transient_provider_failure",
+        retry: true,
+        deadLetter: false,
+      },
+      retryAt: new Date("2026-09-03T00:00:30.000Z"),
+    });
+    expect(retry.values.flat()).toContain("pending");
+    expect(retry.values.flat()).toContain("2026-09-03T00:00:30.000Z");
+
+    const exhausted = completionClient();
+    await completePmsInboxDeliveryJob(
+      exhausted.client,
+      { ...JOB, attemptNumber: 5 },
+      {
+        outcome: "failed",
+        attemptId: "13750000-0000-4000-8000-000000000004",
+        failure: "retry_exhausted",
+        projection: {
+          attemptOutcome: "terminal_failure",
+          state: "failed",
+          reasonCode: "retry_exhausted",
+          retry: false,
+          deadLetter: true,
+        },
+      },
+    );
+    expect(exhausted.queries.some((sql) => sql.includes("platform.dead_letter_events"))).toBe(true);
+    expect(exhausted.values.flat()).toContain("dead_lettered");
+  });
 });
+
+function completionClient() {
+  const queries: string[] = [];
+  const values: (readonly unknown[])[] = [];
+  const query = vi.fn(async (text: string, queryValues?: readonly unknown[]) => {
+    queries.push(text);
+    values.push(queryValues ?? []);
+    if (text.startsWith("SELECT 1 FROM platform.jobs")) return { rows: [{ present: true }] };
+    return { rows: [], rowCount: 1 };
+  });
+  return { client: { query } as never, queries, values };
+}
 
 function delivery() {
   return {

@@ -5,6 +5,7 @@ import {
   PMS_INBOX_DELIVERY_QUEUE,
   pmsInboxProviderIdempotencyReference,
   type PmsInboxDeliveryMediaPort,
+  type PmsInboxDeliveryCompletion,
   type PmsInboxDeliveryJob,
   type PmsInboxPreparedDelivery,
 } from "../domains/pmsInboxDelivery.js";
@@ -332,4 +333,220 @@ function providerLimit(channel: string | null): number {
   if (["expedia", "expedia.com", "expedia_com", "expediacom"].includes(normalized ?? ""))
     return 10 * 1024 * 1024;
   return 25 * 1024 * 1024;
+}
+
+export async function completePmsInboxDeliveryJob(
+  client: PmsInboxDeliveryQueryable,
+  job: PmsInboxDeliveryJob,
+  completion: PmsInboxDeliveryCompletion,
+): Promise<boolean> {
+  const lease = await client.query(
+    `SELECT 1 FROM platform.jobs job
+     JOIN platform.job_attempts attempt
+       ON attempt.job_id = job.id AND attempt.attempt_number = $3
+      AND attempt.status = 'running' AND attempt.worker_id = $2
+     WHERE job.id = $1::uuid AND job.status = 'running'
+       AND job.locked_by = $2 AND job.attempts_count = $3
+     FOR UPDATE OF job, attempt`,
+    [job.id, job.workerId, job.attemptNumber],
+  );
+  if (!lease.rows[0]) return false;
+
+  if (completion.outcome === "accepted") {
+    await acceptProviderAttempt(client, job, completion);
+    await projectMessage(client, job, "sent", null, completion.attemptId);
+    await finishPlatformWork(client, job, "succeeded", null);
+    await insertDeliveryAudit(client, job, "succeeded", null, completion.attemptId);
+    return true;
+  }
+
+  if (completion.attemptId) await failProviderAttempt(client, job, completion);
+  if (completion.projection.state)
+    await projectMessage(
+      client,
+      job,
+      completion.projection.state,
+      completion.projection.reasonCode,
+      completion.attemptId,
+    );
+  const status = completion.projection.retry
+    ? "pending"
+    : completion.projection.deadLetter
+      ? "dead_lettered"
+      : "failed";
+  await finishPlatformWork(client, job, status, completion);
+  if (completion.projection.deadLetter) await insertDeadLetter(client, job, completion);
+  await insertDeliveryAudit(client, job, status, completion, completion.attemptId);
+  return true;
+}
+
+async function acceptProviderAttempt(
+  client: PmsInboxDeliveryQueryable,
+  job: PmsInboxDeliveryJob,
+  completion: Extract<PmsInboxDeliveryCompletion, { outcome: "accepted" }>,
+) {
+  const updated = await client.query(
+    `UPDATE pms.message_delivery_attempts
+     SET outcome = 'accepted', completed_at = now(), provider_reference = $4
+     WHERE id = $1::uuid AND message_id = $2::uuid AND property_id = $3::uuid
+       AND outcome = 'running'`,
+    [completion.attemptId, job.messageId, job.propertyId, completion.providerReference],
+  );
+  if (updated.rowCount === 1) return;
+  const existing = await client.query(
+    `SELECT 1 FROM pms.message_delivery_attempts
+     WHERE id = $1::uuid AND message_id = $2::uuid AND property_id = $3::uuid
+       AND outcome = 'accepted' AND provider_reference = $4`,
+    [completion.attemptId, job.messageId, job.propertyId, completion.providerReference],
+  );
+  if (!existing.rows[0]) throw new Error("PMS Inbox accepted delivery attempt is inconsistent");
+}
+
+async function failProviderAttempt(
+  client: PmsInboxDeliveryQueryable,
+  job: PmsInboxDeliveryJob,
+  completion: Extract<PmsInboxDeliveryCompletion, { outcome: "failed" }>,
+) {
+  const updated = await client.query(
+    `UPDATE pms.message_delivery_attempts
+     SET outcome = $4, completed_at = now(), failure_code = $5,
+         failure_metadata = jsonb_build_object('providerRequestId', $6::text)
+     WHERE id = $1::uuid AND message_id = $2::uuid AND property_id = $3::uuid
+       AND outcome = 'running'`,
+    [
+      completion.attemptId,
+      job.messageId,
+      job.propertyId,
+      completion.projection.attemptOutcome,
+      completion.failure,
+      completion.providerRequestId ?? null,
+    ],
+  );
+  if (updated.rowCount !== 1)
+    throw new Error("PMS Inbox failed delivery attempt was not completed exactly once");
+}
+
+async function projectMessage(
+  client: PmsInboxDeliveryQueryable,
+  job: PmsInboxDeliveryJob,
+  state: "retrying" | "sent" | "held" | "failed",
+  reasonCode: string | null,
+  attemptId: string | null,
+) {
+  const projected = await client.query(
+    `UPDATE pms.messages
+     SET delivery_state = $3, delivery_reason_code = $4,
+         current_delivery_attempt_id = COALESCE($5::uuid, current_delivery_attempt_id)
+     WHERE id = $1::uuid AND property_id = $2::uuid AND direction = 'outbound'`,
+    [job.messageId, job.propertyId, state, reasonCode, attemptId],
+  );
+  if (projected.rowCount !== 1)
+    throw new Error("PMS Inbox delivery projection was not updated exactly once");
+}
+
+async function finishPlatformWork(
+  client: PmsInboxDeliveryQueryable,
+  job: PmsInboxDeliveryJob,
+  status: "pending" | "succeeded" | "failed" | "dead_lettered",
+  completion: Extract<PmsInboxDeliveryCompletion, { outcome: "failed" }> | null,
+) {
+  const attemptStatus = status === "succeeded" ? "succeeded" : "failed";
+  await client.query(
+    `UPDATE platform.job_attempts
+     SET status = $4, finished_at = now(),
+         duration_ms = GREATEST(0, floor(extract(epoch FROM (now() - started_at)) * 1000))::integer,
+         error_type = $5, error_message = $6,
+         retry_after = $7::timestamptz
+     WHERE job_id = $1::uuid AND attempt_number = $2
+       AND status = 'running' AND worker_id = $3`,
+    [
+      job.id,
+      job.attemptNumber,
+      job.workerId,
+      attemptStatus,
+      completion?.failure ?? null,
+      completion?.projection.reasonCode ?? null,
+      completion?.retryAt?.toISOString() ?? null,
+    ],
+  );
+  const finished = await client.query(
+    `UPDATE platform.jobs
+     SET status = $4, run_after = COALESCE($5::timestamptz, run_after),
+         finished_at = CASE WHEN $4 = 'pending' THEN NULL ELSE now() END,
+         locked_at = NULL, locked_by = NULL, updated_at = now(),
+         job_metadata = job_metadata || jsonb_build_object(
+           'lastOutcome', $6::text, 'lastReasonCode', $7::text
+         )
+     WHERE id = $1::uuid AND status = 'running' AND locked_by = $2
+       AND attempts_count = $3`,
+    [
+      job.id,
+      job.workerId,
+      job.attemptNumber,
+      status,
+      completion?.retryAt?.toISOString() ?? null,
+      completion?.outcome ?? "accepted",
+      completion?.projection.reasonCode ?? null,
+    ],
+  );
+  if (finished.rowCount !== 1)
+    throw new Error("PMS Inbox delivery job was not completed exactly once");
+}
+
+async function insertDeadLetter(
+  client: PmsInboxDeliveryQueryable,
+  job: PmsInboxDeliveryJob,
+  completion: Extract<PmsInboxDeliveryCompletion, { outcome: "failed" }>,
+) {
+  await client.query(
+    `INSERT INTO platform.dead_letter_events (
+       source_kind, job_id, job_attempt_id, tenant_scope, property_id,
+       resource_product, resource_type, resource_id, correlation_id,
+       idempotency_key_hash, reason_code, failure_summary, failure_payload
+     )
+     SELECT 'job', job.id, attempt.id, job.tenant_scope, job.property_id,
+       job.resource_product, job.resource_type, job.resource_id, job.correlation_id,
+       job.idempotency_key_hash, $4, $4,
+       jsonb_build_object('attemptNumber', $3::integer)
+     FROM platform.jobs job
+     JOIN platform.job_attempts attempt
+       ON attempt.job_id = job.id AND attempt.attempt_number = $3
+     WHERE job.id = $1::uuid AND job.property_id = $2::uuid`,
+    [job.id, job.propertyId, job.attemptNumber, completion.projection.reasonCode],
+  );
+}
+
+async function insertDeliveryAudit(
+  client: PmsInboxDeliveryQueryable,
+  job: PmsInboxDeliveryJob,
+  status: string,
+  completion: Extract<PmsInboxDeliveryCompletion, { outcome: "failed" }> | null,
+  attemptId: string | null,
+) {
+  await client.query(
+    `INSERT INTO platform.product_audit_events (
+       audit_key, product, action, occurred_at, tenant_scope, property_id, actor_type,
+       target_resource_product, target_resource_type, target_resource_id,
+       job_id, correlation_id, redacted_payload, audit_metadata,
+       retention_class, privacy_scope
+     ) VALUES (
+       $1, 'pms', $2, now(), 'property', $3::uuid, 'system',
+       'pms', 'message', $4, $5::uuid, $6, $7::jsonb, $8::jsonb,
+       'guest_pii', 'confidential'
+     ) ON CONFLICT (product, audit_key) DO NOTHING`,
+    [
+      `pms.inbox.delivery:${job.id}:attempt:${job.attemptNumber}:${status}:v1`,
+      `pms.inbox.message.delivery_${status}`,
+      job.propertyId,
+      job.messageId,
+      job.id,
+      job.correlationId,
+      JSON.stringify({
+        outcome: completion?.outcome ?? "accepted",
+        state: completion?.projection.state ?? "sent",
+        reasonCode: completion?.projection.reasonCode ?? null,
+      }),
+      JSON.stringify({ attemptNumber: job.attemptNumber, deliveryAttemptId: attemptId }),
+    ],
+  );
 }
