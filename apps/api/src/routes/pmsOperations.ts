@@ -1196,6 +1196,7 @@ export async function registerPmsOperationsRoutes(
     await options.roomAssignmentSettings?.close?.();
     await options.roomAssignmentHistory?.close?.();
     await options.inboxReadPort?.close?.();
+    await options.inboxMarkReadPort?.close?.();
     await options.inboxReplyPort?.close?.();
     await options.sameDayBookingSettings?.close?.();
   });
@@ -2259,12 +2260,20 @@ export async function registerPmsOperationsRoutes(
           readModelUnavailable("PMS Inbox read commands are unavailable."),
         );
       const { propertyId, threadId } = request.params;
+      const context = request.authContext!;
       try {
         const result = await options.inboxMarkReadPort.markRead({
           propertyId,
           threadId,
-          actorMembershipId: request.authContext!.membership.membershipId,
+          organizationId: context.selectedOrganization.organizationId,
+          actorUserId: context.actor.internalUserId,
+          actorMembershipId: context.membership.membershipId,
           ...input.value,
+          audit: {
+            requestId: context.audit.requestId,
+            correlationId: context.audit.correlationId ?? context.audit.requestId,
+            requestedAt: context.audit.receivedAt,
+          },
         });
         if (!result.ok) return sendInboxMarkReadError(reply, result.error);
         if (

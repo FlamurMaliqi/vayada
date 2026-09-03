@@ -168,9 +168,12 @@ export type PmsInboxMarkReadPort = {
   markRead(input: {
     propertyId: string;
     threadId: string;
+    organizationId: string;
+    actorUserId: string;
     actorMembershipId: string;
     idempotencyKey: string;
     readThroughMessageId: string;
+    audit: { requestId: string; correlationId: string; requestedAt: string };
   }): Promise<
     | {
         ok: true;
@@ -189,6 +192,7 @@ export type PmsInboxMarkReadPort = {
         };
       }
   >;
+  close?(): Promise<void>;
 };
 
 export type PmsInboxReplyError = {
