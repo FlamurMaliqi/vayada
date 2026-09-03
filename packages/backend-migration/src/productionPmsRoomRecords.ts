@@ -35,6 +35,7 @@ export function buildPmsRoomRecords(context: PmsBuildContext): PmsRoomBuild {
   const flexiblePlanByRoomType = new Map<string, string>();
   const channelPlanByMapping = new Map<string, string>();
   const duplicateNameDispositions = roomTypeDuplicateNameDispositions(context);
+  const currencyDispositions = roomTypeCurrencyDispositions(context);
   for (const source of context.rowsByTable.get("linked_inventory_groups") ?? [])
     append(context, source, records, () => linkedGroup(context, source));
   for (const source of context.rowsByTable.get("room_types") ?? [])
@@ -43,6 +44,7 @@ export function buildPmsRoomRecords(context: PmsBuildContext): PmsRoomBuild {
         context,
         source,
         duplicateNameDispositions.get(uuid(source.data["id"], "id")),
+        currencyDispositions.get(uuid(source.data["id"], "id")),
       );
       flexiblePlanByRoomType.set(built.roomTypeId, built.flexiblePlanId);
       return built.records;
@@ -67,6 +69,20 @@ type RoomTypeDuplicateNameDisposition = {
     | "duplicate_name_empty_inactive"
     | "duplicate_name_historical_inactive";
   sourceActive: boolean;
+};
+
+type RoomTypeCurrencyDisposition = {
+  currencyEligibleActive: boolean;
+  groupCurrencies: string[];
+  reasonCode:
+    | "ambiguous_currency_group_inactive"
+    | "conflicting_currency_historical_inactive"
+    | "historical_currency_inactive"
+    | "live_currency_retained"
+    | "sole_active_currency_retained";
+  retainedCurrency: string | null;
+  sourceActive: boolean;
+  sourceCurrency: string;
 };
 
 function roomTypeDuplicateNameDispositions(
@@ -153,9 +169,10 @@ function duplicateRoomTypeEvidence(
   const futureBlocks = references("room_blocks").filter(
     (row) => String(row.data["end_date"] ?? row.data["ends_on"] ?? "").slice(0, 10) >= snapshotDay,
   );
-  const activeChannelMappings = references("channex_room_type_mappings").filter(
-    (row) => row.data["is_active"] !== false,
-  );
+  const activeChannelMappings = [
+    ...references("channex_room_type_mappings"),
+    ...references("channex_rate_plan_mappings"),
+  ].filter((row) => row.data["is_active"] !== false);
   const physicalRooms = references("rooms").length;
   return {
     id: entry.id,
@@ -183,6 +200,113 @@ function compareDuplicateRoomTypeEvidence(
   );
 }
 
+function roomTypeCurrencyDispositions(
+  context: PmsBuildContext,
+): Map<string, RoomTypeCurrencyDisposition> {
+  const groups = new Map<
+    string,
+    Array<{ id: string; row: IdentitySourceRow; sourceActive: boolean; sourceCurrency: string }>
+  >();
+  for (const row of context.rowsByTable.get("room_types") ?? []) {
+    try {
+      const id = uuid(row.data["id"], "id");
+      const propertyId = propertyForHotel(context, row.data["hotel_id"]);
+      const entry = {
+        id,
+        row,
+        sourceActive: bool(row.data["is_active"], "is_active", true),
+        sourceCurrency: currency(row.data["currency"] ?? "EUR"),
+      };
+      groups.set(propertyId, [...(groups.get(propertyId) ?? []), entry]);
+    } catch {
+      // The normal row builder records malformed source fields as blockers.
+    }
+  }
+
+  const result = new Map<string, RoomTypeCurrencyDisposition>();
+  for (const group of groups.values()) {
+    const groupCurrencies = [...new Set(group.map((entry) => entry.sourceCurrency))].sort();
+    const evidence = group.flatMap((entry) => {
+      try {
+        return [{ ...entry, ...duplicateRoomTypeEvidence(context, entry) }];
+      } catch (error) {
+        addPmsBlocker(
+          context,
+          "INVALID_SOURCE_ROW",
+          "pms.room_types",
+          entry.id,
+          error instanceof Error ? error.message : "Invalid room type evidence",
+        );
+        return [];
+      }
+    });
+    if (evidence.length !== group.length) continue;
+    const inactiveLive = evidence.filter((entry) => entry.live && !entry.sourceActive);
+    for (const entry of inactiveLive)
+      addPmsBlocker(
+        context,
+        "INACTIVE_ROOM_TYPE_HAS_LIVE_EVIDENCE",
+        "pms.room_types",
+        entry.id,
+        "An inactive room type retains future or channel evidence",
+      );
+    if (inactiveLive.length > 0 || groupCurrencies.length < 2) continue;
+    const liveCurrencies = [
+      ...new Set(evidence.filter((entry) => entry.live).map((entry) => entry.sourceCurrency)),
+    ];
+    if (liveCurrencies.length > 1) {
+      for (const entry of evidence.filter((candidate) => candidate.live))
+        addPmsBlocker(
+          context,
+          "MULTIPLE_LIVE_ROOM_TYPE_CURRENCIES",
+          "pms.room_types",
+          entry.id,
+          "Multiple pricing currencies retain future or channel evidence for one property",
+        );
+      continue;
+    }
+    const activeCurrencies = [
+      ...new Set(
+        evidence.filter((entry) => entry.sourceActive).map((entry) => entry.sourceCurrency),
+      ),
+    ];
+    const retainedCurrency =
+      liveCurrencies[0] ?? (activeCurrencies.length === 1 ? activeCurrencies[0]! : null);
+    for (const entry of evidence) {
+      let currencyEligibleActive = entry.sourceActive;
+      let reasonCode: RoomTypeCurrencyDisposition["reasonCode"];
+      if (liveCurrencies[0]) {
+        currencyEligibleActive = entry.sourceActive && entry.sourceCurrency === liveCurrencies[0];
+        reasonCode =
+          entry.sourceCurrency === liveCurrencies[0]
+            ? "live_currency_retained"
+            : "conflicting_currency_historical_inactive";
+      } else if (activeCurrencies.length > 1) {
+        currencyEligibleActive = false;
+        reasonCode = "ambiguous_currency_group_inactive";
+      } else if (entry.sourceActive) {
+        reasonCode = "sole_active_currency_retained";
+      } else {
+        reasonCode = "historical_currency_inactive";
+      }
+      context.effectiveRoomTypeActiveById.set(
+        entry.id,
+        (context.effectiveRoomTypeActiveById.get(entry.id) ?? entry.sourceActive) &&
+          currencyEligibleActive,
+      );
+      result.set(entry.id, {
+        currencyEligibleActive,
+        groupCurrencies,
+        reasonCode,
+        retainedCurrency,
+        sourceActive: entry.sourceActive,
+        sourceCurrency: entry.sourceCurrency,
+      });
+    }
+  }
+  return result;
+}
+
 function linkedGroup(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetRecord[] {
   const id = uuid(source.data["id"], "id");
   const propertyId = propertyForHotel(context, source.data["hotel_id"]);
@@ -204,6 +328,7 @@ function roomType(
   context: PmsBuildContext,
   source: IdentitySourceRow,
   duplicateNameDisposition?: RoomTypeDuplicateNameDisposition,
+  currencyDisposition?: RoomTypeCurrencyDisposition,
 ): { roomTypeId: string; flexiblePlanId: string; records: PmsTargetRecord[] } {
   const data = source.data;
   const id = uuid(data["id"], "id");
@@ -223,7 +348,7 @@ function roomType(
   const roomCurrency = currency(data["currency"] ?? "EUR");
   const baseRate = money(data["base_rate"] ?? 0, "base_rate");
   const effectiveActive =
-    duplicateNameDisposition?.effectiveActive ?? bool(data["is_active"], "is_active", true);
+    context.effectiveRoomTypeActiveById.get(id) ?? bool(data["is_active"], "is_active", true);
   const ignoredSeasonIndices = ignoredLegacySeasonIndices(data);
   const legacyPricing = {
     ...pricingSnapshot(data),
@@ -292,7 +417,10 @@ function roomType(
         bathrooms: integer(data["bathrooms"], "bathrooms", 1),
         legacyPricing,
         ...(duplicateNameDisposition
-          ? { legacyRoomTypeDisposition: duplicateNameDisposition }
+          ? { legacyRoomTypeDisposition: { ...duplicateNameDisposition, effectiveActive } }
+          : {}),
+        ...(currencyDisposition
+          ? { legacyCurrencyDisposition: { ...currencyDisposition, effectiveActive } }
           : {}),
         ...(imageQuarantine
           ? {
@@ -416,6 +544,10 @@ function room(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetRec
     throw new Error(`room status ${status} is unsupported`);
   const createdAt = iso(data["created_at"], "created_at");
   const updatedAt = iso(data["updated_at"], "updated_at");
+  const roomTypeActive =
+    context.effectiveRoomTypeActiveById.get(roomTypeId) ??
+    bool(parent.data["is_active"], "room_type.is_active", true);
+  const effectiveStatus = roomTypeActive ? status : "retired";
   return [
     pmsRecord(source, "rooms", id, updatedAt, true, {
       id,
@@ -425,9 +557,11 @@ function room(context: PmsBuildContext, source: IdentitySourceRow): PmsTargetRec
       sourceRoomId: id,
       roomNumber: requiredText(data["room_number"], "room_number"),
       floor: optionalText(data["floor"], "floor"),
-      status,
+      status: effectiveStatus,
       sortOrder: integer(data["sort_order"], "sort_order", 0),
-      roomMetadata: {},
+      roomMetadata: roomTypeActive
+        ? {}
+        : { legacySourceStatus: status, reasonCode: "parent_room_type_inactive" },
       createdAt,
       updatedAt,
     }),

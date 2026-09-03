@@ -200,6 +200,8 @@ function roomMapping(context: PmsBuildContext, source: IdentitySourceRow): PmsTa
   const connectionId = uuid(connectionSource.data["id"], "connection.id");
   const roomTypeId = uuid(data["room_type_id"], "room_type_id");
   assertRoomType(context, roomTypeId, propertyId);
+  const sourceActive = bool(data["is_active"], "mapping.is_active", true);
+  const roomTypeActive = effectiveRoomTypeActive(context, roomTypeId);
   const updatedAt = iso(data["updated_at"], "updated_at");
   return [
     pmsRecord(
@@ -214,8 +216,11 @@ function roomMapping(context: PmsBuildContext, source: IdentitySourceRow): PmsTa
         connectionId,
         roomTypeId,
         externalRoomTypeId: uuid(data["channex_room_type_id"], "channex_room_type_id"),
-        status: connectionIsActive(context, connectionSource) ? "active" : "disabled",
-        mappingMetadata: { migrationRunId: context.sourceRunId },
+        status:
+          connectionIsActive(context, connectionSource) && sourceActive && roomTypeActive
+            ? "active"
+            : "disabled",
+        mappingMetadata: { migrationRunId: context.sourceRunId, sourceActive, roomTypeActive },
         createdAt: iso(data["created_at"], "created_at"),
         updatedAt,
       },
@@ -237,6 +242,8 @@ function rateMapping(
   const connectionId = uuid(connectionSource.data["id"], "connection.id");
   const roomTypeId = uuid(data["room_type_id"], "room_type_id");
   assertRoomType(context, roomTypeId, propertyId);
+  const sourceActive = bool(data["is_active"], "mapping.is_active", true);
+  const roomTypeActive = effectiveRoomTypeActive(context, roomTypeId);
   const ratePlanId = rooms.channelPlanByMapping.get(id);
   if (!ratePlanId) throw new Error("channel rate plan has not passed room/rate transformation");
   const externalRoomTypeId = uuid(data["channex_room_type_id"], "channex_room_type_id");
@@ -279,9 +286,14 @@ function rateMapping(
         externalRatePlanId: uuid(data["channex_rate_plan_id"], "channex_rate_plan_id"),
         sellMode,
         markupPercent: percentage(markups[0]?.data["markup_pct"] ?? 0, "markup_pct"),
-        status: connectionIsActive(context, connectionSource) ? "active" : "disabled",
+        status:
+          connectionIsActive(context, connectionSource) && sourceActive && roomTypeActive
+            ? "active"
+            : "disabled",
         mappingMetadata: {
           migrationRunId: context.sourceRunId,
+          sourceActive,
+          roomTypeActive,
           planName: optionalText(data["plan_name"], "plan_name"),
           mealPlanCode: integer(data["meal_plan_code"], "meal_plan_code", 0),
           legacyMarkupId: markups[0]?.data["id"] ?? null,
@@ -365,6 +377,15 @@ function connectionIsActive(context: PmsBuildContext, source: IdentitySourceRow)
     ownerStatusForHotel(context, hotelId) === "active" &&
     bool(source.data["is_active"], "connection.is_active", true) &&
     Boolean(optionalUuid(source.data["channex_property_id"], "connection.channex_property_id"))
+  );
+}
+
+function effectiveRoomTypeActive(context: PmsBuildContext, roomTypeId: string): boolean {
+  const roomType = context.roomTypeById.get(roomTypeId);
+  if (!roomType) return false;
+  return (
+    context.effectiveRoomTypeActiveById.get(roomTypeId) ??
+    bool(roomType.data["is_active"], "room_type.is_active", true)
   );
 }
 

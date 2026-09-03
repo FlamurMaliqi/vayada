@@ -7,6 +7,11 @@ import { assertSafeTestDatabase } from "./testUtils.js";
 
 const MIGRATION_PATH = join(import.meta.dirname, "../migrations/0050_pms_pricing_source.sql");
 const migration = await readFile(MIGRATION_PATH, "utf8");
+const HISTORICAL_CURRENCIES_MIGRATION_PATH = join(
+  import.meta.dirname,
+  "../migrations/0137_pms_historical_pricing_currencies.sql",
+);
+const historicalCurrenciesMigration = await readFile(HISTORICAL_CURRENCIES_MIGRATION_PATH, "utf8");
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 
 describe("PMS pricing-source migration contract", () => {
@@ -36,6 +41,20 @@ describe("PMS pricing-source migration contract", () => {
     expect(migration).not.toMatch(/\b(?:booking|finance|distribution|marketplace)\./);
     expect(migration).not.toContain("vayada:no-transaction");
     expect(migration).not.toContain("IF NOT EXISTS");
+  });
+
+  it("keeps inactive historical currencies while guarding every activation path", () => {
+    expect(historicalCurrenciesMigration).toContain("IF NEW.currency IS NULL OR NOT NEW.active");
+    expect(historicalCurrenciesMigration).toContain(
+      "BEFORE INSERT OR UPDATE OF property_id, currency, active",
+    );
+    expect(historicalCurrenciesMigration).toMatch(
+      /WHERE property_id = NEW\.property_id AND active/,
+    );
+    expect(historicalCurrenciesMigration).not.toMatch(
+      /DELETE FROM pms\.(?:room_types|rate_plans)/i,
+    );
+    expect(historicalCurrenciesMigration).not.toMatch(/UPDATE pms\.(?:room_types|rate_plans)/i);
   });
 });
 
@@ -350,6 +369,44 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS pricing-source migration (PostgreSQL)",
     } finally {
       await competing.end();
     }
+  });
+
+  it("preserves inactive conflicting prices but rejects reactivation", async () => {
+    await seedProperties(client);
+    await client.query(migration);
+    await client.query(historicalCurrenciesMigration);
+
+    await client.query(`INSERT INTO pms.room_types
+      (id, property_id, name, base_rate_amount, currency, active)
+      VALUES ('${ROOM_G}', '${PROPERTY_A}', 'Historical USD room', 140.00, 'USD', FALSE)`);
+    await client.query(`INSERT INTO pms.rate_plans
+      (id, property_id, room_type_id, code, name, base_rate_amount, currency, active)
+      VALUES ('${LEGACY_PLAN_C}', '${PROPERTY_A}', '${ROOM_G}', 'OLD-USD',
+              'Historical USD rate', 140.00, 'USD', FALSE)`);
+
+    const { rows } = await client.query(`
+      SELECT room.base_rate_amount::text AS "roomAmount", room.currency::text AS "roomCurrency",
+             plan.base_rate_amount::text AS "planAmount", plan.currency::text AS "planCurrency"
+      FROM pms.room_types room
+      JOIN pms.rate_plans plan ON plan.room_type_id = room.id
+      WHERE room.id = '${ROOM_G}'
+    `);
+    expect(rows).toEqual([
+      { roomAmount: "140.00", roomCurrency: "USD", planAmount: "140.00", planCurrency: "USD" },
+    ]);
+
+    await expectConstraint(
+      client,
+      `UPDATE pms.room_types SET active = TRUE WHERE id = '${ROOM_G}'`,
+      "chk_pms_property_pricing_currency_consistency",
+      "23514",
+    );
+    await expectConstraint(
+      client,
+      `UPDATE pms.rate_plans SET active = TRUE WHERE id = '${LEGACY_PLAN_C}'`,
+      "chk_pms_property_pricing_currency_consistency",
+      "23514",
+    );
   });
 
   it("fails atomically when legacy currencies disagree", async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  appendProductionPmsTargetRows,
   readProductionPmsPrerequisites,
   readProductionPmsTargetState,
 } from "./productionPmsTargetReader.js";
@@ -211,6 +212,27 @@ describe("production PMS target reader", () => {
       }),
     );
   });
+
+  it("loads a production-sized inventory cohort without a variadic stack overflow", () => {
+    const rowCount = 160_000;
+    const rows = Array.from({ length: rowCount }, (_, index) => ({
+      targetId: `inventory-${index}`,
+      updatedAt: "2026-08-30T00:00:00Z",
+      rowData: "{}",
+    }));
+    const records: Parameters<typeof appendProductionPmsTargetRows>[0] = [];
+
+    appendProductionPmsTargetRows(
+      records,
+      "pms",
+      "inventory_days",
+      "pms.inventory_days.updated_at",
+      rows,
+    );
+
+    expect(records).toHaveLength(rowCount);
+    expect(records.at(-1)?.targetId).toBe(`inventory-${rowCount - 1}`);
+  }, 10_000);
 });
 
 function candidates(): PmsTargetRecord[] {
