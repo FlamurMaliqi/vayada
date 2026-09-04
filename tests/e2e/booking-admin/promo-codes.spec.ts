@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 import {
   BOOKING_ADMIN_HOTEL_ID,
   BOOKING_ADMIN_PROMO_CODES_PATH,
@@ -44,6 +45,10 @@ test.describe("booking-admin promo-code settings cutover", () => {
         updatedAt: "2026-06-01T10:00:00.000Z",
       },
     ];
+    let releaseCreateRequest!: () => void;
+    const createRequestGate = new Promise<void>((resolve) => {
+      releaseCreateRequest = resolve;
+    });
     await page.route(`**${BOOKING_ADMIN_PROMO_CODES_PATH}**`, async (route) => {
       const request = route.request();
       const pathname = new URL(request.url()).pathname;
@@ -51,6 +56,7 @@ test.describe("booking-admin promo-code settings cutover", () => {
 
       if (request.method() === "POST") {
         const body = request.postDataJSON();
+        await createRequestGate;
         const created = {
           promoCodeId: "promo_spring25",
           hotelId: BOOKING_ADMIN_HOTEL_ID,
@@ -116,12 +122,65 @@ test.describe("booking-admin promo-code settings cutover", () => {
     await page.getByRole("button", { name: "New promo code" }).click();
     const editor = page.getByRole("dialog", { name: "Create promo code" });
     const overlay = page.locator('body > [role="presentation"]');
+    const codeInput = editor.getByRole("textbox", { name: "Code" });
+    await expect(codeInput).toBeFocused();
+    await expect(editor).toHaveAttribute("aria-describedby", "promo-editor-description");
     await expect(overlay).toHaveCSS("position", "fixed");
     await expect(overlay).toHaveCSS("inset", "0px");
+    await expect(page.locator("body")).toHaveCSS("overflow", "hidden");
+
+    const closeButton = editor.getByRole("button", { name: "Close promo code editor" });
+    const createButton = editor.getByRole("button", { name: "Create promo code" });
+    await closeButton.focus();
+    await page.keyboard.press("Shift+Tab");
+    await expect(createButton).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(closeButton).toBeFocused();
+
+    await page.keyboard.press("Escape");
+    await expect(editor).not.toBeVisible();
+    await expect(page.locator("body")).toHaveCSS("overflow", "visible");
+    await expect(page.getByRole("button", { name: "New promo code" })).toBeFocused();
+    await page.getByRole("button", { name: "New promo code" }).click();
+
+    const promoDetails = editor.getByRole("region", { name: "Promo details" });
+    const promoRules = editor.getByRole("region", { name: "Rules & restrictions" });
+    const desktopDetails = await promoDetails.boundingBox();
+    const desktopRules = await promoRules.boundingBox();
+    expect(desktopDetails).not.toBeNull();
+    expect(desktopRules).not.toBeNull();
+    expect(Math.abs(desktopDetails!.y - desktopRules!.y)).toBeLessThanOrEqual(1);
+    const accessibility = await new AxeBuilder({ page }).include('[role="dialog"]').analyze();
+    expect(
+      accessibility.violations
+        .filter(({ impact }) => impact === "critical" || impact === "serious")
+        .map(({ id, impact, nodes }) => ({
+          id,
+          impact,
+          targets: nodes.map(({ target }) => target),
+        })),
+    ).toEqual([]);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileDetails = await promoDetails.boundingBox();
+    const mobileRules = await promoRules.boundingBox();
+    expect(mobileDetails).not.toBeNull();
+    expect(mobileRules).not.toBeNull();
+    expect(Math.abs(mobileDetails!.x - mobileRules!.x)).toBeLessThanOrEqual(1);
+    expect(mobileRules!.y).toBeGreaterThan(mobileDetails!.y + mobileDetails!.height);
+    await expect(editor.getByRole("button", { name: "Cancel" })).toBeVisible();
+    await expect(editor.getByRole("button", { name: "Create promo code" })).toBeVisible();
+    const mobileLayout = await page.evaluate(() => ({
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+    }));
+    expect(mobileLayout.documentWidth).toBeLessThanOrEqual(mobileLayout.viewportWidth);
+    await page.setViewportSize({ width: 1280, height: 720 });
 
     const activeSwitch = editor.getByRole("switch");
-    const track = await activeSwitch.boundingBox();
-    const knob = await activeSwitch.locator("span").boundingBox();
+    const switchTrack = activeSwitch.locator(":scope > div.relative");
+    const track = await switchTrack.boundingBox();
+    const knob = await switchTrack.locator(":scope > div").boundingBox();
     expect(track).not.toBeNull();
     expect(knob).not.toBeNull();
     expect(knob!.x).toBeGreaterThanOrEqual(track!.x);
@@ -132,23 +191,37 @@ test.describe("booking-admin promo-code settings cutover", () => {
     await expect(activeSwitch).toHaveAttribute("aria-checked", "false");
     await expect
       .poll(async () => {
-        const bounds = await activeSwitch.locator("span").boundingBox();
+        const bounds = await switchTrack.locator(":scope > div").boundingBox();
         return bounds ? bounds.x + bounds.width / 2 : undefined;
       })
       .toBeLessThan(track!.x + track!.width / 2);
     await activeSwitch.click();
 
-    await page.getByRole("textbox", { name: /^Code/ }).fill("spring25");
+    await page.getByRole("textbox", { name: /^Code/ }).fill("a");
     await page.getByRole("spinbutton", { name: /^Discount value/ }).fill("25");
+    await page.getByRole("button", { name: "Create promo code" }).click();
+    await expect(editor.getByRole("alert")).toContainText("Use 2–40 letters");
+    await expect(editor).toHaveAttribute(
+      "aria-describedby",
+      "promo-editor-description promo-editor-error",
+    );
+    await page.getByRole("textbox", { name: /^Code/ }).fill("spring25");
     await page.getByRole("spinbutton", { name: /^Minimum booking value/ }).fill("300");
     await page.getByRole("spinbutton", { name: /^Max uses/ }).fill("25");
-    await page.getByText("All rooms", { exact: true }).click();
+    const roomSelector = editor.locator("summary");
+    await expect(roomSelector).toHaveAccessibleName("Applicable rooms All rooms");
+    await roomSelector.click();
     await page.getByRole("checkbox", { name: "Pool Villa" }).check();
+    await roomSelector.click();
+    await expect(roomSelector).toHaveAccessibleName("Applicable rooms 1 room selected");
     await page.getByLabel(/^Valid from/).fill("2026-07-01");
     await page.getByLabel(/^Valid until/).fill("2026-08-31");
     await page.getByLabel("Stays from").fill("2026-08-01");
     await page.getByLabel("Stays until").fill("2026-09-30");
-    await page.getByRole("button", { name: "Create promo code" }).click();
+    await createButton.click();
+    await expect(editor.getByRole("button", { name: "Saving..." })).toBeDisabled();
+    await expect(codeInput).not.toBeFocused();
+    releaseCreateRequest();
     await expect(page.getByText("SPRING25")).toBeVisible();
 
     await page.getByRole("button", { name: "Edit SPRING25" }).click();
