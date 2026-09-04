@@ -8,6 +8,9 @@ import {
   fingerprintPmsCalendarAutoOpenSource,
 } from "@vayada/domain-pms";
 
+import { createTargetPmsInventoryPublicOfferProjection } from "../domains/pmsInventoryPublicOfferProjection.js";
+import { createPgPmsChannexManagementReadRepository } from "../domains/pmsChannexManagementReadModel.js";
+import { createChannexManagementProvider } from "../integrations/channexManagement.js";
 import {
   PMS_CALENDAR_AUTO_OPEN_QUEUE,
   createPgPmsChannexSchedulerStore,
@@ -17,6 +20,7 @@ import {
   createPgPmsCalendarAutoOpenWorkerStore,
   runPmsCalendarAutoOpenWorkerOnce,
 } from "./pmsCalendarAutoOpenWorker.js";
+import { createPgChannexManagementPlanPort } from "../integrations/channexManagementPlans.js";
 
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const now = new Date("2026-09-03T10:00:00.000Z");
@@ -34,17 +38,28 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open candidate selection"
     connectionString: TEST_DATABASE_URL ?? "postgresql://disabled",
     propertyProfileEvidence,
   });
+  const publicOfferProjection = createTargetPmsInventoryPublicOfferProjection({
+    connectionString: TEST_DATABASE_URL ?? "postgresql://disabled",
+    max: 1,
+    now: () => now,
+  });
 
   beforeAll(() => assertSafeTestDatabase(TEST_DATABASE_URL!));
   afterAll(async () =>
-    Promise.all([admin.end(), store.close(), worker.close?.(), propertyProfileEvidence.close()]),
+    Promise.all([
+      admin.end(),
+      store.close(),
+      worker.close?.(),
+      propertyProfileEvidence.close(),
+      publicOfferProjection.close?.(),
+    ]),
   );
 
   it("paginates canonical property settings without Channex and reselects changed sources", async () => {
     const incompletePropertyId = await seedIncompleteProperty(admin, 0);
     const first = await seedProperty(admin, 1, {
       mode: "rolling",
-      rollingMonths: 12,
+      rollingMonths: 18,
       fixedEndMonth: null,
     });
     const second = await seedProperty(admin, 2, {
@@ -88,7 +103,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open candidate selection"
     expect(firstPage.candidates[0]).toMatchObject({
       propertyId: first.propertyId,
       openFrom: "2026-09-03",
-      openThrough: "2027-09-30",
+      openThrough: "2028-03-31",
       roomTypeIds: [first.roomTypeId],
       generatedCoverageThrough: null,
       source: {
@@ -144,11 +159,11 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open candidate selection"
     );
     expect(applied.rows[0]).toEqual({
       status: "succeeded",
-      days: 393,
+      days: 576,
       minimumGenerated: 0,
       maximumAvailable: 0,
       rateGated: true,
-      coverageThrough: "2027-09-30",
+      coverageThrough: "2028-03-31",
       projections: 1,
       ari: 1,
       ariRateGated: true,
@@ -187,6 +202,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open candidate selection"
        WHERE property_id=$1::uuid AND room_type_id=$2::uuid AND stay_date='2026-09-03'`,
       [first.propertyId, first.roomTypeId],
     );
+    const ratePlanId = randomUUID();
     await admin.query(
       `INSERT INTO pms.rate_plans(
          id,property_id,room_type_id,code,name,rate_type,base_rate_amount,currency,active,
@@ -196,7 +212,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open candidate selection"
          '{"type":"free_until_days_before_arrival","freeCancellationDeadlineDays":1,
            "afterDeadlinePenalty":"full_booking_amount","noShowPenalty":"full_booking_amount"}'::jsonb,
          'pms-pricing.v1',1,1,1)`,
-      [randomUUID(), first.propertyId, first.roomTypeId],
+      [ratePlanId, first.propertyId, first.roomTypeId],
     );
     const pricedSource = sourceFor(first, 1);
     await store.enqueueCalendarAutoOpenJob(
@@ -204,9 +220,9 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open candidate selection"
         propertyId: first.propertyId,
         organizationId: first.organizationId,
         openFrom: "2026-09-03",
-        openThrough: "2027-09-30",
+        openThrough: "2028-03-31",
         roomTypeIds: [first.roomTypeId],
-        generatedCoverageThrough: "2027-09-30",
+        generatedCoverageThrough: "2028-03-31",
         source: pricedSource,
         sourceFingerprint: fingerprintPmsCalendarAutoOpenSource(pricedSource),
       },
@@ -242,6 +258,203 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open candidate selection"
         },
       ],
     });
+    await admin.query(
+      `INSERT INTO hotel_catalog.property_public_profile_read_model (
+         property_id,public_id,display_name,canonical_slug,default_locale,
+         supported_locales,profile_status
+       ) VALUES ($1::uuid,$2,'VAY-925 Hotel',$2,'en',ARRAY['en'],'complete')`,
+      [first.propertyId, `vay-925-${first.propertyId}`],
+    );
+    await admin.query(
+      `INSERT INTO distribution.public_hotel_bookability_profiles (
+         property_id,public_id,canonical_slug,canonical_url,booking_base_url,timezone,
+         default_currency,supported_currencies,profile_status,freshness_status,
+         public_setup_completeness
+       ) VALUES ($1::uuid,$2,$2,'https://booking.example.test/'||$2,
+         'https://booking.example.test','Europe/Berlin','EUR',ARRAY['EUR'],'public','fresh',
+         '{"status":"ready"}'::jsonb)`,
+      [first.propertyId, `vay-925-${first.propertyId}`],
+    );
+    await expect(
+      publicOfferProjection.projectPending({ propertyId: first.propertyId }),
+    ).resolves.toEqual({
+      profileAvailable: true,
+      pendingEvents: 2,
+      projectedOfferDays: 576,
+    });
+    expect(
+      await admin.query(
+        `SELECT max(stay_date)::text AS "openThrough", bool_and(sellable_publicly) AS sellable
+         FROM distribution.public_room_offer_snapshots WHERE property_id=$1::uuid`,
+        [first.propertyId],
+      ),
+    ).toMatchObject({ rows: [{ openThrough: "2028-03-31", sellable: true }] });
+    const connectionId = randomUUID();
+    await admin.query(
+      `INSERT INTO pms.channel_binding_claims
+         (property_id,provider,external_property_id,claim_state,claim_source)
+       VALUES ($1::uuid,'channex','vay-925-property','active','repair')`,
+      [first.propertyId],
+    );
+    await admin.query(
+      `INSERT INTO pms.channel_connections
+         (id,property_id,provider,connection_status,external_property_id,connection_metadata)
+       VALUES ($2::uuid,$1::uuid,'channex','connected','vay-925-property',
+         jsonb_build_object('organizationId',$3::text,'connectedChannels',
+           '[{"key":"booking_com","application":"BookingCom","title":"Booking.com","isActive":true},
+             {"key":"airbnb","application":"Airbnb","title":"Airbnb","isActive":true}]'::jsonb))`,
+      [first.propertyId, connectionId, first.organizationId],
+    );
+    await admin.query(
+      `INSERT INTO pms.channel_room_type_mappings
+         (property_id,connection_id,room_type_id,external_room_type_id)
+       VALUES ($1::uuid,$2::uuid,$3::uuid,'vay-925-room')`,
+      [first.propertyId, connectionId, first.roomTypeId],
+    );
+    await admin.query(
+      `INSERT INTO pms.channel_rate_plan_mappings
+         (property_id,connection_id,room_type_id,rate_plan_id,channel,
+          external_room_type_id,external_rate_plan_id)
+       VALUES ($1::uuid,$2::uuid,$3::uuid,$4::uuid,'booking_com',
+         'vay-925-room','vay-925-rate'),
+         ($1::uuid,$2::uuid,$3::uuid,$4::uuid,'airbnb','vay-925-room','vay-925-airbnb-rate')`,
+      [first.propertyId, connectionId, first.roomTypeId, ratePlanId],
+    );
+    const retiredRoomTypeId = randomUUID();
+    await admin.query(
+      "INSERT INTO pms.room_types(id,property_id,name,active) VALUES($1,$2,'Retired',FALSE)",
+      [retiredRoomTypeId, first.propertyId],
+    );
+    await admin.query(
+      "INSERT INTO pms.channel_room_type_mappings(property_id,connection_id,room_type_id,external_room_type_id) VALUES($1,$2,$3,'retired')",
+      [first.propertyId, connectionId, retiredRoomTypeId],
+    );
+    const retiredClient = await admin.connect();
+    try {
+      await retiredClient.query("SET session_replication_role=replica");
+      await seedSparseInventoryDay(
+        retiredClient,
+        { ...first, roomTypeId: retiredRoomTypeId },
+        "2026-09-03",
+      );
+    } finally {
+      await retiredClient.query("SET session_replication_role=origin");
+      retiredClient.release();
+    }
+    const automaticAri = (await store.findIncrementalAriPushCandidates(now, 10)).filter(
+      ({ propertyId }) => propertyId === first.propertyId,
+    );
+    expect(automaticAri).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          dateRange: { from: "2026-09-03", to: "2028-03-31" },
+          rateGateOpen: true,
+        }),
+      ]),
+    );
+    const fullAri = await store.findFullAriPushCandidates(now, 10);
+    expect(fullAri.find(({ propertyId }) => propertyId === first.propertyId)).toMatchObject({
+      dateRange: { from: "2026-09-03", to: "2028-03-31" },
+    });
+    expect(fullAri.some(({ roomTypeId }) => roomTypeId === retiredRoomTypeId)).toBe(false);
+    const managementPlans = createPgChannexManagementPlanPort({
+      connectionString: TEST_DATABASE_URL!,
+      pool: admin,
+      bookingRevisionHandoff: async () => undefined,
+      now: () => now,
+    });
+    const forceResyncJob = {
+      jobId: randomUUID(),
+      propertyId: first.propertyId,
+      correlationId: null,
+      attemptNumber: 1,
+      maxAttempts: 5,
+      input: {
+        commandId: "vay-925",
+        idempotencyKey: "vay-925",
+        operationType: "sync_ari" as const,
+      },
+    };
+    const forceResync = await managementPlans.plan(forceResyncJob);
+    const forceResyncAvailability = forceResync.requests[1]?.body as {
+      values: Array<{ date_from: string; date_to: string }>;
+    };
+    expect(forceResyncAvailability.values).toHaveLength(576);
+    expect(forceResyncAvailability.values[0]).toMatchObject({
+      date_from: "2026-09-03",
+      date_to: "2026-09-03",
+    });
+    expect(forceResyncAvailability.values.at(-1)).toMatchObject({
+      date_from: "2028-03-31",
+      date_to: "2028-03-31",
+    });
+    expect(forceResync.requests[2]?.body).toMatchObject({
+      values: expect.arrayContaining([
+        expect.objectContaining({ rate_plan_id: "vay-925-rate", date_to: "2028-03-31" }),
+        expect.objectContaining({ rate_plan_id: "vay-925-airbnb-rate", date_to: "2028-03-31" }),
+      ]),
+    });
+    const managementProvider = createChannexManagementProvider({
+      apiBaseUrl: "https://channex.example.test",
+      apiKey: "test",
+      plans: managementPlans,
+      fetch: async () => {
+        throw new Error("Mapping failure must not contact Channex");
+      },
+    });
+    const managementRead = createPgPmsChannexManagementReadRepository({
+      connectionString: TEST_DATABASE_URL!,
+      pool: admin,
+      now: () => now,
+    });
+    const readSnapshot = () =>
+      managementRead.getSnapshot(first.propertyId, {
+        connection: "observe_only",
+        provisioning: "observe_only",
+        ariSync: "observe_only",
+        bookingSync: "observe_only",
+        markups: "observe_only",
+        messaging: "observe_only",
+        iframe: "observe_only",
+      });
+    await admin.query(
+      `INSERT INTO pms.channel_sync_status (property_id,connection_id,sync_domain,status)
+       VALUES ($1::uuid,$2::uuid,'ari','ok')`,
+      [first.propertyId, connectionId],
+    );
+    for (const table of ["channel_room_type_mappings", "channel_rate_plan_mappings"]) {
+      const channelScope = table === "channel_rate_plan_mappings" ? " AND channel='airbnb'" : "";
+      await admin.query(
+        `UPDATE pms.${table} SET status='disabled' WHERE connection_id=$1::uuid${channelScope}`,
+        [connectionId],
+      );
+      await expect(managementProvider.execute(forceResyncJob)).resolves.toMatchObject({
+        ok: false,
+        code: "mapping_missing",
+      });
+      const snapshot = await readSnapshot();
+      expect(snapshot.sync.ari).toMatchObject({
+        status: "failed",
+        lastErrorCode: "mapping_missing",
+      });
+      await admin.query(
+        `UPDATE pms.${table} SET status='active' WHERE connection_id=$1::uuid${channelScope}`,
+        [connectionId],
+      );
+    }
+    expect((await readSnapshot()).sync.ari).toMatchObject({ status: "ok", lastErrorCode: null });
+    await admin.query(
+      "DELETE FROM pms.channel_rate_plan_mappings WHERE connection_id=$1::uuid AND channel='airbnb'",
+      [connectionId],
+    );
+    await expect(managementProvider.execute(forceResyncJob)).resolves.toMatchObject({
+      ok: false,
+      code: "mapping_missing",
+    });
+    expect((await readSnapshot()).sync.ari).toMatchObject({
+      status: "failed",
+      lastErrorCode: "mapping_missing",
+    });
 
     const beforeReprice = (
       await admin.query<{
@@ -272,7 +485,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open candidate selection"
     expect(repricedCandidate.candidates).toHaveLength(1);
     expect(repricedCandidate.candidates[0]).toMatchObject({
       propertyId: first.propertyId,
-      generatedCoverageThrough: "2027-09-30",
+      generatedCoverageThrough: "2028-03-31",
       source: { pricing: { flexibleRatePlans: [{ flexibleRatePlanRevision: 2 }] } },
     });
     const repriced = await store.enqueueCalendarAutoOpenJob(
@@ -316,7 +529,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open candidate selection"
           fingerprint: repricedCandidate.candidates[0]!.sourceFingerprint,
           manual: 1,
           available: 1,
-          changedDayCount: 393,
+          changedDayCount: 576,
           projections: beforeReprice.projections + 1,
           ari: beforeReprice.ari + 1,
         },
@@ -920,7 +1133,7 @@ async function seedProperty(
   setting: {
     enabled?: boolean;
     mode: "rolling" | "fixed";
-    rollingMonths: 12 | null;
+    rollingMonths: 12 | 18 | 24 | null;
     fixedEndMonth: string | null;
   },
 ): Promise<SeededProperty> {
@@ -994,7 +1207,7 @@ async function seedProperty(
 }
 
 async function seedSparseInventoryDay(
-  admin: pg.Pool,
+  admin: Pick<pg.Pool, "query">,
   property: SeededProperty,
   stayDate: string,
 ): Promise<void> {

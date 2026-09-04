@@ -89,14 +89,24 @@ const DEFAULT_PROJECTION_RETRY_DELAY_MS = 30_000;
 const DEFAULT_PROJECTION_MAX_RETRY_DELAY_MS = 15 * 60_000;
 const DEFAULT_PROJECTION_RETRY_PROPERTY_LIMIT = 25;
 
+const PUBLIC_OFFER_PROJECTION_EVENT_FILTER = `(
+  (
+    outbox.destination = 'distribution.public-bookability'
+    AND outbox.event_type IN (
+      'pms.inventory.changed', 'booking.same_day_booking_policy.changed'
+    )
+  )
+  OR (
+    outbox.destination = 'distribution.inventory-projection'
+    AND outbox.event_type = 'pms.inventory.projection_refresh_requested'
+  )
+)`;
+
 const CLAIM_PENDING_INVENTORY_EVENTS = `
   WITH candidate_event AS (
     SELECT outbox.id, outbox.property_id
     FROM platform.outbox_events outbox
-    WHERE outbox.destination = 'distribution.public-bookability'
-      AND outbox.event_type IN (
-        'pms.inventory.changed', 'booking.same_day_booking_policy.changed'
-      )
+    WHERE ${PUBLIC_OFFER_PROJECTION_EVENT_FILTER}
       AND outbox.tenant_scope = 'property'
       AND ($2::uuid IS NULL OR outbox.property_id = $2::uuid)
       AND outbox.attempts_count < outbox.max_attempts
@@ -112,10 +122,7 @@ const CLAIM_PENDING_INVENTORY_EVENTS = `
     SELECT outbox.id
     FROM platform.outbox_events outbox
     JOIN candidate_event candidate ON candidate.property_id = outbox.property_id
-    WHERE outbox.destination = 'distribution.public-bookability'
-      AND outbox.event_type IN (
-        'pms.inventory.changed', 'booking.same_day_booking_policy.changed'
-      )
+    WHERE ${PUBLIC_OFFER_PROJECTION_EVENT_FILTER}
       AND outbox.tenant_scope = 'property'
       AND outbox.attempts_count < outbox.max_attempts
       AND (
@@ -568,10 +575,7 @@ async function recoverExpiredProjectionLeases(
              ),
              true
            )
-       WHERE outbox.destination = 'distribution.public-bookability'
-         AND outbox.event_type IN (
-           'pms.inventory.changed', 'booking.same_day_booking_policy.changed'
-         )
+       WHERE ${PUBLIC_OFFER_PROJECTION_EVENT_FILTER}
          AND outbox.tenant_scope = 'property'
          AND outbox.status = 'leased'
          AND outbox.leased_until <= $1::timestamptz
@@ -667,10 +671,7 @@ async function projectInventoryClaim(
        FROM platform.outbox_events outbox
        WHERE outbox.property_id = $1::uuid
          AND outbox.id = ANY($2::uuid[])
-         AND outbox.destination = 'distribution.public-bookability'
-         AND outbox.event_type IN (
-           'pms.inventory.changed', 'booking.same_day_booking_policy.changed'
-         )
+         AND ${PUBLIC_OFFER_PROJECTION_EVENT_FILTER}
          AND outbox.status = 'leased'
          AND outbox.outbox_metadata #>> '{publicOfferProjection,leaseToken}' = $3
        ORDER BY outbox.created_at, outbox.id

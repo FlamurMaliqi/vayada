@@ -4,10 +4,15 @@ import {
   SAME_DAY_BOOKING_POLICY_DEFAULTS,
 } from "@vayada/domain-booking";
 import pg from "pg";
+import {
+  CHANNEX_ARI_ACTIVE_ROOM_SQL,
+  CHANNEX_ARI_MAPPING_MISSING_SQL,
+} from "../domains/pmsChannexAriMapping.js";
 
 import type { ChannexManagementJob } from "../jobs/pmsChannexManagementWorker.js";
 import { applyPmsChannexManagementProgress } from "../jobs/pmsChannexManagementTargetState.js";
 import {
+  ChannexAriMappingMissingError,
   channexRequests,
   type ChannexManagementActionPlan,
   type ChannexManagementPlanPort,
@@ -56,7 +61,8 @@ type RateRow = {
   externalRoomTypeId: string | null;
 };
 type AriRow = {
-  stayDate: string | Date;
+  mappingMissing: boolean;
+  stayDate: string;
   available: number;
   externalRoomTypeId: string;
   externalRatePlanId: string;
@@ -327,9 +333,10 @@ async function ariPlan(
   const policy = policyResult.rows[0];
   if (!policy?.timezone) throw new Error("Canonical property timezone is unavailable");
   const from = propertyLocalClock(now, policy.timezone).date;
-  const through = addDays(from, 365);
+  const fallbackThrough = addDays(from, 365);
   const result = await pool.query<AriRow>(
-    `SELECT inventory.stay_date AS "stayDate",
+    `SELECT inventory.stay_date::text AS "stayDate",
+       ${CHANNEX_ARI_MAPPING_MISSING_SQL} AS "mappingMissing",
        CASE WHEN COALESCE(inventory.rate_gate_open, TRUE)
          THEN inventory.available_count ELSE 0 END AS available,
        room_mapping.external_room_type_id AS "externalRoomTypeId",
@@ -339,30 +346,37 @@ async function ariPlan(
      FROM pms.inventory_days inventory
      JOIN pms.channel_connections connection
        ON connection.property_id = inventory.property_id AND connection.provider = 'channex'
-     JOIN pms.channel_room_type_mappings room_mapping
+     LEFT JOIN pms.channel_room_type_mappings room_mapping
        ON room_mapping.connection_id = connection.id AND room_mapping.room_type_id = inventory.room_type_id
-     JOIN pms.channel_rate_plan_mappings rate_mapping
+       AND room_mapping.status = 'active'
+     LEFT JOIN pms.channel_rate_plan_mappings rate_mapping
        ON rate_mapping.connection_id = connection.id AND rate_mapping.room_type_id = inventory.room_type_id
-     JOIN pms.rate_plans plan ON plan.id = rate_mapping.rate_plan_id
-     WHERE inventory.property_id = $1::uuid AND inventory.stay_date BETWEEN $2::date AND $3::date
-       AND room_mapping.status = 'active' AND rate_mapping.status = 'active'
+       AND rate_mapping.status = 'active'
+     LEFT JOIN pms.rate_plans plan ON plan.id = rate_mapping.rate_plan_id
+     LEFT JOIN pms.inventory_materialization_coverage coverage
+       ON coverage.property_id = inventory.property_id
+     WHERE inventory.property_id = $1::uuid
+       AND ${CHANNEX_ARI_ACTIVE_ROOM_SQL}
+       AND inventory.stay_date BETWEEN $2::date
+         AND GREATEST($3::date, COALESCE(coverage.coverage_through, $3::date))
      ORDER BY inventory.stay_date`,
-    [job.propertyId, from, through],
+    [job.propertyId, from, fallbackThrough],
   );
+  if (result.rows.some((row) => row.mappingMissing)) throw new ChannexAriMappingMissingError();
   const overrides = new Map(
     (job.input.markups ?? []).map((item) => [item.channel, item.markupPercent]),
   );
   const availability = [
     ...new Map(
       result.rows.map((row) => [
-        `${row.externalRoomTypeId}:${date(row.stayDate)}`,
+        `${row.externalRoomTypeId}:${row.stayDate}`,
         {
           property_id: externalPropertyId,
           room_type_id: row.externalRoomTypeId,
-          date_from: date(row.stayDate),
-          date_to: date(row.stayDate),
+          date_from: row.stayDate,
+          date_to: row.stayDate,
           availability: evaluateSameDayBooking({
-            checkIn: date(row.stayDate),
+            checkIn: row.stayDate,
             policy,
             propertyTimeZone: policy.timezone!,
             now,
@@ -388,8 +402,8 @@ async function ariPlan(
         result.rows.map((row) => ({
           property_id: externalPropertyId,
           rate_plan_id: row.externalRatePlanId,
-          date_from: date(row.stayDate),
-          date_to: date(row.stayDate),
+          date_from: row.stayDate,
+          date_to: row.stayDate,
           rate: roundCurrency(
             row.rate * (1 + (overrides.get(row.channel) ?? row.markupPercent) / 100),
           ),
@@ -466,9 +480,6 @@ function compact(value: Record<string, unknown>) {
   );
 }
 
-function date(value: string | Date) {
-  return value instanceof Date ? value.toISOString().slice(0, 10) : value;
-}
 function roundCurrency(value: number) {
   return Math.round(value * 100) / 100;
 }

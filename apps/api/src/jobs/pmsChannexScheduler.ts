@@ -588,6 +588,7 @@ async function selectIncrementalAriPushCandidates(
       AND room_mapping.room_type_id::text = outbox.payload ->> 'roomTypeId'
      WHERE outbox.event_type = 'pms.inventory.ari_changed'
        AND outbox.status IN ('pending', 'failed')
+       AND EXISTS (SELECT 1 FROM pms.room_types room WHERE room.id = room_mapping.room_type_id AND room.active)
        AND connection.external_property_id IS NOT NULL
        AND outbox.payload ->> 'roomTypeId' IS NOT NULL
        AND COALESCE(outbox.payload ->> 'organizationId', connection.connection_metadata ->> 'organizationId') IS NOT NULL
@@ -619,7 +620,7 @@ async function selectFullAriPushCandidates(
        room_mapping.room_type_id::text AS "roomTypeId",
        room_mapping.external_room_type_id AS "channexRoomTypeId",
        $1::date AS "dateFrom",
-       $2::date AS "dateTo",
+       GREATEST($2::date, COALESCE(coverage.coverage_through, $2::date)) AS "dateTo",
        $3::text AS "inventoryVersion",
        EXISTS (
          SELECT 1 FROM pms.rate_plans canonical_rate
@@ -632,12 +633,15 @@ async function selectFullAriPushCandidates(
        NULL::text AS "outboxKey",
        $4::text AS "correlationId"
      FROM pms.channel_connections connection
+     LEFT JOIN pms.inventory_materialization_coverage coverage
+       ON coverage.property_id = connection.property_id
      JOIN pms.channel_room_type_mappings room_mapping
        ON room_mapping.connection_id = connection.id
       AND room_mapping.property_id = connection.property_id
       AND room_mapping.status = 'active'
      WHERE connection.provider = 'channex'
        AND connection.connection_status = 'connected'
+       AND EXISTS (SELECT 1 FROM pms.room_types room WHERE room.id = room_mapping.room_type_id AND room.active)
        AND connection.external_property_id IS NOT NULL
        AND connection.connection_metadata ->> 'organizationId' IS NOT NULL
      ORDER BY connection.property_id, room_mapping.room_type_id
