@@ -259,8 +259,8 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
       providerReceiptId: id,
       acknowledgedAt,
     });
-    if (!result.matched)
-      return reply.code(503).send({ error: "resend_provider_reference_not_ready" });
+    if (result.matchCount !== 1)
+      return reply.code(503).send({ error: "resend_provider_reference_unresolved" });
     return reply.code(200).send({ status: result.recorded ? "recorded" : "ignored_or_duplicate" });
   });
 };

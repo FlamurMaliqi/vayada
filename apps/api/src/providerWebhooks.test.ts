@@ -24,7 +24,7 @@ describe("target provider webhook routes", () => {
     const id = "msg_resend_1";
     const timestamp = new Date();
     const signature = new Webhook(secret).sign(id, timestamp, payload);
-    const recordTrustedProviderReceipt = vi.fn(async () => ({ matched: true, recorded: true }));
+    const recordTrustedProviderReceipt = vi.fn(async () => ({ matchCount: 1, recorded: true }));
     const app = buildApp({
       providerWebhooks: {
         secrets: { resend: secret },
@@ -59,7 +59,7 @@ describe("target provider webhook routes", () => {
 
   it("rejects an invalid Resend signature before recording a receipt", async () => {
     const secret = `whsec_${Buffer.from("resend-webhook-secret").toString("base64")}`;
-    const recordTrustedProviderReceipt = vi.fn(async () => ({ matched: true, recorded: true }));
+    const recordTrustedProviderReceipt = vi.fn(async () => ({ matchCount: 1, recorded: true }));
     const app = buildApp({
       providerWebhooks: {
         secrets: { resend: secret },
@@ -100,7 +100,7 @@ describe("target provider webhook routes", () => {
     const timestamp = new Date();
     const signature = new Webhook(secret).sign(id, timestamp, payload);
     const recordTrustedProviderReceipt = vi.fn(async () => ({
-      matched: false,
+      matchCount: 0,
       recorded: false,
     }));
     const app = buildApp({
@@ -124,7 +124,7 @@ describe("target provider webhook routes", () => {
     });
 
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toEqual({ error: "resend_provider_reference_not_ready" });
+    expect(response.json()).toEqual({ error: "resend_provider_reference_unresolved" });
     await app.close();
   });
 

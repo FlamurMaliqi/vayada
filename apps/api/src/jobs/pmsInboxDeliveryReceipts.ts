@@ -15,7 +15,7 @@ export type PmsInboxDeliveryReceiptPort = {
     receiptType: "delivered" | "read";
     providerReceiptId: string;
     acknowledgedAt: Date;
-  }): Promise<{ matched: boolean; recorded: boolean }>;
+  }): Promise<{ matchCount: number; recorded: boolean }>;
   close(): Promise<void>;
 };
 
@@ -33,14 +33,16 @@ export function createPgPmsInboxDeliveryReceiptPort(config: {
         !Number.isFinite(input.acknowledgedAt.getTime())
       )
         throw new Error("PMS Inbox delivery receipt is invalid");
-      const result = await pool.query<{ matched: boolean; recorded: boolean }>(
-        `WITH accepted AS (
+      const result = await pool.query<{ matchCount: number; recorded: boolean }>(
+        `WITH candidates AS (
            SELECT attempt.id, attempt.property_id, attempt.message_id
            FROM pms.message_delivery_attempts attempt
            WHERE attempt.adapter = $1 AND attempt.provider_reference = $2
              AND attempt.outcome = 'accepted'
-           ORDER BY attempt.completed_at DESC, attempt.id DESC
-           LIMIT 1
+         ), accepted AS (
+           SELECT id, property_id, message_id
+           FROM candidates
+           WHERE (SELECT count(*) FROM candidates) = 1
          ), inserted AS (
            INSERT INTO pms.message_delivery_receipts (
              property_id, message_id, attempt_id, receipt_type,
@@ -62,7 +64,7 @@ export function createPgPmsInboxDeliveryReceiptPort(config: {
            WHERE message.property_id = inserted.property_id AND message.id = inserted.message_id
            RETURNING message.id
          )
-         SELECT EXISTS (SELECT 1 FROM accepted) AS matched,
+         SELECT (SELECT count(*)::int FROM candidates) AS "matchCount",
                 EXISTS (SELECT 1 FROM projected) AS recorded`,
         [
           input.adapter,
@@ -73,7 +75,7 @@ export function createPgPmsInboxDeliveryReceiptPort(config: {
         ],
       );
       return {
-        matched: result.rows[0]?.matched ?? false,
+        matchCount: result.rows[0]?.matchCount ?? 0,
         recorded: result.rows[0]?.recorded ?? false,
       };
     },

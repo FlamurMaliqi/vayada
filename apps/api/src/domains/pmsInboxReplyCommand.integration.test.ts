@@ -32,6 +32,8 @@ const OTHER_MEDIA = "13730000-0000-4000-8000-000000000009";
 const BOOKING = "13730000-0000-4000-8000-000000000010";
 const BOOKING_GUEST = "13730000-0000-4000-8000-000000000011";
 const OTHER_ORGANIZATION = "13730000-0000-4000-8000-000000000012";
+const DUPLICATE_MESSAGE = "13730000-0000-4000-8000-000000000013";
+const OTHER_DUPLICATE_MESSAGE = "13730000-0000-4000-8000-000000000014";
 const NOW = "2026-09-03T09:00:00.000Z";
 
 describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
@@ -250,7 +252,7 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
         providerReceiptId: "ota-receipt-1",
         acknowledgedAt,
       }),
-    ).resolves.toEqual({ matched: true, recorded: true });
+    ).resolves.toEqual({ matchCount: 1, recorded: true });
     await expect(
       receipts.recordTrustedProviderReceipt({
         adapter: "channex",
@@ -259,7 +261,7 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
         providerReceiptId: "ota-receipt-1",
         acknowledgedAt,
       }),
-    ).resolves.toEqual({ matched: true, recorded: false });
+    ).resolves.toEqual({ matchCount: 1, recorded: false });
     await expect(
       receipts.recordTrustedProviderReceipt({
         adapter: "channex",
@@ -268,7 +270,7 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
         providerReceiptId: "ota-receipt-unknown",
         acknowledgedAt,
       }),
-    ).resolves.toEqual({ matched: false, recorded: false });
+    ).resolves.toEqual({ matchCount: 0, recorded: false });
     expect(
       (
         await admin.query(
@@ -287,6 +289,71 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
         )
       ).rows,
     ).toEqual([{ acknowledgedAt }]);
+  });
+
+  it("fails closed when an accepted provider reference exists in two properties", async () => {
+    await admin.query(
+      `INSERT INTO pms.messages
+         (id, property_id, thread_id, source_message_id, direction, sender_type,
+          sender_user_id, body, sent_at, received_at, raw_payload,
+          delivery_state, delivery_channel)
+       VALUES
+         ($1::uuid, $2::uuid, $3::uuid, 'duplicate-provider-reference-a', 'outbound',
+          'property_user', $4::uuid, '', $5::timestamptz, $5::timestamptz,
+          '{}'::jsonb, 'sent', 'ota'),
+         ($6::uuid, $7::uuid, $8::uuid, 'duplicate-provider-reference-b', 'outbound',
+          'property_user', $4::uuid, '', $5::timestamptz, $5::timestamptz,
+          '{}'::jsonb, 'sent', 'ota')`,
+      [
+        DUPLICATE_MESSAGE,
+        PROPERTY,
+        THREAD,
+        ACTOR,
+        NOW,
+        OTHER_DUPLICATE_MESSAGE,
+        OTHER_PROPERTY,
+        OTHER_THREAD,
+      ],
+    );
+    await admin.query(
+      `INSERT INTO pms.message_delivery_attempts
+         (property_id, message_id, attempt_number, resolved_channel, adapter, outcome,
+          scheduled_at, started_at, completed_at, provider_reference)
+       VALUES
+         ($1::uuid, $2::uuid, 1, 'ota', 'channex', 'accepted',
+          $5::timestamptz, $5::timestamptz, $5::timestamptz, 'duplicate-reference'),
+         ($3::uuid, $4::uuid, 1, 'ota', 'channex', 'accepted',
+          $5::timestamptz, $5::timestamptz, $5::timestamptz, 'duplicate-reference')`,
+      [PROPERTY, DUPLICATE_MESSAGE, OTHER_PROPERTY, OTHER_DUPLICATE_MESSAGE, NOW],
+    );
+    const receipts = createPgPmsInboxDeliveryReceiptPort({
+      connectionString: "",
+      pool: admin as never,
+    });
+
+    await expect(
+      receipts.recordTrustedProviderReceipt({
+        adapter: "channex",
+        providerReference: "duplicate-reference",
+        receiptType: "delivered",
+        providerReceiptId: "ambiguous-receipt",
+        acknowledgedAt: new Date(NOW),
+      }),
+    ).resolves.toEqual({ matchCount: 2, recorded: false });
+    await expect(
+      admin.query(
+        `SELECT count(*)::int AS messages,
+                count(*) FILTER (WHERE latest_provider_receipt_at IS NOT NULL)::int AS projected
+         FROM pms.messages
+         WHERE id = ANY($1::uuid[])`,
+        [[DUPLICATE_MESSAGE, OTHER_DUPLICATE_MESSAGE]],
+      ),
+    ).resolves.toMatchObject({ rows: [{ messages: 2, projected: 0 }] });
+    await expect(
+      admin.query(
+        "SELECT count(*)::int AS count FROM pms.message_delivery_receipts WHERE provider_receipt_id = 'ambiguous-receipt'",
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: 0 }] });
   });
 
   it.each([
