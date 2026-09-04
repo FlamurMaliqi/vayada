@@ -1,5 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { Webhook } from "svix";
+import { describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./app.js";
 import { promotePulledChannexBookingRevision } from "./routes/providerWebhooks.js";
@@ -13,6 +14,120 @@ import type {
 const fixedNow = new Date("2026-06-11T12:00:00.000Z");
 
 describe("target provider webhook routes", () => {
+  it("records an authenticated Resend delivery receipt against its provider reference", async () => {
+    const secret = `whsec_${Buffer.from("resend-webhook-secret").toString("base64")}`;
+    const payload = JSON.stringify({
+      type: "email.delivered",
+      created_at: "2026-09-04T12:00:00.000Z",
+      data: { email_id: "email-1" },
+    });
+    const id = "msg_resend_1";
+    const timestamp = new Date();
+    const signature = new Webhook(secret).sign(id, timestamp, payload);
+    const recordTrustedProviderReceipt = vi.fn(async () => ({ matchCount: 1, recorded: true }));
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { resend: secret },
+        store: createMemoryProviderWebhookStore(),
+        pmsInboxDeliveryReceipts: { recordTrustedProviderReceipt },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/webhooks/resend",
+      headers: {
+        "content-type": "application/json",
+        "svix-id": id,
+        "svix-timestamp": Math.floor(timestamp.getTime() / 1_000).toString(),
+        "svix-signature": signature,
+      },
+      payload,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: "recorded" });
+    expect(recordTrustedProviderReceipt).toHaveBeenCalledWith({
+      adapter: "resend",
+      providerReference: "email-1",
+      receiptType: "delivered",
+      providerReceiptId: id,
+      acknowledgedAt: new Date("2026-09-04T12:00:00.000Z"),
+    });
+    await app.close();
+  });
+
+  it("rejects an invalid Resend signature before recording a receipt", async () => {
+    const secret = `whsec_${Buffer.from("resend-webhook-secret").toString("base64")}`;
+    const recordTrustedProviderReceipt = vi.fn(async () => ({ matchCount: 1, recorded: true }));
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { resend: secret },
+        store: createMemoryProviderWebhookStore(),
+        pmsInboxDeliveryReceipts: { recordTrustedProviderReceipt },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/webhooks/resend",
+      headers: {
+        "content-type": "application/json",
+        "svix-id": "msg_resend_1",
+        "svix-timestamp": Math.floor(Date.now() / 1_000).toString(),
+        "svix-signature": "v1,invalid",
+      },
+      payload: JSON.stringify({
+        type: "email.delivered",
+        created_at: "2026-09-04T12:00:00.000Z",
+        data: { email_id: "email-1" },
+      }),
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(recordTrustedProviderReceipt).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("asks Resend to retry when the accepted provider reference is not committed yet", async () => {
+    const secret = `whsec_${Buffer.from("resend-webhook-secret").toString("base64")}`;
+    const payload = JSON.stringify({
+      type: "email.delivered",
+      created_at: "2026-09-04T12:00:00.000Z",
+      data: { email_id: "email-not-ready" },
+    });
+    const id = "msg_resend_early";
+    const timestamp = new Date();
+    const signature = new Webhook(secret).sign(id, timestamp, payload);
+    const recordTrustedProviderReceipt = vi.fn(async () => ({
+      matchCount: 0,
+      recorded: false,
+    }));
+    const app = buildApp({
+      providerWebhooks: {
+        secrets: { resend: secret },
+        store: createMemoryProviderWebhookStore(),
+        pmsInboxDeliveryReceipts: { recordTrustedProviderReceipt },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/webhooks/resend",
+      headers: {
+        "content-type": "application/json",
+        "svix-id": id,
+        "svix-timestamp": Math.floor(timestamp.getTime() / 1_000).toString(),
+        "svix-signature": signature,
+      },
+      payload,
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ error: "resend_provider_reference_unresolved" });
+    await app.close();
+  });
+
   for (const provider of ["stripe", "xendit", "channex"] as const) {
     for (const mode of ["observe_only", "ack_only_with_receipt", "mutating"] as const) {
       it(`${provider} verifies signatures and dedupes replayed receipts in ${mode}`, async () => {

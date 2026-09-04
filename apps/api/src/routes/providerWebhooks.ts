@@ -1,5 +1,8 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import { Webhook } from "svix";
+
+import type { PmsInboxDeliveryReceiptPort } from "../jobs/pmsInboxDeliveryReceipts.js";
 
 export const PROVIDER_WEBHOOK_MODES = [
   "observe_only",
@@ -14,6 +17,7 @@ export type ProviderWebhookSecrets = {
   stripe?: string;
   xendit?: string;
   channex?: string;
+  resend?: string;
 };
 
 export type ProviderWebhookModeConfig = Partial<
@@ -87,6 +91,7 @@ export type ProviderWebhookRoutesOptions = {
   modes?: ProviderWebhookModeConfig;
   channexBookingPromotionEnabled?: boolean;
   store: ProviderWebhookStore;
+  pmsInboxDeliveryReceipts?: Pick<PmsInboxDeliveryReceiptPort, "recordTrustedProviderReceipt">;
   stripeTimestampToleranceSeconds?: number;
   now?: () => Date;
 };
@@ -216,6 +221,47 @@ export const registerProviderWebhookRoutes: FastifyPluginAsync<
       store: options.store,
       normalizedPreview: previewChannexEvent(payload.value, classification),
     });
+  });
+
+  app.post<{ Body: string }>("/webhooks/resend", async (request, reply) => {
+    const secret = options.secrets.resend;
+    if (!secret || !options.pmsInboxDeliveryReceipts)
+      return reply.code(503).send({ error: "resend_webhook_not_configured" });
+    const id = request.headers["svix-id"];
+    const timestamp = request.headers["svix-timestamp"];
+    const signature = request.headers["svix-signature"];
+    if (typeof id !== "string" || typeof timestamp !== "string" || typeof signature !== "string")
+      return reply.code(400).send({ error: "missing_resend_signature" });
+    try {
+      new Webhook(secret).verify(request.body, {
+        "svix-id": id,
+        "svix-timestamp": timestamp,
+        "svix-signature": signature,
+      });
+    } catch {
+      return reply.code(400).send({ error: "invalid_resend_signature" });
+    }
+
+    const payload = parseJsonPayload(request.body);
+    if (!payload.ok) return reply.code(400).send({ error: "invalid_resend_payload" });
+    if (optionalString(payload.value, "type") !== "email.delivered")
+      return reply.code(200).send({ status: "ignored" });
+    const data = optionalRecord(payload.value, "data");
+    const providerReference = optionalString(data, "email_id");
+    const acknowledgedAt = new Date(optionalString(payload.value, "created_at") ?? "");
+    if (!providerReference || !Number.isFinite(acknowledgedAt.getTime()))
+      return reply.code(400).send({ error: "invalid_resend_delivery_receipt" });
+
+    const result = await options.pmsInboxDeliveryReceipts.recordTrustedProviderReceipt({
+      adapter: "resend",
+      providerReference,
+      receiptType: "delivered",
+      providerReceiptId: id,
+      acknowledgedAt,
+    });
+    if (result.matchCount !== 1)
+      return reply.code(503).send({ error: "resend_provider_reference_unresolved" });
+    return reply.code(200).send({ status: result.recorded ? "recorded" : "ignored_or_duplicate" });
   });
 };
 

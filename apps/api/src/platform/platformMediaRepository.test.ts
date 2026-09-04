@@ -332,6 +332,45 @@ describe("PostgreSQL platform media repository", () => {
     });
   });
 
+  it("persists Inbox uploads as bounded staged thread-scoped orphans", async () => {
+    const database = createFakeDatabase();
+    const repository = repositoryFor(database.pool);
+    await createSession(repository, "marketplace.collaboration_chat.attachment");
+    database.updateSession({
+      purpose: "pms.messaging.attachment",
+      resource: {
+        product: "pms",
+        resourceType: "pms_property",
+        resourceId: PROPERTY_ID,
+        propertyId: PROPERTY_ID,
+        targetResourceId: ROOM_TYPE_ID,
+      },
+      target: {
+        resourceProduct: "pms",
+        resourceType: "message_thread",
+        resourceId: ROOM_TYPE_ID,
+        propertyId: PROPERTY_ID,
+      },
+    });
+    const completed = await repository.completeUploadSession(completionInput(database.session!));
+
+    expect(completed.mediaObjects[0]).toMatchObject({
+      purpose: "pms.messaging.attachment",
+      resourceProduct: "pms",
+      resourceType: "message_thread",
+      resourceId: ROOM_TYPE_ID,
+      lifecycleStatus: "staged",
+      retainedUntil: "2026-07-16T13:01:00.000Z",
+      variants: [expect.objectContaining({ variantName: "provider_original" })],
+    });
+    const objectInsert = database.clientQueries.find(({ text }) =>
+      text.includes("INSERT INTO platform.media_objects"),
+    );
+    expect(JSON.parse(String(objectInsert?.values?.[17]))).toMatchObject({
+      attachmentState: "orphan",
+    });
+  });
+
   it("resolves a chat target only when the source resource belongs to the collaboration", async () => {
     const query = vi.fn(async () => ({
       rows: [{ collaborationId: "collaboration-target-001", propertyId: PROPERTY_ID }],
@@ -374,6 +413,66 @@ describe("PostgreSQL platform media repository", () => {
       "collaboration-source-001",
       "creator-profile-001",
     ]);
+  });
+
+  it("resolves Inbox attachment uploads only to a thread in the canonical PMS property", async () => {
+    const threadId = "33333333-3333-4333-8333-333333333333";
+    const query = vi.fn(async () => ({ rows: [{ propertyId: PROPERTY_ID }] }));
+    const repository = createPgPlatformMediaRepository({
+      connectionString: "postgresql://target.test/vayada",
+      publicCdnBaseUrl: "https://cdn.example.com",
+      pool: { query, connect: vi.fn(), end: vi.fn() } as never,
+    });
+    const input = {
+      request: {
+        purpose: "pms.messaging.attachment" as const,
+        visibility: "private" as const,
+        resource: {
+          product: "pms" as const,
+          resourceType: "pms_property" as const,
+          resourceId: PROPERTY_ID,
+          propertyId: PROPERTY_ID,
+          targetResourceId: threadId,
+        },
+        files: [],
+      },
+      policy: { targetResourceProduct: "pms", targetResourceType: "message_thread" } as never,
+      context: {} as never,
+    };
+
+    await expect(repository.resolveTarget(input)).resolves.toEqual({
+      ok: true,
+      target: {
+        resourceProduct: "pms",
+        resourceType: "message_thread",
+        resourceId: threadId,
+        propertyId: PROPERTY_ID,
+      },
+    });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("pms.message_threads"), [
+      threadId,
+      PROPERTY_ID,
+    ]);
+
+    for (const resource of [
+      { ...input.request.resource, resourceType: "pms_hotel" as const },
+      { ...input.request.resource, propertyId: undefined },
+      { ...input.request.resource, propertyId: ROOM_TYPE_ID },
+      { ...input.request.resource, targetResourceId: "opaque-thread" },
+    ]) {
+      const calls = query.mock.calls.length;
+      await expect(
+        repository.resolveTarget({ ...input, request: { ...input.request, resource } }),
+      ).resolves.toMatchObject({ ok: false, statusCode: 403, code: "media_target_forbidden" });
+      expect(query).toHaveBeenCalledTimes(calls);
+    }
+
+    query.mockResolvedValueOnce({ rows: [] });
+    await expect(repository.resolveTarget(input)).resolves.toMatchObject({
+      ok: false,
+      statusCode: 403,
+      code: "media_target_forbidden",
+    });
   });
 
   it("resolves an add-on upload to the Booking hotel's canonical property", async () => {
@@ -1013,6 +1112,7 @@ function completionInput(session: PlatformMediaSessionRecord) {
   const isPrivate = session.effectiveVisibility === "private";
   const isChat = session.purpose === "marketplace.collaboration_chat.attachment";
   const isFinance = session.purpose === "finance.expense.receipt";
+  const isInbox = session.purpose === "pms.messaging.attachment";
   const isBookingAddon = session.purpose === "booking.addon.image";
   const isPropertyMedia = [
     "property.hero_image",
@@ -1023,7 +1123,11 @@ function completionInput(session: PlatformMediaSessionRecord) {
   const variantNames =
     isPropertyMedia || isBookingAddon
       ? PROPERTY_MEDIA_PUBLIC_VARIANTS
-      : [isChat || isFinance ? ("provider_original" as const) : ("original_safe" as const)];
+      : [
+          isChat || isFinance || isInbox
+            ? ("provider_original" as const)
+            : ("original_safe" as const),
+        ];
   return {
     session,
     files: [

@@ -2263,6 +2263,160 @@ describe("platform media upload routes", () => {
     expect((response.body as ErrorResponse).code).toBe("invalid_media_dimensions");
   });
 
+  it("authorizes Inbox attachment uploads with reply permission and canonical PMS property scope", async () => {
+    const threadId = "33333333-3333-4333-8333-333333333333";
+    const repository = createInMemoryPlatformMediaRepository();
+    const payload = {
+      purpose: "pms.messaging.attachment",
+      visibility: "private",
+      resource: {
+        product: "pms",
+        resourceType: "pms_property",
+        resourceId: financePropertyId,
+        propertyId: financePropertyId,
+        targetResourceId: threadId,
+      },
+      files: [{ filename: "arrival-guide.pdf", contentType: "application/pdf", sizeBytes: 1024 }],
+    };
+    const access = {
+      resources: [
+        {
+          product: "pms" as const,
+          resourceType: "pms_property" as const,
+          resourceId: financePropertyId,
+          relationship: "front_desk" as const,
+        },
+      ],
+      entitlements: [financeEntitlement("property-management")],
+      enabledPurposes: ["pms.messaging.attachment" as const],
+      repository,
+    };
+
+    const authorizedApp = buildMediaApp({ ...access, permissions: ["pms.inbox.reply"] });
+    const allowed = await injectJson(authorizedApp, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: "Bearer valid-token" },
+      payload,
+    });
+    expect(allowed.statusCode).toBe(201);
+    expect(allowed.body).toMatchObject({
+      uploadSession: { purpose: "pms.messaging.attachment", effectiveVisibility: "private" },
+    });
+    expect(JSON.stringify(allowed.body)).not.toMatch(/stagingKey/);
+    const upload = allowed.body as MediaCreateResponse;
+    const finalizeRequest = {
+      method: "POST" as const,
+      url: `/api/media/upload-sessions/${upload.uploadSession.sessionId}/finalize`,
+      headers: { authorization: "Bearer valid-token" },
+      payload: {
+        files: [
+          {
+            uploadTargetId: upload.uploadTargets[0]!.uploadTargetId,
+            contentType: "application/pdf",
+            sizeBytes: 1024,
+          },
+        ],
+      },
+    };
+    for (const response of [
+      await injectJson(authorizedApp, finalizeRequest),
+      await injectJson(authorizedApp, finalizeRequest),
+    ]) {
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toMatchObject({
+        mediaObject: {
+          mediaObjectId: expect.any(String),
+          purpose: "pms.messaging.attachment",
+          lifecycleStatus: "staged",
+          retainedUntil: "2026-06-12T13:00:00.000Z",
+        },
+      });
+      expect(JSON.stringify(response.body)).not.toMatch(
+        /bucket|storageKey|checksumSha256|variants/,
+      );
+    }
+
+    const denialCases = [
+      {
+        app: buildMediaApp({ ...access, permissions: ["pms.operations.manage"] }),
+        code: "missing_permission",
+      },
+      {
+        app: buildMediaApp({ ...access, permissions: ["pms.inbox.reply"], entitlements: [] }),
+        code: "missing_entitlement",
+      },
+      {
+        app: buildMediaApp({
+          ...access,
+          permissions: ["pms.inbox.reply"],
+          entitlements: [{ ...financeEntitlement("property-management"), status: "suspended" }],
+        }),
+        code: "inactive_entitlement",
+      },
+      {
+        app: buildMediaApp({ ...access, permissions: ["pms.inbox.reply"], resources: [] }),
+        code: "missing_resource_access",
+      },
+    ];
+    for (const { app, code } of denialCases) {
+      const denied = await injectJson(app, {
+        method: "POST",
+        url: "/api/media/upload-sessions",
+        headers: { authorization: "Bearer valid-token" },
+        payload,
+      });
+      expect(denied.statusCode).toBe(403);
+      expect(denied.body).toMatchObject({ statusCode: 403, code, category: "authorization" });
+    }
+
+    const unauthenticated = await injectJson(authorizedApp, {
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      payload: { purpose: "pms.messaging.attachment" },
+    });
+    expect(unauthenticated.statusCode).toBe(401);
+    expect(unauthenticated.body).toMatchObject({
+      statusCode: 401,
+      code: "unauthenticated",
+      category: "authentication",
+    });
+
+    const unauthenticatedFinalize = await injectJson(authorizedApp, {
+      method: "POST",
+      url: finalizeRequest.url,
+      payload: finalizeRequest.payload,
+    });
+    expect(unauthenticatedFinalize.statusCode).toBe(401);
+    expect(unauthenticatedFinalize.body).toMatchObject({
+      statusCode: 401,
+      code: "unauthenticated",
+      category: "authentication",
+    });
+
+    const finalizeDenied = await injectJson(
+      buildMediaApp({ ...access, permissions: ["pms.operations.manage"] }),
+      finalizeRequest,
+    );
+    expect(finalizeDenied.statusCode).toBe(403);
+    expect(finalizeDenied.body).toMatchObject({
+      statusCode: 403,
+      code: "missing_permission",
+      category: "authorization",
+    });
+
+    const legacyScope = await injectJson(
+      buildMediaApp({ ...access, permissions: ["pms.inbox.reply"] }),
+      {
+        method: "POST",
+        url: "/api/media/upload-sessions",
+        headers: { authorization: "Bearer valid-token" },
+        payload: { ...payload, resource: { ...payload.resource, resourceType: "pms_hotel" } },
+      },
+    );
+    expect(legacyScope.statusCode).toBe(400);
+  });
+
   it("queues PMS import source image jobs instead of PMS-owned downloads", async () => {
     const repository = createInMemoryPlatformMediaRepository();
     const app = buildMediaApp({

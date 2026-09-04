@@ -68,6 +68,7 @@ const supportedPurposes = new Set([
   "marketplace.offer.media",
   "marketplace.collaboration_chat.attachment",
   "pms.room_type.media",
+  "pms.messaging.attachment",
   "finance.expense.receipt",
 ]);
 const propertyMediaPurposes = new Set([
@@ -365,6 +366,37 @@ async function resolveTarget(
         resourceType: "collaboration",
         resourceId: collaboration.collaborationId,
         propertyId: collaboration.propertyId,
+      },
+    };
+  }
+
+  if (input.request.purpose === "pms.messaging.attachment") {
+    const propertyId = input.request.resource.resourceId.trim();
+    const threadId = input.request.resource.targetResourceId?.trim() ?? "";
+    if (
+      input.request.resource.product !== "pms" ||
+      input.request.resource.resourceType !== "pms_property" ||
+      !CANONICAL_UUID.test(propertyId) ||
+      !CANONICAL_UUID.test(threadId) ||
+      input.request.resource.propertyId !== propertyId
+    ) {
+      return propertyMediaTargetForbidden();
+    }
+    const result = await queryable.query<PropertyTargetRow>(
+      `SELECT thread.property_id::text AS "propertyId"
+       FROM pms.message_threads thread
+       WHERE thread.id = $1::uuid AND thread.property_id = $2::uuid
+       LIMIT 1`,
+      [threadId, propertyId],
+    );
+    if (result.rows.length !== 1) return propertyMediaTargetForbidden();
+    return {
+      ok: true,
+      target: {
+        resourceProduct: "pms",
+        resourceType: "message_thread",
+        resourceId: threadId,
+        propertyId,
       },
     };
   }
@@ -850,7 +882,8 @@ function mediaObjectFor(
     originalFilename: file.sessionFile.filename,
     retainedUntil:
       session.purpose === "marketplace.collaboration_chat.attachment" ||
-      session.purpose === "finance.expense.receipt"
+      session.purpose === "finance.expense.receipt" ||
+      session.purpose === "pms.messaging.attachment"
         ? new Date(Date.parse(now) + 60 * 60 * 1000).toISOString()
         : null,
     variants,
@@ -927,7 +960,8 @@ async function insertMediaObject(
   const sourceMetadata = {
     requestedVisibility: mediaObject.requestedVisibility,
     ...(mediaObject.purpose === "marketplace.collaboration_chat.attachment" ||
-    mediaObject.purpose === "finance.expense.receipt"
+    mediaObject.purpose === "finance.expense.receipt" ||
+    mediaObject.purpose === "pms.messaging.attachment"
       ? { attachmentState: "orphan" }
       : {}),
   };
@@ -943,7 +977,8 @@ async function insertMediaObject(
         $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::jsonb,
         $19,
         CASE
-          WHEN $5 IN ('marketplace.collaboration_chat.attachment', 'finance.expense.receipt')
+          WHEN $5 IN ('marketplace.collaboration_chat.attachment', 'finance.expense.receipt',
+                      'pms.messaging.attachment')
             THEN $21::timestamptz + interval '1 hour'
           ELSE NULL
         END,

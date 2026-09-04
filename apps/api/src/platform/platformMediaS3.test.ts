@@ -83,7 +83,7 @@ describe("S3 platform profile media adapter", () => {
     expect(signingOptions?.signableHeaders).toEqual(new Set(["content-type"]));
   });
 
-  it("signs images up to the chat attachment limit while rejecting larger uploads", async () => {
+  it("signs files up to the Inbox attachment limit while rejecting larger uploads", async () => {
     vi.mocked(getSignedUrl).mockResolvedValue("https://signed-upload.example/offer");
     const { client } = fakeS3(async () => ({}));
     const adapter = createAdapter(client);
@@ -95,7 +95,7 @@ describe("S3 platform profile media adapter", () => {
         uploadTargetId,
         stagingKey,
         contentType: "image/jpeg",
-        sizeBytes: 20 * 1024 * 1024,
+        sizeBytes: 25 * 1024 * 1024,
         expiresAt,
       }),
     ).resolves.toMatchObject({ uploadTargetId });
@@ -105,10 +105,10 @@ describe("S3 platform profile media adapter", () => {
         uploadTargetId,
         stagingKey,
         contentType: "image/jpeg",
-        sizeBytes: 20 * 1024 * 1024 + 1,
+        sizeBytes: 25 * 1024 * 1024 + 1,
         expiresAt,
       }),
-    ).rejects.toThrow("between 1 byte and 20 MB");
+    ).rejects.toThrow("between 1 byte and 25 MB");
   });
 
   it("deletes cleanup objects and every page in a staging prefix", async () => {
@@ -245,6 +245,80 @@ describe("S3 platform profile media adapter", () => {
       ResponseContentType: "image/jpeg",
     });
     expect(options).toEqual({ expiresIn: 300 });
+  });
+
+  it("preserves validated Inbox PDF and HEIF-family attachments as private originals", async () => {
+    const pdf = Buffer.from("%PDF-1.7\nminimal-test-document");
+    const heic = Buffer.concat([Buffer.from([0, 0, 0, 16]), Buffer.from("ftypheic0000")]);
+    for (const [contentType, source, extension] of [
+      ["application/pdf", pdf, "pdf"],
+      ["image/heic", heic, "heic"],
+    ] as const) {
+      const { client, send } = fakeS3(async (command) =>
+        command instanceof GetObjectCommand
+          ? { ContentLength: source.length, Body: Readable.from([source]) }
+          : {},
+      );
+      const adapter = createAdapter(client);
+      const session = inboxSession(source.length, contentType);
+      const sessionFile = session.files[0]!;
+      const uploadTarget = session.uploadTargets[0]!;
+      const inspected = await adapter.inspectUploadedFile({
+        session,
+        sessionFile,
+        uploadTarget,
+        clientFile: { uploadTargetId },
+        policy: inboxPolicy,
+      });
+      expect(inspected).toMatchObject({
+        ok: true,
+        inspection: { contentType, sizeBytes: source.length, checksumSha256: expect.any(String) },
+      });
+      if (!inspected.ok) throw new Error("Expected Inbox attachment inspection to succeed");
+      const [variant] = await adapter.generateVariants({
+        session,
+        file: { sessionFile, uploadTarget, inspection: inspected.inspection },
+        fileIndex: 0,
+        policy: inboxPolicy,
+      });
+      expect(variant).toMatchObject({
+        variantName: "provider_original",
+        visibility: "private",
+        contentType,
+        sizeBytes: source.length,
+      });
+      expect(variant?.storageKey).toMatch(new RegExp(`^private/media/.+\\.${extension}$`));
+      const put = send.mock.calls
+        .map(([command]) => command)
+        .find((command): command is PutObjectCommand => command instanceof PutObjectCommand);
+      expect(put?.input).toMatchObject({
+        Body: source,
+        ContentType: contentType,
+        CacheControl: privateCacheControl,
+      });
+    }
+  });
+
+  it("rejects Inbox attachment bytes that do not match PDF or HEIF-family declarations", async () => {
+    for (const contentType of ["application/pdf", "image/heif"] as const) {
+      const source = Buffer.from("not-the-declared-file-type");
+      const { client } = fakeS3(async (command) =>
+        command instanceof GetObjectCommand
+          ? { ContentLength: source.length, Body: Readable.from([source]) }
+          : {},
+      );
+      const adapter = createAdapter(client);
+      const session = inboxSession(source.length, contentType);
+      await expect(
+        adapter.inspectUploadedFile({
+          session,
+          sessionFile: session.files[0]!,
+          uploadTarget: session.uploadTargets[0]!,
+          clientFile: { uploadTargetId },
+          policy: inboxPolicy,
+        }),
+      ).resolves.toMatchObject({ ok: false, code: "unsupported_media_type" });
+    }
   });
 
   it("decodes actual bytes and writes stripped immutable WebP variants", async () => {
@@ -1088,11 +1162,11 @@ describe("S3 platform profile media adapter", () => {
     const session = profileSession(100);
     const unsupportedPolicy = {
       ...policy,
-      purpose: "pms.messaging.attachment" as const,
+      purpose: "pms.import.source_image" as const,
     };
     const unsupportedSession = {
       ...session,
-      purpose: "pms.messaging.attachment" as const,
+      purpose: "pms.import.source_image" as const,
     };
     await expect(
       adapter.inspectUploadedFile({
@@ -1151,16 +1225,15 @@ function fakeS3(implementation: (command: unknown) => Promise<unknown>) {
   return { client: { send } as unknown as S3Client, send };
 }
 
-function profileSession(
-  sizeBytes: number,
-  contentType: "image/jpeg" | "image/png" | "image/webp" | "image/svg+xml" = "image/jpeg",
-): PlatformMediaSessionRecord {
+function profileSession(sizeBytes: number, contentType = "image/jpeg"): PlatformMediaSessionRecord {
   const extension =
     contentType === "image/jpeg"
       ? "jpg"
-      : contentType === "image/svg+xml"
-        ? "svg"
-        : contentType.slice("image/".length);
+      : contentType === "application/pdf"
+        ? "pdf"
+        : contentType === "image/svg+xml"
+          ? "svg"
+          : contentType.slice("image/".length);
   return {
     sessionId,
     uploadSessionKey: `media.upload_session:${sessionId}`,
@@ -1251,6 +1324,27 @@ const chatPolicy: PlatformMediaPurposePolicy = {
   requiredVariants: ["provider_original"],
 };
 
+const inboxPolicy: PlatformMediaPurposePolicy = {
+  ...chatPolicy,
+  purpose: "pms.messaging.attachment",
+  permission: "pms.inbox.reply",
+  allowedRelationships: ["owner", "operator", "front_desk"],
+  allowedResources: [{ product: "pms", resourceType: "pms_property" }],
+  allowedContentTypes: [
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "image/heic",
+    "image/heif",
+    "application/pdf",
+  ],
+  allowedExtensions: [".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif", ".pdf"],
+  maxFileSizeBytes: 25 * 1024 * 1024,
+  targetResourceProduct: "pms",
+  targetResourceType: "message_thread",
+};
+
 function propertyPolicy(
   purpose:
     | "property.hero_image"
@@ -1311,6 +1405,29 @@ function chatSession(sizeBytes: number): PlatformMediaSessionRecord {
       resourceProduct: "marketplace",
       resourceType: "collaboration",
       resourceId: "collaboration_01J_TEST",
+    },
+  };
+}
+
+function inboxSession(sizeBytes: number, contentType: string): PlatformMediaSessionRecord {
+  const session = profileSession(sizeBytes, contentType);
+  return {
+    ...session,
+    purpose: "pms.messaging.attachment",
+    requestedVisibility: "private",
+    effectiveVisibility: "private",
+    resource: {
+      product: "pms",
+      resourceType: "pms_property",
+      resourceId: "11111111-1111-4111-8111-111111111111",
+      propertyId: "11111111-1111-4111-8111-111111111111",
+      targetResourceId: "33333333-3333-7333-8333-333333333333",
+    },
+    target: {
+      resourceProduct: "pms",
+      resourceType: "message_thread",
+      resourceId: "33333333-3333-7333-8333-333333333333",
+      propertyId: "11111111-1111-4111-8111-111111111111",
     },
   };
 }

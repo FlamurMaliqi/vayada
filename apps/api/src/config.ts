@@ -14,7 +14,11 @@ export type ApiAuthConfig = {
 };
 
 export type ApiAuthSurface =
-  "platform-admin" | "booking-admin" | "pms-web" | "affiliate-dashboard" | "marketplace-web";
+  | "platform-admin"
+  | "booking-admin"
+  | "pms-web"
+  | "affiliate-dashboard"
+  | "marketplace-web";
 
 export type ApiAuthSessionConfig = {
   workosClientId: string;
@@ -57,6 +61,7 @@ export type ProviderWebhookConfig = {
   stripeSecret?: string;
   xenditSecret?: string;
   channexSecret?: string;
+  resendSecret?: string;
   stripeMode: ProviderWebhookIntakeMode;
   xenditMode: ProviderWebhookIntakeMode;
   channexMode: ProviderWebhookIntakeMode;
@@ -488,6 +493,7 @@ function loadProviderWebhookConfig(env: NodeJS.ProcessEnv): ProviderWebhookConfi
     stripeSecret: readOptionalEnv(env, "STRIPE_WEBHOOK_SECRET"),
     xenditSecret: readOptionalEnv(env, "XENDIT_WEBHOOK_SECRET"),
     channexSecret: readOptionalEnv(env, "CHANNEX_WEBHOOK_SECRET"),
+    resendSecret: readOptionalEnv(env, "RESEND_WEBHOOK_SECRET"),
     stripeMode: readSourceEnv(
       env,
       "STRIPE_WEBHOOK_INTAKE_MODE",

@@ -182,6 +182,21 @@ import {
 } from "./routes/platform/admin/propertyLifecycle.js";
 import { registerPlatformPropertyMediaRoutes } from "./routes/platform/admin/propertyMedia.js";
 import { registerPmsOperationsRoutes } from "./routes/pmsOperations.js";
+import type {
+  PmsInboxAssistancePort,
+  PmsInboxMarkReadPort,
+  PmsInboxProviderActionPort,
+  PmsInboxQuickReplyPort,
+  PmsInboxReadPort,
+  PmsInboxReplyPort,
+  PmsInboxStartDirectEmailPort,
+  PmsInboxStaffCommandPort,
+  PmsInboxTriagePort,
+} from "./domains/pmsInbox.js";
+import {
+  registerPmsInboxAttachmentMediaRoutes,
+  type PmsInboxAttachmentMediaRoutesOptions,
+} from "./routes/pmsInboxAttachmentMedia.js";
 import { registerPmsCalendarAutoOpenRoutes } from "./routes/pmsCalendarAutoOpen.js";
 import type { PmsLinkedInventoryGroupCommandRepository } from "./domains/pmsLinkedInventoryGroupRepository.js";
 import {
@@ -248,6 +263,16 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   bookingGuestPolicy?: BookingGuestPolicyRoutesOptions;
   bookingChangeRequestRepository?: BookingHotelChangeRequestRepository;
   pmsOperationsRepository?: PmsOperationsReadRepository;
+  pmsInboxAssistancePort?: PmsInboxAssistancePort;
+  pmsInboxReadPort?: PmsInboxReadPort;
+  pmsInboxMarkReadPort?: PmsInboxMarkReadPort;
+  pmsInboxProviderActionPort?: PmsInboxProviderActionPort;
+  pmsInboxQuickReplyPort?: PmsInboxQuickReplyPort;
+  pmsInboxReplyPort?: PmsInboxReplyPort;
+  pmsInboxStartDirectEmailPort?: PmsInboxStartDirectEmailPort;
+  pmsInboxTriagePort?: PmsInboxTriagePort;
+  pmsInboxStaffCommandPort?: PmsInboxStaffCommandPort;
+  pmsInboxAttachmentMedia?: Omit<PmsInboxAttachmentMediaRoutesOptions, "propertyAccessRepository">;
   pmsManualBookingPreview?: PmsManualBookingPreviewRoutesOptions;
   pmsManualBookingCreate?: PmsManualBookingCreateRoutesOptions;
   pmsModuleActivationRepository?: PmsModuleActivationRepository;
@@ -352,7 +377,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     },
     trustProxy: options.trustProxy ?? false,
     disableRequestLogging: (request) =>
-      request.url.startsWith("/api/marketplace/creator-platform-oauth/"),
+      request.url.startsWith("/api/marketplace/creator-platform-oauth/") ||
+      (request.url.startsWith("/api/pms/properties/") &&
+        request.url.split("?", 1)[0]?.endsWith("/messaging/threads") === true),
   });
 
   app.setErrorHandler((error, request, reply) => {
@@ -667,6 +694,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       sameDayBookingSettings: options.sameDayBookingSettings,
       roomAssignmentSettings: options.pmsRoomAssignmentSettings,
       roomAssignmentHistory: options.pmsRoomAssignmentHistory,
+      inboxAssistancePort: options.pmsInboxAssistancePort,
+      inboxReadPort: options.pmsInboxReadPort,
+      inboxMarkReadPort: options.pmsInboxMarkReadPort,
+      inboxProviderActionPort: options.pmsInboxProviderActionPort,
+      inboxQuickReplyPort: options.pmsInboxQuickReplyPort,
+      inboxReplyPort: options.pmsInboxReplyPort,
+      inboxStartDirectEmailPort: options.pmsInboxStartDirectEmailPort,
+      inboxTriagePort: options.pmsInboxTriagePort,
+      inboxStaffCommandPort: options.pmsInboxStaffCommandPort,
       publicBookabilityPublisher: options.publicBookabilityPublisher,
     });
   }
@@ -807,6 +843,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPlatformMediaRoutes, {
       prefix: "/api/media",
       ...options.platformMedia,
+    });
+  }
+  if (options.pmsInboxAttachmentMedia && options.auth?.propertyAccessRepository) {
+    app.register(registerPmsInboxAttachmentMediaRoutes, {
+      prefix: "/api/media",
+      ...options.pmsInboxAttachmentMedia,
+      propertyAccessRepository: options.auth.propertyAccessRepository,
     });
   }
 

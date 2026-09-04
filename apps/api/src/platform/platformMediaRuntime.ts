@@ -12,11 +12,13 @@ import { createPgPlatformMediaRepository } from "./platformMediaRepository.js";
 import {
   createS3PlatformMediaAdapter,
   type PlatformMediaPrivateDownloadSigner,
+  type PlatformMediaPrivateObjectReader,
 } from "./platformMediaS3.js";
 
 export type PlatformMediaRuntimeInput = {
   auth?: unknown;
   allowedOrigins?: string[];
+  pmsInboxEnabled: boolean;
   targetDatabaseUrl: string;
   platformMediaServing?: PlatformMediaServingConfig;
 };
@@ -35,6 +37,11 @@ export type PlatformMediaRuntime = {
   collaborationAttachments: {
     repository: ReturnType<typeof createPgPlatformMediaRepository>;
     signer: PlatformMediaPrivateDownloadSigner;
+    serving: PlatformMediaServingConfig;
+  };
+  privateDownloads: {
+    signer: PlatformMediaPrivateDownloadSigner;
+    reader: PlatformMediaPrivateObjectReader;
     serving: PlatformMediaServingConfig;
   };
   cleanupStore: ReturnType<typeof createPgPlatformMediaCleanupStore>;
@@ -92,6 +99,7 @@ export function composePlatformMediaRuntime(
     "property.logo",
     "pms.room_type.media",
     "finance.expense.receipt",
+    ...(input.pmsInboxEnabled ? (["pms.messaging.attachment"] as const) : []),
   ];
 
   return {
@@ -102,6 +110,7 @@ export function composePlatformMediaRuntime(
       signer: adapter,
       serving: input.platformMediaServing,
     },
+    privateDownloads: { signer: adapter, reader: adapter, serving: input.platformMediaServing },
     cleanupStore,
     propertyMediaCommands,
     routes: {
