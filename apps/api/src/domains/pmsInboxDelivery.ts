@@ -23,6 +23,7 @@ export type PmsInboxDeliveryProviderInput = {
   channel: "ota" | "email";
   providerConversationId: string | null;
   recipientEmail: string | null;
+  senderEmail: string | null;
   subject: string;
   text: string;
   attachments: readonly PmsInboxDeliveryAttachmentContent[];

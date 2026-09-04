@@ -3,6 +3,7 @@ import pg, { type QueryResultRow } from "pg";
 import type { PmsInboxEmailReplyRouteReadPort } from "../domains/pmsInbox.js";
 import { resolvePmsInboxEmailReplyRoutes } from "../domains/pmsInboxEmailReplyRoutes.js";
 import { lockPmsInboxReplyActorScope } from "../domains/pmsInboxProviderActionCommand.js";
+import type { PmsInboxDeliveryEmailRoutePort } from "../domains/pmsInboxDeliveryEmailRoutes.js";
 import {
   PMS_INBOX_DELIVERY_JOB_TYPE,
   PMS_INBOX_DELIVERY_QUEUE,
@@ -33,6 +34,7 @@ export function createPgPmsInboxDeliveryStore(config: {
   connectionString: string;
   media: PmsInboxDeliveryMediaPort;
   emailReplyRoutes: PmsInboxEmailReplyRouteReadPort;
+  emailDeliveryRoutes: PmsInboxDeliveryEmailRoutePort;
   pool?: Pool;
   max?: number;
 }): PgPmsInboxDeliveryStore {
@@ -49,6 +51,7 @@ export function createPgPmsInboxDeliveryStore(config: {
         preparePmsInboxDeliveryJob(client, job, {
           media: config.media,
           emailReplyRoutes: config.emailReplyRoutes,
+          emailDeliveryRoutes: config.emailDeliveryRoutes,
         }),
       ),
     complete: (job, completion) =>
@@ -142,6 +145,7 @@ type DeliveryRow = {
   organizationId: string | null;
   actorMembershipId: string | null;
   actorUserId: string | null;
+  senderEmail?: string | null;
   emailIdempotencyExpired: boolean;
   body: string;
   deliveryState: string;
@@ -182,7 +186,11 @@ const ALLOWED_TYPES = new Set([
 export async function preparePmsInboxDeliveryJob(
   client: PmsInboxDeliveryQueryable,
   job: PmsInboxDeliveryJob,
-  options: { emailReplyRoutes: PmsInboxEmailReplyRouteReadPort; media: PmsInboxDeliveryMediaPort },
+  options: {
+    emailReplyRoutes: PmsInboxEmailReplyRouteReadPort;
+    emailDeliveryRoutes: PmsInboxDeliveryEmailRoutePort;
+    media: PmsInboxDeliveryMediaPort;
+  },
 ): Promise<PmsInboxPreparedDelivery> {
   const lease = await client.query(
     `SELECT 1 FROM platform.jobs
@@ -296,6 +304,15 @@ export async function preparePmsInboxDeliveryJob(
     const route = routes.get(row.threadId);
     if (route?.state !== "ready" || route.channel !== "email")
       return { state: "blocked", failure: "provider_configuration_unavailable" };
+    const deliveryRoute = await options.emailDeliveryRoutes.resolveDeliveryEmailRoute({
+      propertyId: job.propertyId,
+      threadId: row.threadId,
+      guestEmail: row.guestEmail,
+    });
+    if (deliveryRoute.state !== "ready")
+      return { state: "blocked", failure: "provider_configuration_unavailable" };
+    row.guestEmail = deliveryRoute.recipientEmail;
+    row.senderEmail = deliveryRoute.senderEmail;
   }
   let attachments: Awaited<ReturnType<typeof loadAttachments>>;
   try {
@@ -335,6 +352,7 @@ export async function preparePmsInboxDeliveryJob(
       channel: row.deliveryChannel,
       providerConversationId: adapter === "channex" ? row.sourceThreadId : null,
       recipientEmail: adapter === "resend" ? row.guestEmail?.trim() || null : null,
+      senderEmail: adapter === "resend" ? row.senderEmail?.trim() || null : null,
       subject: "A message from your accommodation",
       text: row.body,
       attachments,

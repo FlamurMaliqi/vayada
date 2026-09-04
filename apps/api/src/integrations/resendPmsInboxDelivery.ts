@@ -5,7 +5,6 @@ import type {
 
 export function createResendPmsInboxDelivery(config: {
   apiKey: string;
-  from: string;
   fetch?: typeof fetch;
 }): PmsInboxDeliveryProvider {
   const request = config.fetch ?? fetch;
@@ -14,6 +13,7 @@ export function createResendPmsInboxDelivery(config: {
       if (
         input.channel !== "email" ||
         !input.recipientEmail?.trim() ||
+        !input.senderEmail?.trim() ||
         !input.subject.trim() ||
         (!input.text.trim() && input.attachments.length === 0) ||
         !input.providerIdempotencyReference.trim() ||
@@ -31,7 +31,7 @@ export function createResendPmsInboxDelivery(config: {
             "Idempotency-Key": input.providerIdempotencyReference,
           },
           body: JSON.stringify({
-            from: config.from,
+            from: input.senderEmail.trim(),
             to: [input.recipientEmail.trim()],
             subject: input.subject.trim(),
             text: input.text,

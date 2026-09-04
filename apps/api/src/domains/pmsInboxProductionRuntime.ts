@@ -17,6 +17,11 @@ import {
   type PmsInboxAssistanceServicePort,
 } from "./pmsInboxAssistance.js";
 import { createPgPmsInboxMarkReadPort } from "./pmsInboxMarkReadCommand.js";
+import {
+  createPgPmsInboxEmailRoutes,
+  createUnavailablePmsInboxDeliveryEmailRoutePort,
+  type PmsInboxDeliveryEmailRoutePort,
+} from "./pmsInboxDeliveryEmailRoutes.js";
 import { createPgPmsInboxProviderActionPort } from "./pmsInboxProviderActionCommand.js";
 import { createPgPmsInboxQuickReplyPort } from "./pmsInboxQuickReply.js";
 import { createPgPmsInboxReadPort } from "./pmsInboxReadModel.js";
@@ -57,6 +62,7 @@ export type PmsInboxProductionRoutes = Readonly<{
 export type PmsInboxProductionRuntime = Readonly<{
   routes: PmsInboxProductionRoutes;
   emailReplyRoutes: PmsInboxEmailReplyRouteReadPort;
+  emailDeliveryRoutes: PmsInboxDeliveryEmailRoutePort;
   close(): Promise<void>;
 }>;
 
@@ -73,6 +79,7 @@ export function createPmsInboxProductionRuntime(
     connectionString: string;
     attachmentMediaAccessEnabled: boolean;
     emailReplyRoutes?: PmsInboxEmailReplyRouteReadPort;
+    emailDeliveryRoutes?: PmsInboxDeliveryEmailRoutePort;
     assistanceService?: PmsInboxAssistanceServicePort;
     pool?: PmsInboxRuntimePool;
     max?: number;
@@ -85,8 +92,14 @@ export function createPmsInboxProductionRuntime(
   const pool =
     input.pool ??
     factories.createPool({ connectionString: input.connectionString, max: input.max ?? 10 });
-  const emailReplyRoutes =
-    input.emailReplyRoutes ?? createUnavailablePmsInboxEmailReplyRouteReadPort();
+  const databaseEmailRoutes = input.emailReplyRoutes
+    ? undefined
+    : createPgPmsInboxEmailRoutes({ connectionString: input.connectionString, pool });
+  const emailReplyRoutes = input.emailReplyRoutes ?? databaseEmailRoutes!;
+  const emailDeliveryRoutes =
+    input.emailDeliveryRoutes ??
+    databaseEmailRoutes ??
+    createUnavailablePmsInboxDeliveryEmailRoutePort();
   const assistance = input.assistanceService
     ? createPgPmsInboxAssistancePort({
         connectionString: input.connectionString,
@@ -140,6 +153,7 @@ export function createPmsInboxProductionRuntime(
   return Object.freeze({
     routes,
     emailReplyRoutes,
+    emailDeliveryRoutes,
     async close() {
       if (closed) return;
       closing ??= (async () => {

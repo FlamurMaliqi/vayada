@@ -85,6 +85,7 @@ function input(overrides: Record<string, unknown> = {}) {
     channel: "ota" as const,
     providerConversationId: "conversation/1",
     recipientEmail: null,
+    senderEmail: null,
     subject: "Guest message",
     text: "Welcome!",
     attachments: [

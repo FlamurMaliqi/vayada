@@ -155,6 +155,7 @@ import { runChannexReviewJobs } from "./jobs/channexReviews.js";
 import { runChannexBookingJobs } from "./jobs/channexBookings.js";
 import { createChannexManagementProvider } from "./integrations/channexManagement.js";
 import { createChannexMessageDelivery } from "./integrations/channexMessageDelivery.js";
+import { createResendPmsInboxDelivery } from "./integrations/resendPmsInboxDelivery.js";
 import { createPgChannexManagementPlanPort } from "./integrations/channexManagementPlans.js";
 import { runPmsChannexManagementWorkerOnce } from "./jobs/pmsChannexManagementWorker.js";
 import { createPgPmsChannexManagementWorkerStore } from "./jobs/pmsChannexManagementWorkerStore.js";
@@ -680,6 +681,7 @@ const pmsInboxDeliveryStore =
         connectionString: targetDatabaseUrl,
         pool: pmsInboxDeliveryPool,
         emailReplyRoutes: pmsInboxRuntime.emailReplyRoutes,
+        emailDeliveryRoutes: pmsInboxRuntime.emailDeliveryRoutes,
         media: {
           async read(input) {
             if (!platformMediaRuntime) throw new Error("PMS Inbox attachment media is unavailable");
@@ -697,6 +699,9 @@ const pmsInboxChannexDelivery =
         apiKey: config.channexManagement.apiKey,
       })
     : undefined;
+const pmsInboxEmailDelivery = config.bookingEmailDelivery
+  ? createResendPmsInboxDelivery({ apiKey: config.bookingEmailDelivery.apiKey })
+  : undefined;
 
 const marketplaceSetupLifecycleStatusRepository = createPgMarketplaceSetupLifecycleStatusRepository(
   { connectionString: targetDatabaseUrl },
@@ -1859,6 +1864,7 @@ const runPmsInboxDelivery = () => {
     .then(() =>
       runPmsInboxDeliveryJobs(pmsInboxDeliveryStore, {
         ...(pmsInboxChannexDelivery ? { channex: pmsInboxChannexDelivery } : {}),
+        ...(pmsInboxEmailDelivery ? { resend: pmsInboxEmailDelivery } : {}),
       }),
     )
     .then((result) => {

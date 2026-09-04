@@ -122,6 +122,7 @@ function readyStore(overrides: Partial<PmsInboxDeliveryJob> = {}): PmsInboxDeliv
         channel: "ota",
         providerConversationId: "thread-1",
         recipientEmail: null,
+        senderEmail: null,
         subject: "Guest message",
         text: "Hello",
         attachments: [],

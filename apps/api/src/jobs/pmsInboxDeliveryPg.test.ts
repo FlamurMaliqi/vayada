@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createUnavailablePmsInboxEmailReplyRouteReadPort } from "../domains/pmsInboxProductionRuntime.js";
+import { createUnavailablePmsInboxDeliveryEmailRoutePort } from "../domains/pmsInboxDeliveryEmailRoutes.js";
 import {
   claimPmsInboxDeliveryJob,
   completePmsInboxDeliveryJob,
@@ -95,6 +96,7 @@ describe("PostgreSQL PMS Inbox delivery store", () => {
     await expect(
       preparePmsInboxDeliveryJob({ query } as never, JOB, {
         emailReplyRoutes: createUnavailablePmsInboxEmailReplyRouteReadPort(),
+        emailDeliveryRoutes: createUnavailablePmsInboxDeliveryEmailRoutePort(),
         media: { read },
       }),
     ).resolves.toMatchObject({
@@ -125,6 +127,7 @@ describe("PostgreSQL PMS Inbox delivery store", () => {
     await expect(
       preparePmsInboxDeliveryJob({ query } as never, JOB, {
         emailReplyRoutes: createUnavailablePmsInboxEmailReplyRouteReadPort(),
+        emailDeliveryRoutes: createUnavailablePmsInboxDeliveryEmailRoutePort(),
         media: { read: vi.fn() },
       }),
     ).resolves.toEqual({ state: "blocked", failure: "access_unavailable" });
@@ -205,6 +208,7 @@ describe("PostgreSQL PMS Inbox delivery store", () => {
       connectionString: "",
       pool: pool as never,
       emailReplyRoutes: createUnavailablePmsInboxEmailReplyRouteReadPort(),
+      emailDeliveryRoutes: createUnavailablePmsInboxDeliveryEmailRoutePort(),
       media: { read: vi.fn() },
     });
 

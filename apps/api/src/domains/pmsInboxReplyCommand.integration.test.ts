@@ -6,6 +6,11 @@ import { createPgPmsInboxDeliveryStore } from "../jobs/pmsInboxDeliveryPg.js";
 import { runPmsInboxDeliveryJobs } from "../jobs/pmsInboxDeliveryWorker.js";
 import type { PmsInboxEmailReplyRouteReadPort } from "./pmsInbox.js";
 import type { PmsInboxDeliveryProvider } from "./pmsInboxDelivery.js";
+import {
+  createPgPmsInboxEmailRoutes,
+  createUnavailablePmsInboxDeliveryEmailRoutePort,
+  type PmsInboxDeliveryEmailRoutePort,
+} from "./pmsInboxDeliveryEmailRoutes.js";
 import { createUnavailablePmsInboxEmailReplyRouteReadPort } from "./pmsInboxProductionRuntime.js";
 import { createPgPmsInboxReplyPort } from "./pmsInboxReplyCommand.js";
 
@@ -34,6 +39,49 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
         threadId,
         route: { state: "ready", channel: "email", providerChannel: null, reasonCode: null },
       }));
+    },
+  };
+
+  it("uses the approved property sender and current direct-booking email", async () => {
+    await admin.query(
+      `INSERT INTO pms.inbox_email_routes
+         (property_id, from_address, sender_status, policy_status, approved_at,
+          approved_by_membership_id)
+       VALUES ($1::uuid, 'Stay <stay@example.test>', 'approved', 'allowed', now(), $2::uuid)`,
+      [PROPERTY, MEMBERSHIP],
+    );
+    const routes = createPgPmsInboxEmailRoutes({ connectionString: "", pool: admin as never });
+    await expect(
+      routes.resolveDeliveryEmailRoute({
+        propertyId: PROPERTY,
+        threadId: THREAD,
+        guestEmail: " current@example.test ",
+      }),
+    ).resolves.toEqual({
+      state: "ready",
+      recipientEmail: "current@example.test",
+      senderEmail: "Stay <stay@example.test>",
+    });
+    await admin.query(
+      "UPDATE pms.inbox_email_routes SET policy_status = 'disallowed' WHERE property_id = $1::uuid",
+      [PROPERTY],
+    );
+    await expect(
+      routes.resolveDeliveryEmailRoute({
+        propertyId: PROPERTY,
+        threadId: THREAD,
+        guestEmail: "current@example.test",
+      }),
+    ).resolves.toEqual({ state: "held", reasonCode: "email_policy_disallowed" });
+  });
+  const approvedDeliveryEmailRoutes: PmsInboxDeliveryEmailRoutePort = {
+    async resolveDeliveryEmailRoute({ guestEmail }) {
+      if (!guestEmail) return { state: "held", reasonCode: "guest_email_unavailable" };
+      return {
+        state: "ready",
+        recipientEmail: guestEmail.trim(),
+        senderEmail: "Stay <stay@example.test>",
+      };
     },
   };
   const reply = createPgPmsInboxReplyPort({
@@ -318,6 +366,7 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
       const store = createPgPmsInboxDeliveryStore({
         connectionString: URL!,
         emailReplyRoutes: approvedEmailRoutes,
+        emailDeliveryRoutes: approvedDeliveryEmailRoutes,
         media: { read: async () => new Uint8Array() },
       });
       try {
@@ -497,6 +546,7 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
       await deliver(
         send,
         approved ? approvedEmailRoutes : createUnavailablePmsInboxEmailReplyRouteReadPort(),
+        approved ? approvedDeliveryEmailRoutes : createUnavailablePmsInboxDeliveryEmailRoutePort(),
       );
       if (approved) {
         expect(send).toHaveBeenCalledOnce();
@@ -607,11 +657,13 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
   async function deliver(
     send: PmsInboxDeliveryProvider["send"],
     emailReplyRoutes = approvedEmailRoutes,
+    emailDeliveryRoutes = approvedDeliveryEmailRoutes,
   ) {
     await relayPmsInboxDeliveryOutbox(URL!, { now: new Date(NOW) });
     const store = createPgPmsInboxDeliveryStore({
       connectionString: URL!,
       emailReplyRoutes,
+      emailDeliveryRoutes,
       media: { read: async ({ expectedSizeBytes }) => new Uint8Array(expectedSizeBytes) },
     });
     try {
@@ -771,6 +823,7 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox manual reply command", () => {
       const properties = [PROPERTY, OTHER_PROPERTY];
       for (const statement of [
         "DELETE FROM pms.message_delivery_receipts WHERE property_id = ANY($1::uuid[])",
+        "DELETE FROM pms.inbox_email_routes WHERE property_id = ANY($1::uuid[])",
         "DELETE FROM pms.message_delivery_attempts WHERE property_id = ANY($1::uuid[])",
         "DELETE FROM platform.job_attempts WHERE job_id IN (SELECT id FROM platform.jobs WHERE property_id = ANY($1::uuid[]))",
         "DELETE FROM platform.jobs WHERE property_id = ANY($1::uuid[])",

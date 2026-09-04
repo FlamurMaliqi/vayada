@@ -72,7 +72,6 @@ describe("Resend PMS Inbox delivery", () => {
 function provider(request: typeof fetch) {
   return createResendPmsInboxDelivery({
     apiKey: "re_test",
-    from: "Vayada Stay <stay@example.test>",
     fetch: request,
   });
 }
@@ -84,6 +83,7 @@ function input(overrides: Record<string, unknown> = {}) {
     channel: "email" as const,
     providerConversationId: null,
     recipientEmail: "guest@example.test",
+    senderEmail: "Vayada Stay <stay@example.test>",
     subject: "A message from your accommodation",
     text: "Welcome!",
     attachments: [
