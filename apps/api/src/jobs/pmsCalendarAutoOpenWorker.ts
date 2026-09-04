@@ -44,8 +44,7 @@ const RESULT_KEY = "calendarAutoOpenResult";
 type Client = PmsInventoryMaterializationRepositoryClient;
 type Pool = { connect(): Promise<Client>; end(): Promise<void> };
 type PmsCalendarAutoOpenClaim =
-  | PmsCalendarAutoOpenWorkerJob
-  | Readonly<{ deadLetteredJobId: string }>;
+  PmsCalendarAutoOpenWorkerJob | Readonly<{ deadLetteredJobId: string }>;
 
 export type PmsCalendarAutoOpenJobPayload = Readonly<{
   propertyId: string;
@@ -627,6 +626,22 @@ async function loadCurrentSource(
      FROM pms.room_types WHERE property_id=$1::uuid AND active IS TRUE ORDER BY id FOR SHARE`,
     [propertyId],
   );
+  const unverifiedLabels = await client.query(
+    `SELECT physical_room.id
+     FROM pms.rooms physical_room
+     JOIN pms.room_types room_type
+       ON room_type.property_id=physical_room.property_id
+      AND room_type.id=physical_room.room_type_id
+      AND room_type.active IS TRUE
+     WHERE physical_room.property_id=$1::uuid
+       AND physical_room.status<>'retired'
+       AND (
+         physical_room.operational_label_status<>'verified'
+         OR physical_room.room_number IS NULL
+       )
+     LIMIT 1`,
+    [propertyId],
+  );
   const plans = await client.query<PlanRow>(
     `SELECT room_type_id::text AS "roomTypeId",
             flexible_rate_plan_revision AS "flexibleRatePlanRevision"
@@ -637,7 +652,7 @@ async function loadCurrentSource(
      ORDER BY plan.room_type_id FOR SHARE OF plan`,
     [propertyId],
   );
-  if (rooms.rows.length === 0) return null;
+  if (rooms.rows.length === 0 || unverifiedLabels.rows.length > 0) return null;
   const settingRevision = positive(root.settingRevision);
   const setting = Object.freeze({
     contractVersion: PMS_CALENDAR_AUTO_OPEN_CONTRACT_VERSION,

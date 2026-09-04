@@ -7,7 +7,7 @@ import {
 } from "./pmsOperationsReadModel.js";
 
 describe("target PMS room order", () => {
-  it("uses a stable ID tie-break after sort order and room number", async () => {
+  it("returns only verified operational labels with a stable order", async () => {
     let roomQuery = "";
     const pool: PmsOperationsReadPool = {
       async query<T extends QueryResultRow = QueryResultRow>(
@@ -30,6 +30,8 @@ describe("target PMS room order", () => {
 
     await repository.listRoomsByPropertyId("property-1");
 
+    expect(roomQuery).toContain("room.operational_label_status = 'verified'");
+    expect(roomQuery).toContain("room.room_number IS NOT NULL");
     expect(roomQuery).toContain("ORDER BY room.sort_order ASC, room.room_number ASC, room.id ASC");
   });
 });
@@ -489,6 +491,7 @@ describe("target PMS room media compatibility", () => {
     const result = await repository.listRoomTypesByPropertyId("property-1");
 
     expect(roomTypeQuery).toContain("'pricingContractVersion', rate_plan.pricing_contract_version");
+    expect(roomTypeQuery).not.toContain("room.operational_label_status = 'verified'");
     expect(roomTypeQuery).toContain("'cancellationPolicySnapshot', COALESCE(");
     expect(roomTypeQuery).toContain(
       "LEFT JOIN pms.flexible_rate_plan_cancellation_extensions cancellation_extension",

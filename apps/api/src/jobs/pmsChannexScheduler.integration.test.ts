@@ -900,6 +900,61 @@ describe.skipIf(!TEST_DATABASE_URL)("PMS calendar auto-open candidate selection"
     ).toMatchObject({ rows: [{ status: "dead_lettered", reason: "max_attempts_exhausted" }] });
   });
 
+  it("skips unverified labels and no-ops a queued job when label readiness changes", async () => {
+    const property = await seedProperty(admin, 21, {
+      mode: "rolling",
+      rollingMonths: 12,
+      fixedEndMonth: null,
+    });
+    const roomIds = [randomUUID(), randomUUID()];
+    await admin.query(
+      `INSERT INTO pms.rooms (
+         id, property_id, room_type_id, room_number, operational_label_status,
+         status, sort_order
+       ) SELECT room_id, $1::uuid, $2::uuid, NULL, 'unverified', 'available', position
+         FROM unnest($3::uuid[]) WITH ORDINALITY AS source(room_id, position)`,
+      [property.propertyId, property.roomTypeId, roomIds],
+    );
+
+    const blocked = await store.findCalendarAutoOpenCandidates(now, 100);
+    expect(blocked.candidates.some(({ propertyId }) => propertyId === property.propertyId)).toBe(
+      false,
+    );
+
+    await admin.query(
+      `UPDATE pms.rooms
+       SET room_number='Verified Room ' || sort_order, operational_label_status='verified'
+       WHERE property_id=$1::uuid`,
+      [property.propertyId],
+    );
+    const ready = await store.findCalendarAutoOpenCandidates(now, 100);
+    const candidate = ready.candidates.find(({ propertyId }) => propertyId === property.propertyId);
+    expect(candidate).toBeDefined();
+    const queued = await store.enqueueCalendarAutoOpenJob(candidate!, context());
+
+    await admin.query(
+      `UPDATE pms.rooms SET operational_label_status='unverified'
+       WHERE id=$1::uuid AND property_id=$2::uuid`,
+      [roomIds[0], property.propertyId],
+    );
+    await expect(
+      runPmsCalendarAutoOpenWorkerOnce({
+        store: worker,
+        workerId: "vay-1462-label-readiness-test",
+        now: () => now,
+      }),
+    ).resolves.toMatchObject({ outcome: "succeeded", applicationOutcome: "unchanged" });
+    await expect(
+      admin.query<{ days: number; status: string }>(
+        `SELECT job.status,
+                (SELECT count(*)::int FROM pms.inventory_days day
+                 WHERE day.property_id=$1::uuid) AS days
+         FROM platform.jobs job WHERE job.job_key=$2`,
+        [property.propertyId, queued.jobKey],
+      ),
+    ).resolves.toMatchObject({ rows: [{ status: "succeeded", days: 0 }] });
+  });
+
   it("rejects untrusted job horizons and generated coverage without inventory", async () => {
     const property = await seedProperty(admin, 19, {
       mode: "fixed",

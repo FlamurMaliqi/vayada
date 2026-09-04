@@ -667,6 +667,20 @@ async function selectCalendarAutoOpenCandidates(
          SELECT setting.property_id
          FROM pms.calendar_auto_open_settings setting
          WHERE setting.enabled IS TRUE
+           AND NOT EXISTS (
+             SELECT 1
+             FROM pms.rooms physical_room
+             JOIN pms.room_types room_type
+               ON room_type.property_id=physical_room.property_id
+              AND room_type.id=physical_room.room_type_id
+              AND room_type.active IS TRUE
+             WHERE physical_room.property_id=setting.property_id
+               AND physical_room.status<>'retired'
+               AND (
+                 physical_room.operational_label_status<>'verified'
+                 OR physical_room.room_number IS NULL
+               )
+           )
            AND ($1::uuid IS NULL OR setting.property_id > $1::uuid)
          ORDER BY setting.property_id
          LIMIT $2

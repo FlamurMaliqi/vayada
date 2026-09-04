@@ -117,7 +117,7 @@ describe("roomAuthoringClient", () => {
     });
     expect(calls.post).toHaveBeenCalledOnce();
     expect(calls.get).toHaveBeenCalledWith(
-      `/api/pms/properties/${propertyId}/room-type-bindings/${encodeURIComponent(draftRoomId)}`,
+      `/api/pms/setup/properties/${propertyId}/room-type-bindings/${encodeURIComponent(draftRoomId)}`,
       { cache: "no-store" },
     );
     expect(calls.put).not.toHaveBeenCalled();
@@ -333,11 +333,25 @@ describe("roomAuthoringClient", () => {
     };
     let capacityReads = 0;
     let publicationReads = 0;
+    let labelWrites = 0;
+    let propertyWideLabelConflict = true;
     calls.get.mockImplementation(async (endpoint) => {
       if (endpoint.endsWith(`/room-types/${roomTypeId}`)) return factsSnapshot();
       if (endpoint.endsWith(`/room-types/${roomTypeId}/capacity`)) {
         capacityReads += 1;
-        return capacity(capacityReads === 1 ? 1 : 2, capacityReads === 1 ? 1 : 3);
+        return capacity(capacityReads === 1 ? 1 : 5, capacityReads === 1 ? 1 : 3);
+      }
+      if (endpoint.endsWith(`/room-types/${roomTypeId}/units`)) {
+        return {
+          items: [
+            physicalUnit("44444444-4444-4444-8444-444444444445"),
+            {
+              ...verifiedPhysicalUnit("77777777-7777-4777-8777-777777777777", "Garden Suite 2"),
+              lifecycle: "retired",
+            },
+            ...reconcileResponse().addedUnits,
+          ],
+        };
       }
       if (endpoint.endsWith("/room-publication-snapshot")) {
         publicationReads += 1;
@@ -345,8 +359,31 @@ describe("roomAuthoringClient", () => {
       }
       throw new Error(`Unexpected GET ${endpoint}`);
     });
-    calls.put.mockImplementation(async (endpoint) => {
+    calls.put.mockImplementation(async (endpoint, data) => {
       if (endpoint.endsWith("/physical-units/reconcile")) return reconcileResponse();
+      if (endpoint.endsWith("/operational-label")) {
+        const roomUnitId = endpoint.split("/").at(-2)!;
+        const body = data as {
+          expectedRevision: number;
+          operationalLabel: string;
+        };
+        if (propertyWideLabelConflict && body.operationalLabel === "Garden Suite 1") {
+          propertyWideLabelConflict = false;
+          throw new ApiErrorResponse(409, { code: "operational_label_conflict" });
+        }
+        labelWrites += 1;
+        return {
+          contractVersion: PMS_ROOM_FACTS_CONTRACT_VERSION,
+          outcome: "updated",
+          propertyId,
+          roomTypeId,
+          roomUnitId,
+          roomUnitsRevision: body.expectedRevision + 1,
+          operationalLabel: body.operationalLabel,
+          operationalLabelStatus: "verified",
+          acceptedAt: now,
+        };
+      }
       if (endpoint.endsWith("/media")) return mediaResponse();
       if (endpoint.endsWith("/amenities")) return amenitiesResponse();
       throw new Error(`Unexpected PUT ${endpoint}`);
@@ -357,7 +394,7 @@ describe("roomAuthoringClient", () => {
       roomTypeId,
       activeUnitCount: 3,
       roomFactsRevision: 1,
-      roomUnitsRevision: 2,
+      roomUnitsRevision: 5,
       roomMediaRevision: 2,
       roomAmenitiesRevision: 2,
       amenityKeys: [],
@@ -378,12 +415,83 @@ describe("roomAuthoringClient", () => {
         ([endpoint]) => endpoint === `/api/pms/properties/${propertyId}/room-types/${roomTypeId}`,
       ),
     ).toBe(false);
+    expect(labelWrites).toBe(3);
+    expect(
+      calls.put.mock.calls
+        .filter(([endpoint]) => endpoint.endsWith("/operational-label"))
+        .map(([, body]) => (body as { operationalLabel: string }).operationalLabel),
+    ).toEqual(["Garden Suite 1", "Garden Suite 3", "Garden Suite 4", "Garden Suite 5"]);
+    expect(
+      calls.put.mock.calls.some(([endpoint]) =>
+        endpoint.startsWith(`/api/pms/setup/properties/${propertyId}/room-types/`),
+      ),
+    ).toBe(true);
     const allEndpoints = [
       ...calls.get.mock.calls.map(([endpoint]) => endpoint),
       ...calls.put.mock.calls.map(([endpoint]) => endpoint),
       ...calls.post.mock.calls.map(([endpoint]) => endpoint),
     ].join(" ");
     expect(allEndpoints).not.toMatch(/pricing|calendar/);
+  });
+
+  it("reduces previously verified setup-generated rooms through canonical reconciliation", async () => {
+    const room = {
+      ...completeRoom(),
+      roomTypeId,
+      roomFactsRevision: 1,
+      unitCount: "2",
+    };
+    const currentPublication = publication(false);
+    currentPublication.rooms[0]!.activeUnitCount = 2;
+    currentPublication.rooms[0]!.sourceRevisions.roomUnitsRevision = 6;
+    let capacityReads = 0;
+    calls.get.mockImplementation(async (endpoint) => {
+      if (endpoint.endsWith(`/room-types/${roomTypeId}`)) return factsSnapshot();
+      if (endpoint.endsWith(`/room-types/${roomTypeId}/capacity`)) {
+        capacityReads += 1;
+        return capacity(capacityReads === 1 ? 5 : 6, capacityReads === 1 ? 3 : 2);
+      }
+      if (endpoint.endsWith(`/room-types/${roomTypeId}/units`)) {
+        return {
+          items: [
+            verifiedPhysicalUnit("44444444-4444-4444-8444-444444444445", "Garden Suite 1"),
+            verifiedPhysicalUnit("55555555-5555-4555-8555-555555555555", "Garden Suite 2"),
+          ],
+        };
+      }
+      if (endpoint.endsWith("/room-publication-snapshot")) return currentPublication;
+      throw new Error(`Unexpected GET ${endpoint}`);
+    });
+    calls.put.mockImplementation(async (endpoint) => {
+      if (!endpoint.endsWith("/physical-units/reconcile")) {
+        throw new Error(`Unexpected PUT ${endpoint}`);
+      }
+      return {
+        contractVersion: PMS_ROOM_FACTS_CONTRACT_VERSION,
+        outcome: "reconciled",
+        propertyId,
+        roomTypeId,
+        previousActiveUnitCount: 3,
+        capacity: capacity(6, 2),
+        addedUnits: [],
+        retiredUnitIds: ["66666666-6666-4666-8666-666666666666"],
+        acceptedAt: now,
+      };
+    });
+    const client = createRoomAuthoringClient(http, mediaHttp, calls.uploadFetch);
+
+    await expect(client.saveRoom({ propertyId, room })).resolves.toMatchObject({
+      activeUnitCount: 2,
+      roomUnitsRevision: 6,
+    });
+    expect(calls.put).toHaveBeenCalledWith(
+      expect.stringContaining("/physical-units/reconcile"),
+      { expectedRevision: 5, targetActiveUnitCount: 2 },
+      expect.any(Object),
+    );
+    expect(calls.put.mock.calls.some(([endpoint]) => endpoint.endsWith("/operational-label"))).toBe(
+      false,
+    );
   });
 });
 
@@ -486,6 +594,14 @@ function physicalUnit(roomUnitId: string) {
   };
 }
 
+function verifiedPhysicalUnit(roomUnitId: string, operationalLabel: string) {
+  return {
+    ...physicalUnit(roomUnitId),
+    operationalLabel,
+    operationalLabelStatus: "verified",
+  };
+}
+
 function publication(initial: boolean) {
   return {
     contractVersion: PMS_ROOM_PUBLICATION_CONTRACT_VERSION,
@@ -514,7 +630,7 @@ function publication(initial: boolean) {
         amenities: initial ? null : [],
         sourceRevisions: {
           roomFactsRevision: 1,
-          roomUnitsRevision: 2,
+          roomUnitsRevision: 5,
           roomMediaRevision: initial ? 1 : 2,
           roomAmenitiesRevision: initial ? 1 : 2,
         },

@@ -7,6 +7,7 @@ import {
   parsePmsOperatingCalendarImpactPreviewError,
   parsePmsOperatingCalendarImpactPreviewRequest,
   parsePmsOperatingCalendarUpsertRequest,
+  parsePhysicalRoomUnitIdentity,
   parseRoomTypeCapacitySnapshot,
   parseRoomTypeFactsSnapshot,
   type PmsOperatingCalendarCanonicalTimeZoneRegistry,
@@ -79,10 +80,7 @@ export function createCalendarApiClient(
     const normalizedPropertyId = propertyId.toLowerCase();
     const [profile, factsValue, current] = await Promise.all([
       profiles.getPropertyProfile(propertyId, options),
-      http.get<unknown>(
-        `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types`,
-        options,
-      ),
+      http.get<unknown>(setupRoomPath(propertyId, "room-types"), options),
       readCurrentCalendar(http, propertyId, options),
     ]);
     if (
@@ -99,10 +97,22 @@ export function createCalendarApiClient(
     }
     const rooms = await Promise.all(
       activeFacts.map(async (snapshot): Promise<CalendarWorkspaceRoom> => {
-        const capacityValue = await http.get<unknown>(
-          `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(snapshot.roomTypeId)}/capacity`,
-          options,
-        );
+        const [capacityValue, unitsValue] = await Promise.all([
+          http.get<unknown>(
+            setupRoomPath(
+              propertyId,
+              `room-types/${encodeURIComponent(snapshot.roomTypeId)}/capacity`,
+            ),
+            options,
+          ),
+          http.get<unknown>(
+            setupRoomPath(
+              propertyId,
+              `room-types/${encodeURIComponent(snapshot.roomTypeId)}/units`,
+            ),
+            options,
+          ),
+        ]);
         const capacity = parseRoomTypeCapacitySnapshot(capacityValue);
         if (
           !capacity ||
@@ -111,6 +121,19 @@ export function createCalendarApiClient(
           capacity.activeUnitCount < 1
         ) {
           throw invalidOwnerContract("room capacity");
+        }
+        const units = parsePhysicalRoomUnits(unitsValue, normalizedPropertyId, snapshot.roomTypeId);
+        if (
+          !units ||
+          units.filter(({ lifecycle }) => lifecycle === "active").length !==
+            capacity.activeUnitCount ||
+          units.some(
+            (unit) => unit.lifecycle === "active" && unit.operationalLabelStatus !== "verified",
+          )
+        ) {
+          throw new Error(
+            `Verify every ${snapshot.facts.name} room label in the Rooms setup step before opening the calendar.`,
+          );
         }
         return {
           roomTypeId: snapshot.roomTypeId,
@@ -205,7 +228,17 @@ export function createCalendarApiClient(
         ownerError.code === "operating_calendar_unchanged"
       ) {
         const workspace = await loadWorkspace(propertyId, { cache: "no-store" });
-        if (workspaceMatchesProposal(propertyId, workspace, proposal)) return workspace;
+        if (workspaceMatchesProposal(propertyId, workspace, proposal)) {
+          const configuration = workspace.current!.configuration;
+          await materializeCalendar(
+            http,
+            propertyId,
+            configuration.calendarRevision,
+            configuration.sourceInputs.propertyTimeZone,
+            new Date().toISOString(),
+          );
+          return workspace;
+        }
       }
       throw ownerError;
     }
@@ -216,6 +249,13 @@ export function createCalendarApiClient(
     if (!result?.ok || !configurationMatchesRequest(propertyId, result.response, request)) {
       throw invalidOwnerContract("operating calendar command receipt");
     }
+    await materializeCalendar(
+      http,
+      propertyId,
+      result.response.configuration.calendarRevision,
+      result.response.configuration.sourceInputs.propertyTimeZone,
+      result.response.acceptedAt,
+    );
     const workspace = await loadWorkspace(propertyId, { cache: "no-store" });
     const currentRead = workspace.current;
     const current = currentRead?.configuration;
@@ -244,6 +284,62 @@ export function createCalendarApiClient(
 }
 
 export const calendarApi = createCalendarApiClient(targetApiClient, sharedHotelSetupApi);
+
+async function materializeCalendar(
+  http: CalendarHttpClient,
+  propertyId: string,
+  calendarRevision: number,
+  propertyTimeZone: string,
+  acceptedAt: string,
+): Promise<void> {
+  const horizon = inventoryHorizon(acceptedAt, propertyTimeZone);
+  const body = { expectedCalendarRevision: calendarRevision, horizon };
+  let value: unknown;
+  try {
+    value = await http.post<unknown>(
+      `/api/pms/properties/${encodeURIComponent(propertyId)}/inventory-materialization`,
+      body,
+      { headers: { "Idempotency-Key": await sha256Key("inventory", propertyId, body) } },
+    );
+  } catch (error) {
+    const code = error instanceof ApiErrorResponse ? error.data.code : undefined;
+    throw new CalendarOwnerError(
+      "The calendar was saved, but its room availability could not be prepared. Reload Calendar setup and try again.",
+      code ?? "inventory_materialization_failed",
+      error,
+      true,
+      false,
+    );
+  }
+  if (
+    !isRecord(value) ||
+    value.ok !== true ||
+    !isRecord(value.coverage) ||
+    value.coverage.materializedRevision !== calendarRevision ||
+    value.coverage.coverageFrom !== horizon.from ||
+    value.coverage.coverageThrough !== horizon.through
+  ) {
+    throw invalidOwnerContract("inventory materialization receipt");
+  }
+}
+
+function inventoryHorizon(instant: string, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(instant));
+  const part = (type: "year" | "month" | "day") =>
+    parts.find((candidate) => candidate.type === type)?.value;
+  const from = `${part("year")}-${part("month")}-${part("day")}`;
+  const start = Date.parse(`${from}T00:00:00.000Z`);
+  if (!Number.isFinite(start)) throw invalidOwnerContract("inventory horizon");
+  return {
+    from,
+    through: new Date(start + 365 * 86_400_000).toISOString().slice(0, 10),
+  };
+}
 
 async function readCurrentCalendar(
   http: CalendarHttpClient,
@@ -289,6 +385,20 @@ function parseRoomFactsList(value: unknown, propertyId: string) {
     new Set(roomTypeIds).size !== roomTypeIds.length
     ? null
     : (items as NonNullable<(typeof items)[number]>[]);
+}
+
+function parsePhysicalRoomUnits(value: unknown, propertyId: string, roomTypeId: string) {
+  if (!isRecord(value) || !Array.isArray(value.items)) return null;
+  const items = value.items.map(parsePhysicalRoomUnitIdentity);
+  return items.some(
+    (item) => !item || item.propertyId !== propertyId || item.roomTypeId !== roomTypeId,
+  )
+    ? null
+    : (items as NonNullable<(typeof items)[number]>[]);
+}
+
+function setupRoomPath(propertyId: string, suffix: string): string {
+  return `/api/pms/setup/properties/${encodeURIComponent(propertyId)}/${suffix}`;
 }
 
 function parseDraftReceipt(

@@ -34,9 +34,11 @@ export type PmsPhysicalRoomUnitReconcilePool = {
 type RoomTypeRow = { roomUnitsRevision: number };
 type UnitRow = {
   roomUnitId: string;
+  sortOrder: number;
   status: "available" | "maintenance" | "out_of_order";
   operationalLabel: string | null;
   operationalLabelStatus: "unverified" | "verified";
+  setupGenerated: boolean;
   hasReservationAssignment: boolean;
   hasRoomBlock: boolean;
 };
@@ -247,7 +249,10 @@ async function reconcileLockedRoomType(
   } else {
     const eligible = units
       .filter(isSafelyRetirable)
-      .sort((left, right) => right.roomUnitId.localeCompare(left.roomUnitId));
+      .sort(
+        (left, right) =>
+          right.sortOrder - left.sortOrder || right.roomUnitId.localeCompare(left.roomUnitId),
+      );
     if (eligible.length < -delta) {
       return failure({
         code: "physical_unit_reconcile_blocked",
@@ -277,9 +282,12 @@ async function lockActiveUnits(
   const result = await client.query<Omit<UnitRow, "hasReservationAssignment" | "hasRoomBlock">>(
     `SELECT
        room.id::text AS "roomUnitId",
+       room.sort_order AS "sortOrder",
        room.status,
        room.room_number AS "operationalLabel",
-       room.operational_label_status AS "operationalLabelStatus"
+       room.operational_label_status AS "operationalLabelStatus",
+       COALESCE(room.room_metadata ->> 'setupGenerated', 'false') = 'true'
+         AS "setupGenerated"
      FROM pms.rooms room
      WHERE room.property_id = $1::uuid
        AND room.room_type_id = $2::uuid
@@ -327,7 +335,7 @@ async function lockActiveUnits(
 function isSafelyRetirable(unit: UnitRow): boolean {
   return (
     unit.status === "available" &&
-    unit.operationalLabelStatus === "unverified" &&
+    (unit.operationalLabelStatus === "unverified" || unit.setupGenerated) &&
     !unit.hasReservationAssignment &&
     !unit.hasRoomBlock
   );
@@ -337,7 +345,10 @@ function blockersFor(units: UnitRow[]): readonly PhysicalRoomUnitReconcileBlocke
   const counted: Array<readonly [PhysicalRoomUnitReconcileBlocker["code"], number]> = [
     [
       "verified_operational_label",
-      units.filter(({ operationalLabelStatus }) => operationalLabelStatus === "verified").length,
+      units.filter(
+        ({ operationalLabelStatus, setupGenerated }) =>
+          operationalLabelStatus === "verified" && !setupGenerated,
+      ).length,
     ],
     [
       "reservation_assignment",
@@ -374,10 +385,11 @@ async function insertUnits(
      ), inserted AS (
        INSERT INTO pms.rooms (
          property_id, room_type_id, source_system, room_number,
-         operational_label_status, status, sort_order
+         operational_label_status, status, sort_order, room_metadata
        )
        SELECT $1::uuid, $2::uuid, 'pms', NULL, 'unverified', 'available',
-              room_order_seed.max_sort_order + source.n
+              room_order_seed.max_sort_order + source.n,
+              jsonb_build_object('setupGenerated', TRUE)
        FROM room_order_seed
        CROSS JOIN generate_series(1, $3::integer) AS source(n)
        RETURNING id
@@ -406,12 +418,15 @@ async function retireUnits(
 ): Promise<void> {
   const result = await client.query(
     `UPDATE pms.rooms
-     SET status = 'retired', updated_at = now()
+     SET status = 'retired', operational_label_status = 'unverified', updated_at = now()
      WHERE property_id = $1::uuid
        AND room_type_id = $2::uuid
        AND id = ANY($3::uuid[])
        AND status = 'available'
-       AND operational_label_status = 'unverified'
+       AND (
+         operational_label_status = 'unverified'
+         OR COALESCE(room_metadata ->> 'setupGenerated', 'false') = 'true'
+       )
        AND NOT EXISTS (
          SELECT 1 FROM pms.operational_booking_assignments assignment
          WHERE assignment.property_id = pms.rooms.property_id

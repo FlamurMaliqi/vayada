@@ -50,6 +50,47 @@ describe("PMS calendar auto-open settings repository", () => {
     expect(pool.sql[0]).toContain("source,settingRevision");
   });
 
+  it("reports missing and stale canonical setup for an enabled setting", async () => {
+    const enabled = row({ configured: true, revision: 2, enabled: true });
+    const missing = createPgPmsCalendarAutoOpenSettingsRepository({
+      pool: new TestPool([enabled], [], {
+        calendarRevision: null,
+        roomBindingsStale: false,
+        labelsUnverified: false,
+      }),
+    });
+    await expect(missing.findContext(propertyId)).resolves.toMatchObject({
+      setupError: { code: "operating_calendar_not_configured" },
+    });
+
+    const stale = createPgPmsCalendarAutoOpenSettingsRepository({
+      pool: new TestPool([enabled], [], {
+        calendarRevision: 4,
+        roomBindingsStale: true,
+        labelsUnverified: false,
+      }),
+    });
+    await expect(stale.findContext(propertyId)).resolves.toMatchObject({
+      setupError: { code: "operating_calendar_room_bindings_stale" },
+    });
+  });
+
+  it("refuses to enable auto-open until physical room labels are verified", async () => {
+    const pool = new TestPool([virtual], [], {
+      calendarRevision: 1,
+      roomBindingsStale: true,
+      labelsUnverified: true,
+    });
+    const repository = createPgPmsCalendarAutoOpenSettingsRepository({ pool });
+
+    await expect(repository.update(command())).resolves.toEqual({
+      ok: false,
+      error: { code: "physical_room_labels_unverified" },
+    });
+    expect(pool.sql.some((sql) => sql.includes("calendar_auto_open_settings ("))).toBe(false);
+    expect(pool.sql.at(-1)).toBe("ROLLBACK");
+  });
+
   it("creates rolling revision one and updates fixed revision two", async () => {
     const rolling = row({ configured: true, revision: 1, enabled: true, rollingMonths: 24 });
     const createPool = new TestPool([virtual], [rolling]);
@@ -281,6 +322,11 @@ class TestPool {
   constructor(
     private readonly reads: Row[],
     private readonly writes: Row[] = [],
+    private readonly setup: {
+      calendarRevision: number | null;
+      roomBindingsStale: boolean;
+      labelsUnverified: boolean;
+    } = { calendarRevision: 1, roomBindingsStale: false, labelsUnverified: false },
   ) {}
   async connect() {
     return { query: this.query.bind(this), release() {} };
@@ -294,13 +340,15 @@ class TestPool {
       ? [{ id: propertyId }]
       : text.includes("FROM hotel_catalog.properties")
         ? this.reads.splice(0, 1)
-        : text.includes("FROM platform.idempotency_keys")
-          ? []
-          : text.includes("INSERT INTO platform.idempotency_keys")
-            ? [{ id: "14330000-0000-4000-8000-000000000003" }]
-            : text.includes("INSERT INTO pms.calendar_auto_open_settings")
-              ? this.writes.splice(0, 1)
-              : [];
+        : text.includes("WITH current_calendar AS")
+          ? [this.setup]
+          : text.includes("FROM platform.idempotency_keys")
+            ? []
+            : text.includes("INSERT INTO platform.idempotency_keys")
+              ? [{ id: "14330000-0000-4000-8000-000000000003" }]
+              : text.includes("INSERT INTO pms.calendar_auto_open_settings")
+                ? this.writes.splice(0, 1)
+                : [];
     return {
       rows: rows as unknown as T[],
       rowCount: text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK" ? 0 : 1,

@@ -61,16 +61,20 @@ export async function registerPmsCalendarAutoOpenRoutes(
           value.setting.propertyId !== scope.propertyId
         )
           return invalidPortResult(reply);
-        const horizon = calculatePmsCalendarAutoOpenHorizon(
+        const calculatedHorizon = calculatePmsCalendarAutoOpenHorizon(
           value.setting,
           value.propertyTimeZone,
           new Date(scope.context.audit.receivedAt),
         );
+        const horizon = value.setupError
+          ? { ...calculatedHorizon, targetOpenThrough: null }
+          : calculatedHorizon;
         return reply.status(200).send({
           contractVersion: PMS_CALENDAR_AUTO_OPEN_CONTRACT_VERSION,
           setting: value.setting,
           horizon,
           warnings: value.warnings,
+          setupError: value.setupError,
         } satisfies PmsCalendarAutoOpenRead & {
           contractVersion: typeof PMS_CALENDAR_AUTO_OPEN_CONTRACT_VERSION;
         });
@@ -135,17 +139,28 @@ export async function registerPmsCalendarAutoOpenRoutes(
           !Number.isFinite(Date.parse(result.evaluatedAt))
         )
           return invalidPortResult(reply);
-        const horizon = calculatePmsCalendarAutoOpenHorizon(
-          result.setting,
-          result.propertyTimeZone,
-          new Date(result.evaluatedAt),
+        const current = await options.settings.findContext(scope.propertyId);
+        if (
+          !current ||
+          !isPmsCalendarAutoOpenSetting(current.setting) ||
+          current.setting.propertyId !== scope.propertyId
+        )
+          return invalidPortResult(reply);
+        const calculatedHorizon = calculatePmsCalendarAutoOpenHorizon(
+          current.setting,
+          current.propertyTimeZone,
+          new Date(scope.context.audit.receivedAt),
         );
+        const horizon = current.setupError
+          ? { ...calculatedHorizon, targetOpenThrough: null }
+          : calculatedHorizon;
         return reply.status(result.outcome === "created" ? 201 : 200).send({
           contractVersion: PMS_CALENDAR_AUTO_OPEN_CONTRACT_VERSION,
           outcome: result.outcome,
-          setting: result.setting,
+          setting: current.setting,
           horizon,
-          warnings: [],
+          warnings: current.warnings,
+          setupError: current.setupError,
           enqueueIntentId: result.enqueueIntentId,
         } satisfies PmsCalendarAutoOpenRead & {
           contractVersion: typeof PMS_CALENDAR_AUTO_OPEN_CONTRACT_VERSION;

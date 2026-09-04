@@ -1,8 +1,20 @@
 import {
+  parseFlexibleRatePlanCommandResult,
+  parsePhysicalRoomUnitIdentity,
+  parsePmsPricingSourceSnapshot,
+  parsePropertyPricingCurrencyCommandResult,
+  parseReconcilePhysicalRoomUnitsResult,
+  parseRoomTypeCapacitySnapshot,
+  parseRoomTypeFactsSnapshot,
+  parseSetPhysicalRoomOperationalLabelResult,
+} from "@vayada/domain-pms";
+
+import {
   assertPmsOperationsReadModelEnabled,
   pmsOperationsClient,
   pmsOperationsRequestOptions,
 } from "../api/pmsOperationsClient";
+import { ApiErrorResponse } from "../api/client";
 import { resolveSelectedPmsPropertyId } from "../api/pmsPropertyClient";
 import { unsupportedPmsNextStackFeature } from "../api/unsupported";
 import type { RoomImageReference } from "../upload";
@@ -305,10 +317,7 @@ export interface RoomTypeRetirementImpact {
   blockers: Array<{
     category: "reservations" | "physical_units" | "inventory" | "publication";
     code:
-      | "active_reservations"
-      | "active_physical_units"
-      | "future_inventory"
-      | "active_publication";
+      "active_reservations" | "active_physical_units" | "future_inventory" | "active_publication";
     affectedCount: number;
     action: string;
   }>;
@@ -527,28 +536,72 @@ export const roomsService = {
         typeof image !== "string" &&
         image.pendingFile instanceof File,
     );
-    const response = await pmsOperationsRoomsReadService.createRoomType(propertyId, {
+    const commandPayload = {
       ...data,
       images: [],
-    });
-    let created = toRoomType(response.propertyId, response.item);
-    if (stagedImages.length > 0) {
-      const uploaded = await uploadService.uploadImages(
-        stagedImages.map(({ pendingFile }) => pendingFile),
-        pmsRoomMediaResource(propertyId, created.id),
-      );
-      const images = uploaded.images.map(({ platformMediaObjectId, url }) => ({
-        url,
-        platformMediaObjectId,
-      }));
-      await replaceRoomTypeMedia(propertyId, created, images);
-      stagedImages.forEach(({ url }) => {
-        if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
-      });
-      const refreshed = await pmsOperationsRoomsReadService.getRoomType(propertyId, created.id);
-      created = toRoomType(refreshed.propertyId, refreshed.item);
-    }
-    return created;
+    };
+    return runRoomTypeLifecycleCommand(
+      ["create", propertyId, commandPayload],
+      "pms-room-type-create",
+      async (commandId) => {
+        const response = await pmsOperationsRoomsReadService.createRoomType(
+          propertyId,
+          commandPayload,
+          commandId,
+        );
+        await preparePhysicalRooms(
+          propertyId,
+          response.item.roomTypeId,
+          response.item.name,
+          data.totalRooms,
+        );
+        await ensureCanonicalFlexibleRatePlan(propertyId, response.item, data);
+        let created = toRoomType(response.propertyId, response.item);
+        if (stagedImages.length > 0) {
+          const existingMediaContinuation = pendingRoomTypeCreateMedia.get(commandId);
+          let mediaContinuation: {
+            commandId: string;
+            images: RoomImageReference[];
+          };
+          if (existingMediaContinuation) {
+            mediaContinuation = existingMediaContinuation;
+          } else {
+            const uploaded = await uploadService.uploadImages(
+              stagedImages.map(({ pendingFile }) => pendingFile),
+              pmsRoomMediaResource(propertyId, created.id),
+            );
+            mediaContinuation = {
+              commandId: randomCommandId("pms-room-media"),
+              images: uploaded.images.map(({ platformMediaObjectId, url }) => ({
+                url,
+                platformMediaObjectId,
+              })),
+            };
+            pendingRoomTypeCreateMedia.set(commandId, mediaContinuation);
+          }
+          const current = await pmsOperationsRoomsReadService.getRoomType(propertyId, created.id);
+          created = toRoomType(current.propertyId, current.item);
+          if (!sameRoomImageOrder(mediaContinuation.images, created.images)) {
+            await replaceRoomTypeMedia(
+              propertyId,
+              created,
+              mediaContinuation.images,
+              mediaContinuation.commandId,
+            );
+            const refreshed = await pmsOperationsRoomsReadService.getRoomType(
+              propertyId,
+              created.id,
+            );
+            created = toRoomType(refreshed.propertyId, refreshed.item);
+          }
+          pendingRoomTypeCreateMedia.delete(commandId);
+          stagedImages.forEach(({ url }) => {
+            if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
+          });
+        }
+        return created;
+      },
+    );
   },
 
   update: async (id: string, data: RoomTypeUpdate) => {
@@ -569,6 +622,16 @@ export const roomsService = {
       await pmsOperationsRoomsReadService.updateRoomType(propertyId, id, data, false);
       const refreshed = await pmsOperationsRoomsReadService.getRoomType(propertyId, id);
       updated = toRoomType(refreshed.propertyId, refreshed.item);
+    }
+    await preparePhysicalRooms(propertyId, id, updated.name, data.totalRooms);
+    if (Number.isInteger(data.totalRooms) && data.totalRooms! >= 1) {
+      const refreshed = await pmsOperationsRoomsReadService.getRoomType(propertyId, id);
+      updated = toRoomType(refreshed.propertyId, refreshed.item);
+      await ensureCanonicalFlexibleRatePlan(
+        propertyId,
+        refreshed.item,
+        roomTypeUpdateForm(updated),
+      );
     }
     if (data.images && !sameRoomImageOrder(data.images, updated.images)) {
       await replaceRoomTypeMedia(propertyId, updated, data.images);
@@ -607,6 +670,240 @@ export const roomsService = {
     return toRoomType(response.propertyId, response.item);
   },
 };
+
+async function preparePhysicalRooms(
+  propertyId: string,
+  roomTypeId: string,
+  roomTypeName: string,
+  targetActiveUnitCount: number | undefined,
+): Promise<void> {
+  if (!Number.isInteger(targetActiveUnitCount) || targetActiveUnitCount! < 1) return;
+  const setupPath = `/api/pms/setup/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(roomTypeId)}`;
+  const capacity = parseRoomTypeCapacitySnapshot(
+    await pmsOperationsClient.get<unknown>(`${setupPath}/capacity`, pmsOperationsRequestOptions),
+  );
+  if (!capacity || capacity.propertyId !== propertyId || capacity.roomTypeId !== roomTypeId) {
+    throw new Error("Physical room capacity is unavailable. Reload the room and try again.");
+  }
+  let revision = capacity.roomUnitsRevision;
+  if (capacity.activeUnitCount !== targetActiveUnitCount) {
+    const response = await pmsOperationsClient.put<unknown>(
+      `${setupPath}/physical-units/reconcile`,
+      { expectedRevision: revision, targetActiveUnitCount },
+      commandOptions("pms-room-unit-reconcile"),
+    );
+    const result = parseReconcilePhysicalRoomUnitsResult({ ok: true, response });
+    if (
+      !result?.ok ||
+      result.response.propertyId !== propertyId ||
+      result.response.roomTypeId !== roomTypeId ||
+      result.response.capacity.activeUnitCount !== targetActiveUnitCount ||
+      result.response.capacity.roomUnitsRevision !== revision + 1
+    ) {
+      throw new Error("Physical rooms could not be reconciled. Reload the room and try again.");
+    }
+    revision = result.response.capacity.roomUnitsRevision;
+  }
+
+  const value = await pmsOperationsClient.get<unknown>(`${setupPath}/units`, {
+    ...pmsOperationsRequestOptions,
+    cache: "no-store",
+  });
+  if (!value || typeof value !== "object" || !Array.isArray((value as { items?: unknown }).items)) {
+    throw new Error("Physical room labels are unavailable. Reload the room and try again.");
+  }
+  const units = (value as { items: unknown[] }).items.map(parsePhysicalRoomUnitIdentity);
+  if (
+    units.some((unit) => !unit || unit.propertyId !== propertyId || unit.roomTypeId !== roomTypeId)
+  ) {
+    throw new Error("Physical room labels are unavailable. Reload the room and try again.");
+  }
+  const activeUnits = units.filter((unit) => unit?.lifecycle === "active");
+  if (activeUnits.length !== targetActiveUnitCount) {
+    throw new Error("Physical room capacity changed. Reload the room and try again.");
+  }
+  const usedLabels = new Set(
+    units.flatMap((unit) => (unit?.operationalLabel ? [unit.operationalLabel.toLowerCase()] : [])),
+  );
+  for (let index = 0; index < activeUnits.length; index += 1) {
+    const unit = activeUnits[index]!;
+    if (!unit || unit.operationalLabelStatus === "verified") continue;
+    let operationalLabel =
+      unit.operationalLabel ?? unusedGeneratedRoomLabel(roomTypeName, index + 1, usedLabels);
+    let response: unknown;
+    while (true) {
+      try {
+        response = await pmsOperationsClient.put<unknown>(
+          `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(roomTypeId)}/physical-units/${encodeURIComponent(unit.roomUnitId)}/operational-label`,
+          { expectedRevision: revision, operationalLabel },
+          commandOptions("pms-room-operational-label"),
+        );
+        break;
+      } catch (error) {
+        if (
+          unit.operationalLabel !== null ||
+          !(error instanceof ApiErrorResponse) ||
+          error.data.code !== "operational_label_conflict"
+        ) {
+          throw error;
+        }
+        usedLabels.add(operationalLabel.toLowerCase());
+        operationalLabel = unusedGeneratedRoomLabel(roomTypeName, index + 1, usedLabels);
+      }
+    }
+    const result = parseSetPhysicalRoomOperationalLabelResult({ ok: true, response });
+    if (
+      !result?.ok ||
+      result.response.propertyId !== propertyId ||
+      result.response.roomTypeId !== roomTypeId ||
+      result.response.roomUnitId !== unit.roomUnitId ||
+      result.response.operationalLabel !== operationalLabel ||
+      result.response.operationalLabelStatus !== "verified" ||
+      result.response.roomUnitsRevision !== revision + 1
+    ) {
+      throw new Error("Physical room labels could not be verified. Reload the room and try again.");
+    }
+    usedLabels.add(operationalLabel.toLowerCase());
+    revision = result.response.roomUnitsRevision;
+  }
+}
+
+function unusedGeneratedRoomLabel(
+  roomTypeName: string,
+  initialPosition: number,
+  usedLabels: ReadonlySet<string>,
+): string {
+  for (let position = initialPosition; ; position += 1) {
+    const suffix = ` ${position}`;
+    const candidate = `${roomTypeName.trim().slice(0, 200 - suffix.length)}${suffix}`;
+    if (!usedLabels.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
+async function ensureCanonicalFlexibleRatePlan(
+  propertyId: string,
+  roomType: PmsOperationsRoomType,
+  data: RoomTypeUpdate,
+): Promise<void> {
+  const pricingPath = `/api/pms/properties/${encodeURIComponent(propertyId)}/pricing-source`;
+  let pricingSource;
+  try {
+    pricingSource = parsePmsPricingSourceSnapshot(
+      await pmsOperationsClient.get<unknown>(pricingPath, {
+        ...pmsOperationsRequestOptions,
+        cache: "no-store",
+      }),
+    );
+    if (!pricingSource || pricingSource.propertyId !== propertyId) {
+      throw new Error("Canonical room pricing is unavailable. Reload the room and try again.");
+    }
+  } catch (error) {
+    if (
+      !(error instanceof ApiErrorResponse) ||
+      error.status !== 404 ||
+      error.data.code !== "pricing_currency_not_configured"
+    ) {
+      throw error;
+    }
+    const response = await pmsOperationsClient.put<unknown>(
+      `${pricingPath}/currency`,
+      { expectedPricingCurrencyRevision: 0, currency: roomType.baseRate.currency },
+      commandOptions("pms-pricing-currency-create"),
+    );
+    const result = parsePropertyPricingCurrencyCommandResult({ ok: true, response });
+    if (
+      !result?.ok ||
+      result.response.pricingCurrency.propertyId !== propertyId ||
+      result.response.pricingCurrency.currency !== roomType.baseRate.currency
+    ) {
+      throw new Error(
+        "Canonical pricing currency could not be saved. Reload the room and try again.",
+      );
+    }
+    pricingSource = {
+      contractVersion: result.response.contractVersion,
+      propertyId,
+      pricingCurrency: result.response.pricingCurrency,
+      flexibleRatePlans: [],
+      capturedAt: result.response.acceptedAt,
+    };
+  }
+  if (pricingSource.pricingCurrency.currency !== roomType.baseRate.currency) {
+    throw new Error(
+      "This room's currency does not match the property's canonical pricing currency.",
+    );
+  }
+
+  const setupPath = `/api/pms/setup/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(roomType.roomTypeId)}`;
+  const roomFacts = parseRoomTypeFactsSnapshot(
+    await pmsOperationsClient.get<unknown>(setupPath, {
+      ...pmsOperationsRequestOptions,
+      cache: "no-store",
+    }),
+  );
+  if (
+    !roomFacts ||
+    roomFacts.propertyId !== propertyId ||
+    roomFacts.roomTypeId !== roomType.roomTypeId
+  ) {
+    throw new Error("Canonical room facts are unavailable. Reload the room and try again.");
+  }
+
+  const cancellationTerms = {
+    type: "free_until_days_before_arrival" as const,
+    freeCancellationDeadlineDays: 7,
+    afterDeadlinePenalty: "full_booking_amount" as const,
+    noShowPenalty: "full_booking_amount" as const,
+    text: data.cancellationPolicy || "Free until 7 days before",
+    flexibleCancellationType: data.flexibleCancellationType ?? "free",
+    partialRefundCancelWindowDays: data.partialRefundCancelWindowDays ?? 30,
+    partialRefundAmountPercent: data.partialRefundAmountPercent ?? 50,
+    partialRefundTiers: data.partialRefundTiers ?? [],
+  };
+  const existing = pricingSource.flexibleRatePlans.find(
+    (candidate) => candidate.roomTypeId === roomType.roomTypeId,
+  );
+  if (
+    existing?.sourceRoomFactsRevision === roomFacts.roomFactsRevision &&
+    existing.baseAmount.amountDecimal === roomType.baseRate.amountDecimal &&
+    JSON.stringify(existing.cancellationTerms) === JSON.stringify(cancellationTerms)
+  ) {
+    return;
+  }
+
+  const response = await pmsOperationsClient.put<unknown>(
+    `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(roomType.roomTypeId)}/flexible-rate-plan`,
+    {
+      expectedRoomFactsRevision: roomFacts.roomFactsRevision,
+      expectedPricingCurrencyRevision: pricingSource.pricingCurrency.pricingCurrencyRevision,
+      expectedFlexibleRatePlanRevision: existing?.flexibleRatePlanRevision ?? 0,
+      baseAmountDecimal: roomType.baseRate.amountDecimal,
+      cancellationTerms,
+    },
+    commandOptions("pms-flexible-rate-plan-upsert"),
+  );
+  const result = parseFlexibleRatePlanCommandResult({ ok: true, response });
+  if (
+    !result?.ok ||
+    result.response.flexibleRatePlan.propertyId !== propertyId ||
+    result.response.flexibleRatePlan.roomTypeId !== roomType.roomTypeId ||
+    result.response.flexibleRatePlan.sourceRoomFactsRevision !== roomFacts.roomFactsRevision ||
+    result.response.flexibleRatePlan.flexibleRatePlanRevision !==
+      (existing?.flexibleRatePlanRevision ?? 0) + 1
+  ) {
+    throw new Error("Canonical room pricing could not be saved. Reload the room and try again.");
+  }
+}
+
+function commandOptions(prefix: string) {
+  return {
+    ...pmsOperationsRequestOptions,
+    headers: {
+      ...(pmsOperationsRequestOptions.headers as Record<string, string>),
+      "Idempotency-Key": randomCommandId(prefix),
+    },
+  };
+}
 
 export class RoomTypeRetirementBlockedError extends Error {
   constructor(readonly impact: RoomTypeRetirementImpact) {
@@ -702,9 +999,8 @@ export const pmsOperationsRoomsReadService = {
     );
   },
 
-  createRoomType: (propertyId: string, data: RoomTypeCreate) => {
+  createRoomType: (propertyId: string, data: RoomTypeCreate, commandId: string) => {
     assertPmsOperationsReadModelEnabled();
-    const commandId = randomCommandId("pms-room-type-create");
     return pmsOperationsClient.post<PmsOperationsCommandResponse<PmsOperationsRoomType>>(
       `/api/pms/properties/${encodeURIComponent(propertyId)}/room-types`,
       {
@@ -788,9 +1084,9 @@ export const pmsOperationsRoomsReadService = {
       altText: string | null;
       sortOrder: number;
     }[],
+    commandId = randomCommandId("pms-room-media"),
   ) => {
     assertPmsOperationsReadModelEnabled();
-    const commandId = randomCommandId("pms-room-media");
     return pmsOperationsClient.put<{
       propertyId: string;
       roomTypeId: string;
@@ -817,6 +1113,13 @@ export const pmsOperationsRoomsReadService = {
 
 const pendingLinkedInventoryCommands = new Map<string, string>();
 const pendingRoomTypeLifecycleCommands = new Map<string, string>();
+const pendingRoomTypeCreateMedia = new Map<
+  string,
+  {
+    commandId: string;
+    images: RoomImageReference[];
+  }
+>();
 
 async function runRoomTypeLifecycleCommand<T>(
   fingerprintParts: unknown[],
@@ -930,6 +1233,7 @@ async function replaceRoomTypeMedia(
   propertyId: string,
   roomType: RoomType,
   images: RoomImageReference[],
+  commandId?: string,
 ): Promise<void> {
   const assignments = images
     .filter(
@@ -964,6 +1268,7 @@ async function replaceRoomTypeMedia(
     roomType.roomMediaRevision,
     assignments,
     legacyMediaSnapshot,
+    commandId,
   );
 }
 

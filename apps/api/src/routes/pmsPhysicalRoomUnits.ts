@@ -31,10 +31,7 @@ export type PmsPhysicalRoomOperationalLabelRoutesOptions = {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/**
- * ONB-12 adapter. It remains unmounted until the reviewed PMS room-facts
- * cutover owns the canonical room-type route group.
- */
+/** ONB-12 canonical physical-unit adapter, mounted below the room setup prefix. */
 export async function registerPmsPhysicalRoomUnitRoutes(
   app: FastifyInstance,
   options: PmsPhysicalRoomUnitRoutesOptions,

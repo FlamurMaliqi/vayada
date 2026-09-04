@@ -45,13 +45,16 @@ const profiles: CalendarPropertyProfileReader = {
 
 describe("calendarApiClient", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     calls.profile.mockResolvedValue(profile());
+    calls.post.mockImplementation(materializationResponse);
     calls.get.mockImplementation(async (endpoint) => {
       if (endpoint.endsWith("/operating-calendar")) return currentCalendar();
       if (endpoint.endsWith("/room-types")) return roomList();
       if (endpoint.endsWith(`/${roomA}/capacity`)) return capacity(roomA, 5, 4);
       if (endpoint.endsWith(`/${roomB}/capacity`)) return capacity(roomB, 3, 2);
+      if (endpoint.endsWith(`/${roomA}/units`)) return physicalUnits(roomA, 4);
+      if (endpoint.endsWith(`/${roomB}/units`)) return physicalUnits(roomB, 2);
       throw new Error(`Unexpected GET ${endpoint}`);
     });
   });
@@ -94,6 +97,8 @@ describe("calendarApiClient", () => {
       if (endpoint.endsWith("/room-types")) return roomList();
       if (endpoint.endsWith(`/${roomA}/capacity`)) return capacity(roomA, 5, 4);
       if (endpoint.endsWith(`/${roomB}/capacity`)) return capacity(roomB, 3, 2);
+      if (endpoint.endsWith(`/${roomA}/units`)) return physicalUnits(roomA, 4);
+      if (endpoint.endsWith(`/${roomB}/units`)) return physicalUnits(roomB, 2);
       throw new Error(`Unexpected GET ${endpoint}`);
     });
     const client = createCalendarApiClient(http, profiles);
@@ -116,6 +121,8 @@ describe("calendarApiClient", () => {
       if (endpoint.endsWith("/room-types")) return roomList();
       if (endpoint.endsWith(`/${roomA}/capacity`)) return capacity(roomA, 5, 0);
       if (endpoint.endsWith(`/${roomB}/capacity`)) return capacity(roomB, 3, 2);
+      if (endpoint.endsWith(`/${roomA}/units`)) return physicalUnits(roomA, 0);
+      if (endpoint.endsWith(`/${roomB}/units`)) return physicalUnits(roomB, 2);
       throw new Error(`Unexpected GET ${endpoint}`);
     });
     await expect(createCalendarApiClient(http, profiles).loadWorkspace(propertyId)).rejects.toThrow(
@@ -132,6 +139,30 @@ describe("calendarApiClient", () => {
     );
   });
 
+  it("keeps unverified physical rooms out of calendar setup", async () => {
+    calls.get.mockImplementation(async (endpoint) => {
+      if (endpoint.endsWith("/operating-calendar")) return currentCalendar();
+      if (endpoint.endsWith("/room-types")) return roomList();
+      if (endpoint.endsWith(`/${roomA}/capacity`)) return capacity(roomA, 5, 4);
+      if (endpoint.endsWith(`/${roomB}/capacity`)) return capacity(roomB, 3, 2);
+      if (endpoint.endsWith(`/${roomA}/units`)) {
+        const units = physicalUnits(roomA, 4);
+        return {
+          items: [
+            { ...units.items[0]!, operationalLabel: null, operationalLabelStatus: "unverified" },
+            ...units.items.slice(1),
+          ],
+        };
+      }
+      if (endpoint.endsWith(`/${roomB}/units`)) return physicalUnits(roomB, 2);
+      throw new Error(`Unexpected GET ${endpoint}`);
+    });
+
+    await expect(createCalendarApiClient(http, profiles).loadWorkspace(propertyId)).rejects.toThrow(
+      "Verify every Garden Suite room label in the Rooms setup step",
+    );
+  });
+
   it.each(["Etc/UTC", "Europe/Kyiv", "Asia/Kolkata", "America/Nuuk"])(
     "accepts Hotel Catalog canonical timezone %s even when a browser resolves an old alias",
     async (timeZoneName) => {
@@ -141,6 +172,8 @@ describe("calendarApiClient", () => {
         if (endpoint.endsWith("/room-types")) return roomList();
         if (endpoint.endsWith(`/${roomA}/capacity`)) return capacity(roomA, 5, 4);
         if (endpoint.endsWith(`/${roomB}/capacity`)) return capacity(roomB, 3, 2);
+        if (endpoint.endsWith(`/${roomA}/units`)) return physicalUnits(roomA, 4);
+        if (endpoint.endsWith(`/${roomB}/units`)) return physicalUnits(roomB, 2);
         throw new Error(`Unexpected GET ${endpoint}`);
       });
 
@@ -270,6 +303,14 @@ describe("calendarApiClient", () => {
     expect(calls.get).toHaveBeenCalledWith(`/api/pms/properties/${propertyId}/operating-calendar`, {
       cache: "no-store",
     });
+    expect(calls.post).toHaveBeenCalledTimes(2);
+    expect(calls.post.mock.calls[0]?.[0]).toBe(
+      `/api/pms/properties/${propertyId}/inventory-materialization`,
+    );
+    expect(calls.post.mock.calls[0]?.[1]).toEqual({
+      expectedCalendarRevision: 3,
+      horizon: { from: "2026-08-04", through: "2027-08-04" },
+    });
   });
 
   it("treats an unchanged command as a verified no-op success", async () => {
@@ -341,6 +382,27 @@ describe("calendarApiClient", () => {
       requiresRefresh: true,
       requiresPreview: true,
     });
+  });
+
+  it("reports a saved calendar whose inventory materialization failed", async () => {
+    calls.put.mockResolvedValue(acceptedResponse());
+    calls.post.mockRejectedValue(
+      ownerApiError(409, { ok: false, error: { code: "configuration_not_current" } }),
+    );
+
+    await expect(
+      createCalendarApiClient(http, profiles).applyCalendar(
+        propertyId,
+        calendarProposal(),
+        impactConfirmation(),
+      ),
+    ).rejects.toMatchObject({
+      name: "CalendarOwnerError",
+      code: "inventory_materialization_failed",
+      requiresRefresh: true,
+      requiresPreview: false,
+    });
+    expect(calls.get).not.toHaveBeenCalled();
   });
 
   it("strictly parses command errors and distinguishes stale confirmation from retryable progress", async () => {
@@ -723,8 +785,43 @@ function installAcceptedWorkspace(
     if (endpoint.endsWith("/room-types")) return roomList();
     if (endpoint.endsWith(`/${roomA}/capacity`)) return capacity(roomA, 5, 4);
     if (endpoint.endsWith(`/${roomB}/capacity`)) return capacity(roomB, 3, 2);
+    if (endpoint.endsWith(`/${roomA}/units`)) return physicalUnits(roomA, 4);
+    if (endpoint.endsWith(`/${roomB}/units`)) return physicalUnits(roomB, 2);
     throw new Error(`Unexpected GET ${endpoint}`);
   });
+}
+
+async function materializationResponse(endpoint: string, data?: unknown) {
+  if (!endpoint.endsWith("/inventory-materialization")) {
+    throw new Error(`Unexpected POST ${endpoint}`);
+  }
+  const body = data as {
+    expectedCalendarRevision: number;
+    horizon: { from: string; through: string };
+  };
+  return {
+    ok: true,
+    outcome: "applied",
+    coverage: {
+      materializedRevision: body.expectedCalendarRevision,
+      coverageFrom: body.horizon.from,
+      coverageThrough: body.horizon.through,
+    },
+  };
+}
+
+function physicalUnits(targetRoomTypeId: string, count: number) {
+  return {
+    items: Array.from({ length: count }, (_, index) => ({
+      contractVersion: PMS_ROOM_FACTS_CONTRACT_VERSION,
+      propertyId,
+      roomTypeId: targetRoomTypeId,
+      roomUnitId: `${targetRoomTypeId.slice(0, -12)}${String(index + 1).padStart(12, "0")}`,
+      lifecycle: "active",
+      operationalLabel: `Room ${index + 1}`,
+      operationalLabelStatus: "verified",
+    })),
+  };
 }
 
 function ownerApiError(status: number, data: unknown): ApiErrorResponse {

@@ -340,10 +340,7 @@ describe("PMS operations command repository", () => {
       "audit_event",
     ]);
     expect(target.roomTypes).toHaveLength(1);
-    expect(target.generatedRooms.map((room) => room.roomNumber)).toEqual([
-      "Deluxe Double 1",
-      "Deluxe Double 2",
-    ]);
+    expect(target.generatedRooms.map((room) => room.roomNumber)).toEqual([null, null]);
     expect(target.auditEvents.map((event) => event.action)).toEqual(["pms.room_type.created"]);
     const keyHash = sha256(command.idempotencyKey);
     const domainEventCalls = target.calls.filter((call) =>
@@ -373,6 +370,9 @@ describe("PMS operations command repository", () => {
     expect(target.calls.filter((call) => call.text.includes("INSERT INTO pms.rooms"))).toHaveLength(
       1,
     );
+    expect(
+      target.calls.find((call) => call.text.includes("INSERT INTO pms.rooms"))?.text,
+    ).toContain("'setupGenerated', TRUE");
     const roomOrderLockIndex = target.calls.findIndex((call) =>
       call.text.includes("pms.room-order:"),
     );
@@ -707,8 +707,8 @@ describe("PMS operations command repository", () => {
     ).toHaveLength(4);
   });
 
-  it("rejects PMS room-type creates when generated room numbers collide", async () => {
-    const target = targetPrivateNotesPool({ generatedRoomConflicts: 1 });
+  it("leaves generated PMS rooms unlabeled until canonical verification", async () => {
+    const target = targetPrivateNotesPool();
     const repository = createTargetPmsOperationsCommandRepository({
       connectionString: "postgresql://pms-target",
       pool: target.pool,
@@ -723,13 +723,11 @@ describe("PMS operations command repository", () => {
       }),
     );
 
-    expect(result).toMatchObject({
-      ok: false,
-      statusCode: 409,
-      code: "room_type_conflict",
-    });
-    expect(target.auditEvents).toHaveLength(0);
-    expect(target.calls.some((call) => call.text.includes("platform.outbox_events"))).toBe(false);
+    expect(result).toMatchObject({ ok: true });
+    expect(target.generatedRooms.map((room) => room.roomNumber)).toEqual([null, null]);
+    expect(
+      target.calls.find((call) => call.text.includes("INSERT INTO pms.rooms"))?.text,
+    ).toContain("'unverified'");
   });
 
   it("rejects checkout charge assignment IDs outside the reservation before insert", async () => {
@@ -794,7 +792,7 @@ type RoomTypeRecord = {
 type GeneratedRoomRecord = {
   propertyId: string;
   roomTypeId: string;
-  roomNumber: string;
+  roomNumber: null;
 };
 
 type IdempotencyRecord = {
@@ -805,7 +803,6 @@ type IdempotencyRecord = {
 
 function targetPrivateNotesPool(
   options: {
-    generatedRoomConflicts?: number;
     retirementCounts?: Partial<{
       reservations: number;
       physicalUnits: number;
@@ -1179,16 +1176,14 @@ function targetPrivateNotesPool(
     if (text.includes("INSERT INTO pms.rooms")) {
       const propertyId = String(values?.[0]);
       const roomTypeId = String(values?.[1]);
-      const roomTypeName = String(values?.[2]);
       const count = Number(values?.[3]);
-      const insertedCount = Math.max(0, count - (options.generatedRoomConflicts ?? 0));
       const createdRooms: Array<{ id: string }> = [];
-      for (let position = 1; position <= insertedCount; position += 1) {
+      for (let position = 1; position <= count; position += 1) {
         const id = `f6855300-0000-0000-0000-${String(generatedRooms.length + 1).padStart(12, "0")}`;
         generatedRooms.push({
           propertyId,
           roomTypeId,
-          roomNumber: `${roomTypeName} ${position}`,
+          roomNumber: null,
         });
         createdRooms.push({ id });
       }

@@ -86,6 +86,9 @@ import { createPgPropertySetupDraftCommandRepository } from "./domains/propertyS
 import { createPgPropertySetupDraftRepository } from "./domains/propertySetupDraftRepository.js";
 import { createPgPropertyPlanReadRepository } from "./domains/propertyPlanReadModel.js";
 import { createPgPmsRoomFactsReadModel } from "./domains/pmsRoomFactsReadModel.js";
+import { createPgPmsRoomFactsCommandRepository } from "./domains/pmsRoomFactsCommandRepository.js";
+import { createPmsRoomFactsVocabularyValidationPort } from "./domains/pmsRoomFactsVocabulary.js";
+import { createPgPmsPhysicalRoomUnitReconcileRepository } from "./domains/pmsPhysicalRoomUnitReconcileRepository.js";
 import { createPgPmsPhysicalRoomOperationalLabelRepository } from "./domains/pmsPhysicalRoomOperationalLabelRepository.js";
 import { createPmsRoomAmenityVocabularyValidationPort } from "./domains/pmsRoomAmenityVocabulary.js";
 import { createPgPmsRoomPublicationCommandRepository } from "./domains/pmsRoomPublicationCommandRepository.js";
@@ -836,10 +839,23 @@ const pmsGuestPolicySetupCommands =
         }),
       }
     : undefined;
-const pmsPhysicalRoomOperationalLabels =
+const pmsRoomSetupRuntime =
   config.pmsOperationsSource === "target"
-    ? createPgPmsPhysicalRoomOperationalLabelRepository({ connectionString: targetDatabaseUrl })
+    ? (() => {
+        const roomFactsCommands = createPgPmsRoomFactsCommandRepository({
+          connectionString: targetDatabaseUrl,
+          vocabularyValidator: createPmsRoomFactsVocabularyValidationPort(),
+        });
+        const physicalUnits = createPgPmsPhysicalRoomUnitReconcileRepository({
+          connectionString: targetDatabaseUrl,
+        });
+        const operationalLabels = createPgPmsPhysicalRoomOperationalLabelRepository({
+          connectionString: targetDatabaseUrl,
+        });
+        return { roomFactsCommands, physicalUnits, operationalLabels };
+      })()
     : undefined;
+const pmsPhysicalRoomOperationalLabels = pmsRoomSetupRuntime?.operationalLabels;
 
 const pmsRoomPublicationRuntime = bookingDesignMediaAdapter
   ? (() => {
@@ -1242,6 +1258,18 @@ const app = buildApp({
       }
     : undefined,
   pmsOperatingCalendar: pmsOperatingCalendarRuntime?.routes,
+  pmsRoomSetup: pmsRoomSetupRuntime
+    ? {
+        facts: {
+          commandPort: pmsRoomSetupRuntime.roomFactsCommands,
+          factsReadPort: propertySetupPmsRuntime.roomFacts,
+          bindingReadPort: propertySetupPmsRuntime.roomFacts,
+          unitReadPort: propertySetupPmsRuntime.roomFacts,
+          capacityReadPort: propertySetupPmsRuntime.roomFacts,
+        },
+        physicalUnits: { commandPort: pmsRoomSetupRuntime.physicalUnits },
+      }
+    : undefined,
   pmsPhysicalRoomOperationalLabels: pmsPhysicalRoomOperationalLabels
     ? { commandPort: pmsPhysicalRoomOperationalLabels }
     : undefined,
@@ -1510,6 +1538,8 @@ app.addHook("onClose", async () => {
     pmsGuestPolicySetupCommands?.pricing.close(),
     pmsGuestPolicySetupCommands?.recurringPricing.close(),
     pmsGuestPolicySetupCommands?.mandatoryCharges.close(),
+    pmsRoomSetupRuntime?.roomFactsCommands.close(),
+    pmsRoomSetupRuntime?.physicalUnits.close(),
     pmsPhysicalRoomOperationalLabels?.close(),
     pmsOperatingCalendarRuntime?.close(),
     pmsInboxRuntime?.close(),

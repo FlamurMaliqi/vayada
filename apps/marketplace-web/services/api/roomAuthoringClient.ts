@@ -4,8 +4,10 @@ import {
   parseConfirmRoomTypeAmenitiesResult,
   parseCreateRoomTypeFactsResult,
   parseDraftRoomTypeBinding,
+  parsePhysicalRoomUnitIdentity,
   parsePmsRoomAmenityKey,
   parseReconcilePhysicalRoomUnitsResult,
+  parseSetPhysicalRoomOperationalLabelResult,
   parseRoomTypeCapacitySnapshot,
   parseRoomTypeFacts,
   parseRoomTypeFactsSnapshot,
@@ -14,6 +16,8 @@ import {
   type RoomPublicationRoomSnapshot,
   type RoomTypeFacts,
   type RoomTypeFactsSnapshot,
+  type PhysicalRoomUnitIdentity,
+  type SetPhysicalRoomOperationalLabelResponse,
 } from "@vayada/domain-pms";
 import {
   PROPERTY_SETUP_DRAFT_CONTRACT_VERSION,
@@ -139,7 +143,7 @@ export function createRoomAuthoringClient(
     options?: RequestInit,
   ): Promise<CanonicalRoomAuthoringState[]> => {
     const [listValue, publication] = await Promise.all([
-      http.get<unknown>(`/api/pms/properties/${encoded(propertyId)}/room-types`, options),
+      http.get<unknown>(setupRoomPath(propertyId, "room-types"), options),
       readPublication(propertyId, options),
     ]);
     const facts = parseRoomTypeList(listValue, propertyId);
@@ -149,7 +153,7 @@ export function createRoomAuthoringClient(
       draftRoomIds.map(async (draftRoomId) => {
         try {
           const value = await http.get<unknown>(
-            `/api/pms/properties/${encoded(propertyId)}/room-type-bindings/${encoded(draftRoomId)}`,
+            setupRoomPath(propertyId, `room-type-bindings/${encoded(draftRoomId)}`),
             options,
           );
           const binding = parseDraftRoomTypeBinding(value);
@@ -179,7 +183,7 @@ export function createRoomAuthoringClient(
         .filter(({ lifecycle }) => lifecycle === "active")
         .map(async (snapshot) => {
           const capacityValue = await http.get<unknown>(
-            `/api/pms/properties/${encoded(propertyId)}/room-types/${encoded(snapshot.roomTypeId)}/capacity`,
+            setupRoomPath(propertyId, `room-types/${encoded(snapshot.roomTypeId)}/capacity`),
             options,
           );
           const capacity = parseRoomTypeCapacitySnapshot(capacityValue);
@@ -254,7 +258,7 @@ export function createRoomAuthoringClient(
     const facts = roomDraftToFacts(room);
     const roomType = await saveFacts(http, propertyId, room, facts);
     const capacityValue = await http.get<unknown>(
-      `/api/pms/properties/${encoded(propertyId)}/room-types/${encoded(roomType.roomTypeId)}/capacity`,
+      setupRoomPath(propertyId, `room-types/${encoded(roomType.roomTypeId)}/capacity`),
       { cache: "no-store" },
     );
     const capacity = parseRoomTypeCapacitySnapshot(capacityValue);
@@ -276,7 +280,10 @@ export function createRoomAuthoringClient(
       const response = await domainCommand(
         () =>
           http.put<unknown>(
-            `/api/pms/properties/${encoded(propertyId)}/room-types/${encoded(roomType.roomTypeId)}/physical-units/reconcile`,
+            setupRoomPath(
+              propertyId,
+              `room-types/${encoded(roomType.roomTypeId)}/physical-units/reconcile`,
+            ),
             body,
             {
               headers: {
@@ -297,6 +304,13 @@ export function createRoomAuthoringClient(
       }
       expectedUnitsRevision = response.capacity.roomUnitsRevision;
     }
+    expectedUnitsRevision = await verifyOperationalLabels(
+      http,
+      propertyId,
+      roomType.roomTypeId,
+      facts.name,
+      expectedUnitsRevision,
+    );
 
     let publication = await readPublication(propertyId, { cache: "no-store" });
     let published = publication.rooms.find(({ roomTypeId }) => roomTypeId === roomType.roomTypeId);
@@ -391,7 +405,7 @@ export function createRoomAuthoringClient(
     publication = await readPublication(propertyId, { cache: "no-store" });
     published = publication.rooms.find(({ roomTypeId }) => roomTypeId === roomType.roomTypeId);
     const refreshedCapacityValue = await http.get<unknown>(
-      `/api/pms/properties/${encoded(propertyId)}/room-types/${encoded(roomType.roomTypeId)}/capacity`,
+      setupRoomPath(propertyId, `room-types/${encoded(roomType.roomTypeId)}/capacity`),
       { cache: "no-store" },
     );
     const refreshedCapacity = parseRoomTypeCapacitySnapshot(refreshedCapacityValue);
@@ -438,16 +452,13 @@ export function createRoomAuthoringClient(
     const body = { expectedRevision: room.roomFactsRevision };
     const response = await domainCommand(
       () =>
-        http.delete<unknown>(
-          `/api/pms/properties/${encoded(propertyId)}/room-types/${encoded(room.roomTypeId!)}`,
-          {
-            headers: {
-              "Content-Type": "application/json",
-              "Idempotency-Key": commandKeySync("room-remove", propertyId, room.draftRoomId, body),
-            },
-            body: JSON.stringify(body),
+        http.delete<unknown>(setupRoomPath(propertyId, `room-types/${encoded(room.roomTypeId!)}`), {
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": commandKeySync("room-remove", propertyId, room.draftRoomId, body),
           },
-        ),
+          body: JSON.stringify(body),
+        }),
       parseSafeDeleteRoomTypeResult,
       "room removal",
     );
@@ -591,7 +602,7 @@ async function saveFacts(
     try {
       const response = await domainCommand(
         () =>
-          http.post<unknown>(`/api/pms/properties/${encoded(propertyId)}/room-types`, body, {
+          http.post<unknown>(setupRoomPath(propertyId, "room-types"), body, {
             headers: { "Idempotency-Key": createRoomCommandKey(propertyId, room.draftRoomId) },
           }),
         parseCreateRoomTypeFactsResult,
@@ -627,7 +638,7 @@ async function saveFacts(
 
   if (room.roomFactsRevision === null) throw invalidOwnerContract("room facts revision");
   const currentValue = await http.get<unknown>(
-    `/api/pms/properties/${encoded(propertyId)}/room-types/${encoded(room.roomTypeId)}`,
+    setupRoomPath(propertyId, `room-types/${encoded(room.roomTypeId)}`),
     { cache: "no-store" },
   );
   const current = parseRoomTypeFactsSnapshot(currentValue);
@@ -658,7 +669,7 @@ async function saveFacts(
     const response = await domainCommand(
       () =>
         http.put<unknown>(
-          `/api/pms/properties/${encoded(propertyId)}/room-types/${encoded(room.roomTypeId!)}`,
+          setupRoomPath(propertyId, `room-types/${encoded(room.roomTypeId!)}`),
           body,
           {
             headers: {
@@ -686,7 +697,7 @@ async function saveFacts(
       throw error;
     }
     const refreshedValue = await http.get<unknown>(
-      `/api/pms/properties/${encoded(propertyId)}/room-types/${encoded(room.roomTypeId)}`,
+      setupRoomPath(propertyId, `room-types/${encoded(room.roomTypeId)}`),
       { cache: "no-store" },
     );
     const refreshed = parseRoomTypeFactsSnapshot(refreshedValue);
@@ -709,7 +720,7 @@ async function readBoundRoomFacts(
   draftRoomId: string,
 ): Promise<RoomTypeFactsSnapshot> {
   const bindingValue = await http.get<unknown>(
-    `/api/pms/properties/${encoded(propertyId)}/room-type-bindings/${encoded(draftRoomId)}`,
+    setupRoomPath(propertyId, `room-type-bindings/${encoded(draftRoomId)}`),
     { cache: "no-store" },
   );
   const binding = parseDraftRoomTypeBinding(bindingValue);
@@ -721,7 +732,7 @@ async function readBoundRoomFacts(
     throw invalidOwnerContract("draft room binding");
   }
   const factsValue = await http.get<unknown>(
-    `/api/pms/properties/${encoded(propertyId)}/room-types/${encoded(binding.roomTypeId)}`,
+    setupRoomPath(propertyId, `room-types/${encoded(binding.roomTypeId)}`),
     { cache: "no-store" },
   );
   const snapshot = parseRoomTypeFactsSnapshot(factsValue);
@@ -751,6 +762,104 @@ type ParsedDomainResponse<TResult extends ParsedDomainResult> = Extract<
   { readonly ok: true }
 >["response"];
 
+async function verifyOperationalLabels(
+  http: RoomAuthoringHttpClient,
+  propertyId: string,
+  roomTypeId: string,
+  roomTypeName: string,
+  initialRevision: number,
+): Promise<number> {
+  const value = await http.get<unknown>(
+    setupRoomPath(propertyId, `room-types/${encoded(roomTypeId)}/units`),
+    { cache: "no-store" },
+  );
+  if (!isRecord(value) || !Array.isArray(value.items)) {
+    throw invalidOwnerContract("physical room identities");
+  }
+  const units = value.items.map(parsePhysicalRoomUnitIdentity);
+  if (
+    units.some(
+      (unit) =>
+        !unit || unit.propertyId !== propertyId.toLowerCase() || unit.roomTypeId !== roomTypeId,
+    )
+  ) {
+    throw invalidOwnerContract("physical room identities");
+  }
+  const activeUnits = (units as PhysicalRoomUnitIdentity[]).filter(
+    ({ lifecycle }) => lifecycle === "active",
+  );
+  const usedLabels = new Set(
+    (units as PhysicalRoomUnitIdentity[]).flatMap(({ operationalLabel }) =>
+      operationalLabel ? [operationalLabel.toLowerCase()] : [],
+    ),
+  );
+  let expectedRevision = initialRevision;
+  for (let index = 0; index < activeUnits.length; index += 1) {
+    const unit = activeUnits[index]!;
+    if (unit.operationalLabelStatus === "verified") continue;
+    let operationalLabel =
+      unit.operationalLabel ?? generatedRoomLabel(roomTypeName, index + 1, usedLabels);
+    let response: SetPhysicalRoomOperationalLabelResponse;
+    while (true) {
+      const body = { expectedRevision, operationalLabel };
+      try {
+        response = await domainCommand(
+          () =>
+            http.put<unknown>(
+              `/api/pms/properties/${encoded(propertyId)}/room-types/${encoded(roomTypeId)}/physical-units/${encoded(unit.roomUnitId)}/operational-label`,
+              body,
+              {
+                headers: {
+                  "Idempotency-Key": commandKeySync(
+                    "room-label",
+                    propertyId,
+                    unit.roomUnitId,
+                    body,
+                  ),
+                },
+              },
+            ),
+          parseSetPhysicalRoomOperationalLabelResult,
+          "physical room label",
+        );
+        break;
+      } catch (error) {
+        if (
+          unit.operationalLabel !== null ||
+          !(error instanceof RoomAuthoringOwnerError) ||
+          error.code !== "operational_label_conflict"
+        ) {
+          throw error;
+        }
+        usedLabels.add(operationalLabel.toLowerCase());
+        operationalLabel = generatedRoomLabel(roomTypeName, index + 1, usedLabels);
+      }
+    }
+    if (
+      response.roomUnitId !== unit.roomUnitId ||
+      response.operationalLabel !== operationalLabel ||
+      response.roomUnitsRevision !== expectedRevision + 1
+    ) {
+      throw invalidOwnerContract("physical room label");
+    }
+    usedLabels.add(operationalLabel.toLowerCase());
+    expectedRevision = response.roomUnitsRevision;
+  }
+  return expectedRevision;
+}
+
+function generatedRoomLabel(
+  roomTypeName: string,
+  initialPosition: number,
+  usedLabels: ReadonlySet<string>,
+): string {
+  for (let position = initialPosition; ; position += 1) {
+    const suffix = ` ${position}`;
+    const candidate = `${roomTypeName.trim().slice(0, 200 - suffix.length)}${suffix}`;
+    if (!usedLabels.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
 async function domainCommand<TResult extends ParsedDomainResult>(
   send: () => Promise<unknown>,
   parse: (value: unknown) => TResult | null,
@@ -777,6 +886,8 @@ function ownerError(code: string, details: unknown): RoomAuthoringOwnerError {
       "This room count changed in another session. Refresh before saving.",
     physical_unit_reconcile_blocked:
       "Some rooms are already protected by PMS activity. Keep the current count or manage them in PMS.",
+    operational_label_conflict:
+      "A generated room label is already in use. Rename the conflicting room in PMS and save again.",
     room_media_revision_conflict:
       "This room's photos changed in another session. Refresh before saving.",
     room_amenities_revision_conflict:
@@ -1069,6 +1180,10 @@ function invalidOwnerContract(label: string): Error {
 
 function encoded(value: string): string {
   return encodeURIComponent(value);
+}
+
+function setupRoomPath(propertyId: string, suffix: string): string {
+  return `/api/pms/setup/properties/${encoded(propertyId)}/${suffix}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

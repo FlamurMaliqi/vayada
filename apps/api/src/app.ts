@@ -209,9 +209,15 @@ import {
   type PmsManualBookingCreateRoutesOptions,
 } from "./routes/pmsManualBookingCreate.js";
 import {
+  registerPmsPhysicalRoomUnitRoutes,
   registerPmsPhysicalRoomOperationalLabelRoutes,
+  type PmsPhysicalRoomUnitRoutesOptions,
   type PmsPhysicalRoomOperationalLabelRoutesOptions,
 } from "./routes/pmsPhysicalRoomUnits.js";
+import {
+  registerPmsRoomFactsRoutes,
+  type PmsRoomFactsRoutesOptions,
+} from "./routes/pmsRoomFacts.js";
 import {
   registerPmsRoomPublicationRoutes,
   type PmsRoomPublicationRoutesOptions,
@@ -295,6 +301,10 @@ type BuildAppOptions = Pick<FastifyServerOptions, "logger" | "trustProxy"> & {
   pmsRecurringPricing?: PmsRecurringPricingRoutesOptions;
   pmsMandatoryChargeConfirmation?: PmsMandatoryChargeConfirmationRoutesOptions;
   pmsOperatingCalendar?: PmsOperatingCalendarRoutesOptions;
+  pmsRoomSetup?: {
+    facts: PmsRoomFactsRoutesOptions;
+    physicalUnits: PmsPhysicalRoomUnitRoutesOptions;
+  };
   pmsPhysicalRoomOperationalLabels?: PmsPhysicalRoomOperationalLabelRoutesOptions;
   bookingDashboardMetricsReadPort?: BookingRoutesOptions["dashboardMetricsReadPort"];
   bookingPropertyAccessRepository?: BookingRoutesOptions["propertyAccessRepository"];
@@ -743,6 +753,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     app.register(registerPmsOperatingCalendarRoutes, {
       prefix: "/api/pms",
       ...options.pmsOperatingCalendar,
+    });
+  }
+  if (options.pmsRoomSetup) {
+    app.register(registerPmsRoomFactsRoutes, {
+      prefix: "/api/pms/setup",
+      ...options.pmsRoomSetup.facts,
+    });
+    app.register(registerPmsPhysicalRoomUnitRoutes, {
+      prefix: "/api/pms/setup",
+      ...options.pmsRoomSetup.physicalUnits,
     });
   }
   if (options.pmsPhysicalRoomOperationalLabels) {
