@@ -162,6 +162,7 @@ export type FinanceParity = {
   omittedPayoutNetByCurrencyStatusOwner: Record<string, string>;
   targetPayoutNetByCurrencyStatusOwner: Record<string, string>;
   sourcePayoutAllocationsByBookingOwner: Record<string, string>;
+  omittedPayoutAllocationsByBookingOwner: Record<string, string>;
   targetPayoutAllocationsByBookingOwner: Record<string, string>;
 };
 
