@@ -15,6 +15,10 @@ const attributionMigration = await readFile(
   join(import.meta.dirname, "../migrations/0143_marketplace_matching_impression_attribution.sql"),
   "utf8",
 );
+const outcomeMigration = await readFile(
+  join(import.meta.dirname, "../migrations/0144_marketplace_matching_evaluation_outcomes.sql"),
+  "utf8",
+);
 const TEST_DATABASE_URL = process.env["TEST_DATABASE_URL"];
 const ids = {
   actor: "10000000-0000-4000-8000-000000000001",
@@ -48,6 +52,11 @@ describe("Marketplace matching event projection migration contract", () => {
     expect(migration).not.toMatch(
       /\b(?:raw_demographics|provider_payload|handle|contact_data|profile_text|portfolio_text|message|travel_notes|private_preferences|content_url|private_thresholds)\b/i,
     );
+    expect(outcomeMigration).not.toMatch(
+      /\b(?:jsonb|free_text|message|url|payload|demographics|private_preferences)\b/i,
+    );
+    expect(outcomeMigration).toContain("uq_marketplace_matching_satisfaction_revision");
+    expect(outcomeMigration).toContain("uq_marketplace_matching_guardrail_revision");
   });
 });
 
@@ -173,6 +182,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
     it("deduplicates qualified impressions by policy, pair, surface, and UTC day", async () => {
       await client.query(migration);
       await client.query(attributionMigration);
+      await client.query(outcomeMigration);
       await expect(
         insertMatchingEvent(client, {
           ...impression("0", "2026-09-02T00:00:00.000Z"),
@@ -192,6 +202,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
     it("enforces attribution shapes and freezes collaboration attribution", async () => {
       await client.query(migration);
       await client.query(attributionMigration);
+      await client.query(outcomeMigration);
       await expect(
         insertCollaboration(client, ids.collaboration, "hotel", recommended),
       ).rejects.toMatchObject({ constraint: "chk_marketplace_collaboration_matching_attribution" });
@@ -250,6 +261,7 @@ describe.skipIf(!TEST_DATABASE_URL)(
     it("rejects one of two concurrent duplicate impressions", async () => {
       await client.query(migration);
       await client.query(attributionMigration);
+      await client.query(outcomeMigration);
       const writer = new pg.Client({ connectionString: TEST_DATABASE_URL });
       await writer.connect();
       try {
@@ -260,6 +272,108 @@ describe.skipIf(!TEST_DATABASE_URL)(
         expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
         expect(results.find(({ status }) => status === "rejected")).toMatchObject({
           reason: { code: "23505", constraint: "uq_marketplace_matching_qualified_impression" },
+        });
+      } finally {
+        await writer.end();
+      }
+    });
+
+    it("enforces evaluation allowlists, score invariants, and exclusive fields", async () => {
+      await client.query(migration);
+      await client.query(attributionMigration);
+      await client.query(outcomeMigration);
+      await insertMatchingEvent(client, evaluated());
+      await expect(
+        insertMatchingEvent(client, {
+          ...evaluated(),
+          eligibilityRuleOutcomes: [...Array(8).fill("pass"), "skipped"],
+        }),
+      ).rejects.toMatchObject({ constraint: "chk_marketplace_matching_event_evaluation" });
+      await expect(
+        insertMatchingEvent(client, { ...evaluated(), pairFitBps: 8_001 }),
+      ).rejects.toMatchObject({ constraint: "chk_marketplace_matching_event_evaluation" });
+      await expect(
+        insertMatchingEvent(client, {
+          eventType: "marketplace.match.saved.v1",
+          attributionKind: "organic",
+          respondentSide: "creator",
+        }),
+      ).rejects.toMatchObject({ constraint: "chk_marketplace_matching_event_outcome" });
+    });
+
+    it("enforces the approved structured outcome vocabularies", async () => {
+      await client.query(migration);
+      await client.query(attributionMigration);
+      await client.query(outcomeMigration);
+      await insertCollaboration(client, ids.collaboration, "creator");
+      for (const input of [
+        { eventType: "marketplace.match.dismissed.v1", dismissalReasonCode: "not_interested" },
+        {
+          eventType: "marketplace.match.response_recorded.v1",
+          collaborationId: ids.collaboration,
+          respondentSide: "hotel",
+          responseValue: "positive",
+        },
+        {
+          eventType: "marketplace.match.rating_recorded.v1",
+          collaborationId: ids.collaboration,
+          respondentSide: "hotel",
+          subjectSide: "creator",
+          ratingScore: 5,
+        },
+        satisfaction(randomUUID()),
+        {
+          eventType: "marketplace.match.guardrail_recorded.v1",
+          collaborationId: ids.collaboration,
+          guardrailState: "opened",
+          guardrailCode: "dispute",
+        },
+      ])
+        await insertMatchingEvent(client, { ...input, attributionKind: "organic" });
+      for (const invalid of [
+        { eventType: "marketplace.match.dismissed.v1", dismissalReasonCode: "not_relevant" },
+        {
+          eventType: "marketplace.match.response_recorded.v1",
+          collaborationId: ids.collaboration,
+          respondentSide: "hotel",
+          responseValue: "maybe",
+        },
+        {
+          eventType: "marketplace.match.satisfaction_recorded.v1",
+          collaborationId: ids.collaboration,
+          respondentSide: "creator",
+          satisfactionOutcome: "unknown",
+        },
+        {
+          eventType: "marketplace.match.guardrail_recorded.v1",
+          collaborationId: ids.collaboration,
+          guardrailState: "opened",
+          guardrailCode: "late_reply",
+        },
+      ])
+        await expect(
+          insertMatchingEvent(client, { ...invalid, attributionKind: "organic" }),
+        ).rejects.toMatchObject({ constraint: "chk_marketplace_matching_event_outcome" });
+    });
+
+    it("rejects concurrent duplicate satisfaction revisions", async () => {
+      await client.query(migration);
+      await client.query(attributionMigration);
+      await client.query(outcomeMigration);
+      await insertCollaboration(client, ids.collaboration, "creator");
+      const writer = new pg.Client({ connectionString: TEST_DATABASE_URL });
+      await writer.connect();
+      try {
+        const results = await Promise.allSettled([
+          insertMatchingEvent(client, satisfaction(randomUUID())),
+          insertMatchingEvent(writer, satisfaction(randomUUID())),
+        ]);
+        expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+        expect(results.find(({ status }) => status === "rejected")).toMatchObject({
+          reason: {
+            code: "23505",
+            constraint: "uq_marketplace_matching_satisfaction_revision",
+          },
         });
       } finally {
         await writer.end();
@@ -349,6 +463,28 @@ type MatchingEventInput = {
   presentationMode?: "ranked" | "exploration";
   rank?: number;
   slot?: number;
+  eligibilityStatus?: string;
+  eligibilityRuleOutcomes?: string[];
+  hotelFitBps?: number;
+  creatorFitBps?: number;
+  pairFitBps?: number;
+  hotelCoverageBps?: number;
+  creatorCoverageBps?: number;
+  confidence?: string;
+  reasonCodes?: string[];
+  evidenceKnownCount?: number;
+  evidenceUnknownCount?: number;
+  evidenceStaleCount?: number;
+  evidenceUnavailableCount?: number;
+  evidenceNotApplicableCount?: number;
+  respondentSide?: string;
+  subjectSide?: string;
+  responseValue?: string;
+  ratingScore?: number;
+  satisfactionOutcome?: string;
+  dismissalReasonCode?: string;
+  guardrailState?: string;
+  guardrailCode?: string;
 };
 
 function impression(character: string, acceptedAt: string): MatchingEventInput {
@@ -365,6 +501,41 @@ function impression(character: string, acceptedAt: string): MatchingEventInput {
     presentationMode: "ranked",
     rank: 1,
     slot: 1,
+  };
+}
+
+function evaluated(): MatchingEventInput {
+  return {
+    eventType: "marketplace.match.evaluated.v1",
+    sourceId: ids.evaluation,
+    policyVersion: recommended.policyVersion,
+    evaluationId: ids.evaluation,
+    evaluationMode: "shadow",
+    eligibilityStatus: "eligible",
+    eligibilityRuleOutcomes: Array(9).fill("pass"),
+    hotelFitBps: 8_000,
+    creatorFitBps: 9_000,
+    pairFitBps: 8_000,
+    hotelCoverageBps: 10_000,
+    creatorCoverageBps: 10_000,
+    confidence: "medium",
+    reasonCodes: ["destination_match", "platform_match"],
+    evidenceKnownCount: 8,
+    evidenceUnknownCount: 1,
+    evidenceStaleCount: 0,
+    evidenceUnavailableCount: 0,
+    evidenceNotApplicableCount: 0,
+  };
+}
+
+function satisfaction(sourceId: string): MatchingEventInput {
+  return {
+    eventType: "marketplace.match.satisfaction_recorded.v1",
+    sourceId,
+    collaborationId: ids.collaboration,
+    attributionKind: "organic",
+    respondentSide: "creator",
+    satisfactionOutcome: "satisfied",
   };
 }
 
@@ -418,15 +589,64 @@ async function insertMatchingEvent(client: pg.Client, input: MatchingEventInput)
       sourceId,
     ],
   );
+  const detailColumns = [
+    "eligibility_status",
+    "eligibility_rule_outcomes",
+    "hotel_fit_bps",
+    "creator_fit_bps",
+    "pair_fit_bps",
+    "hotel_coverage_bps",
+    "creator_coverage_bps",
+    "confidence",
+    "reason_codes",
+    "evidence_known_count",
+    "evidence_unknown_count",
+    "evidence_stale_count",
+    "evidence_unavailable_count",
+    "evidence_not_applicable_count",
+    "respondent_side",
+    "subject_side",
+    "response_value",
+    "rating_score",
+    "satisfaction_outcome",
+    "dismissal_reason_code",
+    "guardrail_state",
+    "guardrail_code",
+  ];
+  const detailValues = [
+    input.eligibilityStatus,
+    input.eligibilityRuleOutcomes,
+    input.hotelFitBps,
+    input.creatorFitBps,
+    input.pairFitBps,
+    input.hotelCoverageBps,
+    input.creatorCoverageBps,
+    input.confidence,
+    input.reasonCodes,
+    input.evidenceKnownCount,
+    input.evidenceUnknownCount,
+    input.evidenceStaleCount,
+    input.evidenceUnavailableCount,
+    input.evidenceNotApplicableCount,
+    input.respondentSide,
+    input.subjectSide,
+    input.responseValue,
+    input.ratingScore,
+    input.satisfactionOutcome,
+    input.dismissalReasonCode,
+    input.guardrailState,
+    input.guardrailCode,
+  ].map((value) => value ?? null);
   await client.query(
     `INSERT INTO marketplace.matching_event_projections
      (domain_event_id,event_type,source_id,revision,actor_user_id,creator_profile_id,
       creator_organization_id,hotel_organization_id,property_id,offer_id,collaboration_id,
       contract_version,correlation_id,occurred_at,recorded_at,attribution_kind,policy_version,
       evaluation_id,evaluation_mode,impression_id,recommendation_session_id,surface,
-      presentation_mode,impression_rank,impression_slot)
+      presentation_mode,impression_rank,impression_slot,${detailColumns.join(",")})
      VALUES ($1,$2,$3,1,$4,$5,$6,$7,$8,$9,$10,'marketplace-matching-contract.v2',
-       'correlation-1',$11,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+       'correlation-1',$11,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
+       ${detailValues.map((_, index) => `$${index + 22}`).join(",")})`,
     [
       domainEventId,
       input.eventType,
@@ -449,6 +669,7 @@ async function insertMatchingEvent(client: pg.Client, input: MatchingEventInput)
       input.presentationMode ?? null,
       input.rank ?? null,
       input.slot ?? null,
+      ...detailValues,
     ],
   );
 }
