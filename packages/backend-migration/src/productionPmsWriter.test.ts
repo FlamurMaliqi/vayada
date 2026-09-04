@@ -4,6 +4,26 @@ import { writeProductionPmsRecords } from "./productionPmsWriter.js";
 import type { PmsTargetRecord } from "./productionPmsTypes.js";
 
 describe("production PMS writer", () => {
+  it("bounds inventory statements and preserves every row and aggregate count", async () => {
+    const batches: Record<string, unknown>[][] = [];
+    const client = {
+      async query(sql: string, values?: unknown[]) {
+        expect(sql).toContain("INSERT INTO pms.inventory_days");
+        const rows = JSON.parse(String(values?.[0]));
+        batches.push(rows);
+        return { rowCount: rows.length };
+      },
+    };
+    const records = Array.from({ length: 1_001 }, (_, index) =>
+      record("inventory_days", { propertyId: "property", roomTypeId: "room", index }),
+    );
+    expect(await writeProductionPmsRecords(client as never, records)).toEqual({
+      inventory_days: 1_001,
+    });
+    expect(batches.map((batch) => batch.length)).toEqual([500, 500, 1]);
+    expect(batches.flat()).toEqual(records.map((entry) => entry.row));
+  });
+
   it("writes dependencies in order and uses the inventory composite key", async () => {
     const calls: { sql: string; values?: unknown[] }[] = [];
     const client = {

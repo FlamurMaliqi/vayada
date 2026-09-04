@@ -309,7 +309,36 @@ async function readCollisions(
   client: QueryClient,
   candidates: PmsTargetRecord[],
 ): Promise<IdentityMigrationBlocker[]> {
-  if (!candidates.length) return [];
+  // Only these tables participate in the secondary-unique checks below. In particular,
+  // inventory days must not inflate the JSON recordset for every collision query.
+  const collisionTables = new Set([
+    "room_types",
+    "rooms",
+    "rate_plans",
+    "operational_booking_assignments",
+    "message_threads",
+    "messages",
+    "channel_connections",
+    "channel_binding_claims",
+    "channel_room_type_mappings",
+    "channel_rate_plan_mappings",
+    "channel_booking_mappings",
+    "channel_sync_status",
+    "product_audit_events",
+    "external_webhook_events",
+  ]);
+  const relevant = candidates.filter((candidate) => collisionTables.has(candidate.targetTable));
+  const blockers: IdentityMigrationBlocker[] = [];
+  for (let offset = 0; offset < relevant.length; offset += 500)
+    for (const blocker of await readCollisionBatch(client, relevant.slice(offset, offset + 500)))
+      blockers.push(blocker);
+  return blockers;
+}
+
+async function readCollisionBatch(
+  client: QueryClient,
+  candidates: PmsTargetRecord[],
+): Promise<IdentityMigrationBlocker[]> {
   const rows = candidates.map((candidate) => ({
     targetTable: candidate.targetTable,
     targetId: candidate.targetId,
