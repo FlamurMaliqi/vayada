@@ -251,13 +251,30 @@ type ThreadSummary = {
   providerChannel: string | null;
   guest: { displayName: string | null; email?: string; phone?: string };
   conversationContext:
-    | { state: "linked"; bookingId: string; reference: string }
+    | {
+        state: "linked";
+        bookingId: string;
+        reference: string;
+        stay: {
+          checkIn: string;
+          checkOut: string;
+          nights: number;
+          adults: number;
+          children: number;
+          roomCount: number;
+          roomName: string | null;
+          roomNumber: string | null;
+          status: string;
+        };
+      }
     | {
         state: "inquiry";
         bookingId: null;
         sourceReference: string;
         arrivalDate: string | null;
         departureDate: string | null;
+        adults: number | null;
+        children: number | null;
       }
     | { state: "unlinked"; bookingId: null; sourceReference: string | null };
   unreadCount: number;
@@ -302,7 +319,8 @@ type InternalNote = {
 };
 
 type TimelineItem =
-  { kind: "message"; message: Message } | { kind: "internal_note"; note: InternalNote };
+  | { kind: "message"; message: Message }
+  | { kind: "internal_note"; note: InternalNote };
 ```
 
 When present, `accessPath` is an authenticated Platform Media route, not a
@@ -485,8 +503,22 @@ It returns `202` after atomically recording audit/outbox evidence for a durable
 capability and uses a stable provider idempotency reference; ambiguous outcomes
 are held for review rather than retried blindly. It does not implicitly change
 the Vayada `attentionState`; staff may separately mark the thread done.
+Once an action job has been accepted for a thread, detail suppresses the action
+and the command rejects a second key so a reload cannot enqueue a duplicate.
 
 ### Start a direct email thread
+
+The reply-authorized direct-booking chooser is exposed through the Inbox
+permission boundary so staff do not also need `pms.reservation.read`:
+
+```http
+GET /direct-bookings
+```
+
+It returns up to 500 property-scoped direct bookings whose canonical lifecycle
+is `confirmed`, `canceled`, `completed`, or `no_show`. Items contain the booking
+ID/reference, guest display name, dates, and canonical lifecycle only; guest
+contact values are not included.
 
 ```http
 POST /threads

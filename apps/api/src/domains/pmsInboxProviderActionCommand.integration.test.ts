@@ -108,6 +108,26 @@ describe.skipIf(!URL)("PostgreSQL PMS Inbox provider action", () => {
     );
   });
 
+  it("rejects a second logical action after one job has been accepted", async () => {
+    await expect(command.noReplyNeeded(action("first-action"))).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(command.noReplyNeeded(action("second-action"))).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "provider_action_unavailable",
+        message: "Booking.com no reply needed is unavailable for this conversation.",
+      },
+    });
+    expect((await state()).counts).toEqual({
+      idempotency: 2,
+      events: 1,
+      audits: 1,
+      outbox: 1,
+      jobs: 1,
+    });
+  });
+
   it("revalidates provider and connection capability before enqueue", async () => {
     await admin.query(
       "UPDATE pms.message_threads SET provider_channel = 'airbnb' WHERE id = $1::uuid",

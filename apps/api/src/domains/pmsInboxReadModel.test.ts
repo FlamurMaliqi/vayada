@@ -26,6 +26,17 @@ const row = {
   sourceReference: "provider-booking",
   inquiryArrivalDate: null,
   inquiryDepartureDate: null,
+  inquiryAdults: null,
+  inquiryChildren: null,
+  linkedCheckIn: "2026-09-10",
+  linkedCheckOut: "2026-09-12",
+  linkedNights: 2,
+  linkedAdults: 2,
+  linkedChildren: 0,
+  linkedRoomCount: 1,
+  linkedRoomName: "Suite",
+  linkedRoomNumber: "101",
+  linkedStatus: "confirmed",
   unreadCount: 2,
   activityAt: "2026-09-02T08:00:00.000123Z",
   lastMessagePreview: "Can I arrive early?",
@@ -147,5 +158,59 @@ describe("PostgreSQL PMS Inbox list read model", () => {
       ok: true,
       value: { items: [{ thread: { replyRoute: emailRoute } }] },
     });
+  });
+
+  it("lists only property-scoped direct bookings eligible for a new Inbox thread", async () => {
+    const bookingId = "66666666-6666-4666-8666-666666666666";
+    const { pool, calls } = recordingPool((sql) => {
+      if (!sql.includes("FROM booking.guest_bookings booking")) {
+        throw new Error("Unexpected query");
+      }
+      return {
+        rows: [
+          {
+            guestBookingId: bookingId,
+            bookingReference: "VAY-DIRECT",
+            status: "confirmed",
+            guestDisplayName: "Grace Hopper",
+            checkIn: "2026-10-01",
+            checkOut: "2026-10-03",
+          },
+        ],
+        rowCount: 1,
+      };
+    });
+    const read = createPgPmsInboxReadPort({
+      connectionString: "",
+      attachmentMediaAccessEnabled: true,
+      pool,
+      emailReplyRoutes: {
+        async resolveReplyRoutes() {
+          return [];
+        },
+      },
+    });
+
+    await expect(read.listDirectBookings?.(PROPERTY)).resolves.toEqual({
+      propertyId: PROPERTY,
+      items: [
+        {
+          propertyId: PROPERTY,
+          guestBookingId: bookingId,
+          bookingReference: "VAY-DIRECT",
+          source: "direct_booking",
+          status: "confirmed",
+          primaryGuest: { displayName: "Grace Hopper" },
+          stay: { checkIn: "2026-10-01", checkOut: "2026-10-03" },
+        },
+      ],
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[0]).toContain("booking.property_id = $1::uuid");
+    expect(calls[0]?.[0]).toContain("booking.booking_channel = 'direct'");
+    expect(calls[0]?.[0]).toContain(
+      "booking.lifecycle_status IN ('confirmed', 'canceled', 'completed', 'no_show')",
+    );
+    expect(calls[0]?.[1]).toEqual([PROPERTY]);
   });
 });

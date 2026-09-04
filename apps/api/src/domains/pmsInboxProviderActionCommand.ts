@@ -388,11 +388,20 @@ async function lockThread(
             (thread.source = 'channex'
              AND thread.delivery_channel = 'ota'
              AND lower(BTRIM(thread.provider_channel)) IN ('booking.com', 'booking_com', 'bookingcom')
-             AND BTRIM(thread.source_thread_id) <> '') AS "providerCapable"
+             AND BTRIM(thread.source_thread_id) <> ''
+             AND NOT EXISTS (
+               SELECT 1 FROM platform.jobs provider_action_job
+               WHERE provider_action_job.property_id = thread.property_id
+                 AND provider_action_job.resource_product = 'pms'
+                 AND provider_action_job.resource_type = 'message_thread'
+                 AND provider_action_job.resource_id = thread.id::text
+                 AND provider_action_job.job_type = $3
+                 AND provider_action_job.source_domain_event_id IS NOT NULL
+             )) AS "providerCapable"
      FROM pms.message_threads thread
      WHERE thread.property_id = $1::uuid AND thread.id = $2::uuid
      FOR UPDATE OF thread`,
-    [propertyId, threadId],
+    [propertyId, threadId, JOB_TYPE],
   );
   return query.rows[0] ?? null;
 }

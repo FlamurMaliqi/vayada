@@ -48,6 +48,8 @@ import {
   getChannelLabel,
   normalizeChannelKey,
 } from "@/lib/constants/statusStyles";
+import { messagingService } from "@/services/messaging";
+import { resolveSelectedPmsPropertyId } from "@/services/api/pmsPropertyClient";
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -1114,6 +1116,9 @@ function EditAddOnsModal({
 export default function BookingDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [booking, setBooking] = useState<Booking | null>(null);
+  const [directInboxEligibleBookingId, setDirectInboxEligibleBookingId] = useState<string | null>(
+    null,
+  );
   const [policy, setPolicy] = useState<CancellationPolicy | null>(null);
   const [notes, setNotes] = useState<BookingNote[]>([]);
   const [guests, setGuests] = useState<BookingAdditionalGuest[]>([]);
@@ -1217,6 +1222,30 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!booking || normalizeChannelKey(booking.channel) !== "direct") return;
+
+    void resolveSelectedPmsPropertyId("checking Inbox access")
+      .then((propertyId) => messagingService.listDirectBookings(propertyId))
+      .then((candidates) => {
+        if (!cancelled) {
+          setDirectInboxEligibleBookingId(
+            candidates.some((candidate) => candidate.guestBookingId === booking.id)
+              ? booking.id
+              : null,
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setDirectInboxEligibleBookingId(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [booking]);
 
   const doAction = useCallback(async (action: () => Promise<Booking>, errorMsg: string) => {
     setUpdating(true);
@@ -1641,6 +1670,7 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
 
   const channelKey = normalizeChannelKey(booking.channel);
   const channelLabel = getChannelLabel(booking.channel);
+  const canMessageGuest = channelKey === "direct" && directInboxEligibleBookingId === booking.id;
   const rateType = "Flexible"; // current bookings always use the hotel's default rate plan.
 
   // Add-ons rendered with quantity-suffix from addonQuantities.
@@ -1663,7 +1693,15 @@ export default function BookingDetailPage({ params }: { params: Promise<{ id: st
         >
           {booking.status}
         </span>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-1.5">
+          {canMessageGuest && (
+            <Link
+              href={`/inbox?booking=${encodeURIComponent(booking.id)}`}
+              className="inline-flex min-h-9 items-center rounded-md border border-gray-200 px-3 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+            >
+              Message guest
+            </Link>
+          )}
           <OverflowMenu
             onPrint={() => window.print()}
             onExport={() => {

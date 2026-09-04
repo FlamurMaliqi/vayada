@@ -12823,7 +12823,22 @@ describe("vayada-api", () => {
       channel: "ota",
       providerChannel: "booking.com",
       guest: { displayName: "Alex Lee", email: "alex@example.com" },
-      conversationContext: { state: "linked", bookingId: "booking_1", reference: "VAY-1" },
+      conversationContext: {
+        state: "linked",
+        bookingId: "booking_1",
+        reference: "VAY-1",
+        stay: {
+          checkIn: "2026-09-10",
+          checkOut: "2026-09-12",
+          nights: 2,
+          adults: 2,
+          children: 0,
+          roomCount: 1,
+          roomName: "Suite",
+          roomNumber: "101",
+          status: "confirmed",
+        },
+      },
       unreadCount: 2,
       activityAt: "2026-09-01T10:00:00.000Z",
       lastMessage: { preview: "Hello", at: "2026-09-01T10:00:00.000Z", hasAttachments: false },
@@ -12963,7 +12978,22 @@ describe("vayada-api", () => {
       channel: "ota",
       providerChannel: "booking.com",
       guest: { displayName: "Alex Lee", email: "alex@example.com" },
-      conversationContext: { state: "linked", bookingId: "booking_1", reference: "VAY-1" },
+      conversationContext: {
+        state: "linked",
+        bookingId: "booking_1",
+        reference: "VAY-1",
+        stay: {
+          checkIn: "2026-09-10",
+          checkOut: "2026-09-12",
+          nights: 2,
+          adults: 2,
+          children: 0,
+          roomCount: 1,
+          roomName: "Suite",
+          roomNumber: "101",
+          status: "confirmed",
+        },
+      },
       unreadCount: 2,
       activityAt: "2026-09-01T10:00:00.000Z",
       lastMessage: { preview: "Hello", at: "2026-09-01T10:00:00.000Z", hasAttachments: true },
@@ -14020,6 +14050,86 @@ describe("vayada-api", () => {
       app = null;
     }
     expect(dispatches).toHaveLength(0);
+  });
+
+  it("lists direct-booking candidates behind Inbox read and reply permissions", async () => {
+    const bookingId = "13736100-0000-4000-8000-000000000000";
+    const calls: string[] = [];
+    const port: PmsInboxReadPort = {
+      async listThreads() {
+        throw new Error("not exercised");
+      },
+      async getThread() {
+        throw new Error("not exercised");
+      },
+      async unreadCount() {
+        throw new Error("not exercised");
+      },
+      async listDirectBookings(propertyId) {
+        calls.push(propertyId);
+        return {
+          propertyId,
+          items: [
+            {
+              propertyId,
+              guestBookingId: bookingId,
+              bookingReference: "VAY-DIRECT",
+              source: "direct_booking",
+              status: "confirmed",
+              primaryGuest: { displayName: "Grace Hopper" },
+              stay: { checkIn: "2026-10-01", checkOut: "2026-10-03" },
+            },
+          ],
+        };
+      },
+    };
+    const url = `/api/pms/properties/${pmsPropertyId}/messaging/direct-bookings`;
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read", "pms.inbox.reply"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsInboxReadPort: port,
+      pmsOperationsAllowedOrigins: ["https://pms.localhost"],
+    });
+
+    await expect(
+      app.inject({ method: "OPTIONS", url, headers: { origin: "https://pms.localhost" } }),
+    ).resolves.toMatchObject({ statusCode: 204 });
+    await expect(
+      injectJson(app, {
+        method: "GET",
+        url,
+        headers: { authorization: "Bearer valid-token" },
+      }),
+    ).resolves.toMatchObject({
+      statusCode: 200,
+      body: {
+        contractVersion: "native-guest-inbox.v2",
+        propertyId: pmsPropertyId,
+        items: [
+          {
+            guestBookingId: bookingId,
+            bookingReference: "VAY-DIRECT",
+            source: "direct_booking",
+          },
+        ],
+      },
+    });
+    expect(calls).toEqual([pmsPropertyId]);
+
+    await app.close();
+    app = buildAuthenticatedApp({
+      permissions: ["pms.inbox.read"],
+      entitlements: [{ product: "pms", key: "property-management", status: "active" }],
+      pmsInboxReadPort: port,
+    });
+    await expect(
+      injectJson(app, {
+        method: "GET",
+        url,
+        headers: { authorization: "Bearer valid-token" },
+      }),
+    ).resolves.toMatchObject({ statusCode: 403, body: { code: "missing_permission" } });
+    expect(calls).toEqual([pmsPropertyId]);
   });
 
   it("creates or returns a protected direct-email Inbox thread", async () => {

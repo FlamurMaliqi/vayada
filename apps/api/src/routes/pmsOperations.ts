@@ -1255,6 +1255,7 @@ export async function registerPmsOperationsRoutes(
     "/properties/:propertyId/booking-acceptance",
     "/properties/:propertyId/same-day-booking",
     "/properties/:propertyId/messaging/unread-count",
+    "/properties/:propertyId/messaging/direct-bookings",
     "/properties/:propertyId/messaging/threads",
     "/properties/:propertyId/messaging/threads/:threadId",
     "/properties/:propertyId/messaging/threads/:threadId/read",
@@ -2221,6 +2222,36 @@ export async function registerPmsOperationsRoutes(
         };
       } catch {
         request.log.error("PMS Inbox thread list failed");
+        return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
+      }
+    },
+  );
+
+  app.get<{ Params: PmsPropertyParams }>(
+    "/properties/:propertyId/messaging/direct-bookings",
+    { onRequest: inboxStaffCommandAuthorization(options) },
+    async (request, reply) => {
+      const { propertyId } = request.params;
+      if (!options.inboxReadPort?.listDirectBookings)
+        return sendPmsOperationsError(
+          reply,
+          readModelUnavailable("PMS Inbox direct-booking chooser is unavailable."),
+        );
+      try {
+        const result = await options.inboxReadPort.listDirectBookings(propertyId);
+        if (
+          result.propertyId !== propertyId ||
+          result.items.some((item) => item.propertyId !== propertyId)
+        ) {
+          throw new Error("Inbox direct-booking scope mismatch");
+        }
+        return {
+          contractVersion: NATIVE_GUEST_INBOX_CONTRACT_VERSION,
+          propertyId,
+          items: result.items.map(({ propertyId: _propertyId, ...item }) => item),
+        };
+      } catch {
+        request.log.error("PMS Inbox direct-booking chooser failed");
         return sendPmsOperationsError(reply, readModelUnavailable("PMS Inbox is unavailable."));
       }
     },
