@@ -414,9 +414,16 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL PMS physical-room reconciliation
       reconcileCommand("reverse-race-seed", 1, 2),
     );
     if (!added.ok) throw new Error("Expected physical units to be added");
-    const retirementCandidateId = [...added.response.addedUnits].sort((left, right) =>
-      right.roomUnitId.localeCompare(left.roomUnitId),
-    )[0]!.roomUnitId;
+    const retirementCandidate = await admin.query<{ roomUnitId: string }>(
+      `SELECT id::text AS "roomUnitId"
+       FROM pms.rooms
+       WHERE id = ANY($1::uuid[])
+       ORDER BY sort_order DESC, id DESC
+       LIMIT 1`,
+      [added.response.addedUnits.map(({ roomUnitId }) => roomUnitId)],
+    );
+    const retirementCandidateId = retirementCandidate.rows[0]?.roomUnitId;
+    if (!retirementCandidateId) throw new Error("Expected a retirement candidate");
     await expect(
       admin.query("SELECT id FROM pms.rooms WHERE id = $1::uuid AND status <> 'retired'", [
         retirementCandidateId,
