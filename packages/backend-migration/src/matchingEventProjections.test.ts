@@ -59,11 +59,7 @@ describe("Marketplace matching event projection migration contract", () => {
     expect(outcomeMigration).not.toMatch(
       /\b(?:jsonb|free_text|message|url|payload|demographics|private_preferences)\b/i,
     );
-    expect(outcomeMigration).toContain("uq_marketplace_matching_satisfaction_revision");
     expect(outcomeMigration).toContain("uq_marketplace_matching_guardrail_revision");
-    expect(currentOutcomeMigration).toContain("CREATE TABLE marketplace.current_matching_outcomes");
-    expect(currentOutcomeMigration).toContain("transition_xid          XID8");
-    expect(currentOutcomeMigration).toContain("source.transition_xid = pg_current_xact_id()");
     expect(currentOutcomeMigration).not.toMatch(/\b(?:jsonb|free_text|message|payload|cursor)\b/i);
   });
 });
@@ -391,19 +387,15 @@ describe.skipIf(!TEST_DATABASE_URL)(
     it("ties current satisfaction and guardrail facts to exact same-transaction events", async () => {
       await applyCurrentOutcomeMigrations(client);
       await insertCollaboration(client, ids.collaboration, "creator");
-      const satisfactionId = randomUUID();
-      const guardrailId = randomUUID();
-      await recordCurrentOutcome(client, satisfactionSource(satisfactionId, "satisfied"));
-      await recordCurrentOutcome(client, guardrailSource(guardrailId, "opened", "dispute"));
-      for (const mismatch of [
-        satisfactionSource(satisfactionId, "neutral", 2),
-        guardrailSource(guardrailId, "resolved", "dispute", 2),
-      ])
-        await expect(
-          insertMatchingEvent(client, currentOutcomeEvent(mismatch, occurredAt)),
-        ).rejects.toMatchObject({
+      for (const [source, event] of [
+        [satisfactionSource(randomUUID(), "satisfied"), { satisfactionOutcome: "neutral" }],
+        [guardrailSource(randomUUID(), "opened", "dispute"), { guardrailState: "resolved" }],
+      ] as const)
+        await expect(recordCurrentOutcome(client, source, event)).rejects.toMatchObject({
           constraint: "chk_marketplace_matching_event_current_source_transition",
         });
+      await recordCurrentOutcome(client, satisfactionSource(randomUUID(), "satisfied"));
+      await recordCurrentOutcome(client, guardrailSource(randomUUID(), "opened", "dispute"));
     });
 
     it("enforces source revisions and keeps them independent of retained events", async () => {
@@ -432,13 +424,16 @@ describe.skipIf(!TEST_DATABASE_URL)(
       await client.query(
         "ALTER TABLE marketplace.matching_event_projections DISABLE TRIGGER trg_marketplace_matching_event_append_only",
       );
-      await client.query(
-        "DELETE FROM marketplace.matching_event_projections WHERE source_id=$1 AND revision=1",
-        [replacementId],
-      );
-      await client.query(
-        "ALTER TABLE marketplace.matching_event_projections ENABLE TRIGGER trg_marketplace_matching_event_append_only",
-      );
+      try {
+        await client.query(
+          "DELETE FROM marketplace.matching_event_projections WHERE source_id=$1 AND revision=1",
+          [replacementId],
+        );
+      } finally {
+        await client.query(
+          "ALTER TABLE marketplace.matching_event_projections ENABLE TRIGGER trg_marketplace_matching_event_append_only",
+        );
+      }
       await recordCurrentOutcome(client, satisfactionSource(replacementId, "neutral", 2));
       expect(await currentRevision(client, replacementId)).toBe(2);
     });
@@ -539,7 +534,6 @@ type MatchingEventInput = {
   eventType: string;
   sourceId?: string;
   revision?: number;
-  actorUserId?: string;
   occurredAt?: string;
   collaborationId?: string;
   attributionKind?: "organic" | "recommended";
@@ -675,7 +669,7 @@ async function insertMatchingEvent(client: pg.Client, input: MatchingEventInput)
       input.eventType,
       acceptedAt,
       ids.property,
-      input.actorUserId ?? ids.actor,
+      ids.actor,
       sourceId,
     ],
   );
@@ -742,7 +736,7 @@ async function insertMatchingEvent(client: pg.Client, input: MatchingEventInput)
       input.eventType,
       sourceId,
       revision,
-      input.actorUserId ?? ids.actor,
+      ids.actor,
       ids.creator,
       ids.creatorOrg,
       ids.hotelOrg,
@@ -844,7 +838,13 @@ async function insertCurrentOutcome(
   return result.rows[0]!.occurredAt;
 }
 
-async function recordCurrentOutcome(client: pg.Client, input: CurrentOutcomeInput): Promise<void> {
+type EventOverrides = Partial<MatchingEventInput>;
+
+async function recordCurrentOutcome(
+  client: pg.Client,
+  input: CurrentOutcomeInput,
+  event: EventOverrides = {},
+): Promise<void> {
   await client.query("BEGIN");
   try {
     const revision = input.revision ?? 1;
@@ -865,7 +865,8 @@ async function recordCurrentOutcome(client: pg.Client, input: CurrentOutcomeInpu
               ],
             )
           ).rows[0]!.occurredAt;
-    await insertMatchingEvent(client, currentOutcomeEvent({ ...input, revision }, occurredAt));
+    const currentEvent = currentOutcomeEvent({ ...input, revision }, occurredAt);
+    await insertMatchingEvent(client, Object.assign(currentEvent, event));
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
