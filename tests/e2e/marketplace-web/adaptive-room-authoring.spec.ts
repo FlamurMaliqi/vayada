@@ -245,6 +245,8 @@ async function mockRoomOwnerApis(page: Page) {
     facts: Record<string, unknown>;
     roomFactsRevision: number;
     activeUnitCount: number;
+    roomUnitIds: string[];
+    nextRoomUnitOrdinal: number;
     roomUnitsRevision: number;
     mediaObjectIds: string[];
     roomMediaRevision: number;
@@ -333,6 +335,8 @@ async function mockRoomOwnerApis(page: Page) {
         facts: body.facts,
         roomFactsRevision: 1,
         activeUnitCount: 0,
+        roomUnitIds: [],
+        nextRoomUnitOrdinal: 1,
         roomUnitsRevision: 1,
         mediaObjectIds: [],
         roomMediaRevision: 1,
@@ -403,7 +407,20 @@ async function mockRoomOwnerApis(page: Page) {
       const room = roomByType(rooms, route.request().url(), 2);
       const body = route.request().postDataJSON() as { targetActiveUnitCount: number };
       const previous = room.activeUnitCount;
-      room.activeUnitCount = body.targetActiveUnitCount;
+      const retiredUnitIds =
+        body.targetActiveUnitCount < previous
+          ? room.roomUnitIds.splice(body.targetActiveUnitCount)
+          : [];
+      const addedUnitIds = Array.from(
+        { length: Math.max(0, body.targetActiveUnitCount - previous) },
+        (_, index) =>
+          `eeeeeeee-eeee-4eee-8eee-${String(
+            roomTypeIds.indexOf(room.roomTypeId) * 100 + room.nextRoomUnitOrdinal + index,
+          ).padStart(12, "0")}`,
+      );
+      room.roomUnitIds.push(...addedUnitIds);
+      room.nextRoomUnitOrdinal += addedUnitIds.length;
+      room.activeUnitCount = room.roomUnitIds.length;
       room.roomUnitsRevision += 1;
       events.push("units:reconcile");
       await route.fulfill({
@@ -416,16 +433,16 @@ async function mockRoomOwnerApis(page: Page) {
           roomTypeId: room.roomTypeId,
           previousActiveUnitCount: previous,
           capacity: capacitySnapshot(room),
-          addedUnits: Array.from({ length: room.activeUnitCount - previous }, (_, index) => ({
+          addedUnits: addedUnitIds.map((roomUnitId) => ({
             contractVersion: "pms-room-facts.v1",
             propertyId,
             roomTypeId: room.roomTypeId,
-            roomUnitId: `eeeeeeee-eeee-4eee-8eee-${String(rooms.size * 100 + index).padStart(12, "0")}`,
+            roomUnitId,
             lifecycle: "active",
             operationalLabel: null,
             operationalLabelStatus: "unverified",
           })),
-          retiredUnitIds: [],
+          retiredUnitIds,
           acceptedAt: now,
         },
       });
@@ -441,11 +458,11 @@ async function mockRoomOwnerApis(page: Page) {
         status: 200,
         headers: corsHeaders(route),
         json: {
-          items: Array.from({ length: room.activeUnitCount }, (_, index) => ({
+          items: room.roomUnitIds.map((roomUnitId) => ({
             contractVersion: "pms-room-facts.v1",
             propertyId,
             roomTypeId: room.roomTypeId,
-            roomUnitId: `eeeeeeee-eeee-4eee-8eee-${String(roomTypeIds.indexOf(room.roomTypeId) * 100 + index + 1).padStart(12, "0")}`,
+            roomUnitId,
             lifecycle: "active",
             operationalLabel: null,
             operationalLabelStatus: "unverified",
@@ -655,6 +672,8 @@ function ownerRoomShape() {
     facts: {} as Record<string, unknown>,
     roomFactsRevision: 1,
     activeUnitCount: 0,
+    roomUnitIds: [] as string[],
+    nextRoomUnitOrdinal: 1,
     roomUnitsRevision: 1,
     mediaObjectIds: [] as string[],
     roomMediaRevision: 1,

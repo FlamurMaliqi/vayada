@@ -678,11 +678,17 @@ async function preparePhysicalRooms(
   targetActiveUnitCount: number | undefined,
 ): Promise<void> {
   if (!Number.isInteger(targetActiveUnitCount) || targetActiveUnitCount! < 1) return;
+  const expectedPropertyId = propertyId.toLowerCase();
+  const expectedRoomTypeId = roomTypeId.toLowerCase();
   const setupPath = `/api/pms/setup/properties/${encodeURIComponent(propertyId)}/room-types/${encodeURIComponent(roomTypeId)}`;
   const capacity = parseRoomTypeCapacitySnapshot(
     await pmsOperationsClient.get<unknown>(`${setupPath}/capacity`, pmsOperationsRequestOptions),
   );
-  if (!capacity || capacity.propertyId !== propertyId || capacity.roomTypeId !== roomTypeId) {
+  if (
+    !capacity ||
+    capacity.propertyId !== expectedPropertyId ||
+    capacity.roomTypeId !== expectedRoomTypeId
+  ) {
     throw new Error("Physical room capacity is unavailable. Reload the room and try again.");
   }
   let revision = capacity.roomUnitsRevision;
@@ -695,8 +701,8 @@ async function preparePhysicalRooms(
     const result = parseReconcilePhysicalRoomUnitsResult({ ok: true, response });
     if (
       !result?.ok ||
-      result.response.propertyId !== propertyId ||
-      result.response.roomTypeId !== roomTypeId ||
+      result.response.propertyId !== expectedPropertyId ||
+      result.response.roomTypeId !== expectedRoomTypeId ||
       result.response.capacity.activeUnitCount !== targetActiveUnitCount ||
       result.response.capacity.roomUnitsRevision !== revision + 1
     ) {
@@ -714,7 +720,10 @@ async function preparePhysicalRooms(
   }
   const units = (value as { items: unknown[] }).items.map(parsePhysicalRoomUnitIdentity);
   if (
-    units.some((unit) => !unit || unit.propertyId !== propertyId || unit.roomTypeId !== roomTypeId)
+    units.some(
+      (unit) =>
+        !unit || unit.propertyId !== expectedPropertyId || unit.roomTypeId !== expectedRoomTypeId,
+    )
   ) {
     throw new Error("Physical room labels are unavailable. Reload the room and try again.");
   }
@@ -754,8 +763,8 @@ async function preparePhysicalRooms(
     const result = parseSetPhysicalRoomOperationalLabelResult({ ok: true, response });
     if (
       !result?.ok ||
-      result.response.propertyId !== propertyId ||
-      result.response.roomTypeId !== roomTypeId ||
+      result.response.propertyId !== expectedPropertyId ||
+      result.response.roomTypeId !== expectedRoomTypeId ||
       result.response.roomUnitId !== unit.roomUnitId ||
       result.response.operationalLabel !== operationalLabel ||
       result.response.operationalLabelStatus !== "verified" ||
@@ -785,6 +794,7 @@ async function ensureCanonicalFlexibleRatePlan(
   roomType: PmsOperationsRoomType,
   data: RoomTypeUpdate,
 ): Promise<void> {
+  const expectedPropertyId = propertyId.toLowerCase();
   const pricingPath = `/api/pms/properties/${encodeURIComponent(propertyId)}/pricing-source`;
   let pricingSource;
   try {
@@ -794,7 +804,7 @@ async function ensureCanonicalFlexibleRatePlan(
         cache: "no-store",
       }),
     );
-    if (!pricingSource || pricingSource.propertyId !== propertyId) {
+    if (!pricingSource || pricingSource.propertyId !== expectedPropertyId) {
       throw new Error("Canonical room pricing is unavailable. Reload the room and try again.");
     }
   } catch (error) {
@@ -813,7 +823,7 @@ async function ensureCanonicalFlexibleRatePlan(
     const result = parsePropertyPricingCurrencyCommandResult({ ok: true, response });
     if (
       !result?.ok ||
-      result.response.pricingCurrency.propertyId !== propertyId ||
+      result.response.pricingCurrency.propertyId !== expectedPropertyId ||
       result.response.pricingCurrency.currency !== roomType.baseRate.currency
     ) {
       throw new Error(
@@ -843,7 +853,7 @@ async function ensureCanonicalFlexibleRatePlan(
   );
   if (
     !roomFacts ||
-    roomFacts.propertyId !== propertyId ||
+    roomFacts.propertyId !== expectedPropertyId ||
     roomFacts.roomTypeId !== roomType.roomTypeId
   ) {
     throw new Error("Canonical room facts are unavailable. Reload the room and try again.");
@@ -885,7 +895,7 @@ async function ensureCanonicalFlexibleRatePlan(
   const result = parseFlexibleRatePlanCommandResult({ ok: true, response });
   if (
     !result?.ok ||
-    result.response.flexibleRatePlan.propertyId !== propertyId ||
+    result.response.flexibleRatePlan.propertyId !== expectedPropertyId ||
     result.response.flexibleRatePlan.roomTypeId !== roomType.roomTypeId ||
     result.response.flexibleRatePlan.sourceRoomFactsRevision !== roomFacts.roomFactsRevision ||
     result.response.flexibleRatePlan.flexibleRatePlanRevision !==

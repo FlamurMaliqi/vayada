@@ -799,7 +799,8 @@ describe("roomsService.create", () => {
 
   it("retries generated labels that collide elsewhere in the property", async () => {
     vi.clearAllMocks();
-    const propertyId = "11111111-1111-4111-8111-111111111111";
+    const propertyId = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA";
+    const canonicalPropertyId = propertyId.toLowerCase();
     const roomTypeId = "22222222-2222-4222-8222-222222222222";
     const unitIds = [
       "33333333-3333-4333-8333-333333333331",
@@ -807,13 +808,13 @@ describe("roomsService.create", () => {
     ];
     mocks.resolvePropertyId.mockResolvedValue(propertyId);
     mocks.post.mockResolvedValue({
-      propertyId,
+      propertyId: canonicalPropertyId,
       item: pmsRoomTypeItem({ roomTypeId, name: "Castrop Suite", roomCount: 2 }),
     });
     mocks.get
       .mockResolvedValueOnce({
         contractVersion: "pms-room-facts.v1",
-        propertyId,
+        propertyId: canonicalPropertyId,
         roomTypeId,
         roomUnitsRevision: 1,
         activeUnitCount: 2,
@@ -822,7 +823,7 @@ describe("roomsService.create", () => {
       .mockResolvedValueOnce({
         items: unitIds.map((roomUnitId) => ({
           contractVersion: "pms-room-facts.v1",
-          propertyId,
+          propertyId: canonicalPropertyId,
           roomTypeId,
           roomUnitId,
           lifecycle: "active",
@@ -830,8 +831,8 @@ describe("roomsService.create", () => {
           operationalLabelStatus: "unverified",
         })),
       })
-      .mockResolvedValueOnce(canonicalPricingSource(propertyId, roomTypeId))
-      .mockResolvedValueOnce(canonicalRoomFacts(propertyId, roomTypeId));
+      .mockResolvedValueOnce(canonicalPricingSource(canonicalPropertyId, roomTypeId))
+      .mockResolvedValueOnce(canonicalRoomFacts(canonicalPropertyId, roomTypeId));
     let propertyWideLabelConflict = true;
     mocks.put.mockImplementation(async (endpoint, body) => {
       if (propertyWideLabelConflict && body.operationalLabel === "Castrop Suite 1") {
@@ -841,7 +842,7 @@ describe("roomsService.create", () => {
       return {
         contractVersion: "pms-room-facts.v1",
         outcome: "updated",
-        propertyId,
+        propertyId: canonicalPropertyId,
         roomTypeId,
         roomUnitId: endpoint.split("/").at(-2),
         roomUnitsRevision: body.expectedRevision + 1,
@@ -973,22 +974,27 @@ describe("roomsService.create", () => {
     );
   });
 
-  it("reconciles an edited room count before verifying the added unit", async () => {
+  it("reconciles an uppercase room type ID before verifying the added unit", async () => {
     vi.clearAllMocks();
     const propertyId = "11111111-1111-4111-8111-111111111111";
-    const roomTypeId = "22222222-2222-4222-8222-222222222222";
+    const roomTypeId = "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB";
+    const canonicalRoomTypeId = roomTypeId.toLowerCase();
     const existingUnitId = "33333333-3333-4333-8333-333333333332";
     const roomUnitId = "33333333-3333-4333-8333-333333333333";
     mocks.resolvePropertyId.mockResolvedValue(propertyId);
     mocks.patch.mockResolvedValue({
       propertyId,
-      item: pmsRoomTypeItem({ roomTypeId, name: "Castrop Suite", roomCount: 1 }),
+      item: pmsRoomTypeItem({
+        roomTypeId: canonicalRoomTypeId,
+        name: "Castrop Suite",
+        roomCount: 1,
+      }),
     });
     mocks.get
       .mockResolvedValueOnce({
         contractVersion: "pms-room-facts.v1",
         propertyId,
-        roomTypeId,
+        roomTypeId: canonicalRoomTypeId,
         roomUnitsRevision: 4,
         activeUnitCount: 1,
         capturedAt: "2026-09-04T00:00:00.000Z",
@@ -998,7 +1004,7 @@ describe("roomsService.create", () => {
           {
             contractVersion: "pms-room-facts.v1",
             propertyId,
-            roomTypeId,
+            roomTypeId: canonicalRoomTypeId,
             roomUnitId: existingUnitId,
             lifecycle: "active",
             operationalLabel: "Castrop Suite 1",
@@ -1007,7 +1013,7 @@ describe("roomsService.create", () => {
           {
             contractVersion: "pms-room-facts.v1",
             propertyId,
-            roomTypeId,
+            roomTypeId: canonicalRoomTypeId,
             roomUnitId: "33333333-3333-4333-8333-333333333331",
             lifecycle: "retired",
             operationalLabel: "Castrop Suite 2",
@@ -1016,7 +1022,7 @@ describe("roomsService.create", () => {
           {
             contractVersion: "pms-room-facts.v1",
             propertyId,
-            roomTypeId,
+            roomTypeId: canonicalRoomTypeId,
             roomUnitId,
             lifecycle: "active",
             operationalLabel: null,
@@ -1026,21 +1032,25 @@ describe("roomsService.create", () => {
       })
       .mockResolvedValueOnce({
         propertyId,
-        item: pmsRoomTypeItem({ roomTypeId, name: "Castrop Suite", roomCount: 2 }),
+        item: pmsRoomTypeItem({
+          roomTypeId: canonicalRoomTypeId,
+          name: "Castrop Suite",
+          roomCount: 2,
+        }),
       })
-      .mockResolvedValueOnce(canonicalPricingSource(propertyId, roomTypeId))
-      .mockResolvedValueOnce(canonicalRoomFacts(propertyId, roomTypeId));
+      .mockResolvedValueOnce(canonicalPricingSource(propertyId, canonicalRoomTypeId))
+      .mockResolvedValueOnce(canonicalRoomFacts(propertyId, canonicalRoomTypeId));
     mocks.put
       .mockResolvedValueOnce({
         contractVersion: "pms-room-facts.v1",
         outcome: "reconciled",
         propertyId,
-        roomTypeId,
+        roomTypeId: canonicalRoomTypeId,
         previousActiveUnitCount: 1,
         capacity: {
           contractVersion: "pms-room-facts.v1",
           propertyId,
-          roomTypeId,
+          roomTypeId: canonicalRoomTypeId,
           roomUnitsRevision: 5,
           activeUnitCount: 2,
           capturedAt: "2026-09-04T00:00:00.000Z",
@@ -1049,7 +1059,7 @@ describe("roomsService.create", () => {
           {
             contractVersion: "pms-room-facts.v1",
             propertyId,
-            roomTypeId,
+            roomTypeId: canonicalRoomTypeId,
             roomUnitId,
             lifecycle: "active",
             operationalLabel: null,
@@ -1063,7 +1073,7 @@ describe("roomsService.create", () => {
         contractVersion: "pms-room-facts.v1",
         outcome: "updated",
         propertyId,
-        roomTypeId,
+        roomTypeId: canonicalRoomTypeId,
         roomUnitId,
         roomUnitsRevision: 6,
         operationalLabel: "Castrop Suite 3",
