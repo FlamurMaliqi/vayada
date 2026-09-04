@@ -514,6 +514,31 @@ export async function mockBookingAdminShellRoutes(
       },
     }),
   );
+  await page.route(`**${BOOKING_ADMIN_FINANCE_PAYMENT_SETTINGS_PATH}`, (route) =>
+    route.fulfill({
+      json: {
+        contractVersion: "finance-route-contracts.v1",
+        propertyId: BOOKING_ADMIN_PROPERTY_ID,
+        paymentSettings: {
+          paymentsEnabled: false,
+          paymentProvider: "vayada",
+          acceptedMethods: ["pay_at_property", "cash"],
+          defaultCurrency: "EUR",
+          supportedCurrencies: ["EUR"],
+          requiresManualReview: false,
+          providerAccount: {
+            providerAccountId: null,
+            provider: null,
+            status: "not_configured",
+            onboardingStatus: "not_started",
+            chargesEnabled: false,
+            payoutsEnabled: false,
+            capabilities: [],
+          },
+        },
+      },
+    }),
+  );
   await page.route(`**${BOOKING_ADMIN_PROPERTY_PROFILE_PATH}*`, (route) =>
     route.fulfill({ json: defaultBookingAdminPropertyProfile }),
   );
